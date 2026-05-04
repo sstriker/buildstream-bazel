@@ -55,7 +55,71 @@ func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
 	if err != nil {
 		return err
 	}
-	return h.RenderA(elem, elemPkg)
+	if err := h.RenderA(elem, elemPkg); err != nil {
+		return err
+	}
+	// Emit srckey.txt + srckey-breakdown.txt — the per-element
+	// build-graph identity used by the trace-driven registry
+	// (see srckey.go). Only emitted when the trace-driven path
+	// is enabled (matches the `convertBin` set guard the
+	// pipelineHandlerForElement applied above), since coarse
+	// pipeline elements don't participate in the registry.
+	if autotoolsConfig.convertBin != "" {
+		if err := renderSrckey(elem, elemPkg, autotoolsSrckeyPatterns()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// autotoolsSrckeyPatterns is the per-kind narrowing rule set
+// for autotools' build-graph srckey. The returned rules
+// classify each source-tree file as content-included (its
+// bytes contribute to srckey) or name-only (only the path
+// contributes).
+//
+// Content-included families:
+//
+//   - configure / configure.ac / configure.in / config.h.in —
+//     autoconf entry points. Changing these changes the
+//     generated Makefile.
+//   - *.am / Makefile.in — automake / Makefile templates.
+//     Direct source of truth for make's recipes.
+//   - *.m4 — autoconf macro libraries fed into configure
+//     processing.
+//   - **/*.h / **/*.hpp / **/*.hxx — header files. Their
+//     content rarely changes the build COMMANDS, but config.h
+//     -style preprocessor switches CAN affect which compile
+//     directives the Makefile emits (target-specific CFLAGS
+//     keyed on HAVE_FOO macros). Kept conservatively.
+//
+// Everything else falls into name-only territory by default.
+// Most importantly: **/*.c / *.cpp / *.cc / *.S / *.s. Their
+// CONTENT doesn't influence the build graph — make's recipes
+// stay the same; only the .o bytes the compiler emits change.
+// Their NAMES still contribute (a wildcard rule in Makefile.in
+// could pick up a newly-added .c, so adding/removing files
+// must invalidate srckey).
+//
+// Pattern grammar matches the read-paths patterns
+// (read_paths_patterns.go), since computeSrckey reuses the
+// same matcher.
+func autotoolsSrckeyPatterns() *readPathsPatterns {
+	return &readPathsPatterns{
+		Rules: []patternRule{
+			{Include: true, Pattern: "configure"},
+			{Include: true, Pattern: "configure.ac"},
+			{Include: true, Pattern: "configure.in"},
+			{Include: true, Pattern: "config.h.in"},
+			{Include: true, Pattern: "**/*.ac"},
+			{Include: true, Pattern: "**/*.am"},
+			{Include: true, Pattern: "**/*.in"},
+			{Include: true, Pattern: "**/*.m4"},
+			{Include: true, Pattern: "**/*.h"},
+			{Include: true, Pattern: "**/*.hpp"},
+			{Include: true, Pattern: "**/*.hxx"},
+		},
+	}
 }
 
 func (autotoolsHandler) RenderB(elem *element, elemPkg string) error {
