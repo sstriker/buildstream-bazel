@@ -143,45 +143,44 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 	return true, nil
 }
 
-// autotoolsTraceExtension wires build-tracer into the install
-// genrule + adds a sibling `<elem>_converted` genrule that
-// runs convert-element-autotools against the trace. Two
-// Bazel actions, two cache keys:
+// autotoolsTraceExtension is the pipelineExtension that wires
+// the build-tracer + convert-element-autotools steps into the
+// rendered install-genrule cmd. Outputs: install_tree.tar
+// (existing) + BUILD.bazel.out (converter output) + make-db.txt
+// (post-build dump of `make -np`, fed back to the converter as
+// a structural hint) + install-mapping.json (sidecar). Tools:
+// build-tracer + convert-element-autotools (both staged into
+// project A's tools/ at write-a time). When hasImports is true,
+// imports.json is added to the genrule's srcs and the converter
+// step's `--imports-manifest` flag references it via
+// $(location imports.json).
 //
-//   - `<elem>_install`: full source tree as input. Wraps
-//     `./configure && make && make install` under
-//     build-tracer; outputs install_tree.tar + trace.log +
-//     make-db.txt. Source content edits invalidate this
-//     action's cache key (the build re-runs).
-//   - `<elem>_converted`: trace.log + make-db.txt (+
-//     optional imports.json) as input. Runs
-//     convert-element-autotools; outputs BUILD.bazel.out +
-//     install-mapping.json. **Cache key narrows to the
-//     trace + make-db**, so a comment-only source edit
-//     re-runs _install but its trace + make-db come out
-//     byte-identical → _converted cache hits → project B's
-//     staged BUILD doesn't churn.
-//
-// Mirrors kind:cmake's narrow-cache story: cmake's convert
-// action depends only on configure-time read paths via
-// zero_files; everything else changes don't invalidate the
-// converter. For autotools the build IS the introspection,
-// so we can't avoid re-running the build — but we can cache
-// the conversion narrowly.
+// Note on the convert action's cache key: this lives in the
+// SAME genrule action as the build, so any change that
+// invalidates the install action also re-runs the converter.
+// We attempted to split into _install + _converted (sibling
+// genrules) to give the converter a narrower cache key, but
+// reverted: trace + make-db are not byte-stable across builds
+// (pid prefix, cc1 temp paths, make-db's `# Last modified`
+// timestamps), so the narrow cache key never hit anyway. See
+// docs/trace-driven-autotools.md for the determinism work
+// that would let us re-introduce the split.
 func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension {
 	ext := &pipelineExtension{
 		WrapPipelineCmds: wrapAutotoolsPipelineCmds,
-		AppendCmd:        autotoolsMakeDBStep(),
+		AppendCmd:        autotoolsConverterStep(hasImports),
 		ExtraOuts: []string{
-			"trace.log",
+			"BUILD.bazel.out",
 			"make-db.txt",
+			"install-mapping.json",
 		},
 		ExtraTools: []string{
 			"//tools:build-tracer",
+			"//tools:convert-element-autotools",
 		},
-		SiblingRules: func(elemName string) string {
-			return autotoolsConvertedSiblingRule(elemName, hasImports)
-		},
+	}
+	if hasImports {
+		ext.ExtraSrcs = []string{"imports.json"}
 	}
 	// Wire dep install_tree.tar outputs into the consumer's
 	// _install srcs so configure / make can find dep .h / .a.
@@ -236,87 +235,73 @@ func autotoolsDepExtractCmd() string {
 // configure/build/install commands block. Every command runs
 // under build-tracer so a single trace.log captures the entire
 // process tree (compile / archive / link / install execve
-// calls). The trace artifact is a real Bazel output of the
-// install genrule — the sibling `<elem>_converted` rule
-// consumes it.
+// calls). The trace lives in $$AUTOTOOLS_TRACE; the converter
+// step (AppendCmd) reads it.
+//
+// We use one tracer invocation around the whole pipeline —
+// configure + build + install — rather than per-phase, so the
+// process-tree filtering is straightforward (one strace
+// session, one trace file).
 //
 // Path note: the tool reference is anchored to $$EXEC_ROOT.
-// Bazel resolves $(location //tools:build-tracer) and
-// $(location trace.log) to exec-root-relative paths;
-// pipelineHandler's prelude already cd'd to $$BUILD_ROOT, so
-// the bare relative paths wouldn't find them.
+// Bazel resolves $(location //tools:build-tracer) to an
+// exec-root-relative path; pipelineHandler's prelude already
+// `cd "$$BUILD_ROOT"` by the time this runs, so the bare
+// relative path wouldn't find the staged binary.
 func wrapAutotoolsPipelineCmds(cmds string) string {
 	return fmt.Sprintf(`        # Build-tracer wraps the entire configure/build/install
         # pipeline. The trace artifact captures every execve under
-        # the build sandbox; convert-element-autotools (in the
-        # sibling _converted rule) reads it to emit BUILD.bazel.out.
-        "$$EXEC_ROOT/$(location //tools:build-tracer)" --out="$$EXEC_ROOT/$(location trace.log)" -- sh -c '
+        # the build sandbox; convert-element-autotools (run by the
+        # AppendCmd step) reads it to emit BUILD.bazel.out.
+        export AUTOTOOLS_TRACE="$$(mktemp)"
+        "$$EXEC_ROOT/$(location //tools:build-tracer)" --out="$$AUTOTOOLS_TRACE" -- sh -c '
 %s
 '`, cmds)
 }
 
-// autotoolsMakeDBStep dumps the post-build make database to
-// make-db.txt. Runs in $$BUILD_ROOT (pipeline's cd is still
-// in effect) so make finds its Makefile. `make -np` may exit
-// non-zero on a healthy build (e.g. "nothing to do" when
-// targets are up-to-date), so `|| true` keeps the genrule
-// successful.
+// autotoolsConverterStep is the shell snippet inserted between
+// the (tracer-wrapped) pipeline cmds and the install-tree tar.
+// Two sub-steps:
 //
-// The convert step itself moved out of the install genrule
-// into the sibling `<elem>_converted` rule — see
-// autotoolsConvertedSiblingRule.
-func autotoolsMakeDBStep() string {
-	return `        # Capture the post-build make database. Run from
-        # $$BUILD_ROOT (pipeline cmds left us there); ` + "`make -np`" + `
+//  1. Dump `make -np` (dry-run + print-database) to capture
+//     the post-build Makefile state — fully variable-resolved
+//     after configure ran. Cwd is $$BUILD_ROOT here (the
+//     pipeline's `cd "$$BUILD_ROOT"` is still in effect), so
+//     make finds its Makefile.
+//  2. Run convert-element-autotools against the trace + the
+//     captured make database, emitting BUILD.bazel.out.
+//
+// `make -np` may exit non-zero on a healthy build (it skips
+// the actual build but still attempts `nothing to do` — safe
+// to ignore). The `|| true` keeps the genrule action
+// successful even if make is unhappy with the dry run.
+//
+// When hasImports is true, --imports-manifest=$(location
+// imports.json) threads through so cross-element `-l<name>`
+// flags resolve to the right Bazel labels.
+func autotoolsConverterStep(hasImports bool) string {
+	importsFlag := ""
+	if hasImports {
+		importsFlag = ` \
+            --imports-manifest="$(location imports.json)"`
+	}
+	return fmt.Sprintf(`        # Capture the post-build make database. Run from
+        # $$BUILD_ROOT (pipeline cmds left us there); `+"`make -np`"+`
         # dumps every rule, variable, and prereq edge after
         # configure-time substitutions are baked in. Tolerate
         # non-zero exit (make's dry-run can grumble about
         # "nothing to do" or missing optional targets).
-        make -np > "$$EXEC_ROOT/$(location make-db.txt)" 2>/dev/null || true`
-}
+        make -np > "$$EXEC_ROOT/$(location make-db.txt)" 2>/dev/null || true
 
-// autotoolsConvertedSiblingRule renders the
-// `<elem>_converted` genrule. Consumes the install rule's
-// trace.log + make-db.txt outputs; runs convert-element-
-// autotools to produce BUILD.bazel.out + install-mapping.json.
-//
-// Cache-key narrowing: this action's input set is just the
-// trace + make-db (+ optional imports.json). A comment-only
-// edit in a source file invalidates `<elem>_install` (which
-// re-runs the build) but leaves trace.log + make-db.txt
-// byte-identical → `<elem>_converted`'s cache key is
-// unchanged → cache hit → BUILD.bazel.out reused → project
-// B's staged BUILD doesn't churn → consumers don't rebuild.
-//
-// `<elem>_install`'s outputs are referenced via the local
-// labels `:trace.log` and `:make-db.txt` (Bazel exposes each
-// genrule output as a sibling target with the output's
-// filename).
-func autotoolsConvertedSiblingRule(elemName string, hasImports bool) string {
-	importsSrcs := ""
-	importsFlag := ""
-	if hasImports {
-		importsSrcs = `, "imports.json"`
-		importsFlag = ` \
-            --imports-manifest="$(location imports.json)"`
-	}
-	return fmt.Sprintf(`# Convert step — narrow cache key. A comment-only edit in a
-# source file re-runs `+"`%[1]s_install`"+` (the build), but its
-# trace.log + make-db.txt outputs come out byte-identical, so
-# this rule's action cache hits and BUILD.bazel.out is reused.
-# Mirrors kind:cmake's read-paths-narrowed convert action.
-genrule(
-    name = "%[1]s_converted",
-    srcs = [":trace.log", ":make-db.txt"%[2]s],
-    outs = ["BUILD.bazel.out", "install-mapping.json"],
-    cmd = """
+        # Trace + make-db -> native cc_library / cc_binary
+        # BUILD.bazel.out. Output goes through bazel's normal
+        # action cache (buildbarn in CI), which is what gives us
+        # cross-node convergence — same trace + same converter
+        # version => same BUILD.bazel.out everywhere.
+        cd "$$EXEC_ROOT"
         $(location //tools:convert-element-autotools) \
-            --trace="$(location :trace.log)" \
-            --make-db="$(location :make-db.txt)" \
-            --out-build="$(location BUILD.bazel.out)" \
-            --out-install-mapping="$(location install-mapping.json)"%[3]s
-    """,
-    tools = ["//tools:convert-element-autotools"],
-)
-`, elemName, importsSrcs, importsFlag)
+            --trace="$$AUTOTOOLS_TRACE" \
+            --make-db="$(location make-db.txt)" \
+            --out-install-mapping="$(location install-mapping.json)" \
+            --out-build="$(location BUILD.bazel.out)"%s`, importsFlag)
 }

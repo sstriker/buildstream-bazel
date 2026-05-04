@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-stability e2e-meta-autotools-libtool-pic \
+        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -251,17 +251,6 @@ e2e-meta-autotools-multitarget: check-tools converter
 # copts while stripping the global default flags.
 e2e-meta-autotools-tu-optflags: check-tools converter
 	scripts/meta-autotools-tu-optflags.sh
-
-# Convert-action stability gate. Splits the autotools native
-# render path into _install (full source input → trace.log +
-# make-db.txt) + _converted (narrow input → BUILD.bazel.out).
-# A comment-only edit in a source file invalidates _install's
-# cache key (input bytes changed) but the build's trace.log +
-# make-db.txt come out byte-identical, so _converted's narrow
-# cache key is unchanged → BUILD.bazel.out is reused. Mirrors
-# kind:cmake's read-paths narrowing.
-e2e-meta-autotools-stability: check-tools converter
-	scripts/meta-autotools-stability.sh
 
 # Libtool dual-compile gate. Fixture's Makefile compiles foo.c
 # twice: once with -fPIC -DPIC into .libs/foo.o (archived as
