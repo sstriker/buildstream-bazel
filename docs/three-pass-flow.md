@@ -1,68 +1,141 @@
-# Three-pass flow: when each phase runs and why
+# Three-pass flow: 1 → 2 → 3 (and the 2' → 3' loop for autotools)
 
-The cmake-to-bazel converter is a **3-pass** system. Each pass
-has its own caching story, and the optimization opportunities
-look very different depending on which pass you're in. This doc
-exists because the tradeoffs are easy to confuse — especially
-the autotools narrowing one, which is essentially impossible
-under Bazel's hermetic-action model and only becomes possible
-with an out-of-band side channel.
+The cmake-to-bazel converter is a 3-pass system. Each pass has
+its own caching story, and the optimization opportunities look
+very different depending on which pass you're in. **Pass 3 is
+where the real builds live** — pass 2 is meta-graph processing
+that produces project B's BUILD definitions, and pass 1 is just
+the writer that prepares project A.
 
-## The three passes
+For element kinds that introspect their build graph from
+sources alone (cmake), pass 2 produces fine-grained BUILD
+definitions in one shot. For kinds where the build graph is
+only knowable by actually running the build (autotools), pass
+2 emits a coarse passthrough genrule into project B, pass 3
+runs the build inside it (deps available as proper B-side
+targets) and registers the resulting trace, and a follow-up
+**pass 2′** picks up the trace at the next render to emit the
+fine-grained graph for **pass 3′** to compile natively.
+
+## The three (or five) passes
 
 ```mermaid
 flowchart LR
-  bst[".bst graph<br/>+ element source trees"] --> wa[Pass 1: write-a<br/>renders project A]
-  wa --> a["project A<br/>(BUILD files + staged sources)"]
-  a --> ba[Pass 2: bazel build A<br/>per-element genrules]
-  ba --> bins["bazel-bin/elements/&lt;name&gt;/<br/>BUILD.bazel.out + install_tree.tar"]
-  bins --> stage["stage A's outputs<br/>into project B"]
-  stage --> b[project B]
-  b --> bb[Pass 3: bazel build B<br/>final artifacts]
-  bb --> art["binaries / libraries"]
+  bst[".bst graph"] --> wa[Pass 1: write-a<br/>renders project A]
+  wa --> pa[project A]
+  pa --> ba[Pass 2: bazel build A<br/>produces B's BUILD defs]
+  ba --> pb[project B]
+  pb --> bb[Pass 3: bazel build B<br/>real builds + artifacts]
+  bb -- "cmake: done" --> art[binaries]
+  bb -- "autotools: trace registered" --> reg["srckey -> trace<br/>registry"]
+  reg -. "next render" .-> wa2[Pass 1': write-a<br/>render checks registry]
+  wa2 --> pa2[project A']
+  pa2 --> ba2[Pass 2': fine-grained<br/>BUILD defs from trace]
+  ba2 --> pb2[project B']
+  pb2 --> bb2[Pass 3': bazel build B'<br/>fine-grained native compile]
+  bb2 --> art
 ```
 
 | Pass | Cost | Cache | Inputs |
 |---|---|---|---|
 | 1: write-a | cheap (seconds) | none — always re-runs | .bst graph + element source bytes |
-| 2: bazel build A | varies — expensive for kind:autotools (real build); cheap for kind:cmake | Bazel's ActionCache (REAPI / buildbarn for cross-machine) | per-element genrule srcs |
-| 3: bazel build B | per native cc_library / cc_binary action | Bazel's ActionCache, normal Bazel semantics | the converted cc rules + their srcs |
+| 2: bazel build A | cheap for cmake (graph-only); cheap for autotools (just stages a passthrough genrule) | Bazel's ActionCache | per-element graph-shape |
+| 3: bazel build B | per-action: cheap for cmake cc rules; **expensive for autotools coarse genrule** (configure + make + install + tracer) | Bazel's ActionCache | source bytes + dep artifacts |
+| 2': write-a / bazel build A re-render | cheap | registry hit ⇒ emits fine-grained graph for B | trace registered by pass 3 |
+| 3': bazel build B' | cheap (incremental, fine-grained cc) | normal Bazel | the converted cc_library / cc_binary |
 
-## Per-kind: where conversion lives
+**Key correction** (versus an earlier draft of this doc):
+the autotools build does NOT live in pass 2 (project A's
+genrule). It lives in pass 3 (project B's coarse genrule).
+This matters because in pass 2 the element's dependencies
+aren't materialized as Bazel targets yet — only their .bst
+graph metadata is. In pass 3 the deps are real B-side
+`cc_library` outputs (or coarse `install_tree.tar` filegroups
+for upstream autotools elements that haven't yet round-
+tripped through 2'). The build can link against them.
 
-### kind:cmake — conversion is "graph-only", lives in pass 2
+## Per-kind: in-2 conversion vs 3 → 2' loop
+
+### kind:cmake — fine-grained graph from pass 2 directly
 
 cmake exposes structured introspection (File API codemodel
-+ `--trace-expand`). The convert action reads CMakeLists.txt
-and its referenced files, but **doesn't compile anything** —
-it's a pure source-graph parse.
++ `--trace-expand`). Pass 2's per-element action runs
+`convert-element` against zero-stubbed sources (real bytes
+for files cmake reads at configure time; zero stubs for
+files cmake's `file(GLOB)` walks but doesn't read). Output:
+fine-grained `cc_library` / `cc_binary` rules in project B's
+per-element BUILD.
 
-So pass 2's per-element action narrows cleanly via the
-zero-stub pattern:
-- Real bytes for files cmake reads at configure time
-  (`CMakeLists.txt`, `*.cmake`, `*.h` referenced by
-  `target_link_libraries`, etc.).
-- Zero stubs for files cmake's `file(GLOB)` walks see but
-  whose content cmake doesn't read (typically `*.c` /
-  `*.cpp`).
+Pass 3 then compiles those rules natively. **One round.**
 
-Result: `.c`-only edits don't change the convert action's
-input bytes → Bazel's AC hits → `BUILD.bazel.out` reused
-verbatim. Project B's BUILD doesn't churn.
+### kind:autotools — coarse-then-fine via the 3 → 2' loop
 
-### kind:autotools — conversion needs a real build, lives in pass 2 inline
+Autotools has no introspection equivalent. The only way to
+recover the build graph is to run `make` and trace `execve`
+calls. Two things follow:
 
-Autotools has no equivalent introspection. The only way to
-recover what `make` did is to **actually run it** and trace
-the resulting `execve` calls. So pass 2's per-element action
-is `./configure && make && make install` wrapped in
-`build-tracer`, with `convert-element-autotools` parsing the
-trace inline to emit `BUILD.bazel.out`.
+1. The build needs deps available as proper Bazel inputs →
+   it must run in **pass 3** (where deps are B-side targets),
+   not pass 2 (where they're just .bst metadata).
+2. The first round can't emit a fine-grained graph — only a
+   coarse `genrule` that owns the entire build.
 
-The build is real and expensive. The trace + make-db are
-byte-stable across reruns of identical builds (PR #61's
-canonicalization), so `BUILD.bazel.out` comes out byte-stable
-even though the build re-runs.
+So the round-1 shape:
+
+- **Pass 1**: write-a renders project A. No autotools-specific
+  meta beyond the per-element source staging.
+- **Pass 2**: bazel build A produces project B's per-element
+  BUILD with a coarse genrule. The genrule's srcs include the
+  element's sources + deps' install artifacts. Outputs:
+  `install_tree.tar` (the actual installed files) +
+  `trace.log` + `make-db.txt`.
+- **Pass 3**: bazel builds the coarse genrule. configure +
+  make + install run under the tracer; trace + make-db are
+  byte-stable per PR #61's canonicalization. install_tree.tar
+  is the artifact for downstream consumers. **trace + make-db
+  are registered against the element's srckey** for the next
+  round.
+
+Round-2 shape (post-trace registration):
+
+- **Pass 1' (write-a re-render)**: detects the registered
+  trace for this element's srckey. Emits project A with a
+  marker indicating "fine-graph available for X."
+- **Pass 2' (bazel build A')**: per-element action no longer
+  needs to defer to a coarse genrule. It reads the registered
+  trace + make-db, runs the converter, and emits fine-grained
+  `cc_library` / `cc_binary` BUILD definitions into project B
+  (just like cmake's pass 2 does).
+- **Pass 3' (bazel build B')**: native cc compile of the
+  fine-grained rules. `.c` content edits trigger ONLY
+  recompiling that translation unit (not the whole autotools
+  build).
+
+The registry is what carries pass-3 trace output back to
+pass-2'. It's a write-a-time / pass-2-time lookup, NOT an
+in-action lookup — which is why it doesn't duplicate Bazel's
+ActionCache. Different layer entirely.
+
+### When does the coarse pass-3 genrule re-run?
+
+After round 2, the fine-grained pass-3' compilation is what
+runs on most edits. The coarse pass-3 genrule only re-runs
+when the registry MISSES — i.e., when the element's srckey
+changes. With autotools narrowing patterns from PR #62, the
+srckey changes on:
+
+- `configure` / `configure.ac` / `*.am` / `*.in` / `*.m4` /
+  `*.h` content edits (graph-affecting).
+- File adds/removes anywhere in the source tree (a wildcard
+  rule in Makefile.in might pick them up).
+
+The srckey does NOT change on:
+
+- `.c` / `.cpp` / `.cc` / `.S` / `.s` content edits
+  (graph-irrelevant — make's recipes stay the same).
+
+So `.c`-only edits stay on the cheap path: 2' (registry hit)
+→ 3' (incremental cc compile of the changed file).
 
 ## Scenario walkthroughs
 
@@ -70,172 +143,123 @@ even though the build re-runs.
 
 ```mermaid
 sequenceDiagram
-    participant U as user
-    participant W as write-a
-    participant A as bazel build A
-    participant B as bazel build B
-    U->>W: edit X/sources/x.c (comment only)
-    W->>W: re-render (cheap; BUILD.bazel unchanged)
-    A->>A: X_real glob picks up new .c bytes...<br/>BUT x.c is in X_zero_stubs ⇒ action input<br/>byte-equal ⇒ AC HIT ⇒ BUILD.bazel.out reused
-    A-->>B: stage unchanged BUILD.bazel.out
-    B->>B: cc_library(X) srcs glob picks up real .c<br/>⇒ recompile X (correct — content changed)<br/>⇒ relink consumers
+    U->>W: edit X/sources/x.c
+    W->>W: pass 1 re-render (cheap)
+    A->>A: pass 2: convert action's srcs include x.c via X_zero_stubs<br/>⇒ AC HIT ⇒ B's BUILD reused
+    B->>B: pass 3: cc_library(X) srcs glob picks up real .c<br/>⇒ recompile X (correct) ⇒ relink consumers
 ```
 
-Pass 2 hits the cache for the conversion. Pass 3 recompiles
-X but only X (and consumers re-link, not recompile their own
-sources). **Optimal for this case.**
+One round; no registry; AC narrowing via zero-stubs.
 
-### S2. Comment-only `.c` edit in kind:autotools element X (today)
+### S2. Comment-only `.c` edit in kind:autotools element X — first round
 
 ```mermaid
 sequenceDiagram
-    participant U as user
-    participant W as write-a
-    participant A as bazel build A
-    participant B as bazel build B
-    U->>W: edit X/sources/x.c (comment only)
-    W->>W: re-render. srckey UNCHANGED (.c is name-only<br/>per autotoolsSrckeyPatterns), but BUILD.bazel<br/>still uses full sources ⇒ no narrowing applied
-    A->>A: install genrule srcs = X_sources ⇒ AC MISS<br/>(any .c byte change invalidates)<br/>⇒ FULL BUILD reruns (configure+make+install)<br/>⇒ trace canonical, BUILD.bazel.out byte-stable<br/>⇒ install_tree.tar byte-stable IF build deterministic
-    A-->>B: stage unchanged BUILD.bazel.out
-    B->>B: cc_library(X) srcs glob picks up real .c<br/>⇒ recompile X
+    U->>W: edit X/sources/x.c (first build)
+    W->>W: pass 1 re-render
+    A->>A: pass 2: emits coarse passthrough genrule into B (cheap)
+    B->>B: pass 3: coarse genrule runs configure+make+install + tracer<br/>(EXPENSIVE — full autotools build)
+    B->>R: register (srckey, trace, make-db) into registry
 ```
 
-Pass 2 re-runs the expensive build. Pass 3 still works
-correctly. Project B's BUILD doesn't churn (BUILD.bazel.out
-byte-stable post-#61).
+First-time cost is full build. Registry now has the trace.
 
-**Where the cost is:** the pass-2 full build. The user wants
-to avoid this for non-graph-affecting changes.
-
-### S3. `*.am` / `Makefile.in` / `*.h` edit in kind:autotools element X
+### S3. Comment-only `.c` edit in kind:autotools element X — second round
 
 ```mermaid
 sequenceDiagram
-    participant W as write-a
-    participant A as bazel build A
-    participant B as bazel build B
-    W->>W: srckey CHANGES (.h/.am/.in are content-included)
-    A->>A: install genrule srcs change ⇒ AC MISS<br/>⇒ FULL BUILD reruns. Trace differs<br/>(different make recipes / compile flags).<br/>BUILD.bazel.out genuinely changes.
-    A-->>B: stage NEW BUILD.bazel.out
-    B->>B: project B's BUILD churns ⇒ downstream<br/>consumers re-evaluate
+    U->>W: edit X/sources/x.c
+    W->>W: pass 1' re-render. srckey UNCHANGED (.c is name-only)<br/>⇒ registry HIT
+    A->>A: pass 2': converter runs against registered trace<br/>⇒ emits fine-grained cc_library / cc_binary into B<br/>⇒ B's BUILD content byte-stable
+    B->>B: pass 3': cc_library(X) srcs glob picks up real .c<br/>⇒ incremental recompile of just x.c ⇒ relink
 ```
 
-Pass 2 re-runs (necessary — the build graph genuinely
-changed). Pass 3 picks up the new shape. **This is correct;
-nothing to optimize.**
+Cheap. Same shape as cmake's S1 once we're past round 1.
 
-### S4. Source change in element D where consumer C build-depends on D
+### S4. `*.am` / `Makefile.in` / `.h` edit in kind:autotools element X
+
+```mermaid
+sequenceDiagram
+    U->>W: edit X/sources/Makefile.in
+    W->>W: pass 1 re-render. srckey CHANGES<br/>⇒ registry MISS ⇒ fall back to coarse pass-3 shape
+    A->>A: pass 2: emits coarse passthrough genrule
+    B->>B: pass 3: full autotools build runs<br/>(necessary — graph genuinely changed)<br/>⇒ register new trace for new srckey
+```
+
+Same as S2. Cost is paid because the graph genuinely changed.
+
+### S5. Source change in element D where consumer C build-depends on D
 
 For both cmake and autotools, on a real D content change:
 
-- D's pass 2 re-runs (D's srcs changed).
-- D's `install_tree.tar` differs.
-- C's pass 2 has D's `install_tree.tar` in its srcs (autotools
-  dep wiring from earlier work) → C's AC misses → C re-runs.
-- C's `BUILD.bazel.out` may or may not change depending on
-  whether D's `.h` contents (now visible to C) shifted any
-  preprocessor decisions.
-- Pass 3: standard Bazel propagation.
+- D's pass 2/3 produces new outputs (cc rules and/or
+  install_tree.tar).
+- C's pass 3 has D's outputs as inputs → AC misses → C
+  re-runs. For cmake, just C's affected cc_library rules.
+  For autotools, C's coarse pass-3 genrule (or its
+  fine-grained pass-3' equivalent if C has rounded).
 
-For a comment-only edit in D's `.c`:
-- D's pass 2 re-runs (same as S2).
-- D's `install_tree.tar` byte-equal (deterministic ar/tar +
-  byte-equal `.o`).
-- C's pass 2 has byte-equal D-tar input → C's AC HITS → C
-  doesn't re-run. **This works today** (with PR #61's
-  determinism work).
+For a comment-only edit in D's `.c` (round 2 for D):
 
-## The optimization the user has been asking about
+- D's pass 2' produces byte-equal fine-grained graph
+  (registry hit).
+- D's pass 3' recompiles just the changed .c.
+- C's pass 3 / 3' has D's cc_library outputs as inputs.
+  Bazel's normal incremental rebuild kicks in. C may relink
+  but doesn't need to recompile its own `.c` files.
 
-> can we avoid the full pass-2 build for autotools when the
-> source change is non-consequential to the build graph?
+This is the property PR #61's determinism work delivers
+transitively.
 
-For cmake the answer is "yes, already" — zero-stubs make
-it work natively.
+## Where the cost actually lives
 
-For autotools the answer is **"only with an out-of-band
-side channel" (FUSE or host-fs cache).** Bazel's hermetic-
-action model says: if a byte is needed at action exec time,
-it's an input, and it's in the AC key. Zero-stubs work for
-cmake because cmake doesn't NEED `.c` bytes at convert time.
-Autotools does need them — to compile.
+| Edit | Round 1 cost | Round 2+ cost |
+|---|---|---|
+| cmake .c edit | n/a | only the .c (cheap) |
+| cmake .h / CMakeLists.txt edit | n/a | re-convert + re-build affected (medium) |
+| autotools .c edit | full build (one-time) | only the .c (cheap) |
+| autotools graph-affecting edit | full build | full build (necessary) |
+| dep change | only consumer's affected actions | only consumer's affected actions |
 
-Concrete options:
+**The full autotools build is a one-time cost per srckey.**
+Subsequent edits in the .c name-only territory stay on the
+cheap path forever (until a graph-affecting edit invalidates
+the srckey).
 
-| Option | Bazel-native? | Cross-machine via RBE? | Notes |
-|---|---|---|---|
-| Status quo (full sources in srcs) | ✅ | ✅ | Pass-2 always reruns on `.c` change. We have this. |
-| FUSE `@src_<key>//:tree` for real bytes; zero-stubs in srcs for AC narrowing | ❌ (FUSE = side channel) | ✅ if cas-fuse runs on executor | The "fallback" path the user flagged. PR #65 is the scaffolding. |
-| Host-fs source cache + `--repo_env=SRC_CACHE=...` | ❌ | ❌ (RBE has no host fs) | DOA for distributed builds. |
-| 2-round write-a-time cache: register `BUILD.bazel.out` keyed by srckey; pass 1 emits a `static-files` shape on hit (no genrule) | ✅ at the BAZEL layer (BUILD that pass 1 emits is just files); side channel is at write-a layer (filesystem registry of prior conversion outputs) | ✅ if registry is shared (CAS / network FS) | This is what PR #63 + #64 were stumbling toward. Not redundant with Bazel's AC after all — operates one layer up (write-a-time, not action-time). |
+## What this means for the implementation
 
-The 2-round option is interesting because the **render-time
-decision** moves out of Bazel entirely. write-a says "I
-have a prior `BUILD.bazel.out` for this srckey; I'll
-emit project A as a static-files shape that just exposes
-the cached `BUILD.bazel.out` and `install_tree.tar`. No
-genrule, no build needed in pass 2." Bazel's AC then
-trivially hits because all outputs are filegroups over
-existing files.
+Mapping back to PRs already in flight:
 
-Risk of this approach: install_tree.tar from a prior
-build with byte-different `.c` content has DIFFERENT
-binaries than what the current `.c` content would
-produce. So this option is correct ONLY when:
-- The .c bytes are truly graph-irrelevant (we can prove
-  this with srckey narrowing + ar+tar determinism).
-- AND the .c bytes happen to compile to identical .o
-  (only true for comment-only / formatting edits without
-  `-g`).
+- **PR #61** (canonical trace + filtered make-db): foundation
+  for round 1 producing a byte-stable trace that round 2 can
+  reuse. Required.
+- **PR #62** (per-element srckey + autotools narrowing
+  patterns): defines what counts as graph-affecting vs
+  name-only. Required.
+- **PR #63 + #64** (filesystem-backed registry + cache-status
+  sidecar): the registry IS the right concept (carrying pass-3
+  output back to pass-2'), just placed at the wrong layer. The
+  observability bits in #64 stay relevant; #63's storage
+  primitive will need to grow to handle artifact sets (trace +
+  make-db + maybe install_tree.tar) instead of single files,
+  but the lookup-at-write-a-time interface is correct.
+- **PR #65** (zero_files + narrowed-srcs scaffolding for
+  autotools): not the right path under this corrected model.
+  AC narrowing on the install genrule's input set isn't what
+  delivers the win — the registry-based round-2 graph
+  derivation is. **Recommend closing #65** in favor of
+  refactoring autotools to:
+  1. Move the build-tracer + converter genrule from project
+     A's BUILD into project B's BUILD (where deps are
+     available as Bazel targets).
+  2. Make pass-2' emit fine-grained cc rules into B when the
+     registry has a trace for the element's srckey.
 
-In the FDSDK case, autotools elements typically use
-`-g` → comment edits change `.o` bytes (DWARF line
-table) → install_tree.tar differs. So the 2-round
-"static files reuse" path is only safe under stricter
-preconditions than the srckey narrowing alone provides.
-
-## Recommendations
-
-1. **Keep PR #61** (canonical trace + filtered make-db).
-   This delivers the "BUILD.bazel.out byte-stable across
-   pass-2 reruns" property, which is the foundation of
-   pass-3 caching. **Independent of any narrowing work.**
-
-2. **Keep PR #62** (per-element srckey + autotools
-   narrowing patterns). srckey is useful for observability
-   (debugging which paths drive build-graph identity) and
-   as the input to any future narrowing work, registry-
-   based or otherwise.
-
-3. **Land PR #65 as foundation** (zero_files + filegroup
-   scaffolding) but **don't flip the install genrule's
-   srcs** to use it without a side channel design.
-
-4. **Revisit narrowing if and only if pass-2 cost becomes
-   painful in practice.** Concrete trigger: timing the
-   FDSDK-scale runs against the dev iteration loop.
-   Before that, the recommended posture is:
-   - Pass-1 is cheap.
-   - Pass-2 reruns on any source edit (correct under
-     Bazel hermeticity).
-   - Pass-2 outputs are byte-stable for graph-irrelevant
-     edits (PR #61).
-   - Pass-3 caches transitively via Bazel's AC.
-
-5. **If pain shows up**, the 2-round write-a-time cache
-   shape (option 4 in the table above) is the most
-   Bazel-native escape hatch: side channel lives at the
-   write-a layer (which is already non-Bazel), Bazel's AC
-   sees only static files. Not the FUSE option.
-
-## What this doc lets us stop arguing about
-
-- Whether the srckey registry duplicates Bazel's AC: it
-  does at the action layer, but a write-a-time variant
-  does NOT — different layer entirely.
-- Whether FUSE is "Bazel native": no, it's a side channel.
-  But neither is the host-fs cache, and neither is the
-  2-round registry. They all sidestep hermeticity.
-- Whether we should pursue narrowing: only with measured
-  pass-2 pain. Otherwise PR #61's determinism + native
-  Bazel AC handle the common edit patterns well.
+The remaining open question for the next session: where
+exactly does pass-2 stage the coarse passthrough into B?
+Is it write-a directly emitting B's BUILD per element, or
+does pass 2 (a Bazel action in A) write into an output
+filegroup that some staging step copies into B? The current
+e2e gates already do that staging via shell scripts; the
+"emit into B" path is where the round-2 graph-shape
+selection happens.
