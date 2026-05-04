@@ -39,9 +39,9 @@ func TestCanonicalize_StableTempPaths(t *testing.T) {
 	// Cross-event correlation: as's input matches cc1's output;
 	// ld's input matches as's output.
 	for _, want := range []string{
-		`"-o", "/tmp/cc1.s"`,                  // cc1 emits cc1.s
-		`"-o", "/tmp/cc2.o", "/tmp/cc1.s"`,    // as: same .s as cc1
-		`"-o", "app", "/tmp/cc2.o"`,           // ld: same .o as as
+		`"-o", "/tmp/cc1.s"`,                      // cc1 emits cc1.s
+		`"-o", "/tmp/cc2.o", "/tmp/cc1.s"`,        // as: same .s as cc1
+		`"-o", "app", "/tmp/cc2.o"`,               // ld: same .o as as
 		`"-plugin-opt=-fresolution=/tmp/cc3.res"`, // first .res
 	} {
 		if !strings.Contains(got, want) {
