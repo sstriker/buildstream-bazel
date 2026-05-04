@@ -124,7 +124,7 @@ walk.
 
 ## Source-key derivation
 
-Already in `cmd/write-a/source_cache.go` (PR #47): `sourceKey()`
+Already in `cmd/write-a/source_cache.go`: `sourceKey()`
 returns `SHA256(kind | url | canonical_ref)`. Two callers:
 
 - `loadElement` consults `--source-cache` for pre-staged trees
@@ -357,7 +357,7 @@ Per the design discussion, options become Bazel-native config:
   etc.), the `string_flag` shape is the Bazel-native expression.
 
 This replaces the current static-fold pass (`foldStaticConditionals`
-in PR #49) for those options that map to user-configurable flags.
+) for those options that map to user-configurable flags.
 Static fold remains for hardcoded defaults the user can't
 override (`host_arch` is determined by the build host, not a
 flag).
@@ -372,7 +372,7 @@ The choice between static-fold and string_flag per option:
 | `host_arch` | static (host platform) | Build-time host fact |
 | Boolean / element-typed options | `string_flag` + `config_setting` | User-configurable |
 
-The pipeline handler's per-arch resolution loop (PR #45) extends
+The pipeline handler's per-arch resolution loop extends
 to also iterate over option values declared in project.conf, with
 each combination producing a `select()` arm. Combinatorial
 explosion is bounded — most options have 1–3 values.
