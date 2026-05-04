@@ -32,8 +32,9 @@ DERIVE_TOOLCHAIN := $(BIN_DIR)/derive-toolchain
 WRITE_A      := $(BIN_DIR)/write-a
 CAS_FUSE     := $(BIN_DIR)/cas-fuse
 SOURCE_PUSH  := $(BIN_DIR)/source-push
+SRCKEY_REGISTRY := $(BIN_DIR)/srckey-registry
 
-all: converter orchestrator diff history bst-translate derive-toolchain write-a cas-fuse source-push
+all: converter orchestrator diff history bst-translate derive-toolchain write-a cas-fuse source-push srckey-registry
 
 converter: $(CONVERTER)
 
@@ -52,6 +53,8 @@ write-a: $(WRITE_A)
 cas-fuse: $(CAS_FUSE)
 
 source-push: $(SOURCE_PUSH)
+
+srckey-registry: $(SRCKEY_REGISTRY)
 
 $(CONVERTER):
 	@mkdir -p $(BIN_DIR)
@@ -90,6 +93,10 @@ $(CAS_FUSE):
 $(SOURCE_PUSH):
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(SOURCE_PUSH) ./cmd/source-push
+
+$(SRCKEY_REGISTRY):
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(SRCKEY_REGISTRY) ./cmd/srckey-registry
 
 # Unit tests: pre-recorded File API fixtures, no cmake required.
 test:
