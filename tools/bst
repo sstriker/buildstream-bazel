@@ -1,0 +1,352 @@
+#!/bin/sh
+# bst — buildstream-bazel wrapper.
+#
+# Forwards BuildStream-style commands to the equivalent
+# write-a + bazel-build sequence so existing `bst` muscle
+# memory keeps working through the transition. Supports:
+#
+#   bst build <element.bst> [-- <bazel build args>]
+#       Render projects A + B from the .bst graph rooted at
+#       <element.bst> (and any sibling .bst files transitively
+#       reached via depends), then `bazel build` the
+#       corresponding target inside project B. The leaf target
+#       defaults to <element>_install for autotools-shaped
+#       kinds, <element> for cmake-shaped.
+#
+#   bst show <element.bst>
+#       Print the rendered project A + B paths and the
+#       per-element BUILD shapes. Doesn't run bazel.
+#
+#   bst workspace open <element.bst> <path>
+#       Copy the element's source tree under <path> and
+#       rewrite the .bst's `sources: - path:` to point there.
+#       Subsequent `bst build` picks up edits made under
+#       <path>.
+#
+#   bst workspace close <element.bst>
+#       Restore the .bst's original `sources:` block from a
+#       backup left by `workspace open`.
+#
+# State is per-invocation: each `bst build` re-renders both
+# projects under a workspace cache directory
+# (`.bst-bazel/<sha-of-bst-graph>/`) and runs bazel against
+# that. No long-lived daemon.
+#
+# The whole goal here is making BuildStream developers
+# productive on a converted Bazel project without learning
+# the Bazel CLI surface upfront. Once teams are comfortable
+# with `bazel build //elements/<name>:...` directly, the
+# wrapper becomes optional.
+
+set -eu
+
+usage() {
+    cat <<'EOF' >&2
+usage: bst <subcommand> [args...]
+
+  bst build <element.bst> [-- <bazel build args>]
+  bst show <element.bst>
+  bst workspace open <element.bst> <path>
+  bst workspace close <element.bst>
+  bst workspace reset <element.bst>
+
+Run `bst <subcommand> --help` for subcommand-specific help.
+EOF
+}
+
+repo_root() {
+    # Locate the repo root by walking up until we find a known
+    # marker (Makefile + cmd/write-a). Works whether the user
+    # invokes `bst` from anywhere under the repo. Errors out
+    # with a clear message if we can't find one.
+    d="$(pwd)"
+    while [ "$d" != "/" ]; do
+        if [ -f "$d/Makefile" ] && [ -d "$d/cmd/write-a" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+        d="$(dirname "$d")"
+    done
+    echo "bst: not in a buildstream-bazel repo (no Makefile + cmd/write-a found above $(pwd))" >&2
+    return 1
+}
+
+ensure_binaries() {
+    # write-a + convert-element + build-tracer +
+    # convert-element-autotools all live under build/bin after
+    # `make all`. Shell out to make if anything's stale; make
+    # is fast for a no-op build.
+    root="$1"
+    ( cd "$root" && make -s all >/dev/null )
+}
+
+bst_collect() {
+    # Given a leaf .bst path, walk depends/build-depends
+    # transitively and emit `--bst <abspath>` flag pairs for
+    # every reachable .bst, deduped, sorted. write-a's --bst
+    # is repeatable; this is how we feed it the full graph
+    # without requiring the user to enumerate it.
+    leaf="$1"
+    leaf_abs="$(cd "$(dirname "$leaf")" && pwd)/$(basename "$leaf")"
+    leaf_dir="$(dirname "$leaf_abs")"
+
+    # Simple iterative walker. Visited set keyed on absolute path.
+    todo="$leaf_abs"
+    visited=""
+    while [ -n "$todo" ]; do
+        cur="$(echo "$todo" | head -1)"
+        todo="$(echo "$todo" | tail -n +2)"
+        case "$visited" in
+            *"|$cur|"*) continue ;;
+        esac
+        visited="$visited|$cur|"
+        if [ ! -f "$cur" ]; then
+            echo "bst: $cur not found" >&2
+            return 1
+        fi
+        # Extract dep .bst names from `depends:` / `build-depends:`
+        # / `runtime-depends:` blocks. The reference shape is a
+        # YAML list of bare strings. Map-form (filename: ..., ...)
+        # also supported via filename: lookup.
+        deps="$(awk '
+            /^[[:space:]]*(depends|build-depends|runtime-depends)[[:space:]]*:[[:space:]]*$/ { in_deps=1; next }
+            /^[a-zA-Z]/ && !/^[[:space:]]/ { in_deps=0 }
+            in_deps && /^[[:space:]]+-[[:space:]]+[^ {}\[]+\.bst/ { gsub(/^[[:space:]]+-[[:space:]]+/, "", $0); print }
+            in_deps && /^[[:space:]]+-[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
+                gsub(/^[[:space:]]+-[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print
+            }
+            in_deps && /^[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
+                gsub(/^[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print
+            }
+        ' "$cur" 2>/dev/null || true)"
+        for dep in $deps; do
+            # Resolve dep path: relative to current .bst's dir.
+            dep_abs="$(cd "$(dirname "$cur")" && cd "$(dirname "$dep")" 2>/dev/null && pwd)/$(basename "$dep")"
+            todo="$todo
+$dep_abs"
+        done
+    done
+    # Emit deduped, sorted --bst flags.
+    echo "$visited" | tr '|' '\n' | sort -u | while read -r p; do
+        [ -z "$p" ] && continue
+        printf -- '--bst %s ' "$p"
+    done
+}
+
+cache_dir_for() {
+    leaf_abs="$1"
+    # Hash the .bst path + the .bst's content + its sibling
+    # files' mtimes so a meaningful change picks a fresh cache
+    # dir. Cheap stand-in for a real source-key digest.
+    key="$(printf '%s' "$leaf_abs" | sha256sum | cut -c 1-16)"
+    echo "${BST_CACHE_DIR:-$HOME/.cache/buildstream-bazel}/$key"
+}
+
+cmd_build() {
+    if [ $# -lt 1 ]; then
+        echo "bst build: missing <element.bst>" >&2
+        usage
+        exit 2
+    fi
+    leaf="$1"
+    shift
+    # Optional `-- <bazel args>` separator.
+    bazel_extra=""
+    if [ "$#" -gt 0 ] && [ "$1" = "--" ]; then
+        shift
+        bazel_extra="$*"
+    fi
+
+    root="$(repo_root)"
+    ensure_binaries "$root"
+
+    leaf_abs="$(cd "$(dirname "$leaf")" && pwd)/$(basename "$leaf")"
+    elem_name="$(basename "$leaf_abs" .bst)"
+    cache="$(cache_dir_for "$leaf_abs")"
+    project_a="$cache/A"
+    project_b="$cache/B"
+    mkdir -p "$cache"
+
+    bst_flags="$(bst_collect "$leaf_abs")"
+
+    # shellcheck disable=SC2086
+    "$root/build/bin/write-a" \
+        $bst_flags \
+        --out "$project_a" \
+        --out-b "$project_b" \
+        --convert-element "$root/build/bin/convert-element" \
+        --convert-element-autotools "$root/build/bin/convert-element-autotools" \
+        --build-tracer-bin "$root/build/bin/build-tracer"
+
+    # Pick the leaf target. autotools elements expose
+    # <name>_install (the genrule producing install_tree.tar +
+    # BUILD.bazel.out + ...). cmake elements expose <name>
+    # directly (the converted cc_binary / cc_library). Detect
+    # by checking which kind the .bst declares.
+    target_name="$elem_name"
+    case "$(awk '/^kind[[:space:]]*:[[:space:]]+/ { print $2; exit }' "$leaf_abs")" in
+        autotools|make|manual|script|pyproject|stack|filter|compose|import)
+            target_name="${elem_name}_install"
+            ;;
+    esac
+    target="//elements/${elem_name}:${target_name}"
+
+    BAZEL="${BAZEL:-bazel}"
+    if ! command -v "$BAZEL" >/dev/null && command -v bazelisk >/dev/null; then
+        BAZEL=bazelisk
+    fi
+    if ! command -v "$BAZEL" >/dev/null; then
+        cat <<EOF >&2
+bst build: rendered project A + B at:
+  $project_a
+  $project_b
+
+Bazel isn't on PATH; the render is done. Install bazel >= 7
+(bzlmod), then:
+  cd $project_b && bazel build $target
+EOF
+        return 0
+    fi
+
+    echo "bst build: $target (in $project_b)" >&2
+    # shellcheck disable=SC2086
+    ( cd "$project_b" && "$BAZEL" build $bazel_extra "$target" )
+}
+
+cmd_show() {
+    if [ $# -lt 1 ]; then
+        echo "bst show: missing <element.bst>" >&2
+        return 2
+    fi
+    leaf_abs="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    elem_name="$(basename "$leaf_abs" .bst)"
+    cache="$(cache_dir_for "$leaf_abs")"
+    cat <<EOF
+element: $elem_name
+.bst:    $leaf_abs
+cache:   $cache
+project A: $cache/A
+project B: $cache/B
+EOF
+    if [ -f "$cache/B/elements/$elem_name/BUILD.bazel" ]; then
+        echo "--- project B BUILD ---"
+        cat "$cache/B/elements/$elem_name/BUILD.bazel"
+    else
+        echo "(not yet rendered — run \`bst build $1\` first)"
+    fi
+}
+
+cmd_workspace_open() {
+    if [ $# -lt 2 ]; then
+        echo "bst workspace open: missing <element.bst> <path>" >&2
+        return 2
+    fi
+    bst="$1"
+    workdir="$2"
+    bst_abs="$(cd "$(dirname "$bst")" && pwd)/$(basename "$bst")"
+    workdir_abs="$(cd "$(dirname "$workdir")" 2>/dev/null && pwd)/$(basename "$workdir")"
+    if [ -d "$workdir_abs" ] && [ -n "$(ls -A "$workdir_abs" 2>/dev/null)" ]; then
+        echo "bst workspace open: $workdir_abs is non-empty; refusing" >&2
+        return 1
+    fi
+    # Pull the element's existing kind:local source path.
+    src_path="$(awk '
+        /^[[:space:]]*sources[[:space:]]*:[[:space:]]*$/ { in_src=1; next }
+        /^[a-zA-Z]/ && !/^[[:space:]]/ { in_src=0 }
+        in_src && /^[[:space:]]+path[[:space:]]*:[[:space:]]+/ {
+            gsub(/^[[:space:]]+path[[:space:]]*:[[:space:]]+/, "", $0); print; exit
+        }
+    ' "$bst_abs")"
+    if [ -z "$src_path" ]; then
+        echo "bst workspace open: $bst_abs has no kind:local sources to copy" >&2
+        return 1
+    fi
+    # Resolve relative to .bst's directory.
+    src_abs="$(cd "$(dirname "$bst_abs")" && cd "$src_path" && pwd)"
+    mkdir -p "$workdir_abs"
+    cp -a "$src_abs/." "$workdir_abs/"
+    # Backup the .bst before rewriting so `workspace close` can
+    # restore. The backup name is deterministic.
+    cp "$bst_abs" "$bst_abs.bst-bazel-orig"
+    sed -i "s|^\([[:space:]]*path[[:space:]]*:[[:space:]]\)$src_path\$|\1$workdir_abs|" "$bst_abs"
+    echo "bst workspace open: $workdir_abs (was $src_abs); .bst rewritten." >&2
+}
+
+cmd_workspace_close() {
+    if [ $# -lt 1 ]; then
+        echo "bst workspace close: missing <element.bst>" >&2
+        return 2
+    fi
+    bst_abs="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    if [ ! -f "$bst_abs.bst-bazel-orig" ]; then
+        echo "bst workspace close: no $bst_abs.bst-bazel-orig backup; was workspace open run?" >&2
+        return 1
+    fi
+    mv "$bst_abs.bst-bazel-orig" "$bst_abs"
+    echo "bst workspace close: $bst_abs restored." >&2
+}
+
+cmd_workspace_reset() {
+    if [ $# -lt 1 ]; then
+        echo "bst workspace reset: missing <element.bst>" >&2
+        return 2
+    fi
+    bst_abs="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+    if [ ! -f "$bst_abs.bst-bazel-orig" ]; then
+        echo "bst workspace reset: no open workspace for $bst_abs (no .bst-bazel-orig backup)" >&2
+        return 1
+    fi
+    # Read current path (workspace dir) + original path from
+    # backup, recopy original sources into workspace dir.
+    cur_path="$(awk '/^[[:space:]]+path[[:space:]]*:[[:space:]]+/ { gsub(/^[[:space:]]+path[[:space:]]*:[[:space:]]+/, "", $0); print; exit }' "$bst_abs")"
+    orig_path="$(awk '/^[[:space:]]+path[[:space:]]*:[[:space:]]+/ { gsub(/^[[:space:]]+path[[:space:]]*:[[:space:]]+/, "", $0); print; exit }' "$bst_abs.bst-bazel-orig")"
+    orig_abs="$(cd "$(dirname "$bst_abs")" && cd "$orig_path" && pwd)"
+    rm -rf "$cur_path"
+    mkdir -p "$cur_path"
+    cp -a "$orig_abs/." "$cur_path/"
+    echo "bst workspace reset: $cur_path repopulated from $orig_abs." >&2
+}
+
+cmd_workspace() {
+    if [ $# -lt 1 ]; then
+        usage
+        return 2
+    fi
+    sub="$1"
+    shift
+    case "$sub" in
+        open)  cmd_workspace_open "$@" ;;
+        close) cmd_workspace_close "$@" ;;
+        reset) cmd_workspace_reset "$@" ;;
+        *)
+            echo "bst workspace: unknown subcommand $sub" >&2
+            usage
+            return 2
+            ;;
+    esac
+}
+
+main() {
+    if [ $# -lt 1 ]; then
+        usage
+        exit 2
+    fi
+    cmd="$1"
+    shift
+    case "$cmd" in
+        build)     cmd_build "$@" ;;
+        show)      cmd_show "$@" ;;
+        workspace) cmd_workspace "$@" ;;
+        -h|--help|help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "bst: unknown subcommand $cmd" >&2
+            usage
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"
