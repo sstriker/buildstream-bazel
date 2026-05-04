@@ -91,7 +91,7 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/libtool-pic:libtool-pic_converted 2>&1 | tail -10
+run_bazel "$A" build //elements/libtool-pic:libtool-pic_install 2>&1 | tail -10
 
 build_out="$A/bazel-bin/elements/libtool-pic/BUILD.bazel.out"
 mapping="$A/bazel-bin/elements/libtool-pic/install-mapping.json"

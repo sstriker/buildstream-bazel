@@ -67,11 +67,9 @@ for want in \
 done
 for marker in \
     '"BUILD.bazel.out"' \
-    '"trace.log"' \
     '"//tools:build-tracer"' \
     '"//tools:convert-element-autotools"' \
-    'name = "greet_install"' \
-    'name = "greet_converted"'; do
+    'AUTOTOOLS_TRACE'; do
     if ! grep -qF -- "$marker" "$A/elements/greet/BUILD.bazel"; then
         echo "meta-autotools-native: rendered BUILD missing marker: $marker" >&2
         cat "$A/elements/greet/BUILD.bazel" >&2
@@ -117,20 +115,17 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-# Pass 1: bazel builds the convert genrule, which depends on
-# the install genrule. Two actions, two cache keys:
-#   - <elem>_install: full source input → trace.log +
-#     make-db.txt + install_tree.tar.
-#   - <elem>_converted: trace.log + make-db.txt → BUILD.bazel.out
-#     + install-mapping.json. Cache narrows to the trace +
-#     make-db, so trivial source edits leave this action's
-#     cache key stable (project B's BUILD doesn't churn).
+# Single-genrule shape: one bazel build runs build-tracer
+# wrapping configure/make/make install + the inline
+# convert-element-autotools call. Outputs:
+# install_tree.tar + BUILD.bazel.out + make-db.txt +
+# install-mapping.json — all in one action, one cache key.
 #
 # build-tracer's native backend uses ptrace from a parent
 # process; bazel's default linux-sandbox usually allows that
 # (kernel.yama.ptrace_scope = 1 means "trace your own
 # children"), so we don't need --spawn_strategy=local.
-run_bazel "$A" build //elements/greet:greet_converted 2>&1 | tail -10
+run_bazel "$A" build //elements/greet:greet_install 2>&1 | tail -10
 
 # Native BUILD.bazel.out + install_tree.tar should both exist.
 for want in \

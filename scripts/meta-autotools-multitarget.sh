@@ -61,9 +61,7 @@ for marker in \
     '"BUILD.bazel.out"' \
     '"make-db.txt"' \
     '"install-mapping.json"' \
-    '"trace.log"' \
     'name = "multitarget_install"' \
-    'name = "multitarget_converted"' \
     '--out-install-mapping="$(location install-mapping.json)"'; do
     if ! grep -qF -- "$marker" "$A/elements/multitarget/BUILD.bazel"; then
         echo "meta-autotools-multitarget: render missing marker: $marker" >&2
@@ -106,7 +104,7 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/multitarget:multitarget_converted 2>&1 | tail -10
+run_bazel "$A" build //elements/multitarget:multitarget_install 2>&1 | tail -10
 
 build_out="$A/bazel-bin/elements/multitarget/BUILD.bazel.out"
 mapping="$A/bazel-bin/elements/multitarget/install-mapping.json"

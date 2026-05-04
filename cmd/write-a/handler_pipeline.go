@@ -107,17 +107,6 @@ type pipelineExtension struct {
 	// so the pipeline can find the deps' headers and
 	// libraries. No-op when DepLabels is empty.
 	DepExtractCmd string
-
-	// SiblingRules, when non-nil, is invoked at render time
-	// with the element name and returns extra rule
-	// declarations appended after the main `<elem>_install`
-	// genrule. Used by the autotools native render to put
-	// the convert step in its own `<elem>_converted` genrule
-	// — so a comment-only source edit re-runs the build but
-	// cache-hits the convert action (whose inputs are just
-	// the trace + make-db, byte-stable across trivial source
-	// edits).
-	SiblingRules func(elemName string) string
 }
 
 func (h pipelineHandler) Kind() string                                 { return h.kindName }
@@ -625,18 +614,6 @@ package(default_visibility = ["//visibility:public"])
 		srcsAttr,
 		strList(outs),
 		toolsAttr(tools))
-
-	// Sibling rules — currently only the autotools native
-	// render uses this hook to split the convert step into
-	// its own genrule. The split lets comment-edits in
-	// source files trigger _install (the build) without
-	// invalidating _converted (the trace → BUILD.bazel.out
-	// step) — same narrow-cache-key story kind:cmake gets
-	// from read_paths.json + zero-stubs.
-	if ext != nil && ext.SiblingRules != nil {
-		b.WriteString("\n")
-		b.WriteString(ext.SiblingRules(elem.Name))
-	}
 	return b.String()
 }
 

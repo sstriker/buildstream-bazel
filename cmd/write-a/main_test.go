@@ -582,30 +582,23 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(body)
-	// Positive markers: TWO genrules. Install runs the build
-	// under build-tracer (full source input → `<elem>_install`
-	// re-runs on any source edit). Converted reads
-	// trace + make-db (narrow input → cache hits when the
-	// build's compile/link commands stay the same, even if
-	// underlying source bytes changed).
+	// Positive markers: install genrule produces the four
+	// outputs (install_tree.tar + the converter's BUILD.bazel.out
+	// + make-db.txt + install-mapping.json) in one action. The
+	// pipeline cmds are wrapped in build-tracer; the AppendCmd
+	// dumps `make -np` and runs convert-element-autotools inline.
 	for _, marker := range []string{
-		// _install genrule:
 		`name = "auto_install"`,
 		`"install_tree.tar"`,
-		`"trace.log"`,
-		`"make-db.txt"`,
-		`"$$EXEC_ROOT/$(location //tools:build-tracer)" --out="$$EXEC_ROOT/$(location trace.log)"`,
-		`make -np > "$$EXEC_ROOT/$(location make-db.txt)"`,
-		`tools = ["//tools:build-tracer"]`,
-		// _converted sibling genrule:
-		`name = "auto_converted"`,
 		`"BUILD.bazel.out"`,
+		`"make-db.txt"`,
 		`"install-mapping.json"`,
-		`":trace.log", ":make-db.txt"`,
+		`"//tools:build-tracer"`,
+		`"//tools:convert-element-autotools"`,
+		`"$$EXEC_ROOT/$(location //tools:build-tracer)" --out="$$AUTOTOOLS_TRACE"`,
 		`$(location //tools:convert-element-autotools)`,
-		`--trace="$(location :trace.log)"`,
-		`--make-db="$(location :make-db.txt)"`,
-		`tools = ["//tools:convert-element-autotools"]`,
+		`make -np > "$$EXEC_ROOT/$(location make-db.txt)"`,
+		`--make-db="$(location make-db.txt)"`,
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("native autotools BUILD missing %q\n--body--\n%s", marker, got)
