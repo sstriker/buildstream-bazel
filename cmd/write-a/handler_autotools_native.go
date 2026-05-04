@@ -253,8 +253,24 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
         # pipeline. The trace artifact captures every execve under
         # the build sandbox; convert-element-autotools (run by the
         # AppendCmd step) reads it to emit BUILD.bazel.out.
+        #
+        # --normalize-prefix substitutions neutralize action-time
+        # mktemp paths (INSTALL_ROOT, BUILD_ROOT, DEP_PREFIX). Their
+        # bytes vary across bazel invocations even when the build
+        # is otherwise identical, so without normalization the
+        # canonical trace would still drift run-to-run. The
+        # placeholder names (/INSTALL_ROOT, etc.) are stable
+        # across machines and human-readable. DEP_PREFIX is only
+        # set when the element has autotools deps — using
+        # ${DEP_PREFIX:-} keeps the flag harmless when unset
+        # (substitutes empty-string, which trivially matches
+        # nothing).
         export AUTOTOOLS_TRACE="$$(mktemp)"
-        "$$EXEC_ROOT/$(location //tools:build-tracer)" --out="$$AUTOTOOLS_TRACE" -- sh -c '
+        "$$EXEC_ROOT/$(location //tools:build-tracer)" \
+            --normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT" \
+            --normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT" \
+            --normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX" \
+            --out="$$AUTOTOOLS_TRACE" -- sh -c '
 %s
 '`, cmds)
 }
@@ -291,7 +307,32 @@ func autotoolsConverterStep(hasImports bool) string {
         # configure-time substitutions are baked in. Tolerate
         # non-zero exit (make's dry-run can grumble about
         # "nothing to do" or missing optional targets).
-        make -np > "$$EXEC_ROOT/$(location make-db.txt)" 2>/dev/null || true
+        #
+        # Two-stage filter:
+        #
+        #   1. Drop diagnostic lines that vary across runs of an
+        #      otherwise-identical build:
+        #        - "#  Last modified <timestamp>" — file mtime
+        #          drift even when content is unchanged.
+        #        - "# (device X, inode Y): N files, ..." and
+        #          "# N files, M impossibilities in D directories"
+        #          — vary with filesystem state (.deps files).
+        #      These are diagnostic-only metadata; rule + variable
+        #      data the converter consumes lives in other lines.
+        #   2. Substitute action-time mktemp paths
+        #      ($$INSTALL_ROOT, $$BUILD_ROOT, $$DEP_PREFIX) with
+        #      stable placeholders. Same set of substitutions
+        #      build-tracer's --normalize-prefix applies to the
+        #      trace; here the values appear in make's PWD /
+        #      CURDIR / DESTDIR variable dumps. The empty-string
+        #      fallback (bash ${VAR:-default} form) keeps the sed
+        #      script harmless when the variable isn't set.
+        ( make -np 2>/dev/null || true ) \
+            | sed -E '/^#[[:space:]]+Last modified /d; /\(device [0-9]+, inode [0-9]+\): [0-9]+ files,/d; /^# [0-9]+ files,.*impossibilities in /d; /^# Make data base, printed on /d; /^# Finished Make data base on /d' \
+            | sed -e "s|$$INSTALL_ROOT|/INSTALL_ROOT|g" \
+                  -e "s|$$BUILD_ROOT|/BUILD_ROOT|g" \
+                  -e "s|$${DEP_PREFIX:-/__unset_dep_prefix__}|/DEP_PREFIX|g" \
+            > "$$EXEC_ROOT/$(location make-db.txt)"
 
         # Trace + make-db -> native cc_library / cc_binary
         # BUILD.bazel.out. Output goes through bazel's normal

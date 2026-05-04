@@ -33,13 +33,44 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
+// prefixSubFlag is a flag.Value collecting repeatable
+// `--normalize-prefix=FROM=TO` flags. Each invocation pushes
+// one substitution; canonicalize applies them per line.
+//
+// FROM is typically the value of an action-time mktemp
+// (`$INSTALL_ROOT`, `$BUILD_ROOT`, `$DEP_PREFIX`) — paths
+// whose bytes vary across bazel invocations even when the
+// underlying build is identical. TO is a stable placeholder
+// the trace embeds instead.
+type prefixSubFlag []prefixSub
+
+func (p *prefixSubFlag) String() string {
+	parts := make([]string, len(*p))
+	for i, s := range *p {
+		parts[i] = s.From + "=" + s.To
+	}
+	return strings.Join(parts, ",")
+}
+
+func (p *prefixSubFlag) Set(s string) error {
+	idx := strings.Index(s, "=")
+	if idx <= 0 {
+		return fmt.Errorf("--normalize-prefix expects FROM=TO; got %q", s)
+	}
+	*p = append(*p, prefixSub{From: s[:idx], To: s[idx+1:]})
+	return nil
+}
+
 func main() {
-	out := flag.String("out", "", "path to write the trace artifact (strace text format)")
+	out := flag.String("out", "", "path to write the trace artifact (canonical strace text format — pids stripped, gcc temp paths replaced with stable placeholders)")
 	useStrace := flag.Bool("strace", false, "use the host strace binary instead of the native ptrace backend (fallback for non-linux/amd64 hosts)")
+	var prefixSubs prefixSubFlag
+	flag.Var(&prefixSubs, "normalize-prefix", "FROM=TO substitution applied to every trace line. Repeatable. Used to neutralize action-time mktemp paths (INSTALL_ROOT / BUILD_ROOT / DEP_PREFIX) whose bytes vary across bazel invocations.")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: build-tracer [--strace] --out=<path> -- <cmd> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: build-tracer [--strace] [--normalize-prefix=FROM=TO ...] --out=<path> -- <cmd> [args...]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -54,10 +85,36 @@ func main() {
 		os.Exit(2)
 	}
 
-	if *useStrace || !nativeBackendAvailable() {
-		os.Exit(runStrace(*out, args))
+	// Both backends write the raw strace-format trace to a
+	// temp file; canonicalize() rewrites it into the form
+	// Bazel hashes (pid-stripped, stable temp-path placeholders)
+	// at --out. Done here in main so both backends benefit
+	// from the same normalization.
+	rawFile, err := os.CreateTemp("", "build-tracer-raw-*.log")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "build-tracer: tempfile: %v\n", err)
+		os.Exit(1)
 	}
-	os.Exit(runNative(*out, args))
+	rawPath := rawFile.Name()
+	rawFile.Close()
+	defer os.Remove(rawPath)
+
+	var exitCode int
+	if *useStrace || !nativeBackendAvailable() {
+		exitCode = runStrace(rawPath, args)
+	} else {
+		exitCode = runNative(rawPath, args)
+	}
+
+	// Canonicalize even on non-zero exit — partial traces from
+	// failing builds are still useful for post-mortem.
+	if err := canonicalize(rawPath, *out, []prefixSub(prefixSubs)); err != nil {
+		fmt.Fprintf(os.Stderr, "build-tracer: canonicalize: %v\n", err)
+		if exitCode == 0 {
+			exitCode = 1
+		}
+	}
+	os.Exit(exitCode)
 }
 
 // runStrace invokes the host strace binary as a thin wrapper
