@@ -69,10 +69,10 @@ for marker in \
     '"BUILD.bazel.out"' \
     '"//tools:build-tracer"' \
     '"//tools:convert-element-autotools"' \
-    'AUTOTOOLS_TRACE'; do
-    if ! grep -qF -- "$marker" "$A/elements/greet/BUILD.bazel"; then
+    'name = "greet_install"'; do
+    if ! grep -qF -- "$marker" "$B/elements/greet/BUILD.bazel"; then
         echo "meta-autotools-native: rendered BUILD missing marker: $marker" >&2
-        cat "$A/elements/greet/BUILD.bazel" >&2
+        cat "$B/elements/greet/BUILD.bazel" >&2
         exit 1
     fi
 done
@@ -125,12 +125,12 @@ run_bazel() {
 # process; bazel's default linux-sandbox usually allows that
 # (kernel.yama.ptrace_scope = 1 means "trace your own
 # children"), so we don't need --spawn_strategy=local.
-run_bazel "$A" build //elements/greet:greet_install 2>&1 | tail -10
+run_bazel "$B" build //elements/greet:greet_install 2>&1 | tail -10
 
 # Native BUILD.bazel.out + install_tree.tar should both exist.
 for want in \
-    "$A/bazel-bin/elements/greet/install_tree.tar" \
-    "$A/bazel-bin/elements/greet/BUILD.bazel.out"; do
+    "$B/bazel-bin/elements/greet/install_tree.tar" \
+    "$B/bazel-bin/elements/greet/BUILD.bazel.out"; do
     if [ ! -f "$want" ]; then
         echo "meta-autotools-native: missing build output $want" >&2
         exit 1
@@ -139,7 +139,7 @@ done
 
 # Native shape: BUILD.bazel.out should declare a cc_binary
 # matching the fixture's `greet` binary.
-build_out="$A/bazel-bin/elements/greet/BUILD.bazel.out"
+build_out="$B/bazel-bin/elements/greet/BUILD.bazel.out"
 for marker in \
     'load("@rules_cc//cc:defs.bzl"' \
     'cc_binary(' \

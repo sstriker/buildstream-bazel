@@ -704,11 +704,27 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	}
 	binPath := fakeConvertBin(t, tmp)
 	outA := filepath.Join(tmp, "A")
+	outB := filepath.Join(tmp, "B")
 	if err := writeProjectA(g, outA, binPath); err != nil {
 		t.Fatalf("writeProjectA: %v", err)
 	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
 
-	body, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
+	// A-side BUILD is now a marker pointing at B (post-architectural
+	// move; see docs/three-pass-flow.md and PR #67 follow-up).
+	aBody, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(aBody), "BUILD_IN_PROJECT_B") {
+		t.Errorf("A-side BUILD should be a marker pointing at B; got:\n%s", aBody)
+	}
+
+	// B-side BUILD now hosts the install genrule + the rest of
+	// the trace-driven scaffolding the test already covered.
+	body, err := os.ReadFile(filepath.Join(outB, "elements/auto/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}

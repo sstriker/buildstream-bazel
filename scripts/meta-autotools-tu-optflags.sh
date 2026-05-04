@@ -77,9 +77,9 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/optflags:optflags_install 2>&1 | tail -10
+run_bazel "$B" build //elements/optflags:optflags_install 2>&1 | tail -10
 
-build_out="$A/bazel-bin/elements/optflags/BUILD.bazel.out"
+build_out="$B/bazel-bin/elements/optflags/BUILD.bazel.out"
 if [ ! -f "$build_out" ]; then
     echo "meta-autotools-tu-optflags: BUILD.bazel.out not produced" >&2
     exit 1
