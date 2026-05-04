@@ -355,6 +355,7 @@ func main() {
 	bootstrapBuildArch := flag.String("bootstrap-build-arch", "", "override the static bootstrap_build_arch dispatch variable (default: auto-detected from the build host).")
 	autotoolsBin := flag.String("convert-element-autotools", "", "optional: path to convert-element-autotools. When set (alongside --build-tracer-bin), kind:autotools elements render with the trace-driven native converter wired into the install genrule; bazel's action cache handles convergence across nodes via the existing remote-cache plumbing.")
 	tracerBin := flag.String("build-tracer-bin", "", "optional: path to build-tracer. Required when --convert-element-autotools is set.")
+	srckeyRegistry := flag.String("srckey-registry", "", "optional: directory rooting the srckey -> trace registry (see internal/srckeyregistry). When set, kind:autotools render emits a srckey-cache-status.txt per element (`hit` / `miss` / `off`) reflecting whether a registered trace exists for the element's srckey. Foundation for the round-2 cache-hit render shape.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -388,6 +389,13 @@ func main() {
 			log.Fatalf("resolve build-tracer path: %v", err)
 		}
 		autotoolsConfig.tracerBin = abs
+	}
+	if *srckeyRegistry != "" {
+		abs, err := filepath.Abs(*srckeyRegistry)
+		if err != nil {
+			log.Fatalf("resolve srckey-registry path: %v", err)
+		}
+		autotoolsConfig.srckeyRegistry = abs
 	}
 
 	g, err := loadGraph(bstPaths, *sourceCache)

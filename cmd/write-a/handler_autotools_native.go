@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/cmake-to-bazel/internal/srckeyregistry"
 )
 
 // init registers kind:autotools. The handler always falls back
@@ -34,8 +37,9 @@ func init() {
 // the autotools handler decide per-element whether to install
 // the extension hooks.
 var autotoolsConfig struct {
-	convertBin string // absolute path to convert-element-autotools
-	tracerBin  string // absolute path to build-tracer
+	convertBin     string // absolute path to convert-element-autotools
+	tracerBin      string // absolute path to build-tracer
+	srckeyRegistry string // optional: absolute path to the srckey registry root
 }
 
 // autotoolsHandler picks the right pipelineHandler shape based
@@ -68,8 +72,62 @@ func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
 		if err := renderSrckey(elem, elemPkg, autotoolsSrckeyPatterns()); err != nil {
 			return err
 		}
+		if err := renderSrckeyCacheStatus(elem, elemPkg); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// renderSrckeyCacheStatus checks the srckey registry (when
+// configured) for a hit on the element's srckey and emits a
+// `srckey-cache-status.txt` companion file recording the
+// outcome. Format:
+//
+//	hit	<srckey>		   — registry has a registered trace.log
+//	miss	<srckey>	   — registry doesn't (yet) have one
+//	off	<srckey>		   — no --srckey-registry flag passed; no lookup
+//
+// Round-1/round-2 plumbing reads this file to decide whether
+// the install genrule emits the standard build-tracer-wrapped
+// pipeline (miss) or a converter-only shape (hit). PR4 emits
+// the status file as a foundation; the round-2 render-shape
+// switch lands separately so the registry plumbing can be
+// reviewed in isolation.
+func renderSrckeyCacheStatus(elem *element, elemPkg string) error {
+	keyPath := filepath.Join(elemPkg, "srckey.txt")
+	keyBytes, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("element %q: read srckey: %w", elem.Name, err)
+	}
+	srckey := strings.TrimSpace(string(keyBytes))
+
+	status := "off"
+	if autotoolsConfig.srckeyRegistry != "" {
+		r, err := srckeyregistry.New(autotoolsConfig.srckeyRegistry)
+		if err != nil {
+			return fmt.Errorf("element %q: open registry: %w", elem.Name, err)
+		}
+		// Use trace.log as the hit indicator. The registration
+		// flow (post-build wrapper) writes the full set of
+		// artifacts under a srckey atomically enough that a
+		// trace.log entry being present implies the others
+		// (make-db.txt, BUILD.bazel.out, install-mapping.json)
+		// are too. If a future backend can't make that
+		// guarantee, this check grows to AND across the full
+		// set.
+		hit, err := r.Has(srckey, "trace.log")
+		if err != nil {
+			return fmt.Errorf("element %q: registry lookup: %w", elem.Name, err)
+		}
+		if hit {
+			status = "hit"
+		} else {
+			status = "miss"
+		}
+	}
+	body := status + "\t" + srckey + "\n"
+	return writeFile(filepath.Join(elemPkg, "srckey-cache-status.txt"), body)
 }
 
 // autotoolsSrckeyPatterns is the per-kind narrowing rule set

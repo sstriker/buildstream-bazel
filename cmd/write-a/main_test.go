@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/cmake-to-bazel/internal/srckeyregistry"
 	"gopkg.in/yaml.v3"
 )
 
@@ -615,6 +616,120 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outA, "tools/build-tracer")); err != nil {
 		t.Errorf("build-tracer not staged: %v", err)
+	}
+}
+
+// TestWriter_AutotoolsSrckeyCacheStatus covers the registry
+// observability layer (PR4): with --srckey-registry pointing at
+// a directory, write-a checks for a registered trace.log under
+// the element's srckey and emits a srckey-cache-status.txt
+// sidecar. Three regimes:
+//
+//   - --srckey-registry not set (empty autotoolsConfig.srckeyRegistry):
+//     status `off` regardless of registry contents. Renders that
+//     don't opt in shouldn't pay any I/O cost.
+//   - flag set, registry empty for this srckey: status `miss`.
+//   - flag set, registry pre-populated with trace.log: status `hit`.
+//
+// Round-2 render-shape switch (converter-only genrule on hit)
+// builds on this — left as a follow-up to keep PR4 reviewable.
+func TestWriter_AutotoolsSrckeyCacheStatus(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "configure"),
+		[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "Makefile.in"),
+		[]byte("all:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "auto.bst")
+	bstBody := "kind: autotools\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeAutotoolsBin := filepath.Join(tmp, "convert-element-autotools-fake")
+	if err := os.WriteFile(fakeAutotoolsBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeTracerBin := filepath.Join(tmp, "build-tracer-fake")
+	if err := os.WriteFile(fakeTracerBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	autotoolsConfig.convertBin = fakeAutotoolsBin
+	autotoolsConfig.tracerBin = fakeTracerBin
+	t.Cleanup(func() {
+		autotoolsConfig.convertBin = ""
+		autotoolsConfig.tracerBin = ""
+		autotoolsConfig.srckeyRegistry = ""
+	})
+
+	render := func(t *testing.T) string {
+		t.Helper()
+		g, err := loadGraph([]string{bst}, "")
+		if err != nil {
+			t.Fatalf("loadGraph: %v", err)
+		}
+		outA := filepath.Join(tmp, "A-"+t.Name())
+		if err := writeProjectA(g, outA, fakeConvertBin(t, tmp)); err != nil {
+			t.Fatalf("writeProjectA: %v", err)
+		}
+		body, err := os.ReadFile(filepath.Join(outA, "elements/auto/srckey-cache-status.txt"))
+		if err != nil {
+			t.Fatalf("read status: %v", err)
+		}
+		// Read srckey too; the assertions below match against
+		// the same value the status file embeds.
+		keyBytes, err := os.ReadFile(filepath.Join(outA, "elements/auto/srckey.txt"))
+		if err != nil {
+			t.Fatalf("read srckey: %v", err)
+		}
+		t.Logf("srckey=%s status=%s", strings.TrimSpace(string(keyBytes)), strings.TrimSpace(string(body)))
+		return string(body)
+	}
+
+	// 1. Flag unset → status `off`.
+	autotoolsConfig.srckeyRegistry = ""
+	got := render(t)
+	if !strings.HasPrefix(got, "off\t") {
+		t.Errorf("flag unset: want `off\\t...`, got %q", got)
+	}
+
+	// 2. Flag set, registry empty → status `miss`.
+	regDir := filepath.Join(tmp, "registry")
+	autotoolsConfig.srckeyRegistry = regDir
+	got = render(t)
+	if !strings.HasPrefix(got, "miss\t") {
+		t.Errorf("registry empty: want `miss\\t...`, got %q", got)
+	}
+
+	// 3. Pre-populate the registry with a trace.log under the
+	// element's srckey, then re-render → status `hit`.
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srckey, _, err := computeSrckey(g.Elements[0], autotoolsSrckeyPatterns())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := srckeyregistry.New(regDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Register(srckey, "trace.log", []byte("execve(\"/bin/true\", [\"true\"], 0x0) = 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	got = render(t)
+	if !strings.HasPrefix(got, "hit\t") {
+		t.Errorf("registry populated: want `hit\\t...`, got %q", got)
+	}
+	if !strings.Contains(got, srckey) {
+		t.Errorf("status missing srckey: %q (want %s)", got, srckey)
 	}
 }
 
