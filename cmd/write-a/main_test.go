@@ -595,9 +595,14 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 		`"install-mapping.json"`,
 		`"//tools:build-tracer"`,
 		`"//tools:convert-element-autotools"`,
-		`"$$EXEC_ROOT/$(location //tools:build-tracer)" --out="$$AUTOTOOLS_TRACE"`,
+		`"$$EXEC_ROOT/$(location //tools:build-tracer)"`,
+		`--normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT"`,
+		`--normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT"`,
+		`--out="$$AUTOTOOLS_TRACE"`,
 		`$(location //tools:convert-element-autotools)`,
-		`make -np > "$$EXEC_ROOT/$(location make-db.txt)"`,
+		`( make -np 2>/dev/null || true )`,
+		`/^#[[:space:]]+Last modified /d`,
+		`> "$$EXEC_ROOT/$(location make-db.txt)"`,
 		`--make-db="$(location make-db.txt)"`,
 	} {
 		if !strings.Contains(got, marker) {
