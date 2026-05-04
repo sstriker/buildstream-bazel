@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -68,7 +70,130 @@ func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
 		if err := renderSrckey(elem, elemPkg, autotoolsSrckeyPatterns()); err != nil {
 			return err
 		}
+		if err := renderAutotoolsNarrowing(elem, elemPkg); err != nil {
+			return err
+		}
 	}
+	return nil
+}
+
+// renderAutotoolsNarrowing emits the AC-key narrowing
+// scaffolding alongside the existing install genrule:
+//
+//   - `<elem>_zero_stubs`: zero_files target whose paths cover
+//     the source-tree files autotoolsSrckeyPatterns classifies
+//     as content-irrelevant (`*.c`, `*.cpp`, `*.cc`, `*.S`,
+//     `*.s`). Bazel hashes the empty SHA for each — comment-
+//     only edits to those files don't change action-input
+//     bytes.
+//   - `<elem>_narrowed_srcs`: filegroup gathering the real
+//     content-included paths plus the zero stubs. Same staged
+//     tree shape as kind:cmake's `<elem>_real` + `<elem>_zero_stubs`
+//     pair — drop-in input for any rule that wants AC narrowing
+//     on this element's source set.
+//
+// Foundation: the install genrule still consumes the full
+// source tree (`<elem>_sources` filegroup) so the autotools
+// build sees real `.c` bytes and links correctly. Switching
+// the genrule's srcs to `<elem>_narrowed_srcs` requires a
+// rehydration step inside the action that copies real `.c`
+// content from an out-of-AC-key side channel
+// (host-fs source cache via `--repo_env`, or `@src_<key>//:tree`
+// FUSE mount, or similar). That side-channel work is the
+// follow-up; this PR establishes the rendered structure +
+// the partition's debug visibility (srckey-breakdown.txt
+// already shows which paths are name-only).
+//
+// Skipped when ZeroPaths is empty (no narrowing applies — the
+// fixture has no .c-style files to zero-stub). The full
+// install genrule still works in that case; narrowing
+// rendering is an opt-in tightening.
+func renderAutotoolsNarrowing(elem *element, elemPkg string) error {
+	if err := partitionAutotoolsSources(elem); err != nil {
+		return err
+	}
+	if len(elem.ZeroPaths) == 0 {
+		return nil
+	}
+
+	var b strings.Builder
+	b.WriteString("\n")
+	b.WriteString(`load("//rules:zero_files.bzl", "zero_files")
+`)
+	b.WriteString("\n")
+	b.WriteString("# AC-key narrowing scaffolding (foundation work — see\n")
+	b.WriteString("# docs/trace-driven-autotools.md). zero_files materializes\n")
+	b.WriteString("# zero-byte stubs at action time for the source-tree files\n")
+	b.WriteString("# whose CONTENT doesn't influence the build graph (*.c /\n")
+	b.WriteString("# *.cpp / *.cc / *.S — make's recipes stay the same\n")
+	b.WriteString("# regardless of their bytes; only the produced .o differs).\n")
+	b.WriteString("# Comment-only edits to any of these files don't change the\n")
+	b.WriteString("# zero-stub bytes, so an action whose input is\n")
+	b.WriteString("# `<elem>_narrowed_srcs` cache-hits even when the .c content\n")
+	b.WriteString("# changed — Bazel's ActionCache narrowing without a bespoke\n")
+	b.WriteString("# srckey registry.\n")
+	fmt.Fprintf(&b, "zero_files(\n    name = %q,\n    paths = [\n", elem.Name+"_zero_stubs")
+	for _, p := range elem.ZeroPaths {
+		fmt.Fprintf(&b, "        %q,\n", "sources/"+p)
+	}
+	b.WriteString("    ],\n)\n")
+	b.WriteString("\n")
+	b.WriteString("# Real content-included paths (configure / *.am / *.in /\n")
+	b.WriteString("# *.h / *.m4 / ...). Glob is anchored to the per-element\n")
+	b.WriteString("# patterns autotoolsSrckeyPatterns codifies (see\n")
+	b.WriteString("# srckey-breakdown.txt for the resolved file list).\n")
+	fmt.Fprintf(&b, "filegroup(\n    name = %q,\n    srcs = [\n", elem.Name+"_real_narrowed")
+	for _, p := range elem.RealPaths {
+		fmt.Fprintf(&b, "        %q,\n", "sources/"+p)
+	}
+	b.WriteString("    ],\n)\n")
+	b.WriteString("\n")
+	b.WriteString("# AC-narrowed source set the install genrule's srcs would\n")
+	b.WriteString("# consume in the next iteration of this work — when the\n")
+	b.WriteString("# real-bytes rehydration side-channel is wired in.\n")
+	fmt.Fprintf(&b, "filegroup(\n    name = %q,\n    srcs = [%q, %q],\n)\n",
+		elem.Name+"_narrowed_srcs",
+		":"+elem.Name+"_real_narrowed",
+		":"+elem.Name+"_zero_stubs")
+
+	buildPath := filepath.Join(elemPkg, "BUILD.bazel")
+	existing, err := os.ReadFile(buildPath)
+	if err != nil {
+		return fmt.Errorf("element %q: read BUILD.bazel: %w", elem.Name, err)
+	}
+	return os.WriteFile(buildPath, append(existing, []byte(b.String())...), 0o644)
+}
+
+// partitionAutotoolsSources walks the element's source tree and
+// fills elem.RealPaths / elem.ZeroPaths per autotoolsSrckeyPatterns.
+// Mirrors handler_cmake.go's partitionSources except the rule set
+// is the per-kind autotools pattern set, not the cmake feedback
+// patterns.
+func partitionAutotoolsSources(elem *element) error {
+	if len(elem.Sources) == 0 || elem.Sources[0].AbsPath == "" {
+		return nil
+	}
+	root := elem.Sources[0].AbsPath
+	var universe []string
+	err := filepath.Walk(root, func(p string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(root, p)
+		if err != nil {
+			return err
+		}
+		universe = append(universe, filepath.ToSlash(rel))
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	sort.Strings(universe)
+	elem.RealPaths, elem.ZeroPaths = applyReadPathsPatterns(autotoolsSrckeyPatterns(), universe)
 	return nil
 }
 

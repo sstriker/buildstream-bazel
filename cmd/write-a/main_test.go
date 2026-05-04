@@ -618,6 +618,105 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	}
 }
 
+// TestWriter_AutotoolsNarrowingScaffolding covers the AC-key
+// narrowing scaffolding emitted alongside the install genrule
+// when the trace-driven path is enabled: a zero_files target
+// for `.c`-style files, a `<elem>_real_narrowed` filegroup for
+// content-relevant paths, and a `<elem>_narrowed_srcs`
+// filegroup composing both.
+//
+// Foundation work — the install genrule still consumes the
+// full source tree; the narrowed pair is rendered for
+// downstream consumers that want AC narrowing, and as the
+// staging surface a future rehydration step would consume.
+func TestWriter_AutotoolsNarrowingScaffolding(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(srcDir, "configure"), "#!/bin/sh\nexit 0\n")
+	mustWrite(t, filepath.Join(srcDir, "Makefile.in"), "all:\n")
+	mustWrite(t, filepath.Join(srcDir, "main.c"), "int main(void){return 0;}\n")
+	mustWrite(t, filepath.Join(srcDir, "helper.cpp"), "int helper(void){return 1;}\n")
+	mustWrite(t, filepath.Join(srcDir, "header.h"), "extern int x;\n")
+
+	bst := filepath.Join(tmp, "auto.bst")
+	bstBody := "kind: autotools\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeAutotoolsBin := filepath.Join(tmp, "convert-element-autotools-fake")
+	if err := os.WriteFile(fakeAutotoolsBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeTracerBin := filepath.Join(tmp, "build-tracer-fake")
+	if err := os.WriteFile(fakeTracerBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	autotoolsConfig.convertBin = fakeAutotoolsBin
+	autotoolsConfig.tracerBin = fakeTracerBin
+	t.Cleanup(func() {
+		autotoolsConfig.convertBin = ""
+		autotoolsConfig.tracerBin = ""
+	})
+
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	outA := filepath.Join(tmp, "A")
+	if err := writeProjectA(g, outA, fakeConvertBin(t, tmp)); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	for _, marker := range []string{
+		`load("//rules:zero_files.bzl", "zero_files")`,
+		`name = "auto_zero_stubs"`,
+		`"sources/main.c"`,
+		`"sources/helper.cpp"`,
+		`name = "auto_real_narrowed"`,
+		`"sources/configure"`,
+		`"sources/Makefile.in"`,
+		`"sources/header.h"`,
+		`name = "auto_narrowed_srcs"`,
+		`srcs = [":auto_real_narrowed", ":auto_zero_stubs"]`,
+	} {
+		if !strings.Contains(got, marker) {
+			t.Errorf("narrowing scaffolding missing %q\n--body--\n%s", marker, got)
+		}
+	}
+	// .c / .cpp must NOT appear in real_narrowed.
+	realStart := strings.Index(got, `name = "auto_real_narrowed"`)
+	realEnd := strings.Index(got[realStart:], "],\n)")
+	if realStart < 0 || realEnd < 0 {
+		t.Fatal("could not locate auto_real_narrowed body")
+	}
+	realBody := got[realStart : realStart+realEnd]
+	for _, banned := range []string{`"sources/main.c"`, `"sources/helper.cpp"`} {
+		if strings.Contains(realBody, banned) {
+			t.Errorf("auto_real_narrowed should not include %s\n%s", banned, realBody)
+		}
+	}
+	// .h / configure / Makefile.in must NOT appear in zero_stubs.
+	zeroStart := strings.Index(got, `name = "auto_zero_stubs"`)
+	zeroEnd := strings.Index(got[zeroStart:], "],\n)")
+	if zeroStart < 0 || zeroEnd < 0 {
+		t.Fatal("could not locate auto_zero_stubs body")
+	}
+	zeroBody := got[zeroStart : zeroStart+zeroEnd]
+	for _, banned := range []string{`"sources/header.h"`, `"sources/configure"`, `"sources/Makefile.in"`} {
+		if strings.Contains(zeroBody, banned) {
+			t.Errorf("auto_zero_stubs should not include %s\n%s", banned, zeroBody)
+		}
+	}
+}
+
 // TestWriter_AutotoolsCoarseFallbackWithoutFlags covers the
 // fallback path: without --convert-element-autotools /
 // --build-tracer-bin, the autotools handler renders the
