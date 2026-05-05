@@ -146,3 +146,46 @@ func TestRenderSourcesBzl_StarlarkShape(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderSourcesBzl_ParameterizesPathPrefix verifies the
+// rule reads CAS_DIRECTORY_PREFIX (default "blobs") and uses
+// it to build the symlink target. The default keeps cmd/cas-fuse
+// users on the historical `<mount>/blobs/directory/<digest>`
+// layout; bb_clientd users override the env to land on
+// `<mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>`.
+func TestRenderSourcesBzl_ParameterizesPathPrefix(t *testing.T) {
+	got := renderSourcesBzl()
+	for _, want := range []string{
+		`rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")`,
+		`mount + "/" + prefix + "/directory/" + digest`,
+		`environ = ["CAS_FUSE_MOUNT", "CAS_DIRECTORY_PREFIX"]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered .bzl missing parameterized-prefix marker %q\n%s", want, got)
+		}
+	}
+	// The pre-parameterization hardcoded shape must NOT survive.
+	if strings.Contains(got, `mount + "/blobs/directory/" + digest`) {
+		t.Errorf("rendered .bzl still contains the hardcoded /blobs/directory/ shape; should use the prefix var")
+	}
+}
+
+// TestRenderTracesBzl_ParameterizesPathPrefix is the round-2
+// counterpart: the _trace_repo rule must read the same
+// CAS_DIRECTORY_PREFIX env so a single --repo_env flag covers
+// both extensions.
+func TestRenderTracesBzl_ParameterizesPathPrefix(t *testing.T) {
+	got := renderTracesBzl()
+	for _, want := range []string{
+		`rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")`,
+		`mount + "/" + prefix + "/directory/" + hash`,
+		`"CAS_DIRECTORY_PREFIX"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered traces.bzl missing parameterized-prefix marker %q\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, `mount + "/blobs/directory/" + hash`) {
+		t.Errorf("rendered traces.bzl still contains the hardcoded /blobs/directory/ shape")
+	}
+}

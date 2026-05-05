@@ -135,18 +135,40 @@ echo "  structure OK"
 echo "== bazel build //elements/hello:hello_converted (Bazel 9 + RemoteOutputService) =="
 DIGEST=$(grep '"digest"' "$PROJ_A/tools/sources.json" | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
 echo "  digest = $DIGEST"
-# Sanity: bb_clientd's mount serves the digest tree.
-if ! test -d "$MOUNT/cas/$DIGEST" 2>/dev/null \
+# Sanity: bb_clientd's mount serves the digest tree. The
+# canonical bb_clientd path is
+# `<mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>`;
+# our deploy/buildbarn/config/bb_clientd.jsonnet uses the
+# defaults (empty instance, sha256), so the path collapses to
+# `<mount>/cas//blobs/sha256/directory/<digest>` (which OS path
+# resolution normalises to `<mount>/cas/blobs/sha256/directory/<digest>`).
+# Probe that shape; if it's missing fall back to the older
+# probes (older bb_clientd versions / different configs).
+if ! test -d "$MOUNT/cas/blobs/sha256/directory/$DIGEST" 2>/dev/null \
+     && ! test -d "$MOUNT/cas/$DIGEST" 2>/dev/null \
      && ! test -d "$MOUNT/blobs/directory/$DIGEST" 2>/dev/null; then
-    echo "bb_clientd mount does not yet serve digest tree at \$MOUNT/cas/$DIGEST or \$MOUNT/blobs/directory/$DIGEST"
+    echo "bb_clientd mount does not serve digest tree at expected paths under \$MOUNT=$MOUNT"
     echo "(bb_clientd config schema may have evolved; verify deploy/buildbarn/config/bb_clientd.jsonnet)"
     ls -la "$MOUNT" || true
     exit 1
 fi
 
 cd "$PROJ_A"
+# Two ways to point the repo rule at bb_clientd:
+#   (1) Legacy hack — set CAS_FUSE_MOUNT to "$MOUNT/cas" so the
+#       hardcoded /blobs/directory/<digest> template under cas-fuse
+#       happens to resolve under bb_clientd's empty-instance,
+#       sha256 default (path collapses to .../cas//blobs/sha256/...).
+#   (2) Canonical — set CAS_FUSE_MOUNT to "$MOUNT" and pass
+#       CAS_DIRECTORY_PREFIX=cas//blobs/sha256 so the rule builds
+#       the bb_clientd-canonical path explicitly.
+# We use (2): exercises the parameterised path-template support
+# rules/sources.bzl ships with so non-default bb_clientd configs
+# (non-empty instance, non-sha256 digest fn) work without further
+# rule changes.
 "$BAZEL" build \
-    --repo_env=CAS_FUSE_MOUNT="$MOUNT/cas" \
+    --repo_env=CAS_FUSE_MOUNT="$MOUNT" \
+    --repo_env=CAS_DIRECTORY_PREFIX="cas//blobs/sha256" \
     --experimental_remote_output_service="unix://$GRPC_SOCK" \
     //elements/hello:hello_converted
 cd "$repo"

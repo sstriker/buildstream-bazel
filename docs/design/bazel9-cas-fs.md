@@ -265,10 +265,32 @@ either parameterising the repo rule's path template (so
 configurable) or switching the rule outright to bb_clientd's
 shape and retiring `cmd/cas-fuse` from the dev path.
 
-## Open work
+## Status
 
-The wiring on the bb_clientd side is in place
-(`deploy/buildbarn/config/bb_clientd.jsonnet`,
-`make bb-clientd-up`, `tools/e2e-hello-bbclientd.sh`). The
-remaining integration steps live on `rules/sources.bzl`'s
-side and on the test side; see `ROADMAP.md` for current status.
+Decision is implemented:
+
+- `make bb-clientd-up` / `make bb-clientd-down` — daemon
+  lifecycle. Config at `deploy/buildbarn/config/bb_clientd.jsonnet`.
+- `rules/sources.bzl` and `rules/traces.bzl` (the round-2
+  trace-rendezvous file) build the symlink target as
+  `<CAS_FUSE_MOUNT>/<CAS_DIRECTORY_PREFIX>/directory/<digest>`.
+  The default prefix is `blobs` — the flat layout cmd/cas-fuse
+  serves. bb_clientd users pass
+  `--repo_env=CAS_DIRECTORY_PREFIX=cas/<instance>/blobs/<digest_function>`
+  to land on bb_clientd's canonical layout. With the daemon's
+  default empty instance + sha256 digest function, that's
+  `cas//blobs/sha256` (OS-normalised to `cas/blobs/sha256`).
+- `tools/e2e-hello-bbclientd.sh` is the end-to-end gate. It
+  brings up buildbarn + bb_clientd, runs `cmd/source-push` to
+  upload, then drives `bazel build` with
+  `--experimental_remote_output_service=unix://<grpc_sock>`
+  + the parameterised CAS_DIRECTORY_PREFIX. CI runs this as
+  the `bazel9-fuse-sources` job.
+- `cmd/cas-fuse` stays in-tree as the flag-only fallback for
+  setups that don't want a bb_clientd dependency (air-gapped
+  CI runners, the in-process casfuse / hello-fuse tests). Its
+  package doc has been updated to flag the legacy/fallback
+  status.
+
+The roadmap entry has been moved to "Done (high points)" in
+`ROADMAP.md`.
