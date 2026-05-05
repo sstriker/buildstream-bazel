@@ -28,11 +28,31 @@ const fmtTargetsCMake = `add_library(FMT::fmt STATIC IMPORTED)
 add_library(FMT::fmt-header-only INTERFACE IMPORTED)
 `
 
+// mkBundle assembles a synth-prefix-shaped bundle directory rooted at
+// <dir> and writes one .cmake file under <dir>/lib/cmake/<pkg>/<name>
+// for each (pkg, name, body) triple. Mirrors the layout
+// `convert-element --out-bundle-dir` produces (via
+// `synthprefix.BuildSlice`).
+func mkBundle(t *testing.T, dir string, files map[string]map[string]string) {
+	t.Helper()
+	for pkg, perPkg := range files {
+		pkgDir := filepath.Join(dir, "lib", "cmake", pkg)
+		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range perPkg {
+			if err := os.WriteFile(filepath.Join(pkgDir, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+}
+
 func TestFromBundle_ParsesAddLibrary(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "helloTargets.cmake"), []byte(helloTargetsCMake), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	mkBundle(t, dir, map[string]map[string]string{
+		"hello": {"helloTargets.cmake": helloTargetsCMake},
+	})
 	exps, err := exports.FromBundle(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -47,9 +67,9 @@ func TestFromBundle_ParsesAddLibrary(t *testing.T) {
 
 func TestFromBundle_MultipleImports(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "FMTTargets.cmake"), []byte(fmtTargetsCMake), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	mkBundle(t, dir, map[string]map[string]string{
+		"FMT": {"FMTTargets.cmake": fmtTargetsCMake},
+	})
 	exps, err := exports.FromBundle(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -67,13 +87,13 @@ func TestFromBundle_MultipleImports(t *testing.T) {
 
 func TestFromBundle_IgnoresPerConfigFile(t *testing.T) {
 	dir := t.TempDir()
-	// The -release.cmake overlay has set_property/set_target_properties
-	// but no new add_library calls. We only parse Targets.cmake itself.
-	if err := os.WriteFile(filepath.Join(dir, "fooTargets-release.cmake"), []byte(`set_property(TARGET foo::foo APPEND PROPERTY IMPORTED_CONFIGURATIONS RELEASE)
+	mkBundle(t, dir, map[string]map[string]string{
+		// The -release.cmake overlay has set_property/set_target_properties
+		// but no new add_library calls. We only parse Targets.cmake itself.
+		"foo": {"fooTargets-release.cmake": `set_property(TARGET foo::foo APPEND PROPERTY IMPORTED_CONFIGURATIONS RELEASE)
 set_target_properties(foo::foo PROPERTIES IMPORTED_LOCATION_RELEASE "/usr/lib/libfoo.a")
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+`},
+	})
 	exps, err := exports.FromBundle(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -96,11 +116,11 @@ func TestFromBundle_EmptyDir(t *testing.T) {
 
 func TestAsElement_StampsBazelLabels(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "fooTargets.cmake"), []byte(`add_library(foo::core STATIC IMPORTED)
+	mkBundle(t, dir, map[string]map[string]string{
+		"foo": {"fooTargets.cmake": `add_library(foo::core STATIC IMPORTED)
 add_library(foo::extra SHARED IMPORTED)
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+`},
+	})
 	raw, err := exports.FromBundle(dir)
 	if err != nil {
 		t.Fatal(err)

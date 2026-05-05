@@ -38,26 +38,21 @@ var addLibraryRe = regexp.MustCompile(`^add_library\(\s*([A-Za-z0-9_-]+)\s*::\s*
 // run it over the file-as-a-whole rather than line-by-line.
 var importedLocationStanzaRe = regexp.MustCompile(`set_target_properties\(\s*([A-Za-z0-9_-]+::[A-Za-z0-9_-]+)\s+PROPERTIES[\s\S]*?IMPORTED_LOCATION_[A-Z]+\s+"\$\{_IMPORT_PREFIX\}([^"]+)"`)
 
-// FromBundle scans a cmake-config bundle directory for imported targets and
-// returns one manifest.Export per declaration. Element name is NOT applied
-// to BazelLabel here — that's the caller's job (the orchestrator stamps the
-// `//elements/<name>:<target>` label after picking up the raw exports).
+// FromBundle scans a synth-prefix-shaped cmake-config bundle directory
+// for imported targets and returns one manifest.Export per declaration.
+// Element name is NOT applied to BazelLabel here — that's the caller's
+// job (the orchestrator stamps the `//elements/<name>:<target>` label
+// after picking up the raw exports).
+//
+// The bundle layout is what `convert-element --out-bundle-dir` writes
+// via `synthprefix.BuildSlice`:
+//
+//	<bundleDir>/lib/cmake/<Pkg>/<Pkg>Targets.cmake
+//	<bundleDir>/lib/cmake/<Pkg>/<Pkg>Targets-<config>.cmake
 func FromBundle(bundleDir string) ([]*manifest.Export, error) {
-	entries, err := os.ReadDir(bundleDir)
+	targetsFiles, err := listTargetsFiles(bundleDir)
 	if err != nil {
-		return nil, fmt.Errorf("exports: read %s: %w", bundleDir, err)
-	}
-	// Targets.cmake declares add_library; per-config Targets-*.cmake
-	// supplies IMPORTED_LOCATION_<CONFIG>.
-	var targetsFiles []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if strings.HasSuffix(name, "Targets.cmake") {
-			targetsFiles = append(targetsFiles, filepath.Join(bundleDir, name))
-		}
+		return nil, err
 	}
 	if len(targetsFiles) == 0 {
 		return nil, nil // nothing to export; not an error
@@ -81,29 +76,94 @@ func FromBundle(bundleDir string) ([]*manifest.Export, error) {
 	return out, nil
 }
 
-// PrefixRelativeLinkPaths reads every per-config Targets-*.cmake under
-// bundleDir and returns a map of cmake_target -> []prefix-relative paths.
-// Each path is the IMPORTED_LOCATION_<CONFIG> stanza's value with the
-// leading `${_IMPORT_PREFIX}` stripped. Caller (orchestrator) joins these
-// against the consumer's prefix root to produce absolute LinkPaths for the
-// imports manifest.
+// PrefixRelativeLinkPaths reads every per-config Targets-*.cmake from
+// the bundle (synth-prefix or flat layout — see FromBundle's comment)
+// and returns a map of cmake_target -> []prefix-relative paths. Each
+// path is the IMPORTED_LOCATION_<CONFIG> stanza's value with the
+// leading `${_IMPORT_PREFIX}` stripped. Caller (orchestrator) joins
+// these against the consumer's prefix root to produce absolute
+// LinkPaths for the imports manifest.
 func PrefixRelativeLinkPaths(bundleDir string) (map[string][]string, error) {
-	entries, err := os.ReadDir(bundleDir)
+	cmakeFiles, err := listAllCmakeFiles(bundleDir)
 	if err != nil {
 		return nil, err
 	}
 	out := map[string][]string{}
-	for _, e := range entries {
-		if e.IsDir() || filepath.Ext(e.Name()) != ".cmake" {
-			continue
-		}
-		body, err := os.ReadFile(filepath.Join(bundleDir, e.Name()))
+	for _, path := range cmakeFiles {
+		body, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
 		for _, m := range importedLocationStanzaRe.FindAllSubmatch(body, -1) {
 			tgt, rel := string(m[1]), string(m[2])
 			out[tgt] = append(out[tgt], rel)
+		}
+	}
+	return out, nil
+}
+
+// listTargetsFiles returns the absolute paths to every
+// `<Pkg>Targets.cmake` under
+// `<bundleDir>/lib/cmake/<Pkg>/`.
+func listTargetsFiles(bundleDir string) ([]string, error) {
+	cmakeRoot := filepath.Join(bundleDir, "lib", "cmake")
+	pkgDirs, err := os.ReadDir(cmakeRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("exports: read %s: %w", cmakeRoot, err)
+	}
+	var out []string
+	for _, p := range pkgDirs {
+		if !p.IsDir() {
+			continue
+		}
+		pkgDir := filepath.Join(cmakeRoot, p.Name())
+		entries, err := os.ReadDir(pkgDir)
+		if err != nil {
+			return nil, fmt.Errorf("exports: read %s: %w", pkgDir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(e.Name(), "Targets.cmake") {
+				out = append(out, filepath.Join(pkgDir, e.Name()))
+			}
+		}
+	}
+	return out, nil
+}
+
+// listAllCmakeFiles is the IMPORTED_LOCATION-source variant of
+// listTargetsFiles: every `*.cmake` regardless of suffix, since
+// per-config overlays (`Targets-<config>.cmake`) carry the
+// IMPORTED_LOCATION_<CONFIG> values.
+func listAllCmakeFiles(bundleDir string) ([]string, error) {
+	cmakeRoot := filepath.Join(bundleDir, "lib", "cmake")
+	pkgDirs, err := os.ReadDir(cmakeRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, p := range pkgDirs {
+		if !p.IsDir() {
+			continue
+		}
+		pkgDir := filepath.Join(cmakeRoot, p.Name())
+		entries, err := os.ReadDir(pkgDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".cmake" {
+				continue
+			}
+			out = append(out, filepath.Join(pkgDir, e.Name()))
 		}
 	}
 	return out, nil

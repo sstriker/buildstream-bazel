@@ -57,13 +57,16 @@ func TestE2E_Orchestrate_StubSubset(t *testing.T) {
 	}
 
 	// Per-element artifacts that real convert-element produces.
+	// `cmake-config/` is in synth-prefix layout (lib/cmake/<Pkg>/...) —
+	// see internal/synthprefix.BuildSlice + the converter's
+	// --out-bundle-dir flow.
 	for _, want := range []string{
 		"elements/components/hello/BUILD.bazel",
-		"elements/components/hello/cmake-config/helloConfig.cmake",
-		"elements/components/hello/cmake-config/helloTargets.cmake",
-		"elements/components/hello/cmake-config/helloTargets-release.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloConfig.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloTargets.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloTargets-release.cmake",
 		"elements/components/uses-hello/BUILD.bazel",
-		"elements/components/uses-hello/cmake-config/uses_helloConfig.cmake",
+		"elements/components/uses-hello/cmake-config/lib/cmake/uses_hello/uses_helloConfig.cmake",
 	} {
 		if _, err := os.Stat(filepath.Join(out, want)); err != nil {
 			t.Errorf("missing %s: %v", want, err)

@@ -28,24 +28,31 @@ import (
 type DepBundle struct {
 	// Pkg is the cmake project name as it appears in the bundle filename
 	// (`<Pkg>Config.cmake`). Drives the lib/cmake/<Pkg>/ subdirectory.
+	// Used for stable iteration ordering only; the layout itself is
+	// determined by the bundle contents under SourceDir.
 	Pkg string
 
 	// SourceDir is the absolute path to the converter-emitted cmake-config
-	// directory for this dep (`<out>/elements/<elem>/cmake-config/`).
+	// directory for this dep (`<out>/elements/<elem>/cmake-config/`). The
+	// directory is in synth-prefix shape — its contents merge directly
+	// onto the destination prefix without re-nesting.
 	SourceDir string
 }
 
-// Build creates dst as a CMAKE_PREFIX_PATH-shaped synth-prefix tree.
+// BuildSlice creates dst as a single-package CMAKE_PREFIX_PATH-shaped
+// slice from a FLAT input directory of `<Pkg>*.cmake` files plus the
+// stubs scanned out of those files. dst must not exist; BuildSlice
+// creates it. Used by `convert-element --out-bundle-dir` to produce
+// the per-element bundle.
 //
-// dst must not exist; Build creates it. For each bundle:
-//   - Bundle .cmake files are copied to <dst>/lib/cmake/<Pkg>/.
-//   - Every IMPORTED_LOCATION_<CONFIG> path under ${_IMPORT_PREFIX} found
-//     in the bundle's per-config Targets-*.cmake files becomes a
-//     zero-byte stub at the corresponding location under <dst>.
+// For each input (typically one per call):
+//   - `<Pkg>*.cmake` files are copied to <dst>/lib/cmake/<Pkg>/.
+//   - Every IMPORTED_LOCATION_<CONFIG> path under ${_IMPORT_PREFIX}
+//     becomes a zero-byte stub at <dst>/<rel>.
 //   - INTERFACE_INCLUDE_DIRECTORIES paths under ${_IMPORT_PREFIX} get
 //     mkdir-stubs (cmake configure doesn't validate include dir
 //     contents, only existence).
-func Build(dst string, deps []DepBundle) error {
+func BuildSlice(dst string, deps []DepBundle) error {
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("synthprefix: dst already exists: %s", dst)
 	}
@@ -53,7 +60,6 @@ func Build(dst string, deps []DepBundle) error {
 		return err
 	}
 
-	// Stable iteration order for byte-identical synth-prefixes across runs.
 	cp := append([]DepBundle(nil), deps...)
 	sort.Slice(cp, func(i, j int) bool { return cp[i].Pkg < cp[j].Pkg })
 
@@ -77,8 +83,6 @@ func Build(dst string, deps []DepBundle) error {
 				return err
 			}
 		}
-
-		// Stub IMPORTED_LOCATION + INTERFACE_INCLUDE_DIRECTORIES paths.
 		stubs, err := scanImportedPaths(d.SourceDir)
 		if err != nil {
 			return err
@@ -90,6 +94,68 @@ func Build(dst string, deps []DepBundle) error {
 		}
 	}
 	return nil
+}
+
+// Build creates dst as a CMAKE_PREFIX_PATH-shaped synth-prefix tree by
+// merging each dep's already-synth-prefix-shaped bundle directory into
+// dst. dst must not exist; Build creates it.
+//
+// Each bundle (produced by `convert-element --out-bundle-dir`, which
+// runs BuildSlice internally) carries its own
+// `lib/cmake/<Pkg>/<Pkg>{Config,Targets,Targets-<config>}.cmake` plus
+// zero-byte stubs at the IMPORTED_LOCATION paths and mkdir-stubs at the
+// INTERFACE_INCLUDE_DIRECTORIES paths. Build copies each bundle's tree
+// over dst; with one Pkg per bundle, the lib/cmake/<Pkg>/ dirs don't
+// collide.
+func Build(dst string, deps []DepBundle) error {
+	if _, err := os.Stat(dst); err == nil {
+		return fmt.Errorf("synthprefix: dst already exists: %s", dst)
+	}
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return err
+	}
+
+	cp := append([]DepBundle(nil), deps...)
+	sort.Slice(cp, func(i, j int) bool { return cp[i].Pkg < cp[j].Pkg })
+
+	for _, d := range cp {
+		if err := mergeTree(d.SourceDir, dst); err != nil {
+			return fmt.Errorf("synthprefix: merge %s: %w", d.SourceDir, err)
+		}
+	}
+	return nil
+}
+
+// mergeTree copies every regular file and directory from src into dst,
+// preserving the relative path layout. Directories already present in
+// dst are extended; files are not overwritten if the same relative path
+// already exists (caller's responsibility to ensure non-overlapping
+// bundles). Symlinks are followed.
+func mergeTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		// Regular file (or zero-byte stub). Skip if already present.
+		if _, err := os.Stat(target); err == nil {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return copyFile(path, target)
+	})
 }
 
 // importedPathKind tells stubAt whether to create a zero-byte file or a
@@ -206,20 +272,43 @@ func copyFile(src, dst string) error {
 
 // PkgFromBundle infers the cmake project name from a bundle directory by
 // looking for the file named `<Pkg>Config.cmake`. Returns the Pkg part or
-// "" if the bundle has no Config.cmake (shouldn't happen for converter
-// output but tolerated).
+// PkgFromBundle returns the cmake project name of a synth-prefix-shaped
+// bundle. Returns "" if the bundle has no Config.cmake (shouldn't
+// happen for converter output but tolerated).
+//
+// The bundle is laid out as
+//
+//	<bundleDir>/lib/cmake/<Pkg>/<Pkg>Config.cmake
+//
+// (the shape `BuildSlice` produces inside `convert-element`'s
+// `--out-bundle-dir`). PkgFromBundle finds the unique
+// `<Pkg>Config.cmake` under `lib/cmake/*/` and returns `<Pkg>`.
 func PkgFromBundle(bundleDir string) (string, error) {
-	entries, err := os.ReadDir(bundleDir)
+	cmakeRoot := filepath.Join(bundleDir, "lib", "cmake")
+	entries, err := os.ReadDir(cmakeRoot)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
 		return "", err
 	}
 	for _, e := range entries {
-		if e.IsDir() {
+		if !e.IsDir() {
 			continue
 		}
-		name := e.Name()
-		if strings.HasSuffix(name, "Config.cmake") {
-			return strings.TrimSuffix(name, "Config.cmake"), nil
+		pkgDir := filepath.Join(cmakeRoot, e.Name())
+		inner, err := os.ReadDir(pkgDir)
+		if err != nil {
+			return "", err
+		}
+		for _, f := range inner {
+			if f.IsDir() {
+				continue
+			}
+			name := f.Name()
+			if strings.HasSuffix(name, "Config.cmake") {
+				return strings.TrimSuffix(name, "Config.cmake"), nil
+			}
 		}
 	}
 	return "", nil

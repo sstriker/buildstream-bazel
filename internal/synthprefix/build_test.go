@@ -41,19 +41,23 @@ list(APPEND _cmake_import_check_files_for_hello::hello "${_IMPORT_PREFIX}/lib/li
 	}
 }
 
-func TestBuild_HelloOnly(t *testing.T) {
+// TestBuildSlice_HelloOnly exercises BuildSlice — the converter-side
+// builder that takes a FLAT bundle dir of <Pkg>*.cmake files and
+// produces a synth-prefix-shaped slice with stubs scanned out of the
+// IMPORTED_LOCATION / INTERFACE_INCLUDE_DIRECTORIES references.
+func TestBuildSlice_HelloOnly(t *testing.T) {
 	tmp := t.TempDir()
 	bundle := filepath.Join(tmp, "src-bundle")
 	writeHelloBundle(t, bundle)
 	dst := filepath.Join(tmp, "prefix")
 
-	if err := synthprefix.Build(dst, []synthprefix.DepBundle{
+	if err := synthprefix.BuildSlice(dst, []synthprefix.DepBundle{
 		{Pkg: "hello", SourceDir: bundle},
 	}); err != nil {
-		t.Fatalf("Build: %v", err)
+		t.Fatalf("BuildSlice: %v", err)
 	}
 
-	// Bundle files copied.
+	// Bundle files copied to lib/cmake/<Pkg>/.
 	for _, f := range []string{"helloConfig.cmake", "helloTargets.cmake", "helloTargets-release.cmake"} {
 		if _, err := os.Stat(filepath.Join(dst, "lib", "cmake", "hello", f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
@@ -80,41 +84,59 @@ func TestBuild_HelloOnly(t *testing.T) {
 	}
 }
 
-func TestBuild_RefusesExistingDst(t *testing.T) {
+func TestBuildSlice_RefusesExistingDst(t *testing.T) {
 	tmp := t.TempDir()
 	bundle := filepath.Join(tmp, "b")
 	writeHelloBundle(t, bundle)
-	if err := synthprefix.Build(tmp /* exists */, []synthprefix.DepBundle{
+	if err := synthprefix.BuildSlice(tmp /* exists */, []synthprefix.DepBundle{
 		{Pkg: "hello", SourceDir: bundle},
 	}); err == nil {
 		t.Error("expected error for existing dst")
 	}
 }
 
-func TestBuild_MultipleDepsBundleSeparately(t *testing.T) {
+// TestBuild_MergesSliceBundles exercises Build — the orchestrator-side
+// merger that takes multiple already-synth-prefix-shaped slice bundles
+// and overlays them onto a per-element prefix.
+func TestBuild_MergesSliceBundles(t *testing.T) {
 	tmp := t.TempDir()
 
-	helloBundle := filepath.Join(tmp, "src-hello")
-	writeHelloBundle(t, helloBundle)
+	// Build a hello slice via BuildSlice (the source-of-truth shape).
+	helloFlat := filepath.Join(tmp, "src-hello")
+	writeHelloBundle(t, helloFlat)
+	helloSlice := filepath.Join(tmp, "slice-hello")
+	if err := synthprefix.BuildSlice(helloSlice, []synthprefix.DepBundle{
+		{Pkg: "hello", SourceDir: helloFlat},
+	}); err != nil {
+		t.Fatalf("BuildSlice hello: %v", err)
+	}
 
-	fooBundle := filepath.Join(tmp, "src-foo")
-	if err := os.MkdirAll(fooBundle, 0o755); err != nil {
+	// Build a foo slice the same way.
+	fooFlat := filepath.Join(tmp, "src-foo")
+	if err := os.MkdirAll(fooFlat, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(fooBundle, "fooConfig.cmake"), []byte("# foo config\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fooFlat, "fooConfig.cmake"), []byte("# foo config\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(fooBundle, "fooTargets-release.cmake"), []byte(`set_target_properties(foo::foo PROPERTIES
+	if err := os.WriteFile(filepath.Join(fooFlat, "fooTargets-release.cmake"), []byte(`set_target_properties(foo::foo PROPERTIES
   IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/lib/libfoo.a"
 )
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fooSlice := filepath.Join(tmp, "slice-foo")
+	if err := synthprefix.BuildSlice(fooSlice, []synthprefix.DepBundle{
+		{Pkg: "foo", SourceDir: fooFlat},
+	}); err != nil {
+		t.Fatalf("BuildSlice foo: %v", err)
+	}
 
+	// Merge both slices into a single prefix.
 	dst := filepath.Join(tmp, "prefix")
 	if err := synthprefix.Build(dst, []synthprefix.DepBundle{
-		{Pkg: "foo", SourceDir: fooBundle},
-		{Pkg: "hello", SourceDir: helloBundle},
+		{Pkg: "foo", SourceDir: fooSlice},
+		{Pkg: "hello", SourceDir: helloSlice},
 	}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -137,11 +159,23 @@ func TestBuild_MultipleDepsBundleSeparately(t *testing.T) {
 }
 
 func TestPkgFromBundle(t *testing.T) {
+	// Synth-prefix-shaped bundle: BuildSlice from a flat input gives
+	// the canonical layout PkgFromBundle reads.
 	tmp := t.TempDir()
-	if err := os.WriteFile(filepath.Join(tmp, "fooConfig.cmake"), []byte(""), 0o644); err != nil {
+	flat := filepath.Join(tmp, "flat")
+	if err := os.MkdirAll(flat, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	pkg, err := synthprefix.PkgFromBundle(tmp)
+	if err := os.WriteFile(filepath.Join(flat, "fooConfig.cmake"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(tmp, "bundle")
+	if err := synthprefix.BuildSlice(bundle, []synthprefix.DepBundle{
+		{Pkg: "foo", SourceDir: flat},
+	}); err != nil {
+		t.Fatalf("BuildSlice: %v", err)
+	}
+	pkg, err := synthprefix.PkgFromBundle(bundle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +183,7 @@ func TestPkgFromBundle(t *testing.T) {
 		t.Errorf("PkgFromBundle = %q, want foo", pkg)
 	}
 
-	// Empty dir.
+	// Empty bundle dir (no lib/cmake/ at all).
 	emptyDir := t.TempDir()
 	pkg, err = synthprefix.PkgFromBundle(emptyDir)
 	if err != nil {
