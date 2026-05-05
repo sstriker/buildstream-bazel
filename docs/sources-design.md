@@ -400,55 +400,13 @@ to also iterate over option values declared in project.conf, with
 each combination producing a `select()` arm. Combinatorial
 explosion is bounded — most options have 1–3 values.
 
-## What's shipped vs. what's roadmap
+## Status
 
-Shipped (in `main` today):
-
-- **Project.conf completion**: options lower to `string_flag` +
-  `config_setting` + `select()`; aliases parsed and wired into the
-  source-fetcher's URL translation (`github:`, `sourceware:` etc.);
-  the project's `environment:` block surfaces as per-element
-  genrule `env` attrs.
-- **`cmd/cas-fuse` daemon**: lifted from `bb_clientd`'s FUSE stack.
-  Mounts a single root and serves CAS Directories at
-  digest-addressed paths under `<mount>/blobs/directory/<digest>/`.
-  Linux ships today via `go-fuse/v2`. `make buildbarn-up` wires
-  the dev-side stack end-to-end (CAS server + cas-fuse mount).
-- **Sources scaffold**: `rules/sources.bzl` module extension reads
-  the per-element `sources.json` write-a emits and declares one
-  external repo per source identity. Each repo's `ctx.symlink`
-  points into the cas-fuse mount; element BUILDs reference
-  `@src_<key>//:tree`.
-- **`bst source push` integration**: `tools/bst-source-push.sh`
-  drives BuildStream's own pusher to populate CAS for any project
-  that already publishes Directory digests. The hello-fuse
-  end-to-end gate (`tools/e2e-hello-fuse.sh`) exercises the full
-  pipeline (push → cas-fuse → write-a → bazel build).
-- **Cmake narrowing via patterns**: pattern parser (`include` /
-  `exclude` glob lines); when no `<element>.read-paths.txt`
-  exists, the default is "entire tree real" (equivalent to
-  `include **/*`); the old `--read-paths-feedback` adaptive flow
-  is gone.
-
-Roadmap (separate doc, but called out here for orientation):
-
-- **Bazel 9 CAS-aware filesystem.** The xattr-served-digest
-  shortcut (see "Full BwoB" below) was dropped from Bazel 9.
-  Without a replacement, every input read from the cas-fuse
-  mount costs a re-hash on the client side — the dev-machine
-  resource budget the design depends on. The roadmap item is
-  to land an equivalent integration against Bazel 9's
-  RemoteOutputService (or a successor virtual-filesystem hook),
-  so we keep the property "the only sources resident on a dev
-  machine are the ones being locally modified." Tracked in
-  `ROADMAP.md`.
-- **End-to-end FDSDK demonstration**: a real FDSDK kind:cmake
-  element built end-to-end against project B with CAS-backed
-  sources, dev disk never materialising the source tree. The
-  reality-check probe extends to confirm
-  `bazel build //elements/expat:expat` succeeds against the
-  CAS-populated workspace + running `cmd/cas-fuse`. Hello-fuse
-  is the smaller proxy gate that runs in CI today.
+This doc describes the architecture; for what's wired in
+`main` today vs. what's queued, see [`ROADMAP.md`](../ROADMAP.md)
+— most notably the Bazel-9 CAS-aware-filesystem item that
+restores the `--unix_digest_hash_attribute_name` fast path lost
+in the 7→9 jump (see "Full BwoB" below for what we paid).
 
 ## Open questions
 
