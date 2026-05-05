@@ -25,8 +25,8 @@ func TestEmitBuild_DeterministicGivenSameInput(t *testing.T) {
 		{Kind: EventArchive, Out: "libfoo.a", Objs: []string{"foo.o", "bar.o"}},
 		{Kind: EventLink, Out: "myapp", Srcs: []string{"myapp.c"}, Libs: []string{"foo"}, Copts: []string{"-fstack-protector-strong"}},
 	}
-	first := emitBuild(correlate(events), nil, nil)
-	second := emitBuild(correlate(events), nil, nil)
+	first := emitBuild(correlate(events), nil, nil, nil)
+	second := emitBuild(correlate(events), nil, nil, nil)
 	if first != second {
 		t.Errorf("emitBuild non-deterministic across runs:\n--first--\n%s\n--second--\n%s", first, second)
 	}
@@ -56,8 +56,8 @@ func TestEmitBuild_StableUnderTraceNoise(t *testing.T) {
 		{Kind: EventCompile, Out: "foo.o", Srcs: []string{"foo.c"}},
 		{Kind: EventArchive, Out: "libfoo.a", Objs: []string{"foo.o", "bar.o"}},
 	}
-	first := emitBuild(correlate(base), nil, nil)
-	second := emitBuild(correlate(reordered), nil, nil)
+	first := emitBuild(correlate(base), nil, nil, nil)
+	second := emitBuild(correlate(reordered), nil, nil, nil)
 	if first != second {
 		t.Errorf("emitBuild diverged on event reorder:\n--first--\n%s\n--second--\n%s", first, second)
 	}

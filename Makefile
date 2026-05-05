@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs \
+        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -291,6 +291,14 @@ e2e-meta-autotools-determinism: check-tools converter
 # defines / sources.
 e2e-meta-autotools-subdirs: check-tools converter
 	scripts/meta-autotools-subdirs.sh
+
+# AC_CONFIG_HEADERS-style generated header gate. The fixture's
+# configure step produces config.h from config.h.in; the
+# pipeline's pre/post-configure header snapshot diff feeds
+# convert-element-autotools' --generated-headers flag so the
+# emitted cc_library carries config.h in its hdrs.
+e2e-meta-autotools-config-h: check-tools converter
+	scripts/meta-autotools-config-h.sh
 
 # Conditional-lowering acceptance gate. Single kind:manual element
 # (testdata/meta-project/conditional-greet/) whose .bst declares

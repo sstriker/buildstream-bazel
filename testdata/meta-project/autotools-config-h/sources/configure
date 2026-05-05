@@ -1,0 +1,38 @@
+#!/bin/sh
+# Hand-rolled configure for the autotools-config-h fixture.
+# In addition to the canonical Makefile.in substitution, this
+# script runs an AC_CONFIG_HEADERS-equivalent step: substitute
+# @VERSION@ into config.h.in to produce config.h. The
+# build-time-generated config.h is what the converter must
+# pick up via --generated-headers.
+
+PREFIX=/usr/local
+CFLAGS=${CFLAGS:--O2}
+VERSION=1.0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prefix=*)        PREFIX="${1#--prefix=}" ;;
+        --prefix)          PREFIX="$2"; shift ;;
+        --exec-prefix=*|--bindir=*|--sbindir=*|--sysconfdir=*|\
+        --datadir=*|--includedir=*|--libdir=*|--libexecdir=*|\
+        --localstatedir=*|--sharedstatedir=*|--mandir=*|--infodir=*) ;;
+        --build=*|--host=*|--target=*) ;;
+        *) ;;
+    esac
+    shift
+done
+
+sed -e "s|@PREFIX@|$PREFIX|g" \
+    -e "s|@CFLAGS@|$CFLAGS|g" \
+    Makefile.in > Makefile
+
+# AC_CONFIG_HEADERS analog: write config.h from config.h.in
+# by substituting @VERSION@. Real autoconf does this via a
+# separate config.status invocation; the visible effect is the
+# same — config.h didn't exist in the source tree but does in
+# the build dir post-configure.
+sed -e "s|@VERSION@|\"$VERSION\"|g" \
+    config.h.in > config.h
+
+echo "configure: PREFIX=$PREFIX CFLAGS=$CFLAGS VERSION=$VERSION"

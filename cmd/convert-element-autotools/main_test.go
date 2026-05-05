@@ -174,7 +174,7 @@ func TestCorrelate_LibAndApp(t *testing.T) {
 		{Kind: EventArchive, Out: "libfoo.a", Objs: []string{"foo.o", "bar.o"}},
 		{Kind: EventLink, Out: "myapp", Objs: []string{"myapp.o"}, Libs: []string{"foo"}, Copts: []string{"-fstack-protector-strong"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 
 	for _, marker := range []string{
 		`load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")`,
@@ -210,7 +210,7 @@ func TestCorrelate_GreetStandalone(t *testing.T) {
 	events := []Event{
 		{Kind: EventLink, Out: "greet", Srcs: []string{"greet.c"}, Copts: []string{"-fstack-protector-strong"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 	for _, marker := range []string{
 		`load("@rules_cc//cc:defs.bzl", "cc_binary")`,
 		`cc_binary(`,
@@ -258,14 +258,14 @@ func TestEmitBuild_ImportsManifestFallback(t *testing.T) {
 	events := []Event{
 		{Kind: EventLink, Out: "myapp", Srcs: []string{"myapp.c"}, Libs: []string{"z"}},
 	}
-	got := emitBuild(correlate(events), imports, nil)
+	got := emitBuild(correlate(events), imports, nil, nil)
 	if !strings.Contains(got, `deps = ["//elements/zlib:zlib"]`) {
 		t.Errorf("expected deps to resolve -lz via manifest:\n%s", got)
 	}
 
 	// Negative check: nil manifest (no fallback) drops the
 	// unresolved -lz silently.
-	got2 := emitBuild(correlate(events), nil, nil)
+	got2 := emitBuild(correlate(events), nil, nil, nil)
 	if strings.Contains(got2, "deps") {
 		t.Errorf("nil manifest should not produce deps; got:\n%s", got2)
 	}
@@ -292,7 +292,7 @@ func TestPerTargetIntent_PreservesAlwaysOptimize(t *testing.T) {
 		Rules:      map[string]MakeRule{},
 		TargetVars: map[string][]TargetVar{"hotloop.o": {{Name: "CFLAGS", Op: "+=", Value: "-O2"}}},
 	}
-	got := emitBuild(correlate(events), nil, makeDB)
+	got := emitBuild(correlate(events), nil, makeDB, nil)
 	// hotloop.o's per-target -O2 lands in the cc_library's copts.
 	if !strings.Contains(got, `copts = ["-O2"]`) {
 		t.Errorf("expected -O2 in copts (per-target intent preserved):\n%s", got)
@@ -324,7 +324,7 @@ func TestCorrelate_LibtoolDualCompile(t *testing.T) {
 		{Kind: EventCompile, Out: ".libs/foo.o", Srcs: []string{"foo.c"}, Copts: []string{"-O2", "-fPIC"}, Defines: []string{"PIC"}},
 		{Kind: EventArchive, Out: "libfoo_pic.a", Objs: []string{".libs/foo.o"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 	// Both rules emit, both have foo.c as src.
 	for _, marker := range []string{
 		`name = "foo"`,
@@ -374,7 +374,7 @@ func TestPerTargetIntent_NilDBStripsEverything(t *testing.T) {
 		{Kind: EventCompile, Out: "x.o", Srcs: []string{"x.c"}, Copts: []string{"-O2", "-g", "-fPIC"}},
 		{Kind: EventArchive, Out: "libx.a", Objs: []string{"x.o"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 	if strings.Contains(got, "copts =") {
 		t.Errorf("nil makeDB should strip every default flag; got:\n%s", got)
 	}
@@ -421,7 +421,7 @@ func TestCorrelate_SubdirsCwdDisambiguation(t *testing.T) {
 		{Kind: EventCompile, Cwd: "/build/libB", Out: "parent.o", Srcs: []string{"parent.c"}, Defines: []string{"VARIANT=B"}},
 		{Kind: EventArchive, Cwd: "/build/libB", Out: "libB.a", Objs: []string{"parent.o"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 
 	// Both archives should appear with their own define preserved.
 	blocks := strings.Split(got, "cc_library(")
@@ -533,6 +533,61 @@ func TestIsSharedLibraryOutput(t *testing.T) {
 		if got := isSharedLibraryOutput(c.in); got != c.want {
 			t.Errorf("isSharedLibraryOutput(%q) = %v, want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// TestEmitBuild_GeneratedHeaders covers the AC_CONFIG_HEADERS
+// path: when the pipeline tells the converter that `config.h`
+// (or any other build-time-generated header) exists, every
+// emitted cc_library / cc_binary should carry it in its hdrs
+// attribute. The pipeline detects these via a pre-configure /
+// post-build snapshot diff and passes the resulting list via
+// --generated-headers.
+func TestEmitBuild_GeneratedHeaders(t *testing.T) {
+	events := []Event{
+		{Kind: EventCompile, Out: "foo.o", Srcs: []string{"foo.c"}},
+		{Kind: EventArchive, Out: "libfoo.a", Objs: []string{"foo.o"}},
+		{Kind: EventCompile, Out: "myapp.o", Srcs: []string{"myapp.c"}},
+		{Kind: EventLink, Out: "myapp", Objs: []string{"myapp.o"}, Libs: []string{"foo"}},
+	}
+	got := emitBuild(correlate(events), nil, nil, []string{"config.h", "fficonfig.h"})
+
+	for _, marker := range []string{
+		`hdrs = ["config.h", "fficonfig.h"]`,
+		`name = "foo"`,
+		`name = "myapp"`,
+	} {
+		if !strings.Contains(got, marker) {
+			t.Errorf("missing marker %q\n--body--\n%s", marker, got)
+		}
+	}
+	// Both rules (cc_library AND cc_binary) should carry hdrs.
+	if strings.Count(got, `hdrs = ["config.h", "fficonfig.h"]`) != 2 {
+		t.Errorf("expected hdrs on every emitted rule; got:\n%s", got)
+	}
+}
+
+// TestParseGeneratedHeaderList covers the input shape: one
+// path per line, blank lines + `#` comments tolerated, leading
+// `./` (from `find . -type f`) stripped.
+func TestParseGeneratedHeaderList(t *testing.T) {
+	input := []byte(`# generated headers from build snapshot diff
+./config.h
+
+./src/parser.h
+# blank lines and comments are dropped
+fficonfig.h
+`)
+	got := parseGeneratedHeaderList(input)
+	want := []string{"config.h", "src/parser.h", "fficonfig.h"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseGeneratedHeaderList = %#v, want %#v", got, want)
+	}
+
+	// Empty body returns nil (callers tolerate either nil or
+	// empty when --generated-headers points at an empty file).
+	if got := parseGeneratedHeaderList(nil); got != nil {
+		t.Errorf("parseGeneratedHeaderList(nil) = %#v, want nil", got)
 	}
 }
 
