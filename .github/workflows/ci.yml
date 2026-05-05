@@ -94,6 +94,52 @@ jobs:
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 
+  bazel9-fuse-sources:
+    # Verifies the post-xattr-deprecation source flow on Bazel 9:
+    # internal/casfuse mount + the rules/sources.bzl module
+    # extension shape that cmd/write-a generates + a real Bazel 9
+    # build resolving sources through the FUSE mount. This is the
+    # smallest test that exercises the design's premise without
+    # depending on bb_clientd (whose upstream build is in flux —
+    # see docs/bazel9-cas-fs.md).
+    name: End-to-end (Bazel 9 + casfuse + bzlmod sources)
+    runs-on: ubuntu-24.04
+    needs: unit
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install fuse3 + ca-certificates-java
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fuse3 ca-certificates-java
+          fusermount3 --version || true
+
+      - name: Install Bazel 9
+        # Direct binary download. bazelisk would also work but the
+        # explicit pin makes drift visible.
+        run: |
+          set -e
+          curl -fsSL -o /tmp/bazel \
+            https://github.com/bazelbuild/bazel/releases/download/9.0.0/bazel-9.0.0-linux-x86_64
+          chmod +x /tmp/bazel
+          /tmp/bazel --version
+
+      - name: TestBazel9_FuseSourcesEndToEnd
+        # CASFUSE_BAZEL_BIN points the test at the explicit pin.
+        # The test itself probes BCR reachability and skips
+        # cleanly if it's blocked.
+        env:
+          CASFUSE_BAZEL_BIN: /tmp/bazel
+        run: go test -v ./internal/casfuse/... -run TestBazel9_FuseSourcesEndToEnd -timeout 600s 2>&1 | tee -a /tmp/cijob.log
+
+      - uses: ./.github/actions/post-failure-tail
+        if: failure()
+
   hello-fuse-e2e:
     # PR #60's verification target. Walks the full pipeline
     # source-push → cas-fuse → write-a --use-fuse-sources →

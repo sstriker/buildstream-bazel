@@ -81,7 +81,7 @@ case "$bazel_major" in
     *) bazel_major=0 ;;
 esac
 if [[ "$bazel_major" -lt 9 ]]; then
-    skip_reason "bazel $bazel_major < 9 (--remote_output_service not stable until 9.x)"
+    skip_reason "bazel $bazel_major < 9 (--experimental_remote_output_service requires 9.x)"
 fi
 
 # --- pipeline ---------------------------------------------------
@@ -147,7 +147,7 @@ fi
 cd "$PROJ_A"
 "$BAZEL" build \
     --repo_env=CAS_FUSE_MOUNT="$MOUNT/cas" \
-    --remote_output_service="unix://$GRPC_SOCK" \
+    --experimental_remote_output_service="unix://$GRPC_SOCK" \
     //elements/hello:hello_converted
 cd "$repo"
 

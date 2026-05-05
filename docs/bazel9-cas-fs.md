@@ -286,15 +286,82 @@ prepopulator) are still valid follow-ups if a fallback path
 ever needs implementing — the doc keeps them under "Options
 surveyed" rather than rewriting them out.
 
+## Empirical findings (2026-05-05 probe)
+
+Before the design committed to bb_clientd as a Bazel companion,
+I tried to actually run it locally + verify the integration in
+this repo's sandbox. Honest readout:
+
+| Probe | Result |
+|---|---|
+| Bazel 9.0.0 binary download + extract + run | ✅ |
+| FUSE in this container (`/dev/fuse`, `fusermount3`) | ✅ |
+| `internal/casfuse` mount + xattr-serve test (`TestMount_RealMountReadFile`) | ✅ |
+| `--experimental_remote_output_service` flag exists in Bazel 9 | ✅ (with `experimental_` prefix) |
+| `bb-deployments` ships bb_clientd in their canonical docker-compose | ❌ — they don't anymore |
+| `go install github.com/buildbarn/bb-storage/cmd/bb_clientd@latest` | ❌ — package moved out of bb-storage |
+| `go install github.com/buildbarn/bb-clientd/cmd/bb_clientd@latest` | ❌ — go.mod has stale `replace` directives, blocked by `go install` |
+| Manual clone + `go build ./cmd/bb_clientd` | ❌ — `bb-remote-execution` references go-fuse APIs (`fuse.ReadDirEntryList`, `fuse.ServerCallbacks`) that don't exist at the pinned go-fuse version, and bumping go-fuse breaks other call sites. Upstream is in flux. |
+| Pre-built `ghcr.io/buildbarn/bb-clientd:latest` image | ❌ — `manifest unknown` |
+| `internal/casfuse`'s `TestMount_MultiDigestRoot` | ❌ — pre-existing EIO bug on lazy multi-digest resolution; tracked separately |
+| Bazel 9 + `fakecas` + casfuse single-tree mount + bzlmod build (`TestBazel9_FuseSourcesEndToEnd`) | ⚠️ skipped — sandbox can't reach `bcr.bazel.build` (HTTP 403; rate-limit / IP-based block); test is wired and runs on hosts with BCR access |
+
+### What this means for the picked direction
+
+The bb_clientd path is **directionally right** (it's Bazel 9's
+intended home for the digest-trust integration) but the
+upstream binary path has real friction today:
+
+- The repo is alive (`buildbarn/bb-clientd` had commits within
+  the last few months) but the build-from-source path is
+  broken at HEAD.
+- bb-deployments — the canonical "how to use buildbarn"
+  reference — stopped including bb_clientd in their docker-
+  compose, suggesting low active deployment.
+- The Bazel-side flag is still `experimental_`-prefixed in
+  9.0.0. The contract may shift before stabilising.
+
+This isn't a reason to flip the picked direction — Option A
+(http_archive + repository_cache) has its own trade-offs and
+isn't obviously better — but it changes the **shape of the
+next concrete step**:
+
+1. **Track upstream bb_clientd buildability** rather than
+   landing the integration immediately. The work above
+   (`deploy/buildbarn/config/bb_clientd.jsonnet`,
+   `make bb-clientd-up`, `tools/e2e-hello-bbclientd.sh`) is
+   ready to run the moment a buildable / pre-built bb_clientd
+   exists.
+2. **Verify the cas-fuse + Bazel 9 + bzlmod path works without
+   bb_clientd** (which is what we currently have). The new
+   `TestBazel9_FuseSourcesEndToEnd` test does this — it
+   exercises Bazel 9 reading sources through a casfuse mount
+   via the `rules/sources.bzl` shape, with no bb_clientd in
+   the picture. Skips cleanly when BCR is unreachable; CI
+   covers the case where it is.
+3. **Add a CI job that installs Bazel 9 + fuse3 + runs the
+   test.** Catches regressions in the no-bb_clientd-yet path
+   while the bb_clientd path is in flux.
+
+When upstream bb_clientd stabilises (and / or someone
+contributes the go-fuse-API-skew fix back), the wiring already
+in `deploy/buildbarn/` + the `e2e-hello-bbclientd` gate is
+ready to take over. The doc keeps both paths described so the
+direction is still clear.
+
 ## What this PR ships
 
 - This doc (`docs/bazel9-cas-fs.md`).
 - `tools/e2e-hello-fuse.sh` no longer passes the dropped flag
-  pair (lines 132–155). Was supposed to be PR #71's change but
-  hadn't landed; folded in here for honesty between the doc
-  and the runnable script.
-- `ROADMAP.md`'s Bazel 9 CAS-FS bullet now points at this doc
-  and reflects the chosen direction.
-
-No code changes; the next concrete step (cas-fuse flat sha256
-view) is a follow-up PR.
+  pair.
+- `ROADMAP.md`'s Bazel 9 CAS-FS bullet now points at this doc.
+- `deploy/buildbarn/config/bb_clientd.jsonnet` skeleton +
+  `make bb-clientd-up` lifecycle target +
+  `tools/e2e-hello-bbclientd.sh` parallel gate. All ready to
+  run; all skip cleanly without a bb_clientd binary on PATH.
+- `internal/casfuse/bazel9_e2e_test.go` —
+  `TestBazel9_FuseSourcesEndToEnd`: actually runs Bazel 9
+  against a casfuse-served source tree using the
+  `rules/sources.bzl` shape. Skips cleanly when BCR or
+  Bazel ≥ 9 isn't reachable; CI is wired to install both and
+  run the test.
