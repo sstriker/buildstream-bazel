@@ -25,7 +25,7 @@ transition cleanly.
   re-hashes every input the FUSE daemon already knows the
   digest of. First builds of fresh checkouts pay the full
   O(source-bytes) re-read + hash cost.
-  **Direction picked** (see `docs/bazel9-cas-fs.md` for the
+  **Direction picked** (see `docs/design/bazel9-cas-fs.md` for the
   full analysis): adopt **`bb_clientd`** as a Bazel 9
   companion daemon, paired with Bazel via the surviving
   `--remote_output_service=` flag. bb_clientd serves a

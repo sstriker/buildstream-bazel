@@ -414,7 +414,7 @@ buildbarn-down:
 
 # bb_clientd lifecycle. bb_clientd is the Bazel-9 companion daemon
 # that replaces the dropped --unix_digest_hash_attribute_name
-# fast-path; see docs/bazel9-cas-fs.md. Unlike the buildbarn
+# fast-path; see docs/design/bazel9-cas-fs.md. Unlike the buildbarn
 # executor stack, bb_clientd runs on the dev's host (not in
 # docker) because it serves a host FUSE mount Bazel reads through.
 #

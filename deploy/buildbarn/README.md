@@ -13,7 +13,7 @@ real Buildbarn code, vs the in-process fake the unit tests use.
 - `bb_clientd` (host-side, see below) — Bazel-9 companion daemon
   serving a FUSE mount + RemoteOutputService gRPC; replaces the
   dropped `--unix_digest_hash_attribute_name` xattr fast-path.
-  See [`docs/bazel9-cas-fs.md`](../../docs/bazel9-cas-fs.md).
+  See [`docs/design/bazel9-cas-fs.md`](../../docs/design/bazel9-cas-fs.md).
 
 No auth, localhost-only port mapping, file-backed blobstore at
 1 GiB CAS / 64 MiB AC. Tear down with `docker compose down -v` to
@@ -60,12 +60,28 @@ used to provide on Bazel 7/8.
 
 ### Install
 
+bb_clientd is a buildbarn project — the upstream repo
+builds with **Bazel** (not the Go toolchain; `go install`
+will not work). The dev loop doesn't need a source build:
+
 ```sh
-# Pre-built releases (recommended):
-#   https://github.com/buildbarn/bb-storage/releases
-# Or build from source:
-go install github.com/buildbarn/bb-storage/cmd/bb_clientd@latest
+# Recommended: pre-built binary from the bb-clientd repo.
+# Statically linked, no runtime deps.
+curl -fsSL -o /usr/local/bin/bb_clientd \
+  https://github.com/buildbarn/bb-clientd/releases/latest/download/bb_clientd.linux_amd64
+chmod +x /usr/local/bin/bb_clientd
 ```
+
+Source build (only needed if you're modifying bb_clientd):
+
+```sh
+git clone https://github.com/buildbarn/bb-clientd && cd bb-clientd
+bazel run --run_under cp //cmd/bb_clientd $PWD/bb_clientd
+sudo install bb_clientd /usr/local/bin/
+```
+
+See `CONTRIBUTING.md`'s "Development install requirements"
+section for the full set of host tools the dev loop uses.
 
 Either way, point the lifecycle target at the binary if it's
 not on `$PATH`:

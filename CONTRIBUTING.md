@@ -176,7 +176,7 @@ companion daemon.
 
 - **`bb_clientd`** — the Bazel-9 companion daemon
   (replaces the dropped `--unix_digest_hash_attribute_name`
-  fast-path; see `docs/bazel9-cas-fs.md`). bb_clientd
+  fast-path; see `docs/design/bazel9-cas-fs.md`). bb_clientd
   builds with **Bazel** (it's a buildbarn project), but the
   dev loop doesn't need a source build:
 

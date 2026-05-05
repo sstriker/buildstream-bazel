@@ -49,7 +49,7 @@ import (
 // test specifically does NOT pass that flag, proving the
 // post-deprecation flow still works (with the documented
 // re-hash cost). The bb_clientd integration to restore the
-// fast path is tracked separately in docs/bazel9-cas-fs.md.
+// fast path is tracked separately in docs/design/bazel9-cas-fs.md.
 func TestBazel9_FuseSourcesEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("fusermount3"); err != nil {
 		if _, err := exec.LookPath("fusermount"); err != nil {
