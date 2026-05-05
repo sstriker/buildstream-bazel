@@ -26,14 +26,17 @@ transition cleanly.
   digest of. First builds of fresh checkouts pay the full
   O(source-bytes) re-read + hash cost.
   **Direction picked** (see `docs/bazel9-cas-fs.md` for the
-  full analysis): rework `rules/sources.bzl` to flow each
-  source through Bazel's `http_file(sha256=…)` mechanism with
-  a sha256-keyed `--repository_cache` pre-populated by symlinks
-  into the cas-fuse mount. Bazel trusts the sha256 and skips
-  the re-hash. Reuses Bazel-native primitives; no patching, no
-  plugin. The doc enumerates the next concrete PRs (flat
-  sha256 view in cas-fuse → repo-cache prepopulator →
-  `sources.bzl` rewrite → e2e gate).
+  full analysis): adopt **`bb_clientd`** as a Bazel 9
+  companion daemon, paired with Bazel via the surviving
+  `--remote_output_service=` flag. bb_clientd serves a
+  FUSE/NFS mount and reports digests over the
+  `RemoteOutputService` protocol; Bazel trusts those digests
+  without re-hashing. This is *not* an adoption of buildbarn
+  end-to-end — bb_clientd talks plain REAPI to whatever CAS
+  endpoint we point it at, the same way `bazelisk` talks to
+  whatever Bazel binary it pins. Output-side BwoB (lazy
+  materialisation of build artifacts) lands as a free side
+  effect.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`, `hello-fuse pipeline`,
   `cas-fuse against fake CAS`) fail intermittently or
@@ -70,6 +73,15 @@ transition cleanly.
   have placeholder handlers today. Each kind is bounded work; what's
   not bounded is the question of which kinds are graph-recoverable
   vs need-to-stay-coarse.
+- **Drop the host-toolchain assumption from CI / e2e gates.**
+  Several gates expect cmake / ninja / bwrap / fuse3 installed on
+  the host machine (CI runner or developer workstation). In a
+  full remote-execution setup these belong on the executor, not
+  on the dev's box — the dev only needs Bazel + bb_clientd. Walk
+  the gate scripts and the `make check-tools` surface, identify
+  which host-tool dependencies are CI-runner artifacts (vs
+  hard build-tool needs we can't push remote), and migrate the
+  former onto the executor toolchain.
 
 ## Done (high points)
 

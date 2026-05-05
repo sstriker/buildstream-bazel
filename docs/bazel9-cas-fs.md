@@ -108,42 +108,74 @@ Implementation outline:
 ### B. `RemoteOutputService` via bb_clientd
 
 Bazel 9 keeps the `--remote_output_service=` flag, which points
-Bazel at a gRPC server (canonically `bb_clientd`) that
-materialises **outputs** lazily. bb_clientd also serves a Bazel
-**input** mount and tells Bazel about it via the same protocol's
-filesystem hooks; Bazel then trusts the digests bb_clientd
-reports for both inputs and outputs.
+Bazel at a gRPC server that materialises inputs and outputs
+lazily and tells Bazel which digests they have. Bazel trusts
+those digests. The canonical implementation is `bb_clientd`,
+buildbarn's client-side daemon, which serves a FUSE/NFS mount
+and speaks the `RemoteOutputService` protocol.
+
+Critical framing: **`bb_clientd` is a companion daemon paired
+with Bazel 9, in the same way `bazelisk` pairs with `bazel`.**
+Adopting it is **not** an adoption of "the buildbarn ecosystem"
+or a commitment to running buildbarn end-to-end. Plenty of
+projects run `bb_clientd` alongside non-buildbarn executors
+(EngFlow, BuildBuddy, NativeLink, …) — the daemon talks plain
+REAPI to whatever CAS endpoint you point it at, and plain
+`RemoteOutputService` to Bazel.
 
 Implementation outline:
 
 1. Add `bb_clientd` to `deploy/buildbarn/`'s service set,
-   configured against the existing CAS endpoint.
-2. Replace `cmd/cas-fuse` with `bb_clientd` (or run them
-   side-by-side during transition).
-3. Pass `--remote_output_service=unix:///path/to/bb_clientd.sock`
-   to bazel invocations.
+   configured against the existing CAS endpoint. The daemon
+   runs locally on each dev machine (and on each CI runner) —
+   not centrally, not via docker-compose. A `make cas-fuse-up`
+   replacement (e.g. `make bb-clientd-up`) drives the
+   lifecycle.
+2. Pass `--remote_output_service=unix:///run/bb_clientd/grpc`
+   (or similar) to bazel invocations. Bazel uses the daemon's
+   mount as both the input root and the output root.
+3. Update `rules/sources.bzl` so `_src_repo` resolves source
+   trees via the daemon's mount path — minor adjustment;
+   the current `ctx.symlink(<dir-digest>)` shape carries over
+   essentially unchanged once `CAS_FUSE_MOUNT` is renamed to
+   the bb_clientd mount path.
+4. Decide what to do with our own `cmd/cas-fuse` /
+   `internal/casfuse` once bb_clientd is the production path.
+   Likely outcomes:
+     - Keep `internal/casfuse` for the in-process FUSE the
+       Go test suite uses (it doesn't need a separate
+       daemon process).
+     - Mark `cmd/cas-fuse` deprecated; remove once the
+       hello-fuse e2e gate runs against bb_clientd.
 
 **Pros**:
 
-- Maintained by the same team that maintains the executor stack
-  we already depend on (buildbarn).
-- Mature Bazel-9 integration; bb_clientd is the canonical
-  reference implementation.
-- Covers both input and output materialisation in one daemon —
-  closer to the long-term BwoB shape.
+- Bazel-9-native: this *is* Bazel 9's intended replacement
+  for the dropped xattr fast-path. No flag drift, no plugin
+  SPI risk.
+- Covers both inputs and outputs in one daemon. Output-side
+  BwoB (lazy materialisation of build artifacts) lands as
+  a free side effect of solving the input-side problem.
+- Pre-built: `bb_clientd` is a stable, tested binary
+  shipping with buildbarn releases. Adopting it is a
+  configuration exercise, not a code-authoring one.
+- Doesn't touch `rules/sources.bzl`'s structural shape.
+  The repo rule still ctx.symlinks into a digest-addressed
+  mount; only the daemon serving the mount changes.
 
 **Cons**:
 
-- **`bb_clientd` is a substantial dependency** (Java-style
-  config, jsonnet-driven, full REAPI client + filesystem stack).
-  Adopting it pulls in a large swath of buildbarn's runtime.
-- Replaces `internal/casfuse`'s minimal Go FUSE layer with a
-  binary we don't control. Reduces our ability to evolve the
-  source-staging shape independently.
-- The `RemoteOutputService` proto's primary axis is OUTPUT
-  materialisation. Its INPUT-side guarantees (digest trust
-  without re-hash) are coupled to the daemon's input-mount
-  configuration, which is more opinionated than what we want.
+- New external dependency: bb_clientd binary + jsonnet config.
+  Mitigated by treating it as a Bazel companion (like
+  bazelisk), not a platform commitment.
+- Operational learning curve: jsonnet config is more involved
+  than `cmd/cas-fuse`'s flag-only invocation. Mitigated by
+  shipping a working config under `deploy/buildbarn/` so users
+  start from a known-good template.
+- `internal/casfuse`'s xattr-set machinery becomes purely a
+  test-infrastructure concern (Bazel reaches the bytes via
+  bb_clientd, not directly). Not a regression — it was always
+  the bb_clientd-equivalent in our smaller, in-process form.
 
 ### C. BlazeModule plugin (Java SPI)
 
@@ -186,59 +218,73 @@ amortize re-hashes across builds.
 
 ## Direction
 
-**Pick A (`http_archive` + `repository_cache`).** Reasoning:
+**Pick B (`RemoteOutputService` via bb_clientd).** Reasoning:
 
-- It's the smallest infrastructure change that restores the
-  "Bazel never re-hashes inputs" property on Bazel 9. We use
-  Bazel's existing sha256-trust path; no patching, no plugin.
-- The cas-fuse mount stays — it just gets a small additive
-  feature (flat sha256-keyed view alongside the existing
-  Directory-keyed view). `internal/casfuse`'s xattr-set
-  machinery stays in tree (still useful for non-Bazel clients
-  and as the proto-level source of digest truth).
-- Reversibility: if A underperforms (external-repo scaling,
-  symlink-resolution surprises), Option B (`bb_clientd`) is
-  still on the table. We don't burn that option by trying A
-  first.
-- B remains a sensible **eventual** direction — it's where the
-  rest of the buildbarn-aligned stack is heading, and the
-  output-side gains are real. But it's a bigger jump than the
-  next concrete step warrants.
+- It's Bazel 9's intended replacement for the dropped xattr
+  fast-path. Picking anything else is picking a workaround;
+  picking B is picking the supported path.
+- bb_clientd is a Bazel-9 companion daemon, **not** an adoption
+  of buildbarn end-to-end. The same daemon happily talks REAPI
+  to non-buildbarn CAS endpoints (EngFlow, BuildBuddy,
+  NativeLink, our own `make buildbarn-up` stack) and plain
+  `RemoteOutputService` to Bazel. Adopting it doesn't lock the
+  project into a particular executor.
+- Output-side BwoB (lazy materialisation of build artifacts)
+  comes along free. We don't have to scope it separately.
+- The `rules/sources.bzl` shape stays — just the daemon serving
+  the mount changes from `cmd/cas-fuse` to `bb_clientd`.
+- Option A remains usable as a **fallback** if bb_clientd's
+  operational footprint turns out badly for some workflow we
+  care about (e.g. a developer on a constrained host who can't
+  run the daemon). The repository_cache route stays available
+  as an escape hatch.
 
 ## Next concrete steps
 
 In rough order, sized for one PR each:
 
-1. **cas-fuse: flat sha256-keyed view.** Add a top-level
-   `<mount>/blobs/sha256/<hash>` namespace that resolves to
-   the FileNode at that hash (via the existing CAS client).
-   The Directory-keyed view stays. Tests in
-   `internal/casfuse/fs_linux_test.go`.
-2. **Repository-cache prepopulator.** A small `tools/cas-prepop`
-   (or cas-fuse subcommand) that walks a sources manifest and
-   creates symlinks at
-   `<repo-cache>/content_addressable/sha256/<X>/file` → the
-   flat sha256 path under the FUSE mount. Idempotent; safe to
-   re-run.
-3. **`rules/sources.bzl` rewrite.** Switch the per-source repo
-   shape from `ctx.symlink(<dir-digest>)` to per-file
-   `http_file(sha256=…, urls=["file://..."])`, with the URL
-   resolving via the prepopulated repo cache. Probably gated
-   on a feature flag (`--repo_env=CAS_FUSE_BAZEL9=1`) for the
-   first pass so we can A/B against the legacy shape.
-4. **Hello-fuse e2e gate.** Extend `tools/e2e-hello-fuse.sh`
-   to exercise the new shape. Profile the digest phase via
-   `--profile=...` and report the wall-clock delta against the
-   legacy mount-only shape.
-5. **External-repo-count probe.** At FDSDK scale a per-file
-   `http_file` declaration is ~thousands of repos. Measure the
-   evaluation-time cost; if it bites, fall back to per-source
-   `http_archive(tarball)` with sha256-trust. The packing logic
-   would live in cas-fuse / a sibling tool.
+1. **Stand up bb_clientd in `deploy/buildbarn/`.** Add a
+   `bb_clientd.jsonnet` configured against the existing CAS
+   endpoint, with a FUSE mount at a well-known dev path
+   (e.g. `/var/cache/cmake-to-bazel/bb_clientd/`). Document
+   the `bb_clientd` binary install (recommend grabbing
+   pre-built releases from buildbarn-storage). Add a
+   `make bb-clientd-up` lifecycle target alongside the
+   existing `make buildbarn-up`.
+2. **Wire `--remote_output_service` into hello-fuse e2e.** Drop
+   the `cas-fuse` daemon from `tools/e2e-hello-fuse.sh`'s
+   pipeline; bring up bb_clientd instead; pass
+   `--remote_output_service=unix:///path/to/bb_clientd.sock`
+   to the bazel invocation. The script's structural checks
+   (sources.json shape, BUILD references) stay; the bytes
+   layer changes underneath.
+3. **`rules/sources.bzl` mount-path rename.** The repo-rule
+   shape doesn't change — `ctx.symlink(<mount>/blobs/directory/<digest>)`
+   still works against bb_clientd's mount. The
+   `CAS_FUSE_MOUNT` env-var and `rules/sources.bzl` doc strings
+   get renamed to reflect that bb_clientd is the production
+   serving daemon (e.g. `BB_CLIENTD_MOUNT`); `cmd/cas-fuse`
+   stays for the in-process Go test suite.
+4. **Profile + measure.** Extend the hello-fuse gate (and
+   eventually the FDSDK probe) to report digest-phase wall
+   time before/after the bb_clientd switch. We need a number,
+   not a vibe, on what the xattr replacement actually buys.
+5. **Migrate or deprecate `cmd/cas-fuse`.** Once (1)–(4) prove
+   bb_clientd is the production path, decide between deleting
+   `cmd/cas-fuse` (relying on bb_clientd everywhere) or
+   keeping it as a slim Go alternative for environments that
+   can't run bb_clientd. `internal/casfuse` likely stays
+   either way (it's the in-process FUSE the Go test suite
+   exercises directly).
 
-Each step is independently testable; (1) and (2) can land
-without (3), and the legacy shape keeps working until (3)
-flips the default.
+Each step is independently testable. (1) lands without (2);
+(2) doesn't break the legacy `cas-fuse` path because the
+RUN_BAZEL=1 leg is opt-in.
+
+The Option-A breadcrumbs (flat sha256 view, repository_cache
+prepopulator) are still valid follow-ups if a fallback path
+ever needs implementing — the doc keeps them under "Options
+surveyed" rather than rewriting them out.
 
 ## What this PR ships
 
