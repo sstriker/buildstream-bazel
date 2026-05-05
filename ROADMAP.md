@@ -88,8 +88,11 @@ transition cleanly.
   it's pointed at (the same way `bazelisk` pairs with `bazel`).
   Output-side BwoB (lazy materialisation of build artifacts) is a
   free side effect. Wiring: `make bb-clientd-up`/`down`,
-  `deploy/buildbarn/config/bb_clientd.jsonnet`. End-to-end gate:
-  `tools/e2e-hello-bbclientd.sh` (also wired into CI as `bazel9-fuse-sources`).
+  `deploy/buildbarn/config/bb_clientd.jsonnet`. Local end-to-end
+  exercise: `tools/e2e-hello-bbclientd.sh` (also `make
+  e2e-hello-bbclientd`); not yet wired into GitHub Actions CI
+  because the runners don't ship bb_clientd by default — adding
+  it as a CI step would self-skip until that changes.
   `rules/sources.bzl` + `rules/traces.bzl` parameterise the
   mount-side path layout via `CAS_DIRECTORY_PREFIX` (default `blobs`
   for cmd/cas-fuse compat; bb_clientd users pass

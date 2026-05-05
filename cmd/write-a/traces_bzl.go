@@ -62,16 +62,26 @@ func renderTracesBzl() string {
 """Module extension that declares one external repo per
 kind:autotools element's srckey. The repo's ":trace" filegroup
 resolves to either a 2-file fileset (trace.log + make-db.txt
-from the cas-fuse mount, when the AC has the trace published) or
-to an empty filegroup (when the lookup misses; downstream
-converter falls back to coarse).
+from the cas-fuse / bb_clientd mount, when the AC has the trace
+published) or to an empty filegroup (when the lookup misses;
+downstream converter falls back to coarse).
 
 Configuration (pass via --repo_env=KEY=VALUE on project-A bazel
 invocations):
 
   --repo_env=CAS_GRPC_ADDR=127.0.0.1:8980
   --repo_env=CAS_FUSE_MOUNT=/var/cache/cmake-to-bazel/cas
+  --repo_env=CAS_DIRECTORY_PREFIX=blobs   # default; cmd/cas-fuse layout
   --repo_env=TRACE_LOOKUP_BIN=/abs/path/to/trace-lookup
+
+The symlink target is
+<CAS_FUSE_MOUNT>/<CAS_DIRECTORY_PREFIX>/directory/<digest>.
+Default prefix "blobs" matches the flat layout cmd/cas-fuse
+serves. bb_clientd users set the prefix to
+cas/<instance>/blobs/<digest_function> to land on the canonical
+bb_clientd layout (see docs/design/bazel9-cas-fs.md). The same
+env var rules/sources.bzl reads, so a single --repo_env covers
+both extensions.
 
 Optional:
   --repo_env=TRACE_REPO_NONCE=<any>  # bump to force re-evaluation
@@ -116,9 +126,12 @@ def _trace_repo_impl(rctx):
         return
 
     # trace-lookup prints "<hash>/<size>". The FUSE mount serves
-    # any Directory blob in CAS at <mount>/blobs/directory/<hash>;
-    # symlinking under trace_dir/ then globbing produces the
-    # 2-file filegroup the converter consumes.
+    # any Directory blob in CAS at
+    # <mount>/<prefix>/directory/<hash>; default prefix "blobs"
+    # matches cmd/cas-fuse, bb_clientd users set it to
+    # cas/<instance>/blobs/<digest_function> for the daemon's
+    # canonical layout. Symlinking under trace_dir/ then globbing
+    # produces the 2-file filegroup the converter consumes.
     parts = line.split("/")
     if len(parts) != 2:
         rctx.file("BUILD.bazel", empty_build)

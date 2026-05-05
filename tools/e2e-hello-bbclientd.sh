@@ -13,17 +13,22 @@
 #  2. Stand up buildbarn (docker compose) — the CAS endpoint.
 #  3. cmd/source-push graph: PushBlob each source tree's
 #     bytes into bb-storage's CAS.
-#  4. bb_clientd: bring up the daemon (`make bb-clientd-up`)
-#     so its FUSE mount serves CAS Directories at
-#     <mount>/cas/<digest>/ and its grpc.sock speaks
-#     RemoteOutputService.
+#  4. bb_clientd: bring up the daemon (`make bb-clientd-up`).
+#     Its FUSE mount serves CAS Directories under the canonical
+#     bb_clientd layout
+#       <mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>/
+#     (with this deploy's defaults — empty instance, sha256 — that
+#     collapses to <mount>/cas/blobs/sha256/directory/<digest>/).
+#     Its grpc.sock speaks RemoteOutputService.
 #  5. cmd/write-a --use-fuse-sources: generate project A
 #     whose hello/BUILD.bazel references @src_<key>//:tree.
-#     The repo rule reads BB_CLIENTD_MOUNT (set by this
-#     script) and ctx.symlinks into the daemon's mount.
+#     The _src_repo rule reads CAS_FUSE_MOUNT + CAS_DIRECTORY_PREFIX
+#     and ctx.symlinks into the daemon's mount; the prefix env var
+#     parameterises bb_clientd vs cmd/cas-fuse layout (see
+#     docs/design/bazel9-cas-fs.md and rules/sources.bzl).
 #  6. bazel build //elements/hello:hello_converted with
-#     --remote_output_service pointing at the daemon's
-#     grpc.sock. Bazel trusts the daemon's reported
+#     --experimental_remote_output_service pointing at the
+#     daemon's grpc.sock. Bazel trusts the daemon's reported
 #     digests; no re-hash on the input side.
 #
 # Skip cleanly when bb_clientd or bazel >= 9 isn't on PATH.
@@ -108,12 +113,11 @@ BB_CLIENTD_UP=1
 MOUNT="$BB_CLIENTD_ROOT/mount"
 GRPC_SOCK="$BB_CLIENTD_ROOT/grpc.sock"
 
-echo "== write-a (--use-fuse-sources, BB_CLIENTD_MOUNT) =="
+echo "== write-a (--use-fuse-sources) =="
 # write-a's --use-fuse-sources path emits ctx.symlink into
-# whatever path the consumer's CAS_FUSE_MOUNT env-var is set to.
-# bb_clientd's mount happens to use the same digest-addressed
-# subdir layout (blobs/directory/<digest>) under <mount>/cas/,
-# so we point CAS_FUSE_MOUNT at <mount>/cas to match.
+# <CAS_FUSE_MOUNT>/<CAS_DIRECTORY_PREFIX>/directory/<digest>;
+# both env vars are read by the _src_repo rule at bazel-build
+# time, set below as --repo_env flags.
 build/bin/write-a \
     --bst testdata/fuse-fixtures/hello.bst \
     --out "$PROJ_A" \
