@@ -15,11 +15,15 @@ type IndexCMake struct {
 	Version   IndexVersion   `json:"version"`
 }
 
+// IndexGenerator describes the cmake generator used for the build
+// (e.g. "Ninja", "Unix Makefiles").
 type IndexGenerator struct {
 	Name        string `json:"name"`
 	MultiConfig bool   `json:"multiConfig"`
 }
 
+// IndexPaths records the absolute paths to cmake, ctest, cpack, and
+// the cmake root directory as reported in the index file.
 type IndexPaths struct {
 	CMake string `json:"cmake"`
 	CTest string `json:"ctest"`
@@ -27,6 +31,7 @@ type IndexPaths struct {
 	Root  string `json:"root"`
 }
 
+// IndexVersion is the cmake version reported in the index file.
 type IndexVersion struct {
 	Major   int    `json:"major"`
 	Minor   int    `json:"minor"`
