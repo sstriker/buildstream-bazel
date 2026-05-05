@@ -181,12 +181,17 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
     echo "  digest hash = $DIGEST_HASH"
     # Canonical bb_clientd layout is
     #   <mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>/
-    # With this deploy's defaults (empty instance, sha256) the
-    # path collapses to <mount>/cas//blobs/sha256/directory/<digest>/,
-    # which the OS normalises to <mount>/cas/blobs/sha256/directory/<digest>/.
-    # Probe the canonical shape; fall back to the older flat
-    # probes to tolerate alternate bb_clientd configs (different
-    # instance / digest_function).
+    # With this script's deploy (deploy/buildbarn/config/bb_clientd.jsonnet:
+    # empty instance, sha256) the path collapses to
+    # <mount>/cas//blobs/sha256/directory/<digest>/, which the OS
+    # normalises to <mount>/cas/blobs/sha256/directory/<digest>/.
+    # Probe that shape; tolerate two older flat layouts a previous
+    # bb_clientd version may have served (kept for now so a daemon
+    # version bump doesn't immediately break the gate). This probe
+    # set does NOT cover non-default instance / digest_function
+    # configs — when this script's deploy moves to a different
+    # config, both this probe loop and the bazel-build half's
+    # CAS_DIRECTORY_PREFIX value have to be updated together.
     SERVED=""
     for candidate in \
         "$MOUNT/cas/blobs/sha256/directory/$DIGEST_HASH" \
@@ -199,7 +204,9 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
     done
     if [[ -z "$SERVED" ]]; then
         echo "bb_clientd mount does not serve published Directory under \$MOUNT=$MOUNT"
-        echo "(verify deploy/buildbarn/config/bb_clientd.jsonnet matches the daemon version's schema)"
+        echo "(verify deploy/buildbarn/config/bb_clientd.jsonnet matches the daemon version's schema;"
+        echo " or — if you moved to a non-default instance / digest_function — update"
+        echo " the probe loop above + this script's CAS_DIRECTORY_PREFIX value to match)"
         ls -la "$MOUNT" || true
         exit 1
     fi
@@ -240,7 +247,23 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         CGO_ENABLED=0 go build -o "$repo/build/bin/build-tracer" ./cmd/build-tracer
         CGO_ENABLED=0 go build -o "$repo/build/bin/convert-element-autotools" ./cmd/convert-element-autotools
 
-        FIXTURE="$repo/testdata/meta-project/autotools-greet"
+        # Copy the fixture to a tmp dir and append a per-run nonce
+        # to a file matching autotoolsSrckeyPatterns (configure is
+        # content-included; see cmd/write-a/handler_autotools_native.go).
+        # This makes write-a's computed srckey unique per run, so a
+        # stale AC entry left over from a prior run can't satisfy
+        # the lookup and produce a false positive when this run's
+        # republish path is broken — the AC only hits when the
+        # publish step BELOW lands an entry under THIS run's key.
+        FIXTURE_SRC="$repo/testdata/meta-project/autotools-greet"
+        FIXTURE="$TMP/fixture"
+        mkdir -p "$FIXTURE"
+        cp -r "$FIXTURE_SRC/." "$FIXTURE/"
+        chmod -R u+w "$FIXTURE"
+        NONCE="round2-live-$(date +%s)-$$-$RANDOM"
+        echo "# round2-live nonce: $NONCE" >> "$FIXTURE/sources/configure"
+        echo "  per-run nonce: $NONCE"
+
         PROJ_A="$TMP/projA"
         PROJ_B="$TMP/projB"
         rm -rf "$PROJ_A" "$PROJ_B"
@@ -257,12 +280,12 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
 
         # The wire-roundtrip half above used a synthetic per-run
         # srckey. The bazel build below evaluates `_trace_repo`
-        # against the FIXTURE's srckey (computed by write-a from
-        # the autotools-greet source tree), so we re-publish the
-        # same synthetic trace under THAT srckey to make the
-        # load-time AC lookup hit.
+        # against the per-run-mutated fixture's srckey, which is
+        # unique per run thanks to the nonce above. Republish the
+        # same synthetic trace under THAT srckey so the load-time
+        # AC lookup hits.
         FIXTURE_SRCKEY=$(tr -d '[:space:]' < "$PROJ_A/elements/greet/srckey.txt")
-        echo "  fixture srckey: $FIXTURE_SRCKEY"
+        echo "  fixture srckey (nonce-mutated): $FIXTURE_SRCKEY"
         "$repo/build/bin/trace-publish" \
             --cas="$CAS_ADDR" \
             --srckey="$FIXTURE_SRCKEY" \
