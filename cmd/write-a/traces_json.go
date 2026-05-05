@@ -27,16 +27,25 @@ type tracesJSON struct {
 	Traces []traceEntry `json:"traces"`
 }
 
-// collectTraces walks the graph, computes per-element srckeys for
-// each kind:autotools element, and returns one entry per element
-// sorted by key (deterministic rendering). Computed-on-demand
-// rather than stored on element so the autotools-specific patterns
-// stay scoped to the autotools handler.
+// collectTraces walks the graph, computes per-element srckeys
+// for each element whose handler opts into the trace-driven
+// round-2 path, and returns one entry per element sorted by key
+// (deterministic rendering). Two opt-in shapes contribute:
+//
+//   - kind:autotools (handler_autotools_native.go, autotoolsHandler
+//     wrapping pipelineHandler). Patterns: autotoolsSrckeyPatterns.
+//   - Any pipelineHandler-shaped kind that sets
+//     traceDrivenSrckeyPatterns on its registered handler
+//     (handler_make.go's makeSrckeyPatterns, plus any future kind
+//     that joins the trace-driven path the same way).
+//
+// Computed-on-demand rather than stored on element so the
+// per-kind patterns stay scoped to the kind's handler.
 func collectTraces(g *graph) (tracesJSON, error) {
-	patterns := autotoolsSrckeyPatterns()
 	var entries []traceEntry
 	for _, elem := range g.Elements {
-		if elem.Bst.Kind != "autotools" {
+		patterns := traceDrivenSrckeyPatternsForKind(elem.Bst.Kind)
+		if patterns == nil {
 			continue
 		}
 		hash, _, err := computeSrckey(elem, patterns)
@@ -47,6 +56,33 @@ func collectTraces(g *graph) (tracesJSON, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
 	return tracesJSON{Traces: entries}, nil
+}
+
+// traceDrivenSrckeyPatternsForKind returns the per-kind srckey
+// pattern set when the kind is opted into trace-driven round-2,
+// or nil otherwise. Source of truth for "is this kind in the
+// trace-driven set" — used by collectTraces to populate
+// tools/traces.json for project A's _trace_repo extension.
+//
+// kind:autotools is special-cased here because its dispatch lives
+// in autotoolsHandler (handler_autotools_native.go) rather than
+// going through pipelineHandler's traceDrivenSrckeyPatterns
+// field. Other pipeline kinds (kind:make currently; future kinds
+// extending the same pattern) read straight from the handler's
+// field.
+func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
+	if kind == "autotools" {
+		return autotoolsSrckeyPatterns()
+	}
+	h, ok := handlers[kind]
+	if !ok {
+		return nil
+	}
+	ph, ok := h.(pipelineHandler)
+	if !ok {
+		return nil
+	}
+	return ph.traceDrivenSrckeyPatterns
 }
 
 func marshalTracesJSON(s tracesJSON) ([]byte, error) {

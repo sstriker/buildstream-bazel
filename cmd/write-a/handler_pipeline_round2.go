@@ -6,17 +6,18 @@ import (
 	"strings"
 )
 
-// Round-2 trace-driven kind:autotools rendering.
+// Round-2 trace-driven rendering for any pipeline-shape kind.
 //
-// Round 1 (default today) runs the converter inline in project
-// B's coarse install genrule: configure / make / make-install
-// under build-tracer, then convert-element-autotools reads the
-// trace and emits BUILD.bazel.out as an additional output of the
-// SAME genrule action. Project A's per-element BUILD is just a
-// marker filegroup pointing at B.
+// Background. Round 1 of kind:autotools (the historical shape)
+// runs the converter inline in project B's coarse install
+// genrule: configure / make / make-install under build-tracer,
+// then convert-element-autotools reads the trace and emits
+// BUILD.bazel.out as an additional output of the SAME genrule
+// action. Project A's per-element BUILD is just a marker
+// filegroup pointing at B.
 //
-// Round 2 (gated on autotoolsConfig.round2Enabled, off by default
-// while the architectural change is rolled out) splits the work:
+// Round 2 (gated on autotoolsConfig.round2Enabled) splits the
+// work:
 //
 //   - PROJECT A hosts a per-element converter genrule. Its srcs
 //     include @trace_<elem>//:trace — a Bazel external repo
@@ -26,24 +27,31 @@ import (
 //     and the converter emits cc_library / cc_binary into
 //     BUILD.bazel.out. AC miss ⇒ the fileset is empty and the
 //     converter writes a placeholder BUILD.bazel.out.
-//   - PROJECT B hosts the coarse install genrule (same shape as
-//     round 1's pipeline) PLUS an inline cmd/trace-publish call:
-//     once configure / make / make-install + build-tracer have
-//     produced trace.log + the make-db post-process step has
-//     produced make-db.txt, trace-publish packs both as a REAPI
-//     Directory, uploads to CAS, and writes an ActionResult under
-//     SyntheticActionDigest(srckey). The converter no longer runs
-//     here.
+//   - PROJECT B hosts the coarse install genrule (build pipeline
+//     wrapped in build-tracer) PLUS an inline cmd/trace-publish
+//     call: once make-install has produced trace.log and the
+//     post-process step has produced make-db.txt, trace-publish
+//     packs both as a REAPI Directory, uploads to CAS, and writes
+//     an ActionResult under SyntheticActionDigest(srckey).
 //
-// The 3' → 2' feedback in docs/three-pass-flow.md is realized by
-// the AC: the round-1 pass-3 publish lands at the same key the
+// The 3' → 2' feedback loop in docs/three-pass-flow.md is realized
+// by the AC: the round-1 pass-3 publish lands at the same key the
 // round-2 pass-2 lookup queries. Once published — globally, once
 // per srckey — every subsequent render of project A on any node
 // sees the AC hit and the converter emits fine-grained cc rules
-// without re-running the autotools build.
+// without re-running the build.
+//
+// kind-agnostic. The code in this file does not know what kind it
+// renders for. cmd/write-a/handler_autotools_native.go calls
+// these helpers passing autotoolsSrckeyPatterns() + the autotools
+// dep-kind list; pipelineHandler-shaped kinds (make, etc.) opt in
+// by setting traceDrivenSrckeyPatterns + going through the
+// pipelineHandler dispatch in handler_pipeline.go. New kinds
+// joining the trace-driven path are a one-line opt-in once their
+// srckey-pattern set is decided.
 
-// renderAutotoolsRound2A emits project A's per-element BUILD for
-// the round-2 path:
+// renderTraceDrivenRound2A emits project A's per-element BUILD
+// for the round-2 path:
 //
 //	srckey.txt + srckey-breakdown.txt   (debug + AC-key seed)
 //	BUILD.bazel containing the converter genrule:
@@ -53,8 +61,12 @@ import (
 //	  tools   = ["//tools:convert-element-autotools"]
 //	  cmd     = stage @trace_<elem>//:trace into a tmpdir,
 //	            invoke convert-element-autotools --trace-dir.
-func renderAutotoolsRound2A(elem *element, elemPkg string) error {
-	if err := renderSrckey(elem, elemPkg, autotoolsSrckeyPatterns()); err != nil {
+//
+// The kindName parameter only feeds the comment header of the
+// rendered BUILD; it does not affect the genrule's behavior
+// (convert-element-autotools is kind-agnostic at runtime).
+func renderTraceDrivenRound2A(elem *element, elemPkg, kindName string, srckeyPatterns *readPathsPatterns) error {
+	if err := renderSrckey(elem, elemPkg, srckeyPatterns); err != nil {
 		return err
 	}
 	hasImports, err := writeAutotoolsImportsManifest(elem, elemPkg)
@@ -62,15 +74,6 @@ func renderAutotoolsRound2A(elem *element, elemPkg string) error {
 		return err
 	}
 
-	// Source label: the @src_<key>//:tree filegroup when the
-	// element has a non-kind:local source resolved via the
-	// sources extension; otherwise the round-2 path requires
-	// the FUSE-mounted source tree (kind:local-only autotools
-	// elements aren't a round-2 target — they have no AC-keyed
-	// srckey identity that crosses machines). The render still
-	// emits a converter genrule for completeness; the genrule's
-	// srcs will be empty for kind:local elements until they're
-	// staged via the sources extension.
 	srcLabels := []string{}
 	for _, rs := range elem.Sources {
 		key := sourceKey(rs)
@@ -92,7 +95,7 @@ func renderAutotoolsRound2A(elem *element, elemPkg string) error {
 	}
 
 	build := fmt.Sprintf(`# Generated by cmd/write-a. Do not edit by hand.
-# kind:autotools round-2 — pass-2 converter genrule.
+# kind:%[4]s round-2 — pass-2 converter genrule.
 #
 # Reads @trace_%[1]s//:trace (a load-time _trace_repo lookup
 # against the REAPI ActionCache; see rules/traces.bzl). When the
@@ -126,26 +129,29 @@ genrule(
             --out-build="$(location BUILD.bazel.out)"%[3]s
     """,
 )
-`, elem.Name, strings.Join(srcLabels, ", "), importsFlag)
+`, elem.Name, strings.Join(srcLabels, ", "), importsFlag, kindName)
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), build)
 }
 
-// autotoolsTraceExtensionRound2 is the project-B pipelineExtension
-// for round-2: the coarse install genrule wraps configure/build/
-// install in build-tracer, post-processes make-db, and ends with
-// an inline trace-publish call (NO converter). Outputs shrink to
-// install_tree.tar + trace.log + make-db.txt — the 1:1 inputs
-// trace-publish needs.
+// pipelineTraceExtensionRound2 is the pipelineExtension for
+// project B's coarse install genrule under round-2: build-tracer
+// wraps configure/build/install, the genrule's AppendCmd
+// post-processes make-db and runs trace-publish. Outputs:
+// install_tree.tar + trace.log + make-db.txt + the per-element
+// generated-headers.txt the autotools handler already emits
+// (kept under round-2 too — generated-headers feeds future
+// converter improvements without re-running the action).
 //
-// Round 1's autotoolsTraceExtension keeps running the converter
-// inline; this is a parallel implementation gated on
-// autotoolsConfig.round2Enabled. The two paths share
-// wrapAutotoolsPipelineCmds (build-tracer wrapping is identical)
-// and autotoolsDepExtractCmd (dep tar extraction is identical).
-func autotoolsTraceExtensionRound2(elem *element, hasImports bool) *pipelineExtension {
+// depKindAllow is the set of dep `Bst.Kind` strings whose
+// install_tree.tar tarballs should be staged + extracted under
+// $DEP_PREFIX so the build pipeline's compile commands can find
+// dep headers / libraries. autotools passes []string{"autotools"};
+// kind:make passes []string{"make"}; cross-kind dep wiring is a
+// follow-up once the fixtures land.
+func pipelineTraceExtensionRound2(elem *element, hasImports bool, depKindAllow []string) *pipelineExtension {
 	ext := &pipelineExtension{
 		WrapPipelineCmds: wrapAutotoolsPipelineCmds,
-		AppendCmd:        autotoolsTracePublishStep(elem.Name),
+		AppendCmd:        pipelineTracePublishStep(elem.Name),
 		ExtraOuts: []string{
 			"trace.log",
 			"make-db.txt",
@@ -161,12 +167,18 @@ func autotoolsTraceExtensionRound2(elem *element, hasImports bool) *pipelineExte
 	}
 	// srckey.txt is also a genrule input — trace-publish reads
 	// it to derive the synthetic Action digest. It's emitted by
-	// renderAutotoolsRound2A in project A; project B's RenderB
-	// also calls renderSrckey so the file exists in B's elemPkg.
+	// renderTraceDrivenRound2A in project A; the caller in
+	// pipelineHandler.RenderB / autotoolsHandler.RenderB also
+	// calls renderSrckey so the file exists in B's elemPkg.
 	ext.ExtraSrcs = append(ext.ExtraSrcs, "srckey.txt")
+
+	allow := map[string]bool{}
+	for _, k := range depKindAllow {
+		allow[k] = true
+	}
 	var depLabels []string
 	for _, dep := range elem.Deps {
-		if dep == nil || dep.Bst.Kind != "autotools" {
+		if dep == nil || !allow[dep.Bst.Kind] {
 			continue
 		}
 		depLabels = append(depLabels, fmt.Sprintf("//elements/%s:install_tree.tar", dep.Name))
@@ -178,30 +190,33 @@ func autotoolsTraceExtensionRound2(elem *element, hasImports bool) *pipelineExte
 	return ext
 }
 
-// autotoolsTracePublishStep is the AppendCmd snippet that runs
+// pipelineTracePublishStep is the AppendCmd snippet that runs
 // after the build pipeline. Three sub-steps:
 //
 //  1. Capture the post-build make database to make-db.txt
-//     (mirrors round 1's same-named step verbatim, with the
-//     same sed filter for run-to-run determinism).
+//     (mirrors the inline sed filter so byte-stable across runs).
 //  2. Copy the canonical trace.log out of $$AUTOTOOLS_TRACE
 //     so it lands at the genrule's declared trace.log output.
-//  3. Invoke trace-publish, IFF the action environment
-//     supplies CAS_GRPC_ADDR (devs running locally without
-//     a remote cache leave the variable unset; the build
-//     still succeeds, just no AC entry is published).
+//  3. Invoke trace-publish, IFF the action environment supplies
+//     CAS_GRPC_ADDR (devs running locally without a remote cache
+//     leave the variable unset; the build still succeeds, no AC
+//     entry is published).
 //
-// elemName threads through so the publish call can read the
-// per-element srckey.txt via $(location). srckey.txt is added
-// to the genrule's srcs by autotoolsTraceExtensionRound2.
-func autotoolsTracePublishStep(elemName string) string {
+// The step is kind-agnostic at runtime: any pipeline kind's
+// build that produces a Makefile-compatible artifact can run
+// `make -np` (defaults to a no-op when no Makefile is present;
+// `|| true` keeps the genrule action alive). For kinds whose
+// build never produces a Makefile (kind:script edge cases),
+// make-db.txt ends up empty — the converter tolerates that.
+func pipelineTracePublishStep(elemName string) string {
 	_ = elemName // reserved for future per-element diagnostics
 	return `        # === make-db post-process (round 2) ===
-        # Same sed filter as round 1: drop the variant lines
-        # whose bytes drift across runs of an otherwise-identical
-        # build (mtimes, file-count summaries, db print
-        # timestamps). The publisher path's tracenorm.FilterMakeDB
-        # re-applies the same drop list defensively in-process.
+        # Same sed filter the autotools install genrule applies
+        # inline (drop variant lines whose bytes drift across
+        # runs of an otherwise-identical build: mtimes,
+        # file-count summaries, db print timestamps). The
+        # publisher path's tracenorm.FilterMakeDB re-applies the
+        # same drop list defensively in-process.
         ( make -np 2>/dev/null || true ) \
             | sed -E '/^#[[:space:]]+Last modified /d; /\(device [0-9]+, inode [0-9]+\): [0-9]+ files,/d; /^# [0-9]+ files,.*impossibilities in /d; /^# Make data base, printed on /d; /^# Finished Make data base on /d' \
             | sed -e "s|$$INSTALL_ROOT|/INSTALL_ROOT|g" \

@@ -83,7 +83,7 @@ func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
 		// genrule. Reads @trace_<elem>//:trace from the AC at
 		// load time; emits BUILD.bazel.out (cc_library /
 		// cc_binary on AC hit; placeholder on miss).
-		return renderAutotoolsRound2A(elem, elemPkg)
+		return renderTraceDrivenRound2A(elem, elemPkg, "autotools", autotoolsSrckeyPatterns())
 	}
 	// Round 1: A-side is just a marker. The install genrule +
 	// source tree live in project B (where the converter runs
@@ -207,7 +207,7 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 		return pipelineHandler{}, err
 	}
 	if autotoolsConfig.round2Enabled {
-		h.extension = autotoolsTraceExtensionRound2(elem, hasImports)
+		h.extension = pipelineTraceExtensionRound2(elem, hasImports, []string{"autotools"})
 	} else {
 		h.extension = autotoolsTraceExtension(elem, hasImports)
 	}

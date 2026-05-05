@@ -76,6 +76,20 @@ transition cleanly.
   Live-AC gate (buildbarn + optionally bb_clientd):
   `tools/e2e-meta-autotools-round2-live.sh`. Recipe:
   `docs/design/autotools-round2-rendezvous.md`.
+- **kind:make joins the round-2 trace-driven path.** Same
+  architecture as kind:autotools — opt-in via the
+  `traceDrivenSrckeyPatterns` field on the kind's
+  `pipelineHandler` (`handler_make.go:makeSrckeyPatterns`).
+  When the trace-driven binaries are supplied to write-a, kind:make
+  elements render with the converter genrule in project A and the
+  build-tracer-wrapped install genrule + inline trace-publish in
+  project B. Render-half gate: `meta-make-round2.sh`. The
+  kind-agnostic live-AC gate
+  (`tools/e2e-meta-autotools-round2-live.sh`) covers the
+  bazel-build-half wire contract end-to-end against bb_clientd,
+  applying to any opted-in kind. Adding more pipeline kinds
+  (kind:makemaker / modulebuild / manual / script) is now a
+  one-line opt-in in their `init()`.
 - **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
   `--unix_digest_hash_attribute_name` (the xattr fast-path that
   let cas-fuse tell Bazel "trust this pre-computed digest, don't

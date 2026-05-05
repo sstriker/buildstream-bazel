@@ -162,12 +162,24 @@ under the same synthetic key. Self-healing.
 The rendezvous mechanism is kind-agnostic. `_trace_repo`,
 `SyntheticActionDigest`, `trace-publish`, and `trace-lookup`
 all key off a srckey-string and don't know what kind produced
-the trace. Future trace-driven kinds (`kind:script`,
-`kind:flatpak_image`, possibly `kind:collect_*`) plug in by
-pointing their pass-3 coarse step at `trace-publish` and adding
-their per-element entries to `tools/traces.json`. The handler
-then renders the same `_trace_repo`-backed converter genrule
-shape `handler_autotools_round2.go` does.
+the trace.
+
+**kind:make** opts in by setting `traceDrivenSrckeyPatterns` on
+its registered `pipelineHandler` (see `handler_make.go`'s
+`makeSrckeyPatterns`). `pipelineHandler.RenderA` /
+`pipelineHandler.RenderB` (in `handler_pipeline.go`) check the
+field via `shouldUseRound2` and dispatch to the same kind-
+agnostic helpers `kind:autotools` uses
+(`handler_pipeline_round2.go::renderTraceDrivenRound2A` and
+`pipelineTraceExtensionRound2`).
+
+Future trace-driven kinds (`kind:makemaker`, `kind:modulebuild`,
+opt-in for `kind:manual` / `kind:script`, possibly
+`kind:flatpak_image`, `kind:collect_*`) join the same way: one
+line in their `init()` setting `traceDrivenSrckeyPatterns` to a
+per-kind narrowing rule set. The decision per kind is which
+file paths gate the BUILD COMMANDS (content-included) vs which
+only affect compile OUTPUT bytes (path-only).
 
 ## Roll-out
 
@@ -204,7 +216,7 @@ published, which needs the AC + cas-fuse / bb_clientd mount.
 | `internal/tracenorm/synthkey.go` | `SyntheticActionDigest(srckey)` recipe |
 | `cmd/trace-publish/main.go` | round-1 publisher; runs inline in pass-3 |
 | `cmd/trace-lookup/main.go` | round-2 consumer; shells out from `_trace_repo` |
-| `cmd/write-a/handler_autotools_round2.go` | round-2 RenderA + pipelineExtension for B |
+| `cmd/write-a/handler_pipeline_round2.go` | kind-agnostic round-2 helpers (renderTraceDrivenRound2A, pipelineTraceExtensionRound2) used by both kind:autotools and any pipelineHandler-shaped kind opting in |
 | `cmd/write-a/traces_bzl.go` | renders `rules/traces.bzl` |
 | `cmd/write-a/traces_json.go` | renders `tools/traces.json` |
 | `scripts/meta-autotools-round2.sh` | render gate |
