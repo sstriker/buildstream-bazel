@@ -1,6 +1,6 @@
 .PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
@@ -176,6 +176,21 @@ e2e-meta-manual: check-tools converter
 # resolve correctly without an explicit config: in the .bst.
 e2e-meta-make: check-tools converter
 	scripts/meta-make.sh
+
+# kind:make joins the trace-driven round-2 architecture
+# (handler_make.go opts in via traceDrivenSrckeyPatterns).
+# This gate asserts the round-2 rendered shape: project A hosts
+# a per-element converter genrule consuming @trace_<elem>//:trace;
+# project B hosts the coarse install genrule wrapped in
+# build-tracer with an inline trace-publish step. Mirror of
+# e2e-meta-autotools-round2 for the kind:make path.
+#
+# Render-half only. The kind-agnostic bazel-side e2e (publish →
+# AC hit on fresh render → fine cc rules) lives in
+# tools/e2e-meta-autotools-round2-live.sh and applies to any
+# trace-driven kind including kind:make.
+e2e-meta-make-round2: check-tools converter
+	scripts/meta-make-round2.sh
 
 # Variable-resolver acceptance gate. Single kind:manual element
 # (testdata/meta-project/vars-greet/) whose .bst overrides %{prefix}

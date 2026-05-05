@@ -63,6 +63,26 @@ type pipelineHandler struct {
 	// Nil = no transformation; the existing single-genrule
 	// install_tree.tar shape renders unchanged.
 	extension *pipelineExtension
+
+	// traceDrivenSrckeyPatterns: when non-nil AND the trace-driven
+	// CLI is configured (autotoolsConfig.convertBin set +
+	// autotoolsConfig.round2Enabled true), this kind opts into
+	// the round-2 trace-driven shape. Project A hosts a
+	// per-element converter genrule consuming @trace_<elem>//:trace
+	// (via cmd/trace-lookup at Bazel load time); project B hosts
+	// the coarse install genrule wrapped in build-tracer with an
+	// inline cmd/trace-publish step. The patterns drive srckey
+	// computation — paths matching include rules contribute their
+	// CONTENT bytes to srckey; everything else contributes by
+	// path only (matches autotoolsSrckeyPatterns' semantics —
+	// see srckey.go and handler_autotools_native.go).
+	//
+	// Default (nil) keeps the legacy install-genrule-in-A shape
+	// from pipelineHandler.RenderA. kind:autotools doesn't go
+	// through this field — it has its own autotoolsHandler
+	// wrapping pipelineHandler with a more complex round-1 vs
+	// round-2 dispatch (see handler_autotools_native.go).
+	traceDrivenSrckeyPatterns *readPathsPatterns
 }
 
 // pipelineExtension is the small surface a pipeline-kind
@@ -146,7 +166,49 @@ type pipelinePhases struct {
 	Env                              [][2]string // ordered K, V pairs
 }
 
+// shouldUseRound2 reports whether this pipelineHandler is opted
+// in to the trace-driven round-2 shape AND the runtime CLI flags
+// activated round-2 globally. Both gates have to pass:
+//
+//   - traceDrivenSrckeyPatterns set on the handler (kind opts in).
+//   - autotoolsConfig.convertBin / round2Enabled set on write-a
+//     (operator passed --convert-element-autotools etc, didn't
+//     pass --autotools-round1 to opt out).
+//
+// When false, RenderA / RenderB fall through to the legacy
+// install-genrule-in-A + placeholder-in-B shape; existing
+// fixtures and gates that don't enable round-2 keep working.
+func (h pipelineHandler) shouldUseRound2() bool {
+	return h.traceDrivenSrckeyPatterns != nil &&
+		autotoolsConfig.convertBin != "" &&
+		autotoolsConfig.round2Enabled
+}
+
 func (h pipelineHandler) RenderA(elem *element, elemPkg string) error {
+	if h.shouldUseRound2() {
+		// Round-2: project A hosts the per-element converter
+		// genrule. Reads @trace_<elem>//:trace from the AC at
+		// load time; emits BUILD.bazel.out (cc_library /
+		// cc_binary on AC hit; placeholder on miss). The
+		// install genrule itself moves to project B (see
+		// RenderB below).
+		return renderTraceDrivenRound2A(elem, elemPkg, h.kindName, h.traceDrivenSrckeyPatterns)
+	}
+	return h.renderInstallGenrule(elem, elemPkg)
+}
+
+// renderInstallGenrule is the legacy install-genrule rendering —
+// the shape pipelineHandler.RenderA emits when the kind isn't
+// opted into round-2 (or when round-2 is globally disabled). The
+// genrule's outs include install_tree.tar; cmd stages sources,
+// runs configure/build/install/strip phases, and tars
+// %{install-root}.
+//
+// Factored out as a separate method so RenderB can also call it
+// when round-2 is active — round-2 moves this same genrule from
+// project A into project B (where it ends with a trace-publish
+// step instead of being the user-facing target).
+func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) error {
 	var cfg pipelineCfg
 	// Decode the .bst's config: only when it's actually present;
 	// otherwise leave cfg zero (all phases nil → use defaults).
@@ -473,11 +535,30 @@ func substituteCmds(cmds []string, vars map[string]string, elemName, kindName, p
 }
 
 func (h pipelineHandler) RenderB(elem *element, elemPkg string) error {
-	// All pipeline kinds expose their primary output as
-	// install_tree.tar in project A; project B's wrapper for
-	// downstream consumers is a follow-up. For now, a placeholder
-	// (same shape as kind:cmake's BUILD_NOT_YET_STAGED) marks the
-	// "driver hasn't post-processed yet" state.
+	if h.shouldUseRound2() {
+		// Round-2: project B hosts the coarse install genrule
+		// (build-tracer wrap + inline trace-publish). The
+		// converter is gone from this side — it lives in project
+		// A's per-element converter genrule (see RenderA above).
+		// imports.json is NOT rendered in B: nothing here reads
+		// it (the converter is in A); rendering would create a
+		// dead input under the install action's merkle and
+		// cause unnecessary cache invalidation when only the
+		// imports manifest changes.
+		h2 := h
+		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName})
+		if err := h2.renderInstallGenrule(elem, elemPkg); err != nil {
+			return err
+		}
+		// srckey.txt feeds trace-publish (it derives the
+		// synthetic AC key from the contents). Same file the
+		// project-A converter genrule references; rendered in
+		// both places to keep each project's BUILD self-contained.
+		return renderSrckey(elem, elemPkg, h.traceDrivenSrckeyPatterns)
+	}
+	// Legacy / non-opted-in path: install_tree.tar lives in
+	// project A; project B is a placeholder for the
+	// typed-filegroup wrapper that future work lands.
 	body := fmt.Sprintf(`# Generated by cmd/write-a. Do not edit by hand.
 # kind:%[2]s — install tree produced by project A's genrule.
 # The driver script overwrites this file with the typed-filegroup
