@@ -15,26 +15,25 @@ transition cleanly.
   directly when the registry hits — is the next concrete piece. See
   `docs/three-pass-flow.md` for the architectural arc and the
   precise contract round-2 needs to honor.
-- **Bazel 9 CAS-aware filesystem.** The point of the FUSE-served
-  sources route (`cmd/cas-fuse`, `docs/sources-design.md`) is that
-  a developer's machine never holds the full source set — only
-  what they are locally modifying. Bytes stay in CAS, served
-  lazily, and the executor fetches them via REAPI. Dev-machine
-  resource budgets (disk, RAM) stay modest regardless of how
-  large the source graph gets; the heavy lifting moves to the
-  remote-execution services. **Bazel 9 dropped
-  `--unix_digest_hash_attribute_name`** — the flag that made the
-  digest fast-path work — without a direct replacement. The
-  cas-fuse mount still serves correctly, and we run with the flag
-  removed (see `tools/e2e-hello-fuse.sh`), but Bazel re-hashes
-  every input the FUSE daemon already knows the digest of. The
-  next concrete step is wiring `internal/casfuse`'s xattr-set
-  machinery into a Bazel-9 successor surface (likely something
-  stitched onto `RemoteOutputService` — primarily aimed at
-  outputs, but the "trust an external digest source" shape is
-  the same). Until that lands, all the other BwoB properties
-  (executor-side reads from CAS, no source-tree materialisation
-  on dev disk) are preserved; we just pay a re-read cost.
+- **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
+  `--unix_digest_hash_attribute_name` — the flag that let the
+  cas-fuse FUSE mount tell Bazel "trust this pre-computed
+  digest, don't re-hash" — without a direct replacement. The
+  mount still resolves correctly on Bazel 9 and the BwoB
+  properties (executor-side reads from CAS, no source-tree
+  materialisation on dev disk) are preserved, but Bazel
+  re-hashes every input the FUSE daemon already knows the
+  digest of. First builds of fresh checkouts pay the full
+  O(source-bytes) re-read + hash cost.
+  **Direction picked** (see `docs/bazel9-cas-fs.md` for the
+  full analysis): rework `rules/sources.bzl` to flow each
+  source through Bazel's `http_file(sha256=…)` mechanism with
+  a sha256-keyed `--repository_cache` pre-populated by symlinks
+  into the cas-fuse mount. Bazel trusts the sha256 and skips
+  the re-hash. Reuses Bazel-native primitives; no patching, no
+  plugin. The doc enumerates the next concrete PRs (flat
+  sha256 view in cas-fuse → repo-cache prepopulator →
+  `sources.bzl` rewrite → e2e gate).
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`, `hello-fuse pipeline`,
   `cas-fuse against fake CAS`) fail intermittently or
