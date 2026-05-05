@@ -155,7 +155,12 @@ if [[ "${RUN_BAZEL:-0}" == "1" ]]; then
     else
         BAZEL=$(command -v bazel || command -v bazelisk)
         cd "$PROJ_A"
+        # --verbose_failures + --sandbox_debug surface the actual
+        # genrule cmd + sandbox layout when something goes wrong.
+        # Cheap on green runs; load-bearing for diagnosing CI red.
         "$BAZEL" build \
+            --verbose_failures \
+            --sandbox_debug \
             --repo_env=CAS_FUSE_MOUNT="$MOUNT" \
             //elements/hello:hello_converted
         echo "  bazel-build of project A leaf succeeded"
