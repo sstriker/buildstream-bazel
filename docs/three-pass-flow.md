@@ -91,7 +91,7 @@ So the round-1 shape:
   `trace.log` + `make-db.txt`.
 - **Pass 3**: bazel builds the coarse genrule. configure +
   make + install run under the tracer; trace + make-db are
-  byte-stable per PR #61's canonicalization. install_tree.tar
+  byte-stable post-canonicalization. install_tree.tar
   is the artifact for downstream consumers. **trace + make-db
   are registered against the element's srckey** for the next
   round.
@@ -121,7 +121,7 @@ ActionCache. Different layer entirely.
 After round 2, the fine-grained pass-3' compilation is what
 runs on most edits. The coarse pass-3 genrule only re-runs
 when the registry MISSES — i.e., when the element's srckey
-changes. With autotools narrowing patterns from PR #62, the
+changes. With autotools narrowing patterns the autotools handler ships, the
 srckey changes on:
 
 - `configure` / `configure.ac` / `*.am` / `*.in` / `*.m4` /
@@ -208,7 +208,7 @@ For a comment-only edit in D's `.c` (round 2 for D):
   Bazel's normal incremental rebuild kicks in. C may relink
   but doesn't need to recompile its own `.c` files.
 
-This is the property PR #61's determinism work delivers
+This is the property the determinism work delivers
 transitively.
 
 ## Where the cost actually lives
@@ -226,40 +226,56 @@ Subsequent edits in the .c name-only territory stay on the
 cheap path forever (until a graph-affecting edit invalidates
 the srckey).
 
-## What this means for the implementation
+## What's shipped vs. what's roadmap
 
-Mapping back to PRs already in flight:
+Shipped (in `main` today):
 
-- **PR #61** (canonical trace + filtered make-db): foundation
-  for round 1 producing a byte-stable trace that round 2 can
-  reuse. Required.
-- **PR #62** (per-element srckey + autotools narrowing
-  patterns): defines what counts as graph-affecting vs
-  name-only. Required.
-- **PR #63 + #64** (filesystem-backed registry + cache-status
-  sidecar): the registry IS the right concept (carrying pass-3
-  output back to pass-2'), just placed at the wrong layer. The
-  observability bits in #64 stay relevant; #63's storage
-  primitive will need to grow to handle artifact sets (trace +
-  make-db + maybe install_tree.tar) instead of single files,
-  but the lookup-at-write-a-time interface is correct.
-- **PR #65** (zero_files + narrowed-srcs scaffolding for
-  autotools): not the right path under this corrected model.
-  AC narrowing on the install genrule's input set isn't what
-  delivers the win — the registry-based round-2 graph
-  derivation is. **Recommend closing #65** in favor of
-  refactoring autotools to:
-  1. Move the build-tracer + converter genrule from project
-     A's BUILD into project B's BUILD (where deps are
-     available as Bazel targets).
-  2. Make pass-2' emit fine-grained cc rules into B when the
-     registry has a trace for the element's srckey.
+- **Canonical trace + filtered `make -np` output**:
+  `cmd/build-tracer` strips pids and gcc temp paths and
+  applies caller-supplied `--normalize-prefix=FROM=TO`
+  substitutions; the autotools install genrule's `make -np`
+  step filters per-run-drift lines (file mtimes, file-count
+  summaries, "Make data base printed on …"). Round 1 produces
+  a byte-stable trace that round 2 can reuse.
+- **Per-element srckey + per-kind narrowing patterns**:
+  `cmd/write-a/srckey.go` walks each element's source tree,
+  partitions paths into content-included vs name-only via
+  patterns (per-handler `<kind>SrckeyPatterns()`). For
+  kind:autotools the default narrowing puts `*.c` / `*.cpp` /
+  `*.S` in name-only territory (their content doesn't
+  influence the build graph) and keeps `configure*` / `*.am`
+  / `*.in` / `*.m4` / `*.h` content-included.
+- **Trace-driven kind:autotools install genrule in
+  project B**: the autotools handler stages sources + emits
+  the install genrule into project B's per-element BUILD,
+  where deps are materialized as Bazel targets.
+  `//tools:build-tracer` + `//tools:convert-element-autotools`
+  resolve in B because both projects stage them at write-a
+  time.
 
-The remaining open question for the next session: where
-exactly does pass-2 stage the coarse passthrough into B?
-Is it write-a directly emitting B's BUILD per element, or
-does pass 2 (a Bazel action in A) write into an output
-filegroup that some staging step copies into B? The current
-e2e gates already do that staging via shell scripts; the
-"emit into B" path is where the round-2 graph-shape
-selection happens.
+Roadmap (round 2 — not yet wired):
+
+1. **Trace registry**: a srckey → registered-trace lookup
+   consulted by write-a at render time. The "registry" is
+   *not* an action-cache replacement — Bazel's AC handles
+   action-input-keyed caching natively. The registry sits at
+   the **write-a layer**, deciding *which shape* to render
+   into project B (coarse genrule vs static fine-grained cc
+   rules).
+2. **Round-2 render-shape switch**: when write-a finds a
+   registered trace for an element's srckey, it emits
+   fine-grained `cc_library` / `cc_binary` into B directly
+   (no genrule, no build needed at pass 3). Cache miss falls
+   back to round 1's coarse genrule.
+3. **Trace post-build registration**: a wrapper around
+   `bazel build` walks `bazel-bin/elements/*/trace.log` and
+   inserts each into the registry under the element's
+   srckey.
+
+The big-picture goal stays: **this repo is a transition
+tool**. Long-term, the success state is "you don't need
+this anymore — your downstream is plain Bazel." The
+roadmap above is in service of making the autotools
+transition cheap; once an element's graph stabilizes, its
+fine-grained cc rules are checked in and the genrule
+goes away entirely.

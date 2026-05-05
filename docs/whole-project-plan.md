@@ -1,13 +1,10 @@
 # Whole-project plan: Bazel-as-orchestrator (two-pass meta-project)
 
-Supersedes the earlier "per-kind translators inside a Go orchestrator"
-shape this document carried, which itself superseded a coarse-via-bst
-draft. The directional shift this revision encodes: **keep the
-orchestrator small and dumb; defer cross-element scheduling, action
-caching, and dataflow to Bazel as a proven graph system**. Per-kind
-translators are still the unit of work, but their host moves from a
-Go dispatch loop in the orchestrator to tools that per-element
-genrules invoke inside a meta Bazel workspace.
+The directional choice this repo makes: **keep the orchestrator small
+and dumb; defer cross-element scheduling, action caching, and
+dataflow to Bazel as a proven graph system**. Per-kind translators
+are the unit of work, hosted as tools that per-element genrules
+invoke inside a meta Bazel workspace.
 
 ## Goal
 
