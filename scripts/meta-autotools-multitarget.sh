@@ -55,7 +55,8 @@ fixture="testdata/meta-project/autotools-multitarget"
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
     --convert-element-autotools "$bin_dir/convert-element-autotools" \
-    --build-tracer-bin "$bin_dir/build-tracer"
+    --build-tracer-bin "$bin_dir/build-tracer" \
+    --autotools-round1
 
 for marker in \
     '"BUILD.bazel.out"' \

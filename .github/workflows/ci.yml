@@ -337,6 +337,15 @@ jobs:
         # / ByteStream.Read interop with bb-storage end-to-end.
         run: make e2e-source-push 2>&1 | tee -a /tmp/cijob.log
 
+      - name: Run kind:autotools round-2 live-AC roundtrip
+        # trace-publish writes an AC entry against real buildbarn;
+        # trace-lookup re-derives the synthetic key from the same
+        # srckey and asserts the published digest comes back. The
+        # bb_clientd mount-half runs only when bb_clientd is on
+        # PATH (gate self-skips otherwise). Validates the wire
+        # contract round-2's _trace_repo Bazel rule depends on.
+        run: make e2e-meta-autotools-round2-live 2>&1 | tee -a /tmp/cijob.log
+
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 

@@ -51,7 +51,8 @@ fixture="testdata/meta-project/autotools-subdirs"
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
     --convert-element-autotools "$bin_dir/convert-element-autotools" \
-    --build-tracer-bin "$bin_dir/build-tracer"
+    --build-tracer-bin "$bin_dir/build-tracer" \
+    --autotools-round1
 
 for marker in \
     '"BUILD.bazel.out"' \
@@ -59,9 +60,9 @@ for marker in \
     '"install-mapping.json"' \
     'name = "subdirs_install"' \
     '--out-install-mapping="$(location install-mapping.json)"'; do
-    if ! grep -qF -- "$marker" "$A/elements/subdirs/BUILD.bazel"; then
+    if ! grep -qF -- "$marker" "$B/elements/subdirs/BUILD.bazel"; then
         echo "meta-autotools-subdirs: render missing marker: $marker" >&2
-        cat "$A/elements/subdirs/BUILD.bazel" >&2
+        cat "$B/elements/subdirs/BUILD.bazel" >&2
         exit 1
     fi
 done
@@ -100,13 +101,13 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/subdirs:subdirs_install 2>&1 | tail -10
+run_bazel "$B" build //elements/subdirs:subdirs_install 2>&1 | tail -10
 
-build_out="$A/bazel-bin/elements/subdirs/BUILD.bazel.out"
-mapping="$A/bazel-bin/elements/subdirs/install-mapping.json"
+build_out="$B/bazel-bin/elements/subdirs/BUILD.bazel.out"
+mapping="$B/bazel-bin/elements/subdirs/install-mapping.json"
 for want in "$build_out" "$mapping" \
-            "$A/bazel-bin/elements/subdirs/install_tree.tar" \
-            "$A/bazel-bin/elements/subdirs/make-db.txt"; do
+            "$B/bazel-bin/elements/subdirs/install_tree.tar" \
+            "$B/bazel-bin/elements/subdirs/make-db.txt"; do
     if [ ! -f "$want" ]; then
         echo "meta-autotools-subdirs: missing build output $want" >&2
         exit 1

@@ -353,11 +353,11 @@ func main() {
 	hostArch := flag.String("host-arch", "", "override the static host_arch dispatch variable (default: auto-detected from the build host).")
 	buildArch := flag.String("build-arch", "", "override the static build_arch dispatch variable (default: auto-detected from the build host).")
 	bootstrapBuildArch := flag.String("bootstrap-build-arch", "", "override the static bootstrap_build_arch dispatch variable (default: auto-detected from the build host).")
-	autotoolsBin := flag.String("convert-element-autotools", "", "optional: path to convert-element-autotools. When set (alongside --build-tracer-bin), kind:autotools elements render with the trace-driven native converter wired into the install genrule; bazel's action cache handles convergence across nodes via the existing remote-cache plumbing.")
+	autotoolsBin := flag.String("convert-element-autotools", "", "optional: path to convert-element-autotools. When set (alongside --build-tracer-bin), kind:autotools elements render with the trace-driven native converter; round-2 (default) wires it via project A's per-element converter genrule, round-1 (opt-out via --autotools-round1) wires it inline in project B's install genrule.")
 	tracerBin := flag.String("build-tracer-bin", "", "optional: path to build-tracer. Required when --convert-element-autotools is set.")
-	publishBin := flag.String("trace-publish-bin", "", "optional: path to cmd/trace-publish. Required with --autotools-round2 — staged into project B's tools/ so the round-2 coarse install genrule can publish its trace to the REAPI ActionCache.")
-	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required with --autotools-round2 — staged into project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time; staging mirrors the convert-element-autotools convention.")
-	round2 := flag.Bool("autotools-round2", false, "experimental: pivot kind:autotools rendering to round-2 shape. Project A hosts a per-element converter genrule consuming @trace_<elem>//:trace (AC-keyed by srckey via the synthetic-action-digest rendezvous; see internal/tracenorm/synthkey.go). Project B's coarse install genrule no longer runs the converter inline; it ends with a trace-publish step that writes the AC entry. Round-1 boots the AC; round-2 reads it. Requires --convert-element-autotools, --build-tracer-bin, --trace-publish-bin, and --trace-lookup-bin set.")
+	publishBin := flag.String("trace-publish-bin", "", "optional: path to cmd/trace-publish. Required for round-2 (the default trace-driven path) — staged into project B's tools/ so the round-2 install genrule can publish its trace to the REAPI ActionCache.")
+	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for round-2 (the default trace-driven path) — staged into project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time; staging mirrors the convert-element-autotools convention.")
+	round1 := flag.Bool("autotools-round1", false, "opt out of round-2 (the default for kind:autotools when the trace-driven path is enabled). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / make / make-install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -392,9 +392,15 @@ func main() {
 		}
 		autotoolsConfig.tracerBin = abs
 	}
-	if *round2 {
-		if autotoolsConfig.convertBin == "" || autotoolsConfig.tracerBin == "" || *publishBin == "" || *lookupBin == "" {
-			log.Fatalf("--autotools-round2 requires --convert-element-autotools, --build-tracer-bin, --trace-publish-bin, and --trace-lookup-bin")
+	// Round-2 is the default trace-driven path. It activates
+	// when --convert-element-autotools is set AND the user
+	// hasn't passed --autotools-round1. The round-2 wiring
+	// requires the publisher + lookup binaries; without them,
+	// hard-fail with a directive at the user (either supply the
+	// binaries OR opt out via --autotools-round1).
+	if autotoolsConfig.convertBin != "" && !*round1 {
+		if *publishBin == "" || *lookupBin == "" {
+			log.Fatalf("kind:autotools round-2 (the default when --convert-element-autotools is set) requires --trace-publish-bin and --trace-lookup-bin; pass --autotools-round1 to opt back into the legacy single-genrule shape that doesn't need them")
 		}
 		pubAbs, err := filepath.Abs(*publishBin)
 		if err != nil {

@@ -7,22 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **`kind:autotools` round-2 graph derivation — wire the
-  rendezvous into a real REAPI mount.** The plumbing landed:
-  write-a `--autotools-round2` pivots project A to host a
-  per-element converter genrule consuming `@trace_<elem>//:trace`
-  (load-time `_trace_repo` lookup against the AC), and project
-  B's coarse install genrule ends with an inline `trace-publish`
-  call that lands the AC entry. The synthetic-key recipe lives
-  in `internal/tracenorm/synthkey.go`; the publisher / consumer
-  CLIs (`cmd/trace-publish`, `cmd/trace-lookup`) round-trip
-  through the in-tree CAS interface. See
-  `docs/design/autotools-round2-rendezvous.md` for the full
-  recipe and `scripts/meta-autotools-round2.sh` for the render
-  gate. Still queued: an e2e gate that exercises the publish →
-  AC-hit-on-fresh-render → fine-grained-cc-rules loop against
-  buildbarn / bb_clientd — the same infra the cas-fuse and
-  hello-fuse gates already exercise; integration is a follow-up.
 - **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
   `--unix_digest_hash_attribute_name` — the flag that let the
   cas-fuse FUSE mount tell Bazel "trust this pre-computed
@@ -103,6 +87,17 @@ transition cleanly.
   `configure && make && make install`; the trace + `make -np`
   feed `convert-element-autotools`; install genrule lives in
   project B with deps as proper Bazel targets.
+- `kind:autotools` round-2 graph derivation. Project A's
+  per-element converter genrule consumes `@trace_<elem>//:trace`,
+  a load-time `_trace_repo` lookup against the REAPI
+  ActionCache keyed by `SyntheticActionDigest(srckey)`. Project
+  B's install genrule ends with an inline `trace-publish` call
+  that lands the AC entry. Round-2 is the default; pass
+  `--autotools-round1` to opt back into the legacy single-
+  genrule shape. Render-half gate: `meta-autotools-round2.sh`.
+  Live-AC gate (buildbarn + optionally bb_clientd):
+  `tools/e2e-meta-autotools-round2-live.sh`. Recipe:
+  `docs/design/autotools-round2-rendezvous.md`.
 - Trace + make-db canonicalization (pids stripped, gcc temp paths
   placeholdered, action-time mktemp paths normalized). Foundation
   for round-2 cache reuse.

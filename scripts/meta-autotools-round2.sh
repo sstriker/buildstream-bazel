@@ -2,7 +2,10 @@
 # meta-autotools-round2.sh — render-half acceptance gate for the
 # trace-driven kind:autotools round-2 architecture.
 #
-# Runs write-a with --autotools-round2 and asserts the new shape:
+# Round-2 is now the default when --convert-element-autotools is
+# set (the legacy round-1 single-genrule shape lives behind the
+# --autotools-round1 opt-out). This gate exercises the default by
+# passing --trace-publish-bin / --trace-lookup-bin and asserts:
 #
 #   1. Project A's per-element BUILD is a converter genrule
 #      consuming @trace_<elem>//:trace (the round-2 lookup repo
@@ -52,8 +55,7 @@ fixture="testdata/meta-project/autotools-greet"
     --convert-element-autotools "$bin_dir/convert-element-autotools" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \
-    --trace-lookup-bin "$bin_dir/trace-lookup" \
-    --autotools-round2
+    --trace-lookup-bin "$bin_dir/trace-lookup"
 
 # A-side: the converter genrule consuming the trace fileset.
 a_build="$A/elements/greet/BUILD.bazel"

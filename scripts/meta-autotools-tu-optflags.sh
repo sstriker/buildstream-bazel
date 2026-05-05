@@ -42,7 +42,8 @@ fixture="testdata/meta-project/autotools-tu-optflags"
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
     --convert-element-autotools "$bin_dir/convert-element-autotools" \
-    --build-tracer-bin "$bin_dir/build-tracer"
+    --build-tracer-bin "$bin_dir/build-tracer" \
+    --autotools-round1
 
 # Bazel-availability gating.
 if command -v bazel >/dev/null; then

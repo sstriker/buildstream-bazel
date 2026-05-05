@@ -171,11 +171,29 @@ shape `handler_autotools_round2.go` does.
 
 ## Roll-out
 
-`--autotools-round2` is opt-in (default off) while the round-2
-architecture rolls out. The render gate
-`scripts/meta-autotools-round2.sh` locks in the rendered shape;
-the live-AC half of the loop lands once the buildbarn /
-bb_clientd integration follows.
+Round-2 is the default whenever `--convert-element-autotools`
+is set; passing `--autotools-round1` opts back into the legacy
+single-genrule shape (project A is a marker; project B's
+install genrule runs the converter inline). The opt-out exists
+because some render gates assert fine-conversion-shape
+properties (per-target CFLAGS, libtool dual-compile, etc.) by
+running `bazel build` against round-1's inline converter; in
+round-2 those properties only emerge after pass-3 has
+published, which needs the AC + cas-fuse / bb_clientd mount.
+
+## Gates
+
+- `scripts/meta-autotools-round2.sh` — render-half gate. Locks
+  in the rendered shape (project A converter genrule, project
+  B install + trace-publish). Runs without buildbarn.
+- `tools/e2e-meta-autotools-round2-live.sh` — live-AC gate.
+  Stands up buildbarn (and optionally bb_clientd), runs
+  `trace-publish` against the real REAPI endpoint, runs
+  `trace-lookup` and asserts the published digest round-trips,
+  and (with bb_clientd) asserts the Directory blob is mountable
+  at `<mount>/cas/<digest>/`. The same path the `_trace_repo`
+  rule symlinks at load time. Wired into CI alongside the other
+  buildbarn-tagged jobs (`make e2e-meta-autotools-round2-live`).
 
 ## Reference
 

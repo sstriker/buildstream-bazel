@@ -55,16 +55,17 @@ fixture="testdata/meta-project/autotools-asm"
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
     --convert-element-autotools "$bin_dir/convert-element-autotools" \
-    --build-tracer-bin "$bin_dir/build-tracer"
+    --build-tracer-bin "$bin_dir/build-tracer" \
+    --autotools-round1
 
 for marker in \
     '"BUILD.bazel.out"' \
     '"make-db.txt"' \
     '"install-mapping.json"' \
     'name = "asm_install"'; do
-    if ! grep -qF -- "$marker" "$A/elements/asm/BUILD.bazel"; then
+    if ! grep -qF -- "$marker" "$B/elements/asm/BUILD.bazel"; then
         echo "meta-autotools-asm: render missing marker: $marker" >&2
-        cat "$A/elements/asm/BUILD.bazel" >&2
+        cat "$B/elements/asm/BUILD.bazel" >&2
         exit 1
     fi
 done
@@ -103,12 +104,12 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/asm:asm_install 2>&1 | tail -10
+run_bazel "$B" build //elements/asm:asm_install 2>&1 | tail -10
 
-build_out="$A/bazel-bin/elements/asm/BUILD.bazel.out"
-mapping="$A/bazel-bin/elements/asm/install-mapping.json"
+build_out="$B/bazel-bin/elements/asm/BUILD.bazel.out"
+mapping="$B/bazel-bin/elements/asm/install-mapping.json"
 for want in "$build_out" "$mapping" \
-            "$A/bazel-bin/elements/asm/install_tree.tar"; do
+            "$B/bazel-bin/elements/asm/install_tree.tar"; do
     if [ ! -f "$want" ]; then
         echo "meta-autotools-asm: missing build output $want" >&2
         exit 1
