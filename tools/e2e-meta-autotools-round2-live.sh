@@ -109,26 +109,38 @@ SRCKEY="round2-live-$(date +%s)-$$"
 echo "  srckey = $SRCKEY"
 
 echo "== trace-publish =="
-PUB_OUT=$("$repo/build/bin/trace-publish" \
-    --cas="$CAS_ADDR" \
-    --srckey="$SRCKEY" \
-    --trace="$STAGE/trace.log" \
-    --make-db="$STAGE/make-db.txt")
+PUB_LOG="$TMP/trace-publish.log"
+if ! PUB_OUT=$("$repo/build/bin/trace-publish" \
+        --cas="$CAS_ADDR" \
+        --srckey="$SRCKEY" \
+        --trace="$STAGE/trace.log" \
+        --make-db="$STAGE/make-db.txt" 2>"$PUB_LOG"); then
+    echo "trace-publish failed:"
+    cat "$PUB_LOG"
+    exit 1
+fi
 echo "  trace-publish printed: $PUB_OUT"
 if [[ -z "$PUB_OUT" ]]; then
     echo "trace-publish printed nothing — expected '<hash>/<size>'"
+    cat "$PUB_LOG"
     exit 1
 fi
 
 echo "== trace-lookup =="
-LK_OUT=$("$repo/build/bin/trace-lookup" \
-    --cas="$CAS_ADDR" \
-    --srckey="$SRCKEY")
+LK_LOG="$TMP/trace-lookup.log"
+if ! LK_OUT=$("$repo/build/bin/trace-lookup" \
+        --cas="$CAS_ADDR" \
+        --srckey="$SRCKEY" 2>"$LK_LOG"); then
+    echo "trace-lookup failed:"
+    cat "$LK_LOG"
+    exit 1
+fi
 echo "  trace-lookup printed: $LK_OUT"
 if [[ "$PUB_OUT" != "$LK_OUT" ]]; then
     echo "trace-lookup digest mismatch:"
     echo "  publish: $PUB_OUT"
     echo "  lookup:  $LK_OUT"
+    cat "$LK_LOG"
     exit 1
 fi
 echo "  publish/lookup digests match — wire roundtrip OK"

@@ -92,9 +92,17 @@ func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath
 	traceBody = tracenorm.CanonicalizeBytes(traceBody, nil)
 	makeDBBody = tracenorm.FilterMakeDB(makeDBBody)
 
-	// Pack the two-file trace dir as a REAPI Directory and upload
-	// every blob (root directory + the two file contents) via
-	// FindMissing/PutBlob. cas.UploadDir does both in one helper.
+	// Pack the two-file trace dir as a REAPI Directory and
+	// upload every blob (root Directory + each file content)
+	// via FindMissing/PutBlob. We do this as PackDir + manual
+	// upload (rather than UploadDir) so we can also build +
+	// upload the Tree proto: Buildbarn's bb-storage wraps its
+	// AC backend in a completeness checker that walks the AR's
+	// OutputDirectory[].TreeDigest at GetActionResult time and
+	// rejects entries whose Tree (or its referenced files) are
+	// missing from CAS. So we MUST publish the Tree blob, not
+	// just the root Directory blob, for the AC entry to be
+	// readable.
 	stage, err := os.MkdirTemp("", "trace-publish-stage-*")
 	if err != nil {
 		return fmt.Errorf("stage tmpdir: %w", err)
@@ -106,19 +114,36 @@ func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath
 	if err := os.WriteFile(filepath.Join(stage, "make-db.txt"), makeDBBody, 0o644); err != nil {
 		return fmt.Errorf("write staged make-db: %w", err)
 	}
-	rootDigest, err := cas.UploadDir(ctx, store, stage)
+	tree, err := cas.PackDir(stage)
 	if err != nil {
+		return fmt.Errorf("pack trace dir: %w", err)
+	}
+	if err := uploadTree(ctx, store, tree); err != nil {
 		return fmt.Errorf("upload trace dir: %w", err)
 	}
 
+	// Build + upload the REAPI Tree proto. Tree.Root carries
+	// the root Directory; Children is empty for our flat
+	// 2-file layout. The Tree proto's bytes (digested
+	// deterministically via cas.DigestProto) are what the AC
+	// entry's TreeDigest references; the bb-storage
+	// completeness checker walks this to verify CAS coverage.
+	reapiTree := tree.AsReapiTree()
+	treeDigest, treeBlob, err := cas.DigestProto(reapiTree)
+	if err != nil {
+		return fmt.Errorf("digest tree proto: %w", err)
+	}
+	if err := store.PutBlob(ctx, treeDigest, treeBlob); err != nil {
+		return fmt.Errorf("upload tree proto: %w", err)
+	}
+
 	// Compute the synthetic Action digest and publish an
-	// ActionResult whose single OutputDirectory carries the
-	// trace dir's root Directory digest. trace-lookup reads
-	// RootDirectoryDigest back; cas-fuse / bb_clientd serve any
-	// Directory blob in CAS at `<mount>/blobs/directory/<digest>`,
-	// so the digest IS the FUSE-mountable identifier — no Tree
-	// blob is needed for lookup. (TreeDigest stays nil; consumers
-	// of this AC entry use RootDirectoryDigest only.)
+	// ActionResult whose single OutputDirectory carries both
+	// the Tree digest (canonical REAPI shape, required by
+	// bb-storage's completeness checker) and the root
+	// Directory digest (consumed by trace-lookup directly so
+	// cas-fuse / bb_clientd can serve `<mount>/blobs/directory/
+	// <root>` without a Tree-proto round trip).
 	actionDigest, err := tracenorm.SyntheticActionDigest(srckey)
 	if err != nil {
 		return fmt.Errorf("synth-key: %w", err)
@@ -127,13 +152,68 @@ func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath
 		OutputDirectories: []*repb.OutputDirectory{
 			{
 				Path:                "trace",
-				RootDirectoryDigest: rootDigest,
+				TreeDigest:          treeDigest,
+				RootDirectoryDigest: tree.RootDigest,
 			},
 		},
 	}
 	if err := store.UpdateActionResult(ctx, actionDigest, ar); err != nil {
 		return fmt.Errorf("update ac: %w", err)
 	}
-	fmt.Printf("%s/%d\n", rootDigest.Hash, rootDigest.SizeBytes)
+	fmt.Printf("%s/%d\n", tree.RootDigest.Hash, tree.RootDigest.SizeBytes)
+	return nil
+}
+
+// uploadTree mirrors cas.UploadDir's logic but takes a
+// pre-packed *cas.Tree so the caller retains access to the
+// tree's structure (root proto, Files map) for downstream
+// uses — here, building the REAPI Tree proto whose digest
+// goes into the AR's TreeDigest.
+func uploadTree(ctx context.Context, store cas.Store, tree *cas.Tree) error {
+	dirBodies := make(map[string][]byte, len(tree.Directories))
+	digests := make([]*cas.Digest, 0, len(tree.Directories)+len(tree.Files))
+	for h, d := range tree.Directories {
+		body, err := cas.MarshalDeterministic(d)
+		if err != nil {
+			return fmt.Errorf("marshal directory %s: %w", h, err)
+		}
+		dirBodies[h] = body
+		digests = append(digests, &cas.Digest{Hash: h, SizeBytes: int64(len(body))})
+	}
+	for h, p := range tree.Files {
+		info, err := os.Stat(p)
+		if err != nil {
+			return fmt.Errorf("stat %s: %w", p, err)
+		}
+		digests = append(digests, &cas.Digest{Hash: h, SizeBytes: info.Size()})
+	}
+	missing, err := store.FindMissing(ctx, digests)
+	if err != nil {
+		return fmt.Errorf("findmissing: %w", err)
+	}
+	missingSet := make(map[string]bool, len(missing))
+	for _, d := range missing {
+		missingSet[d.Hash] = true
+	}
+	for h, body := range dirBodies {
+		if !missingSet[h] {
+			continue
+		}
+		if err := store.PutBlob(ctx, &cas.Digest{Hash: h, SizeBytes: int64(len(body))}, body); err != nil {
+			return fmt.Errorf("put directory %s: %w", h, err)
+		}
+	}
+	for h, p := range tree.Files {
+		if !missingSet[h] {
+			continue
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", p, err)
+		}
+		if err := store.PutBlob(ctx, &cas.Digest{Hash: h, SizeBytes: int64(len(body))}, body); err != nil {
+			return fmt.Errorf("put file %s: %w", h, err)
+		}
+	}
 	return nil
 }
