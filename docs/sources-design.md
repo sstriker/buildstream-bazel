@@ -2,8 +2,7 @@
 
 Captures the architecture for source resolution + materialization
 across `cmd/write-a`, project A (the meta workspace), and project B
-(the consumer workspace), per the design discussion threading
-through PRs #46–#49.
+(the consumer workspace).
 
 ## Goal
 
@@ -217,10 +216,18 @@ Bazel re-evaluates the module extension when `sources.json`
 changes (its declared input). It doesn't need to watch the
 filesystem — we never overwrite paths.
 
-### Full BwoB via xattr-served digests
+### Full BwoB via xattr-served digests (Bazel 7/8 only — deprecated)
 
-Bazel ships a flag pair that closes the loop end-to-end without
-any dev-side byte traffic for digesting:
+The point of the FUSE-served sources route is that **a developer's
+machine never holds the full source set** — only what they are
+locally modifying. Everything else stays in CAS, served lazily by
+`cmd/cas-fuse`, and consumed by the executor via REAPI. The dev
+machine's resource budget (disk, RAM) stays modest regardless of
+the size of the source graph; the heavy lifting moves to the
+remote-execution services.
+
+Bazel 7.x and 8.x shipped a flag pair that closes the loop
+end-to-end without any dev-side byte traffic for digesting:
 
 ```
 --unix_digest_hash_attribute_name=user.bazel.cas.digest
@@ -232,7 +239,7 @@ file and treats its value as the file's content digest, skipping
 the read-and-hash step it would otherwise perform. `cmd/cas-fuse`
 serves exactly that xattr (key `user.bazel.cas.digest`, value =
 hex SHA-256 of the file's bytes — already known from the CAS
-FileNode digest). Result:
+FileNode digest). Result on those Bazel versions:
 
 - ✓ Executor side: workers read from CAS via REAPI.
 - ✓ Dev disk: source trees never materialise as durable files.
@@ -241,16 +248,32 @@ FileNode digest). Result:
   doesn't happen for inputs to remote actions — the executor
   fetches them itself).
 
-The build invocation gets these alongside the existing
-remote-execution flags:
+**Bazel 9 dropped `--unix_digest_hash_attribute_name`** without a
+direct replacement; this project targets Bazel 9 (see
+`tools/e2e-hello-fuse.sh`, which no longer passes the flag). On
+Bazel 9 the FUSE-served files still serve correctly, but Bazel
+hashes them itself — paying a re-read cost the xattr fast path
+used to skip. The functional outcome (executor-side BwoB,
+dev-side modest disk footprint) is preserved; the digest-fast-path
+optimization is not.
+
+A Bazel-9 equivalent — most likely something stitched onto the
+RemoteOutputService surface (the spiritual successor to the
+xattr flag pair, primarily aimed at outputs but with the same
+"trust an external digest source" shape) — is on `ROADMAP.md`
+under "Bazel 9 CAS-aware filesystem." Until that lands, the
+`internal/casfuse` xattr-set machinery stays in tree: it's still
+useful for any non-Bazel client wanting the fast-path digest, and
+it's the integration point we'd plug a Bazel-9 successor into.
+
+Today's build invocation alongside the existing remote-execution
+flags:
 
 ```
 bazel build \
   --remote_executor=grpc://... \
   --remote_cache=grpc://... \
   --remote_download_minimal \
-  --unix_digest_hash_attribute_name=user.bazel.cas.digest \
-  --digest_function=SHA256 \
   --repo_env=CAS_FUSE_MOUNT=/var/cache/cmake-to-bazel/cas \
   //elements/<leaf>:<leaf>
 ```
@@ -356,8 +379,8 @@ Per the design discussion, options become Bazel-native config:
 - For non-arch options (FDSDK's `prod_keys`, `bootstrap_build_arch`,
   etc.), the `string_flag` shape is the Bazel-native expression.
 
-This replaces the current static-fold pass (`foldStaticConditionals`
-) for those options that map to user-configurable flags.
+This replaces the current static-fold pass (`foldStaticConditionals`)
+for those options that map to user-configurable flags.
 Static fold remains for hardcoded defaults the user can't
 override (`host_arch` is determined by the build host, not a
 flag).
@@ -377,35 +400,55 @@ to also iterate over option values declared in project.conf, with
 each combination producing a `select()` arm. Combinatorial
 explosion is bounded — most options have 1–3 values.
 
-## Migration order
+## What's shipped vs. what's roadmap
 
-Per the agreed sequence:
+Shipped (in `main` today):
 
-1. **This PR (#50)**: design doc only. Captures direction.
-2. **Project.conf completion** (#51 and follow-ups): options as
-   string_flag + select(); aliases parsed (used by the source-fetcher
-   to translate `github:`, `sourceware:` etc.); environment block
-   wired into per-element genrule `env` attrs.
-3. **`cmd/cas-fuse` daemon** (#52): user-level FUSE daemon
-   lifted from `bb_clientd`. Mounts a single root, serves CAS
-   Directories at digest-addressed paths. Linux first; macOS
-   NFSv4 path follows. Includes a `make cas-fuse-up` lifecycle
-   helper for dev workflows.
-4. **Sources scaffold** (#53 and follow-ups):
-   - `rules/sources.bzl` module extension that reads
-     `sources.json` and declares per-digest repos.
-   - Per-repo rule `ctx.symlink`s into the daemon's mount.
-   - `make fdsdk-source-push` driver wrapping `bst source push`
-     to populate CAS for FDSDK end to end.
-5. **Cmake narrowing via patterns** (#54): pattern parser;
-   default-when-absent (entire tree real); remove
-   `--read-paths-feedback` outright.
-6. **End-to-end demonstration** (#55): one FDSDK kind:cmake
-   element built end-to-end against project B with CAS-backed
-   sources, dev disk never materialising the source tree. The
-   reality-check probe extends to confirm
-   `bazel build //elements/expat:expat` succeeds against the
-   CAS-populated workspace + running `cmd/cas-fuse`.
+- **Project.conf completion**: options lower to `string_flag` +
+  `config_setting` + `select()`; aliases parsed and wired into the
+  source-fetcher's URL translation (`github:`, `sourceware:` etc.);
+  the project's `environment:` block surfaces as per-element
+  genrule `env` attrs.
+- **`cmd/cas-fuse` daemon**: lifted from `bb_clientd`'s FUSE stack.
+  Mounts a single root and serves CAS Directories at
+  digest-addressed paths under `<mount>/blobs/directory/<digest>/`.
+  Linux ships today via `go-fuse/v2`. `make buildbarn-up` wires
+  the dev-side stack end-to-end (CAS server + cas-fuse mount).
+- **Sources scaffold**: `rules/sources.bzl` module extension reads
+  the per-element `sources.json` write-a emits and declares one
+  external repo per source identity. Each repo's `ctx.symlink`
+  points into the cas-fuse mount; element BUILDs reference
+  `@src_<key>//:tree`.
+- **`bst source push` integration**: `tools/bst-source-push.sh`
+  drives BuildStream's own pusher to populate CAS for any project
+  that already publishes Directory digests. The hello-fuse
+  end-to-end gate (`tools/e2e-hello-fuse.sh`) exercises the full
+  pipeline (push → cas-fuse → write-a → bazel build).
+- **Cmake narrowing via patterns**: pattern parser (`include` /
+  `exclude` glob lines); when no `<element>.read-paths.txt`
+  exists, the default is "entire tree real" (equivalent to
+  `include **/*`); the old `--read-paths-feedback` adaptive flow
+  is gone.
+
+Roadmap (separate doc, but called out here for orientation):
+
+- **Bazel 9 CAS-aware filesystem.** The xattr-served-digest
+  shortcut (see "Full BwoB" below) was dropped from Bazel 9.
+  Without a replacement, every input read from the cas-fuse
+  mount costs a re-hash on the client side — the dev-machine
+  resource budget the design depends on. The roadmap item is
+  to land an equivalent integration against Bazel 9's
+  RemoteOutputService (or a successor virtual-filesystem hook),
+  so we keep the property "the only sources resident on a dev
+  machine are the ones being locally modified." Tracked in
+  `ROADMAP.md`.
+- **End-to-end FDSDK demonstration**: a real FDSDK kind:cmake
+  element built end-to-end against project B with CAS-backed
+  sources, dev disk never materialising the source tree. The
+  reality-check probe extends to confirm
+  `bazel build //elements/expat:expat` succeeds against the
+  CAS-populated workspace + running `cmd/cas-fuse`. Hello-fuse
+  is the smaller proxy gate that runs in CI today.
 
 ## Open questions
 
