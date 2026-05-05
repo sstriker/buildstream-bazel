@@ -4,6 +4,17 @@ Captures the architecture for source resolution + materialization
 across `cmd/write-a`, project A (the meta workspace), and project B
 (the consumer workspace).
 
+> **Historical note.** This doc was written when the in-tree
+> `cmd/cas-fuse` daemon + `internal/casfuse` library were the
+> source-mount path. Both were retired once `bb_clientd` became
+> the Bazel-9 production direction (`docs/design/bazel9-cas-fs.md`
+> covers the why + the migration). The architectural layers below
+> still describe the intended shape — source identity, repo-rule
+> contract, on-disk layout — but where the text says "cas-fuse",
+> read "bb_clientd"; where it says `internal/casfuse`, read
+> `internal/cas`. The CAS client / packer / tree pieces relocated
+> there as part of the cas-fuse retirement.
+
 ## Goal
 
 `bazel build //...` against either project resolves and consumes

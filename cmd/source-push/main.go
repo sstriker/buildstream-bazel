@@ -1,6 +1,7 @@
 // source-push uploads on-disk source trees to a REAPI CAS
-// endpoint, indexed by sourceKey, so cmd/cas-fuse can serve them
-// to Bazel repo rules.
+// endpoint, indexed by sourceKey, so cas-aware FUSE daemons
+// (bb_clientd in production; cmd/cas-fuse historically, now
+// retired) can serve them to Bazel repo rules.
 //
 // Two modes:
 //
@@ -28,9 +29,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/sstriker/cmake-to-bazel/internal/casfuse"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"github.com/sstriker/cmake-to-bazel/internal/cas"
 )
 
 func main() {
@@ -64,38 +63,37 @@ Usage:
 
 func cmdTree(args []string) {
 	fs := flag.NewFlagSet("tree", flag.ExitOnError)
-	cas := fs.String("cas", "", "gRPC address of the CAS endpoint")
+	addr := fs.String("cas", "", "gRPC address of the CAS endpoint")
 	src := fs.String("src", "", "directory to pack and push")
 	instance := fs.String("instance", "", "REAPI instance name")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	if *cas == "" || *src == "" {
+	if *addr == "" || *src == "" {
 		fmt.Fprintln(os.Stderr, "--cas and --src are required")
 		os.Exit(2)
 	}
 
-	pt, err := casfuse.PackDir(*src)
-	if err != nil {
-		log.Fatalf("pack %s: %v", *src, err)
-	}
+	ctx := context.Background()
+	store := dial(ctx, *addr, *instance)
+	defer store.Close()
 
-	client := dial(*cas, *instance)
-	if err := pushAll(context.Background(), client, pt.Blobs); err != nil {
-		log.Fatalf("push: %v", err)
+	rootDigest, err := cas.UploadDir(ctx, store, *src)
+	if err != nil {
+		log.Fatalf("upload-dir %s: %v", *src, err)
 	}
-	fmt.Println(pt.RootDigest.String())
+	fmt.Println(formatPathDigest(rootDigest))
 }
 
 func cmdGraph(args []string) {
 	fs := flag.NewFlagSet("graph", flag.ExitOnError)
-	cas := fs.String("cas", "", "gRPC address of the CAS endpoint")
+	addr := fs.String("cas", "", "gRPC address of the CAS endpoint")
 	cache := fs.String("source-cache", "", "directory of pre-fetched source trees, indexed by source-key")
 	instance := fs.String("instance", "", "REAPI instance name")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
-	if *cas == "" || *cache == "" {
+	if *addr == "" || *cache == "" {
 		fmt.Fprintln(os.Stderr, "--cas and --source-cache are required")
 		os.Exit(2)
 	}
@@ -104,7 +102,9 @@ func cmdGraph(args []string) {
 	if err != nil {
 		log.Fatalf("read source-cache %s: %v", *cache, err)
 	}
-	client := dial(*cas, *instance)
+	ctx := context.Background()
+	store := dial(ctx, *addr, *instance)
+	defer store.Close()
 	manifest := map[string]string{}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -112,33 +112,34 @@ func cmdGraph(args []string) {
 		}
 		key := e.Name()
 		path := *cache + "/" + key
-		pt, err := casfuse.PackDir(path)
+		rootDigest, err := cas.UploadDir(ctx, store, path)
 		if err != nil {
-			log.Fatalf("pack %s: %v", path, err)
+			log.Fatalf("upload-dir %s: %v", path, err)
 		}
-		if err := pushAll(context.Background(), client, pt.Blobs); err != nil {
-			log.Fatalf("push %s: %v", key, err)
-		}
-		manifest[key] = pt.RootDigest.String()
+		manifest[key] = formatPathDigest(rootDigest)
 	}
 	out, _ := json.MarshalIndent(manifest, "", "  ")
 	fmt.Println(string(out))
 }
 
-func dial(addr, instance string) *casfuse.CASClient {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+func dial(ctx context.Context, addr, instance string) *cas.GRPCStore {
+	store, err := cas.NewGRPCStore(ctx, cas.GRPCConfig{
+		Endpoint:     addr,
+		InstanceName: instance,
+		Insecure:     true,
+	})
 	if err != nil {
 		log.Fatalf("dial CAS %q: %v", addr, err)
 	}
-	return casfuse.NewCASClient(conn, instance)
+	return store
 }
 
-func pushAll(ctx context.Context, client *casfuse.CASClient, blobs map[string][]byte) error {
-	for hash, body := range blobs {
-		d := casfuse.Digest{Hash: hash, Size: int64(len(body))}
-		if err := client.PushBlob(ctx, d, body); err != nil {
-			return fmt.Errorf("blob %s: %w", hash, err)
-		}
-	}
-	return nil
+// formatPathDigest renders a cas.Digest in the `<hash>-<size>`
+// form used by REAPI mount-path components (bb_clientd's
+// `<mount>/cas/<instance>/blobs/<fn>/directory/<hash>-<size>/`)
+// and by the `digest` field of cmd/write-a's tools/sources.json.
+// Different from cas.DigestString (which emits `<hash>/<size>` for
+// log lines / bb_browser URLs).
+func formatPathDigest(d *cas.Digest) string {
+	return fmt.Sprintf("%s-%d", d.Hash, d.SizeBytes)
 }

@@ -11,21 +11,19 @@ package main
 // inside the module extension: write-a already has the
 // --source-cache tree and an absolute path per source identity.
 // The extension stays small (read JSON, declare repos), and CAS
-// upload (#59 via bst source push) remains an out-of-band step
-// the dev runs once.
+// upload (out-of-band step) remains separate — `bst source push`
+// in production, `cmd/source-push` for tests / dev.
 
 import (
 	"fmt"
 
-	"github.com/sstriker/cmake-to-bazel/internal/casfuse"
+	"github.com/sstriker/cmake-to-bazel/internal/cas"
 )
 
 // populateDigests packs the on-disk source-cache tree for each
 // sourceEntry that has one and stamps the resulting Directory
-// digest into entry.Digest. Returns a per-key blob map (hash →
-// bytes) for every Directory + file blob the packing produced;
-// callers either (a) pass it into a fake CAS in tests or (b)
-// hand it to bst source push / a CAS uploader in production.
+// digest into entry.Digest. Returns the entries with digests
+// filled in for sources that resolved.
 //
 // Sources without a source-cache hit (AbsPath empty) get
 // Digest left empty — the sources.json carries enough metadata
@@ -34,7 +32,7 @@ import (
 // That's the right behaviour: it surfaces "I forgot to populate
 // the cache for source X" instead of silently producing a broken
 // build.
-func populateDigests(g *graph, entries []sourceEntry) ([]sourceEntry, map[string][]byte, error) {
+func populateDigests(g *graph, entries []sourceEntry) ([]sourceEntry, error) {
 	// Index resolvedSource by sourceKey so we can find AbsPath
 	// per entry without re-walking the graph.
 	keyToPath := map[string]string{}
@@ -51,7 +49,6 @@ func populateDigests(g *graph, entries []sourceEntry) ([]sourceEntry, map[string
 		}
 	}
 
-	allBlobs := map[string][]byte{}
 	out := make([]sourceEntry, len(entries))
 	for i, e := range entries {
 		out[i] = e
@@ -59,14 +56,16 @@ func populateDigests(g *graph, entries []sourceEntry) ([]sourceEntry, map[string
 		if !ok || path == "" {
 			continue
 		}
-		pt, err := casfuse.PackDir(path)
+		tree, err := cas.PackDir(path)
 		if err != nil {
-			return nil, nil, fmt.Errorf("pack source %s (%s): %w", e.Key, path, err)
+			return nil, fmt.Errorf("pack source %s (%s): %w", e.Key, path, err)
 		}
-		out[i].Digest = pt.RootDigest.String()
-		for h, b := range pt.Blobs {
-			allBlobs[h] = b
-		}
+		// `<hash>-<size>` is the path-component format
+		// rules/sources.bzl uses to build the symlink target
+		// (`<mount>/<prefix>/directory/<digest>`); cas.DigestString
+		// returns `<hash>/<size>` (slash) for log lines / browser
+		// URLs, which is the wrong shape here.
+		out[i].Digest = fmt.Sprintf("%s-%d", tree.RootDigest.Hash, tree.RootDigest.SizeBytes)
 	}
-	return out, allBlobs, nil
+	return out, nil
 }

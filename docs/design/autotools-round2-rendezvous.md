@@ -206,7 +206,7 @@ because some render gates assert fine-conversion-shape
 properties (per-target CFLAGS, libtool dual-compile, etc.) by
 running `bazel build` against round-1's inline converter; in
 round-2 those properties only emerge after pass-3 has
-published, which needs the AC + cas-fuse / bb_clientd mount.
+published, which needs the AC + bb_clientd mount.
 
 ## Gates
 

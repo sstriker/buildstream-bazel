@@ -103,11 +103,13 @@ into action sandboxes through a daemon-served FUSE mount, no
 materialisation on dev disk), use Bazel 9 + `bb_clientd` —
 Bazel trusts the daemon's reported digests through
 `--experimental_remote_output_service` instead of re-hashing
-inputs locally. Bazel 7 / 8 can use the legacy `cmd/cas-fuse` +
-`--unix_digest_hash_attribute_name` xattr path for the same
-property; that flag was dropped in Bazel 9, which is why
-Bazel 9 is the production direction here. See
+inputs locally. See
 [`docs/design/bazel9-cas-fs.md`](docs/design/bazel9-cas-fs.md).
+The repo previously shipped an in-tree `cmd/cas-fuse` daemon
+for Bazel 7 / 8 (paired with the
+`--unix_digest_hash_attribute_name` xattr path the flag
+provided); both were retired once `bb_clientd` became the
+production direction.
 Cmake-side conversion needs `cmake` and `bwrap` on the host;
 autotools-side needs `cmake`, `make`, and either Linux/amd64
 (native ptrace) or `strace` on `$PATH`. See

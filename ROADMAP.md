@@ -8,13 +8,15 @@ transition cleanly.
 ## Now
 
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
-  `bazel build downstream`, `hello-fuse pipeline`,
-  `cas-fuse against fake CAS`) fail intermittently or
-  consistently for environment reasons (cmake-config bundle
-  staging on the CI runner; userns / fuse permissions on
-  Ubuntu 24.04 runners; bazel 9 toolchain expectations).
-  These don't reflect product issues but they make PR review
-  noisier than it should be.
+  `bazel build downstream`) fail intermittently for
+  environment reasons (cmake-config bundle staging on the CI
+  runner; userns / fuse permissions on Ubuntu 24.04 runners;
+  bazel 9 toolchain expectations). These don't reflect
+  product issues but they make PR review noisier than it
+  should be. The previously-listed `hello-fuse pipeline` and
+  `cas-fuse against fake CAS` jobs were retired alongside
+  `cmd/cas-fuse` itself; bb_clientd is the production
+  CAS-aware mount story now.
 
 ## Next
 
@@ -117,11 +119,12 @@ transition cleanly.
   because the runners don't ship bb_clientd by default — adding
   it as a CI step would self-skip until that changes.
   `rules/sources.bzl` + `rules/traces.bzl` parameterise the
-  mount-side path layout via `CAS_DIRECTORY_PREFIX` (default `blobs`
-  for cmd/cas-fuse compat; bb_clientd users pass
-  `cas/<instance>/blobs/<digest_function>`). cmd/cas-fuse stays
-  in-tree as the no-bb_clientd fallback. Recipe:
-  `docs/design/bazel9-cas-fs.md`.
+  mount-side path layout via `CAS_DIRECTORY_PREFIX` (default
+  `blobs` historically — the cmd/cas-fuse layout; bb_clientd
+  users pass `cas/<instance>/blobs/<digest_function>`).
+  `cmd/cas-fuse` and `internal/casfuse` were retired in a
+  follow-up after bb_clientd proved itself the production
+  path. Recipe: `docs/design/bazel9-cas-fs.md`.
 - Trace + make-db canonicalization (pids stripped, gcc temp paths
   placeholdered, action-time mktemp paths normalized). Foundation
   for round-2 cache reuse.

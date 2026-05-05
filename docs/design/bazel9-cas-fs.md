@@ -290,12 +290,15 @@ state lives in `ROADMAP.md`. Pointers to the in-tree pieces:
   and the parameterised `CAS_DIRECTORY_PREFIX`. Skips cleanly
   when bb_clientd / Bazel ≥ 9 aren't on PATH; not yet wired
   into the GitHub Actions CI workflow because the runners
-  don't ship bb_clientd by default. The CI job named
-  `bazel9-fuse-sources` (in `.github/workflows/ci.yml`) runs
-  the in-process Go test `TestBazel9_FuseSourcesEndToEnd` from
-  `internal/casfuse/`, which exercises Bazel 9 against the
-  `cmd/cas-fuse` mount path — different code path from the
-  bb_clientd gate above.
-- `cmd/cas-fuse` stays in-tree as the flag-only fallback for
-  setups that don't want a bb_clientd dependency (air-gapped
-  CI runners, the in-process casfuse / hello-fuse tests).
+  don't ship bb_clientd by default.
+- `cmd/cas-fuse` and `internal/casfuse` are retired. Earlier
+  iterations of this doc treated them as a fallback for
+  setups without bb_clientd; in practice they only ever served
+  the Bazel-7/8 xattr fast-path, the in-process FUSE tests
+  were a recurring environmental flake source, and the
+  CI jobs covering them (`cas-fuse-e2e`, `bazel9-fuse-sources`,
+  `hello-fuse-e2e`) were testing a code path with no
+  production consumers. bb_clientd is the only CAS-aware
+  mount path the project supports; the still-active CAS
+  client / packer / tree code that used to live in
+  `internal/casfuse` was merged into `internal/cas`.

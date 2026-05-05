@@ -836,7 +836,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	// AbsPath get an empty Digest (the repo rule's empty-tree
 	// fallback handles that without breaking load() resolution).
 	rawSrcs := collectSources(g)
-	withDigests, _, err := populateDigests(g, rawSrcs.Sources)
+	withDigests, err := populateDigests(g, rawSrcs.Sources)
 	if err != nil {
 		return fmt.Errorf("compute source digests: %w", err)
 	}
@@ -1018,7 +1018,7 @@ func writeProjectB(g *graph, outDir string) error {
 		return err
 	}
 	rawSrcs := collectSources(g)
-	withDigests, _, err := populateDigests(g, rawSrcs.Sources)
+	withDigests, err := populateDigests(g, rawSrcs.Sources)
 	if err != nil {
 		return fmt.Errorf("compute source digests: %w", err)
 	}
