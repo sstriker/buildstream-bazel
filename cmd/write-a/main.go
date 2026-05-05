@@ -839,23 +839,11 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	// the trace-driven kind:autotools path is configured. The
 	// install genrule references both via tools = [...]; without
 	// staging, the labels would resolve to nothing.
-	if autotoolsConfig.convertBin != "" && autotoolsConfig.tracerBin != "" {
-		stagedAt := filepath.Join(outDir, "tools", "convert-element-autotools")
-		if err := copyFile(autotoolsConfig.convertBin, stagedAt); err != nil {
-			return fmt.Errorf("stage convert-element-autotools: %w", err)
-		}
-		if err := os.Chmod(stagedAt, 0o755); err != nil {
-			return err
-		}
-		stagedTracer := filepath.Join(outDir, "tools", "build-tracer")
-		if err := copyFile(autotoolsConfig.tracerBin, stagedTracer); err != nil {
-			return fmt.Errorf("stage build-tracer: %w", err)
-		}
-		if err := os.Chmod(stagedTracer, 0o755); err != nil {
-			return err
-		}
-		exports = append(exports, "convert-element-autotools", "build-tracer")
+	autotoolsExports, err := stageAutotoolsTools(outDir)
+	if err != nil {
+		return err
 	}
+	exports = append(exports, autotoolsExports...)
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {
@@ -891,6 +879,45 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 
 // writeProjectB renders the consumer workspace project B reads against
 // project A's outputs.
+// stageAutotoolsTools copies convert-element-autotools +
+// build-tracer into outDir/tools/ when the trace-driven
+// kind:autotools path is enabled (both convertBin and
+// tracerBin set on autotoolsConfig). Returns the additional
+// exports_files entries the caller needs to add to its
+// tools/BUILD.bazel; nil + nil when the trace-driven path
+// is disabled.
+//
+// Used by both writeProjectA and writeProjectB so the
+// install genrule can resolve //tools:build-tracer +
+// //tools:convert-element-autotools regardless of which
+// project hosts it. Foundation for the architectural move
+// of the install genrule from project A's BUILD into
+// project B's BUILD (see docs/three-pass-flow.md "1 → 2 →
+// 3 → 2′ → 3′" loop).
+func stageAutotoolsTools(outDir string) ([]string, error) {
+	if autotoolsConfig.convertBin == "" || autotoolsConfig.tracerBin == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return nil, err
+	}
+	stagedAt := filepath.Join(outDir, "tools", "convert-element-autotools")
+	if err := copyFile(autotoolsConfig.convertBin, stagedAt); err != nil {
+		return nil, fmt.Errorf("stage convert-element-autotools: %w", err)
+	}
+	if err := os.Chmod(stagedAt, 0o755); err != nil {
+		return nil, err
+	}
+	stagedTracer := filepath.Join(outDir, "tools", "build-tracer")
+	if err := copyFile(autotoolsConfig.tracerBin, stagedTracer); err != nil {
+		return nil, fmt.Errorf("stage build-tracer: %w", err)
+	}
+	if err := os.Chmod(stagedTracer, 0o755); err != nil {
+		return nil, err
+	}
+	return []string{"convert-element-autotools", "build-tracer"}, nil
+}
+
 func writeProjectB(g *graph, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -927,7 +954,26 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "tools", "sources.json"), string(srcJSON)); err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), "# tools/ holds the JSON inputs the sources extension reads.\nexports_files([\"sources.json\"])\n"); err != nil {
+	// Stage convert-element-autotools + build-tracer when the
+	// trace-driven kind:autotools path is configured. Project B
+	// hosts the install genrule (see docs/three-pass-flow.md);
+	// without these tools the //tools:build-tracer +
+	// //tools:convert-element-autotools labels resolve to
+	// nothing in the B-side BUILD.
+	exports := []string{"sources.json"}
+	autotoolsExports, err := stageAutotoolsTools(outDir)
+	if err != nil {
+		return err
+	}
+	exports = append(exports, autotoolsExports...)
+	exportsList := ""
+	for i, e := range exports {
+		if i > 0 {
+			exportsList += ", "
+		}
+		exportsList += fmt.Sprintf("%q", e)
+	}
+	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("# tools/ holds the JSON inputs the sources extension reads + the\n# trace-driven autotools binaries (build-tracer / convert-element-\n# autotools) the install genrule references.\nexports_files([%s])\n", exportsList)); err != nil {
 		return err
 	}
 

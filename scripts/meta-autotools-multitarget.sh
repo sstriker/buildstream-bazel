@@ -63,9 +63,9 @@ for marker in \
     '"install-mapping.json"' \
     'name = "multitarget_install"' \
     '--out-install-mapping="$(location install-mapping.json)"'; do
-    if ! grep -qF -- "$marker" "$A/elements/multitarget/BUILD.bazel"; then
+    if ! grep -qF -- "$marker" "$B/elements/multitarget/BUILD.bazel"; then
         echo "meta-autotools-multitarget: render missing marker: $marker" >&2
-        cat "$A/elements/multitarget/BUILD.bazel" >&2
+        cat "$B/elements/multitarget/BUILD.bazel" >&2
         exit 1
     fi
 done
@@ -104,13 +104,13 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/multitarget:multitarget_install 2>&1 | tail -10
+run_bazel "$B" build //elements/multitarget:multitarget_install 2>&1 | tail -10
 
-build_out="$A/bazel-bin/elements/multitarget/BUILD.bazel.out"
-mapping="$A/bazel-bin/elements/multitarget/install-mapping.json"
+build_out="$B/bazel-bin/elements/multitarget/BUILD.bazel.out"
+mapping="$B/bazel-bin/elements/multitarget/install-mapping.json"
 for want in "$build_out" "$mapping" \
-            "$A/bazel-bin/elements/multitarget/install_tree.tar" \
-            "$A/bazel-bin/elements/multitarget/make-db.txt"; do
+            "$B/bazel-bin/elements/multitarget/install_tree.tar" \
+            "$B/bazel-bin/elements/multitarget/make-db.txt"; do
     if [ ! -f "$want" ]; then
         echo "meta-autotools-multitarget: missing build output $want" >&2
         exit 1

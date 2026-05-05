@@ -523,6 +523,137 @@ func TestWriter_AutotoolsElementShape(t *testing.T) {
 	}
 }
 
+// TestWriter_AutotoolsToolsStagedInProjectB verifies that
+// build-tracer + convert-element-autotools land in BOTH
+// project A's and project B's tools/ directories when the
+// trace-driven path is enabled. Foundation for the
+// architectural move (docs/three-pass-flow.md) where the
+// autotools install genrule lives in project B's BUILD —
+// the //tools:build-tracer + //tools:convert-element-
+// autotools labels need to resolve in B too.
+//
+// Without this staging, B-side rendering of the install
+// genrule (a follow-up PR) would break with "no such
+// target" errors at bazel-build time.
+func TestWriter_AutotoolsToolsStagedInProjectB(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "configure"),
+		[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "Makefile.in"),
+		[]byte("all:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "auto.bst")
+	bstBody := "kind: autotools\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeAutotoolsBin := filepath.Join(tmp, "fake-cea")
+	if err := os.WriteFile(fakeAutotoolsBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeTracerBin := filepath.Join(tmp, "fake-bt")
+	if err := os.WriteFile(fakeTracerBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	autotoolsConfig.convertBin = fakeAutotoolsBin
+	autotoolsConfig.tracerBin = fakeTracerBin
+	t.Cleanup(func() {
+		autotoolsConfig.convertBin = ""
+		autotoolsConfig.tracerBin = ""
+	})
+
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	outA := filepath.Join(tmp, "A")
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectA(g, outA, fakeConvertBin(t, tmp)); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+
+	// Both A and B should contain the autotools tools.
+	for _, project := range []string{outA, outB} {
+		for _, tool := range []string{"build-tracer", "convert-element-autotools"} {
+			path := filepath.Join(project, "tools", tool)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Errorf("%s missing: %v", path, err)
+				continue
+			}
+			if info.Mode().Perm()&0o100 == 0 {
+				t.Errorf("%s not executable (mode=%v)", path, info.Mode())
+			}
+		}
+		// tools/BUILD.bazel exports both binaries.
+		buildBody, err := os.ReadFile(filepath.Join(project, "tools", "BUILD.bazel"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(buildBody)
+		for _, marker := range []string{
+			`"build-tracer"`,
+			`"convert-element-autotools"`,
+			`exports_files(`,
+		} {
+			if !strings.Contains(got, marker) {
+				t.Errorf("%s/tools/BUILD.bazel missing %q\n--body--\n%s", project, marker, got)
+			}
+		}
+	}
+}
+
+// TestWriter_AutotoolsToolsNotStagedWhenDisabled verifies that
+// project B's tools/ stays minimal (sources.json only) when
+// the trace-driven path is NOT enabled — coarse-pipeline
+// elements don't need the autotools binaries, so we shouldn't
+// materialize them in B.
+func TestWriter_AutotoolsToolsNotStagedWhenDisabled(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "configure"),
+		[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "Makefile.in"),
+		[]byte("all:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "auto.bst")
+	bstBody := "kind: autotools\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// autotoolsConfig left zero — trace-driven path disabled.
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{"build-tracer", "convert-element-autotools"} {
+		path := filepath.Join(outB, "tools", banned)
+		if _, err := os.Stat(path); err == nil {
+			t.Errorf("%s should not be staged when trace-driven path is disabled", path)
+		}
+	}
+}
+
 // TestWriter_AutotoolsNativeWraps covers the trace-driven
 // autotools native render path. When --convert-element-autotools
 // + --build-tracer-bin are supplied, the per-element BUILD's
@@ -573,11 +704,27 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	}
 	binPath := fakeConvertBin(t, tmp)
 	outA := filepath.Join(tmp, "A")
+	outB := filepath.Join(tmp, "B")
 	if err := writeProjectA(g, outA, binPath); err != nil {
 		t.Fatalf("writeProjectA: %v", err)
 	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
 
-	body, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
+	// A-side BUILD is now a marker pointing at B (post-architectural
+	// move; see docs/three-pass-flow.md and PR #67 follow-up).
+	aBody, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(aBody), "BUILD_IN_PROJECT_B") {
+		t.Errorf("A-side BUILD should be a marker pointing at B; got:\n%s", aBody)
+	}
+
+	// B-side BUILD now hosts the install genrule + the rest of
+	// the trace-driven scaffolding the test already covered.
+	body, err := os.ReadFile(filepath.Join(outB, "elements/auto/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
