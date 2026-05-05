@@ -25,3 +25,23 @@ This applies to:
 If you've previously committed or posted a body that contains the URL,
 scrub it on the next edit pass — don't propagate the URL forward when you
 update existing text.
+
+## Verifying code edits
+
+Read `CONTRIBUTING.md` end-to-end before making changes that go beyond a
+typo. It's the single source of truth for the dev-loop commands ("did my
+change actually work?") and maps each touched file family to the unit
+tests + render gates that exercise it.
+
+The fast feedback loop in one paragraph: `go build ./...` then
+`go vet ./...` then `gofmt -l .` (must print nothing) then
+`go test ./...`. After that, run the render gate(s) under `scripts/`
+matching what you touched (see `CONTRIBUTING.md`'s handler→gate table).
+Render gates skip their bazel-build half cleanly when bazel ≥7 isn't on
+`$PATH`, but the render half they always exercise is still the contract
+`cmd/write-a` owes its consumers.
+
+When something asks for the "correctness story" of a change — in a PR
+description, a commit message, or your own design notes — show that you
+ran these and what they printed. A green `go test ./...` plus the
+relevant render gate's `ok` line is usually enough.
