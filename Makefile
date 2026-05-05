@@ -30,10 +30,9 @@ HISTORY      := $(BIN_DIR)/orchestrate-history
 BST_TRANSLATE := $(BIN_DIR)/orchestrate-bst-translate
 DERIVE_TOOLCHAIN := $(BIN_DIR)/derive-toolchain
 WRITE_A      := $(BIN_DIR)/write-a
-CAS_FUSE     := $(BIN_DIR)/cas-fuse
 SOURCE_PUSH  := $(BIN_DIR)/source-push
 
-all: converter orchestrator diff history bst-translate derive-toolchain write-a cas-fuse source-push
+all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push
 
 converter: $(CONVERTER)
 
@@ -48,8 +47,6 @@ bst-translate: $(BST_TRANSLATE)
 derive-toolchain: $(DERIVE_TOOLCHAIN)
 
 write-a: $(WRITE_A)
-
-cas-fuse: $(CAS_FUSE)
 
 source-push: $(SOURCE_PUSH)
 
@@ -80,12 +77,6 @@ $(DERIVE_TOOLCHAIN):
 $(WRITE_A):
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(WRITE_A) ./cmd/write-a
-
-# cas-fuse links against go-fuse which uses cgo; leave CGO_ENABLED
-# at the default. Daemon binary, not a hot path build.
-$(CAS_FUSE):
-	@mkdir -p $(BIN_DIR)
-	$(GO) build $(GOFLAGS) -o $(CAS_FUSE) ./cmd/cas-fuse
 
 $(SOURCE_PUSH):
 	@mkdir -p $(BIN_DIR)
@@ -551,11 +542,15 @@ bb-clientd-down:
 		  || true; \
 	fi
 
-# bb_clientd-backed hello-fuse e2e gate. Mirrors
-# tools/e2e-hello-fuse.sh's pipeline but uses bb_clientd's
-# mount + --remote_output_service in place of cmd/cas-fuse +
-# the dropped --unix_digest_hash_attribute_name flag. Skips
-# cleanly when bb_clientd or Bazel >= 9 isn't on PATH.
+# bb_clientd-backed hello-fuse e2e gate. Brings up buildbarn +
+# bb_clientd, populates CAS via cmd/source-push, renders project A
+# with --use-fuse-sources, and drives bazel build through the
+# bb_clientd RemoteOutputService — Bazel's intended Bazel-9
+# replacement for the dropped --unix_digest_hash_attribute_name
+# xattr fast-path. Skips cleanly when bb_clientd or Bazel >= 9
+# isn't on PATH. (cmd/cas-fuse + the in-process FUSE library it
+# was built on were retired alongside this — bb_clientd is the
+# production direction; cas-fuse was already legacy.)
 e2e-hello-bbclientd: converter source-push write-a
 	./tools/e2e-hello-bbclientd.sh
 
@@ -691,8 +686,8 @@ clean:
 #   make source-push-graph SOURCE_CACHE=/tmp/sc
 #
 # CI uses this path against a stood-up buildbarn so the
-# end-to-end "populate CAS from local trees, mount with cas-fuse,
-# read through" round-trip is exercised on every change.
+# end-to-end "populate CAS from local trees, read through CAS"
+# round-trip is exercised on every change.
 
 CAS_ADDR ?= 127.0.0.1:8980
 
@@ -747,20 +742,12 @@ bst-venv:
 	@$$HOME/.cache/cmake-to-bazel/bst-venv/bin/bst --version
 
 # e2e-source-push: stand up buildbarn, pack a tiny synthetic
-# source-cache, push it via cmd/source-push, verify CAS contents
-# round-trip through casfuse.NewTree. The fast cousin of the
-# full project-B e2e (PR #60) — runs in seconds and gates the
-# wire-format end of the pipeline.
+# source tree, push it via cas.UploadDir, verify CAS contents
+# round-trip through cas.GetBlob. Runs in seconds and gates the
+# wire-format end of the pipeline. Replaces the legacy
+# casfuse-based variant alongside cmd/cas-fuse's retirement.
 e2e-source-push: source-push buildbarn-up
-	@$(GO) test -tags=buildbarn -run TestE2E_SourcePush ./internal/casfuse/...; \
+	@$(GO) test -tags=buildbarn -run TestE2E_SourcePush ./internal/cas/...; \
 	  ec=$$?; \
 	  $(MAKE) buildbarn-down; \
 	  exit $$ec
-
-# e2e-hello-fuse: PR #60's verification target. Walks the full
-# pipeline (source-push → cas-fuse → write-a --use-fuse-sources
-# → structural verification of the generated project A). The
-# bazel-build step is gated behind RUN_BAZEL=1 — set it when the
-# host has bazel + cmake + ninja + bwrap.
-e2e-hello-fuse: converter cas-fuse source-push write-a
-	./tools/e2e-hello-fuse.sh

@@ -18,11 +18,10 @@
 #
 # Bazel-build half is intentionally out of scope here. The round-2
 # feedback loop (publish → look up → fine cc rules) needs a
-# REAPI-capable cas-fuse / bb_clientd mount, which is the same
-# infrastructure the cas-fuse / bb_clientd e2e gates already
-# exercise. That integration lands separately. This gate locks in
-# the rendered contract — write-a's output shape — so a regression
-# in the renderer surfaces immediately.
+# REAPI-capable bb_clientd mount, which is what the
+# `tools/e2e-meta-autotools-round2-live.sh` gate exercises. This
+# gate locks in the rendered contract — write-a's output shape —
+# so a regression in the renderer surfaces immediately.
 
 set -eu
 

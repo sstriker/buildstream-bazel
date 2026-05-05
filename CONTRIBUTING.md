@@ -161,18 +161,15 @@ build half locally.
   # often older.
   ```
 
-### For the FUSE / cas-fuse / bb_clientd verifications
+### For the bb_clientd verification
 
-`internal/casfuse`'s mount-gated tests + the hello-fuse and
-bbclientd e2e gates need FUSE userspace + the bb_clientd
-companion daemon.
-
-- **`fuse3`** + **`libfuse3-dev`**:
-  ```sh
-  sudo apt-get install fuse3 libfuse3-dev
-  ```
-  Verify with `fusermount3 --version`. macOS support is
-  experimental (NFSv4 path); see `internal/casfuse/fs_other.go`.
+The hello-bbclientd e2e gate needs the bb_clientd companion
+daemon. (Earlier docs in this file referenced an in-tree
+`cmd/cas-fuse` daemon + `internal/casfuse` library that hosted
+mount-gated tests under FUSE userspace. Both were retired once
+bb_clientd became the production CAS-aware mount path; the
+CI jobs that covered them (`cas-fuse-e2e`, `bazel9-fuse-sources`,
+`hello-fuse-e2e`) are gone too.)
 
 - **`bb_clientd`** — the Bazel-9 companion daemon
   (replaces the dropped `--unix_digest_hash_attribute_name`
