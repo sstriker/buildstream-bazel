@@ -1,0 +1,24 @@
+CC ?= cc
+CFLAGS = @CFLAGS@
+prefix = @PREFIX@
+libdir = $(prefix)/lib
+includedir = $(prefix)/include
+
+# Recursive-automake style: SUBDIRS dispatches to per-subdir
+# Makefiles. Both subdirs produce parent.o + lib<X>.a; the
+# .o basename collision is the bug under test (the converter
+# must use cwd to disambiguate the two compile events).
+SUBDIRS = libA libB
+
+all:
+	@for d in $(SUBDIRS); do $(MAKE) -C $$d CC='$(CC)' CFLAGS='$(CFLAGS)' all || exit 1; done
+
+install: all
+	install -D -m 0644 libA/libA.a $(DESTDIR)$(libdir)/libA.a
+	install -D -m 0644 libB/libB.a $(DESTDIR)$(libdir)/libB.a
+	install -D -m 0644 include/parent.h $(DESTDIR)$(includedir)/parent.h
+
+clean:
+	@for d in $(SUBDIRS); do $(MAKE) -C $$d clean; done
+
+.PHONY: all install clean

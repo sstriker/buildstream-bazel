@@ -1,0 +1,26 @@
+CC ?= cc
+CFLAGS = @CFLAGS@
+prefix = @PREFIX@
+libdir = $(prefix)/lib
+includedir = $(prefix)/include
+
+# config.h is produced at configure time (see ./configure). The
+# converter must recognize it as a build-time-generated header
+# and add it to libfoo's hdrs in BUILD.bazel.out.
+all: libfoo.a
+
+foo.o: foo.c foo.h config.h
+	$(CC) $(CFLAGS) -I. -c foo.c -o foo.o
+
+libfoo.a: foo.o
+	ar rcs libfoo.a foo.o
+
+install: all
+	install -D -m 0644 libfoo.a $(DESTDIR)$(libdir)/libfoo.a
+	install -D -m 0644 foo.h $(DESTDIR)$(includedir)/foo.h
+	install -D -m 0644 config.h $(DESTDIR)$(includedir)/config.h
+
+clean:
+	rm -f *.o *.a config.h
+
+.PHONY: all install clean

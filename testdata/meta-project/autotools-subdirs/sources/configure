@@ -1,0 +1,28 @@
+#!/bin/sh
+# Hand-rolled configure for the autotools-subdirs fixture.
+# Mirrors the canonical autoconf flag surface used by the
+# other autotools fixtures; substitutes @PREFIX@/@CFLAGS@ into
+# the top-level Makefile.in only — the per-subdir Makefiles
+# are checked-in literal (no recursion through configure).
+
+PREFIX=/usr/local
+CFLAGS=${CFLAGS:--O2}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prefix=*)        PREFIX="${1#--prefix=}" ;;
+        --prefix)          PREFIX="$2"; shift ;;
+        --exec-prefix=*|--bindir=*|--sbindir=*|--sysconfdir=*|\
+        --datadir=*|--includedir=*|--libdir=*|--libexecdir=*|\
+        --localstatedir=*|--sharedstatedir=*|--mandir=*|--infodir=*) ;;
+        --build=*|--host=*|--target=*) ;;
+        *) ;;
+    esac
+    shift
+done
+
+sed -e "s|@PREFIX@|$PREFIX|g" \
+    -e "s|@CFLAGS@|$CFLAGS|g" \
+    Makefile.in > Makefile
+
+echo "configure: PREFIX=$PREFIX CFLAGS=$CFLAGS"

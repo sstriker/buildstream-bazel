@@ -174,7 +174,7 @@ func TestCorrelate_LibAndApp(t *testing.T) {
 		{Kind: EventArchive, Out: "libfoo.a", Objs: []string{"foo.o", "bar.o"}},
 		{Kind: EventLink, Out: "myapp", Objs: []string{"myapp.o"}, Libs: []string{"foo"}, Copts: []string{"-fstack-protector-strong"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 
 	for _, marker := range []string{
 		`load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")`,
@@ -210,7 +210,7 @@ func TestCorrelate_GreetStandalone(t *testing.T) {
 	events := []Event{
 		{Kind: EventLink, Out: "greet", Srcs: []string{"greet.c"}, Copts: []string{"-fstack-protector-strong"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 	for _, marker := range []string{
 		`load("@rules_cc//cc:defs.bzl", "cc_binary")`,
 		`cc_binary(`,
@@ -258,14 +258,14 @@ func TestEmitBuild_ImportsManifestFallback(t *testing.T) {
 	events := []Event{
 		{Kind: EventLink, Out: "myapp", Srcs: []string{"myapp.c"}, Libs: []string{"z"}},
 	}
-	got := emitBuild(correlate(events), imports, nil)
+	got := emitBuild(correlate(events), imports, nil, nil)
 	if !strings.Contains(got, `deps = ["//elements/zlib:zlib"]`) {
 		t.Errorf("expected deps to resolve -lz via manifest:\n%s", got)
 	}
 
 	// Negative check: nil manifest (no fallback) drops the
 	// unresolved -lz silently.
-	got2 := emitBuild(correlate(events), nil, nil)
+	got2 := emitBuild(correlate(events), nil, nil, nil)
 	if strings.Contains(got2, "deps") {
 		t.Errorf("nil manifest should not produce deps; got:\n%s", got2)
 	}
@@ -292,7 +292,7 @@ func TestPerTargetIntent_PreservesAlwaysOptimize(t *testing.T) {
 		Rules:      map[string]MakeRule{},
 		TargetVars: map[string][]TargetVar{"hotloop.o": {{Name: "CFLAGS", Op: "+=", Value: "-O2"}}},
 	}
-	got := emitBuild(correlate(events), nil, makeDB)
+	got := emitBuild(correlate(events), nil, makeDB, nil)
 	// hotloop.o's per-target -O2 lands in the cc_library's copts.
 	if !strings.Contains(got, `copts = ["-O2"]`) {
 		t.Errorf("expected -O2 in copts (per-target intent preserved):\n%s", got)
@@ -324,7 +324,7 @@ func TestCorrelate_LibtoolDualCompile(t *testing.T) {
 		{Kind: EventCompile, Out: ".libs/foo.o", Srcs: []string{"foo.c"}, Copts: []string{"-O2", "-fPIC"}, Defines: []string{"PIC"}},
 		{Kind: EventArchive, Out: "libfoo_pic.a", Objs: []string{".libs/foo.o"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 	// Both rules emit, both have foo.c as src.
 	for _, marker := range []string{
 		`name = "foo"`,
@@ -374,7 +374,7 @@ func TestPerTargetIntent_NilDBStripsEverything(t *testing.T) {
 		{Kind: EventCompile, Out: "x.o", Srcs: []string{"x.c"}, Copts: []string{"-O2", "-g", "-fPIC"}},
 		{Kind: EventArchive, Out: "libx.a", Objs: []string{"x.o"}},
 	}
-	got := emitBuild(correlate(events), nil, nil)
+	got := emitBuild(correlate(events), nil, nil, nil)
 	if strings.Contains(got, "copts =") {
 		t.Errorf("nil makeDB should strip every default flag; got:\n%s", got)
 	}
@@ -397,5 +397,280 @@ func TestStripLibPrefixSuffix(t *testing.T) {
 		if got := stripLibPrefixSuffix(c.in); got != c.want {
 			t.Errorf("stripLibPrefixSuffix(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestCorrelate_SubdirsCwdDisambiguation guards the recursive-
+// automake (`SUBDIRS`) collision case: two sub-Makefiles each
+// compile a `parent.c` (same basename, same `-o parent.o`)
+// inside their own subdir. Without cwd-keyed correlation, both
+// subdir archives' lookups would resolve to whichever compile
+// event happened to be written last into objByPath / objByBasename
+// — collapsing the two archives' sources together. With cwd
+// captured by the build-tracer and threaded through to the
+// archive event, each archive resolves to its own subdir's
+// compile.
+func TestCorrelate_SubdirsCwdDisambiguation(t *testing.T) {
+	events := []Event{
+		// libA/Makefile recipe runs from libA/ and produces libA/parent.o.
+		// The Out path is what `-o` produced relative to the recipe's
+		// cwd ("parent.o"); cwd is the absolute libA path.
+		{Kind: EventCompile, Cwd: "/build/libA", Out: "parent.o", Srcs: []string{"parent.c"}, Defines: []string{"VARIANT=A"}},
+		{Kind: EventArchive, Cwd: "/build/libA", Out: "libA.a", Objs: []string{"parent.o"}},
+		// libB/Makefile: identical basename / identical Out, different cwd.
+		{Kind: EventCompile, Cwd: "/build/libB", Out: "parent.o", Srcs: []string{"parent.c"}, Defines: []string{"VARIANT=B"}},
+		{Kind: EventArchive, Cwd: "/build/libB", Out: "libB.a", Objs: []string{"parent.o"}},
+	}
+	got := emitBuild(correlate(events), nil, nil, nil)
+
+	// Both archives should appear with their own define preserved.
+	blocks := strings.Split(got, "cc_library(")
+	var aBody, bBody string
+	for _, b := range blocks {
+		switch {
+		case strings.Contains(b, `name = "A"`):
+			aBody = b
+		case strings.Contains(b, `name = "B"`):
+			bBody = b
+		}
+	}
+	if aBody == "" || bBody == "" {
+		t.Fatalf("could not isolate A/B rule bodies\n--body--\n%s", got)
+	}
+	if !strings.Contains(aBody, `defines = ["VARIANT=A"]`) {
+		t.Errorf("libA leaked the wrong VARIANT (cwd disambiguation failed)\n--A body--\n%s", aBody)
+	}
+	if !strings.Contains(bBody, `defines = ["VARIANT=B"]`) {
+		t.Errorf("libB leaked the wrong VARIANT (cwd disambiguation failed)\n--B body--\n%s", bBody)
+	}
+}
+
+// TestClassifyArgv_LibtoolSkips covers the libtool-emitted
+// invocations the converter must NOT lower into events.
+//
+//   - `cc -shared -o libfoo.so.0.0.0 .libs/foo.o` is libtool's
+//     real shared-library link step; Bazel's cc_library
+//     produces the matching .so on the consumer side, so we
+//     skip it (otherwise it'd land as a spurious cc_binary
+//     named "libfoo.so.0.0.0").
+//   - `cc -c -o foo.lo foo.c` and similar `-o ...la` outputs
+//     are libtool wrapper metadata files; the inner cc
+//     invocation that does the real compile (`-o .libs/foo.o`
+//     / `-o foo.o`) is captured on its own line.
+//   - The bare `libfoo.so` / build-tree `.libs/libfoo.so`
+//     variants must also be filtered; only the actual
+//     `.so` extension's version-suffix shape is treated as
+//     a shared lib (so `foo.something.elsewhere.c` doesn't
+//     get false-positive-skipped).
+func TestClassifyArgv_LibtoolSkips(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		ok   bool
+	}{
+		{
+			"shared-lib link skipped (versioned .so)",
+			[]string{"cc", "-shared", "-o", ".libs/libfoo.so.0.0.0", ".libs/foo.o", ".libs/bar.o"},
+			false,
+		},
+		{
+			"shared-lib link skipped (bare .so)",
+			[]string{"cc", "-shared", "-o", ".libs/libfoo.so", ".libs/foo.o"},
+			false,
+		},
+		{
+			"shared-lib link skipped (.dylib on darwin)",
+			[]string{"cc", "-dynamiclib", "-o", "libfoo.dylib", "foo.o"},
+			false,
+		},
+		{
+			"libtool .lo wrapper output skipped",
+			[]string{"cc", "-c", "-o", "foo.lo", "foo.c"},
+			false,
+		},
+		{
+			"libtool .la wrapper output skipped",
+			[]string{"cc", "-o", "libfoo.la", "foo.lo", "bar.lo"},
+			false,
+		},
+		{
+			"non-shared output retained (regression guard)",
+			[]string{"cc", "-shared", "-o", ".libs/something.weird", ".libs/foo.o"},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, ok := classifyArgv(c.argv)
+			if ok != c.ok {
+				t.Errorf("classifyArgv ok = %v, want %v", ok, c.ok)
+			}
+		})
+	}
+}
+
+// TestIsSharedLibraryOutput covers the suffix logic directly:
+// version-segment validation rejects malformed `.so`-followed
+// strings (e.g., `.so.weird`) so the gate doesn't drop real
+// outputs that happen to contain `.so` in their name.
+func TestIsSharedLibraryOutput(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"libfoo.so", true},
+		{"libfoo.so.0", true},
+		{"libfoo.so.0.0.0", true},
+		{".libs/libfoo.so.1.2.3", true},
+		{"libfoo.dylib", true},
+		{"foo.o", false},
+		{"libfoo.a", false},
+		{"libfoo.so.weird", false}, // non-numeric version segment → not a shared lib
+		{"foo.c", false},
+		{"foo.so.1.bad.2", false}, // mixed numeric/non-numeric segments
+	}
+	for _, c := range cases {
+		if got := isSharedLibraryOutput(c.in); got != c.want {
+			t.Errorf("isSharedLibraryOutput(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestClassifyArgv_AssemblerSources covers the `.S` (cpp-then-
+// assemble) and `.s` (assemble-only) source extensions. cc
+// handles both natively; real autotools projects like libffi
+// wire arch-specific `src/<arch>/sysv.S` through configure.host,
+// so the converter has to recognize them as source inputs.
+// Without this, `cc -c sysv.S -o sysv.o` would have srcs=[]
+// and the compile-only branch would return ok=false — silently
+// dropping the event.
+func TestClassifyArgv_AssemblerSources(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want Event
+	}{
+		{
+			"capital S (cpp + assemble)",
+			[]string{"cc", "-c", "-o", "sysv.o", "sysv.S"},
+			Event{Kind: EventCompile, Out: "sysv.o", Srcs: []string{"sysv.S"}},
+		},
+		{
+			"lowercase s (assemble only)",
+			[]string{"cc", "-c", "-o", "boot.o", "boot.s"},
+			Event{Kind: EventCompile, Out: "boot.o", Srcs: []string{"boot.s"}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := classifyArgv(c.argv)
+			if !ok {
+				t.Fatalf("classifyArgv ok = false; want true")
+			}
+			if got.Kind != c.want.Kind {
+				t.Errorf("Kind = %d, want %d", got.Kind, c.want.Kind)
+			}
+			if got.Out != c.want.Out {
+				t.Errorf("Out = %q, want %q", got.Out, c.want.Out)
+			}
+			if !reflect.DeepEqual(got.Srcs, c.want.Srcs) {
+				t.Errorf("Srcs = %#v, want %#v", got.Srcs, c.want.Srcs)
+			}
+		})
+	}
+}
+
+// TestEmitBuild_GeneratedHeaders covers the AC_CONFIG_HEADERS
+// path: when the pipeline tells the converter that `config.h`
+// (or any other build-time-generated header) exists, every
+// emitted cc_library / cc_binary should carry it in its hdrs
+// attribute. The pipeline detects these via a pre-configure /
+// post-build snapshot diff and passes the resulting list via
+// --generated-headers.
+func TestEmitBuild_GeneratedHeaders(t *testing.T) {
+	events := []Event{
+		{Kind: EventCompile, Out: "foo.o", Srcs: []string{"foo.c"}},
+		{Kind: EventArchive, Out: "libfoo.a", Objs: []string{"foo.o"}},
+		{Kind: EventCompile, Out: "myapp.o", Srcs: []string{"myapp.c"}},
+		{Kind: EventLink, Out: "myapp", Objs: []string{"myapp.o"}, Libs: []string{"foo"}},
+	}
+	got := emitBuild(correlate(events), nil, nil, []string{"config.h", "fficonfig.h"})
+
+	for _, marker := range []string{
+		`hdrs = ["config.h", "fficonfig.h"]`,
+		`name = "foo"`,
+		`name = "myapp"`,
+	} {
+		if !strings.Contains(got, marker) {
+			t.Errorf("missing marker %q\n--body--\n%s", marker, got)
+		}
+	}
+	// Both rules (cc_library AND cc_binary) should carry hdrs.
+	if strings.Count(got, `hdrs = ["config.h", "fficonfig.h"]`) != 2 {
+		t.Errorf("expected hdrs on every emitted rule; got:\n%s", got)
+	}
+}
+
+// TestParseGeneratedHeaderList covers the input shape: one
+// path per line, blank lines + `#` comments tolerated, leading
+// `./` (from `find . -type f`) stripped.
+func TestParseGeneratedHeaderList(t *testing.T) {
+	input := []byte(`# generated headers from build snapshot diff
+./config.h
+
+./src/parser.h
+# blank lines and comments are dropped
+fficonfig.h
+`)
+	got := parseGeneratedHeaderList(input)
+	want := []string{"config.h", "src/parser.h", "fficonfig.h"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("parseGeneratedHeaderList = %#v, want %#v", got, want)
+	}
+
+	// Empty body returns nil (callers tolerate either nil or
+	// empty when --generated-headers points at an empty file).
+	if got := parseGeneratedHeaderList(nil); got != nil {
+		t.Errorf("parseGeneratedHeaderList(nil) = %#v, want nil", got)
+	}
+}
+
+// TestParseCwdAnnotation covers the build-tracer-extension
+// `cwd:"..."` annotation that the native tracer emits between
+// the pid prefix and the execve(...) call. Strace traces (no
+// cwd capture) must round-trip as empty.
+func TestParseCwdAnnotation(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"native tracer line with cwd",
+			`1748  cwd:"/build/libA"  execve("/usr/bin/cc", ["cc", "-c", "-o", "parent.o", "parent.c"], 0x... /* 0 vars */) = 0`,
+			"/build/libA",
+		},
+		{
+			"strace line with no cwd annotation",
+			`1748  execve("/usr/bin/cc", ["cc", "-c", "-o", "parent.o", "parent.c"], 0x... /* 0 vars */) = 0`,
+			"",
+		},
+		{
+			"cwd containing an escaped quote",
+			`1748  cwd:"/build/weird\"dir"  execve("/usr/bin/cc", ["cc"], 0x... /* 0 vars */) = 0`,
+			`/build/weird"dir`,
+		},
+		{
+			"cwd token appears AFTER execve (not the annotation we want)",
+			`1748  execve("/usr/bin/cwd:\"trap\"", ["cwd"], 0x... /* 0 vars */) = 0`,
+			"",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseCwdAnnotation(c.line); got != c.want {
+				t.Errorf("parseCwdAnnotation = %q, want %q", got, c.want)
+			}
+		})
 	}
 }

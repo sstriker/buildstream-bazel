@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-determinism \
+        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -262,6 +262,18 @@ e2e-meta-autotools-tu-optflags: check-tools converter
 e2e-meta-autotools-libtool-pic: check-tools converter
 	scripts/meta-autotools-libtool-pic.sh
 
+# Real-libtool emission gate. Same translation unit produces
+# both libfoo.a (static, via ar/ranlib) AND libfoo.so.0.0.0
+# (shared, via cc -shared) plus a libfoo.la text metadata
+# file. Asserts the converter recovers ONLY the cc_library
+# from the .a archive — the cc -shared event is filtered
+# (Bazel's cc_library handles shared output on its own;
+# emitting it as a cc_binary would be a duplicate / name
+# collision) and the .la file participates in install-mapping
+# but doesn't drive a rule.
+e2e-meta-autotools-libtool-shared: check-tools converter
+	scripts/meta-autotools-libtool-shared.sh
+
 # Trace + make-db determinism gate. Drives the autotools-greet
 # fixture through build-tracer twice (with different INSTALL_ROOT
 # / BUILD_ROOT mktemp paths) and asserts the canonical trace +
@@ -270,6 +282,30 @@ e2e-meta-autotools-libtool-pic: check-tools converter
 # registered trace can't be reused across builds.
 e2e-meta-autotools-determinism: check-tools converter
 	scripts/meta-autotools-determinism.sh
+
+# Recursive-automake (SUBDIRS) collision gate. Two-subdir
+# fixture where each subdir compiles its own source into
+# parent.o (basename collision); the build-tracer's per-execve
+# cwd capture lets the converter disambiguate the two compile
+# events so each cc_library carries the right per-subdir
+# defines / sources.
+e2e-meta-autotools-subdirs: check-tools converter
+	scripts/meta-autotools-subdirs.sh
+
+# AC_CONFIG_HEADERS-style generated header gate. The fixture's
+# configure step produces config.h from config.h.in; the
+# pipeline's pre/post-configure header snapshot diff feeds
+# convert-element-autotools' --generated-headers flag so the
+# emitted cc_library carries config.h in its hdrs.
+e2e-meta-autotools-config-h: check-tools converter
+	scripts/meta-autotools-config-h.sh
+
+# Assembler-source (.S) recognition gate. libffi-style mixed
+# C + arch-specific assembly: the converter must include .S
+# files in cc_library srcs alongside .c. The fixture's sysv.S
+# is x86_64; the build phase requires an x86_64 host.
+e2e-meta-autotools-asm: check-tools converter
+	scripts/meta-autotools-asm.sh
 
 # Conditional-lowering acceptance gate. Single kind:manual element
 # (testdata/meta-project/conditional-greet/) whose .bst declares

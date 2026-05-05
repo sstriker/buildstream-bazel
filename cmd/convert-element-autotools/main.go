@@ -47,6 +47,7 @@ func main() {
 	importsPath := flag.String("imports-manifest", "", "optional: path to imports.json mapping cross-element link libraries to Bazel labels")
 	makeDBPath := flag.String("make-db", "", "optional: path to `make -np` dump for post-build Makefile structural hints (target names, recipes, variables)")
 	outMapping := flag.String("out-install-mapping", "", "optional: path to write install-mapping.json sidecar (source → install-tree dest map; consumed by Phase 4 typed-filegroup work)")
+	generatedHeadersPath := flag.String("generated-headers", "", "optional: path to a newline-separated list of build-time-generated headers (config.h-style outputs of AC_CONFIG_HEADERS / yacc / etc.); added to every cc_library's hdrs so the BUILD manifest documents the dep")
 	flag.Parse()
 
 	if *tracePath == "" || *outBuild == "" {
@@ -85,9 +86,19 @@ func main() {
 			makeDB = parseMakeDB(body)
 		}
 	}
+	var generatedHeaders []string
+	if *generatedHeadersPath != "" {
+		body, err := os.ReadFile(*generatedHeadersPath)
+		if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "convert-element-autotools: read generated-headers: %v\n", err)
+			os.Exit(1)
+		}
+		generatedHeaders = parseGeneratedHeaderList(body)
+	}
+
 	events := parseTrace(traceFile)
 	graph := correlate(events)
-	out := emitBuild(graph, imports, makeDB)
+	out := emitBuild(graph, imports, makeDB, generatedHeaders)
 
 	// Install-mapping sidecar: when --out-install-mapping is
 	// set AND we have a make-db, parse the install: recipe and
@@ -152,6 +163,7 @@ const (
 // by absolute path (which is build-dir-dependent).
 type Event struct {
 	Kind    EventKind
+	Cwd     string   // tracee cwd at exec time ("" when build-tracer didn't capture it)
 	Out     string   // output path (-o argument or ar's first positional)
 	Srcs    []string // .c/.cc/.cpp/.cxx/.c++/.C input args (compile + link)
 	Objs    []string // .o input args (link + archive)
@@ -169,6 +181,7 @@ func parseTrace(r *os.File) []Event {
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		cwd := parseCwdAnnotation(line) // "" when absent
 		argv, ok := parseExecveLine(line)
 		if !ok {
 			continue
@@ -177,9 +190,46 @@ func parseTrace(r *os.File) []Event {
 		if !ok {
 			continue
 		}
+		ev.Cwd = cwd
 		out = append(out, ev)
 	}
 	return out
+}
+
+// parseCwdAnnotation extracts the build-tracer-extension
+// `cwd:"..."` annotation that may appear between the (already-
+// stripped) pid prefix and the `execve(...)` call. Returns ""
+// when the annotation isn't present (older build-tracer
+// versions, or strace-fallback traces that didn't capture cwd).
+//
+// Format from build-tracer's emitExecve:
+//
+//	cwd:"/build/root/lib"  execve(...) = 0
+//
+// We don't unescape strace's quoting beyond the simplest \"
+// case because real cwd paths are POSIX paths without embedded
+// quotes; if a path contains \", the converter falls back to
+// the empty-cwd behavior (basename-only correlation, the
+// pre-cwd default).
+func parseCwdAnnotation(line string) string {
+	idx := strings.Index(line, "cwd:\"")
+	if idx < 0 {
+		return ""
+	}
+	// Make sure cwd: appears BEFORE execve(, not embedded
+	// somewhere in argv.
+	exec := strings.Index(line, "execve(")
+	if exec < 0 || idx >= exec {
+		return ""
+	}
+	rest := line[idx+len("cwd:"):] // includes the leading "
+	end := indexAfterQuoted(rest, 0)
+	if end < 0 {
+		return ""
+	}
+	// rest[1:end] is the content between the quotes.
+	// indexAfterQuoted returns the index of the closing quote.
+	return strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(rest[1:end])
 }
 
 // classifyArgv routes a single execve argv to the right Event
@@ -276,6 +326,21 @@ func classifyCompilerDriver(argv []string) (Event, bool) {
 	if output == "" {
 		return Event{}, false
 	}
+	// Shared-library link outputs (real libtool's `cc -shared
+	// -o libfoo.so.0.0.0` step) are skipped: Bazel's cc_library
+	// rule already produces the matching shared object at link
+	// time alongside the static archive. Emitting these as
+	// EventLink would create a spurious `cc_binary` named
+	// libfoo.so.0.0.0 that collides with — and adds nothing
+	// over — the cc_library recovered from the matching .a.
+	// We also skip libtool's wrapper-mediated `-o foo.lo`
+	// outputs: `.lo` is libtool's own metadata file, never a
+	// real artifact, and the inner cc invocation that does the
+	// real compile (`-o .libs/foo.o` / `-o foo.o`) is captured
+	// independently.
+	if isSharedLibraryOutput(output) || isLibtoolObject(output) {
+		return Event{}, false
+	}
 	if compileOnly {
 		// Compile-only invocations should have exactly one
 		// source and an output ending in .o. Tolerate
@@ -305,6 +370,62 @@ func classifyCompilerDriver(argv []string) (Event, bool) {
 		Copts:   stableUnique(copts),
 		Defines: stableUnique(defines),
 	}, true
+}
+
+// isSharedLibraryOutput recognizes the output forms libtool's
+// link mode produces for shared libraries: bare `libfoo.so` /
+// `libfoo.dylib`, versioned `libfoo.so.0` / `libfoo.so.0.0.0`,
+// and the build-tree `.libs/`-prefixed variants. Bazel's
+// cc_library covers the equivalent on the consumer side, so
+// these events don't need to round-trip through the converter.
+func isSharedLibraryOutput(p string) bool {
+	base := filepath.Base(p)
+	if strings.HasSuffix(base, ".dylib") {
+		return true
+	}
+	// `.so` may be followed by version segments (`.so.0.0.0`).
+	// Find the first `.so` boundary and require the remainder
+	// to be either empty or `.<digits>(.<digits>)*`.
+	idx := strings.Index(base, ".so")
+	if idx < 0 {
+		return false
+	}
+	rest := base[idx+len(".so"):]
+	if rest == "" {
+		return true
+	}
+	// Versioned shared libs have the shape `.so.<digits>(.<digits>)*`.
+	// rest begins with a leading "." that we strip before walking
+	// the numeric segments.
+	if !strings.HasPrefix(rest, ".") {
+		return false
+	}
+	for _, seg := range strings.Split(rest[1:], ".") {
+		if seg == "" {
+			return false
+		}
+		for _, r := range seg {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isLibtoolObject covers libtool's `.lo` metadata file path
+// (compile mode) and `.la` text-archive path (link mode).
+// Neither is a real compile / link artifact — both are
+// libtool-internal bookkeeping written by the libtool shell
+// script. The actual cc invocations under the wrapper produce
+// `.libs/foo.o` / `.libs/libfoo.so` / `.libs/libfoo.a` and
+// are captured in the trace independently.
+func isLibtoolObject(p string) bool {
+	switch filepath.Ext(p) {
+	case ".lo", ".la":
+		return true
+	}
+	return false
 }
 
 // perTargetIntentFlags returns the set of flag tokens that
@@ -440,6 +561,16 @@ func isSourceFile(p string) bool {
 	switch filepath.Ext(p) {
 	case ".c", ".cc", ".cpp", ".cxx", ".C", ".c++":
 		return true
+	case ".S", ".s":
+		// Assembler sources. `.S` is preprocessed-then-assembled
+		// (cpp invoked first); `.s` is assembled directly. cc
+		// handles both natively and Bazel's cc_library accepts
+		// them in srcs alongside `.c`. Real autotools projects
+		// (notably libffi's `src/<arch>/sysv.S`) wire arch-
+		// specific assembly via configure.host; without `.S` in
+		// the source-file allowlist these compile events get
+		// silently dropped during classifyArgv.
+		return true
 	}
 	return false
 }
@@ -453,17 +584,22 @@ func isObjectFile(p string) bool {
 // consume which archives. The emitter walks Graph to produce
 // cc_library / cc_binary rules.
 type Graph struct {
+	// objByCwdPath maps `<cwd>/<out>` (the compile event's
+	// cwd at exec time joined with its -o output path) to the
+	// producing event. Preferred when both the producer and a
+	// consumer event have cwd captured — disambiguates
+	// recursive-make SUBDIRS where lib/foo.o and src/foo.o
+	// would otherwise look identical to objByPath / objByBasename.
+	objByCwdPath map[string]Event
 	// objByPath maps the compile event's exact output path
 	// (e.g., "foo.o", ".libs/foo.o") to the producing event.
-	// Preferred for archive/link lookups because libtool-style
-	// dual-compile patterns produce two events with different
-	// paths but the same basename — keying by basename alone
-	// would collide.
+	// Used as a fallback when cwd isn't available; libtool-
+	// style dual-compile patterns also rely on this tier
+	// (`foo.o` vs `.libs/foo.o` — different Out paths).
 	objByPath map[string]Event
-	// objByBasename is the fallback for the rare case where an
-	// archive references an object by a different path form
-	// than the compiler's -o argument. Last-write-wins on
-	// duplicate basenames.
+	// objByBasename is the last-resort fallback for traces
+	// where neither side has reliable path information.
+	// Last-write-wins on duplicate basenames.
 	objByBasename map[string]Event
 	// libByBaseName maps a stripped library basename
 	// (libfoo.a → "foo") to the archive event that produced it.
@@ -480,12 +616,30 @@ type Graph struct {
 
 // lookupCompile resolves an object path (as it appears in an
 // archive's input list or a link command's `.o` arg) to the
-// compile event that produced it. Tries exact-path match
-// first; falls back to basename. The two-tier lookup is what
-// keeps libtool-style dual-compiles distinguishable: `foo.o`
-// resolves to the non-PIC compile, `.libs/foo.o` to the PIC
-// one.
-func (g *Graph) lookupCompile(obj string) (Event, bool) {
+// compile event that produced it. The lookup is three-tier:
+//
+//  1. (cwd, out) exact match — preferred when both events
+//     have a cwd captured. Disambiguates same-basename
+//     compiles from recursive-make SUBDIRS where lib/foo.o
+//     and src/foo.o would otherwise collide.
+//  2. ev.Out exact match — falls back when the consumer
+//     event (archive / link) has no cwd OR the producer
+//     compile event had no cwd. Also keeps libtool-style
+//     dual-compiles distinguishable: `foo.o` resolves to
+//     the non-PIC compile, `.libs/foo.o` to the PIC one.
+//  3. basename match — last-resort for traces where neither
+//     side has reliable path information.
+//
+// `cwd` is the consumer event's cwd; an archive in lib/Makefile
+// references "foo.o" relative to lib/, so we compose
+// `(consumerCwd, obj)` for the (1) lookup.
+func (g *Graph) lookupCompile(consumerCwd, obj string) (Event, bool) {
+	if consumerCwd != "" {
+		key := consumerCwd + string(filepath.Separator) + obj
+		if ev, ok := g.objByCwdPath[key]; ok {
+			return ev, true
+		}
+	}
 	if ev, ok := g.objByPath[obj]; ok {
 		return ev, true
 	}
@@ -495,6 +649,7 @@ func (g *Graph) lookupCompile(obj string) (Event, bool) {
 
 func correlate(events []Event) *Graph {
 	g := &Graph{
+		objByCwdPath:  map[string]Event{},
 		objByPath:     map[string]Event{},
 		objByBasename: map[string]Event{},
 		libByBaseName: map[string]Event{},
@@ -502,6 +657,9 @@ func correlate(events []Event) *Graph {
 	for _, ev := range events {
 		switch ev.Kind {
 		case EventCompile:
+			if ev.Cwd != "" {
+				g.objByCwdPath[ev.Cwd+string(filepath.Separator)+ev.Out] = ev
+			}
 			g.objByPath[ev.Out] = ev
 			g.objByBasename[filepath.Base(ev.Out)] = ev
 		case EventArchive:
@@ -529,6 +687,7 @@ type CCRule struct {
 	RuleKind string // "cc_library" or "cc_binary"
 	Name     string
 	Srcs     []string // sorted
+	Hdrs     []string // sorted (build-time-generated headers; AC_CONFIG_HEADERS-style config.h)
 	Copts    []string // sorted, deduped
 	Defines  []string // sorted, deduped (-D<name>[=<val>] from compile events)
 	Deps     []string // sorted (in-tree library labels like ":foo")
@@ -541,8 +700,20 @@ type CCRule struct {
 // to local archives or — via the optional imports manifest —
 // to cross-element Bazel labels). Order is stable: libraries
 // first sorted by name, then binaries sorted by name.
-func emitBuild(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) string {
+func emitBuild(g *Graph, imports *manifest.Resolver, makeDB *MakeDB, generatedHeaders []string) string {
 	rules := buildRules(g, imports, makeDB)
+	// AC_CONFIG_HEADERS-style generated headers are universal to
+	// every translation unit in an autotools build (config.h /
+	// fficonfig.h / etc. is `#include`d at the top of every .c).
+	// Apply uniformly; any over-attribution is harmless (Bazel
+	// would just include the file in the lib's package without
+	// surfacing it as a public header).
+	if len(generatedHeaders) > 0 {
+		hdrs := stableUnique(generatedHeaders)
+		for i := range rules {
+			rules[i].Hdrs = hdrs
+		}
+	}
 	if len(rules) == 0 {
 		return "# Generated by convert-element-autotools. DO NOT EDIT.\n# (no buildable targets recovered from trace)\n"
 	}
@@ -560,6 +731,9 @@ func emitBuild(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) string {
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "%s(\n    name = %q,\n", r.RuleKind, r.Name)
 		fmt.Fprintf(&b, "    srcs = %s,\n", strList(r.Srcs))
+		if len(r.Hdrs) > 0 {
+			fmt.Fprintf(&b, "    hdrs = %s,\n", strList(r.Hdrs))
+		}
 		if len(r.Copts) > 0 {
 			fmt.Fprintf(&b, "    copts = %s,\n", strList(r.Copts))
 		}
@@ -578,13 +752,39 @@ func emitBuild(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) string {
 	return b.String()
 }
 
+// parseGeneratedHeaderList reads the body of the
+// generated-headers list file (one path per line; blank lines
+// and `#`-prefixed comments tolerated) and returns the
+// non-empty entries. The pipeline emits this file by snapshotting
+// the build dir's `*.h` set before configure and after make,
+// then running `comm -13` on the sorted lists; the result is
+// the set of headers created by the build (config.h-style
+// outputs of AC_CONFIG_HEADERS, yacc parser headers, etc.).
+func parseGeneratedHeaderList(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// `find . -type f -name '*.h'` emits paths like
+		// `./config.h`. Drop the leading `./` so the BUILD
+		// reference is package-relative.
+		out = append(out, strings.TrimPrefix(line, "./"))
+	}
+	return out
+}
+
 func buildRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) []CCRule {
 	var libs, bins []CCRule
 	// Archives → cc_library.
 	for _, a := range g.archives {
 		var srcs, copts, defines []string
 		for _, obj := range a.Objs {
-			c, ok := g.lookupCompile(obj)
+			c, ok := g.lookupCompile(a.Cwd, obj)
 			if !ok {
 				continue
 			}
@@ -620,7 +820,7 @@ func buildRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) []CCRule {
 		// Each .o input expands to its compile event's source +
 		// copts + defines (last-write-wins on duplicate basenames).
 		for _, obj := range l.Objs {
-			c, ok := g.lookupCompile(obj)
+			c, ok := g.lookupCompile(l.Cwd, obj)
 			if !ok {
 				continue
 			}

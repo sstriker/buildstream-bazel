@@ -740,6 +740,7 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 		`"BUILD.bazel.out"`,
 		`"make-db.txt"`,
 		`"install-mapping.json"`,
+		`"generated-headers.txt"`,
 		`"//tools:build-tracer"`,
 		`"//tools:convert-element-autotools"`,
 		`"$$EXEC_ROOT/$(location //tools:build-tracer)"`,
@@ -751,6 +752,9 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 		`/^#[[:space:]]+Last modified /d`,
 		`> "$$EXEC_ROOT/$(location make-db.txt)"`,
 		`--make-db="$(location make-db.txt)"`,
+		`--generated-headers="$(location generated-headers.txt)"`,
+		`PRE_HEADERS_LIST="$$(mktemp)"`,
+		`comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST"`,
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("native autotools BUILD missing %q\n--body--\n%s", marker, got)
