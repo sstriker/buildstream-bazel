@@ -62,11 +62,19 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 	}
 
 	libs := filterImportable(pkg.Targets)
-	if len(libs) == 0 {
-		return nil, fmt.Errorf("cmakecfg.Emit: no importable library targets")
-	}
-
 	b := &Bundle{Files: map[string][]byte{}}
+	if len(libs) == 0 {
+		// Executable-only / no-library projects have nothing to
+		// publish to cmake-side find_package consumers. Return
+		// an empty bundle so the caller can still satisfy its
+		// --out-bundle-dir contract (Bazel genrules require the
+		// declared output dir to exist) without burning a
+		// failure path. find_package(<Pkg> CONFIG) consumers of
+		// such a bundle would see no imported targets, which
+		// matches what cmake sees for a real project that only
+		// installs an executable.
+		return b, nil
+	}
 
 	cfg, err := renderConfig(pkg.Name)
 	if err != nil {
