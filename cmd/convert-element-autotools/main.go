@@ -152,6 +152,7 @@ const (
 // by absolute path (which is build-dir-dependent).
 type Event struct {
 	Kind    EventKind
+	Cwd     string   // tracee cwd at exec time ("" when build-tracer didn't capture it)
 	Out     string   // output path (-o argument or ar's first positional)
 	Srcs    []string // .c/.cc/.cpp/.cxx/.c++/.C input args (compile + link)
 	Objs    []string // .o input args (link + archive)
@@ -169,6 +170,7 @@ func parseTrace(r *os.File) []Event {
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
+		cwd := parseCwdAnnotation(line) // "" when absent
 		argv, ok := parseExecveLine(line)
 		if !ok {
 			continue
@@ -177,9 +179,46 @@ func parseTrace(r *os.File) []Event {
 		if !ok {
 			continue
 		}
+		ev.Cwd = cwd
 		out = append(out, ev)
 	}
 	return out
+}
+
+// parseCwdAnnotation extracts the build-tracer-extension
+// `cwd:"..."` annotation that may appear between the (already-
+// stripped) pid prefix and the `execve(...)` call. Returns ""
+// when the annotation isn't present (older build-tracer
+// versions, or strace-fallback traces that didn't capture cwd).
+//
+// Format from build-tracer's emitExecve:
+//
+//	cwd:"/build/root/lib"  execve(...) = 0
+//
+// We don't unescape strace's quoting beyond the simplest \"
+// case because real cwd paths are POSIX paths without embedded
+// quotes; if a path contains \", the converter falls back to
+// the empty-cwd behavior (basename-only correlation, the
+// pre-cwd default).
+func parseCwdAnnotation(line string) string {
+	idx := strings.Index(line, "cwd:\"")
+	if idx < 0 {
+		return ""
+	}
+	// Make sure cwd: appears BEFORE execve(, not embedded
+	// somewhere in argv.
+	exec := strings.Index(line, "execve(")
+	if exec < 0 || idx >= exec {
+		return ""
+	}
+	rest := line[idx+len("cwd:"):] // includes the leading "
+	end := indexAfterQuoted(rest, 0)
+	if end < 0 {
+		return ""
+	}
+	// rest[1:end] is the content between the quotes.
+	// indexAfterQuoted returns the index of the closing quote.
+	return strings.NewReplacer(`\"`, `"`, `\\`, `\`).Replace(rest[1:end])
 }
 
 // classifyArgv routes a single execve argv to the right Event
@@ -453,17 +492,22 @@ func isObjectFile(p string) bool {
 // consume which archives. The emitter walks Graph to produce
 // cc_library / cc_binary rules.
 type Graph struct {
+	// objByCwdPath maps `<cwd>/<out>` (the compile event's
+	// cwd at exec time joined with its -o output path) to the
+	// producing event. Preferred when both the producer and a
+	// consumer event have cwd captured — disambiguates
+	// recursive-make SUBDIRS where lib/foo.o and src/foo.o
+	// would otherwise look identical to objByPath / objByBasename.
+	objByCwdPath map[string]Event
 	// objByPath maps the compile event's exact output path
 	// (e.g., "foo.o", ".libs/foo.o") to the producing event.
-	// Preferred for archive/link lookups because libtool-style
-	// dual-compile patterns produce two events with different
-	// paths but the same basename — keying by basename alone
-	// would collide.
+	// Used as a fallback when cwd isn't available; libtool-
+	// style dual-compile patterns also rely on this tier
+	// (`foo.o` vs `.libs/foo.o` — different Out paths).
 	objByPath map[string]Event
-	// objByBasename is the fallback for the rare case where an
-	// archive references an object by a different path form
-	// than the compiler's -o argument. Last-write-wins on
-	// duplicate basenames.
+	// objByBasename is the last-resort fallback for traces
+	// where neither side has reliable path information.
+	// Last-write-wins on duplicate basenames.
 	objByBasename map[string]Event
 	// libByBaseName maps a stripped library basename
 	// (libfoo.a → "foo") to the archive event that produced it.
@@ -480,12 +524,30 @@ type Graph struct {
 
 // lookupCompile resolves an object path (as it appears in an
 // archive's input list or a link command's `.o` arg) to the
-// compile event that produced it. Tries exact-path match
-// first; falls back to basename. The two-tier lookup is what
-// keeps libtool-style dual-compiles distinguishable: `foo.o`
-// resolves to the non-PIC compile, `.libs/foo.o` to the PIC
-// one.
-func (g *Graph) lookupCompile(obj string) (Event, bool) {
+// compile event that produced it. The lookup is three-tier:
+//
+//  1. (cwd, out) exact match — preferred when both events
+//     have a cwd captured. Disambiguates same-basename
+//     compiles from recursive-make SUBDIRS where lib/foo.o
+//     and src/foo.o would otherwise collide.
+//  2. ev.Out exact match — falls back when the consumer
+//     event (archive / link) has no cwd OR the producer
+//     compile event had no cwd. Also keeps libtool-style
+//     dual-compiles distinguishable: `foo.o` resolves to
+//     the non-PIC compile, `.libs/foo.o` to the PIC one.
+//  3. basename match — last-resort for traces where neither
+//     side has reliable path information.
+//
+// `cwd` is the consumer event's cwd; an archive in lib/Makefile
+// references "foo.o" relative to lib/, so we compose
+// `(consumerCwd, obj)` for the (1) lookup.
+func (g *Graph) lookupCompile(consumerCwd, obj string) (Event, bool) {
+	if consumerCwd != "" {
+		key := consumerCwd + string(filepath.Separator) + obj
+		if ev, ok := g.objByCwdPath[key]; ok {
+			return ev, true
+		}
+	}
 	if ev, ok := g.objByPath[obj]; ok {
 		return ev, true
 	}
@@ -495,6 +557,7 @@ func (g *Graph) lookupCompile(obj string) (Event, bool) {
 
 func correlate(events []Event) *Graph {
 	g := &Graph{
+		objByCwdPath:  map[string]Event{},
 		objByPath:     map[string]Event{},
 		objByBasename: map[string]Event{},
 		libByBaseName: map[string]Event{},
@@ -502,6 +565,9 @@ func correlate(events []Event) *Graph {
 	for _, ev := range events {
 		switch ev.Kind {
 		case EventCompile:
+			if ev.Cwd != "" {
+				g.objByCwdPath[ev.Cwd+string(filepath.Separator)+ev.Out] = ev
+			}
 			g.objByPath[ev.Out] = ev
 			g.objByBasename[filepath.Base(ev.Out)] = ev
 		case EventArchive:
@@ -584,7 +650,7 @@ func buildRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) []CCRule {
 	for _, a := range g.archives {
 		var srcs, copts, defines []string
 		for _, obj := range a.Objs {
-			c, ok := g.lookupCompile(obj)
+			c, ok := g.lookupCompile(a.Cwd, obj)
 			if !ok {
 				continue
 			}
@@ -620,7 +686,7 @@ func buildRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) []CCRule {
 		// Each .o input expands to its compile event's source +
 		// copts + defines (last-write-wins on duplicate basenames).
 		for _, obj := range l.Objs {
-			c, ok := g.lookupCompile(obj)
+			c, ok := g.lookupCompile(l.Cwd, obj)
 			if !ok {
 				continue
 			}

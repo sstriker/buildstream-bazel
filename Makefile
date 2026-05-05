@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-determinism \
+        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-determinism e2e-meta-autotools-subdirs \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -270,6 +270,15 @@ e2e-meta-autotools-libtool-pic: check-tools converter
 # registered trace can't be reused across builds.
 e2e-meta-autotools-determinism: check-tools converter
 	scripts/meta-autotools-determinism.sh
+
+# Recursive-automake (SUBDIRS) collision gate. Two-subdir
+# fixture where each subdir compiles its own source into
+# parent.o (basename collision); the build-tracer's per-execve
+# cwd capture lets the converter disambiguate the two compile
+# events so each cc_library carries the right per-subdir
+# defines / sources.
+e2e-meta-autotools-subdirs: check-tools converter
+	scripts/meta-autotools-subdirs.sh
 
 # Conditional-lowering acceptance gate. Single kind:manual element
 # (testdata/meta-project/conditional-greet/) whose .bst declares

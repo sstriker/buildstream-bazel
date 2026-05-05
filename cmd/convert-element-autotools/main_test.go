@@ -399,3 +399,88 @@ func TestStripLibPrefixSuffix(t *testing.T) {
 		}
 	}
 }
+
+// TestCorrelate_SubdirsCwdDisambiguation guards the recursive-
+// automake (`SUBDIRS`) collision case: two sub-Makefiles each
+// compile a `parent.c` (same basename, same `-o parent.o`)
+// inside their own subdir. Without cwd-keyed correlation, both
+// subdir archives' lookups would resolve to whichever compile
+// event happened to be written last into objByPath / objByBasename
+// — collapsing the two archives' sources together. With cwd
+// captured by the build-tracer and threaded through to the
+// archive event, each archive resolves to its own subdir's
+// compile.
+func TestCorrelate_SubdirsCwdDisambiguation(t *testing.T) {
+	events := []Event{
+		// libA/Makefile recipe runs from libA/ and produces libA/parent.o.
+		// The Out path is what `-o` produced relative to the recipe's
+		// cwd ("parent.o"); cwd is the absolute libA path.
+		{Kind: EventCompile, Cwd: "/build/libA", Out: "parent.o", Srcs: []string{"parent.c"}, Defines: []string{"VARIANT=A"}},
+		{Kind: EventArchive, Cwd: "/build/libA", Out: "libA.a", Objs: []string{"parent.o"}},
+		// libB/Makefile: identical basename / identical Out, different cwd.
+		{Kind: EventCompile, Cwd: "/build/libB", Out: "parent.o", Srcs: []string{"parent.c"}, Defines: []string{"VARIANT=B"}},
+		{Kind: EventArchive, Cwd: "/build/libB", Out: "libB.a", Objs: []string{"parent.o"}},
+	}
+	got := emitBuild(correlate(events), nil, nil)
+
+	// Both archives should appear with their own define preserved.
+	blocks := strings.Split(got, "cc_library(")
+	var aBody, bBody string
+	for _, b := range blocks {
+		switch {
+		case strings.Contains(b, `name = "A"`):
+			aBody = b
+		case strings.Contains(b, `name = "B"`):
+			bBody = b
+		}
+	}
+	if aBody == "" || bBody == "" {
+		t.Fatalf("could not isolate A/B rule bodies\n--body--\n%s", got)
+	}
+	if !strings.Contains(aBody, `defines = ["VARIANT=A"]`) {
+		t.Errorf("libA leaked the wrong VARIANT (cwd disambiguation failed)\n--A body--\n%s", aBody)
+	}
+	if !strings.Contains(bBody, `defines = ["VARIANT=B"]`) {
+		t.Errorf("libB leaked the wrong VARIANT (cwd disambiguation failed)\n--B body--\n%s", bBody)
+	}
+}
+
+// TestParseCwdAnnotation covers the build-tracer-extension
+// `cwd:"..."` annotation that the native tracer emits between
+// the pid prefix and the execve(...) call. Strace traces (no
+// cwd capture) must round-trip as empty.
+func TestParseCwdAnnotation(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			"native tracer line with cwd",
+			`1748  cwd:"/build/libA"  execve("/usr/bin/cc", ["cc", "-c", "-o", "parent.o", "parent.c"], 0x... /* 0 vars */) = 0`,
+			"/build/libA",
+		},
+		{
+			"strace line with no cwd annotation",
+			`1748  execve("/usr/bin/cc", ["cc", "-c", "-o", "parent.o", "parent.c"], 0x... /* 0 vars */) = 0`,
+			"",
+		},
+		{
+			"cwd containing an escaped quote",
+			`1748  cwd:"/build/weird\"dir"  execve("/usr/bin/cc", ["cc"], 0x... /* 0 vars */) = 0`,
+			`/build/weird"dir`,
+		},
+		{
+			"cwd token appears AFTER execve (not the annotation we want)",
+			`1748  execve("/usr/bin/cwd:\"trap\"", ["cwd"], 0x... /* 0 vars */) = 0`,
+			"",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := parseCwdAnnotation(c.line); got != c.want {
+				t.Errorf("parseCwdAnnotation = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

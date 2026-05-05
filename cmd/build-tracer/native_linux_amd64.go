@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -37,12 +38,13 @@ func nativeBackendAvailable() bool { return true }
 // targets fall back to the strace shim.
 // pidState carries the per-tracee bookkeeping the loop needs
 // across stops: whether the next syscall stop is enter or
-// exit, plus argv/path captured at enter (so we can emit them
-// on exit when we know the return value).
+// exit, plus argv/path/cwd captured at enter (so we can emit
+// them on exit when we know the return value).
 type pidState struct {
 	atEnter  bool
 	execPath string
 	execArgv []string
+	execCwd  string
 }
 
 func runNative(out string, args []string) int {
@@ -87,8 +89,11 @@ func runNative(out string, args []string) int {
 	// SIGSTOP dance strace uses, so the root tracee's first
 	// exec stops AFTER the syscall completed (before we
 	// could install options). We know what command we asked
-	// for, so emit it from cmd.Path / cmd.Args.
-	emitExecve(traceFile, rootPid, cmd.Path, cmd.Args)
+	// for, so emit it from cmd.Path / cmd.Args. cwd at this
+	// point is the tracee's, which equals build-tracer's own
+	// (we didn't fork into a subdir).
+	rootCwd, _ := os.Getwd()
+	emitExecve(traceFile, rootPid, rootCwd, cmd.Path, cmd.Args)
 
 	// Set options on the root tracee. New children inherit them
 	// automatically via PTRACE_O_TRACE{FORK,VFORK,CLONE}, so we
@@ -223,6 +228,13 @@ func handleSyscallStop(pid int, st *pidState, w io.Writer) {
 		if regs.Orig_rax == sysExecve {
 			st.execPath = readCString(pid, uintptr(regs.Rdi), 4096)
 			st.execArgv = readArgv(pid, uintptr(regs.Rsi))
+			// Snapshot cwd at the moment of the syscall.
+			// The new process inherits the cwd the parent
+			// had when it called execve; reading after the
+			// exec would show the new image's cwd which —
+			// usually identical, but recursive make can
+			// chdir mid-build, and we want the parent's.
+			st.execCwd = readCwd(pid)
 		}
 		st.atEnter = false
 		return
@@ -232,12 +244,27 @@ func handleSyscallStop(pid int, st *pidState, w io.Writer) {
 		// rax holds the return value on amd64. 0 == success;
 		// anything else == errno (negative).
 		if int64(regs.Rax) == 0 {
-			emitExecve(w, pid, st.execPath, st.execArgv)
+			emitExecve(w, pid, st.execCwd, st.execPath, st.execArgv)
 		}
 		st.execPath = ""
 		st.execArgv = nil
+		st.execCwd = ""
 	}
 	st.atEnter = true
+}
+
+// readCwd resolves /proc/<pid>/cwd to the tracee's current
+// working directory. Best-effort: returns "" if the symlink
+// can't be read (tracee disappeared, /proc not mounted, etc.).
+// Used to disambiguate same-basename .o paths from recursive
+// make invocations across SUBDIRS — without cwd, lib/foo.o
+// and src/foo.o look identical to the converter.
+func readCwd(pid int) string {
+	target, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
+	if err != nil {
+		return ""
+	}
+	return target
 }
 
 // readCString reads a NUL-terminated string from the tracee's
@@ -291,16 +318,31 @@ func readArgv(pid int, addr uintptr) []string {
 // emitExecve writes one strace-compatible execve trace line to
 // w. Format:
 //
-//	1234  execve("/usr/bin/cc", ["cc", "-O2", "-o", "x", "x.c"], 0x0) = 0
+//	1234  cwd:"/build/root/lib"  execve("/usr/bin/cc", [...], 0x0) = 0
+//
+// The `cwd:"..."  ` prefix between the pid and the `execve(`
+// call is a build-tracer extension over strace's plain output
+// — captures the tracee's working directory at the moment of
+// the syscall, so recursive-make builds (where each subdir
+// invocation produces same-basename .o files in different
+// dirs) disambiguate at correlation time. cwd is omitted when
+// /proc/<pid>/cwd couldn't be read; convert-element-autotools'
+// parser tolerates both forms.
 //
 // Strings are quoted via straceQuote to escape control chars
 // and embedded quotes the same way strace does. The trailing
 // `0x0` is a placeholder for the envp argument (which strace
 // renders as a real address); convert-element-autotools'
 // parser doesn't care about it.
-func emitExecve(w io.Writer, pid int, path string, argv []string) {
+func emitExecve(w io.Writer, pid int, cwd, path string, argv []string) {
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "%d  execve(", pid)
+	fmt.Fprintf(&b, "%d  ", pid)
+	if cwd != "" {
+		b.WriteString("cwd:")
+		straceQuote(&b, cwd)
+		b.WriteString("  ")
+	}
+	b.WriteString("execve(")
 	straceQuote(&b, path)
 	b.WriteString(", [")
 	for i, a := range argv {
