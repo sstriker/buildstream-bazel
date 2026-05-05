@@ -315,6 +315,21 @@ func classifyCompilerDriver(argv []string) (Event, bool) {
 	if output == "" {
 		return Event{}, false
 	}
+	// Shared-library link outputs (real libtool's `cc -shared
+	// -o libfoo.so.0.0.0` step) are skipped: Bazel's cc_library
+	// rule already produces the matching shared object at link
+	// time alongside the static archive. Emitting these as
+	// EventLink would create a spurious `cc_binary` named
+	// libfoo.so.0.0.0 that collides with — and adds nothing
+	// over — the cc_library recovered from the matching .a.
+	// We also skip libtool's wrapper-mediated `-o foo.lo`
+	// outputs: `.lo` is libtool's own metadata file, never a
+	// real artifact, and the inner cc invocation that does the
+	// real compile (`-o .libs/foo.o` / `-o foo.o`) is captured
+	// independently.
+	if isSharedLibraryOutput(output) || isLibtoolObject(output) {
+		return Event{}, false
+	}
 	if compileOnly {
 		// Compile-only invocations should have exactly one
 		// source and an output ending in .o. Tolerate
@@ -344,6 +359,62 @@ func classifyCompilerDriver(argv []string) (Event, bool) {
 		Copts:   stableUnique(copts),
 		Defines: stableUnique(defines),
 	}, true
+}
+
+// isSharedLibraryOutput recognizes the output forms libtool's
+// link mode produces for shared libraries: bare `libfoo.so` /
+// `libfoo.dylib`, versioned `libfoo.so.0` / `libfoo.so.0.0.0`,
+// and the build-tree `.libs/`-prefixed variants. Bazel's
+// cc_library covers the equivalent on the consumer side, so
+// these events don't need to round-trip through the converter.
+func isSharedLibraryOutput(p string) bool {
+	base := filepath.Base(p)
+	if strings.HasSuffix(base, ".dylib") {
+		return true
+	}
+	// `.so` may be followed by version segments (`.so.0.0.0`).
+	// Find the first `.so` boundary and require the remainder
+	// to be either empty or `.<digits>(.<digits>)*`.
+	idx := strings.Index(base, ".so")
+	if idx < 0 {
+		return false
+	}
+	rest := base[idx+len(".so"):]
+	if rest == "" {
+		return true
+	}
+	// Versioned shared libs have the shape `.so.<digits>(.<digits>)*`.
+	// rest begins with a leading "." that we strip before walking
+	// the numeric segments.
+	if !strings.HasPrefix(rest, ".") {
+		return false
+	}
+	for _, seg := range strings.Split(rest[1:], ".") {
+		if seg == "" {
+			return false
+		}
+		for _, r := range seg {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// isLibtoolObject covers libtool's `.lo` metadata file path
+// (compile mode) and `.la` text-archive path (link mode).
+// Neither is a real compile / link artifact — both are
+// libtool-internal bookkeeping written by the libtool shell
+// script. The actual cc invocations under the wrapper produce
+// `.libs/foo.o` / `.libs/libfoo.so` / `.libs/libfoo.a` and
+// are captured in the trace independently.
+func isLibtoolObject(p string) bool {
+	switch filepath.Ext(p) {
+	case ".lo", ".la":
+		return true
+	}
+	return false
 }
 
 // perTargetIntentFlags returns the set of flag tokens that

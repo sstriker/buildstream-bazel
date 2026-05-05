@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-determinism e2e-meta-autotools-subdirs \
+        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -261,6 +261,18 @@ e2e-meta-autotools-tu-optflags: check-tools converter
 # inherit -DPIC from the PIC compile.
 e2e-meta-autotools-libtool-pic: check-tools converter
 	scripts/meta-autotools-libtool-pic.sh
+
+# Real-libtool emission gate. Same translation unit produces
+# both libfoo.a (static, via ar/ranlib) AND libfoo.so.0.0.0
+# (shared, via cc -shared) plus a libfoo.la text metadata
+# file. Asserts the converter recovers ONLY the cc_library
+# from the .a archive — the cc -shared event is filtered
+# (Bazel's cc_library handles shared output on its own;
+# emitting it as a cc_binary would be a duplicate / name
+# collision) and the .la file participates in install-mapping
+# but doesn't drive a rule.
+e2e-meta-autotools-libtool-shared: check-tools converter
+	scripts/meta-autotools-libtool-shared.sh
 
 # Trace + make-db determinism gate. Drives the autotools-greet
 # fixture through build-tracer twice (with different INSTALL_ROOT

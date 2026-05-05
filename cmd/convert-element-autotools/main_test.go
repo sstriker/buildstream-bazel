@@ -445,6 +445,97 @@ func TestCorrelate_SubdirsCwdDisambiguation(t *testing.T) {
 	}
 }
 
+// TestClassifyArgv_LibtoolSkips covers the libtool-emitted
+// invocations the converter must NOT lower into events.
+//
+//   - `cc -shared -o libfoo.so.0.0.0 .libs/foo.o` is libtool's
+//     real shared-library link step; Bazel's cc_library
+//     produces the matching .so on the consumer side, so we
+//     skip it (otherwise it'd land as a spurious cc_binary
+//     named "libfoo.so.0.0.0").
+//   - `cc -c -o foo.lo foo.c` and similar `-o ...la` outputs
+//     are libtool wrapper metadata files; the inner cc
+//     invocation that does the real compile (`-o .libs/foo.o`
+//     / `-o foo.o`) is captured on its own line.
+//   - The bare `libfoo.so` / build-tree `.libs/libfoo.so`
+//     variants must also be filtered; only the actual
+//     `.so` extension's version-suffix shape is treated as
+//     a shared lib (so `foo.something.elsewhere.c` doesn't
+//     get false-positive-skipped).
+func TestClassifyArgv_LibtoolSkips(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		ok   bool
+	}{
+		{
+			"shared-lib link skipped (versioned .so)",
+			[]string{"cc", "-shared", "-o", ".libs/libfoo.so.0.0.0", ".libs/foo.o", ".libs/bar.o"},
+			false,
+		},
+		{
+			"shared-lib link skipped (bare .so)",
+			[]string{"cc", "-shared", "-o", ".libs/libfoo.so", ".libs/foo.o"},
+			false,
+		},
+		{
+			"shared-lib link skipped (.dylib on darwin)",
+			[]string{"cc", "-dynamiclib", "-o", "libfoo.dylib", "foo.o"},
+			false,
+		},
+		{
+			"libtool .lo wrapper output skipped",
+			[]string{"cc", "-c", "-o", "foo.lo", "foo.c"},
+			false,
+		},
+		{
+			"libtool .la wrapper output skipped",
+			[]string{"cc", "-o", "libfoo.la", "foo.lo", "bar.lo"},
+			false,
+		},
+		{
+			"non-shared output retained (regression guard)",
+			[]string{"cc", "-shared", "-o", ".libs/something.weird", ".libs/foo.o"},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, ok := classifyArgv(c.argv)
+			if ok != c.ok {
+				t.Errorf("classifyArgv ok = %v, want %v", ok, c.ok)
+			}
+		})
+	}
+}
+
+// TestIsSharedLibraryOutput covers the suffix logic directly:
+// version-segment validation rejects malformed `.so`-followed
+// strings (e.g., `.so.weird`) so the gate doesn't drop real
+// outputs that happen to contain `.so` in their name.
+func TestIsSharedLibraryOutput(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"libfoo.so", true},
+		{"libfoo.so.0", true},
+		{"libfoo.so.0.0.0", true},
+		{".libs/libfoo.so.1.2.3", true},
+		{"libfoo.dylib", true},
+		{"foo.o", false},
+		{"libfoo.a", false},
+		{"libfoo.so.weird", false}, // non-numeric version segment → not a shared lib
+		{"foo.c", false},
+		{"foo.so.1.bad.2", false}, // mixed numeric/non-numeric segments
+	}
+	for _, c := range cases {
+		if got := isSharedLibraryOutput(c.in); got != c.want {
+			t.Errorf("isSharedLibraryOutput(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
 // TestParseCwdAnnotation covers the build-tracer-extension
 // `cwd:"..."` annotation that the native tracer emits between
 // the pid prefix and the execve(...) call. Strace traces (no
