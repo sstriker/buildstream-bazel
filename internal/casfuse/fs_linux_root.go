@@ -150,8 +150,7 @@ func (n *directoryNode) Lookup(ctx context.Context, name string, out *fuse.Entry
 		// matching how the kernel reports unreachable storage.
 		return nil, syscall.EIO
 	}
-	child := &dirNode{tree: tree, dir: dir}
-	child.once.Do(func() {})
+	child := &dirNode{tree: tree, dir: dir, loaded: true}
 	out.Mode = fuse.S_IFDIR | 0o555
 	return n.NewInode(ctx, child, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 }

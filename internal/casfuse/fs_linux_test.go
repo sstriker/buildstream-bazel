@@ -3,6 +3,7 @@
 package casfuse
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,14 +56,31 @@ func TestMount_RealMountReadFile(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Unmount() })
 
-	// Give the mount a moment to settle. go-fuse's Mount returns
-	// once the kernel mount call succeeds, but a tiny sleep avoids
-	// rare flakes where the very first Stat races kernel setup.
-	time.Sleep(50 * time.Millisecond)
-
-	got, err := os.ReadFile(filepath.Join(mountPoint, "hello.txt"))
-	if err != nil {
-		t.Fatalf("read through mount: %v", err)
+	// Poll until the mount is ready: even after fs.Mount returns the FUSE
+	// event loop may return a transient EIO on the first request (e.g.
+	// because the in-process gRPC connection to the fake CAS hasn't been
+	// fully established yet). Retry on EIO up to a generous deadline; any
+	// other error is a real failure and aborts immediately.
+	var got []byte
+	{
+		path := filepath.Join(mountPoint, "hello.txt")
+		deadline := time.Now().Add(5 * time.Second)
+		var lastErr error
+		for time.Now().Before(deadline) {
+			var err error
+			got, err = os.ReadFile(path)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, syscall.EIO) {
+				t.Fatalf("read through mount: %v", err)
+			}
+			lastErr = err
+			time.Sleep(5 * time.Millisecond)
+		}
+		if lastErr != nil {
+			t.Fatalf("read through mount: %v", lastErr)
+		}
 	}
 	if string(got) != string(body) {
 		t.Errorf("got %q, want %q", got, body)
@@ -132,14 +150,33 @@ func TestMount_MultiDigestRoot(t *testing.T) {
 		t.Fatalf("MountRoot: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Unmount() })
-	time.Sleep(50 * time.Millisecond)
 
 	digestPath := filepath.Join(mountPoint, "blobs", "directory",
 		Digest{Hash: rootHash, Size: int64(len(rootBytes))}.String())
 
-	got, err := os.ReadFile(filepath.Join(digestPath, "x.txt"))
-	if err != nil {
-		t.Fatalf("read through multi-digest mount: %v", err)
+	// Same retry logic as TestMount_RealMountReadFile: retry on EIO so a
+	// transient gRPC-connection hiccup on the first FUSE Lookup doesn't
+	// turn into a permanent test failure.
+	var got []byte
+	{
+		path := filepath.Join(digestPath, "x.txt")
+		deadline := time.Now().Add(5 * time.Second)
+		var lastErr error
+		for time.Now().Before(deadline) {
+			var err error
+			got, err = os.ReadFile(path)
+			if err == nil {
+				break
+			}
+			if !errors.Is(err, syscall.EIO) {
+				t.Fatalf("read through multi-digest mount: %v", err)
+			}
+			lastErr = err
+			time.Sleep(5 * time.Millisecond)
+		}
+		if lastErr != nil {
+			t.Fatalf("read through multi-digest mount: %v", lastErr)
+		}
 	}
 	if string(got) != string(body) {
 		t.Errorf("got %q, want %q", got, body)

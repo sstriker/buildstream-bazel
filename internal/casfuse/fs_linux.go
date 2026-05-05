@@ -107,10 +107,12 @@ type dirNode struct {
 	tree *Tree
 	// dir is the underlying Directory proto. For the root, this
 	// is fetched on first Lookup; for subdirs, it's set at
-	// construction time from the parent's lookup result.
+	// construction time from the parent's lookup result
+	// (loaded = true).
 	dir *repb.Directory
 
-	once sync.Once
+	mu     sync.Mutex
+	loaded bool // set only on successful ensureDir; allows retry on transient failure
 }
 
 var _ fs.NodeLookuper = (*dirNode)(nil)
@@ -118,19 +120,22 @@ var _ fs.NodeReaddirer = (*dirNode)(nil)
 var _ fs.NodeGetattrer = (*dirNode)(nil)
 
 func (n *dirNode) ensureDir(ctx context.Context) syscall.Errno {
-	var loadErr syscall.Errno
-	n.once.Do(func() {
-		if n.dir != nil {
-			return
-		}
-		dir, err := n.tree.Root(ctx)
-		if err != nil {
-			loadErr = syscall.EIO
-			return
-		}
-		n.dir = dir
-	})
-	return loadErr
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.loaded {
+		return 0
+	}
+	dir, err := n.tree.Root(ctx)
+	if err != nil {
+		// Do NOT mark loaded=true on failure so the next Lookup
+		// can retry. sync.Once would prevent that, causing the
+		// directory to stay nil-forever and subsequent lookups to
+		// silently return ENOENT.
+		return syscall.EIO
+	}
+	n.dir = dir
+	n.loaded = true
+	return 0
 }
 
 func (n *dirNode) Getattr(_ context.Context, _ fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
@@ -147,9 +152,7 @@ func (n *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 		if err != nil {
 			return nil, syscall.EIO
 		}
-		child := &dirNode{tree: n.tree, dir: subDir}
-		// Mark once-init as already done — dir is already populated.
-		child.once.Do(func() {})
+		child := &dirNode{tree: n.tree, dir: subDir, loaded: true}
 		out.Mode = fuse.S_IFDIR | 0o555
 		return n.NewInode(ctx, child, fs.StableAttr{Mode: fuse.S_IFDIR}), 0
 	}
