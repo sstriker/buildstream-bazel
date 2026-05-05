@@ -188,8 +188,16 @@ func TestWriter_MakeWithoutRound2_StillRendersInstallInA(t *testing.T) {
 	}
 
 	// No trace-driven binaries → no opt-in → legacy shape.
+	// Snapshot + restore the full autotoolsConfig struct via
+	// t.Cleanup so this test isn't order-dependent if a future
+	// test expects non-zero state.
+	prev := autotoolsConfig
 	autotoolsConfig.convertBin = ""
+	autotoolsConfig.tracerBin = ""
+	autotoolsConfig.publishBin = ""
+	autotoolsConfig.lookupBin = ""
 	autotoolsConfig.round2Enabled = false
+	t.Cleanup(func() { autotoolsConfig = prev })
 
 	g, err := loadGraph([]string{bst}, "")
 	if err != nil {

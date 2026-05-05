@@ -142,13 +142,21 @@ genrule(
 // (kept under round-2 too — generated-headers feeds future
 // converter improvements without re-running the action).
 //
+// imports.json is intentionally NOT in ExtraSrcs here: the
+// round-2 B-side install genrule doesn't run the converter
+// (the converter moved to project A's per-element converter
+// genrule, which references imports.json via its own srcs).
+// Adding the file to this action's inputs would invalidate the
+// install action's cache key on every imports.json change with
+// no corresponding behavioral effect on the build.
+//
 // depKindAllow is the set of dep `Bst.Kind` strings whose
 // install_tree.tar tarballs should be staged + extracted under
 // $DEP_PREFIX so the build pipeline's compile commands can find
 // dep headers / libraries. autotools passes []string{"autotools"};
 // kind:make passes []string{"make"}; cross-kind dep wiring is a
 // follow-up once the fixtures land.
-func pipelineTraceExtensionRound2(elem *element, hasImports bool, depKindAllow []string) *pipelineExtension {
+func pipelineTraceExtensionRound2(elem *element, depKindAllow []string) *pipelineExtension {
 	ext := &pipelineExtension{
 		WrapPipelineCmds: wrapAutotoolsPipelineCmds,
 		AppendCmd:        pipelineTracePublishStep(elem.Name),
@@ -161,16 +169,13 @@ func pipelineTraceExtensionRound2(elem *element, hasImports bool, depKindAllow [
 			"//tools:build-tracer",
 			"//tools:trace-publish",
 		},
+		// srckey.txt is the only ExtraSrcs entry under round-2:
+		// trace-publish reads it to derive the synthetic Action
+		// digest. The caller (pipelineHandler.RenderB or
+		// autotoolsHandler.RenderB) calls renderSrckey before
+		// the genrule fires so the file exists at action time.
+		ExtraSrcs: []string{"srckey.txt"},
 	}
-	if hasImports {
-		ext.ExtraSrcs = []string{"imports.json"}
-	}
-	// srckey.txt is also a genrule input — trace-publish reads
-	// it to derive the synthetic Action digest. It's emitted by
-	// renderTraceDrivenRound2A in project A; the caller in
-	// pipelineHandler.RenderB / autotoolsHandler.RenderB also
-	// calls renderSrckey so the file exists in B's elemPkg.
-	ext.ExtraSrcs = append(ext.ExtraSrcs, "srckey.txt")
 
 	allow := map[string]bool{}
 	for _, k := range depKindAllow {

@@ -540,15 +540,13 @@ func (h pipelineHandler) RenderB(elem *element, elemPkg string) error {
 		// (build-tracer wrap + inline trace-publish). The
 		// converter is gone from this side — it lives in project
 		// A's per-element converter genrule (see RenderA above).
-		// Cross-element link-library resolution mirrors the
-		// autotools convention: imports.json is rendered next to
-		// the BUILD when the element has deps; absent otherwise.
-		hasImports, err := writeAutotoolsImportsManifest(elem, elemPkg)
-		if err != nil {
-			return err
-		}
+		// imports.json is NOT rendered in B: nothing here reads
+		// it (the converter is in A); rendering would create a
+		// dead input under the install action's merkle and
+		// cause unnecessary cache invalidation when only the
+		// imports manifest changes.
 		h2 := h
-		h2.extension = pipelineTraceExtensionRound2(elem, hasImports, []string{h.kindName})
+		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName})
 		if err := h2.renderInstallGenrule(elem, elemPkg); err != nil {
 			return err
 		}

@@ -202,15 +202,23 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 	if autotoolsConfig.convertBin == "" {
 		return h, nil
 	}
+	if autotoolsConfig.round2Enabled {
+		// Round 2: converter runs in project A, not B. imports.json
+		// is rendered in A only (by renderTraceDrivenRound2A);
+		// don't write a B-side copy that no action references —
+		// it would just invalidate the install genrule's cache
+		// key on every imports.json change with no behavioral
+		// effect.
+		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"})
+		return h, nil
+	}
+	// Round 1: converter runs inline in B's install genrule, so
+	// imports.json must be in B's elemPkg + the genrule's srcs.
 	hasImports, err := writeAutotoolsImportsManifest(elem, elemPkg)
 	if err != nil {
 		return pipelineHandler{}, err
 	}
-	if autotoolsConfig.round2Enabled {
-		h.extension = pipelineTraceExtensionRound2(elem, hasImports, []string{"autotools"})
-	} else {
-		h.extension = autotoolsTraceExtension(elem, hasImports)
-	}
+	h.extension = autotoolsTraceExtension(elem, hasImports)
 	return h, nil
 }
 
