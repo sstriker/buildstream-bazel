@@ -87,9 +87,18 @@ transition cleanly.
   kind-agnostic live-AC gate
   (`tools/e2e-meta-autotools-round2-live.sh`) covers the
   bazel-build-half wire contract end-to-end against bb_clientd,
-  applying to any opted-in kind. Adding more pipeline kinds
-  (kind:makemaker / modulebuild / manual / script) is now a
-  one-line opt-in in their `init()`.
+  applying to any opted-in kind.
+- **kind:makemaker, kind:modulebuild, kind:manual, kind:script
+  join the trace-driven path.** Same one-line opt-in pattern
+  kind:make established. Per-kind srckey narrowing:
+  kind:makemaker tracks Makefile.PL + *.xs + *.h family;
+  kind:modulebuild tracks Build.PL + *.xs + *.h family;
+  kind:manual + kind:script use the conservative
+  content-everything default (no kind-level signal for which
+  files drive build commands — per-element narrowing comes
+  via the existing read-paths.txt sibling). Coverage:
+  `cmd/write-a/handler_pipeline_round2_test.go` table-driven
+  test asserts the round-2 shape end-to-end for each kind.
 - **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
   `--unix_digest_hash_attribute_name` (the xattr fast-path that
   let cas-fuse tell Bazel "trust this pre-computed digest, don't

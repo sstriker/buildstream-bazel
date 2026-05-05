@@ -164,22 +164,37 @@ The rendezvous mechanism is kind-agnostic. `_trace_repo`,
 all key off a srckey-string and don't know what kind produced
 the trace.
 
-**kind:make** opts in by setting `traceDrivenSrckeyPatterns` on
-its registered `pipelineHandler` (see `handler_make.go`'s
-`makeSrckeyPatterns`). `pipelineHandler.RenderA` /
+**kind:make**, **kind:makemaker**, **kind:modulebuild**,
+**kind:manual**, and **kind:script** opt in by setting
+`traceDrivenSrckeyPatterns` on their registered
+`pipelineHandler`. `pipelineHandler.RenderA` /
 `pipelineHandler.RenderB` (in `handler_pipeline.go`) check the
 field via `shouldUseRound2` and dispatch to the same kind-
 agnostic helpers `kind:autotools` uses
 (`handler_pipeline_round2.go::renderTraceDrivenRound2A` and
 `pipelineTraceExtensionRound2`).
 
-Future trace-driven kinds (`kind:makemaker`, `kind:modulebuild`,
-opt-in for `kind:manual` / `kind:script`, possibly
-`kind:flatpak_image`, `kind:collect_*`) join the same way: one
-line in their `init()` setting `traceDrivenSrckeyPatterns` to a
-per-kind narrowing rule set. The decision per kind is which
-file paths gate the BUILD COMMANDS (content-included) vs which
-only affect compile OUTPUT bytes (path-only).
+Per-kind srckey narrowing decisions:
+
+- **kind:make**: `Makefile` + `**/Makefile` + `**/*.h` family.
+  `.c` content is path-only (recipes don't depend on it).
+- **kind:makemaker**: `Makefile.PL` + `**/Makefile` + `**/*.xs`
+  + `**/*.h` family. `*.pm` is path-only (pure Perl, doesn't
+  drive cc); `*.c` typically generated from `*.xs` so path-only.
+- **kind:modulebuild**: `Build.PL` + `**/*.xs` + `**/*.h` family.
+- **kind:manual** + **kind:script**: empty rule set
+  (`&readPathsPatterns{}`) → `matchesSrckeyPatterns` returns
+  content-included for every file. The .bst's commands could
+  be anything; there's no kind-level signal for which files
+  drive build commands. Per-element narrowing is available
+  via the existing read-paths.txt sibling.
+
+Further trace-driven kinds (possibly `kind:flatpak_image`,
+`kind:collect_*`) join the same way — one line in `init()`
+setting `traceDrivenSrckeyPatterns`. The pattern set's job is
+deciding which file paths gate the BUILD COMMANDS
+(content-included) vs which only affect compile OUTPUT bytes
+(path-only).
 
 ## Roll-out
 
