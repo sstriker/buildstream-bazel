@@ -3,6 +3,21 @@
 // push deposited into CAS, without ever materialising the bytes
 // on the dev's local disk.
 //
+// Status (legacy / fallback): On Bazel 9, bb_clientd is the
+// production path for CAS-aware mounts. bb_clientd is a stable,
+// upstream-maintained binary that serves both the FUSE mount and
+// the RemoteOutputService gRPC surface Bazel 9 needs to trust the
+// daemon's reported digests without re-hashing inputs (see
+// docs/design/bazel9-cas-fs.md). cas-fuse remains in-tree as a
+// flag-only fallback for setups that don't want the bb_clientd
+// dependency (e.g. air-gapped CI runners, simple dev fixtures, or
+// the in-process casfuse / hello-fuse tests). The xattr fast-path
+// cas-fuse implements (the `user.bazel.cas.digest` attribute that
+// satisfied --unix_digest_hash_attribute_name) only matters on
+// Bazel < 9; the flag was dropped in Bazel 9 without replacement,
+// and the equivalent guarantee comes from bb_clientd's
+// RemoteOutputService instead.
+//
 // Default mode (multi-digest, "root" mount):
 //
 //	cas-fuse mount --cas=<grpc-addr> --at=<mount-point> [--instance=<name>]

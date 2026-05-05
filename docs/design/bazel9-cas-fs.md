@@ -265,10 +265,37 @@ either parameterising the repo rule's path template (so
 configurable) or switching the rule outright to bb_clientd's
 shape and retiring `cmd/cas-fuse` from the dev path.
 
-## Open work
+## Where the wiring lives
 
-The wiring on the bb_clientd side is in place
-(`deploy/buildbarn/config/bb_clientd.jsonnet`,
-`make bb-clientd-up`, `tools/e2e-hello-bbclientd.sh`). The
-remaining integration steps live on `rules/sources.bzl`'s
-side and on the test side; see `ROADMAP.md` for current status.
+Per `CLAUDE.md`, this doc describes how the system works; shipped-vs-queued
+state lives in `ROADMAP.md`. Pointers to the in-tree pieces:
+
+- Daemon lifecycle: `make bb-clientd-up` / `make bb-clientd-down`,
+  config at `deploy/buildbarn/config/bb_clientd.jsonnet`.
+- Path-template parameterisation lives in
+  `cmd/write-a/sources_bzl.go` and `cmd/write-a/traces_bzl.go`.
+  Both rendered .bzl files build the symlink target as
+  `<CAS_FUSE_MOUNT>/<CAS_DIRECTORY_PREFIX>/directory/<digest>`.
+  Default prefix is `blobs` (the flat layout `cmd/cas-fuse`
+  serves). bb_clientd users pass
+  `--repo_env=CAS_DIRECTORY_PREFIX=cas/<instance>/blobs/<digest_function>`
+  to land on the bb_clientd canonical layout (with the daemon's
+  default empty instance + sha256 digest function, that
+  collapses to `cas//blobs/sha256`).
+- Local end-to-end exercise: `tools/e2e-hello-bbclientd.sh`
+  (also `make e2e-hello-bbclientd`). Brings up buildbarn +
+  bb_clientd, runs `cmd/source-push` to upload, then drives
+  `bazel build` with
+  `--experimental_remote_output_service=unix://<grpc_sock>`
+  and the parameterised `CAS_DIRECTORY_PREFIX`. Skips cleanly
+  when bb_clientd / Bazel ≥ 9 aren't on PATH; not yet wired
+  into the GitHub Actions CI workflow because the runners
+  don't ship bb_clientd by default. The CI job named
+  `bazel9-fuse-sources` (in `.github/workflows/ci.yml`) runs
+  the in-process Go test `TestBazel9_FuseSourcesEndToEnd` from
+  `internal/casfuse/`, which exercises Bazel 9 against the
+  `cmd/cas-fuse` mount path — different code path from the
+  bb_clientd gate above.
+- `cmd/cas-fuse` stays in-tree as the flag-only fallback for
+  setups that don't want a bb_clientd dependency (air-gapped
+  CI runners, the in-process casfuse / hello-fuse tests).

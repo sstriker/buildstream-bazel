@@ -7,28 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
-  `--unix_digest_hash_attribute_name` — the flag that let the
-  cas-fuse FUSE mount tell Bazel "trust this pre-computed
-  digest, don't re-hash" — without a direct replacement. The
-  mount still resolves correctly on Bazel 9 and the BwoB
-  properties (executor-side reads from CAS, no source-tree
-  materialisation on dev disk) are preserved, but Bazel
-  re-hashes every input the FUSE daemon already knows the
-  digest of. First builds of fresh checkouts pay the full
-  O(source-bytes) re-read + hash cost.
-  **Direction picked** (see `docs/design/bazel9-cas-fs.md` for the
-  full analysis): adopt **`bb_clientd`** as a Bazel 9
-  companion daemon, paired with Bazel via the surviving
-  `--remote_output_service=` flag. bb_clientd serves a
-  FUSE/NFS mount and reports digests over the
-  `RemoteOutputService` protocol; Bazel trusts those digests
-  without re-hashing. This is *not* an adoption of buildbarn
-  end-to-end — bb_clientd talks plain REAPI to whatever CAS
-  endpoint we point it at, the same way `bazelisk` talks to
-  whatever Bazel binary it pins. Output-side BwoB (lazy
-  materialisation of build artifacts) lands as a free side
-  effect.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`, `hello-fuse pipeline`,
   `cas-fuse against fake CAS`) fail intermittently or
@@ -98,6 +76,29 @@ transition cleanly.
   Live-AC gate (buildbarn + optionally bb_clientd):
   `tools/e2e-meta-autotools-round2-live.sh`. Recipe:
   `docs/design/autotools-round2-rendezvous.md`.
+- **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
+  `--unix_digest_hash_attribute_name` (the xattr fast-path that
+  let cas-fuse tell Bazel "trust this pre-computed digest, don't
+  re-hash") without a direct replacement. Replacement: adopt
+  `bb_clientd` as a Bazel-9 companion daemon — paired with Bazel
+  via the surviving `--experimental_remote_output_service=` flag,
+  serving a FUSE mount + speaking RemoteOutputService so Bazel
+  trusts daemon-reported digests. **Not** an adoption of buildbarn
+  end-to-end; bb_clientd talks plain REAPI to whatever CAS endpoint
+  it's pointed at (the same way `bazelisk` pairs with `bazel`).
+  Output-side BwoB (lazy materialisation of build artifacts) is a
+  free side effect. Wiring: `make bb-clientd-up`/`down`,
+  `deploy/buildbarn/config/bb_clientd.jsonnet`. Local end-to-end
+  exercise: `tools/e2e-hello-bbclientd.sh` (also `make
+  e2e-hello-bbclientd`); not yet wired into GitHub Actions CI
+  because the runners don't ship bb_clientd by default — adding
+  it as a CI step would self-skip until that changes.
+  `rules/sources.bzl` + `rules/traces.bzl` parameterise the
+  mount-side path layout via `CAS_DIRECTORY_PREFIX` (default `blobs`
+  for cmd/cas-fuse compat; bb_clientd users pass
+  `cas/<instance>/blobs/<digest_function>`). cmd/cas-fuse stays
+  in-tree as the no-bb_clientd fallback. Recipe:
+  `docs/design/bazel9-cas-fs.md`.
 - Trace + make-db canonicalization (pids stripped, gcc temp paths
   placeholdered, action-time mktemp paths normalized). Foundation
   for round-2 cache reuse.
