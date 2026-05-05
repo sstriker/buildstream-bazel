@@ -1,4 +1,4 @@
-package main
+package tracenorm
 
 import (
 	"os"
@@ -23,32 +23,24 @@ execve("/usr/bin/ld", ["ld", "-o", "app", "x.o"], 0x0) = 0
 	}
 }
 
-// TestCanonicalize_StableTempPaths verifies that the same
-// temp path within a trace gets the same placeholder, but
-// different paths get different placeholders. Cross-event
-// correlation (compile output → as input) must still resolve
-// after canonicalization.
+// TestCanonicalize_StableTempPaths verifies cross-event correlation
+// (compile output → as input) survives canonicalization.
 func TestCanonicalize_StableTempPaths(t *testing.T) {
 	in := `1  execve("/usr/libexec/cc1", ["cc1", "-o", "/tmp/ccABC123.s"], 0x0) = 0
 2  execve("/usr/bin/as", ["as", "-o", "/tmp/ccDEF456.o", "/tmp/ccABC123.s"], 0x0) = 0
 3  execve("/usr/bin/ld", ["ld", "-o", "app", "/tmp/ccDEF456.o", "-plugin-opt=-fresolution=/tmp/ccGHI789.res"], 0x0) = 0
 `
 	got := canonicalizeString(t, in, nil)
-
-	// First-appearance ordering: ABC=1, DEF=2, GHI=3.
-	// Cross-event correlation: as's input matches cc1's output;
-	// ld's input matches as's output.
 	for _, want := range []string{
-		`"-o", "/tmp/cc1.s"`,                      // cc1 emits cc1.s
-		`"-o", "/tmp/cc2.o", "/tmp/cc1.s"`,        // as: same .s as cc1
-		`"-o", "app", "/tmp/cc2.o"`,               // ld: same .o as as
-		`"-plugin-opt=-fresolution=/tmp/cc3.res"`, // first .res
+		`"-o", "/tmp/cc1.s"`,
+		`"-o", "/tmp/cc2.o", "/tmp/cc1.s"`,
+		`"-o", "app", "/tmp/cc2.o"`,
+		`"-plugin-opt=-fresolution=/tmp/cc3.res"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q\n--got--\n%s", want, got)
 		}
 	}
-	// No raw random tokens should remain.
 	for _, banned := range []string{"ccABC123", "ccDEF456", "ccGHI789"} {
 		if strings.Contains(got, banned) {
 			t.Errorf("raw random token %q leaked through canonicalization\n%s", banned, got)
@@ -56,19 +48,12 @@ func TestCanonicalize_StableTempPaths(t *testing.T) {
 	}
 }
 
-// TestCanonicalize_PrefixSubs verifies caller-supplied
-// substitutions apply per-line and longer prefixes win when
-// they overlap. Used to neutralize action-time mktemp paths
-// (INSTALL_ROOT etc.) so traces are byte-stable across bazel
-// invocations.
+// TestCanonicalize_PrefixSubs verifies longest-first ordering.
 func TestCanonicalize_PrefixSubs(t *testing.T) {
 	in := `1  execve("/usr/bin/install", ["install", "greet", "/tmp/sandbox/install_root/usr/bin/greet"], 0x0) = 0
 2  execve("/usr/bin/cc", ["cc", "-I/tmp/sandbox/dep_prefix/usr/include", "-c", "x.c"], 0x0) = 0
 `
-	subs := []prefixSub{
-		// Order intentionally short-then-long: canonicalizer
-		// must reorder to longest-first so /tmp/sandbox/install_root
-		// applies before /tmp/sandbox.
+	subs := []PrefixSub{
 		{From: "/tmp/sandbox", To: "/SANDBOX"},
 		{From: "/tmp/sandbox/install_root", To: "/INSTALL_ROOT"},
 		{From: "/tmp/sandbox/dep_prefix", To: "/DEP_PREFIX"},
@@ -82,19 +67,13 @@ func TestCanonicalize_PrefixSubs(t *testing.T) {
 			t.Errorf("missing %q\n--got--\n%s", want, got)
 		}
 	}
-	// The bare /tmp/sandbox prefix shouldn't have applied
-	// where a longer match was available — those would leak
-	// the /SANDBOX/install_root form (concatenation of the
-	// shorter sub's output + the unmatched suffix).
 	if strings.Contains(got, "/SANDBOX/install_root") {
 		t.Errorf("shorter prefix sub fired before longer; got:\n%s", got)
 	}
 }
 
-// TestCanonicalize_DeterministicAcrossRuns verifies repeated
-// canonicalization of the same input yields byte-identical
-// output. Guards against incidental nondeterminism (map
-// iteration order, etc.) in the canonicalizer itself.
+// TestCanonicalize_DeterministicAcrossRuns guards against
+// nondeterminism in the canonicalizer (map iteration order, etc.).
 func TestCanonicalize_DeterministicAcrossRuns(t *testing.T) {
 	in := `1  execve("/usr/libexec/cc1", ["cc1", "-o", "/tmp/ccAAA.s"], 0x0) = 0
 2  execve("/usr/libexec/cc1", ["cc1", "-o", "/tmp/ccBBB.s"], 0x0) = 0
@@ -110,9 +89,23 @@ func TestCanonicalize_DeterministicAcrossRuns(t *testing.T) {
 	}
 }
 
-// canonicalizeString is a test helper — drives canonicalize()
-// through tempfiles and returns the result as a string.
-func canonicalizeString(t *testing.T, in string, subs []prefixSub) string {
+// TestCanonicalizeBytes_MatchesFileVariant verifies the byte-slice
+// helper produces the same output as the file-based form. trace-
+// publish uses CanonicalizeBytes; cmd/build-tracer uses the file
+// form. Same canonicalized output is the contract.
+func TestCanonicalizeBytes_MatchesFileVariant(t *testing.T) {
+	in := `1234  execve("/usr/bin/cc", ["cc", "-c", "x.c"], 0x0) = 0
+99  execve("/usr/bin/cc", ["cc", "-o", "/tmp/ccZZZ123.s"], 0x0) = 0
+`
+	subs := []PrefixSub{{From: "/tmp", To: "/T"}}
+	fileForm := canonicalizeString(t, in, subs)
+	bytesForm := string(CanonicalizeBytes([]byte(in), subs))
+	if fileForm != bytesForm {
+		t.Errorf("file/bytes variants diverged\nfile:\n%s\nbytes:\n%s", fileForm, bytesForm)
+	}
+}
+
+func canonicalizeString(t *testing.T, in string, subs []PrefixSub) string {
 	t.Helper()
 	tmp := t.TempDir()
 	rawPath := filepath.Join(tmp, "raw.log")
@@ -120,7 +113,7 @@ func canonicalizeString(t *testing.T, in string, subs []prefixSub) string {
 	if err := os.WriteFile(rawPath, []byte(in), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := canonicalize(rawPath, outPath, subs); err != nil {
+	if err := Canonicalize(rawPath, outPath, subs); err != nil {
 		t.Fatal(err)
 	}
 	body, err := os.ReadFile(outPath)

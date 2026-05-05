@@ -355,6 +355,9 @@ func main() {
 	bootstrapBuildArch := flag.String("bootstrap-build-arch", "", "override the static bootstrap_build_arch dispatch variable (default: auto-detected from the build host).")
 	autotoolsBin := flag.String("convert-element-autotools", "", "optional: path to convert-element-autotools. When set (alongside --build-tracer-bin), kind:autotools elements render with the trace-driven native converter wired into the install genrule; bazel's action cache handles convergence across nodes via the existing remote-cache plumbing.")
 	tracerBin := flag.String("build-tracer-bin", "", "optional: path to build-tracer. Required when --convert-element-autotools is set.")
+	publishBin := flag.String("trace-publish-bin", "", "optional: path to cmd/trace-publish. Required with --autotools-round2 — staged into project B's tools/ so the round-2 coarse install genrule can publish its trace to the REAPI ActionCache.")
+	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required with --autotools-round2 — staged into project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time; staging mirrors the convert-element-autotools convention.")
+	round2 := flag.Bool("autotools-round2", false, "experimental: pivot kind:autotools rendering to round-2 shape. Project A hosts a per-element converter genrule consuming @trace_<elem>//:trace (AC-keyed by srckey via the synthetic-action-digest rendezvous; see internal/tracenorm/synthkey.go). Project B's coarse install genrule no longer runs the converter inline; it ends with a trace-publish step that writes the AC entry. Round-1 boots the AC; round-2 reads it. Requires --convert-element-autotools, --build-tracer-bin, --trace-publish-bin, and --trace-lookup-bin set.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -388,6 +391,22 @@ func main() {
 			log.Fatalf("resolve build-tracer path: %v", err)
 		}
 		autotoolsConfig.tracerBin = abs
+	}
+	if *round2 {
+		if autotoolsConfig.convertBin == "" || autotoolsConfig.tracerBin == "" || *publishBin == "" || *lookupBin == "" {
+			log.Fatalf("--autotools-round2 requires --convert-element-autotools, --build-tracer-bin, --trace-publish-bin, and --trace-lookup-bin")
+		}
+		pubAbs, err := filepath.Abs(*publishBin)
+		if err != nil {
+			log.Fatalf("resolve trace-publish path: %v", err)
+		}
+		autotoolsConfig.publishBin = pubAbs
+		lkAbs, err := filepath.Abs(*lookupBin)
+		if err != nil {
+			log.Fatalf("resolve trace-lookup path: %v", err)
+		}
+		autotoolsConfig.lookupBin = lkAbs
+		autotoolsConfig.round2Enabled = true
 	}
 
 	g, err := loadGraph(bstPaths, *sourceCache)
@@ -792,6 +811,11 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
 		return err
 	}
+	if autotoolsConfig.round2Enabled {
+		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
+			return err
+		}
+	}
 	if err := writeFile(filepath.Join(outDir, "rules", "BUILD.bazel"), "# rules/ holds the starlark utilities project A's per-element BUILDs use.\n"); err != nil {
 		return err
 	}
@@ -819,6 +843,20 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 
+	if autotoolsConfig.round2Enabled {
+		traces, err := collectTraces(g)
+		if err != nil {
+			return fmt.Errorf("collect traces: %w", err)
+		}
+		traceJSON, err := marshalTracesJSON(traces)
+		if err != nil {
+			return fmt.Errorf("marshal traces.json: %w", err)
+		}
+		if err := writeFile(filepath.Join(outDir, "tools", "traces.json"), string(traceJSON)); err != nil {
+			return err
+		}
+	}
+
 	// Stage the convert-element binary into project A's tools/ so the
 	// per-element genrule sees it as a hermetic input via tools = [...].
 	// `exports_files` keeps Bazel's load() footprint minimal — no
@@ -835,6 +873,9 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports := []string{"convert-element", "sources.json"}
+	if autotoolsConfig.round2Enabled {
+		exports = append(exports, "traces.json")
+	}
 	// Also stage convert-element-autotools + build-tracer when
 	// the trace-driven kind:autotools path is configured. The
 	// install genrule references both via tools = [...]; without
@@ -915,7 +956,31 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 	if err := os.Chmod(stagedTracer, 0o755); err != nil {
 		return nil, err
 	}
-	return []string{"convert-element-autotools", "build-tracer"}, nil
+	exports := []string{"convert-element-autotools", "build-tracer"}
+	if autotoolsConfig.round2Enabled {
+		// trace-publish lands as a //tools:trace-publish label
+		// referenced by project B's round-2 coarse install
+		// genrule. trace-lookup is staged so operators have a
+		// known artifact to point TRACE_LOOKUP_BIN at; the
+		// _trace_repo rule reads the env var (set via
+		// --repo_env=TRACE_LOOKUP_BIN=...) at bazel build time.
+		stagedPub := filepath.Join(outDir, "tools", "trace-publish")
+		if err := copyFile(autotoolsConfig.publishBin, stagedPub); err != nil {
+			return nil, fmt.Errorf("stage trace-publish: %w", err)
+		}
+		if err := os.Chmod(stagedPub, 0o755); err != nil {
+			return nil, err
+		}
+		stagedLk := filepath.Join(outDir, "tools", "trace-lookup")
+		if err := copyFile(autotoolsConfig.lookupBin, stagedLk); err != nil {
+			return nil, fmt.Errorf("stage trace-lookup: %w", err)
+		}
+		if err := os.Chmod(stagedLk, 0o755); err != nil {
+			return nil, err
+		}
+		exports = append(exports, "trace-publish", "trace-lookup")
+	}
+	return exports, nil
 }
 
 func writeProjectB(g *graph, outDir string) error {
@@ -938,6 +1003,11 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
 		return err
 	}
+	if autotoolsConfig.round2Enabled {
+		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
+			return err
+		}
+	}
 	if err := writeFile(filepath.Join(outDir, "rules", "BUILD.bazel"), "# rules/ holds the starlark utilities project B's per-element BUILDs use.\n"); err != nil {
 		return err
 	}
@@ -954,6 +1024,19 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "tools", "sources.json"), string(srcJSON)); err != nil {
 		return err
 	}
+	if autotoolsConfig.round2Enabled {
+		traces, err := collectTraces(g)
+		if err != nil {
+			return fmt.Errorf("collect traces: %w", err)
+		}
+		traceJSON, err := marshalTracesJSON(traces)
+		if err != nil {
+			return fmt.Errorf("marshal traces.json: %w", err)
+		}
+		if err := writeFile(filepath.Join(outDir, "tools", "traces.json"), string(traceJSON)); err != nil {
+			return err
+		}
+	}
 	// Stage convert-element-autotools + build-tracer when the
 	// trace-driven kind:autotools path is configured. Project B
 	// hosts the install genrule (see docs/three-pass-flow.md);
@@ -961,6 +1044,9 @@ func writeProjectB(g *graph, outDir string) error {
 	// //tools:convert-element-autotools labels resolve to
 	// nothing in the B-side BUILD.
 	exports := []string{"sources.json"}
+	if autotoolsConfig.round2Enabled {
+		exports = append(exports, "traces.json")
+	}
 	autotoolsExports, err := stageAutotoolsTools(outDir)
 	if err != nil {
 		return err
@@ -1014,6 +1100,12 @@ bazel_dep(name = "bazel_skylib", version = "1.7.1")
 `)
 	}
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
+	if autotoolsConfig.round2Enabled {
+		traces, err := collectTraces(g)
+		if err == nil {
+			b.WriteString(renderTracesUseExtension(traces))
+		}
+	}
 	return b.String()
 }
 
@@ -1031,6 +1123,12 @@ func moduleBazelB(g *graph) string {
 bazel_dep(name = "rules_cc", version = "0.0.17")
 `)
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
+	if autotoolsConfig.round2Enabled {
+		traces, err := collectTraces(g)
+		if err == nil {
+			b.WriteString(renderTracesUseExtension(traces))
+		}
+	}
 	return b.String()
 }
 
