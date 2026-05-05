@@ -254,15 +254,22 @@ e2e-meta-autotools-round2: check-tools converter
 	scripts/meta-autotools-round2.sh
 
 # Live-AC variant of the round-2 gate. Stands up buildbarn (and
-# optionally bb_clientd) and asserts trace-publish → trace-lookup
-# round-trips through real REAPI: an AC entry written by
-# trace-publish is reachable + verified by trace-lookup, and
-# (when bb_clientd is on PATH) the published Directory blob is
-# mountable at <bb_clientd_mount>/cas/<digest>/ — the same path
-# the round-2 _trace_repo Bazel rule symlinks at load time.
+# optionally bb_clientd + Bazel ≥ 9) and asserts the round-2
+# rendezvous works through real REAPI:
+#   - trace-publish writes an AC entry; trace-lookup reads it back.
+#   - (When bb_clientd is on PATH) the published Directory blob
+#     is mountable at the canonical bb_clientd layout
+#     <mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>/
+#     — the same path the round-2 _trace_repo Bazel rule symlinks.
+#   - (When bb_clientd + Bazel ≥ 9 are on PATH) a real
+#     `bazel build //elements/greet:greet_build` against project A
+#     resolves the AC-served trace through the parameterised
+#     CAS_DIRECTORY_PREFIX and emits cc rules instead of the
+#     placeholder shape. End-to-end coverage of the
+#     RemoteOutputService-backed round-2 path.
 #
-# Skips cleanly when docker compose isn't on PATH; bb_clientd
-# half is optional.
+# Skips cleanly when prereqs are missing (docker / bb_clientd /
+# Bazel 9 each gate their respective half).
 e2e-meta-autotools-round2-live:
 	./tools/e2e-meta-autotools-round2-live.sh
 

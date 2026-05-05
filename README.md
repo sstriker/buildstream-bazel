@@ -93,7 +93,16 @@ build/bin/write-a \
 
 Then `cd /tmp/project-b && bazel build //...`. That's it.
 
-You'll need Bazel ≥ 7 (bzlmod) to consume the output.
+You'll need Bazel ≥ 9 (bzlmod + RemoteOutputService) to
+consume the output with the production CAS-aware mount path
+(bb_clientd serves source bytes; Bazel trusts the daemon's
+digests without re-hashing). Bazel 7 / 8 still build the
+generated workspaces — the CAS-mount path falls back to
+`cmd/cas-fuse` with the `--unix_digest_hash_attribute_name`
+xattr fast-path Bazel ≤ 8 carried — but that's the legacy
+shape; the project's main story is Bazel 9 + bb_clientd. See
+[`docs/design/bazel9-cas-fs.md`](docs/design/bazel9-cas-fs.md)
+for the rationale.
 Cmake-side conversion needs `cmake` and `bwrap` on the host;
 autotools-side needs `cmake`, `make`, and either Linux/amd64
 (native ptrace) or `strace` on `$PATH`. See
