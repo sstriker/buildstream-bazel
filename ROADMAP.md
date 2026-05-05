@@ -7,14 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **`kind:autotools` round-2 graph derivation.** Round 1 (the
-  trace-driven coarse genrule in project B, the canonical trace
-  output, the per-element srckey) ships today. Round 2 — write-a
-  consults a srckey → registered-trace lookup at render time and
-  emits fine-grained `cc_library` / `cc_binary` into project B
-  directly when the registry hits — is the next concrete piece. See
-  `docs/three-pass-flow.md` for the architectural arc and the
-  precise contract round-2 needs to honor.
 - **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
   `--unix_digest_hash_attribute_name` — the flag that let the
   cas-fuse FUSE mount tell Bazel "trust this pre-computed
@@ -95,6 +87,17 @@ transition cleanly.
   `configure && make && make install`; the trace + `make -np`
   feed `convert-element-autotools`; install genrule lives in
   project B with deps as proper Bazel targets.
+- `kind:autotools` round-2 graph derivation. Project A's
+  per-element converter genrule consumes `@trace_<elem>//:trace`,
+  a load-time `_trace_repo` lookup against the REAPI
+  ActionCache keyed by `SyntheticActionDigest(srckey)`. Project
+  B's install genrule ends with an inline `trace-publish` call
+  that lands the AC entry. Round-2 is the default; pass
+  `--autotools-round1` to opt back into the legacy single-
+  genrule shape. Render-half gate: `meta-autotools-round2.sh`.
+  Live-AC gate (buildbarn + optionally bb_clientd):
+  `tools/e2e-meta-autotools-round2-live.sh`. Recipe:
+  `docs/design/autotools-round2-rendezvous.md`.
 - Trace + make-db canonicalization (pids stripped, gcc temp paths
   placeholdered, action-time mktemp paths normalized). Foundation
   for round-2 cache reuse.

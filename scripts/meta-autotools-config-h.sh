@@ -42,7 +42,8 @@ fixture="testdata/meta-project/autotools-config-h"
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
     --convert-element-autotools "$bin_dir/convert-element-autotools" \
-    --build-tracer-bin "$bin_dir/build-tracer"
+    --build-tracer-bin "$bin_dir/build-tracer" \
+    --autotools-round1
 
 for marker in \
     '"BUILD.bazel.out"' \
@@ -53,9 +54,9 @@ for marker in \
     'PRE_HEADERS_LIST="$$(mktemp)"' \
     'comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST"' \
     'name = "config-h_install"'; do
-    if ! grep -qF -- "$marker" "$A/elements/config-h/BUILD.bazel"; then
+    if ! grep -qF -- "$marker" "$B/elements/config-h/BUILD.bazel"; then
         echo "meta-autotools-config-h: render missing marker: $marker" >&2
-        cat "$A/elements/config-h/BUILD.bazel" >&2
+        cat "$B/elements/config-h/BUILD.bazel" >&2
         exit 1
     fi
 done
@@ -94,12 +95,12 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/config-h:config-h_install 2>&1 | tail -10
+run_bazel "$B" build //elements/config-h:config-h_install 2>&1 | tail -10
 
-build_out="$A/bazel-bin/elements/config-h/BUILD.bazel.out"
-generated_headers="$A/bazel-bin/elements/config-h/generated-headers.txt"
+build_out="$B/bazel-bin/elements/config-h/BUILD.bazel.out"
+generated_headers="$B/bazel-bin/elements/config-h/generated-headers.txt"
 for want in "$build_out" "$generated_headers" \
-            "$A/bazel-bin/elements/config-h/install_tree.tar"; do
+            "$B/bazel-bin/elements/config-h/install_tree.tar"; do
     if [ ! -f "$want" ]; then
         echo "meta-autotools-config-h: missing build output $want" >&2
         exit 1

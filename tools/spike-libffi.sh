@@ -117,6 +117,7 @@ render_rc=0
     --convert-element "$repo/build/bin/convert-element" \
     --convert-element-autotools "$repo/build/bin/convert-element-autotools" \
     --build-tracer-bin "$repo/build/bin/build-tracer" \
+    --autotools-round1 \
     >"$work/write-a.log" 2>&1 || render_rc=$?
 if [ "$render_rc" -ne 0 ]; then
     echo "write-a failed (exit $render_rc); see $work/write-a.log:"

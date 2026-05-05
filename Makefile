@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
+        e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -235,6 +235,36 @@ e2e-meta-autotools: check-tools converter
 # convergence transparently — same action key, same outputs.
 e2e-meta-autotools-native: check-tools converter
 	scripts/meta-autotools-native.sh
+
+# Trace-driven kind:autotools round-2 acceptance gate. Drives
+# write-a with --autotools-round2 and asserts the new architectural
+# shape: project A hosts a per-element converter genrule consuming
+# @trace_<elem>//:trace (a load-time _trace_repo lookup against the
+# REAPI ActionCache); project B's coarse install genrule no longer
+# runs the converter inline — it ends with a trace-publish call
+# that writes the AC entry the next pass-2 lookup will read.
+#
+# Render-half only (the full round-2 feedback loop has its own
+# gate, e2e-meta-autotools-round2-live, that exercises the
+# publish → lookup wire roundtrip against a real buildbarn +
+# optionally bb_clientd). The publish/lookup wire contract is
+# also covered in-process by go-test TestPublish_* + TestLookup_*
+# in cmd/trace-{publish,lookup}.
+e2e-meta-autotools-round2: check-tools converter
+	scripts/meta-autotools-round2.sh
+
+# Live-AC variant of the round-2 gate. Stands up buildbarn (and
+# optionally bb_clientd) and asserts trace-publish → trace-lookup
+# round-trips through real REAPI: an AC entry written by
+# trace-publish is reachable + verified by trace-lookup, and
+# (when bb_clientd is on PATH) the published Directory blob is
+# mountable at <bb_clientd_mount>/cas/<digest>/ — the same path
+# the round-2 _trace_repo Bazel rule symlinks at load time.
+#
+# Skips cleanly when docker compose isn't on PATH; bb_clientd
+# half is optional.
+e2e-meta-autotools-round2-live:
+	./tools/e2e-meta-autotools-round2-live.sh
 
 # Multi-target trace-driven kind:autotools acceptance gate.
 # Drives the autotools-multitarget fixture (multiple cc rules,
