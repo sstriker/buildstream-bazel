@@ -114,6 +114,108 @@ Common failure modes and how to diagnose:
 - **Project-level architecture story**:
   `docs/three-pass-flow.md`, `docs/overview.md`.
 
+## Development install requirements
+
+Most of the dev loop above only needs Go (and `gofmt`, which
+ships with Go). The render gates' bazel-build half + the
+end-to-end FUSE / bb_clientd verifications need additional
+host tooling. **None of this is required to develop the
+converter itself**; install only what the change you're
+working on actually exercises.
+
+### Always-useful
+
+- **Go ≥ 1.25** (matches `go.mod`'s `go` directive).
+- **`gofmt`** (ships with Go).
+
+### For render gates' bazel-build half
+
+The `scripts/meta-*.sh` gates skip cleanly when bazel ≥ 7
+isn't on PATH; install only when you want to exercise the
+build half locally.
+
+- **Bazel 9** — recommended over older releases. Direct
+  install:
+  ```sh
+  curl -fsSL -o /usr/local/bin/bazel \
+    https://github.com/bazelbuild/bazel/releases/download/9.0.0/bazel-9.0.0-linux-x86_64
+  chmod +x /usr/local/bin/bazel
+  ```
+  Or `bazelisk` to manage versions: `go install github.com/bazelbuild/bazelisk@latest`.
+- **`ca-certificates-java`** — Bazel 9's bundled JVM uses
+  its own truststore; without the system truststore on the
+  side, BCR registry lookups fail with TLS errors.
+  ```sh
+  sudo apt-get install ca-certificates-java
+  ```
+  Tests + scripts auto-detect `/etc/ssl/certs/java/cacerts`
+  and pass it via `--host_jvm_args`.
+- **`cmake` + `ninja` + `bwrap`** — needed by the
+  `kind:cmake` converter and a few autotools fixtures. For
+  reproducibility pin to the versions the orchestrator's
+  default platform asserts:
+  ```sh
+  sudo apt-get install ninja-build bubblewrap
+  # cmake: install the version pinned in `Makefile`'s
+  # CMAKE_VERSION (currently 3.28.3); apt's default is
+  # often older.
+  ```
+
+### For the FUSE / cas-fuse / bb_clientd verifications
+
+`internal/casfuse`'s mount-gated tests + the hello-fuse and
+bbclientd e2e gates need FUSE userspace + the bb_clientd
+companion daemon.
+
+- **`fuse3`** + **`libfuse3-dev`**:
+  ```sh
+  sudo apt-get install fuse3 libfuse3-dev
+  ```
+  Verify with `fusermount3 --version`. macOS support is
+  experimental (NFSv4 path); see `internal/casfuse/fs_other.go`.
+
+- **`bb_clientd`** — the Bazel-9 companion daemon
+  (replaces the dropped `--unix_digest_hash_attribute_name`
+  fast-path; see `docs/design/bazel9-cas-fs.md`). bb_clientd
+  builds with **Bazel** (it's a buildbarn project), but the
+  dev loop doesn't need a source build:
+
+  ```sh
+  # Recommended: pre-built binary from the bb-clientd repo
+  # (released on every push to main, statically linked, no
+  # runtime deps). Pick the platform suffix that matches
+  # your host.
+  curl -fsSL -o /usr/local/bin/bb_clientd \
+    https://github.com/buildbarn/bb-clientd/releases/latest/download/bb_clientd.linux_amd64
+  chmod +x /usr/local/bin/bb_clientd
+  ```
+
+  Source build (only needed if you're modifying bb_clientd
+  itself):
+
+  ```sh
+  git clone https://github.com/buildbarn/bb-clientd && cd bb-clientd
+  bazel run --run_under cp //cmd/bb_clientd $PWD/bb_clientd
+  sudo install bb_clientd /usr/local/bin/
+  ```
+
+  `go install` does **not** work on bb_clientd — buildbarn
+  projects use Bazel. The repo's go.mod has `replace`
+  directives that exist for `rules_go`'s sake; they make
+  `go install` fail but Bazel honours them correctly.
+
+  Run the daemon via `make bb-clientd-up`; tear down with
+  `make bb-clientd-down`. The daemon's mount lives under
+  `~/.cache/cmake-to-bazel/bb_clientd/mount` by default;
+  override with `BB_CLIENTD_ROOT=`.
+
+### For the executor stack (`make e2e-buildbarn*` only)
+
+- **Docker**. The `make buildbarn-up` target brings up
+  bb-storage, bb-scheduler, bb-worker, bb-runner-bare via
+  docker-compose. CI runs these; local runs are rarely
+  necessary for converter work.
+
 ## What to skip
 
 These do NOT need to run for most changes:

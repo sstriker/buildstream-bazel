@@ -14,6 +14,7 @@ import (
 	"context"
 	"sync"
 	"syscall"
+	"time"
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"github.com/hanwen/go-fuse/v2/fs"
@@ -42,12 +43,30 @@ func Mount(tree *Tree, mountPoint string, opts MountOptions) (*fuse.Server, erro
 			FsName:     "cas-fuse",
 			AllowOther: opts.AllowOther,
 		},
+		// Mount contents are content-addressed (digest-keyed), so
+		// they don't change underneath the kernel — both directory
+		// entries and inode attributes can cache for a long time.
+		// Without this, GNU cp's "did this file change while I was
+		// copying it?" race check can fire under heavy concurrent
+		// access (the kernel re-stats through FUSE between cp's
+		// open and its post-read stat; subtle re-evaluation in
+		// the FUSE server can produce attributes that look like a
+		// post-edit change). The bb_clientd convention is 5 min
+		// (300s); we mirror that.
+		EntryTimeout: durationPtr(300 * time.Second),
+		AttrTimeout:  durationPtr(300 * time.Second),
 	})
 	if err != nil {
 		return nil, err
 	}
 	return server, nil
 }
+
+// durationPtr is a small helper so the Options literal stays
+// concise — go-fuse takes EntryTimeout / AttrTimeout as
+// *time.Duration so a nil means "kernel default", and we want a
+// concrete-finite value here.
+func durationPtr(d time.Duration) *time.Duration { return &d }
 
 // MountRoot attaches a Root at mountPoint and returns the
 // running server. The kernel sees the bb_clientd-style virtual
@@ -68,6 +87,11 @@ func MountRoot(root *Root, mountPoint string, opts MountOptions) (*fuse.Server, 
 			FsName:     "cas-fuse",
 			AllowOther: opts.AllowOther,
 		},
+		// See Mount() for why we cache attributes long; same
+		// reasoning applies — mount contents are content-addressed
+		// and don't change underneath the kernel.
+		EntryTimeout: durationPtr(300 * time.Second),
+		AttrTimeout:  durationPtr(300 * time.Second),
 	})
 	if err != nil {
 		return nil, err

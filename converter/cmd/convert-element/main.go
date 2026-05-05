@@ -256,7 +256,7 @@ func run(a cli.Args) error {
 		if err := os.RemoveAll(a.OutBundleDir); err != nil {
 			return err
 		}
-		if err := synthprefix.Build(a.OutBundleDir, []synthprefix.DepBundle{{
+		if err := synthprefix.BuildSlice(a.OutBundleDir, []synthprefix.DepBundle{{
 			Pkg:       pkg.Name,
 			SourceDir: flatDir,
 		}}); err != nil {

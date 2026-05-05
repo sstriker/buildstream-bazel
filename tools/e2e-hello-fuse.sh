@@ -16,12 +16,11 @@
 #  5. cmd/write-a --use-fuse-sources: generate project A whose
 #     hello/BUILD.bazel references @src_<key>//:tree.
 #  6. bazel build //elements/hello:hello_converted in project A,
-#     with --repo_env=CAS_FUSE_MOUNT=... so cmd/cas-fuse's
-#     mount serves the source bytes Bazel reads. (Earlier
-#     revisions also passed --unix_digest_hash_attribute_name to
-#     trust pre-computed xattr digests; Bazel 9 dropped that
-#     flag, so Bazel now computes its own digest off the FUSE
-#     bytes.)
+#     with --repo_env=CAS_FUSE_MOUNT=... pointing the source
+#     extension at the FUSE mount. Bazel 9 reads file bytes
+#     through the mount and hashes them itself; the dropped
+#     `--unix_digest_hash_attribute_name` fast-path is the
+#     subject of docs/design/bazel9-cas-fs.md.
 #
 # Non-zero exit on any step's failure. All daemons/mounts are
 # torn down via trap on exit. Run from repo root.
@@ -134,20 +133,21 @@ fi
 
 # bazel-build verification is the next layer: invoke
 #   bazel build --repo_env=CAS_FUSE_MOUNT=$MOUNT \
-#     --digest_function=SHA256 \
 #     //elements/hello:hello_converted
 # It needs bazel + cmake + ninja + bwrap on the host. Gated
 # behind RUN_BAZEL=1 so the script's structural checks above
 # can pass even on minimal environments.
 #
-# Historical note: earlier revisions also passed
-# --unix_digest_hash_attribute_name=user.bazel.cas.digest so
-# Bazel would trust the cas-fuse-set xattr instead of
-# recomputing the digest. Bazel 9 dropped that flag; we now
-# let Bazel compute its own digest off the FUSE-served bytes.
-# The xattr machinery in internal/casfuse stays intact for
-# any non-Bazel client that wants the fast-path, and so the
-# capability is ready when Bazel reintroduces an equivalent.
+# Note: Bazel 7/8 supported `--unix_digest_hash_attribute_name=
+# user.bazel.cas.digest --digest_function=SHA256` here, which let
+# Bazel trust the FUSE daemon's pre-computed digests instead of
+# re-hashing every input. Bazel 9 dropped that flag pair without
+# a direct replacement; on Bazel 9 the FUSE-served files still
+# resolve correctly, but Bazel hashes them itself. The
+# `internal/casfuse` xattr-set machinery stays in tree because
+# (a) non-Bazel clients still want it and (b) it's the
+# integration point a Bazel-9 successor will plug into. See
+# `docs/design/bazel9-cas-fs.md` for the chosen replacement direction.
 if [[ "${RUN_BAZEL:-0}" == "1" ]]; then
     echo "== bazel build //elements/hello:hello_converted in project A =="
     if ! command -v bazel >/dev/null && ! command -v bazelisk >/dev/null; then
@@ -155,9 +155,13 @@ if [[ "${RUN_BAZEL:-0}" == "1" ]]; then
     else
         BAZEL=$(command -v bazel || command -v bazelisk)
         cd "$PROJ_A"
+        # --verbose_failures + --sandbox_debug surface the actual
+        # genrule cmd + sandbox layout when something goes wrong.
+        # Cheap on green runs; load-bearing for diagnosing CI red.
         "$BAZEL" build \
+            --verbose_failures \
+            --sandbox_debug \
             --repo_env=CAS_FUSE_MOUNT="$MOUNT" \
-            --digest_function=SHA256 \
             //elements/hello:hello_converted
         echo "  bazel-build of project A leaf succeeded"
         cd "$repo"

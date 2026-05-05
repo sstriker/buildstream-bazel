@@ -57,17 +57,31 @@ func TestE2E_Orchestrate_StubSubset(t *testing.T) {
 	}
 
 	// Per-element artifacts that real convert-element produces.
+	// `cmake-config/` is in synth-prefix layout (lib/cmake/<Pkg>/...) —
+	// see internal/synthprefix.BuildSlice + the converter's
+	// --out-bundle-dir flow.
 	for _, want := range []string{
 		"elements/components/hello/BUILD.bazel",
-		"elements/components/hello/cmake-config/helloConfig.cmake",
-		"elements/components/hello/cmake-config/helloTargets.cmake",
-		"elements/components/hello/cmake-config/helloTargets-release.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloConfig.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloTargets.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloTargets-release.cmake",
 		"elements/components/uses-hello/BUILD.bazel",
-		"elements/components/uses-hello/cmake-config/uses_helloConfig.cmake",
+		"elements/components/uses-hello/cmake-config/lib/cmake/uses_hello/uses_helloConfig.cmake",
 	} {
 		if _, err := os.Stat(filepath.Join(out, want)); err != nil {
 			t.Errorf("missing %s: %v", want, err)
 		}
+	}
+
+	// Diagnostics on failure: dump the actual `out` tree + the
+	// per-element converter outputs the orchestrator should have
+	// staged. The test fails consistently in CI but not locally; the
+	// extra context surfaces what the runner actually sees so we can
+	// narrow the gap without pinging tmate / scrolling 600-line
+	// transcripts. No-op on a green run because t.Failed() is false
+	// then.
+	if t.Failed() {
+		dumpTree(t, out, "out")
 	}
 
 	helloBuild := mustReadFile(t, filepath.Join(out, "elements", "components", "hello", "BUILD.bazel"))
@@ -89,4 +103,43 @@ func TestE2E_Orchestrate_StubSubset(t *testing.T) {
 			t.Errorf("uses-hello BUILD.bazel missing %s\n%s", want, usesBuild)
 		}
 	}
+}
+
+// dumpTree walks rootDir and prints every entry's relative path,
+// type, mode, and size. Called from t.Failed() blocks so a CI
+// transcript carries the actual filesystem state for diagnosis
+// (the failure is consistent in CI but not locally; we want CI
+// to show us what it sees rather than guessing). No-op when the
+// directory doesn't exist.
+func dumpTree(t *testing.T, rootDir, label string) {
+	t.Helper()
+	t.Logf("--- dumpTree(%s) at %s ---", label, rootDir)
+	if _, err := os.Stat(rootDir); err != nil {
+		t.Logf("  (root not present: %v)", err)
+		return
+	}
+	_ = filepath.WalkDir(rootDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			t.Logf("  walk-err %s: %v", path, err)
+			return nil
+		}
+		rel, _ := filepath.Rel(rootDir, path)
+		if rel == "." {
+			rel = ""
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			t.Logf("  %s [stat-err: %v]", rel, ierr)
+			return nil
+		}
+		kind := "F"
+		if d.IsDir() {
+			kind = "D"
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			kind = "L"
+		}
+		t.Logf("  %s %04o %8d %s", kind, info.Mode().Perm(), info.Size(), rel)
+		return nil
+	})
 }

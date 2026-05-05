@@ -4,7 +4,7 @@
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
-        buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
+        buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -411,6 +411,101 @@ buildbarn-up:
 
 buildbarn-down:
 	docker compose -f $(BUILDBARN_COMPOSE) down -v
+
+# bb_clientd lifecycle. bb_clientd is the Bazel-9 companion daemon
+# that replaces the dropped --unix_digest_hash_attribute_name
+# fast-path; see docs/design/bazel9-cas-fs.md. Unlike the buildbarn
+# executor stack, bb_clientd runs on the dev's host (not in
+# docker) because it serves a host FUSE mount Bazel reads through.
+#
+# Configurable knobs (override on the make command line):
+#   BB_CLIENTD_BIN  — path to the bb_clientd binary. If unset and
+#                     not on PATH, the target prints install
+#                     instructions and exits cleanly.
+#   BB_CLIENTD_ROOT — host dir where the daemon writes mount /
+#                     cache / outputs / grpc.sock. Default keeps
+#                     dev users isolated under $HOME.
+#   BB_CLIENTD_CAS  — REAPI gRPC address the daemon talks to.
+#                     Defaults to the local make-buildbarn-up
+#                     stack on 127.0.0.1:8980.
+BB_CLIENTD_BIN  ?= $(shell command -v bb_clientd 2>/dev/null)
+BB_CLIENTD_ROOT ?= $(HOME)/.cache/cmake-to-bazel/bb_clientd
+BB_CLIENTD_CAS  ?= 127.0.0.1:8980
+BB_CLIENTD_CONFIG := deploy/buildbarn/config/bb_clientd.jsonnet
+BB_CLIENTD_PIDFILE := $(BB_CLIENTD_ROOT)/bb_clientd.pid
+
+bb-clientd-up:
+	@if [ -z "$(BB_CLIENTD_BIN)" ]; then \
+		echo "bb-clientd-up: bb_clientd not found on PATH"; \
+		echo ""; \
+		echo "Install (recommended — pre-built binary):"; \
+		echo "  curl -fsSL -o /usr/local/bin/bb_clientd \\"; \
+		echo "    https://github.com/buildbarn/bb-clientd/releases/latest/download/bb_clientd.linux_amd64"; \
+		echo "  chmod +x /usr/local/bin/bb_clientd"; \
+		echo ""; \
+		echo "Or build from source (requires Bazel; bb_clientd builds"; \
+		echo "with Bazel, not the Go toolchain):"; \
+		echo "  git clone https://github.com/buildbarn/bb-clientd && cd bb-clientd"; \
+		echo "  bazel run --run_under cp //cmd/bb_clientd \\"; \
+		echo "    \$$PWD/bb_clientd && sudo install bb_clientd /usr/local/bin/"; \
+		echo ""; \
+		echo "Then re-run with BB_CLIENTD_BIN pointing at the binary, or"; \
+		echo "ensure bb_clientd is on \$$PATH. See CONTRIBUTING.md for the"; \
+		echo "full development install requirements."; \
+		exit 1; \
+	fi
+	@mkdir -p $(BB_CLIENTD_ROOT)/mount $(BB_CLIENTD_ROOT)/cache $(BB_CLIENTD_ROOT)/outputs
+	@if [ -f $(BB_CLIENTD_PIDFILE) ] && kill -0 "$$(cat $(BB_CLIENTD_PIDFILE))" 2>/dev/null; then \
+		echo "bb-clientd-up: already running (pid $$(cat $(BB_CLIENTD_PIDFILE)))"; \
+		exit 0; \
+	fi
+	@echo "bb-clientd-up: starting against $(BB_CLIENTD_CAS), mount=$(BB_CLIENTD_ROOT)/mount"
+	@BB_CLIENTD_ROOT=$(BB_CLIENTD_ROOT) BB_CLIENTD_CAS=$(BB_CLIENTD_CAS) \
+	    nohup $(BB_CLIENTD_BIN) $(BB_CLIENTD_CONFIG) >$(BB_CLIENTD_ROOT)/bb_clientd.log 2>&1 & \
+	    echo $$! > $(BB_CLIENTD_PIDFILE)
+	@for i in $$(seq 1 30); do \
+		if [ -S $(BB_CLIENTD_ROOT)/grpc.sock ] && mountpoint -q $(BB_CLIENTD_ROOT)/mount 2>/dev/null; then \
+			echo "bb-clientd: ready (grpc=$(BB_CLIENTD_ROOT)/grpc.sock, mount=$(BB_CLIENTD_ROOT)/mount)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "bb-clientd-up: daemon failed to become ready within 30s"; \
+	echo "log tail:"; tail -50 $(BB_CLIENTD_ROOT)/bb_clientd.log 2>/dev/null || true; \
+	exit 1
+
+bb-clientd-down:
+	@if [ ! -f $(BB_CLIENTD_PIDFILE) ]; then \
+		echo "bb-clientd-down: no pidfile at $(BB_CLIENTD_PIDFILE); nothing to do"; \
+		exit 0; \
+	fi
+	@pid=$$(cat $(BB_CLIENTD_PIDFILE)); \
+	if kill -0 "$$pid" 2>/dev/null; then \
+		echo "bb-clientd-down: stopping pid $$pid"; \
+		kill -TERM "$$pid"; \
+		for i in 1 2 3 4 5; do \
+			if ! kill -0 "$$pid" 2>/dev/null; then break; fi; \
+			sleep 1; \
+		done; \
+		if kill -0 "$$pid" 2>/dev/null; then \
+			echo "bb-clientd-down: forcing kill"; \
+			kill -KILL "$$pid"; \
+		fi; \
+	fi; \
+	rm -f $(BB_CLIENTD_PIDFILE); \
+	if mountpoint -q $(BB_CLIENTD_ROOT)/mount 2>/dev/null; then \
+		fusermount3 -u $(BB_CLIENTD_ROOT)/mount 2>/dev/null \
+		  || fusermount  -u $(BB_CLIENTD_ROOT)/mount 2>/dev/null \
+		  || true; \
+	fi
+
+# bb_clientd-backed hello-fuse e2e gate. Mirrors
+# tools/e2e-hello-fuse.sh's pipeline but uses bb_clientd's
+# mount + --remote_output_service in place of cmd/cas-fuse +
+# the dropped --unix_digest_hash_attribute_name flag. Skips
+# cleanly when bb_clientd or Bazel >= 9 isn't on PATH.
+e2e-hello-bbclientd: converter source-push write-a
+	./tools/e2e-hello-bbclientd.sh
 
 e2e-buildbarn: buildbarn-up
 	$(GO) test -tags=buildbarn -run TestE2E_Buildbarn ./orchestrator/...

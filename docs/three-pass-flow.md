@@ -226,56 +226,11 @@ Subsequent edits in the .c name-only territory stay on the
 cheap path forever (until a graph-affecting edit invalidates
 the srckey).
 
-## What's shipped vs. what's roadmap
+## Status
 
-Shipped (in `main` today):
-
-- **Canonical trace + filtered `make -np` output**:
-  `cmd/build-tracer` strips pids and gcc temp paths and
-  applies caller-supplied `--normalize-prefix=FROM=TO`
-  substitutions; the autotools install genrule's `make -np`
-  step filters per-run-drift lines (file mtimes, file-count
-  summaries, "Make data base printed on …"). Round 1 produces
-  a byte-stable trace that round 2 can reuse.
-- **Per-element srckey + per-kind narrowing patterns**:
-  `cmd/write-a/srckey.go` walks each element's source tree,
-  partitions paths into content-included vs name-only via
-  patterns (per-handler `<kind>SrckeyPatterns()`). For
-  kind:autotools the default narrowing puts `*.c` / `*.cpp` /
-  `*.S` in name-only territory (their content doesn't
-  influence the build graph) and keeps `configure*` / `*.am`
-  / `*.in` / `*.m4` / `*.h` content-included.
-- **Trace-driven kind:autotools install genrule in
-  project B**: the autotools handler stages sources + emits
-  the install genrule into project B's per-element BUILD,
-  where deps are materialized as Bazel targets.
-  `//tools:build-tracer` + `//tools:convert-element-autotools`
-  resolve in B because both projects stage them at write-a
-  time.
-
-Roadmap (round 2 — not yet wired):
-
-1. **Trace registry**: a srckey → registered-trace lookup
-   consulted by write-a at render time. The "registry" is
-   *not* an action-cache replacement — Bazel's AC handles
-   action-input-keyed caching natively. The registry sits at
-   the **write-a layer**, deciding *which shape* to render
-   into project B (coarse genrule vs static fine-grained cc
-   rules).
-2. **Round-2 render-shape switch**: when write-a finds a
-   registered trace for an element's srckey, it emits
-   fine-grained `cc_library` / `cc_binary` into B directly
-   (no genrule, no build needed at pass 3). Cache miss falls
-   back to round 1's coarse genrule.
-3. **Trace post-build registration**: a wrapper around
-   `bazel build` walks `bazel-bin/elements/*/trace.log` and
-   inserts each into the registry under the element's
-   srckey.
-
-The big-picture goal stays: **this repo is a transition
-tool**. Long-term, the success state is "you don't need
-this anymore — your downstream is plain Bazel." The
-roadmap above is in service of making the autotools
-transition cheap; once an element's graph stabilizes, its
-fine-grained cc rules are checked in and the genrule
-goes away entirely.
+This doc describes the architecture; for what's wired in
+`main` today vs. what's queued, see [`ROADMAP.md`](../ROADMAP.md).
+The round-2 work (trace registry, render-shape switch, post-build
+trace registration) is what makes the autotools transition cheap
+once an element's graph stabilizes — its fine-grained cc rules
+get checked in and the genrule goes away entirely.

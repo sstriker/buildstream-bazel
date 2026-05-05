@@ -15,10 +15,34 @@ transition cleanly.
   directly when the registry hits — is the next concrete piece. See
   `docs/three-pass-flow.md` for the architectural arc and the
   precise contract round-2 needs to honor.
+- **Bazel 9 CAS-aware filesystem.** Bazel 9 dropped
+  `--unix_digest_hash_attribute_name` — the flag that let the
+  cas-fuse FUSE mount tell Bazel "trust this pre-computed
+  digest, don't re-hash" — without a direct replacement. The
+  mount still resolves correctly on Bazel 9 and the BwoB
+  properties (executor-side reads from CAS, no source-tree
+  materialisation on dev disk) are preserved, but Bazel
+  re-hashes every input the FUSE daemon already knows the
+  digest of. First builds of fresh checkouts pay the full
+  O(source-bytes) re-read + hash cost.
+  **Direction picked** (see `docs/design/bazel9-cas-fs.md` for the
+  full analysis): adopt **`bb_clientd`** as a Bazel 9
+  companion daemon, paired with Bazel via the surviving
+  `--remote_output_service=` flag. bb_clientd serves a
+  FUSE/NFS mount and reports digests over the
+  `RemoteOutputService` protocol; Bazel trusts those digests
+  without re-hashing. This is *not* an adoption of buildbarn
+  end-to-end — bb_clientd talks plain REAPI to whatever CAS
+  endpoint we point it at, the same way `bazelisk` talks to
+  whatever Bazel binary it pins. Output-side BwoB (lazy
+  materialisation of build artifacts) lands as a free side
+  effect.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
-  `bazel build downstream`, `hello-fuse pipeline`) fail on main
-  for environment reasons (cmake-config bundle staging on the CI
-  runner; bazel 9 dropped `--unix_digest_hash_attribute_name`).
+  `bazel build downstream`, `hello-fuse pipeline`,
+  `cas-fuse against fake CAS`) fail intermittently or
+  consistently for environment reasons (cmake-config bundle
+  staging on the CI runner; userns / fuse permissions on
+  Ubuntu 24.04 runners; bazel 9 toolchain expectations).
   These don't reflect product issues but they make PR review
   noisier than it should be.
 
@@ -49,6 +73,15 @@ transition cleanly.
   have placeholder handlers today. Each kind is bounded work; what's
   not bounded is the question of which kinds are graph-recoverable
   vs need-to-stay-coarse.
+- **Drop the host-toolchain assumption from CI / e2e gates.**
+  Several gates expect cmake / ninja / bwrap / fuse3 installed on
+  the host machine (CI runner or developer workstation). In a
+  full remote-execution setup these belong on the executor, not
+  on the dev's box — the dev only needs Bazel + bb_clientd. Walk
+  the gate scripts and the `make check-tools` surface, identify
+  which host-tool dependencies are CI-runner artifacts (vs
+  hard build-tool needs we can't push remote), and migrate the
+  former onto the executor toolchain.
 
 ## Done (high points)
 

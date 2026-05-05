@@ -105,20 +105,24 @@ func stubConverter() int {
 			return 70
 		}
 		if *outBundle != "" {
-			if err := os.MkdirAll(*outBundle, 0o755); err != nil {
-				return 70
-			}
 			// Strip any path components in the element name ("components/hello"
 			// -> "hello") so bundle filenames stay short and stable across
 			// element layouts.
 			pkg := strings.ToLower(filepath.Base(elementName))
-			_ = os.WriteFile(filepath.Join(*outBundle, pkg+"Config.cmake"), []byte("# stub config\n"), 0o644)
+			// Synth-prefix layout: cmake-config files live under
+			// lib/cmake/<Pkg>/. Mirrors what real convert-element writes
+			// via synthprefix.BuildSlice.
+			pkgDir := filepath.Join(*outBundle, "lib", "cmake", pkg)
+			if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+				return 70
+			}
+			_ = os.WriteFile(filepath.Join(pkgDir, pkg+"Config.cmake"), []byte("# stub config\n"), 0o644)
 			// Realistic Targets.cmake so the orchestrator's exports-extraction
 			// picks up the import declaration when building the next element's
 			// imports manifest.
 			targets := fmt.Sprintf("add_library(%s::%s STATIC IMPORTED)\n", pkg, pkg)
-			_ = os.WriteFile(filepath.Join(*outBundle, pkg+"Targets.cmake"), []byte(targets), 0o644)
-			_ = os.WriteFile(filepath.Join(*outBundle, pkg+"Targets-release.cmake"), []byte("# stub release\n"), 0o644)
+			_ = os.WriteFile(filepath.Join(pkgDir, pkg+"Targets.cmake"), []byte(targets), 0o644)
+			_ = os.WriteFile(filepath.Join(pkgDir, pkg+"Targets-release.cmake"), []byte("# stub release\n"), 0o644)
 		}
 		if *outReadPaths != "" {
 			_ = os.MkdirAll(filepath.Dir(*outReadPaths), 0o755)
@@ -172,13 +176,15 @@ func TestRun_StubSuccess(t *testing.T) {
 	// Per-element artifacts staged for both. The stub names its bundle
 	// after the source root's basename — which is now the shadow tree
 	// path the orchestrator builds (last segment matches the element
-	// name's last segment).
+	// name's last segment). cmake-config/ is in synth-prefix layout
+	// (lib/cmake/<Pkg>/...) — mirrors what real convert-element writes
+	// via synthprefix.BuildSlice.
 	for _, want := range []string{
 		"elements/components/hello/BUILD.bazel",
-		"elements/components/hello/cmake-config/helloConfig.cmake",
+		"elements/components/hello/cmake-config/lib/cmake/hello/helloConfig.cmake",
 		"elements/components/hello/read_paths.json",
 		"elements/components/uses-hello/BUILD.bazel",
-		"elements/components/uses-hello/cmake-config/uses-helloConfig.cmake",
+		"elements/components/uses-hello/cmake-config/lib/cmake/uses-hello/uses-helloConfig.cmake",
 		"elements/components/uses-hello/read_paths.json",
 	} {
 		if _, err := os.Stat(filepath.Join(out, want)); err != nil {
