@@ -17,11 +17,19 @@ func init() {
 	// (or future per-element traceDrivenSrckeyPatterns override)
 	// can tighten this for elements with predictable shapes.
 	//
-	// Round-2 dispatch only activates when the trace-driven CLI is
-	// configured AND the element compiles native code (the
-	// converter recovers cc rules from execve events; an element
-	// that just stages files produces an empty BUILD.bazel.out
-	// placeholder, which is exactly the round-2 boot-phase signal).
+	// Round-2 dispatch activates whenever the trace-driven CLI
+	// is configured (autotoolsConfig.convertBin set +
+	// round2Enabled true) AND the kind opted in via
+	// traceDrivenSrckeyPatterns — see pipelineHandler.shouldUseRound2.
+	// Whether the converter recovers cc rules vs emits the
+	// boot-phase placeholder is a separate question answered at
+	// converter-action time: a manual element whose commands
+	// don't run cc / ar / ld produces a trace with no compile
+	// events, the converter sees nothing to recover, and
+	// BUILD.bazel.out comes out empty. Project B's coarse install
+	// genrule remains the buildable target in that case (same as
+	// the AC-miss boot phase). Net: opting kind:manual in is
+	// safe for non-native elements; they just stay coarse.
 	registerHandler(pipelineHandler{
 		kindName:                  "manual",
 		traceDrivenSrckeyPatterns: manualScriptSrckeyPatterns(),
