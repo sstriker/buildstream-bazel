@@ -1,0 +1,31 @@
+CC ?= cc
+CFLAGS = @CFLAGS@
+prefix = @PREFIX@
+libdir = $(prefix)/lib
+includedir = $(prefix)/include
+
+# Mixed C + assembler library. sysv.S exercises the .S source
+# extension the converter must recognize (libffi-style
+# arch-specific assembly). foo.c calls into sysv.S's
+# arch_value() symbol.
+all: libfoo.a
+
+foo.o: foo.c foo.h
+	$(CC) $(CFLAGS) -c foo.c -o foo.o
+
+# .S goes through cpp first. The CPPFLAG is for cpp; cc
+# handles the routing automatically.
+sysv.o: sysv.S
+	$(CC) $(CFLAGS) -DASM_VARIANT=42 -c sysv.S -o sysv.o
+
+libfoo.a: foo.o sysv.o
+	ar rcs libfoo.a foo.o sysv.o
+
+install: all
+	install -D -m 0644 libfoo.a $(DESTDIR)$(libdir)/libfoo.a
+	install -D -m 0644 foo.h $(DESTDIR)$(includedir)/foo.h
+
+clean:
+	rm -f *.o *.a
+
+.PHONY: all install clean

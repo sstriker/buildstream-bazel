@@ -1,0 +1,30 @@
+#!/bin/sh
+# Hand-rolled configure for the autotools-asm fixture.
+# Substitutes @PREFIX@/@CFLAGS@ into Makefile.in. The fixture
+# unconditionally compiles the x86_64 sysv.S — gating on
+# `uname -m` would let real autotools' configure.host
+# arch-pick the right .S, but the fixture's job is to verify
+# the converter recognizes .S as a source, not to model the
+# full configure.host machinery.
+
+PREFIX=/usr/local
+CFLAGS=${CFLAGS:--O2}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --prefix=*)        PREFIX="${1#--prefix=}" ;;
+        --prefix)          PREFIX="$2"; shift ;;
+        --exec-prefix=*|--bindir=*|--sbindir=*|--sysconfdir=*|\
+        --datadir=*|--includedir=*|--libdir=*|--libexecdir=*|\
+        --localstatedir=*|--sharedstatedir=*|--mandir=*|--infodir=*) ;;
+        --build=*|--host=*|--target=*) ;;
+        *) ;;
+    esac
+    shift
+done
+
+sed -e "s|@PREFIX@|$PREFIX|g" \
+    -e "s|@CFLAGS@|$CFLAGS|g" \
+    Makefile.in > Makefile
+
+echo "configure: PREFIX=$PREFIX CFLAGS=$CFLAGS"

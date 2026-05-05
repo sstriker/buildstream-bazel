@@ -561,6 +561,16 @@ func isSourceFile(p string) bool {
 	switch filepath.Ext(p) {
 	case ".c", ".cc", ".cpp", ".cxx", ".C", ".c++":
 		return true
+	case ".S", ".s":
+		// Assembler sources. `.S` is preprocessed-then-assembled
+		// (cpp invoked first); `.s` is assembled directly. cc
+		// handles both natively and Bazel's cc_library accepts
+		// them in srcs alongside `.c`. Real autotools projects
+		// (notably libffi's `src/<arch>/sysv.S`) wire arch-
+		// specific assembly via configure.host; without `.S` in
+		// the source-file allowlist these compile events get
+		// silently dropped during classifyArgv.
+		return true
 	}
 	return false
 }

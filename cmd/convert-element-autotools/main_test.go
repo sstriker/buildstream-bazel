@@ -536,6 +536,50 @@ func TestIsSharedLibraryOutput(t *testing.T) {
 	}
 }
 
+// TestClassifyArgv_AssemblerSources covers the `.S` (cpp-then-
+// assemble) and `.s` (assemble-only) source extensions. cc
+// handles both natively; real autotools projects like libffi
+// wire arch-specific `src/<arch>/sysv.S` through configure.host,
+// so the converter has to recognize them as source inputs.
+// Without this, `cc -c sysv.S -o sysv.o` would have srcs=[]
+// and the compile-only branch would return ok=false — silently
+// dropping the event.
+func TestClassifyArgv_AssemblerSources(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want Event
+	}{
+		{
+			"capital S (cpp + assemble)",
+			[]string{"cc", "-c", "-o", "sysv.o", "sysv.S"},
+			Event{Kind: EventCompile, Out: "sysv.o", Srcs: []string{"sysv.S"}},
+		},
+		{
+			"lowercase s (assemble only)",
+			[]string{"cc", "-c", "-o", "boot.o", "boot.s"},
+			Event{Kind: EventCompile, Out: "boot.o", Srcs: []string{"boot.s"}},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := classifyArgv(c.argv)
+			if !ok {
+				t.Fatalf("classifyArgv ok = false; want true")
+			}
+			if got.Kind != c.want.Kind {
+				t.Errorf("Kind = %d, want %d", got.Kind, c.want.Kind)
+			}
+			if got.Out != c.want.Out {
+				t.Errorf("Out = %q, want %q", got.Out, c.want.Out)
+			}
+			if !reflect.DeepEqual(got.Srcs, c.want.Srcs) {
+				t.Errorf("Srcs = %#v, want %#v", got.Srcs, c.want.Srcs)
+			}
+		})
+	}
+}
+
 // TestEmitBuild_GeneratedHeaders covers the AC_CONFIG_HEADERS
 // path: when the pipeline tells the converter that `config.h`
 // (or any other build-time-generated header) exists, every

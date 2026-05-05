@@ -2,7 +2,7 @@
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
-        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h \
+        e2e-meta-autotools-native e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
         buildbarn-up buildbarn-down install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
@@ -299,6 +299,13 @@ e2e-meta-autotools-subdirs: check-tools converter
 # emitted cc_library carries config.h in its hdrs.
 e2e-meta-autotools-config-h: check-tools converter
 	scripts/meta-autotools-config-h.sh
+
+# Assembler-source (.S) recognition gate. libffi-style mixed
+# C + arch-specific assembly: the converter must include .S
+# files in cc_library srcs alongside .c. The fixture's sysv.S
+# is x86_64; the build phase requires an x86_64 host.
+e2e-meta-autotools-asm: check-tools converter
+	scripts/meta-autotools-asm.sh
 
 # Conditional-lowering acceptance gate. Single kind:manual element
 # (testdata/meta-project/conditional-greet/) whose .bst declares
