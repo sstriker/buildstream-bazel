@@ -14,26 +14,22 @@
 //
 // See:
 //   - docs/bazel9-cas-fs.md — design doc for the chosen direction
-//   - docs/sources-design.md — sources-route architecture
-//   - https://github.com/buildbarn/bb-storage/blob/master/cmd/bb_clientd/main.go
-//   - https://github.com/buildbarn/bb-deployments/tree/master/docker-compose
-//     for the canonical bb-deployments example configs.
+//   - CONTRIBUTING.md — bb_clientd install instructions for dev
+//   - https://github.com/buildbarn/bb-clientd/releases — public
+//     pre-built binaries (linux_amd64 + darwin / freebsd / windows)
+//   - https://github.com/buildbarn/bb-deployments/blob/master/docker-compose/config/common.libsonnet
+//     — canonical config patterns we mirror
 //
 // Schema reference for upgrades:
-//   https://github.com/buildbarn/bb-storage/blob/master/pkg/proto/configuration/bb_clientd/bb_clientd.proto
+//   https://github.com/buildbarn/bb-clientd/blob/main/pkg/proto/configuration/bb_clientd/bb_clientd.proto
 //
-// This config is meant to run on the dev's host (not in
-// docker), so paths use $HOME-relative locations resolved by
-// the lifecycle script (`make bb-clientd-up`). Hard-coded paths
-// in this file would surprise multi-user hosts; the lifecycle
-// script writes a per-invocation config to a tempdir,
-// substituting paths.
+// This config runs on the dev's host (not in docker), so paths
+// use $HOME-relative locations resolved by extVar substitutions
+// from the lifecycle script (`make bb-clientd-up`).
 
 local bbClientdRoot = std.extVar('BB_CLIENTD_ROOT');
 local casAddress = std.extVar('BB_CLIENTD_CAS');
 local mountPath = bbClientdRoot + '/mount';
-local cachePath = bbClientdRoot + '/cache';
-local outputPath = bbClientdRoot + '/outputs';
 
 {
   blobstore: {
@@ -43,11 +39,16 @@ local outputPath = bbClientdRoot + '/outputs';
     // BuildBuddy, NativeLink, …) just change `address` —
     // bb_clientd doesn't care which implementation is on the
     // other end of the gRPC wire.
+    //
+    // Schema: BlobAccessConfiguration.grpc is a
+    // GrpcBlobAccessConfiguration whose `client` is a
+    // ClientConfiguration with `address`. Mirrors the canonical
+    // bb-deployments common.libsonnet shape.
     contentAddressableStorage: {
-      grpc: { address: casAddress },
+      grpc: { client: { address: casAddress } },
     },
     actionCache: {
-      grpc: { address: casAddress },
+      grpc: { client: { address: casAddress } },
     },
   },
   global: {
@@ -59,35 +60,42 @@ local outputPath = bbClientdRoot + '/outputs';
       enablePrometheus: true,
     },
   },
-  // gRPC server Bazel connects to via --remote_output_service.
-  // Unix socket so multi-user hosts don't collide on a shared
-  // TCP port and so permissions stay scoped to the daemon's
-  // owner.
+  // gRPC server Bazel connects to via
+  // --experimental_remote_output_service. Unix socket so
+  // multi-user hosts don't collide on a shared TCP port and so
+  // permissions stay scoped to the daemon's owner.
   grpcServers: [{
-    listenAddresses: ['unix://' + bbClientdRoot + '/grpc.sock'],
+    listenPaths: [bbClientdRoot + '/grpc.sock'],
     authenticationPolicy: { allow: {} },
   }],
-  // The FUSE mount where Bazel-visible content lives:
-  //   <mount>/cas/<digest>          — read-only CAS Directories
-  //                                    addressed by digest
-  //   <mount>/outputs/<workspace>/  — Bazel's per-build output
+  // The FUSE mount where Bazel-visible content lives. Per the
+  // bb_clientd proto's MountConfiguration, the daemon serves
+  // its own well-known layout under the mount_path:
+  //
+  //   <mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>/
+  //                         /file/<digest>
+  //                         /executable/<digest>
+  //                         /tree/<digest>/
+  //                         /command/<digest>
+  //   <mount>/outputs/<workspace>/   — Bazel's per-build output
   //                                    paths (lazily materialized)
-  // Bazel's --remote_output_service tells it to use this mount
-  // as both input and output namespace.
+  //   <mount>/scratch/               — writable scratch namespace
+  //
+  // rules/sources.bzl needs to learn this layout (currently
+  // it expects `<mount>/blobs/directory/<digest>/`). Fixing
+  // that is a follow-up; for round 1 the path adjustments are
+  // documented in docs/bazel9-cas-fs.md.
   mount: {
     mountPath: mountPath,
     fuse: {
-      // No allowOther: the dev's user owns the mount, no need
-      // for cross-user visibility. Set true if you want Docker
-      // containers (running as a different uid) to read through
-      // the mount.
+      // Mount contents are content-addressed (digest-keyed),
+      // so the kernel can cache directory entries / inode
+      // attributes for a long time without correctness loss.
+      // Recommended values from the proto comments.
+      directoryEntryValidity: '300s',
+      inodeAttributeValidity: '300s',
+      // No allowOther: the dev's user owns the mount.
       allowOther: false,
-      // directoryEntryValidity: how long the kernel may cache
-      // dir-entry results before re-asking bb_clientd. Mount
-      // contents are content-addressed (digest-keyed), so
-      // they don't change underneath us — long validity is fine.
-      directoryEntryValidity: '600s',
-      inodeAttributeValidity: '600s',
     },
   },
   // The pool of per-build output-path directories. Bazel asks
@@ -96,25 +104,28 @@ local outputPath = bbClientdRoot + '/outputs';
   // restarts means a stopped/started bb_clientd doesn't lose
   // in-flight build state.
   outputPathPersistency: {
-    stateDirectoryPath: outputPath,
+    stateDirectoryPath: bbClientdRoot + '/outputs',
     maximumStateFileSizeBytes: 16 * 1024 * 1024,
-    maximumStateFileAgeSeconds: 86400,
+    maximumStateFileAge: '86400s',
   },
-  // Local on-disk cache of CAS blobs the daemon has fetched.
-  // Bounded; bb_clientd evicts older blobs when full.
+  // Local on-disk cache backing the file pool (writable
+  // outputs + scratch). Bounded; bb_clientd evicts older
+  // blobs when full.
   filePool: {
     blockDevice: {
       file: {
-        path: cachePath + '/file_pool',
+        path: bbClientdRoot + '/cache/file_pool',
         sizeBytes: 1073741824,  // 1 GiB
       },
     },
   },
-  // Per-build identity hash. Lets bb_clientd disambiguate
-  // concurrent builds running against the same daemon
-  // (different shells, different repos).
-  filesystemAccessCache: {
-    inMemory: { cacheSize: 100000 },
+  // In-memory cache of fetched CAS Directory objects.
+  // Tunable per the daemon's RAM budget.
+  directoryCache: {
+    maximumCount: 100000,
+    maximumSizeBytes: 16 * 1024 * 1024,
+    cacheReplacementPolicy: 'LEAST_RECENTLY_USED',
   },
   maximumMessageSizeBytes: 16 * 1024 * 1024,
+  maximumTreeSizeBytes: 64 * 1024 * 1024,
 }

@@ -438,12 +438,20 @@ bb-clientd-up:
 	@if [ -z "$(BB_CLIENTD_BIN)" ]; then \
 		echo "bb-clientd-up: bb_clientd not found on PATH"; \
 		echo ""; \
-		echo "Install:"; \
-		echo "  Pre-built releases: https://github.com/buildbarn/bb-storage/releases"; \
-		echo "  Or build from source: go install github.com/buildbarn/bb-storage/cmd/bb_clientd@latest"; \
+		echo "Install (recommended — pre-built binary):"; \
+		echo "  curl -fsSL -o /usr/local/bin/bb_clientd \\"; \
+		echo "    https://github.com/buildbarn/bb-clientd/releases/latest/download/bb_clientd.linux_amd64"; \
+		echo "  chmod +x /usr/local/bin/bb_clientd"; \
+		echo ""; \
+		echo "Or build from source (requires Bazel; bb_clientd builds"; \
+		echo "with Bazel, not the Go toolchain):"; \
+		echo "  git clone https://github.com/buildbarn/bb-clientd && cd bb-clientd"; \
+		echo "  bazel run --run_under cp //cmd/bb_clientd \\"; \
+		echo "    \$$PWD/bb_clientd && sudo install bb_clientd /usr/local/bin/"; \
 		echo ""; \
 		echo "Then re-run with BB_CLIENTD_BIN pointing at the binary, or"; \
-		echo "ensure bb_clientd is on \$$PATH."; \
+		echo "ensure bb_clientd is on \$$PATH. See CONTRIBUTING.md for the"; \
+		echo "full development install requirements."; \
 		exit 1; \
 	fi
 	@mkdir -p $(BB_CLIENTD_ROOT)/mount $(BB_CLIENTD_ROOT)/cache $(BB_CLIENTD_ROOT)/outputs
