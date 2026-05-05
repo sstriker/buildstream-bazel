@@ -559,11 +559,23 @@ genrule(
         # path components ending in tree_dir/<rel>. Strip up to
         # and including the last tree_dir/ to recover the
         # source-relative suffix.
+        #
+        # SHADOW is a tree of symlinks pointing back at the
+        # original Bazel-supplied source paths. No byte
+        # materialisation: when sources flow from the FUSE
+        # mount, cmake reads through the symlinks → kernel →
+        # FUSE → CAS, byte-for-byte on demand. cp -L would
+        # break this (it'd render bytes into the action's
+        # workdir, defeating the no-bytes-on-dev-disk story
+        # the FUSE-sources route exists to deliver). The "cp
+        # replaced while being copied" CI flake the symlink
+        # shape also avoids was a downstream symptom of the
+        # same materialisation we don't want.
         SHADOW="$$(mktemp -d)"
         for src in $(SRCS); do
             rel="$${src##*tree_dir/}"
             mkdir -p "$$SHADOW/$$(dirname "$$rel")"
-            cp -L "$$src" "$$SHADOW/$$rel"
+            ln -s "$$(readlink -f "$$src")" "$$SHADOW/$$rel"
         done
         BUNDLE_DIR="$$(mktemp -d)"
         $(location //tools:convert-element) \\
