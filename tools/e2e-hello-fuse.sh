@@ -16,9 +16,12 @@
 #  5. cmd/write-a --use-fuse-sources: generate project A whose
 #     hello/BUILD.bazel references @src_<key>//:tree.
 #  6. bazel build //elements/hello:hello_converted in project A,
-#     with --repo_env=CAS_FUSE_MOUNT=... and the
-#     --unix_digest_hash_attribute_name flag pair so the daemon's
-#     pre-computed digests are trusted.
+#     with --repo_env=CAS_FUSE_MOUNT=... so cmd/cas-fuse's
+#     mount serves the source bytes Bazel reads. (Earlier
+#     revisions also passed --unix_digest_hash_attribute_name to
+#     trust pre-computed xattr digests; Bazel 9 dropped that
+#     flag, so Bazel now computes its own digest off the FUSE
+#     bytes.)
 #
 # Non-zero exit on any step's failure. All daemons/mounts are
 # torn down via trap on exit. Run from repo root.
@@ -131,12 +134,20 @@ fi
 
 # bazel-build verification is the next layer: invoke
 #   bazel build --repo_env=CAS_FUSE_MOUNT=$MOUNT \
-#     --unix_digest_hash_attribute_name=user.bazel.cas.digest \
 #     --digest_function=SHA256 \
 #     //elements/hello:hello_converted
 # It needs bazel + cmake + ninja + bwrap on the host. Gated
 # behind RUN_BAZEL=1 so the script's structural checks above
 # can pass even on minimal environments.
+#
+# Historical note: earlier revisions also passed
+# --unix_digest_hash_attribute_name=user.bazel.cas.digest so
+# Bazel would trust the cas-fuse-set xattr instead of
+# recomputing the digest. Bazel 9 dropped that flag; we now
+# let Bazel compute its own digest off the FUSE-served bytes.
+# The xattr machinery in internal/casfuse stays intact for
+# any non-Bazel client that wants the fast-path, and so the
+# capability is ready when Bazel reintroduces an equivalent.
 if [[ "${RUN_BAZEL:-0}" == "1" ]]; then
     echo "== bazel build //elements/hello:hello_converted in project A =="
     if ! command -v bazel >/dev/null && ! command -v bazelisk >/dev/null; then
@@ -146,7 +157,6 @@ if [[ "${RUN_BAZEL:-0}" == "1" ]]; then
         cd "$PROJ_A"
         "$BAZEL" build \
             --repo_env=CAS_FUSE_MOUNT="$MOUNT" \
-            --unix_digest_hash_attribute_name=user.bazel.cas.digest \
             --digest_function=SHA256 \
             //elements/hello:hello_converted
         echo "  bazel-build of project A leaf succeeded"
