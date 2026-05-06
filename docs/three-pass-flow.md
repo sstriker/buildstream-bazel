@@ -1,4 +1,4 @@
-# Three-pass flow: 1 → 2 → 3 (and the 2' → 3' loop for autotools)
+# Three-pass flow: 1 → 2 → 3 (and the 2' → 3' follow-up for autotools)
 
 The cmake-to-bazel converter is a 3-pass system. Each pass has
 its own caching story, and the optimization opportunities look
@@ -14,10 +14,11 @@ only knowable by actually running the build (autotools), pass
 2 emits a coarse passthrough genrule into project B, pass 3
 runs the build inside it (deps available as proper B-side
 targets) and registers the resulting trace, and a follow-up
-**pass 2′** picks up the trace at the next render to emit the
-fine-grained graph for **pass 3′** to compile natively.
+**pass 2′** picks up that trace via the existing A-side
+converter genrule to emit the fine-grained graph for
+**pass 3′** to compile natively.
 
-## The three (or five) passes
+## The three passes plus autotools' 2' → 3' follow-up
 
 ```mermaid
 flowchart LR
@@ -28,9 +29,7 @@ flowchart LR
   pb --> bb[Pass 3: bazel build B<br/>real builds + artifacts]
   bb -- "cmake: done" --> art[binaries]
   bb -- "autotools: trace registered" --> reg["srckey -> trace<br/>registry"]
-  reg -. "next render" .-> wa2[Pass 1': write-a<br/>render checks registry]
-  wa2 --> pa2[project A']
-  pa2 --> ba2[Pass 2': fine-grained<br/>BUILD defs from trace]
+  reg -. "next bazel build A" .-> ba2[Pass 2': fine-grained<br/>BUILD defs from trace]
   ba2 --> pb2[project B']
   pb2 --> bb2[Pass 3': bazel build B'<br/>fine-grained native compile]
   bb2 --> art
@@ -41,7 +40,7 @@ flowchart LR
 | 1: write-a | cheap (seconds) | none — always re-runs | .bst graph + element source bytes |
 | 2: bazel build A | cheap for cmake (graph-only); cheap for autotools (just stages a passthrough genrule) | Bazel's ActionCache | per-element graph-shape |
 | 3: bazel build B | per-action: cheap for cmake cc rules; **expensive for autotools coarse genrule** (configure + make + install + tracer) | Bazel's ActionCache | source bytes + dep artifacts |
-| 2': write-a / bazel build A re-render | cheap | registry hit ⇒ emits fine-grained graph for B | trace registered by pass 3 |
+| 2': bazel build A follow-up | cheap | registry hit ⇒ emits fine-grained graph for B | trace registered by pass 3 |
 | 3': bazel build B' | cheap (incremental, fine-grained cc) | normal Bazel | the converted cc_library / cc_binary |
 
 **Key correction** (versus an earlier draft of this doc):
@@ -96,23 +95,21 @@ So the round-1 shape:
   are registered against the element's srckey** for the next
   round.
 
-Round-2 shape (post-trace registration):
+Round-2 follow-up (post-trace registration):
 
-- **Pass 1' (write-a re-render)**: detects the registered
-  trace for this element's srckey. Emits project A with a
-  marker indicating "fine-graph available for X."
-- **Pass 2' (bazel build A')**: per-element action no longer
-  needs to defer to a coarse genrule. It reads the registered
+- **Pass 2' (bazel build A')**: the same round-2 converter
+  genrule already rendered in project A now sees the registered
   trace + make-db, runs the converter, and emits fine-grained
   `cc_library` / `cc_binary` BUILD definitions into project B
-  (just like cmake's pass 2 does).
+  (just like cmake's pass 2 does). No distinct `write-a`
+  re-render is required between pass 3 and pass 2'.
 - **Pass 3' (bazel build B')**: native cc compile of the
   fine-grained rules. `.c` content edits trigger ONLY
   recompiling that translation unit (not the whole autotools
   build).
 
 The registry is what carries pass-3 trace output back to
-pass-2'. It's a write-a-time / pass-2-time lookup, NOT an
+pass-2'. It's a Bazel-load-time / pass-2-time lookup, NOT an
 in-action lookup — which is why it doesn't duplicate Bazel's
 ActionCache. Different layer entirely.
 
@@ -169,7 +166,7 @@ First-time cost is full build. Registry now has the trace.
 ```mermaid
 sequenceDiagram
     U->>W: edit X/sources/x.c
-    W->>W: pass 1' re-render. srckey UNCHANGED (.c is name-only)<br/>⇒ registry HIT
+    W->>W: pass 1 re-render for the source edit (normal cycle)<br/>A already has the round-2 converter wiring
     A->>A: pass 2': converter runs against registered trace<br/>⇒ emits fine-grained cc_library / cc_binary into B<br/>⇒ B's BUILD content byte-stable
     B->>B: pass 3': cc_library(X) srcs glob picks up real .c<br/>⇒ incremental recompile of just x.c ⇒ relink
 ```
