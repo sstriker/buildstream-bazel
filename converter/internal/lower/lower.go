@@ -131,10 +131,21 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
 	var traceLinkLibs map[string][]string             // target → ordered list of cmake lib names from target_link_libraries (all visibility arms, dedup-preserved)
+	// traceDecoded tracks whether shadow.Decode ran; when true,
+	// decodedConfigureFiles holds the configure_file extractions
+	// from that single pass and the configure_file recovery
+	// reuses them rather than re-parsing the trace. A
+	// nil-slice sentinel wouldn't suffice — a trace with zero
+	// configure_file events leaves the slice nil, which would
+	// otherwise look identical to "decode never ran".
+	var traceDecoded bool
+	var decodedConfigureFiles []shadow.ConfigureFileCall
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
+		decoded := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
+		traceDecoded = true
 		privateIncludeDirs = map[string]map[string]bool{}
-		for _, call := range shadow.ExtractTargetIncludes(opts.TraceRaw, cmakeSrcForTrace, knownTargets) {
+		for _, call := range decoded.Includes {
 			for _, grp := range call.Groups {
 				if grp.Visibility != "PRIVATE" {
 					continue
@@ -148,7 +159,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 		traceLinkLibs = map[string][]string{}
-		for _, call := range shadow.ExtractTargetLinks(opts.TraceRaw, cmakeSrcForTrace, knownTargets) {
+		for _, call := range decoded.Links {
 			seen := map[string]bool{}
 			for _, grp := range call.Groups {
 				for _, lib := range grp.Libs {
@@ -160,6 +171,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				}
 			}
 		}
+		decodedConfigureFiles = decoded.ConfigFiles
 	}
 
 	cmakeSrc := r.Codemodel.Paths.Source
@@ -182,9 +194,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// recorded outputs (and their build-dir-relative paths) to
 	// attach to consuming targets that include the cmake build
 	// dir in their codemodel-recorded Includes.
-	configureFiles, err := recoverConfigureFiles(opts.TraceRaw, opts.BuildDir, cmakeSrc, cmakeBuild, cc)
-	if err != nil {
-		return nil, err
+	var configureFiles []configureFileOut
+	if traceDecoded {
+		var err error
+		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, opts.BuildDir, cmakeBuild, cc)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, opts.BuildDir, cmakeSrc, cmakeBuild, cc)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Build the in-codebase id -> Bazel-rule-name map up front so dep
@@ -276,6 +298,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			"target %q has unsupported type %q", t.Name, t.Type)
 	}
 
+	// Build the source-index → in-compile-group set once per target.
+	// Walking t.CompileGroups[].SourceIndexes per source visit was
+	// O(N*M) where N is sources and M is compile-group entries; for
+	// large targets (mesa, gcc, clang) that's the dominant cost in
+	// lowerTarget.
+	inCompileGroup := buildCompileGroupSet(t)
+
 	consumesCodegen := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
@@ -304,7 +333,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			consumesCodegen = true
 			ext := strings.ToLower(filepath.Ext(relOut))
 			switch {
-			case isInCompileGroup(t, i):
+			case inCompileGroup[i]:
 				irt.Srcs = append(irt.Srcs, relOut)
 			case headerExts[ext]:
 				irt.Hdrs = append(irt.Hdrs, relOut)
@@ -316,7 +345,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			continue
 		}
 
-		if !isInCompileGroup(t, i) {
+		if !inCompileGroup[i] {
 			// Not assigned to a compile group: probably a header in
 			// target_sources(); we'll discover hdrs via include-dir
 			// walking below. Skip here.
@@ -420,7 +449,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 	}
 
-	hdrs, err := discoverHeaders(hostSrc, irt.Includes)
+	hdrs, err := discoverHeaders(hostSrc, irt.Includes, cc.HeaderWalkCache)
 	if err != nil {
 		return nil, err
 	}
@@ -821,19 +850,23 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
-// isInCompileGroup reports whether target source index i is referenced by any
-// of the target's compileGroups. The CompileGroupIndex field on TargetSource
-// can't be trusted on its own — it's an int with default 0, indistinguishable
-// from "in group 0" vs "absent".
-func isInCompileGroup(t *fileapi.Target, i int) bool {
+// buildCompileGroupSet returns the set of source indexes that any of
+// the target's compileGroups references. The CompileGroupIndex field on
+// TargetSource can't be trusted on its own — it's an int with default 0,
+// indistinguishable from "in group 0" vs "absent". The returned set is
+// queried once per source in the per-target source loop; building it
+// once flattens what was an O(sources * compileGroupEntries) inner loop.
+func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
+	if len(t.CompileGroups) == 0 {
+		return nil
+	}
+	out := make(map[int]bool)
 	for _, cg := range t.CompileGroups {
 		for _, idx := range cg.SourceIndexes {
-			if idx == i {
-				return true
-			}
+			out[idx] = true
 		}
 	}
-	return false
+	return out
 }
 
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
@@ -881,10 +914,23 @@ func relativeIfInside(root, abs string) (string, bool) {
 // discoverHeaders walks each include dir under sourceRoot and returns a sorted
 // deduplicated list of header files (package-relative). M1 walks recursively;
 // per-file granularity (excluding subdirs) can come later.
-func discoverHeaders(sourceRoot string, includeDirs []string) ([]string, error) {
+//
+// Walks are memoized through cache (keyed on absolute include-dir path)
+// so that multiple targets sharing an include root don't re-walk the
+// same filesystem subtree. Pass nil for cache to disable memoization.
+func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, inc := range includeDirs {
 		absDir := filepath.Join(sourceRoot, inc)
+		if cache != nil {
+			if hdrs, ok := cache[absDir]; ok {
+				for _, h := range hdrs {
+					seen[h] = struct{}{}
+				}
+				continue
+			}
+		}
+		var perDir []string
 		walkErr := filepath.WalkDir(absDir, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
 				// An include dir that doesn't exist on disk is an error
@@ -904,11 +950,16 @@ func discoverHeaders(sourceRoot string, includeDirs []string) ([]string, error) 
 			if err != nil {
 				return err
 			}
-			seen[filepath.ToSlash(rel)] = struct{}{}
+			slash := filepath.ToSlash(rel)
+			seen[slash] = struct{}{}
+			perDir = append(perDir, slash)
 			return nil
 		})
 		if walkErr != nil {
 			return nil, fmt.Errorf("walk include dir %q: %w", absDir, walkErr)
+		}
+		if cache != nil {
+			cache[absDir] = perDir
 		}
 	}
 	out := make([]string, 0, len(seen))

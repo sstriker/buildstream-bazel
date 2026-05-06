@@ -27,13 +27,18 @@ once on a project, commit the generated BUILD files, ship.
   goes through a one-time trace-driven build that recovers the
   same set. No runtime indirection — `bazel build //...` over the
   output is plain Bazel.
-- **Wide kind coverage.** `cmake`, `autotools`, `make`, `manual`,
-  `script`, `stack`, `filter`, `compose`, `import`, `pyproject`,
-  `flatpak_image`, `snap_image`, plus arch / option conditional
-  dispatch lowered to Bazel `select()`. The dominant 67% of FDSDK
-  ships through the high-fidelity converters; the long tail goes
-  through coarse install-tree pipelines that still produce real
-  Bazel targets downstream consumers can depend on.
+- **Wide kind coverage.** Native, trace-driven converters for
+  `cmake`, `autotools`, `make`, `makemaker`, `modulebuild`,
+  `manual`, and `script`. Pure-graph kinds (`stack`, `filter`,
+  `compose`, `import`, `bazel`) lower without a build step. Coarse
+  placeholder handlers for `pyproject`, `flatpak_image`,
+  `snap_image` produce dependency-correct Bazel targets but
+  don't yet reconstruct the kind's output bytes — see
+  `ROADMAP.md` "Later" for the trade-off. Plus arch / option
+  conditional dispatch lowered to Bazel `select()`. The dominant
+  67% of FDSDK ships through the high-fidelity converters; the
+  long tail goes through coarse install-tree pipelines that still
+  produce real Bazel targets downstream consumers can depend on.
 - **Faithful cross-element wiring.** `find_package` resolves to
   proper Bazel `deps`. `pkg_check_modules` ditto. Library link
   flags map to `cc_library` deps. None of this is heuristic; the

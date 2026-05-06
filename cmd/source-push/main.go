@@ -118,7 +118,10 @@ func cmdGraph(args []string) {
 		}
 		manifest[key] = formatPathDigest(rootDigest)
 	}
-	out, _ := json.MarshalIndent(manifest, "", "  ")
+	out, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		log.Fatalf("encode manifest: %v", err)
+	}
 	fmt.Println(string(out))
 }
 

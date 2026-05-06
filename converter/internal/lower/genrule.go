@@ -42,12 +42,21 @@ type codegenContext struct {
 	// SeenBuilds dedupes recovered builds when multiple targets reference
 	// the same generated source.
 	SeenBuilds map[*ninja.Build]string
+
+	// HeaderWalkCache memoizes filesystem walks of include directories
+	// across targets within one lower-element invocation. Keyed on the
+	// absolute include-dir path; value is the package-relative header
+	// list for that dir. Multiple targets in a project commonly share
+	// include roots (`include/`, `src/`); without the cache each
+	// target re-walks every shared dir.
+	HeaderWalkCache map[string][]string
 }
 
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
-		OutToGenrule: map[string]string{},
-		SeenBuilds:   map[*ninja.Build]string{},
+		OutToGenrule:    map[string]string{},
+		SeenBuilds:      map[*ninja.Build]string{},
+		HeaderWalkCache: map[string][]string{},
 	}
 }
 

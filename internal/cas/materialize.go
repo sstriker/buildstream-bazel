@@ -6,11 +6,46 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"google.golang.org/protobuf/proto"
 )
+
+// validSegment rejects names that would let a malformed Directory escape
+// the materialization root: empty, "."/"..", or anything containing a
+// path separator. REAPI defines FileNode.name / SymlinkNode.name /
+// DirectoryNode.name as a single path segment; this enforces that
+// instead of trusting upstream.
+func validSegment(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsRune(name, '/') || strings.ContainsRune(name, filepath.Separator) {
+		return false
+	}
+	return true
+}
+
+// symlinkTargetEscapes reports whether sl.Target, resolved relative
+// to linkDir (the directory the symlink lives in), would land outside
+// the materialization root. Absolute targets are rejected outright;
+// relative targets are joined to linkDir, cleaned, and checked against
+// root. A symlink in a nested subdir may legitimately point at a
+// sibling under root via "../sibling"; only escapes from root itself
+// fail.
+func symlinkTargetEscapes(linkDir, target, root string) bool {
+	if filepath.IsAbs(target) {
+		return true
+	}
+	resolved := filepath.Clean(filepath.Join(linkDir, target))
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil {
+		return true
+	}
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
 
 // MaterializeDirectory walks the Directory tree rooted at d (in CAS)
 // and writes every entry to dst on the local filesystem. The directory
@@ -29,7 +64,11 @@ func MaterializeDirectory(ctx context.Context, store Store, d *Digest, dst strin
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("materialize: mkdir %s: %w", dst, err)
 	}
-	return materializeDirRecurse(ctx, store, d, dst)
+	root, err := filepath.Abs(dst)
+	if err != nil {
+		return fmt.Errorf("materialize: abs %s: %w", dst, err)
+	}
+	return materializeDirRecurse(ctx, store, d, root, root)
 }
 
 // writeFile writes a materialized file to disk. For executable files it
@@ -60,7 +99,7 @@ func (e *ErrMissingBlob) Error() string {
 }
 func (e *ErrMissingBlob) Unwrap() error { return e.Err }
 
-func materializeDirRecurse(ctx context.Context, store Store, d *Digest, dst string) error {
+func materializeDirRecurse(ctx context.Context, store Store, d *Digest, dst, root string) error {
 	body, err := store.GetBlob(ctx, d)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -74,6 +113,9 @@ func materializeDirRecurse(ctx context.Context, store Store, d *Digest, dst stri
 	}
 
 	for _, f := range dir.Files {
+		if !validSegment(f.Name) {
+			return fmt.Errorf("materialize: rejecting file name %q (must be a single path segment)", f.Name)
+		}
 		body, err := store.GetBlob(ctx, f.Digest)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
@@ -90,17 +132,26 @@ func materializeDirRecurse(ctx context.Context, store Store, d *Digest, dst stri
 		}
 	}
 	for _, sl := range dir.Symlinks {
+		if !validSegment(sl.Name) {
+			return fmt.Errorf("materialize: rejecting symlink name %q (must be a single path segment)", sl.Name)
+		}
+		if symlinkTargetEscapes(dst, sl.Target, root) {
+			return fmt.Errorf("materialize: rejecting symlink %q -> %q (target escapes root)", sl.Name, sl.Target)
+		}
 		path := filepath.Join(dst, sl.Name)
 		if err := os.Symlink(sl.Target, path); err != nil {
 			return fmt.Errorf("materialize: symlink %s -> %s: %w", path, sl.Target, err)
 		}
 	}
 	for _, sub := range dir.Directories {
+		if !validSegment(sub.Name) {
+			return fmt.Errorf("materialize: rejecting directory name %q (must be a single path segment)", sub.Name)
+		}
 		next := filepath.Join(dst, sub.Name)
 		if err := os.MkdirAll(next, 0o755); err != nil {
 			return fmt.Errorf("materialize: mkdir %s: %w", next, err)
 		}
-		if err := materializeDirRecurse(ctx, store, sub.Digest, next); err != nil {
+		if err := materializeDirRecurse(ctx, store, sub.Digest, next, root); err != nil {
 			return err
 		}
 	}
