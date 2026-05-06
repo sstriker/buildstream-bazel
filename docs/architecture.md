@@ -18,9 +18,13 @@ consumers still resolve `find_package()`). Every element's outputs are
 content-addressed in CAS; an orchestrator coordinates the multi-element
 graph, materializes cross-element source/dependency trees, and
 optionally submits the per-element conversion as a REAPI Action so a
-remote Buildbarn cluster can fan out the work. Non-cmake element kinds
-(`manual`, `autotools`, `meson`) are out of scope right now and tracked
-in `docs/fdsdk-whole-project-plan.md`.
+remote Buildbarn cluster can fan out the work. The trace-driven
+two-pass meta-project shape (`cmd/write-a` + Bazel-as-orchestrator)
+extends the same conversion model to non-cmake kinds — `kind:autotools`
+(round-1 coarse + round-2 trace-driven), `kind:make`, `kind:makemaker`,
+`kind:modulebuild`, `kind:manual`, and `kind:script` are all shipped via
+the per-kind handlers under `cmd/write-a/`. `kind:meson` is the next
+native renderer queued; see `ROADMAP.md` for current vs. queued state.
 
 ## Repo layout
 

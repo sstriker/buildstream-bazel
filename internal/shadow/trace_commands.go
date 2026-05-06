@@ -21,10 +21,51 @@ package shadow
 // and aren't part of the user's project intent.
 
 import (
-	"bytes"
-	"encoding/json"
+	"sort"
 	"strings"
 )
+
+// Decoded is the combined result of one ParseTrace pass dispatched
+// through every extractor. Lower's converter (which historically
+// called three Extract* functions back-to-back on the same trace)
+// uses this to pay the bytes.Split + json.Unmarshal cost once.
+type Decoded struct {
+	Reads       []string
+	Includes    []TargetIncludeCall
+	Links       []TargetLinkCall
+	ConfigFiles []ConfigureFileCall
+}
+
+// Decode walks the trace once and dispatches every event to the four
+// extractors at the same time. Equivalent in result to calling
+// ExtractReadPaths + ExtractTargetIncludes + ExtractTargetLinks +
+// ExtractConfigureFiles on the same trace, but pays the parse cost
+// once rather than four times. Reads is the deduped slash-style
+// source-tree path list; the three call lists preserve insertion
+// order from the trace.
+func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
+	events := ParseTrace(traceRaw)
+	reads := map[string]struct{}{}
+	var d Decoded
+	for _, ev := range events {
+		collectReadPath(ev, sourceRoot, reads)
+		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
+			d.Includes = append(d.Includes, call)
+		}
+		if call, ok := classifyTargetLinks(ev, sourceRoot, knownTargets); ok {
+			d.Links = append(d.Links, call)
+		}
+		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
+			d.ConfigFiles = append(d.ConfigFiles, call)
+		}
+	}
+	d.Reads = make([]string, 0, len(reads))
+	for k := range reads {
+		d.Reads = append(d.Reads, k)
+	}
+	sort.Strings(d.Reads)
+	return d
+}
 
 // TargetIncludeCall records one user-written
 // target_include_directories(target [SYSTEM] [AFTER|BEFORE]
@@ -103,90 +144,93 @@ type ConfigureFileCall struct {
 // the filter behaves as a strict source-tree check.
 func ExtractTargetIncludes(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) []TargetIncludeCall {
 	var out []TargetIncludeCall
-	for _, line := range bytes.Split(traceRaw, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		var ev TraceEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		if !strings.EqualFold(ev.Cmd, "target_include_directories") {
-			continue
-		}
-		if len(ev.Args) < 2 {
-			continue
-		}
-		if !inScopeForTarget(ev.File, sourceRoot, ev.Args[0], knownTargets) {
-			continue
-		}
-		call := TargetIncludeCall{Target: ev.Args[0]}
-		// Walk args after the target name; group dirs under
-		// their preceding visibility keyword. Optional SYSTEM /
-		// AFTER / BEFORE keywords prefix the visibility group.
-		// Per cmake docs: SYSTEM applies to all subsequent
-		// visibility groups in the same call; we approximate
-		// by attaching it to the next group we see.
-		var pendingSystem bool
-		var pendingOrder string
-		var current *TargetIncludeGroup
-		for _, a := range ev.Args[1:] {
-			switch strings.ToUpper(a) {
-			case "SYSTEM":
-				pendingSystem = true
-				continue
-			case "AFTER", "BEFORE":
-				pendingOrder = strings.ToUpper(a)
-				continue
-			case "PUBLIC", "PRIVATE", "INTERFACE":
-				if current != nil {
-					call.Groups = append(call.Groups, *current)
-				}
-				current = &TargetIncludeGroup{
-					Visibility: strings.ToUpper(a),
-					System:     pendingSystem,
-					Order:      pendingOrder,
-				}
-				pendingSystem = false
-				pendingOrder = ""
-				continue
-			}
-			if current == nil {
-				// Bare positional dirs without a visibility
-				// keyword: PRIVATE per cmake's pre-3.0
-				// shape. Treat as PRIVATE.
-				current = &TargetIncludeGroup{
-					Visibility: "PRIVATE",
-					System:     pendingSystem,
-					Order:      pendingOrder,
-				}
-				pendingSystem = false
-				pendingOrder = ""
-			}
-			// Unwrap $<BUILD_INTERFACE:X> → X and drop
-			// $<INSTALL_INTERFACE:Y> entries (build-time
-			// converter context). The codemodel already
-			// resolved these generator expressions for the
-			// build config; the trace records them
-			// pre-resolution. This unwrap brings the trace
-			// view into alignment with the codemodel view so
-			// downstream consumers can match dir-strings
-			// directly.
-			resolved, ok := unwrapBuildInterface(a)
-			if !ok {
-				continue
-			}
-			current.Dirs = append(current.Dirs, resolved)
-		}
-		if current != nil {
-			call.Groups = append(call.Groups, *current)
-		}
-		if len(call.Groups) > 0 {
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
 			out = append(out, call)
 		}
 	}
 	return out
+}
+
+// classifyTargetIncludes returns the TargetIncludeCall corresponding
+// to a single trace event, or (_, false) if the event isn't a
+// user-scoped target_include_directories. Shared between the legacy
+// per-extractor API and Decode's combined pass.
+func classifyTargetIncludes(ev TraceEvent, sourceRoot string, knownTargets map[string]bool) (TargetIncludeCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "target_include_directories") {
+		return TargetIncludeCall{}, false
+	}
+	if len(ev.Args) < 2 {
+		return TargetIncludeCall{}, false
+	}
+	if !inScopeForTarget(ev.File, sourceRoot, ev.Args[0], knownTargets) {
+		return TargetIncludeCall{}, false
+	}
+	call := TargetIncludeCall{Target: ev.Args[0]}
+	// Walk args after the target name; group dirs under
+	// their preceding visibility keyword. Optional SYSTEM /
+	// AFTER / BEFORE keywords prefix the visibility group.
+	// Per cmake docs: SYSTEM applies to all subsequent
+	// visibility groups in the same call; we approximate
+	// by attaching it to the next group we see.
+	var pendingSystem bool
+	var pendingOrder string
+	var current *TargetIncludeGroup
+	for _, a := range ev.Args[1:] {
+		switch strings.ToUpper(a) {
+		case "SYSTEM":
+			pendingSystem = true
+			continue
+		case "AFTER", "BEFORE":
+			pendingOrder = strings.ToUpper(a)
+			continue
+		case "PUBLIC", "PRIVATE", "INTERFACE":
+			if current != nil {
+				call.Groups = append(call.Groups, *current)
+			}
+			current = &TargetIncludeGroup{
+				Visibility: strings.ToUpper(a),
+				System:     pendingSystem,
+				Order:      pendingOrder,
+			}
+			pendingSystem = false
+			pendingOrder = ""
+			continue
+		}
+		if current == nil {
+			// Bare positional dirs without a visibility
+			// keyword: PRIVATE per cmake's pre-3.0
+			// shape. Treat as PRIVATE.
+			current = &TargetIncludeGroup{
+				Visibility: "PRIVATE",
+				System:     pendingSystem,
+				Order:      pendingOrder,
+			}
+			pendingSystem = false
+			pendingOrder = ""
+		}
+		// Unwrap $<BUILD_INTERFACE:X> → X and drop
+		// $<INSTALL_INTERFACE:Y> entries (build-time
+		// converter context). The codemodel already
+		// resolved these generator expressions for the
+		// build config; the trace records them
+		// pre-resolution. This unwrap brings the trace
+		// view into alignment with the codemodel view so
+		// downstream consumers can match dir-strings
+		// directly.
+		resolved, ok := unwrapBuildInterface(a)
+		if !ok {
+			continue
+		}
+		current.Dirs = append(current.Dirs, resolved)
+	}
+	if current != nil {
+		call.Groups = append(call.Groups, *current)
+	}
+	if len(call.Groups) == 0 {
+		return TargetIncludeCall{}, false
+	}
+	return call, true
 }
 
 // ExtractTargetLinks returns one entry per user-written
@@ -207,49 +251,48 @@ func ExtractTargetIncludes(traceRaw []byte, sourceRoot string, knownTargets map[
 // without writing a special case.
 func ExtractTargetLinks(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) []TargetLinkCall {
 	var out []TargetLinkCall
-	for _, line := range bytes.Split(traceRaw, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] != '{' {
-			continue
-		}
-		var ev TraceEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		if !strings.EqualFold(ev.Cmd, "target_link_libraries") {
-			continue
-		}
-		if len(ev.Args) < 2 {
-			continue
-		}
-		if !inScopeForTarget(ev.File, sourceRoot, ev.Args[0], knownTargets) {
-			continue
-		}
-		call := TargetLinkCall{Target: ev.Args[0]}
-		var current *TargetLinkGroup
-		for _, a := range ev.Args[1:] {
-			switch strings.ToUpper(a) {
-			case "PUBLIC", "PRIVATE", "INTERFACE":
-				if current != nil {
-					call.Groups = append(call.Groups, *current)
-				}
-				current = &TargetLinkGroup{Visibility: strings.ToUpper(a)}
-				continue
-			}
-			if current == nil {
-				// Legacy positional shape — start an unkeyed group.
-				current = &TargetLinkGroup{Visibility: ""}
-			}
-			current.Libs = append(current.Libs, a)
-		}
-		if current != nil {
-			call.Groups = append(call.Groups, *current)
-		}
-		if len(call.Groups) > 0 {
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyTargetLinks(ev, sourceRoot, knownTargets); ok {
 			out = append(out, call)
 		}
 	}
 	return out
+}
+
+func classifyTargetLinks(ev TraceEvent, sourceRoot string, knownTargets map[string]bool) (TargetLinkCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "target_link_libraries") {
+		return TargetLinkCall{}, false
+	}
+	if len(ev.Args) < 2 {
+		return TargetLinkCall{}, false
+	}
+	if !inScopeForTarget(ev.File, sourceRoot, ev.Args[0], knownTargets) {
+		return TargetLinkCall{}, false
+	}
+	call := TargetLinkCall{Target: ev.Args[0]}
+	var current *TargetLinkGroup
+	for _, a := range ev.Args[1:] {
+		switch strings.ToUpper(a) {
+		case "PUBLIC", "PRIVATE", "INTERFACE":
+			if current != nil {
+				call.Groups = append(call.Groups, *current)
+			}
+			current = &TargetLinkGroup{Visibility: strings.ToUpper(a)}
+			continue
+		}
+		if current == nil {
+			// Legacy positional shape — start an unkeyed group.
+			current = &TargetLinkGroup{Visibility: ""}
+		}
+		current.Libs = append(current.Libs, a)
+	}
+	if current != nil {
+		call.Groups = append(call.Groups, *current)
+	}
+	if len(call.Groups) == 0 {
+		return TargetLinkCall{}, false
+	}
+	return call, true
 }
 
 // ExtractConfigureFiles returns one entry per user-written
@@ -259,31 +302,29 @@ func ExtractTargetLinks(traceRaw []byte, sourceRoot string, knownTargets map[str
 // (input) or build dir (output) per cmake's conventions.
 func ExtractConfigureFiles(traceRaw []byte, sourceRoot string) []ConfigureFileCall {
 	var out []ConfigureFileCall
-	for _, line := range bytes.Split(traceRaw, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] != '{' {
-			continue
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
+			out = append(out, call)
 		}
-		var ev TraceEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
-		}
-		if !strings.EqualFold(ev.Cmd, "configure_file") {
-			continue
-		}
-		if !inSourceTree(ev.File, sourceRoot) {
-			continue
-		}
-		if len(ev.Args) < 2 {
-			continue
-		}
-		out = append(out, ConfigureFileCall{
-			Input:   ev.Args[0],
-			Output:  ev.Args[1],
-			Options: append([]string(nil), ev.Args[2:]...),
-		})
 	}
 	return out
+}
+
+func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "configure_file") {
+		return ConfigureFileCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return ConfigureFileCall{}, false
+	}
+	if len(ev.Args) < 2 {
+		return ConfigureFileCall{}, false
+	}
+	return ConfigureFileCall{
+		Input:   ev.Args[0],
+		Output:  ev.Args[1],
+		Options: append([]string(nil), ev.Args[2:]...),
+	}, true
 }
 
 // inScopeForTarget combines two checks for whether a trace

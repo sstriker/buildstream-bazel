@@ -48,8 +48,15 @@ func recoverConfigureFiles(traceRaw []byte, hostBuildDir, recordedSrcDir, record
 	if len(traceRaw) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
-	calls := shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir)
-	if len(calls) == 0 {
+	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostBuildDir, recordedBuildDir, cc)
+}
+
+// recoverConfigureFilesFromCalls is the same logic as
+// recoverConfigureFiles but takes pre-decoded ConfigureFileCall
+// records. Used by Lower's single-pass trace dispatch so the trace
+// is parsed once for every extractor.
+func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostBuildDir, recordedBuildDir string, cc *codegenContext) ([]configureFileOut, error) {
+	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
 
