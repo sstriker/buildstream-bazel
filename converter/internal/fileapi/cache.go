@@ -11,6 +11,7 @@ type Cache struct {
 	Kind    string        `json:"kind"`
 	Version ObjectVersion `json:"version"`
 	Entries []CacheEntry  `json:"entries"`
+	index   map[string]int
 }
 
 // CacheEntry is one cache variable. Properties carry HELPSTRING, ADVANCED, etc.
@@ -28,9 +29,27 @@ type CacheEntryProp struct {
 	Value string `json:"value"`
 }
 
+func (c *Cache) buildIndex() {
+	if len(c.Entries) == 0 {
+		c.index = nil
+		return
+	}
+	idx := make(map[string]int, len(c.Entries))
+	for i := range c.Entries {
+		if _, seen := idx[c.Entries[i].Name]; seen {
+			continue
+		}
+		idx[c.Entries[i].Name] = i
+	}
+	c.index = idx
+}
+
 // Get returns the entry with the given name, or nil if not present. Names are
 // case-sensitive (matching CMake).
 func (c Cache) Get(name string) *CacheEntry {
+	if i, ok := c.index[name]; ok {
+		return &c.Entries[i]
+	}
 	for i := range c.Entries {
 		if c.Entries[i].Name == name {
 			return &c.Entries[i]

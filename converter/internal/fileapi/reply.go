@@ -71,6 +71,7 @@ func Load(replyDir string) (*Reply, error) {
 			if err := readJSON(path, &r.Cache); err != nil {
 				return nil, fmt.Errorf("fileapi: cache: %w", err)
 			}
+			r.Cache.buildIndex()
 		}
 	}
 
