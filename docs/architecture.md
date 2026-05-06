@@ -3,6 +3,8 @@
 A descriptive map of what's actually in this repo today: the binaries
 shipped, the data flowing between them, and the shared substrates each
 one leans on. For what's done vs queued see [`ROADMAP.md`](../ROADMAP.md).
+For a diagram-first tour of the same material see
+[`docs/visual-guide.md`](visual-guide.md).
 
 ## Goal in one paragraph
 

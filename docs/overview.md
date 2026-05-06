@@ -162,6 +162,8 @@ REAPI ActionCache endpoint — no separate registry service.
 ## Where to look next
 
 - **Just trying it**: [README.md quick start](../README.md#quick-start).
+- **Diagram-first tour**: [docs/visual-guide.md](visual-guide.md). Same
+  material as this doc in mermaid diagrams with subtexts.
 - **Generated workspace shape (interop contract)**:
   [docs/build-structure.md](build-structure.md). Read this if
   you're writing a sibling .bst → Bazel converter or a
@@ -172,3 +174,4 @@ REAPI ActionCache endpoint — no separate registry service.
   [docs/trace-driven-autotools.md](trace-driven-autotools.md).
 - **Repo today (binaries, packages, data flow)**:
   [docs/architecture.md](architecture.md).
+

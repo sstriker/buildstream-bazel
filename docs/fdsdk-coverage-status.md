@@ -5,7 +5,7 @@ A snapshot of which FreeDesktop SDK element kinds have
 conversion vs. **coarse** (run the build in a genrule, output
 an opaque install_tree.tar) conversion. The full kind catalog +
 counts is in
-[docs/fdsdk-element-survey.md](fdsdk-element-survey.md).
+[docs/research/fdsdk-element-survey.md](research/fdsdk-element-survey.md).
 
 ## Conversion-quality levels
 
