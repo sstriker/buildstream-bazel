@@ -69,6 +69,9 @@ type TargetLinkCall struct {
 	Groups []TargetLinkGroup
 }
 
+// TargetLinkGroup is one PUBLIC / PRIVATE / INTERFACE arm of a
+// target_link_libraries call. Visibility "" indicates the legacy
+// positional form (no keyword; treated as PUBLIC per cmake semantics).
 type TargetLinkGroup struct {
 	Visibility string // "PUBLIC", "PRIVATE", "INTERFACE", or "" for the legacy positional shape
 	Libs       []string

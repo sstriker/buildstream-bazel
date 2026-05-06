@@ -21,6 +21,8 @@ type CacheEntry struct {
 	Properties []CacheEntryProp `json:"properties,omitempty"`
 }
 
+// CacheEntryProp is one named property attached to a CacheEntry
+// (e.g. HELPSTRING, ADVANCED).
 type CacheEntryProp struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`

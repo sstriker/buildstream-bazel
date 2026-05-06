@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	raa "github.com/bazelbuild/remote-apis/build/bazel/remote/asset/v1"
@@ -180,14 +181,7 @@ func QualifiersFromMap(m map[string]string) []Qualifier {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// Use strings.Sort via sort.Strings to avoid importing sort here.
-	for i := 0; i < len(keys); i++ {
-		for j := i + 1; j < len(keys); j++ {
-			if strings.Compare(keys[i], keys[j]) > 0 {
-				keys[i], keys[j] = keys[j], keys[i]
-			}
-		}
-	}
+	sort.Strings(keys)
 	out := make([]Qualifier, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, Qualifier{Name: k, Value: m[k]})

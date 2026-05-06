@@ -125,11 +125,10 @@ func (t *Tree) packSubtree(absPath string) (*repb.Directory, *Digest, error) {
 
 	SortDirectory(dir)
 
-	digest, body, err := DigestProto(dir)
+	digest, _, err := DigestProto(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal directory %s: %w", absPath, err)
 	}
-	_ = body
 	t.Directories[digest.Hash] = dir
 	return dir, digest, nil
 }

@@ -30,6 +30,9 @@ type Configuration struct {
 	Targets     []ConfigTargetRef `json:"targets"`
 }
 
+// ConfigDirectory is one entry in Configuration.Directories[]. It
+// identifies a source/build directory pair within the configuration
+// and carries install-rule and project membership metadata.
 type ConfigDirectory struct {
 	Source              string `json:"source"`
 	Build               string `json:"build"`
@@ -78,6 +81,9 @@ type DirectoryInstaller struct {
 	Paths       []json.RawMessage `json:"paths"`
 }
 
+// ConfigProject is one entry in Configuration.Projects[]. It groups
+// directories and targets belonging to the same cmake project()
+// declaration.
 type ConfigProject struct {
 	Name             string `json:"name"`
 	DirectoryIndexes []int  `json:"directoryIndexes"`
@@ -117,10 +123,15 @@ type Target struct {
 	BacktraceGraph BacktraceGraph     `json:"backtraceGraph"`
 }
 
+// TargetFolder is the FOLDER property value assigned to a target via
+// set_target_properties(... PROPERTIES FOLDER ...). Purely cosmetic in
+// cmake; recorded here so higher-level tools can group targets.
 type TargetFolder struct {
 	Name string `json:"name"`
 }
 
+// TargetPaths carries the source and build directory roots for a target.
+// Both paths are absolute on the recording machine.
 type TargetPaths struct {
 	Source string `json:"source"`
 	Build  string `json:"build"`
@@ -137,6 +148,8 @@ type TargetSource struct {
 	FileSetIndex      *int   `json:"fileSetIndex,omitempty"`
 }
 
+// SourceGroup clusters source files under a named IDE filter (e.g. "Header
+// Files", "Source Files"). Indexes refer into Target.Sources[].
 type SourceGroup struct {
 	Name          string `json:"name"`
 	SourceIndexes []int  `json:"sourceIndexes"`
@@ -162,32 +175,43 @@ type CommandFragment struct {
 	Role     string `json:"role,omitempty"`
 }
 
+// CompileInclude is one entry in CompileGroup.Includes[].
+// IsSystem marks -isystem / -I (system) includes.
 type CompileInclude struct {
 	Path      string `json:"path"`
 	IsSystem  bool   `json:"isSystem,omitempty"`
 	Backtrace int    `json:"backtrace,omitempty"`
 }
 
+// CompileDefine is one -D entry in CompileGroup.Defines[]. The string
+// is in the "NAME" or "NAME=VALUE" form cmake records.
 type CompileDefine struct {
 	Define    string `json:"define"`
 	Backtrace int    `json:"backtrace,omitempty"`
 }
 
+// CompileFramework is one -F entry in CompileGroup.Frameworks[] (Apple only).
 type CompileFramework struct {
 	Path     string `json:"path"`
 	IsSystem bool   `json:"isSystem,omitempty"`
 }
 
+// CompilePCH is one precompiled-header entry in
+// CompileGroup.PrecompileHeaders[].
 type CompilePCH struct {
 	Header    string `json:"header"`
 	Backtrace int    `json:"backtrace,omitempty"`
 }
 
+// LanguageStandard carries the CMAKE_<LANG>_STANDARD value
+// (e.g. "17" for C++17) for a compile group.
 type LanguageStandard struct {
 	Standard   string `json:"standard"`
 	Backtraces []int  `json:"backtraces,omitempty"`
 }
 
+// TargetArtifact is one on-disk output of a target (the built binary,
+// shared library, archive, etc.). Path is build-dir-relative.
 type TargetArtifact struct {
 	Path string `json:"path"`
 }
@@ -209,6 +233,8 @@ type TargetLink struct {
 	} `json:"sysroot,omitempty"`
 }
 
+// TargetDependency is one entry in Target.Dependencies[]. Id is the
+// cmake target id of the depended-upon target (matches ConfigTargetRef.Id).
 type TargetDependency struct {
 	Id        string `json:"id"`
 	Backtrace int    `json:"backtrace,omitempty"`
@@ -223,6 +249,8 @@ type TargetInstall struct {
 	Destinations []TargetInstallDest `json:"destinations"`
 }
 
+// TargetInstallDest is one destination entry within a TargetInstall.
+// Path is relative to TargetInstall.Prefix.
 type TargetInstallDest struct {
 	Path      string `json:"path"`
 	Backtrace int    `json:"backtrace,omitempty"`
@@ -237,6 +265,9 @@ type BacktraceGraph struct {
 	Nodes    []BacktraceNode `json:"nodes"`
 }
 
+// BacktraceNode is one node in a BacktraceGraph. File and Command are
+// indices into BacktraceGraph.Files and BacktraceGraph.Commands respectively;
+// Parent is an optional index into BacktraceGraph.Nodes for the caller frame.
 type BacktraceNode struct {
 	File    int  `json:"file"`
 	Line    int  `json:"line,omitempty"`

@@ -270,8 +270,6 @@ func copyFile(src, dst string) error {
 	return out.Close()
 }
 
-// PkgFromBundle infers the cmake project name from a bundle directory by
-// looking for the file named `<Pkg>Config.cmake`. Returns the Pkg part or
 // PkgFromBundle returns the cmake project name of a synth-prefix-shaped
 // bundle. Returns "" if the bundle has no Config.cmake (shouldn't
 // happen for converter output but tolerated).
