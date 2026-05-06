@@ -12,6 +12,11 @@ import (
 // cmake version that emits the File API objects we consume. Older cmakes
 // silently produce malformed or missing replies. Bumping this floor is a
 // breaking change for any orchestration that runs against host cmake.
+//
+// No upper bound is enforced here. The fileapi loader validates per-object
+// schema majors (codemodel/cache/toolchains/cmakeFiles) and surfaces a clear
+// error when a future cmake bumps any of them; that's the more precise
+// compatibility tripwire. Tested across CMake 3.20 through 4.x.
 const (
 	MinCMakeMajor = 3
 	MinCMakeMinor = 20

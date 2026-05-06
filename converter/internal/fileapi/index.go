@@ -53,3 +53,15 @@ type ObjectVersion struct {
 	Major int `json:"major"`
 	Minor int `json:"minor"`
 }
+
+// SupportedObjectMajors records the codemodel-v2 / cache-v2 / toolchains-v1
+// / cmakeFiles-v1 schema majors this loader knows how to parse. Per the
+// File API contract a client must reject unknown majors; minor bumps are
+// additive and parsed best-effort (unknown new fields drop silently via
+// json.Unmarshal). Tested against CMake 3.20 through 4.x.
+var SupportedObjectMajors = map[string]int{
+	"codemodel":  2,
+	"cache":      2,
+	"toolchains": 1,
+	"cmakeFiles": 1,
+}

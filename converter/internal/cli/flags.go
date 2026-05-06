@@ -88,6 +88,20 @@ type Args struct {
 	// scale.
 	ToolchainCMakeFile string
 
+	// Verify, when true, cross-checks the lowered IR against the
+	// compile_commands.json cmake emits at configure time. Mismatches
+	// (a -D macro or -I include that's in compile_commands but not in
+	// any IR target's flags, or vice versa) are surfaced as warnings
+	// on stderr; conversion still succeeds. Off by default — adds a
+	// JSON parse + per-source diff pass; only enable in CI or when
+	// auditing a converter change.
+	Verify bool
+
+	// VerifyReport, when non-empty, writes the structured Report
+	// (verify.Report — JSON) to this path in addition to (or instead
+	// of) the stderr warnings. Implies Verify=true.
+	VerifyReport string
+
 	// SourceKey, when non-empty, names the @src_<key>// external
 	// repository the FUSE-sources path declared for this element's
 	// source tree. The Bazel emitter prefixes every relative source
@@ -125,9 +139,14 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
+	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
+	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
 
 	if err := fs.Parse(argv); err != nil {
 		return a, ExitUsage
+	}
+	if a.VerifyReport != "" {
+		a.Verify = true
 	}
 	if a.SourceRoot == "" && a.ReplyDir == "" {
 		fmt.Fprintln(stderr, "convert-element: must set --source-root or --reply-dir")

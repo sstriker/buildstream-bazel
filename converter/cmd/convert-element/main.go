@@ -28,6 +28,7 @@ import (
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
+	"github.com/sstriker/cmake-to-bazel/converter/internal/verify"
 	"github.com/sstriker/cmake-to-bazel/internal/manifest"
 	"github.com/sstriker/cmake-to-bazel/internal/shadow"
 	"github.com/sstriker/cmake-to-bazel/internal/synthprefix"
@@ -200,6 +201,28 @@ func run(a cli.Args) error {
 	if err != nil {
 		return err
 	}
+	if a.Verify {
+		ccPath := compileCommandsPath(hostBuildDir, a.ReplyDir)
+		if ccPath != "" {
+			rep, verr := verify.Verify(ccPath, pkg, a.SourceRoot)
+			if verr != nil {
+				return failure.New(failure.FileAPIMalformed, "verify: %v", verr)
+			}
+			if msg := verify.FormatMismatches(rep); msg != "" {
+				fmt.Fprint(os.Stderr, msg)
+			}
+			if a.VerifyReport != "" {
+				body, _ := json.MarshalIndent(rep, "", "  ")
+				if err := os.MkdirAll(filepath.Dir(a.VerifyReport), 0o755); err != nil {
+					return err
+				}
+				if err := os.WriteFile(a.VerifyReport, append(body, '\n'), 0o644); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
 	out, err := bazel.EmitWithOptions(pkg, bazel.Options{SourceKey: a.SourceKey})
 	if err != nil {
 		return err
@@ -305,6 +328,27 @@ func run(a cli.Args) error {
 		}
 	}
 	return nil
+}
+
+// compileCommandsPath returns the path to the compile_commands.json
+// cmake emitted, or "" if neither the live build dir nor the offline
+// fixture has one. Live runs always have it (we pass
+// -DCMAKE_EXPORT_COMPILE_COMMANDS=ON); offline runs see it only if a
+// recording script captured it alongside the reply.
+func compileCommandsPath(hostBuildDir, replyDir string) string {
+	if hostBuildDir != "" {
+		p := filepath.Join(hostBuildDir, "compile_commands.json")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if replyDir != "" {
+		p := filepath.Join(replyDir, "compile_commands.json")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // handleError marshals a typed Tier-1 failure to OutFailure (if requested) and

@@ -54,6 +54,17 @@ func Load(replyDir string) (*Reply, error) {
 
 	for _, obj := range idx.Objects {
 		path := filepath.Join(replyDir, obj.JSONFile)
+		want, known := SupportedObjectMajors[obj.Kind]
+		if !known {
+			// Unknown kind — cmake may add new object kinds later;
+			// skipping silently lets us coexist with future cmakes
+			// rather than failing on every reply that ships one.
+			continue
+		}
+		if obj.Version.Major != want {
+			return nil, fmt.Errorf("fileapi: %s schema major %d.%d not supported (this loader handles major %d); upgrade convert-element or pin cmake to a compatible version",
+				obj.Kind, obj.Version.Major, obj.Version.Minor, want)
+		}
 		switch obj.Kind {
 		case "codemodel":
 			if err := readJSON(path, &r.Codemodel); err != nil {

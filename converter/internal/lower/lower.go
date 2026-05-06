@@ -264,6 +264,13 @@ func projectName(r *fileapi.Reply) string {
 }
 
 func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, configureFiles []configureFileOut) (*ir.Target, error) {
+	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
+	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
+	// integration and have no Bazel equivalent. Skip them silently.
+	if t.IsGeneratorProvided {
+		return nil, nil
+	}
+
 	irt := &ir.Target{Name: t.Name}
 
 	switch t.Type {
@@ -453,9 +460,31 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	if err != nil {
 		return nil, err
 	}
-	// Merge filesystem-discovered headers with any generated headers
-	// already appended above; sort+dedupe so the emitter's stable.
+	// FileSets give cmake's authoritative list of HEADERS-typed sources
+	// declared via `target_sources(... FILE_SET HEADERS ...)`. The
+	// filesystem walk above catches anything under irt.Includes, but a
+	// FILE_SET can name a header outside any declared include dir;
+	// merging the two lists ensures those don't get dropped. Sources
+	// without a FileSetIndex (the common case in M1 fixtures) leave
+	// fileSetHdrs empty and behavior matches the pre-FileSets path.
+	var fileSetHdrs []string
+	if len(t.FileSets) > 0 {
+		for _, src := range t.Sources {
+			if src.FileSetIndex == nil {
+				continue
+			}
+			idx := *src.FileSetIndex
+			if idx < 0 || idx >= len(t.FileSets) {
+				continue
+			}
+			if t.FileSets[idx].Type != "HEADERS" {
+				continue
+			}
+			fileSetHdrs = append(fileSetHdrs, src.Path)
+		}
+	}
 	merged := append(irt.Hdrs, hdrs...)
+	merged = append(merged, fileSetHdrs...)
 	sort.Strings(merged)
 	irt.Hdrs = dedupeStrings(merged)
 

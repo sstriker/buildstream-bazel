@@ -222,6 +222,70 @@ jobs:
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 
+  e2e-latest-cmake:
+    # Same surface as the `e2e` job, but runs against whatever cmake
+    # the runner ships (currently 3.31.6 on ubuntu-24.04) instead of
+    # the pinned 3.28.3. Tripwire for File API schema bumps and
+    # build.ninja shape drift in newer cmakes; non-blocking
+    # (continue-on-error) so a single upstream cmake change can't
+    # gate every PR. Reviewers should still investigate failures —
+    # they signal real compatibility gaps the pinned-cmake job
+    # can't see.
+    name: End-to-end (latest cmake — non-blocking)
+    runs-on: ubuntu-24.04
+    needs: unit
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install bwrap (use runner's stock cmake)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo chmod u+s "$(command -v bwrap)"
+          # Skip tools/install-pinned-cmake.sh — we *want* the
+          # runner's stock cmake here. Print the version so PR
+          # readers can correlate failures with the cmake they
+          # surface against.
+          cmake --version | head -1
+          ninja --version
+          bwrap --version 2>&1 | head -1
+
+      - name: Build converter
+        run: make converter 2>&1 | tee -a /tmp/cijob.log
+
+      - name: hello-world e2e (against latest cmake)
+        # The Go-level e2e test calls cmakerun.Configure directly and
+        # doesn't go through main.go's AssertVersion gate, so it
+        # exercises the loader against whatever cmake the runner has
+        # without needing --allow-cmake-version-mismatch.
+        run: make e2e-hello-world 2>&1 | tee -a /tmp/cijob.log
+
+      - name: convert-element binary against latest cmake
+        # Drives the convert-element CLI explicitly with the
+        # version-mismatch escape hatch so the fileapi schema-major
+        # check is the actual tripwire on the binary path. If a
+        # future cmake bumps codemodel/cache/toolchains/cmakeFiles
+        # major, this is where it fires — with a clear "schema major
+        # N not supported" error rather than a downstream parse
+        # crash.
+        run: |
+          tmpdir=$(mktemp -d)
+          ./build/bin/convert-element \
+            --source-root converter/testdata/sample-projects/hello-world \
+            --out-build "$tmpdir/BUILD.bazel" \
+            --allow-cmake-version-mismatch \
+            --verify \
+            2>&1 | tee -a /tmp/cijob.log
+
+      - uses: ./.github/actions/post-failure-tail
+        if: failure()
+
   fdsdk-probe:
     # Empirical FDSDK reality-check probe: clone FDSDK at the
     # requested ref, run scripts/fdsdk-reality-check.sh, upload
