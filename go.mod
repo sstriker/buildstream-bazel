@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/bazelbuild/remote-apis v0.0.0-20260331222004-becdd8f9ff81
 	github.com/google/uuid v1.6.0
+	github.com/hanwen/go-fuse/v2 v2.10.1
 	google.golang.org/genproto v0.0.0-20250603155806-513f23925822
 	google.golang.org/genproto/googleapis/bytestream v0.0.0-20260427160629-7cedc36a6bc4
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260203192932-546029d2fa20
