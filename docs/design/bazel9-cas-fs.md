@@ -1,7 +1,6 @@
 # Bazel 9 CAS-aware filesystem (xattr fast-path replacement)
 
-The point of the FUSE-served sources route (`cmd/cas-fuse`,
-`docs/sources-design.md`) is that **a developer's machine never
+The point of the FUSE-served sources route is that **a developer's machine never
 holds the full source set**. Bytes stay in CAS, served lazily,
 and the executor reads them via REAPI. Dev-machine resource
 budgets (disk, RAM) stay modest regardless of how large the
