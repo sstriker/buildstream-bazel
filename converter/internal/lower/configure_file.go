@@ -53,8 +53,10 @@ func recoverConfigureFiles(traceRaw []byte, hostBuildDir, recordedSrcDir, record
 
 // recoverConfigureFilesFromCalls is the same logic as
 // recoverConfigureFiles but takes pre-decoded ConfigureFileCall
-// records. Used by Lower's single-pass trace dispatch so the trace
-// is parsed once for every extractor.
+// records. Used by Lower's single-pass trace dispatch so the
+// trace is parsed once total across all extractors (including
+// the configure_file recovery), instead of one pass per
+// extractor.
 func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostBuildDir, recordedBuildDir string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil

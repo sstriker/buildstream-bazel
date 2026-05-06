@@ -28,11 +28,13 @@ func validSegment(name string) bool {
 	return true
 }
 
-// symlinkTargetEscapes reports whether sl.Target would resolve outside
-// linkDir (the directory the symlink lives in). Absolute targets and
-// targets that climb above linkDir via ".." both fail. CAS Directory
-// trees may legitimately point at sibling files inside the same root,
-// so this is a containment check, not a flat reject.
+// symlinkTargetEscapes reports whether sl.Target, resolved relative
+// to linkDir (the directory the symlink lives in), would land outside
+// the materialization root. Absolute targets are rejected outright;
+// relative targets are joined to linkDir, cleaned, and checked against
+// root. A symlink in a nested subdir may legitimately point at a
+// sibling under root via "../sibling"; only escapes from root itself
+// fail.
 func symlinkTargetEscapes(linkDir, target, root string) bool {
 	if filepath.IsAbs(target) {
 		return true

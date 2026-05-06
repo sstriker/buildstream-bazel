@@ -131,15 +131,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
 	var traceLinkLibs map[string][]string             // target → ordered list of cmake lib names from target_link_libraries (all visibility arms, dedup-preserved)
-	// decodedConfigureFiles is set when the trace dispatch runs;
-	// reused below as the input to recoverConfigureFilesFromCalls
-	// so the trace's bytes.Split + json.Unmarshal cost is paid
-	// once for the three trace-derived extractors plus the
-	// configure_file recovery.
+	// traceDecoded tracks whether shadow.Decode ran; when true,
+	// decodedConfigureFiles holds the configure_file extractions
+	// from that single pass and the configure_file recovery
+	// reuses them rather than re-parsing the trace. A
+	// nil-slice sentinel wouldn't suffice — a trace with zero
+	// configure_file events leaves the slice nil, which would
+	// otherwise look identical to "decode never ran".
+	var traceDecoded bool
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
 		decoded := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
+		traceDecoded = true
 		privateIncludeDirs = map[string]map[string]bool{}
 		for _, call := range decoded.Includes {
 			for _, grp := range call.Groups {
@@ -191,7 +195,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// attach to consuming targets that include the cmake build
 	// dir in their codemodel-recorded Includes.
 	var configureFiles []configureFileOut
-	if decodedConfigureFiles != nil {
+	if traceDecoded {
 		var err error
 		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, opts.BuildDir, cmakeBuild, cc)
 		if err != nil {
