@@ -130,20 +130,6 @@ transition cleanly.
   for round-2 cache reuse.
 - Per-element srckey + per-kind narrowing patterns — defines what
   counts as graph-affecting vs name-only for the autotools build.
-- **Converter perf + correctness pass.** `internal/shadow.Decode`
-  walks the cmake `--trace-expand` stream once and dispatches
-  each event to all four extractors (reads, target-includes,
-  target-links, configure-files); previously the trace was
-  parsed four times per cmake conversion. Per-target
-  compile-group membership is precomputed once before the
-  source loop (`lower.buildCompileGroupSet`) replacing an
-  O(sources × compileGroupEntries) inner check. `discoverHeaders`
-  memoizes filesystem walks across targets sharing include
-  roots within one element. `cas.MaterializeDirectory` validates
-  REAPI Directory entry names (single-segment, no `..`) and
-  rejects symlink targets that escape the materialization root
-  — defense-in-depth that closes a path-traversal gap if the
-  CAS ever serves attacker-influenced content.
 
 The "Done" list is in the rear-view; the doc that captures the
 current state of the codebase is `docs/architecture.md` (top-down)
