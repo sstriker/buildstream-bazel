@@ -4,16 +4,13 @@ Captures the architecture for source resolution + materialization
 across `cmd/write-a`, project A (the meta workspace), and project B
 (the consumer workspace).
 
-> **Historical note.** This doc was written when the in-tree
-> `cmd/cas-fuse` daemon + `internal/casfuse` library were the
-> source-mount path. Both were retired once `bb_clientd` became
-> the Bazel-9 production direction (`docs/design/bazel9-cas-fs.md`
-> covers the why + the migration). The architectural layers below
-> still describe the intended shape — source identity, repo-rule
-> contract, on-disk layout — but where the text says "cas-fuse",
-> read "bb_clientd"; where it says `internal/casfuse`, read
-> `internal/cas`. The CAS client / packer / tree pieces relocated
-> there as part of the cas-fuse retirement.
+> **Implementation state.** The `cmd/cas-fuse` daemon and
+> `internal/casfuse` library described in earlier drafts of this
+> doc have been retired; `bb_clientd` is the production source-mount
+> path. `docs/design/bazel9-cas-fs.md` covers the why + migration.
+> Where an older version of this doc said "cas-fuse daemon", read
+> "bb_clientd daemon". Where it said `internal/casfuse`, the active
+> CAS client / packer / tree code now lives in `internal/cas`.
 
 ## Goal
 
@@ -28,7 +25,7 @@ Three layers consume the same source identity:
 - `write-a` reads source metadata (kind, url, ref) at render time
   and emits Bazel labels + a digest for each source.
 - Project A's per-element genrules consume sources to feed
-  `convert-element`.
+  `convert-element` or `convert-element-autotools`.
 - Project B's per-element targets (`cc_library` and friends)
   consume sources to compile downstream.
 
@@ -44,9 +41,9 @@ by the source's CAS Directory digest.
    reference the same digest. Re-fetching is a bug.
 3. **`write-a` stays small**. Render-time decisions don't depend
    on source bytes; metadata (kind/url/ref/digest) is enough.
-4. **No hard dependency on FUSE or local download**. With
-   remote-execution + populated CAS, the bytes never land on the
-   developer's disk.
+4. **No hard dependency on local download**. With
+   remote-execution + populated CAS + `bb_clientd`, the bytes
+   never land on the developer's disk.
 
 ## Architecture
 
@@ -74,16 +71,18 @@ use_repo(sources, "src_a1b2c3...", "src_d4e5f6...", ...)
 
 The repo rule under each `@src_<key>//` is a thin shim. It
 resolves the source's CAS Directory digest from `sources.json`,
-then `ctx.symlink`s `external/src_<key>` at the path where a
-long-running FUSE daemon exposes that Directory. Concretely:
+then `ctx.symlink`s `external/src_<key>` at the path where
+`bb_clientd` exposes that Directory under the configured mount.
+Concretely:
 
-- A user-level daemon (`cmd/cas-fuse`, derived from buildbarn's
-  `bb_clientd`) mounts a single root, e.g.
-  `/var/cache/cmake-to-bazel/cas/`, at startup and serves CAS
-  Directory content under digest-addressed paths (mirroring
-  bb_clientd's `<instance>/blobs/directory/<hash>-<size>/...`
-  layout).
-- The repo rule reads no source bytes; it just resolves a path.
+- `bb_clientd` (buildbarn's client-side companion daemon) mounts
+  a single root, e.g. `/var/cache/cmake-to-bazel/cas/`, at
+  startup and serves CAS Directory content under digest-addressed
+  paths. The canonical layout is
+  `<mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>/`.
+- The repo rule reads no source bytes; it just resolves a path
+  under `CAS_FUSE_MOUNT` using the prefix stored in
+  `CAS_DIRECTORY_PREFIX`.
 - A `tree` filegroup in the generated `BUILD.bazel` exposes
   every staged file:
 
@@ -157,63 +156,68 @@ deterministic across re-loads.
 The flow has two halves: how the CAS gets *populated*, and how
 Bazel *consumes* what's there.
 
-### Population: `bst source push`
+### Population: `bst source push` / `cmd/source-push`
 
 The CAS that backs the build is assumed configured (any REAPI
 ContentAddressableStorage + Remote Asset implementation; the
 `make buildbarn-up` deployment is one example we use end-to-end).
-Population is done with **`bst source push`** itself — BuildStream
+Production population uses **`bst source push`** — BuildStream
 already knows how to walk a graph, fetch each source, and upload
-Directory digests; we don't reimplement that in Go. A thin driver
-wraps it for the demo:
+Directory digests.
 
-- `make fdsdk-source-push FDSDK_DIR=...` runs `bst source push`
-  against the FDSDK graph with the project's CAS endpoint
-  configured.
+For dev and test workflows, `cmd/source-push` is a Go-side
+uploader:
 
-A direct Go-side uploader is **deferred**. URL-fetch fallback is
-also **deferred** — v1 requires a populated CAS.
+```
+source-push tree  --cas=<addr> --src=<dir>
+source-push graph --cas=<addr> --source-cache=<dir>
+```
 
-### Consumption: FUSE daemon (`cmd/cas-fuse`)
+`make fdsdk-source-push` drives the graph variant against the
+full FDSDK with the project's CAS endpoint configured.
+
+### Consumption: `bb_clientd` FUSE daemon
 
 `bst source push` writes Directory digests, not `(url, sha256) →
 blob` Remote-Asset entries. That rules out stock `http_archive`
 even with `--experimental_remote_downloader` (Bazel only does
 `FetchBlob`, never `FetchDirectory`). We need to consume Directory
-digests directly — which means a custom FS view of CAS.
+digests directly — which means a CAS-aware filesystem view.
 
-Architecture: a long-running user-level daemon mounts a single
-root and serves CAS Directories lazily. Repo rules `ctx.symlink`
-into the mount; bytes are pulled from CAS only on actual reads.
-The daemon is `cmd/cas-fuse`, built by lifting buildbarn's
-existing FUSE stack:
+Architecture: `bb_clientd` (buildbarn's client-side companion
+daemon) mounts a single root and serves CAS Directories lazily.
+Repo rules `ctx.symlink` into the mount; bytes are pulled from
+CAS only on actual reads. `bb_clientd` also speaks the
+`RemoteOutputService` protocol (see "Build Without the Bytes"
+below) so Bazel trusts the daemon's digests without re-reading
+files.
 
-- `bb-remote-execution/pkg/filesystem/virtual/` — generic
-  `Directory`/`Leaf` abstraction, backend-agnostic.
-- `bb-remote-execution/pkg/filesystem/virtual/fuse/` — FUSE shim
-  over `hanwen/go-fuse/v2` (Linux). Clean package boundary, no
-  worker / `RunCommand` entanglement.
-- `bb-clientd/pkg/filesystem/virtual/` — the CAS-Directory
-  factory we want (`decomposed_cas_directory_factory.go`).
-- `bb-remote-execution/pkg/filesystem/virtual/configuration/` —
-  mount glue: FUSE on Linux, in-tree NFSv4 server + `mount(2)` on
-  macOS (no macFUSE / FUSE-T third-party dep), WinFsp on Windows.
+`bb_clientd` is configured via
+`deploy/buildbarn/config/bb_clientd.jsonnet` and managed via
+`make bb-clientd-up` / `make bb-clientd-down`. The daemon talks
+plain REAPI to whatever CAS endpoint it's pointed at — it is not
+coupled to buildbarn's executor stack.
 
-Reuse estimate: ~500 LOC of glue if we adopt buildbarn's
-`program.Group` + protobuf-jsonnet config conventions; ~1500-2500
-LOC if we want a dependency-light binary that inlines the small
-amount of mount glue. Either way, vastly cheaper than building
-equivalent functionality (especially the macOS NFSv4 server) from
-scratch (5-10k+ LOC).
+The path layout under the mount is parameterised via two
+environment variables threaded through Bazel via `--repo_env`:
+
+```
+--repo_env=CAS_FUSE_MOUNT=/var/cache/cmake-to-bazel/cas
+--repo_env=CAS_DIRECTORY_PREFIX=cas//blobs/sha256
+```
+
+`CAS_FUSE_MOUNT` is the daemon's mount root; `CAS_DIRECTORY_PREFIX`
+is the sub-path prefix for directory blobs (bb_clientd's canonical
+layout; the default of `blobs` is kept for backward compatibility
+with tests).
 
 ### Why one mount, not one per repo
 
-A single mount with digest-addressed paths under it (per
-bb_clientd) — repo rules `ctx.symlink` at
-`<mount>/<instance>/blobs/directory/<hash>-<size>/`. Per-repo
-mounts would mean hundreds of FUSE mounts at FDSDK scale, and on
-macOS each NFSv4 mount needs `sudo` (deal-breaker for dev
-ergonomics).
+A single mount with digest-addressed paths under it — repo rules
+`ctx.symlink` at `<mount>/<prefix>/directory/<hash>-<size>/`.
+Per-repo mounts would mean hundreds of FUSE mounts at FDSDK
+scale, and on macOS each NFSv4 mount needs `sudo` (deal-breaker
+for dev ergonomics).
 
 ### Ref-update semantics
 
@@ -227,72 +231,55 @@ Bazel re-evaluates the module extension when `sources.json`
 changes (its declared input). It doesn't need to watch the
 filesystem — we never overwrite paths.
 
-### Full BwoB via xattr-served digests (Bazel 7/8 only — deprecated)
+## Build Without the Bytes (BwoB)
 
 The point of the FUSE-served sources route is that **a developer's
-machine never holds the full source set** — only what they are
-locally modifying. Everything else stays in CAS, served lazily by
-`cmd/cas-fuse`, and consumed by the executor via REAPI. The dev
-machine's resource budget (disk, RAM) stays modest regardless of
-the size of the source graph; the heavy lifting moves to the
-remote-execution services.
+machine never holds the full source set**. Bytes stay in CAS,
+served lazily by `bb_clientd`, and consumed by the executor via
+REAPI. The dev machine's resource budget (disk, RAM) stays modest
+regardless of the size of the source graph; the heavy lifting
+moves to the remote-execution services.
 
-Bazel 7.x and 8.x shipped a flag pair that closes the loop
-end-to-end without any dev-side byte traffic for digesting:
+### BwoB on Bazel 9: `RemoteOutputService` via `bb_clientd`
 
-```
---unix_digest_hash_attribute_name=user.bazel.cas.digest
---digest_function=SHA256
-```
+Bazel 9 dropped the `--unix_digest_hash_attribute_name` /
+`--digest_function` xattr fast-path (which skipped byte reads by
+trusting CAS-served extended attributes) without a direct
+replacement. The Bazel-9-native answer is
+`--experimental_remote_output_service=`, which points Bazel at a
+gRPC daemon that materialises both inputs and outputs lazily and
+reports their digests. Bazel trusts those reported digests.
 
-When set, Bazel reads the named extended attribute on each input
-file and treats its value as the file's content digest, skipping
-the read-and-hash step it would otherwise perform. `cmd/cas-fuse`
-serves exactly that xattr (key `user.bazel.cas.digest`, value =
-hex SHA-256 of the file's bytes — already known from the CAS
-FileNode digest). Result on those Bazel versions:
-
-- ✓ Executor side: workers read from CAS via REAPI.
-- ✓ Dev disk: source trees never materialise as durable files.
-- ✓ Dev network: bytes don't flow at all for digesting; they only
-  flow when an action actually reads the content (which usually
-  doesn't happen for inputs to remote actions — the executor
-  fetches them itself).
-
-**Bazel 9 dropped `--unix_digest_hash_attribute_name`** without a
-direct replacement; this project targets Bazel 9 (see
-`tools/e2e-hello-fuse.sh`, which no longer passes the flag). On
-Bazel 9 the FUSE-served files still serve correctly, but Bazel
-hashes them itself — paying a re-read cost the xattr fast path
-used to skip. The functional outcome (executor-side BwoB,
-dev-side modest disk footprint) is preserved; the digest-fast-path
-optimization is not.
-
-A Bazel-9 equivalent — most likely something stitched onto the
-RemoteOutputService surface (the spiritual successor to the
-xattr flag pair, primarily aimed at outputs but with the same
-"trust an external digest source" shape) — is on `ROADMAP.md`
-under "Bazel 9 CAS-aware filesystem." Until that lands, the
-`internal/casfuse` xattr-set machinery stays in tree: it's still
-useful for any non-Bazel client wanting the fast-path digest, and
-it's the integration point we'd plug a Bazel-9 successor into.
-
-Today's build invocation alongside the existing remote-execution
-flags:
+`bb_clientd` implements `RemoteOutputService` (in addition to the
+FUSE mount). The full BwoB invocation:
 
 ```
 bazel build \
   --remote_executor=grpc://... \
   --remote_cache=grpc://... \
   --remote_download_minimal \
+  --experimental_remote_output_service=unix:///path/to/bb_clientd.sock \
   --repo_env=CAS_FUSE_MOUNT=/var/cache/cmake-to-bazel/cas \
+  --repo_env=CAS_DIRECTORY_PREFIX=cas//blobs/sha256 \
   //elements/<leaf>:<leaf>
 ```
 
-`--repo_env=CAS_FUSE_MOUNT=...` points the source-extension's
-repo rule at the daemon's mount; the rule `ctx.symlink`s
-`<mount>/blobs/directory/<digest>/` into each declared
-`@src_<key>//` repo.
+Result on Bazel 9 + `bb_clientd`:
+
+- ✓ Executor side: workers read from CAS via REAPI.
+- ✓ Dev disk: source trees never materialise as durable files.
+- ✓ Dev network: bytes don't flow for digesting; Bazel trusts
+  the daemon's pre-computed digests (same effect as the
+  xattr fast-path on Bazel 7/8).
+- ✓ Output side: build artifacts are also materialised lazily
+  (`--remote_download_minimal`).
+
+Local end-to-end exercise: `tools/e2e-hello-bbclientd.sh`
+(also `make e2e-hello-bbclientd`). Skips cleanly when
+`bb_clientd` / Bazel ≥ 9 aren't on PATH.
+
+For shipped-vs-queued status see [`ROADMAP.md`](../../ROADMAP.md),
+notably the "Bazel 9 CAS-aware filesystem" item.
 
 ## `cmd/write-a`'s source access pattern
 
@@ -410,14 +397,6 @@ The pipeline handler's per-arch resolution loop extends
 to also iterate over option values declared in project.conf, with
 each combination producing a `select()` arm. Combinatorial
 explosion is bounded — most options have 1–3 values.
-
-## Status
-
-This doc describes the architecture; for what's wired in
-`main` today vs. what's queued, see [`ROADMAP.md`](../ROADMAP.md)
-— most notably the Bazel-9 CAS-aware-filesystem item that
-restores the `--unix_digest_hash_attribute_name` fast path lost
-in the 7→9 jump (see "Full BwoB" below for what we paid).
 
 ## Open questions
 

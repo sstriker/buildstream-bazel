@@ -2,9 +2,9 @@
 
 A descriptive map of what's actually in this repo today: the binaries
 shipped, the data flowing between them, and the shared substrates each
-one leans on. Not a plan — see `docs/m1-plan.md` … `docs/m5b-fidelity-plan.md`
-for milestone framing and `docs/fdsdk-whole-project-plan.md` for what's
-deferred.
+one leans on. For what's done vs queued see [`ROADMAP.md`](../ROADMAP.md).
+For a diagram-first tour of the same material see
+[`docs/visual-guide.md`](visual-guide.md).
 
 ## Goal in one paragraph
 
@@ -24,7 +24,8 @@ extends the same conversion model to non-cmake kinds — `kind:autotools`
 (round-1 coarse + round-2 trace-driven), `kind:make`, `kind:makemaker`,
 `kind:modulebuild`, `kind:manual`, and `kind:script` are all shipped via
 the per-kind handlers under `cmd/write-a/`. `kind:meson` is the next
-native renderer queued; see `ROADMAP.md` for current vs. queued state.
+native renderer queued; see [`ROADMAP.md`](../ROADMAP.md) for current
+vs. queued state.
 
 ## Repo layout
 

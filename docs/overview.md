@@ -11,9 +11,17 @@ and the build graph is recovered from a YAML element catalogue (one
 `cc_binary` rules so Bazel's incremental build, remote execution,
 and remote cache see the FDSDK at fine grain.
 
-## The two-pass shape
+## The two-workspace shape (three-pass execution)
 
-The conversion runs in two Bazel workspaces, generated together:
+The conversion produces two Bazel workspaces and runs in three
+passes. `cmd/write-a` (pass 1) generates both workspaces; `bazel
+build` over project A (pass 2) runs per-element converters; `bazel
+build` over project B (pass 3) compiles the final artifacts. For
+`kind:autotools` elements a fourth and fifth pass (2' and 3')
+follow once the first build registers a trace — see
+[`docs/three-pass-flow.md`](three-pass-flow.md) for the detail.
+
+The two workspaces:
 
 ```mermaid
 flowchart LR
@@ -118,7 +126,7 @@ imports manifest: link command's `-l<name>` flags resolve to
 
 ## Convergence + caching
 
-Both passes write everything through Bazel's action cache:
+All three passes write everything through Bazel's action cache:
 
 - **Project A** caches its render genrules. New `.bst` source →
   new srckey → cache miss → genrule re-runs. Same source +
@@ -128,10 +136,15 @@ Both passes write everything through Bazel's action cache:
 - **Project B** caches its compile / link actions just like any
   other Bazel cc_binary build.
 
-There's no separate srckey-keyed registry. The cache backend
-(buildbarn) IS the convergence point — same source + same toolchain
-+ same converter version → same action key → same outputs,
-deterministically shared across all builders.
+For `kind:cmake` elements there is no separate srckey-keyed
+registry — Bazel's ActionCache IS the convergence point and the
+action key derives directly from input hashes. For trace-driven
+kinds (`kind:autotools` and friends) a lightweight trace
+registry bridges pass 3 back to pass 2': `cmd/trace-publish`
+writes a `(srckey → trace)` entry into the REAPI ActionCache
+under a synthetic key; `cmd/trace-lookup` reads it back at
+load time in project A's converter genrule. This uses the same
+REAPI ActionCache endpoint — no separate registry service.
 
 ## Where things live
 
@@ -149,13 +162,16 @@ deterministically shared across all builders.
 ## Where to look next
 
 - **Just trying it**: [README.md quick start](../README.md#quick-start).
+- **Diagram-first tour**: [docs/visual-guide.md](visual-guide.md). Same
+  material as this doc in mermaid diagrams with subtexts.
 - **Generated workspace shape (interop contract)**:
   [docs/build-structure.md](build-structure.md). Read this if
   you're writing a sibling .bst → Bazel converter or a
   consumer of the generated workspaces.
-- **Project plan**: [docs/whole-project-plan.md](whole-project-plan.md).
+- **Project plan / roadmap**: [`ROADMAP.md`](../ROADMAP.md).
 - **Per-kind conversion details**:
   [docs/cmake-conversion-deltas.md](cmake-conversion-deltas.md),
   [docs/trace-driven-autotools.md](trace-driven-autotools.md).
 - **Repo today (binaries, packages, data flow)**:
   [docs/architecture.md](architecture.md).
+

@@ -89,74 +89,113 @@ dep's bundle into `$PREFIX/lib/cmake/<dep>/`, passes
 and passes `--imports-manifest=$(location imports.json)` so
 IMPORTED-target names map back to Bazel labels.
 
-#### kind:autotools (trace-driven native render)
+#### kind:autotools (trace-driven native render, round-2 default)
+
+Round-2 is the default. The converter lives in **project A** (pass 2);
+the install build lives in **project B** (pass 3) and publishes the
+trace to the REAPI ActionCache so the converter can read it on the
+next pass-2 run.
+
+**Project A — per-element converter genrule (`<elem>_build`):**
+
+```python
+# kind:autotools round-2 — pass-2 converter genrule.
+# Reads @trace_greet//:trace (load-time AC lookup via rules/traces.bzl).
+# AC hit ⇒ emits cc_library / cc_binary into BUILD.bazel.out.
+# AC miss ⇒ emits a placeholder BUILD.bazel.out.
+genrule(
+    name = "greet_build",
+    srcs = [
+        "@src_<key>//:tree",        # source tree
+        "@trace_greet//:trace",     # AC-backed trace (trace.log + make-db.txt)
+        "srckey.txt",               # seed for the synthetic AC key
+    ],
+    outs = ["BUILD.bazel.out"],
+    tools = ["//tools:convert-element-autotools"],
+    cmd = """
+        TRACE_DIR="$$(mktemp -d)"
+        for src in $(SRCS); do
+            case "$$src" in
+                */trace_dir/trace.log)    cp -L "$$src" "$$TRACE_DIR/trace.log"    ;;
+                */trace_dir/make-db.txt)  cp -L "$$src" "$$TRACE_DIR/make-db.txt"  ;;
+            esac
+        done
+        $(location //tools:convert-element-autotools) \
+            --trace-dir="$$TRACE_DIR" \
+            --out-build="$(location BUILD.bazel.out)"
+    """,
+)
+```
+
+**Project B — coarse install genrule (`<elem>_install`):**
 
 ```python
 genrule(
     name = "greet_install",
-    srcs = [":greet_sources"],
+    srcs = [":greet_sources", "srckey.txt"],
     outs = [
         "install_tree.tar",       # the build's DESTDIR install tree
+        "trace.log",              # canonicalized execve trace
         "make-db.txt",            # `make -np` post-build dump
-        "BUILD.bazel.out",        # native cc rules recovered from trace
-        "install-mapping.json",   # install dest -> producing rule
+        "generated-headers.txt",  # generated header list (for future use)
     ],
     cmd = """
-        # ...source staging (same shadow-merge shape as kind:cmake)...
+        # ...source staging + dep-prefix extraction...
         export INSTALL_ROOT="$$(mktemp -d)"
         export AUTOTOOLS_TRACE="$$(mktemp)"
-        "$$EXEC_ROOT/$(location //tools:build-tracer)" \
+        $(location //tools:build-tracer) \
             --out="$$AUTOTOOLS_TRACE" -- sh -c '
             ./configure --prefix=/usr ...
             make
             make -j1 DESTDIR="$$INSTALL_ROOT" install
         '
-        make -np > "$$EXEC_ROOT/$(location make-db.txt)" 2>/dev/null || true
-        cd "$$EXEC_ROOT"
-        $(location //tools:convert-element-autotools) \
-            --trace="$$AUTOTOOLS_TRACE" \
-            --make-db="$(location make-db.txt)" \
-            --out-build="$(location BUILD.bazel.out)" \
-            --out-install-mapping="$(location install-mapping.json)"
+        # post-process make-db (strip non-deterministic lines)
+        ( make -np 2>/dev/null || true ) | sed -E '...' \
+            > "$$EXEC_ROOT/$(location make-db.txt)"
+        cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/$(location trace.log)"
         tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
             -cf "$(location install_tree.tar)" -C "$$INSTALL_ROOT" .
+        # Publish trace → AC under SyntheticActionDigest(srckey)
+        if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
+            $(location //tools:trace-publish) \
+                --cas="$${CAS_GRPC_ADDR}" \
+                --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \
+                --trace="$(location trace.log)" \
+                --make-db="$(location make-db.txt)" >/dev/null
+        fi
     """,
     tools = [
         "//tools:build-tracer",
-        "//tools:convert-element-autotools",
+        "//tools:trace-publish",
     ],
 )
 ```
 
-Single genrule, four outputs. The trace is captured to a transient
-`$AUTOTOOLS_TRACE` path (mktemp) and fed to the converter inline —
-it's not a Bazel-visible output, just an action-local sidecar
-between the tracer and the converter. There is no separate
-`<elem>_converted` target for `kind:autotools` — the convert step
-is folded into the install action because trace + make-db aren't
-byte-stable enough across runs to make a sibling rule's narrow
-cache key actually hit. See `docs/trace-driven-autotools.md` for
-the rationale and the roadmap to re-introduce the split once
-trace normalization lands.
+The converter genrule (project A) and the install genrule (project B)
+are independent Bazel actions. `@trace_<elem>//:trace` is a Bazel
+external repo backed by `rules/traces.bzl`: at load time it shells
+out to `cmd/trace-lookup`, which queries the REAPI ActionCache under
+the element's synthetic key (see `docs/design/autotools-round2-rendezvous.md`).
+AC hit ⇒ the fileset resolves to `trace.log` + `make-db.txt` and the
+converter emits fine-grained cc rules. AC miss ⇒ the fileset is empty
+and the converter writes a placeholder; project B's install genrule
+runs, publishes the trace, and the next render of project A hits.
 
-The tracer + converter run inside the same Bazel action — one
-action, two outputs (install_tree.tar + BUILD.bazel.out). Bazel's
-action cache (buildbarn in CI) handles cross-node convergence
-automatically; same source + same toolchain + same converter
-version => same outputs.
+Pass `--autotools-round1` to `write-a` to opt into the legacy
+single-genrule shape (converter + install inline in one project-B
+action). See `docs/trace-driven-autotools.md` for that shape.
 
-When the element has cross-element deps, an `imports.json` is also
-rendered + listed in srcs + threaded through
-`--imports-manifest=$(location imports.json)`, mirroring the
+When the element has cross-element deps, an `imports.json` is rendered
+and listed in the project-A genrule's `srcs`, mirroring the
 kind:cmake handler's contract.
 
-#### Pipeline kinds without trace conversion (kind:make / kind:manual / kind:script)
+#### Pipeline kinds with trace-driven path (kind:make, kind:manual, kind:script, kind:makemaker, kind:modulebuild)
 
-Same shape as autotools' coarse path: a single
-`<elem>_install` genrule whose `outs = ["install_tree.tar"]`. No
-`BUILD.bazel.out`; downstream consumers reference the install
-tree directly via filegroup composition (kind:stack /
-kind:compose / kind:filter / kind:import).
+Same round-2 shape as autotools: project A holds a converter genrule
+(`<elem>_build`); project B holds the install genrule (`<elem>_install`)
+whose outputs include `install_tree.tar`, `trace.log`, `make-db.txt`.
+Pipeline kinds without a trace-driven opt-in produce only
+`install_tree.tar` from `<elem>_install`.
 
 #### Filegroup-composition kinds (kind:stack / kind:compose / kind:filter / kind:import)
 
@@ -174,6 +213,35 @@ filegroup(
     ],
 )
 ```
+
+#### kind:bazel (passthrough)
+
+The element's source tree already carries Bazel `BUILD.bazel`
+(or `BUILD`) files; write-a stages them verbatim. There is no
+per-kind translator action, no introspection, no rendered
+output beyond the source bytes. Two use cases:
+
+1. Upstream sources that are already Bazel-native (an existing
+   `rules_cc` / `rules_python` project, or a hand-authored
+   BUILD over a curated source set) — kind:bazel slots them
+   into the project A / project B layout without rewriting.
+2. Hand-overriding kind:cmake / kind:autotools converter
+   output. Fork the converted BUILD, edit it, declare the
+   element as kind:bazel pointing at the edited tree.
+
+**Project A side**: a no-target marker `BUILD.bazel`. Same
+"nothing to schedule" shape as kind:import / kind:stack —
+no genrule, no `_build` / `_converted` rule.
+
+**Project B side**: the source tree is staged into
+`elements/<name>/` verbatim, BUILD files included. The
+cross-element label is whatever the source's BUILD declares;
+the convention is to expose a target named after the element
+so `//elements/<name>:<name>` resolves. The handler doesn't
+enforce that — it only synthesizes a placeholder BUILD when
+the source has none, with a comment flagging the gap as
+almost certainly a misconfiguration. Render gate:
+`scripts/meta-bazel-passthrough.sh`.
 
 ## Project B — the consumer workspace
 
@@ -205,8 +273,9 @@ workspace) sees a stable label namespace:
 | Label pattern | Meaning |
 |---|---|
 | `//elements/<name>:<name>` | Primary cc rule (cc_library / cc_binary) for kind:cmake / native kind:autotools. |
-| `//elements/<name>:<name>_install` | Install genrule. For pipeline kinds (kind:autotools / make / manual / script) this is the action that builds + installs + (for trace-driven kind:autotools) converts in one go. Outputs include `install_tree.tar`; trace-driven kind:autotools also emits `trace.log` / `make-db.txt` / `BUILD.bazel.out` / `install-mapping.json`. |
-| `//elements/<name>:<name>_converted` | The cmake convert genrule (kind:cmake only). Outputs `BUILD.bazel.out` + `read_paths.json` + `cmake-config-bundle.tar`. Trace-driven kind:autotools folds convert into `_install`; there is no separate `_converted` rule. |
+| `//elements/<name>:<name>_install` | Install genrule (project B). Outputs include `install_tree.tar`; trace-driven kinds also emit `trace.log` / `make-db.txt`. Does NOT emit `BUILD.bazel.out` under round-2 (that is `<name>_build` in project A). |
+| `//elements/<name>:<name>_build` | Round-2 converter genrule (project A, trace-driven kinds). Reads trace from AC; outputs `BUILD.bazel.out`. |
+| `//elements/<name>:<name>_converted` | The cmake convert genrule (kind:cmake only, project A). Outputs `BUILD.bazel.out` + `read_paths.json` + `cmake-config-bundle.tar`. |
 | `//elements/<name>:cmake_config_bundle` | Synthesized cmake-config bundle tar, for cross-element find_package consumption. |
 | `//elements/<name>:build_bazel` | The rendered `BUILD.bazel.out` filegroup (one entry: the file itself). |
 
@@ -255,11 +324,11 @@ the surface area:
    referenced via `//tools:<name>` labels from per-element
    genrules' `tools = [...]`. The translator binary contract
    (CLI flags, output shape) is documented per-tool.
-7. **Convergence via Bazel's action cache.** No tool-specific
-   srckey registry; rely on Bazel's existing remote-cache
-   plumbing for cross-node consistency. Action keys derive from
-   inputs + tool digests; same source + same toolchain + same
-   tool version → same outputs.
+7. **Convergence via Bazel's action cache.** For kind:cmake there is
+   no separate srckey registry — rely on Bazel's existing remote-cache
+   plumbing. For trace-driven kinds (`cmd/trace-publish` /
+   `cmd/trace-lookup`) the REAPI ActionCache doubles as a
+   srckey → trace registry; no separate registry service is required.
 
 The translator binaries themselves (`convert-element` etc.) are
 the implementation detail of *this* converter — a sibling tool
