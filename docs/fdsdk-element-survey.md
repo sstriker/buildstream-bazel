@@ -2,8 +2,9 @@
 
 Source: `gitlab.com/freedesktop-sdk/freedesktop-sdk` @ `ba490d000` (2026-04-28).
 
-This doc grounds the per-kind translator phasing in
-`docs/whole-project-plan.md` against what FDSDK actually contains.
+This doc grounds the per-kind translator status against what FDSDK
+actually contains. See [`ROADMAP.md`](../ROADMAP.md) for current
+per-kind coverage status.
 Numbers are direct counts off `*.bst` files in the repo. Update this
 doc when the survey is re-run against a newer FDSDK snapshot.
 
@@ -169,39 +170,21 @@ Things to **skip until needed**:
   what FDSDK actually uses; revisit if a translator panics on a
   real element.
 
-## 5. Implications for `whole-project-plan.md`
+## 5. Phasing implications
 
-1. **Phase 2 reshape**. The plan grouped `stack` + `filter` only.
-   Add `import`, `compose`, `flatpak_image`, `snap_image`,
-   `flatpak_repo`, `collect_manifest`, `collect_initial_scripts`,
-   `collect_integration`, `check_forbidden` to the same phase —
-   they're all install-tree-manipulation or static-data emitters
-   with no compile step. Lumping them is cheap; together they're
-   13 % of FDSDK.
-2. **Phase 5 (manual) absorbs more kinds**. `script`, `pyproject`,
-   `make`, `makemaker`, `modulebuild` share the command-list-driven
-   coarse genrule shape with `manual`. One translator with
-   per-kind defaults for the BuildStream-plugin command lists
-   (each plugin ships a default `configure-commands` /
-   `build-commands` / `install-commands` block in its `defaults/`
-   YAML; FDSDK overrides them via `<kind>-local` and the
-   `(>)` / `(<)` YAML directives). Together: 36 % of FDSDK.
-3. **Phase 4 (meson) priority**. Meson is 12.3 % vs cmake's 6.9 %.
-   The fmt fidelity gate already validates the cmake side; meson
-   is the next-largest fine-grained-buildsystem footprint. Keep
-   Phase 4 where it is.
-4. **Phase 3 (autotools) stays coarse**. 25.1 % of FDSDK; coarse
-   `genrule` is the right v1.
-5. **Source-kind work**. `git_repo` (530 entries, dominant) is an
+1. **Composition kinds** (`stack`, `filter`, `import`, `compose`,
+   `flatpak_image`, `snap_image`, `flatpak_repo`, `collect_manifest`,
+   `collect_initial_scripts`, `collect_integration`,
+   `check_forbidden`) — all install-tree-manipulation or
+   static-data emitters with no compile step. Together ~13 % of FDSDK.
+2. **Command-list-driven kinds** (`script`, `pyproject`,
+   `make`, `makemaker`, `modulebuild`, `manual`) share the
+   command-list-driven coarse-genrule shape. Together ~36 % of FDSDK.
+3. **Meson** is 12.3 % vs cmake's 6.9 % — the next-largest
+   fine-grained-buildsystem footprint after autotools (25.1 %).
+4. **Source-kind work**. `git_repo` (530 entries, dominant) is an
    alias-resolving variant of `git` — sourcecheckout needs a small
-   adapter for the URL aliases declared in
-   `include/_private/aliases.yml`. Other community sources
-   (`go_module`, `cargo2`, …) are addressed by the language-element
-   translators, not the core sourcecheckout path.
-
-The eight-phase shape from the plan still holds; Phases 2 and 5
-expand to absorb the unlisted kinds, Phase 4 stays put. No new
-phases needed.
+   adapter for URL aliases in `include/_private/aliases.yml`.
 
 ## Methodology
 

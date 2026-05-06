@@ -11,9 +11,38 @@ The B→A feedback shape: the autotools build runs inside a
 process tracer; the trace is the introspection signal we
 otherwise lack.
 
-## How it runs today (single-genrule)
+> **Current state.** Round-2 is the default since it was shipped
+> (see [`ROADMAP.md`](../ROADMAP.md) and
+> [`docs/design/autotools-round2-rendezvous.md`](design/autotools-round2-rendezvous.md)).
+> Pass `--autotools-round1` to `write-a` to opt into the legacy
+> single-genrule shape. The round-1 shape is described in the
+> section "Round-1 (legacy) shape" below.
 
-Each `kind:autotools` element renders a single genrule that:
+## Round-2 (default): split converter + install genrules
+
+Round-2 splits the work between the two workspaces:
+
+- **Project A** (pass 2) holds a converter genrule (`<elem>_build`)
+  that reads `trace.log` + `make-db.txt` from the REAPI ActionCache
+  (via `@trace_<elem>//:trace`, resolved by `cmd/trace-lookup`) and
+  emits `BUILD.bazel.out` with native cc rules. On an AC miss the
+  converter emits a placeholder and project B's coarse genrule
+  remains the buildable target.
+- **Project B** (pass 3) holds a coarse install genrule
+  (`<elem>_install`) that runs `./configure && make && make install`
+  under `build-tracer`, post-processes `make-db`, and calls
+  `cmd/trace-publish` to register the trace in the AC under
+  `SyntheticActionDigest(srckey)`.
+
+See [`docs/build-structure.md`](build-structure.md) for the
+generated BUILD shapes and
+[`docs/design/autotools-round2-rendezvous.md`](design/autotools-round2-rendezvous.md)
+for the AC rendezvous protocol.
+
+## Round-1 (legacy) shape: single-genrule
+
+Activated by `--autotools-round1`. Each `kind:autotools` element
+renders a single genrule that:
 
 1. Stages the element's source tree into `$BUILD_ROOT`,
    extracts upstream autotools deps' `install_tree.tar`
@@ -151,114 +180,39 @@ prerequisites land. Re-introduce when (a) trace
 normalization makes `trace.log` byte-stable and (b)
 `make -np` post-processing makes `make-db.txt` byte-stable.
 
-## B → A feedback (eventual)
+These prerequisites are now met — see the round-2 description
+at the top of this doc.
 
-The eventual design extends today's single-genrule with a
-per-element CAS-backed cache of converted output, keyed on
-a srckey that excludes content-irrelevant files:
+## B → A feedback (round-2, shipped)
 
-1. **Round 1** — write-a renders the kind:autotools
-   element as today's coarse install genrule with the
-   tracer-wrapped pipeline. Bazel build of project B runs
-   the trace, conversion, install-tree tarring. The
-   tracer-wrapped action's outputs include `trace.log` (a
-   real Bazel output, normalized).
-2. **Trace registration** — the trace gets registered in
-   a CAS-backed index keyed by `(srckey, toolchain_digest,
-   tracer_version, configure_args_hash)` (NOT srckey
-   alone — a different gcc or different `--prefix` would
-   produce a different trace shape; the cache key needs to
-   reflect that).
-3. **Round 2** — write-a's render checks the index for the
-   element's srckey. **Cache hit** → the per-element BUILD
-   runs only `convert-element-autotools` against the
-   cached trace, no build needed. **Cache miss** → fall
-   back to round 1.
+Round-2 realized the split with the normalization prerequisites
+satisfied. The shipped design:
 
-Monotone: once a trace is registered for a given key, every
-subsequent A render uses it. New source → new srckey →
-trace miss → coarse fallback → tracer runs → new trace →
-new index entry. Self-healing across distributed builders
-because the cache key is content-addressed.
+1. **Round 1** — write-a renders project A with a converter
+   genrule that accepts trace input, and project B with the
+   coarse install genrule. Bazel build of project B runs
+   configure / make / make-install under `build-tracer`,
+   post-processes `make-db`, and calls `trace-publish` to
+   write an AC entry under `SyntheticActionDigest(srckey)`.
+2. **Round 2** — on the next `bazel build` of project A, the
+   `@trace_<elem>//:trace` filegroup resolves to the AC hit.
+   The converter genrule reads the trace and emits fine-grained
+   cc rules. **Cache miss** → same coarse fallback as round 1.
 
-**Prerequisite**: trace + make-db normalization (see
-roadmap below). Without it, two builds of the same source
-produce different traces, and the cache is useless.
+See [`docs/design/autotools-round2-rendezvous.md`](design/autotools-round2-rendezvous.md)
+for the AC rendezvous protocol.
 
-## Roadmap
+## Open items (future work)
 
-Sequenced as separate PRs in priority order.
+### Direct-dep narrowing in `convert-element-autotools`
 
-### Follow-up PR A: realize the 2-phase design
-
-Bundles the determinism work + the cache index +
-direct-dep narrowing into one PR because they're
-mutually-reinforcing — the index has no value without
-normalization, and direct-dep narrowing is most
-naturally implemented in the converter that the cache
-serves.
-
-**Trace normalization in `cmd/build-tracer`.** Add a
-`--canonical` mode (or make it the default):
-
-- Strip the `\d+  ` pid prefix from each line, OR
-  remap to sequence numbers.
-- Regex-replace `/tmp/cc[A-Za-z0-9]+\.[osr]+`
-  occurrences with stable placeholders (e.g.
-  `<cc-tmp-1>`, `<cc-tmp-2>`) — the gcc internal
-  temp file paths.
-- Same treatment for `/tmp/cc[A-Za-z0-9]+\.res`
-  (collect2's resolution file).
-
-**`make -np` post-processing in the install genrule.**
-Filter the dump through a small awk/sed pipeline before
-writing `make-db.txt`:
-
-- Drop `# N files, M impossibilities` line.
-- Drop `# Last modified <timestamp>` lines.
-- Strip any other timestamp/PID-bearing comments.
-
-**Per-kind srckey narrowing rules.** Each kind defines
-include/exclude patterns over the source tree; the srckey
-hashes only the included files. For autotools the
-content-irrelevant files (their bytes don't appear in
-`execve` argv) are:
-
-- **EXCLUDE**: `**/*.c`, `**/*.cpp`, `**/*.cc`,
-  `**/*.S`. Their content drives compile output bytes
-  but doesn't change the trace's command structure.
-- **INCLUDE**: `configure`, `configure.ac`,
-  `Makefile.am`, `Makefile.in`, `**/*.m4`,
-  `**/*.in` templates (config.h.in etc.), pkg-config
-  templates (`**/*.pc.in`).
-- **Caveat**: `.h` files are content-relevant when they
-  carry preprocessor switches that affect compile output
-  (e.g. `#define` choices that get propagated into the
-  build). A blanket `**/*.h` exclude is too broad —
-  `config.h.in` is the canonical example. Keep `.h`
-  files in the srckey by default; revisit if a fixture
-  shows the cost is meaningful.
-- The exact patterns are a per-kind CONFIG that lives
-  alongside the handler, not hard-coded in the
-  converter binary. Future kinds (meson, etc.) declare
-  their own.
-
-**CAS-backed srckey cache (the round 1/2 mechanism).**
-Concretely: the convert action is a separate genrule
-(re-introducing the split, but this time with the
-narrowing actually working). Its srcs are the
-normalized trace + make-db (and imports.json). Its
-cache key narrows to those bytes — which are now
-byte-stable across irrelevant edits.
-
-**Direct-dep narrowing in `convert-element-autotools`.**
 Today the converter resolves every `-l<name>` link flag
-against the in-trace archive set + the imports
-manifest. Future enhancement: filter the emitted
-`cc_library` / `cc_binary` `deps` to just those that
-match a declared direct dep of the element (from the
-.bst's `depends` / `build-depends`). Trust Bazel to
-propagate transitive `cc_library` deps. Caveats:
+against the in-trace archive set + the imports manifest.
+Future enhancement: filter the emitted `cc_library` /
+`cc_binary` `deps` to just those that match a declared
+direct dep of the element (from the .bst's `depends` /
+`build-depends`). Trust Bazel to propagate transitive
+`cc_library` deps. Caveats:
 
 - System libs (`-lc`, `-lpthread`, `-lm`,
   `-ldl`) come from `cc_toolchain`, not declared deps.
@@ -270,9 +224,9 @@ propagate transitive `cc_library` deps. Caveats:
   Direct-dep narrowing is a fix for kinds that infer
   deps from execve flags (autotools, make).
 
-### Follow-up PR B: pkgconfig synthesis (after PR A)
+### pkgconfig synthesis
 
-Today A synthesizes cmake-config files
+Today the project synthesizes cmake-config files
 (`<DepPkg>Config.cmake`) for each kind:cmake dep so
 consumers' `find_package(... CONFIG)` resolves at
 genrule action time. The pkg-config analog: synthesize

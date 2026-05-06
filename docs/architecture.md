@@ -2,9 +2,7 @@
 
 A descriptive map of what's actually in this repo today: the binaries
 shipped, the data flowing between them, and the shared substrates each
-one leans on. Not a plan — see `docs/m1-plan.md` … `docs/m5b-fidelity-plan.md`
-for milestone framing and `docs/fdsdk-whole-project-plan.md` for what's
-deferred.
+one leans on. For what's done vs queued see [`ROADMAP.md`](../ROADMAP.md).
 
 ## Goal in one paragraph
 
@@ -19,8 +17,8 @@ content-addressed in CAS; an orchestrator coordinates the multi-element
 graph, materializes cross-element source/dependency trees, and
 optionally submits the per-element conversion as a REAPI Action so a
 remote Buildbarn cluster can fan out the work. Non-cmake element kinds
-(`manual`, `autotools`, `meson`) are out of scope right now and tracked
-in `docs/fdsdk-whole-project-plan.md`.
+(`manual`, `autotools`, `meson`) with remaining open work are tracked
+in [`ROADMAP.md`](../ROADMAP.md).
 
 ## Repo layout
 
