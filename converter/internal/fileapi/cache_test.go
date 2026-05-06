@@ -20,6 +20,14 @@ func TestCacheGet_UsesBuiltIndex(t *testing.T) {
 	}
 }
 
+func TestCacheGet_FallbackWhenIndexNil(t *testing.T) {
+	c := Cache{Entries: []CacheEntry{{Name: "X", Value: "v"}}}
+	// No buildIndex call — index stays nil.
+	if got := c.Get("X"); got == nil || got.Value != "v" {
+		t.Fatalf("Get(X) fallback path = %#v, want value v", got)
+	}
+}
+
 func TestCacheGet_DuplicateNamesKeepFirstEntry(t *testing.T) {
 	c := Cache{
 		Entries: []CacheEntry{
