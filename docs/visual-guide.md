@@ -223,6 +223,24 @@ flowchart LR
 
 No genrule at all — just starlark filegroup composition of dep elements.
 
+### 4e. kind:bazel — passthrough (source ships its own BUILD)
+
+```mermaid
+flowchart LR
+    SRC["element source tree\nincludes BUILD.bazel"]
+    PA["Project A:\nelements/<name>/BUILD.bazel\n(no-target marker)"]
+    PB["Project B:\nelements/<name>/\nstaged verbatim"]
+
+    SRC --> PA
+    SRC --> PB
+```
+
+No converter, no genrule, no introspection. The source's existing
+BUILD files become the element's project-B package as-is. Useful
+for upstream Bazel-native sources or for hand-edited forks of
+converter output. The handler only inserts a placeholder BUILD
+(with a misconfiguration warning) if the source tree has none.
+
 ---
 
 ## 5. Cross-element data flow (cmake deps)

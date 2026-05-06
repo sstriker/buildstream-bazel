@@ -214,6 +214,35 @@ filegroup(
 )
 ```
 
+#### kind:bazel (passthrough)
+
+The element's source tree already carries Bazel `BUILD.bazel`
+(or `BUILD`) files; write-a stages them verbatim. There is no
+per-kind translator action, no introspection, no rendered
+output beyond the source bytes. Two use cases:
+
+1. Upstream sources that are already Bazel-native (an existing
+   `rules_cc` / `rules_python` project, or a hand-authored
+   BUILD over a curated source set) — kind:bazel slots them
+   into the project A / project B layout without rewriting.
+2. Hand-overriding kind:cmake / kind:autotools converter
+   output. Fork the converted BUILD, edit it, declare the
+   element as kind:bazel pointing at the edited tree.
+
+**Project A side**: a no-target marker `BUILD.bazel`. Same
+"nothing to schedule" shape as kind:import / kind:stack —
+no genrule, no `_build` / `_converted` rule.
+
+**Project B side**: the source tree is staged into
+`elements/<name>/` verbatim, BUILD files included. The
+cross-element label is whatever the source's BUILD declares;
+the convention is to expose a target named after the element
+so `//elements/<name>:<name>` resolves. The handler doesn't
+enforce that — it only synthesizes a placeholder BUILD when
+the source has none, with a comment flagging the gap as
+almost certainly a misconfiguration. Render gate:
+`scripts/meta-bazel-passthrough.sh`.
+
 ## Project B — the consumer workspace
 
 ```
