@@ -119,8 +119,12 @@ flowchart TB
     RB --> PB
 ```
 
-After `bazel build //...` over project A, the driver script stages each
-`BUILD.bazel.out` from project A into project B, replacing the placeholder.
+For **kind:cmake** elements: after `bazel build //...` over project A, the
+driver script stages each `BUILD.bazel.out` from project A into project B,
+replacing the placeholder.  For **kind:autotools** round-2, project B's
+install genrule is rendered in place from the start; project A's
+`BUILD.bazel.out` is consumed differently — the operator stages or builds it
+as a label once the round-2 trace is available from the AC.
 
 ---
 
@@ -165,7 +169,7 @@ flowchart LR
     MAKEDB["make -np output\n(make-db.txt)"]
     CEA2["convert-element-autotools\n(parse + correlate)"]
     BUILD_OUT["BUILD.bazel.out\n(cc_library / cc_binary)"]
-    REG["Trace registry\n(REAPI ActionCache\nkeyed by srckey)"]
+    REG["AC entry under\nSyntheticActionDigest(srckey)\n(REAPI ActionCache)"]
 
     SRC2 --> BT2
     BT2 --> CONFIGURE
@@ -281,7 +285,7 @@ flowchart LR
 | 3 — bazel build B | cc_library / cc_binary compile+link | Bazel ActionCache |
 | 1' — write-a (registry hit) | re-render with trace available | none |
 | 2' — bazel build A' | converter reads trace, emits fine graph | Bazel ActionCache |
-| 3' — bazel build B' | incremental cc compile of changed .c | Bazel ActionCache |
+| 3' — bazel build B' (kind:autotools round-2) | incremental cc compile of changed .c | Bazel ActionCache |
 
 The full autotools build (pass 3 coarse genrule) runs **once per srckey**.
 After that, `.c`-only edits stay on the cheap path permanently.
@@ -379,6 +383,11 @@ flowchart TB
     E2E_BB --> BBE2E
     E2E_MAKE --> BAZELE2E
 ```
+
+The four CI jobs shown (`unit`, `e2e`, `bazel-e2e`, `buildbarn-e2e`) are the
+always-run jobs triggered on push/PR.  A fifth job, `fdsdk-probe` (FDSDK
+reality-check survey), runs only on manual `workflow_dispatch` and is not
+wired to any `make` target above.
 
 ---
 
