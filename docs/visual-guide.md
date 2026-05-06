@@ -245,7 +245,7 @@ For **autotools consumers**: cross-element resolution uses `imports.json`
 
 ---
 
-## 6. The three-pass (and five-pass) build flow
+## 6. The three-pass build flow (plus autotools' 2' → 3' follow-up)
 
 ```mermaid
 flowchart LR
@@ -265,9 +265,8 @@ flowchart LR
         ART2["Artifacts"]
     end
 
-    subgraph LOOP["Round-2 loop (autotools only)"]
+    subgraph LOOP["Round-2 follow-up (autotools only)"]
         REG2["srckey → trace\nregistry (ActionCache)"]
-        WA3["Pass 1': write-a re-render\n(registry hit → fine-graph)"]
         BA2["Pass 2': converter reads\nregistered trace"]
         BB2["Pass 3': incremental\ncc compile"]
     end
@@ -275,7 +274,7 @@ flowchart LR
     BST2 --> P1 --> P2 --> P3
     P3 -- "cmake: done" --> ART2
     P3 -- "autotools: trace\nregistered" --> REG2
-    REG2 --> WA3 --> BA2 --> BB2 --> ART2
+    REG2 --> BA2 --> BB2 --> ART2
 ```
 
 | Pass | What runs | Cache layer |
@@ -283,7 +282,6 @@ flowchart LR
 | 1 — write-a | Go binary writes files | none — always fast |
 | 2 — bazel build A | per-element converter genrules | Bazel ActionCache (buildbarn) |
 | 3 — bazel build B | cc_library / cc_binary compile+link | Bazel ActionCache |
-| 1' — write-a (registry hit) | re-render with trace available | none |
 | 2' — bazel build A' | converter reads trace, emits fine graph | Bazel ActionCache |
 | 3' — bazel build B' (kind:autotools round-2) | incremental cc compile of changed .c | Bazel ActionCache |
 
@@ -329,8 +327,8 @@ convergence point. Same source + same toolchain + same converter version →
 same action key → same outputs, shared across all builders automatically.
 
 Autotools adds a separate registry layer because the coarse pass-3 genrule's
-trace output needs to flow back into pass 1'/2' write-time decisions, which
-happen before the ActionCache for pass 2 is consulted.
+trace output needs to flow back into the already-rendered pass-2 converter
+genrule at Bazel load time, before the ActionCache for pass 2 is consulted.
 
 ---
 
