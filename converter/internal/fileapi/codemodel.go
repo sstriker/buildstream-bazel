@@ -120,7 +120,32 @@ type Target struct {
 	Link           *TargetLink        `json:"link,omitempty"`
 	Dependencies   []TargetDependency `json:"dependencies,omitempty"`
 	Install        *TargetInstall     `json:"install,omitempty"`
+	FileSets       []TargetFileSet    `json:"fileSets,omitempty"`
 	BacktraceGraph BacktraceGraph     `json:"backtraceGraph"`
+
+	// IsGeneratorProvided is true for cmake-internal helper targets
+	// (ZERO_CHECK, INSTALL, PACKAGE, RUN_TESTS, etc.) that the generator
+	// inserts. Lowering should skip these — they have no Bazel
+	// equivalent and aren't user-authored.
+	IsGeneratorProvided bool `json:"isGeneratorProvided,omitempty"`
+}
+
+// TargetFileSet is one entry in Target.FileSets[]. A file set is the
+// authoritative cmake-side declaration of which files belong to a
+// target's public/private/INTERFACE surface, replacing the
+// filesystem-walk heuristic for header discovery on targets that use
+// `target_sources(... FILE_SET ...)`. Added in codemodel-v2 minor 5
+// (cmake 3.25). Per-source membership is recorded via
+// TargetSource.FileSetIndex.
+//
+// Type is typically "HEADERS" (`target_sources(... FILE_SET HEADERS ...)`)
+// or "CXX_MODULES" (cmake 3.28+); other types are forward-compatible.
+// Visibility mirrors cmake's keyword: PUBLIC / PRIVATE / INTERFACE.
+type TargetFileSet struct {
+	Name            string   `json:"name"`
+	Type            string   `json:"type"`
+	Visibility      string   `json:"visibility"`
+	BaseDirectories []string `json:"baseDirectories,omitempty"`
 }
 
 // TargetFolder is the FOLDER property value assigned to a target via
@@ -165,6 +190,13 @@ type CompileGroup struct {
 	Frameworks              []CompileFramework `json:"frameworks,omitempty"`
 	PrecompileHeaders       []CompilePCH       `json:"precompileHeaders,omitempty"`
 	LanguageStandard        *LanguageStandard  `json:"languageStandard,omitempty"`
+	// Sysroot, when set, is the per-language compile-time sysroot
+	// (CMAKE_SYSROOT or CMAKE_SYSROOT_COMPILE). Added in codemodel-v2
+	// minor 8 (cmake 3.30+). Distinct from Link.Sysroot, which is the
+	// link-time sysroot — they can differ for cross builds.
+	Sysroot *struct {
+		Path string `json:"path"`
+	} `json:"sysroot,omitempty"`
 }
 
 // CommandFragment is one --flag or "-DFOO=bar" chunk passed to the compiler.

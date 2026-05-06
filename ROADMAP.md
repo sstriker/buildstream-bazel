@@ -7,6 +7,15 @@ transition cleanly.
 
 ## Now
 
+- **Multi-version cmake compatibility shakeout.** Per-object
+  schema-major validation now lives in `fileapi/reply.go` and a
+  non-blocking `e2e-latest-cmake` CI job runs the converter
+  against the runner's stock cmake (3.31+) alongside the pinned
+  3.28.3 path. The first surface this catches in practice is
+  build.ninja drift in newer cmakes (C++20 module dyndep, custom
+  command emission); fixes for whatever the matrix surfaces land
+  here as they come up. Once the matrix has been green for a
+  release cycle we can promote it to a blocking gate.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for
   environment reasons (cmake-config bundle staging on the CI
