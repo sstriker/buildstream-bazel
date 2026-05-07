@@ -5,13 +5,13 @@
 #
 # Why: round-2's chicken-and-egg shape (B publishes the trace; A
 # re-runs to consume it; B then picks up the new fine-grained rules)
-# costs two bazel invocations to fully settle when an element's
-# srckey moved. See docs/trace-driven-autotools.md "Re-conversion
-# thrash". Rather than instrument and conditionally re-invoke, just
-# run the four-step loop unconditionally — Bazel's persistent
-# daemons + action cache make redundant invocations cheap when
-# nothing changed (each subsequent step is a no-op for elements
-# whose trace AC was already warm).
+# takes two passes (four `bazel build` invocations) to fully settle
+# when an element's srckey moved. See docs/trace-driven-autotools.md
+# "Re-conversion thrash". Rather than instrument and conditionally
+# re-invoke, just run the four-step loop unconditionally — Bazel's
+# persistent daemons + action cache make redundant invocations
+# cheap when nothing changed (each subsequent step is a no-op for
+# elements whose trace AC was already warm).
 #
 # Usage:
 #   build-with-settle.sh -A <projectA-dir> -B <projectB-dir>
@@ -58,8 +58,10 @@ while getopts "A:B:a:b:h" opt; do
     esac
 done
 shift $((OPTIND - 1))
-# Anything past `--` is forwarded to bazel build verbatim.
-EXTRA="$*"
+# Anything past `--` is forwarded to bazel build via "$@". Don't
+# flatten into a single string — that would lose argument boundaries
+# and require unsafe word-splitting on expansion (a flag like
+# --copt='-DFOO=bar baz' would break apart at the embedded space).
 
 if [ -z "$A" ] || [ -z "$B" ] || [ -z "$A_TARGETS" ] || [ -z "$B_TARGETS" ]; then
     usage
@@ -68,17 +70,25 @@ fi
 # Each pass is one bazel invocation per workspace. The second pass
 # is the settle: A picks up traces B published in pass-1; B picks up
 # the new BUILD.bazel.out A emitted in pass-2-A.
+#
+# $1 is the pass number; "$@" after the shift carries the
+# forwarded-to-bazel extra args with their argument boundaries
+# intact. $A_TARGETS / $B_TARGETS stay unquoted on purpose: the -a /
+# -b flags accept a space-separated target list as a single value
+# (e.g. -a "//foo //bar"), and word-splitting that into multiple
+# args is the desired behaviour.
 run_pass() {
     pass="$1"
+    shift
     echo "build-with-settle: pass $pass — project A ($A_TARGETS)" >&2
     # shellcheck disable=SC2086
-    (cd "$A" && bazel build $EXTRA -- $A_TARGETS)
+    (cd "$A" && bazel build "$@" -- $A_TARGETS)
     echo "build-with-settle: pass $pass — project B ($B_TARGETS)" >&2
     # shellcheck disable=SC2086
-    (cd "$B" && bazel build $EXTRA -- $B_TARGETS)
+    (cd "$B" && bazel build "$@" -- $B_TARGETS)
 }
 
-run_pass 1
-run_pass 2
+run_pass 1 "$@"
+run_pass 2 "$@"
 
 echo "build-with-settle: settled in 2 passes" >&2

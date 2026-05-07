@@ -207,7 +207,7 @@ for the AC rendezvous protocol.
 Round-2's chicken-and-egg shape (B publishes the trace; A
 re-runs to consume it; B then rebuilds against the new
 fine-grained rules) means a graph-affecting source edit costs
-**two bazel invocations to settle**, not one:
+**two passes (four `bazel build` invocations) to settle**:
 
 1. `bazel build` of project A — converter genrule's
    `@trace_<elem>//:trace` resolves to the OLD AC entry (or
@@ -222,10 +222,11 @@ fine-grained rules) means a graph-affecting source edit costs
 4. Next `bazel build` of project B — sees a different
    action graph; recompiles every TU.
 
-The reason it's two invocations and not one: bazel resolves
-external repos at invocation start, so the trace AC entry
-B publishes mid-build can't appear in A's load phase until
-the next bazel invocation.
+The reason a single `bazel build` can't fold this into one
+pass: bazel resolves external repos at invocation start, so
+the trace AC entry B publishes mid-build can't appear in A's
+load phase until the next bazel invocation. Two passes is
+the minimum.
 
 ### What insulates non-graph edits
 
