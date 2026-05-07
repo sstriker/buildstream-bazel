@@ -309,6 +309,40 @@ func run(a cli.Args) error {
 		}
 	}
 
+	if a.OutCMakeConfigureReads != "" && g != nil {
+		// The build.ninja oracle: cmake's own list of files whose bytes
+		// should re-trigger configure. Project against the source root
+		// to drop cmake-stdlib modules and build-tree configure outputs;
+		// callers compare the result against per-kind narrowing
+		// patterns to flag undercoverage drift.
+		//
+		// Source-root choice: the live-cmake path uses --source-root
+		// directly; the offline --reply-dir path falls back to whatever
+		// the recording captured (the build.ninja's absolute paths
+		// remain the recording-time root, so projection works only when
+		// SourceRoot matches). Empty SourceRoot → projector returns nil
+		// and we write an empty array, which is unambiguous in the
+		// downstream consumer.
+		buildDirForProj := hostBuildDir
+		if buildDirForProj == "" {
+			buildDirForProj = a.ReplyDir
+		}
+		reads := ninja.ProjectToSourceTree(g.ReconfigureInputs(), a.SourceRoot, buildDirForProj)
+		if reads == nil {
+			reads = []string{}
+		}
+		body, err := json.MarshalIndent(reads, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutCMakeConfigureReads), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutCMakeConfigureReads, append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+
 	if a.OutReadPaths != "" && hostBuildDir != "" {
 		traceHost := filepath.Join(hostBuildDir, "trace.jsonl")
 		raw, err := os.ReadFile(traceHost)

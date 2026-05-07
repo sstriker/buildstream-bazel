@@ -68,6 +68,19 @@ type Args struct {
 	// across a project.
 	OutTimings string
 
+	// OutCMakeConfigureReads, when non-empty, writes a JSON array of
+	// source-relative paths drawn from build.ninja's RERUN_CMAKE
+	// implicit-input list. This is the cmake-side configure-time
+	// oracle: the set of files cmake itself thinks should re-trigger
+	// configure when their bytes change (see
+	// internal/ninja.Graph.ReconfigureInputs +
+	// ProjectToSourceTree). A sibling oracle to OutReadPaths (which
+	// derives from --trace-expand events); the two have overlap but
+	// neither subsumes the other. Downstream audit tooling compares
+	// either oracle against the per-kind narrowing patterns to flag
+	// undercoverage drift.
+	OutCMakeConfigureReads string
+
 	// AllowCMakeVersionMismatch lets the converter run with a cmake
 	// version below the architectural floor (3.20 — codemodel-v2 minimum).
 	// Local-dev only; M3 must never set this.
@@ -135,6 +148,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.ImportsManifest, "imports-manifest", "", "path to JSON imports manifest mapping out-of-tree CMake targets to Bazel labels (optional)")
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
 	fs.StringVar(&a.OutTimings, "out-timings", "", "write JSON with per-phase wall-clock timings (cmake configure, translation, total)")
+	fs.StringVar(&a.OutCMakeConfigureReads, "out-cmake-configure-reads", "", "write JSON array of source-relative paths from build.ninja's RERUN_CMAKE implicit-input list (configure-time oracle)")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
