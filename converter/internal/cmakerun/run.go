@@ -26,11 +26,13 @@ import (
 )
 
 // dumpVarsCMake is the script Configure injects via
-// -DCMAKE_PROJECT_INCLUDE_AFTER. It registers a deferred callback
-// that writes every cmake variable's value to
-// `<build>/cmake-to-bazel.vars.dump` after all of CMakeLists.txt
-// has executed. parseVarsDump reads that file back. See the script
-// header for design rationale.
+// -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+; we tried
+// -DCMAKE_PROJECT_INCLUDE_AFTER first but it didn't honour the
+// -D form in our test fixture, hence the switch). It registers
+// a deferred callback that writes every cmake variable's value
+// to `<build>/cmake-to-bazel.vars.dump` after all of
+// CMakeLists.txt has executed. parseVarsDump reads that file
+// back. See the script header for design rationale.
 //
 //go:embed dump-vars.cmake
 var dumpVarsCMake []byte
@@ -125,7 +127,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 
 	// Stage the dump-vars hook into the build dir. Lives next to
 	// the CMakeCache to make introspection easy; the path passes
-	// to cmake via -DCMAKE_PROJECT_INCLUDE_AFTER.
+	// to cmake via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES below.
 	dumpVarsPath := filepath.Join(opts.BuildDir, "cmake-to-bazel.dump-vars.cmake")
 	if err := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); err != nil {
 		return Reply{}, fmt.Errorf("cmakerun: stage dump-vars hook: %w", err)
@@ -294,14 +296,20 @@ func filterVolatilePaths(in map[string]string) map[string]string {
 	return out
 }
 
-// buildDirPrefixes locates the build dir path the dump's
-// volatile variables share. We try CMAKE_BINARY_DIR first (it's
-// the canonical name); if absent (e.g. cmake renamed it in a
-// future version), fall back to scanning for the longest common
-// prefix of all *_BINARY_DIR-suffixed values. Returns the
-// distinct prefixes found (often one; can be more when a
-// project has both a top-level and an external-project build
-// dir).
+// buildDirPrefixes returns every distinct build-dir-shaped path
+// the dump references — CMAKE_BINARY_DIR plus every variable
+// ending in `_BINARY_DIR` (subprojects, external_projects, etc.
+// each define one). Used by filterVolatilePaths to wipe entries
+// that name the run's build dir, since the dir is a per-run
+// tmpdir whose path varies across invocations even when the
+// underlying cmake graph is identical.
+//
+// Multiple distinct prefixes are common when a project has
+// nested CMakeLists in subdirs (each gets its own
+// <subdir>_BINARY_DIR pointing at <build>/<subdir>); we collect
+// them all rather than picking one. Returns nil when no
+// build-dir variable is set (atypical; the caller treats this
+// as "skip the volatility filter").
 func buildDirPrefixes(in map[string]string) []string {
 	seen := map[string]bool{}
 	if v, ok := in["CMAKE_BINARY_DIR"]; ok && v != "" {

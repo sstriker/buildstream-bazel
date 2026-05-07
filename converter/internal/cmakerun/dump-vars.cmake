@@ -1,16 +1,20 @@
-# Hook injected via -DCMAKE_PROJECT_INCLUDE_AFTER. Registers a
+# Hook injected via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake
+# 3.24+; we tried -DCMAKE_PROJECT_INCLUDE_AFTER first but
+# -D didn't reliably propagate that variable in our test fixture
+# — see the run.go argv comment for the diagnostic). Registers a
 # deferred callback that fires at the end of the top-level
 # directory's processing, AFTER all configure_file() / set() /
 # option() calls have run; dumps every cmake variable's value
 # so the configurefile lift's Bazel-time substitution has access
 # to the same namespace cmake had at configure time.
 #
-# Why DEFER (not just dump inline): -DCMAKE_PROJECT_INCLUDE_AFTER
-# runs after each project() call but BEFORE the user's subsequent
-# commands (configure_file, set(), etc). If we dumped here we'd
-# miss every variable the user sets later in CMakeLists.txt. DEFER
-# schedules the dump for end-of-top-level-directory, which fires
-# after every command in CMakeLists.txt has executed.
+# Why DEFER (not just dump inline): TOP_LEVEL_INCLUDES files are
+# included as part of the top-level project() call but BEFORE the
+# user's subsequent commands (configure_file, set(), etc). If we
+# dumped here we'd miss every variable the user sets later in
+# CMakeLists.txt. DEFER schedules the dump for end-of-top-level-
+# directory, which fires after every command in CMakeLists.txt
+# has executed.
 #
 # Output format: one line per variable, "<NAME>=<HEX>\n", where
 # HEX is the lowercase hex encoding of the value's bytes
