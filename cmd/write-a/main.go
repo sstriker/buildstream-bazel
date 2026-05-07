@@ -939,8 +939,6 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	return nil
 }
 
-// writeProjectB renders the consumer workspace project B reads against
-// project A's outputs.
 // stageCmakeConfigureFileTool copies cmake-configure-file into
 // outDir/tools/ when --cmake-configure-file-bin was set, returning
 // the exports_files entry the caller adds to tools/BUILD.bazel.
@@ -1035,6 +1033,8 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 	return exports, nil
 }
 
+// writeProjectB renders the consumer workspace project B reads
+// against project A's outputs.
 func writeProjectB(g *graph, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err

@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -211,7 +212,7 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 func pickValues(templateBody, rendered []byte, opts configurefile.Options, cmakeVars map[string]string) (map[string]string, bool) {
 	if len(cmakeVars) > 0 {
 		got := configurefile.Substitute(templateBody, cmakeVars, opts)
-		if string(got) == string(rendered) {
+		if bytes.Equal(got, rendered) {
 			return cmakeVars, true
 		}
 		// Verify-pass failed — Substitute doesn't model some

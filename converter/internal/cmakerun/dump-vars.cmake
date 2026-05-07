@@ -30,24 +30,34 @@ if(NOT _CMTB_VARS_DUMP_REGISTERED)
 endif()
 
 function(_cmtb_dump_vars)
-    get_cmake_property(_vars VARIABLES)
-    set(_buf "")
-    foreach(_var ${_vars})
-        # Skip the registration sentinel + dump function's own
+    # All function-locals are _CMTB_-prefixed so the
+    # `^_CMTB_` filter below catches them — without that, if
+    # `get_cmake_property(... VARIABLES)` enumerates the
+    # current function's locals (cmake's docs are ambiguous on
+    # whether function scope is included; observed behavior
+    # varies by version), our internals would leak into the
+    # dump. The most dangerous case is _CMTB_BUF, which grows
+    # one entry per iteration; if it ever appeared in the
+    # variable list mid-loop it would self-capture into the
+    # output, ballooning the values JSON unboundedly.
+    get_cmake_property(_CMTB_VARS VARIABLES)
+    set(_CMTB_BUF "")
+    foreach(_CMTB_VAR ${_CMTB_VARS})
+        # Skip the registration sentinel + this function's own
         # locals so they don't leak into the output. Conservative
-        # name prefixes so we don't accidentally swallow a user
+        # name prefix so we don't accidentally swallow a user
         # variable named _CMTB_*.
-        if(_var MATCHES "^_CMTB_")
+        if(_CMTB_VAR MATCHES "^_CMTB_")
             continue()
         endif()
-        # ${${_var}} is the value of the variable named _var.
-        # Cmake variables are themselves strings (with embedded
-        # ; treated as list separators); ${...} re-joins with ;
-        # which is the same shape the configure_file substitutor
-        # consumes, so we capture it as-is.
-        set(_value "${${_var}}")
-        string(HEX "${_value}" _hex)
-        string(APPEND _buf "${_var}=${_hex}\n")
+        # ${${_CMTB_VAR}} is the value of the variable named
+        # _CMTB_VAR. Cmake variables are themselves strings (with
+        # embedded ; treated as list separators); ${...} re-joins
+        # with ; which is the same shape the configure_file
+        # substitutor consumes, so we capture it as-is.
+        set(_CMTB_VALUE "${${_CMTB_VAR}}")
+        string(HEX "${_CMTB_VALUE}" _CMTB_HEX)
+        string(APPEND _CMTB_BUF "${_CMTB_VAR}=${_CMTB_HEX}\n")
     endforeach()
-    file(WRITE "${CMAKE_BINARY_DIR}/cmake-to-bazel.vars.dump" "${_buf}")
+    file(WRITE "${CMAKE_BINARY_DIR}/cmake-to-bazel.vars.dump" "${_CMTB_BUF}")
 endfunction()
