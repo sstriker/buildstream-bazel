@@ -50,6 +50,15 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					Argv:   formatExecuteProcessArgv(call),
 				})
 			}
+		case BucketFileProducing:
+			if reason, ok := liftFileProducing(call, hostSrcDir, recordedSrcDir, recordedBuildDir, cc); !ok {
+				unsupported = append(unsupported, executeProcessRefusal{
+					Loc:    formatExecuteProcessLoc(call),
+					Bucket: v.Bucket,
+					Reason: reason,
+					Argv:   formatExecuteProcessArgv(call),
+				})
+			}
 		default:
 			unsupported = append(unsupported, executeProcessRefusal{
 				Loc:    formatExecuteProcessLoc(call),
@@ -176,6 +185,157 @@ func liftCMakeECopy(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir 
 	})
 	cc.OutToGenrule[dstRel] = name
 	return "", true
+}
+
+// liftFileProducing translates an execute_process call with a
+// declared OUTPUT_FILE redirect into a build-time genrule.
+// This hoist moves the work from configure-time to build-time,
+// which is a behaviour change — the genrule carries the
+// cmake-codegen-execute-process-hoisted tag so audits flag the
+// move for reviewer attention.
+//
+// v1 is conservative about hoist preconditions:
+//   - OUTPUT_FILE must anchor under the build dir.
+//   - argv elements that look like absolute paths under the
+//     source root are surfaced as Bazel srcs with $(location)
+//     substitution in the cmd; argv[0] is preserved as-is so
+//     PATH-resolved tools (python3, gen-script-on-PATH) keep
+//     working under Bazel's standard executor sandbox.
+//   - WORKING_DIRECTORY, ENVIRONMENT, TIMEOUT are not yet
+//     modeled — refuse the lift if any are set so a hoisted
+//     genrule never silently drops them. Adding support is a
+//     follow-on once a real fixture exercises the shape.
+//
+// Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
+// the genrule.go custom-command recovery so existing audit
+// queries that filter on driver= pick up hoisted rules.
+func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) (string, bool) {
+	if call.WorkingDirectory != "" {
+		return "WORKING_DIRECTORY is not yet modeled by the file-producing lifter", false
+	}
+	if len(call.Environment) > 0 {
+		return "ENVIRONMENT is not yet modeled by the file-producing lifter", false
+	}
+	if call.Timeout != "" {
+		return "TIMEOUT is not yet modeled by the file-producing lifter", false
+	}
+	if call.InputFile != "" || call.ErrorFile != "" {
+		return "INPUT_FILE / ERROR_FILE are not yet modeled by the file-producing lifter", false
+	}
+
+	dstRel, ok := executeProcessAnchorOutput(call.OutputFile, recordedBuildDir)
+	if !ok {
+		return fmt.Sprintf("OUTPUT_FILE %q is not under the build dir", call.OutputFile), false
+	}
+	if _, exists := cc.OutToGenrule[dstRel]; exists {
+		return "", true
+	}
+
+	argv := call.Commands[0]
+	if len(argv) == 0 {
+		return "empty argv", false
+	}
+
+	// Walk argv: rewrite elements that anchor under the source
+	// root as $(location <rel>) so Bazel's source graph tracks
+	// them. argv[0] is the tool name; absolute host paths
+	// (cmake's resolution of ${Python3_EXECUTABLE}, etc.) are
+	// stripped to basename so the recovered cmd is portable
+	// across executor environments — host-resolved /usr/local/bin/
+	// paths are recording-machine artefacts, not declared
+	// dependencies. If argv[0] resolves under the source root
+	// it's an in-tree tool; surface as $(location) so the
+	// dependency is explicit.
+	srcs := make([]string, 0)
+	srcSet := map[string]bool{}
+	rewritten := make([]string, 0, len(argv))
+	for i, a := range argv {
+		if rel, ok := executeProcessAnchorSource(a, hostSrcDir, recordedSrcDir); ok {
+			if !srcSet[rel] {
+				srcSet[rel] = true
+				srcs = append(srcs, rel)
+			}
+			rewritten = append(rewritten, fmt.Sprintf("$(location %s)", rel))
+			continue
+		}
+		if i == 0 && filepath.IsAbs(a) {
+			// Host-resolved tool path: strip to basename so
+			// the cmd is portable. The driver tag below
+			// captures the same basename for audit queries.
+			rewritten = append(rewritten, shellQuoteArg(filepath.Base(a)))
+			continue
+		}
+		rewritten = append(rewritten, shellQuoteArg(a))
+	}
+
+	cmd := fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s > "$@"`, strings.Join(rewritten, " "))
+	driver := executeProcessDriverBasename(argv[0])
+	if driver == "" {
+		driver = "unknown"
+	}
+
+	name := executeProcessGenruleName(dstRel)
+	cc.Genrules = append(cc.Genrules, ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		Srcs:        srcs,
+		GenruleCmd:  cmd,
+		GenruleOuts: []string{dstRel},
+		Tags:        fileProducingTags(driver),
+		Visibility:  []string{"//visibility:private"},
+	})
+	cc.OutToGenrule[dstRel] = name
+	return "", true
+}
+
+// fileProducingTags builds the cmake-codegen tag set for a
+// hoisted file-producing genrule. The -hoisted facet is the
+// audit-visible signal that this rule represents work moved
+// from configure-time to build-time, distinct from genuine
+// build-time genrules that the user authored as
+// add_custom_command.
+func fileProducingTags(driver string) []string {
+	tags := []string{
+		"cmake-codegen",
+		"cmake-codegen-driver=" + driver,
+		"cmake-codegen-execute-process",
+		"cmake-codegen-execute-process-hoisted",
+	}
+	sort.Strings(tags)
+	return tags
+}
+
+// shellQuoteArg returns a shell-safe representation of an argv
+// element. Shell-special chars get single-quoted; literal
+// single quotes in the input are escaped as the standard
+// '\” sequence. Used by liftFileProducing to defend the
+// hoisted cmd against argv elements containing spaces, $, etc.
+// — paths from cmake's expanded trace are usually plain but
+// this keeps the lifter honest about adversarial inputs.
+func shellQuoteArg(a string) string {
+	if a == "" {
+		return "''"
+	}
+	safe := true
+	for i := 0; i < len(a); i++ {
+		c := a[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_', c == '-', c == '/', c == '.', c == ':', c == '+', c == '=', c == ',':
+			// safe
+		default:
+			safe = false
+		}
+		if !safe {
+			break
+		}
+	}
+	if safe {
+		return a
+	}
+	return "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
 }
 
 // executeProcessAnchorOutput tries to resolve a recorded

@@ -109,6 +109,116 @@ func TestRecoverExecuteProcess_LiftCMakeECopy_RejectsSourceOutsideTree(t *testin
 	}
 }
 
+// TestRecoverExecuteProcess_LiftFileProducing covers the
+// build-time hoist of a file-producing execute_process call
+// (OUTPUT_FILE declared, argv reads an in-tree input). The
+// recovered genrule has the input as a real Bazel src, the
+// output anchored to the build dir, and the
+// cmake-codegen-execute-process-hoisted tag flagging the
+// configure-time → build-time move.
+func TestRecoverExecuteProcess_LiftFileProducing(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:       "/src/CMakeLists.txt",
+		Line:       12,
+		Commands:   [][]string{{"/usr/bin/python3", "/src/scripts/gen.py", "--in", "/src/spec.txt"}},
+		OutputFile: "/build/generated.h",
+	}}
+	cc := newCodegenContext()
+	if err := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", cc); err != nil {
+		t.Fatalf("expected lift to succeed; got %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: want 1, got %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if g.Name != "exec_generated_h" {
+		t.Errorf("name: %q want exec_generated_h", g.Name)
+	}
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "generated.h" {
+		t.Errorf("outs: %v want [generated.h]", g.GenruleOuts)
+	}
+	if len(g.Srcs) != 2 || g.Srcs[0] != "scripts/gen.py" || g.Srcs[1] != "spec.txt" {
+		t.Errorf("srcs: %v want [scripts/gen.py spec.txt]", g.Srcs)
+	}
+	for _, want := range []string{
+		"$(location scripts/gen.py)",
+		"$(location spec.txt)",
+		`> "$@"`,
+	} {
+		if !strings.Contains(g.GenruleCmd, want) {
+			t.Errorf("cmd missing %q; got %q", want, g.GenruleCmd)
+		}
+	}
+	hasHoisted := false
+	hasDriver := false
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-execute-process-hoisted" {
+			hasHoisted = true
+		}
+		if tg == "cmake-codegen-driver=python3" {
+			hasDriver = true
+		}
+	}
+	if !hasHoisted {
+		t.Errorf("tags should include cmake-codegen-execute-process-hoisted; got %v", g.Tags)
+	}
+	if !hasDriver {
+		t.Errorf("tags should include cmake-codegen-driver=python3; got %v", g.Tags)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts
+// asserts that v1 conservatively refuses calls that set
+// WORKING_DIRECTORY / ENVIRONMENT / TIMEOUT / INPUT_FILE /
+// ERROR_FILE — the lifter doesn't model these yet, and a
+// silent drop would change semantics. Refusal is the safe
+// default until a real fixture forces the support.
+func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*shadow.ExecuteProcessCall)
+		want string
+	}{
+		{
+			name: "WORKING_DIRECTORY",
+			mut:  func(c *shadow.ExecuteProcessCall) { c.WorkingDirectory = "/build/sub" },
+			want: "WORKING_DIRECTORY",
+		},
+		{
+			name: "ENVIRONMENT",
+			mut:  func(c *shadow.ExecuteProcessCall) { c.Environment = []string{"FOO=bar"} },
+			want: "ENVIRONMENT",
+		},
+		{
+			name: "TIMEOUT",
+			mut:  func(c *shadow.ExecuteProcessCall) { c.Timeout = "30" },
+			want: "TIMEOUT",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			call := shadow.ExecuteProcessCall{
+				File:       "/src/CMakeLists.txt",
+				Line:       4,
+				Commands:   [][]string{{"python3", "/src/gen.py"}},
+				OutputFile: "/build/out.h",
+			}
+			tc.mut(&call)
+			cc := newCodegenContext()
+			err := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "/build", "/build", cc)
+			if err == nil {
+				t.Fatalf("expected refusal")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("refusal should mention %q; got: %v", tc.want, err)
+			}
+			if len(cc.Genrules) != 0 {
+				t.Errorf("no genrule should be appended on refusal; got %+v", cc.Genrules)
+			}
+		})
+	}
+}
+
 // TestRecoverExecuteProcess_LiftPlusRefuse covers the mixed-bag
 // case: one cmake -E touch (lifts) + one git rev-parse (refuses).
 // The lift succeeds and adds a genrule; the refusal still
