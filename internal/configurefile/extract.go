@@ -18,10 +18,16 @@ import (
 // rendered input. Mismatches return an error so callers can
 // fall back to the legacy base64-embedding shape rather than
 // emit a genrule that produces a different config.h than the
-// project expects.
+// project expects. The verify-pass is also the soundness gate
+// for Options the extractor doesn't model line-shape-explicitly
+// (e.g. EscapeQuotes' literal-quote-passthrough behavior, or
+// NewlineStyle's terminator choice): if the recovered values
+// don't reproduce the rendered output through Substitute, we
+// know the option's effect can't be cleanly recovered and
+// the caller should fall back to legacy.
 //
 // Supported template shapes (cmake's documented configure_file
-// directives, v1 scope):
+// directives):
 //
 //   - @VAR@ markers on plain lines.
 //   - ${VAR} markers on plain lines (unless opts.AtOnly).
@@ -29,45 +35,76 @@ import (
 //   - #cmakedefine FOO <content>    → recovers FOO truthiness +
 //     any @VAR@ in content.
 //   - #cmakedefine01 FOO            → recovers FOO 0/1.
-//
-// Out of v1 scope: multi-line #cmakedefine content, NEWLINE_STYLE
-// variation, ESCAPE_QUOTES decoding, recursive @VAR@ in values.
-// When the extractor can't align a line it returns an error;
-// the caller falls back to the legacy base64-cmd shape so
-// soundness is preserved.
+//   - CopyOnly: trivial — values dict is empty, verify-pass
+//     ensures rendered matches the template (modulo the
+//     newline rewrite COPYONLY may apply).
+//   - EscapeQuotes: when extracting a marker's value out of the
+//     rendered span, undo `\"` and `\\` escapes (mirrors the
+//     escape Substitute would re-apply on the verify pass).
+//   - NewlineStyle: line splitting honors the configured style
+//     so CRLF rendered output aligns 1:1 with LF templates.
 func Extract(template, rendered []byte, opts Options) (map[string]string, error) {
 	values := map[string]string{}
-	tplLines := splitLines(template)
-	outLines := splitLines(rendered)
+	tplLines := splitLines(template, NewlineLF)
+	outLines := splitLines(rendered, lineTerminatorFor(opts.NewlineStyle, rendered))
 	if len(tplLines) != len(outLines) {
 		return nil, fmt.Errorf("template/rendered line count differs (%d vs %d); can't align", len(tplLines), len(outLines))
 	}
+	if opts.CopyOnly {
+		// COPYONLY: no values to extract. The verify-pass
+		// below catches a template/rendered mismatch
+		// (e.g. NewlineStyle drift).
+		verify := Substitute(template, values, opts)
+		if !bytes.Equal(verify, rendered) {
+			return nil, fmt.Errorf("COPYONLY template differs from rendered output; can't recover")
+		}
+		return values, nil
+	}
 	for i := range tplLines {
-		if err := extractLine(tplLines[i], outLines[i], values, opts); err != nil {
+		// Strip trailing \r so CRLF templates don't carry the
+		// \r through to the per-line extractor (which expects
+		// LF-terminated content).
+		tpl := strings.TrimSuffix(tplLines[i], "\r")
+		out := strings.TrimSuffix(outLines[i], "\r")
+		if err := extractLine(tpl, out, values, opts); err != nil {
 			return nil, fmt.Errorf("line %d: %w", i+1, err)
 		}
 	}
 	verify := Substitute(template, values, opts)
 	if !bytes.Equal(verify, rendered) {
-		return nil, fmt.Errorf("extracted values don't reproduce the rendered output; ambiguous template")
+		return nil, fmt.Errorf("extracted values don't reproduce the rendered output; ambiguous template or unmodeled option")
 	}
 	return values, nil
 }
 
-// splitLines splits b on '\n', preserving the empty trailing
-// element so a template ending in '\n' has a different length
-// than one that doesn't. Mirrors what Substitute's line walker
-// does.
-func splitLines(b []byte) []string {
+// splitLines splits b on the given line terminator, preserving
+// the empty trailing element when b ends with a terminator (so
+// '\n'-terminated and unterminated templates have different
+// line counts). Mirrors what Substitute's line walker does.
+func splitLines(b []byte, term NewlineStyle) []string {
 	if len(b) == 0 {
 		return nil
 	}
-	s := string(b)
-	out := strings.Split(s, "\n")
-	// strings.Split returns ["", ] when s == "" — handled above.
-	// When s ends in '\n', we get a trailing "" we want to keep
-	// (so line counts match between '\n'-terminated and not).
-	return out
+	switch term {
+	case NewlineCRLF:
+		return strings.Split(string(b), "\r\n")
+	default:
+		return strings.Split(string(b), "\n")
+	}
+}
+
+// lineTerminatorFor picks the NewlineStyle to use for splitting
+// a buffer: explicit if opts forces it, else autodetected from
+// the bytes (CRLF if the first '\n' is preceded by '\r', LF
+// otherwise — same heuristic Substitute uses).
+func lineTerminatorFor(style NewlineStyle, b []byte) NewlineStyle {
+	if style != NewlineDefault {
+		return style
+	}
+	if idx := bytes.IndexByte(b, '\n'); idx > 0 && b[idx-1] == '\r' {
+		return NewlineCRLF
+	}
+	return NewlineLF
 }
 
 // extractLine populates values from a single template/rendered
@@ -209,7 +246,11 @@ func extractPlain(tpl, out string, values map[string]string, opts Options) error
 			next := nextLiteralPiece(pieces, i+1)
 			if next == nil {
 				// Marker is at end of line; value is the rest.
-				if err := setValue(values, p.text, out[pos:]); err != nil {
+				v, err := unescapeIfRendered(out[pos:], opts.EscapeQuotes)
+				if err != nil {
+					return fmt.Errorf("marker @%s@ at end of line: %w", p.text, err)
+				}
+				if err := setValue(values, p.text, v); err != nil {
 					return err
 				}
 				pos = len(out)
@@ -219,7 +260,11 @@ func extractPlain(tpl, out string, values map[string]string, opts Options) error
 			if idx < 0 {
 				return fmt.Errorf("can't locate next literal anchor %q after marker @%s@ in %q", next.text, p.text, out)
 			}
-			if err := setValue(values, p.text, out[pos:pos+idx]); err != nil {
+			v, err := unescapeIfRendered(out[pos:pos+idx], opts.EscapeQuotes)
+			if err != nil {
+				return fmt.Errorf("marker @%s@: %w", p.text, err)
+			}
+			if err := setValue(values, p.text, v); err != nil {
 				return err
 			}
 			pos += idx
@@ -348,4 +393,39 @@ func setValue(values map[string]string, name, v string) error {
 		return nil
 	}
 	return fmt.Errorf("variable %q has conflicting values %q vs %q", name, existing, v)
+}
+
+// unescapeIfRendered is the inverse of substitute.go's escapeIf:
+// when ESCAPE_QUOTES was applied at substitution time, marker
+// values come back with `\\` and `\"` escapes; this undoes them
+// so the recovered values dict is byte-equal to what cmake had
+// at configure time. Returns an error on malformed input (a
+// dangling backslash with no following character) so the
+// caller can fall back to legacy.
+func unescapeIfRendered(rendered string, escape bool) (string, error) {
+	if !escape || !strings.Contains(rendered, `\`) {
+		return rendered, nil
+	}
+	var b strings.Builder
+	b.Grow(len(rendered))
+	for i := 0; i < len(rendered); i++ {
+		c := rendered[i]
+		if c != '\\' {
+			b.WriteByte(c)
+			continue
+		}
+		if i+1 >= len(rendered) {
+			return "", fmt.Errorf("dangling backslash at end of escaped value %q", rendered)
+		}
+		i++
+		next := rendered[i]
+		if next != '\\' && next != '"' {
+			// We only emit \\ and \" — any other backslash
+			// pair came from somewhere we don't understand.
+			// Refuse to round-trip blindly.
+			return "", fmt.Errorf("unexpected escape \\%c in escaped value %q", next, rendered)
+		}
+		b.WriteByte(next)
+	}
+	return b.String(), nil
 }

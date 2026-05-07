@@ -185,21 +185,104 @@ func TestSubstitute_EmptyTemplate(t *testing.T) {
 	}
 }
 
-// TestSubstitute_NoRecursiveExpansion documents the v1 scope
-// limitation: values that themselves contain @VAR@ markers do
-// not get re-expanded. cmake's real configure_file does
-// bounded recursive expansion; we don't (yet). If a fixture
-// surfaces this limitation, the substitute function grows a
-// re-expand loop with cmake's depth limit (~16).
-func TestSubstitute_NoRecursiveExpansion(t *testing.T) {
+// TestSubstitute_RecursiveExpansion verifies that values which
+// themselves contain @VAR@ / ${VAR} markers get re-expanded,
+// matching cmake's bounded recursive substitution.
+func TestSubstitute_RecursiveExpansion(t *testing.T) {
 	tmpl := []byte("@OUTER@\n")
 	values := map[string]string{
 		"OUTER": "@INNER@",
 		"INNER": "real-value",
 	}
 	got := string(configurefile.Substitute(tmpl, values, configurefile.Options{}))
-	want := "@INNER@\n" // single-pass; no re-expansion
+	want := "real-value\n"
 	if got != want {
-		t.Errorf("recursive expansion (expected NOT to recurse)\nwant:%q\ngot:%q", want, got)
+		t.Errorf("recursive expansion\nwant:%q\ngot:%q", want, got)
+	}
+}
+
+// TestSubstitute_RecursionCappedAtLimit verifies the loop
+// terminates on cyclic input (A→B, B→A) rather than running
+// forever. The exact byte output isn't load-bearing — only
+// that we exit. cmake itself caps at a small bound; we do too.
+func TestSubstitute_RecursionCappedAtLimit(t *testing.T) {
+	tmpl := []byte("@A@\n")
+	values := map[string]string{
+		"A": "@B@",
+		"B": "@A@",
+	}
+	// Just verify Substitute returns at all; the cycle should
+	// hit the cap and stop.
+	_ = configurefile.Substitute(tmpl, values, configurefile.Options{})
+}
+
+// TestSubstitute_CopyOnly_NoSubstitution verifies COPYONLY
+// emits the template verbatim — @VAR@ markers stay literal,
+// #cmakedefine stays literal, no value expansion.
+func TestSubstitute_CopyOnly_NoSubstitution(t *testing.T) {
+	tmpl := []byte("verbatim @FOO@ ${BAR}\n#cmakedefine HAVE_X\n")
+	values := map[string]string{"FOO": "expanded", "BAR": "expanded", "HAVE_X": "1"}
+	got := string(configurefile.Substitute(tmpl, values, configurefile.Options{CopyOnly: true}))
+	want := "verbatim @FOO@ ${BAR}\n#cmakedefine HAVE_X\n"
+	if got != want {
+		t.Errorf("COPYONLY mismatch\nwant:%q\ngot:%q", want, got)
+	}
+}
+
+// TestSubstitute_EscapeQuotes_OnlyEscapesSubstitutedValues
+// verifies ESCAPE_QUOTES escapes `"` only inside expanded
+// values; literal `"` in the template passes through unchanged.
+func TestSubstitute_EscapeQuotes_OnlyEscapesSubstitutedValues(t *testing.T) {
+	tmpl := []byte(`literal "kept" @FOO@`)
+	values := map[string]string{"FOO": `with "quotes"`}
+	got := string(configurefile.Substitute(tmpl, values, configurefile.Options{EscapeQuotes: true}))
+	want := `literal "kept" with \"quotes\"`
+	if got != want {
+		t.Errorf("ESCAPE_QUOTES mismatch\nwant:%q\ngot:%q", want, got)
+	}
+}
+
+// TestSubstitute_NewlineStyle_LF: explicit LF style on a
+// CRLF-flavored template normalizes to LF.
+func TestSubstitute_NewlineStyle_LF(t *testing.T) {
+	tmpl := []byte("@FOO@\r\n@BAR@\r\n")
+	values := map[string]string{"FOO": "1", "BAR": "2"}
+	got := string(configurefile.Substitute(tmpl, values, configurefile.Options{NewlineStyle: configurefile.NewlineLF}))
+	want := "1\n2\n"
+	if got != want {
+		t.Errorf("NEWLINE_STYLE LF mismatch\nwant:%q\ngot:%q", want, got)
+	}
+}
+
+// TestSubstitute_NewlineStyle_CRLF: explicit CRLF style on an
+// LF-flavored template emits CRLF terminators.
+func TestSubstitute_NewlineStyle_CRLF(t *testing.T) {
+	tmpl := []byte("@FOO@\n@BAR@\n")
+	values := map[string]string{"FOO": "1", "BAR": "2"}
+	got := string(configurefile.Substitute(tmpl, values, configurefile.Options{NewlineStyle: configurefile.NewlineCRLF}))
+	want := "1\r\n2\r\n"
+	if got != want {
+		t.Errorf("NEWLINE_STYLE CRLF mismatch\nwant:%q\ngot:%q", want, got)
+	}
+}
+
+// TestSubstitute_NewlineDefault_PreservesTemplateStyle:
+// without an explicit NewlineStyle, the rendered output uses
+// the template's predominant line terminator.
+func TestSubstitute_NewlineDefault_PreservesTemplateStyle(t *testing.T) {
+	cases := map[string]struct {
+		template string
+		want     string
+	}{
+		"crlf": {"@A@\r\n@B@\r\n", "1\r\n2\r\n"},
+		"lf":   {"@A@\n@B@\n", "1\n2\n"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			got := string(configurefile.Substitute([]byte(c.template), map[string]string{"A": "1", "B": "2"}, configurefile.Options{}))
+			if got != c.want {
+				t.Errorf("template style preservation\nwant:%q\ngot:%q", c.want, got)
+			}
+		})
 	}
 }

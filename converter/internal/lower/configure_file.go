@@ -146,17 +146,24 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if !liftEnabled || hostSrcDir == "" || recordedSrcDir == "" {
 		return legacy
 	}
-	// Note on configure_file options: v1 Substitute models
-	// @ONLY only. Other options (COPYONLY, ESCAPE_QUOTES,
-	// NEWLINE_STYLE, FILE_PERMISSIONS, ...) aren't enumerated
-	// here; instead we rely on Extract's verify-pass to gate
-	// the lift. Extract runs Substitute(template, values, opts)
-	// and byte-compares against cmake's rendered output; any
-	// divergence (CRLF vs LF, escaped vs un-escaped quotes,
-	// COPYONLY's no-substitute-when-markers-present case, etc.)
-	// fails the verify and we fall back to the legacy shape
-	// below. Cleaner than maintaining a parallel option allow-
-	// list that would have to track Substitute's evolution.
+	// Parse all documented configure_file options into the
+	// configurefile.Options struct. FILE_PERMISSIONS /
+	// USE_SOURCE_PERMISSIONS / NO_SOURCE_PERMISSIONS only
+	// affect the output's mode bits — Bazel's genrule sets its
+	// own mode and config.h-style files don't depend on it for
+	// compilation, so we ignore them here. Anything else that's
+	// content-affecting and unmodeled (e.g., a future cmake
+	// option we haven't seen) gets caught by Extract's
+	// verify-pass: Substitute(template, values, opts) is run
+	// against the recovered values and byte-compared against
+	// cmake's rendered output; any drift fails the verify and
+	// the caller falls back to legacy. Net: we model the
+	// documented set explicitly and let the verify-pass be the
+	// safety net for the unknown.
+	opts, optErr := configureFileOptionsFromCall(call.Options)
+	if optErr != nil {
+		return legacy
+	}
 	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 	if !ok {
 		return legacy
@@ -165,7 +172,6 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if err != nil {
 		return legacy
 	}
-	opts := configurefile.Options{AtOnly: hasOption(call.Options, "@ONLY")}
 	values, err := configurefile.Extract(templateBody, rendered, opts)
 	if err != nil {
 		return legacy
@@ -205,15 +211,77 @@ func resolveTemplatePath(input, hostSrcDir, recordedSrcDir string) (string, stri
 	return filepath.Join(hostSrcDir, rel), filepath.ToSlash(rel), true
 }
 
-// hasOption is a case-insensitive search of cmake's
-// configure_file option flags (the trailing tokens beyond
-// input/output: COPYONLY / @ONLY / ESCAPE_QUOTES /
-// NEWLINE_STYLE...).
-func hasOption(options []string, want string) bool {
-	for _, o := range options {
-		if strings.EqualFold(o, want) {
-			return true
+// configureFileOptionsFromCall parses cmake's configure_file
+// option list (the trailing tokens beyond input/output:
+// `@ONLY`, `COPYONLY`, `ESCAPE_QUOTES`, `NEWLINE_STYLE <style>`,
+// permission keywords) into a configurefile.Options. Returns
+// an error on a malformed list (e.g. NEWLINE_STYLE without a
+// value); the caller falls back to legacy in that case.
+//
+// Permission keywords (FILE_PERMISSIONS / USE_SOURCE_PERMISSIONS
+// / NO_SOURCE_PERMISSIONS) are accepted-and-ignored: they affect
+// the output file's mode bits, not its content; Bazel's
+// genrule sets its own mode independent of cmake's choice, and
+// for config.h-style headers the mode doesn't matter for
+// downstream compilation.
+func configureFileOptionsFromCall(opts []string) (configurefile.Options, error) {
+	out := configurefile.Options{}
+	for i := 0; i < len(opts); i++ {
+		switch strings.ToUpper(opts[i]) {
+		case "@ONLY":
+			out.AtOnly = true
+		case "COPYONLY":
+			out.CopyOnly = true
+		case "ESCAPE_QUOTES":
+			out.EscapeQuotes = true
+		case "NEWLINE_STYLE":
+			if i+1 >= len(opts) {
+				return out, fmt.Errorf("NEWLINE_STYLE without value")
+			}
+			i++
+			switch strings.ToUpper(opts[i]) {
+			case "UNIX", "LF":
+				out.NewlineStyle = configurefile.NewlineLF
+			case "DOS", "WIN32", "CRLF":
+				out.NewlineStyle = configurefile.NewlineCRLF
+			default:
+				return out, fmt.Errorf("NEWLINE_STYLE: unknown value %q", opts[i])
+			}
+		case "FILE_PERMISSIONS",
+			"USE_SOURCE_PERMISSIONS",
+			"NO_SOURCE_PERMISSIONS":
+			// Mode bits — ignored (see fn doc).
+			// FILE_PERMISSIONS takes value args; consume
+			// until we hit a known keyword or the end.
+			if strings.EqualFold(opts[i], "FILE_PERMISSIONS") {
+				for i+1 < len(opts) && !isConfigureFileKeyword(opts[i+1]) {
+					i++
+				}
+			}
+		default:
+			// Unknown token — defer to Extract's verify-pass
+			// rather than guessing semantics. Returning here
+			// would force fallback even for a benign new
+			// option; instead we accept and let the verify
+			// pass tell us if it actually affected bytes.
 		}
+	}
+	return out, nil
+}
+
+// isConfigureFileKeyword reports whether s is one of the
+// documented configure_file flag keywords. Used to bound
+// FILE_PERMISSIONS' variadic value list.
+func isConfigureFileKeyword(s string) bool {
+	switch strings.ToUpper(s) {
+	case "@ONLY",
+		"COPYONLY",
+		"ESCAPE_QUOTES",
+		"NEWLINE_STYLE",
+		"FILE_PERMISSIONS",
+		"USE_SOURCE_PERMISSIONS",
+		"NO_SOURCE_PERMISSIONS":
+		return true
 	}
 	return false
 }
@@ -277,10 +345,7 @@ func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts
 		return "", fmt.Errorf("marshal values: %w", err)
 	}
 	encoded := base64.StdEncoding.EncodeToString(body)
-	atOnly := ""
-	if opts.AtOnly {
-		atOnly = "--at-only "
-	}
+	flags := configureFileToolFlags(opts)
 	// $(execpath) resolves srcs labels relative to exec root;
 	// $@ is the genrule output. The values tmpfile is created
 	// under the genrule's output dir (via a portable mktemp
@@ -298,8 +363,37 @@ func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts
 			`echo %s | base64 -d > "$$VALUES" && `+
 			`$(execpath //tools:cmake-configure-file) %s--values="$$VALUES" "$(execpath %s)" "$@" ; `+
 			`rc=$$?; rm -f "$$VALUES"; exit $$rc`,
-		encoded, atOnly, inRel,
+		encoded, flags, inRel,
 	), nil
+}
+
+// configureFileToolFlags builds the cmake-configure-file CLI
+// flag string corresponding to opts. Each set field becomes a
+// `--flag` token (or `--flag=value` for the newline style),
+// joined with trailing spaces so the cmd template can
+// concatenate them before --values without extra plumbing.
+// Returns "" when no flags are set.
+func configureFileToolFlags(opts configurefile.Options) string {
+	var flags []string
+	if opts.AtOnly {
+		flags = append(flags, "--at-only")
+	}
+	if opts.CopyOnly {
+		flags = append(flags, "--copy-only")
+	}
+	if opts.EscapeQuotes {
+		flags = append(flags, "--escape-quotes")
+	}
+	switch opts.NewlineStyle {
+	case configurefile.NewlineLF:
+		flags = append(flags, "--newline-style=lf")
+	case configurefile.NewlineCRLF:
+		flags = append(flags, "--newline-style=crlf")
+	}
+	if len(flags) == 0 {
+		return ""
+	}
+	return strings.Join(flags, " ") + " "
 }
 
 // configureFileTags returns the cmake-codegen tag set for a

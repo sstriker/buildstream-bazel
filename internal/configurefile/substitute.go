@@ -10,7 +10,7 @@
 // srckey for soundness, since editing it changes BUILD.bazel.
 //
 // With this package + a small tool wrapper (cmd/cmake-configure-
-// file, in a follow-up commit), the genrule shape becomes
+// file), the genrule shape becomes
 //
 //	genrule(
 //	    name = "gen_config_h",
@@ -25,33 +25,37 @@
 // Editing .h.in invalidates the genrule directly through Bazel's
 // source graph — convert-element doesn't have to rerun. The
 // values dict (captured at convert-element time by
-// reverse-extracting from cmake's rendered output) goes either
-// inline in the cmd or in a sidecar; either way it changes only
-// when CMakeLists.txt-driven variables change, which already
-// invalidates srckey via the CMakeLists.txt content-include
-// rule. Net: .h.in becomes name-only for srckey purposes.
+// reverse-extracting from cmake's rendered output) goes inline
+// in the cmd; it changes only when CMakeLists.txt-driven
+// variables change, which already invalidates srckey via the
+// CMakeLists.txt content-include rule. Net: .h.in becomes
+// name-only for srckey purposes.
 //
 // Substitution rules (per cmake's configure_file documentation):
 //
 //   - @VAR@ → values["VAR"], or empty if absent.
 //   - ${VAR} → same, unless AtOnly is set.
+//   - Recursive expansion: substitution loops up to RecursionLimit
+//     iterations or until fixpoint, matching cmake's bounded
+//     re-expansion of values that themselves contain markers.
 //   - #cmakedefine FOO → "#define FOO" if FOO is truthy in
 //     values, "/* #undef FOO */" otherwise.
 //   - #cmakedefine FOO <content> → "#define FOO <expanded
 //     content>" if FOO is truthy, "/* #undef FOO */" otherwise.
 //   - #cmakedefine01 FOO → "#define FOO 1" or "#define FOO 0".
+//   - CopyOnly: emit the template verbatim with no substitution
+//     (mirrors COPYONLY).
+//   - EscapeQuotes: backslash-escape `"` in expanded values
+//     (mirrors ESCAPE_QUOTES).
+//   - NewlineStyle: control the line terminator written between
+//     lines — LF for UNIX/LF and CRLF for DOS/WIN32/CRLF (mirrors
+//     NEWLINE_STYLE). Default empty preserves the template's
+//     original terminator.
 //
 // Truthiness per cmake's if(): empty string and the constants
 // 0, OFF, NO, FALSE, N, IGNORE, NOTFOUND, and any value ending
 // in "-NOTFOUND" are false; everything else is true. Case-
 // insensitive for the named constants.
-//
-// NOT yet implemented (queued for follow-up if a fixture forces
-// them): NEWLINE_STYLE control, ESCAPE_QUOTES, COPYONLY,
-// recursive @VAR@ expansion (the rendered output is taken at
-// face value; if a value itself contains @SUBVAR@ markers, they
-// pass through verbatim — cmake's recursive expansion is
-// bounded but not modeled here).
 package configurefile
 
 import (
@@ -59,20 +63,91 @@ import (
 	"strings"
 )
 
-// Options controls substitution behaviour, mirroring the
-// configure_file flags relevant to the lift's v1 scope.
+// NewlineStyle controls the line terminator Substitute writes
+// between lines, mirroring cmake's NEWLINE_STYLE flag.
+type NewlineStyle int
+
+const (
+	// NewlineDefault preserves the template's original line
+	// terminator (cmake's default when NEWLINE_STYLE is omitted).
+	NewlineDefault NewlineStyle = iota
+	// NewlineLF writes "\n" (cmake UNIX / LF).
+	NewlineLF
+	// NewlineCRLF writes "\r\n" (cmake DOS / WIN32 / CRLF).
+	NewlineCRLF
+)
+
+// recursionLimit caps the @VAR@/${VAR} re-expansion loop. cmake's
+// own configure_file applies a small bounded depth too (the
+// exact limit isn't documented but is on the order of a handful);
+// 16 is generous and still small enough that pathological input
+// can't waste time.
+const recursionLimit = 16
+
+// Options controls substitution behaviour, covering each cmake
+// configure_file flag whose semantics affect the rendered
+// output bytes.
 type Options struct {
 	// AtOnly skips ${VAR} substitution; only @VAR@ markers are
 	// replaced. Mirrors configure_file's @ONLY flag.
 	AtOnly bool
+
+	// CopyOnly skips ALL substitution (@VAR@, ${VAR}, and
+	// #cmakedefine* directives) — output is the template
+	// verbatim. Mirrors configure_file's COPYONLY flag.
+	// Combined with EscapeQuotes / NewlineStyle? cmake errors
+	// on COPYONLY + ESCAPE_QUOTES; we match by ignoring the
+	// other knobs when CopyOnly is set.
+	CopyOnly bool
+
+	// EscapeQuotes backslash-escapes `"` in @VAR@ / ${VAR}
+	// expansions (only the substituted bytes — literal `"` in
+	// the template passes through unchanged). Mirrors
+	// configure_file's ESCAPE_QUOTES flag.
+	EscapeQuotes bool
+
+	// NewlineStyle controls the line terminator between lines
+	// in the rendered output. Default (NewlineDefault) preserves
+	// the template's original terminator.
+	NewlineStyle NewlineStyle
 }
 
 // Substitute renders template against values, returning the
 // rendered output. See package doc for the supported
 // substitution rules.
 func Substitute(template []byte, values map[string]string, opts Options) []byte {
+	if opts.CopyOnly {
+		// COPYONLY: write the template verbatim, modulo the
+		// caller's NewlineStyle preference (cmake re-emits
+		// line terminators per NEWLINE_STYLE even with
+		// COPYONLY).
+		return rewriteNewlines(template, opts.NewlineStyle)
+	}
+
+	out := substituteOnce(template, values, opts)
+	// Recursive @VAR@ expansion — re-run Substitute on the
+	// output until it converges, capping at recursionLimit.
+	// cmake's documented behavior is bounded; reaching the cap
+	// matches what cmake does too (it stops, leaving any
+	// deeper markers unexpanded).
+	for i := 0; i < recursionLimit-1; i++ {
+		next := substituteOnce(out, values, opts)
+		if bytes.Equal(next, out) {
+			break
+		}
+		out = next
+	}
+	return out
+}
+
+// substituteOnce performs a single pass over the template,
+// expanding @VAR@ / ${VAR} markers and #cmakedefine* directives
+// per options. The recursive-expansion loop in Substitute calls
+// this repeatedly.
+func substituteOnce(template []byte, values map[string]string, opts Options) []byte {
 	var out bytes.Buffer
 	out.Grow(len(template))
+	terminator := newlineTerminator(opts.NewlineStyle, template)
 	// bytes.Split rather than bufio.Scanner: Scanner has a max
 	// token size (defaults 64K, capped at 1MiB even with a
 	// custom buffer) that would silently truncate long lines.
@@ -82,24 +157,75 @@ func Substitute(template []byte, values map[string]string, opts Options) []byte 
 	// kind of correctness bug that wouldn't surface until a
 	// real template trips it.
 	for i, line := range bytes.Split(template, []byte{'\n'}) {
+		// Strip trailing \r so CRLF templates don't carry the
+		// \r through to the rendered output. Whatever
+		// terminator NewlineStyle picks gets re-applied below.
+		line = bytes.TrimSuffix(line, []byte{'\r'})
 		if i > 0 {
-			out.WriteByte('\n')
+			out.WriteString(terminator)
 		}
 		out.WriteString(processLine(string(line), values, opts))
 	}
-	return trimTrailingIfTemplateLacked(out.Bytes(), template)
+	return trimTrailingIfTemplateLacked(out.Bytes(), template, terminator)
 }
 
-// trimTrailingIfTemplateLacked drops the final newline we always
-// add per line if the original template didn't end with one.
-// Keeps Substitute's output byte-equal to cmake's when the
+// newlineTerminator picks the line terminator substituteOnce
+// writes between lines: LF/CRLF per opts.NewlineStyle, or — when
+// the option is NewlineDefault — whichever terminator the
+// template predominantly uses (CRLF if the first \n is preceded
+// by \r, LF otherwise).
+func newlineTerminator(style NewlineStyle, template []byte) string {
+	switch style {
+	case NewlineLF:
+		return "\n"
+	case NewlineCRLF:
+		return "\r\n"
+	}
+	// Default: detect from the template. First newline; if
+	// preceded by \r, the template is CRLF.
+	if idx := bytes.IndexByte(template, '\n'); idx > 0 && template[idx-1] == '\r' {
+		return "\r\n"
+	}
+	return "\n"
+}
+
+// rewriteNewlines is COPYONLY's transform: copy the template's
+// non-newline bytes verbatim, but apply the caller's NewlineStyle
+// to each line terminator. Default style preserves the
+// template's original terminators.
+func rewriteNewlines(template []byte, style NewlineStyle) []byte {
+	if style == NewlineDefault {
+		return append([]byte(nil), template...)
+	}
+	terminator := "\n"
+	if style == NewlineCRLF {
+		terminator = "\r\n"
+	}
+	var out bytes.Buffer
+	out.Grow(len(template) + len(template)/64)
+	for i, line := range bytes.Split(template, []byte{'\n'}) {
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		if i > 0 {
+			out.WriteString(terminator)
+		}
+		out.Write(line)
+	}
+	return trimTrailingIfTemplateLacked(out.Bytes(), template, terminator)
+}
+
+// trimTrailingIfTemplateLacked drops the final newline-terminator
+// we always add per line if the original template didn't end with
+// one. Keeps Substitute's output byte-equal to cmake's when the
 // template's last line is unterminated.
-func trimTrailingIfTemplateLacked(rendered, template []byte) []byte {
+func trimTrailingIfTemplateLacked(rendered, template []byte, terminator string) []byte {
 	if len(template) == 0 {
 		return rendered[:0]
 	}
-	if template[len(template)-1] != '\n' && len(rendered) > 0 && rendered[len(rendered)-1] == '\n' {
-		return rendered[:len(rendered)-1]
+	if template[len(template)-1] == '\n' {
+		return rendered
+	}
+	if strings.HasSuffix(string(rendered), terminator) {
+		return rendered[:len(rendered)-len(terminator)]
 	}
 	return rendered
 }
@@ -224,14 +350,14 @@ func expandVars(s string, values map[string]string, opts Options) string {
 		switch c {
 		case '@':
 			if name, end, ok := scanAtVar(s, i); ok {
-				b.WriteString(values[name])
+				b.WriteString(escapeIf(values[name], opts.EscapeQuotes))
 				i = end
 				continue
 			}
 		case '$':
 			if !opts.AtOnly {
 				if name, end, ok := scanDollarVar(s, i); ok {
-					b.WriteString(values[name])
+					b.WriteString(escapeIf(values[name], opts.EscapeQuotes))
 					i = end
 					continue
 				}
@@ -239,6 +365,28 @@ func expandVars(s string, values map[string]string, opts Options) string {
 		}
 		b.WriteByte(c)
 		i++
+	}
+	return b.String()
+}
+
+// escapeIf backslash-escapes `"` (and the escape itself) in v
+// when escape is set, mirroring cmake's ESCAPE_QUOTES behavior.
+// Only the substituted bytes go through this — literal `"` in
+// the template passes through untouched (cmake's documented
+// behavior matches: ESCAPE_QUOTES only applies to expanded
+// values, not to literal characters in the template body).
+func escapeIf(v string, escape bool) string {
+	if !escape || (!strings.ContainsRune(v, '"') && !strings.ContainsRune(v, '\\')) {
+		return v
+	}
+	var b strings.Builder
+	b.Grow(len(v) + 4)
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		if c == '\\' || c == '"' {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(c)
 	}
 	return b.String()
 }

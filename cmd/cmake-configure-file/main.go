@@ -50,6 +50,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
 )
@@ -57,8 +58,11 @@ import (
 func main() {
 	valuesPath := flag.String("values", "", "path to JSON file containing the {VAR: value, ...} substitution map. Required.")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
+	copyOnly := flag.Bool("copy-only", false, "skip ALL substitution (@VAR@, ${VAR}, #cmakedefine*) and emit the template verbatim. Mirrors configure_file's COPYONLY flag.")
+	escapeQuotes := flag.Bool("escape-quotes", false, "backslash-escape `\"` (and `\\\\`) in expanded values. Mirrors configure_file's ESCAPE_QUOTES flag.")
+	newlineStyle := flag.String("newline-style", "", "rewrite the line terminator: 'lf'|'unix' for `\\n`, 'crlf'|'dos'|'win32' for `\\r\\n`. Empty preserves the template's original style. Mirrors configure_file's NEWLINE_STYLE flag.")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: cmake-configure-file [--at-only] --values=<values.json> <input> <output>")
+		fmt.Fprintln(os.Stderr, "usage: cmake-configure-file [--at-only] [--copy-only] [--escape-quotes] [--newline-style=lf|crlf] --values=<values.json> <input> <output>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -68,10 +72,36 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(*valuesPath, args[0], args[1], configurefile.Options{AtOnly: *atOnly}); err != nil {
+	style, err := parseNewlineStyle(*newlineStyle)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
+		os.Exit(2)
+	}
+	opts := configurefile.Options{
+		AtOnly:       *atOnly,
+		CopyOnly:     *copyOnly,
+		EscapeQuotes: *escapeQuotes,
+		NewlineStyle: style,
+	}
+	if err := run(*valuesPath, args[0], args[1], opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// parseNewlineStyle accepts cmake's NEWLINE_STYLE token set
+// (case-insensitive). Empty string maps to NewlineDefault
+// (preserve the template's original line terminator).
+func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
+	switch strings.ToLower(s) {
+	case "":
+		return configurefile.NewlineDefault, nil
+	case "lf", "unix":
+		return configurefile.NewlineLF, nil
+	case "crlf", "dos", "win32":
+		return configurefile.NewlineCRLF, nil
+	}
+	return 0, fmt.Errorf("--newline-style: %q not one of LF|UNIX|CRLF|DOS|WIN32", s)
 }
 
 func run(valuesPath, inPath, outPath string, opts configurefile.Options) error {

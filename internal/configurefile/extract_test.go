@@ -194,6 +194,84 @@ func TestExtract_EmptyTemplateAndRendered(t *testing.T) {
 	}
 }
 
+// TestExtract_CopyOnly_EmptyValues: COPYONLY templates surface
+// no values; the verify-pass ensures rendered == template
+// (modulo NewlineStyle).
+func TestExtract_CopyOnly_EmptyValues(t *testing.T) {
+	tmpl := []byte("verbatim @FOO@ ${BAR}\n#cmakedefine HAVE_X\n")
+	rendered := tmpl // COPYONLY: rendered IS template.
+	values, err := configurefile.Extract(tmpl, rendered, configurefile.Options{CopyOnly: true})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(values) != 0 {
+		t.Errorf("COPYONLY values should be empty; got %v", values)
+	}
+}
+
+func TestExtract_CopyOnly_DriftIsError(t *testing.T) {
+	tmpl := []byte("@FOO@\n")
+	rendered := []byte("changed\n")
+	if _, err := configurefile.Extract(tmpl, rendered, configurefile.Options{CopyOnly: true}); err == nil {
+		t.Error("expected COPYONLY drift error")
+	}
+}
+
+// TestExtract_EscapeQuotes_RecoverValuesWithQuotes: when
+// ESCAPE_QUOTES is on, the rendered output has `\"` for any
+// `"` in the substituted value. Extract undoes the escape so
+// the recovered value is the original.
+func TestExtract_EscapeQuotes_RecoverValuesWithQuotes(t *testing.T) {
+	tmpl := []byte(`literal "kept" @FOO@`)
+	rendered := []byte(`literal "kept" with \"quotes\"`)
+	values, err := configurefile.Extract(tmpl, rendered, configurefile.Options{EscapeQuotes: true})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	want := `with "quotes"`
+	if values["FOO"] != want {
+		t.Errorf("FOO = %q, want %q", values["FOO"], want)
+	}
+}
+
+// TestExtract_NewlineStyle_CRLFRendered: when the rendered
+// output uses CRLF line endings (mirroring NEWLINE_STYLE CRLF),
+// Extract's line splitter aligns 1:1 with the LF template.
+func TestExtract_NewlineStyle_CRLFRendered(t *testing.T) {
+	tmpl := []byte("@A@\n@B@\n")
+	rendered := []byte("1\r\n2\r\n")
+	values, err := configurefile.Extract(tmpl, rendered, configurefile.Options{NewlineStyle: configurefile.NewlineCRLF})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if values["A"] != "1" || values["B"] != "2" {
+		t.Errorf("recovered values = %v, want A=1 B=2", values)
+	}
+}
+
+// TestExtract_RecursiveExpansion: when a value itself contains
+// a marker, cmake recursively expands it. Substitute matches
+// (recursionLimit loop). Extract should accept rendered
+// outputs whose recovered values produce the same output via
+// the verify-pass.
+func TestExtract_RecursiveExpansion(t *testing.T) {
+	tmpl := []byte("@OUTER@\n")
+	rendered := []byte("real-value\n")
+	// Extract sees the literal output "real-value" and
+	// recovers OUTER="real-value". The verify-pass
+	// Substitute(template, {OUTER:"real-value"}, opts) →
+	// "real-value\n", byte-equal. We don't recover the
+	// transitive INNER → real-value relationship, but the
+	// verify-pass ensures soundness.
+	values, err := configurefile.Extract(tmpl, rendered, configurefile.Options{})
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if values["OUTER"] != "real-value" {
+		t.Errorf("OUTER = %q, want %q", values["OUTER"], "real-value")
+	}
+}
+
 // isTruthy is the same check Substitute uses; mirrored here
 // for the test assertion shape.
 func isTruthy(v string) bool {
