@@ -197,7 +197,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var configureFiles []configureFileOut
 	if traceDecoded {
 		var err error
-		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, opts.BuildDir, cmakeBuild, cc)
+		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, cc)
 		if err != nil {
 			return nil, err
 		}

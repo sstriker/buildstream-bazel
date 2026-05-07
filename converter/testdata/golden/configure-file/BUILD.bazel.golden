@@ -16,12 +16,15 @@ cc_library(
 
 genrule(
     name = "gen_config_h",
+    srcs = ["src/config.h.in"],
     outs = ["config.h"],
-    cmd = "mkdir -p $$(dirname $@) && echo I2lmbmRlZiBDRkdMSUJfQ09ORklHX0gKI2RlZmluZSBDRkdMSUJfQ09ORklHX0gKI2RlZmluZSBDRkdMSUJfVkVSU0lPTl9NQUpPUiAxCiNkZWZpbmUgQ0ZHTElCX1ZFUlNJT05fTUlOT1IgMgojZW5kaWYK | base64 -d > $@",
+    cmd = "mkdir -p $$(dirname $@) && VALUES=$$(mktemp) && echo eyJDRkdMSUJfVkVSU0lPTl9NQUpPUiI6IjEiLCJDRkdMSUJfVkVSU0lPTl9NSU5PUiI6IjIifQ== | base64 -d > $$VALUES && $(execpath //tools:cmake-configure-file) --at-only --values=$$VALUES $(execpath src/config.h.in) $@ ; rc=$$?; rm -f $$VALUES; exit $$rc",
+    tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",
         "cmake-codegen-configure-file",
         "cmake-codegen-driver=configure_file",
+        "cmake-codegen-lifted",
     ],
     visibility = ["//visibility:private"],
 )

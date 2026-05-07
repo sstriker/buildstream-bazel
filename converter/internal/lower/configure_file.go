@@ -2,6 +2,7 @@ package lower
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
 	"github.com/sstriker/cmake-to-bazel/internal/shadow"
 )
 
@@ -48,7 +50,7 @@ func recoverConfigureFiles(traceRaw []byte, hostBuildDir, recordedSrcDir, record
 	if len(traceRaw) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
-	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostBuildDir, recordedBuildDir, cc)
+	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), recordedSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, cc)
 }
 
 // recoverConfigureFilesFromCalls is the same logic as
@@ -57,7 +59,7 @@ func recoverConfigureFiles(traceRaw []byte, hostBuildDir, recordedSrcDir, record
 // trace is parsed once total across all extractors (including
 // the configure_file recovery), instead of one pass per
 // extractor.
-func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostBuildDir, recordedBuildDir string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -100,15 +102,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostBuildD
 		}
 
 		name := configureFileGenruleName(rel)
-		cmd := configureFileCmd(rel, body)
-		gen := ir.Target{
-			Name:        name,
-			Kind:        ir.KindGenrule,
-			GenruleCmd:  cmd,
-			GenruleOuts: []string{rel},
-			Tags:        configureFileTags(),
-			Visibility:  []string{"//visibility:private"},
-		}
+		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -119,6 +113,95 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostBuildD
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })
 	return out, nil
+}
+
+// buildConfigureFileGenrule decides between the lifted shape
+// (.h.in as a real srcs + cmake-configure-file tool + values
+// JSON in cmd) and the legacy shape (rendered output base64-
+// embedded in cmd). Picks the lifted shape when:
+//
+//   - The template input path resolves to a readable file
+//     inside the source root, AND
+//   - configurefile.Extract recovers a values dict that
+//     round-trips to the rendered output byte-for-byte.
+//
+// Falls back to the legacy shape otherwise — soundness is
+// preserved (the .h.in stays load-bearing in srckey via the
+// existing read-paths.txt narrowing); the audit tool's
+// undercoverage report continues to flag those .h.in paths
+// until the templating shape is supported.
+func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string) ir.Target {
+	legacy := ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
+		GenruleOuts: []string{outRel},
+		Tags:        configureFileTags(),
+		Visibility:  []string{"//visibility:private"},
+	}
+
+	if hostSrcDir == "" || recordedSrcDir == "" {
+		return legacy
+	}
+	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
+	if !ok {
+		return legacy
+	}
+	templateBody, err := os.ReadFile(templatePath)
+	if err != nil {
+		return legacy
+	}
+	opts := configurefile.Options{AtOnly: hasOption(call.Options, "@ONLY")}
+	values, err := configurefile.Extract(templateBody, rendered, opts)
+	if err != nil {
+		return legacy
+	}
+	cmd, err := configureFileLiftedCmd(inRel, outRel, values, opts)
+	if err != nil {
+		return legacy
+	}
+	return ir.Target{
+		Name:         name,
+		Kind:         ir.KindGenrule,
+		Srcs:         []string{inRel},
+		GenruleCmd:   cmd,
+		GenruleOuts:  []string{outRel},
+		GenruleTools: []string{"//tools:cmake-configure-file"},
+		Tags:         append(configureFileTags(), "cmake-codegen-lifted"),
+		Visibility:   []string{"//visibility:private"},
+	}
+}
+
+// resolveTemplatePath converts the trace's recorded template
+// input path into (host-real path, package-relative path) so
+// the genrule's srcs label resolves at Bazel time. Returns
+// ok=false when the input lives outside the source tree or
+// can't be made source-relative.
+func resolveTemplatePath(input, hostSrcDir, recordedSrcDir string) (string, string, bool) {
+	if !filepath.IsAbs(input) {
+		// Trace usually records absolute paths after cmake
+		// expands variables; if not, we can't anchor without
+		// per-call current-source-dir context.
+		return "", "", false
+	}
+	rel, ok := relativeIfInsideRelaxed(recordedSrcDir, input)
+	if !ok {
+		return "", "", false
+	}
+	return filepath.Join(hostSrcDir, rel), filepath.ToSlash(rel), true
+}
+
+// hasOption is a case-insensitive search of cmake's
+// configure_file option flags (the trailing tokens beyond
+// input/output: COPYONLY / @ONLY / ESCAPE_QUOTES /
+// NEWLINE_STYLE...).
+func hasOption(options []string, want string) bool {
+	for _, o := range options {
+		if strings.EqualFold(o, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // configureFileGenruleName turns a build-dir-relative output
@@ -144,15 +227,58 @@ func configureFileGenruleName(rel string) string {
 	return sb.String()
 }
 
-// configureFileCmd builds a shell command that writes the
-// rendered bytes to $@. Encodes via base64 so any byte content
-// (including embedded newlines, single-quotes, $, etc.) round-
-// trips losslessly without shell-escaping concerns. The
+// configureFileLegacyCmd builds the fallback shell command
+// when configurefile.Extract can't recover a values dict.
+// Embeds the rendered bytes verbatim via base64 so any byte
+// content (including embedded newlines, single-quotes, $, etc.)
+// round-trips losslessly without shell-escaping concerns. The
 // `mkdir -p $$(dirname $@)` prefix is harmless for top-level
 // outputs and necessary for nested ones (e.g. subdir/version.h).
-func configureFileCmd(rel string, body []byte) string {
+//
+// Soundness consequence: the rendered bytes appear in the
+// genrule's cmd, so the .h.in template content drives the
+// BUILD.bazel content; the .h.in must remain content-included
+// in convert-element's srckey for soundness. Audit catches
+// this case (it's the cmake-side oracle's whole point); the
+// fix is the lifted shape, taken when Extract succeeds.
+func configureFileLegacyCmd(rel string, body []byte) string {
 	encoded := base64.StdEncoding.EncodeToString(body)
 	return fmt.Sprintf("mkdir -p $$(dirname $@) && echo %s | base64 -d > $@", encoded)
+}
+
+// configureFileLiftedCmd builds the lifted shell command:
+// stage the values JSON to a tmpfile, then run the
+// cmake-configure-file tool with the .h.in template (resolved
+// via $(location <inRel>)) and the captured values. The
+// rendered output bytes do NOT appear in the cmd; only the
+// values dict does. Edits to .h.in invalidate the genrule
+// through srcs, not through BUILD.bazel content.
+//
+// Values are base64'd JSON to avoid shell-quoting concerns;
+// the JSON is small (one entry per cmake variable the
+// template references) so this stays compact.
+func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts configurefile.Options) (string, error) {
+	body, err := json.Marshal(values)
+	if err != nil {
+		return "", fmt.Errorf("marshal values: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(body)
+	atOnly := ""
+	if opts.AtOnly {
+		atOnly = "--at-only "
+	}
+	// $(execpath) resolves srcs labels relative to exec root;
+	// $@ is the genrule output. Tmpfile lives under $(@D) (the
+	// genrule's output dir) so it's auto-cleaned on rebuild and
+	// doesn't pollute /tmp on shared executors.
+	return fmt.Sprintf(
+		"mkdir -p $$(dirname $@) && "+
+			"VALUES=$$(mktemp) && "+
+			"echo %s | base64 -d > $$VALUES && "+
+			"$(execpath //tools:cmake-configure-file) %s--values=$$VALUES $(execpath %s) $@ ; "+
+			"rc=$$?; rm -f $$VALUES; exit $$rc",
+		encoded, atOnly, inRel,
+	), nil
 }
 
 // configureFileTags returns the cmake-codegen tag set for a
