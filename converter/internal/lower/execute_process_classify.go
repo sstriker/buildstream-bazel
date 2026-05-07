@@ -91,55 +91,79 @@ var supportedCMakeEOps = map[string]string{
 	"touch":             "create an empty file",
 }
 
-// stampDrivers names argv[0] basenames whose presence with an
-// OutputVariable writeback (and no OutputFile redirect)
-// signals a version-stamp probe. Version stamps need a repo
-// rule (loading-time) to be sound under Bazel's
-// analysis-then-action model; v1 refuses them rather than
-// emitting a non-hermetic build-time genrule that runs git on
-// the executor.
+// stampDrivers names argv[0] basenames whose presence
+// classifies the call as Stamp regardless of how the output
+// is captured. VCS query tools have no legitimate
+// code-generation use; hoisting them to a build-time genrule
+// would run the VCS tool on the executor and re-introduce
+// the same non-hermeticity the refusal is meant to prevent.
+// Driver name is the gate, not OutputVariable / OutputFile
+// presence.
 var stampDrivers = map[string]bool{
 	"git": true,
 	"hg":  true,
 	"svn": true,
 }
 
-// probeDrivers names argv[0] basenames whose presence with an
-// OutputVariable writeback (and no OutputFile redirect)
-// signals a host/toolchain probe. The right Bazel translation
-// is a select() over config_setting (or in extreme cases a
-// repo rule for one-shot toolchain detection); v1 refuses
-// them rather than guessing.
-var probeDrivers = map[string]bool{
+// strongProbeDrivers names argv[0] basenames whose presence
+// classifies the call as Probe regardless of how the output
+// is captured. These tools are unambiguously host/toolchain
+// probes (uname / hostname / sw_vers / lsb_release etc.);
+// they don't generate files. Hoisting them to a build-time
+// genrule would re-introduce host-environment leakage.
+var strongProbeDrivers = map[string]bool{
 	"uname":       true,
 	"hostname":    true,
-	"gcc":         true,
-	"g++":         true,
-	"clang":       true,
-	"clang++":     true,
-	"ld":          true,
-	"pkg-config":  true,
-	"python":      true,
-	"python3":     true,
-	"perl":        true,
-	"ruby":        true,
-	"node":        true,
 	"sw_vers":     true,
 	"lsb_release": true,
 }
 
+// dualUseProbeDrivers names argv[0] basenames that CAN be
+// host probes but are also legitimate code-generation tools.
+// `python3 gen.py ... > out.h` is code generation;
+// `python3 -c "import sys; print(sys.version_info[0])"` is a
+// probe. Compilers and pkg-config are similar: probe shape
+// when capturing toolchain info via OUTPUT_VARIABLE; not
+// probe when the call's purpose is to invoke them as build
+// tools.
+//
+// These drivers classify as Probe only when the call shape
+// disambiguates (OUTPUT_VARIABLE set without OUTPUT_FILE);
+// shapes with OUTPUT_FILE fall through to FileProducing
+// (the lifter then hoists the call to a build-time genrule).
+var dualUseProbeDrivers = map[string]bool{
+	"gcc":        true,
+	"g++":        true,
+	"clang":      true,
+	"clang++":    true,
+	"ld":         true,
+	"pkg-config": true,
+	"python":     true,
+	"python3":    true,
+	"perl":       true,
+	"ruby":       true,
+	"node":       true,
+}
+
 // Classify maps one execute_process call to a Bucket using
 // argv-only heuristics — no subprocess execution, no
-// filesystem access. The order of checks matters: pipelines
-// short-circuit to Unknown before any single-COMMAND shape
-// recognition; CMakeE wins over FileProducing for `cmake -E
-// touch` even though touch declares an output file; stamp /
-// probe pattern detection precedes the generic
-// FileProducing fallback so a `git rev-parse > out` pattern
-// (stamp via OutputFile) classifies as Stamp rather than
-// FileProducing — those still need the repo-rule analog and
-// a Bazel-time genrule running git would re-introduce the
-// hermeticity violation we're trying to remove.
+// filesystem access. Order of checks:
+//
+//  1. No / multi-COMMAND clauses → Unknown.
+//  2. cmake -E builtin recognition wins over everything else,
+//     even when the call also sets OutputFile (e.g. `cmake -E
+//     touch <path>`).
+//  3. Stamp / probe DRIVER recognition wins over file-producing
+//     classification. A `git rev-parse > out.txt` shape
+//     classifies as Stamp, not FileProducing, because hoisting
+//     it to a build-time genrule would run the VCS tool on the
+//     executor and re-introduce the same non-hermeticity the
+//     refusal is meant to prevent. Driver-first classification
+//     closes the hole the earlier OutputFile-gated shape left.
+//  4. OUTPUT_FILE alone → FileProducing (the call's purpose is
+//     "produce this file at configure time"; hoist to a
+//     build-time genrule).
+//  5. Otherwise → Unknown.
 func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	if len(call.Commands) == 0 {
 		return ClassifyResult{
@@ -188,23 +212,37 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		}
 	}
 
-	// Version-stamp / probe detection. Both require a writeback
-	// variable (OutputVariable) and no OutputFile redirect —
-	// the file-producing form of `git describe > out.txt` is
-	// rare and still needs the repo-rule analog, so it falls
-	// through to Stamp here rather than FileProducing.
-	if call.OutputVariable != "" && call.OutputFile == "" {
-		if stampDrivers[driver] {
-			return ClassifyResult{
-				Bucket: BucketStamp,
-				Reason: driver + " writing OUTPUT_VARIABLE looks like a version stamp",
-			}
+	// Stamp / strong-probe drivers: classification is
+	// driver-first regardless of how the call captures
+	// output. These tools have no legitimate code-generation
+	// use; hoisting them to a build-time genrule would
+	// re-introduce the non-hermeticity the refusal is meant to
+	// prevent. Diagnostic context (OutputVariable / OutputFile)
+	// threads into the reason so operators see the full
+	// shape; classification doesn't pivot on it.
+	if stampDrivers[driver] {
+		return ClassifyResult{
+			Bucket: BucketStamp,
+			Reason: driver + " is a version-control driver" + outputContext(call),
 		}
-		if probeDrivers[driver] {
-			return ClassifyResult{
-				Bucket: BucketProbe,
-				Reason: driver + " writing OUTPUT_VARIABLE looks like a host/toolchain probe",
-			}
+	}
+	if strongProbeDrivers[driver] {
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: driver + " is a host probe driver" + outputContext(call),
+		}
+	}
+	// Dual-use probe drivers: classify as Probe only when the
+	// call shape unambiguously matches the probe pattern
+	// (OUTPUT_VARIABLE without OUTPUT_FILE). Calls with
+	// OUTPUT_FILE fall through to the FileProducing case
+	// below — `python3 gen.py spec.txt OUTPUT_FILE generated.h`
+	// is code generation, not a probe, and should hoist to a
+	// build-time genrule.
+	if dualUseProbeDrivers[driver] && call.OutputVariable != "" && call.OutputFile == "" {
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: driver + " writing OUTPUT_VARIABLE looks like a host/toolchain probe",
 		}
 	}
 
@@ -222,6 +260,23 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		Bucket: BucketUnknown,
 		Reason: "no recognized lift pattern",
 	}
+}
+
+// outputContext renders the call's writeback channels (
+// OutputVariable, OutputFile) as a parenthesised suffix for
+// classifier reason messages. Threads diagnostic context
+// into stamp / strong-probe refusal reasons without
+// re-implementing the formatting at each call site.
+func outputContext(call shadow.ExecuteProcessCall) string {
+	switch {
+	case call.OutputVariable != "" && call.OutputFile != "":
+		return " writing OUTPUT_VARIABLE " + call.OutputVariable + " with OUTPUT_FILE " + call.OutputFile
+	case call.OutputVariable != "":
+		return " writing OUTPUT_VARIABLE " + call.OutputVariable
+	case call.OutputFile != "":
+		return " with OUTPUT_FILE " + call.OutputFile
+	}
+	return ""
 }
 
 // isCMakeDriver reports whether argv[0] names cmake itself —

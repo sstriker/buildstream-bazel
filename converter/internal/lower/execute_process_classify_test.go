@@ -88,32 +88,65 @@ func TestClassify_Buckets(t *testing.T) {
 				Commands:   [][]string{{"python3", "gen.py", "--in", "spec.txt"}},
 				OutputFile: "generated.h",
 			},
+			// python3 is in dualUseProbeDrivers: it CAN be
+			// a probe (`python3 -c "import sys; print(...)"`)
+			// or a code generator (`python3 gen.py > out.h`).
+			// OUTPUT_FILE alone disambiguates as code
+			// generation; falls through to FileProducing for
+			// the lifter to hoist as a build-time genrule.
 			bucket: BucketFileProducing,
 		},
 		{
-			name: "python3 with OUTPUT_VARIABLE only → probe (python is in probeDrivers)",
+			name: "python3 -c with OUTPUT_VARIABLE only → probe",
 			call: shadow.ExecuteProcessCall{
 				Commands:       [][]string{{"python3", "-c", "import sys; print(sys.version_info[0])"}},
 				OutputVariable: "PYMAJOR",
 			},
+			// Dual-use probe drivers classify as Probe only
+			// when OUTPUT_VARIABLE is set without OUTPUT_FILE
+			// (the unambiguous probe shape).
 			bucket: BucketProbe,
 		},
 		{
-			name: "git with OUTPUT_FILE (not OUTPUT_VARIABLE) still classifies as stamp",
+			name: "git + OUTPUT_FILE → stamp (driver-first; stamp drivers can't hoist)",
+			call: shadow.ExecuteProcessCall{
+				Commands:   [][]string{{"git", "describe", "--tags"}},
+				OutputFile: "version.txt",
+			},
+			// VCS drivers have no legitimate code-generation
+			// use; hoisting `git describe > out.txt` into a
+			// build-time genrule would run git on the
+			// executor — re-introduces the non-hermeticity
+			// the refusal is meant to prevent. Stamp wins
+			// over FileProducing regardless of OUTPUT_FILE.
+			bucket: BucketStamp,
+		},
+		{
+			name: "git + OUTPUT_VARIABLE + OUTPUT_FILE → stamp (still driver-first)",
 			call: shadow.ExecuteProcessCall{
 				Commands:       [][]string{{"git", "describe", "--tags"}},
 				OutputVariable: "VER",
 				OutputFile:     "version.txt",
 			},
-			// Order-of-precedence corner: when both OutputVariable
-			// and OutputFile are set, OutputVariable wins for
-			// stamp/probe drivers — a file-producing genrule
-			// running git on the executor still re-introduces the
-			// non-hermeticity we're avoiding. Falls through to
-			// FileProducing because the stamp/probe gate requires
-			// OutputFile=="". Document the conservative corner:
-			// real-world projects rarely combine both.
-			bucket: BucketFileProducing,
+			// Both writeback channels populated; stamp
+			// driver classification is unaffected. Both
+			// OutputVariable and OutputFile thread into
+			// the refusal reason via outputContext for
+			// triage but neither flips the bucket.
+			bucket: BucketStamp,
+		},
+		{
+			name: "uname + OUTPUT_FILE → probe (strong probe driver, driver-first)",
+			call: shadow.ExecuteProcessCall{
+				Commands:   [][]string{{"uname", "-m"}},
+				OutputFile: "arch.txt",
+			},
+			// uname is in strongProbeDrivers (unambiguously
+			// a host probe — no legitimate code-generation
+			// use). Same driver-first rule as stamp: a
+			// build-time genrule running `uname -m` would
+			// re-introduce host-environment leakage.
+			bucket: BucketProbe,
 		},
 		{
 			name: "multi-COMMAND pipeline → unknown",

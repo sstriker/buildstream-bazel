@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -10,6 +11,22 @@ import (
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/internal/shadow"
 )
+
+// isExistingDir reports whether p is a directory on disk.
+// Used by liftFileProducing to decide whether to wrap an
+// argv element in $(location) (file) or leave it as a literal
+// path (directory). On stat error (path doesn't exist on the
+// recording machine, race, etc.) returns false so the caller
+// falls through to the file-shaped $(location) wrap;
+// downstream Bazel-time resolution will then either succeed
+// or surface a clear "no such target" error.
+func isExistingDir(p string) bool {
+	info, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	return info.IsDir()
+}
 
 // recoverExecuteProcess walks the trace's execute_process
 // calls, classifies each into a Bucket, and either emits a
@@ -98,7 +115,7 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 	case "touch":
 		return liftCMakeETouch(args, recordedBuildDir, cc)
 	case "copy", "copy_if_different":
-		return liftCMakeECopy(args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	}
 	return "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
@@ -157,18 +174,18 @@ func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext
 // the lift with a descriptive reason — the caller falls back to
 // refusal so the operator sees exactly which path didn't
 // resolve.
-func liftCMakeECopy(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) (string, bool) {
+func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) (string, bool) {
 	if len(args) != 2 {
-		return fmt.Sprintf("cmake -E copy: v1 supports the 2-arg form only (got %d args)", len(args)), false
+		return fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
 	src, dst := args[0], args[1]
 	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
 	if !ok {
-		return fmt.Sprintf("cmake -E copy: source %q is not under the source root", src), false
+		return fmt.Sprintf("cmake -E %s: source %q is not under the source root", op, src), false
 	}
 	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
 	if !ok {
-		return fmt.Sprintf("cmake -E copy: destination %q is not under the build dir", dst), false
+		return fmt.Sprintf("cmake -E %s: destination %q is not under the build dir", op, dst), false
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return "", true
@@ -180,7 +197,7 @@ func liftCMakeECopy(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir 
 		Srcs:        []string{srcRel},
 		GenruleCmd:  fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && cp "$(location %s)" "$@"`, srcRel),
 		GenruleOuts: []string{dstRel},
-		Tags:        cmakeETags("copy"),
+		Tags:        cmakeETags(op),
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
@@ -246,11 +263,25 @@ func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDi
 	// dependencies. If argv[0] resolves under the source root
 	// it's an in-tree tool; surface as $(location) so the
 	// dependency is explicit.
+	//
+	// Directories under the source root (cmake's
+	// ${CMAKE_CURRENT_SOURCE_DIR} expanding to a dir path) are
+	// preserved as literal strings rather than $(location)
+	// references — Bazel's $(location <label>) expects a single
+	// file, and a dir-shaped src would either fail or expand
+	// to surprising basenames. The hostSrcDir-relative path is
+	// still emitted (so the cmd is portable across recording
+	// machines), just without the $(location) wrap.
 	srcs := make([]string, 0)
 	srcSet := map[string]bool{}
 	rewritten := make([]string, 0, len(argv))
 	for i, a := range argv {
 		if rel, ok := executeProcessAnchorSource(a, hostSrcDir, recordedSrcDir); ok {
+			if isExistingDir(filepath.Join(hostSrcDir, rel)) {
+				// Directory: preserve as literal relative path.
+				rewritten = append(rewritten, shellQuoteArg(rel))
+				continue
+			}
 			if !srcSet[rel] {
 				srcSet[rel] = true
 				srcs = append(srcs, rel)
@@ -308,8 +339,9 @@ func fileProducingTags(driver string) []string {
 // shellQuoteArg returns a shell-safe representation of an argv
 // element. Shell-special chars get single-quoted; literal
 // single quotes in the input are escaped as the standard
-// '\” sequence. Used by liftFileProducing to defend the
-// hoisted cmd against argv elements containing spaces, $, etc.
+// `'\”` sequence (close-quote, escaped-quote, re-open-quote).
+// Used by liftFileProducing to defend the hoisted cmd
+// against argv elements containing spaces, $, etc.
 // — paths from cmake's expanded trace are usually plain but
 // this keeps the lifter honest about adversarial inputs.
 func shellQuoteArg(a string) string {
@@ -373,13 +405,12 @@ func executeProcessAnchorSource(p, hostSrcDir, recordedSrcDir string) (string, b
 }
 
 // executeProcessGenruleName turns a build-dir-relative output
-// path into a Bazel-rule-name-safe identifier mirroring
-// configureFileGenruleName: "marker.stamp" -> "gen_marker_stamp".
-// We can't share configureFileGenruleName directly because
-// the configure-file recovery uses the same naming convention
-// for its own genrule pool — risk of name collision when both
-// recoveries land on the same package. The "exec_" prefix
-// scopes the namespace.
+// path into a Bazel-rule-name-safe identifier with the
+// "exec_" prefix: "marker.stamp" -> "exec_marker_stamp",
+// "subdir/foo.h" -> "exec_subdir_foo_h". Mirrors
+// configureFileGenruleName's gen_-prefixed shape but uses a
+// distinct prefix so the two recoveries can land in the same
+// package without name collisions.
 func executeProcessGenruleName(rel string) string {
 	rel = filepath.ToSlash(rel)
 	rel = strings.TrimPrefix(rel, "./")
