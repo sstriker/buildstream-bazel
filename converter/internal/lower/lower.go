@@ -203,21 +203,6 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decodedExecuteProcesses = decoded.ExecuteProcesses
 	}
 
-	// execute_process recovery. Configure-time subprocess
-	// invocations are a hermeticity violation by Bazel's
-	// analysis-then-action model. Some calls are liftable
-	// (cmake -E builtins, file-producing tools with declared
-	// OUTPUT_FILE — translated to build-time genrules) and some
-	// aren't (version stamps, toolchain probes, opaque
-	// pipelines — refused with a typed Tier-1 failure).
-	// recoverExecuteProcess aggregates all unliftable calls
-	// into a single failure so projects with several
-	// execute_process invocations get one triage report rather
-	// than N converter runs uncovering them one at a time.
-	if err := recoverExecuteProcess(decodedExecuteProcesses); err != nil {
-		return nil, err
-	}
-
 	cmakeSrc := r.Codemodel.Paths.Source
 	cmakeBuild := r.Codemodel.Paths.Build
 	hostSrc := opts.HostSourceRoot
@@ -231,6 +216,25 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	cc := newCodegenContext()
+
+	// execute_process recovery. Configure-time subprocess
+	// invocations are a hermeticity violation by Bazel's
+	// analysis-then-action model. Some calls are liftable
+	// (cmake -E builtins; file-producing tools with declared
+	// OUTPUT_FILE — translated to build-time genrules) and some
+	// aren't (version stamps, toolchain probes, opaque
+	// pipelines — refused with a typed Tier-1 failure).
+	// recoverExecuteProcess aggregates all unliftable calls
+	// into a single failure so projects with several
+	// execute_process invocations get one triage report rather
+	// than N converter runs uncovering them one at a time.
+	// Liftable buckets append to cc.Genrules + cc.OutToGenrule
+	// before lowerTarget runs so consumer attribution can
+	// attach generated artefacts to cc targets that include the
+	// build dir.
+	if err := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, cc); err != nil {
+		return nil, err
+	}
 
 	// Recover configure_file outputs from trace before lowering
 	// targets. Each call surfaces as an ir.Target{KindGenrule}
