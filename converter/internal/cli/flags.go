@@ -93,6 +93,21 @@ type Args struct {
 	// package doc for the cache-key analysis.
 	LiftConfigureFile bool
 
+	// UnsupportedExecuteProcessFallback toggles the
+	// recoverExecuteProcess refusal path's behaviour. Off
+	// (default): refusals exit Tier-1 with the typed
+	// `unsupported-execute-process` failure code, the same as
+	// today. On: refusals don't exit Tier-1; the converter
+	// emits a placeholder BUILD.bazel that delegates to the
+	// element's round-2 install_tree.tar via per-target stub
+	// rules (cc_import / sh_binary / cc_library) reconstructed
+	// from the codemodel's Target.Install.Destinations. The
+	// flag is per-element opt-in; downstream Bazel envelopes
+	// must stage the round-2 install genrule for the
+	// placeholder to resolve. See
+	// docs/design/cmake-execute-process-round2-fallback.md.
+	UnsupportedExecuteProcessFallback bool
+
 	// AllowCMakeVersionMismatch lets the converter run with a cmake
 	// version below the architectural floor (3.20 — codemodel-v2 minimum).
 	// Local-dev only; M3 must never set this.
@@ -162,6 +177,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutTimings, "out-timings", "", "write JSON with per-phase wall-clock timings (cmake configure, translation, total)")
 	fs.StringVar(&a.OutCMakeConfigureReads, "out-cmake-configure-reads", "", "write JSON array of source-relative paths from build.ninja's RERUN_CMAKE implicit-input list (configure-time oracle)")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
+	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls (stamp / probe / unknown buckets), emit a placeholder BUILD.bazel that delegates to the element's round-2 install_tree.tar via per-target stub rules — instead of exiting Tier-1 with unsupported-execute-process. Requires write-a to have staged the round-2 install genrule for this element. Off by default to preserve the current strict-fail behaviour. See docs/design/cmake-execute-process-round2-fallback.md.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")

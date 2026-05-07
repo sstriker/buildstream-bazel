@@ -200,14 +200,15 @@ func run(a cli.Args) error {
 	}
 
 	pkg, err := lower.ToIR(r, g, lower.Options{
-		HostSourceRoot:    a.SourceRoot,
-		HostPrefixDir:     prefixAbs,
-		BuildDir:          hostBuildOrReply,
-		Imports:           imports,
-		CTest:             testRegistry,
-		TraceRaw:          traceRaw,
-		LiftConfigureFile: a.LiftConfigureFile,
-		CMakeVars:         cmakeVars,
+		HostSourceRoot:                    a.SourceRoot,
+		HostPrefixDir:                     prefixAbs,
+		BuildDir:                          hostBuildOrReply,
+		Imports:                           imports,
+		CTest:                             testRegistry,
+		TraceRaw:                          traceRaw,
+		LiftConfigureFile:                 a.LiftConfigureFile,
+		CMakeVars:                         cmakeVars,
+		UnsupportedExecuteProcessFallback: a.UnsupportedExecuteProcessFallback,
 	})
 	if err != nil {
 		return err

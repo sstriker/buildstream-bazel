@@ -7,6 +7,7 @@ import (
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
+	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
 )
 
@@ -170,6 +171,147 @@ func TestFailure_UnsupportedExecuteProcess_Aggregates(t *testing.T) {
 	}
 	if !strings.Contains(msg, "[stamp]") || !strings.Contains(msg, "[probe]") {
 		t.Errorf("expected both bucket labels in failure message; got: %s", msg)
+	}
+}
+
+// TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets
+// covers the Phase B fallback path: with
+// UnsupportedExecuteProcessFallback set, classifier refusals
+// (uname / git in this case) no longer exit Tier-1; ToIR
+// returns a placeholder ir.Package whose targets are the
+// codemodel's non-UTILITY targets as empty stubs (right Kind,
+// public visibility, marker tag, no srcs).
+func TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Name: "thelib", Id: "thelib::@1"},
+					{Name: "thetool", Id: "thetool::@2"},
+					{Name: "noisy_utility", Id: "noisy_utility::@3"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"thelib::@1":        {Name: "thelib", Type: "STATIC_LIBRARY"},
+			"thetool::@2":       {Name: "thetool", Type: "EXECUTABLE"},
+			"noisy_utility::@3": {Name: "noisy_utility", Type: "UTILITY"},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["COMMAND","uname","-m","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		TraceRaw:                          traceRaw,
+		UnsupportedExecuteProcessFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("expected nil error in fallback mode; got %v", err)
+	}
+	if pkg == nil {
+		t.Fatal("expected placeholder ir.Package, got nil")
+	}
+
+	// Per-target stubs: STATIC_LIBRARY → cc_library +
+	// linkstatic, EXECUTABLE → cc_binary, UTILITY → skipped.
+	gotKinds := map[string]ir.Kind{}
+	for _, target := range pkg.Targets {
+		gotKinds[target.Name] = target.Kind
+	}
+	if len(gotKinds) != 2 {
+		t.Errorf("expected 2 stub targets (UTILITY skipped); got %+v", gotKinds)
+	}
+	if gotKinds["thelib"] != ir.KindCCLibrary {
+		t.Errorf("thelib kind: %v want cc_library", gotKinds["thelib"])
+	}
+	if gotKinds["thetool"] != ir.KindCCBinary {
+		t.Errorf("thetool kind: %v want cc_binary", gotKinds["thetool"])
+	}
+	if _, present := gotKinds["noisy_utility"]; present {
+		t.Errorf("UTILITY target should be skipped from placeholder; got %+v", gotKinds)
+	}
+
+	// Each stub carries the marker tag so audit queries can
+	// distinguish placeholder targets from fully-converted
+	// ones; visibility is public so downstream consumers can
+	// reference :thelib / :thetool the same way they would
+	// against a native-rendered element.
+	for _, target := range pkg.Targets {
+		hasMarker := false
+		for _, tag := range target.Tags {
+			if tag == "cmake-codegen-execute-process-fallback" {
+				hasMarker = true
+				break
+			}
+		}
+		if !hasMarker {
+			t.Errorf("target %q missing cmake-codegen-execute-process-fallback tag; tags=%v", target.Name, target.Tags)
+		}
+		if len(target.Visibility) != 1 || target.Visibility[0] != "//visibility:public" {
+			t.Errorf("target %q visibility: %v want [//visibility:public]", target.Name, target.Visibility)
+		}
+		// Stubs are intentionally empty bodies — the
+		// per-target install-destination wiring is queued
+		// behind IR support for cc_import attributes
+		// (Step 2.5 in docs/design/cmake-execute-process-round2-fallback.md).
+		if len(target.Srcs) != 0 {
+			t.Errorf("target %q srcs should be empty in v1 placeholder; got %v", target.Name, target.Srcs)
+		}
+	}
+
+	// STATIC_LIBRARY stub carries Linkstatic for fidelity
+	// with native render's STATIC_LIBRARY → cc_library +
+	// linkstatic dispatch.
+	for _, target := range pkg.Targets {
+		if target.Name == "thelib" && !target.Linkstatic {
+			t.Errorf("thelib placeholder should carry Linkstatic=true (mirrors native render's STATIC_LIBRARY shape)")
+		}
+	}
+}
+
+// TestFallback_NoRefusals_NoEffect asserts that the fallback
+// flag is harmless when there are no execute_process refusals
+// — ToIR proceeds with the native lowering path unchanged.
+// Guards against the flag accidentally short-circuiting
+// projects that don't need fallback.
+func TestFallback_NoRefusals_NoEffect(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Name: "lib", Id: "lib::@1"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"lib::@1": {Name: "lib", Type: "STATIC_LIBRARY"},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		UnsupportedExecuteProcessFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("expected success; got %v", err)
+	}
+	if pkg == nil {
+		t.Fatal("expected ir.Package")
+	}
+	// Native lowering path produced one cc_library; no
+	// fallback marker (the flag was set but had no
+	// refusals to act on, so the native shape stands).
+	if len(pkg.Targets) != 1 {
+		t.Errorf("expected 1 target, got %d", len(pkg.Targets))
+	}
+	for _, target := range pkg.Targets {
+		for _, tag := range target.Tags {
+			if tag == "cmake-codegen-execute-process-fallback" {
+				t.Errorf("target %q should not carry fallback marker when there were no refusals; tags=%v", target.Name, target.Tags)
+			}
+		}
 	}
 }
 

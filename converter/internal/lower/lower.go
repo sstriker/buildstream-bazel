@@ -84,6 +84,21 @@ type Options struct {
 	// codemodel-only behavior matches pre-trace lower output.
 	TraceRaw []byte
 
+	// UnsupportedExecuteProcessFallback toggles
+	// recoverExecuteProcess's refusal handling. When false
+	// (the default — preserves Phase A behaviour),
+	// classifier refusals (stamp / probe / unknown buckets)
+	// produce a typed unsupported-execute-process Tier-1
+	// failure. When true, refusals don't error; ToIR returns
+	// a placeholder ir.Package whose targets delegate to the
+	// element's round-2 install_tree.tar via per-target stub
+	// rules (cc_import / sh_binary / cc_library)
+	// reconstructed from the codemodel's
+	// Target.Install.Destinations. See
+	// docs/design/cmake-execute-process-round2-fallback.md
+	// for the architectural shape.
+	UnsupportedExecuteProcessFallback bool
+
 	// LiftConfigureFile toggles the configure_file recovery's
 	// lifted shape. When true (and a values namespace is
 	// available — either via CMakeVars below or via per-template
@@ -223,18 +238,42 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// (cmake -E builtins; file-producing tools with declared
 	// OUTPUT_FILE — translated to build-time genrules) and some
 	// aren't (version stamps, toolchain probes, opaque
-	// pipelines — refused with a typed Tier-1 failure).
-	// recoverExecuteProcess aggregates all unliftable calls
-	// into a single failure so projects with several
-	// execute_process invocations get one triage report rather
-	// than N converter runs uncovering them one at a time.
-	// Liftable buckets append to cc.Genrules + cc.OutToGenrule
-	// before lowerTarget runs so consumer attribution can
-	// attach generated artefacts to cc targets that include the
-	// build dir.
-	executeProcesses, err := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, cmakeBuild, cc)
-	if err != nil {
-		return nil, err
+	// pipelines).
+	//
+	// Disposition of the unliftable bucket depends on
+	// opts.UnsupportedExecuteProcessFallback:
+	//   - off (Phase A): aggregate into a single typed
+	//     unsupported-execute-process Tier-1 failure so
+	//     projects with several offending calls get one
+	//     triage report rather than N converter runs
+	//     uncovering them one at a time.
+	//   - on (Phase B fallback): the refusals are surfaced
+	//     to the caller via the placeholder ir.Package
+	//     (handled below alongside the codemodel walk so
+	//     placeholder targets can reuse Target.Install
+	//     destinations from the codemodel).
+	//
+	// Liftable buckets always append to cc.Genrules +
+	// cc.OutToGenrule before lowerTarget runs so consumer
+	// attribution can attach generated artefacts to cc
+	// targets that include the build dir. The
+	// []executeProcessOut return is parallel to
+	// configureFileOut and feeds the same per-target
+	// attribution loop in lowerTarget below.
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, cmakeBuild, cc)
+	if len(executeProcessRefusals) > 0 {
+		if !opts.UnsupportedExecuteProcessFallback {
+			return nil, formatExecuteProcessFailure(executeProcessRefusals)
+		}
+		// Phase B fallback: emit a placeholder ir.Package
+		// rather than continuing into the native lowering
+		// path. The native path would either redo the
+		// refusal analysis or trip on the unliftable call
+		// later in lowerTarget; the placeholder is the
+		// cleaner cut, and it lets downstream consumers see
+		// per-target labels at analysis time even when the
+		// element itself can't be fine-converted.
+		return emitFallbackPlaceholder(r, hostSrc)
 	}
 
 	// Recover configure_file outputs from trace before lowering

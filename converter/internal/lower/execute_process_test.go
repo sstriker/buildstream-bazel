@@ -18,8 +18,8 @@ func TestRecoverExecuteProcess_LiftCMakeETouch(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "touch", "/build/marker.stamp"}},
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); err != nil {
-		t.Fatalf("expected lift to succeed; got %v", err)
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules: want 1, got %d (%+v)", len(cc.Genrules), cc.Genrules)
@@ -66,8 +66,8 @@ func TestRecoverExecuteProcess_LiftCMakeECopy(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "copy", "/src/inputs/template.cfg", "/build/staged/template.cfg"}},
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); err != nil {
-		t.Fatalf("expected lift to succeed; got %v", err)
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
@@ -97,10 +97,11 @@ func TestRecoverExecuteProcess_LiftCMakeECopy_RejectsSourceOutsideTree(t *testin
 		Commands: [][]string{{"cmake", "-E", "copy", "/usr/share/foo/data.bin", "/build/staged/data.bin"}},
 	}}
 	cc := newCodegenContext()
-	_, err := recoverExecuteProcess(calls, "/src", "/src", "/build", cc)
-	if err == nil {
-		t.Fatal("expected refusal failure")
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc)
+	if len(refusals) == 0 {
+		t.Fatal("expected refusal")
 	}
+	err := formatExecuteProcessFailure(refusals)
 	if !strings.Contains(err.Error(), "/usr/share/foo/data.bin") {
 		t.Errorf("expected refusal to name the offending path; got: %v", err)
 	}
@@ -124,8 +125,8 @@ func TestRecoverExecuteProcess_LiftFileProducing(t *testing.T) {
 		OutputFile: "/build/generated.h",
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); err != nil {
-		t.Fatalf("expected lift to succeed; got %v", err)
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules: want 1, got %+v", cc.Genrules)
@@ -242,10 +243,11 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 			}
 			tc.mut(&call)
 			cc := newCodegenContext()
-			_, err := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "/build", cc)
-			if err == nil {
+			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "/build", cc)
+			if len(refusals) == 0 {
 				t.Fatalf("expected refusal")
 			}
+			err := formatExecuteProcessFailure(refusals)
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("refusal should mention %q; got: %v", tc.want, err)
 			}
@@ -277,14 +279,15 @@ func TestRecoverExecuteProcess_LiftPlusRefuse(t *testing.T) {
 		},
 	}
 	cc := newCodegenContext()
-	_, err := recoverExecuteProcess(calls, "/src", "/src", "/build", cc)
-	if err == nil {
-		t.Fatal("expected refusal failure for the git call")
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc)
+	if len(refusals) == 0 {
+		t.Fatal("expected refusal for the git call")
 	}
 	// The touch lift still went through.
 	if len(cc.Genrules) != 1 {
 		t.Errorf("touch should have lifted to one genrule even though git refused; got %+v", cc.Genrules)
 	}
+	err := formatExecuteProcessFailure(refusals)
 	if !strings.Contains(err.Error(), "[stamp]") {
 		t.Errorf("refusal should mention [stamp]; got: %v", err)
 	}
