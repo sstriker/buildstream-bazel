@@ -66,6 +66,16 @@ shift $((OPTIND - 1))
 if [ -z "$A" ] || [ -z "$B" ] || [ -z "$A_TARGETS" ] || [ -z "$B_TARGETS" ]; then
     usage
 fi
+# Verify the workspace dirs exist before kicking off any pass.
+# Without this, a typo in -A/-B falls through to a `cd` failure
+# under `set -e` and the operator sees a cryptic "no such file or
+# directory" attributed to the cd, not to the bad flag value.
+for dir in "$A" "$B"; do
+    if [ ! -d "$dir" ]; then
+        echo "build-with-settle: workspace directory not found: $dir" >&2
+        exit 64
+    fi
+done
 
 # Each pass is one bazel invocation per workspace. The second pass
 # is the settle: A picks up traces B published in pass-1; B picks up
@@ -76,16 +86,21 @@ fi
 # intact. $A_TARGETS / $B_TARGETS stay unquoted on purpose: the -a /
 # -b flags accept a space-separated target list as a single value
 # (e.g. -a "//foo //bar"), and word-splitting that into multiple
-# args is the desired behaviour.
+# args is the desired behaviour. Globbing of the same expansion is
+# NOT — bazel target patterns like `//pkg:*` and `@platforms//cpu:*`
+# would otherwise expand against the cwd if matching files happened
+# to exist there. `set -f` inside the subshell disables glob
+# expansion while leaving word-splitting on, which is exactly what
+# we want for target lists.
 run_pass() {
     pass="$1"
     shift
     echo "build-with-settle: pass $pass — project A ($A_TARGETS)" >&2
     # shellcheck disable=SC2086
-    (cd "$A" && bazel build "$@" -- $A_TARGETS)
+    (cd "$A" && set -f && bazel build "$@" -- $A_TARGETS)
     echo "build-with-settle: pass $pass — project B ($B_TARGETS)" >&2
     # shellcheck disable=SC2086
-    (cd "$B" && bazel build "$@" -- $B_TARGETS)
+    (cd "$B" && set -f && bazel build "$@" -- $B_TARGETS)
 }
 
 run_pass 1 "$@"
