@@ -63,6 +63,27 @@ func TestCanonicalize_OpenatStableAcrossFdValues(t *testing.T) {
 	}
 }
 
+// TestCanonicalize_OpenatNonAtFdcwdDirfd verifies that openat
+// calls using a non-AT_FDCWD dirfd (e.g. an O_PATH-opened
+// directory) still get captured when the pathname is
+// absolute. The kernel ignores dirfd for absolute paths;
+// dropping these would silently lose source-tree reads from
+// callers that don't use the AT_FDCWD form. The canonicalized
+// line rewrites the dirfd back to AT_FDCWD so the byte
+// schema stays stable.
+func TestCanonicalize_OpenatNonAtFdcwdDirfd(t *testing.T) {
+	in := `42  openat(7, "/work/include/foo.h", O_RDONLY|O_CLOEXEC) = 9
+43  openat(-1, "/work/src/x.c", O_RDONLY) = 10
+`
+	got := string(CanonicalizeBytesWith([]byte(in), Options{SourceRoot: "/work"}))
+	want := `openat(AT_FDCWD, "include/foo.h", O_RDONLY|O_CLOEXEC) = ?
+openat(AT_FDCWD, "src/x.c", O_RDONLY) = ?
+`
+	if got != want {
+		t.Errorf("non-AT_FDCWD dirfd handling\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
 // TestCanonicalize_OpenatRelativePathsDropped verifies that
 // relative openat paths (which require per-call cwd context to
 // resolve) are dropped rather than mis-rooted.

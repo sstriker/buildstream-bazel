@@ -324,6 +324,16 @@ func run(a cli.Args) error {
 		// and we write an empty array, which is unambiguous in the
 		// downstream consumer.
 		//
+		// Build-dir choice: live-cmake uses the host tmpdir we
+		// configured against; offline --reply-dir uses the build
+		// path the codemodel recorded (Codemodel.Paths.Build), NOT
+		// ReplyDir itself — ReplyDir is the
+		// `<build>/.cmake/api/v1/reply` subdir, four levels too
+		// deep. Using ReplyDir would break the in-source-buildDir
+		// exclude in ProjectToSourceTree (build-tree artifacts
+		// like `<build>/CMakeCache.txt` wouldn't be recognized
+		// as "inside buildDir" and would leak into the oracle).
+		//
 		// When build.ninja wasn't parseable (g == nil — older cmake or
 		// non-ninja generator), we still write the file but as an
 		// empty array, so scripts that always expect the artifact to
@@ -334,7 +344,7 @@ func run(a cli.Args) error {
 		if g != nil {
 			buildDirForProj := hostBuildDir
 			if buildDirForProj == "" {
-				buildDirForProj = a.ReplyDir
+				buildDirForProj = r.Codemodel.Paths.Build
 			}
 			reads = ninja.ProjectToSourceTree(g.ReconfigureInputs(), a.SourceRoot, buildDirForProj)
 		}

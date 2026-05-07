@@ -35,9 +35,8 @@
 package tracenorm
 
 import (
-	"bufio"
+	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,34 +79,15 @@ func Canonicalize(rawPath, outPath string, prefixSubs []PrefixSub) error {
 // Threads SourceRoot through so the openat read-oracle filter
 // applies (see package doc).
 func CanonicalizeWith(rawPath, outPath string, opts Options) error {
-	in, err := os.Open(rawPath)
+	raw, err := os.ReadFile(rawPath)
 	if err != nil {
 		return fmt.Errorf("open raw trace: %w", err)
 	}
-	defer in.Close()
-
-	out, err := os.Create(outPath)
-	if err != nil {
+	canon := CanonicalizeBytesWith(raw, opts)
+	if err := os.WriteFile(outPath, canon, 0o644); err != nil {
 		return fmt.Errorf("create canonical trace: %w", err)
 	}
-	defer out.Close()
-
-	w := bufio.NewWriter(out)
-	defer w.Flush()
-
-	c := newCanonicalizer(opts)
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		lineOut, keep := c.line(scanner.Text())
-		if !keep {
-			continue
-		}
-		if _, err := io.WriteString(w, lineOut+"\n"); err != nil {
-			return err
-		}
-	}
-	return scanner.Err()
+	return nil
 }
 
 // CanonicalizeBytes applies the same transforms as Canonicalize but
@@ -123,21 +103,37 @@ func CanonicalizeBytes(raw []byte, prefixSubs []PrefixSub) []byte {
 // CanonicalizeBytesWith is CanonicalizeBytes with the full
 // Options surface; mirrors CanonicalizeWith for in-memory
 // callers (trace-publish).
+//
+// Implementation walks via bytes.Split rather than bufio.Scanner.
+// Scanner's max-token-size cap (defaults 64K, hard-capped at
+// 1MiB even with a custom buffer) would silently truncate
+// pathologically long trace lines and skip the rest of the
+// trace — exactly the failure mode that breaks AC-digest
+// stability AND under-reports the read oracle. bytes.Split has
+// no such cap. CanonicalizeWith funnels through this same path
+// so both file-based and bytes-based callers get the unified
+// behavior.
 func CanonicalizeBytesWith(raw []byte, opts Options) []byte {
 	c := newCanonicalizer(opts)
-	var b strings.Builder
+	var b bytes.Buffer
 	b.Grow(len(raw))
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		out, keep := c.line(scanner.Text())
+	lines := bytes.Split(raw, []byte{'\n'})
+	// bytes.Split on "a\nb\n" returns ["a","b",""]; drop the
+	// trailing empty element so we don't materialize a blank
+	// line at end-of-file (which the scanner-based predecessor
+	// also skipped).
+	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	for _, line := range lines {
+		lineOut, keep := c.line(string(line))
 		if !keep {
 			continue
 		}
-		b.WriteString(out)
+		b.WriteString(lineOut)
 		b.WriteByte('\n')
 	}
-	return []byte(b.String())
+	return b.Bytes()
 }
 
 type canonicalizer struct {
@@ -182,7 +178,16 @@ var gccTempPathRE = regexp.MustCompile(`/tmp/cc[A-Za-z0-9]{6,}\.[a-zA-Z]+`)
 // openatLineRE matches strace-format openat lines. Capture
 // groups:
 //
-//  1. `openat(AT_FDCWD, "` — fixed prefix.
+//  1. `openat(<dirfd>, "` — the dirfd token can be either
+//     `AT_FDCWD` (the common case — caller used the cwd-rooted
+//     form) or a numeric file descriptor (typical when callers
+//     `open()`'d a directory and pass that fd in for relative
+//     resolution). For relative pathnames the dirfd matters,
+//     and we drop those (we can't replay the open-the-dir
+//     resolution context). For absolute pathnames the dirfd is
+//     ignored by the kernel; we keep the line so the read
+//     oracle doesn't lose source-tree reads from non-AT_FDCWD
+//     callers.
 //  2. The pathname (between the surrounding double-quotes;
 //     embedded `\"` escapes preserved).
 //  3. The rest of the call: closing `"`, optional `, <flags>`,
@@ -198,11 +203,12 @@ var gccTempPathRE = regexp.MustCompile(`/tmp/cc[A-Za-z0-9]{6,}\.[a-zA-Z]+`)
 //
 //	openat(AT_FDCWD, "/path", O_RDONLY|O_CLOEXEC) = 3
 //	openat(AT_FDCWD, "/path", O_RDONLY|O_CLOEXEC, 0666) = 3
+//	openat(7, "/abs/path", O_RDONLY) = 3
 //
 // The capture group for the path uses non-greedy matching so
 // embedded `\"` escapes inside the path string don't terminate
 // the match early.
-var openatLineRE = regexp.MustCompile(`^(openat\(AT_FDCWD, ")((?:[^"\\]|\\.)*)("(?:, [^)]*)?\))(\s*=\s*-?\d+)?$`)
+var openatLineRE = regexp.MustCompile(`^(openat\((?:AT_FDCWD|-?\d+), ")((?:[^"\\]|\\.)*)("(?:, [^)]*)?\))(\s*=\s*-?\d+)?$`)
 
 func (c *canonicalizer) line(s string) (string, bool) {
 	s = pidPrefixRE.ReplaceAllString(s, "")
@@ -243,7 +249,14 @@ func (c *canonicalizer) openatLine(s string) (string, bool) {
 	if m == nil {
 		return "", false
 	}
-	prefix := m[1] // `openat(AT_FDCWD, "`
+	// Canonicalize prefix: rewrite numeric dirfds back to
+	// AT_FDCWD so the byte schema is stable regardless of the
+	// caller's resolution shape. The kernel ignores dirfd for
+	// absolute paths (which is the only path shape we keep);
+	// we'll drop relative paths below since we can't resolve
+	// them without per-call dirfd context.
+	const canonicalPrefix = `openat(AT_FDCWD, "`
+	prefix := canonicalPrefix
 	pathQuoted := m[2]
 	suffix := m[3] // closing `"` + flags + `)`
 
