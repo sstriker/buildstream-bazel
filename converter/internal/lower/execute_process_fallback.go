@@ -42,11 +42,15 @@ type fallbackStub struct {
 // The "install_tree/" prefix names the extract genrule's output
 // directory; downstream rules reference paths inside it.
 //
-// The install_tree.tar src for the extract genrule is the
-// label literal "install_tree.tar" — write-a wires the actual
-// label (whether it lives in project A's converter genrule
-// outputs or a sibling install genrule) at write-a time. The
-// placeholder doesn't take a position on that wiring.
+// The extract genrule's src is the literal label
+// "install_tree.tar". Resolution: when A's BUILD.bazel.out
+// gets symlinked into Project B's package, the placeholder
+// co-locates with B's install genrule, which produces
+// install_tree.tar as one of its outs (Step 3, write-a side
+// — wraps cmake configure + ninja + install under
+// build-tracer + inline trace-publish). Same Bazel package =
+// label resolution succeeds. convert-element's executor
+// toolchain stays cmake-only; the build work lives in B.
 //
 // Targets with no Install block — utility, internal-only
 // libraries, the project's private build artefacts — are

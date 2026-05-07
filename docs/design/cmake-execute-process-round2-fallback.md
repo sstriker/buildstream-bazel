@@ -65,107 +65,152 @@ both build-wide, not per-element), which sacrifices native
 render's fine-grained `cc_library` / `cc_binary` outputs for
 projects that don't need the fallback.
 
-## Per-element fallback decision
+## Architecture: A converter + B install + round-2 rendezvous
 
-write-a stays uniform across kind:cmake elements: every
-element gets the same converter-genrule shape, with the same
-output set. **convert-element decides per-element at action
-time** whether to take the native render path or the fallback
-path, based on whether classification refuses any
-`execute_process` calls. write-a never needs to know which
-elements opt into fallback — the per-element decision is
-fully encapsulated in convert-element.
+`kind:cmake` round-2 fallback uses the same architectural
+split that `kind:autotools` round-2 already established:
 
-This avoids three uglier alternatives:
+- **Project A — converter genrule.** Runs `cmake configure` +
+  File API + `lower`. Decides per-element at action time
+  whether to emit native cc rules or the placeholder shape
+  in `BUILD.bazel.out`. `convert-element`'s executor
+  toolchain stays cmake-only — no ninja, no install. The
+  per-element decision is "what shape of `BUILD.bazel.out`
+  to write," not "what build to run."
+- **Project B — install genrule.** `build-tracer` wraps
+  `cmake -B build` + `cmake --build build` + `cmake --install
+  build`. Outputs `install_tree.tar` (split per cmake's
+  `install_manifest.txt` is a future optimisation; v1 emits
+  a single tar). Inline `trace-publish` lands the AC entry
+  keyed by `SyntheticActionDigest(srckey)`.
+- **Round-2 rendezvous.** A's converter genrule consumes
+  `@trace_<elem>//:trace` via load-time `_trace_repo` lookup
+  against the REAPI ActionCache. Same mechanism + same
+  helpers as kind:autotools round-2 (see
+  `docs/design/autotools-round2-rendezvous.md`).
 
-- **write-a runs cmake configure per element.** Eliminates the
-  decision-time problem at the cost of polluting write-a's
-  wallclock boundary. Rejected — write-a is a parsing +
-  emission pass; running cmake at write-a time ties its
-  latency to every cmake project's configure cost.
-- **Per-element opt-in in `.bst`.** Operators tag elements
-  `cmake.round2: true` after seeing failures. Rejected —
-  duplicates information already in the `failure.json` triage
-  report; encourages the manifest and the failure to drift
-  apart.
-- **Separate Project B install genrule.** Mirrors
-  kind:autotools round-2 (where the install genrule lives in
-  Project B). For kind:cmake this would force write-a to
-  emit two genrules per element (converter in A, install in
-  B). Rejected — bolts the round-2 install steps onto
-  convert-element's existing genrule keeps the per-element
-  decision in one place; convert-element already runs cmake
-  configure, so adding "and conditionally also ninja +
-  install" is a smaller delta than wiring a parallel B-side
-  genrule.
+write-a's responsibility expands by exactly the kind:autotools
+amount: emit both A's converter genrule and B's install
+genrule for kind:cmake elements when round-2 fallback is
+enabled. The "is this element a fallback element" decision
+isn't write-a's — write-a uniformly emits both genrules for
+every kind:cmake element under round-2 mode. Bazel evaluates
+B's install genrule lazily; it's only built when A's
+`BUILD.bazel.out` references its outputs. Native-render
+elements emit cc rules that don't reference `install_tree.tar`,
+so B's install genrule sits unbuilt; fallback elements emit
+the placeholder shape that does reference it, so B's install
+genrule runs.
 
-The chosen shape: convert-element's genrule has a fixed
-output set (`BUILD.bazel.out`, `install_tree.tar`,
-`trace.log`, `failure.json`). On native success
-install_tree.tar is empty; on fallback it contains the
-artifacts. write-a doesn't observe the choice; operators see
-which path was taken via the `failure.json` triage report
-and a stderr banner from convert-element.
+### Convergence: the trace turns refusal into refinement
+
+The round-2 rendezvous gives the architecture an interesting
+property: refused elements aren't permanently coarse. The
+first build of a given srckey hits the miss path (trace
+empty → placeholder shape with `cc_import` / `sh_binary`
+stubs); after pass-3 publishes the trace + AC entry,
+subsequent builds of the same srckey *anywhere* (CI, dev
+laptop, fresh executor) see the trace at A's load time and
+the converter can refine — possibly all the way to native
+cc rules for the previously-refused element, by reading the
+trace to learn what the unliftable `execute_process` actually
+did at the filesystem level.
+
+v1 of the converter doesn't do that refinement; it always
+emits the placeholder shape when classification refuses,
+regardless of whether a trace is available. The converger
+direction is the natural follow-on once placeholder-shape
+projects are in real use — it's queued as a Later bullet
+in `ROADMAP.md`.
+
+### Why not run the build inside convert-element
+
+Bolting `cmake --build` + `cmake --install` onto
+convert-element would keep the per-element decision in one
+place but at three real costs:
+
+1. **Toolchain expansion.** Executors that run convert-element
+   gain a ninja dependency and a DESTDIR-shaped sandbox.
+   Currently the convert-element action is a pure
+   static-analysis tool; conflating it with a build action
+   muddies the role.
+2. **No round-2 rendezvous.** The kind-agnostic
+   `_trace_repo` + `trace-publish` plumbing assumes B's
+   install genrule emits the trace; folding into A
+   means re-implementing the rendezvous A-side, with no
+   share with kind:autotools/make.
+3. **No convergence path.** With B emitting the trace, the
+   round-2 mechanism above — refused elements becoming
+   fine-grained over time — falls out for free. With A
+   doing the build, the trace would be A's own action's
+   fingerprint, not the upstream build's, defeating the
+   convergence direction.
+
+So the split lives where kind:autotools put it: A is
+analysis, B is build. write-a renders both.
 
 ## The shape
 
 ```
-write-a (no kind:cmake-side opt-in needed)  →
+write-a --cmake-round2-fallback  →
   project A: per-element converter genrule
-             outs: [BUILD.bazel.out, install_tree.tar,
-                    trace.log, failure.json]
-  project B: thin source-staging stub (unchanged from today)
+             outs: [BUILD.bazel.out, ...]
+             cmd: convert-element --reply-dir=... \
+                  --unsupported-execute-process-fallback=true \
+                  --out-build=BUILD.bazel.out
+             load-time: @trace_<elem>//:trace via _trace_repo
+  project B: per-element install genrule
+             outs: [install_tree.tar, trace.log, ...]
+             cmd: build-tracer wraps:
+                  cmake -B build -G Ninja -S src \
+                  cmake --build build --parallel 1
+                  cmake --install build --prefix=$DESTDIR
+                  tar -C $DESTDIR -cf install_tree.tar .
+                  trace-publish (lands the AC entry)
 
 bazel build A//<elem>:<elem>_build
-   converter genrule (one action covers both render paths):
-     cmake configure + File API reply + trace
-     convert-element runs lower.ToIR(...)
-       → success            ⇒ emit fine-grained cc_library / cc_binary
-       → unsupported-execute-process
-                            ⇒ emit placeholder BUILD.bazel.out:
-                                aliases pointing at <elem>_install_tree
+   pass-2 converter genrule:
+     load-time → _trace_repo lookup against AC
+                 → AC hit  ⇒ symlink trace dir into @trace_<elem>//
+                 → AC miss ⇒ empty fileset
+     action time → cmake configure + File API reply + trace.jsonl
+                   convert-element runs lower.ToIR(...)
+                     → native success ⇒ emit fine cc rules
+                     → unsupported-execute-process refusal AND
+                       fallback flag set ⇒ emit placeholder:
+                         * extract genrule untarring
+                           //<elem-pkg>:install_tree.tar
+                         * per-target stubs:
+                             STATIC/OBJECT → cc_import + static_library
+                             SHARED/MODULE → cc_import + shared_library
+                             EXECUTABLE    → sh_binary + srcs
+                             INTERFACE     → cc_library hdrs-only
 
 bazel build B//<elem>:<elem>_install
-   pass-3 install genrule:
+   pass-3 install genrule (only built when A's BUILD.bazel.out
+   references install_tree.tar — i.e. fallback path was taken):
      build-tracer wraps:
        cmake -B build [...]
        cmake --build build
        cmake --install build --prefix=$INSTALL_ROOT
      synthesize empty make-db.txt (cmake has no make-db; the
        trace-publish wire contract requires the slot)
-     trace-publish (defense-in-depth, lands AC entry)
+     trace-publish lands the AC entry
 ```
 
-Native render and fallback share **one** convert-element
-genrule. The per-element decision is fully encapsulated; the
-genrule's output set is uniform (so write-a renders one
-template); convert-element fills in whatever subset of those
-outputs the chosen path needs.
-
-### Why one genrule, not two
-
-The `kind:autotools` round-2 architecture splits the work
-across Project A (converter genrule) and Project B (install
-genrule). For autotools that split is forced — autotools has
-no analysis-time introspection so the converter can't run
-without the install actually happening, and the natural place
-for the install is Project B's existing build action.
-
-`kind:cmake` doesn't have that constraint. cmake's File API
-gives the converter analysis-time introspection; the
-converter already runs cmake configure. Bolting "and
-optionally also `ninja` + `cmake --install`" onto the same
-action keeps the per-element decision in one place and avoids
-write-a needing to know which elements opt into fallback.
+Bazel evaluates B's install genrule lazily. Native-render
+elements emit cc rules that don't reference
+`install_tree.tar`; B's install genrule sits unbuilt for them.
+Fallback elements emit the placeholder shape that *does*
+reference `install_tree.tar`; B's install genrule runs.
 
 ## Convert-element's failure → placeholder transition
 
 Today, `convert-element` exits 1 on `unsupported-execute-process`
 and the genrule action fails. For the fallback, the genrule
-action must succeed even when classification refuses, run
-cmake build + install instead of giving up, and emit a
-placeholder BUILD whose per-target stubs delegate to the
-fresh install_tree.tar.
+action must succeed even when classification refuses, and emit
+a placeholder BUILD whose per-target stubs delegate to
+Project B's `install_tree.tar`.
 
 Implementation: a new `--unsupported-execute-process-fallback`
 flag on `convert-element`. When set:
@@ -175,12 +220,9 @@ flag on `convert-element`. When set:
   the lowering reads.
 - `lower.ToIR` calls `emitFallbackPlaceholder` to produce an
   `ir.Package` of per-target stubs (shape described below).
-- (Future Step 3) convert-element ALSO runs `cmake --build` +
-  `cmake --install` + `tar` to populate install_tree.tar in
-  the same action, and writes failure.json with the per-call
-  triage report. Step 2 / Step 2.5 just emit the BUILD shape;
-  the actual build-and-install work in convert-element lands
-  in Step 3.
+  Convert-element's executor toolchain is unchanged — still
+  cmake-only, no ninja, no install. The actual build work
+  lives in Project B's install genrule (Step 3, write-a side).
 
 ### Placeholder shape (per-target rules from install destinations)
 
@@ -201,9 +243,10 @@ the codemodel and dispatches on `Target.Type`:
 ```python
 # One-time tar extract genrule. Outputs are enumerated from
 # Target.Install.Destinations + NameOnDisk; the genrule's src
-# is the literal "install_tree.tar" label that write-a (Step
-# 3) wires to the converter genrule's own install_tree.tar
-# output (or wherever the install bytes come from).
+# is "install_tree.tar" — a label that resolves once A's
+# BUILD.bazel.out is symlinked into Project B's package and
+# co-locates with B's install genrule (which produces
+# install_tree.tar as one of its outs).
 genrule(
     name = "_install_tree_extract",
     srcs = ["install_tree.tar"],
@@ -358,17 +401,40 @@ ones but each leaves the tree in a runnable state.
    per-target `cc_import` / `sh_binary` / extract-genrule
    shape in Step 2.5 — PR #98). The flag is off by default;
    existing flows unchanged.
-3. **write-a `--cmake-round2-fallback` flag + per-element
-   round-2 install genrule emission.** When the flag is on,
-   write-a emits the round-2 install genrule alongside the
-   native converter genrule, and threads
-   `--unsupported-execute-process-fallback` into the
-   converter genrule's cmd. Render gate
-   `scripts/meta-cmake-round2-fallback.sh` lands here.
+3. **write-a integration: emit Project B install genrule +
+   wire the round-2 rendezvous.** write-a's kind:cmake render
+   gains a round-2 mode that:
+   - threads `--unsupported-execute-process-fallback=true`
+     into A's converter genrule cmd;
+   - adds the `@trace_<elem>//:trace` load-time lookup to
+     A's converter genrule (kind-agnostic helpers in
+     `handler_pipeline_round2.go::renderTraceDrivenRound2A`
+     are reusable as-is);
+   - emits B's install genrule wrapping cmake configure +
+     ninja + install under `build-tracer` (using the
+     `wrapCmakePipelineCmds()` helper from Step 1) plus
+     inline `trace-publish`.
+   Render gate `scripts/meta-cmake-round2-fallback.sh` lands
+   here. Reuses `cmd/build-tracer`, `cmd/trace-publish`,
+   `cmd/trace-lookup`, and the synthetic-key digest from
+   `internal/tracenorm/synthkey.go` — all kind-agnostic.
 4. **Roadmap promotion + docs.** Move the ROADMAP `Later`
    bullet to `Now`/`Done` as the steps land. Update
    `docs/research/cmake_analysis.md` §9 to reflect the
    shipped fallback path.
+
+### Future: trace-driven convergence (research)
+
+A natural Step 5 (queued in ROADMAP `Later`): with B's trace
+available via `@trace_<elem>//:trace`, the converter can read
+it to learn what the unliftable `execute_process` actually
+spawned + wrote at the filesystem level — and potentially
+emit *fine-grained* `cc_library` / `cc_binary` rules for
+elements that originally refused. The first build of a given
+srckey hits the placeholder shape; subsequent builds *anywhere*
+(after pass-3 publishes) see the trace and refine. This makes
+fallback a transient state, not a permanent regression. v1
+doesn't ship this; it's tracked as a research direction.
 
 Each step ships with `go test ./...` clean, `gofmt -l .`
 empty, and the relevant render/live-AC gate green.
