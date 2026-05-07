@@ -74,6 +74,21 @@ type Options struct {
 	// --trace-format=json-v1 --trace-redirect=<TracePath>`.
 	TracePath string
 
+	// DumpVars enables the post-configure variable-namespace
+	// capture. When true, Configure stages dump-vars.cmake into
+	// the build dir and passes
+	// `-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=<staged>`; the
+	// resulting cmake-to-bazel.vars.dump file feeds Reply.Vars,
+	// which the configure_file lift uses for byte-stable
+	// substitution at Bazel build time. Off by default — staging
+	// the hook unconditionally would (a) override a project- or
+	// operator-supplied CMAKE_PROJECT_TOP_LEVEL_INCLUDES value
+	// and (b) emit a "manually-specified variables were not
+	// used" warning on cmake < 3.24 (the variable was added
+	// there). convert-element only flips this on when
+	// --lift-configure-file is set.
+	DumpVars bool
+
 	// Stdout/Stderr capture cmake output. Nil discards.
 	Stdout, Stderr io.Writer
 }
@@ -125,12 +140,18 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		_ = f.Close()
 	}
 
-	// Stage the dump-vars hook into the build dir. Lives next to
-	// the CMakeCache to make introspection easy; the path passes
-	// to cmake via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES below.
-	dumpVarsPath := filepath.Join(opts.BuildDir, "cmake-to-bazel.dump-vars.cmake")
-	if err := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); err != nil {
-		return Reply{}, fmt.Errorf("cmakerun: stage dump-vars hook: %w", err)
+	// Stage the dump-vars hook into the build dir when the
+	// caller opted into the namespace capture (see
+	// Options.DumpVars). When opted out we leave
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES alone so projects /
+	// operators that set it don't get silently overridden, and
+	// cmake < 3.24 doesn't see the unused-variable diagnostic.
+	var dumpVarsPath string
+	if opts.DumpVars {
+		dumpVarsPath = filepath.Join(opts.BuildDir, "cmake-to-bazel.dump-vars.cmake")
+		if err := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: stage dump-vars hook: %w", err)
+		}
 	}
 
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
@@ -147,6 +168,8 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		"-G", "Ninja",
 		"-DCMAKE_BUILD_TYPE=" + opts.BuildType,
 		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+	if opts.DumpVars {
 		// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) injects
 		// our dump-vars hook at the end of the top-level project()
 		// call. Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake
@@ -157,7 +180,9 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		// in the cache). _TOP_LEVEL_INCLUDES is a list-of-files
 		// variable explicitly designed for this CLI-injection
 		// pattern.
-		"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=" + dumpVarsPath,
+		argv = append(argv,
+			"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+dumpVarsPath,
+		)
 	}
 	if opts.TracePath != "" {
 		argv = append(argv,
@@ -188,14 +213,21 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		return Reply{}, fmt.Errorf("cmakerun: cmake failed: %w", err)
 	}
 
-	// Best-effort read of the variable dump: a fatal-erred
-	// configure may have skipped the deferred callback, in
-	// which case the file is absent and we return an empty
-	// Vars map. Downstream lower then falls back to either the
-	// per-template Extract path or the legacy base64 shape.
-	vars, err := readVarsDump(filepath.Join(opts.BuildDir, VarsDumpFilename))
-	if err != nil {
-		return Reply{}, fmt.Errorf("cmakerun: read vars dump: %w", err)
+	// Best-effort read of the variable dump (only when we
+	// staged the hook in the first place — without
+	// opts.DumpVars cmake never sees dump-vars.cmake and the
+	// file won't exist). When DumpVars is on but configure
+	// fatal-erred before the deferred callback, the file is
+	// absent and readVarsDump returns nil values; downstream
+	// lower then falls back to either the per-template Extract
+	// path or the legacy base64 shape.
+	var vars map[string]string
+	if opts.DumpVars {
+		var err error
+		vars, err = readVarsDump(filepath.Join(opts.BuildDir, VarsDumpFilename))
+		if err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: read vars dump: %w", err)
+		}
 	}
 	return Reply{
 		Path: filepath.Join(opts.BuildDir, ".cmake", "api", "v1", "reply"),

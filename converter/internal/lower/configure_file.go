@@ -374,9 +374,15 @@ func configureFileLegacyCmd(rel string, body []byte) string {
 // Values are base64'd JSON to avoid shell-quoting concerns;
 // when the cmakeVars-fed full-namespace path is used the JSON
 // is roughly the size of `cmake -E environment` output (a few
-// KB to tens of KB depending on project breadth). Even then it
-// stays much smaller than the rendered config.h's worth of
-// bytes the legacy shape embedded.
+// KB to tens of KB depending on project breadth). The size
+// vs. the legacy base64-of-rendered shape isn't a guaranteed
+// win — for tiny templates that reference one or two cmake
+// variables the values JSON can be larger than what config.h
+// would have been — but the cache-key shape IS the win:
+// BUILD.bazel content is decoupled from .h.in content (only
+// the cmake-variable namespace shows up here), so editing
+// .h.in cache-hits convert-element instead of rerunning it.
+// That's the lift's whole point; size is incidental.
 func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts configurefile.Options) (string, error) {
 	body, err := json.Marshal(values)
 	if err != nil {
@@ -394,14 +400,17 @@ func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts
 	// Bazel's per-action sandbox cleanup pick it up if the
 	// trap doesn't fire (e.g. SIGKILL). All `$@` expansions
 	// are double-quoted to handle output paths containing
-	// spaces. The trailing rm + explicit exit-code preservation
-	// handles the normal-exit case.
+	// spaces. Cleanup `rm` runs only when VALUES is non-empty:
+	// if mkdir or mktemp failed earlier (`set -e`-like
+	// short-circuit via `&&`), VALUES is unset and `rm -f ""`
+	// would emit a noise diagnostic on some shells, obscuring
+	// the real failure.
 	return fmt.Sprintf(
 		`mkdir -p "$$(dirname "$@")" && `+
 			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 			`echo %s | base64 -d > "$$VALUES" && `+
 			`$(location //tools:cmake-configure-file) %s--values="$$VALUES" "$(location %s)" "$@" ; `+
-			`rc=$$?; rm -f "$$VALUES"; exit $$rc`,
+			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES"; exit $$rc`,
 		encoded, flags, inRel,
 	), nil
 }

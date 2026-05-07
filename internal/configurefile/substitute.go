@@ -176,9 +176,14 @@ func substituteOnce(template []byte, values map[string]string, opts Options) []b
 
 // newlineTerminator picks the line terminator substituteOnce
 // writes between lines: LF/CRLF per opts.NewlineStyle, or — when
-// the option is NewlineDefault — whichever terminator the
-// template predominantly uses (CRLF if the first \n is preceded
-// by \r, LF otherwise).
+// the option is NewlineDefault — a heuristic detection from the
+// template's first newline (CRLF if the first \n is preceded by
+// \r, LF otherwise). Single-newline sniff rather than full-byte
+// scan: real-world configure_file templates have a consistent
+// line-ending style, and sampling the first newline matches what
+// cmake's NEWLINE_STYLE-omitted behavior produces. If a fixture
+// shows up with mixed line endings, the right answer is to set
+// an explicit NewlineStyle; the heuristic isn't load-bearing.
 func newlineTerminator(style NewlineStyle, template []byte) string {
 	switch style {
 	case NewlineLF:
@@ -229,7 +234,7 @@ func trimTrailingIfTemplateLacked(rendered, template []byte, terminator string) 
 	if template[len(template)-1] == '\n' {
 		return rendered
 	}
-	if strings.HasSuffix(string(rendered), terminator) {
+	if bytes.HasSuffix(rendered, []byte(terminator)) {
 		return rendered[:len(rendered)-len(terminator)]
 	}
 	return rendered
