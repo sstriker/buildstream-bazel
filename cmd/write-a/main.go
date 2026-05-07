@@ -359,6 +359,7 @@ func main() {
 	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for round-2 (the default trace-driven path) — staged into project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time; staging mirrors the convert-element-autotools convention.")
 	round1 := flag.Bool("autotools-round1", false, "opt out of round-2 (the default for kind:autotools when the trace-driven path is enabled). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / make / make-install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
+	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin. See docs/design/cmake-execute-process-round2-fallback.md.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -376,8 +377,17 @@ func main() {
 	// install_tree.tar. Bazel's action cache (buildbarn in CI)
 	// handles cross-node convergence via the existing
 	// remote-cache plumbing.
-	if (*autotoolsBin != "") != (*tracerBin != "") {
-		log.Fatalf("--convert-element-autotools and --build-tracer-bin must be set together")
+	// --build-tracer-bin without --convert-element-autotools is
+	// allowed when --cmake-round2-fallback is set (kind:cmake's
+	// install genrule wraps cmake under build-tracer without
+	// involving the autotools converter); the inverse (autotools
+	// without tracer) is still an error. The earlier check
+	// rejected both shapes; relax it for the cmake-only case.
+	if *autotoolsBin != "" && *tracerBin == "" {
+		log.Fatalf("--convert-element-autotools requires --build-tracer-bin")
+	}
+	if *tracerBin != "" && *autotoolsBin == "" && !*cmakeRound2Fallback {
+		log.Fatalf("--build-tracer-bin requires either --convert-element-autotools (autotools round-{1,2}) or --cmake-round2-fallback (kind:cmake fallback)")
 	}
 	if *autotoolsBin != "" {
 		abs, err := filepath.Abs(*autotoolsBin)
@@ -399,6 +409,41 @@ func main() {
 			log.Fatalf("resolve cmake-configure-file path: %v", err)
 		}
 		cmakeConfig.configureFileBin = abs
+	}
+	// kind:cmake round-2 fallback. Reuses the same build-tracer
+	// + trace-publish staging the autotools round-2 path needs;
+	// require both binaries so Project B's install genrule has
+	// what it needs to wrap the build and publish the trace.
+	// trace-lookup is NOT required for v1 — A's converter
+	// genrule doesn't yet consume @trace_<elem>//:trace
+	// (queued behind the trace-driven convergence research
+	// follow-on). When that lands, this validation gains
+	// trace-lookup as a dependency.
+	if *cmakeRound2Fallback {
+		if *tracerBin == "" || *publishBin == "" {
+			log.Fatalf("--cmake-round2-fallback requires --build-tracer-bin and --trace-publish-bin so Project B's install genrule can wrap the build and publish the trace")
+		}
+		// build-tracer / trace-publish abs paths are resolved
+		// above (autotools-round-2 path uses the same flags),
+		// so autotoolsConfig.tracerBin / .publishBin already
+		// hold the resolved values when --convert-element-autotools
+		// is also set. When ONLY --cmake-round2-fallback is set
+		// (not autotools round-2), resolve here.
+		if autotoolsConfig.tracerBin == "" {
+			abs, err := filepath.Abs(*tracerBin)
+			if err != nil {
+				log.Fatalf("resolve build-tracer path: %v", err)
+			}
+			autotoolsConfig.tracerBin = abs
+		}
+		if autotoolsConfig.publishBin == "" {
+			abs, err := filepath.Abs(*publishBin)
+			if err != nil {
+				log.Fatalf("resolve trace-publish path: %v", err)
+			}
+			autotoolsConfig.publishBin = abs
+		}
+		cmakeConfig.round2FallbackEnabled = true
 	}
 	// Round-2 is the default trace-driven path. It activates
 	// when --convert-element-autotools is set AND the user
@@ -986,34 +1031,52 @@ func stageCmakeConfigureFileTool(outDir string) (string, error) {
 // project B's BUILD (see docs/three-pass-flow.md "1 → 2 →
 // 3 → 2′ → 3′" loop).
 func stageAutotoolsTools(outDir string) ([]string, error) {
-	if autotoolsConfig.convertBin == "" || autotoolsConfig.tracerBin == "" {
+	autotoolsActive := autotoolsConfig.convertBin != "" && autotoolsConfig.tracerBin != ""
+	cmakeFallbackActive := cmakeConfig.round2FallbackEnabled
+	if !autotoolsActive && !cmakeFallbackActive {
 		return nil, nil
 	}
 	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
 		return nil, err
 	}
-	stagedAt := filepath.Join(outDir, "tools", "convert-element-autotools")
-	if err := copyFile(autotoolsConfig.convertBin, stagedAt); err != nil {
-		return nil, fmt.Errorf("stage convert-element-autotools: %w", err)
+	var exports []string
+	if autotoolsActive {
+		stagedAt := filepath.Join(outDir, "tools", "convert-element-autotools")
+		if err := copyFile(autotoolsConfig.convertBin, stagedAt); err != nil {
+			return nil, fmt.Errorf("stage convert-element-autotools: %w", err)
+		}
+		if err := os.Chmod(stagedAt, 0o755); err != nil {
+			return nil, err
+		}
+		exports = append(exports, "convert-element-autotools")
 	}
-	if err := os.Chmod(stagedAt, 0o755); err != nil {
-		return nil, err
+	// build-tracer is needed for both autotools round-{1,2}
+	// (its install genrule wraps configure/make/install) and
+	// for kind:cmake round-2 fallback (its install genrule wraps
+	// cmake configure / ninja / install). The binary lives at
+	// autotoolsConfig.tracerBin regardless — both paths
+	// resolved it via --build-tracer-bin.
+	if autotoolsConfig.tracerBin != "" {
+		stagedTracer := filepath.Join(outDir, "tools", "build-tracer")
+		if err := copyFile(autotoolsConfig.tracerBin, stagedTracer); err != nil {
+			return nil, fmt.Errorf("stage build-tracer: %w", err)
+		}
+		if err := os.Chmod(stagedTracer, 0o755); err != nil {
+			return nil, err
+		}
+		exports = append(exports, "build-tracer")
 	}
-	stagedTracer := filepath.Join(outDir, "tools", "build-tracer")
-	if err := copyFile(autotoolsConfig.tracerBin, stagedTracer); err != nil {
-		return nil, fmt.Errorf("stage build-tracer: %w", err)
-	}
-	if err := os.Chmod(stagedTracer, 0o755); err != nil {
-		return nil, err
-	}
-	exports := []string{"convert-element-autotools", "build-tracer"}
-	if autotoolsConfig.round2Enabled {
-		// trace-publish lands as a //tools:trace-publish label
-		// referenced by project B's round-2 coarse install
-		// genrule. trace-lookup is staged so operators have a
-		// known artifact to point TRACE_LOOKUP_BIN at; the
-		// _trace_repo rule reads the env var (set via
-		// --repo_env=TRACE_LOOKUP_BIN=...) at bazel build time.
+	// trace-publish + trace-lookup land for round-2 paths.
+	// Autotools' round-2 needs both (publish in B's install
+	// genrule, lookup in A's converter genrule via the
+	// _trace_repo rule). kind:cmake fallback v1 only needs
+	// publish (the @trace_<elem>//:trace lookup is queued
+	// behind the trace-driven convergence research follow-on);
+	// we still stage trace-lookup when autotools round-2 is
+	// active so that path keeps working uniformly.
+	publishNeeded := autotoolsConfig.round2Enabled || cmakeFallbackActive
+	lookupNeeded := autotoolsConfig.round2Enabled
+	if publishNeeded {
 		stagedPub := filepath.Join(outDir, "tools", "trace-publish")
 		if err := copyFile(autotoolsConfig.publishBin, stagedPub); err != nil {
 			return nil, fmt.Errorf("stage trace-publish: %w", err)
@@ -1021,6 +1084,9 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 		if err := os.Chmod(stagedPub, 0o755); err != nil {
 			return nil, err
 		}
+		exports = append(exports, "trace-publish")
+	}
+	if lookupNeeded {
 		stagedLk := filepath.Join(outDir, "tools", "trace-lookup")
 		if err := copyFile(autotoolsConfig.lookupBin, stagedLk); err != nil {
 			return nil, fmt.Errorf("stage trace-lookup: %w", err)
@@ -1028,7 +1094,7 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 		if err := os.Chmod(stagedLk, 0o755); err != nil {
 			return nil, err
 		}
-		exports = append(exports, "trace-publish", "trace-lookup")
+		exports = append(exports, "trace-lookup")
 	}
 	return exports, nil
 }
