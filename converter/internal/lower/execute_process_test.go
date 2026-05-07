@@ -167,6 +167,43 @@ func TestRecoverExecuteProcess_LiftFileProducing(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_LiftFileProducing_SourceRootArgv
+// covers the corner where an argv element resolves to the
+// source root itself (cmake's ${CMAKE_CURRENT_SOURCE_DIR}
+// expanding to the project root). relativeIfInside maps that
+// to "" — without normalisation, shellQuoteArg("") would
+// emit literal `”` in the cmd, dropping the path argument
+// entirely. The fix re-normalises empty rel to "." so the
+// argument remains valid; the directory-handling branch
+// then renders it as a literal `.` rather than a
+// $(location) wrap (which would also fail on the empty
+// path).
+func TestRecoverExecuteProcess_LiftFileProducing_SourceRootArgv(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:       "/src/CMakeLists.txt",
+		Line:       12,
+		Commands:   [][]string{{"/usr/bin/python3", "/src/scripts/gen.py", "/src"}},
+		OutputFile: "/build/generated.h",
+	}}
+	cc := newCodegenContext()
+	if err := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", cc); err != nil {
+		t.Fatalf("expected lift to succeed; got %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	// argv[2] is /src (the source root itself) — must
+	// render as a literal "." in the cmd, not as `''` or
+	// $(location ).
+	if strings.Contains(g.GenruleCmd, " '' ") || strings.Contains(g.GenruleCmd, "$(location )") {
+		t.Errorf("source-root argv element should normalise to %q; got cmd: %s", ".", g.GenruleCmd)
+	}
+	if !strings.Contains(g.GenruleCmd, " . > ") && !strings.HasSuffix(strings.SplitN(g.GenruleCmd, ` > "$@"`, 2)[0], " .") {
+		t.Errorf("expected literal `.` for source-root argv; got cmd: %s", g.GenruleCmd)
+	}
+}
+
 // TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts
 // asserts that v1 conservatively refuses calls that set
 // WORKING_DIRECTORY / ENVIRONMENT / TIMEOUT / INPUT_FILE /

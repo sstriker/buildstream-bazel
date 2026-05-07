@@ -61,7 +61,8 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		case BucketCMakeE:
 			if reason, ok := liftCMakeE(call, v, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, cc); !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
-					Loc:    formatExecuteProcessLoc(call),
+					File:   call.File,
+					Line:   call.Line,
 					Bucket: v.Bucket,
 					Reason: reason,
 					Argv:   formatExecuteProcessArgv(call),
@@ -70,7 +71,8 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		case BucketFileProducing:
 			if reason, ok := liftFileProducing(call, hostSrcDir, recordedSrcDir, recordedBuildDir, cc); !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
-					Loc:    formatExecuteProcessLoc(call),
+					File:   call.File,
+					Line:   call.Line,
 					Bucket: v.Bucket,
 					Reason: reason,
 					Argv:   formatExecuteProcessArgv(call),
@@ -78,7 +80,8 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 		default:
 			unsupported = append(unsupported, executeProcessRefusal{
-				Loc:    formatExecuteProcessLoc(call),
+				File:   call.File,
+				Line:   call.Line,
 				Bucket: v.Bucket,
 				Reason: v.Reason,
 				Argv:   formatExecuteProcessArgv(call),
@@ -277,7 +280,26 @@ func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDi
 	rewritten := make([]string, 0, len(argv))
 	for i, a := range argv {
 		if rel, ok := executeProcessAnchorSource(a, hostSrcDir, recordedSrcDir); ok {
-			if isExistingDir(filepath.Join(hostSrcDir, rel)) {
+			// relativeIfInside maps the source root itself
+			// to "" (empty relative path). For an argv
+			// element that points AT the source root
+			// (e.g. cmake's ${CMAKE_CURRENT_SOURCE_DIR}
+			// resolving to the project root), the only
+			// valid rendering is the literal `.` —
+			// shellQuoteArg("") would emit `''` (changing
+			// the cmd's semantics from "source root" to
+			// "empty argument") and $(location <empty>) /
+			// $(location .) wouldn't resolve to a Bazel
+			// label. Treat empty rel as the source-root
+			// directory so the directory branch fires
+			// regardless of the isExistingDir filesystem
+			// probe (which can fail on offline tests where
+			// hostSrcDir is synthetic).
+			isDir := rel == "" || isExistingDir(filepath.Join(hostSrcDir, rel))
+			if rel == "" {
+				rel = "."
+			}
+			if isDir {
 				// Directory: preserve as literal relative path.
 				rewritten = append(rewritten, shellQuoteArg(rel))
 				continue
@@ -454,27 +476,32 @@ func cmakeETags(op string) []string {
 
 // executeProcessRefusal is the per-call refusal record used
 // inside recoverExecuteProcess to assemble the aggregated
-// failure message. Loc carries file:line for the source-level
-// pointer; Argv carries the joined COMMAND argv (or "<n>
-// stages" for pipelines) for at-a-glance triage; Bucket and
-// Reason mirror the classifier output (or, for failed lifts,
-// the lifter's specific diagnostic).
+// failure message. File / Line are stored as raw fields so
+// the sort comparator can order numerically by line within
+// each file (lexicographic ordering of "file:line" strings
+// would put `:10` before `:2`); Bucket and Reason mirror the
+// classifier output (or, for failed lifts, the lifter's
+// specific diagnostic). Argv carries the joined COMMAND argv
+// (or "<n> stages" for pipelines) for at-a-glance triage.
 type executeProcessRefusal struct {
-	Loc    string
+	File   string
+	Line   int
 	Bucket Bucket
 	Reason string
 	Argv   string
 }
 
-// formatExecuteProcessLoc returns "<file>:<line>" for the
-// trace event's source location, or just "<file>" when the
-// trace didn't record a line number (defensive — cmake's
-// JSON-v1 trace always carries one in practice).
-func formatExecuteProcessLoc(call shadow.ExecuteProcessCall) string {
-	if call.Line > 0 {
-		return call.File + ":" + itoa(call.Line)
+// loc returns "<file>:<line>" for the refusal's source
+// location, or just "<file>" when the trace didn't record a
+// line number (defensive — cmake's JSON-v1 trace always
+// carries one in practice). Used by the failure-message
+// renderer; sort uses File / Line directly for numeric
+// ordering.
+func (r executeProcessRefusal) loc() string {
+	if r.Line > 0 {
+		return r.File + ":" + itoa(r.Line)
 	}
-	return call.File
+	return r.File
 }
 
 // formatExecuteProcessArgv compresses the call's COMMAND
@@ -500,14 +527,22 @@ func formatExecuteProcessArgv(call shadow.ExecuteProcessCall) string {
 }
 
 // formatExecuteProcessRefusal renders the aggregated refusal
-// list into a single message string, sorted by source location
-// so the output is stable across runs (the trace's call order
-// is configure-time-evaluation order which can shift with
-// cmake version drift; sorting by file:line is the stable
-// presentation).
+// list into a single message string, sorted by source
+// location so the output is stable across runs (the trace's
+// call order is configure-time-evaluation order which can
+// shift with cmake version drift; sorting by file then
+// numeric line is the stable presentation).
+//
+// Sort precedence: File ascending, then Line ascending. The
+// secondary numeric sort matters when one file declares
+// multiple unliftable calls — lexicographic sort on the
+// rendered "file:line" string would put `:10` before `:2`.
 func formatExecuteProcessRefusal(refusals []executeProcessRefusal) string {
 	sort.Slice(refusals, func(i, j int) bool {
-		return refusals[i].Loc < refusals[j].Loc
+		if refusals[i].File != refusals[j].File {
+			return refusals[i].File < refusals[j].File
+		}
+		return refusals[i].Line < refusals[j].Line
 	})
 	var sb strings.Builder
 	sb.WriteString(itoa(len(refusals)))
@@ -518,7 +553,7 @@ func formatExecuteProcessRefusal(refusals []executeProcessRefusal) string {
 	}
 	for _, r := range refusals {
 		sb.WriteString("  - ")
-		sb.WriteString(r.Loc)
+		sb.WriteString(r.loc())
 		sb.WriteString(" [")
 		sb.WriteString(string(r.Bucket))
 		sb.WriteString("] ")

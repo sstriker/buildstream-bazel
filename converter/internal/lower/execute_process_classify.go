@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/internal/shadow"
@@ -292,13 +291,36 @@ func isCMakeDriver(arg0 string) bool {
 }
 
 // executeProcessDriverBasename returns the canonical basename
-// of an argv[0] for driver-pattern matching. Strips any path
-// component, leaves the basename in its original case (cmake's
-// portable filename casing). Pure string ops; no filesystem
-// access.
+// of an argv[0] for driver-pattern matching, normalised so
+// the stamp / probe / cmake-driver maps don't have to carry
+// per-platform variants:
+//
+//   - Strips any path component (`/usr/bin/cmake` →
+//     `cmake`, `C:\Program Files\CMake\bin\cmake.exe` →
+//     `cmake.exe`).
+//   - Strips a trailing `.exe` (case-insensitive) so
+//     Windows-style absolute paths classify the same as
+//     POSIX bare names.
+//   - Lowercases the result so case-insensitive filesystems
+//     (Windows, macOS HFS+) classify identically to the
+//     canonical lower-case driver-map keys.
+//
+// Pure string ops; no filesystem access.
 func executeProcessDriverBasename(arg0 string) string {
 	if arg0 == "" {
 		return ""
 	}
-	return filepath.Base(arg0)
+	// Handle Windows-style backslash separators in addition
+	// to POSIX forward slashes. filepath.Base on a host
+	// where filepath.Separator is '/' won't strip
+	// `C:\foo\bar` — handle the cross-platform shape
+	// explicitly.
+	base := arg0
+	if i := strings.LastIndexAny(base, `/\`); i >= 0 {
+		base = base[i+1:]
+	}
+	if strings.HasSuffix(strings.ToLower(base), ".exe") {
+		base = base[:len(base)-len(".exe")]
+	}
+	return strings.ToLower(base)
 }

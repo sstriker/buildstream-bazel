@@ -189,6 +189,71 @@ func TestClassify_Buckets(t *testing.T) {
 	}
 }
 
+// TestClassify_DriverBasenameNormalisation locks in the
+// argv[0] normalisation rules: path stripping (POSIX +
+// Windows), case-fold to lower, .exe suffix removal. These
+// keep the stamp / probe / cmake-driver maps as plain
+// lower-case canonical names and avoid duplicating
+// per-platform variants in each map.
+func TestClassify_DriverBasenameNormalisation(t *testing.T) {
+	cases := []struct {
+		name   string
+		argv0  string
+		bucket Bucket
+	}{
+		{
+			// `C:\Program Files\CMake\bin\cmake.exe -E touch x` —
+			// Windows-style absolute path with .exe suffix;
+			// should classify as cmake-e regardless of platform.
+			name:   "Windows cmake.exe path",
+			argv0:  `C:\Program Files\CMake\bin\cmake.exe`,
+			bucket: BucketCMakeE,
+		},
+		{
+			// `/usr/bin/Cmake -E touch x` — POSIX path with
+			// non-canonical case (case-insensitive
+			// filesystems can surface mixed case).
+			name:   "POSIX Cmake mixed case",
+			argv0:  "/usr/bin/Cmake",
+			bucket: BucketCMakeE,
+		},
+		{
+			// `git.exe rev-parse HEAD` — Windows git
+			// executable; should classify as Stamp.
+			name:   "git.exe Windows",
+			argv0:  "git.exe",
+			bucket: BucketStamp,
+		},
+		{
+			// `C:\Tools\HOSTNAME.EXE` — uppercase .EXE plus
+			// Windows path; should classify as Probe (strong
+			// driver: hostname).
+			name:   "uppercase HOSTNAME.EXE Windows",
+			argv0:  `C:\Tools\HOSTNAME.EXE`,
+			bucket: BucketProbe,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			call := shadow.ExecuteProcessCall{}
+			switch c.bucket {
+			case BucketCMakeE:
+				call.Commands = [][]string{{c.argv0, "-E", "touch", "marker"}}
+			case BucketStamp:
+				call.Commands = [][]string{{c.argv0, "rev-parse", "HEAD"}}
+				call.OutputVariable = "GIT_SHA"
+			case BucketProbe:
+				call.Commands = [][]string{{c.argv0}}
+				call.OutputVariable = "H"
+			}
+			got := Classify(call)
+			if got.Bucket != c.bucket {
+				t.Errorf("bucket: got %q want %q (reason: %q)", got.Bucket, c.bucket, got.Reason)
+			}
+		})
+	}
+}
+
 // TestClassify_CMakeEOpsAreLowercased asserts that the
 // CMakeEOp returned is always the lowercase op name regardless
 // of how the user wrote it in CMakeLists.txt — the eventual
