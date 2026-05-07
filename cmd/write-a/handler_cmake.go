@@ -10,6 +10,27 @@ import (
 
 func init() { registerHandler(cmakeHandler{}) }
 
+// cmakeConfig holds the per-run config the kind:cmake handler
+// needs from CLI flags. Populated by main.go on --cmake-configure-
+// file-bin; consumed by the per-element render to opt
+// convert-element into the configure_file lift (see
+// internal/configurefile package doc + ROADMAP.md).
+var cmakeConfig struct {
+	// configureFileBin is the absolute path to the
+	// cmake-configure-file binary. When non-empty:
+	//   - writeProjectA / writeProjectB stage the binary into
+	//     their tools/ dir and add it to exports_files.
+	//   - The per-cmake-element genrule cmd includes
+	//     `--lift-configure-file=true` so convert-element emits
+	//     the lifted shape (.h.in as srcs +
+	//     //tools:cmake-configure-file invocation) when its
+	//     reverse-extract succeeds.
+	// Empty (default) preserves the legacy base64-of-rendered
+	// shape — keeps orchestrator-driven flows that don't stage
+	// the tool working unchanged.
+	configureFileBin string
+}
+
 // cmakeHandler renders a kind:cmake element. The project-A side is a
 // genrule invoking convert-element under Bazel's action graph; the
 // project-B side is a placeholder the driver script overwrites with
@@ -378,6 +399,11 @@ filegroup(
 	var depExtract strings.Builder
 	prefixFlag := ""
 	importsFlag := ""
+	liftFlag := ""
+	if cmakeConfig.configureFileBin != "" {
+		liftFlag = ` \
+            --lift-configure-file=true`
+	}
 	if len(cmakeDepLabels) > 0 {
 		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
 `)
@@ -429,7 +455,7 @@ genrule(
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
-            --out-read-paths="$(location read_paths.json)"%[4]s%[5]s
+            --out-read-paths="$(location read_paths.json)"%[4]s%[5]s%[6]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element"],
@@ -450,7 +476,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag)
 	return b.String()
 }
 
