@@ -15,6 +15,7 @@ Decide based on what you touched:
 | `cmd/write-a/handler_*.go` (any handler) | the relevant `scripts/meta-*.sh` render gate (see [render gates](#render-gates)) |
 | `cmd/build-tracer/` | `go test ./cmd/build-tracer/...` plus a render gate that exercises the autotools native path (`scripts/meta-autotools-native.sh`) |
 | `cmd/convert-element-autotools/` | `go test ./cmd/convert-element-autotools/...` plus the autotools render gates |
+| `cmd/audit-narrowing/`, `internal/readpaths/`, `internal/tracenorm/reads.go`, `converter/internal/ninja/configure_reads.go` | `go test ./cmd/audit-narrowing/... ./internal/readpaths/... ./internal/tracenorm/... ./converter/internal/ninja/...` (the audit consumes outputs of both oracles; recipe in [`docs/design/narrowing-audit.md`](docs/design/narrowing-audit.md)) |
 | `converter/...` (cmake-side) | `go test ./converter/...` (unit), `make e2e-orchestrate` (needs cmake + bwrap) |
 | `Makefile` / `scripts/` | the script(s) you touched, plus run their `make e2e-meta-*` target if it exists |
 | Anything in `docs/` | nothing. CI's docs jobs render via GitHub markdown. |
@@ -110,7 +111,16 @@ Common failure modes and how to diagnose:
   `converter/internal/`.
 - **Source-key + content-narrowing patterns**:
   `cmd/write-a/srckey.go` + per-handler
-  `<kind>SrckeyPatterns()`.
+  `<kind>SrckeyPatterns()`. Shared matcher:
+  `internal/readpaths/`.
+- **Narrowing-undercoverage audit** (catches silent-cache-hit
+  bugs when patterns omit a load-bearing path): the recipe
+  + invocation lives in
+  [`docs/design/narrowing-audit.md`](docs/design/narrowing-audit.md).
+  Touched code: `cmd/audit-narrowing/`,
+  `converter/internal/ninja/configure_reads.go`,
+  `internal/tracenorm/reads.go`, the build-tracer
+  `--source-root` flag.
 - **Project-level architecture story**:
   `docs/three-pass-flow.md`, `docs/overview.md`.
 
