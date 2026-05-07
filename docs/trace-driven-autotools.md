@@ -202,6 +202,143 @@ satisfied. The shipped design:
 See [`docs/design/autotools-round2-rendezvous.md`](design/autotools-round2-rendezvous.md)
 for the AC rendezvous protocol.
 
+## Re-conversion thrash
+
+Round-2's chicken-and-egg shape (B publishes the trace; A
+re-runs to consume it; B then rebuilds against the new
+fine-grained rules) means a graph-affecting source edit costs
+**two bazel invocations to settle**, not one:
+
+1. `bazel build` of project A — converter genrule's
+   `@trace_<elem>//:trace` resolves to the OLD AC entry (or
+   misses on a fresh srckey). Project A renders the coarse
+   fallback / placeholder BUILD.bazel.
+2. `bazel build` of project B — coarse install genrule
+   runs `configure && make && make install`, publishes the new
+   trace under `SyntheticActionDigest(srckey)`.
+3. Next `bazel build` of project A — converter sees the
+   new trace, emits fine-grained `cc_library` / `cc_binary`
+   rules. BUILD.bazel changes shape.
+4. Next `bazel build` of project B — sees a different
+   action graph; recompiles every TU.
+
+The reason it's two invocations and not one: bazel resolves
+external repos at invocation start, so the trace AC entry
+B publishes mid-build can't appear in A's load phase until
+the next bazel invocation.
+
+### What insulates non-graph edits
+
+The cycle above only fires when an edit changes the
+content-narrowed `srckey`. Per-kind narrowing patterns
+(`autotoolsSrckeyPatterns()`, `makeSrckeyPatterns()`, …)
+exclude `.c` / `.cpp` / `.S` content from srckey — those
+files contribute by **path** but not by **content**. So:
+
+- **Comment-only edit in `foo.c`** → srckey unchanged →
+  trace AC stays valid → A cache-hits → no thrash. B reruns
+  because source bytes changed, but B's outputs are
+  byte-stable for content-equivalent input (per
+  `tracenorm` + `make -np` post-processing) so B's
+  consumers cache-hit too.
+- **Adding `bar.c`** → srckey changes → full 4-step thrash.
+- **Editing `Makefile.in` / `configure.ac` / `*.m4` /
+  `config.h.in`** → srckey changes → full 4-step thrash.
+- **Editing a header in the source tree** → srckey changes
+  (headers stay content-included for autotools because
+  preprocessor switches in headers can change which
+  compile commands the Makefile emits).
+
+### Settling the thrash automatically
+
+There's no good "previous run" metric to surface here:
+independent CI nodes and developer machines share state
+only through the content-addressed CAS / AC, not through
+sidecar files. Trying to compute a re-conversion delta
+locally would tell each node a different story.
+
+The pragmatic alternative is to just **always run the
+settle loop**. Invoke `bazel build` for project A and
+project B back-to-back twice:
+
+```text
+bazel build <projectA targets>     # may render coarse fallback
+bazel build <projectB targets>     # publishes new traces
+bazel build <projectA targets>     # consumes new traces, fine-grained
+bazel build <projectB targets>     # picks up new BUILD.bazel.out
+```
+
+This works because Bazel's persistent daemons + content-
+addressed action cache make a redundant invocation cheap
+when nothing changed: the second A+B pair is a no-op for
+elements whose trace AC was already warm. Only elements
+whose srckey moved this build pay the second pair's cost,
+and only for the actions actually affected.
+
+`scripts/build-with-settle.sh` wraps the four invocations
+behind a single shell command. CI workflows and dev-loop
+make targets that build kind:autotools / kind:make round-2
+elements should call it instead of `bazel build` directly.
+The script is intentionally dumb — no BEP parsing, no
+conditional skipping — because the overhead of the extra
+invocations is bounded by Bazel's daemon and dwarfed by
+the configure/make work the first pair already paid.
+
+A smarter loop (parse BEP for `trace-publish` action
+events, only re-invoke when an AC entry actually moved)
+would shave the steady-state case to one A+B pair plus a
+no-op A. Worth doing once we have data showing the dumb
+loop's overhead is non-trivial; not worth doing
+speculatively.
+
+### When round-2 isn't worth it
+
+The round-2 default is good for elements where the
+fine-grained rules give Bazel real parallelism /
+incrementality wins on day one — large autotools projects
+where `make` already serializes more than it needs to and
+Bazel can interleave compiles across deps.
+
+It is **not** worth it when:
+
+- The element rarely changes (a stable
+  bottom-of-the-stack lib like libffi, zlib): the steady-
+  state cache-hit rate is already near 100% with the
+  coarse install genrule, and the round-2 thrash on the
+  occasional graph edit pays a higher cost per edit than
+  the coarse rebuild it replaced.
+- The element is a one-off conversion target: the
+  developer wants the converter to run once, capture
+  `BUILD.bazel.out`, commit it, and reclassify the .bst
+  as `kind:bazel`. The round-2 register/refresh cycle
+  is wasted machinery in this workflow.
+
+For both cases, the recommended workflow today is:
+
+- **Don't pass `--convert-element-autotools` by default.**
+  kind:autotools elements then render as the unmodified
+  coarse install_tree.tar pipeline; project B's downstream
+  cache stays warm across edits and the trace AC isn't
+  involved.
+- **Migration to kind:bazel**: pass
+  `--convert-element-autotools` + `--build-tracer-bin`
+  + `--trace-publish-bin` + `--trace-lookup-bin` for the
+  one-off conversion build. Capture
+  `bazel build //elements/<name>:<name>_build`'s
+  `BUILD.bazel.out` artifact, copy it into the .bst's
+  source tree, change the .bst's `kind` to `bazel` (the
+  passthrough handler), commit. Subsequent builds bypass
+  the converter entirely.
+
+A per-element opt-in (turning round-2 on for `glib`
+specifically while keeping `zlib` coarse) isn't wired
+today — `autotoolsConfig.round2Enabled` is global.
+Adding it is a small refactor (per-element
+`Bst.Round2: bool` field driven from a project.conf
+knob); the settle loop above keeps the global default
+livable in the meantime, so the per-element refinement
+can wait for a workload that demonstrably needs it.
+
 ## Open items (future work)
 
 ### Direct-dep narrowing in `convert-element-autotools`
