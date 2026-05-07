@@ -12,9 +12,13 @@
 // than without, either we generated the wrong file or we wired
 // -DCMAKE_TOOLCHAIN_FILE wrong; either way the test fires.
 //
-// Conservative assertion: B < A. Any improvement counts. The ratio
-// is logged for operator visibility but not asserted as a number to
-// avoid CI flakiness on noisy runners.
+// Conservative assertion: best-of-N(B) < best-of-N(A). The fixture
+// is small (3 cmake elements; cumulative configure ~few seconds)
+// so single-shot wall-clock is easily inverted by co-tenant noise on
+// shared CI runners. Best-of-N takes the lowest measurement from each
+// pass — closer to the platonic uninterfered configure time, which
+// is what the optimization actually affects. The per-pass ratio is
+// logged for operator visibility but not asserted as a number.
 package orchestrator_test
 
 import (
@@ -29,46 +33,54 @@ import (
 	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
 )
 
+// toolchainSkipRuns is the number of measurements taken per pass.
+// Best-of-N over N=3 reduces noisy-neighbor flakiness from O(20%)
+// per-shot to O(1%) for the comparison; bumping to 5 helps further
+// at proportionally more runtime. Keep at 3 unless flakes recur.
+const toolchainSkipRuns = 3
+
 func TestE2E_Toolchain_SkipReducesConfigureTime(t *testing.T) {
 	conv := lookupConverter(t)
 	deriveBin := lookupDeriveToolchain(t)
 
-	// Pass 1: cold orchestrator run with NO --toolchain-cmake-file.
-	// This populates the per-element timing baseline AND, as a side
-	// effect, leaves a fileapi reply we can hand to derive-toolchain
-	// to produce the toolchain.cmake we'll test in pass 2.
-	out1 := t.TempDir()
-	res1 := runOrchestratorWithoutToolchain(t, out1, conv)
-	logTimings(t, "pass1 (no toolchain.cmake)", res1)
-
-	// Take one element's reply directory and run derive-toolchain
-	// against it. The fdsdk-subset's hello build dir lives at
-	// <out>/sources/<sha>/checkout/CMakeLists.txt processed under
-	// the orchestrator's hermetic flow; we don't have direct access
-	// to its build dir post-conversion. Easier: run a one-shot
-	// hello-world configure ourselves to produce a fresh reply.
+	// Derive the toolchain.cmake once, up front. It's deterministic
+	// from the host's cmake; running it inside the measurement loop
+	// would just add noise.
 	tcFile := deriveToolchainCMake(t, deriveBin)
 
-	// Pass 2: same fixture, --toolchain-cmake-file points at the
-	// freshly-derived toolchain.cmake. Cache must stay cold so we
-	// re-run the converter (otherwise the AC short-circuit would
-	// hide the configure-time delta).
-	out2 := t.TempDir()
-	res2 := runOrchestratorWithToolchain(t, out2, conv, tcFile)
-	logTimings(t, "pass2 (with toolchain.cmake)", res2)
+	// Interleave the two passes (A, B, A, B, ...) rather than running
+	// all of one then all of the other. Interleaving cancels any
+	// monotonic drift in runner load over the test's wall-clock
+	// window — if the runner gets steadily busier, the bias hits both
+	// passes equally instead of penalising whichever ran second.
+	var bestA, bestB float64
+	for i := 0; i < toolchainSkipRuns; i++ {
+		outA := t.TempDir()
+		resA := runOrchestratorWithoutToolchain(t, outA, conv)
+		logTimings(t, fmt.Sprintf("pass A (no toolchain.cmake) run %d/%d", i+1, toolchainSkipRuns), resA)
+		if i == 0 || resA.Timings.TotalCMakeConfigureSecs < bestA {
+			bestA = resA.Timings.TotalCMakeConfigureSecs
+		}
 
-	if res2.Timings.TotalCMakeConfigureSecs >= res1.Timings.TotalCMakeConfigureSecs {
-		t.Errorf("toolchain.cmake did not reduce configure time:\n"+
-			"  pass1 (without): %.2fs\n"+
-			"  pass2 (with):    %.2fs",
-			res1.Timings.TotalCMakeConfigureSecs,
-			res2.Timings.TotalCMakeConfigureSecs)
+		outB := t.TempDir()
+		resB := runOrchestratorWithToolchain(t, outB, conv, tcFile)
+		logTimings(t, fmt.Sprintf("pass B (with toolchain.cmake) run %d/%d", i+1, toolchainSkipRuns), resB)
+		if i == 0 || resB.Timings.TotalCMakeConfigureSecs < bestB {
+			bestB = resB.Timings.TotalCMakeConfigureSecs
+		}
 	}
 
-	improvement := res1.Timings.TotalCMakeConfigureSecs - res2.Timings.TotalCMakeConfigureSecs
-	pct := 100.0 * improvement / res1.Timings.TotalCMakeConfigureSecs
-	t.Logf("toolchain.cmake configure-time win: %.2fs absolute, %.1f%% relative",
-		improvement, pct)
+	if bestB >= bestA {
+		t.Errorf("toolchain.cmake did not reduce configure time across %d runs:\n"+
+			"  best-of-%d pass A (without): %.2fs\n"+
+			"  best-of-%d pass B (with):    %.2fs",
+			toolchainSkipRuns, toolchainSkipRuns, bestA, toolchainSkipRuns, bestB)
+	}
+
+	improvement := bestA - bestB
+	pct := 100.0 * improvement / bestA
+	t.Logf("toolchain.cmake configure-time win (best-of-%d): %.2fs absolute, %.1f%% relative",
+		toolchainSkipRuns, improvement, pct)
 }
 
 func runOrchestratorWithoutToolchain(t *testing.T, out, conv string) *orchestrator.Result {
