@@ -39,41 +39,33 @@ transition cleanly.
     `srckey-patterns.txt`.
   - `cmd/audit-narrowing` consumes patterns + oracle(s) and
     emits a sorted undercoverage report.
+  - configure_file lift (`--cmake-configure-file-bin` on
+    write-a) makes `*.h.in` safe to mark
+    `exclude **/*.h.in` in patterns when the lift is enabled.
   
   Missing piece: actually run the audit somewhere. Two
   conversations to have before flipping the gate on:
   - **Policy**: hard-fail on any drift, or accept a per-element
-    allowlist of expected misses? The cmake configure-file
-    fixture currently surfaces `src/config.h.in` as a real-but-
-    real-needs-to-stay miss until the configure_file lift
-    (below) lands. A whitelist mechanism plus an "expected
-    drift" file alongside `srckey-patterns.txt` is the realistic
-    landing.
+    allowlist of expected misses? Templates that didn't lift
+    (the v1 Extract can't recover values from every shape)
+    keep flagging their `.h.in` correctly. A whitelist mechanism
+    plus an "expected drift" file alongside
+    `srckey-patterns.txt` is the realistic landing.
   - **Per-element opt-in to capture** for trace-driven kinds:
     pass `--source-root` into the round-2 install genrule's
     build-tracer + trace-publish invocations (today
     `pipelineTracePublishStep` doesn't). Without this the
     trace oracle is empty and only the cmake side carries
     signal.
-- **Lift `configure_file` out of convert-element's cache key.**
-  Today `lower/configure_file.go` reads cmake's already-rendered
-  `config.h` bytes from the build dir and base64-embeds them in
-  the recovered genrule's `cmd`. The `*.h.in` template's content
-  therefore drives the BUILD.bazel bytes, forcing it into
-  convert-element's srckey — a soundness requirement that the
-  forthcoming narrowing-undercoverage warning (cmake configure-
-  reads oracle) flags as load-bearing for `*.h.in`. Real fix:
-  emit a `cmake-configure-file` tool (substitution rules per
-  cmake docs: `@VAR@` / `${VAR}` / `#cmakedefine` /
-  `#cmakedefine01` / recursive expansion) plus a values sidecar
-  carrying the resolved cmake variables; the genrule consumes
-  `*.h.in` as `srcs` and the values as a separate input. After
-  the lift `*.h.in` becomes name-only for srckey purposes; only
-  variable-set changes (which all flow from CMakeLists.txt
-  edits, already in srckey) re-trigger convert-element. Same
-  shape applies to `file(GENERATE)` and any
-  `add_custom_command` whose COMMAND is a cmake builtin —
-  follow-up sweep.
+- **Same lift shape for `file(GENERATE)` and cmake-builtin
+  `add_custom_command`s.** Wherever `lower/` currently reads
+  bytes from the build dir to embed in a genrule's `cmd`, the
+  same cache-key issue applies. The configure_file lift's
+  pattern (template + values + Bazel-time tool) is reusable
+  for these other configure-time codegen surfaces; sweep
+  through `lower/codegen.go` and `lower/configure_file.go`'s
+  callers, classify each by what cmake feature they recover,
+  and lift the cleanly-tractable cases.
 - **kind:meson** native render. Meson exposes
   `meson introspect --targets`, which is closer to cmake's File API
   than autotools' "you have to actually run it" introspection. The
@@ -111,6 +103,30 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Configure_file lift.** Per-element `*.h.in` templates are
+  no longer load-bearing inputs of convert-element's cache key.
+  Convert-element captures the cmake variable values cmake had
+  at configure time by reverse-extracting them from the
+  rendered output (`internal/configurefile.Extract`); the
+  recovered genrule emits with the .h.in as a real Bazel
+  `srcs` input plus a `//tools:cmake-configure-file` invocation
+  that re-runs cmake's substitution at Bazel build time.
+  Edits to .h.in invalidate the genrule directly through
+  Bazel's source graph; convert-element doesn't have to
+  rerun. Opt-in via `write-a --cmake-configure-file-bin=<path>`
+  (the binary gets staged into both projects' `tools/` and
+  the per-element genrule passes `--lift-configure-file=true`
+  to convert-element). Templates the v1 Extract can't recover
+  values for fall back to the legacy base64-cmd shape;
+  `cmake-codegen-lifted` tag distinguishes the two at query
+  time. Recipe: `docs/design/narrowing-audit.md`.
+- **Narrowing-undercoverage audit.** cmake oracle from
+  build.ninja's `RERUN_CMAKE` deps + trace oracle from
+  build-tracer's openat capture (opt-in via `--source-root`)
+  + per-element patterns surface emitted by write-a +
+  `cmd/audit-narrowing` consumer that diffs the two and
+  emits an undercoverage report. Recipe:
+  `docs/design/narrowing-audit.md`.
 - Two-pass meta-project shape: `cmd/write-a` renders project A and
   project B, Bazel owns cross-element scheduling and caching.
 - `kind:cmake` native render: cmake's File API + `--trace-expand`
