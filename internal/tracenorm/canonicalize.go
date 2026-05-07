@@ -162,11 +162,11 @@ func newCanonicalizer(opts Options) *canonicalizer {
 	return &canonicalizer{tempPaths: map[string]string{}, prefixSubs: subs, sourceRoot: root}
 }
 
-// pidPrefixRE matches a leading `<pid>  ` (decimal pid, two
-// spaces — strace's exact separator). Trailing 2-space matters
-// because some argv strings contain bare numbers we don't want
-// to strip.
-var pidPrefixRE = regexp.MustCompile(`^\d+  `)
+// pidPrefixRE matches a leading `<pid> ` (decimal pid + one or
+// more spaces — the native backend writes two spaces, strace
+// writes one). Anchored at line start, so argv-embedded
+// numbers don't trip the match.
+var pidPrefixRE = regexp.MustCompile(`^\d+ +`)
 
 // gccTempPathRE matches the gcc-driver mkstemps shape: `/tmp/`
 // + `cc` + 6+ alphanumerics + `.` + short alphabetic extension.

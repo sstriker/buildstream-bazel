@@ -149,6 +149,138 @@ func TestBuildTracer_PropagatesExit(t *testing.T) {
 	}
 }
 
+// TestBuildTracer_SourceRootCapturesOpenatNative verifies that
+// --source-root opts the native backend into capturing openat
+// reads, that canonicalize rewrites the path source-relative,
+// and that the volatile fd return value gets stripped. End-to-
+// end exercise of the trace-side configure-time read oracle.
+func TestBuildTracer_SourceRootCapturesOpenatNative(t *testing.T) {
+	if _, err := exec.LookPath("strace"); err != nil {
+		t.Skip("strace not on PATH; gating native test on host ptrace capability")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "build-tracer")
+	out := filepath.Join(tmp, "trace.log")
+	srcRoot := filepath.Join(tmp, "src")
+	if err := os.Mkdir(srcRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probePath := filepath.Join(srcRoot, "probe.txt")
+	if err := os.WriteFile(probePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = mustDir(t)
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+
+	// /bin/cat opens the probe file via openat(AT_FDCWD, ...).
+	// With --source-root pointing at our tmp src dir, the
+	// canonical trace should carry the rewritten path
+	// "probe.txt" with the fd suffix replaced by `?`.
+	cmd := exec.Command(bin, "--source-root="+srcRoot, "--out="+out, "--", "/bin/cat", probePath)
+	cmd.Stdout = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build-tracer run: %v", err)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, `openat(AT_FDCWD, "probe.txt"`) {
+		t.Errorf("trace missing source-relative openat for probe.txt\n--body--\n%s", got)
+	}
+	if !strings.Contains(got, " = ?") {
+		t.Errorf("trace missing fd-stripped suffix `= ?`\n--body--\n%s", got)
+	}
+	// Out-of-tree opens (libc.so, /etc/passwd, etc.) must not
+	// appear — the canonicalize filter drops them.
+	if strings.Contains(got, "libc.so") || strings.Contains(got, "/etc/") {
+		t.Errorf("trace leaked out-of-tree openat lines\n--body--\n%s", got)
+	}
+}
+
+// TestBuildTracer_SourceRootCapturesOpenatStrace mirrors the
+// native test against the --strace fallback path.
+func TestBuildTracer_SourceRootCapturesOpenatStrace(t *testing.T) {
+	if _, err := exec.LookPath("strace"); err != nil {
+		t.Skip("strace not on PATH; skipping")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "build-tracer")
+	out := filepath.Join(tmp, "trace.log")
+	srcRoot := filepath.Join(tmp, "src")
+	if err := os.Mkdir(srcRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probePath := filepath.Join(srcRoot, "probe.txt")
+	if err := os.WriteFile(probePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = mustDir(t)
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--strace", "--source-root="+srcRoot, "--out="+out, "--", "/bin/cat", probePath)
+	cmd.Stdout = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build-tracer --strace run: %v", err)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, `openat(AT_FDCWD, "probe.txt"`) {
+		t.Errorf("strace-fallback trace missing source-relative openat for probe.txt\n--body--\n%s", got)
+	}
+	if !strings.Contains(got, " = ?") {
+		t.Errorf("strace-fallback trace missing fd-stripped suffix `= ?`\n--body--\n%s", got)
+	}
+}
+
+// TestBuildTracer_NoSourceRootSkipsOpenat confirms the legacy
+// AC byte schema: without --source-root, openat events are
+// dropped entirely so existing AC entries (computed against
+// execve-only traces) remain valid.
+func TestBuildTracer_NoSourceRootSkipsOpenat(t *testing.T) {
+	if _, err := exec.LookPath("strace"); err != nil {
+		t.Skip("strace not on PATH; skipping")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "build-tracer")
+	out := filepath.Join(tmp, "trace.log")
+	probePath := filepath.Join(tmp, "probe.txt")
+	if err := os.WriteFile(probePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = mustDir(t)
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--out="+out, "--", "/bin/cat", probePath)
+	cmd.Stdout = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build-tracer run: %v", err)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "openat(") {
+		t.Errorf("legacy mode leaked openat into trace.log\n--body--\n%s", body)
+	}
+}
+
 func mustDir(t *testing.T) string {
 	t.Helper()
 	wd, err := os.Getwd()

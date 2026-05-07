@@ -40,14 +40,24 @@ func nativeBackendAvailable() bool { return true }
 // across stops: whether the next syscall stop is enter or
 // exit, plus argv/path/cwd captured at enter (so we can emit
 // them on exit when we know the return value).
+//
+// openat capture: when captureReads is set on the tracer,
+// openat-enter saves the path + flags so openat-exit can
+// emit (or skip) based on the return value. Only successful
+// reads (rax >= 0) emit; failed-open events are noise. Path
+// filtering against the source root happens at canonicalize
+// time, not here — keeps the tracer dumb.
 type pidState struct {
-	atEnter  bool
-	execPath string
-	execArgv []string
-	execCwd  string
+	atEnter      bool
+	execPath     string
+	execArgv     []string
+	execCwd      string
+	openPath     string
+	openFlags    uint64
+	openCaptured bool
 }
 
-func runNative(out string, args []string) int {
+func runNative(out string, args []string, captureReads bool) int {
 	// ptrace requires every ptrace call for a given tracee to
 	// come from the same OS thread. Lock for the entire trace
 	// so the Go runtime doesn't reschedule us mid-loop.
@@ -178,7 +188,7 @@ func runNative(out string, args []string) int {
 		//   3. Other signal: pass through.
 		switch {
 		case stopSig == syscall.SIGTRAP|0x80:
-			handleSyscallStop(pid, st, traceFile)
+			handleSyscallStop(pid, st, traceFile, captureReads)
 		case stopSig == syscall.SIGTRAP:
 			event := ws.TrapCause()
 			switch event {
@@ -215,17 +225,27 @@ func runNative(out string, args []string) int {
 // captures argv from the tracee's memory; on the matching exit
 // with rax == 0 (success), emits the trace line.
 //
-// Other syscalls are ignored — we only care about execve.
-func handleSyscallStop(pid int, st *pidState, w io.Writer) {
+// When captureReads is true, also handles openat (syscall 257):
+// captures the path + flags arg at enter; on exit, if the
+// return value is a non-negative fd (= the open succeeded) AND
+// the access mode is O_RDONLY (read-only — we only care about
+// reads for the configure-time oracle), emits an openat trace
+// line. Filtering to source-tree paths happens downstream at
+// canonicalize time.
+func handleSyscallStop(pid int, st *pidState, w io.Writer, captureReads bool) {
 	var regs syscall.PtraceRegs
 	if err := syscall.PtraceGetRegs(pid, &regs); err != nil {
 		// Tracee transient state; toggle and move on.
 		st.atEnter = !st.atEnter
 		return
 	}
-	const sysExecve = 59 // amd64 syscall number for execve(2)
+	const (
+		sysExecve = 59  // amd64 syscall number for execve(2)
+		sysOpenat = 257 // amd64 syscall number for openat(2)
+	)
 	if st.atEnter {
-		if regs.Orig_rax == sysExecve {
+		switch regs.Orig_rax {
+		case sysExecve:
 			st.execPath = readCString(pid, uintptr(regs.Rdi), 4096)
 			st.execArgv = readArgv(pid, uintptr(regs.Rsi))
 			// Snapshot cwd at the moment of the syscall.
@@ -235,6 +255,17 @@ func handleSyscallStop(pid int, st *pidState, w io.Writer) {
 			// usually identical, but recursive make can
 			// chdir mid-build, and we want the parent's.
 			st.execCwd = readCwd(pid)
+		case sysOpenat:
+			if captureReads {
+				// openat(int dirfd, const char *pathname,
+				// int flags, mode_t mode) — pathname in
+				// rsi, flags in rdx (we ignore dirfd; the
+				// canonical filter only keeps absolute
+				// paths anyway).
+				st.openPath = readCString(pid, uintptr(regs.Rsi), 4096)
+				st.openFlags = regs.Rdx
+				st.openCaptured = true
+			}
 		}
 		st.atEnter = false
 		return
@@ -249,6 +280,23 @@ func handleSyscallStop(pid int, st *pidState, w io.Writer) {
 		st.execPath = ""
 		st.execArgv = nil
 		st.execCwd = ""
+	}
+	if st.openCaptured {
+		// Successful open returns a non-negative fd; failed
+		// open returns -errno (large unsigned when read
+		// from rax). int64 cast surfaces the sign.
+		ret := int64(regs.Rax)
+		// O_RDONLY = 0; access mode lives in the low 2 bits
+		// (O_ACCMODE = 3). We want flags & 3 == 0 (read
+		// only). Skip O_WRONLY (1) and O_RDWR (2); writes
+		// don't belong in the read oracle.
+		const oAccMode = 3
+		if ret >= 0 && (st.openFlags&oAccMode) == 0 {
+			emitOpenat(w, pid, st.openPath, st.openFlags, ret)
+		}
+		st.openPath = ""
+		st.openFlags = 0
+		st.openCaptured = false
 	}
 	st.atEnter = true
 }
@@ -353,6 +401,65 @@ func emitExecve(w io.Writer, pid int, cwd, path string, argv []string) {
 	}
 	b.WriteString("], 0x0) = 0\n")
 	_, _ = w.Write(b.Bytes())
+}
+
+// emitOpenat writes one strace-compatible openat trace line to
+// w. Format:
+//
+//	1234  openat(AT_FDCWD, "/path", O_RDONLY|O_CLOEXEC) = 3
+//
+// Flags are rendered as a small subset of strace's flag-name
+// decoding (the only ones glibc routinely passes for read-mode
+// opens). canonicalize doesn't depend on the exact flag names —
+// it filters by path against --source-root and strips the
+// `= <fd>` suffix unconditionally — so the precise spelling
+// here is for human readability, not byte stability.
+func emitOpenat(w io.Writer, pid int, path string, flags uint64, retFd int64) {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, "%d  openat(AT_FDCWD, ", pid)
+	straceQuote(&b, path)
+	b.WriteString(", ")
+	b.WriteString(formatOpenFlags(flags))
+	fmt.Fprintf(&b, ") = %d\n", retFd)
+	_, _ = w.Write(b.Bytes())
+}
+
+// formatOpenFlags renders the open(2) flags arg in strace's
+// `O_FOO|O_BAR` style. We model only the flags successful
+// read-mode opens carry in practice (O_RDONLY, O_CLOEXEC,
+// O_NOFOLLOW, O_DIRECTORY); other bits collapse into a hex
+// suffix. Stable enough for the canonical-trace shape; we
+// never parse this back.
+func formatOpenFlags(flags uint64) string {
+	parts := []string{"O_RDONLY"}
+	const (
+		oCloexec   = 0x80000 // O_CLOEXEC
+		oNofollow  = 0x20000 // O_NOFOLLOW
+		oDirectory = 0x10000 // O_DIRECTORY
+		oNonblock  = 0x800   // O_NONBLOCK
+	)
+	if flags&oCloexec != 0 {
+		parts = append(parts, "O_CLOEXEC")
+		flags &^= oCloexec
+	}
+	if flags&oNofollow != 0 {
+		parts = append(parts, "O_NOFOLLOW")
+		flags &^= oNofollow
+	}
+	if flags&oDirectory != 0 {
+		parts = append(parts, "O_DIRECTORY")
+		flags &^= oDirectory
+	}
+	if flags&oNonblock != 0 {
+		parts = append(parts, "O_NONBLOCK")
+		flags &^= oNonblock
+	}
+	flags &^= 3 // O_RDONLY/WRONLY/RDWR already rendered as O_RDONLY
+	out := strings.Join(parts, "|")
+	if flags != 0 {
+		out += fmt.Sprintf("|0x%x", flags)
+	}
+	return out
 }
 
 // straceQuote writes s into w as a strace-compatible quoted

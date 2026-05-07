@@ -16,6 +16,15 @@ import (
 // flag.Value implementation unchanged.
 type prefixSub = tracenorm.PrefixSub
 
-func canonicalize(rawPath, outPath string, prefixSubs []prefixSub) error {
-	return tracenorm.Canonicalize(rawPath, outPath, prefixSubs)
+// canonicalizeWith threads --source-root through to
+// tracenorm.CanonicalizeWith so openat lines captured by the
+// strace-fallback or native backend get filtered + stabilized
+// (or dropped, when sourceRoot is empty). Mirrors the same
+// Options surface trace-publish uses for defensive
+// re-canonicalization.
+func canonicalizeWith(rawPath, outPath string, prefixSubs []prefixSub, sourceRoot string) error {
+	return tracenorm.CanonicalizeWith(rawPath, outPath, tracenorm.Options{
+		PrefixSubs: prefixSubs,
+		SourceRoot: sourceRoot,
+	})
 }

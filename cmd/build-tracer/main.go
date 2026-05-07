@@ -67,10 +67,11 @@ func (p *prefixSubFlag) Set(s string) error {
 func main() {
 	out := flag.String("out", "", "path to write the trace artifact (canonical strace text format — pids stripped, gcc temp paths replaced with stable placeholders)")
 	useStrace := flag.Bool("strace", false, "use the host strace binary instead of the native ptrace backend (fallback for non-linux/amd64 hosts)")
+	sourceRoot := flag.String("source-root", "", "absolute path to the element's source tree. When set, the tracer also captures openat reads (in addition to execve), and canonicalize filters them to source-relative paths with the volatile fd return value stripped — the trace doubles as a configure-time read oracle (see internal/tracenorm package doc). When empty, openat events are skipped entirely; trace.log byte schema matches the legacy execve-only shape and existing AC entries stay valid.")
 	var prefixSubs prefixSubFlag
 	flag.Var(&prefixSubs, "normalize-prefix", "FROM=TO substitution applied to every trace line. Repeatable. Used to neutralize action-time mktemp paths (INSTALL_ROOT / BUILD_ROOT / DEP_PREFIX) whose bytes vary across bazel invocations.")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: build-tracer [--strace] [--normalize-prefix=FROM=TO ...] --out=<path> -- <cmd> [args...]")
+		fmt.Fprintln(os.Stderr, "usage: build-tracer [--strace] [--source-root=PATH] [--normalize-prefix=FROM=TO ...] --out=<path> -- <cmd> [args...]")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -101,14 +102,14 @@ func main() {
 
 	var exitCode int
 	if *useStrace || !nativeBackendAvailable() {
-		exitCode = runStrace(rawPath, args)
+		exitCode = runStrace(rawPath, args, *sourceRoot != "")
 	} else {
-		exitCode = runNative(rawPath, args)
+		exitCode = runNative(rawPath, args, *sourceRoot != "")
 	}
 
 	// Canonicalize even on non-zero exit — partial traces from
 	// failing builds are still useful for post-mortem.
-	if err := canonicalize(rawPath, *out, []prefixSub(prefixSubs)); err != nil {
+	if err := canonicalizeWith(rawPath, *out, []prefixSub(prefixSubs), *sourceRoot); err != nil {
 		fmt.Fprintf(os.Stderr, "build-tracer: canonicalize: %v\n", err)
 		if exitCode == 0 {
 			exitCode = 1
@@ -120,10 +121,22 @@ func main() {
 // runStrace invokes the host strace binary as a thin wrapper
 // around the build command. Used as the fallback backend when
 // the native ptrace path isn't available.
-func runStrace(out string, args []string) int {
+//
+// captureReads = true broadens the syscall set to include
+// openat events alongside execve. Strace itself does not filter
+// openat by path or by access mode; canonicalize (called
+// downstream with the same source-root) drops openat lines
+// outside the source tree and strips the volatile fd return
+// value. The resulting canonical trace doubles as a configure-
+// time read oracle.
+func runStrace(out string, args []string, captureReads bool) int {
+	traceSet := "execve"
+	if captureReads {
+		traceSet = "execve,openat"
+	}
 	straceArgs := []string{
-		"-f",                 // follow forks
-		"-e", "trace=execve", // we only care about exec events
+		"-f", // follow forks
+		"-e", "trace=" + traceSet,
 		"-s", "4096", // long enough for argv strings
 		"--signal=none", // skip signal noise
 		"-o", out,       // trace destination
