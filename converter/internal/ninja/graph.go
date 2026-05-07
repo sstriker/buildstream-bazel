@@ -109,8 +109,9 @@ func (g *Graph) BuildFor(out string) *Build {
 // ReconfigureInputs returns the implicit-input list of the `build
 // build.ninja: RERUN_CMAKE | <inputs>` statement cmake emits — the set of
 // files cmake itself thinks should re-trigger configure when their bytes
-// change. Empty slice if no such build statement exists (older cmake, non-
-// ninja generator, or hand-written ninja).
+// change. Returns nil if no such build statement exists (older cmake, non-
+// ninja generator, or hand-written ninja) or if it has no implicit inputs;
+// callers can use len() == 0 to handle both cases uniformly.
 //
 // Inputs are returned verbatim as written in build.ninja: a mix of
 // absolute paths (user CMakeLists.txt + cmake-stdlib /usr/share/cmake-*

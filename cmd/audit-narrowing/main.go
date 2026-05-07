@@ -23,8 +23,8 @@
 // sorted, listing every oracle path the patterns DON'T cover. Empty
 // file = clean (all reads accounted for in the cache key). Exit
 // status is always 0; the report is the signal. CI gates that want
-// hard-fail-on-drift can grep -c ” the report and fail when
-// non-zero.
+// hard-fail-on-drift can `[ ! -s undercomplete.txt ]` and fail when
+// it isn't empty.
 //
 // Pattern set is the source of truth for "what's covered"; oracle
 // is "what was actually read". Soundness invariant the audit tests:

@@ -4,9 +4,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// nativeBackendCompiledIn mirrors cmd/build-tracer's
+// nativeBackendAvailable() — the only platform with the native
+// ptrace backend compiled in is linux/amd64 (per the build
+// constraints on native_linux_amd64.go vs. native_other.go).
+// Tests that exercise the native path skip when this is false;
+// they no longer use `strace`-on-PATH as a proxy for "this host
+// can ptrace" because that conflates two unrelated concerns
+// (the strace fallback vs. the native backend).
+func nativeBackendCompiledIn() bool {
+	return runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
+}
 
 // TestBuildTracer_E2E confirms build-tracer wraps a command
 // under strace and produces a trace artifact containing the
@@ -52,11 +65,8 @@ func TestBuildTracer_E2E(t *testing.T) {
 // Skipped on non-amd64 Linux where the native backend isn't
 // compiled in.
 func TestBuildTracer_NativeCapturesForkedExecve(t *testing.T) {
-	if _, err := exec.LookPath("strace"); err != nil {
-		// Test relies on `go build` + ptrace working on the
-		// host. strace's presence approximates "this kernel
-		// allows ptrace from a parent." Skip if absent.
-		t.Skip("strace not on PATH; gating native test on the same host capability")
+	if !nativeBackendCompiledIn() {
+		t.Skip("native backend not compiled in for this GOOS/GOARCH")
 	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "build-tracer")
@@ -155,8 +165,8 @@ func TestBuildTracer_PropagatesExit(t *testing.T) {
 // and that the volatile fd return value gets stripped. End-to-
 // end exercise of the trace-side configure-time read oracle.
 func TestBuildTracer_SourceRootCapturesOpenatNative(t *testing.T) {
-	if _, err := exec.LookPath("strace"); err != nil {
-		t.Skip("strace not on PATH; gating native test on host ptrace capability")
+	if !nativeBackendCompiledIn() {
+		t.Skip("native backend not compiled in for this GOOS/GOARCH")
 	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "build-tracer")

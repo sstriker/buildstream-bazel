@@ -172,9 +172,10 @@ func walkSrckeyPaths(root string) ([]string, error) {
 }
 
 // matchesSrckeyPatterns reports whether a path's CONTENT
-// contributes to srckey. Mirrors applyReadPathsPatterns'
-// matched-vs-unmatched semantics minus the cmake-specific
-// CMakeLists.txt special case:
+// contributes to srckey. Delegates to readpaths.Patterns.Match
+// so the inclusion semantics stay byte-equivalent with what
+// cmd/audit-narrowing applies on the same per-element
+// srckey-patterns.txt.
 //
 //   - patterns nil / empty rules: content-included (full
 //     hashing, conservative default).
@@ -183,34 +184,7 @@ func walkSrckeyPaths(root string) ([]string, error) {
 //   - Only exclude rules: content-included unless the path
 //     matches an exclude rule.
 func matchesSrckeyPatterns(patterns *readPathsPatterns, path string) bool {
-	if patterns == nil || len(patterns.Rules) == 0 {
-		return true
-	}
-	hasInclude := false
-	for _, r := range patterns.Rules {
-		if r.Include {
-			hasInclude = true
-			break
-		}
-	}
-	matched := !hasInclude
-	if hasInclude {
-		for _, r := range patterns.Rules {
-			if r.Include && matchPattern(r.Pattern, path) {
-				matched = true
-				break
-			}
-		}
-	}
-	if matched {
-		for _, r := range patterns.Rules {
-			if !r.Include && matchPattern(r.Pattern, path) {
-				matched = false
-				break
-			}
-		}
-	}
-	return matched
+	return patterns.Match(path)
 }
 
 // renderSrckey writes srckey.txt + srckey-breakdown.txt +

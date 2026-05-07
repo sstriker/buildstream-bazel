@@ -172,10 +172,20 @@ var pidPrefixRE = regexp.MustCompile(`^\d+ +`)
 // + `cc` + 6+ alphanumerics + `.` + short alphabetic extension.
 var gccTempPathRE = regexp.MustCompile(`/tmp/cc[A-Za-z0-9]{6,}\.[a-zA-Z]+`)
 
-// openatLineRE matches strace-format openat lines, capturing
-// the path arg (group 1) and the rest of the call up to the
-// `= <retval>` suffix (group 2). The leading `<pid>  ` prefix
-// is already stripped by pidPrefixRE before this fires.
+// openatLineRE matches strace-format openat lines. Capture
+// groups:
+//
+//  1. `openat(AT_FDCWD, "` — fixed prefix.
+//  2. The pathname (between the surrounding double-quotes;
+//     embedded `\"` escapes preserved).
+//  3. The rest of the call: closing `"`, optional `, <flags>`,
+//     and the closing `)`. Inspected by openatLine to filter
+//     write-mode opens out of the read oracle.
+//  4. Optional ` = <retval>` suffix (stripped at canonicalize
+//     time because fd numbers are run-volatile).
+//
+// The leading `<pid>  ` prefix is already stripped by pidPrefixRE
+// before this fires.
 //
 // Format we accept:
 //
@@ -204,11 +214,17 @@ func (c *canonicalizer) line(s string) (string, bool) {
 // (legacy AC byte schema preserved for non-oracle elements).
 // With a SourceRoot configured:
 //
-//   - Path inside the root: line passes through with the path
-//     rewritten source-relative (slash form) and the `= <fd>`
-//     suffix replaced with `= ?` (the literal fd return is
-//     run-volatile and must not enter the AC digest).
+//   - Path inside the root AND access mode is O_RDONLY: line
+//     passes through with the path rewritten source-relative
+//     (slash form) and the `= <fd>` suffix replaced with `= ?`
+//     (the literal fd return is run-volatile and must not enter
+//     the AC digest).
 //   - Path outside the root: dropped.
+//   - Write-mode open (O_WRONLY / O_RDWR): dropped — the read
+//     oracle is purely about reads. Build-tracer's native
+//     backend filters these at capture time; the strace
+//     fallback doesn't (strace's -e trace=openat captures every
+//     access mode), so the parity filter lives here.
 //   - Malformed line that doesn't match openatLineRE: dropped
 //     (defensive — strace can emit unfinished/resumed split
 //     forms we don't model yet).
@@ -224,6 +240,15 @@ func (c *canonicalizer) openatLine(s string) (string, bool) {
 	pathQuoted := m[2]
 	suffix := m[3] // closing `"` + flags + `)`
 
+	// Read-only filter (parity with native backend's capture-
+	// time filter). Strace renders each access mode as a literal
+	// O_* token; checking the suffix for the write-mode tokens
+	// is sufficient because they only appear in the flags arg
+	// (not in path strings, which were already split off into m[2]).
+	if strings.Contains(suffix, "O_WRONLY") || strings.Contains(suffix, "O_RDWR") {
+		return "", false
+	}
+
 	path := unquoteStrace(pathQuoted)
 	if !filepath.IsAbs(path) {
 		// Relative paths in openat are resolved against AT_FDCWD
@@ -236,11 +261,26 @@ func (c *canonicalizer) openatLine(s string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(c.sourceRoot, path)
-	if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, "..") {
+	if err != nil || !insideSourceRoot(rel) {
 		return "", false
 	}
 	rel = filepath.ToSlash(rel)
 	return prefix + quoteStrace(rel) + suffix + " = ?", true
+}
+
+// insideSourceRoot reports whether rel (a filepath.Rel result)
+// names a path inside its base — i.e., it isn't `""`, `"."`,
+// `".."`, and doesn't start with `"../"`. Plain
+// `strings.HasPrefix(rel, "..")` would also reject legitimate
+// in-tree paths whose first component literally starts with
+// the bytes `..` (e.g. `..foo/bar`). filepath.Rel never produces
+// an internal `..` component, so this check only needs to consider
+// the leading position.
+func insideSourceRoot(rel string) bool {
+	if rel == "" || rel == "." || rel == ".." {
+		return false
+	}
+	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // unquoteStrace inverts straceQuote (cmd/build-tracer): undoes
@@ -283,9 +323,17 @@ func unquoteStrace(s string) string {
 	return b.String()
 }
 
-// quoteStrace mirrors cmd/build-tracer's straceQuote (we duplicate
-// the small helper here rather than import to avoid a layering
-// cycle: build-tracer imports tracenorm, not the other way).
+// quoteStrace escapes the body of a strace-quoted string —
+// applies the same backslash-escapes (`\\`, `\"`, `\n`, `\t`,
+// `\r`, `\xNN`) build-tracer's straceQuote uses, BUT does NOT
+// emit the surrounding double-quotes. openatLine reuses the
+// caller-supplied quotes from the original line (m[1] / m[3]
+// in openatLineRE) and only needs the body re-escaped here.
+// Naming kept "quote" rather than "escape" for symmetry with
+// the build-tracer helper, even though the responsibility is
+// narrower; the (short) helper is duplicated rather than
+// imported to avoid a layering cycle (build-tracer imports
+// tracenorm, not the other way).
 func quoteStrace(s string) string {
 	var b strings.Builder
 	b.Grow(len(s) + 2)

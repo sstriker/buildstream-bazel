@@ -309,7 +309,7 @@ func run(a cli.Args) error {
 		}
 	}
 
-	if a.OutCMakeConfigureReads != "" && g != nil {
+	if a.OutCMakeConfigureReads != "" {
 		// The build.ninja oracle: cmake's own list of files whose bytes
 		// should re-trigger configure. Project against the source root
 		// to drop cmake-stdlib modules and build-tree configure outputs;
@@ -323,11 +323,21 @@ func run(a cli.Args) error {
 		// SourceRoot matches). Empty SourceRoot → projector returns nil
 		// and we write an empty array, which is unambiguous in the
 		// downstream consumer.
-		buildDirForProj := hostBuildDir
-		if buildDirForProj == "" {
-			buildDirForProj = a.ReplyDir
+		//
+		// When build.ninja wasn't parseable (g == nil — older cmake or
+		// non-ninja generator), we still write the file but as an
+		// empty array, so scripts that always expect the artifact to
+		// exist when the flag is set don't fail with ENOENT. Audit
+		// consumers see "no oracle data" via the empty array, which
+		// is the right semantic.
+		var reads []string
+		if g != nil {
+			buildDirForProj := hostBuildDir
+			if buildDirForProj == "" {
+				buildDirForProj = a.ReplyDir
+			}
+			reads = ninja.ProjectToSourceTree(g.ReconfigureInputs(), a.SourceRoot, buildDirForProj)
 		}
-		reads := ninja.ProjectToSourceTree(g.ReconfigureInputs(), a.SourceRoot, buildDirForProj)
 		if reads == nil {
 			reads = []string{}
 		}

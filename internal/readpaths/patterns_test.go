@@ -115,6 +115,53 @@ func TestParse_ErrorsOnUnknownRule(t *testing.T) {
 	}
 }
 
+// TestMatch_GlobGrammar exercises the glob matcher's edge
+// cases via single-rule include patterns. Each case asserts
+// the include-rule grammar (the equivalent of the old
+// matchPattern unit test in cmd/write-a, lifted here when the
+// matcher was consolidated into this package).
+func TestMatch_GlobGrammar(t *testing.T) {
+	cases := []struct {
+		pattern string
+		path    string
+		want    bool
+	}{
+		{"CMakeLists.txt", "CMakeLists.txt", true},
+		{"CMakeLists.txt", "src/CMakeLists.txt", false},
+		{"*", "foo", true},
+		{"*", "foo/bar", false},
+		{"*.h", "foo.h", true},
+		{"*.h", "sub/foo.h", false},
+		{"cmake/*.cmake", "cmake/Find.cmake", true},
+		{"cmake/*.cmake", "cmake/sub/Find.cmake", false},
+		{"include/**/*.h", "include/foo.h", true},
+		{"include/**/*.h", "include/sub/foo.h", true},
+		{"include/**/*.h", "include/sub/deep/foo.h", true},
+		{"include/**/*.h", "src/foo.h", false},
+		{"**/*.h", "foo.h", true},
+		{"**/*.h", "src/foo.h", true},
+		{"**", "anything/at/all", true},
+		{"foo/**/bar", "foo/bar", true},
+		{"foo/**/bar", "foo/x/bar", true},
+		{"foo/**/bar", "foo/x/y/bar", true},
+		{"foo/**/bar", "foo/baz", false},
+		{"include/internal/*", "include/internal/x.h", true},
+		{"include/internal/*", "include/public/x.h", false},
+		{"?.c", "a.c", true},
+		{"?.c", "ab.c", false},
+	}
+	for _, c := range cases {
+		t.Run(c.pattern+"::"+c.path, func(t *testing.T) {
+			pp := &readpaths.Patterns{Rules: []readpaths.Rule{
+				{Include: true, Pattern: c.pattern},
+			}}
+			if got := pp.Match(c.path); got != c.want {
+				t.Errorf("Match(%q) on include %q = %v, want %v", c.path, c.pattern, got, c.want)
+			}
+		})
+	}
+}
+
 func TestFormat_NilOrEmpty(t *testing.T) {
 	if got := (*readpaths.Patterns)(nil).Format(); got != "" {
 		t.Errorf("nil Format = %q, want empty", got)

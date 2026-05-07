@@ -23,8 +23,6 @@ package main
 // action-cache benefit is worth the maintenance burden.
 
 import (
-	"bufio"
-	"fmt"
 	"os"
 	"strings"
 
@@ -32,11 +30,11 @@ import (
 )
 
 // patternRule and readPathsPatterns are aliases to the shared
-// pattern types in internal/readpaths. Aliased rather than
-// re-declared so cmd/audit-narrowing and cmd/write-a stay byte-
-// equivalent on the matcher (the file format and rule semantics
-// are an interop contract between the two binaries via the
-// per-element srckey-patterns.txt artifact).
+// pattern types in internal/readpaths. The shared package
+// owns the file-format parser AND the matcher, so cmd/write-a
+// (which writes srckey-patterns.txt) and cmd/audit-narrowing
+// (which reads it) can never drift on either the syntax or
+// the inclusion semantics.
 type patternRule = readpaths.Rule
 type readPathsPatterns = readpaths.Patterns
 
@@ -77,6 +75,10 @@ func withCMakeListsRule(patterns *readPathsPatterns) *readPathsPatterns {
 // Returns (nil, nil) when the file is absent — that's the default
 // "entire tree real" case, distinct from a file present but
 // empty (which is technically a narrowing to zero matches).
+//
+// Parsing delegates to internal/readpaths.Parse so the file
+// format is shared with cmd/audit-narrowing without duplicate
+// parsers that could drift.
 func loadReadPathsPatterns(bstPath string) (*readPathsPatterns, error) {
 	patternsPath := strings.TrimSuffix(bstPath, ".bst") + ".read-paths.txt"
 	f, err := os.Open(patternsPath)
@@ -87,103 +89,26 @@ func loadReadPathsPatterns(bstPath string) (*readPathsPatterns, error) {
 		return nil, err
 	}
 	defer f.Close()
-
-	pp := &readPathsPatterns{}
-	scanner := bufio.NewScanner(f)
-	lineNum := 0
-	for scanner.Scan() {
-		lineNum++
-		raw := strings.TrimSpace(scanner.Text())
-		// Skip blanks + comments.
-		if raw == "" || strings.HasPrefix(raw, "#") {
-			continue
-		}
-		fields := strings.Fields(raw)
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("%s:%d: expected '<include|exclude> <pattern>', got %q", patternsPath, lineNum, raw)
-		}
-		var include bool
-		switch fields[0] {
-		case "include":
-			include = true
-		case "exclude":
-			include = false
-		default:
-			return nil, fmt.Errorf("%s:%d: unknown rule %q (want include or exclude)", patternsPath, lineNum, fields[0])
-		}
-		// Pattern is everything after the first field (allows
-		// patterns containing spaces — unusual but legal).
-		pattern := strings.Join(fields[1:], " ")
-		pp.Rules = append(pp.Rules, patternRule{Include: include, Pattern: pattern})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return pp, nil
+	return readpaths.Parse(f, patternsPath)
 }
 
 // applyReadPathsPatterns partitions universe (the source-relative
 // file paths in the element's source tree) into real vs zero
 // according to the rules.
 //
-// Algorithm:
-//
-//   - Start with every path "real" iff at least one include rule
-//     is present and matches; "zero" otherwise. With no include
-//     rules at all, default-to-real (so a patterns file with only
-//     exclude lines acts as "include everything except these"
-//     rather than "include nothing").
-//   - Then apply exclude rules in order: any path matching an
-//     exclude rule flips to zero.
-//   - CMakeLists.txt files are always real regardless of rules
-//     (cmake parses the entry CMakeLists before any user pattern
-//     can ever fire; auto-including matches the feedback flow's
-//     same auto-include).
+// Inclusion semantics delegate to readpaths.Patterns.Match —
+// shared with the audit tool. The kind:cmake special case
+// (CMakeLists.txt always real) is layered on top here.
 func applyReadPathsPatterns(pp *readPathsPatterns, universe []string) (real, zero []string) {
 	if pp == nil || len(pp.Rules) == 0 {
 		return universe, nil
 	}
-	hasInclude := false
-	for _, r := range pp.Rules {
-		if r.Include {
-			hasInclude = true
-			break
-		}
-	}
 	for _, p := range universe {
-		isReal := !hasInclude // default-to-real when only exclude rules
-		for _, r := range pp.Rules {
-			if !r.Include {
-				continue
-			}
-			if matchPattern(r.Pattern, p) {
-				isReal = true
-				break
-			}
-		}
-		if isReal {
-			for _, r := range pp.Rules {
-				if r.Include {
-					continue
-				}
-				if matchPattern(r.Pattern, p) {
-					isReal = false
-					break
-				}
-			}
-		}
-		// CMakeLists.txt always real.
-		if !isReal {
-			base := p
-			for i := len(p) - 1; i >= 0; i-- {
-				if p[i] == '/' {
-					base = p[i+1:]
-					break
-				}
-			}
-			if base == "CMakeLists.txt" {
-				isReal = true
-			}
+		isReal := pp.Match(p)
+		// CMakeLists.txt always real (kind:cmake-specific
+		// special case).
+		if !isReal && pathBase(p) == "CMakeLists.txt" {
+			isReal = true
 		}
 		if isReal {
 			real = append(real, p)
@@ -194,76 +119,13 @@ func applyReadPathsPatterns(pp *readPathsPatterns, universe []string) (real, zer
 	return real, zero
 }
 
-// matchPattern matches a path against a glob pattern with ** support.
-//
-// Pattern grammar (POSIX-glob superset):
-//   - * matches any sequence of characters except /
-//   - ** matches any sequence of characters including / (zero or more
-//     path components)
-//   - ? matches one character except /
-//   - all other characters match literally
-//
-// Implementation: walk the pattern + path together, dispatching on
-// special characters. ** is implemented via try-and-backtrack.
-func matchPattern(pattern, path string) bool {
-	return matchPatternRec(pattern, path)
-}
-
-func matchPatternRec(pattern, path string) bool {
-	for len(pattern) > 0 {
-		// ** — match any number of characters (including /), then
-		// recurse on remainder.
-		if strings.HasPrefix(pattern, "**") {
-			rest := pattern[2:]
-			if rest == "" {
-				return true // trailing ** matches everything
-			}
-			// Special-case "**/X": ** can match zero path
-			// components (i.e., the **/ collapses to nothing) so
-			// "include/**/*.h" matches "include/foo.h" too.
-			if strings.HasPrefix(rest, "/") {
-				if matchPatternRec(rest[1:], path) {
-					return true
-				}
-			}
-			// Try every possible split of path.
-			for i := 0; i <= len(path); i++ {
-				if matchPatternRec(rest, path[i:]) {
-					return true
-				}
-			}
-			return false
-		}
-		c := pattern[0]
-		switch c {
-		case '*':
-			rest := pattern[1:]
-			// * matches any non-/ chars, then recurse on remainder.
-			if rest == "" {
-				return !strings.Contains(path, "/")
-			}
-			for i := 0; i <= len(path); i++ {
-				if i > 0 && path[i-1] == '/' {
-					return false
-				}
-				if matchPatternRec(rest, path[i:]) {
-					return true
-				}
-			}
-			return false
-		case '?':
-			if len(path) == 0 || path[0] == '/' {
-				return false
-			}
-			pattern = pattern[1:]
-			path = path[1:]
-		default:
-			if len(path) == 0 || path[0] != c {
-				return false
-			}
-			pattern = pattern[1:]
-			path = path[1:]
+// pathBase returns the last `/`-separated segment of p (or p
+// itself when no `/` is present).
+func pathBase(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' {
+			return p[i+1:]
 		}
 	}
-	return len(path) == 0
+	return p
 }
