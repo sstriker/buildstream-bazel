@@ -237,6 +237,9 @@ func parseVarsDump(body []byte) (map[string]string, error) {
 			return nil, fmt.Errorf("vars dump line %d: missing '=' in %q", i+1, line)
 		}
 		name := line[:eq]
+		if name == "" {
+			return nil, fmt.Errorf("vars dump line %d: empty variable name in %q", i+1, line)
+		}
 		raw, err := hex.DecodeString(line[eq+1:])
 		if err != nil {
 			return nil, fmt.Errorf("vars dump line %d: decode hex for %q: %w", i+1, name, err)
