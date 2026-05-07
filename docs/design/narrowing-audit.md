@@ -65,7 +65,7 @@ the action's output but Bazel won't re-run the action because
 
 ### cmake oracle (build.ninja's `RERUN_CMAKE`)
 
-Cmake itself volunteers a list. In every generated `build.ninja`
+CMake itself volunteers a list. In every generated `build.ninja`
 there's a build edge:
 
 ```

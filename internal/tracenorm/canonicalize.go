@@ -157,7 +157,14 @@ func newCanonicalizer(opts Options) *canonicalizer {
 		if abs, err := filepath.Abs(root); err == nil {
 			root = abs
 		}
-		root = strings.TrimRight(root, "/")
+		// Strip a single trailing slash for the typical
+		// "/path/to/src/" → "/path/to/src" normalization, but
+		// don't TrimRight the universe of '/' characters: a
+		// SourceRoot of "/" (the filesystem root) is a legal
+		// — if pathological — input that TrimRight would
+		// collapse to "" and silently disable the openat
+		// filter. filepath.Clean is the safe normalizer.
+		root = filepath.Clean(root)
 	}
 	return &canonicalizer{tempPaths: map[string]string{}, prefixSubs: subs, sourceRoot: root}
 }

@@ -24,9 +24,10 @@ import (
 //   - Paths that share sourceRoot's parent prefix only (`..` segments
 //     after Rel).
 //
-// sourceRoot and buildDir should be absolute. If either is empty, the
-// function returns nil (callers without both pieces of context can't do
-// the projection).
+// sourceRoot and buildDir may be relative or absolute; the function
+// runs filepath.Abs on each before comparison. If either is empty,
+// the function returns nil (callers without both pieces of context
+// can't do the projection).
 func ProjectToSourceTree(inputs []string, sourceRoot, buildDir string) []string {
 	if len(inputs) == 0 || sourceRoot == "" || buildDir == "" {
 		return nil
