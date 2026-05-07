@@ -271,12 +271,16 @@ func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts
 		atOnly = "--at-only "
 	}
 	// $(execpath) resolves srcs labels relative to exec root;
-	// $@ is the genrule output. Tmpfile lives under $(@D) (the
-	// genrule's output dir) so it's auto-cleaned on rebuild and
-	// doesn't pollute /tmp on shared executors.
+	// $@ is the genrule output. The values tmpfile is created
+	// under $(@D) (the genrule's output dir) via a `mktemp -p`
+	// flag, so it lives in the action's sandbox rather than
+	// /tmp — keeps shared executors clean and lets Bazel's
+	// per-action sandbox cleanup pick it up if the trap
+	// doesn't fire (e.g. SIGKILL). The trailing rm + explicit
+	// exit-code preservation handles the normal-exit case.
 	return fmt.Sprintf(
 		"mkdir -p $$(dirname $@) && "+
-			"VALUES=$$(mktemp) && "+
+			"VALUES=$$(mktemp -p $$(dirname $@) cmake-configure-file.values.XXXXXX) && "+
 			"echo %s | base64 -d > $$VALUES && "+
 			"$(execpath //tools:cmake-configure-file) %s--values=$$VALUES $(execpath %s) $@ ; "+
 			"rc=$$?; rm -f $$VALUES; exit $$rc",

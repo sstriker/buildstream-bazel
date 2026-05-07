@@ -11,25 +11,38 @@
 //	    --values=<values.json> \
 //	    <input.h.in> <output>
 //
-// The companion lift in converter/internal/lower (forthcoming
-// commit on this branch) emits a genrule of shape
+// The companion lift in converter/internal/lower
+// (configureFileLiftedCmd) emits a genrule of shape:
 //
 //	genrule(
 //	    name = "gen_config_h",
-//	    srcs = ["src/config.h.in", ":gen_config_h_values"],
+//	    srcs = ["src/config.h.in"],
 //	    outs = ["config.h"],
-//	    cmd  = "$(location //tools:cmake-configure-file) " +
-//	           "--values=$(location :gen_config_h_values) " +
-//	           "$(location src/config.h.in) $@",
+//	    cmd  = "mkdir -p $$(dirname $@) && "
+//	           "VALUES=$$(mktemp -p $$(dirname $@) ...) && "
+//	           "echo <base64-of-values-json> | base64 -d > $$VALUES && "
+//	           "$(execpath //tools:cmake-configure-file) [--at-only] "
+//	           "--values=$$VALUES $(execpath src/config.h.in) $@ ; "
+//	           "rc=$$?; rm -f $$VALUES; exit $$rc",
 //	    tools = ["//tools:cmake-configure-file"],
 //	)
 //
 // .h.in lives in srcs (Bazel invalidates the genrule directly
-// on edit), the values JSON sidecar carries the resolved cmake
-// variables convert-element captured at conversion time. .h.in
-// becomes name-only for srckey purposes; convert-element only
-// reruns when the values change, which already requires a
-// CMakeLists.txt edit (already in srckey content-include).
+// on edit). The values JSON is inlined into the cmd as a small
+// base64 blob (typically a few hundred bytes — one entry per
+// variable the template references) — much smaller than the
+// rendered output it replaces, AND independent of .h.in
+// content. .h.in becomes name-only for srckey purposes;
+// convert-element only reruns when the values blob changes,
+// which already requires a CMakeLists.txt edit (already in
+// srckey content-include).
+//
+// We could move the values to a separate sidecar file (with
+// `srcs = [".h.in", ":gen_*_values"]`); the inline form keeps
+// convert-element's output set unchanged (just BUILD.bazel) at
+// the cost of a marginally longer cmd. Inline is the v1 shape;
+// the sidecar form is a follow-up if the cmd's length becomes
+// a problem in practice.
 package main
 
 import (

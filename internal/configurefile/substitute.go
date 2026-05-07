@@ -55,7 +55,6 @@
 package configurefile
 
 import (
-	"bufio"
 	"bytes"
 	"strings"
 )
@@ -74,12 +73,19 @@ type Options struct {
 func Substitute(template []byte, values map[string]string, opts Options) []byte {
 	var out bytes.Buffer
 	out.Grow(len(template))
-	scanner := bufio.NewScanner(bytes.NewReader(template))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		out.WriteString(processLine(line, values, opts))
-		out.WriteByte('\n')
+	// bytes.Split rather than bufio.Scanner: Scanner has a max
+	// token size (defaults 64K, capped at 1MiB even with a
+	// custom buffer) that would silently truncate long lines.
+	// configure_file templates are usually small, but we need
+	// the byte-equal-to-cmake guarantee to be unconditional —
+	// silent truncation on a pathologically long line is the
+	// kind of correctness bug that wouldn't surface until a
+	// real template trips it.
+	for i, line := range bytes.Split(template, []byte{'\n'}) {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(processLine(string(line), values, opts))
 	}
 	return trimTrailingIfTemplateLacked(out.Bytes(), template)
 }
