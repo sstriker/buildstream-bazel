@@ -83,6 +83,19 @@ type Options struct {
 	// Empty disables the trace-driven enrichment paths;
 	// codemodel-only behavior matches pre-trace lower output.
 	TraceRaw []byte
+
+	// LiftConfigureFile toggles the configure_file recovery's
+	// lifted shape. When true (and Extract recovers a values
+	// dict that round-trips to cmake's rendered output), the
+	// emitted genrule has the .h.in template as a real srcs
+	// input and invokes //tools:cmake-configure-file at Bazel
+	// build time. When false (the default — preserves
+	// pre-lift behaviour for callers that don't yet stage the
+	// tool), the legacy base64-of-rendered-bytes cmd shape is
+	// always emitted regardless of Extract's outcome. See
+	// internal/configurefile package doc for the full lift
+	// rationale + cache-key analysis.
+	LiftConfigureFile bool
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -197,13 +210,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var configureFiles []configureFileOut
 	if traceDecoded {
 		var err error
-		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, cc)
+		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, cc)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		var err error
-		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, opts.BuildDir, cmakeSrc, cmakeBuild, cc)
+		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, hostSrc, opts.BuildDir, cmakeSrc, cmakeBuild, opts.LiftConfigureFile, cc)
 		if err != nil {
 			return nil, err
 		}

@@ -248,9 +248,10 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 		t.Fatalf("read trace: %v", err)
 	}
 	pkg, err := lower.ToIR(r, nil, lower.Options{
-		HostSourceRoot: src,
-		BuildDir:       replyDir,
-		TraceRaw:       traceRaw,
+		HostSourceRoot:    src,
+		BuildDir:          replyDir,
+		TraceRaw:          traceRaw,
+		LiftConfigureFile: true,
 	})
 	if err != nil {
 		t.Fatal(err)

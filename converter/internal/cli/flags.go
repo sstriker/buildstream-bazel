@@ -81,6 +81,18 @@ type Args struct {
 	// undercoverage drift.
 	OutCMakeConfigureReads string
 
+	// LiftConfigureFile toggles the configure_file recovery's
+	// lifted shape (.h.in as a real srcs +
+	// //tools:cmake-configure-file invocation at Bazel build
+	// time). Off by default so existing orchestrator-driven
+	// flows that don't stage the tool keep working. Callers
+	// who do stage //tools:cmake-configure-file (write-a's
+	// project A render with --cmake-configure-file-bin set, and
+	// any operator-built downstream Bazel envelope that mirrors
+	// it) opt in via this flag. See internal/configurefile
+	// package doc for the cache-key analysis.
+	LiftConfigureFile bool
+
 	// AllowCMakeVersionMismatch lets the converter run with a cmake
 	// version below the architectural floor (3.20 — codemodel-v2 minimum).
 	// Local-dev only; M3 must never set this.
@@ -149,6 +161,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
 	fs.StringVar(&a.OutTimings, "out-timings", "", "write JSON with per-phase wall-clock timings (cmake configure, translation, total)")
 	fs.StringVar(&a.OutCMakeConfigureReads, "out-cmake-configure-reads", "", "write JSON array of source-relative paths from build.ninja's RERUN_CMAKE implicit-input list (configure-time oracle)")
+	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")

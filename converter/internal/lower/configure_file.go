@@ -46,11 +46,14 @@ type configureFileOut struct {
 // or no configure_file events are recorded — preserves the
 // pre-trace behavior for offline runs without a stashed
 // fixture.
-func recoverConfigureFiles(traceRaw []byte, hostBuildDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, liftEnabled bool, cc *codegenContext) ([]configureFileOut, error) {
 	if len(traceRaw) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
-	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), recordedSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, cc)
+	if hostSrcDir == "" {
+		hostSrcDir = recordedSrcDir
+	}
+	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cc)
 }
 
 // recoverConfigureFilesFromCalls is the same logic as
@@ -59,7 +62,7 @@ func recoverConfigureFiles(traceRaw []byte, hostBuildDir, recordedSrcDir, record
 // trace is parsed once total across all extractors (including
 // the configure_file recovery), instead of one pass per
 // extractor.
-func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cc *codegenContext) ([]configureFileOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -102,7 +105,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		}
 
 		name := configureFileGenruleName(rel)
-		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir)
+		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -130,7 +133,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 // existing read-paths.txt narrowing); the audit tool's
 // undercoverage report continues to flag those .h.in paths
 // until the templating shape is supported.
-func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string) ir.Target {
+func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool) ir.Target {
 	legacy := ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
@@ -140,7 +143,7 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 		Visibility:  []string{"//visibility:private"},
 	}
 
-	if hostSrcDir == "" || recordedSrcDir == "" {
+	if !liftEnabled || hostSrcDir == "" || recordedSrcDir == "" {
 		return legacy
 	}
 	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
