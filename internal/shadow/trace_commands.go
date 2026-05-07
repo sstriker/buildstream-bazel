@@ -37,13 +37,14 @@ type Decoded struct {
 	ExecuteProcesses []ExecuteProcessCall
 }
 
-// Decode walks the trace once and dispatches every event to the four
+// Decode walks the trace once and dispatches every event to all
 // extractors at the same time. Equivalent in result to calling
 // ExtractReadPaths + ExtractTargetIncludes + ExtractTargetLinks +
-// ExtractConfigureFiles on the same trace, but pays the parse cost
-// once rather than four times. Reads is the deduped slash-style
-// source-tree path list; the three call lists preserve insertion
-// order from the trace.
+// ExtractConfigureFiles + ExtractExecuteProcess on the same trace,
+// but pays the parse cost once rather than per extractor. Reads
+// is the deduped slash-style source-tree path list; the four
+// call lists (Includes / Links / ConfigFiles / ExecuteProcesses)
+// preserve insertion order from the trace.
 func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
