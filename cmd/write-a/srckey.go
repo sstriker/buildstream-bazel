@@ -213,18 +213,27 @@ func matchesSrckeyPatterns(patterns *readPathsPatterns, path string) bool {
 	return matched
 }
 
-// renderSrckey writes srckey.txt + srckey-breakdown.txt to
-// elemPkg. Both files are byte-stable as long as the source
-// tree is byte-stable + patterns are unchanged. The breakdown
-// is human-readable: one line per source path with status
-// (content / name) and the file's sha256 (when content-
-// included). srckey.txt is the sha256 of the breakdown's bytes.
+// renderSrckey writes srckey.txt + srckey-breakdown.txt +
+// srckey-patterns.txt to elemPkg. All three files are byte-
+// stable as long as the source tree is byte-stable + patterns
+// are unchanged. The breakdown is human-readable: one line per
+// source path with status (content / name) and the file's
+// sha256 (when content-included). srckey.txt is the sha256 of
+// the breakdown's bytes. srckey-patterns.txt is the resolved
+// pattern set in read-paths.txt syntax — the surface
+// cmd/audit-narrowing reads to compare against the action-time
+// read oracle and flag undercoverage drift. Empty patterns
+// (the conservative no-narrow default) round-trip as an empty
+// file; the audit treats that as "everything covered".
 func renderSrckey(elem *element, elemPkg string, patterns *readPathsPatterns) error {
 	hash, breakdown, err := computeSrckey(elem, patterns)
 	if err != nil {
 		return fmt.Errorf("element %q: compute srckey: %w", elem.Name, err)
 	}
 	if err := writeFile(filepath.Join(elemPkg, "srckey-breakdown.txt"), breakdown); err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(elemPkg, "srckey-patterns.txt"), patterns.Format()); err != nil {
 		return err
 	}
 	return writeFile(filepath.Join(elemPkg, "srckey.txt"), hash+"\n")

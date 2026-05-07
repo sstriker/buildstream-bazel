@@ -101,6 +101,23 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Errorf("srckey.txt not staged in project A: %v", err)
 	}
 
+	// srckey-patterns.txt is the per-element pattern surface
+	// cmd/audit-narrowing reads to flag undercoverage drift.
+	// For kind:autotools that's autotoolsSrckeyPatterns()'s
+	// content-include rules, formatted in read-paths.txt syntax.
+	patternsBody, err := os.ReadFile(filepath.Join(outA, "elements/auto/srckey-patterns.txt"))
+	if err != nil {
+		t.Errorf("srckey-patterns.txt not staged in project A: %v", err)
+	}
+	for _, want := range []string{
+		"include configure.ac\n",
+		"include **/*.h\n",
+	} {
+		if !strings.Contains(string(patternsBody), want) {
+			t.Errorf("srckey-patterns.txt missing rule %q\n%s", want, patternsBody)
+		}
+	}
+
 	// rules/traces.bzl + tools/traces.json must both render.
 	tracesBzl, err := os.ReadFile(filepath.Join(outA, "rules/traces.bzl"))
 	if err != nil {

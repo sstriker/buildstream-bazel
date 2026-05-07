@@ -27,19 +27,50 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
 )
 
-// patternRule is one parsed line from <element>.read-paths.txt.
-type patternRule struct {
-	Include bool   // true for "include", false for "exclude"
-	Pattern string // POSIX-style glob with ** support
+// patternRule and readPathsPatterns are aliases to the shared
+// pattern types in internal/readpaths. Aliased rather than
+// re-declared so cmd/audit-narrowing and cmd/write-a stay byte-
+// equivalent on the matcher (the file format and rule semantics
+// are an interop contract between the two binaries via the
+// per-element srckey-patterns.txt artifact).
+type patternRule = readpaths.Rule
+type readPathsPatterns = readpaths.Patterns
+
+// writeNarrowingPatterns writes the resolved per-element pattern
+// set to elemPkg/srckey-patterns.txt in read-paths.txt syntax —
+// the surface cmd/audit-narrowing reads to compare against the
+// action-time read oracle. nil/empty patterns produce an empty
+// file (the conservative no-narrow default; audit treats as
+// "everything covered").
+func writeNarrowingPatterns(elemPkg string, patterns *readPathsPatterns) error {
+	return writeFile(elemPkg+"/srckey-patterns.txt", patterns.Format())
 }
 
-// readPathsPatterns is the parsed file content. Empty / nil
-// signals "no narrowing" — the default the caller honours by
-// staging the entire tree as real.
-type readPathsPatterns struct {
-	Rules []patternRule
+// withCMakeListsRule prepends an `include CMakeLists.txt` rule to
+// patterns so cmake's CMakeLists.txt-always-real special case
+// (in applyReadPathsPatterns) shows up as an explicit pattern.
+// The audit tool's plain Match() doesn't know about per-kind
+// special cases; making the rule explicit at emission time keeps
+// the audit kind-agnostic.
+//
+// Returns patterns unchanged when the input is already nil/empty
+// AND no narrowing was applied (a no-narrow element doesn't need
+// the special case made explicit because Match returns true for
+// every path anyway).
+func withCMakeListsRule(patterns *readPathsPatterns) *readPathsPatterns {
+	if patterns == nil || len(patterns.Rules) == 0 {
+		return patterns
+	}
+	out := &readPathsPatterns{
+		Rules: make([]patternRule, 0, len(patterns.Rules)+1),
+	}
+	out.Rules = append(out.Rules, patternRule{Include: true, Pattern: "CMakeLists.txt"})
+	out.Rules = append(out.Rules, patterns.Rules...)
+	return out
 }
 
 // loadReadPathsPatterns reads <bstPathWithoutSuffix>.read-paths.txt.

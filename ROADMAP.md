@@ -29,28 +29,32 @@ transition cleanly.
 
 ## Next
 
-- **Narrowing-undercoverage audit step.** Both halves of the
-  oracle plumbing now exist:
-  - cmake side: convert-element's `--out-cmake-configure-reads`
-    projects build.ninja's `RERUN_CMAKE` deps onto source-relative
-    paths.
-  - trace-driven side: build-tracer's `--source-root` flag opts
-    elements into openat capture; `tracenorm.ExtractReads`
-    pulls the source-relative read set back out of the
-    canonicalized trace.
+- **Wire the narrowing-undercoverage audit into a CI gate.**
+  All the plumbing is in:
+  - cmake oracle via convert-element's
+    `--out-cmake-configure-reads`.
+  - trace oracle via build-tracer's `--source-root` flag +
+    `tracenorm.ExtractReads`.
+  - per-element pattern surface emitted by write-a as
+    `srckey-patterns.txt`.
+  - `cmd/audit-narrowing` consumes patterns + oracle(s) and
+    emits a sorted undercoverage report.
   
-  Missing piece: a small `audit-narrowing` tool (or a write-a
-  subcommand) that consumes the oracle output + the per-kind
-  `<kind>SrckeyPatterns()` / `DefaultReadPathsPatterns()` and
-  emits `srckey-undercomplete.txt` warnings for paths the oracle
-  flags as read but the patterns leave name-only. Shipping
-  separately because the policy question — "fail CI on any
-  drift, or only on first surfacing per element" — is a
-  conversation worth having before the audit runs in PR gates.
-  Per-element opt-in to capture (passing `--source-root` into
-  the round-2 install genrule's build-tracer + trace-publish
-  invocations) lands alongside the audit tool, since neither
-  is useful without the other.
+  Missing piece: actually run the audit somewhere. Two
+  conversations to have before flipping the gate on:
+  - **Policy**: hard-fail on any drift, or accept a per-element
+    allowlist of expected misses? The cmake configure-file
+    fixture currently surfaces `src/config.h.in` as a real-but-
+    real-needs-to-stay miss until the configure_file lift
+    (below) lands. A whitelist mechanism plus an "expected
+    drift" file alongside `srckey-patterns.txt` is the realistic
+    landing.
+  - **Per-element opt-in to capture** for trace-driven kinds:
+    pass `--source-root` into the round-2 install genrule's
+    build-tracer + trace-publish invocations (today
+    `pipelineTracePublishStep` doesn't). Without this the
+    trace oracle is empty and only the cmake side carries
+    signal.
 - **Lift `configure_file` out of convert-element's cache key.**
   Today `lower/configure_file.go` reads cmake's already-rendered
   `config.h` bytes from the build dir and base64-embeds them in
