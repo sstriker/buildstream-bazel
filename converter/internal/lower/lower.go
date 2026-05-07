@@ -167,6 +167,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// otherwise look identical to "decode never ran".
 	var traceDecoded bool
 	var decodedConfigureFiles []shadow.ConfigureFileCall
+	var decodedExecuteProcesses []shadow.ExecuteProcessCall
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
 		decoded := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
@@ -199,6 +200,22 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 		decodedConfigureFiles = decoded.ConfigFiles
+		decodedExecuteProcesses = decoded.ExecuteProcesses
+	}
+
+	// execute_process recovery. Configure-time subprocess
+	// invocations are a hermeticity violation by Bazel's
+	// analysis-then-action model. Some calls are liftable
+	// (cmake -E builtins, file-producing tools with declared
+	// OUTPUT_FILE — translated to build-time genrules) and some
+	// aren't (version stamps, toolchain probes, opaque
+	// pipelines — refused with a typed Tier-1 failure).
+	// recoverExecuteProcess aggregates all unliftable calls
+	// into a single failure so projects with several
+	// execute_process invocations get one triage report rather
+	// than N converter runs uncovering them one at a time.
+	if err := recoverExecuteProcess(decodedExecuteProcesses); err != nil {
+		return nil, err
 	}
 
 	cmakeSrc := r.Codemodel.Paths.Source

@@ -2,6 +2,7 @@ package lower_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
@@ -89,6 +90,60 @@ func TestFailure_UnsupportedTargetType_MultiConfig(t *testing.T) {
 	}
 	_, err := lower.ToIR(r, nil, lower.Options{})
 	assertCode(t, err, failure.UnsupportedTargetType)
+}
+
+// TestFailure_UnsupportedExecuteProcess_Stamp covers the
+// stamp-pattern refusal: a CMakeLists.txt that runs `git
+// rev-parse HEAD` at configure time to populate a version
+// macro. The classifier flags this as Stamp; v1 has no
+// repo-rule analog wired so the converter refuses the call
+// with a typed Tier-1 failure listing the offending location.
+func TestFailure_UnsupportedExecuteProcess_Stamp(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+			}},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["COMMAND","git","rev-parse","HEAD","OUTPUT_VARIABLE","GIT_SHA"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":4}` + "\n",
+	)
+	_, err := lower.ToIR(r, nil, lower.Options{TraceRaw: traceRaw})
+	assertCode(t, err, failure.UnsupportedExecuteProcess)
+}
+
+// TestFailure_UnsupportedExecuteProcess_Aggregates asserts
+// that multiple unliftable calls in one project produce a
+// single failure with all locations listed (sorted by
+// file:line for stable output across cmake's evaluation-order
+// drift).
+func TestFailure_UnsupportedExecuteProcess_Aggregates(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+			}},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["COMMAND","uname","-m","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n" +
+			`{"args":["COMMAND","git","rev-parse","HEAD","OUTPUT_VARIABLE","GIT_SHA"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":4}` + "\n",
+	)
+	_, err := lower.ToIR(r, nil, lower.Options{TraceRaw: traceRaw})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	assertCode(t, err, failure.UnsupportedExecuteProcess)
+	msg := err.Error()
+	if !strings.Contains(msg, "/src/CMakeLists.txt:4") || !strings.Contains(msg, "/src/CMakeLists.txt:7") {
+		t.Errorf("expected both locations in failure message; got: %s", msg)
+	}
+	if !strings.Contains(msg, "[stamp]") || !strings.Contains(msg, "[probe]") {
+		t.Errorf("expected both bucket labels in failure message; got: %s", msg)
+	}
 }
 
 func assertCode(t *testing.T, err error, want failure.Code) {
