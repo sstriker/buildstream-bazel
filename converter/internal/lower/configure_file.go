@@ -146,6 +146,17 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if !liftEnabled || hostSrcDir == "" || recordedSrcDir == "" {
 		return legacy
 	}
+	// Note on configure_file options: v1 Substitute models
+	// @ONLY only. Other options (COPYONLY, ESCAPE_QUOTES,
+	// NEWLINE_STYLE, FILE_PERMISSIONS, ...) aren't enumerated
+	// here; instead we rely on Extract's verify-pass to gate
+	// the lift. Extract runs Substitute(template, values, opts)
+	// and byte-compares against cmake's rendered output; any
+	// divergence (CRLF vs LF, escaped vs un-escaped quotes,
+	// COPYONLY's no-substitute-when-markers-present case, etc.)
+	// fails the verify and we fall back to the legacy shape
+	// below. Cleaner than maintaining a parallel option allow-
+	// list that would have to track Substitute's evolution.
 	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 	if !ok {
 		return legacy
@@ -272,18 +283,21 @@ func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts
 	}
 	// $(execpath) resolves srcs labels relative to exec root;
 	// $@ is the genrule output. The values tmpfile is created
-	// under $(@D) (the genrule's output dir) via a `mktemp -p`
-	// flag, so it lives in the action's sandbox rather than
-	// /tmp — keeps shared executors clean and lets Bazel's
-	// per-action sandbox cleanup pick it up if the trap
-	// doesn't fire (e.g. SIGKILL). The trailing rm + explicit
+	// under the genrule's output dir (via a portable mktemp
+	// template, since `mktemp -p` is GNU-only and BSD/macOS
+	// mktemp doesn't accept it), so it lives in the action's
+	// sandbox rather than /tmp — keeps shared executors clean
+	// and lets Bazel's per-action sandbox cleanup pick it up
+	// if the trap doesn't fire (e.g. SIGKILL). All `$@`
+	// expansions are double-quoted to handle output paths
+	// containing spaces. The trailing rm + explicit
 	// exit-code preservation handles the normal-exit case.
 	return fmt.Sprintf(
-		"mkdir -p $$(dirname $@) && "+
-			"VALUES=$$(mktemp -p $$(dirname $@) cmake-configure-file.values.XXXXXX) && "+
-			"echo %s | base64 -d > $$VALUES && "+
-			"$(execpath //tools:cmake-configure-file) %s--values=$$VALUES $(execpath %s) $@ ; "+
-			"rc=$$?; rm -f $$VALUES; exit $$rc",
+		`mkdir -p "$$(dirname "$@")" && `+
+			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
+			`echo %s | base64 -d > "$$VALUES" && `+
+			`$(execpath //tools:cmake-configure-file) %s--values="$$VALUES" "$(execpath %s)" "$@" ; `+
+			`rc=$$?; rm -f "$$VALUES"; exit $$rc`,
 		encoded, atOnly, inRel,
 	), nil
 }

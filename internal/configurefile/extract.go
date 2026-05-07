@@ -306,28 +306,46 @@ func nextLiteralPiece(pieces []templatePiece, from int) *templatePiece {
 // template references the same variable twice with conflicting
 // rendered values, which is either a bug in the extractor or
 // an alignment-ambiguous template.
+//
+// Sentinel-based reconciliation: #cmakedefine recovery records
+// "1" for truthy and "" for falsy. The same variable may also
+// appear as @NAME@ elsewhere, where extractPlain captures the
+// more specific rendered string. cmake's truthiness check only
+// cares about "is it in the falsy set" — so any two values that
+// agree on truthiness are compatible; we prefer the more
+// specific (non-sentinel) one. Concretely:
+//
+//   - existing == "1"   ∧ v is truthy → upgrade existing to v.
+//   - v == "1"          ∧ existing is truthy → keep existing.
+//   - existing == ""    ∧ v is falsy (any value) → upgrade
+//     existing to v.
+//   - v == ""           ∧ existing is falsy → keep existing.
+//   - same truthiness, both specific, but byte-different → conflict.
 func setValue(values map[string]string, name, v string) error {
-	if existing, ok := values[name]; ok {
-		// Special case: #cmakedefine sets the truthy sentinel
-		// "1" but the variable might also appear as @NAME@
-		// elsewhere and resolve to a different string. cmake's
-		// truthiness check only cares about "is it falsy"; any
-		// non-falsy value works for the #cmakedefine semantic.
-		// So if existing == "1" (our truthy sentinel) and v
-		// is also truthy, prefer the more specific v. And vice
-		// versa.
-		if existing == "1" && isTruthy(v) {
-			values[name] = v
-			return nil
-		}
-		if v == "1" && isTruthy(existing) {
-			return nil
-		}
-		if existing != v {
-			return fmt.Errorf("variable %q has conflicting values %q vs %q", name, existing, v)
-		}
+	existing, ok := values[name]
+	if !ok {
+		values[name] = v
 		return nil
 	}
-	values[name] = v
-	return nil
+	if existing == v {
+		return nil
+	}
+	// Truthy reconciliation.
+	if existing == "1" && isTruthy(v) {
+		values[name] = v
+		return nil
+	}
+	if v == "1" && isTruthy(existing) {
+		return nil
+	}
+	// Falsy reconciliation: "" is the #cmakedefine-falsy
+	// sentinel; any falsy nonempty value is compatible.
+	if existing == "" && !isTruthy(v) {
+		values[name] = v
+		return nil
+	}
+	if v == "" && !isTruthy(existing) {
+		return nil
+	}
+	return fmt.Errorf("variable %q has conflicting values %q vs %q", name, existing, v)
 }
