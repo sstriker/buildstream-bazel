@@ -358,6 +358,7 @@ func main() {
 	publishBin := flag.String("trace-publish-bin", "", "optional: path to cmd/trace-publish. Required for round-2 (the default trace-driven path) — staged into project B's tools/ so the round-2 install genrule can publish its trace to the REAPI ActionCache.")
 	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for round-2 (the default trace-driven path) — staged into project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time; staging mirrors the convert-element-autotools convention.")
 	round1 := flag.Bool("autotools-round1", false, "opt out of round-2 (the default for kind:autotools when the trace-driven path is enabled). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / make / make-install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available.")
+	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -391,6 +392,13 @@ func main() {
 			log.Fatalf("resolve build-tracer path: %v", err)
 		}
 		autotoolsConfig.tracerBin = abs
+	}
+	if *cmakeConfigureFileBin != "" {
+		abs, err := filepath.Abs(*cmakeConfigureFileBin)
+		if err != nil {
+			log.Fatalf("resolve cmake-configure-file path: %v", err)
+		}
+		cmakeConfig.configureFileBin = abs
 	}
 	// Round-2 is the default trace-driven path. It activates
 	// when --convert-element-autotools is set AND the user
@@ -891,6 +899,13 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports = append(exports, autotoolsExports...)
+	cmakeFileExport, err := stageCmakeConfigureFileTool(outDir)
+	if err != nil {
+		return err
+	}
+	if cmakeFileExport != "" {
+		exports = append(exports, cmakeFileExport)
+	}
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {
@@ -924,8 +939,37 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	return nil
 }
 
-// writeProjectB renders the consumer workspace project B reads against
-// project A's outputs.
+// stageCmakeConfigureFileTool copies cmake-configure-file into
+// outDir/tools/ when --cmake-configure-file-bin was set, returning
+// the exports_files entry the caller adds to tools/BUILD.bazel.
+// Empty + nil when the lift is disabled (legacy shape stays
+// active; nothing to stage).
+//
+// Symmetric staging in project A + project B keeps the
+// per-element BUILD.bazel.out's `//tools:cmake-configure-file`
+// label resolving regardless of which project hosts the
+// genrule. The convert-element action that runs in project A
+// doesn't itself invoke this binary — only project B's
+// downstream Bazel build does — but both projects keep a
+// staged copy so the meta-driver script doesn't have to know
+// which side is which.
+func stageCmakeConfigureFileTool(outDir string) (string, error) {
+	if cmakeConfig.configureFileBin == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return "", err
+	}
+	stagedAt := filepath.Join(outDir, "tools", "cmake-configure-file")
+	if err := copyFile(cmakeConfig.configureFileBin, stagedAt); err != nil {
+		return "", fmt.Errorf("stage cmake-configure-file: %w", err)
+	}
+	if err := os.Chmod(stagedAt, 0o755); err != nil {
+		return "", err
+	}
+	return "cmake-configure-file", nil
+}
+
 // stageAutotoolsTools copies convert-element-autotools +
 // build-tracer into outDir/tools/ when the trace-driven
 // kind:autotools path is enabled (both convertBin and
@@ -989,6 +1033,8 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 	return exports, nil
 }
 
+// writeProjectB renders the consumer workspace project B reads
+// against project A's outputs.
 func writeProjectB(g *graph, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -1058,6 +1104,13 @@ func writeProjectB(g *graph, outDir string) error {
 		return err
 	}
 	exports = append(exports, autotoolsExports...)
+	cmakeFileExport, err := stageCmakeConfigureFileTool(outDir)
+	if err != nil {
+		return err
+	}
+	if cmakeFileExport != "" {
+		exports = append(exports, cmakeFileExport)
+	}
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {

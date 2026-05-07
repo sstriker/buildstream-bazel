@@ -194,9 +194,10 @@ evidence of drift; an empty report is **necessary-but-not-sufficient**
 evidence of soundness. Treat the audit as a high-signal lower
 bound on the narrowing-soundness question, not as a proof.
 
-## Known true-positive: `*.h.in`
+## `*.h.in` and the configure_file lift
 
-The cmake configure-file fixture trips an obvious miss:
+By default, the cmake configure-file fixture trips a true-positive
+miss:
 
 ```
 $ audit-narrowing --patterns=... --cmake-reads=... --out=u.txt
@@ -204,19 +205,91 @@ $ cat u.txt
 src/config.h.in
 ```
 
-This isn't a false positive. Convert-element's `lower/configure_file.go`
+Convert-element's `lower/configure_file.go`
 reads cmake's already-rendered `config.h` bytes from the build dir
 and base64-embeds them into a recovered genrule's `cmd`. The
 genrule has no `srcs`, so the genrule's Bazel cache key depends on
 its `cmd` string, which depends on the `*.h.in` content. The patterns
 must include `*.h.in` for the conversion action to be sound.
 
-The fix is the **configure_file lift** queued in `ROADMAP.md`:
-emit the substitution as actual codegen (a small `cmake-configure-
-file` tool + a values sidecar), wire `*.h.in` as a real `srcs`
-input, and `*.h.in` becomes name-only for srckey purposes. Until
-then the audit will keep flagging it; that's the warning working
-as intended.
+The fix shipped: the **configure_file lift**
+(`internal/configurefile` package + `cmd/cmake-configure-file`
+tool + `lower/configure_file.go` lifted-shape emission). When
+write-a is invoked with `--cmake-configure-file-bin=<path>`:
+
+  - The tool is staged into project A and project B `tools/`.
+  - Per-element convert-element genrules pass
+    `--lift-configure-file=true`, which makes lower emit a
+    genrule with `srcs = ["<.h.in>"]` and
+    `tools = ["//tools:cmake-configure-file"]`. The .h.in
+    content drives the genrule's Bazel cache key directly
+    (via `srcs`), not via convert-element's BUILD.bazel content.
+  - `*.h.in` is now safely name-only for srckey purposes.
+
+After enabling the lift, the oracle will still flag `*.h.in`
+(cmake DOES read those files at configure time — that's a
+fact-of-life). To silence the audit's false-positive in this
+case, add an explicit exclude to the per-element pattern set:
+
+```
+# srckey-patterns.txt:
+include CMakeLists.txt
+include cmake/*.cmake
+exclude **/*.h.in     # safe: the lift makes .h.in Bazel-srcs covered
+```
+
+The audit's `Match` semantics: `exclude` rules suppress the
+include match. So an oracle path that matches an explicit
+`exclude` is treated as covered (the user has affirmatively
+declared it doesn't need to be in srckey content). Because
+the lift makes that affirmation correct, the exclude is
+sound rather than aspirational.
+
+### Soundness across template edits
+
+The "safe to exclude" claim relies on the lifted genrule's
+substitution tool having access to whatever cmake variable
+the template references — even ones the user adds in a
+later edit without rerunning convert-element. With the
+**full-namespace values dump** (see
+`converter/internal/cmakerun/dump-vars.cmake`) every cmake
+variable observed at configure time is captured into the
+values JSON, so a `.h.in` edit that adds `@SOMETHING_NEW@`
+resolves correctly through the Bazel-time tool as long as
+`SOMETHING_NEW` was defined in cmake's namespace at the
+captured configure run.
+
+The volatile path-bearing variables (`*_BINARY_DIR`,
+`CMAKE_PROJECT_TOP_LEVEL_INCLUDES`, etc.) are filtered out
+of the dump (see `cmakerun.filterVolatilePaths`) so the
+values JSON is byte-stable across cmake reinvocations of
+the same source tree; the Bazel-time tool's verify-pass
+catches the rare case where a template references a filtered
+variable, and the converter falls back to the legacy
+base64-cmd shape — soundness preserved.
+
+### When the lift falls back to legacy
+
+Some `.h.in` calls don't lift, even with the flag enabled:
+
+- Offline/`--reply-dir` test paths where no cmake invocation
+  ran, so no values dump exists. The per-template
+  `configurefile.Extract` path takes over — recovers values
+  from the rendered output. Sound for the templates the
+  fixture captured against, but adds no protection if the
+  template later mutates.
+- Live runs where the verify-pass `Substitute(template, values,
+  opts) != rendered` (an option Substitute hasn't modeled, or
+  a value the dump's volatility filter dropped that the
+  template references). The converter emits the legacy
+  base64-cmd shape; `.h.in` stays load-bearing in srckey.
+
+The render-time tag `cmake-codegen-lifted` distinguishes the
+two shapes — operators can `bazel query
+'attr("tags", "cmake-codegen-lifted", //...)'` to see which
+templates are lifted. Don't add `exclude **/*.h.in` for
+elements with non-lifted templates; the audit will continue
+to flag those as undercoverage drift, correctly.
 
 ## Files of interest
 
@@ -229,10 +302,18 @@ as intended.
   `ProjectToSourceTree`.
 - `converter/internal/ninja/graph.go` — `ReconfigureInputs()`.
 - `converter/cmd/convert-element/main.go` — `--out-cmake-configure-reads`
-  emission.
+  emission + `--lift-configure-file` toggle.
 - `internal/tracenorm/canonicalize.go` — Options.SourceRoot,
   openat filtering, fd-strip.
 - `internal/tracenorm/reads.go` — `ExtractReads`.
+- `internal/configurefile/substitute.go` — cmake configure_file
+  substitution rules implemented as a pure function.
+- `internal/configurefile/extract.go` — reverse-extract values
+  from cmake's rendered output.
+- `cmd/cmake-configure-file/main.go` — Bazel-time substitution
+  CLI; the tool the lifted genrule invokes.
+- `converter/internal/lower/configure_file.go` — picks lifted vs
+  legacy genrule shape per recovered call.
 - `cmd/build-tracer/main.go` — `--source-root` flag, strace
   fallback opens.
 - `cmd/build-tracer/native_linux_amd64.go` — native ptrace openat
@@ -242,6 +323,7 @@ as intended.
 - `cmd/write-a/srckey.go` — emits `srckey-patterns.txt` for
   trace-driven kinds.
 - `cmd/write-a/handler_cmake.go` — emits `srckey-patterns.txt`
-  for kind:cmake.
+  for kind:cmake; passes `--lift-configure-file=true` when
+  `--cmake-configure-file-bin` is set.
 - `cmd/write-a/read_paths_patterns.go` — `writeNarrowingPatterns`,
   `withCMakeListsRule`.

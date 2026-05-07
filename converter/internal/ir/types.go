@@ -123,6 +123,13 @@ type Target struct {
 	// GenruleOuts are package-relative output paths the genrule produces.
 	GenruleOuts []string
 
+	// GenruleTools are full Bazel labels added to the genrule's
+	// `tools` attribute (e.g. "//tools:cmake-configure-file").
+	// Used by configure_file recovery to invoke the runtime
+	// substitution tool with the .h.in template as a real srcs
+	// input — see lower/configure_file.go.
+	GenruleTools []string
+
 	// cc_test-specific fields. Populated only when Kind == KindCCTest;
 	// recovered from set_tests_properties() in CTestTestfile.cmake.
 

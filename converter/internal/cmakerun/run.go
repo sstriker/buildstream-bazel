@@ -15,12 +15,33 @@ package cmakerun
 
 import (
 	"context"
+	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
+
+// dumpVarsCMake is the script Configure injects via
+// -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+; we tried
+// -DCMAKE_PROJECT_INCLUDE_AFTER first but it didn't honour the
+// -D form in our test fixture, hence the switch). It registers
+// a deferred callback that writes every cmake variable's value
+// to `<build>/cmake-to-bazel.vars.dump` after all of
+// CMakeLists.txt has executed. parseVarsDump reads that file
+// back. See the script header for design rationale.
+//
+//go:embed dump-vars.cmake
+var dumpVarsCMake []byte
+
+// VarsDumpFilename is the basename of the variable dump
+// dump-vars.cmake writes inside the build dir. Exposed so callers
+// (offline test fixtures, the orchestrator's record path) can
+// stash a recording mirror under the same name.
+const VarsDumpFilename = "cmake-to-bazel.vars.dump"
 
 // SourceDateEpoch is the project-wide fixed timestamp for deterministic
 // configure-time outputs. 2020-01-01T00:00:00Z, picked arbitrarily to be
@@ -53,13 +74,47 @@ type Options struct {
 	// --trace-format=json-v1 --trace-redirect=<TracePath>`.
 	TracePath string
 
+	// DumpVars enables the post-configure variable-namespace
+	// capture. When true, Configure stages dump-vars.cmake into
+	// the build dir and passes
+	// `-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=<staged>`; the
+	// resulting cmake-to-bazel.vars.dump file feeds Reply.Vars,
+	// which the configure_file lift uses for byte-stable
+	// substitution at Bazel build time. Off by default — staging
+	// the hook unconditionally would (a) override a project- or
+	// operator-supplied CMAKE_PROJECT_TOP_LEVEL_INCLUDES value
+	// and (b) emit a "manually-specified variables were not
+	// used" warning on cmake < 3.24 (the variable was added
+	// there). convert-element only flips this on when
+	// --lift-configure-file is set.
+	DumpVars bool
+
 	// Stdout/Stderr capture cmake output. Nil discards.
 	Stdout, Stderr io.Writer
 }
 
-// Reply is the File API reply directory cmake produced.
+// Reply is the File API reply directory cmake produced, plus
+// the captured variable namespace.
 type Reply struct {
+	// Path is the .cmake/api/v1/reply directory cmake wrote.
 	Path string
+
+	// Vars is the full set of cmake variables observed at end
+	// of top-level directory processing — i.e., AFTER every
+	// command in CMakeLists.txt has run. Populated from
+	// `<build>/cmake-to-bazel.vars.dump` which dump-vars.cmake
+	// wrote. Empty if the dump file was missing (e.g., the
+	// user's CMakeLists.txt fatal-erred before reaching the
+	// deferred callback).
+	//
+	// Used by the lower's configure_file recovery: with the
+	// full namespace in hand, the lifted genrule's Bazel-time
+	// Substitute can resolve any @VAR@ the user adds to a
+	// .h.in template, even one that wasn't referenced when
+	// the values were captured. Closes the soundness gap
+	// where a per-template extracted dict would mis-render
+	// new markers (PR #94 Copilot review).
+	Vars map[string]string
 }
 
 // Configure runs cmake -B <build> -S <source>, with File API queries
@@ -85,6 +140,20 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		_ = f.Close()
 	}
 
+	// Stage the dump-vars hook into the build dir when the
+	// caller opted into the namespace capture (see
+	// Options.DumpVars). When opted out we leave
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES alone so projects /
+	// operators that set it don't get silently overridden, and
+	// cmake < 3.24 doesn't see the unused-variable diagnostic.
+	var dumpVarsPath string
+	if opts.DumpVars {
+		dumpVarsPath = filepath.Join(opts.BuildDir, "cmake-to-bazel.dump-vars.cmake")
+		if err := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: stage dump-vars hook: %w", err)
+		}
+	}
+
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
 	// rewrites HOME. Best-effort cleanup; cmake only reads from here.
 	homeDir, err := os.MkdirTemp("", "cmakerun-home-*")
@@ -99,6 +168,21 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		"-G", "Ninja",
 		"-DCMAKE_BUILD_TYPE=" + opts.BuildType,
 		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+	if opts.DumpVars {
+		// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) injects
+		// our dump-vars hook at the end of the top-level project()
+		// call. Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake
+		// reported it as a "manually-specified variable not used"
+		// in the configure-file fixture, suggesting the variable
+		// isn't honored when set only via -D (it expects the
+		// project to set it via set(CACHE) or for it to be already
+		// in the cache). _TOP_LEVEL_INCLUDES is a list-of-files
+		// variable explicitly designed for this CLI-injection
+		// pattern.
+		argv = append(argv,
+			"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+dumpVarsPath,
+		)
 	}
 	if opts.TracePath != "" {
 		argv = append(argv,
@@ -129,9 +213,194 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		return Reply{}, fmt.Errorf("cmakerun: cmake failed: %w", err)
 	}
 
+	// Best-effort read of the variable dump (only when we
+	// staged the hook in the first place — without
+	// opts.DumpVars cmake never sees dump-vars.cmake and the
+	// file won't exist). When DumpVars is on but configure
+	// fatal-erred before the deferred callback, the file is
+	// absent and readVarsDump returns nil values; downstream
+	// lower then falls back to either the per-template Extract
+	// path or the legacy base64 shape.
+	var vars map[string]string
+	if opts.DumpVars {
+		var err error
+		vars, err = readVarsDump(filepath.Join(opts.BuildDir, VarsDumpFilename))
+		if err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: read vars dump: %w", err)
+		}
+	}
 	return Reply{
 		Path: filepath.Join(opts.BuildDir, ".cmake", "api", "v1", "reply"),
+		Vars: vars,
 	}, nil
+}
+
+// readVarsDump parses the file dump-vars.cmake wrote. Missing
+// file → (nil, nil): the caller treats absence as "no vars
+// captured" rather than a hard error. Malformed lines are a hard
+// error so a buggy dump-vars.cmake doesn't silently produce a
+// truncated namespace.
+func readVarsDump(path string) (map[string]string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseVarsDump(body)
+}
+
+// parseVarsDump decodes the "<NAME>=<HEX>\n" stream
+// dump-vars.cmake emits. Each value is hex-decoded back to its
+// raw byte sequence so values containing newlines / quotes /
+// semicolons round-trip losslessly. Volatile path-bearing
+// variables are filtered (see filterVolatilePaths) so the
+// resulting map is byte-stable across cmake invocations
+// against the same source tree. Empty input → empty map.
+func parseVarsDump(body []byte) (map[string]string, error) {
+	out := map[string]string{}
+	for i, line := range strings.Split(string(body), "\n") {
+		if line == "" {
+			continue
+		}
+		eq := strings.IndexByte(line, '=')
+		if eq < 0 {
+			return nil, fmt.Errorf("vars dump line %d: missing '=' in %q", i+1, line)
+		}
+		name := line[:eq]
+		if name == "" {
+			return nil, fmt.Errorf("vars dump line %d: empty variable name in %q", i+1, line)
+		}
+		raw, err := hex.DecodeString(line[eq+1:])
+		if err != nil {
+			return nil, fmt.Errorf("vars dump line %d: decode hex for %q: %w", i+1, name, err)
+		}
+		out[name] = string(raw)
+	}
+	return filterVolatilePaths(out), nil
+}
+
+// filterVolatilePaths drops the cmake variables whose values
+// vary across configure runs of the same source tree — most
+// notably the *_BINARY_DIR family (which point at the per-run
+// temp build dir Configure created) and any other variable
+// whose value happens to contain that build dir as a substring.
+//
+// Why the filter: the lift embeds the values map into a base64
+// blob in BUILD.bazel.cmd, and BUILD.bazel must be byte-stable
+// across runs of the same source tree (otherwise convert-
+// element's Bazel cache key churns on every invocation). The
+// volatile vars contribute no semantic value to typical
+// `configure_file` templates — those reference variables like
+// `PROJECT_VERSION`, not `CMAKE_BINARY_DIR`. If a template DOES
+// reference one of the filtered variables, the lift's verify-
+// pass (Substitute(template, values, opts) byte-equal vs cmake's
+// rendered output) fails and the converter falls back to the
+// legacy base64-of-rendered shape — soundness preserved.
+//
+// Two-stage filter:
+//
+//  1. Locate the build dir (CMAKE_BINARY_DIR if it's still in
+//     the dump, plus any unique single root prefix all *_BINARY_DIR
+//     paths share). Drop every entry whose value contains that
+//     path. Catches the long tail of cmake-derived path variables
+//     (CMAKE_PLATFORM_INFO_DIR, CMAKE_PROJECT_TOP_LEVEL_INCLUDES,
+//     `<Pkg>_BINARY_DIR`, etc.) without a hand-maintained allow-
+//     list.
+//  2. Drop names matching `*_BINARY_DIR` / `*_SOURCE_DIR`
+//     suffixes, plus a handful of explicit names whose VALUES
+//     might happen to be stable (CMAKE_BUILD_TOOL, CMAKE_COMMAND,
+//     etc., which point at the host-installed cmake binaries —
+//     stable across runs but vary across machines).
+func filterVolatilePaths(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return in
+	}
+	buildDirPaths := buildDirPrefixes(in)
+	out := make(map[string]string, len(in))
+	for name, val := range in {
+		if isVolatileVarName(name) {
+			continue
+		}
+		if containsAny(val, buildDirPaths) {
+			continue
+		}
+		out[name] = val
+	}
+	return out
+}
+
+// buildDirPrefixes returns every distinct build-dir-shaped path
+// the dump references — CMAKE_BINARY_DIR plus every variable
+// ending in `_BINARY_DIR` (subprojects, external_projects, etc.
+// each define one). Used by filterVolatilePaths to wipe entries
+// that name the run's build dir, since the dir is a per-run
+// tmpdir whose path varies across invocations even when the
+// underlying cmake graph is identical.
+//
+// Multiple distinct prefixes are common when a project has
+// nested CMakeLists in subdirs (each gets its own
+// <subdir>_BINARY_DIR pointing at <build>/<subdir>); we collect
+// them all rather than picking one. Returns nil when no
+// build-dir variable is set (atypical; the caller treats this
+// as "skip the volatility filter").
+func buildDirPrefixes(in map[string]string) []string {
+	seen := map[string]bool{}
+	if v, ok := in["CMAKE_BINARY_DIR"]; ok && v != "" {
+		seen[v] = true
+	}
+	for name, val := range in {
+		if val == "" {
+			continue
+		}
+		if strings.HasSuffix(name, "_BINARY_DIR") {
+			seen[val] = true
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	return out
+}
+
+func containsAny(s string, needles []string) bool {
+	for _, n := range needles {
+		if n == "" {
+			continue
+		}
+		if strings.Contains(s, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func isVolatileVarName(name string) bool {
+	if strings.HasSuffix(name, "_BINARY_DIR") || strings.HasSuffix(name, "_SOURCE_DIR") {
+		return true
+	}
+	switch name {
+	case "CMAKE_HOME_DIRECTORY",
+		"CMAKE_CACHEFILE_DIR",
+		"CMAKE_FILES_DIRECTORY",
+		"CMAKE_FIND_PACKAGE_REDIRECTS_DIR",
+		"CMAKE_CURRENT_FUNCTION_LIST_DIR",
+		"CMAKE_CURRENT_FUNCTION_LIST_FILE",
+		"CMAKE_CURRENT_LIST_DIR",
+		"CMAKE_CURRENT_LIST_FILE",
+		"CMAKE_BUILD_TOOL",
+		"CMAKE_COMMAND",
+		"CMAKE_CTEST_COMMAND",
+		"CMAKE_CPACK_COMMAND",
+		"CMAKE_ROOT":
+		return true
+	}
+	return false
 }
 
 // configureEnv returns the controlled env for the cmake child. PATH is

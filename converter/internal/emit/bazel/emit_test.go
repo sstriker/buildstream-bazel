@@ -222,10 +222,14 @@ func contains(haystack, needle string) bool {
 // Lower's recovery path: trace records configure_file calls'
 // (input, output) pairs; the recording script stashes the
 // rendered output bytes in the fixture mirroring the build-dir
-// layout. lower reads those bytes, emits a genrule that
-// base64-decodes them at Bazel build time, and attaches the
-// output to the consuming cc_library's hdrs (matched by the
-// target's codemodel-recorded build-dir include).
+// layout. lower reads template + rendered, recovers the values
+// dict via configurefile.Extract, and emits a genrule with
+// .h.in as a real srcs input (so .h.in edits invalidate the
+// genrule directly through Bazel's source graph) +
+// //tools:cmake-configure-file as the tool that runs cmake's
+// substitution rules at Bazel build time. The fallback shape
+// (legacy base64-of-rendered cmd, no srcs) takes over when
+// Extract can't recover values for a template.
 func TestEmit_ConfigureFile_Golden(t *testing.T) {
 	src, err := filepath.Abs("../../../testdata/sample-projects/configure-file")
 	if err != nil {
@@ -244,9 +248,10 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 		t.Fatalf("read trace: %v", err)
 	}
 	pkg, err := lower.ToIR(r, nil, lower.Options{
-		HostSourceRoot: src,
-		BuildDir:       replyDir,
-		TraceRaw:       traceRaw,
+		HostSourceRoot:    src,
+		BuildDir:          replyDir,
+		TraceRaw:          traceRaw,
+		LiftConfigureFile: true,
 	})
 	if err != nil {
 		t.Fatal(err)

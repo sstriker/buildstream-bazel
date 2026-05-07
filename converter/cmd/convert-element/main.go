@@ -61,6 +61,7 @@ func run(a cli.Args) error {
 	replyDir := a.ReplyDir
 	var ninjaPath string
 	var hostBuildDir string
+	var cmakeVars map[string]string
 	if replyDir == "" {
 		ctx := context.Background()
 
@@ -87,8 +88,15 @@ func run(a cli.Args) error {
 			BuildDir:           buildDir,
 			PrefixDir:          a.PrefixDir,
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
-			Stdout:             os.Stderr, // route cmake noise to our stderr
-			Stderr:             os.Stderr,
+			// DumpVars only when --lift-configure-file is on:
+			// the dump hook overrides project/operator-supplied
+			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES and triggers a
+			// "manually-specified variable not used" warning on
+			// cmake < 3.24, so we don't pay that cost for
+			// elements that don't need the captured namespace.
+			DumpVars: a.LiftConfigureFile,
+			Stdout:   os.Stderr, // route cmake noise to our stderr
+			Stderr:   os.Stderr,
 		}
 		if a.OutReadPaths != "" {
 			opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
@@ -100,6 +108,7 @@ func run(a cli.Args) error {
 			return failure.New(failure.ConfigureFailed, "%v", err)
 		}
 		replyDir = reply.Path
+		cmakeVars = reply.Vars
 		ninjaPath = filepath.Join(buildDir, "build.ninja")
 	} else {
 		// Offline path: a build.ninja is sometimes checked in alongside the
@@ -191,12 +200,14 @@ func run(a cli.Args) error {
 	}
 
 	pkg, err := lower.ToIR(r, g, lower.Options{
-		HostSourceRoot: a.SourceRoot,
-		HostPrefixDir:  prefixAbs,
-		BuildDir:       hostBuildOrReply,
-		Imports:        imports,
-		CTest:          testRegistry,
-		TraceRaw:       traceRaw,
+		HostSourceRoot:    a.SourceRoot,
+		HostPrefixDir:     prefixAbs,
+		BuildDir:          hostBuildOrReply,
+		Imports:           imports,
+		CTest:             testRegistry,
+		TraceRaw:          traceRaw,
+		LiftConfigureFile: a.LiftConfigureFile,
+		CMakeVars:         cmakeVars,
 	})
 	if err != nil {
 		return err
