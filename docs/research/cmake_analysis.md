@@ -262,6 +262,16 @@ Multiple `COMMAND` form a **pipeline** (concurrent, shared stderr). Sequential c
 
 → **Conversion.** Canonical hermeticity violation. Only legitimate analog: `repository_ctx.execute()` in a repo rule (loading/fetch time). Anything informing target-graph shape (e.g. `git rev-parse HEAD` for a version macro) must lift into a repo rule producing a generated `.bzl` or stamped header.
 
+The converter implements a partial native lift in `converter/internal/lower/execute_process_classify.go` and `execute_process.go`, sorting calls into five buckets:
+
+- **`cmake-e`** — single-COMMAND `cmake -E touch / copy / copy_if_different` calls translate to native Bazel genrules (no runtime cmake dep on the executor).
+- **`file-producing`** — calls with declared `OUTPUT_FILE` get hoisted to build-time genrules tagged `cmake-codegen-execute-process-hoisted`. The hoist moves work from configure-time to build-time, an auditable behaviour change.
+- **`stamp`** — `git/hg/svn` writing `OUTPUT_VARIABLE` looks like a version stamp. The textbook analog is a repo rule producing a generated `.bzl` table; that infrastructure isn't built yet, so v1 refuses with the typed `unsupported-execute-process` Tier-1 failure.
+- **`probe`** — `uname / gcc --version / pkg-config / python -c` writing `OUTPUT_VARIABLE` looks like a host/toolchain probe; should fold into `select()` over `@platforms` config_settings. v1 refuses.
+- **`unknown`** — multi-COMMAND pipeline, opaque shell script, or any unrecognized shape. v1 refuses.
+
+When refusing, the converter aggregates every unliftable call in the project into a single failure carrying a per-call triage line (file:line, bucket, reason, argv) — see `docs/failure-schema.md` `unsupported-execute-process`. The Phase B follow-on (queued in `ROADMAP.md` Later) routes refused projects through a round-2 coarse-genrule fallback so the build still succeeds while owners migrate the offending CMakeLists.txt.
+
 ---
 
 ## 10. `project()` and toolchain detection
