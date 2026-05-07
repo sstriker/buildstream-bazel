@@ -109,6 +109,26 @@ transition cleanly.
   gate: `meta-cmake-round2.sh`. The kind-agnostic live-AC gate
   (`tools/e2e-meta-autotools-round2-live.sh`) covers
   kind:cmake the moment it opts in.
+- **Repo-rule install for kind:cmake round-2 fallback.**
+  Phase B's round-2 fallback (per
+  `docs/design/cmake-execute-process-round2-fallback.md`)
+  transports the install tree as `install_tree.tar` between
+  project B and project A's `BUILD.bazel.out`, costing roughly
+  2× bytes in CAS (tar blob + extracted files via the
+  in-`BUILD.bazel.out` extract genrule) and one extra Bazel
+  action per consumer. Storage duplication adds up across a
+  fleet. Alternative: a Bazel repository rule whose
+  `repository_ctx.execute()` either runs cmake at loading
+  time directly OR untars `install_tree.tar` into a
+  per-element repo, exposing per-target labels without the
+  extract genrule + CAS duplication. Precedent:
+  `rules/traces.bzl`'s `_trace_repo` (loading-time AC
+  lookup) — but that one only does AC `GetActionResult`, not
+  a full build. Trade-offs: loading-time work blocks Bazel
+  startup; repo rules don't run on RBE (executor-pool
+  advantages forfeited); hermeticity weaker (relies on
+  host-side cmake/ninja). Worth re-evaluating once fixtures
+  reveal the storage-duplication cost in practice.
 - **kind:meson** native render. Meson exposes
   `meson introspect --targets`, which is closer to cmake's File API
   than autotools' "you have to actually run it" introspection. The
