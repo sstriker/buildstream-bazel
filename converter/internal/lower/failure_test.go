@@ -360,6 +360,98 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 	}
 }
 
+// TestFallback_PopulatesHdrsFromFileSets covers the FileSet
+// HEADERS path: a STATIC_LIBRARY whose target_sources(...
+// FILE_SET HEADERS BASE_DIRS include FILES include/foo.h)
+// has its public header surfaced as cc_import.hdrs in the
+// placeholder, and the same path appears in the extract
+// genrule's outs so consumers can resolve #include <foo.h>
+// through the placeholder shape.
+func TestFallback_PopulatesHdrsFromFileSets(t *testing.T) {
+	idx0 := 0
+	thelib := fileapi.Target{
+		Name:       "thelib",
+		Type:       "STATIC_LIBRARY",
+		NameOnDisk: "libthelib.a",
+		Paths:      fileapi.TargetPaths{Source: "/src"},
+		Install: &fileapi.TargetInstall{
+			Destinations: []fileapi.TargetInstallDest{{Path: "lib"}},
+		},
+		FileSets: []fileapi.TargetFileSet{{
+			Name:            "thelib_headers",
+			Type:            "HEADERS",
+			Visibility:      "PUBLIC",
+			BaseDirectories: []string{"/src/include"},
+		}},
+		Sources: []fileapi.TargetSource{
+			{Path: "src/lib.c"},
+			{Path: "include/thelib.h", FileSetIndex: &idx0},
+			{Path: "include/sub/internal.h", FileSetIndex: &idx0},
+		},
+	}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Name: "thelib", Id: "thelib::@1"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"thelib::@1": thelib,
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["COMMAND","uname","-m","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		TraceRaw:                          traceRaw,
+		UnsupportedExecuteProcessFallback: true,
+	})
+	if err != nil {
+		t.Fatalf("expected fallback success; got %v", err)
+	}
+
+	byName := map[string]ir.Target{}
+	for _, target := range pkg.Targets {
+		byName[target.Name] = target
+	}
+	thelibStub := byName["thelib"]
+	wantHdrs := []string{
+		"install_tree/include/sub/internal.h",
+		"install_tree/include/thelib.h",
+	}
+	if len(thelibStub.Hdrs) != len(wantHdrs) {
+		t.Fatalf("hdrs: %v want %v", thelibStub.Hdrs, wantHdrs)
+	}
+	for i, want := range wantHdrs {
+		if thelibStub.Hdrs[i] != want {
+			t.Errorf("hdrs[%d]: %q want %q", i, thelibStub.Hdrs[i], want)
+		}
+	}
+
+	// Extract genrule's outs include both the artefact path
+	// and every header path so the cc_import.hdrs labels
+	// resolve.
+	extract := byName["_install_tree_extract"]
+	wantOuts := map[string]bool{
+		"install_tree/lib/libthelib.a":        true,
+		"install_tree/include/thelib.h":       true,
+		"install_tree/include/sub/internal.h": true,
+	}
+	if len(extract.GenruleOuts) != len(wantOuts) {
+		t.Errorf("extract outs: %v want %v", extract.GenruleOuts, wantOuts)
+	}
+	for _, o := range extract.GenruleOuts {
+		if !wantOuts[o] {
+			t.Errorf("extract outs unexpected entry %q", o)
+		}
+	}
+}
+
 // TestFallback_NoRefusals_NoEffect asserts that the fallback
 // flag is harmless when there are no execute_process refusals
 // — ToIR proceeds with the native lowering path unchanged.

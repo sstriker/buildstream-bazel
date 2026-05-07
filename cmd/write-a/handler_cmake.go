@@ -426,6 +426,19 @@ filegroup(
 		// the right Bazel labels.
 		srcsList += `, "imports.json"`
 	}
+	if cmakeConfig.round2FallbackEnabled {
+		// @trace_<elem>//:trace is a load-time _trace_repo
+		// lookup against the REAPI ActionCache; AC hit means
+		// a previous Project B run published the build's
+		// trace, AC miss means the trace fileset is empty.
+		// convert-element doesn't consume the trace yet (the
+		// trace-driven convergence research follow-on
+		// teaches it to refine refusals into fine cc rules
+		// from the trace); wiring the lookup now means that
+		// follow-on is converter-side only — no further
+		// write-a changes.
+		srcsList += fmt.Sprintf(`, "@trace_%s//:trace"`, elem.Name)
+	}
 
 	// Cross-element bundle extraction: every kind:cmake dep's
 	// cmake-config-bundle.tar already carries its full synth-

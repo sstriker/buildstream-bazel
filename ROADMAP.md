@@ -7,33 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **`execute_process` recovery for kind:cmake — Phase A (native
-  lift) + Phase B (round-2 fallback).** Phase A: native lift for
-  the deterministic buckets (`cmake -E touch / copy /
-  copy_if_different`; file-producing tools with declared
-  `OUTPUT_FILE`). Unliftable buckets (version stamps via
-  `git rev-parse`, host probes like `uname -m / gcc --version`,
-  multi-COMMAND pipelines, opaque shell scripts) emit a typed
-  `unsupported-execute-process` Tier-1 failure with a per-call
-  triage report. File-producing hoists carry a
-  `cmake-codegen-execute-process-hoisted` audit tag.
-
-  Phase B: opt-in `--cmake-round2-fallback` mode. When
-  enabled, A's converter genrule threads
-  `--unsupported-execute-process-fallback=true` so refusals
-  produce a placeholder shape (per-target `cc_import` /
-  `sh_binary` stubs from codemodel install destinations +
-  extract genrule referencing `install_tree.tar`); Project B
-  emits a real install genrule wrapping cmake configure +
-  ninja + install + tar under build-tracer + inline
-  trace-publish. Render gate
-  `scripts/meta-cmake-round2-fallback.sh`.
-
-  Recipe: `docs/design/cmake-execute-process-round2-fallback.md`.
-  Failure schema: `docs/failure-schema.md`
-  `unsupported-execute-process`. Trace-driven convergence
-  (using B's published trace to refine A's render beyond the
-  placeholder) is queued in `Later`.
 - **Multi-version cmake compatibility shakeout.** Per-object
   schema-major validation now lives in `fileapi/reply.go` and a
   non-blocking `e2e-latest-cmake` CI job runs the converter
@@ -185,6 +158,44 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`execute_process` recovery for kind:cmake.** Phase A
+  (native lift): the deterministic buckets — `cmake -E touch
+  / copy / copy_if_different` and file-producing tools with
+  declared `OUTPUT_FILE` — translate to native Bazel genrules.
+  Unliftable buckets (version stamps via `git rev-parse`,
+  host probes like `uname -m / gcc --version`, multi-COMMAND
+  pipelines, opaque shell scripts) emit a typed
+  `unsupported-execute-process` Tier-1 failure with a per-call
+  triage report. File-producing hoists carry a
+  `cmake-codegen-execute-process-hoisted` audit tag.
+
+  Phase B (round-2 fallback): opt-in
+  `--cmake-round2-fallback` mode wires the kind-agnostic
+  round-2 plumbing for kind:cmake. A's converter genrule
+  threads `--unsupported-execute-process-fallback=true` so
+  classifier refusals produce the placeholder shape
+  (per-target `cc_import` / `sh_binary` stubs from codemodel
+  install destinations + `cc_import.hdrs` from
+  `Target.FileSets HEADERS` + extract genrule referencing
+  `install_tree.tar`) instead of exiting Tier-1; Project B
+  emits a real install genrule wrapping cmake configure +
+  ninja + install + tar under build-tracer + inline
+  trace-publish. A's converter genrule consumes
+  `@trace_<elem>//:trace` via load-time `_trace_repo` lookup,
+  so a published trace from a previous Project B run is
+  available at convert-element action time (the
+  trace-driven convergence path queued in `Later` will teach
+  the converter to refine refusals from the trace; the
+  wiring is in place today).
+
+  Render gate: `scripts/meta-cmake-round2-fallback.sh`.
+  The kind-agnostic live-AC gate
+  (`tools/e2e-meta-autotools-round2-live.sh`) covers
+  kind:cmake's wire contract through its publish/lookup
+  round-trip half. Recipe:
+  `docs/design/cmake-execute-process-round2-fallback.md`.
+  Failure schema: `docs/failure-schema.md`
+  `unsupported-execute-process`.
 - **Configure_file lift.** Per-element `*.h.in` templates are
   no longer load-bearing inputs of convert-element's cache key
   for elements whose templates lift. Convert-element captures

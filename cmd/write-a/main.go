@@ -411,17 +411,23 @@ func main() {
 		cmakeConfig.configureFileBin = abs
 	}
 	// kind:cmake round-2 fallback. Reuses the same build-tracer
-	// + trace-publish staging the autotools round-2 path needs;
-	// require both binaries so Project B's install genrule has
-	// what it needs to wrap the build and publish the trace.
-	// trace-lookup is NOT required for v1 — A's converter
-	// genrule doesn't yet consume @trace_<elem>//:trace
-	// (queued behind the trace-driven convergence research
-	// follow-on). When that lands, this validation gains
-	// trace-lookup as a dependency.
+	// + trace-publish + trace-lookup staging the autotools
+	// round-2 path needs:
+	//   - build-tracer wraps Project B's install genrule
+	//     (cmake configure + ninja + install).
+	//   - trace-publish runs inline at the end of B's install
+	//     genrule, landing the AC entry keyed by srckey.
+	//   - trace-lookup runs at A's load time (via the
+	//     @trace_<elem>//:trace _trace_repo rule) so a previous
+	//     Project B run's trace is available at convert-element
+	//     action time.
+	// All three are kind-agnostic; resolved here when
+	// --cmake-round2-fallback is set without
+	// --convert-element-autotools (the autotools-round-2 path
+	// resolves them itself when both flags are set).
 	if *cmakeRound2Fallback {
-		if *tracerBin == "" || *publishBin == "" {
-			log.Fatalf("--cmake-round2-fallback requires --build-tracer-bin and --trace-publish-bin so Project B's install genrule can wrap the build and publish the trace")
+		if *tracerBin == "" || *publishBin == "" || *lookupBin == "" {
+			log.Fatalf("--cmake-round2-fallback requires --build-tracer-bin, --trace-publish-bin, and --trace-lookup-bin (Project B wraps the build via build-tracer and publishes the trace; Project A wires the load-time @trace_<elem>//:trace lookup via trace-lookup)")
 		}
 		// The FUSE-sources kind:cmake template
 		// (cmakeElementBuildFuse) renders a different
@@ -452,6 +458,13 @@ func main() {
 				log.Fatalf("resolve trace-publish path: %v", err)
 			}
 			autotoolsConfig.publishBin = abs
+		}
+		if autotoolsConfig.lookupBin == "" {
+			abs, err := filepath.Abs(*lookupBin)
+			if err != nil {
+				log.Fatalf("resolve trace-lookup path: %v", err)
+			}
+			autotoolsConfig.lookupBin = abs
 		}
 		cmakeConfig.round2FallbackEnabled = true
 	}
@@ -880,7 +893,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
 		return err
 	}
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
 			return err
 		}
@@ -912,7 +925,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		traces, err := collectTraces(g)
 		if err != nil {
 			return fmt.Errorf("collect traces: %w", err)
@@ -942,7 +955,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports := []string{"convert-element", "sources.json"}
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		exports = append(exports, "traces.json")
 	}
 	// Also stage convert-element-autotools + build-tracer when
@@ -1103,7 +1116,15 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 	// we still stage trace-lookup when autotools round-2 is
 	// active so that path keeps working uniformly.
 	publishNeeded := autotoolsConfig.round2Enabled || cmakeFallbackActive
-	lookupNeeded := autotoolsConfig.round2Enabled
+	// kind:cmake fallback v1 wires the @trace_<elem>//:trace
+	// load-time lookup into A's converter genrule so a published
+	// trace from a previous Project B run is available at
+	// convert-element action time. The lookup itself runs via
+	// trace-lookup (staged below); the converter doesn't yet
+	// CONSUME the trace (the convergence-from-trace research
+	// follow-on adds that), but the wiring lands now so the
+	// follow-on is purely a converter-side change.
+	lookupNeeded := autotoolsConfig.round2Enabled || cmakeFallbackActive
 	if publishNeeded {
 		stagedPub := filepath.Join(outDir, "tools", "trace-publish")
 		if err := copyFile(autotoolsConfig.publishBin, stagedPub); err != nil {
@@ -1149,7 +1170,7 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
 		return err
 	}
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
 			return err
 		}
@@ -1170,7 +1191,7 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "tools", "sources.json"), string(srcJSON)); err != nil {
 		return err
 	}
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		traces, err := collectTraces(g)
 		if err != nil {
 			return fmt.Errorf("collect traces: %w", err)
@@ -1190,7 +1211,7 @@ func writeProjectB(g *graph, outDir string) error {
 	// //tools:convert-element-autotools labels resolve to
 	// nothing in the B-side BUILD.
 	exports := []string{"sources.json"}
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		exports = append(exports, "traces.json")
 	}
 	autotoolsExports, err := stageAutotoolsTools(outDir)
@@ -1253,7 +1274,7 @@ bazel_dep(name = "bazel_skylib", version = "1.7.1")
 `)
 	}
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
-	if autotoolsConfig.round2Enabled {
+	if autotoolsConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		traces, err := collectTraces(g)
 		if err == nil {
 			b.WriteString(renderTracesUseExtension(traces))

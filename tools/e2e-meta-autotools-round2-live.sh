@@ -44,6 +44,19 @@
 #      parameterised env vars, assert BUILD.bazel.out is the fine
 #      shape (cc_binary, not the placeholder).
 #
+# kind coverage: the publish/lookup wire contract this gate
+# exercises (steps 1–3) is kind-agnostic — it tests
+# SyntheticActionDigest(srckey) round-tripping through a real
+# REAPI endpoint, which any kind that uses
+# rules/traces.bzl's _trace_repo (kind:autotools / make /
+# perl / cmake-round2-fallback) hits the same way. Step 6's
+# bazel-build half is autotools-specific (asserts the
+# autotools converter emits fine cc rules from a published
+# trace); the cmake-round2-fallback equivalent is the
+# render-half gate scripts/meta-cmake-round2-fallback.sh
+# (which covers the shape) plus the kind-agnostic wire
+# round-trip here.
+#
 # Skips cleanly when docker compose / buildbarn aren't available.
 # Tears down everything via trap.
 set -euo pipefail

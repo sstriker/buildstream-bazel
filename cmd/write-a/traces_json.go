@@ -67,12 +67,18 @@ func collectTraces(g *graph) (tracesJSON, error) {
 // kind:autotools is special-cased here because its dispatch lives
 // in autotoolsHandler (handler_autotools_native.go) rather than
 // going through pipelineHandler's traceDrivenSrckeyPatterns
-// field. Other pipeline kinds (kind:make currently; future kinds
+// field. kind:cmake is special-cased too: it's not a pipeline
+// handler, but joins the trace-driven path via the round-2
+// fallback (Phase B) when cmakeConfig.round2FallbackEnabled is
+// set. Other pipeline kinds (kind:make currently; future kinds
 // extending the same pattern) read straight from the handler's
 // field.
 func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 	if kind == "autotools" {
 		return autotoolsSrckeyPatterns()
+	}
+	if kind == "cmake" && cmakeConfig.round2FallbackEnabled {
+		return cmakeSrckeyPatterns()
 	}
 	h, ok := handlers[kind]
 	if !ok {
