@@ -47,6 +47,7 @@ func main() {
 	srckey := flag.String("srckey", "", "per-element srckey hex (the content of srckey.txt); seeds the synthetic AC key.")
 	tracePath := flag.String("trace", "", "path to the canonicalized trace.log produced by build-tracer.")
 	makeDBPath := flag.String("make-db", "", "path to the filtered make-db.txt produced by the genrule's `make -np` post-step.")
+	sourceRoot := flag.String("source-root", "", "absolute path to the element's source tree. Mirrors build-tracer's --source-root: when set, the defensive re-canonicalization filters openat lines to source-relative paths and strips the volatile fd return value (the trace doubles as a configure-time read oracle). When empty, openat lines drop entirely — preserves the legacy AC byte schema for elements not opted into the oracle.")
 	flag.Parse()
 
 	if *addr == "" || *srckey == "" || *tracePath == "" || *makeDBPath == "" {
@@ -65,7 +66,7 @@ func main() {
 	}
 	defer store.Close()
 
-	if err := publish(ctx, store, *srckey, *tracePath, *makeDBPath); err != nil {
+	if err := publish(ctx, store, *srckey, *tracePath, *makeDBPath, *sourceRoot); err != nil {
 		log.Fatalf("trace-publish: %v", err)
 	}
 }
@@ -73,7 +74,7 @@ func main() {
 // publish does the work; factored out so the in-process roundtrip
 // test (which uses cas.LocalStore) shares the upload + AC-update
 // logic with the gRPC binary path.
-func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath string) error {
+func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath, sourceRoot string) error {
 	traceBody, err := os.ReadFile(tracePath)
 	if err != nil {
 		return fmt.Errorf("read trace: %w", err)
@@ -89,7 +90,12 @@ func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath
 	// Re-applying here means a publisher running against an older
 	// build-tracer or a custom genrule still lands a stable AC
 	// entry across machines.
-	traceBody = tracenorm.CanonicalizeBytes(traceBody, nil)
+	//
+	// sourceRoot is threaded through so the openat read-oracle
+	// filter applies the same way it did at trace time. When
+	// sourceRoot is empty, openat lines drop and the bytes match
+	// the legacy execve-only schema.
+	traceBody = tracenorm.CanonicalizeBytesWith(traceBody, tracenorm.Options{SourceRoot: sourceRoot})
 	makeDBBody = tracenorm.FilterMakeDB(makeDBBody)
 
 	// Pack the two-file trace dir as a REAPI Directory and

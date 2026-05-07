@@ -29,6 +29,28 @@ transition cleanly.
 
 ## Next
 
+- **Narrowing-undercoverage audit step.** Both halves of the
+  oracle plumbing now exist:
+  - cmake side: convert-element's `--out-cmake-configure-reads`
+    projects build.ninja's `RERUN_CMAKE` deps onto source-relative
+    paths.
+  - trace-driven side: build-tracer's `--source-root` flag opts
+    elements into openat capture; `tracenorm.ExtractReads`
+    pulls the source-relative read set back out of the
+    canonicalized trace.
+  
+  Missing piece: a small `audit-narrowing` tool (or a write-a
+  subcommand) that consumes the oracle output + the per-kind
+  `<kind>SrckeyPatterns()` / `DefaultReadPathsPatterns()` and
+  emits `srckey-undercomplete.txt` warnings for paths the oracle
+  flags as read but the patterns leave name-only. Shipping
+  separately because the policy question — "fail CI on any
+  drift, or only on first surfacing per element" — is a
+  conversation worth having before the audit runs in PR gates.
+  Per-element opt-in to capture (passing `--source-root` into
+  the round-2 install genrule's build-tracer + trace-publish
+  invocations) lands alongside the audit tool, since neither
+  is useful without the other.
 - **Lift `configure_file` out of convert-element's cache key.**
   Today `lower/configure_file.go` reads cmake's already-rendered
   `config.h` bytes from the build dir and base64-embeds them in
