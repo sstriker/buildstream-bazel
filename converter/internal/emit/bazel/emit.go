@@ -99,6 +99,18 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			}
 			continue
 		}
+		if t.Kind == ir.KindCCImport {
+			if err := emitCCImport(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindShBinary {
+			if err := emitShBinary(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
 			return nil, err
 		}
@@ -150,6 +162,53 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .Alwayslink}}
     alwayslink = True,
 {{- end}}
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+// ccImportTmpl renders cc_import. Distinct from the generic
+// cc_library / cc_binary template because cc_import's
+// attribute set is fundamentally different — it wraps a
+// pre-built archive / shared object (StaticLibrary /
+// SharedLibrary as single-file label refs) plus optional hdrs;
+// no srcs / copts / defines / deps.
+var ccImportTmpl = template.Must(template.New("cc_import").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`cc_import(
+    name = "{{.Name}}",
+{{- if .StaticLibrary}}
+    static_library = "{{.StaticLibrary}}",
+{{- end}}
+{{- if .SharedLibrary}}
+    shared_library = "{{.SharedLibrary}}",
+{{- end}}
+{{- if .Hdrs}}
+    hdrs = {{strList .Hdrs}},
+{{- end}}
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+// shBinaryTmpl renders sh_binary. Bazel's sh_binary expects a
+// single-element srcs (the executable) — no hdrs, no copts.
+// Used by the kind:cmake round-2 fallback's per-target stubs
+// for EXECUTABLE targets, where the placeholder references
+// the installed binary path directly.
+var shBinaryTmpl = template.Must(template.New("sh_binary").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`sh_binary(
+    name = "{{.Name}}",
+    srcs = {{strList .Srcs}},
 {{- if .Tags}}
     tags = {{strList .Tags}},
 {{- end}}
@@ -213,6 +272,44 @@ type genruleView struct {
 	CmdLiteral string // already-quoted Starlark string literal
 	Tags       []string
 	Visibility []string
+}
+
+// ccImportView projects ir.Target into the cc_import template.
+type ccImportView struct {
+	Name          string
+	StaticLibrary string
+	SharedLibrary string
+	Hdrs          []string
+	Tags          []string
+	Visibility    []string
+}
+
+// shBinaryView projects ir.Target into the sh_binary template.
+type shBinaryView struct {
+	Name       string
+	Srcs       []string
+	Tags       []string
+	Visibility []string
+}
+
+func emitCCImport(w *bytes.Buffer, t ir.Target) error {
+	return ccImportTmpl.Execute(w, ccImportView{
+		Name:          t.Name,
+		StaticLibrary: t.StaticLibrary,
+		SharedLibrary: t.SharedLibrary,
+		Hdrs:          sortedCopy(t.Hdrs),
+		Tags:          sortedCopy(t.Tags),
+		Visibility:    append([]string(nil), t.Visibility...),
+	})
+}
+
+func emitShBinary(w *bytes.Buffer, t ir.Target) error {
+	return shBinaryTmpl.Execute(w, shBinaryView{
+		Name:       t.Name,
+		Srcs:       sortedCopy(t.Srcs),
+		Tags:       sortedCopy(t.Tags),
+		Visibility: append([]string(nil), t.Visibility...),
+	})
 }
 
 func emitCCTarget(w *bytes.Buffer, t ir.Target) error {

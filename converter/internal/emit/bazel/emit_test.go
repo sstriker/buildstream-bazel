@@ -4,10 +4,12 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
+	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
 	"github.com/sstriker/cmake-to-bazel/internal/manifest"
 )
@@ -277,6 +279,124 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 	}
 	if string(got) != string(want) {
 		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestEmit_ExecuteProcess_Fallback_Shape locks in the
+// rendered shape of the kind:cmake round-2 fallback
+// placeholder: extract genrule with install_tree.tar src and
+// per-file outs, plus per-target stubs (cc_import +
+// static_library / shared_library, sh_binary + srcs). The
+// test constructs a synthetic ir.Package matching what
+// emitFallbackPlaceholder produces and asserts the literal
+// rendered bytes (no separate golden file — keeps the
+// invariant close to the test for easy review).
+func TestEmit_ExecuteProcess_Fallback_Shape(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "demo",
+		Targets: []ir.Target{
+			{
+				Name:        "_install_tree_extract",
+				Kind:        ir.KindGenrule,
+				Srcs:        []string{"install_tree.tar"},
+				GenruleOuts: []string{"install_tree/lib/libthelib.a", "install_tree/bin/thetool"},
+				GenruleCmd:  `mkdir -p "$(@D)/install_tree" && tar -C "$(@D)/install_tree" -xf "$(location install_tree.tar)"`,
+				Tags:        []string{"cmake-codegen-execute-process-fallback", "cmake-codegen-execute-process-fallback-extract"},
+				Visibility:  []string{"//visibility:private"},
+			},
+			{
+				Name:          "thelib",
+				Kind:          ir.KindCCImport,
+				StaticLibrary: "install_tree/lib/libthelib.a",
+				Tags:          []string{"cmake-codegen-execute-process-fallback"},
+				Visibility:    []string{"//visibility:public"},
+			},
+			{
+				Name:       "thetool",
+				Kind:       ir.KindShBinary,
+				Srcs:       []string{"install_tree/bin/thetool"},
+				Tags:       []string{"cmake-codegen-execute-process-fallback"},
+				Visibility: []string{"//visibility:public"},
+			},
+		},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+
+	// Load line: cc_import comes from rules_cc; cc_library
+	// / cc_binary aren't used in the placeholder so the load
+	// should only mention cc_import. sh_binary is built-in
+	// (no load needed).
+	if !strings.Contains(gotStr, `load("@rules_cc//cc:defs.bzl", "cc_import")`) {
+		t.Errorf("expected cc_import load; got:\n%s", gotStr)
+	}
+	if strings.Contains(gotStr, `"cc_library"`) {
+		t.Errorf("placeholder should not load cc_library; got:\n%s", gotStr)
+	}
+
+	// Extract genrule rendering: srcs + outs + cmd + tags.
+	for _, want := range []string{
+		`name = "_install_tree_extract"`,
+		`srcs = ["install_tree.tar"]`,
+		`"install_tree/lib/libthelib.a"`,
+		`"install_tree/bin/thetool"`,
+		`tar -C`,
+	} {
+		if !strings.Contains(gotStr, want) {
+			t.Errorf("extract genrule missing %q; got:\n%s", want, gotStr)
+		}
+	}
+
+	// cc_import rendering: static_library attribute.
+	for _, want := range []string{
+		`cc_import(`,
+		`name = "thelib"`,
+		`static_library = "install_tree/lib/libthelib.a"`,
+	} {
+		if !strings.Contains(gotStr, want) {
+			t.Errorf("cc_import shape missing %q; got:\n%s", want, gotStr)
+		}
+	}
+
+	// sh_binary rendering: srcs attribute.
+	for _, want := range []string{
+		`sh_binary(`,
+		`name = "thetool"`,
+		`srcs = ["install_tree/bin/thetool"]`,
+	} {
+		if !strings.Contains(gotStr, want) {
+			t.Errorf("sh_binary shape missing %q; got:\n%s", want, gotStr)
+		}
+	}
+}
+
+// TestEmit_CCImport_SharedLibrary asserts the SHARED_LIBRARY
+// path of cc_import: shared_library attribute populated
+// instead of static_library. Mirrors the
+// fallback placeholder's SHARED/MODULE_LIBRARY → cc_import +
+// shared_library dispatch.
+func TestEmit_CCImport_SharedLibrary(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:          "shared",
+			Kind:          ir.KindCCImport,
+			SharedLibrary: "install_tree/lib/libshared.so.1",
+			Visibility:    []string{"//visibility:public"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.Contains(gotStr, `shared_library = "install_tree/lib/libshared.so.1"`) {
+		t.Errorf("expected shared_library attribute; got:\n%s", gotStr)
+	}
+	if strings.Contains(gotStr, `static_library`) {
+		t.Errorf("static_library should not appear; got:\n%s", gotStr)
 	}
 }
 
