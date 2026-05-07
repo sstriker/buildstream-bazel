@@ -41,7 +41,7 @@ func TestPublish_RoundtripThroughLocalStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := publish(ctx, store, "srckey-aaa", tracePath, makeDBPath); err != nil {
+	if err := publish(ctx, store, "srckey-aaa", tracePath, makeDBPath, ""); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
@@ -97,10 +97,10 @@ func TestPublish_DistinctSrckeysIsolate(t *testing.T) {
 	if err := os.WriteFile(makeDBPath, []byte("makedb content\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := publish(ctx, store, "srckey-a", tracePath, makeDBPath); err != nil {
+	if err := publish(ctx, store, "srckey-a", tracePath, makeDBPath, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := publish(ctx, store, "srckey-b", tracePath, makeDBPath); err != nil {
+	if err := publish(ctx, store, "srckey-b", tracePath, makeDBPath, ""); err != nil {
 		t.Fatal(err)
 	}
 	keyA, _ := tracenorm.SyntheticActionDigest("srckey-a")
@@ -143,7 +143,7 @@ func TestPublish_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := publish(ctx, store, "srckey-zzz", tracePath, makeDBPath); err != nil {
+		if err := publish(ctx, store, "srckey-zzz", tracePath, makeDBPath, ""); err != nil {
 			t.Fatalf("iteration %d: %v", i, err)
 		}
 	}

@@ -296,6 +296,73 @@ func TestParseFile_HelloWorld(t *testing.T) {
 	}
 }
 
+func TestReconfigureInputs_HelloWorld(t *testing.T) {
+	f, err := os.Open("../../testdata/fileapi/hello-world/build.ninja")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	g, err := ninja.Parse(f, "", &ninja.Parser{
+		FileResolver: func(parentDir, path string) (io.ReadCloser, error) {
+			return nil, nil // skip rules.ninja include
+		},
+	})
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	inputs := g.ReconfigureInputs()
+	if len(inputs) == 0 {
+		t.Fatal("ReconfigureInputs returned empty list; expected RERUN_CMAKE deps")
+	}
+	// The fixture's user CMakeLists.txt is the load-bearing entry.
+	const wantUserCMakeLists = "/home/user/cmake-to-bazel/converter/testdata/sample-projects/hello-world/CMakeLists.txt"
+	found := false
+	for _, p := range inputs {
+		if p == wantUserCMakeLists {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("ReconfigureInputs missing user CMakeLists.txt; got %d inputs, first 3: %v", len(inputs), firstN(inputs, 3))
+	}
+	// Build-tree artifacts (relative paths) should be present too —
+	// the projection pass filters them out, but the raw oracle keeps
+	// them so callers can audit if needed.
+	if !containsString(inputs, "CMakeCache.txt") {
+		t.Errorf("ReconfigureInputs missing CMakeCache.txt; got first 3: %v", firstN(inputs, 3))
+	}
+}
+
+func TestReconfigureInputs_NoRerunCmake(t *testing.T) {
+	// A hand-written ninja file with no RERUN_CMAKE statement —
+	// ReconfigureInputs must return nil, not panic.
+	g := mustParse(t, `rule cc
+  command = cc -c $in -o $out
+
+build x.o: cc x.c
+`)
+	if got := g.ReconfigureInputs(); got != nil {
+		t.Errorf("ReconfigureInputs = %v, want nil", got)
+	}
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+func firstN(s []string, n int) []string {
+	if len(s) < n {
+		return s
+	}
+	return s[:n]
+}
+
 func sameSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -7,47 +7,9 @@ import (
 	"testing"
 )
 
-func TestMatchPattern(t *testing.T) {
-	cases := []struct {
-		pattern string
-		path    string
-		want    bool
-	}{
-		{"CMakeLists.txt", "CMakeLists.txt", true},
-		{"CMakeLists.txt", "src/CMakeLists.txt", false},
-		{"*", "foo", true},
-		{"*", "foo/bar", false},
-		{"*.h", "foo.h", true},
-		{"*.h", "sub/foo.h", false},
-		{"cmake/*.cmake", "cmake/Find.cmake", true},
-		{"cmake/*.cmake", "cmake/sub/Find.cmake", false},
-		{"include/**/*.h", "include/foo.h", true},
-		{"include/**/*.h", "include/sub/foo.h", true},
-		{"include/**/*.h", "include/sub/deep/foo.h", true},
-		{"include/**/*.h", "src/foo.h", false},
-		{"**/*.h", "foo.h", true},
-		{"**/*.h", "src/foo.h", true},
-		{"**", "anything/at/all", true},
-		{"foo/**/bar", "foo/bar", true},
-		{"foo/**/bar", "foo/x/bar", true},
-		{"foo/**/bar", "foo/x/y/bar", true},
-		{"foo/**/bar", "foo/baz", false},
-		{"include/internal/*", "include/internal/x.h", true},
-		{"include/internal/*", "include/public/x.h", false},
-		{"?.c", "a.c", true},
-		{"?.c", "ab.c", false},
-		// Edge: empty pattern only matches empty path.
-		{"", "", true},
-		{"", "x", false},
-	}
-	for _, c := range cases {
-		t.Run(c.pattern+"::"+c.path, func(t *testing.T) {
-			if got := matchPattern(c.pattern, c.path); got != c.want {
-				t.Errorf("matchPattern(%q, %q) = %v, want %v", c.pattern, c.path, got, c.want)
-			}
-		})
-	}
-}
+// Note: TestMatchPattern moved to
+// internal/readpaths/patterns_test.go (TestMatch_GlobGrammar)
+// when the matcher was lifted into the shared package.
 
 func TestLoadReadPathsPatterns_Absent(t *testing.T) {
 	tmp := t.TempDir()

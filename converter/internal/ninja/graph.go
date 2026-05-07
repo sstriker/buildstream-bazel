@@ -106,6 +106,40 @@ func (g *Graph) BuildFor(out string) *Build {
 	return g.OutputIndex[out]
 }
 
+// ReconfigureInputs returns the implicit-input list of the `build
+// build.ninja: RERUN_CMAKE | <inputs>` statement cmake emits — the set of
+// files cmake itself thinks should re-trigger configure when their bytes
+// change. Returns nil if no such build statement exists (older cmake, non-
+// ninja generator, or hand-written ninja) or if it has no implicit inputs;
+// callers can use len() == 0 to handle both cases uniformly.
+//
+// Inputs are returned verbatim as written in build.ninja: a mix of
+// absolute paths (user CMakeLists.txt + cmake-stdlib /usr/share/cmake-*
+// modules) and build-relative paths (CMakeCache.txt and the CMakeFiles/
+// detection cache). Callers project these onto the source tree by
+// resolving relative paths against the build dir and filtering to paths
+// inside the source root. Convert-element does that projection.
+//
+// The list is a configure-time oracle: it captures everything cmake's
+// reconfigure-detection machinery cares about, including files added via
+// internal cmAddCMakeDependFile calls that --trace-expand doesn't surface.
+// It is NOT a complete read-set — file(GLOB) without CONFIGURE_DEPENDS,
+// per-config find_package paths, and try_compile probes that take a
+// branch we didn't take are all invisible. Treat the output as a
+// soundness lower bound, not an oracle of last resort.
+func (g *Graph) ReconfigureInputs() []string {
+	b := g.BuildFor("build.ninja")
+	if b == nil || b.Rule != "RERUN_CMAKE" {
+		return nil
+	}
+	if len(b.ImplicitInputs) == 0 {
+		return nil
+	}
+	out := make([]string, len(b.ImplicitInputs))
+	copy(out, b.ImplicitInputs)
+	return out
+}
+
 func newGraph() *Graph {
 	return &Graph{
 		Vars:  map[string]string{},

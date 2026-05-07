@@ -309,6 +309,60 @@ func run(a cli.Args) error {
 		}
 	}
 
+	if a.OutCMakeConfigureReads != "" {
+		// The build.ninja oracle: cmake's own list of files whose bytes
+		// should re-trigger configure. Project against the source root
+		// to drop cmake-stdlib modules and build-tree configure outputs;
+		// callers compare the result against per-kind narrowing
+		// patterns to flag undercoverage drift.
+		//
+		// Source-root choice: the live-cmake path uses --source-root
+		// directly; the offline --reply-dir path falls back to whatever
+		// the recording captured (the build.ninja's absolute paths
+		// remain the recording-time root, so projection works only when
+		// SourceRoot matches). Empty SourceRoot → projector returns nil
+		// and we write an empty array, which is unambiguous in the
+		// downstream consumer.
+		//
+		// Build-dir choice: live-cmake uses the host tmpdir we
+		// configured against; offline --reply-dir uses the build
+		// path the codemodel recorded (Codemodel.Paths.Build), NOT
+		// ReplyDir itself — ReplyDir is the
+		// `<build>/.cmake/api/v1/reply` subdir, four levels too
+		// deep. Using ReplyDir would break the in-source-buildDir
+		// exclude in ProjectToSourceTree (build-tree artifacts
+		// like `<build>/CMakeCache.txt` wouldn't be recognized
+		// as "inside buildDir" and would leak into the oracle).
+		//
+		// When build.ninja wasn't parseable (g == nil — older cmake or
+		// non-ninja generator), we still write the file but as an
+		// empty array, so scripts that always expect the artifact to
+		// exist when the flag is set don't fail with ENOENT. Audit
+		// consumers see "no oracle data" via the empty array, which
+		// is the right semantic.
+		var reads []string
+		if g != nil {
+			buildDirForProj := hostBuildDir
+			if buildDirForProj == "" {
+				buildDirForProj = r.Codemodel.Paths.Build
+			}
+			reads = ninja.ProjectToSourceTree(g.ReconfigureInputs(), a.SourceRoot, buildDirForProj)
+		}
+		if reads == nil {
+			reads = []string{}
+		}
+		body, err := json.MarshalIndent(reads, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutCMakeConfigureReads), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutCMakeConfigureReads, append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+
 	if a.OutReadPaths != "" && hostBuildDir != "" {
 		traceHost := filepath.Join(hostBuildDir, "trace.jsonl")
 		raw, err := os.ReadFile(traceHost)

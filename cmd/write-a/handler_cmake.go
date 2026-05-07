@@ -65,6 +65,10 @@ func (cmakeHandler) RenderA(elem *element, elemPkg string) error {
 			if err := partitionSources(elem); err != nil {
 				return fmt.Errorf("partition sources (fuse mode): %w", err)
 			}
+			cmakePatterns := composeReadPathsPatterns(cmakeHandler{}.DefaultReadPathsPatterns(), elem.Patterns)
+			if err := writeNarrowingPatterns(elemPkg, withCMakeListsRule(cmakePatterns)); err != nil {
+				return err
+			}
 			return writeFile(filepath.Join(elemPkg, "BUILD.bazel"),
 				cmakeElementBuildFuse(elem, k))
 		}
@@ -93,11 +97,26 @@ func (cmakeHandler) RenderA(elem *element, elemPkg string) error {
 		if err := writeCmakeImportsManifest(elem, elemPkg); err != nil {
 			return err
 		}
+		// Multi-source / Directory-suffix: no narrowing applied;
+		// audit consumes an empty pattern set as "everything
+		// covered" (the conservative default).
+		if err := writeNarrowingPatterns(elemPkg, nil); err != nil {
+			return err
+		}
 		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), cmakeElementBuild(elem))
 	}
 
 	if err := partitionSources(elem); err != nil {
 		return fmt.Errorf("partition sources: %w", err)
+	}
+	// Emit the resolved pattern set for cmd/audit-narrowing.
+	// The CMakeLists.txt-always-real rule that partitionSources
+	// applies as a special case is made explicit here so the
+	// audit's plain Match() produces the same coverage answer
+	// applyReadPathsPatterns produces in the staging path.
+	cmakePatterns := composeReadPathsPatterns(cmakeHandler{}.DefaultReadPathsPatterns(), elem.Patterns)
+	if err := writeNarrowingPatterns(elemPkg, withCMakeListsRule(cmakePatterns)); err != nil {
+		return err
 	}
 	// Real sources are staged as files in project A's source tree;
 	// the glob in the per-element BUILD picks them up. Zero stubs are

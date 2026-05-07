@@ -29,6 +29,51 @@ transition cleanly.
 
 ## Next
 
+- **Wire the narrowing-undercoverage audit into a CI gate.**
+  All the plumbing is in:
+  - cmake oracle via convert-element's
+    `--out-cmake-configure-reads`.
+  - trace oracle via build-tracer's `--source-root` flag +
+    `tracenorm.ExtractReads`.
+  - per-element pattern surface emitted by write-a as
+    `srckey-patterns.txt`.
+  - `cmd/audit-narrowing` consumes patterns + oracle(s) and
+    emits a sorted undercoverage report.
+  
+  Missing piece: actually run the audit somewhere. Two
+  conversations to have before flipping the gate on:
+  - **Policy**: hard-fail on any drift, or accept a per-element
+    allowlist of expected misses? The cmake configure-file
+    fixture currently surfaces `src/config.h.in` as a real-but-
+    real-needs-to-stay miss until the configure_file lift
+    (below) lands. A whitelist mechanism plus an "expected
+    drift" file alongside `srckey-patterns.txt` is the realistic
+    landing.
+  - **Per-element opt-in to capture** for trace-driven kinds:
+    pass `--source-root` into the round-2 install genrule's
+    build-tracer + trace-publish invocations (today
+    `pipelineTracePublishStep` doesn't). Without this the
+    trace oracle is empty and only the cmake side carries
+    signal.
+- **Lift `configure_file` out of convert-element's cache key.**
+  Today `lower/configure_file.go` reads cmake's already-rendered
+  `config.h` bytes from the build dir and base64-embeds them in
+  the recovered genrule's `cmd`. The `*.h.in` template's content
+  therefore drives the BUILD.bazel bytes, forcing it into
+  convert-element's srckey — a soundness requirement that the
+  forthcoming narrowing-undercoverage warning (cmake configure-
+  reads oracle) flags as load-bearing for `*.h.in`. Real fix:
+  emit a `cmake-configure-file` tool (substitution rules per
+  cmake docs: `@VAR@` / `${VAR}` / `#cmakedefine` /
+  `#cmakedefine01` / recursive expansion) plus a values sidecar
+  carrying the resolved cmake variables; the genrule consumes
+  `*.h.in` as `srcs` and the values as a separate input. After
+  the lift `*.h.in` becomes name-only for srckey purposes; only
+  variable-set changes (which all flow from CMakeLists.txt
+  edits, already in srckey) re-trigger convert-element. Same
+  shape applies to `file(GENERATE)` and any
+  `add_custom_command` whose COMMAND is a cmake builtin —
+  follow-up sweep.
 - **kind:meson** native render. Meson exposes
   `meson introspect --targets`, which is closer to cmake's File API
   than autotools' "you have to actually run it" introspection. The

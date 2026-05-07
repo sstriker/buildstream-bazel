@@ -4,9 +4,22 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+// nativeBackendCompiledIn mirrors cmd/build-tracer's
+// nativeBackendAvailable() — the only platform with the native
+// ptrace backend compiled in is linux/amd64 (per the build
+// constraints on native_linux_amd64.go vs. native_other.go).
+// Tests that exercise the native path skip when this is false;
+// they no longer use `strace`-on-PATH as a proxy for "this host
+// can ptrace" because that conflates two unrelated concerns
+// (the strace fallback vs. the native backend).
+func nativeBackendCompiledIn() bool {
+	return runtime.GOOS == "linux" && runtime.GOARCH == "amd64"
+}
 
 // TestBuildTracer_E2E confirms build-tracer wraps a command
 // under strace and produces a trace artifact containing the
@@ -52,11 +65,8 @@ func TestBuildTracer_E2E(t *testing.T) {
 // Skipped on non-amd64 Linux where the native backend isn't
 // compiled in.
 func TestBuildTracer_NativeCapturesForkedExecve(t *testing.T) {
-	if _, err := exec.LookPath("strace"); err != nil {
-		// Test relies on `go build` + ptrace working on the
-		// host. strace's presence approximates "this kernel
-		// allows ptrace from a parent." Skip if absent.
-		t.Skip("strace not on PATH; gating native test on the same host capability")
+	if !nativeBackendCompiledIn() {
+		t.Skip("native backend not compiled in for this GOOS/GOARCH")
 	}
 	tmp := t.TempDir()
 	bin := filepath.Join(tmp, "build-tracer")
@@ -146,6 +156,138 @@ func TestBuildTracer_PropagatesExit(t *testing.T) {
 		if ee.ExitCode() == 0 {
 			t.Errorf("expected non-zero exit; got 0")
 		}
+	}
+}
+
+// TestBuildTracer_SourceRootCapturesOpenatNative verifies that
+// --source-root opts the native backend into capturing openat
+// reads, that canonicalize rewrites the path source-relative,
+// and that the volatile fd return value gets stripped. End-to-
+// end exercise of the trace-side configure-time read oracle.
+func TestBuildTracer_SourceRootCapturesOpenatNative(t *testing.T) {
+	if !nativeBackendCompiledIn() {
+		t.Skip("native backend not compiled in for this GOOS/GOARCH")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "build-tracer")
+	out := filepath.Join(tmp, "trace.log")
+	srcRoot := filepath.Join(tmp, "src")
+	if err := os.Mkdir(srcRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probePath := filepath.Join(srcRoot, "probe.txt")
+	if err := os.WriteFile(probePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = mustDir(t)
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+
+	// /bin/cat opens the probe file via openat(AT_FDCWD, ...).
+	// With --source-root pointing at our tmp src dir, the
+	// canonical trace should carry the rewritten path
+	// "probe.txt" with the fd suffix replaced by `?`.
+	cmd := exec.Command(bin, "--source-root="+srcRoot, "--out="+out, "--", "/bin/cat", probePath)
+	cmd.Stdout = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build-tracer run: %v", err)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, `openat(AT_FDCWD, "probe.txt"`) {
+		t.Errorf("trace missing source-relative openat for probe.txt\n--body--\n%s", got)
+	}
+	if !strings.Contains(got, " = ?") {
+		t.Errorf("trace missing fd-stripped suffix `= ?`\n--body--\n%s", got)
+	}
+	// Out-of-tree opens (libc.so, /etc/passwd, etc.) must not
+	// appear — the canonicalize filter drops them.
+	if strings.Contains(got, "libc.so") || strings.Contains(got, "/etc/") {
+		t.Errorf("trace leaked out-of-tree openat lines\n--body--\n%s", got)
+	}
+}
+
+// TestBuildTracer_SourceRootCapturesOpenatStrace mirrors the
+// native test against the --strace fallback path.
+func TestBuildTracer_SourceRootCapturesOpenatStrace(t *testing.T) {
+	if _, err := exec.LookPath("strace"); err != nil {
+		t.Skip("strace not on PATH; skipping")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "build-tracer")
+	out := filepath.Join(tmp, "trace.log")
+	srcRoot := filepath.Join(tmp, "src")
+	if err := os.Mkdir(srcRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	probePath := filepath.Join(srcRoot, "probe.txt")
+	if err := os.WriteFile(probePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = mustDir(t)
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--strace", "--source-root="+srcRoot, "--out="+out, "--", "/bin/cat", probePath)
+	cmd.Stdout = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build-tracer --strace run: %v", err)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	if !strings.Contains(got, `openat(AT_FDCWD, "probe.txt"`) {
+		t.Errorf("strace-fallback trace missing source-relative openat for probe.txt\n--body--\n%s", got)
+	}
+	if !strings.Contains(got, " = ?") {
+		t.Errorf("strace-fallback trace missing fd-stripped suffix `= ?`\n--body--\n%s", got)
+	}
+}
+
+// TestBuildTracer_NoSourceRootSkipsOpenat confirms the legacy
+// AC byte schema: without --source-root, openat events are
+// dropped entirely so existing AC entries (computed against
+// execve-only traces) remain valid.
+func TestBuildTracer_NoSourceRootSkipsOpenat(t *testing.T) {
+	if _, err := exec.LookPath("strace"); err != nil {
+		t.Skip("strace not on PATH; skipping")
+	}
+	tmp := t.TempDir()
+	bin := filepath.Join(tmp, "build-tracer")
+	out := filepath.Join(tmp, "trace.log")
+	probePath := filepath.Join(tmp, "probe.txt")
+	if err := os.WriteFile(probePath, []byte("hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	build := exec.Command("go", "build", "-o", bin, ".")
+	build.Dir = mustDir(t)
+	if err := build.Run(); err != nil {
+		t.Fatalf("go build: %v", err)
+	}
+
+	cmd := exec.Command(bin, "--out="+out, "--", "/bin/cat", probePath)
+	cmd.Stdout = nil
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("build-tracer run: %v", err)
+	}
+	body, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "openat(") {
+		t.Errorf("legacy mode leaked openat into trace.log\n--body--\n%s", body)
 	}
 }
 

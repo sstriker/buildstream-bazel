@@ -172,9 +172,10 @@ func walkSrckeyPaths(root string) ([]string, error) {
 }
 
 // matchesSrckeyPatterns reports whether a path's CONTENT
-// contributes to srckey. Mirrors applyReadPathsPatterns'
-// matched-vs-unmatched semantics minus the cmake-specific
-// CMakeLists.txt special case:
+// contributes to srckey. Delegates to readpaths.Patterns.Match
+// so the inclusion semantics stay byte-equivalent with what
+// cmd/audit-narrowing applies on the same per-element
+// srckey-patterns.txt.
 //
 //   - patterns nil / empty rules: content-included (full
 //     hashing, conservative default).
@@ -183,48 +184,30 @@ func walkSrckeyPaths(root string) ([]string, error) {
 //   - Only exclude rules: content-included unless the path
 //     matches an exclude rule.
 func matchesSrckeyPatterns(patterns *readPathsPatterns, path string) bool {
-	if patterns == nil || len(patterns.Rules) == 0 {
-		return true
-	}
-	hasInclude := false
-	for _, r := range patterns.Rules {
-		if r.Include {
-			hasInclude = true
-			break
-		}
-	}
-	matched := !hasInclude
-	if hasInclude {
-		for _, r := range patterns.Rules {
-			if r.Include && matchPattern(r.Pattern, path) {
-				matched = true
-				break
-			}
-		}
-	}
-	if matched {
-		for _, r := range patterns.Rules {
-			if !r.Include && matchPattern(r.Pattern, path) {
-				matched = false
-				break
-			}
-		}
-	}
-	return matched
+	return patterns.Match(path)
 }
 
-// renderSrckey writes srckey.txt + srckey-breakdown.txt to
-// elemPkg. Both files are byte-stable as long as the source
-// tree is byte-stable + patterns are unchanged. The breakdown
-// is human-readable: one line per source path with status
-// (content / name) and the file's sha256 (when content-
-// included). srckey.txt is the sha256 of the breakdown's bytes.
+// renderSrckey writes srckey.txt + srckey-breakdown.txt +
+// srckey-patterns.txt to elemPkg. All three files are byte-
+// stable as long as the source tree is byte-stable + patterns
+// are unchanged. The breakdown is human-readable: one line per
+// source path with status (content / name) and the file's
+// sha256 (when content-included). srckey.txt is the sha256 of
+// the breakdown's bytes. srckey-patterns.txt is the resolved
+// pattern set in read-paths.txt syntax — the surface
+// cmd/audit-narrowing reads to compare against the action-time
+// read oracle and flag undercoverage drift. Empty patterns
+// (the conservative no-narrow default) round-trip as an empty
+// file; the audit treats that as "everything covered".
 func renderSrckey(elem *element, elemPkg string, patterns *readPathsPatterns) error {
 	hash, breakdown, err := computeSrckey(elem, patterns)
 	if err != nil {
 		return fmt.Errorf("element %q: compute srckey: %w", elem.Name, err)
 	}
 	if err := writeFile(filepath.Join(elemPkg, "srckey-breakdown.txt"), breakdown); err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(elemPkg, "srckey-patterns.txt"), patterns.Format()); err != nil {
 		return err
 	}
 	return writeFile(filepath.Join(elemPkg, "srckey.txt"), hash+"\n")

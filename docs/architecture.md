@@ -66,6 +66,15 @@ internal/                   shared substrates (used by both binaries)
   fidelity                  symbol-set + behavioral diffs (used by tests)
   manifest                  per-package + per-run JSON schemas
   shadow                    path-only-stat shadow-tree creator + read-path tracer
+  readpaths                 shared pattern matcher for write-a + audit-narrowing
+  tracenorm                 canonicalize / openat filtering / SyntheticActionDigest
+
+cmd/                        write-a-side binaries + the trace-driven half
+  build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
+  trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
+  trace-lookup/             A-side load-time AC reader for round-2 _trace_repo
+  audit-narrowing/          patterns × oracle → undercoverage report
+  write-a/                  meta-project renderer (per-kind handlers)
 
 deploy/buildbarn/           local-dev REAPI cluster
   docker-compose.yml        bb-storage + bb-scheduler + bb-worker + bb-runner-bare
@@ -227,6 +236,29 @@ read-paths the converter actually saw, so a run's
 to. The `internal/shadow/trace.go` parser handles that; the per-
 package allowlist registry lives in
 `orchestrator/internal/allowlistreg`.
+
+### `internal/readpaths`
+
+Shared pattern matcher for read-paths and srckey narrowing
+(`Rule`, `Patterns`, `Parse`, `Format`, `Match`). One
+authoritative implementation used by both `cmd/write-a` (which
+emits `srckey-patterns.txt` per element) and `cmd/audit-narrowing`
+(which reads it back to flag undercoverage drift). cmd/write-a's
+local `patternRule` and `readPathsPatterns` are aliases to
+this package's `Rule` and `Patterns`. See
+[`docs/design/narrowing-audit.md`](design/narrowing-audit.md).
+
+### `cmd/audit-narrowing`
+
+Diffs an element's narrowing patterns against an action-time
+read oracle and reports paths the oracle says were read but the
+patterns leave name-only. Two oracle inputs accepted (either
+or both): a JSON array from `convert-element`'s
+`--out-cmake-configure-reads` (cmake-side, sourced from
+build.ninja's `RERUN_CMAKE` deps), and a canonicalized
+`trace.log` from `build-tracer --source-root=...` (trace-driven
+side, sourced from openat capture). Recipe + scope:
+[`docs/design/narrowing-audit.md`](design/narrowing-audit.md).
 
 ### `internal/fidelity`
 
