@@ -35,14 +35,17 @@ func TestCmakeSrckeyPatterns_ContentInclusionTruthTable(t *testing.T) {
 		{"include/foo.hxx", true},
 		{"include/foo.hh", true},
 		{"src/internal/bar.h", true},
-		// .h.in — cmake reads via configure_file at configure
-		// time; per-element configure_file-lift exclude
-		// overrides this default for elements with the lift
-		// staged.
-		{"src/config.h.in", true},
 		// CMake presets — alternative configure entry points.
 		{"CMakePresets.json", true},
 		{"CMakeUserPresets.json", true},
+
+		// .h.in — path-only by default. The configure_file
+		// lift makes them Bazel-srcs covered; elements
+		// without the lift add `include **/*.h.in` per-element
+		// (the audit flags them as undercoverage drift since
+		// cmake's RERUN_CMAKE oracle reports them as reads).
+		{"src/config.h.in", false},
+		{"include/cap.h.in", false},
 
 		// Source files: content-only (no rule matches → not
 		// content-included). Edits invalidate via Bazel's

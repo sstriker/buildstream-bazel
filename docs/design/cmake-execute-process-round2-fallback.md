@@ -129,7 +129,8 @@ extra wiring that only kicks in on classifier refusal.
 Today, `convert-element` exits 1 on `unsupported-execute-process`
 and the genrule action fails. For the fallback, the genrule
 action must succeed even when classification refuses, but
-emit a placeholder pointing at the round-2 install_tree.tar.
+emit a placeholder BUILD that delegates to the round-2
+install_tree.tar.
 
 Implementation: a new `--unsupported-execute-process=fallback`
 flag on `convert-element`. When set:
@@ -137,15 +138,97 @@ flag on `convert-element`. When set:
 - Classifier's refusal path no longer returns Tier-1; instead
   `recoverExecuteProcess` returns a sentinel value the lowering
   reads.
-- `lower.ToIR` returns a *placeholder* `ir.Package` containing
-  alias rules for every cmake target the codemodel records,
-  each pointing at `:<elem>_install_tree.tar` (or the unpacked
-  contents thereof, depending on how the round-2 install
-  genrule lays out artifacts).
+- `lower.ToIR` returns a *placeholder* `ir.Package` whose shape
+  is described below — not raw aliases to a tar archive, but
+  per-target `cc_import` / `cc_library` / `sh_binary` / filegroup
+  rules referencing files extracted from the install_tree.
 - The genrule still writes `BUILD.bazel.out` and exits 0.
 - A sibling `failure.json` is still written so the orchestrator
   / audit can see that fallback fired (with the same per-call
   triage report Phase A emits).
+
+### Placeholder shape (per-target rules from install destinations)
+
+Aliasing every cmake target to the coarse `install_tree.tar`
+doesn't work — Bazel can't link a tar archive into a
+downstream `cc_binary`. Downstream consumers expect the same
+ergonomics native render gives them: `deps = [":thelib"]`
+should pull in linkable artifacts and headers.
+
+The codemodel records `Target.Install.Destinations[].Path` per
+target (relative to `Target.Install.Prefix.Path`) plus
+`Target.NameOnDisk` (the artifact filename). Combined, that's
+enough to reconstruct each target's path inside the
+install_tree without parsing tar contents at action time. The
+placeholder generator walks the codemodel exactly the way
+`lower.lowerTarget` does today, but emits per-target stub
+rules instead of full cc rules.
+
+Sketch of the generated BUILD shape:
+
+```python
+# One-time tar extract genrule. Outputs are enumerated from
+# Target.Install.Destinations + NameOnDisk, plus a header tree
+# under include/.
+genrule(
+    name = "<elem>_install_tree_extract",
+    srcs = ["//<elem-pkg>:install_tree.tar"],
+    outs = [
+        "tree/lib/libthelib.a",
+        "tree/include/thelib.h",
+        "tree/bin/thetool",
+        # ...one entry per (target, install destination) plus
+        # the headers the codemodel records as installed.
+    ],
+    cmd = "tar -C $(@D)/tree -xf $<",
+)
+
+# Per-target stub rules. Kind dispatch follows Target.Type:
+cc_import(
+    name = "thelib",                   # STATIC_LIBRARY
+    static_library = "tree/lib/libthelib.a",
+    hdrs = ["tree/include/thelib.h"],
+    visibility = ["//visibility:public"],
+)
+cc_import(
+    name = "shared_lib",               # SHARED_LIBRARY
+    shared_library = "tree/lib/libshared_lib.so",
+    hdrs = [...],
+)
+sh_binary(
+    name = "thetool",                  # EXECUTABLE
+    srcs = ["tree/bin/thetool"],
+)
+cc_library(
+    name = "headers_only",             # INTERFACE_LIBRARY
+    hdrs = [...],
+    includes = ["tree/include"],
+)
+```
+
+Targets without an `Install` block — utility, internal-only
+libraries, the project's private build artefacts — are
+**omitted** from the placeholder. Downstream consumers
+referencing such labels get a Bazel "label not found" error
+that's a clear signal: the target wasn't part of the install
+contract; either expose it via `install()` upstream or stop
+depending on it across the round-2 boundary.
+
+The codemodel also records `compileGroups[].includes[]` for
+each target, which `lower.lowerTarget` already walks for
+header discovery. The placeholder generator reuses that walk
+to populate `hdrs` on `cc_import` / `cc_library` rules from
+the installed `include/` tree, preserving the public-header
+contract.
+
+### Why not filegroups everywhere?
+
+A simpler shape — emit a `filegroup(srcs = ["tree/lib/libthelib.a"])`
+per target — wouldn't satisfy `cc_binary`'s `deps` interface
+(filegroups don't carry the `CcInfo` provider). `cc_import`
+gets the linkable `CcInfo` automatically. We use `filegroup`
+only for the few target types that don't fit any cc_* rule
+(custom-command outputs, runtime data, etc.).
 
 ## The kind-specific bits
 
@@ -154,13 +237,27 @@ kind-agnostic infra in `handler_pipeline_round2.go`):
 
 - **`cmakeSrckeyPatterns()`** — the file-glob set that gates
   what counts as content-included for srckey computation.
-  Proposed contents:
-  - `CMakeLists.txt`, `**/CMakeLists.txt`, `cmake/*.cmake`,
-    `cmake/*.cmake.in`, `**/*.cmake`, `**/*.cmake.in`
+  Contents (see the function's doc comment for the per-glob
+  rationale):
+  - `CMakeLists.txt`, `**/CMakeLists.txt`, `*.cmake`,
+    `**/*.cmake`, `*.cmake.in`, `**/*.cmake.in`
     (cmake-driven build commands).
-  - `**/*.h` family + `**/*.hpp` + `**/*.hh` (header changes
-    can shift include resolution, which surfaces in the
-    trace).
+  - `**/*.h` family + `**/*.hpp` + `**/*.hxx` + `**/*.hh`
+    (header changes can shift include resolution, which
+    surfaces in the trace).
+  - `CMakePresets.json` / `CMakeUserPresets.json`
+    (alternative configure entry points).
+  - **`.h.in` is path-only by default** — cmake reads them at
+    configure time (`RERUN_CMAKE` flags them) but the
+    configure_file lift in PR #94 makes them Bazel-srcs
+    covered, removing the need for srckey content-inclusion.
+    Elements without the lift staged surface undercoverage
+    drift in `audit-narrowing` (cmake oracle reports `.h.in`,
+    patterns don't cover); operators react by either staging
+    the lift OR adding a per-element `include **/*.h.in`
+    override to read-paths.txt. The audit's report is the
+    warning channel — there's no need for a bespoke
+    "did-you-mean-to-stage-the-lift" check.
   - Compile sources (`*.c` / `*.cc` / etc.) **path-only** —
     the trace records compile commands, not source bytes;
     edits to `.c` files don't change the trace's structure.

@@ -53,16 +53,23 @@ import "fmt"
 //     conditionals, which surface in compile commands the
 //     trace records (added/removed -I dirs, distinct
 //     dependency edges in ninja's deps DB).
-//   - **/*.h.in — header templates that configure_file
-//     substitutes at cmake configure time. The substituted
-//     .h sits under the build dir but the .h.in's content
-//     determines what gets emitted; edits change the build's
-//     compile commands by way of the substituted header
-//     consumers see. Per-element configure_file-lift exclude
-//     overrides this default for elements that have staged
-//     //tools:cmake-configure-file (see
-//     docs/design/narrowing-audit.md "*.h.in and the
-//     configure_file lift").
+//   - CMakePresets.json / CMakeUserPresets.json — alternative
+//     configure entry points; their content reshapes the
+//     configure command without going through CMakeLists.txt.
+//
+// **`.h.in` default is path-only.** cmake itself reads `.h.in`
+// at configure time (configure_file substitutes them), so the
+// `RERUN_CMAKE` oracle always flags them. The configure_file
+// lift in PR #94 makes `.h.in` Bazel-srcs covered, removing
+// the need for srckey content-inclusion. The kind default
+// reflects that steady state: `.h.in` is path-only by default;
+// elements without the lift staged surface undercoverage drift
+// in `audit-narrowing` (the cmake oracle reports `.h.in`, the
+// patterns don't cover it). Operators react by either staging
+// the configure_file lift OR adding a per-element
+// `include **/*.h.in` override to read-paths.txt. See
+// `docs/design/narrowing-audit.md` "*.h.in and the
+// configure_file lift" for the trade-off.
 //
 // Path-only (no rule) for: *.c / *.cc / *.cpp / *.cxx /
 // *.C / *.s / *.S — compile sources. The trace records the
@@ -83,7 +90,6 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 			{Include: true, Pattern: "*.cmake.in"},
 			{Include: true, Pattern: "**/*.cmake.in"},
 			{Include: true, Pattern: "**/*.h"},
-			{Include: true, Pattern: "**/*.h.in"},
 			{Include: true, Pattern: "**/*.hpp"},
 			{Include: true, Pattern: "**/*.hxx"},
 			{Include: true, Pattern: "**/*.hh"},
