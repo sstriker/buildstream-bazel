@@ -34,6 +34,31 @@ func TestProjectToSourceTree_FiltersStdlibAndBuildTree(t *testing.T) {
 	}
 }
 
+// TestProjectToSourceTree_BuildDirInsideSourceRoot covers the
+// in-tree build-dir layout (sourceRoot=/work, buildDir=/work/build).
+// Without an explicit buildDir-exclude pass, relative inputs like
+// CMakeCache.txt would resolve to /work/build/CMakeCache.txt, which
+// IS inside /work, and leak into the projected oracle as
+// "build/CMakeCache.txt" — a configure output, not a source.
+func TestProjectToSourceTree_BuildDirInsideSourceRoot(t *testing.T) {
+	inputs := []string{
+		// In-source absolute → keep.
+		"/work/src/main.c",
+		// Build-tree relative → drop (resolves to /work/build/CMakeCache.txt).
+		"CMakeCache.txt",
+		// Build-tree relative → drop.
+		"CMakeFiles/3.28.3/CMakeCCompiler.cmake",
+		// Build-tree absolute (the path that triggered the
+		// original leak): also drop.
+		"/work/build/CMakeFiles/cmake.check_cache",
+	}
+	got := ninja.ProjectToSourceTree(inputs, "/work", "/work/build")
+	want := []string{"src/main.c"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("in-tree-buildDir leak\nwant: %v\ngot:  %v", want, got)
+	}
+}
+
 func TestProjectToSourceTree_DedupesAndSorts(t *testing.T) {
 	inputs := []string{
 		"/work/b.txt",

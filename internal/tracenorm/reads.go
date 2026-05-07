@@ -18,10 +18,9 @@
 package tracenorm
 
 import (
-	"bufio"
+	"bytes"
 	"regexp"
 	"sort"
-	"strings"
 )
 
 // canonicalOpenatRE matches openat lines after CanonicalizeWith
@@ -47,23 +46,27 @@ var canonicalOpenatRE = regexp.MustCompile(`^openat\(AT_FDCWD, "((?:[^"\\]|\\.)*
 // This consumes a CANONICALIZED trace, not a raw one — the path
 // rewriting + filtering is done at canonicalize time so the AC
 // digest reflects the same view the audit step sees.
+//
+// Implementation note: walks via bytes.Split rather than
+// bufio.Scanner. Scanner's max-token-size cap (defaults 64K,
+// hard-capped at 1MiB even with a custom buffer) would silently
+// truncate pathologically long openat lines and under-report
+// the read set — exactly the failure mode this oracle exists
+// to catch. bytes.Split has no such cap.
 func ExtractReads(canonicalTrace []byte) []string {
 	if len(canonicalTrace) == 0 {
 		return nil
 	}
 	seen := map[string]struct{}{}
-	scanner := bufio.NewScanner(strings.NewReader(string(canonicalTrace)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "openat(") {
+	for _, line := range bytes.Split(canonicalTrace, []byte{'\n'}) {
+		if !bytes.HasPrefix(line, []byte("openat(")) {
 			continue
 		}
-		m := canonicalOpenatRE.FindStringSubmatch(line)
+		m := canonicalOpenatRE.FindSubmatch(line)
 		if m == nil {
 			continue
 		}
-		path := unquoteStrace(m[1])
+		path := unquoteStrace(string(m[1]))
 		if path == "" {
 			continue
 		}

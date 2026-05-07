@@ -99,11 +99,11 @@ func CanonicalizeWith(rawPath, outPath string, opts Options) error {
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		out, keep := c.line(scanner.Text())
+		lineOut, keep := c.line(scanner.Text())
 		if !keep {
 			continue
 		}
-		if _, err := io.WriteString(w, out+"\n"); err != nil {
+		if _, err := io.WriteString(w, lineOut+"\n"); err != nil {
 			return err
 		}
 	}

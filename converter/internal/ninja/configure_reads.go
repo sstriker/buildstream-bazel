@@ -7,10 +7,10 @@ import (
 )
 
 // ProjectToSourceTree filters a raw RERUN_CMAKE implicit-input list to the
-// paths that live inside sourceRoot. Relative paths in the input are
-// resolved against buildDir before the in-source check (cmake writes
-// build-tree paths like CMakeCache.txt and CMakeFiles/<ver>/CMakeCCompiler.cmake
-// relative to cmake_ninja_workdir).
+// paths that live inside sourceRoot AND outside buildDir. Relative paths in
+// the input are resolved against buildDir (cmake writes build-tree paths like
+// CMakeCache.txt and CMakeFiles/<ver>/CMakeCCompiler.cmake relative to
+// cmake_ninja_workdir).
 //
 // Output: source-relative slash-form paths, sorted lexicographically and
 // deduplicated. Empty input → nil.
@@ -21,6 +21,11 @@ import (
 //   - Relative paths that resolve into the build tree (CMakeCache.txt,
 //     CMakeFiles/<ver>/* — these are configure outputs, not source-tree
 //     inputs).
+//   - Absolute paths that resolve into buildDir, even when buildDir is
+//     itself nested inside sourceRoot (the typical out-of-source-but-
+//     within-the-repo build dir layout). Without this check, build-tree
+//     artifacts would pass the in-source-root test and leak into the
+//     oracle.
 //   - Paths that share sourceRoot's parent prefix only (`..` segments
 //     after Rel).
 //
@@ -48,6 +53,21 @@ func ProjectToSourceTree(inputs []string, sourceRoot, buildDir string) []string 
 		abs := p
 		if !filepath.IsAbs(abs) {
 			abs = filepath.Join(buildAbs, abs)
+		}
+		// Filter out anything that resolves into the build dir,
+		// regardless of whether buildDir is in or out of sourceRoot.
+		// Without this check, an in-tree build dir layout (e.g.
+		// sourceRoot=/work, buildDir=/work/build) would let
+		// CMakeCache.txt and friends pass the inside-sourceRoot
+		// test below as `build/CMakeCache.txt`.
+		if relBuild, err := filepath.Rel(buildAbs, abs); err == nil && insideRoot(relBuild) {
+			continue
+		}
+		// Edge: the buildDir itself (relBuild == ".") shouldn't
+		// be in an oracle either; insideRoot returns false for
+		// "." so we drop it here.
+		if abs == buildAbs {
+			continue
 		}
 		rel, err := filepath.Rel(srcAbs, abs)
 		if err != nil {

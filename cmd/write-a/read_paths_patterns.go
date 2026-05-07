@@ -72,9 +72,13 @@ func withCMakeListsRule(patterns *readPathsPatterns) *readPathsPatterns {
 }
 
 // loadReadPathsPatterns reads <bstPathWithoutSuffix>.read-paths.txt.
-// Returns (nil, nil) when the file is absent — that's the default
-// "entire tree real" case, distinct from a file present but
-// empty (which is technically a narrowing to zero matches).
+// Returns (nil, nil) when the file is absent. A file that's
+// present but empty (no rules, only comments / whitespace)
+// produces a Patterns with len(Rules) == 0, which Match treats
+// the same as nil — both signal "no narrowing applied;
+// applyReadPathsPatterns returns the entire universe as real.
+// To narrow to zero you'd need an `exclude **` rule, not an
+// empty file.
 //
 // Parsing delegates to internal/readpaths.Parse so the file
 // format is shared with cmd/audit-narrowing without duplicate
