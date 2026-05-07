@@ -41,7 +41,15 @@ transition cleanly.
     emits a sorted undercoverage report.
   - configure_file lift (`--cmake-configure-file-bin` on
     write-a) makes `*.h.in` safe to mark
-    `exclude **/*.h.in` in patterns when the lift is enabled.
+    `exclude **/*.h.in` in patterns for elements whose
+    templates lifted: with the full cmake-variable namespace
+    captured into the values JSON
+    (`cmakerun.filterVolatilePaths`), template edits that add
+    `@VAR@` markers resolve correctly through the Bazel-time
+    tool without convert-element rerunning. The
+    `cmake-codegen-lifted` tag distinguishes lifted vs legacy
+    genrules; legacy ones still have `.h.in` content-load-bearing
+    and shouldn't be excluded.
   
   Missing piece: actually run the audit somewhere. Two
   conversations to have before flipping the gate on:
@@ -104,22 +112,30 @@ transition cleanly.
 ## Done (high points)
 
 - **Configure_file lift.** Per-element `*.h.in` templates are
-  no longer load-bearing inputs of convert-element's cache key.
-  Convert-element captures the cmake variable values cmake had
-  at configure time by reverse-extracting them from the
-  rendered output (`internal/configurefile.Extract`); the
-  recovered genrule emits with the .h.in as a real Bazel
-  `srcs` input plus a `//tools:cmake-configure-file` invocation
-  that re-runs cmake's substitution at Bazel build time.
-  Edits to .h.in invalidate the genrule directly through
-  Bazel's source graph; convert-element doesn't have to
-  rerun. Opt-in via `write-a --cmake-configure-file-bin=<path>`
-  (the binary gets staged into both projects' `tools/` and
-  the per-element genrule passes `--lift-configure-file=true`
-  to convert-element). Templates the v1 Extract can't recover
-  values for fall back to the legacy base64-cmd shape;
-  `cmake-codegen-lifted` tag distinguishes the two at query
-  time. Recipe: `docs/design/narrowing-audit.md`.
+  no longer load-bearing inputs of convert-element's cache key
+  for elements whose templates lift. Convert-element captures
+  the FULL cmake variable namespace at end-of-configure
+  (`cmakerun/dump-vars.cmake` registers a deferred callback
+  that dumps every variable; `cmakerun.filterVolatilePaths`
+  drops path-bearing vars so the dump is byte-stable across
+  cmake invocations). The recovered genrule emits with the
+  .h.in as a real Bazel `srcs` input plus a
+  `//tools:cmake-configure-file` invocation that re-runs
+  cmake's substitution at Bazel build time. Edits to .h.in
+  — including ones that introduce new `@VAR@` markers —
+  invalidate the genrule directly through Bazel's source graph
+  and resolve correctly via the namespace dump; convert-
+  element doesn't have to rerun. Opt-in via `write-a
+  --cmake-configure-file-bin=<path>` (the binary gets staged
+  into both projects' `tools/` and the per-element genrule
+  passes `--lift-configure-file=true` to convert-element).
+  Templates the verify-pass can't reproduce (Substitute hasn't
+  modeled an option, or the template references a filtered
+  volatile variable) fall back to the legacy base64-cmd shape;
+  for those, .h.in stays content-load-bearing in srckey. The
+  `cmake-codegen-lifted` tag distinguishes lifted vs legacy
+  genrules at query time. Recipe:
+  `docs/design/narrowing-audit.md`.
 - **Narrowing-undercoverage audit.** cmake oracle from
   build.ninja's `RERUN_CMAKE` deps + trace oracle from
   build-tracer's openat capture (opt-in via `--source-root`)

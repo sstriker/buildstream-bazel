@@ -85,17 +85,31 @@ type Options struct {
 	TraceRaw []byte
 
 	// LiftConfigureFile toggles the configure_file recovery's
-	// lifted shape. When true (and Extract recovers a values
-	// dict that round-trips to cmake's rendered output), the
-	// emitted genrule has the .h.in template as a real srcs
-	// input and invokes //tools:cmake-configure-file at Bazel
-	// build time. When false (the default — preserves
-	// pre-lift behaviour for callers that don't yet stage the
-	// tool), the legacy base64-of-rendered-bytes cmd shape is
-	// always emitted regardless of Extract's outcome. See
+	// lifted shape. When true (and a values namespace is
+	// available — either via CMakeVars below or via per-template
+	// Extract recovery), the emitted genrule has the .h.in
+	// template as a real srcs input and invokes
+	// //tools:cmake-configure-file at Bazel build time. When
+	// false (the default — preserves pre-lift behaviour for
+	// callers that don't yet stage the tool), the legacy
+	// base64-of-rendered-bytes cmd shape is always emitted. See
 	// internal/configurefile package doc for the full lift
 	// rationale + cache-key analysis.
 	LiftConfigureFile bool
+
+	// CMakeVars is the full cmake variable namespace captured
+	// at end of configure (cmakerun.Reply.Vars). Used by the
+	// configure_file lift as the values map for the lifted
+	// genrule's Substitute, replacing per-template Extract.
+	// With every cmake variable in hand, .h.in edits that
+	// introduce new @VAR@/${VAR} markers always resolve
+	// correctly without convert-element rerunning — closes the
+	// soundness gap the per-template Extract had. Empty (e.g.
+	// offline --reply-dir tests, or a configure that fatal-
+	// erred before the dump-vars hook fired) falls back to
+	// Extract per-template; if Extract also fails the lift
+	// falls back to legacy.
+	CMakeVars map[string]string
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -210,13 +224,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var configureFiles []configureFileOut
 	if traceDecoded {
 		var err error
-		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, cc)
+		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		var err error
-		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, hostSrc, opts.BuildDir, cmakeSrc, cmakeBuild, opts.LiftConfigureFile, cc)
+		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, hostSrc, opts.BuildDir, cmakeSrc, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
 		if err != nil {
 			return nil, err
 		}

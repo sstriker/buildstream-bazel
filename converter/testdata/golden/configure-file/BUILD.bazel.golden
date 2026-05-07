@@ -18,7 +18,7 @@ genrule(
     name = "gen_config_h",
     srcs = ["src/config.h.in"],
     outs = ["config.h"],
-    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo eyJDRkdMSUJfVkVSU0lPTl9NQUpPUiI6IjEiLCJDRkdMSUJfVkVSU0lPTl9NSU5PUiI6IjIifQ== | base64 -d > \"$$VALUES\" && $(execpath //tools:cmake-configure-file) --at-only --values=\"$$VALUES\" \"$(execpath src/config.h.in)\" \"$@\" ; rc=$$?; rm -f \"$$VALUES\"; exit $$rc",
+    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo eyJDRkdMSUJfVkVSU0lPTl9NQUpPUiI6IjEiLCJDRkdMSUJfVkVSU0lPTl9NSU5PUiI6IjIifQ== | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --at-only --values=\"$$VALUES\" \"$(location src/config.h.in)\" \"$@\" ; rc=$$?; rm -f \"$$VALUES\"; exit $$rc",
     tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",

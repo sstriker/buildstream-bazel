@@ -61,6 +61,7 @@ func run(a cli.Args) error {
 	replyDir := a.ReplyDir
 	var ninjaPath string
 	var hostBuildDir string
+	var cmakeVars map[string]string
 	if replyDir == "" {
 		ctx := context.Background()
 
@@ -100,6 +101,7 @@ func run(a cli.Args) error {
 			return failure.New(failure.ConfigureFailed, "%v", err)
 		}
 		replyDir = reply.Path
+		cmakeVars = reply.Vars
 		ninjaPath = filepath.Join(buildDir, "build.ninja")
 	} else {
 		// Offline path: a build.ninja is sometimes checked in alongside the
@@ -198,6 +200,7 @@ func run(a cli.Args) error {
 		CTest:             testRegistry,
 		TraceRaw:          traceRaw,
 		LiftConfigureFile: a.LiftConfigureFile,
+		CMakeVars:         cmakeVars,
 	})
 	if err != nil {
 		return err

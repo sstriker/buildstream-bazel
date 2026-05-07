@@ -46,14 +46,14 @@ type configureFileOut struct {
 // or no configure_file events are recorded — preserves the
 // pre-trace behavior for offline runs without a stashed
 // fixture.
-func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, liftEnabled bool, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(traceRaw) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
 	if hostSrcDir == "" {
 		hostSrcDir = recordedSrcDir
 	}
-	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cc)
+	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
 }
 
 // recoverConfigureFilesFromCalls is the same logic as
@@ -62,7 +62,7 @@ func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSr
 // trace is parsed once total across all extractors (including
 // the configure_file recovery), instead of one pass per
 // extractor.
-func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -105,7 +105,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		}
 
 		name := configureFileGenruleName(rel)
-		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled)
+		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -125,15 +125,31 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 //
 //   - The template input path resolves to a readable file
 //     inside the source root, AND
-//   - configurefile.Extract recovers a values dict that
-//     round-trips to the rendered output byte-for-byte.
+//   - A values namespace is available (cmakeVars from
+//     cmakerun's dump-vars hook, OR — for offline/fixture runs
+//     where the dump isn't available — configurefile.Extract
+//     recovers the per-template values dict), AND
+//   - The verify-pass `Substitute(template, values, opts) ==
+//     rendered` succeeds (catches any unmodeled option's byte
+//     divergence; for the cmakeVars path this is the soundness
+//     gate against future cmake additions we haven't taught
+//     Substitute about).
 //
 // Falls back to the legacy shape otherwise — soundness is
 // preserved (the .h.in stays load-bearing in srckey via the
 // existing read-paths.txt narrowing); the audit tool's
 // undercoverage report continues to flag those .h.in paths
 // until the templating shape is supported.
-func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool) ir.Target {
+//
+// cmakeVars vs Extract: Extract recovers ONLY the variables
+// the current template references; if the user later edits
+// .h.in to add a new @VAR@, Extract's values are stale and
+// the lifted genrule renders empty for the new marker. The
+// cmakeVars path captures the FULL cmake variable namespace
+// at configure time, so any marker the user later adds
+// resolves correctly through the Bazel-time tool — closing
+// the soundness gap PR #94 review identified.
+func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string) ir.Target {
 	legacy := ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
@@ -146,20 +162,6 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if !liftEnabled || hostSrcDir == "" || recordedSrcDir == "" {
 		return legacy
 	}
-	// Parse all documented configure_file options into the
-	// configurefile.Options struct. FILE_PERMISSIONS /
-	// USE_SOURCE_PERMISSIONS / NO_SOURCE_PERMISSIONS only
-	// affect the output's mode bits — Bazel's genrule sets its
-	// own mode and config.h-style files don't depend on it for
-	// compilation, so we ignore them here. Anything else that's
-	// content-affecting and unmodeled (e.g., a future cmake
-	// option we haven't seen) gets caught by Extract's
-	// verify-pass: Substitute(template, values, opts) is run
-	// against the recovered values and byte-compared against
-	// cmake's rendered output; any drift fails the verify and
-	// the caller falls back to legacy. Net: we model the
-	// documented set explicitly and let the verify-pass be the
-	// safety net for the unknown.
 	opts, optErr := configureFileOptionsFromCall(call.Options)
 	if optErr != nil {
 		return legacy
@@ -172,8 +174,8 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if err != nil {
 		return legacy
 	}
-	values, err := configurefile.Extract(templateBody, rendered, opts)
-	if err != nil {
+	values, ok := pickValues(templateBody, rendered, opts, cmakeVars)
+	if !ok {
 		return legacy
 	}
 	cmd, err := configureFileLiftedCmd(inRel, outRel, values, opts)
@@ -190,6 +192,38 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 		Tags:         append(configureFileTags(), "cmake-codegen-lifted"),
 		Visibility:   []string{"//visibility:private"},
 	}
+}
+
+// pickValues chooses the values map the lifted genrule's
+// Substitute will run against. Prefers the full cmake namespace
+// (cmakeVars from dump-vars.cmake) since that resolves any
+// @VAR@ the user later adds to the template; falls back to
+// per-template Extract when the dump isn't available (offline
+// fixtures); falls back to "no lift" when neither produces a
+// values map that round-trips to cmake's rendered output.
+//
+// Returns (values, true) on success, (nil, false) on giving up.
+// The verify-pass — running Substitute against the chosen
+// values and byte-comparing against rendered — is what makes
+// the cmakeVars path safe even when Substitute hasn't modeled
+// every cmake configure_file option yet: divergence fails the
+// pass and we drop back to legacy.
+func pickValues(templateBody, rendered []byte, opts configurefile.Options, cmakeVars map[string]string) (map[string]string, bool) {
+	if len(cmakeVars) > 0 {
+		got := configurefile.Substitute(templateBody, cmakeVars, opts)
+		if string(got) == string(rendered) {
+			return cmakeVars, true
+		}
+		// Verify-pass failed — Substitute doesn't model some
+		// option this call uses, OR cmakeVars is somehow
+		// stale relative to the configure run that produced
+		// `rendered`. Fall through to Extract.
+	}
+	values, err := configurefile.Extract(templateBody, rendered, opts)
+	if err != nil {
+		return nil, false
+	}
+	return values, true
 }
 
 // resolveTemplatePath converts the trace's recorded template
@@ -337,8 +371,11 @@ func configureFileLegacyCmd(rel string, body []byte) string {
 // through srcs, not through BUILD.bazel content.
 //
 // Values are base64'd JSON to avoid shell-quoting concerns;
-// the JSON is small (one entry per cmake variable the
-// template references) so this stays compact.
+// when the cmakeVars-fed full-namespace path is used the JSON
+// is roughly the size of `cmake -E environment` output (a few
+// KB to tens of KB depending on project breadth). Even then it
+// stays much smaller than the rendered config.h's worth of
+// bytes the legacy shape embedded.
 func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts configurefile.Options) (string, error) {
 	body, err := json.Marshal(values)
 	if err != nil {
@@ -346,22 +383,23 @@ func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts
 	}
 	encoded := base64.StdEncoding.EncodeToString(body)
 	flags := configureFileToolFlags(opts)
-	// $(execpath) resolves srcs labels relative to exec root;
-	// $@ is the genrule output. The values tmpfile is created
-	// under the genrule's output dir (via a portable mktemp
-	// template, since `mktemp -p` is GNU-only and BSD/macOS
-	// mktemp doesn't accept it), so it lives in the action's
-	// sandbox rather than /tmp — keeps shared executors clean
-	// and lets Bazel's per-action sandbox cleanup pick it up
-	// if the trap doesn't fire (e.g. SIGKILL). All `$@`
-	// expansions are double-quoted to handle output paths
-	// containing spaces. The trailing rm + explicit
-	// exit-code preservation handles the normal-exit case.
+	// $(location ...) resolves srcs and tools labels (matches
+	// the existing genrule cmds elsewhere in the repo). $@ is
+	// the genrule output. The values tmpfile is created under
+	// the genrule's output dir (via a portable mktemp template
+	// — `mktemp -p` is GNU-only and BSD/macOS mktemp doesn't
+	// accept it), so it lives in the action's sandbox rather
+	// than /tmp — keeps shared executors clean and lets
+	// Bazel's per-action sandbox cleanup pick it up if the
+	// trap doesn't fire (e.g. SIGKILL). All `$@` expansions
+	// are double-quoted to handle output paths containing
+	// spaces. The trailing rm + explicit exit-code preservation
+	// handles the normal-exit case.
 	return fmt.Sprintf(
 		`mkdir -p "$$(dirname "$@")" && `+
 			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 			`echo %s | base64 -d > "$$VALUES" && `+
-			`$(execpath //tools:cmake-configure-file) %s--values="$$VALUES" "$(execpath %s)" "$@" ; `+
+			`$(location //tools:cmake-configure-file) %s--values="$$VALUES" "$(location %s)" "$@" ; `+
 			`rc=$$?; rm -f "$$VALUES"; exit $$rc`,
 		encoded, flags, inRel,
 	), nil

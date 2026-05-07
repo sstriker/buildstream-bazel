@@ -35,22 +35,26 @@
 //
 //   - @VAR@ → values["VAR"], or empty if absent.
 //   - ${VAR} → same, unless AtOnly is set.
-//   - Recursive expansion: substitution loops up to RecursionLimit
-//     iterations or until fixpoint, matching cmake's bounded
-//     re-expansion of values that themselves contain markers.
+//   - Recursive expansion: Substitute loops until fixpoint or
+//     until an internal depth cap (matching cmake's bounded
+//     re-expansion of values that themselves contain markers).
 //   - #cmakedefine FOO → "#define FOO" if FOO is truthy in
 //     values, "/* #undef FOO */" otherwise.
 //   - #cmakedefine FOO <content> → "#define FOO <expanded
 //     content>" if FOO is truthy, "/* #undef FOO */" otherwise.
 //   - #cmakedefine01 FOO → "#define FOO 1" or "#define FOO 0".
-//   - CopyOnly: emit the template verbatim with no substitution
-//     (mirrors COPYONLY).
+//   - CopyOnly: emit the template verbatim with no @VAR@ /
+//     ${VAR} / #cmakedefine substitution (mirrors COPYONLY).
+//     EscapeQuotes is also a no-op when CopyOnly is set (no
+//     substituted bytes to escape); NewlineStyle is still
+//     honored — cmake re-emits line terminators per the
+//     NEWLINE_STYLE choice even with COPYONLY.
 //   - EscapeQuotes: backslash-escape `"` in expanded values
 //     (mirrors ESCAPE_QUOTES).
 //   - NewlineStyle: control the line terminator written between
 //     lines — LF for UNIX/LF and CRLF for DOS/WIN32/CRLF (mirrors
-//     NEWLINE_STYLE). Default empty preserves the template's
-//     original terminator.
+//     NEWLINE_STYLE). NewlineDefault preserves the template's
+//     original terminator (auto-detected from the first newline).
 //
 // Truthiness per cmake's if(): empty string and the constants
 // 0, OFF, NO, FALSE, N, IGNORE, NOTFOUND, and any value ending
@@ -92,12 +96,13 @@ type Options struct {
 	// replaced. Mirrors configure_file's @ONLY flag.
 	AtOnly bool
 
-	// CopyOnly skips ALL substitution (@VAR@, ${VAR}, and
-	// #cmakedefine* directives) — output is the template
-	// verbatim. Mirrors configure_file's COPYONLY flag.
-	// Combined with EscapeQuotes / NewlineStyle? cmake errors
-	// on COPYONLY + ESCAPE_QUOTES; we match by ignoring the
-	// other knobs when CopyOnly is set.
+	// CopyOnly skips @VAR@ / ${VAR} / #cmakedefine
+	// substitution — content bytes are emitted verbatim.
+	// Mirrors configure_file's COPYONLY flag. EscapeQuotes is
+	// effectively a no-op alongside CopyOnly (no substituted
+	// bytes to escape), but NewlineStyle is still honored
+	// because cmake itself re-emits line terminators per
+	// NEWLINE_STYLE even with COPYONLY.
 	CopyOnly bool
 
 	// EscapeQuotes backslash-escapes `"` in @VAR@ / ${VAR}

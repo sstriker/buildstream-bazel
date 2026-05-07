@@ -18,24 +18,27 @@
 //	    name = "gen_config_h",
 //	    srcs = ["src/config.h.in"],
 //	    outs = ["config.h"],
-//	    cmd  = "mkdir -p $$(dirname $@) && "
-//	           "VALUES=$$(mktemp -p $$(dirname $@) ...) && "
-//	           "echo <base64-of-values-json> | base64 -d > $$VALUES && "
-//	           "$(execpath //tools:cmake-configure-file) [--at-only] "
-//	           "--values=$$VALUES $(execpath src/config.h.in) $@ ; "
-//	           "rc=$$?; rm -f $$VALUES; exit $$rc",
+//	    cmd  = "mkdir -p \"$$(dirname \"$@\")\" && "
+//	           "VALUES=\"$$(mktemp \"$$(dirname \"$@\")/...XXXXXX\")\" && "
+//	           "echo <base64-of-values-json> | base64 -d > \"$$VALUES\" && "
+//	           "$(location //tools:cmake-configure-file) [--at-only] "
+//	           "--values=\"$$VALUES\" \"$(location src/config.h.in)\" \"$@\" ; "
+//	           "rc=$$?; rm -f \"$$VALUES\"; exit $$rc",
 //	    tools = ["//tools:cmake-configure-file"],
 //	)
 //
 // .h.in lives in srcs (Bazel invalidates the genrule directly
-// on edit). The values JSON is inlined into the cmd as a small
-// base64 blob (typically a few hundred bytes — one entry per
-// variable the template references) — much smaller than the
-// rendered output it replaces, AND independent of .h.in
-// content. .h.in becomes name-only for srckey purposes;
-// convert-element only reruns when the values blob changes,
-// which already requires a CMakeLists.txt edit (already in
-// srckey content-include).
+// on edit). The values JSON is inlined into the cmd as a base64
+// blob containing the FULL cmake variable namespace at configure
+// time (a few KB to tens of KB) so any @VAR@/${VAR}/#cmakedefine
+// the user later adds to the template resolves correctly without
+// convert-element rerunning. Smaller than embedding the full
+// rendered output AND independent of .h.in content; .h.in
+// becomes safely name-only for srckey purposes. Volatile path-
+// bearing variables are filtered before the values JSON is
+// emitted (see cmakerun.filterVolatilePaths) so BUILD.bazel
+// stays byte-stable across cmake invocations against the same
+// source tree.
 //
 // We could move the values to a separate sidecar file (with
 // `srcs = [".h.in", ":gen_*_values"]`); the inline form keeps

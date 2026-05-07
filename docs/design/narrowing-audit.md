@@ -245,14 +245,51 @@ declared it doesn't need to be in srckey content). Because
 the lift makes that affirmation correct, the exclude is
 sound rather than aspirational.
 
-For templates the v1 Extract can't recover values for (ambiguous
-templates, multi-line `#cmakedefine` content, etc.), lower falls
-back to the legacy base64-cmd shape. Those `.h.in` files DO
-remain content-load-bearing; don't add them to the exclude
-list. The render-time tag `cmake-codegen-lifted` distinguishes
-the two shapes — operators can `bazel query
+### Soundness across template edits
+
+The "safe to exclude" claim relies on the lifted genrule's
+substitution tool having access to whatever cmake variable
+the template references — even ones the user adds in a
+later edit without rerunning convert-element. With the
+**full-namespace values dump** (see
+`converter/internal/cmakerun/dump-vars.cmake`) every cmake
+variable observed at configure time is captured into the
+values JSON, so a `.h.in` edit that adds `@SOMETHING_NEW@`
+resolves correctly through the Bazel-time tool as long as
+`SOMETHING_NEW` was defined in cmake's namespace at the
+captured configure run.
+
+The volatile path-bearing variables (`*_BINARY_DIR`,
+`CMAKE_PROJECT_TOP_LEVEL_INCLUDES`, etc.) are filtered out
+of the dump (see `cmakerun.filterVolatilePaths`) so the
+values JSON is byte-stable across cmake reinvocations of
+the same source tree; the Bazel-time tool's verify-pass
+catches the rare case where a template references a filtered
+variable, and the converter falls back to the legacy
+base64-cmd shape — soundness preserved.
+
+### When the lift falls back to legacy
+
+Some `.h.in` calls don't lift, even with the flag enabled:
+
+- Offline/`--reply-dir` test paths where no cmake invocation
+  ran, so no values dump exists. The per-template
+  `configurefile.Extract` path takes over — recovers values
+  from the rendered output. Sound for the templates the
+  fixture captured against, but adds no protection if the
+  template later mutates.
+- Live runs where the verify-pass `Substitute(template, values,
+  opts) != rendered` (an option Substitute hasn't modeled, or
+  a value the dump's volatility filter dropped that the
+  template references). The converter emits the legacy
+  base64-cmd shape; `.h.in` stays load-bearing in srckey.
+
+The render-time tag `cmake-codegen-lifted` distinguishes the
+two shapes — operators can `bazel query
 'attr("tags", "cmake-codegen-lifted", //...)'` to see which
-templates are lifted.
+templates are lifted. Don't add `exclude **/*.h.in` for
+elements with non-lifted templates; the audit will continue
+to flag those as undercoverage drift, correctly.
 
 ## Files of interest
 
