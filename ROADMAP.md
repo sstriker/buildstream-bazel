@@ -29,6 +29,25 @@ transition cleanly.
 
 ## Next
 
+- **Lift `configure_file` out of convert-element's cache key.**
+  Today `lower/configure_file.go` reads cmake's already-rendered
+  `config.h` bytes from the build dir and base64-embeds them in
+  the recovered genrule's `cmd`. The `*.h.in` template's content
+  therefore drives the BUILD.bazel bytes, forcing it into
+  convert-element's srckey — a soundness requirement that the
+  forthcoming narrowing-undercoverage warning (cmake configure-
+  reads oracle) flags as load-bearing for `*.h.in`. Real fix:
+  emit a `cmake-configure-file` tool (substitution rules per
+  cmake docs: `@VAR@` / `${VAR}` / `#cmakedefine` /
+  `#cmakedefine01` / recursive expansion) plus a values sidecar
+  carrying the resolved cmake variables; the genrule consumes
+  `*.h.in` as `srcs` and the values as a separate input. After
+  the lift `*.h.in` becomes name-only for srckey purposes; only
+  variable-set changes (which all flow from CMakeLists.txt
+  edits, already in srckey) re-trigger convert-element. Same
+  shape applies to `file(GENERATE)` and any
+  `add_custom_command` whose COMMAND is a cmake builtin —
+  follow-up sweep.
 - **kind:meson** native render. Meson exposes
   `meson introspect --targets`, which is closer to cmake's File API
   than autotools' "you have to actually run it" introspection. The
