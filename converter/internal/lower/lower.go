@@ -90,11 +90,16 @@ type Options struct {
 	// classifier refusals (stamp / probe / unknown buckets)
 	// produce a typed unsupported-execute-process Tier-1
 	// failure. When true, refusals don't error; ToIR returns
-	// a placeholder ir.Package whose targets delegate to the
-	// element's round-2 install_tree.tar via per-target stub
-	// rules (cc_import / sh_binary / cc_library)
-	// reconstructed from the codemodel's
-	// Target.Install.Destinations. See
+	// a placeholder ir.Package whose targets are **empty
+	// cc_library / cc_binary / cc_library-interface stubs**
+	// (one per non-UTILITY codemodel target, public
+	// visibility) so downstream label references still
+	// resolve at analysis time. The per-target artifact
+	// wiring (cc_import / sh_binary referencing install_tree.tar
+	// paths reconstructed from Target.Install.Destinations
+	// + NameOnDisk) lands in Step 2.5 — until then,
+	// downstream consumers' compile/link actions against the
+	// stubs fail. See
 	// docs/design/cmake-execute-process-round2-fallback.md
 	// for the architectural shape.
 	UnsupportedExecuteProcessFallback bool
@@ -247,11 +252,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	//     projects with several offending calls get one
 	//     triage report rather than N converter runs
 	//     uncovering them one at a time.
-	//   - on (Phase B fallback): the refusals are surfaced
-	//     to the caller via the placeholder ir.Package
-	//     (handled below alongside the codemodel walk so
-	//     placeholder targets can reuse Target.Install
-	//     destinations from the codemodel).
+	//   - on (Phase B fallback): emitFallbackPlaceholder
+	//     enumerates every non-UTILITY codemodel target as
+	//     an empty cc_library / cc_binary / cc_library-
+	//     interface stub so downstream label references
+	//     resolve at analysis time. Step 2.5 (PR #98)
+	//     extends the placeholder to wire those stubs to
+	//     Target.Install.Destinations via cc_import /
+	//     sh_binary; this PR (Step 2) only delivers the
+	//     analysis-time label-resolution shape.
 	//
 	// Liftable buckets always append to cc.Genrules +
 	// cc.OutToGenrule before lowerTarget runs so consumer

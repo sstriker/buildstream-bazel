@@ -55,8 +55,15 @@ type executeProcessOut struct {
 //     every call's location, bucket, reason and argv.
 //   - Phase B fallback (UnsupportedExecuteProcessFallback on):
 //     ToIR ignores the refusals as errors and emits a
-//     placeholder ir.Package whose targets delegate to the
-//     element's round-2 install_tree.tar.
+//     placeholder ir.Package whose targets are empty
+//     cc_library / cc_binary / cc_library-interface stubs at
+//     this stage (Step 2 / PR #97), one per non-UTILITY
+//     codemodel target with public visibility, so downstream
+//     label references resolve at analysis time. Step 2.5
+//     (PR #98) extends the placeholder to wire those stubs
+//     to install_tree.tar via per-target cc_import / sh_binary
+//     reconstructed from Target.Install.Destinations +
+//     NameOnDisk.
 //
 // Returning structured data here keeps the per-call detail
 // available for either disposition. Callers that don't care

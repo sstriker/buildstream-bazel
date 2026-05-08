@@ -9,23 +9,33 @@ import (
 // emitFallbackPlaceholder builds the placeholder ir.Package
 // returned by ToIR when Phase B's
 // UnsupportedExecuteProcessFallback flag is on and the
-// classifier produced refusals. The placeholder enumerates
-// every non-UTILITY codemodel target as an empty per-target
-// stub — same Kind dispatch as native render
-// (lowerTarget), same public visibility, but no srcs / hdrs
-// / copts / deps so the BUILD analyzes cleanly without
-// committing to artifact paths.
+// classifier produced refusals. At this stage (Step 2 / PR
+// #97), the placeholder enumerates every non-UTILITY codemodel
+// target as an **empty** per-target stub — same Kind dispatch
+// as native render (lowerTarget), same public visibility, but
+// no srcs / hdrs / copts / deps. The BUILD analyzes cleanly,
+// so downstream label references like `:thelib` / `:thetool`
+// resolve, but compile/link actions against the stubs fail
+// because nothing on the rule body claims an artifact path.
 //
-// The intent is "labels resolve at analysis time so downstream
-// consumers see :thelib / :thetool / etc." even though the
-// rules are empty bodies. Step 2.5 (queued behind IR support
-// for cc_import.static_library / .shared_library) wires the
-// stubs to the round-2 install_tree.tar's per-target paths
-// derived from Target.Install.Destinations + NameOnDisk —
-// after which downstream consumers' compile actions can pull
-// linkable artifacts through the placeholder. For Step 2 the
-// stubs are deliberately load-bearing only at the
-// label-resolution layer; the artifact-wiring follow-on is
+// Artifact wiring is the next step. Step 2.5 (queued behind IR
+// support for cc_import.static_library / .shared_library)
+// extends emitFallbackPlaceholder to:
+//
+//   - dispatch STATIC_LIBRARY / SHARED_LIBRARY → cc_import
+//     with `static_library` / `shared_library` pointing at
+//     install_tree.tar paths derived from
+//     Target.Install.Destinations + Target.NameOnDisk;
+//   - dispatch EXECUTABLE → sh_binary with srcs at the same
+//     install_tree.tar paths;
+//   - leave INTERFACE_LIBRARY as cc_library hdrs-only;
+//   - emit a sister extract genrule that untars
+//     install_tree.tar into the paths the stubs reference.
+//
+// After Step 2.5, downstream consumers' compile/link actions
+// pull real artifacts through the placeholder. For Step 2
+// the stubs are deliberately load-bearing only at the
+// label-resolution layer; the artifact wiring follow-on is
 // queued in docs/design/cmake-execute-process-round2-fallback.md
 // "Staged implementation."
 //
@@ -46,13 +56,17 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 	for _, tref := range cfg.Targets {
 		t, ok := r.Targets[tref.Id]
 		if !ok {
-			// Same defensive check as ToIR's main walk; skip
-			// silently rather than turning a placeholder
-			// emission into a Tier-2 failure. A dangling target
-			// ref is a real bug, but in fallback mode the goal
-			// is "produce something analyzable"; the fully-
-			// converted path's stricter validation catches the
-			// bug there.
+			// Native render's main walk returns FileAPIMalformed
+			// here; the fallback intentionally relaxes that to
+			// a silent skip. The goal in fallback mode is "emit
+			// the largest set of resolvable labels we can", and
+			// turning a single dangling ref into a Tier-2 failure
+			// would lose every other target on the same
+			// codemodel — defeating the whole point of the
+			// placeholder. The same dangling ref still surfaces
+			// loudly the moment the operator drops the fallback
+			// flag and re-runs against the same reply (where the
+			// stricter native walk takes over).
 			continue
 		}
 		if t.IsGeneratorProvided {
@@ -81,10 +95,18 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			stub.Kind = ir.KindCCInterface
 		default:
 			// UTILITY targets (add_custom_target / dependency
-			// grouping) and unknown types: skip. Native render
-			// already filters UTILITY; we mirror that here so
-			// the placeholder doesn't introduce labels native
-			// render wouldn't have emitted.
+			// grouping) have no Bazel equivalent — both native
+			// render and the fallback skip them. Other unknown
+			// types (target shapes the codemodel adds in newer
+			// cmake versions before lower.go grows a case)
+			// also fall here. Native render returns
+			// UnsupportedTargetType for those; the fallback
+			// instead silently drops them so the rest of the
+			// codemodel's labels still resolve. Trade-off: an
+			// element that depends on the dropped label fails
+			// loudly at consumer build time rather than at
+			// analysis. Operators who need analysis-time
+			// strictness drop the fallback flag and rerun.
 			continue
 		}
 		pkg.Targets = append(pkg.Targets, stub)
