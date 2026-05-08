@@ -5,9 +5,11 @@ load("@rules_cc//cc:defs.bzl", "cc_library")
 cc_library(
     name = "thelib",
     srcs = ["src/lib.c"],
+    hdrs = ["generated.h"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
     linkstatic = True,
+    tags = ["has-cmake-codegen"],
 )
 
 genrule(

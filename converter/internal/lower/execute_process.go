@@ -28,6 +28,19 @@ func isExistingDir(p string) bool {
 	return info.IsDir()
 }
 
+// executeProcessOut is one recovered execute_process output:
+// the build-dir-relative path the genrule writes the file at.
+// lowerTarget walks this list (sister to configureFileOut) and
+// attaches matching outputs to consuming targets via the same
+// build-dir-include match that configure_file uses, so a target
+// that target_include_directories'd
+// `${CMAKE_CURRENT_BINARY_DIR}` and `#include`s a header an
+// `execute_process(... OUTPUT_FILE generated.h)` call produces
+// gets a real Bazel dep edge to the recovered genrule.
+type executeProcessOut struct {
+	RelOutput string
+}
+
 // recoverExecuteProcess walks the trace's execute_process
 // calls, classifies each into a Bucket, and either emits a
 // Bazel genrule for the liftable buckets (cmake-e,
@@ -44,22 +57,30 @@ func isExistingDir(p string) bool {
 //
 // Liftable buckets append to cc.Genrules (one ir.Target per
 // recovered call) and register the output path in
-// cc.OutToGenrule so consumer attribution can attach the
-// generated artifact to any cc target whose Includes cover the
-// build-dir output. Unliftable buckets — and lift attempts
-// that fail their own preconditions (e.g. cmake -E copy with
-// an unresolvable input path) — fall through to the refusal
-// aggregator.
-func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, cc *codegenContext) error {
+// cc.OutToGenrule. The returned []executeProcessOut slice gives
+// lowerTarget the per-call output rels needed for consumer
+// attribution (target hdrs / srcs depending on extension), the
+// same way configureFileOut does for configure_file. Unliftable
+// buckets — and lift attempts that fail their own preconditions
+// (e.g. cmake -E copy with an unresolvable input path) — fall
+// through to the refusal aggregator.
+func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]executeProcessOut, error) {
 	if len(calls) == 0 {
-		return nil
+		return nil, nil
 	}
 	var unsupported []executeProcessRefusal
+	var outs []executeProcessOut
+	collect := func(rels []string) {
+		for _, rel := range rels {
+			outs = append(outs, executeProcessOut{RelOutput: rel})
+		}
+	}
 	for _, call := range calls {
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
-			if reason, ok := liftCMakeE(call, v, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, cc); !ok {
+			rels, reason, ok := liftCMakeE(call, v, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+			if !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
 					File:   call.File,
 					Line:   call.Line,
@@ -67,9 +88,12 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					Reason: reason,
 					Argv:   formatExecuteProcessArgv(call),
 				})
+				continue
 			}
+			collect(rels)
 		case BucketFileProducing:
-			if reason, ok := liftFileProducing(call, hostSrcDir, recordedSrcDir, recordedBuildDir, cc); !ok {
+			rels, reason, ok := liftFileProducing(call, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+			if !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
 					File:   call.File,
 					Line:   call.Line,
@@ -77,7 +101,9 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					Reason: reason,
 					Argv:   formatExecuteProcessArgv(call),
 				})
+				continue
 			}
+			collect(rels)
 		default:
 			unsupported = append(unsupported, executeProcessRefusal{
 				File:   call.File,
@@ -88,11 +114,12 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			})
 		}
 	}
-	if len(unsupported) == 0 {
-		return nil
+	if len(unsupported) > 0 {
+		return nil, failure.New(failure.UnsupportedExecuteProcess,
+			"%s", formatExecuteProcessRefusal(unsupported))
 	}
-	return failure.New(failure.UnsupportedExecuteProcess,
-		"%s", formatExecuteProcessRefusal(unsupported))
+	sort.Slice(outs, func(i, j int) bool { return outs[i].RelOutput < outs[j].RelOutput })
+	return outs, nil
 }
 
 // liftCMakeE translates a recognized cmake -E builtin call
@@ -110,7 +137,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 // existing add_custom_command lifter so audit queries can
 // split the two cleanly even though they take different
 // trace-vs-ninja paths to recover.
-func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, cc *codegenContext) (string, bool) {
+func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	argv := call.Commands[0] // single-COMMAND guaranteed by Classify
 	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op
 	args := argv[3:]
@@ -120,7 +147,7 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 	case "copy", "copy_if_different":
 		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	}
-	return "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
+	return nil, "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
 
 // liftCMakeETouch translates `cmake -E touch <path> ...` into
@@ -133,15 +160,17 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 // touch with no args is rejected (refused with a diagnostic);
 // a path outside the build dir is also refused — the converter
 // can't anchor it as a Bazel output.
-func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext) (string, bool) {
+func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	if len(paths) == 0 {
-		return "cmake -E touch with no arguments", false
+		return nil, "cmake -E touch with no arguments", false
 	}
+	rels := make([]string, 0, len(paths))
 	for _, p := range paths {
 		rel, ok := executeProcessAnchorOutput(p, recordedBuildDir)
 		if !ok {
-			return fmt.Sprintf("cmake -E touch path %q is not under the build dir", p), false
+			return nil, fmt.Sprintf("cmake -E touch path %q is not under the build dir", p), false
 		}
+		rels = append(rels, rel)
 		if _, exists := cc.OutToGenrule[rel]; exists {
 			// Already recovered (e.g., the same call appears
 			// multiple times in the trace from re-evaluation).
@@ -158,7 +187,7 @@ func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext
 		})
 		cc.OutToGenrule[rel] = name
 	}
-	return "", true
+	return rels, "", true
 }
 
 // liftCMakeECopy translates `cmake -E copy <src> <dst>` (and
@@ -177,21 +206,21 @@ func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext
 // the lift with a descriptive reason — the caller falls back to
 // refusal so the operator sees exactly which path didn't
 // resolve.
-func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) (string, bool) {
+func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	if len(args) != 2 {
-		return fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
+		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
 	src, dst := args[0], args[1]
 	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
 	if !ok {
-		return fmt.Sprintf("cmake -E %s: source %q is not under the source root", op, src), false
+		return nil, fmt.Sprintf("cmake -E %s: source %q is not under the source root", op, src), false
 	}
 	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
 	if !ok {
-		return fmt.Sprintf("cmake -E %s: destination %q is not under the build dir", op, dst), false
+		return nil, fmt.Sprintf("cmake -E %s: destination %q is not under the build dir", op, dst), false
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
-		return "", true
+		return []string{dstRel}, "", true
 	}
 	name := executeProcessGenruleName(dstRel)
 	cc.Genrules = append(cc.Genrules, ir.Target{
@@ -204,7 +233,7 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
-	return "", true
+	return []string{dstRel}, "", true
 }
 
 // liftFileProducing translates an execute_process call with a
@@ -229,31 +258,31 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 // Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
 // the genrule.go custom-command recovery so existing audit
 // queries that filter on driver= pick up hoisted rules.
-func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) (string, bool) {
+func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	if call.WorkingDirectory != "" {
-		return "WORKING_DIRECTORY is not yet modeled by the file-producing lifter", false
+		return nil, "WORKING_DIRECTORY is not yet modeled by the file-producing lifter", false
 	}
 	if len(call.Environment) > 0 {
-		return "ENVIRONMENT is not yet modeled by the file-producing lifter", false
+		return nil, "ENVIRONMENT is not yet modeled by the file-producing lifter", false
 	}
 	if call.Timeout != "" {
-		return "TIMEOUT is not yet modeled by the file-producing lifter", false
+		return nil, "TIMEOUT is not yet modeled by the file-producing lifter", false
 	}
 	if call.InputFile != "" || call.ErrorFile != "" {
-		return "INPUT_FILE / ERROR_FILE are not yet modeled by the file-producing lifter", false
+		return nil, "INPUT_FILE / ERROR_FILE are not yet modeled by the file-producing lifter", false
 	}
 
 	dstRel, ok := executeProcessAnchorOutput(call.OutputFile, recordedBuildDir)
 	if !ok {
-		return fmt.Sprintf("OUTPUT_FILE %q is not under the build dir", call.OutputFile), false
+		return nil, fmt.Sprintf("OUTPUT_FILE %q is not under the build dir", call.OutputFile), false
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
-		return "", true
+		return []string{dstRel}, "", true
 	}
 
 	argv := call.Commands[0]
 	if len(argv) == 0 {
-		return "empty argv", false
+		return nil, "empty argv", false
 	}
 
 	// Walk argv: rewrite elements that anchor under the source
@@ -338,7 +367,7 @@ func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDi
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
-	return "", true
+	return []string{dstRel}, "", true
 }
 
 // fileProducingTags builds the cmake-codegen tag set for a

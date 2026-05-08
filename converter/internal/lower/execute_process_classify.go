@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/internal/shadow"
@@ -75,8 +76,9 @@ type ClassifyResult struct {
 // supportedCMakeEOps is the v1 allow-list of cmake -E
 // operations the lifter knows how to translate to a Bazel
 // genrule with declared inputs and outputs. Entries map the op
-// name to a one-line description used in the genrule comment
-// (and for failure-report context when an op isn't supported).
+// name to a one-line description; the description is surfaced
+// in the unsupported-op refusal reason so operators see at a
+// glance which ops the v1 lifter covers and what they do.
 //
 // v1 starts intentionally small; widening the set is a
 // follow-on commit that adds the per-op translator + a
@@ -88,6 +90,24 @@ var supportedCMakeEOps = map[string]string{
 	"copy":              "copy a single file",
 	"copy_if_different": "copy a single file (no-op if dst is byte-identical)",
 	"touch":             "create an empty file",
+}
+
+// supportedCMakeEOpsList renders the allow-list as a stable,
+// human-readable string for the unsupported-op refusal reason:
+// `copy (copy a single file), copy_if_different (...), touch
+// (...)`. Sort keeps the order stable across runs (Go map
+// iteration is randomized).
+func supportedCMakeEOpsList() string {
+	keys := make([]string, 0, len(supportedCMakeEOps))
+	for k := range supportedCMakeEOps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + " (" + supportedCMakeEOps[k] + ")"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // stampDrivers names argv[0] basenames whose presence
@@ -207,7 +227,7 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		}
 		return ClassifyResult{
 			Bucket: BucketUnknown,
-			Reason: "cmake -E " + op + " is not in the v1 supported-op set",
+			Reason: "cmake -E " + op + " is not in the v1 supported-op set (supported: " + supportedCMakeEOpsList() + ")",
 		}
 	}
 
@@ -261,11 +281,15 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	}
 }
 
-// outputContext renders the call's writeback channels (
-// OutputVariable, OutputFile) as a parenthesised suffix for
-// classifier reason messages. Threads diagnostic context
-// into stamp / strong-probe refusal reasons without
-// re-implementing the formatting at each call site.
+// outputContext renders the call's writeback channels
+// (OutputVariable, OutputFile) as a leading-space suffix for
+// classifier reason messages — e.g. ` writing OUTPUT_VARIABLE
+// GIT_SHA`, concatenated onto the bucket label so the final
+// reason reads `git is a version-control driver writing
+// OUTPUT_VARIABLE GIT_SHA`. Empty when neither channel is set.
+// Threads diagnostic context into stamp / strong-probe refusal
+// reasons without re-implementing the formatting at each call
+// site.
 func outputContext(call shadow.ExecuteProcessCall) string {
 	switch {
 	case call.OutputVariable != "" && call.OutputFile != "":
