@@ -250,13 +250,15 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 		return err
 	}
 
-	// Round-2 fallback shape: emit a real install genrule
-	// alongside the placeholder. The placeholder still gets
-	// overwritten with A's BUILD.bazel.out post-build (which
-	// contains the cc_import / sh_binary stubs + extract genrule
-	// referencing install_tree.tar); this install genrule is
-	// what produces install_tree.tar so the extract genrule's
-	// src resolves. See
+	// Round-2 fallback shape: write the install genrule as
+	// the package's BUILD.bazel directly — the placeholder is
+	// NOT emitted in this branch. Post-build the driver
+	// stages A's BUILD.bazel.out alongside this BUILD.bazel
+	// (same package), so labels declared in BUILD.bazel.out
+	// (cc_import / sh_binary stubs + the extract genrule
+	// referencing "install_tree.tar") resolve to this
+	// genrule's install_tree.tar output via same-package
+	// label resolution. See
 	// docs/design/cmake-execute-process-round2-fallback.md.
 	if cmakeConfig.round2FallbackEnabled {
 		if err := renderSrckey(elem, elemPkg, withCMakeListsRule(cmakeSrckeyPatterns())); err != nil {

@@ -195,6 +195,16 @@ genrule(
         # Stage the source tree into a fresh dir so cmake's
         # configure-time filesystem walks see exactly the user's
         # source tree without Bazel sandbox bookkeeping files.
+        # cp -P preserves symlinks rather than dereferencing
+        # them. write-a's offline copyTree preserves symlinks
+        # (including dangling ones) when staging the source
+        # tree into elemPkg; switching to cp -L here would
+        # silently diverge by materialising the symlink
+        # target's bytes in the staged tree, breaking
+        # elements that ship intentional symlinks (e.g.
+        # compatibility shims or versioned-name links).
+        # Dangling symlinks in the source tree stay dangling
+        # here — same as copyTree.
         export SRC_DIR="$$(mktemp -d)"
         for src in $(SRCS); do
             case "$$src" in
@@ -202,7 +212,7 @@ genrule(
             esac
             rel="$${src#elements/%[1]s/}"
             mkdir -p "$$SRC_DIR/$$(dirname "$$rel")"
-            cp -L "$$src" "$$SRC_DIR/$$rel"
+            cp -P "$$src" "$$SRC_DIR/$$rel"
         done
 
         export BUILD_ROOT="$$(mktemp -d)"
