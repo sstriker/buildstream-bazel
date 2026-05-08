@@ -223,8 +223,17 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 // fixtures with diverging destinations can drive a per-type
 // disambiguation.
 //
-// Returns "" if the target has no install destination or no
-// NameOnDisk — caller skips emitting a stub for that target.
+// Returns "" if the target has no install destination, no
+// NameOnDisk, or its install destination would escape the
+// "install_tree/" prefix (an absolute path or one whose
+// path.Clean form starts with "..") — caller skips emitting a
+// stub for that target. The escape check matters because
+// path.Join with "install_tree/" + "../lib" would silently
+// resolve to "lib/...", which the extract genrule (which
+// always extracts under "install_tree/") wouldn't satisfy
+// and could push outs out of the genrule's declared output
+// directory. Refusing such targets is safer than emitting
+// stubs whose paths the genrule can never produce.
 func installPathFor(t fileapi.Target) string {
 	if t.Install == nil || len(t.Install.Destinations) == 0 {
 		return ""
@@ -234,7 +243,20 @@ func installPathFor(t fileapi.Target) string {
 	}
 	dest := t.Install.Destinations[0].Path
 	dest = strings.TrimPrefix(dest, "/")
-	return path.Join("install_tree", dest, t.NameOnDisk)
+	// Reject destinations that escape install_tree/ via
+	// absolute paths or .. segments. path.Clean collapses
+	// the latter; if the cleaned result is still
+	// rooted-or-escaping, drop the target.
+	cleaned := path.Clean(dest)
+	if cleaned == "." {
+		// destination was empty / "./"; place artefact
+		// directly under install_tree/.
+		cleaned = ""
+	}
+	if path.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") {
+		return ""
+	}
+	return path.Join("install_tree", cleaned, t.NameOnDisk)
 }
 
 // buildExtractGenrule emits the single tar-extract genrule
