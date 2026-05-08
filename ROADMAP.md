@@ -111,7 +111,7 @@ transition cleanly.
   refuses the call. Reuses `cmd/build-tracer`,
   `@trace_<elem>//:trace`, and the inline `trace-publish`
   rendezvous machinery — all of which are kind-agnostic
-  already. Render gate: `meta-cmake-round2.sh`. Live-AC gate:
+  already. Render gate: `scripts/meta-cmake-round2-fallback.sh`. Live-AC gate:
   the publish/lookup wire half of
   `tools/e2e-meta-autotools-round2-live.sh` is kind-agnostic
   but its bazel-build half is autotools-fixture-specific; a
