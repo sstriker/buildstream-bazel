@@ -96,6 +96,16 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 			// CMakePresets — alternative configure entry
 			// points; their content reshapes the configure
 			// command without going through CMakeLists.txt.
+			//
+			// TODO: investigate cmake kits (CMakeTools'
+			// cmake-kits.json + ~/.local/share/CMakeTools/
+			// cmake-tools-kits.json). Kits are a workflow
+			// layer rather than a CMakeLists-replacing input
+			// today, but they CAN influence configure when
+			// the generator picks them up via
+			// CMAKE_TOOLCHAIN_FILE / preset-style overrides.
+			// Decide per-fixture whether kit JSONs need a
+			// rule here once a real project surfaces them.
 			{Include: true, Pattern: "CMakePresets.json"},
 			{Include: true, Pattern: "CMakeUserPresets.json"},
 		},
