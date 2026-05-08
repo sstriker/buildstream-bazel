@@ -153,10 +153,12 @@ func wrapCmakePipelineCmds(cmds string) string {
         # canonical trace would still drift run-to-run. The
         # placeholder names (/INSTALL_ROOT, etc.) are stable
         # across machines and human-readable. DEP_PREFIX is only
-        # set when the element has cmake deps — using
-        # ${DEP_PREFIX:-} keeps the flag harmless when unset
-        # (substitutes empty-string, which trivially matches
-        # nothing).
+        # set when the element has cmake deps — the
+        # ${DEP_PREFIX:-/__unset_dep_prefix__} sentinel default
+        # keeps the flag harmless when unset by substituting an
+        # implausible path that no recorded trace line will
+        # match, so the rewrite is a no-op rather than rewriting
+        # an empty prefix (which would match every line).
         export CMAKE_TRACE="$$(mktemp)"
         "$$EXEC_ROOT/$(location //tools:build-tracer)" \
             --normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT" \

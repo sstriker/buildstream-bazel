@@ -18,24 +18,35 @@ only the kind-specific wiring is new.
 
 ## The architectural mismatch
 
-`kind:autotools / make / etc.` joined round-2 via a one-line
-opt-in: each one is a `pipelineHandler` variant
-(`cmd/write-a/handler_pipeline.go:51`), and round-2 dispatch
-hangs off the `traceDrivenSrckeyPatterns` field
-(`handler_pipeline.go:85`). When the field is non-nil and
+The pipeline kinds (`kind:make / makemaker / modulebuild / manual /
+script`) joined round-2 via a one-line opt-in: each one is a
+`pipelineHandler` variant (`cmd/write-a/handler_pipeline.go:51`),
+and round-2 dispatch hangs off the `traceDrivenSrckeyPatterns`
+field (`handler_pipeline.go:85`). When the field is non-nil and
 runtime config enables round-2,
 `pipelineHandler.shouldUseRound2()` returns true and `RenderA` /
 `RenderB` route through the kind-agnostic helpers in
 `handler_pipeline_round2.go`.
 
-`kind:cmake` is **not** a `pipelineHandler`. `cmakeHandler` is
-its own `struct{}` (`handler_cmake.go:39`) with bespoke
-`RenderA` / `RenderB` that don't go through the pipeline
-dispatcher. The round-1 / round-2 split there isn't a
-configure-then-make-then-install shape; it's a single per-element
-genrule that runs `convert-element` against cmake's File API
-reply. There's no `traceDrivenSrckeyPatterns` field to set; no
-`shouldUseRound2` branch to flip.
+`kind:autotools` joined round-2 too, but via a different
+mechanism: `autotoolsHandler` (`handler_autotools_native.go`) is
+its own struct, not a `pipelineHandler` variant. Its `RenderA`
+calls `renderTraceDrivenRound2A` (the kind-agnostic helper)
+directly when `autotoolsConfig.round2Enabled` is set, and its
+`RenderB` produces the install genrule via the
+`pipelineExtension` returned by `pipelineTraceExtensionRound2`.
+Same destination, different dispatch — but still bounded
+(autotools has a single config flag, not per-element gating).
+
+`kind:cmake` is neither shape. `cmakeHandler` is its own
+`struct{}` (`handler_cmake.go:39`) with bespoke `RenderA` /
+`RenderB` that don't go through either dispatcher. The round-1 /
+round-2 split there isn't a configure-then-make-then-install
+shape; it's a single per-element genrule that runs
+`convert-element` against cmake's File API reply. There's no
+`traceDrivenSrckeyPatterns` field to set; no `shouldUseRound2`
+branch to flip; and no autotools-style `round2Enabled` config
+that would route every element through round-2 either.
 
 So Phase B can't be a one-line opt-in. The choice is between:
 
@@ -49,9 +60,10 @@ native render as the primary path, and the round-2 shape is a
 per-element fallback that activates when convert-element exits
 with `unsupported-execute-process`**. Option (1) would force
 every `kind:cmake` element through the round-2 path
-unconditionally (the opt-in is build-wide, not per-element),
-which sacrifices native render's fine-grained `cc_library` /
-`cc_binary` outputs for projects that don't need the fallback.
+unconditionally (the pipeline-kinds and autotools opt-ins are
+both build-wide, not per-element), which sacrifices native
+render's fine-grained `cc_library` / `cc_binary` outputs for
+projects that don't need the fallback.
 
 ## Per-element fallback decision
 
@@ -275,10 +287,25 @@ kind-agnostic infra in `handler_pipeline_round2.go`):
   modeled on `meta-autotools-round2.sh` but asserting the
   cmake-specific shape (placeholder BUILD.bazel.out content,
   cmake-flavoured install genrule cmd).
-- **A live-AC gate hookup** — the existing kind-agnostic
-  `tools/e2e-meta-autotools-round2-live.sh` should pick up
-  `kind:cmake` automatically once the render half is in place,
-  per the rendezvous doc's Generality section.
+- **A live-AC gate.** The existing
+  `tools/e2e-meta-autotools-round2-live.sh` is mixed: the
+  publish/lookup wire contract it round-trips through a real
+  REAPI endpoint is genuinely kind-agnostic (any kind using
+  `rules/traces.bzl`'s `_trace_repo` hits the same
+  `SyntheticActionDigest(srckey)` path), but the bazel-build
+  half hard-codes the autotools fixture + binary +
+  `//elements/greet:greet_build` target. So `kind:cmake` needs
+  one of:
+  1. A dedicated cmake live gate (analogue of the autotools
+     one) using a kind:cmake fixture and the cmake-side
+     `bazel build //elements/<demo>:` target.
+  2. A refactor of the existing live gate to take fixture +
+     converter binary + target label as arguments and run once
+     per kind.
+  v1 picks (1) — bounded and concrete; (2) is a follow-up if
+  more kinds join. The render-half acceptance still lives in
+  `scripts/meta-cmake-round2-fallback.sh` and is the
+  primary contract for write-a's emission shape.
 
 ## Staged implementation
 
@@ -341,8 +368,17 @@ empty, and the relevant render/live-AC gate green.
   `execute_process`.
 - **Fixture fragility.** Building the round-2 install genrule
   in tests requires a real cmake + ninja on the CI runner.
-  The render-half gate skips its bazel-build half cleanly
-  when bazel ≥7 isn't on `$PATH`; same convention here.
+  The render-half acceptance gate
+  (`scripts/meta-cmake-round2-fallback.sh`) is render-only — it
+  only invokes write-a and asserts the emitted BUILD shape, no
+  bazel build half — so it stays runnable without bazel on the
+  host. The live-AC gate
+  (`tools/e2e-meta-autotools-round2-live.sh`, the future
+  cmake sibling) is the one that exercises a real `bazel
+  build`; that gate skips its bazel half cleanly when Bazel is
+  missing or its major version is < 9 (Bazel 9 toolchain
+  expectations are part of the contract). Same convention is
+  expected for the cmake live gate when it lands.
 
 ## Reference
 
@@ -357,4 +393,4 @@ empty, and the relevant render/live-AC gate green.
 | `cmd/trace-lookup/main.go` | already kind-agnostic |
 | `internal/tracenorm/synthkey.go` | `SyntheticActionDigest(srckey)` — already kind-agnostic |
 | `scripts/meta-cmake-round2-fallback.sh` | new render gate (Step 3) |
-| `tools/e2e-meta-autotools-round2-live.sh` | live-AC gate; covers kind:cmake automatically once Step 3 lands |
+| `tools/e2e-meta-autotools-round2-live.sh` | live-AC gate; publish/lookup wire half is kind-agnostic, but the bazel-build half is autotools-fixture-specific. A cmake sibling gate is a follow-up. |
