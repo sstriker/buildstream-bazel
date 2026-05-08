@@ -2,6 +2,7 @@ package lower
 
 import (
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -289,11 +290,18 @@ func installPathFor(t fileapi.Target) string {
 
 // installHeadersFor enumerates the install-tree-relative
 // paths of public headers for one target. Walks
-// Target.FileSets where Type == "HEADERS"; for each such
-// FileSet, walks Target.Sources looking for entries whose
-// FileSetIndex points back at it; for each match, computes
-// the path under the FileSet's first BaseDirectory and
-// prefixes "install_tree/include/".
+// Target.FileSets where Type == "HEADERS" and Visibility ∈
+// {"PUBLIC", "INTERFACE"} — PRIVATE FileSets are
+// internal-only headers (target_sources(... FILE_SET
+// HEADERS PRIVATE ...)) that aren't part of the install
+// contract; surfacing them as cc_import.hdrs would expose
+// internal-only headers to consumers AND have the extract
+// genrule claim outs that install_tree.tar never produces.
+// For each PUBLIC/INTERFACE HEADERS FileSet, walks
+// Target.Sources looking for entries whose FileSetIndex
+// points back at it; for each match, computes the path
+// under the FileSet's first BaseDirectory and prefixes
+// "install_tree/include/".
 //
 // The "install_tree/include/" convention reflects cmake's
 // GNUInstallDirs default (CMAKE_INSTALL_INCLUDEDIR == "include").
@@ -318,6 +326,13 @@ func installHeadersFor(t fileapi.Target) []string {
 	headerSets := map[int]fileapi.TargetFileSet{}
 	for i, fs := range t.FileSets {
 		if fs.Type != "HEADERS" {
+			continue
+		}
+		// PRIVATE = internal-only header set; not part of the
+		// install contract. Skip so the extract genrule's outs
+		// don't reference paths install_tree.tar won't produce
+		// and consumer cc_import.hdrs doesn't expose internals.
+		if fs.Visibility == "PRIVATE" {
 			continue
 		}
 		headerSets[i] = fs
@@ -356,23 +371,37 @@ func installHeadersFor(t fileapi.Target) []string {
 }
 
 // stripFileSetBase returns the relative path of src under the
-// first BaseDirectory that contains it. Both src and the
-// base dirs may be absolute (cmake's File API records
-// BaseDirectories absolutely) or source-root-relative; we
-// normalise via the target's source path. Returns "" when no
-// base dir matches.
+// first BaseDirectory that contains it, in slash form. Both
+// src and the base dirs may be absolute (cmake's File API
+// records BaseDirectories absolutely) or source-root-relative;
+// we normalise via the target's source path with filepath.Abs-
+// equivalent joining (filepath.IsAbs / filepath.Join match
+// the rest of lower's path handling for cross-platform path
+// separators).
+//
+// When no base dir contains src, falls back to filepath.Base(src)
+// — better than dropping the header entirely (the consumer
+// would then have a broken hdrs reference at consumer build
+// time, which surfaces the issue loudly rather than silently
+// missing the header). The fallback is best-effort: if the
+// project's install_tree.tar doesn't actually carry that
+// basename at install_tree/include/<basename>, the consumer's
+// build fails with a missing-file error pointing at the right
+// path. Returns "" only when src is empty or has no basename.
 func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string {
-	abs := srcPath
-	if !path.IsAbs(abs) && srcRoot != "" {
-		abs = path.Join(srcRoot, abs)
+	if srcPath == "" {
+		return ""
 	}
+	abs := srcPath
+	if !filepath.IsAbs(abs) && srcRoot != "" {
+		abs = filepath.Join(srcRoot, abs)
+	}
+	abs = filepath.ToSlash(abs)
 	for _, base := range baseDirs {
 		if base == "" {
 			continue
 		}
-		// Trim trailing slash to make the prefix check
-		// boundary-correct.
-		baseTrim := strings.TrimSuffix(base, "/")
+		baseTrim := filepath.ToSlash(strings.TrimSuffix(base, "/"))
 		if abs == baseTrim {
 			return path.Base(abs)
 		}
@@ -381,7 +410,13 @@ func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string 
 			return abs[len(prefix):]
 		}
 	}
-	return ""
+	// No base dir matched — return the source basename so
+	// the consumer at least gets `install_tree/include/<name>`
+	// (which install_tree.tar typically does carry under cmake's
+	// GNUInstallDirs default). A miss surfaces as a missing-
+	// header error at consumer build time rather than silent
+	// drop.
+	return path.Base(filepath.ToSlash(srcPath))
 }
 
 // buildExtractGenrule emits the single tar-extract genrule
