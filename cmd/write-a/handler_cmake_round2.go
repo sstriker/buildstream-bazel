@@ -93,9 +93,9 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 			{Include: true, Pattern: "**/*.hpp"},
 			{Include: true, Pattern: "**/*.hxx"},
 			{Include: true, Pattern: "**/*.hh"},
-			// CMakePresets / kits — build-driver inputs that
-			// reshape the configure command without going
-			// through CMakeLists.txt.
+			// CMakePresets — alternative configure entry
+			// points; their content reshapes the configure
+			// command without going through CMakeLists.txt.
 			{Include: true, Pattern: "CMakePresets.json"},
 			{Include: true, Pattern: "CMakeUserPresets.json"},
 		},
