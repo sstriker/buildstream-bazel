@@ -242,18 +242,31 @@ func installPathFor(t fileapi.Target) string {
 		return ""
 	}
 	dest := t.Install.Destinations[0].Path
+	// Reject absolute destinations BEFORE TrimPrefix so the
+	// path.IsAbs check actually fires. Strip-then-check would
+	// always pass (the TrimPrefix removes the leading "/" that
+	// IsAbs needs to fire on POSIX paths). cmake's install
+	// destinations are conventionally relative (e.g. "lib",
+	// "include/foo"); an absolute one would either escape the
+	// install_tree/ prefix on path.Join or stomp the genrule's
+	// output dir, neither of which the extract genrule
+	// produces.
+	if path.IsAbs(dest) {
+		return ""
+	}
 	dest = strings.TrimPrefix(dest, "/")
-	// Reject destinations that escape install_tree/ via
-	// absolute paths or .. segments. path.Clean collapses
-	// the latter; if the cleaned result is still
-	// rooted-or-escaping, drop the target.
+	// path.Clean collapses any `..` segments. After cleaning,
+	// reject destinations that traverse upward — `..` alone or
+	// anything starting with `../` (NOT plain `..foo` which
+	// is a legitimate single-component name even though it
+	// happens to start with two dots).
 	cleaned := path.Clean(dest)
 	if cleaned == "." {
 		// destination was empty / "./"; place artefact
 		// directly under install_tree/.
 		cleaned = ""
 	}
-	if path.IsAbs(cleaned) || strings.HasPrefix(cleaned, "..") {
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return ""
 	}
 	return path.Join("install_tree", cleaned, t.NameOnDisk)
@@ -291,8 +304,8 @@ func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
 		Kind:        ir.KindGenrule,
 		Srcs:        []string{"install_tree.tar"},
 		GenruleOuts: outs,
-		GenruleCmd: `mkdir -p "$(@D)/install_tree" && ` +
-			`tar -C "$(@D)/install_tree" -xf "$(location install_tree.tar)"`,
+		GenruleCmd: `mkdir -p "$(RULEDIR)/install_tree" && ` +
+			`tar -C "$(RULEDIR)/install_tree" -xf "$(location install_tree.tar)"`,
 		Tags: []string{
 			"cmake-codegen-execute-process-fallback",
 			"cmake-codegen-execute-process-fallback-extract",

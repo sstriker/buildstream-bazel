@@ -256,7 +256,7 @@ genrule(
         "install_tree/bin/thetool",
         # ...one entry per (target, install destination).
     ],
-    cmd = "mkdir -p \"$(@D)/install_tree\" && tar -C \"$(@D)/install_tree\" -xf \"$(location install_tree.tar)\"",
+    cmd = "mkdir -p \"$(RULEDIR)/install_tree\" && tar -C \"$(RULEDIR)/install_tree\" -xf \"$(location install_tree.tar)\"",
     tags = [
         "cmake-codegen-execute-process-fallback",
         "cmake-codegen-execute-process-fallback-extract",

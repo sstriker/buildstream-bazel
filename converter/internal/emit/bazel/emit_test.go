@@ -300,7 +300,7 @@ func TestEmit_ExecuteProcess_Fallback_Shape(t *testing.T) {
 				Kind:        ir.KindGenrule,
 				Srcs:        []string{"install_tree.tar"},
 				GenruleOuts: []string{"install_tree/lib/libthelib.a", "install_tree/bin/thetool"},
-				GenruleCmd:  `mkdir -p "$(@D)/install_tree" && tar -C "$(@D)/install_tree" -xf "$(location install_tree.tar)"`,
+				GenruleCmd:  `mkdir -p "$(RULEDIR)/install_tree" && tar -C "$(RULEDIR)/install_tree" -xf "$(location install_tree.tar)"`,
 				Tags:        []string{"cmake-codegen-execute-process-fallback", "cmake-codegen-execute-process-fallback-extract"},
 				Visibility:  []string{"//visibility:private"},
 			},
