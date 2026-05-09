@@ -178,7 +178,7 @@ package(default_visibility = ["//visibility:public"])
 
 genrule(
     name = "%[1]s_install",
-    srcs = glob(["**"], exclude = ["BUILD.bazel", "BUILD.bazel.out", "WORKSPACE", "MODULE.bazel", "srckey.txt", "srckey-breakdown.txt", "srckey-patterns.txt"]) + [
+    srcs = glob(["**"], exclude = ["BUILD.bazel", "BUILD.bazel.out", "srckey.txt", "srckey-breakdown.txt", "srckey-patterns.txt"]) + [
         "srckey.txt",
     ],
     outs = [
