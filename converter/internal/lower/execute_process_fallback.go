@@ -300,8 +300,8 @@ func installPathFor(t fileapi.Target) string {
 // For each PUBLIC/INTERFACE HEADERS FileSet, walks
 // Target.Sources looking for entries whose FileSetIndex
 // points back at it; for each match, computes the path
-// under the FileSet's first BaseDirectory and prefixes
-// "install_tree/include/".
+// under the first matching BaseDirectory (iteration order
+// of fs.BaseDirectories) and prefixes "install_tree/include/".
 //
 // The "install_tree/include/" convention reflects cmake's
 // GNUInstallDirs default (CMAKE_INSTALL_INCLUDEDIR == "include").
@@ -357,11 +357,11 @@ func installHeadersFor(t fileapi.Target) []string {
 		if !ok {
 			continue
 		}
-		// src.Path is project-source-root-relative. Strip the
-		// FileSet's first BaseDirectory prefix (the public
-		// header root) to get the install-relative name; if
-		// no base dir matches, fall back to the source basename
-		// — wrong but at least non-crashing.
+		// src.Path is project-source-root-relative. Strip
+		// the first matching BaseDirectory prefix (the
+		// public header root) to get the install-relative
+		// name; if no base dir matches, fall back to the
+		// source basename — wrong but at least non-crashing.
 		rel := stripFileSetBase(src.Path, fs.BaseDirectories, t.Paths.Source)
 		if rel == "" {
 			continue
@@ -378,13 +378,17 @@ func installHeadersFor(t fileapi.Target) []string {
 }
 
 // stripFileSetBase returns the relative path of src under the
-// first BaseDirectory that contains it, in slash form. Both
-// src and the base dirs may be absolute (cmake's File API
-// records BaseDirectories absolutely) or source-root-relative;
-// we normalise via the target's source path with filepath.Abs-
-// equivalent joining (filepath.IsAbs / filepath.Join match
-// the rest of lower's path handling for cross-platform path
-// separators).
+// first BaseDirectory that contains it, in slash form. srcPath
+// is project-source-root-relative; we resolve it to absolute
+// form by joining with srcRoot when present, then ToSlash for
+// cross-platform comparison. BaseDirectories from cmake's File
+// API are recorded absolutely in practice, so the prefix match
+// runs against absolute slash form on both sides. A
+// hypothetical relative base dir falls through to the basename
+// fallback (no Join against srcRoot is performed for bases —
+// adding that needs a fixture pinning down what semantics
+// cmake actually uses for relative bases, which we haven't
+// observed in tree).
 //
 // When no base dir contains src, falls back to filepath.Base(src)
 // — better than dropping the header entirely (the consumer
@@ -439,15 +443,15 @@ func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string 
 // reference (artefacts + headers). Returns nil when there
 // are no extractable paths.
 //
-// The genrule reads "install_tree.tar" — a literal label that
-// write-a wires to the appropriate source (project A's
-// converter-genrule output vs a sibling install genrule). The
-// extract cmd untars into $(RULEDIR)/install_tree, matching the
-// "install_tree/" prefix the per-target paths share. $(RULEDIR)
-// rather than $(@D) so the base stays the package output root
-// regardless of which `outs` entry comes first (a nested first
-// out under install_tree/lib would make $(@D) point one level
-// too deep).
+// The genrule reads "install_tree.tar" — a literal label
+// that resolves once A's BUILD.bazel.out is symlinked into
+// Project B's package and co-locates with B's install
+// genrule. The extract cmd untars into $(RULEDIR)/install_tree,
+// matching the "install_tree/" prefix the per-target paths
+// share. $(RULEDIR) (not $(@D)) so the base stays the package
+// output root regardless of which `outs` entry comes first
+// (a nested first out under install_tree/lib would make
+// $(@D) point one level too deep).
 func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
 	var outs []string
 	seen := map[string]bool{}
