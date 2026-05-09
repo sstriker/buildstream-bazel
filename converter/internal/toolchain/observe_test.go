@@ -137,7 +137,7 @@ func TestDefaultVariantMapping(t *testing.T) {
 		{Variant{Name: "release", CacheVars: map[string]string{"CMAKE_BUILD_TYPE": "Release"}}, BazelFeatureOpt},
 		{Variant{Name: "minsize", CacheVars: map[string]string{"CMAKE_BUILD_TYPE": "MinSizeRel"}}, BazelFeatureOpt},
 		{Variant{Name: "rdi", CacheVars: map[string]string{"CMAKE_BUILD_TYPE": "RelWithDebInfo"}}, BazelFeatureOpt},
-		{Variant{Name: "asan", CacheVars: map[string]string{"CMAKE_C_FLAGS": "-fsanitize=address"}}, BazelFeatureNone},
+		{Variant{Name: "asan", CacheVars: map[string]string{"CMAKE_C_FLAGS": "-fsanitize=address"}}, BazelFeatureAsan},
 	}
 	for _, tc := range cases {
 		if got := DefaultVariantMapping(tc.v); got != tc.want {
