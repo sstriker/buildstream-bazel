@@ -1107,23 +1107,18 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 		}
 		exports = append(exports, "build-tracer")
 	}
-	// trace-publish + trace-lookup land for round-2 paths.
-	// Autotools' round-2 needs both (publish in B's install
-	// genrule, lookup in A's converter genrule via the
-	// _trace_repo rule). kind:cmake fallback v1 only needs
-	// publish (the @trace_<elem>//:trace lookup is queued
-	// behind the trace-driven convergence research follow-on);
-	// we still stage trace-lookup when autotools round-2 is
-	// active so that path keeps working uniformly.
+	// trace-publish + trace-lookup land for both round-2
+	// paths. kind:autotools' round-2 needs publish in B's
+	// install genrule + lookup in A's converter genrule via
+	// the _trace_repo rule. kind:cmake fallback wires the
+	// same shape — Project B publishes via inline
+	// trace-publish; Project A pulls @trace_<elem>//:trace at
+	// load time via trace-lookup. The converter doesn't yet
+	// CONSUME the trace bytes for refusal-refinement (that's
+	// the trace-driven convergence research follow-on), but
+	// the wiring is staged today so the follow-on is purely a
+	// converter-side change.
 	publishNeeded := autotoolsConfig.round2Enabled || cmakeFallbackActive
-	// kind:cmake fallback v1 wires the @trace_<elem>//:trace
-	// load-time lookup into A's converter genrule so a published
-	// trace from a previous Project B run is available at
-	// convert-element action time. The lookup itself runs via
-	// trace-lookup (staged below); the converter doesn't yet
-	// CONSUME the trace (the convergence-from-trace research
-	// follow-on adds that), but the wiring lands now so the
-	// follow-on is purely a converter-side change.
 	lookupNeeded := autotoolsConfig.round2Enabled || cmakeFallbackActive
 	if publishNeeded {
 		stagedPub := filepath.Join(outDir, "tools", "trace-publish")

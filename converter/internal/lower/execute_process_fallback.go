@@ -328,11 +328,18 @@ func installHeadersFor(t fileapi.Target) []string {
 		if fs.Type != "HEADERS" {
 			continue
 		}
-		// PRIVATE = internal-only header set; not part of the
-		// install contract. Skip so the extract genrule's outs
-		// don't reference paths install_tree.tar won't produce
-		// and consumer cc_import.hdrs doesn't expose internals.
-		if fs.Visibility == "PRIVATE" {
+		// Allowlist PUBLIC / INTERFACE explicitly rather than
+		// blocklisting PRIVATE. Allowlist semantics make us
+		// safe against new visibility values cmake may add to
+		// the codemodel — an unknown visibility doesn't slip
+		// through as "exposed" by default. PRIVATE is the
+		// internal-only case (target_sources(... FILE_SET
+		// HEADERS PRIVATE ...)); other unknown values that
+		// might mean "internal but new" also drop out here.
+		// Empty Visibility (older codemodel-v2 minor without
+		// the field populated) also drops, which is the
+		// conservative default.
+		if fs.Visibility != "PUBLIC" && fs.Visibility != "INTERFACE" {
 			continue
 		}
 		headerSets[i] = fs
@@ -401,7 +408,15 @@ func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string 
 		if base == "" {
 			continue
 		}
-		baseTrim := filepath.ToSlash(strings.TrimSuffix(base, "/"))
+		// Normalise to forward-slash form FIRST so
+		// Windows-style paths (backslash separators) collapse
+		// to slash before we trim the trailing separator.
+		// TrimRight on `/` then handles both `path/` and
+		// double-slash trailing forms uniformly. Trimming
+		// before ToSlash would miss `path\` (TrimSuffix("/")
+		// doesn't see the backslash) and produce `path/` →
+		// double-slash prefix that never matches.
+		baseTrim := strings.TrimRight(filepath.ToSlash(base), "/")
 		if abs == baseTrim {
 			return path.Base(abs)
 		}
