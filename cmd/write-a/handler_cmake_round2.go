@@ -232,7 +232,15 @@ genrule(
         # "install_tree/" prefix; we tar from $$INSTALL_ROOT so
         # the entries inside are <dest>/<artefact>
         # (matching cmake's install destinations + NameOnDisk).
-        ( cd "$$INSTALL_ROOT" && tar -cf "$$EXEC_ROOT/$(location install_tree.tar)" . )
+        # --mtime=@0 / --sort=name / --owner=0 --group=0
+        # --numeric-owner mirror the autotools install-genrule
+        # tar in handler_pipeline.go: keep tar bytes
+        # cross-machine stable so the AC entry that publishes
+        # this artefact set hits on identical inputs across
+        # different recording hosts.
+        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+            -cf "$$EXEC_ROOT/$(location install_tree.tar)" \
+            -C "$$INSTALL_ROOT" .
 
         # Surface the canonical trace.log as a declared output of
         # this genrule. trace-publish reads it from here.
