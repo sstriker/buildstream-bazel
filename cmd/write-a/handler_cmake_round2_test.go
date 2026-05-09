@@ -101,9 +101,14 @@ func TestCmakeSrckeyPatterns_DistinctFromAutotoolsAndMake(t *testing.T) {
 // formatting can drift in cosmetic ways; the assertions below
 // pin the contract pieces only.
 func TestWrapCmakePipelineCmds_ShellShape(t *testing.T) {
-	cmds := `cmake -B "$$BUILD_DIR" -G Ninja -S "$$SRC_DIR"
-cmake --build "$$BUILD_DIR" --parallel 1
-cmake --install "$$BUILD_DIR" --prefix "$$DESTDIR"`
+	// The canonical shape uses BUILD_ROOT/INSTALL_ROOT/SRC_DIR
+	// — the same variable names the surrounding install genrule
+	// binds in its prelude. --normalize-prefix below rewrites
+	// those exact prefixes into stable placeholders, so the
+	// test cmds use the same names for accurate coverage.
+	cmds := `cmake -B "$$BUILD_ROOT" -G Ninja -S "$$SRC_DIR" -DCMAKE_INSTALL_PREFIX="$$INSTALL_ROOT"
+cmake --build "$$BUILD_ROOT" --parallel 1
+cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"`
 	got := wrapCmakePipelineCmds(cmds)
 
 	for _, want := range []string{
@@ -113,9 +118,9 @@ cmake --install "$$BUILD_DIR" --prefix "$$DESTDIR"`
 		`--normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"`,
 		`--out="$$CMAKE_TRACE"`,
 		`-- sh -c '`,
-		`cmake -B "$$BUILD_DIR" -G Ninja -S "$$SRC_DIR"`,
-		`cmake --build "$$BUILD_DIR" --parallel 1`,
-		`cmake --install "$$BUILD_DIR" --prefix "$$DESTDIR"`,
+		`cmake -B "$$BUILD_ROOT" -G Ninja -S "$$SRC_DIR" -DCMAKE_INSTALL_PREFIX="$$INSTALL_ROOT"`,
+		`cmake --build "$$BUILD_ROOT" --parallel 1`,
+		`cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("wrapCmakePipelineCmds output missing %q\n--- got ---\n%s", want, got)

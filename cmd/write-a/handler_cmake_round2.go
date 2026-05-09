@@ -121,12 +121,24 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 //
 // The cmds argument is the resolved configure / build / install
 // shell snippet (already variable-substituted by the caller).
-// For kind:cmake round-2 the canonical shape is:
+// For kind:cmake round-2 the canonical shape uses the same
+// prelude-bound variable names that the surrounding install
+// genrule prepares — $$BUILD_ROOT for the cmake build dir,
+// $$INSTALL_ROOT for the install prefix, $$SRC_DIR for the
+// staged source tree:
 //
-//	cmake -B "$$BUILD_DIR" -G Ninja -S "$$SRC_DIR" \
-//	    -DCMAKE_INSTALL_PREFIX="$$DESTDIR" [...]
-//	cmake --build "$$BUILD_DIR" --parallel 1
-//	cmake --install "$$BUILD_DIR" --prefix "$$DESTDIR"
+//	cmake -B "$$BUILD_ROOT" -G Ninja -S "$$SRC_DIR" \
+//	    -DCMAKE_INSTALL_PREFIX="$$INSTALL_ROOT" [...]
+//	cmake --build "$$BUILD_ROOT" --parallel 1
+//	cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"
+//
+// The variable names matter because --normalize-prefix below
+// rewrites those exact prefixes into stable placeholders
+// (`/BUILD_ROOT/`, `/INSTALL_ROOT/`) for byte-stable canonical
+// traces. A configure step that bound a different variable
+// (BUILD_DIR, DESTDIR, ...) would land mktemp paths the
+// substitution can't match, breaking trace stability across
+// machines.
 //
 // --parallel 1 mirrors `make -j1` in autotools round-2: serial
 // execution keeps the trace's process-spawn order stable so
