@@ -2,10 +2,15 @@ package main
 
 // tools/traces.json emission.
 //
-// Mirror of sources_json.go: one record per kind:autotools element
-// in the graph, naming the element's content-narrowed srckey. The
-// traces module extension (rules/traces.bzl) reads this file at
-// load time to declare one @trace_<key>//:trace repo per entry.
+// Mirror of sources_json.go: one record per element whose kind
+// participates in the trace-driven round-2 path, naming the
+// element's content-narrowed srckey. The set is kind-agnostic —
+// kind:autotools, any pipeline kind whose handler sets
+// traceDrivenSrckeyPatterns (kind:make / makemaker / modulebuild
+// today; more later), and kind:cmake when the
+// --cmake-round2-fallback flag is enabled. The traces module
+// extension (rules/traces.bzl) reads this file at load time to
+// declare one @trace_<key>//:trace repo per entry.
 //
 // The "key" field is the element name; Bazel's external-repo
 // namespace requires a static identifier. The "srckey" field is
@@ -101,10 +106,14 @@ func marshalTracesJSON(s tracesJSON) ([]byte, error) {
 
 // renderTracesUseExtension emits the use_extension + use_repo
 // block for the traces module extension. Only emitted when the
-// graph contains at least one kind:autotools element AND the
-// trace-driven path is enabled (autotoolsConfig.convertBin set);
-// otherwise project A / B's MODULE.bazel doesn't reference the
-// extension at all.
+// graph contains at least one element opted into the trace-
+// driven path — that's any kind whose
+// traceDrivenSrckeyPatternsForKind returns non-nil (kind:autotools
+// when the trace-driven autotools converter is staged, pipeline
+// kinds with traceDrivenSrckeyPatterns set on their handler, or
+// kind:cmake when --cmake-round2-fallback is enabled). Otherwise
+// project A / B's MODULE.bazel doesn't reference the extension
+// at all.
 func renderTracesUseExtension(t tracesJSON) string {
 	if len(t.Traces) == 0 {
 		return ""
