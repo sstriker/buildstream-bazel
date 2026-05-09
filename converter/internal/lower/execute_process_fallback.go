@@ -113,13 +113,14 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 		base := ir.Target{
 			Name: t.Name,
 			Tags: []string{"cmake-codegen-execute-process-fallback"},
-			// Public visibility for every stub — even
-			// not-installed targets that native render would
-			// have marked private. The goal in fallback mode is
-			// label resolvability: any cross-element consumer
-			// referring to `:thelib` should resolve regardless
-			// of whether the upstream element installed the
-			// target. This is a deliberate divergence from
+			// Public visibility for every emitted stub. The
+			// goal in fallback mode is label resolvability:
+			// any cross-element consumer referring to
+			// `:thelib` should resolve. Note this only applies
+			// to targets we actually emit — non-INTERFACE
+			// targets without an Install block are skipped
+			// above (they aren't crossing the round-2
+			// boundary). This is a deliberate divergence from
 			// native render's per-target visibility (where
 			// Visibility comes from cmake's INTERFACE
 			// declarations); operators who want native render's
@@ -281,8 +282,12 @@ func installPathFor(t fileapi.Target) string {
 // The genrule reads "install_tree.tar" — a literal label that
 // write-a wires to the appropriate source (project A's
 // converter-genrule output vs a sibling install genrule). The
-// extract cmd untars into $(@D)/install_tree, matching the
-// "install_tree/" prefix the per-target paths share.
+// extract cmd untars into $(RULEDIR)/install_tree, matching the
+// "install_tree/" prefix the per-target paths share. $(RULEDIR)
+// rather than $(@D) so the base stays the package output root
+// regardless of which `outs` entry comes first (a nested first
+// out under install_tree/lib would make $(@D) point one level
+// too deep).
 func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
 	var outs []string
 	seen := map[string]bool{}
