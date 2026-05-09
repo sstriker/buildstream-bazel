@@ -216,7 +216,17 @@ genrule(
             case "$$src" in
                 */srckey.txt) continue ;;
             esac
-            rel="$${src#elements/%[1]s/}"
+            # Use ## (greedy left-strip) so the rel computation is
+            # robust to whatever path shape Bazel hands us:
+            #   - Plain "elements/<name>/<rel>" (the typical case
+            #     for sources colocated with the BUILD file).
+            #   - "bazel-out/k8/bin/elements/<name>/<rel>" (when a
+            #     generated source flows through this genrule).
+            # The '#' (non-greedy) variant only strips the exact
+            # leading prefix and would silently leave bazel-out/
+            # paths un-stripped, miscopying them under a deep
+            # SRC_DIR/bazel-out/.../<rel> tree.
+            rel="$${src##*elements/%[1]s/}"
             mkdir -p "$$SRC_DIR/$$(dirname "$$rel")"
             cp -L "$$src" "$$SRC_DIR/$$rel"
         done
@@ -265,7 +275,7 @@ genrule(
 )
 `, elem.Name, wrapCmakePipelineCmds(`        cmake -B "$$BUILD_ROOT" -G Ninja -S "$$SRC_DIR" -DCMAKE_INSTALL_PREFIX="$$INSTALL_ROOT"
         cmake --build "$$BUILD_ROOT" --parallel 1
-        cmake --install "$$BUILD_ROOT"`))
+        cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"`))
 }
 
 // wrapCmakePipelineCmds wraps a cmake configure + build +

@@ -423,6 +423,16 @@ func main() {
 		if *tracerBin == "" || *publishBin == "" {
 			log.Fatalf("--cmake-round2-fallback requires --build-tracer-bin and --trace-publish-bin so Project B's install genrule can wrap the build and publish the trace")
 		}
+		// The FUSE-sources kind:cmake template
+		// (cmakeElementBuildFuse) renders a different
+		// convert-element invocation that doesn't yet thread the
+		// fallback flag (or other convert-element flags). Until
+		// that template grows feature parity, reject the
+		// combination outright rather than silently letting
+		// classifier refusals Tier-1-exit on FUSE-mode runs.
+		if *useFuseSources {
+			log.Fatalf("--cmake-round2-fallback is incompatible with --use-fuse-sources today; the FUSE template doesn't yet thread --unsupported-execute-process-fallback into convert-element. Drop one of the flags.")
+		}
 		// build-tracer / trace-publish abs paths are resolved
 		// above (autotools-round-2 path uses the same flags),
 		// so autotoolsConfig.tracerBin / .publishBin already
