@@ -1,0 +1,225 @@
+package presets
+
+import (
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+)
+
+func TestParse_BasicShape(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "debug", "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}},
+			{"name": "release", "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := []toolchain.Variant{
+		{Name: "debug", CacheVars: map[string]string{"CMAKE_BUILD_TYPE": "Debug"}},
+		{Name: "release", CacheVars: map[string]string{"CMAKE_BUILD_TYPE": "Release"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestParse_HiddenPresetsSkipped: hidden presets are abstract bases
+// (typical pattern: "_base" with the binary dir pattern, then real
+// presets inherit it). They must NOT appear in the Variant matrix
+// because trying to configure with a hidden preset is meaningless.
+func TestParse_HiddenPresetsSkipped(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "_base", "hidden": true, "cacheVariables": {"FOO": "bar"}},
+			{"name": "real", "inherits": "_base"}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 visible variant; got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "real" {
+		t.Errorf("expected name=real; got %q", got[0].Name)
+	}
+	if got[0].CacheVars["FOO"] != "bar" {
+		t.Errorf("inherited FOO not propagated; got %v", got[0].CacheVars)
+	}
+}
+
+// TestParse_InheritsChainOverridesParent: child cacheVariables win
+// over inherited ones. The merge order — parent first, child last —
+// is the documented CMakePresets.json semantics.
+func TestParse_InheritsChainOverridesParent(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "parent", "hidden": true, "cacheVariables": {"A": "from-parent", "B": "from-parent"}},
+			{"name": "child", "inherits": "parent", "cacheVariables": {"A": "from-child", "C": "from-child"}}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1; got %d", len(got))
+	}
+	want := map[string]string{"A": "from-child", "B": "from-parent", "C": "from-child"}
+	if !reflect.DeepEqual(got[0].CacheVars, want) {
+		t.Errorf("got %+v, want %+v", got[0].CacheVars, want)
+	}
+}
+
+// TestParse_InheritsArray: the `inherits` field can be a string OR
+// an array of strings (later parents override earlier when keys
+// collide). Sorting the parent list keeps merge output deterministic
+// — two presets that differ only in inherits-list ordering must
+// produce byte-identical Variant output.
+func TestParse_InheritsArray(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "p1", "hidden": true, "cacheVariables": {"X": "p1"}},
+			{"name": "p2", "hidden": true, "cacheVariables": {"X": "p2", "Y": "p2-only"}},
+			{"name": "child", "inherits": ["p1", "p2"]}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1; got %d", len(got))
+	}
+	// Sorted-parents merge: p1 first, then p2 overrides X. Y from p2.
+	want := map[string]string{"X": "p2", "Y": "p2-only"}
+	if !reflect.DeepEqual(got[0].CacheVars, want) {
+		t.Errorf("got %+v, want %+v", got[0].CacheVars, want)
+	}
+}
+
+func TestParse_InheritsCycleRejected(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "a", "inherits": "b"},
+			{"name": "b", "inherits": "a"}
+		]
+	}`)
+	_, err := Parse(body)
+	if err == nil {
+		t.Fatal("expected cycle error; got nil")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParse_InheritsUnknownPresetRejected(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "a", "inherits": "missing"}
+		]
+	}`)
+	_, err := Parse(body)
+	if err == nil {
+		t.Fatal("expected unknown-parent error; got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown preset") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestParse_CacheVariableObjectShape: cacheVariables values can be
+// plain strings or {value, type} objects. Both paths must lift the
+// value into Variant.CacheVars.
+func TestParse_CacheVariableObjectShape(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "p", "cacheVariables": {
+				"PLAIN": "string-value",
+				"OBJECT": {"type": "STRING", "value": "object-value"},
+				"BOOL_LIKE": "ON"
+			}}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	want := map[string]string{
+		"PLAIN":     "string-value",
+		"OBJECT":    "object-value",
+		"BOOL_LIKE": "ON",
+	}
+	if !reflect.DeepEqual(got[0].CacheVars, want) {
+		t.Errorf("got %+v, want %+v", got[0].CacheVars, want)
+	}
+}
+
+// TestLoadFile_MissingReturnsNil keeps caller code clean — they can
+// union LoadFile("CMakePresets.json") + LoadFile("CMakeUserPresets.json")
+// without checking IsNotExist themselves. CMakeUserPresets.json is
+// commonly absent (it's per-developer, .gitignore'd).
+func TestLoadFile_MissingReturnsNil(t *testing.T) {
+	got, err := LoadFile("/no/such/path/CMakePresets.json")
+	if err != nil {
+		t.Errorf("expected nil error for missing file; got %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil variants; got %v", got)
+	}
+}
+
+// TestLoadFile_ProbeProjectFixture is the canonical-catalog contract:
+// converter/testdata/toolchain-probe/CMakePresets.json carries the
+// project's variant matrix (build types + sanitizers + coverage + lto).
+// This test loads it and asserts the catalog matches the Go-side
+// SanitizerVariants — the JSON is the single source of truth.
+func TestLoadFile_ProbeProjectFixture(t *testing.T) {
+	got, err := LoadFile("../../../testdata/toolchain-probe/CMakePresets.json")
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("probe-project CMakePresets.json yielded no variants")
+	}
+
+	gotByName := map[string]toolchain.Variant{}
+	for _, v := range got {
+		gotByName[v.Name] = v
+	}
+
+	// Every SanitizerVariant must appear in the JSON catalog with
+	// matching CacheVars; this is the cross-check the plan calls for.
+	for _, want := range toolchain.SanitizerVariants {
+		got, ok := gotByName[want.Name]
+		if !ok {
+			t.Errorf("CMakePresets.json missing sanitizer preset %q", want.Name)
+			continue
+		}
+		if !reflect.DeepEqual(got.CacheVars, want.CacheVars) {
+			t.Errorf("preset %q CacheVars mismatch:\n got: %+v\nwant: %+v",
+				want.Name, got.CacheVars, want.CacheVars)
+		}
+	}
+
+	// Build-type presets are also expected to be present.
+	for _, bt := range []string{"debug", "release", "relwithdebinfo", "minsizerel"} {
+		if _, ok := gotByName[bt]; !ok {
+			t.Errorf("CMakePresets.json missing build-type preset %q", bt)
+		}
+	}
+}
