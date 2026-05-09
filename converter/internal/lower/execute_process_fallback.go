@@ -138,7 +138,7 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			Visibility: []string{"//visibility:public"},
 		}
 
-		hdrs := installHeadersFor(t)
+		hdrs := installHeadersFor(t, hostSrc)
 		// Known gap: hdrs land on cc_import without an include-
 		// path export. Bazel's cc_import emitter doesn't render
 		// the `includes` attribute, so downstream consumers
@@ -344,7 +344,7 @@ func installPathFor(t fileapi.Target) string {
 // the divergence drives FileSet install-membership lookup as
 // a follow-on (Target.Install.FileSets / a codemodel field
 // we don't yet decode).
-func installHeadersFor(t fileapi.Target) []string {
+func installHeadersFor(t fileapi.Target, projectSrcRoot string) []string {
 	if len(t.FileSets) == 0 {
 		return nil
 	}
@@ -382,12 +382,15 @@ func installHeadersFor(t fileapi.Target) []string {
 		if !ok {
 			continue
 		}
-		// src.Path is project-source-root-relative. Strip
-		// the first matching BaseDirectory prefix (the
-		// public header root) to get the install-relative
-		// name; if no base dir matches, fall back to the
-		// source basename — wrong but at least non-crashing.
-		rel := stripFileSetBase(src.Path, fs.BaseDirectories, t.Paths.Source)
+		// src.Path is project-source-root-relative — pass the
+		// project root (not t.Paths.Source, which is the
+		// per-target source dir like "src/util" and would
+		// mis-resolve when joined with src.Path). Strip the
+		// first matching BaseDirectory prefix (the public
+		// header root) to get the install-relative name; if
+		// no base dir matches, fall back to the source
+		// basename — wrong but at least non-crashing.
+		rel := stripFileSetBase(src.Path, fs.BaseDirectories, projectSrcRoot)
 		if rel == "" {
 			continue
 		}
