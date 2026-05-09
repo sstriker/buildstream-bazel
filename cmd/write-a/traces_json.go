@@ -76,14 +76,22 @@ func collectTraces(g *graph) (tracesJSON, error) {
 // kind:autotools is special-cased here because its dispatch lives
 // in autotoolsHandler (handler_autotools_native.go) rather than
 // going through pipelineHandler's traceDrivenSrckeyPatterns
-// field. kind:cmake is special-cased too: it's not a pipeline
+// field. The autotools + pipeline arms only return non-nil when
+// autotoolsConfig.round2Enabled is set (with convertBin staged):
+// without round-2 active, those kinds don't reference
+// @trace_<elem>//:trace in their rendered BUILDs, so adding
+// per-element trace_repo entries to tools/traces.json would
+// instantiate Bazel repo rules at load time that nothing
+// consumes. kind:cmake is special-cased too: it's not a pipeline
 // handler, but joins the trace-driven path via the round-2
 // fallback (Phase B) when cmakeConfig.round2FallbackEnabled is
-// set. Other pipeline kinds (kind:make currently; future kinds
-// extending the same pattern) read straight from the handler's
-// field.
+// set, independent of autotools round-2.
 func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
+	autotoolsRound2 := autotoolsConfig.convertBin != "" && autotoolsConfig.round2Enabled
 	if kind == "autotools" {
+		if !autotoolsRound2 {
+			return nil
+		}
 		return autotoolsSrckeyPatterns()
 	}
 	if kind == "cmake" && cmakeConfig.round2FallbackEnabled {
@@ -95,6 +103,13 @@ func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 	}
 	ph, ok := h.(pipelineHandler)
 	if !ok {
+		return nil
+	}
+	if !autotoolsRound2 {
+		// Pipeline-kind dispatch through pipelineHandler.
+		// shouldUseRound2() also requires this gate; without
+		// it, traces.json populates entries for elements
+		// whose rendered BUILD won't reference @trace_*.
 		return nil
 	}
 	return ph.traceDrivenSrckeyPatterns
