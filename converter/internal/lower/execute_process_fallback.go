@@ -57,16 +57,17 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 		t, ok := r.Targets[tref.Id]
 		if !ok {
 			// Native render's main walk returns FileAPIMalformed
-			// here; the fallback intentionally relaxes that to
-			// a silent skip. The goal in fallback mode is "emit
-			// the largest set of resolvable labels we can", and
-			// turning a single dangling ref into a Tier-2 failure
-			// would lose every other target on the same
-			// codemodel — defeating the whole point of the
-			// placeholder. The same dangling ref still surfaces
-			// loudly the moment the operator drops the fallback
-			// flag and re-runs against the same reply (where the
-			// stricter native walk takes over).
+			// (a typed Tier-1 failure code) here; the fallback
+			// intentionally relaxes that to a silent skip. The
+			// goal in fallback mode is "emit the largest set of
+			// resolvable labels we can", and turning a single
+			// dangling ref into a Tier-1 failure would lose
+			// every other target on the same codemodel —
+			// defeating the whole point of the placeholder. The
+			// same dangling ref still surfaces loudly the moment
+			// the operator drops the fallback flag and re-runs
+			// against the same reply (where the stricter native
+			// walk takes over).
 			continue
 		}
 		if t.IsGeneratorProvided {
@@ -77,10 +78,17 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 		stub := ir.Target{
 			Name: t.Name,
 			Tags: []string{"cmake-codegen-execute-process-fallback"},
-			// Public visibility mirrors what native render
-			// gives an installed target; downstream consumers
-			// reference these labels exactly as they would
-			// against a fully-converted element.
+			// Public visibility for every stub — even
+			// not-installed targets that native render would
+			// have marked private. The goal in fallback mode is
+			// label resolvability: any cross-element consumer
+			// referring to `:thelib` should resolve regardless
+			// of whether the upstream element installed the
+			// target. This is a deliberate divergence from
+			// native render's per-target visibility (where
+			// Visibility comes from cmake's INTERFACE
+			// declarations); operators who want native render's
+			// visibility semantics drop the fallback flag.
 			Visibility: []string{"//visibility:public"},
 		}
 		switch t.Type {
@@ -88,6 +96,19 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			stub.Kind = ir.KindCCLibrary
 			if t.Type == "STATIC_LIBRARY" {
 				stub.Linkstatic = true
+			}
+			if t.Type == "OBJECT_LIBRARY" {
+				// Match native lowering: OBJECT_LIBRARY needs
+				// alwayslink=True so $<TARGET_OBJECTS:obj>
+				// link contributions from a consumer's deps[]
+				// don't get pruned by Bazel's link archiver
+				// (which strips unreferenced .o objects from
+				// static-archive deps by default). Even though
+				// the stub's body is empty in Step 2, keeping
+				// the structural attribute aligned now stops
+				// subtle behaviour drift once Step 2.5 wires
+				// real artifacts into the rule.
+				stub.Alwayslink = true
 			}
 		case "EXECUTABLE":
 			stub.Kind = ir.KindCCBinary
