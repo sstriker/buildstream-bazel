@@ -122,6 +122,16 @@ type Options struct {
 	// scale. The orchestrator validates the file exists at startup.
 	ToolchainCMakeFile string
 
+	// CollectToolchainSignal, when true, asks each element's
+	// converter to copy its cmake File API reply directory into
+	// <Out>/elements/<name>/toolchain-signal/. The unifier
+	// (cmd/unify-toolchains, Stage 5) consumes these via
+	// --element-signal to fold any per-element builtin-include /
+	// sysroot fact the dedicated toolchain probe missed. Off by
+	// default: existing flows that don't unify toolchains pay
+	// nothing for the extra directory copy.
+	CollectToolchainSignal bool
+
 	// Log is a back-compat shim: when set and Logger is nil, the
 	// orchestrator builds a slog.NewTextHandler(Log) and uses that
 	// for structured progress records. Per-element converter
@@ -587,13 +597,14 @@ func (r *runner) processElement(ctx context.Context, name string) error {
 	}
 
 	built, err := reapi.Build(reapi.Inputs{
-		ShadowDir:          shadowSrc,
-		ImportsManifest:    importsPath,
-		PrefixDir:          prefixPath,
-		ToolchainCMakeFile: r.opts.ToolchainCMakeFile,
-		ConverterBin:       r.convAbs,
-		Platform:           r.platform,
-		Timeout:            r.timeout,
+		ShadowDir:              shadowSrc,
+		ImportsManifest:        importsPath,
+		PrefixDir:              prefixPath,
+		ToolchainCMakeFile:     r.opts.ToolchainCMakeFile,
+		ConverterBin:           r.convAbs,
+		Platform:               r.platform,
+		Timeout:                r.timeout,
+		CollectToolchainSignal: r.opts.CollectToolchainSignal,
 		EnvVars: map[string]string{
 			"ORCHESTRATOR_ELEMENT_NAME": name,
 		},

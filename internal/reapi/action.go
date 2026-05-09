@@ -93,6 +93,15 @@ type Inputs struct {
 	// changing argv. Names are sorted into the proto for stable
 	// digests across hosts.
 	EnvVars map[string]string
+
+	// CollectToolchainSignal, when true, requests that
+	// convert-element copy its cmake File API reply directory into
+	// the action's output tree at <pathOutToolchainSignal>. The
+	// orchestrator uses this when it intends to feed
+	// unify-toolchains' --element-signal flag downstream — every
+	// element's reply contributes any builtin-include / sysroot
+	// fact the dedicated toolchain probe missed.
+	CollectToolchainSignal bool
 }
 
 // BuiltAction is the result of Build: a complete REAPI Action plus
@@ -139,6 +148,12 @@ const (
 	pathOutFailure     = "failure.json"
 	pathOutReads       = "read_paths.json"
 	pathOutTimings     = "timings.json"
+
+	// pathOutToolchainSignal is the action's output directory for
+	// per-element fileapi reply contents (Stage 6). Activated by
+	// Inputs.CollectToolchainSignal. The unifier (Stage 5) consumes
+	// the resulting trees via --element-signal.
+	pathOutToolchainSignal = "toolchain-signal"
 )
 
 // Build constructs the Action / Command / InputRoot for one conversion.
@@ -208,6 +223,9 @@ func buildCommand(in Inputs) *repb.Command {
 	if in.ToolchainCMakeFile != "" {
 		args = append(args, "--toolchain-cmake-file", pathToolchainCMake)
 	}
+	if in.CollectToolchainSignal {
+		args = append(args, "--out-toolchain-signal-dir", pathOutToolchainSignal)
+	}
 
 	platform := &repb.Platform{}
 	props := append([]PlatformProperty(nil), in.Platform...)
@@ -232,18 +250,23 @@ func buildCommand(in Inputs) *repb.Command {
 		})
 	}
 
+	outputs := []string{
+		pathOutBuild,
+		pathOutBundle,
+		pathOutFailure,
+		pathOutReads,
+		pathOutTimings,
+	}
+	if in.CollectToolchainSignal {
+		outputs = append(outputs, pathOutToolchainSignal)
+	}
+
 	return &repb.Command{
 		Arguments:            args,
 		EnvironmentVariables: envVars,
-		OutputPaths: []string{
-			pathOutBuild,
-			pathOutBundle,
-			pathOutFailure,
-			pathOutReads,
-			pathOutTimings,
-		},
-		WorkingDirectory: "",
-		Platform:         platform,
+		OutputPaths:          outputs,
+		WorkingDirectory:     "",
+		Platform:             platform,
 	}
 }
 

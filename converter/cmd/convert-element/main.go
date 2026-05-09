@@ -134,6 +134,19 @@ func run(a cli.Args) error {
 		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
 	}
 
+	// Stage 6: per-element toolchain signal capture. The unifier
+	// (Stage 5's cmd/unify-toolchains) optionally folds these
+	// into the platform's ResolvedToolchain.Base, picking up any
+	// builtin-include / sysroot fact a real element exposes that
+	// the dedicated toolchain probe missed. Off unless the caller
+	// (typically the orchestrator with --collect-toolchain-signal)
+	// opts in.
+	if a.OutToolchainSignalDir != "" {
+		if err := copyDirContents(replyDir, a.OutToolchainSignalDir); err != nil {
+			return fmt.Errorf("copy toolchain signal: %w", err)
+		}
+	}
+
 	var g *ninja.Graph
 	if ninjaPath != "" {
 		g, err = ninja.ParseFile(ninjaPath)
@@ -415,6 +428,44 @@ func compileCommandsPath(hostBuildDir, replyDir string) string {
 		}
 	}
 	return ""
+}
+
+// copyDirContents recursively copies srcDir's contents into dstDir,
+// creating dstDir if absent. Used by the Stage 6 toolchain-signal
+// capture: cmake's File API reply directory is small (a few JSON
+// files), so a recursive copy is cheap and a regular file/dir
+// shape is what the unifier's --element-signal consumer expects.
+// Symlinks are dereferenced — fileapi never produces them, so
+// this is a defensive no-op that keeps the destination tree
+// portable.
+func copyDirContents(srcDir, dstDir string) error {
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return err
+	}
+	return filepath.Walk(srcDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		dst := filepath.Join(dstDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, info.Mode().Perm())
+	})
 }
 
 // handleError marshals a typed Tier-1 failure to OutFailure (if requested) and

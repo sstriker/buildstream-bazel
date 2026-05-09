@@ -143,6 +143,50 @@ func TestBuild_ArgvHasCanonicalPaths(t *testing.T) {
 	}
 }
 
+// TestBuild_CollectToolchainSignal: when on, the action gets the
+// --out-toolchain-signal-dir flag plus the matching output path,
+// and the action digest changes (the flag flip is observable in
+// CAS so cached results from before the flip don't get reused).
+func TestBuild_CollectToolchainSignal(t *testing.T) {
+	in := fixture(t, false, false)
+	a1, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build w/o signal: %v", err)
+	}
+
+	in.CollectToolchainSignal = true
+	a2, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build w/ signal: %v", err)
+	}
+
+	// Argv has the new flag + path.
+	argv := a2.Command.Arguments
+	hasFlag := false
+	hasPath := false
+	for i, a := range argv {
+		if a == "--out-toolchain-signal-dir" && i+1 < len(argv) && argv[i+1] == "toolchain-signal" {
+			hasFlag = true
+		}
+	}
+	for _, p := range a2.Command.OutputPaths {
+		if p == "toolchain-signal" {
+			hasPath = true
+		}
+	}
+	if !hasFlag {
+		t.Errorf("expected --out-toolchain-signal-dir toolchain-signal in argv; got %v", argv)
+	}
+	if !hasPath {
+		t.Errorf("expected toolchain-signal in OutputPaths; got %v", a2.Command.OutputPaths)
+	}
+
+	// Different action digest.
+	if a1.ActionDigest.Hash == a2.ActionDigest.Hash {
+		t.Errorf("ActionDigest unchanged with CollectToolchainSignal flip; should differ")
+	}
+}
+
 func TestBuild_TimeoutSetsAction(t *testing.T) {
 	in := fixture(t, false, false)
 	in.Timeout = 17 * time.Minute
