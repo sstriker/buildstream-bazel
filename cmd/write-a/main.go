@@ -1023,13 +1023,14 @@ func stageCmakeConfigureFileTool(outDir string) (string, error) {
 //     and tracerBin set on autotoolsConfig): stages
 //     convert-element-autotools + build-tracer; round-2 also
 //     stages trace-publish + trace-lookup.
-//   - kind:cmake round-2 fallback active (cmakeConfig.round2-
-//     FallbackEnabled set, with --build-tracer-bin and
-//     --trace-publish-bin on the CLI): stages build-tracer +
-//     trace-publish (no convert-element-autotools — kind:cmake
-//     doesn't use it; no trace-lookup yet — the load-time
-//     @trace_<elem>//:trace lookup for cmake fallback is queued
-//     behind the trace-driven convergence research follow-on).
+//   - kind:cmake round-2 fallback active
+//     (cmakeConfig.round2FallbackEnabled set, with
+//     --build-tracer-bin and --trace-publish-bin on the CLI):
+//     stages build-tracer + trace-publish (no
+//     convert-element-autotools — kind:cmake doesn't use it; no
+//     trace-lookup yet — the load-time @trace_<elem>//:trace
+//     lookup for cmake fallback is queued behind the trace-
+//     driven convergence research follow-on).
 //
 // Returns the additional exports_files entries the caller
 // needs to add to its tools/BUILD.bazel; nil + nil when no

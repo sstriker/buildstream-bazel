@@ -261,7 +261,11 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 	// label resolution. See
 	// docs/design/cmake-execute-process-round2-fallback.md.
 	if cmakeConfig.round2FallbackEnabled {
-		if err := renderSrckey(elem, elemPkg, withCMakeListsRule(cmakeSrckeyPatterns())); err != nil {
+		// cmakeSrckeyPatterns() already includes "CMakeLists.txt"
+		// + "**/CMakeLists.txt" rules, so withCMakeListsRule
+		// would duplicate them in srckey-patterns.txt. Pass the
+		// pattern set straight through.
+		if err := renderSrckey(elem, elemPkg, cmakeSrckeyPatterns()); err != nil {
 			return err
 		}
 		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), cmakeRound2InstallBuild(elem))

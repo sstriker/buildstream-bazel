@@ -51,8 +51,15 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	// requires --build-tracer-bin + --trace-publish-bin to be
 	// set when --cmake-round2-fallback is on; the test wires
 	// them on autotoolsConfig (the shared resolution target).
+	// Explicitly clear the autotools-round2-specific fields so
+	// stageAutotoolsTools doesn't see leftover state from a
+	// prior test (notably .round2Enabled, which would stage
+	// trace-lookup and break the assertions below).
 	prevC := cmakeConfig
 	prevA := autotoolsConfig
+	autotoolsConfig.convertBin = ""
+	autotoolsConfig.lookupBin = ""
+	autotoolsConfig.round2Enabled = false
 	autotoolsConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
 	autotoolsConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
 	cmakeConfig.round2FallbackEnabled = true
