@@ -48,16 +48,19 @@
 # exercises (steps 1–3) is kind-agnostic — it tests
 # SyntheticActionDigest(srckey) round-tripping through a real
 # REAPI endpoint, which any kind that uses rules/traces.bzl's
-# _trace_repo hits the same way. That set is kind:autotools,
-# kind:make, kind:makemaker, kind:modulebuild, and kind:cmake
-# (with --cmake-round2-fallback enabled — the cmake handler
-# only opts into the rendezvous on that flag). Step 6's
-# bazel-build half is autotools-specific (asserts the
-# autotools converter emits fine cc rules from a published
-# trace); the kind:cmake-round2-fallback equivalent is the
-# render-half gate scripts/meta-cmake-round2-fallback.sh
-# (which covers the shape) plus the kind-agnostic wire
-# round-trip here.
+# _trace_repo hits the same way. The set is whichever kinds
+# write-a's traceDrivenSrckeyPatternsForKind returns non-nil
+# for: kind:autotools (special-cased), any pipeline kind
+# whose handler sets traceDrivenSrckeyPatterns (kind:make,
+# kind:makemaker, kind:modulebuild, kind:manual, kind:script
+# as of this writing — the list grows as new pipeline kinds
+# opt in), and kind:cmake when --cmake-round2-fallback is
+# enabled. Step 6's bazel-build half is autotools-specific
+# (asserts the autotools converter emits fine cc rules from
+# a published trace); the kind:cmake-round2-fallback
+# equivalent is the render-half gate
+# scripts/meta-cmake-round2-fallback.sh (which covers the
+# shape) plus the kind-agnostic wire round-trip here.
 #
 # Skips cleanly when docker compose / buildbarn aren't available.
 # Tears down everything via trap.

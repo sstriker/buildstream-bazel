@@ -511,6 +511,12 @@ func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
 	if len(outs) == 0 {
 		return nil
 	}
+	// Sort for deterministic rendering. The encounter order
+	// follows cfg.Targets + per-target FileSets + Sources,
+	// which can drift across cmake versions / File API JSON
+	// decode order; without a sort the emitted BUILD.bazel.out
+	// would shuffle outs across runs and break golden tests.
+	sort.Strings(outs)
 	return &ir.Target{
 		Name:        "_install_tree_extract",
 		Kind:        ir.KindGenrule,

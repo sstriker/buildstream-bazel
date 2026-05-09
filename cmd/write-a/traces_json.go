@@ -5,12 +5,16 @@ package main
 // Mirror of sources_json.go: one record per element whose kind
 // participates in the trace-driven round-2 path, naming the
 // element's content-narrowed srckey. The set is kind-agnostic —
-// kind:autotools, any pipeline kind whose handler sets
-// traceDrivenSrckeyPatterns (kind:make / makemaker / modulebuild
-// today; more later), and kind:cmake when the
-// --cmake-round2-fallback flag is enabled. The traces module
-// extension (rules/traces.bzl) reads this file at load time to
-// declare one @trace_<key>//:trace repo per entry.
+// kind:autotools (special-cased), any pipeline kind whose
+// handler sets traceDrivenSrckeyPatterns, and kind:cmake when
+// --cmake-round2-fallback is enabled. The pipeline-kind opt-ins
+// (as of this writing: kind:make / makemaker / modulebuild /
+// manual / script) grow whenever a new handler sets the field;
+// the source of truth lives on the per-kind handler rather than
+// in this comment, so don't take the list as canonical. The
+// traces module extension (rules/traces.bzl) reads this file
+// at load time to declare one @trace_<key>//:trace repo per
+// entry.
 //
 // The "key" field is the element name; Bazel's external-repo
 // namespace requires a static identifier. The "srckey" field is
