@@ -365,8 +365,12 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 // FILE_SET HEADERS BASE_DIRS include FILES include/foo.h)
 // has its public header surfaced as cc_import.hdrs in the
 // placeholder, and the same path appears in the extract
-// genrule's outs so consumers can resolve #include <foo.h>
-// through the placeholder shape.
+// genrule's outs so the file is at least produced. (A
+// follow-on extends the placeholder to also export an include
+// path — the cc_import emitter doesn't render `includes`
+// today, so bare-bracket #include <foo.h> still won't resolve.
+// Consumers using `install_tree/include/foo.h` directly do
+// resolve through the current shape.)
 func TestFallback_PopulatesHdrsFromFileSets(t *testing.T) {
 	idx0 := 0
 	thelib := fileapi.Target{

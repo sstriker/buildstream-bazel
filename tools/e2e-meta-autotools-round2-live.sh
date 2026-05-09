@@ -49,7 +49,8 @@
 # SyntheticActionDigest(srckey) round-tripping through a real
 # REAPI endpoint, which any kind that uses
 # rules/traces.bzl's _trace_repo (kind:autotools / make /
-# perl / cmake-round2-fallback) hits the same way. Step 6's
+# makemaker / modulebuild / cmake-round2-fallback) hits the
+# same way. Step 6's
 # bazel-build half is autotools-specific (asserts the
 # autotools converter emits fine cc rules from a published
 # trace); the cmake-round2-fallback equivalent is the
