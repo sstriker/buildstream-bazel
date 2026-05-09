@@ -187,8 +187,8 @@ func TestRecoverExecuteProcess_LiftFileProducing_SourceRootArgv(t *testing.T) {
 		OutputFile: "/build/generated.h",
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); err != nil {
-		t.Fatalf("expected lift to succeed; got %v", err)
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+		t.Fatalf("expected lift to succeed; got refusals: %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
