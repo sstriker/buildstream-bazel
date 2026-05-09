@@ -314,11 +314,21 @@ func installPathFor(t fileapi.Target) string {
 // FileSet install-destination support as a follow-on.
 //
 // Returns the deduped, sorted list of header install paths.
-// Nil for targets without HEADERS-typed FileSets — typical
-// for libraries that ship headers via target_sources(...
-// FILE_SET HEADERS) but didn't run install(TARGETS ...
-// FILE_SET HEADERS); the placeholder still emits the
-// artefact rule, just without hdrs.
+// Nil for targets without any PUBLIC/INTERFACE HEADERS-typed
+// FileSet — those targets get an artefact-only stub.
+//
+// Known gap: a target that DECLARES PUBLIC/INTERFACE FILE_SET
+// HEADERS via target_sources but doesn't actually pass those
+// FileSets to install(TARGETS ... FILE_SET HEADERS) will
+// still produce hdrs entries here — the function gates on
+// FileSet visibility, not on whether the FileSet appears in
+// the install contract. The extract genrule then declares
+// outs that install_tree.tar won't carry, surfacing as a
+// missing-out failure at A's build time. Honest behaviour
+// vs. silently dropping the headers; a real fixture forcing
+// the divergence drives FileSet install-membership lookup as
+// a follow-on (Target.Install.FileSets / a codemodel field
+// we don't yet decode).
 func installHeadersFor(t fileapi.Target) []string {
 	if len(t.FileSets) == 0 {
 		return nil
