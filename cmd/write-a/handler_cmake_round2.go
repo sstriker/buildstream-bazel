@@ -195,16 +195,22 @@ genrule(
         # Stage the source tree into a fresh dir so cmake's
         # configure-time filesystem walks see exactly the user's
         # source tree without Bazel sandbox bookkeeping files.
-        # cp -P preserves symlinks rather than dereferencing
-        # them. write-a's offline copyTree preserves symlinks
-        # (including dangling ones) when staging the source
-        # tree into elemPkg; switching to cp -L here would
-        # silently diverge by materialising the symlink
-        # target's bytes in the staged tree, breaking
-        # elements that ship intentional symlinks (e.g.
-        # compatibility shims or versioned-name links).
-        # Dangling symlinks in the source tree stay dangling
-        # here — same as copyTree.
+        # cp -L dereferences symlinks so SRC_DIR ends up with
+        # real bytes the cmake configure can read AND write to
+        # (some cmake projects do file(WRITE ...) or run
+        # generators that drop files in-tree at configure
+        # time). Inside Bazel's sandbox $(SRCS) typically
+        # resolve through the runfiles tree as read-only
+        # symlinks; cp -P would preserve them and downstream
+        # in-tree writes would fail with EROFS errors.
+        # write-a's offline copyTree preserves user-source
+        # symlinks at workspace-staging time, but once Bazel
+        # has the byte set the bytes are what matter; cp -L
+        # produces a writable, self-contained SRC_DIR. Dangling
+        # symlinks land here as cp errors — a clear "missing
+        # source" signal rather than the silent breakage cp -P
+        # would produce when the symlink target leaves the
+        # staged tree.
         export SRC_DIR="$$(mktemp -d)"
         for src in $(SRCS); do
             case "$$src" in
@@ -212,7 +218,7 @@ genrule(
             esac
             rel="$${src#elements/%[1]s/}"
             mkdir -p "$$SRC_DIR/$$(dirname "$$rel")"
-            cp -P "$$src" "$$SRC_DIR/$$rel"
+            cp -L "$$src" "$$SRC_DIR/$$rel"
         done
 
         export BUILD_ROOT="$$(mktemp -d)"
