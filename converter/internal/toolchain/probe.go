@@ -104,19 +104,10 @@ func Probe(ctx context.Context, opts ProbeOptions) ([]ProbeResult, error) {
 			return results, fmt.Errorf("toolchain.Probe: mkdir variant %q: %w", v.Name, err)
 		}
 
-		// cmakerun.Options surfaces BuildType as a dedicated field;
-		// other CacheVars don't have a "raw -D pass-through" surface
-		// yet (queued). Build type is the variant axis that matters
-		// for correctness today.
-		buildType := v.CacheVars["CMAKE_BUILD_TYPE"]
-
-		reply, err := cmakerun.Configure(ctx, cmakerun.Options{
-			SourceRoot: opts.SourceRoot,
-			BuildDir:   buildDir,
-			BuildType:  buildType,
-			Stdout:     opts.Stdout,
-			Stderr:     opts.Stderr,
-		})
+		runOpts := cmakeOptionsFor(v, opts.SourceRoot, buildDir)
+		runOpts.Stdout = opts.Stdout
+		runOpts.Stderr = opts.Stderr
+		reply, err := cmakerun.Configure(ctx, runOpts)
 		if err != nil {
 			return results, fmt.Errorf("toolchain.Probe: configure variant %q: %w", v.Name, err)
 		}
@@ -142,6 +133,31 @@ type ProbeResult struct {
 	Model    *Model
 	BuildDir string
 	Reply    *fileapi.Reply
+}
+
+// cmakeOptionsFor builds the cmakerun.Options that drive one
+// variant's Configure call. Pulled out as a pure helper so the
+// CacheVars routing (CMAKE_BUILD_TYPE → dedicated slot, everything
+// else → ExtraCacheVars) is unit-testable without invoking cmake.
+func cmakeOptionsFor(v Variant, sourceRoot, buildDir string) cmakerun.Options {
+	opts := cmakerun.Options{
+		SourceRoot: sourceRoot,
+		BuildDir:   buildDir,
+		BuildType:  v.CacheVars["CMAKE_BUILD_TYPE"],
+	}
+	// Forward every CacheVar except CMAKE_BUILD_TYPE (it has its
+	// own dedicated slot above; cmakerun rejects the duplication
+	// explicitly).
+	for k, val := range v.CacheVars {
+		if k == "CMAKE_BUILD_TYPE" {
+			continue
+		}
+		if opts.ExtraCacheVars == nil {
+			opts.ExtraCacheVars = make(map[string]string, len(v.CacheVars))
+		}
+		opts.ExtraCacheVars[k] = val
+	}
+	return opts
 }
 
 // sanitizeVariantName produces a filesystem-safe directory name.

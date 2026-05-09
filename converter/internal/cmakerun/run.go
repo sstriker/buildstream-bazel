@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -69,6 +70,17 @@ type Options struct {
 
 	// BuildType is passed as -DCMAKE_BUILD_TYPE. Defaults to Release.
 	BuildType string
+
+	// ExtraCacheVars are additional cmake cache entries passed as
+	// -D<name>=<value>. Rendered in lexicographic key order so the
+	// argv is byte-stable across runs. Use this for any cache knob
+	// that distinguishes a probe variant (compiler overrides,
+	// sanitizer flags, custom toolchain cache vars). Callers must
+	// not put CMAKE_BUILD_TYPE here — it has the dedicated BuildType
+	// slot above; Configure rejects the duplication explicitly to
+	// surface the misuse rather than silently letting cmake's
+	// last-wins -D semantics pick a winner.
+	ExtraCacheVars map[string]string
 
 	// TracePath, when non-empty, enables `cmake --trace-expand
 	// --trace-format=json-v1 --trace-redirect=<TracePath>`.
@@ -162,46 +174,9 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 	defer os.RemoveAll(homeDir)
 
-	argv := []string{
-		"-S", opts.SourceRoot,
-		"-B", opts.BuildDir,
-		"-G", "Ninja",
-		"-DCMAKE_BUILD_TYPE=" + opts.BuildType,
-		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
-	}
-	if opts.DumpVars {
-		// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) injects
-		// our dump-vars hook at the end of the top-level project()
-		// call. Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake
-		// reported it as a "manually-specified variable not used"
-		// in the configure-file fixture, suggesting the variable
-		// isn't honored when set only via -D (it expects the
-		// project to set it via set(CACHE) or for it to be already
-		// in the cache). _TOP_LEVEL_INCLUDES is a list-of-files
-		// variable explicitly designed for this CLI-injection
-		// pattern.
-		argv = append(argv,
-			"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+dumpVarsPath,
-		)
-	}
-	if opts.TracePath != "" {
-		argv = append(argv,
-			"--trace-expand",
-			"--trace-format=json-v1",
-			"--trace-redirect="+opts.TracePath,
-		)
-	}
-	if opts.ToolchainCMakeFile != "" {
-		// CMake resolves CMAKE_TOOLCHAIN_FILE relative paths against
-		// the build-dir first, then the source-dir; neither matches
-		// the executor's input-root layout where the file lands at
-		// <workdir>/toolchain.cmake. Pass an absolute path so cmake
-		// loads the file regardless of cwd / build-dir choice.
-		toolchainAbs, err := filepath.Abs(opts.ToolchainCMakeFile)
-		if err != nil {
-			return Reply{}, fmt.Errorf("cmakerun: abs toolchain file: %w", err)
-		}
-		argv = append(argv, "-DCMAKE_TOOLCHAIN_FILE="+toolchainAbs)
+	argv, err := buildCmakeArgv(opts, dumpVarsPath)
+	if err != nil {
+		return Reply{}, err
 	}
 
 	cmd := exec.CommandContext(ctx, "cmake", argv...)
@@ -233,6 +208,73 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		Path: filepath.Join(opts.BuildDir, ".cmake", "api", "v1", "reply"),
 		Vars: vars,
 	}, nil
+}
+
+// buildCmakeArgv assembles cmake's command-line arguments from
+// Options. Pure (no I/O) so the rendering is unit-testable. The
+// only filesystem-touching step the function performs is
+// resolving CMAKE_TOOLCHAIN_FILE to an absolute path — required
+// because cmake resolves a relative CMAKE_TOOLCHAIN_FILE against
+// the build-dir first, then the source-dir, and our executor's
+// input-root layout matches neither.
+//
+// Argv order is fixed: -S, -B, -G, the dedicated -DCMAKE_BUILD_TYPE
+// and -DCMAKE_EXPORT_COMPILE_COMMANDS, then ExtraCacheVars in
+// lexicographic key order, then the optional --trace-* and
+// CMAKE_TOOLCHAIN_FILE / CMAKE_PROJECT_TOP_LEVEL_INCLUDES tail.
+// Stable across runs of the same Options.
+func buildCmakeArgv(opts Options, dumpVarsPath string) ([]string, error) {
+	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
+		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
+	}
+
+	argv := []string{
+		"-S", opts.SourceRoot,
+		"-B", opts.BuildDir,
+		"-G", "Ninja",
+		"-DCMAKE_BUILD_TYPE=" + opts.BuildType,
+		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+
+	if len(opts.ExtraCacheVars) > 0 {
+		keys := make([]string, 0, len(opts.ExtraCacheVars))
+		for k := range opts.ExtraCacheVars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			argv = append(argv, "-D"+k+"="+opts.ExtraCacheVars[k])
+		}
+	}
+
+	if opts.DumpVars {
+		// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) injects
+		// our dump-vars hook at the end of the top-level project()
+		// call. Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake
+		// reported it as a "manually-specified variable not used"
+		// in the configure-file fixture, suggesting the variable
+		// isn't honored when set only via -D (it expects the
+		// project to set it via set(CACHE) or for it to be already
+		// in the cache). _TOP_LEVEL_INCLUDES is a list-of-files
+		// variable explicitly designed for this CLI-injection
+		// pattern.
+		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+dumpVarsPath)
+	}
+	if opts.TracePath != "" {
+		argv = append(argv,
+			"--trace-expand",
+			"--trace-format=json-v1",
+			"--trace-redirect="+opts.TracePath,
+		)
+	}
+	if opts.ToolchainCMakeFile != "" {
+		toolchainAbs, err := filepath.Abs(opts.ToolchainCMakeFile)
+		if err != nil {
+			return nil, fmt.Errorf("cmakerun: abs toolchain file: %w", err)
+		}
+		argv = append(argv, "-DCMAKE_TOOLCHAIN_FILE="+toolchainAbs)
+	}
+	return argv, nil
 }
 
 // readVarsDump parses the file dump-vars.cmake wrote. Missing
