@@ -84,7 +84,8 @@ loop is:
 4. **End the turn**. Webhook events will wake you when the bot
    responds.
 5. **When feedback lands**, fetch the full state with
-   `pull_request_read` (`get_review_comments` + `get_check_runs`) and
+   `mcp__github__pull_request_read` (`get_review_comments` +
+   `get_check_runs`) and
    triage each thread:
    - **Real bugs** (broken behavior, logic errors, unresolved merge
      conflict markers, CI failures): fix.
