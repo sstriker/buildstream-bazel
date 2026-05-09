@@ -138,7 +138,19 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			Visibility: []string{"//visibility:public"},
 		}
 
-		hdrs := installHeadersFor(t, hostSrc)
+		// Use the codemodel's recording-time source root for
+		// the FileSet BaseDirectory prefix-strip rather than
+		// the host-side hostSrc. BaseDirectories are absolute
+		// paths under r.Codemodel.Paths.Source — the recording
+		// machine's source path. When hostSrc differs (common
+		// in --reply-dir offline tests, where the reply was
+		// captured on a different host), passing hostSrc makes
+		// the prefix match fail and stripFileSetBase falls back
+		// to filepath.Base(), flattening nested public headers
+		// like include/sub/internal.h → internal.h. The
+		// codemodel-side root keeps the prefix match stable
+		// across machines.
+		hdrs := installHeadersFor(t, r.Codemodel.Paths.Source)
 		// Known gap: hdrs land on cc_import without an include-
 		// path export. Bazel's cc_import emitter doesn't render
 		// the `includes` attribute, so downstream consumers
