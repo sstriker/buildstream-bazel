@@ -33,32 +33,28 @@ transition cleanly.
   per-element orchestrate-time fold shipped for kind:cmake
   Phase A (see Done — `internal/empfold`,
   `converter/internal/elementfold`, `cmd/fold-element`,
-  per-element multi-platform BUILD generation), but the
+  per-element multi-platform BUILD generation), and the
+  trace publish/lookup rendezvous can now partition its AC
+  keyspace by platform (also Done — `SyntheticActionDigest`
+  takes a platform tag; `trace-publish` / `trace-lookup` /
+  `rules/traces.bzl` plumb `--platform` end to end via
+  `CMAKE_TO_BAZEL_PLATFORM`). What's still queued for the
   round-2 path (kind:cmake Phase B fallback, kind:autotools,
   kind:make, kind:makemaker, kind:modulebuild, kind:manual,
-  kind:script, kind:meson Phase B) doesn't yet have an
-  equivalent. Two unresolved cross-platform problems show up
-  when Bazel builds project B across more than one platform:
-  (1) the trace-publish/lookup rendezvous keys the AC by
-  `SyntheticActionDigest(srckey)` where srckey is computed
-  from sources only, so traces from different platforms
-  collide at the same AC key (a darwin trace published first
-  shadows the linux trace under the same srckey); (2) install
-  layouts diverge across platforms (`.so` vs `.dylib`,
-  multiarch lib dirs, arch-tagged binary names), so a
-  converter genrule consuming one platform's trace emits
-  stubs that don't match another platform's `install_tree.tar`.
-  Resolution sketch: extend the synthetic AC key with a
-  platform tag (REAPI Action.Platform digest or a
-  manifest-supplied platform name) and teach project A's
-  converter genrule to fold per-platform install plans the
-  same way `elementfold` folds per-platform IRs — emitting
-  per-target stubs with `select()`-gated path attributes
+  kind:script, kind:meson Phase B): the converter genrule
+  itself runs in project A and emits a single
+  `BUILD.bazel.out` per element today. With diverging
+  per-platform install layouts (`.so` vs `.dylib`, multiarch
+  lib dirs, arch-tagged binary names), one platform's
+  converter output doesn't match another platform's
+  `install_tree.tar` — the platform-partitioned AC alone
+  isn't enough; the rendered stubs need `select()`-gated
+  path attributes
   (`static_library = select({...: "lib/x86_64-linux-gnu/libfoo.a", ...})`).
   Open design question: whether the round-2 converter genrule
-  itself runs per-platform (and the elementfold then composes
-  N converter outputs) or whether it consumes N traces
-  directly via a `_trace_repo` that fans out by platform.
+  itself runs per-platform (and `elementfold` composes N
+  converter outputs) or whether it consumes N traces directly
+  via a `_trace_repo` that fans out by platform.
 - **Element-signal consumption in the unifier.** Stage 6 capture
   is in (`--collect-toolchain-signal` flows fileapi replies into
   `<out>/elements/<name>/toolchain-signal/`). Pending: wire
@@ -216,6 +212,27 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Platform-tagged synthetic AC key for trace publish/lookup.**
+  `tracenorm.SyntheticActionDigest` takes a platform tag in
+  addition to srckey; non-empty tags partition the synthetic
+  AC keyspace so two platforms' traces against the same source
+  content land at distinct AC keys instead of one shadowing
+  the other. Empty platform preserves the historical
+  2-argument shape exactly — single-platform operators
+  upgrading past this revision keep their previously published
+  AC entries valid. `trace-publish` / `trace-lookup` gain a
+  `--platform` flag; `rules/traces.bzl`'s `_trace_repo` reads
+  `CMAKE_TO_BAZEL_PLATFORM` from the operator's `--repo_env`
+  and passes it to `trace-lookup`; project B's install
+  genrules (cmake round-2 + the autotools-family pipeline)
+  read the same env var via `--action_env` and pass it to
+  `trace-publish`. The publish/lookup rendezvous now hits
+  only when both sides agree on the platform — a darwin
+  trace and a linux trace coexist in the AC without
+  collision. The matching converter-side fold of per-platform
+  install plans is still queued under Next as
+  "Per-platform fold for round-2 trace-driven kinds".
 
 - **Per-element multi-platform BUILD generation (kind:cmake Phase A).**
   `convert-element` no longer bakes the host's viewpoint into each

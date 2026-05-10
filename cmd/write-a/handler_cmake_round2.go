@@ -266,9 +266,19 @@ genrule(
         # keeps the genrule output readable when debugging.
         if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
             cd "$$EXEC_ROOT"
+            # CMAKE_TO_BAZEL_PLATFORM is the matching env var
+            # rules/traces.bzl's _trace_repo reads at load time.
+            # When the operator sets it on the build (via
+            # --action_env=CMAKE_TO_BAZEL_PLATFORM=...) the publish
+            # side tags its AC entry with that platform; rendezvous
+            # with the lookup side (--repo_env of the same var) hits
+            # only for matching platforms. Unset preserves today's
+            # single-keyspace shape — single-platform operators see
+            # no behavior change.
             $(location //tools:trace-publish) \\
                 --cas="$${CAS_GRPC_ADDR}" \\
                 --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \\
+                --platform="$${CMAKE_TO_BAZEL_PLATFORM:-}" \\
                 --trace="$(location trace.log)" >/dev/null
         fi
     """,

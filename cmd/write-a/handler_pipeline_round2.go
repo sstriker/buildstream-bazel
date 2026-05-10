@@ -242,9 +242,16 @@ func pipelineTracePublishStep(elemName string) string {
         # readable when a developer is debugging.
         cd "$$EXEC_ROOT"
         if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
+            # CMAKE_TO_BAZEL_PLATFORM partitions the synthetic AC
+            # keyspace per target platform (matches the env var
+            # rules/traces.bzl's _trace_repo reads at load time).
+            # Operators with a multi-platform Bazel build set it
+            # via --action_env=CMAKE_TO_BAZEL_PLATFORM=...; unset
+            # preserves the historical single-keyspace shape.
             $(location //tools:trace-publish) \
                 --cas="$${CAS_GRPC_ADDR}" \
                 --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \
+                --platform="$${CMAKE_TO_BAZEL_PLATFORM:-}" \
                 --trace="$(location trace.log)" \
                 --make-db="$(location make-db.txt)" >/dev/null
         fi`

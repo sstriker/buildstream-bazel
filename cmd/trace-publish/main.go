@@ -48,6 +48,7 @@ func main() {
 	tracePath := flag.String("trace", "", "path to the canonicalized trace.log produced by build-tracer.")
 	makeDBPath := flag.String("make-db", "", "path to the filtered make-db.txt produced by the genrule's `make -np` post-step.")
 	sourceRoot := flag.String("source-root", "", "absolute path to the element's source tree. Mirrors build-tracer's --source-root: when set, the defensive re-canonicalization filters openat lines to source-relative paths and strips the volatile fd return value (the trace doubles as a configure-time read oracle). When empty, openat lines drop entirely — preserves the legacy AC byte schema for elements not opted into the oracle.")
+	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace for round-2 trace-driven kinds whose install layout / build graph diverges across target platforms. Empty preserves the historical single-keyspace shape — single-platform operators upgrading past this flag keep their previously published AC entries valid. The matching trace-lookup invocation in rules/traces.bzl must pass the same tag for the publish/lookup rendezvous to hit.")
 	flag.Parse()
 
 	if *addr == "" || *srckey == "" || *tracePath == "" || *makeDBPath == "" {
@@ -66,7 +67,7 @@ func main() {
 	}
 	defer store.Close()
 
-	if err := publish(ctx, store, *srckey, *tracePath, *makeDBPath, *sourceRoot); err != nil {
+	if err := publish(ctx, store, *srckey, *platform, *tracePath, *makeDBPath, *sourceRoot); err != nil {
 		log.Fatalf("trace-publish: %v", err)
 	}
 }
@@ -74,7 +75,7 @@ func main() {
 // publish does the work; factored out so the in-process roundtrip
 // test (which uses cas.LocalStore) shares the upload + AC-update
 // logic with the gRPC binary path.
-func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath, sourceRoot string) error {
+func publish(ctx context.Context, store cas.Store, srckey, platform, tracePath, makeDBPath, sourceRoot string) error {
 	traceBody, err := os.ReadFile(tracePath)
 	if err != nil {
 		return fmt.Errorf("read trace: %w", err)
@@ -150,7 +151,7 @@ func publish(ctx context.Context, store cas.Store, srckey, tracePath, makeDBPath
 	// Directory digest (consumed by trace-lookup directly so
 	// cas-fuse / bb_clientd can serve `<mount>/blobs/directory/
 	// <root>` without a Tree-proto round trip).
-	actionDigest, err := tracenorm.SyntheticActionDigest(srckey)
+	actionDigest, err := tracenorm.SyntheticActionDigest(srckey, platform)
 	if err != nil {
 		return fmt.Errorf("synth-key: %w", err)
 	}

@@ -41,6 +41,7 @@ func main() {
 	addr := flag.String("cas", "", "REAPI gRPC address (host:port). Empty/unset ⇒ lookup miss (load-time fallback shape).")
 	instance := flag.String("instance", "", "REAPI instance name; matches the AC endpoint's multi-tenancy prefix.")
 	srckey := flag.String("srckey", "", "per-element srckey hex (the content of srckey.txt); seeds the synthetic AC key.")
+	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace. Must match the tag the publishing side (trace-publish) used for the same srckey. Empty preserves the historical single-keyspace shape — single-platform operators upgrading past this flag keep their previously published entries reachable.")
 	flag.Parse()
 
 	if *srckey == "" {
@@ -71,7 +72,7 @@ func main() {
 	}
 	defer store.Close()
 
-	digest, err := lookup(ctx, store, *srckey)
+	digest, err := lookup(ctx, store, *srckey, *platform)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "trace-lookup: %v\n", err)
 		os.Exit(1)
@@ -89,8 +90,8 @@ func main() {
 // (AC entry absent OR blob evicted); both publisher
 // "haven't built this yet" and CAS-eviction shapes route
 // through the same coarse-fallback path.
-func lookup(ctx context.Context, store cas.Store, srckey string) (*cas.Digest, error) {
-	key, err := tracenorm.SyntheticActionDigest(srckey)
+func lookup(ctx context.Context, store cas.Store, srckey, platform string) (*cas.Digest, error) {
+	key, err := tracenorm.SyntheticActionDigest(srckey, platform)
 	if err != nil {
 		return nil, fmt.Errorf("synth-key: %w", err)
 	}

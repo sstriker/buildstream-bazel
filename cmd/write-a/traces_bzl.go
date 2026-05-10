@@ -49,6 +49,21 @@ package main
 //                       perform the lookup and falls back to miss.
 //
 // Optional:
+//   - CMAKE_TO_BAZEL_PLATFORM — platform tag (e.g.
+//                       "linux_x86_64") that partitions the
+//                       synthetic AC keyspace, so the lookup
+//                       hits only the trace published by the
+//                       matching platform's build. Multi-
+//                       platform operators set this to match
+//                       their `bazel build --platforms=...`
+//                       choice (via `--repo_env`); single-
+//                       platform operators leave it unset and
+//                       fall back to the legacy single-
+//                       keyspace shape. The MATCHING
+//                       trace-publish invocation in project
+//                       B's install genrule must read the
+//                       same env var so its `--platform` flag
+//                       agrees with the lookup side.
 //   - TRACE_REPO_NONCE — opaque env var the rule declares in
 //                        `environ`. Bumping its value forces
 //                        Bazel to re-run the repo rule even when
@@ -93,6 +108,14 @@ def _trace_repo_impl(rctx):
     mount = rctx.os.environ.get("CAS_FUSE_MOUNT", "")
     prefix = rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")
     lookup_bin = rctx.os.environ.get("TRACE_LOOKUP_BIN", "")
+    # CMAKE_TO_BAZEL_PLATFORM partitions the synthetic AC
+    # keyspace per target platform. Empty/unset preserves the
+    # legacy single-keyspace shape so single-platform operators
+    # upgrading past this rule revision keep their previously
+    # published AC entries reachable. The matching publish-side
+    # invocation in project B's install genrule must read the
+    # same env var (via --action_env) so the two sides agree.
+    platform_tag = rctx.os.environ.get("CMAKE_TO_BAZEL_PLATFORM", "")
     rctx.file("WORKSPACE", "")
 
     # Empty fallback: any of the three env requirements absent
@@ -116,7 +139,10 @@ def _trace_repo_impl(rctx):
     # eval shouldn't fail the build just because the cache is
     # unreachable; the converter's coarse fallback is the
     # available-mode path.
-    res = rctx.execute([lookup_bin, "--cas=" + addr, "--srckey=" + srckey])
+    lookup_argv = [lookup_bin, "--cas=" + addr, "--srckey=" + srckey]
+    if platform_tag != "":
+        lookup_argv.append("--platform=" + platform_tag)
+    res = rctx.execute(lookup_argv)
     if res.return_code != 0:
         rctx.file("BUILD.bazel", empty_build)
         return
@@ -161,6 +187,7 @@ _trace_repo = repository_rule(
         "CAS_FUSE_MOUNT",
         "CAS_DIRECTORY_PREFIX",
         "TRACE_LOOKUP_BIN",
+        "CMAKE_TO_BAZEL_PLATFORM",
         "TRACE_REPO_NONCE",
     ],
 )

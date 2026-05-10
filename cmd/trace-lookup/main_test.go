@@ -34,7 +34,7 @@ func TestLookup_HitReturnsRootDigest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("uploaddir: %v", err)
 	}
-	key, err := tracenorm.SyntheticActionDigest("srckey-1")
+	key, err := tracenorm.SyntheticActionDigest("srckey-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestLookup_HitReturnsRootDigest(t *testing.T) {
 		t.Fatalf("update-ar: %v", err)
 	}
 
-	got, err := lookup(ctx, store, "srckey-1")
+	got, err := lookup(ctx, store, "srckey-1", "")
 	if err != nil {
 		t.Fatalf("lookup: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestLookup_MissReturnsNil(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := lookup(ctx, store, "never-published")
+	got, err := lookup(ctx, store, "never-published", "")
 	if err != nil {
 		t.Errorf("miss should not be an error; got %v", err)
 	}
@@ -93,7 +93,7 @@ func TestLookup_BlobEvictedTreatedAsMiss(t *testing.T) {
 	// landed in CAS (synthesize a digest of arbitrary bytes).
 	bogusBody := []byte("not actually in cas")
 	bogusDigest := cas.DigestOf(bogusBody)
-	key, _ := tracenorm.SyntheticActionDigest("srckey-evicted")
+	key, _ := tracenorm.SyntheticActionDigest("srckey-evicted", "")
 	if err := store.UpdateActionResult(ctx, key, &repb.ActionResult{
 		OutputDirectories: []*repb.OutputDirectory{
 			{Path: "trace", RootDirectoryDigest: bogusDigest},
@@ -101,7 +101,7 @@ func TestLookup_BlobEvictedTreatedAsMiss(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := lookup(ctx, store, "srckey-evicted")
+	got, err := lookup(ctx, store, "srckey-evicted", "")
 	if err != nil {
 		t.Errorf("eviction case should be a clean miss; got %v", err)
 	}

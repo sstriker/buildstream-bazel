@@ -41,12 +41,12 @@ func TestPublish_RoundtripThroughLocalStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := publish(ctx, store, "srckey-aaa", tracePath, makeDBPath, ""); err != nil {
+	if err := publish(ctx, store, "srckey-aaa", "", tracePath, makeDBPath, ""); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
 	// Lookup by recomputing the synthetic key.
-	key, err := tracenorm.SyntheticActionDigest("srckey-aaa")
+	key, err := tracenorm.SyntheticActionDigest("srckey-aaa", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,14 +97,14 @@ func TestPublish_DistinctSrckeysIsolate(t *testing.T) {
 	if err := os.WriteFile(makeDBPath, []byte("makedb content\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := publish(ctx, store, "srckey-a", tracePath, makeDBPath, ""); err != nil {
+	if err := publish(ctx, store, "srckey-a", "", tracePath, makeDBPath, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := publish(ctx, store, "srckey-b", tracePath, makeDBPath, ""); err != nil {
+	if err := publish(ctx, store, "srckey-b", "", tracePath, makeDBPath, ""); err != nil {
 		t.Fatal(err)
 	}
-	keyA, _ := tracenorm.SyntheticActionDigest("srckey-a")
-	keyB, _ := tracenorm.SyntheticActionDigest("srckey-b")
+	keyA, _ := tracenorm.SyntheticActionDigest("srckey-a", "")
+	keyB, _ := tracenorm.SyntheticActionDigest("srckey-b", "")
 	arA, err := store.GetActionResult(ctx, keyA)
 	if err != nil {
 		t.Fatalf("get-ar A: %v", err)
@@ -143,11 +143,11 @@ func TestPublish_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := publish(ctx, store, "srckey-zzz", tracePath, makeDBPath, ""); err != nil {
+		if err := publish(ctx, store, "srckey-zzz", "", tracePath, makeDBPath, ""); err != nil {
 			t.Fatalf("iteration %d: %v", i, err)
 		}
 	}
-	key, _ := tracenorm.SyntheticActionDigest("srckey-zzz")
+	key, _ := tracenorm.SyntheticActionDigest("srckey-zzz", "")
 	if _, err := store.GetActionResult(ctx, key); err != nil {
 		t.Errorf("AC entry missing after 3 publishes: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestPublish_NotFoundIsCleanError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	key, _ := tracenorm.SyntheticActionDigest("never-published")
+	key, _ := tracenorm.SyntheticActionDigest("never-published", "")
 	_, err = store.GetActionResult(ctx, key)
 	if !errors.Is(err, cas.ErrNotFound) {
 		t.Errorf("expected ErrNotFound; got %v", err)
@@ -170,4 +170,75 @@ func TestPublish_NotFoundIsCleanError(t *testing.T) {
 	// Silence the unused import — repb may not appear in the
 	// non-error path otherwise.
 	_ = (*repb.ActionResult)(nil)
+}
+
+// TestPublish_PlatformPartitionsAC: publishing the same srckey
+// under two different platform tags lands two distinct AC
+// entries. Critical for round-2 trace-driven kinds whose
+// install layout / build graph legitimately diverges across
+// target platforms (.so vs .dylib, multiarch lib dirs); a
+// shared keyspace would let the first platform's trace shadow
+// the second's, producing converter stubs that don't match
+// the second platform's install_tree.tar.
+func TestPublish_PlatformPartitionsAC(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	linuxTrace := filepath.Join(src, "linux.log")
+	darwinTrace := filepath.Join(src, "darwin.log")
+	makeDB := filepath.Join(src, "db.txt")
+	// Distinct bodies so the platform partitioning is the only
+	// thing keeping the two AC entries distinct (i.e. we're
+	// testing keyspace behaviour, not CAS dedup).
+	if err := os.WriteFile(linuxTrace, []byte("trace-linux\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(darwinTrace, []byte("trace-darwin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(makeDB, []byte("db\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publish(ctx, store, "srckey-shared", "linux_x86_64", linuxTrace, makeDB, ""); err != nil {
+		t.Fatalf("publish linux: %v", err)
+	}
+	if err := publish(ctx, store, "srckey-shared", "darwin_arm64", darwinTrace, makeDB, ""); err != nil {
+		t.Fatalf("publish darwin: %v", err)
+	}
+
+	linuxKey, _ := tracenorm.SyntheticActionDigest("srckey-shared", "linux_x86_64")
+	darwinKey, _ := tracenorm.SyntheticActionDigest("srckey-shared", "darwin_arm64")
+	if linuxKey.Hash == darwinKey.Hash {
+		t.Fatalf("synth keys collapsed across platforms; the platform partition is the test's premise")
+	}
+	linuxAR, err := store.GetActionResult(ctx, linuxKey)
+	if err != nil {
+		t.Fatalf("get linux AR: %v", err)
+	}
+	darwinAR, err := store.GetActionResult(ctx, darwinKey)
+	if err != nil {
+		t.Fatalf("get darwin AR: %v", err)
+	}
+	if linuxAR == nil || darwinAR == nil {
+		t.Fatalf("per-platform AC entries didn't round-trip: linux=%v darwin=%v", linuxAR, darwinAR)
+	}
+	if linuxAR.OutputDirectories[0].RootDirectoryDigest.Hash ==
+		darwinAR.OutputDirectories[0].RootDirectoryDigest.Hash {
+		t.Errorf("AC entries reference identical trace bodies — one platform's publish overwrote the other under a shared key (regression in the partition)")
+	}
+
+	// A platform-less lookup against the same srckey misses
+	// both entries (it queries the legacy keyspace, which we
+	// never published into); confirms back-compat goes the
+	// other way too — an old-style lookup can't accidentally
+	// route to a platform-tagged entry.
+	legacyKey, _ := tracenorm.SyntheticActionDigest("srckey-shared", "")
+	_, err = store.GetActionResult(ctx, legacyKey)
+	if !errors.Is(err, cas.ErrNotFound) {
+		t.Errorf("platform-less lookup against a srckey only published with platform tags should be ErrNotFound; got %v", err)
+	}
 }
