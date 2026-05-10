@@ -94,21 +94,50 @@ transition cleanly.
 - **kind:cmake round-2 fallback for unliftable
   `execute_process`.** Phase B follow-on to the Now-bullet
   native lift. When `convert-element` exits with
-  `unsupported-execute-process`, the orchestrator should route
-  the element through a coarse "cmake configure + ninja +
-  install" genrule, exactly the way kind:autotools / make /
-  perl / manual / script round-2 handle elements that the
-  native renderer can't fully translate. Reuses
-  `cmd/build-tracer` (ptrace-wraps the build to capture every
-  subprocess including the configure-time `execute_process`
-  invocations), the `@trace_<elem>//:trace` AC-lookup repo
-  rule, and the inline `trace-publish` write-back. Opt-in via
-  the existing `traceDrivenSrckeyPatterns` field on
-  kind:cmake's `pipelineHandler` (see kind:make's one-line
-  precedent in `handler_make.go:makeSrckeyPatterns`). Render
-  gate: `meta-cmake-round2.sh`. The kind-agnostic live-AC gate
-  (`tools/e2e-meta-autotools-round2-live.sh`) covers
-  kind:cmake the moment it opts in.
+  `unsupported-execute-process`, the round-2-style coarse
+  "cmake configure + ninja + install" genrule takes over for
+  that element — same destination as kind:autotools / make /
+  makemaker / modulebuild / manual / script, but reached
+  differently. kind:cmake
+  is **not** a `pipelineHandler` variant (no
+  `traceDrivenSrckeyPatterns` field to flip; no
+  `shouldUseRound2()` branch), and it doesn't have an
+  autotools-style `round2Enabled` build-wide flag either —
+  flipping either would force every kind:cmake element through
+  round-2, sacrificing the fine-grained native render. Instead
+  the dispatch is **per-element**: `cmakeHandler` keeps the
+  native render as the primary path, and the round-2 install
+  genrule + placeholder BUILD.bazel.out are extra wiring
+  emitted alongside, activated only when convert-element
+  refuses the call. Reuses `cmd/build-tracer`,
+  `@trace_<elem>//:trace`, and the inline `trace-publish`
+  rendezvous machinery — all of which are kind-agnostic
+  already. Render gate: `scripts/meta-cmake-round2-fallback.sh`. Live-AC gate:
+  the publish/lookup wire half of
+  `tools/e2e-meta-autotools-round2-live.sh` is kind-agnostic
+  but its bazel-build half is autotools-fixture-specific; a
+  cmake sibling gate is the v1 plan. Architectural recipe:
+  `docs/design/cmake-execute-process-round2-fallback.md`.
+- **Repo-rule install for kind:cmake round-2 fallback.**
+  Phase B's round-2 fallback (per
+  `docs/design/cmake-execute-process-round2-fallback.md`)
+  transports the install tree as `install_tree.tar` between
+  project B and project A's `BUILD.bazel.out`, costing roughly
+  2× bytes in CAS (tar blob + extracted files via the
+  in-`BUILD.bazel.out` extract genrule) and one extra Bazel
+  action per consumer. Storage duplication adds up across a
+  fleet. Alternative: a Bazel repository rule whose
+  `repository_ctx.execute()` either runs cmake at loading
+  time directly OR untars `install_tree.tar` into a
+  per-element repo, exposing per-target labels without the
+  extract genrule + CAS duplication. Precedent:
+  `rules/traces.bzl`'s `_trace_repo` (loading-time AC
+  lookup) — but that one only does AC `GetActionResult`, not
+  a full build. Trade-offs: loading-time work blocks Bazel
+  startup; repo rules don't run on RBE (executor-pool
+  advantages forfeited); hermeticity weaker (relies on
+  host-side cmake/ninja). Worth re-evaluating once fixtures
+  reveal the storage-duplication cost in practice.
 - **kind:meson** native render. Meson exposes
   `meson introspect --targets`, which is closer to cmake's File API
   than autotools' "you have to actually run it" introspection. The
