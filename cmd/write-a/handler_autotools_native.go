@@ -9,7 +9,7 @@ import (
 // init registers kind:autotools. The handler always falls back
 // to the coarse install-pipeline shape; when --convert-element-
 // autotools is supplied, it additionally wraps the build cmd in
-// build-tracer + runs convert-element-autotools to emit a native
+// build-tracer + runs convert-element-trace to emit a native
 // BUILD.bazel.out alongside the install_tree.tar.
 //
 // One genrule with two outputs (install_tree.tar +
@@ -23,7 +23,7 @@ func init() {
 	registerHandler(autotoolsHandler{})
 }
 
-// autotoolsConfig holds the render-time settings for the
+// traceConfig holds the render-time settings for the
 // trace-driven autotools converter. Populated from main()'s
 // flags before the per-element render loop runs. Empty
 // convertBin disables the trace+convert wrap entirely
@@ -33,8 +33,8 @@ func init() {
 // (RenderA / RenderB don't take a config arg) while letting
 // the autotools handler decide per-element whether to install
 // the extension hooks.
-var autotoolsConfig struct {
-	convertBin    string // absolute path to convert-element-autotools
+var traceConfig struct {
+	convertBin    string // absolute path to convert-element-trace
 	tracerBin     string // absolute path to build-tracer
 	publishBin    string // absolute path to trace-publish (round 2 publisher)
 	lookupBin     string // absolute path to trace-lookup (round 2 consumer; staged so CI can find it on PATH)
@@ -42,10 +42,10 @@ var autotoolsConfig struct {
 }
 
 // autotoolsHandler picks the right pipelineHandler shape based
-// on the global autotoolsConfig. Without a converter binary,
+// on the global traceConfig. Without a converter binary,
 // the coarse install_tree.tar pipeline is the rendered shape;
 // with it, the pipelineExtension wraps the cmd in build-tracer
-// and runs convert-element-autotools after the install phase.
+// and runs convert-element-trace after the install phase.
 type autotoolsHandler struct{}
 
 func (autotoolsHandler) Kind() string                                 { return "autotools" }
@@ -57,19 +57,19 @@ func (autotoolsHandler) DefaultReadPathsPatterns() *readPathsPatterns { return n
 // element. Behavior splits on whether the trace-driven path is
 // enabled:
 //
-//   - Trace-driven (autotoolsConfig.convertBin set): the install
+//   - Trace-driven (traceConfig.convertBin set): the install
 //     genrule lives in PROJECT B (RenderB below), where deps are
 //     materialized as Bazel cc_library / install_tree.tar
 //     targets. Project A only carries a marker BUILD plus the
 //     srckey debug artifacts the registry-driven round-2 lookup
 //     consults. See docs/three-pass-flow.md for the
 //     1 → 2 → 3 → 2′ → 3′ loop.
-//   - Coarse (no --convert-element-autotools): existing
+//   - Coarse (no --convert-element-trace): existing
 //     pipeline-shape rendering — install genrule in A, B is a
 //     placeholder. Preserved verbatim so kinds that haven't
 //     opted into the trace-driven path don't change.
 func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
-	if autotoolsConfig.convertBin == "" {
+	if traceConfig.convertBin == "" {
 		// Coarse path: fall back to the historical
 		// pipelineHandler shape (install genrule in A).
 		h, err := autotoolsPipelineHandlerForElement(elem, elemPkg)
@@ -78,7 +78,7 @@ func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
 		}
 		return h.RenderA(elem, elemPkg)
 	}
-	if autotoolsConfig.round2Enabled {
+	if traceConfig.round2Enabled {
 		// Round 2: project A hosts the per-element converter
 		// genrule. Reads @trace_<elem>//:trace from the AC at
 		// load time; emits BUILD.bazel.out (cc_library /
@@ -98,11 +98,11 @@ func (autotoolsHandler) RenderA(elem *element, elemPkg string) error {
 
 // RenderB writes project B's contribution. Trace-driven
 // elements get the full install genrule (sources + the build-
-// tracer + convert-element-autotools wrapper) here, where
+// tracer + convert-element-trace wrapper) here, where
 // dep elements' Bazel targets are addressable. Coarse-path
 // elements get the historical placeholder.
 func (autotoolsHandler) RenderB(elem *element, elemPkg string) error {
-	if autotoolsConfig.convertBin == "" {
+	if traceConfig.convertBin == "" {
 		return autotoolsBasePipelineHandler().RenderB(elem, elemPkg)
 	}
 	// Trace-driven path: stage sources + render the install
@@ -110,7 +110,7 @@ func (autotoolsHandler) RenderB(elem *element, elemPkg string) error {
 	// it's parameterized over elemPkg, so calling it with
 	// project-B's per-element package directory does the
 	// right thing — //tools:build-tracer +
-	// //tools:convert-element-autotools resolve in B because
+	// //tools:convert-element-trace resolve in B because
 	// stageAutotoolsTools already staged them at writeProjectB
 	// time (PR #67).
 	h, err := autotoolsPipelineHandlerForElement(elem, elemPkg)
@@ -126,7 +126,7 @@ func (autotoolsHandler) RenderB(elem *element, elemPkg string) error {
 	// is enabled (matches the `convertBin` set guard the
 	// pipelineHandlerForElement applied above), since coarse
 	// pipeline elements don't participate in the registry.
-	if autotoolsConfig.convertBin != "" {
+	if traceConfig.convertBin != "" {
 		if err := renderSrckey(elem, elemPkg, autotoolsSrckeyPatterns()); err != nil {
 			return err
 		}
@@ -194,15 +194,15 @@ func autotoolsSrckeyPatterns() *readPathsPatterns {
 // stages it; AppendCmd's --imports-manifest flag references it
 // via $(location imports.json).
 //
-// Without --convert-element-autotools / --build-tracer-bin, the
+// Without --convert-element-trace / --build-tracer-bin, the
 // returned handler has no extension — the unmodified coarse
 // install_tree.tar pipeline renders.
 func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipelineHandler, error) {
 	h := autotoolsBasePipelineHandler()
-	if autotoolsConfig.convertBin == "" {
+	if traceConfig.convertBin == "" {
 		return h, nil
 	}
-	if autotoolsConfig.round2Enabled {
+	if traceConfig.round2Enabled {
 		// Round 2: converter runs in project A, not B. imports.json
 		// is rendered in A only (by renderTraceDrivenRound2A);
 		// don't write a B-side copy that no action references —
@@ -228,7 +228,7 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 // link_libraries=["<name>"] → "//elements/<name>:<name>".
 // Mirrors writeCmakeImportsManifest's shape, except the
 // resolution key is the link-library name (matched against
-// `-l<name>` flags by convert-element-autotools'
+// `-l<name>` flags by convert-element-trace'
 // LookupLinkLibrary) rather than the cmake target name.
 //
 // Returns (true, nil) when imports.json was written;
@@ -278,12 +278,12 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 }
 
 // autotoolsTraceExtension is the pipelineExtension that wires
-// the build-tracer + convert-element-autotools steps into the
+// the build-tracer + convert-element-trace steps into the
 // rendered install-genrule cmd. Outputs: install_tree.tar
 // (existing) + BUILD.bazel.out (converter output) + make-db.txt
 // (post-build dump of `make -np`, fed back to the converter as
 // a structural hint) + install-mapping.json (sidecar). Tools:
-// build-tracer + convert-element-autotools (both staged into
+// build-tracer + convert-element-trace (both staged into
 // project A's tools/ at write-a time). When hasImports is true,
 // imports.json is added to the genrule's srcs and the converter
 // step's `--imports-manifest` flag references it via
@@ -311,7 +311,7 @@ func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension 
 		},
 		ExtraTools: []string{
 			"//tools:build-tracer",
-			"//tools:convert-element-autotools",
+			"//tools:convert-element-trace",
 		},
 	}
 	if hasImports {
@@ -389,7 +389,7 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
         # completes, a second snapshot diffs against this one to
         # recover the set of build-time-generated headers
         # (AC_CONFIG_HEADERS-style config.h, yacc/bison parser
-        # headers, etc.). The diff feeds convert-element-autotools'
+        # headers, etc.). The diff feeds convert-element-trace'
         # --generated-headers flag so cc_library rules in
         # BUILD.bazel.out document the dependency.
         PRE_HEADERS_LIST="$$(mktemp)"
@@ -397,7 +397,7 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
 
         # Build-tracer wraps the entire configure/build/install
         # pipeline. The trace artifact captures every execve under
-        # the build sandbox; convert-element-autotools (run by the
+        # the build sandbox; convert-element-trace (run by the
         # AppendCmd step) reads it to emit BUILD.bazel.out.
         #
         # --normalize-prefix substitutions neutralize action-time
@@ -440,7 +440,7 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
 //     after configure ran. Cwd is $$BUILD_ROOT here (the
 //     pipeline's `cd "$$BUILD_ROOT"` is still in effect), so
 //     make finds its Makefile.
-//  2. Run convert-element-autotools against the trace + the
+//  2. Run convert-element-trace against the trace + the
 //     captured make database, emitting BUILD.bazel.out.
 //
 // `make -np` may exit non-zero on a healthy build (it skips
@@ -496,7 +496,7 @@ func autotoolsConverterStep(hasImports bool) string {
         # cross-node convergence — same trace + same converter
         # version => same BUILD.bazel.out everywhere.
         cd "$$EXEC_ROOT"
-        $(location //tools:convert-element-autotools) \
+        $(location //tools:convert-element-trace) \
             --trace="$$AUTOTOOLS_TRACE" \
             --make-db="$(location make-db.txt)" \
             --generated-headers="$(location generated-headers.txt)" \

@@ -245,7 +245,7 @@ e2e-meta-autotools: check-tools converter
 
 # Trace-driven kind:autotools native acceptance gate. Drives
 # the autotools-greet fixture through write-a +
-# --convert-element-autotools + --build-tracer-bin; bazel build
+# --convert-element-trace + --build-tracer-bin; bazel build
 # runs the tracer-wrapped install genrule + the native converter
 # inline; the gate asserts the rendered BUILD.bazel.out contains
 # native cc_binary targets recovered from the trace.
@@ -350,7 +350,7 @@ e2e-meta-autotools-subdirs: check-tools converter
 # AC_CONFIG_HEADERS-style generated header gate. The fixture's
 # configure step produces config.h from config.h.in; the
 # pipeline's pre/post-configure header snapshot diff feeds
-# convert-element-autotools' --generated-headers flag so the
+# convert-element-trace' --generated-headers flag so the
 # emitted cc_library carries config.h in its hdrs.
 e2e-meta-autotools-config-h: check-tools converter
 	scripts/meta-autotools-config-h.sh

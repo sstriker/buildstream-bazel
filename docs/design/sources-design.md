@@ -25,7 +25,7 @@ Three layers consume the same source identity:
 - `write-a` reads source metadata (kind, url, ref) at render time
   and emits Bazel labels + a digest for each source.
 - Project A's per-element genrules consume sources to feed
-  `convert-element` or `convert-element-autotools`.
+  `convert-element` or `convert-element-trace`.
 - Project B's per-element targets (`cc_library` and friends)
   consume sources to compile downstream.
 

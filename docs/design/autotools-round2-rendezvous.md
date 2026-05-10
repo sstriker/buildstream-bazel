@@ -36,7 +36,7 @@ bazel build A//<elem>:<elem>_build
                     → AC.GetActionResult(synthetic_key)
                     → AC hit  ⇒ symlink <CAS_FUSE_MOUNT>/blobs/directory/<digest>
                     → AC miss ⇒ empty fileset
-     action time → convert-element-autotools --trace-dir=<staged>
+     action time → convert-element-trace --trace-dir=<staged>
                     → trace.log present ⇒ emit cc_library / cc_binary
                     → trace.log absent  ⇒ emit placeholder BUILD.bazel.out
 
@@ -198,8 +198,8 @@ deciding which file paths gate the BUILD COMMANDS
 
 ## Roll-out
 
-Round-2 is the default whenever `--convert-element-autotools`
-is set; passing `--autotools-round1` opts back into the legacy
+Round-2 is the default whenever `--convert-element-trace`
+is set; passing `--trace-round1` opts back into the legacy
 single-genrule shape (project A is a marker; project B's
 install genrule runs the converter inline). The opt-out exists
 because some render gates assert fine-conversion-shape

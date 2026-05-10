@@ -27,7 +27,7 @@ func nativeBackendAvailable() bool { return true }
 // execve into an strace-compatible text file.
 //
 // Output format mirrors `strace -f -e trace=execve` so
-// convert-element-autotools' existing parser handles both
+// convert-element-trace' existing parser handles both
 // backends without changes:
 //
 //	1234  execve("/usr/bin/cc", ["cc", "-O2", "-o", "x", "x.c"], 0x0) = 0
@@ -374,13 +374,13 @@ func readArgv(pid int, addr uintptr) []string {
 // the syscall, so recursive-make builds (where each subdir
 // invocation produces same-basename .o files in different
 // dirs) disambiguate at correlation time. cwd is omitted when
-// /proc/<pid>/cwd couldn't be read; convert-element-autotools'
+// /proc/<pid>/cwd couldn't be read; convert-element-trace'
 // parser tolerates both forms.
 //
 // Strings are quoted via straceQuote to escape control chars
 // and embedded quotes the same way strace does. The trailing
 // `0x0` is a placeholder for the envp argument (which strace
-// renders as a real address); convert-element-autotools'
+// renders as a real address); convert-element-trace'
 // parser doesn't care about it.
 func emitExecve(w io.Writer, pid int, cwd, path string, argv []string) {
 	var b bytes.Buffer

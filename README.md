@@ -97,7 +97,7 @@ build/bin/write-a \
     --out /tmp/project-a \
     --out-b /tmp/project-b \
     --convert-element           build/bin/convert-element \
-    --convert-element-autotools build/bin/convert-element-autotools \
+    --convert-element-trace build/bin/convert-element-trace \
     --build-tracer-bin          build/bin/build-tracer
 ```
 
@@ -151,7 +151,7 @@ clean-room implementation.
 |---|---|
 | `cmd/write-a/` | Renders project A + project B from a `.bst` graph. The thing you actually run. |
 | `cmd/build-tracer/` | Process tracer for the autotools native path (native ptrace + strace fallback, canonical output). |
-| `cmd/convert-element-autotools/` | Trace + `make -np` → native cc rules. |
+| `cmd/convert-element-trace/` | Trace + `make -np` → native cc rules. |
 | `converter/` | The cmake converter. cmake File API codemodel + `--trace-expand` → native cc rules. |
 | `orchestrator/` | Predecessor single-project orchestrator. Kept for the regression-diff machinery; new kinds land in `cmd/write-a/`. |
 | `internal/` | Shared packages — CAS, FUSE, manifest, shadow tree, fidelity. |

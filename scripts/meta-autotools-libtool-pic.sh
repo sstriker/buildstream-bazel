@@ -40,7 +40,7 @@ mkdir -p "$bin_dir"
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-tracer" ./cmd/build-tracer
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element-autotools" ./cmd/convert-element-autotools
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-trace" ./cmd/convert-element-trace
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -55,9 +55,9 @@ fixture="testdata/meta-project/autotools-libtool-pic"
     --out "$A" \
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
-    --convert-element-autotools "$bin_dir/convert-element-autotools" \
+    --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
-    --autotools-round1
+    --trace-round1
 
 # Bazel-availability gating.
 if command -v bazel >/dev/null; then

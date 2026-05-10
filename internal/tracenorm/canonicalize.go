@@ -4,7 +4,7 @@
 // Three concerns live here:
 //
 //   - Canonicalize: rewrite a raw strace-format trace into the form
-//     downstream consumers (convert-element-autotools, the action
+//     downstream consumers (convert-element-trace, the action
 //     cache) hash. Strips pids, replaces gcc-driver mkstemps random
 //     suffixes with stable counters, applies caller-supplied
 //     prefix substitutions for sandbox mktemp paths.

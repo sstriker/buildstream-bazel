@@ -2,9 +2,9 @@
 # meta-autotools-round2.sh — render-half acceptance gate for the
 # trace-driven kind:autotools round-2 architecture.
 #
-# Round-2 is now the default when --convert-element-autotools is
+# Round-2 is now the default when --convert-element-trace is
 # set (the legacy round-1 single-genrule shape lives behind the
-# --autotools-round1 opt-out). This gate exercises the default by
+# --trace-round1 opt-out). This gate exercises the default by
 # passing --trace-publish-bin / --trace-lookup-bin and asserts:
 #
 #   1. Project A's per-element BUILD is a converter genrule
@@ -12,7 +12,7 @@
 #      declared by rules/traces.bzl).
 #   2. rules/traces.bzl + tools/traces.json render in both A and B.
 #   3. Project B's coarse install genrule no longer references
-#      convert-element-autotools (the converter moved to A);
+#      convert-element-trace (the converter moved to A);
 #      instead it references //tools:trace-publish (the round-2
 #      publisher CLI that lands the AC entry).
 #
@@ -34,7 +34,7 @@ mkdir -p "$bin_dir"
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-tracer" ./cmd/build-tracer
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element-autotools" ./cmd/convert-element-autotools
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-trace" ./cmd/convert-element-trace
 CGO_ENABLED=0 go build -o "$bin_dir/trace-publish" ./cmd/trace-publish
 CGO_ENABLED=0 go build -o "$bin_dir/trace-lookup" ./cmd/trace-lookup
 
@@ -51,7 +51,7 @@ fixture="testdata/meta-project/autotools-greet"
     --out "$A" \
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
-    --convert-element-autotools "$bin_dir/convert-element-autotools" \
+    --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \
     --trace-lookup-bin "$bin_dir/trace-lookup"
@@ -61,7 +61,7 @@ a_build="$A/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_build"' \
     '"@trace_greet//:trace"' \
-    '"//tools:convert-element-autotools"' \
+    '"//tools:convert-element-trace"' \
     '--trace-dir' \
     '--out-build'; do
     if ! grep -qF -- "$marker" "$a_build"; then
@@ -122,7 +122,7 @@ done
 for banned in \
     '"BUILD.bazel.out"' \
     '"install-mapping.json"' \
-    '//tools:convert-element-autotools'; do
+    '//tools:convert-element-trace'; do
     if grep -qF -- "$banned" "$b_build"; then
         echo "meta-autotools-round2: B-side BUILD unexpectedly contains: $banned" >&2
         cat "$b_build" >&2

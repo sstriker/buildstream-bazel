@@ -2,7 +2,7 @@
 // trace-driven autotools-to-Bazel converter (see
 // docs/trace-driven-autotools.md). Wraps a build invocation
 // in a process tracer; the resulting trace artifact is what
-// convert-element-autotools reads to recover Bazel targets.
+// convert-element-trace reads to recover Bazel targets.
 //
 // Two backends:
 //

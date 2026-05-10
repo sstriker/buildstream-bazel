@@ -14,7 +14,7 @@ otherwise lack.
 > **Current state.** Round-2 is the default since it was shipped
 > (see [`ROADMAP.md`](../ROADMAP.md) and
 > [`docs/design/autotools-round2-rendezvous.md`](design/autotools-round2-rendezvous.md)).
-> Pass `--autotools-round1` to `write-a` to opt into the legacy
+> Pass `--trace-round1` to `write-a` to opt into the legacy
 > single-genrule shape. The round-1 shape is described in the
 > section "Round-1 (legacy) shape" below.
 
@@ -41,7 +41,7 @@ for the AC rendezvous protocol.
 
 ## Round-1 (legacy) shape: single-genrule
 
-Activated by `--autotools-round1`. Each `kind:autotools` element
+Activated by `--trace-round1`. Each `kind:autotools` element
 renders a single genrule that:
 
 1. Stages the element's source tree into `$BUILD_ROOT`,
@@ -55,7 +55,7 @@ renders a single genrule that:
 3. Dumps the post-build Makefile state via `make -np` to
    `make-db.txt` (target-specific variables, prerequisite
    edges, fully variable-resolved after configure ran).
-4. Runs `convert-element-autotools` against the trace +
+4. Runs `convert-element-trace` against the trace +
    make-db, emitting `BUILD.bazel.out` (native `cc_library`
    / `cc_binary`) + `install-mapping.json` (sidecar
    mapping install destinations to producing rules).
@@ -69,14 +69,14 @@ sequenceDiagram
     participant Bazel as bazel build (project A)
     participant BT as build-tracer
     participant Build as ./configure + make + make install
-    participant CEA as convert-element-autotools
+    participant CEA as convert-element-trace
 
     WA->>WA: Render install genrule with tracer + converter wired in
     Bazel->>BT: $(location //tools:build-tracer) --out=$AUTOTOOLS_TRACE -- sh -c '...'
     BT->>Build: fork + ptrace; capture every execve
     Build-->>BT: install tree at $INSTALL_ROOT
     BT-->>Bazel: $AUTOTOOLS_TRACE (mktemp; not a Bazel output)
-    Bazel->>CEA: $(location //tools:convert-element-autotools) --trace=$AUTOTOOLS_TRACE
+    Bazel->>CEA: $(location //tools:convert-element-trace) --trace=$AUTOTOOLS_TRACE
     CEA-->>Bazel: BUILD.bazel.out + install-mapping.json
     Bazel->>Bazel: tar install_tree.tar (deterministic flags)
     Note over Bazel: One action, four outputs:<br/>install_tree.tar + BUILD.bazel.out + make-db.txt + install-mapping.json<br/>cache key = full element source + tools + dep tars
@@ -316,13 +316,13 @@ It is **not** worth it when:
 
 For both cases, the recommended workflow today is:
 
-- **Don't pass `--convert-element-autotools` by default.**
+- **Don't pass `--convert-element-trace` by default.**
   kind:autotools elements then render as the unmodified
   coarse install_tree.tar pipeline; project B's downstream
   cache stays warm across edits and the trace AC isn't
   involved.
 - **Migration to kind:bazel**: pass
-  `--convert-element-autotools` + `--build-tracer-bin`
+  `--convert-element-trace` + `--build-tracer-bin`
   + `--trace-publish-bin` + `--trace-lookup-bin` for the
   one-off conversion build. Capture
   `bazel build //elements/<name>:<name>_build`'s
@@ -342,7 +342,7 @@ can wait for a workload that demonstrably needs it.
 
 ## Open items (future work)
 
-### Direct-dep narrowing in `convert-element-autotools`
+### Direct-dep narrowing in `convert-element-trace`
 
 Today the converter resolves every `-l<name>` link flag
 against the in-trace archive set + the imports manifest.
@@ -492,7 +492,7 @@ converter.
 
 ## Component status
 
-What works today (`cmd/convert-element-autotools/`):
+What works today (`cmd/convert-element-trace/`):
 
 - **Parser**: strace text-format input (`-f -e
   trace=execve -s 4096 -o <path>`); recognizes top-level
@@ -525,7 +525,7 @@ What works today (`cmd/convert-element-autotools/`):
   Phase-4 typed-filegroup work.
 
 What's wired in `cmd/write-a` (`autotoolsHandler`): when
-`--convert-element-autotools` + `--build-tracer-bin` are
+`--convert-element-trace` + `--build-tracer-bin` are
 set, renders the install genrule with the tracer wrap +
 converter step inline. Emits `imports.json` next to the
 BUILD when there are cross-element deps. Pipes upstream

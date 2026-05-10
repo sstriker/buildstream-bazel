@@ -1,15 +1,15 @@
 #!/bin/sh
 # spike-autotools-trace.sh — converter-pipeline validation gate.
 #
-# Drives convert-element-autotools end-to-end against two
+# Drives convert-element-trace end-to-end against two
 # fixtures (autotools-greet, autotools-libapp): stages the
 # source tree, runs ./configure + make under build-tracer,
-# feeds the resulting trace into convert-element-autotools,
+# feeds the resulting trace into convert-element-trace,
 # asserts the rendered BUILD.bazel.out matches expectations.
 #
 # This validates the converter pipeline in isolation. The
 # write-a integration (kind:autotools handler wrapping the
-# install genrule in build-tracer + convert-element-autotools)
+# install genrule in build-tracer + convert-element-trace)
 # is exercised end-to-end via scripts/meta-autotools-native.sh.
 
 set -eu
@@ -20,9 +20,9 @@ cd "$repo_root"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
-bin="$work_dir/convert-element-autotools"
+bin="$work_dir/convert-element-trace"
 tracer="$work_dir/build-tracer"
-CGO_ENABLED=0 go build -o "$bin" ./cmd/convert-element-autotools
+CGO_ENABLED=0 go build -o "$bin" ./cmd/convert-element-trace
 CGO_ENABLED=0 go build -o "$tracer" ./cmd/build-tracer
 
 # run_fixture stages, traces, converts, asserts.

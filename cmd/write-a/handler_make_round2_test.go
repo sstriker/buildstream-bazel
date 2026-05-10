@@ -36,7 +36,7 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 
 	// Marker-shaped fakes for the four trace-driven binaries.
 	for _, name := range []string{
-		"convert-element-autotools-fake",
+		"convert-element-trace-fake",
 		"build-tracer-fake",
 		"trace-publish-fake",
 		"trace-lookup-fake",
@@ -46,17 +46,17 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	autotoolsConfig.convertBin = filepath.Join(tmp, "convert-element-autotools-fake")
-	autotoolsConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
-	autotoolsConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
-	autotoolsConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
-	autotoolsConfig.round2Enabled = true
+	traceConfig.convertBin = filepath.Join(tmp, "convert-element-trace-fake")
+	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+	traceConfig.round2Enabled = true
 	t.Cleanup(func() {
-		autotoolsConfig.convertBin = ""
-		autotoolsConfig.tracerBin = ""
-		autotoolsConfig.publishBin = ""
-		autotoolsConfig.lookupBin = ""
-		autotoolsConfig.round2Enabled = false
+		traceConfig.convertBin = ""
+		traceConfig.tracerBin = ""
+		traceConfig.publishBin = ""
+		traceConfig.lookupBin = ""
+		traceConfig.round2Enabled = false
 	})
 
 	g, err := loadGraph([]string{bst}, "")
@@ -82,7 +82,7 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 		`name = "mk_build"`,
 		`"@trace_mk//:trace"`,
 		`"srckey.txt"`,
-		`"//tools:convert-element-autotools"`,
+		`"//tools:convert-element-trace"`,
 		`--trace-dir`,
 		`--out-build`,
 		`kind:make round-2`,
@@ -153,7 +153,7 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 	for _, banned := range []string{
 		`"BUILD.bazel.out"`,
 		`"install-mapping.json"`,
-		`//tools:convert-element-autotools`,
+		`//tools:convert-element-trace`,
 	} {
 		if strings.Contains(string(bBody), banned) {
 			t.Errorf("project B round-2 BUILD unexpectedly contains %q\n%s", banned, bBody)
@@ -188,16 +188,16 @@ func TestWriter_MakeWithoutRound2_StillRendersInstallInA(t *testing.T) {
 	}
 
 	// No trace-driven binaries → no opt-in → legacy shape.
-	// Snapshot + restore the full autotoolsConfig struct via
+	// Snapshot + restore the full traceConfig struct via
 	// t.Cleanup so this test isn't order-dependent if a future
 	// test expects non-zero state.
-	prev := autotoolsConfig
-	autotoolsConfig.convertBin = ""
-	autotoolsConfig.tracerBin = ""
-	autotoolsConfig.publishBin = ""
-	autotoolsConfig.lookupBin = ""
-	autotoolsConfig.round2Enabled = false
-	t.Cleanup(func() { autotoolsConfig = prev })
+	prev := traceConfig
+	traceConfig.convertBin = ""
+	traceConfig.tracerBin = ""
+	traceConfig.publishBin = ""
+	traceConfig.lookupBin = ""
+	traceConfig.round2Enabled = false
+	t.Cleanup(func() { traceConfig = prev })
 
 	g, err := loadGraph([]string{bst}, "")
 	if err != nil {

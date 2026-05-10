@@ -1,14 +1,19 @@
-// convert-element-autotools is the spike implementation of the
-// B→A trace-driven autotools-to-Bazel converter described in
-// docs/trace-driven-autotools.md. Round 1 of building a
-// kind:autotools element in project B runs the build under a
-// process tracer; the trace gets registered (CAS-keyed by
-// srckey) and read back by project A's render in round 2.
-// With the trace in hand, the autotools element converts to
-// native cc_library / cc_binary targets instead of the opaque
-// install_tree.tar genrule.
+// convert-element-trace is the trace-driven Bazel converter shared
+// by every kind:* element whose build runs through cc/ar via some
+// driver — autotools / make / manual / script / makemaker /
+// modulebuild today. Project B runs the build under a process
+// tracer; the trace gets registered (CAS-keyed by srckey) and
+// read back by project A's render in round 2. With the trace in
+// hand, the element converts to native cc_library / cc_binary
+// targets instead of the opaque install_tree.tar genrule.
 //
-// Spike scope:
+// The binary used to live under cmd/convert-element-autotools/
+// when only autotools opted into the trace-driven path. The
+// converter logic was always kind-agnostic — it operates on
+// cc/ar execve events, not on autotools-specific patterns — so
+// the rename to "trace" reflects what the code actually does.
+//
+// Scope:
 //   - Input: a strace text-format trace file (see --trace).
 //   - Trace event filter: top-level compiler-driver execve calls
 //     (cc / gcc / g++ / clang / c++) and `ar` archive calls.
@@ -20,6 +25,11 @@
 //     pairs the .o → .c map back to source files for the
 //     archive's cc_library{srcs=[...]}. Link events that
 //     consume the same archive resolve `-lfoo` → `:foo`.
+//   - Optional `--make-db` hint: when the build invokes `make`,
+//     a `make -np` dump captured alongside the trace gives
+//     structural Makefile context (target names, recipes,
+//     variables). For non-make-driven kinds (manual / script)
+//     this stays unset and the trace alone drives conversion.
 //   - Output: BUILD.bazel.out with one cc_library per recovered
 //     archive plus one cc_binary per recovered link.
 //
@@ -52,7 +62,7 @@ func main() {
 	flag.Parse()
 
 	if *outBuild == "" {
-		fmt.Fprintln(os.Stderr, "convert-element-autotools: --out-build is required")
+		fmt.Fprintln(os.Stderr, "convert-element-trace: --out-build is required")
 		os.Exit(2)
 	}
 
@@ -71,7 +81,7 @@ func main() {
 	if *traceDir != "" {
 		if _, err := os.Stat(filepath.Join(*traceDir, "trace.log")); err != nil {
 			if err := writePlaceholderBuild(*outBuild); err != nil {
-				fmt.Fprintf(os.Stderr, "convert-element-autotools: write placeholder: %v\n", err)
+				fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -88,13 +98,13 @@ func main() {
 	}
 
 	if *tracePath == "" {
-		fmt.Fprintln(os.Stderr, "convert-element-autotools: --trace (or non-empty --trace-dir) is required")
+		fmt.Fprintln(os.Stderr, "convert-element-trace: --trace (or non-empty --trace-dir) is required")
 		os.Exit(2)
 	}
 
 	traceFile, err := os.Open(*tracePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "convert-element-autotools: open trace: %v\n", err)
+		fmt.Fprintf(os.Stderr, "convert-element-trace: open trace: %v\n", err)
 		os.Exit(1)
 	}
 	defer traceFile.Close()
@@ -103,7 +113,7 @@ func main() {
 	if *importsPath != "" {
 		imports, err = manifest.Load(*importsPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-autotools: load imports manifest: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: load imports manifest: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -117,7 +127,7 @@ func main() {
 			// and uses `|| true` so the artifact may be
 			// absent or empty on healthy builds where make
 			// dislikes the dry run. Treat parse failures the
-			// same — convert-element-autotools should still
+			// same — convert-element-trace should still
 			// emit a valid BUILD.bazel.out from the trace
 			// alone.
 			makeDB = parseMakeDB(body)
@@ -127,7 +137,7 @@ func main() {
 	if *generatedHeadersPath != "" {
 		body, err := os.ReadFile(*generatedHeadersPath)
 		if err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "convert-element-autotools: read generated-headers: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: read generated-headers: %v\n", err)
 			os.Exit(1)
 		}
 		generatedHeaders = parseGeneratedHeaderList(body)
@@ -148,7 +158,7 @@ func main() {
 		mapping := buildInstallMapping(makeDB, buildRules(graph, imports, makeDB))
 		body, err := renderInstallMappingJSON(mapping)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-autotools: render install-mapping: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: render install-mapping: %v\n", err)
 			os.Exit(1)
 		}
 		if body == nil {
@@ -158,21 +168,21 @@ func main() {
 			body = []byte(`{"version":1,"mappings":[]}` + "\n")
 		}
 		if err := os.MkdirAll(filepath.Dir(*outMapping), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-autotools: mkdir mapping: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: mkdir mapping: %v\n", err)
 			os.Exit(1)
 		}
 		if err := os.WriteFile(*outMapping, body, 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-autotools: write mapping: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: write mapping: %v\n", err)
 			os.Exit(1)
 		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(*outBuild), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "convert-element-autotools: mkdir: %v\n", err)
+		fmt.Fprintf(os.Stderr, "convert-element-trace: mkdir: %v\n", err)
 		os.Exit(1)
 	}
 	if err := os.WriteFile(*outBuild, []byte(out), 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "convert-element-autotools: write: %v\n", err)
+		fmt.Fprintf(os.Stderr, "convert-element-trace: write: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -189,7 +199,7 @@ func writePlaceholderBuild(outBuild string) error {
 	if err := os.MkdirAll(filepath.Dir(outBuild), 0o755); err != nil {
 		return err
 	}
-	const body = `# Generated by convert-element-autotools.
+	const body = `# Generated by convert-element-trace.
 # Round-2 boot phase: no trace published for this srckey yet.
 # Build project B's coarse install genrule
 # (//elements/<elem>:<elem>_install) to materialize the install
@@ -774,11 +784,11 @@ func emitBuild(g *Graph, imports *manifest.Resolver, makeDB *MakeDB, generatedHe
 		}
 	}
 	if len(rules) == 0 {
-		return "# Generated by convert-element-autotools. DO NOT EDIT.\n# (no buildable targets recovered from trace)\n"
+		return "# Generated by convert-element-trace. DO NOT EDIT.\n# (no buildable targets recovered from trace)\n"
 	}
 
 	var b strings.Builder
-	b.WriteString("# Generated by convert-element-autotools. DO NOT EDIT.\n\n")
+	b.WriteString("# Generated by convert-element-trace. DO NOT EDIT.\n\n")
 
 	loads := neededLoads(rules)
 	if len(loads) > 0 {

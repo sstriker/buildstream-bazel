@@ -91,7 +91,7 @@ config:
 			}
 
 			for _, name := range []string{
-				"convert-element-autotools-fake",
+				"convert-element-trace-fake",
 				"build-tracer-fake",
 				"trace-publish-fake",
 				"trace-lookup-fake",
@@ -101,13 +101,13 @@ config:
 					t.Fatal(err)
 				}
 			}
-			prev := autotoolsConfig
-			autotoolsConfig.convertBin = filepath.Join(tmp, "convert-element-autotools-fake")
-			autotoolsConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
-			autotoolsConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
-			autotoolsConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
-			autotoolsConfig.round2Enabled = true
-			t.Cleanup(func() { autotoolsConfig = prev })
+			prev := traceConfig
+			traceConfig.convertBin = filepath.Join(tmp, "convert-element-trace-fake")
+			traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+			traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+			traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+			traceConfig.round2Enabled = true
+			t.Cleanup(func() { traceConfig = prev })
 
 			g, err := loadGraph([]string{bst}, "")
 			if err != nil {
@@ -132,7 +132,7 @@ config:
 				`name = "elem_build"`,
 				`"@trace_elem//:trace"`,
 				`"srckey.txt"`,
-				`"//tools:convert-element-autotools"`,
+				`"//tools:convert-element-trace"`,
 				`--trace-dir`,
 				"kind:" + tc.kind + " round-2",
 			} {
@@ -187,7 +187,7 @@ config:
 			for _, banned := range []string{
 				`"BUILD.bazel.out"`,
 				`"install-mapping.json"`,
-				`//tools:convert-element-autotools`,
+				`//tools:convert-element-trace`,
 				`"imports.json"`,
 			} {
 				if strings.Contains(string(bBody), banned) {

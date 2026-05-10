@@ -73,7 +73,7 @@ repo_root() {
 
 ensure_binaries() {
     # write-a + convert-element + build-tracer +
-    # convert-element-autotools all live under build/bin after
+    # convert-element-trace all live under build/bin after
     # `make all`. Shell out to make if anything's stale; make
     # is fast for a no-op build.
     root="$1"
@@ -175,7 +175,7 @@ cmd_build() {
         --out "$project_a" \
         --out-b "$project_b" \
         --convert-element "$root/build/bin/convert-element" \
-        --convert-element-autotools "$root/build/bin/convert-element-autotools" \
+        --convert-element-trace "$root/build/bin/convert-element-trace" \
         --build-tracer-bin "$root/build/bin/build-tracer"
 
     # Pick the leaf target. autotools elements expose

@@ -24,7 +24,7 @@ func init() {
 	//
 	// kind:make also opts into the trace-driven round-2 path via
 	// makeSrckeyPatterns (below). When the operator passes the
-	// trace-driven binaries to write-a (--convert-element-autotools
+	// trace-driven binaries to write-a (--convert-element-trace
 	// + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin)
 	// AND doesn't pass --autotools-round1, kind:make elements
 	// render with the same round-2 architecture as kind:autotools:

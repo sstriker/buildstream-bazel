@@ -5,9 +5,9 @@
 #
 # kind:make opts into round-2 via pipelineHandler's
 # traceDrivenSrckeyPatterns field (handler_make.go:makeSrckeyPatterns).
-# When the operator passes --convert-element-autotools +
+# When the operator passes --convert-element-trace +
 # --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin to
-# write-a (and doesn't pass --autotools-round1), kind:make elements
+# write-a (and doesn't pass --trace-round1), kind:make elements
 # render with the same round-2 shape as kind:autotools:
 #
 #   1. Project A's per-element BUILD is a converter genrule
@@ -37,7 +37,7 @@ mkdir -p "$bin_dir"
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-tracer" ./cmd/build-tracer
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element-autotools" ./cmd/convert-element-autotools
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-trace" ./cmd/convert-element-trace
 CGO_ENABLED=0 go build -o "$bin_dir/trace-publish" ./cmd/trace-publish
 CGO_ENABLED=0 go build -o "$bin_dir/trace-lookup" ./cmd/trace-lookup
 
@@ -54,7 +54,7 @@ fixture="testdata/meta-project/make-greet"
     --out "$A" \
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
-    --convert-element-autotools "$bin_dir/convert-element-autotools" \
+    --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \
     --trace-lookup-bin "$bin_dir/trace-lookup"
@@ -64,7 +64,7 @@ a_build="$A/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_build"' \
     '"@trace_greet//:trace"' \
-    '"//tools:convert-element-autotools"' \
+    '"//tools:convert-element-trace"' \
     '--trace-dir' \
     '--out-build' \
     'kind:make round-2'; do
@@ -126,7 +126,7 @@ done
 for banned in \
     '"BUILD.bazel.out"' \
     '"install-mapping.json"' \
-    '//tools:convert-element-autotools'; do
+    '//tools:convert-element-trace'; do
     if grep -qF -- "$banned" "$b_build"; then
         echo "meta-make-round2: B-side BUILD unexpectedly contains: $banned" >&2
         cat "$b_build" >&2

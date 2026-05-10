@@ -35,7 +35,7 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 
 	// Marker-shaped fakes.
 	for _, name := range []string{
-		"convert-element-autotools-fake",
+		"convert-element-trace-fake",
 		"build-tracer-fake",
 		"trace-publish-fake",
 		"trace-lookup-fake",
@@ -45,17 +45,17 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	autotoolsConfig.convertBin = filepath.Join(tmp, "convert-element-autotools-fake")
-	autotoolsConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
-	autotoolsConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
-	autotoolsConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
-	autotoolsConfig.round2Enabled = true
+	traceConfig.convertBin = filepath.Join(tmp, "convert-element-trace-fake")
+	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+	traceConfig.round2Enabled = true
 	t.Cleanup(func() {
-		autotoolsConfig.convertBin = ""
-		autotoolsConfig.tracerBin = ""
-		autotoolsConfig.publishBin = ""
-		autotoolsConfig.lookupBin = ""
-		autotoolsConfig.round2Enabled = false
+		traceConfig.convertBin = ""
+		traceConfig.tracerBin = ""
+		traceConfig.publishBin = ""
+		traceConfig.lookupBin = ""
+		traceConfig.round2Enabled = false
 	})
 
 	g, err := loadGraph([]string{bst}, "")
@@ -81,7 +81,7 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		`name = "auto_build"`,
 		`"@trace_auto//:trace"`,
 		`"srckey.txt"`,
-		`"//tools:convert-element-autotools"`,
+		`"//tools:convert-element-trace"`,
 		`--trace-dir`,
 		`--out-build`,
 	} {
@@ -191,7 +191,7 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		// Round-2's pass-3 must NOT run the converter inline.
 		`"BUILD.bazel.out"`,
 		`"install-mapping.json"`,
-		`//tools:convert-element-autotools`,
+		`//tools:convert-element-trace`,
 	} {
 		if strings.Contains(string(bBody), banned) {
 			t.Errorf("project B round-2 BUILD unexpectedly contains %q\n%s", banned, bBody)

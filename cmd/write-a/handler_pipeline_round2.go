@@ -11,12 +11,12 @@ import (
 // Background. Round 1 of kind:autotools (the historical shape)
 // runs the converter inline in project B's coarse install
 // genrule: configure / make / make-install under build-tracer,
-// then convert-element-autotools reads the trace and emits
+// then convert-element-trace reads the trace and emits
 // BUILD.bazel.out as an additional output of the SAME genrule
 // action. Project A's per-element BUILD is just a marker
 // filegroup pointing at B.
 //
-// Round 2 (gated on autotoolsConfig.round2Enabled) splits the
+// Round 2 (gated on traceConfig.round2Enabled) splits the
 // work:
 //
 //   - PROJECT A hosts a per-element converter genrule. Its srcs
@@ -58,13 +58,13 @@ import (
 //	  srcs    = [@src_<key>//:tree, @trace_<elem>//:trace,
 //	             imports.json (optional), srckey.txt]
 //	  outs    = ["BUILD.bazel.out"]
-//	  tools   = ["//tools:convert-element-autotools"]
+//	  tools   = ["//tools:convert-element-trace"]
 //	  cmd     = stage @trace_<elem>//:trace into a tmpdir,
-//	            invoke convert-element-autotools --trace-dir.
+//	            invoke convert-element-trace --trace-dir.
 //
 // The kindName parameter only feeds the comment header of the
 // rendered BUILD; it does not affect the genrule's behavior
-// (convert-element-autotools is kind-agnostic at runtime).
+// (convert-element-trace is kind-agnostic at runtime).
 func renderTraceDrivenRound2A(elem *element, elemPkg, kindName string, srckeyPatterns *readPathsPatterns) error {
 	if err := renderSrckey(elem, elemPkg, srckeyPatterns); err != nil {
 		return err
@@ -99,7 +99,7 @@ func renderTraceDrivenRound2A(elem *element, elemPkg, kindName string, srckeyPat
 #
 # Reads @trace_%[1]s//:trace (a load-time _trace_repo lookup
 # against the REAPI ActionCache; see rules/traces.bzl). When the
-# trace fileset is non-empty (AC hit), convert-element-autotools
+# trace fileset is non-empty (AC hit), convert-element-trace
 # emits cc_library / cc_binary into BUILD.bazel.out. When empty
 # (AC miss / round-2 boot phase), the converter writes a
 # placeholder BUILD.bazel.out and project B's coarse install
@@ -111,7 +111,7 @@ genrule(
     name = "%[1]s_build",
     srcs = [%[2]s],
     outs = ["BUILD.bazel.out"],
-    tools = ["//tools:convert-element-autotools"],
+    tools = ["//tools:convert-element-trace"],
     cmd = """
         # Stage trace.log + make-db.txt (when present) into a
         # known dir. The @trace_%[1]s//:trace filegroup may resolve
@@ -124,7 +124,7 @@ genrule(
                 */trace_dir/make-db.txt) cp -L "$$src" "$$TRACE_DIR/make-db.txt" ;;
             esac
         done
-        $(location //tools:convert-element-autotools) \
+        $(location //tools:convert-element-trace) \
             --trace-dir="$$TRACE_DIR" \
             --out-build="$(location BUILD.bazel.out)"%[3]s
     """,

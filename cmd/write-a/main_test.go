@@ -524,7 +524,7 @@ func TestWriter_AutotoolsElementShape(t *testing.T) {
 }
 
 // TestWriter_AutotoolsToolsStagedInProjectB verifies that
-// build-tracer + convert-element-autotools land in BOTH
+// build-tracer + convert-element-trace land in BOTH
 // project A's and project B's tools/ directories when the
 // trace-driven path is enabled. Foundation for the
 // architectural move (docs/three-pass-flow.md) where the
@@ -562,11 +562,11 @@ func TestWriter_AutotoolsToolsStagedInProjectB(t *testing.T) {
 	if err := os.WriteFile(fakeTracerBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	autotoolsConfig.convertBin = fakeAutotoolsBin
-	autotoolsConfig.tracerBin = fakeTracerBin
+	traceConfig.convertBin = fakeAutotoolsBin
+	traceConfig.tracerBin = fakeTracerBin
 	t.Cleanup(func() {
-		autotoolsConfig.convertBin = ""
-		autotoolsConfig.tracerBin = ""
+		traceConfig.convertBin = ""
+		traceConfig.tracerBin = ""
 	})
 
 	g, err := loadGraph([]string{bst}, "")
@@ -584,7 +584,7 @@ func TestWriter_AutotoolsToolsStagedInProjectB(t *testing.T) {
 
 	// Both A and B should contain the autotools tools.
 	for _, project := range []string{outA, outB} {
-		for _, tool := range []string{"build-tracer", "convert-element-autotools"} {
+		for _, tool := range []string{"build-tracer", "convert-element-trace"} {
 			path := filepath.Join(project, "tools", tool)
 			info, err := os.Stat(path)
 			if err != nil {
@@ -603,7 +603,7 @@ func TestWriter_AutotoolsToolsStagedInProjectB(t *testing.T) {
 		got := string(buildBody)
 		for _, marker := range []string{
 			`"build-tracer"`,
-			`"convert-element-autotools"`,
+			`"convert-element-trace"`,
 			`exports_files(`,
 		} {
 			if !strings.Contains(got, marker) {
@@ -637,7 +637,7 @@ func TestWriter_AutotoolsToolsNotStagedWhenDisabled(t *testing.T) {
 	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// autotoolsConfig left zero — trace-driven path disabled.
+	// traceConfig left zero — trace-driven path disabled.
 	g, err := loadGraph([]string{bst}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -646,7 +646,7 @@ func TestWriter_AutotoolsToolsNotStagedWhenDisabled(t *testing.T) {
 	if err := writeProjectB(g, outB); err != nil {
 		t.Fatal(err)
 	}
-	for _, banned := range []string{"build-tracer", "convert-element-autotools"} {
+	for _, banned := range []string{"build-tracer", "convert-element-trace"} {
 		path := filepath.Join(outB, "tools", banned)
 		if _, err := os.Stat(path); err == nil {
 			t.Errorf("%s should not be staged when trace-driven path is disabled", path)
@@ -655,10 +655,10 @@ func TestWriter_AutotoolsToolsNotStagedWhenDisabled(t *testing.T) {
 }
 
 // TestWriter_AutotoolsNativeWraps covers the trace-driven
-// autotools native render path. When --convert-element-autotools
+// autotools native render path. When --convert-element-trace
 // + --build-tracer-bin are supplied, the per-element BUILD's
 // install genrule wraps the configure/build/install commands in
-// build-tracer and appends a convert-element-autotools step that
+// build-tracer and appends a convert-element-trace step that
 // emits BUILD.bazel.out alongside install_tree.tar — one Bazel
 // action with two outputs. Bazel's action cache (buildbarn in
 // CI) handles cross-node convergence; no separate registry.
@@ -683,7 +683,7 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	}
 
 	// Marker-shaped fake binaries — RenderA only stages them.
-	fakeAutotoolsBin := filepath.Join(tmp, "convert-element-autotools-fake")
+	fakeAutotoolsBin := filepath.Join(tmp, "convert-element-trace-fake")
 	if err := os.WriteFile(fakeAutotoolsBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -691,11 +691,11 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	if err := os.WriteFile(fakeTracerBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	autotoolsConfig.convertBin = fakeAutotoolsBin
-	autotoolsConfig.tracerBin = fakeTracerBin
+	traceConfig.convertBin = fakeAutotoolsBin
+	traceConfig.tracerBin = fakeTracerBin
 	t.Cleanup(func() {
-		autotoolsConfig.convertBin = ""
-		autotoolsConfig.tracerBin = ""
+		traceConfig.convertBin = ""
+		traceConfig.tracerBin = ""
 	})
 
 	g, err := loadGraph([]string{bst}, "")
@@ -733,7 +733,7 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	// outputs (install_tree.tar + the converter's BUILD.bazel.out
 	// + make-db.txt + install-mapping.json) in one action. The
 	// pipeline cmds are wrapped in build-tracer; the AppendCmd
-	// dumps `make -np` and runs convert-element-autotools inline.
+	// dumps `make -np` and runs convert-element-trace inline.
 	for _, marker := range []string{
 		`name = "auto_install"`,
 		`"install_tree.tar"`,
@@ -742,12 +742,12 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 		`"install-mapping.json"`,
 		`"generated-headers.txt"`,
 		`"//tools:build-tracer"`,
-		`"//tools:convert-element-autotools"`,
+		`"//tools:convert-element-trace"`,
 		`"$$EXEC_ROOT/$(location //tools:build-tracer)"`,
 		`--normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT"`,
 		`--normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT"`,
 		`--out="$$AUTOTOOLS_TRACE"`,
-		`$(location //tools:convert-element-autotools)`,
+		`$(location //tools:convert-element-trace)`,
 		`( make -np 2>/dev/null || true )`,
 		`/^#[[:space:]]+Last modified /d`,
 		`> "$$EXEC_ROOT/$(location make-db.txt)"`,
@@ -761,8 +761,8 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 		}
 	}
 	// Both binaries staged under tools/.
-	if _, err := os.Stat(filepath.Join(outA, "tools/convert-element-autotools")); err != nil {
-		t.Errorf("convert-element-autotools not staged: %v", err)
+	if _, err := os.Stat(filepath.Join(outA, "tools/convert-element-trace")); err != nil {
+		t.Errorf("convert-element-trace not staged: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(outA, "tools/build-tracer")); err != nil {
 		t.Errorf("build-tracer not staged: %v", err)
@@ -770,7 +770,7 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 }
 
 // TestWriter_AutotoolsCoarseFallbackWithoutFlags covers the
-// fallback path: without --convert-element-autotools /
+// fallback path: without --convert-element-trace /
 // --build-tracer-bin, the autotools handler renders the
 // unmodified coarse install-pipeline shape. No tracer wrap, no
 // BUILD.bazel.out output, no extra tools.
@@ -793,8 +793,8 @@ func TestWriter_AutotoolsCoarseFallbackWithoutFlags(t *testing.T) {
 	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	autotoolsConfig.convertBin = ""
-	autotoolsConfig.tracerBin = ""
+	traceConfig.convertBin = ""
+	traceConfig.tracerBin = ""
 
 	g, err := loadGraph([]string{bst}, "")
 	if err != nil {
@@ -817,7 +817,7 @@ func TestWriter_AutotoolsCoarseFallbackWithoutFlags(t *testing.T) {
 		`BUILD.bazel.out`,
 		`AUTOTOOLS_TRACE`,
 		`//tools:build-tracer`,
-		`//tools:convert-element-autotools`,
+		`//tools:convert-element-trace`,
 	} {
 		if strings.Contains(got, missing) {
 			t.Errorf("coarse fallback wrongly contains %q\n%s", missing, got)

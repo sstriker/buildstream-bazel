@@ -203,6 +203,25 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`convert-element-autotools` → `convert-element-trace` rename.**
+  The trace-driven converter has served kind:make / kind:manual /
+  kind:script / kind:makemaker / kind:modulebuild as well as
+  kind:autotools for several PRs (each kind opted in via its
+  `pipelineHandler.traceDrivenSrckeyPatterns` field), but the
+  binary kept the autotools-only name. The rename clarifies what
+  the code actually does: it operates on cc/ar execve events,
+  not on autotools-specific patterns. Renames in this PR:
+  `cmd/convert-element-autotools/` →
+  `cmd/convert-element-trace/`; the `--convert-element-autotools`
+  write-a flag → `--convert-element-trace`; the
+  `--autotools-round1` write-a flag → `--trace-round1`; the
+  `autotoolsConfig` global in write-a → `traceConfig`; and the
+  `//tools:convert-element-autotools` Bazel label →
+  `//tools:convert-element-trace`. Clean break — no aliases. Doc
+  taxonomy follow-up: `docs/fdsdk-coverage-status.md` now
+  reclassifies the five formerly-coarse trace-driven kinds as
+  deep, lifting the FDSDK deep-conversion figure from 44 % to
+  ~65 %.
 - **kind:meson native render (Phase A).** New
   `converter/cmd/convert-element-meson` runs `meson setup` against a
   source tree, parses `<build>/meson-info/intro-targets.json` +
@@ -354,7 +373,7 @@ transition cleanly.
   convert action.
 - `kind:autotools` round-1 native render: build-tracer wraps
   `configure && make && make install`; the trace + `make -np`
-  feed `convert-element-autotools`; install genrule lives in
+  feed `convert-element-trace`; install genrule lives in
   project B with deps as proper Bazel targets.
 - `kind:autotools` round-2 graph derivation. Project A's
   per-element converter genrule consumes `@trace_<elem>//:trace`,
@@ -362,7 +381,7 @@ transition cleanly.
   ActionCache keyed by `SyntheticActionDigest(srckey)`. Project
   B's install genrule ends with an inline `trace-publish` call
   that lands the AC entry. Round-2 is the default; pass
-  `--autotools-round1` to opt back into the legacy single-
+  `--trace-round1` to opt back into the legacy single-
   genrule shape. Render-half gate: `meta-autotools-round2.sh`.
   Live-AC gate (buildbarn + optionally bb_clientd):
   `tools/e2e-meta-autotools-round2-live.sh`. Recipe:
