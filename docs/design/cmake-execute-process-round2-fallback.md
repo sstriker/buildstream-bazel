@@ -126,8 +126,9 @@ bazel build B//<elem>:<elem>_install
      build-tracer wraps:
        cmake -B build [...]
        cmake --build build
-       cmake --install build --prefix=$DESTDIR
-     post-process make-db (sed filter)
+       cmake --install build --prefix=$INSTALL_ROOT
+     synthesize empty make-db.txt (cmake has no make-db; the
+       trace-publish wire contract requires the slot)
      trace-publish (defense-in-depth, lands AC entry)
 ```
 
@@ -144,7 +145,7 @@ action must succeed even when classification refuses, but
 emit a placeholder BUILD that delegates to the round-2
 install_tree.tar.
 
-Implementation: a new `--unsupported-execute-process=fallback`
+Implementation: a new `--unsupported-execute-process-fallback`
 flag on `convert-element`. When set:
 
 - Classifier's refusal path no longer returns Tier-1; instead
@@ -316,7 +317,7 @@ ones but each leaves the tree in a runnable state.
    pure functions with unit tests. No call sites yet — pure
    scaffolding. Lets the bucket-of-globs / build-tracer
    wrapping be reviewed in isolation before any wiring.
-2. **convert-element `--unsupported-execute-process=fallback`
+2. **convert-element `--unsupported-execute-process-fallback`
    flag.** When set, classifier refusals become a sentinel;
    `lower.ToIR` emits a placeholder `ir.Package`. Add a
    golden test for the placeholder shape. write-a doesn't yet
