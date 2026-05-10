@@ -65,8 +65,8 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	fs := flag.NewFlagSet("convert-element-meson", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	a := args{}
-	fs.StringVar(&a.sourceRoot, "source-root", "", "absolute path to the meson source root")
-	fs.StringVar(&a.infoDir, "info-dir", "", "skip meson invocation; read intro-*.json from this dir (testing)")
+	fs.StringVar(&a.sourceRoot, "source-root", "", "absolute path to the meson source root (required in both live and --info-dir mode; intro-targets.json records absolute source paths that the lowering pass projects against this prefix)")
+	fs.StringVar(&a.infoDir, "info-dir", "", "skip meson invocation; read intro-*.json from this dir (testing). Still requires --source-root.")
 	fs.StringVar(&a.outBuild, "out-build", "BUILD.bazel.out", "destination path for generated BUILD.bazel.out")
 	fs.StringVar(&a.outFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	fs.StringVar(&a.outBundleDir, "out-bundle-dir", "", "directory for synthesized pkg-config bundle (optional; v1 emits an empty bundle)")
@@ -76,8 +76,12 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	if err := fs.Parse(argv); err != nil {
 		return a, exitUsage
 	}
-	if a.sourceRoot == "" && a.infoDir == "" {
-		fmt.Fprintln(stderr, "convert-element-meson: must set --source-root or --info-dir")
+	// --source-root is required in both modes: meson introspection
+	// records absolute source paths in intro-targets.json's
+	// `sources` field, and Lower() refuses absolute paths without
+	// a source-root to project against.
+	if a.sourceRoot == "" {
+		fmt.Fprintln(stderr, "convert-element-meson: --source-root is required (also in --info-dir mode; introspection sources are absolute paths)")
 		fs.Usage()
 		return a, exitUsage
 	}

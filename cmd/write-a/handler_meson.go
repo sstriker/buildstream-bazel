@@ -142,32 +142,21 @@ filegroup(
 
 	depBundleLabels := mesonDepBundleLabels(elem)
 
+	// v1: imports.json is the only cross-element wiring we plumb
+	// into convert-element-meson today (used to resolve external
+	// dependency('foo') names onto Bazel labels). The pkg-config
+	// bundle synthesis + --prefix-dir staging land alongside the
+	// Phase B install-plan fallback queued in ROADMAP.md; until
+	// then, including the dep tars in srcs / extracting them at
+	// action time would just be dead weight in the action's input
+	// merkle.
 	srcsList := fmt.Sprintf(`":%s_real"`, elem.Name)
-	for _, depLabel := range depBundleLabels {
-		srcsList += fmt.Sprintf(`, %q`, depLabel.Label)
-	}
+	importsFlag := ""
 	if len(depBundleLabels) > 0 {
 		srcsList += `, "imports.json"`
-	}
-
-	importsFlag := ""
-	prefixFlag := ""
-	var depExtract strings.Builder
-	if len(depBundleLabels) > 0 {
-		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
-`)
-		for _, dep := range depBundleLabels {
-			fmt.Fprintf(&depExtract, `        for tar in $(locations %s); do
-            tar -xf "$$tar" -C "$$PREFIX"
-        done
-`, dep.Label)
-		}
-		prefixFlag = ` \
-            --prefix-dir="$$PREFIX"`
 		importsFlag = ` \
             --imports-manifest="$(location imports.json)"`
 	}
-	_ = prefixFlag // reserved for the bundle-staging extension; v1 leaves the flag unwired.
 
 	fmt.Fprintf(&b, `
 genrule(
@@ -186,18 +175,17 @@ genrule(
         SHADOW="$$(mktemp -d)"
         for src in $(SRCS); do
             case "$$src" in
-                *pkg-config-bundle.tar) continue ;;
                 */imports.json) continue ;;
             esac
             rel="$${src##*sources/}"
             mkdir -p "$$SHADOW/$$(dirname "$$rel")"
             cp -L "$$src" "$$SHADOW/$$rel"
         done
-%[3]s        BUNDLE_DIR="$$(mktemp -d)"
+        BUNDLE_DIR="$$(mktemp -d)"
         $(location //tools:convert-element-meson) \\
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
-            --out-bundle-dir="$$BUNDLE_DIR"%[4]s
+            --out-bundle-dir="$$BUNDLE_DIR"%[3]s
         # v1 emits an empty bundle dir. Tarring it directly produces
         # a zero-entry tar, which is fine for the declared-output
         # contract — downstream consumers don't yet read it.
@@ -215,7 +203,7 @@ filegroup(
     name = "pkg_config_bundle",
     srcs = ["pkg-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), importsFlag)
+`, elem.Name, srcsList, importsFlag)
 
 	return b.String()
 }

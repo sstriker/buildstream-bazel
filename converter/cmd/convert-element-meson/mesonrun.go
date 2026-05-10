@@ -15,9 +15,12 @@ import (
 	"path/filepath"
 )
 
-// SourceDateEpoch is the project-wide fixed timestamp for
-// deterministic configure-time outputs. Same value cmakerun uses;
-// keeps cross-converter logs comparable.
+// sourceDateEpoch is the project-wide fixed timestamp for
+// deterministic configure-time outputs. Same value
+// cmakerun.SourceDateEpoch uses; keeps cross-converter logs
+// comparable. Unexported because mesonrun is the only consumer
+// today; promote + unify with cmakerun's constant once a second
+// caller appears.
 const sourceDateEpoch = "1577836800"
 
 type mesonOptions struct {

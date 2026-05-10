@@ -72,10 +72,10 @@ File API doesn't fully cover custom commands — meson's does).
                        BUILD.bazel.out
 ```
 
-The `cmd/convert-element-meson/main.go` binary is a sibling of
-`converter/cmd/convert-element/main.go` (the cmake converter).
-Both consume an external build-system's introspection and
-produce IR + BUILD.bazel.out via the same emit package.
+The `converter/cmd/convert-element-meson/main.go` binary is a
+sibling of `converter/cmd/convert-element/main.go` (the cmake
+converter). Both consume an external build-system's introspection
+and produce IR + BUILD.bazel.out via the same emit package.
 
 ## Per-target lowering rules
 
@@ -85,8 +85,8 @@ produce IR + BUILD.bazel.out via the same emit package.
 | `shared library`   | `KindCCLibrary`          | Defaults to dynamic linking.             |
 | `both libraries`   | `KindCCLibrary`          | Single rule (Bazel decides static vs shared via toolchain). |
 | `executable`       | `KindCCBinary`           | -                                        |
-| `custom`           | `KindGenrule` (best-effort) | Lifted only when the command's argv contains `@INPUT@`/`@OUTPUT@` and no host-probing tools. |
-| `run`              | refused (`unsupported-meson-target-type`) | Configure-time / dev-only target. |
+| `custom`           | `KindGenrule` (best-effort) | Lifted only when the command's argv contains exactly the standalone tokens `@INPUT@` / `@OUTPUT@` (no embedded or indexed forms) and no host-probing tools. Argv that lacks the expected token (or carries an unsupported substitution) refuses. |
+| `run`              | silently skipped | Developer-convenience target (meson's analog of `add_custom_target`); no consumer-visible artifact, no Bazel analog needed. |
 | `jar`              | refused (`unsupported-meson-target-type`) | JVM toolchain not modeled in v1. |
 
 For each `target_sources` cc entry:
@@ -100,11 +100,13 @@ For each `target_sources` cc entry:
 - **Defines**: each `-D<NAME>[=<VAL>]` becomes a `Defines` entry.
   meson's auto-injected `-D_FILE_OFFSET_BITS=64` family is kept
   (it's a real semantic flag).
-- **Copts**: any flag that isn't `-I` or `-D`. Color-diagnostics
-  flags (`-fdiagnostics-color=always`, `-Winvalid-pch`) and
-  `-fPIC` are kept verbatim — Bazel's toolchain may add the same
-  flags but duplication is harmless and preserves the meson
-  intent.
+- **Copts**: any flag that isn't `-I` or `-D`, with one exception:
+  flags Bazel's cc toolchain emits unconditionally
+  (`-fPIC`/`-fpic`/`-fPIE`/`-fpie` and the
+  `-fdiagnostics-color=*` family — see `isToolchainHandledFlag` in
+  `lower.go`) are dropped. Preserving meson's verbatim copy would
+  duplicate the toolchain's emission in every cc_* rule's copts
+  for no semantic gain.
 
 For the linker entry within `target_sources`:
 

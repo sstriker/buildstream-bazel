@@ -94,9 +94,16 @@ func Load(metaInfoDir string) (*Introspect, error) {
 	}
 	// Dependencies file is optional. Newer meson always emits it; older
 	// versions / projects with zero external deps may still write it as
-	// "[]". Treat ENOENT as empty.
+	// "[]". Treat IsNotExist as empty; surface every other Stat error
+	// (permissions, transient I/O) so the caller doesn't silently
+	// proceed with an empty Dependencies slice when the file is
+	// genuinely there but unreadable.
 	depsPath := filepath.Join(metaInfoDir, "intro-dependencies.json")
-	if _, err := os.Stat(depsPath); err == nil {
+	if _, err := os.Stat(depsPath); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("stat %s: %w", depsPath, err)
+		}
+	} else {
 		if err := readJSON(depsPath, &out.Dependencies); err != nil {
 			return nil, err
 		}

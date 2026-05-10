@@ -189,9 +189,9 @@ e2e-meta-make-round2: check-tools converter
 # the per-element BUILD invokes //tools:convert-element-meson against
 # the staged source tree, producing BUILD.bazel.out with native
 # cc_library / cc_binary rules from `meson introspect`. The render
-# half always runs; the bazel-build half self-skips when bazel >= 7
-# or meson isn't on PATH (the genrule needs meson on the executor).
-# See docs/design/meson-native-render.md.
+# half always runs; the bazel-build half self-skips unless BOTH
+# bazel >= 7 AND meson are on PATH (the genrule needs meson on the
+# executor; bazel < 7 lacks bzlmod). See docs/design/meson-native-render.md.
 e2e-meta-meson: check-tools converter
 	scripts/meta-meson.sh
 

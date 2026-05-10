@@ -8,7 +8,9 @@
 //   - `both libraries`  → cc_library (Bazel toolchain decides static/shared)
 //   - `executable`      → cc_binary
 //   - `custom`          → genrule (best-effort lift; refuses on opaque shapes)
-//   - `run`, `jar`      → typed Tier-1 refusal
+//   - `run`             → silently skipped (developer-convenience target;
+//     no consumer-visible artifact, no Bazel analog).
+//   - `jar`             → typed Tier-1 refusal (JVM toolchain not modeled).
 //
 // Per-target_sources:
 //
@@ -252,57 +254,63 @@ func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
 }
 
 // renderCustomCmd substitutes meson's @INPUT@ / @OUTPUT@ tokens
-// for Bazel's $(SRCS) / $(OUTS). The pattern is direct only when
-// there's exactly one input and one output (the common shape:
-// `command @INPUT@ -o @OUTPUT@`); multi-input/multi-output
-// tokens (@INPUT0@, @OUTPUT1@) refuse with a typed failure.
+// for Bazel's $(SRCS) / $(OUTS). v1 lifts only the single-input /
+// single-output / standalone-token shape; everything else refuses
+// to keep the rendered genrule sound.
+//
+// Refusal rules:
+//   - Any argv element containing `@INPUT` or `@OUTPUT` that isn't
+//     EXACTLY `@INPUT@` / `@OUTPUT@` (so embedded forms like
+//     `--in=@INPUT@` and indexed forms like `@INPUT0@` both
+//     refuse; substituting them blindly would either break the
+//     genrule's $(location ...) interpolation or generate an
+//     argv that doesn't match the genrule's declared inputs/
+//     outputs).
+//   - The standalone `@INPUT@` token requires exactly one source;
+//     `@OUTPUT@` requires exactly one output.
+//   - The argv must mention `@INPUT@` (when srcs is non-empty)
+//     and `@OUTPUT@` (always), so the rendered genrule cmd
+//     actually references its declared inputs/outputs. Otherwise
+//     Bazel would build a genrule whose cmd ignores its srcs/outs
+//     — silently broken at action time.
 func renderCustomCmd(argv, srcs, outs []string) (string, error) {
 	out := make([]string, 0, len(argv))
+	sawInput := false
+	sawOutput := false
 	for _, arg := range argv {
-		// Refuse indexed substitution — needs richer mapping
-		// than v1 supports.
-		if hasIndexedSub(arg) {
-			return "", newFailure(unsupportedMesonCustomTarget,
-				"command argv contains indexed substitution: %q", arg)
-		}
-		switch {
-		case arg == "@INPUT@":
+		switch arg {
+		case "@INPUT@":
 			if len(srcs) != 1 {
 				return "", newFailure(unsupportedMesonCustomTarget,
 					"@INPUT@ used but %d source(s)", len(srcs))
 			}
 			out = append(out, "$(location "+srcs[0]+")")
-		case arg == "@OUTPUT@":
+			sawInput = true
+		case "@OUTPUT@":
 			if len(outs) != 1 {
 				return "", newFailure(unsupportedMesonCustomTarget,
 					"@OUTPUT@ used but %d output(s)", len(outs))
 			}
 			out = append(out, "$(location "+outs[0]+")")
+			sawOutput = true
 		default:
+			if strings.Contains(arg, "@INPUT") || strings.Contains(arg, "@OUTPUT") {
+				return "", newFailure(unsupportedMesonCustomTarget,
+					"command argv contains unsupported meson substitution: %q (only standalone @INPUT@ / @OUTPUT@ are lifted in v1)", arg)
+			}
 			out = append(out, shellQuote(arg))
 		}
 	}
+	if len(srcs) > 0 && !sawInput {
+		return "", newFailure(unsupportedMesonCustomTarget,
+			"command argv has %d source(s) but doesn't reference @INPUT@; rendered genrule would ignore its declared inputs",
+			len(srcs))
+	}
+	if !sawOutput {
+		return "", newFailure(unsupportedMesonCustomTarget,
+			"command argv doesn't reference @OUTPUT@; rendered genrule would ignore its declared outputs")
+	}
 	return strings.Join(out, " "), nil
-}
-
-func hasIndexedSub(arg string) bool {
-	if !strings.Contains(arg, "@INPUT") && !strings.Contains(arg, "@OUTPUT") {
-		return false
-	}
-	// @INPUT@ / @OUTPUT@ are the unindexed canonical forms.
-	if arg == "@INPUT@" || arg == "@OUTPUT@" {
-		return false
-	}
-	// Anything containing @INPUTn@ or @OUTPUTn@ is indexed.
-	for _, prefix := range []string{"@INPUT", "@OUTPUT"} {
-		if i := strings.Index(arg, prefix); i >= 0 {
-			rest := arg[i+len(prefix):]
-			if rest != "@" && !strings.HasPrefix(rest, "@") {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // shellQuote wraps in single quotes for genrule cmd safety, only
