@@ -113,9 +113,12 @@ func run(a args) error {
 			return failure.New(mesonSetupFailed, "%v", err)
 		}
 		infoDir = got
-	} else if buildDir == "" {
+	} else {
 		// Offline path: build dir is the meson-info's parent.
-		buildDir = filepath.Dir(infoDir)
+		// filepath.Clean strips a trailing slash so a caller-
+		// supplied "/tmp/build/meson-info/" still yields
+		// "/tmp/build" rather than "/tmp/build/meson-info".
+		buildDir = filepath.Dir(filepath.Clean(infoDir))
 	}
 
 	intro, err := Load(infoDir)

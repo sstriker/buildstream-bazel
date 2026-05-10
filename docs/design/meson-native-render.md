@@ -177,10 +177,24 @@ follow-up.
 
 ## Tests + render gate
 
-- Unit tests for the introspect parser (`main_test.go` golden
-  fixtures under `testdata/meson-introspect/`).
+- Unit tests for the introspection lowering live in
+  `converter/cmd/convert-element-meson/lower_test.go`: synthetic
+  `Introspect` payloads exercise the static-lib + executable
+  shape, the `unsupported-meson-*` refusal codes, the
+  `threads → -pthread` inline-fold path, the build-dir filter's
+  sibling-collision regression, and `renderCustomCmd`'s
+  `@INPUT@` / `@OUTPUT@` validation rules.
+- Write-a-side handler tests in
+  `cmd/write-a/handler_meson_test.go` cover both the pipeline-
+  shape fallback (when `--convert-element-meson` is unset) and
+  the native-render shape (`//tools:convert-element-meson`
+  invocation, `BUILD.bazel.out` + `pkg-config-bundle.tar` outs,
+  source staging into project A and project B).
 - Render gate `scripts/meta-meson.sh` mirroring `meta-hello.sh`:
-  drives write-a + bazel-build (when bazel is present) against
-  `testdata/meta-project/meson-greet/`, asserts the converter
+  drives write-a end-to-end + a standalone-converter assertion
+  (skips the bazel-build half cleanly when bazel ≥ 7 or meson
+  isn't on PATH) against
+  `testdata/meta-project/meson-greet/`. Asserts the converter
   produces `cc_library` for the static lib, `cc_binary` for the
-  executable, and the smoke binary links + runs.
+  executable, and (when bazel is present) the smoke binary
+  links + runs.
