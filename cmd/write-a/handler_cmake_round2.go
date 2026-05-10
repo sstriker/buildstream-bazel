@@ -98,14 +98,21 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 			// command without going through CMakeLists.txt.
 			//
 			// TODO: investigate cmake kits (CMakeTools'
-			// cmake-kits.json + ~/.local/share/CMakeTools/
-			// cmake-tools-kits.json). Kits are a workflow
-			// layer rather than a CMakeLists-replacing input
-			// today, but they CAN influence configure when
-			// the generator picks them up via
+			// repo-local `cmake-kits.json`). Kits are a
+			// workflow layer rather than a CMakeLists-
+			// replacing input today, but they CAN influence
+			// configure when the generator picks them up via
 			// CMAKE_TOOLCHAIN_FILE / preset-style overrides.
-			// Decide per-fixture whether kit JSONs need a
-			// rule here once a real project surfaces them.
+			// User-global kits at
+			// ~/.local/share/CMakeTools/cmake-tools-kits.json
+			// are intentionally out of scope — srckey patterns
+			// only match source-tree-relative paths, so
+			// host-local config can't be captured by this
+			// mechanism (treat it the same as host compiler
+			// version: action-cache invalidation rather than
+			// srckey). Decide per-fixture whether the repo-
+			// local kit JSON needs a rule here once a real
+			// project surfaces them.
 			{Include: true, Pattern: "CMakePresets.json"},
 			{Include: true, Pattern: "CMakeUserPresets.json"},
 		},

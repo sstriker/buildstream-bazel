@@ -278,9 +278,9 @@ kind-agnostic infra in `handler_pipeline_round2.go`):
   (`handler_autotools_native.go:386`). Wraps cmake's
   `configure / build / install` sequence under build-tracer
   with `--normalize-prefix` for byte-stable traces.
-  - Configure: `cmake -B "$$BUILD_DIR" -G Ninja -S "$$SRC_DIR" -DCMAKE_INSTALL_PREFIX="$$DESTDIR" [...]`
-  - Build: `cmake --build "$$BUILD_DIR" --parallel 1`
-  - Install: `cmake --install "$$BUILD_DIR" --prefix "$$DESTDIR"`
+  - Configure: `cmake -B "$$BUILD_ROOT" -G Ninja -S "$$SRC_DIR" -DCMAKE_INSTALL_PREFIX="$$INSTALL_ROOT" [...]`
+  - Build: `cmake --build "$$BUILD_ROOT" --parallel 1`
+  - Install: `cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"`
   The `--parallel 1` matches `make -j1` in autotools round-2
   for trace stability (no interleaved subprocess output).
 - **A render gate** at `scripts/meta-cmake-round2-fallback.sh`,
@@ -327,9 +327,9 @@ ones but each leaves the tree in a runnable state.
    default for projects with detected `execute_process`),
    write-a emits the round-2 install genrule alongside the
    native converter genrule, and threads
-   `--unsupported-execute-process=fallback` into the
+   `--unsupported-execute-process-fallback` into the
    converter genrule's cmd. Render gate
-   `meta-cmake-round2-fallback.sh` lands here.
+   `scripts/meta-cmake-round2-fallback.sh` lands here.
 4. **Roadmap promotion + docs.** Move the ROADMAP `Later`
    bullet to `Now`/`Done` as the steps land. Update
    `docs/research/cmake_analysis.md` §9 to reflect the
