@@ -128,9 +128,7 @@ func Lower(intro *Introspect, opts LowerOptions) (*ir.Package, error) {
 			if err != nil {
 				return nil, err
 			}
-			if tgt != nil {
-				pkg.Targets = append(pkg.Targets, *tgt)
-			}
+			pkg.Targets = append(pkg.Targets, tgt)
 		case "run":
 			// `run_target` is a developer convenience (meson's
 			// version of `add_custom_target(... CONFIGURE_OUTPUT)`).
@@ -190,19 +188,21 @@ func lowerExecutable(t Target, byID, byName, byArchiveBasename map[string]string
 	return out, nil
 }
 
-// lowerCustom handles type=custom (custom_target). Returns a nil
-// target when the custom_target shape isn't liftable in v1
-// (consistent with the cmake execute_process classifier's "skip
-// this target, the operator will see it as a refusal" stance).
+// lowerCustom handles type=custom (custom_target). Always
+// returns either a non-nil ir.Target (lift succeeded) or a
+// typed unsupported-meson-custom-target failure.
 //
-// Liftable shape: single-argv command with at most one input and
-// at least one output, no @-substitutions other than @INPUT@ /
-// @OUTPUT@. Anything more elaborate (multi-step shell pipelines,
-// host probes via run_command, or @CURRENT_SOURCE_DIR@ usage)
-// surfaces as a typed refusal rather than a silent skip.
-func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
+// Liftable shape: single target_sources entry, single-argv
+// command with at most one input and at least one output, no
+// @-substitutions other than standalone @INPUT@ / @OUTPUT@.
+// Anything more elaborate (multi-group target_sources, multi-
+// step shell pipelines, host probes via run_command, or
+// @CURRENT_SOURCE_DIR@ usage) refuses with a typed Tier-1
+// failure — there's no silent-skip path; refused targets
+// surface to the operator via failure.json.
+func lowerCustom(t Target, opts LowerOptions) (ir.Target, error) {
 	if len(t.TargetSources) == 0 {
-		return nil, newFailure(unsupportedMesonCustomTarget,
+		return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
 			"custom target %q has no target_sources", t.Name)
 	}
 	if len(t.TargetSources) != 1 {
@@ -213,13 +213,13 @@ func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
 		// silently dropping the second-and-later entries' inputs/
 		// commands and rendering a genrule that doesn't match
 		// the meson target's actual recipe.
-		return nil, newFailure(unsupportedMesonCustomTarget,
+		return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
 			"custom target %q has %d target_sources entries (multi-group / multi-COMMAND custom targets aren't lifted in v1)",
 			t.Name, len(t.TargetSources))
 	}
 	src := t.TargetSources[0]
 	if len(src.Compiler) == 0 {
-		return nil, newFailure(unsupportedMesonCustomTarget,
+		return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
 			"custom target %q has empty command", t.Name)
 	}
 	for _, arg := range src.Compiler {
@@ -230,7 +230,7 @@ func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
 			strings.Contains(arg, "@BUILD_ROOT@") ||
 			strings.Contains(arg, "@DEPFILE@") ||
 			strings.Contains(arg, "@OUTDIR@") {
-			return nil, newFailure(unsupportedMesonCustomTarget,
+			return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
 				"custom target %q uses unsupported substitution in command: %q",
 				t.Name, arg)
 		}
@@ -238,22 +238,22 @@ func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
 
 	srcs, err := relativizeSources(src.Sources, opts.SourceRoot)
 	if err != nil {
-		return nil, err
+		return ir.Target{}, err
 	}
 	outs := make([]string, 0, len(t.Filename))
 	for _, fn := range t.Filename {
 		outs = append(outs, filepath.Base(fn))
 	}
 	if len(outs) == 0 {
-		return nil, newFailure(unsupportedMesonCustomTarget,
+		return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
 			"custom target %q produces no outputs", t.Name)
 	}
 
 	cmd, err := renderCustomCmd(src.Compiler, srcs, outs)
 	if err != nil {
-		return nil, fmt.Errorf("custom target %q: %w", t.Name, err)
+		return ir.Target{}, fmt.Errorf("custom target %q: %w", t.Name, err)
 	}
-	out := ir.Target{
+	return ir.Target{
 		Name:        t.Name,
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,
@@ -261,8 +261,7 @@ func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
 		GenruleCmd:  cmd,
 		Visibility:  []string{"//visibility:public"},
 		Tags:        []string{"meson-codegen-custom-target"},
-	}
-	return &out, nil
+	}, nil
 }
 
 // renderCustomCmd substitutes meson's @INPUT@ / @OUTPUT@ tokens
@@ -325,16 +324,48 @@ func renderCustomCmd(argv, srcs, outs []string) (string, error) {
 	return strings.Join(out, " "), nil
 }
 
-// shellQuote wraps in single quotes for genrule cmd safety, only
-// when the arg contains shell metacharacters. Pure-alnum args pass
-// through unquoted to keep the rendered cmd readable.
+// shellQuote wraps an argv element in single quotes for safe
+// embedding into the genrule's cmd (Bazel runs the cmd under
+// `/bin/sh -c`). The genrule cmd's $(location ...) substitutions
+// are emitted unquoted by renderCustomCmd; everything else flows
+// through this helper, which:
+//
+//   - Returns plain alphanumeric / `_` / `-` / `.` / `/` / `=`
+//     args verbatim (the common shape — file paths, simple
+//     identifiers, `--flag=value`). Keeps the rendered genrule
+//     readable in the BUILD output.
+//   - Single-quotes everything else, escaping embedded single
+//     quotes via the standard `'\”` dance. This covers the full
+//     POSIX shell metacharacter set (`;`, `|`, `&`, `<`, `>`,
+//     `(`, `)`, newline, `$`, “ ` “, `\`, glob chars,
+//     whitespace) without enumerating each one — anything that
+//     isn't in the safe set goes through quoting.
 func shellQuote(s string) string {
+	if s == "" {
+		return "''"
+	}
 	for _, r := range s {
-		if r == ' ' || r == '\t' || r == '"' || r == '\'' || r == '$' || r == '`' || r == '\\' || r == '*' || r == '?' || r == '[' || r == ']' {
+		if !isShellSafeRune(r) {
 			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 		}
 	}
 	return s
+}
+
+func isShellSafeRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return true
+	case r >= 'A' && r <= 'Z':
+		return true
+	case r >= '0' && r <= '9':
+		return true
+	}
+	switch r {
+	case '_', '-', '.', '/', '=', '+', ':', ',', '@', '%':
+		return true
+	}
+	return false
 }
 
 // fillSourcesAndFlags walks target_sources, pulling the cc-shaped

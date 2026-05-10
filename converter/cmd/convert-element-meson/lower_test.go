@@ -279,6 +279,44 @@ func TestApplyCompileParameters_BuildDirSiblingNotDropped(t *testing.T) {
 	}
 }
 
+func TestShellQuote(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// Safe shapes pass through unquoted.
+		{"foo", "foo"},
+		{"--flag=value", "--flag=value"},
+		{"path/to/file.c", "path/to/file.c"},
+		{"abc-123_xyz", "abc-123_xyz"},
+		// Anything else gets single-quoted. The full POSIX shell
+		// metacharacter set must be covered (regression for the
+		// previous metachar-list bug that omitted ; | & < > ( )
+		// newline).
+		{"a;b", "'a;b'"},
+		{"a|b", "'a|b'"},
+		{"a&b", "'a&b'"},
+		{"a<b", "'a<b'"},
+		{"a>b", "'a>b'"},
+		{"a(b", "'a(b'"},
+		{"a)b", "'a)b'"},
+		{"a b", "'a b'"},
+		{"a\nb", "'a\nb'"},
+		{"a$b", "'a$b'"},
+		{"a`b", "'a`b'"},
+		{"a*b", "'a*b'"},
+		// Embedded single quotes are escaped via the canonical
+		// '\'' dance so the surrounding quoting stays sound.
+		{"a'b", `'a'\''b'`},
+		// Empty arg becomes literal '' — preserves the argv slot.
+		{"", "''"},
+	}
+	for _, c := range cases {
+		if got := shellQuote(c.in); got != c.want {
+			t.Errorf("shellQuote(%q)=%q want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestRenderCustomCmd_RefusesEmbeddedAndUnreferencedTokens(t *testing.T) {
 	// Embedded @INPUT@ in a larger token must refuse.
 	if _, err := renderCustomCmd([]string{"--in=@INPUT@", "@OUTPUT@"}, []string{"a"}, []string{"b"}); err == nil ||

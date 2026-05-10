@@ -86,6 +86,21 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 		fs.Usage()
 		return a, exitUsage
 	}
+	// The lowering pass projects intro-targets.json's absolute
+	// source paths against SourceRoot via string-prefix matching;
+	// a relative --source-root would silently fall into the
+	// "outside source root" / subproject refusal arm. Normalize
+	// to an absolute path here so a caller-supplied relative
+	// path Just Works (matches the convention every other
+	// converter binary in this repo follows).
+	if !filepath.IsAbs(a.sourceRoot) {
+		abs, err := filepath.Abs(a.sourceRoot)
+		if err != nil {
+			fmt.Fprintf(stderr, "convert-element-meson: resolve --source-root %q: %v\n", a.sourceRoot, err)
+			return a, exitUsage
+		}
+		a.sourceRoot = abs
+	}
 	if mesonArgs != "" {
 		a.mesonExtraArgs = strings.Fields(mesonArgs)
 	}
