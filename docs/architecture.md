@@ -22,16 +22,17 @@ remote Buildbarn cluster can fan out the work. The trace-driven
 two-pass meta-project shape (`cmd/write-a` + Bazel-as-orchestrator)
 extends the same conversion model to non-cmake kinds — `kind:autotools`
 (round-1 coarse + round-2 trace-driven), `kind:make`, `kind:makemaker`,
-`kind:modulebuild`, `kind:manual`, and `kind:script` are all shipped via
-the per-kind handlers under `cmd/write-a/`. `kind:meson` is the next
-native renderer queued; see [`ROADMAP.md`](../ROADMAP.md) for current
-vs. queued state.
+`kind:modulebuild`, `kind:manual`, `kind:script`, and `kind:meson`
+(introspection-driven Phase A) are all shipped via the per-kind
+handlers under `cmd/write-a/`. See [`ROADMAP.md`](../ROADMAP.md) for
+current vs. queued state.
 
 ## Repo layout
 
 ```
 converter/                  single-element converter (the per-package brain)
-  cmd/convert-element/      CLI entry point
+  cmd/convert-element/      CLI entry point (cmake)
+  cmd/convert-element-meson/  CLI entry point (meson; introspection-driven, see docs/design/meson-native-render.md)
   cmd/derive-toolchain/     emits cc_toolchain + toolchain.cmake from a cmake probe
   internal/cli              flag parsing + exit codes
   internal/hermetic         bwrap argv builder, env scrubbing

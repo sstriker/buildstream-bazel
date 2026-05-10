@@ -31,7 +31,7 @@ counts is in
 | Kind | Count | % | Quality | Notes |
 |---|---|---|---|---|
 | `autotools` | 274 | 25.1 % | **deep (NEW)** | trace-driven via build-tracer + convert-element-autotools |
-| `meson` | 134 | 12.3 % | coarse | introspection available but not wired (next high-impact) |
+| `meson` | 134 | 12.3 % | **deep (NEW)** | introspection-driven via convert-element-meson; Phase B install-plan fallback queued |
 | `pyproject` | 115 | 10.5 % | coarse | py_library / py_binary mapping deferred |
 | `manual` | 104 | 9.5 % | coarse | command-list driven; trace-driven path applicable |
 | `stack` | 96 | 8.8 % | structural | filegroup composition over deps |
@@ -53,40 +53,10 @@ counts is in
 | `flatpak_repo` | 1 | 0.1 % | **missing** | FDSDK glue |
 | `modulebuild` | 1 | 0.1 % | coarse | Perl Module::Build |
 
-**Today: 25.1% (autotools) + 6.9% (cmake) = 32.0% of FDSDK has
-deep conversion. With meson on top: ~44.3%.**
+**Today: 25.1% (autotools) + 12.3% (meson) + 6.9% (cmake) = 44.3%
+of FDSDK has deep conversion.**
 
-## Highest-impact next: meson
-
-134 elements (12.3% of FDSDK). meson exposes its build graph
-via `meson introspect --buildoptions / --targets / --installed`
-— a JSON dump analogous to cmake's File API. The meson
-introspection is structurally rich enough for native
-conversion:
-
-- `--targets` lists every executable / static_library /
-  shared_library with its source files, dependencies, and
-  per-target compile args.
-- `--installed` lists install destinations.
-- `--buildoptions` lists build-time options (analog of
-  cmake cache values).
-
-A `convert-element-meson` translator would:
-
-1. Run `meson setup` + `meson introspect` against the source.
-2. Parse the introspection JSON.
-3. Emit native `cc_library` / `cc_binary` rules with proper
-   `srcs` / `copts` / `deps`, mirroring the cmake handler's
-   shape.
-4. Emit a synth cmake-config-bundle equivalent (meson
-   pkg-config files via `meson dependency('foo').generate_pc()`)
-   for cross-element dep resolution.
-
-Estimate: similar scope to the cmake converter (~2 weeks of
-focused work). Reuses everything else (lower IR, bazel
-emit, imports manifest, cross-element bundle plumbing).
-
-## After meson: trace-driven for kind:make / kind:manual / kind:script
+## Highest-impact next: trace-driven for kind:make / kind:manual / kind:script
 
 Combined: 216 elements (19.8% of FDSDK). All are
 command-list-driven (no introspection surface). The
@@ -144,8 +114,9 @@ high-impact items above.
 
 Tackle in order of impact-per-work-unit:
 
-1. **meson** — biggest single chunk (12.3%), structurally
-   rich introspection available. Highest ROI.
+1. ~~**meson** — biggest single chunk (12.3%).~~ Shipped Phase A
+   (introspection-driven deep conversion); Phase B install-plan
+   fallback queued in `ROADMAP.md` Next.
 2. **trace-driven for make / manual / script** — quick win
    (1-2 days, 19.8% of FDSDK becomes deep instead of coarse).
 3. **pyproject** — fresh translator (10.5%). Distinct shape
@@ -153,4 +124,4 @@ Tackle in order of impact-per-work-unit:
 4. **FDSDK glue** — last; small impact each.
 
 Net after these: **~75% of FDSDK has deep conversion** (vs.
-32% today).
+44% today).

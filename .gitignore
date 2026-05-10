@@ -31,6 +31,7 @@ converter/testdata/sample-projects/libdrm/
 # `go build ./converter/cmd/<name>`. Anchored so the per-binary
 # source directories under converter/cmd/ aren't swept up.
 /convert-element
+/convert-element-meson
 /derive-toolchain
 /probe-cell
 /probe-cell-fixture

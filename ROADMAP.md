@@ -156,11 +156,21 @@ transition cleanly.
   advantages forfeited); hermeticity weaker (relies on
   host-side cmake/ninja). Worth re-evaluating once fixtures
   reveal the storage-duplication cost in practice.
-- **kind:meson** native render. Meson exposes
-  `meson introspect --targets`, which is closer to cmake's File API
-  than autotools' "you have to actually run it" introspection. The
-  native render path probably looks like a kind:cmake variant rather
-  than a kind:autotools variant.
+- **kind:meson round-2 fallback.** Phase A (deep introspection-driven
+  render) shipped — see Done. The Phase B sibling for elements whose
+  configure refuses (subprojects, generated_sources from custom
+  targets the v1 lift can't recover, unresolved external deps) is the
+  same shape as kind:cmake's round-2 fallback: project B hosts an
+  install genrule wrapping `meson setup + ninja + meson install
+  --destdir + tar` under build-tracer + inline trace-publish; project
+  A's converter genrule reads `intro-install_plan.json` to emit per-
+  target stubs (`runtime` → `sh_binary` / `cc_binary`, `devel` +
+  `libdir_static` → `cc_import(static_library=…)`, `devel` +
+  `libdir_shared` → `cc_import(shared_library=…)`) referencing the
+  install_tree.tar. The install-plan's `tag` field
+  (`runtime`/`devel`/`man`) gives a richer signal than cmake's
+  destination-path inference; structural recipe parallels
+  `docs/design/cmake-execute-process-round2-fallback.md`.
 - **`bst` wrapper** so `bst build` works against a converted project
   (and against `bst workspace open`-modified element source trees).
   Goal: BuildStream developers' muscle memory keeps working through
@@ -193,6 +203,30 @@ transition cleanly.
 
 ## Done (high points)
 
+- **kind:meson native render (Phase A).** New
+  `converter/cmd/convert-element-meson` runs `meson setup` against a
+  source tree, parses `<build>/meson-info/intro-targets.json` +
+  siblings, and lowers into the same IR the kind:cmake converter
+  emits — yielding native `cc_library` / `cc_binary` rules in
+  `BUILD.bazel.out`. Per-target `target_sources.parameters` are split
+  into `Includes` (`-I`), `Defines` (`-D`), and `Copts` (everything
+  else, with toolchain-handled flags like `-fPIC` /
+  `-fdiagnostics-color=always` filtered). `link_with:` propagates as
+  a `libfoo.a` linker argument, which the converter matches against
+  in-project archive output basenames to populate `Deps`. External
+  `dependency('foo')` entries resolve via the imports manifest; deps
+  meson can fold inline (e.g. `threads → -pthread`) flow into Copts /
+  LinkOpts directly. Typed Tier-1 refusals (`unsupported-meson-
+  subproject`, `unsupported-meson-target-type`, `unsupported-meson-
+  custom-target`, `unsupported-meson-generated-sources`,
+  `unsupported-meson-cross-compile`, `unresolved-meson-dependency`)
+  cover the patterns v1 doesn't lift; the Phase B install-plan
+  fallback (queued in Next) catches the rest. `cmd/write-a`'s kind:
+  meson handler is opt-in via `--convert-element-meson <path>` —
+  unset preserves the historical pipeline-shape coarse install
+  genrule. Render gate: `scripts/meta-meson.sh`. Recipe:
+  `docs/design/meson-native-render.md`. Coverage status:
+  `docs/fdsdk-coverage-status.md`.
 - **`execute_process` recovery for kind:cmake.** Phase A
   (native lift): the deterministic buckets — `cmake -E touch
   / copy / copy_if_different` and file-producing tools with
