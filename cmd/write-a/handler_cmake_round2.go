@@ -19,10 +19,27 @@ import "fmt"
 // docs/design/cmake-execute-process-round2-fallback.md for the
 // architectural shape and staged plan.
 //
-// The kind-agnostic round-2 helpers
-// (renderTraceDrivenRound2A, pipelineTraceExtensionRound2 in
-// handler_pipeline_round2.go) are reused as-is once kind:cmake
-// joins; only the bits below are kind-specific.
+// What kind:cmake reuses from the existing round-2 plumbing:
+//
+//   - renderTraceDrivenRound2A in handler_pipeline_round2.go —
+//     kind-agnostic; emits A's converter genrule wired against
+//     @trace_<elem>//:trace.
+//   - cmd/build-tracer / cmd/trace-publish / cmd/trace-lookup
+//     and tracenorm.SyntheticActionDigest — the publish/lookup
+//     wire contract is kind-agnostic.
+//
+// What kind:cmake does NOT reuse:
+//
+//   - pipelineTraceExtensionRound2 + pipelineTracePublishStep
+//     hard-code autotools assumptions: they call
+//     wrapAutotoolsPipelineCmds, write to $$AUTOTOOLS_TRACE,
+//     and capture `make -np` for the make-db. kind:cmake's
+//     install genrule needs its own equivalent that uses
+//     wrapCmakePipelineCmds (defined below) and $$CMAKE_TRACE,
+//     and synthesises an empty make-db (cmake doesn't have
+//     one). Step 3 lands cmakeRound2InstallBuild; in this PR
+//     wrapCmakePipelineCmds + the srckey patterns are the
+//     standalone scaffolding it consumes.
 
 // cmakeSrckeyPatterns returns the file-glob set that gates
 // srckey content-inclusion for kind:cmake round-2.
