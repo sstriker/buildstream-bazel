@@ -156,6 +156,34 @@ func TestRegisterToolchainsCallPresent(t *testing.T) {
 	}
 }
 
+// TestLoadPlatforms_RejectsUnsafeNames: platform names from the
+// JSON manifest become Bazel target names, .bazelrc --config
+// aliases, and probe filename halves. loadPlatforms must reject
+// anything outside the [a-zA-Z0-9_-] charset early with a
+// clear error rather than letting the bad name surface as a
+// confusing "no probe cells found" warning or a Bazel parse
+// error in toolchains/BUILD.bazel.
+func TestLoadPlatforms_RejectsUnsafeNames(t *testing.T) {
+	cases := map[string]string{
+		"with dot":   `[{"name": "linux.x86_64", "constraints": ["@platforms//os:linux"]}]`,
+		"with slash": `[{"name": "linux/x86_64", "constraints": ["@platforms//os:linux"]}]`,
+		"with colon": `[{"name": "linux:x86_64", "constraints": ["@platforms//os:linux"]}]`,
+		"with space": `[{"name": "linux x86_64", "constraints": ["@platforms//os:linux"]}]`,
+	}
+	for label, body := range cases {
+		t.Run(label, func(t *testing.T) {
+			tmp := t.TempDir()
+			path := filepath.Join(tmp, "platforms.json")
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loadPlatforms(path); err == nil {
+				t.Errorf("expected error for %s", label)
+			}
+		})
+	}
+}
+
 // TestRun_NoCellsForPlatform demonstrates the "skip-with-warning"
 // behaviour: a platform listed in --platforms-json with no probe
 // cells in --probe-cells is dropped from the output (with a

@@ -100,13 +100,17 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 		if p.Name == "" {
 			return nil, fmt.Errorf("projecta: Platforms[%d] has empty Name", i)
 		}
-		// '.' splits filenames in unify-toolchains
-		// (<platform>.<variant>.probe.json — strings.IndexByte('.')
-		// recovers the platform); a dotted platform name would land
-		// the cell under the wrong group. Reject up front rather
-		// than producing ambiguous artifacts.
-		if strings.ContainsRune(p.Name, '.') {
-			return nil, fmt.Errorf("projecta: Platforms[%d].Name %q contains '.', reserved as the <platform>.<variant> separator in probe artifact filenames", i, p.Name)
+		// Platform names become Bazel target name prefixes
+		// (genrule(name="<plat>.<var>"), platform() rule names),
+		// .bazelrc --config aliases, and per-cell probe filenames.
+		// Allow only [a-zA-Z0-9_-] so chars that would produce
+		// invalid BUILD files or ambiguous artifacts (whitespace,
+		// '/', ':', etc.) fail fast. '.' is rejected in particular
+		// because unify-toolchains splits <platform>.<variant>
+		// filenames on the first '.'; a dotted platform would land
+		// cells under the wrong group.
+		if err := checkBazelTargetSafeName(p.Name); err != nil {
+			return nil, fmt.Errorf("projecta: Platforms[%d].Name %q: %w", i, p.Name, err)
 		}
 		// Duplicate platform names → duplicate Bazel target names
 		// in the rendered BUILD.bazel (genrule(name="<plat>.<var>")
@@ -125,18 +129,11 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 		if v.Name == "" {
 			return nil, fmt.Errorf("projecta: Variants[%d] has empty Name", i)
 		}
-		// Variant names become Bazel target name suffixes ("<plat>.<var>")
-		// and probe artifact filenames; reject characters Bazel doesn't
-		// accept in target names. The allowed set is the conservative
-		// subset used elsewhere in the project (alphanumerics + '_' + '-').
-		for _, r := range v.Name {
-			ok := (r >= 'a' && r <= 'z') ||
-				(r >= 'A' && r <= 'Z') ||
-				(r >= '0' && r <= '9') ||
-				r == '_' || r == '-'
-			if !ok {
-				return nil, fmt.Errorf("projecta: Variants[%d].Name %q contains %q; allowed: [a-zA-Z0-9_-]", i, v.Name, r)
-			}
+		// Variant names become Bazel target name suffixes
+		// ("<plat>.<var>") and probe artifact filenames; same
+		// charset rules as platforms.
+		if err := checkBazelTargetSafeName(v.Name); err != nil {
+			return nil, fmt.Errorf("projecta: Variants[%d].Name %q: %w", i, v.Name, err)
 		}
 		if seenVar[v.Name] {
 			return nil, fmt.Errorf("projecta: duplicate Variants[].Name %q", v.Name)
@@ -240,6 +237,26 @@ func sortedCacheVarKeys(v toolchain.Variant) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// checkBazelTargetSafeName rejects characters Bazel doesn't accept
+// in target names plus a few that would break our cell filename
+// convention. The allowed set [a-zA-Z0-9_-] is the conservative
+// subset already used elsewhere in this project. '.' is rejected
+// explicitly because unify-toolchains splits
+// <platform>.<variant>.probe.json on the first '.'; allowing it
+// in either half would land cells under the wrong group.
+func checkBazelTargetSafeName(name string) error {
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '-'
+		if !ok {
+			return fmt.Errorf("contains %q; allowed: [a-zA-Z0-9_-]", r)
+		}
+	}
+	return nil
 }
 
 // shellQuote wraps a string in single quotes for shell-safe

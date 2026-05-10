@@ -146,16 +146,18 @@ func loadPlatforms(path string) ([]platformSpec, error) {
 	}
 	// Validate each platform spec up front. The probe-cell filename
 	// convention (<platform>.<variant>.probe.json) and the per-
-	// platform fold both assume non-empty, dot-free, unique names
-	// with non-empty constraints; an invalid spec here would
-	// surface later as misleading "no probe cells found" warnings.
+	// platform fold both assume non-empty names from the
+	// Bazel-target-safe charset, with non-empty constraints; an
+	// invalid spec here would surface later as misleading "no
+	// probe cells found" warnings or as Bazel parse errors on the
+	// generated platforms/ + toolchains/ files.
 	seen := map[string]bool{}
 	for i, p := range out {
 		if p.Name == "" {
 			return nil, fmt.Errorf("platforms[%d] in %s has empty name", i, path)
 		}
-		if strings.ContainsRune(p.Name, '.') {
-			return nil, fmt.Errorf("platforms[%d].name %q in %s contains '.', reserved as the <platform>.<variant> separator in probe artifact filenames", i, p.Name, path)
+		if err := checkBazelTargetSafeName(p.Name); err != nil {
+			return nil, fmt.Errorf("platforms[%d].name %q in %s: %w", i, p.Name, path, err)
 		}
 		if seen[p.Name] {
 			return nil, fmt.Errorf("platforms[].name %q appears twice in %s", p.Name, path)
@@ -166,6 +168,29 @@ func loadPlatforms(path string) ([]platformSpec, error) {
 		}
 	}
 	return out, nil
+}
+
+// checkBazelTargetSafeName mirrors projecta's name-charset check
+// (the imported package keeps it private to avoid widening the
+// surface; small enough to duplicate cheaply here). Platform
+// names from --platforms-json become Bazel target names
+// (platform() rules, cc_toolchain target prefixes), .bazelrc
+// --config aliases, and per-cell probe artifact filename halves;
+// anything outside [a-zA-Z0-9_-] would produce broken BUILD
+// files or ambiguous artifacts. '.' rejected explicitly because
+// groupProbeCells uses it as the <platform>.<variant> filename
+// separator.
+func checkBazelTargetSafeName(name string) error {
+	for _, r := range name {
+		ok := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '-'
+		if !ok {
+			return fmt.Errorf("contains %q; allowed: [a-zA-Z0-9_-]", r)
+		}
+	}
+	return nil
 }
 
 // groupProbeCells walks <probeCellsDir> and groups the

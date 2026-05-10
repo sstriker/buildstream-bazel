@@ -19,6 +19,7 @@ package probejson
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
@@ -54,10 +55,23 @@ type ReplyJSON struct {
 // JSON document. Pretty printing is chosen for human-readable
 // per-cell artifacts during debugging — the unifier doesn't care
 // about the formatting; reviewers do.
+//
+// Volatile cache entries are scrubbed before serialization: cmake's
+// File API surfaces the absolute build-dir path in
+// CMAKE_BINARY_DIR / *_BINARY_DIR / CMAKE_FIND_PACKAGE_REDIRECTS_DIR
+// / etc., and that path varies across runs even for byte-identical
+// inputs (Bazel sandbox roots, tmp dir suffixes). Letting them
+// reach probe.json would make per-cell artifacts churn across
+// runs, breaking remote-cache reuse and adding noise to the
+// unifier's Observe partition. The filter mirrors cmakerun's
+// volatile-vars list applied to the dump-vars feature; see
+// cmakerun.filterVolatilePaths for the rationale.
 func Marshal(variant toolchain.Variant, reply *fileapi.Reply) ([]byte, error) {
 	if reply == nil {
 		return nil, fmt.Errorf("probejson: nil reply")
 	}
+	cache := reply.Cache
+	cache.Entries = filterVolatileCacheEntries(cache.Entries)
 	p := ProbeJSON{
 		SchemaVersion: SchemaVersion,
 		Variant:       variant,
@@ -66,12 +80,92 @@ func Marshal(variant toolchain.Variant, reply *fileapi.Reply) ([]byte, error) {
 			Codemodel:   reply.Codemodel,
 			Toolchains:  reply.Toolchains,
 			CMakeFiles:  reply.CMakeFiles,
-			Cache:       reply.Cache,
+			Cache:       cache,
 			Targets:     reply.Targets,
 			Directories: reply.Directories,
 		},
 	}
 	return json.MarshalIndent(p, "", "  ")
+}
+
+// filterVolatileCacheEntries drops fileapi cache entries whose
+// values would naturally vary per run. Two filters compose:
+//
+//  1. Name-based: anything ending in `_BINARY_DIR` / `_SOURCE_DIR`
+//     plus a small list of cmake-internal path-bearing names
+//     (CMAKE_HOME_DIRECTORY, CMAKE_FIND_PACKAGE_REDIRECTS_DIR, the
+//     host-cmake-binary pointers, etc.).
+//
+//  2. Value-based: any entry whose value contains a build-dir path
+//     as substring. The build-dir prefixes are extracted from
+//     CMAKE_BINARY_DIR + every *_BINARY_DIR entry, so derived path
+//     vars (e.g. project paths inside the build tree, log file
+//     paths) drop too without a hand-maintained allowlist.
+//
+// Both filters mirror cmakerun.filterVolatilePaths intent. We don't
+// share code because this operates on []fileapi.CacheEntry while
+// cmakerun's helper operates on map[string]string; the duplication
+// is small enough to be cheaper than an extracted helper package.
+func filterVolatileCacheEntries(in []fileapi.CacheEntry) []fileapi.CacheEntry {
+	if len(in) == 0 {
+		return in
+	}
+	var prefixes []string
+	seen := map[string]bool{}
+	for _, e := range in {
+		if e.Value == "" {
+			continue
+		}
+		if e.Name == "CMAKE_BINARY_DIR" || strings.HasSuffix(e.Name, "_BINARY_DIR") {
+			if !seen[e.Value] {
+				prefixes = append(prefixes, e.Value)
+				seen[e.Value] = true
+			}
+		}
+	}
+	out := make([]fileapi.CacheEntry, 0, len(in))
+	for _, e := range in {
+		if isVolatileCacheVarName(e.Name) {
+			continue
+		}
+		if containsAnyPrefix(e.Value, prefixes) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func isVolatileCacheVarName(name string) bool {
+	if strings.HasSuffix(name, "_BINARY_DIR") || strings.HasSuffix(name, "_SOURCE_DIR") {
+		return true
+	}
+	switch name {
+	case "CMAKE_HOME_DIRECTORY",
+		"CMAKE_CACHEFILE_DIR",
+		"CMAKE_FILES_DIRECTORY",
+		"CMAKE_FIND_PACKAGE_REDIRECTS_DIR",
+		"CMAKE_CURRENT_FUNCTION_LIST_DIR",
+		"CMAKE_CURRENT_FUNCTION_LIST_FILE",
+		"CMAKE_CURRENT_LIST_DIR",
+		"CMAKE_CURRENT_LIST_FILE",
+		"CMAKE_BUILD_TOOL",
+		"CMAKE_COMMAND",
+		"CMAKE_CTEST_COMMAND",
+		"CMAKE_CPACK_COMMAND",
+		"CMAKE_ROOT":
+		return true
+	}
+	return false
+}
+
+func containsAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if p != "" && strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Unmarshal parses a ProbeJSON document. Returns the Variant + a

@@ -69,3 +69,65 @@ func TestMarshal_NilReplyRejected(t *testing.T) {
 		t.Fatal("expected error for nil reply")
 	}
 }
+
+// TestMarshal_FiltersVolatileCacheEntries: the build-dir-derived
+// cache entries cmake's File API emits (CMAKE_BINARY_DIR, every
+// *_BINARY_DIR, CMAKE_FIND_PACKAGE_REDIRECTS_DIR, log-file paths
+// inside the build dir, etc.) carry per-run absolute paths.
+// Letting them through would make probe.json non-deterministic
+// across runs even when the underlying cmake graph is byte-
+// identical. Marshal must drop them before serialization.
+func TestMarshal_FiltersVolatileCacheEntries(t *testing.T) {
+	reply := &fileapi.Reply{
+		Cache: fileapi.Cache{
+			Entries: []fileapi.CacheEntry{
+				{Name: "CMAKE_BINARY_DIR", Value: "/tmp/sandbox-abc/build"},
+				{Name: "CMAKE_HOME_DIRECTORY", Value: "/tmp/sandbox-abc/source"},
+				{Name: "PROJECT_BINARY_DIR", Value: "/tmp/sandbox-abc/build"},
+				{Name: "FOO_BINARY_DIR", Value: "/tmp/sandbox-abc/build/foo"},
+				{Name: "PROJECT_SOURCE_DIR", Value: "/tmp/sandbox-abc/source"},
+				{Name: "CMAKE_FIND_PACKAGE_REDIRECTS_DIR", Value: "/tmp/sandbox-abc/build/CMakeFiles/pkgRedirects"},
+				// Derived path-bearing var: name is benign but value
+				// references the build dir as a substring; should drop.
+				{Name: "DERIVED_LOG_PATH", Value: "log at /tmp/sandbox-abc/build/log.txt"},
+				// Stable entries: should round-trip.
+				{Name: "PROJECT_VERSION", Value: "1.2.3"},
+				{Name: "BUILD_SHARED_LIBS", Value: "ON"},
+				{Name: "CMAKE_C_COMPILER_ID", Value: "GNU"},
+			},
+		},
+	}
+	body, err := Marshal(toolchain.Variant{Name: "baseline"}, reply)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := string(body)
+
+	// Volatile entries gone.
+	for _, dropped := range []string{
+		"CMAKE_BINARY_DIR",
+		"CMAKE_HOME_DIRECTORY",
+		"PROJECT_BINARY_DIR",
+		"FOO_BINARY_DIR",
+		"PROJECT_SOURCE_DIR",
+		"CMAKE_FIND_PACKAGE_REDIRECTS_DIR",
+		"DERIVED_LOG_PATH",
+	} {
+		if strings.Contains(got, `"`+dropped+`"`) {
+			t.Errorf("%s should have been filtered out:\n%s", dropped, got)
+		}
+	}
+	// And the absolute path itself shouldn't appear anywhere in
+	// the serialized cache (defense in depth — even if a name is
+	// missed, the value-side filter catches its embedded path).
+	if strings.Contains(got, "/tmp/sandbox-abc") {
+		t.Errorf("build-dir path /tmp/sandbox-abc leaked into probe.json:\n%s", got)
+	}
+
+	// Stable entries survive.
+	for _, kept := range []string{"PROJECT_VERSION", "BUILD_SHARED_LIBS", "CMAKE_C_COMPILER_ID"} {
+		if !strings.Contains(got, `"`+kept+`"`) {
+			t.Errorf("expected %s to survive the filter; got:\n%s", kept, got)
+		}
+	}
+}

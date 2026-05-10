@@ -74,13 +74,19 @@ func run() error {
 
 	buildDir := *buildDirArg
 	if buildDir == "" {
-		tmp, err := os.MkdirTemp("", "probe-cell-build-*")
-		if err != nil {
-			return fmt.Errorf("mkdir tmp build dir: %w", err)
-		}
-		defer os.RemoveAll(tmp)
-		buildDir = tmp
-	} else if err := os.MkdirAll(buildDir, 0o755); err != nil {
+		// Default to a path derived from --out so the build dir is
+		// deterministic across invocations of the same Bazel
+		// genrule action. cmake's File API surfaces the build-dir
+		// path in many cache entries and configure-time vars; a
+		// tmp-suffixed dir would make probe.json non-deterministic
+		// even when the underlying cmake graph is byte-identical.
+		// Sibling-of-out keeps the path inside whatever sandbox the
+		// caller already uses (genrule output dir is a writable
+		// sibling of $@). probejson.Marshal's volatile-entries
+		// filter handles any residual leakage.
+		buildDir = *outPath + ".build"
+	}
+	if err := os.MkdirAll(buildDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir build dir: %w", err)
 	}
 

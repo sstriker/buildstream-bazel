@@ -37,6 +37,15 @@ func TestRenderToolchainProbe_RejectsMissingFields(t *testing.T) {
 		"platform name with dot": func(a *ToolchainProbeArgs) {
 			a.Platforms[0].Name = "linux.x86_64"
 		},
+		"platform name with slash": func(a *ToolchainProbeArgs) {
+			a.Platforms[0].Name = "linux/x86_64"
+		},
+		"platform name with colon": func(a *ToolchainProbeArgs) {
+			a.Platforms[0].Name = "linux:x86_64"
+		},
+		"platform name with space": func(a *ToolchainProbeArgs) {
+			a.Platforms[0].Name = "linux x86_64"
+		},
 		"variant with empty name": func(a *ToolchainProbeArgs) {
 			a.Variants[0].Name = ""
 		},
