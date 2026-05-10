@@ -59,11 +59,16 @@ func run(argv []string) error {
 	}
 
 	parsed := make([]parsedCell, 0, len(cells))
+	seenNames := map[string]bool{}
 	for _, raw := range cells {
 		c, err := parseCell(raw)
 		if err != nil {
 			return fmt.Errorf("--cell %q: %w", raw, err)
 		}
+		if seenNames[c.name] {
+			return fmt.Errorf("--cell %q: duplicate platform name %q (each --cell must have a unique name; the fold keys per-platform maps by it)", raw, c.name)
+		}
+		seenNames[c.name] = true
 		parsed = append(parsed, c)
 	}
 
@@ -126,22 +131,26 @@ type parsedCell struct {
 	irJSONPath  string
 }
 
-// parseCell decodes "<name>|<c1,c2,...>|<path>". Two pipes
-// split the three fields; commas split the constraints. Empty
-// constraints ("") and empty paths are rejected. Pipe is the
-// outer separator (rather than ":") because Bazel constraint
-// labels embed colons (@platforms//os:linux); SplitN on ":"
-// would shred them.
+// parseCell decodes "<name>|<c1,c2,...>|<path>". Requires
+// exactly two pipes: extra pipes (in any field) are rejected
+// rather than silently absorbed into the path so accidental
+// pipes in a path don't quietly mis-route. Commas split the
+// constraints. Empty name, no constraints, and empty path are
+// each rejected with a specific error. Pipe is the outer
+// separator (rather than ":") because Bazel constraint labels
+// embed colons (@platforms//os:linux); SplitN on ":" would
+// shred them.
 func parseCell(raw string) (parsedCell, error) {
-	parts := strings.SplitN(raw, "|", 3)
+	parts := strings.Split(raw, "|")
 	if len(parts) != 3 {
-		return parsedCell{}, fmt.Errorf("expected <name>|<constraints>|<path>")
+		return parsedCell{}, fmt.Errorf("expected exactly two %q separators in <name>|<constraints>|<path>; got %d field(s)", "|", len(parts))
 	}
 	name := strings.TrimSpace(parts[0])
 	if name == "" {
 		return parsedCell{}, fmt.Errorf("empty name")
 	}
-	if parts[2] == "" {
+	path := strings.TrimSpace(parts[2])
+	if path == "" {
 		return parsedCell{}, fmt.Errorf("empty path")
 	}
 	constraintsRaw := strings.Split(parts[1], ",")
@@ -159,7 +168,7 @@ func parseCell(raw string) (parsedCell, error) {
 	return parsedCell{
 		name:        name,
 		constraints: constraints,
-		irJSONPath:  parts[2],
+		irJSONPath:  path,
 	}, nil
 }
 

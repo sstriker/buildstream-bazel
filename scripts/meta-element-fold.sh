@@ -179,5 +179,4 @@ if ! grep -qF "linux_aarch64" "$work_dir/ambig.stderr"; then
     exit 1
 fi
 
-cells_in_unified=$(grep -c '"src/foo_linux.c"' "$out_build")
 echo "meta-element-fold: ok (multi-platform fold + select() rendering + N=1 degenerate identity + ambiguous-matrix rejection)"

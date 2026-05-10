@@ -234,6 +234,7 @@ func (r *runner) processElementMultiPlatform(
 ) error {
 	cells := make([]foldCell, 0, len(r.platformsMatrix))
 	var firstSuccessElemOut string
+	hits := 0
 	for _, p := range r.platformsMatrix {
 		platOut := filepath.Join(elemOut, p.Name)
 		built, err := reapi.Build(reapi.Inputs{
@@ -260,6 +261,7 @@ func (r *runner) processElementMultiPlatform(
 		}
 		if hit {
 			r.logger.Info("cache hit", "name", name, "platform", p.Name, "action_digest", built.ActionDigest.Hash)
+			hits++
 		} else {
 			if err := os.RemoveAll(platOut); err != nil {
 				return fmt.Errorf("element %s platform %s: clear platOut: %w", name, p.Name, err)
@@ -316,7 +318,17 @@ func (r *runner) processElementMultiPlatform(
 		return fmt.Errorf("element %s: stage canonical artifacts: %w", name, err)
 	}
 
-	r.appendCacheMiss(name) // multi-platform doesn't distinguish hit/miss at the element level yet
+	// Cache accounting at the element level: a multi-platform
+	// element is "hit" iff every per-platform Action hit (so no
+	// remote execution and no fold-side work was strictly
+	// avoidable); otherwise at least one platform exercised the
+	// executor, so record a miss. Per-platform hit counts land in
+	// the structured log above for finer-grained dashboards.
+	if hits == len(cells) {
+		r.appendCacheHit(name)
+	} else {
+		r.appendCacheMiss(name)
+	}
 	return nil
 }
 

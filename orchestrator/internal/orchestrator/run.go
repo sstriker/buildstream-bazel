@@ -146,12 +146,22 @@ type Options struct {
 	// should fan out per-element conversions across. Each entry
 	// pairs a Bazel platform name with its constraint_value
 	// labels and the REAPI Action.Platform properties to route
-	// the matching action to. With a one-platform manifest the
-	// orchestrator's behaviour is byte-identical to today's
-	// single-platform flow (the per-element fold's N=1
-	// degenerate case); with more, each kind:cmake element
-	// produces a unified BUILD.bazel whose attributes carry
-	// `select()` blocks for the per-platform divergence.
+	// the matching action to. With a one-platform manifest each
+	// kind:cmake element renders a BUILD.bazel whose CONTENT
+	// matches today's single-platform output (the N=1
+	// degenerate case of the per-element fold: empty
+	// PerPlatform → flat attribute lists). The on-disk LAYOUT
+	// and Action digests differ: per-platform Actions request
+	// ir.json (EmitIRJSON), land under elemOut/<platform>/, and
+	// the canonical bundle/read_paths are symlinked from the
+	// first cell. Setting PlatformsJSON is therefore a non-
+	// reversible commitment to the new layout even at N=1; the
+	// orchestrator's existing single-platform path (PlatformsJSON
+	// unset) is the byte-for-byte identical-to-today's route
+	// for callers that need full byte-stability. With N>1, each
+	// kind:cmake element produces a unified BUILD.bazel whose
+	// attributes carry `select()` blocks for the per-platform
+	// divergence.
 	//
 	// Manifest schema (one entry per platform):
 	//

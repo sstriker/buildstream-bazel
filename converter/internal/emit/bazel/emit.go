@@ -596,9 +596,13 @@ func strList(items []string) string {
 // keys are emitted in sorted order so the rendered BUILD.bazel
 // is byte-stable across runs (map iteration is randomized).
 //
-// The arm-list contents are sorted within each arm via the same
-// sortedCopy convention the rest of emit uses; callers shouldn't
-// rely on input order surviving.
+// Arm-list contents are emitted in the caller-supplied order.
+// elementfold owns the per-attribute ordering convention: it
+// sorts order-insensitive attrs (srcs, hdrs, includes, defines,
+// deps) lexicographically and preserves cells' original sequence
+// for order-sensitive attrs (copts, linkopts). emit-time
+// fan-in (e.g. cc_binary's hdrs→srcs arm merge) is responsible
+// for sorting its own merged arms before passing them in.
 func attrExpr(flat []string, sel map[string][]string) string {
 	hasSel := len(sel) > 0
 	hasFlat := len(flat) > 0

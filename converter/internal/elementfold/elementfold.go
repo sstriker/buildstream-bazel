@@ -77,6 +77,7 @@ func Fold(cells []Cell) (*ir.Package, error) {
 	if len(cells) == 0 {
 		return nil, fmt.Errorf("elementfold: no cells")
 	}
+	seenName := map[string]int{}
 	for i, c := range cells {
 		if c.Pkg == nil {
 			return nil, fmt.Errorf("elementfold: cells[%d] (%q) has nil Pkg", i, c.Platform.Name)
@@ -87,6 +88,11 @@ func Fold(cells []Cell) (*ir.Package, error) {
 		if c.Platform.SelectKey == "" {
 			return nil, fmt.Errorf("elementfold: cells[%d] (%q) has empty Platform.SelectKey; call PickSelectKeys to derive it", i, c.Platform.Name)
 		}
+		if prev, dup := seenName[c.Platform.Name]; dup {
+			return nil, fmt.Errorf("elementfold: cells[%d] reuses Platform.Name %q first declared by cells[%d]; each cell needs a unique platform name because the fold keys per-platform maps by it",
+				i, c.Platform.Name, prev)
+		}
+		seenName[c.Platform.Name] = i
 	}
 
 	// Validate package-level consistency across cells.
@@ -176,45 +182,46 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 			return nil, fmt.Errorf("Alwayslink disagrees: cell %q has %v, cell %q has %v",
 				cells[0].Platform.Name, first.Alwayslink, c.Platform.Name, v.Alwayslink)
 		}
+		firstName, vName := cells[0].Platform.Name, c.Platform.Name
 		if v.InstallDest != first.InstallDest {
-			return nil, fmt.Errorf("InstallDest disagrees: %q vs %q", first.InstallDest, v.InstallDest)
+			return nil, fmt.Errorf("InstallDest disagrees: cell %q has %q, cell %q has %q", firstName, first.InstallDest, vName, v.InstallDest)
 		}
 		if v.ArtifactName != first.ArtifactName {
-			return nil, fmt.Errorf("ArtifactName disagrees: %q vs %q", first.ArtifactName, v.ArtifactName)
+			return nil, fmt.Errorf("ArtifactName disagrees: cell %q has %q, cell %q has %q", firstName, first.ArtifactName, vName, v.ArtifactName)
 		}
 		if v.LinkLanguage != first.LinkLanguage {
-			return nil, fmt.Errorf("LinkLanguage disagrees: %q vs %q", first.LinkLanguage, v.LinkLanguage)
+			return nil, fmt.Errorf("LinkLanguage disagrees: cell %q has %q, cell %q has %q", firstName, first.LinkLanguage, vName, v.LinkLanguage)
 		}
 		if v.StaticLibrary != first.StaticLibrary {
-			return nil, fmt.Errorf("StaticLibrary disagrees: %q vs %q", first.StaticLibrary, v.StaticLibrary)
+			return nil, fmt.Errorf("StaticLibrary disagrees: cell %q has %q, cell %q has %q", firstName, first.StaticLibrary, vName, v.StaticLibrary)
 		}
 		if v.SharedLibrary != first.SharedLibrary {
-			return nil, fmt.Errorf("SharedLibrary disagrees: %q vs %q", first.SharedLibrary, v.SharedLibrary)
+			return nil, fmt.Errorf("SharedLibrary disagrees: cell %q has %q, cell %q has %q", firstName, first.SharedLibrary, vName, v.SharedLibrary)
 		}
 		if v.GenruleCmd != first.GenruleCmd {
-			return nil, fmt.Errorf("GenruleCmd disagrees")
+			return nil, fmt.Errorf("GenruleCmd disagrees: cell %q has %q, cell %q has %q", firstName, first.GenruleCmd, vName, v.GenruleCmd)
 		}
 		// Genrule outs / tools, test args / data / env / timeout
 		// must also match exactly. Differences here would mean
 		// fundamentally different rule shapes per platform, which
 		// select() can't express at the attribute level.
 		if !sliceEqual(v.GenruleOuts, first.GenruleOuts) {
-			return nil, fmt.Errorf("GenruleOuts disagrees")
+			return nil, fmt.Errorf("GenruleOuts disagrees: cell %q has %v, cell %q has %v", firstName, first.GenruleOuts, vName, v.GenruleOuts)
 		}
 		if !sliceEqual(v.GenruleTools, first.GenruleTools) {
-			return nil, fmt.Errorf("GenruleTools disagrees")
+			return nil, fmt.Errorf("GenruleTools disagrees: cell %q has %v, cell %q has %v", firstName, first.GenruleTools, vName, v.GenruleTools)
 		}
 		if !sliceEqual(v.TestArgs, first.TestArgs) {
-			return nil, fmt.Errorf("TestArgs disagrees")
+			return nil, fmt.Errorf("TestArgs disagrees: cell %q has %v, cell %q has %v", firstName, first.TestArgs, vName, v.TestArgs)
 		}
 		if !sliceEqual(v.TestData, first.TestData) {
-			return nil, fmt.Errorf("TestData disagrees")
+			return nil, fmt.Errorf("TestData disagrees: cell %q has %v, cell %q has %v", firstName, first.TestData, vName, v.TestData)
 		}
 		if !sliceEqual(v.TestEnv, first.TestEnv) {
-			return nil, fmt.Errorf("TestEnv disagrees")
+			return nil, fmt.Errorf("TestEnv disagrees: cell %q has %v, cell %q has %v", firstName, first.TestEnv, vName, v.TestEnv)
 		}
 		if v.TestTimeout != first.TestTimeout {
-			return nil, fmt.Errorf("TestTimeout disagrees")
+			return nil, fmt.Errorf("TestTimeout disagrees: cell %q has %q, cell %q has %q", firstName, first.TestTimeout, vName, v.TestTimeout)
 		}
 	}
 
