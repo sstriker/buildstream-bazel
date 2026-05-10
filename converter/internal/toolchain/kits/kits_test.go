@@ -98,6 +98,31 @@ func TestParse_CmakeSettingsLiftedToCacheVars(t *testing.T) {
 	}
 }
 
+// TestStringify_LargeFloats covers the bounds-checked float→int64
+// path. JSON numbers larger than int64 max (or smaller than min)
+// must fall through to scientific/decimal float formatting rather
+// than wrapping into a garbled integer via implementation-defined
+// conversion.
+func TestStringify_LargeFloats(t *testing.T) {
+	cases := map[string]any{
+		"42":     float64(42),
+		"-7":     float64(-7),
+		"1.5":    1.5,
+		"1e+20":  1e20, // outside int64 range; expect float formatting
+		"-1e+20": -1e20,
+	}
+	for want, in := range cases {
+		got, err := stringify(in)
+		if err != nil {
+			t.Errorf("stringify(%v): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("stringify(%v) = %q; want %q", in, got, want)
+		}
+	}
+}
+
 func TestSanitizeKitName(t *testing.T) {
 	cases := map[string]string{
 		"GCC 13":            "gcc-13",

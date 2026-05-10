@@ -138,6 +138,13 @@ func TestRegisterToolchainsCallPresent(t *testing.T) {
 		`module(name="x")`:                    false,
 		`register_toolchains("//foo:bar")`:    false,
 		`register_toolchains("//toolchains")`: false, // wrong target
+		// commented-out occurrences must NOT count as registered.
+		`# register_toolchains("//toolchains:all")`:                          false,
+		"   # register_toolchains(\"//toolchains:all\")\nmodule(name=\"x\")": false,
+		"#register_toolchains('//toolchains:all')":                           false,
+		"# leading comment\n#register_toolchains('//toolchains:all')\n":      false,
+		// inline comment AFTER a real call still counts as registered.
+		`register_toolchains("//toolchains:all") # ok`: true,
 	}
 	for body, want := range cases {
 		if got := registerToolchainsCallPresent([]byte(body)); got != want {

@@ -269,10 +269,23 @@ func maybePrintSetupBanner(repoRoot string) error {
 // matches too).
 var registerToolchainsRE = regexp.MustCompile(`(?s)register_toolchains\s*\([^)]*['"]//toolchains:all['"]`)
 
+// commentedLineRE matches a Starlark comment line — optional
+// leading whitespace, then `#`, then the rest of the line. Used
+// by registerToolchainsCallPresent to strip fully-commented
+// lines so a `# register_toolchains("//toolchains:all")` snippet
+// in MODULE.bazel doesn't suppress the setup banner.
+var commentedLineRE = regexp.MustCompile(`(?m)^[ \t]*#.*$`)
+
 // registerToolchainsCallPresent reports whether body contains a
 // register_toolchains call that references //toolchains:all. The
 // match is tolerant of whitespace, newlines, and quote-style so
 // the setup banner doesn't re-fire on a reformatted MODULE.bazel.
+// Fully-commented lines are stripped before the regexp runs so
+// `# register_toolchains("//toolchains:all")` snippets in the
+// file don't suppress the banner. Inline comments after a real
+// call (`register_toolchains("//toolchains:all") # ok`) still
+// match because the call itself precedes the `#`.
 func registerToolchainsCallPresent(body []byte) bool {
-	return registerToolchainsRE.Match(body)
+	stripped := commentedLineRE.ReplaceAll(body, nil)
+	return registerToolchainsRE.Match(stripped)
 }

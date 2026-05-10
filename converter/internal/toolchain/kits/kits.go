@@ -29,7 +29,9 @@ package kits
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
@@ -129,11 +131,15 @@ func stringify(v any) (string, error) {
 		return "OFF", nil
 	case float64:
 		// JSON numbers come through as float64 — render integers
-		// without trailing zeros.
-		if x == float64(int64(x)) {
-			return fmt.Sprintf("%d", int64(x)), nil
+		// without trailing zeros when they fit in int64. Out-of-
+		// range floats fall through to %g; the float→int64 cast
+		// itself is implementation-defined for values past
+		// math.MaxInt64 / math.MinInt64, so the bounds check
+		// guards against silent corruption.
+		if x >= math.MinInt64 && x <= math.MaxInt64 && x == float64(int64(x)) {
+			return strconv.FormatInt(int64(x), 10), nil
 		}
-		return fmt.Sprintf("%g", x), nil
+		return strconv.FormatFloat(x, 'g', -1, 64), nil
 	case nil:
 		return "", nil
 	default:

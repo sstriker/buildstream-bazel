@@ -439,6 +439,13 @@ func compileCommandsPath(hostBuildDir, replyDir string) string {
 // this is a defensive no-op that keeps the destination tree
 // portable.
 func copyDirContents(srcDir, dstDir string) error {
+	// Reset dstDir so the result exactly mirrors srcDir — without
+	// this, leftover JSONs from a prior run could mislead the
+	// downstream consumer (the unifier folds each file as a probe
+	// signal, so a stale entry would contribute phantom data).
+	if err := os.RemoveAll(dstDir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
 		return err
 	}
