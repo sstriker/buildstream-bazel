@@ -54,6 +54,35 @@ func TestCopyDirContents_HappyPath(t *testing.T) {
 	}
 }
 
+// TestCopyDirContents_RejectsDangerousDstDir: dstDir comes from
+// --out-toolchain-signal-dir, ultimately operator-controlled.
+// copyDirContents must not let a misuse like "/" or "." trigger
+// a recursive wipe of the operator's filesystem; reject obviously-
+// broad paths up front. The guards aren't exhaustive (the operator
+// can still pass a too-wide custom path), but they catch the
+// foot-guns.
+func TestCopyDirContents_RejectsDangerousDstDir(t *testing.T) {
+	src := t.TempDir()
+	cases := map[string]string{
+		"empty":    "",
+		"relative": "out",
+		"dot":      ".",
+		"dot-dot":  "..",
+		"root":     "/",
+		"home":     "/home",
+		"tmp":      "/tmp",
+		"etc":      "/etc",
+	}
+	for label, dst := range cases {
+		t.Run(label, func(t *testing.T) {
+			err := copyDirContents(src, dst)
+			if err == nil {
+				t.Errorf("expected error for dst=%q; got nil", dst)
+			}
+		})
+	}
+}
+
 // TestCopyDirContents_RejectsSymlinkedSrcDir: filepath.Walk's
 // rel == "." early-return masks a symlinked srcDir as "no
 // entries to copy" — without an upfront Lstat the function

@@ -184,6 +184,40 @@ func TestLoadPlatforms_RejectsUnsafeNames(t *testing.T) {
 	}
 }
 
+// TestGroupProbeCells_RejectsMalformedFilenames: filenames whose
+// stem has the dot at the boundary slip past a naive `dot > 0`
+// check. <platform>..probe.json (empty variant) and
+// <platform>.probe.json (no second half before the .probe.json
+// suffix) both need to be rejected explicitly so malformed
+// artifacts don't get folded under the wrong platform.
+func TestGroupProbeCells_RejectsMalformedFilenames(t *testing.T) {
+	cases := map[string]string{
+		"empty variant": "linux_x86_64..probe.json",
+		"no platform":   ".linux_x86_64.probe.json",
+	}
+	plats := []platformSpec{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux"}},
+	}
+	for label, fname := range cases {
+		t.Run(label, func(t *testing.T) {
+			tmp := t.TempDir()
+			// Stub probe.json content; the parser only looks at
+			// filename in the rejection path so the body's contents
+			// don't matter.
+			if err := os.WriteFile(filepath.Join(tmp, fname), []byte(`{"schemaVersion":1}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := groupProbeCells(tmp, plats)
+			if err == nil {
+				t.Errorf("expected error for %s; got nil", label)
+			}
+			if !strings.Contains(err.Error(), "<platform>.<variant>") {
+				t.Errorf("error %q missing the format hint", err)
+			}
+		})
+	}
+}
+
 // TestRun_NoCellsForPlatform demonstrates the "skip-with-warning"
 // behaviour: a platform listed in --platforms-json with no probe
 // cells in --probe-cells is dropped from the output (with a

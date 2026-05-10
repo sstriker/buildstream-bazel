@@ -218,8 +218,11 @@ func groupProbeCells(dir string, plats []platformSpec) (map[string][]toolchain.P
 		}
 		stem := strings.TrimSuffix(name, ".probe.json")
 		dot := strings.IndexByte(stem, '.')
-		if dot <= 0 {
-			return nil, fmt.Errorf("probe cell %q does not match <platform>.<variant>.probe.json", name)
+		// dot > 0: platform half non-empty.
+		// dot < len(stem)-1: variant half non-empty (rejects
+		// `<platform>..probe.json` and `<platform>.probe.json`).
+		if dot <= 0 || dot >= len(stem)-1 {
+			return nil, fmt.Errorf("probe cell %q does not match <platform>.<variant>.probe.json (both halves must be non-empty)", name)
 		}
 		platName := stem[:dot]
 		if !platSet[platName] {

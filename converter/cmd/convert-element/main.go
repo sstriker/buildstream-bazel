@@ -460,11 +460,21 @@ func copyDirContents(srcDir, dstDir string) error {
 	if !rootInfo.IsDir() {
 		return fmt.Errorf("copyDirContents: srcDir %s is not a directory (mode %s)", srcDir, rootInfo.Mode())
 	}
-	// Reset dstDir so the result exactly mirrors srcDir — without
-	// this, leftover JSONs from a prior run could mislead the
-	// downstream consumer (the unifier folds each file as a probe
-	// signal, so a stale entry would contribute phantom data).
-	if err := os.RemoveAll(dstDir); err != nil {
+	// dstDir comes from --out-toolchain-signal-dir. Reject empty
+	// or obviously-broad paths up front: an unguarded
+	// os.RemoveAll on "/", ".", or ".." would nuke anything
+	// reachable from the converter's cwd. We also forbid relative
+	// paths so a misuse like `./` or implicit cwd can't slip
+	// through; the orchestrator always passes an absolute path.
+	if err := guardDstDir(dstDir); err != nil {
+		return err
+	}
+	// Reset dstDir's CONTENTS (not the directory itself) so the
+	// result exactly mirrors srcDir without leaving stale JSONs.
+	// Removing the directory and recreating it would also work
+	// but interacts badly when dstDir is, say, a bind mount or
+	// a path the parent process expects to keep open.
+	if err := clearDirContents(dstDir); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dstDir, 0o755); err != nil {
@@ -504,6 +514,54 @@ func copyDirContents(srcDir, dstDir string) error {
 		}
 		return os.WriteFile(dst, body, info.Mode().Perm())
 	})
+}
+
+// guardDstDir refuses paths whose accidental misuse as a
+// "wipe everything under here" target would be catastrophic.
+// The function is the cheap first line before clearDirContents —
+// it doesn't try to be exhaustive, just to catch the obvious
+// foot-guns (empty path, relative path, root, dot, dot-dot,
+// /tmp, /home as a whole, etc.).
+func guardDstDir(dstDir string) error {
+	if dstDir == "" {
+		return fmt.Errorf("copyDirContents: dstDir is empty")
+	}
+	if !filepath.IsAbs(dstDir) {
+		return fmt.Errorf("copyDirContents: dstDir %q must be an absolute path", dstDir)
+	}
+	clean := filepath.Clean(dstDir)
+	switch clean {
+	case "/", ".", "..":
+		return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (resolves to %q)", dstDir, clean)
+	}
+	// Reject likely-broad parents the operator should never aim
+	// at: top-level system dirs and the workspace caller is
+	// running inside.
+	for _, forbid := range []string{"/", "/home", "/root", "/tmp", "/var", "/etc", "/usr"} {
+		if clean == forbid {
+			return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (matches forbidden root %q)", dstDir, forbid)
+		}
+	}
+	return nil
+}
+
+// clearDirContents removes the entries inside dir without
+// removing dir itself. Skips silently when dir doesn't exist
+// (the subsequent os.MkdirAll handles the create case).
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleError marshals a typed Tier-1 failure to OutFailure (if requested) and
