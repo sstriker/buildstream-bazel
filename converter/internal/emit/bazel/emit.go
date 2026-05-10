@@ -363,6 +363,11 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 			}
 			for arm, items := range hdrsSel {
 				srcsSel[arm] = append(srcsSel[arm], items...)
+				// srcs is not order-sensitive: sort the merged
+				// arm so it matches the baseline path's
+				// sort-after-fold convention and so renders
+				// stably regardless of cell iteration order.
+				sort.Strings(srcsSel[arm])
 			}
 		}
 		hdrsSel = nil
@@ -635,9 +640,16 @@ func attrExpr(flat []string, sel map[string][]string) string {
 // item gets its own line, regardless of brevity, because the
 // surrounding select() is already multi-line and a single-line
 // arm would visually clash.
+//
+// Items are rendered in the caller-supplied order: the
+// elementfold layer already produces arms in the right order
+// per attribute (lexicographic for srcs/hdrs/etc., original
+// sequence for order-sensitive copts/linkopts), and any
+// emit-time fan-in (e.g. cc_binary's hdrs→srcs fold) sorts
+// its merged arm explicitly before passing it down. Sorting
+// unconditionally here would re-order copts/linkopts deltas
+// out of the sequence the operator wrote.
 func indentArmList(items []string) string {
-	items = append([]string(nil), items...)
-	sort.Strings(items)
 	if len(items) == 0 {
 		return "[]"
 	}

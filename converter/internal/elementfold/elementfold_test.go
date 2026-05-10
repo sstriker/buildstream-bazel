@@ -176,7 +176,10 @@ func TestFold_CoptsBaselinePlusDelta(t *testing.T) {
 		t.Fatalf("Fold: %v", err)
 	}
 	got := merged.Targets[0]
-	wantBaseline := []string{"-O2", "-Wall"} // sorted
+	// copts is order-sensitive: baseline preserves cells[0]'s
+	// original sequence (linux's [-Wall, -O2]) rather than
+	// sorting alphabetically.
+	wantBaseline := []string{"-Wall", "-O2"}
 	if !reflect.DeepEqual(got.Copts, wantBaseline) {
 		t.Errorf("baseline copts = %v; want %v", got.Copts, wantBaseline)
 	}

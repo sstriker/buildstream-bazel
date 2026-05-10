@@ -71,6 +71,13 @@ type Options struct {
 	// to "convert-element" (PATH lookup).
 	ConverterBinary string
 
+	// FoldElementBinary is the path to the fold-element binary used
+	// by the multi-platform path. Empty defaults to "fold-element" —
+	// resolved by looking first in the directory of ConverterBinary
+	// (binaries are typically installed side-by-side) and then on
+	// PATH. Ignored when PlatformsJSON is empty.
+	FoldElementBinary string
+
 	// Store is the CAS+ActionCache backing the per-element conversion
 	// cache. When nil, Run constructs a LocalStore at <Out>/cache so
 	// existing tests and offline runs work unchanged. Pass a GRPCStore
@@ -344,6 +351,13 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
+	var foldElementAbs string
+	if len(platformsMatrix) > 0 {
+		foldElementAbs, err = resolveFoldElementBinary(opts.FoldElementBinary, convAbs)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	r := &runner{
 		opts:            opts,
@@ -353,6 +367,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		executor:        executor,
 		platform:        platform,
 		platformsMatrix: platformsMatrix,
+		foldElementAbs:  foldElementAbs,
 		resolver:        newResolver(opts, store),
 		timeout:         timeout,
 		importsRoot:     importsRoot,
@@ -476,6 +491,7 @@ type runner struct {
 	executor        reapi.Executor
 	platform        []reapi.PlatformProperty
 	platformsMatrix []convertPlatform // empty = single-platform path
+	foldElementAbs  string            // resolved path to fold-element binary; empty when platformsMatrix is empty
 	resolver        *sourcecheckout.Resolver
 	timeout         time.Duration // per-element cap; zero = none
 

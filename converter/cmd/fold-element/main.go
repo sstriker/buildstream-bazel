@@ -47,7 +47,7 @@ func run(argv []string) error {
 	fs := flag.NewFlagSet("fold-element", flag.ContinueOnError)
 	outBuild := fs.String("out-build", "", "destination path for the unified BUILD.bazel")
 	var cells stringSliceFlag
-	fs.Var(&cells, "cell", "<name>:<constraint1,constraint2,...>:<ir.json path>; repeat for each platform")
+	fs.Var(&cells, "cell", "<name>|<constraint1,constraint2,...>|<ir.json path>; repeat for each platform (pipe is the outer separator because Bazel constraint labels embed colons)")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}

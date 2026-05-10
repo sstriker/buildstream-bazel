@@ -52,14 +52,19 @@ type Cell struct {
 // Fold composes N cells into one merged Package with per-
 // attribute select() deltas baked into Target.PerPlatform.
 //
-// All cells must agree on the Package's Name + SourceRoot, and
-// every cell must declare the same Targets keyed by (Name,
-// Kind). Targets present in some cells but missing from others
-// are rejected with an error: lifting a whole target into
-// select() at the package level is materially more complex
-// than per-attribute deltas (Bazel's select() applies to
-// attribute values, not to target existence) and is deferred
-// per the plan.
+// All cells must agree on the Package's Name, and every cell
+// must declare the same Targets keyed by (Name, Kind). The
+// merged Package's SourceRoot is taken from cells[0] without
+// cross-cell validation: per-platform conversions can run on
+// distinct workers whose worker-local SourceRoot paths legitimately
+// differ, and the rendered BUILD.bazel doesn't reference
+// SourceRoot directly (FUSE source-key rewriting in emit/bazel
+// uses an out-of-band Options.SourceKey, not the IR field).
+// Targets present in some cells but missing from others are
+// rejected with an error: lifting a whole target into select()
+// at the package level is materially more complex than
+// per-attribute deltas (Bazel's select() applies to attribute
+// values, not to target existence) and is deferred per the plan.
 //
 // Boolean attributes (Linkstatic, Alwayslink) and identity-like
 // fields (InstallDest, ArtifactName, LinkLanguage, the Genrule*
@@ -244,24 +249,53 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 			}
 		}
 		baseline, deltas := empfold.Partition(cellNames, facts)
-		flat := make([]string, 0, len(baseline))
-		for k := range baseline {
-			flat = append(flat, k)
+
+		// Materialise the baseline. Order-sensitive attrs (copts,
+		// linkopts) preserve cells[0]'s original sequence;
+		// order-insensitive attrs sort lexicographically (matches
+		// emit/bazel's sortedCopy convention for srcs/hdrs/etc.).
+		var flat []string
+		if def.orderSensitive {
+			seq := def.get(variants[cells[0].Platform.Name])
+			flat = make([]string, 0, len(baseline))
+			for _, item := range seq {
+				if baseline[item] {
+					flat = append(flat, item)
+				}
+			}
+		} else {
+			flat = make([]string, 0, len(baseline))
+			for k := range baseline {
+				flat = append(flat, k)
+			}
+			sort.Strings(flat)
 		}
-		sort.Strings(flat)
 		def.set(&merged, flat)
 
 		// Per-cell deltas → PerPlatform[attr][selectKey] = delta items.
+		// Same order convention: walk the cell's own sequence for
+		// order-sensitive attrs; sort lexicographically otherwise.
 		for _, c := range cells {
 			d := deltas[c.Platform.Name]
 			if len(d) == 0 {
 				continue
 			}
-			items := make([]string, 0, len(d))
-			for k := range d {
-				items = append(items, k)
+			var items []string
+			if def.orderSensitive {
+				seq := def.get(variants[c.Platform.Name])
+				items = make([]string, 0, len(d))
+				for _, item := range seq {
+					if d[item] {
+						items = append(items, item)
+					}
+				}
+			} else {
+				items = make([]string, 0, len(d))
+				for k := range d {
+					items = append(items, k)
+				}
+				sort.Strings(items)
 			}
-			sort.Strings(items)
 			if merged.PerPlatform == nil {
 				merged.PerPlatform = map[string]map[string][]string{}
 			}
@@ -275,22 +309,27 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 }
 
 // targetAttrs declares the IR attributes the fold partitions
-// per platform. Order is irrelevant (each is folded
-// independently); the spelling of `name` matches the Bazel
-// attribute name emit/bazel uses to look up
-// Target.PerPlatform[name].
+// per platform. Each entry names the Bazel attribute (matches
+// the keys emit/bazel looks up in Target.PerPlatform[name]) and
+// flags whether its sequence is order-sensitive. copts and
+// linkopts are passed unchanged to the compiler / linker so
+// flag order is semantic; the rest (srcs, hdrs, includes,
+// defines, deps) are unordered and sort lexicographically for
+// stable diffs (matching emit/bazel's sortedCopy convention on
+// the baseline side).
 var targetAttrs = []struct {
-	name string
-	get  func(ir.Target) []string
-	set  func(*ir.Target, []string)
+	name           string
+	orderSensitive bool
+	get            func(ir.Target) []string
+	set            func(*ir.Target, []string)
 }{
-	{"srcs", func(t ir.Target) []string { return t.Srcs }, func(t *ir.Target, v []string) { t.Srcs = v }},
-	{"hdrs", func(t ir.Target) []string { return t.Hdrs }, func(t *ir.Target, v []string) { t.Hdrs = v }},
-	{"includes", func(t ir.Target) []string { return t.Includes }, func(t *ir.Target, v []string) { t.Includes = v }},
-	{"copts", func(t ir.Target) []string { return t.Copts }, func(t *ir.Target, v []string) { t.Copts = v }},
-	{"defines", func(t ir.Target) []string { return t.Defines }, func(t *ir.Target, v []string) { t.Defines = v }},
-	{"linkopts", func(t ir.Target) []string { return t.LinkOpts }, func(t *ir.Target, v []string) { t.LinkOpts = v }},
-	{"deps", func(t ir.Target) []string { return t.Deps }, func(t *ir.Target, v []string) { t.Deps = v }},
+	{"srcs", false, func(t ir.Target) []string { return t.Srcs }, func(t *ir.Target, v []string) { t.Srcs = v }},
+	{"hdrs", false, func(t ir.Target) []string { return t.Hdrs }, func(t *ir.Target, v []string) { t.Hdrs = v }},
+	{"includes", false, func(t ir.Target) []string { return t.Includes }, func(t *ir.Target, v []string) { t.Includes = v }},
+	{"copts", true, func(t ir.Target) []string { return t.Copts }, func(t *ir.Target, v []string) { t.Copts = v }},
+	{"defines", false, func(t ir.Target) []string { return t.Defines }, func(t *ir.Target, v []string) { t.Defines = v }},
+	{"linkopts", true, func(t ir.Target) []string { return t.LinkOpts }, func(t *ir.Target, v []string) { t.LinkOpts = v }},
+	{"deps", false, func(t ir.Target) []string { return t.Deps }, func(t *ir.Target, v []string) { t.Deps = v }},
 }
 
 // PickSelectKeys auto-detects the constraint label that

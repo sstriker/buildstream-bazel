@@ -60,6 +60,7 @@ func main() {
 		platformFlag           = fs.String("platform", "", "Action.platform overrides as comma-separated name=value (e.g. cmake-version=3.30.0,ninja-version=1.12.0). Overrides built-in defaults; the orchestrator MUST agree with workers on platform values to share cache hits.")
 		elemTimeout            = fs.Duration("element-timeout", 0, "per-element pipeline cap (e.g. 30m, 2h). Zero = orchestrator default (30m). Mirrored into Action.timeout for remote workers.")
 		toolchainCMake         = fs.String("toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake) passed to every per-element converter invocation. Skips cmake's compiler-detection probe — measurable per-conversion latency win.")
+		platformsJSON          = fs.String("platforms-json", "", "JSON manifest declaring the target platform matrix to fan out per-element conversions across. Each entry pairs a Bazel platform name with its constraint_value labels and REAPI Action.Platform properties; with N>1 entries every kind:cmake element renders one unified BUILD.bazel with `select()` blocks for per-platform divergence. Empty (default) keeps the single-platform behaviour driven by --platform.")
 		bazelBuild             = fs.String("bazel-build", "", "after a successful conversion, run `bazel build <target>` inside --out (e.g. //... or //elements/components/foo:bar). Requires bazel or bazelisk on PATH.")
 		collectToolchainSignal = fs.Bool("collect-toolchain-signal", false, "ask each element's converter to copy its cmake File API reply into <out>/elements/<name>/toolchain-signal/. Off by default. Capture-only today: the on-disk format is the foundation for unify-toolchains' future consumer (queued under ROADMAP.md Next as 'Element-signal consumption in the unifier'); enabling this now lets a project accumulate signal so the unifier folds it on first use.")
 		logFormat              = fs.String("log-format", "text", "structured-log handler: text (human-readable, default) or json (one record per line for ingestion)")
@@ -169,6 +170,7 @@ func main() {
 		PerElementTimeout:      *elemTimeout,
 		ToolchainCMakeFile:     *toolchainCMake,
 		CollectToolchainSignal: *collectToolchainSignal,
+		PlatformsJSON:          *platformsJSON,
 		Logger:                 logger,
 	})
 	if err != nil {

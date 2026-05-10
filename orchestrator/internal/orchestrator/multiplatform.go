@@ -7,9 +7,67 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/internal/reapi"
 )
+
+// resolveFoldElementBinary picks the fold-element binary to spawn.
+// Resolution order: (1) bin as absolute or relative path that
+// exists; (2) bin's basename next to convAbs (installs typically
+// drop both binaries in the same dir); (3) exec.LookPath. Empty
+// bin defaults to "fold-element". Returns the absolute path or
+// an error with the locations tried.
+func resolveFoldElementBinary(bin, convAbs string) (string, error) {
+	if bin == "" {
+		bin = "fold-element"
+	}
+	if strings.ContainsAny(bin, string(filepath.Separator)) {
+		if _, err := os.Stat(bin); err == nil {
+			return filepath.Abs(bin)
+		}
+		return "", fmt.Errorf("orchestrator: fold-element binary %q not found", bin)
+	}
+	if convAbs != "" {
+		side := filepath.Join(filepath.Dir(convAbs), bin)
+		if _, err := os.Stat(side); err == nil {
+			return side, nil
+		}
+	}
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return "", fmt.Errorf("orchestrator: fold-element binary %q not found next to converter (%s) or on PATH; set --converter to point at an installation directory containing fold-element, or place fold-element on PATH", bin, filepath.Dir(convAbs))
+	}
+	return path, nil
+}
+
+// safePlatformName rejects names that would be unsafe as path
+// components (`/`, `\`, `..`, control chars) or that would
+// collide with the fold-element --cell flag's pipe / comma
+// separators. Manifest names flow straight into
+// filepath.Join(elemOut, name) and into a piped-and-comma'd
+// argv string, so guard both surfaces here rather than downstream.
+func safePlatformName(name string) error {
+	if name == "" {
+		return fmt.Errorf("empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("reserved name %q", name)
+	}
+	for _, r := range name {
+		switch r {
+		case '/', '\\', '|', ',', ':':
+			return fmt.Errorf("contains separator %q", r)
+		}
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("contains control character")
+		}
+	}
+	if strings.Contains(name, "..") {
+		return fmt.Errorf("contains %q", "..")
+	}
+	return nil
+}
 
 // convertPlatform is the orchestrator-side per-platform spec
 // the multi-platform fan-out consumes. Carries the constraint
@@ -50,8 +108,8 @@ func loadPlatformsManifest(path string) ([]convertPlatform, error) {
 	}
 	seen := map[string]bool{}
 	for i, e := range raw {
-		if e.Name == "" {
-			return nil, fmt.Errorf("orchestrator: platforms[%d] in %s has empty name", i, path)
+		if err := safePlatformName(e.Name); err != nil {
+			return nil, fmt.Errorf("orchestrator: platforms[%d] in %s: invalid name %q: %w (names become path components and are embedded in --cell argv where %q is a delimiter; pick a name like 'linux_x86_64')", i, path, e.Name, err, "|")
 		}
 		if seen[e.Name] {
 			return nil, fmt.Errorf("orchestrator: platform %q appears twice in %s", e.Name, path)
@@ -289,7 +347,16 @@ func (r *runner) runFoldElement(ctx context.Context, name, elemOut string, cells
 		}
 		args = append(args, "--cell", c.platform.Name+"|"+constraintsCSV+"|"+c.irJSONPath)
 	}
-	cmd := exec.CommandContext(ctx, "fold-element", args...)
+	bin := r.foldElementAbs
+	if bin == "" {
+		// Defensive: runConvertActions only reaches the
+		// multi-platform path when platformsMatrix is non-empty,
+		// and Run() resolves foldElementAbs in that case. Surface
+		// a clear error rather than fall back to a bare-name
+		// PATH lookup that may pick up something unexpected.
+		return fmt.Errorf("element %s: fold-element binary not resolved; this is an internal invariant", name)
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Stdout = logOf(r.opts)
 	cmd.Stderr = logOf(r.opts)
 	if err := cmd.Run(); err != nil {
