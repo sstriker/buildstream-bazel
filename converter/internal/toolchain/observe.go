@@ -20,6 +20,8 @@
 
 package toolchain
 
+import "github.com/sstriker/cmake-to-bazel/internal/empfold"
+
 // ResolvedToolchain is the empirical fold of N ProbeResults. The
 // baseline slot holds everything observed identically across every
 // variant; the per-variant slots hold only that variant's deltas.
@@ -76,77 +78,36 @@ type VariantDelta struct {
 // nil for an empty input. With a single result Observe still
 // returns a usable ResolvedToolchain — Base mirrors that result,
 // the lone variant's delta is empty.
+//
+// The cache-var partition is delegated to empfold.Partition: it
+// splits per-variant cache observations into a baseline (every
+// variant agreed) and per-variant deltas. Observe then layers
+// the toolchain-specific shape (per-language flag deltas, the
+// ResolvedToolchain wrapper) on top of that primitive.
 func Observe(results []ProbeResult) *ResolvedToolchain {
 	if len(results) == 0 {
 		return nil
 	}
 
-	// Build a per-cache-name -> set of (variantName, value) pairs
-	// across all results. Then partition by cardinality of value
-	// set: cardinality 1 means "all variants agree" -> baseline.
-	type valuesByVariant map[string]string // variant.Name -> value
-	cacheValues := map[string]valuesByVariant{}
+	// Lift each cache entry to facts[name][variantName] = value
+	// for empfold.Partition. Variants without a Reply contribute
+	// no facts but still appear in the cells slice so missing-in-
+	// some-variants is detected correctly.
+	cells := make([]string, 0, len(results))
+	cacheValues := map[string]map[string]string{}
 	for _, r := range results {
+		cells = append(cells, r.Variant.Name)
 		if r.Reply == nil {
 			continue
 		}
 		for _, e := range r.Reply.Cache.Entries {
 			if cacheValues[e.Name] == nil {
-				cacheValues[e.Name] = valuesByVariant{}
+				cacheValues[e.Name] = map[string]string{}
 			}
 			cacheValues[e.Name][r.Variant.Name] = e.Value
 		}
 	}
-
-	// Build a baseline Model: for each cache var present in EVERY
-	// variant with the SAME value, that value lands in baseline;
-	// for vars that differ, baseline is unset and the difference
-	// goes into per-variant delta.
-	allVariantNames := make(map[string]bool, len(results))
-	for _, r := range results {
-		allVariantNames[r.Variant.Name] = true
-	}
-
-	baselineCache := map[string]string{}
-	perVariantOverrides := map[string]map[string]string{}
-	for _, r := range results {
-		perVariantOverrides[r.Variant.Name] = map[string]string{}
-	}
-	for name, byVariant := range cacheValues {
-		// Cache var is "common" only if every variant produced
-		// the same value (and every variant produced ANY value —
-		// missing-in-some counts as a difference).
-		if len(byVariant) != len(allVariantNames) {
-			// Variant N didn't produce this entry; it's a
-			// per-variant signal. Each variant that DID produce
-			// it gets the value as an override.
-			for vname, vval := range byVariant {
-				perVariantOverrides[vname][name] = vval
-			}
-			continue
-		}
-		var common string
-		identical := true
-		first := true
-		for _, val := range byVariant {
-			if first {
-				common = val
-				first = false
-				continue
-			}
-			if val != common {
-				identical = false
-				break
-			}
-		}
-		if identical {
-			baselineCache[name] = common
-		} else {
-			for vname, vval := range byVariant {
-				perVariantOverrides[vname][name] = vval
-			}
-		}
-	}
+	baselineCache, perVariantOverrides := empfold.Partition(cells, cacheValues)
 
 	// Build Base from the first result's Model with cache-driven
 	// fields trimmed to the baseline subset.
