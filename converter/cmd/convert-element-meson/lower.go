@@ -194,12 +194,25 @@ func lowerExecutable(t Target, byID, byName, byArchiveBasename map[string]string
 //
 // Liftable shape: single target_sources entry, single-argv
 // command with at most one input and at least one output, no
-// @-substitutions other than standalone @INPUT@ / @OUTPUT@.
-// Anything more elaborate (multi-group target_sources, multi-
-// step shell pipelines, host probes via run_command, or
-// @CURRENT_SOURCE_DIR@ usage) refuses with a typed Tier-1
-// failure — there's no silent-skip path; refused targets
-// surface to the operator via failure.json.
+// @-substitutions other than the standalone @INPUT@ / @OUTPUT@
+// tokens. Anything else refuses with a typed Tier-1 failure
+// — there's no silent-skip path; refused targets surface to
+// the operator via failure.json.
+//
+// What the lift does NOT detect (out of scope for v1):
+//   - whether the command performs host probing (e.g. invoking
+//     `uname` / `gcc --version` / `pkg-config`). meson's
+//     introspect output is opaque about runtime behaviour, so
+//     we can't reliably tell a "deterministic codegen tool"
+//     apart from a "host probe" by inspecting argv. We accept
+//     that the lifted genrule may bake host state into its
+//     output if the user wired one; the failure mode is the
+//     same as the equivalent kind:cmake execute_process
+//     classifier's `probe` bucket — operators flag it manually
+//     when they audit the rendered BUILD output.
+//   - cross-machine custom_targets (the `machine: build` case
+//     for cc-shaped target_sources is detected; custom_target
+//     doesn't carry the same field shape).
 func lowerCustom(t Target, opts LowerOptions) (ir.Target, error) {
 	if len(t.TargetSources) == 0 {
 		return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
@@ -335,13 +348,16 @@ func renderCustomCmd(argv, srcs, outs []string) (string, error) {
 //     identifiers, `--flag=value`). Keeps the rendered genrule
 //     readable in the BUILD output.
 //   - Single-quotes everything else, escaping embedded single
-//     quotes via the canonical four-character sequence
-//     `'\”` (close-quote, backslash-escaped quote, reopen-
-//     quote). This covers the full POSIX shell metacharacter
-//     set (`;`, `|`, `&`, `<`, `>`, `(`, `)`, newline, `$`,
-//     backtick, `\`, glob chars, whitespace) without
-//     enumerating each one — anything that isn't in the safe
-//     set goes through quoting.
+//     quotes via the canonical four-character POSIX sequence
+//     ' \ ' '  i.e. close the open single-quote, output an
+//     escaped single-quote, then reopen the single-quote. This
+//     matches the strings.ReplaceAll(s, "'", `'\”`) call below
+//     (note the surrounding outer single-quotes the function
+//     itself adds). Covers the full POSIX shell metacharacter
+//     set (semicolon, pipe, ampersand, redirect, parens,
+//     newline, dollar, backtick, backslash, glob chars,
+//     whitespace) without enumerating each one — anything that
+//     isn't in the safe set goes through quoting.
 func shellQuote(s string) string {
 	if s == "" {
 		return "''"

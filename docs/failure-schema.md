@@ -225,13 +225,19 @@ changes when the upstream output changes).
 ### `meson-setup-failed` _(kind:meson)_
 
 `meson setup` returned non-zero, or its `meson-info/intro-*.json`
-artifacts couldn't be parsed. Includes the meson child's stderr
-when relevant.
+artifacts couldn't be parsed. The Tier-1 `message` field carries
+the wrapped Go error (typically the `*exec.ExitError` plus a
+short context string); meson's own stdout/stderr is streamed
+through to the converter's stderr at run time, NOT captured into
+`failure.json`. Operators iterating on a failure read the meson
+output from the converter's stderr stream (or the orchestrator's
+per-element log).
 
 **Operator action:** investigate the meson failure as you would
-in a normal meson invocation. If the cause is a missing
-dependency (`dependency('foo', required: true)`), expose it via
-the imports manifest or pre-stage it on the executor.
+in a normal meson invocation, reading the streamed stderr. If
+the cause is a missing dependency (`dependency('foo', required:
+true)`), expose it via the imports manifest or pre-stage it on
+the executor.
 
 **Emission point:** `cmd/convert-element-meson` `runMesonSetup`
 return path + introspection load.
