@@ -7,10 +7,10 @@ import (
 )
 
 // init registers kind:autotools. The handler always falls back
-// to the coarse install-pipeline shape; when --convert-element-
-// autotools is supplied, it additionally wraps the build cmd in
-// build-tracer + runs convert-element-trace to emit a native
-// BUILD.bazel.out alongside the install_tree.tar.
+// to the coarse install-pipeline shape; when --convert-element-trace
+// is supplied, it additionally wraps the build cmd in build-tracer
+// + runs convert-element-trace to emit a native BUILD.bazel.out
+// alongside the install_tree.tar.
 //
 // One genrule with two outputs (install_tree.tar +
 // BUILD.bazel.out). Bazel's action cache (buildbarn in CI)
@@ -38,7 +38,7 @@ var traceConfig struct {
 	tracerBin     string // absolute path to build-tracer
 	publishBin    string // absolute path to trace-publish (round 2 publisher)
 	lookupBin     string // absolute path to trace-lookup (round 2 consumer; staged so CI can find it on PATH)
-	round2Enabled bool   // --autotools-round2: pivot project A from marker → converter genrule, project B from inline-converter → inline-trace-publish
+	round2Enabled bool   // round-2 active: pivot project A from marker → converter genrule, project B from inline-converter → inline-trace-publish. Set when --convert-element-trace is supplied AND the operator did NOT pass --trace-round1; cleared when only round-1 is wanted.
 }
 
 // autotoolsHandler picks the right pipelineHandler shape based

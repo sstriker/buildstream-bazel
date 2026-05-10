@@ -8,7 +8,7 @@ import (
 )
 
 // TestWriter_AutotoolsRound2_ProjectAConverterGenrule covers the
-// load-bearing pivot: with --autotools-round2 enabled, project A
+// load-bearing pivot: with round-2 (the default when --convert-element-trace is set) enabled, project A
 // for a kind:autotools element renders a converter genrule whose
 // srcs reference @trace_<elem>//:trace. That's the round-2
 // rendezvous wiring — the converter consumes the trace fileset

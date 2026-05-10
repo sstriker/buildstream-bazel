@@ -163,7 +163,7 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 
 // TestWriter_MakeWithoutRound2_StillRendersInstallInA covers the
 // backwards-compat path: when the trace-driven binaries aren't
-// supplied (or --autotools-round1 is passed), kind:make renders
+// supplied (or --trace-round1 is passed), kind:make renders
 // with its legacy shape — install genrule lives in project A,
 // project B is the placeholder. New opt-in field on
 // pipelineHandler must not affect this case.

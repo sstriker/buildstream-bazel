@@ -173,7 +173,7 @@ type pipelinePhases struct {
 //   - traceDrivenSrckeyPatterns set on the handler (kind opts in).
 //   - traceConfig.convertBin / round2Enabled set on write-a
 //     (operator passed --convert-element-trace etc, didn't
-//     pass --autotools-round1 to opt out).
+//     pass --trace-round1 to opt out).
 //
 // When false, RenderA / RenderB fall through to the legacy
 // install-genrule-in-A + placeholder-in-B shape; existing
