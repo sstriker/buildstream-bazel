@@ -335,12 +335,13 @@ func renderCustomCmd(argv, srcs, outs []string) (string, error) {
 //     identifiers, `--flag=value`). Keeps the rendered genrule
 //     readable in the BUILD output.
 //   - Single-quotes everything else, escaping embedded single
-//     quotes via the canonical `'\”` sequence (close-quote,
-//     escaped quote, reopen). This covers the full POSIX shell
-//     metacharacter set (`;`, `|`, `&`, `<`, `>`, `(`, `)`,
-//     newline, `$`, backtick, `\`, glob chars, whitespace)
-//     without enumerating each one — anything that isn't in the
-//     safe set goes through quoting.
+//     quotes via the canonical four-character sequence
+//     `'\”` (close-quote, backslash-escaped quote, reopen-
+//     quote). This covers the full POSIX shell metacharacter
+//     set (`;`, `|`, `&`, `<`, `>`, `(`, `)`, newline, `$`,
+//     backtick, `\`, glob chars, whitespace) without
+//     enumerating each one — anything that isn't in the safe
+//     set goes through quoting.
 func shellQuote(s string) string {
 	if s == "" {
 		return "''"

@@ -152,7 +152,31 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
-run_bazel "$A" build //elements/meson-greet:meson-greet_converted 2>&1 | tail -10
+# run_bazel_tail captures bazel's combined stdout+stderr to a temp
+# file, then prints the last N lines. Crucially, it preserves
+# bazel's exit status — `run_bazel ... | tail` would have masked
+# it because under /bin/sh (often dash) the pipeline's exit
+# status is the last command's, and `tail` virtually always
+# succeeds. With `set -e` active (this script's mode), masking
+# bazel failures was making gate breakage hard to spot.
+run_bazel_tail() {
+    workspace="$1"
+    shift
+    cmd="$1"
+    shift
+    n="$1"
+    shift
+    log="$work_dir/bazel-$cmd-$$.log"
+    if run_bazel "$workspace" "$cmd" "$@" >"$log" 2>&1; then
+        tail -"$n" "$log"
+        return 0
+    fi
+    rc=$?
+    tail -"$n" "$log" >&2
+    return "$rc"
+}
+
+run_bazel_tail "$A" build 10 //elements/meson-greet:meson-greet_converted
 build_out_a="$A/bazel-bin/elements/meson-greet/BUILD.bazel.out"
 if [ ! -f "$build_out_a" ]; then
     echo "meta-meson: project A's BUILD.bazel.out not produced" >&2
@@ -191,8 +215,12 @@ int main(void) {
 }
 EOF
 
-run_bazel "$B" build //smoke:greet_smoke 2>&1 | tail -10
-smoke_out=$(run_bazel "$B" run //smoke:greet_smoke 2>&1 | tail -5)
+run_bazel_tail "$B" build 10 //smoke:greet_smoke
+# `bazel run` similarly: capture to a log, propagate exit status,
+# then read the tail into smoke_out for the assertion below.
+smoke_log="$work_dir/bazel-smoke-run.log"
+run_bazel "$B" run //smoke:greet_smoke >"$smoke_log" 2>&1
+smoke_out=$(tail -5 "$smoke_log")
 echo "meta-meson: smoke output: $smoke_out"
 if ! echo "$smoke_out" | grep -q "Hello from meson!"; then
     echo "meta-meson: smoke binary did not print expected message" >&2
