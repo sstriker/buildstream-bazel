@@ -2,6 +2,8 @@ package lower
 
 import (
 	"path"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
@@ -10,14 +12,22 @@ import (
 )
 
 // fallbackStub pairs a per-target placeholder rule with the
-// install-tree-relative path the extract genrule must
+// install-tree-relative paths the extract genrule must
 // produce so the rule's static_library / shared_library /
-// srcs reference resolves. INTERFACE_LIBRARY targets carry an
-// empty InstallPath since they're header-only and don't need
-// extraction.
+// srcs / hdrs references resolve.
+//
+// InstallPath is the artifact (.a / .so / executable) install
+// path; empty for INTERFACE_LIBRARY (header-only).
+//
+// HeaderPaths are FileSet HEADERS install paths derived from
+// Target.FileSets where Type == "HEADERS" plus the matching
+// Target.Sources entries (correlated via TargetSource.FileSetIndex).
+// The list seeds both the extract genrule's outs and the per-target
+// stub's hdrs.
 type fallbackStub struct {
 	Target      ir.Target
 	InstallPath string
+	HeaderPaths []string
 }
 
 // emitFallbackPlaceholder builds the placeholder ir.Package
@@ -128,6 +138,35 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			Visibility: []string{"//visibility:public"},
 		}
 
+		// Use the codemodel's recording-time source root for
+		// the FileSet BaseDirectory prefix-strip rather than
+		// the host-side hostSrc. BaseDirectories are absolute
+		// paths under r.Codemodel.Paths.Source — the recording
+		// machine's source path. When hostSrc differs (common
+		// in --reply-dir offline tests, where the reply was
+		// captured on a different host), passing hostSrc makes
+		// the prefix match fail and stripFileSetBase falls back
+		// to filepath.Base(), flattening nested public headers
+		// like include/sub/internal.h → internal.h. The
+		// codemodel-side root keeps the prefix match stable
+		// across machines.
+		hdrs := installHeadersFor(t, r.Codemodel.Paths.Source)
+		// Known gap: hdrs land on cc_import without an include-
+		// path export. Bazel's cc_import emitter doesn't render
+		// the `includes` attribute, so downstream consumers
+		// using `#include <foo.h>` (or `<sub/foo.h>`) won't
+		// resolve through the placeholder even though the
+		// header file is in the genrule's outs. Direct
+		// `#include "install_tree/include/foo.h"` works.
+		// Resolving the gap properly needs either (a) extending
+		// the emitter to render cc_import.includes, or
+		// (b) wrapping the cc_import in a cc_library that adds
+		// `strip_include_prefix = "install_tree/include"`. A
+		// real fixture exercising cross-element header consumption
+		// drives that decision; until then the headers are
+		// declared so the extract genrule keeps the files
+		// available, but bare-bracket includes won't resolve.
+
 		switch t.Type {
 		case "STATIC_LIBRARY", "OBJECT_LIBRARY":
 			rel := installPathFor(t)
@@ -136,6 +175,7 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			}
 			base.Kind = ir.KindCCImport
 			base.StaticLibrary = rel
+			base.Hdrs = hdrs
 			// OBJECT_LIBRARY in native lowering sets
 			// alwayslink=True so $<TARGET_OBJECTS:obj> link
 			// contributions don't get pruned by Bazel's link
@@ -150,7 +190,7 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			// (cc_library + linkstatic + alwayslink wrapping
 			// the cc_import), not a no-op attribute on
 			// cc_import.
-			stubs = append(stubs, fallbackStub{Target: base, InstallPath: rel})
+			stubs = append(stubs, fallbackStub{Target: base, InstallPath: rel, HeaderPaths: hdrs})
 		case "SHARED_LIBRARY", "MODULE_LIBRARY":
 			rel := installPathFor(t)
 			if rel == "" {
@@ -158,7 +198,8 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			}
 			base.Kind = ir.KindCCImport
 			base.SharedLibrary = rel
-			stubs = append(stubs, fallbackStub{Target: base, InstallPath: rel})
+			base.Hdrs = hdrs
+			stubs = append(stubs, fallbackStub{Target: base, InstallPath: rel, HeaderPaths: hdrs})
 		case "EXECUTABLE":
 			rel := installPathFor(t)
 			if rel == "" {
@@ -166,14 +207,15 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 			}
 			base.Kind = ir.KindShBinary
 			base.Srcs = []string{rel}
-			stubs = append(stubs, fallbackStub{Target: base, InstallPath: rel})
+			stubs = append(stubs, fallbackStub{Target: base, InstallPath: rel, HeaderPaths: nil})
 		case "INTERFACE_LIBRARY":
 			base.Kind = ir.KindCCInterface
+			base.Hdrs = hdrs
 			// Header-only: the InstallPath is empty for the
-			// extract genrule's purposes; downstream
-			// consumers wire hdrs separately (out-of-scope
-			// for v1 placeholder).
-			stubs = append(stubs, fallbackStub{Target: base, InstallPath: ""})
+			// extract genrule's artefact-side outs; the
+			// HeaderPaths field is what carries the FileSet
+			// headers into the genrule's outs list.
+			stubs = append(stubs, fallbackStub{Target: base, InstallPath: "", HeaderPaths: hdrs})
 		default:
 			// UTILITY targets (add_custom_target / dependency
 			// grouping) have no Bazel equivalent — both native
@@ -273,37 +315,208 @@ func installPathFor(t fileapi.Target) string {
 	return path.Join("install_tree", cleaned, t.NameOnDisk)
 }
 
+// installHeadersFor enumerates the install-tree-relative
+// paths of public headers for one target. Walks
+// Target.FileSets where Type == "HEADERS" and Visibility ∈
+// {"PUBLIC", "INTERFACE"} — PRIVATE FileSets are
+// internal-only headers (target_sources(... FILE_SET
+// HEADERS PRIVATE ...)) that aren't part of the install
+// contract; surfacing them as cc_import.hdrs would expose
+// internal-only headers to consumers AND have the extract
+// genrule claim outs that install_tree.tar never produces.
+// For each PUBLIC/INTERFACE HEADERS FileSet, walks
+// Target.Sources looking for entries whose FileSetIndex
+// points back at it; for each match, computes the path
+// under the first matching BaseDirectory (iteration order
+// of fs.BaseDirectories) and prefixes "install_tree/include/".
+//
+// The "install_tree/include/" convention reflects cmake's
+// GNUInstallDirs default (CMAKE_INSTALL_INCLUDEDIR == "include").
+// Projects that override this either via per-FileSet
+// install destinations or non-default install prefixes will
+// produce placeholder hdrs that don't match the actual
+// install_tree.tar layout. The mismatch surfaces at consumer
+// build time as a missing-header error rather than silently;
+// a real fixture forcing the divergence drives codemodel
+// FileSet install-destination support as a follow-on.
+//
+// Returns the deduped, sorted list of header install paths.
+// Nil for targets without any PUBLIC/INTERFACE HEADERS-typed
+// FileSet — those targets get an artefact-only stub.
+//
+// Known gap: a target that DECLARES PUBLIC/INTERFACE FILE_SET
+// HEADERS via target_sources but doesn't actually pass those
+// FileSets to install(TARGETS ... FILE_SET HEADERS) will
+// still produce hdrs entries here — the function gates on
+// FileSet visibility, not on whether the FileSet appears in
+// the install contract. The extract genrule then declares
+// outs that install_tree.tar won't carry, surfacing as a
+// missing-out failure at A's build time. Honest behaviour
+// vs. silently dropping the headers; a real fixture forcing
+// the divergence drives FileSet install-membership lookup as
+// a follow-on (Target.Install.FileSets / a codemodel field
+// we don't yet decode).
+func installHeadersFor(t fileapi.Target, projectSrcRoot string) []string {
+	if len(t.FileSets) == 0 {
+		return nil
+	}
+	headerSets := map[int]fileapi.TargetFileSet{}
+	for i, fs := range t.FileSets {
+		if fs.Type != "HEADERS" {
+			continue
+		}
+		// Allowlist PUBLIC / INTERFACE explicitly rather than
+		// blocklisting PRIVATE. Allowlist semantics make us
+		// safe against new visibility values cmake may add to
+		// the codemodel — an unknown visibility doesn't slip
+		// through as "exposed" by default. PRIVATE is the
+		// internal-only case (target_sources(... FILE_SET
+		// HEADERS PRIVATE ...)); other unknown values that
+		// might mean "internal but new" also drop out here.
+		// Empty Visibility (older codemodel-v2 minor without
+		// the field populated) also drops, which is the
+		// conservative default.
+		if fs.Visibility != "PUBLIC" && fs.Visibility != "INTERFACE" {
+			continue
+		}
+		headerSets[i] = fs
+	}
+	if len(headerSets) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var hdrs []string
+	for _, src := range t.Sources {
+		if src.FileSetIndex == nil {
+			continue
+		}
+		fs, ok := headerSets[*src.FileSetIndex]
+		if !ok {
+			continue
+		}
+		// src.Path is project-source-root-relative — pass the
+		// project root (not t.Paths.Source, which is the
+		// per-target source dir like "src/util" and would
+		// mis-resolve when joined with src.Path). Strip the
+		// first matching BaseDirectory prefix (the public
+		// header root) to get the install-relative name; if
+		// no base dir matches, fall back to the source
+		// basename — wrong but at least non-crashing.
+		rel := stripFileSetBase(src.Path, fs.BaseDirectories, projectSrcRoot)
+		if rel == "" {
+			continue
+		}
+		installPath := path.Join("install_tree", "include", rel)
+		if seen[installPath] {
+			continue
+		}
+		seen[installPath] = true
+		hdrs = append(hdrs, installPath)
+	}
+	sort.Strings(hdrs)
+	return hdrs
+}
+
+// stripFileSetBase returns the relative path of src under the
+// first BaseDirectory that contains it, in slash form. srcPath
+// is project-source-root-relative; we resolve it to absolute
+// form by joining with srcRoot when present, then ToSlash for
+// cross-platform comparison. BaseDirectories from cmake's File
+// API are recorded absolutely in practice, so the prefix match
+// runs against absolute slash form on both sides. A
+// hypothetical relative base dir falls through to the basename
+// fallback (no Join against srcRoot is performed for bases —
+// adding that needs a fixture pinning down what semantics
+// cmake actually uses for relative bases, which we haven't
+// observed in tree).
+//
+// When no base dir contains src, falls back to filepath.Base(src)
+// — better than dropping the header entirely (the consumer
+// would then have a broken hdrs reference at consumer build
+// time, which surfaces the issue loudly rather than silently
+// missing the header). The fallback is best-effort: if the
+// project's install_tree.tar doesn't actually carry that
+// basename at install_tree/include/<basename>, the consumer's
+// build fails with a missing-file error pointing at the right
+// path. Returns "" only when src is empty or has no basename.
+func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string {
+	if srcPath == "" {
+		return ""
+	}
+	abs := srcPath
+	if !filepath.IsAbs(abs) && srcRoot != "" {
+		abs = filepath.Join(srcRoot, abs)
+	}
+	abs = filepath.ToSlash(abs)
+	for _, base := range baseDirs {
+		if base == "" {
+			continue
+		}
+		// Normalise to forward-slash form FIRST so
+		// Windows-style paths (backslash separators) collapse
+		// to slash before we trim the trailing separator.
+		// TrimRight on `/` then handles both `path/` and
+		// double-slash trailing forms uniformly. Trimming
+		// before ToSlash would miss `path\` (TrimSuffix("/")
+		// doesn't see the backslash) and produce `path/` →
+		// double-slash prefix that never matches.
+		baseTrim := strings.TrimRight(filepath.ToSlash(base), "/")
+		if abs == baseTrim {
+			return path.Base(abs)
+		}
+		prefix := baseTrim + "/"
+		if strings.HasPrefix(abs, prefix) {
+			return abs[len(prefix):]
+		}
+	}
+	// No base dir matched — return the source basename so
+	// the consumer at least gets `install_tree/include/<name>`
+	// (which install_tree.tar typically does carry under cmake's
+	// GNUInstallDirs default). A miss surfaces as a missing-
+	// header error at consumer build time rather than silent
+	// drop.
+	return path.Base(filepath.ToSlash(srcPath))
+}
+
 // buildExtractGenrule emits the single tar-extract genrule
 // that produces every install path the per-target stubs
-// reference. Returns nil when there are no extractable paths
-// (every stub was INTERFACE_LIBRARY, which doesn't need
-// extraction).
+// reference (artefacts + headers). Returns nil when there
+// are no extractable paths.
 //
-// The genrule reads "install_tree.tar" — a literal label that
-// write-a wires to the appropriate source (project A's
-// converter-genrule output vs a sibling install genrule). The
-// extract cmd untars into $(RULEDIR)/install_tree, matching the
-// "install_tree/" prefix the per-target paths share. $(RULEDIR)
-// rather than $(@D) so the base stays the package output root
-// regardless of which `outs` entry comes first (a nested first
-// out under install_tree/lib would make $(@D) point one level
-// too deep).
+// The genrule reads "install_tree.tar" — a literal label
+// that resolves once A's BUILD.bazel.out is symlinked into
+// Project B's package and co-locates with B's install
+// genrule. The extract cmd untars into $(RULEDIR)/install_tree,
+// matching the "install_tree/" prefix the per-target paths
+// share. $(RULEDIR) (not $(@D)) so the base stays the package
+// output root regardless of which `outs` entry comes first
+// (a nested first out under install_tree/lib would make
+// $(@D) point one level too deep).
 func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
 	var outs []string
 	seen := map[string]bool{}
+	add := func(p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		outs = append(outs, p)
+	}
 	for _, s := range stubs {
-		if s.InstallPath == "" {
-			continue
+		add(s.InstallPath)
+		for _, h := range s.HeaderPaths {
+			add(h)
 		}
-		if seen[s.InstallPath] {
-			continue
-		}
-		seen[s.InstallPath] = true
-		outs = append(outs, s.InstallPath)
 	}
 	if len(outs) == 0 {
 		return nil
 	}
+	// Sort for deterministic rendering. The encounter order
+	// follows cfg.Targets + per-target FileSets + Sources,
+	// which can drift across cmake versions / File API JSON
+	// decode order; without a sort the emitted BUILD.bazel.out
+	// would shuffle outs across runs and break golden tests.
+	sort.Strings(outs)
 	return &ir.Target{
 		Name:        "_install_tree_extract",
 		Kind:        ir.KindGenrule,

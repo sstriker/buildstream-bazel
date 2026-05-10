@@ -260,17 +260,21 @@ execute_process(COMMAND a... [COMMAND b...] [WORKING_DIRECTORY d] [TIMEOUT s]
 
 Multiple `COMMAND` form a **pipeline** (concurrent, shared stderr). Sequential commands need separate calls. `RESULT_VARIABLE` = last process exit; `RESULTS_VARIABLE` = all. **Synchronous, configure-time.** For build-time, use `add_custom_command`/`add_custom_target` instead.
 
-→ **Conversion.** Canonical hermeticity violation. Only legitimate analog: `repository_ctx.execute()` in a repo rule (loading/fetch time). Anything informing target-graph shape (e.g. `git rev-parse HEAD` for a version macro) must lift into a repo rule producing a generated `.bzl` or stamped header.
+→ **Conversion.** Canonical hermeticity violation. The converter implements a two-phase strategy that makes this tractable:
 
-The converter implements a partial native lift in `converter/internal/lower/execute_process_classify.go` and `execute_process.go`, sorting calls into five buckets:
+**Phase A — native lift.** Calls are sorted into five buckets by `converter/internal/lower/execute_process_classify.go`:
 
 - **`cmake-e`** — single-COMMAND `cmake -E touch / copy / copy_if_different` calls translate to native Bazel genrules (no runtime cmake dep on the executor).
 - **`file-producing`** — calls with declared `OUTPUT_FILE` get hoisted to build-time genrules tagged `cmake-codegen-execute-process-hoisted`. The hoist moves work from configure-time to build-time, an auditable behaviour change.
-- **`stamp`** — `git/hg/svn` writing `OUTPUT_VARIABLE` looks like a version stamp. The textbook analog is a repo rule producing a generated `.bzl` table; that infrastructure isn't built yet, so v1 refuses with the typed `unsupported-execute-process` Tier-1 failure.
-- **`probe`** — `uname / gcc --version / pkg-config / python -c` writing `OUTPUT_VARIABLE` looks like a host/toolchain probe; should fold into `select()` over `@platforms` config_settings. v1 refuses.
-- **`unknown`** — multi-COMMAND pipeline, opaque shell script, or any unrecognized shape. v1 refuses.
+- **`stamp`** — `git/hg/svn` writing `OUTPUT_VARIABLE` looks like a version stamp. The textbook analog is a repo rule producing a generated `.bzl` table; refused with the typed `unsupported-execute-process` Tier-1 failure.
+- **`probe`** — `uname / gcc --version / pkg-config / python -c` writing `OUTPUT_VARIABLE` looks like a host/toolchain probe; should fold into `select()` over `@platforms` config_settings. Refused.
+- **`unknown`** — multi-COMMAND pipeline, opaque shell script, or any unrecognized shape. Refused.
 
-When refusing, the converter aggregates every unliftable call in the project into a single failure carrying a per-call triage line (file:line, bucket, reason, argv) — see `docs/failure-schema.md` `unsupported-execute-process`. The Phase B follow-on (queued in `ROADMAP.md` Later) routes refused projects through a round-2 coarse-genrule fallback so the build still succeeds while owners migrate the offending CMakeLists.txt.
+**Phase B — round-2 fallback** (opt-in via `write-a --cmake-round2-fallback`). When a project has unliftable calls, the converter doesn't fail Tier-1 — instead it emits a placeholder BUILD whose per-target stubs (`cc_import` / `sh_binary` / `cc_library`) reference an `install_tree.tar` produced by Project B's install genrule (`build-tracer` wraps `cmake configure + ninja + install + tar`, with inline `trace-publish` landing the AC entry). Per-target stubs come from the codemodel's `Target.Install.Destinations + NameOnDisk`; `cc_import.hdrs` come from `Target.FileSets HEADERS`. A's converter genrule consumes `@trace_<elem>//:trace` via the kind-agnostic `_trace_repo` lookup, so the build's trace from a previous Project B run is available at action time.
+
+**Trace-driven convergence** (queued in `ROADMAP.md` Later). With B's trace available at A's load time, a future converter version can read the trace to refine refusals — potentially producing fine cc rules for elements that originally fell back to the placeholder shape. The wiring is in place; the converter-side trace consumption is the remaining piece.
+
+Failure schema: `docs/failure-schema.md` `unsupported-execute-process`. Design recipe: `docs/design/cmake-execute-process-round2-fallback.md`.
 
 ---
 

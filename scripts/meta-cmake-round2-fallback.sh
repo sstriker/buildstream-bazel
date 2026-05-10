@@ -40,6 +40,7 @@ make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-tracer" ./cmd/build-tracer
 CGO_ENABLED=0 go build -o "$bin_dir/trace-publish" ./cmd/trace-publish
+CGO_ENABLED=0 go build -o "$bin_dir/trace-lookup" ./cmd/trace-lookup
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -58,16 +59,45 @@ fixture="testdata/meta-project"
     --convert-element "$bin_dir/convert-element" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \
+    --trace-lookup-bin "$bin_dir/trace-lookup" \
     --cmake-round2-fallback
 
-# A-side: converter genrule threads the fallback flag.
+# A-side: converter genrule threads the fallback flag AND
+# pulls @trace_hello-world//:trace into srcs (the load-time AC
+# lookup; trace-driven convergence research follow-on teaches
+# convert-element to consume the trace).
 a_build="$A/elements/hello-world/BUILD.bazel"
 for marker in \
     '--unsupported-execute-process-fallback=true' \
-    '"//tools:convert-element"'; do
+    '"//tools:convert-element"' \
+    '"@trace_hello-world//:trace"'; do
     if ! grep -qF -- "$marker" "$a_build"; then
         echo "meta-cmake-round2-fallback: A-side BUILD missing marker: $marker" >&2
         cat "$a_build" >&2
+        exit 1
+    fi
+done
+
+# rules/traces.bzl + tools/traces.json present in both projects.
+for path in \
+    "$A/rules/traces.bzl" \
+    "$A/tools/traces.json" \
+    "$B/rules/traces.bzl" \
+    "$B/tools/traces.json"; do
+    if [ ! -f "$path" ]; then
+        echo "meta-cmake-round2-fallback: missing $path" >&2
+        exit 1
+    fi
+done
+
+# A's MODULE.bazel pulls in the traces extension + the per-element repo.
+mod_a="$A/MODULE.bazel"
+for marker in \
+    'use_extension("//rules:traces.bzl", "traces")' \
+    '"trace_hello-world"'; do
+    if ! grep -qF -- "$marker" "$mod_a"; then
+        echo "meta-cmake-round2-fallback: A MODULE.bazel missing marker: $marker" >&2
+        cat "$mod_a" >&2
         exit 1
     fi
 done
@@ -103,25 +133,21 @@ if [ ! -f "$B/elements/hello-world/srckey.txt" ]; then
     exit 1
 fi
 
-# build-tracer + trace-publish stage into both projects' tools/.
-# trace-lookup is intentionally NOT staged: kind:cmake fallback
-# v1 doesn't wire A's load-time trace lookup (queued behind the
-# trace-driven convergence research follow-on).
+# build-tracer + trace-publish + trace-lookup stage into both
+# projects' tools/. Wiring all three at once means the
+# trace-driven convergence research follow-on (teaching
+# convert-element to consume @trace_<elem>//:trace to refine
+# refusals into fine cc rules) is purely a converter-side
+# change — no further write-a / staging work.
 for path in \
     "$A/tools/build-tracer" \
     "$A/tools/trace-publish" \
+    "$A/tools/trace-lookup" \
     "$B/tools/build-tracer" \
-    "$B/tools/trace-publish"; do
+    "$B/tools/trace-publish" \
+    "$B/tools/trace-lookup"; do
     if [ ! -x "$path" ]; then
         echo "meta-cmake-round2-fallback: missing executable $path" >&2
-        exit 1
-    fi
-done
-for path in \
-    "$A/tools/trace-lookup" \
-    "$B/tools/trace-lookup"; do
-    if [ -e "$path" ]; then
-        echo "meta-cmake-round2-fallback: unexpected $path (fallback-only mode shouldn't stage trace-lookup)" >&2
         exit 1
     fi
 done

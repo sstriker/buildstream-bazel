@@ -39,7 +39,7 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	}
 
 	// Marker-shaped fakes for the round-2 binaries.
-	for _, name := range []string{"build-tracer-fake", "trace-publish-fake"} {
+	for _, name := range []string{"build-tracer-fake", "trace-publish-fake", "trace-lookup-fake"} {
 		if err := os.WriteFile(filepath.Join(tmp, name),
 			[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
@@ -47,14 +47,15 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	}
 
 	// Snapshot + restore cmakeConfig / autotoolsConfig so the
-	// test isn't order-dependent. The validation in main.go
-	// requires --build-tracer-bin + --trace-publish-bin to be
-	// set when --cmake-round2-fallback is on; the test wires
-	// them on autotoolsConfig (the shared resolution target).
-	// Explicitly clear the autotools-round2-specific fields so
-	// stageAutotoolsTools doesn't see leftover state from a
-	// prior test (notably .round2Enabled, which would stage
-	// trace-lookup and break the assertions below).
+	// test isn't order-dependent. The kind:cmake round-2
+	// fallback uses the same kind-agnostic round-2 binaries
+	// autotools does (build-tracer / trace-publish /
+	// trace-lookup); they live on autotoolsConfig (the shared
+	// resolution target). Explicitly clear the autotools-
+	// round-2-specific fields so stageAutotoolsTools doesn't
+	// see leftover state from a prior test (notably
+	// .round2Enabled, which would alter staging assertions
+	// below).
 	prevC := cmakeConfig
 	prevA := autotoolsConfig
 	autotoolsConfig.convertBin = ""
@@ -62,6 +63,7 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	autotoolsConfig.round2Enabled = false
 	autotoolsConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
 	autotoolsConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	autotoolsConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
 	cmakeConfig.round2FallbackEnabled = true
 	t.Cleanup(func() {
 		cmakeConfig = prevC
@@ -82,13 +84,46 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 		t.Fatalf("writeProjectB: %v", err)
 	}
 
-	// A-side: converter genrule threads the fallback flag.
+	// A-side: converter genrule threads the fallback flag AND
+	// pulls @trace_<elem>//:trace into srcs (the load-time AC
+	// lookup; trace-driven convergence research follow-on
+	// teaches convert-element to consume the trace).
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/demo/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(aBody), "--unsupported-execute-process-fallback=true") {
-		t.Errorf("project A BUILD missing --unsupported-execute-process-fallback=true flag\n%s", aBody)
+	for _, want := range []string{
+		"--unsupported-execute-process-fallback=true",
+		`"@trace_demo//:trace"`,
+	} {
+		if !strings.Contains(string(aBody), want) {
+			t.Errorf("project A BUILD missing %q\n%s", want, aBody)
+		}
+	}
+
+	// rules/traces.bzl + tools/traces.json render in both
+	// projects (kind-agnostic round-2 plumbing).
+	for _, project := range []string{outA, outB} {
+		for _, p := range []string{"rules/traces.bzl", "tools/traces.json"} {
+			if _, err := os.Stat(filepath.Join(project, p)); err != nil {
+				t.Errorf("%s missing %s: %v", project, p, err)
+			}
+		}
+	}
+
+	// MODULE.bazel pulls in the traces extension + the
+	// per-element repo.
+	modA, err := os.ReadFile(filepath.Join(outA, "MODULE.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`use_extension("//rules:traces.bzl", "traces")`,
+		`"trace_demo"`,
+	} {
+		if !strings.Contains(string(modA), want) {
+			t.Errorf("project A MODULE.bazel missing %q\n%s", want, modA)
+		}
 	}
 
 	// B-side: real install genrule (no placeholder).
@@ -121,19 +156,17 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 		t.Errorf("srckey.txt not staged in project B: %v", err)
 	}
 
-	// build-tracer + trace-publish stage into both projects'
-	// tools/. trace-lookup is NOT staged (kind:cmake fallback
-	// v1 doesn't yet consume @trace_<elem>//:trace at A's
-	// load time — queued for the trace-driven convergence
-	// follow-on).
+	// build-tracer + trace-publish + trace-lookup stage into
+	// both projects' tools/. Wiring all three at once means
+	// the trace-driven convergence research follow-on
+	// (teaching convert-element to consume @trace_<elem>//:trace
+	// to refine refusals into fine cc rules) is purely a
+	// converter-side change — no further write-a work.
 	for _, project := range []string{outA, outB} {
-		for _, tool := range []string{"build-tracer", "trace-publish"} {
+		for _, tool := range []string{"build-tracer", "trace-publish", "trace-lookup"} {
 			if _, err := os.Stat(filepath.Join(project, "tools", tool)); err != nil {
 				t.Errorf("%s missing tools/%s: %v", project, tool, err)
 			}
-		}
-		if _, err := os.Stat(filepath.Join(project, "tools", "trace-lookup")); err == nil {
-			t.Errorf("%s unexpectedly staged tools/trace-lookup (fallback-only mode shouldn't need it)", project)
 		}
 	}
 }
