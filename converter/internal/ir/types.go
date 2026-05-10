@@ -177,4 +177,27 @@ type Target struct {
 	// set_tests_properties REQUIRED_FILES; map onto cc_test's data
 	// attribute.
 	TestData []string
+
+	// PerPlatform carries per-platform attribute deltas the
+	// per-element multi-platform fold produces. The outer key is
+	// the IR attribute name ("srcs", "hdrs", "includes", "copts",
+	// "defines", "linkopts", "deps"); the inner key is the Bazel
+	// select() arm label (a constraint_value label like
+	// "@platforms//os:darwin", or a config_setting label for
+	// multi-axis matrices); the value is the delta items that go
+	// inside that arm — items the platform observes that the
+	// flat baseline doesn't. The flat baseline lives in the
+	// regular fields above (Srcs, Copts, ...).
+	//
+	// Single-platform conversion never populates this field;
+	// emit treats nil and empty maps identically — the rendered
+	// BUILD.bazel uses the flat-list shape and matches the
+	// existing single-platform goldens byte-for-byte. Only the
+	// multi-platform fold (lower/elementfold) populates it; only
+	// emit/bazel renders select() blocks when it's non-empty.
+	//
+	// Attribute names match the Bazel attribute spelling so the
+	// emitter doesn't have to translate; the lowercase form is
+	// the key callers should use ("srcs" not "Srcs").
+	PerPlatform map[string]map[string][]string
 }
