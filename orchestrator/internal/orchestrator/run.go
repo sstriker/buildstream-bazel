@@ -134,6 +134,41 @@ type Options struct {
 	// platform's ResolvedToolchain.Base.
 	CollectToolchainSignal bool
 
+	// PlatformsJSON, when non-empty, points at a JSON manifest
+	// declaring the target platform matrix the orchestrator
+	// should fan out per-element conversions across. Each entry
+	// pairs a Bazel platform name with its constraint_value
+	// labels and the REAPI Action.Platform properties to route
+	// the matching action to. With a one-platform manifest the
+	// orchestrator's behaviour is byte-identical to today's
+	// single-platform flow (the per-element fold's N=1
+	// degenerate case); with more, each kind:cmake element
+	// produces a unified BUILD.bazel whose attributes carry
+	// `select()` blocks for the per-platform divergence.
+	//
+	// Manifest schema (one entry per platform):
+	//
+	//	{
+	//	  "name": "linux_x86_64",
+	//	  "constraints": [
+	//	    "@platforms//os:linux",
+	//	    "@platforms//cpu:x86_64"
+	//	  ],
+	//	  "reapi_properties": [
+	//	    {"name": "OSFamily", "value": "linux"},
+	//	    {"name": "Arch",     "value": "x86_64"}
+	//	  ]
+	//	}
+	//
+	// reapi_properties is required because there's no canonical
+	// cross-walk from constraint_value labels to REAPI property
+	// names; the operator declares them explicitly. Common
+	// conventions (OSFamily, Arch) compose with whatever the
+	// REAPI worker pool advertises. The reapi_properties slice
+	// effectively replaces the orchestrator's hardcoded
+	// defaultPlatform when this manifest is set.
+	PlatformsJSON string
+
 	// Log is a back-compat shim: when set and Logger is nil, the
 	// orchestrator builds a slog.NewTextHandler(Log) and uses that
 	// for structured progress records. Per-element converter
@@ -305,22 +340,28 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 		executor = reapi.NewLocalExecutor()
 	}
 
+	platformsMatrix, err := loadPlatformsManifest(opts.PlatformsJSON)
+	if err != nil {
+		return nil, err
+	}
+
 	r := &runner{
-		opts:        opts,
-		conv:        conv,
-		convAbs:     convAbs,
-		store:       store,
-		executor:    executor,
-		platform:    platform,
-		resolver:    newResolver(opts, store),
-		timeout:     timeout,
-		importsRoot: importsRoot,
-		prefixRoot:  prefixRoot,
-		shadowRoot:  shadowRoot,
-		registry:    registry,
-		depRecords:  map[string]*depRecord{},
-		res:         &Result{},
-		logger:      loggerFor(opts),
+		opts:            opts,
+		conv:            conv,
+		convAbs:         convAbs,
+		store:           store,
+		executor:        executor,
+		platform:        platform,
+		platformsMatrix: platformsMatrix,
+		resolver:        newResolver(opts, store),
+		timeout:         timeout,
+		importsRoot:     importsRoot,
+		prefixRoot:      prefixRoot,
+		shadowRoot:      shadowRoot,
+		registry:        registry,
+		depRecords:      map[string]*depRecord{},
+		res:             &Result{},
+		logger:          loggerFor(opts),
 	}
 
 	if err := r.driveElements(ctx, cmakeOrder); err != nil {
@@ -428,14 +469,15 @@ func logTimingsSummary(logger *slog.Logger, res *Result) {
 // completing elements (depRecords, res) and the registry's persistent
 // state.
 type runner struct {
-	opts     Options
-	conv     string
-	convAbs  string
-	store    cas.Store
-	executor reapi.Executor
-	platform []reapi.PlatformProperty
-	resolver *sourcecheckout.Resolver
-	timeout  time.Duration // per-element cap; zero = none
+	opts            Options
+	conv            string
+	convAbs         string
+	store           cas.Store
+	executor        reapi.Executor
+	platform        []reapi.PlatformProperty
+	platformsMatrix []convertPlatform // empty = single-platform path
+	resolver        *sourcecheckout.Resolver
+	timeout         time.Duration // per-element cap; zero = none
 
 	importsRoot, prefixRoot, shadowRoot string
 	registry                            *allowlistreg.Registry
@@ -598,45 +640,20 @@ func (r *runner) processElement(ctx context.Context, name string) error {
 		return fmt.Errorf("element %s: imports manifest: %w", name, err)
 	}
 
-	built, err := reapi.Build(reapi.Inputs{
-		ShadowDir:              shadowSrc,
-		ImportsManifest:        importsPath,
-		PrefixDir:              prefixPath,
-		ToolchainCMakeFile:     r.opts.ToolchainCMakeFile,
-		ConverterBin:           r.convAbs,
-		Platform:               r.platform,
-		Timeout:                r.timeout,
-		CollectToolchainSignal: r.opts.CollectToolchainSignal,
-		EnvVars: map[string]string{
-			"ORCHESTRATOR_ELEMENT_NAME": name,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("element %s: build action: %w", name, err)
-	}
 	elemOut := filepath.Join(r.opts.Out, "elements", name)
-	hit, fr, err := tryActionCacheHit(ctx, r.store, built, elemOut)
-	if err != nil {
-		return fmt.Errorf("element %s: action cache lookup: %w", name, err)
-	}
 
-	if hit {
-		r.logger.Info("cache hit", "name", name, "action_digest", built.ActionDigest.Hash)
-		r.appendCacheHit(name)
-	} else {
-		if err := os.RemoveAll(elemOut); err != nil {
-			return fmt.Errorf("element %s: clear elemOut: %w", name, err)
-		}
-		fr, err = remoteExecute(ctx, r.store, r.executor, built, elemOut, name, logOf(r.opts))
-		if err != nil {
-			return err
-		}
-		if fr == nil {
-			r.appendCacheMiss(name)
-		}
+	// Multi-platform path: when --platforms-json is set, fan
+	// out one Action per platform and fold per-platform IRs into
+	// one BUILD.bazel via elementfold. Single-platform path
+	// (the empty-matrix case) flows through the reapi.Build /
+	// tryActionCacheHit path below — byte-identical behaviour.
+	// Both paths converge at the depRecord-stitching tail that
+	// reads elemOut/cmake-config + elemOut/read_paths.json.
+	failed, err := r.runConvertActions(ctx, name, realSrcRoot, elemOut, shadowSrc, importsPath, prefixPath)
+	if err != nil {
+		return err
 	}
-	if fr != nil {
-		r.appendFailure(*fr)
+	if failed {
 		return nil
 	}
 
