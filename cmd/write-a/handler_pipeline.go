@@ -57,7 +57,7 @@ type pipelineHandler struct {
 	// transform the rendered pipeline cmd into a wider shape.
 	// Used by the trace-driven kind:autotools path: it wraps
 	// the configure/build/install commands in build-tracer and
-	// appends a convert-element-autotools step that emits
+	// appends a convert-element-trace step that emits
 	// BUILD.bazel.out alongside install_tree.tar.
 	//
 	// Nil = no transformation; the existing single-genrule
@@ -65,8 +65,8 @@ type pipelineHandler struct {
 	extension *pipelineExtension
 
 	// traceDrivenSrckeyPatterns: when non-nil AND the trace-driven
-	// CLI is configured (autotoolsConfig.convertBin set +
-	// autotoolsConfig.round2Enabled true), this kind opts into
+	// CLI is configured (traceConfig.convertBin set +
+	// traceConfig.round2Enabled true), this kind opts into
 	// the round-2 trace-driven shape. Project A hosts a
 	// per-element converter genrule consuming @trace_<elem>//:trace
 	// (via cmd/trace-lookup at Bazel load time); project B hosts
@@ -96,13 +96,13 @@ type pipelineHandler struct {
 //     it. Used to inject a tracer wrapper around the build.
 //   - AppendCmd: shell snippet inserted between the pipeline
 //     commands and the `tar -cf install_tree.tar ...` step.
-//     Used to run convert-element-autotools against the
+//     Used to run convert-element-trace against the
 //     trace before the install tree is tarred.
 //   - ExtraOuts: additional Bazel `outs` filenames the genrule
 //     produces (e.g. "BUILD.bazel.out").
 //   - ExtraTools: additional `//tools:X` labels the genrule
 //     depends on (e.g. "//tools:build-tracer",
-//     "//tools:convert-element-autotools").
+//     "//tools:convert-element-trace").
 type pipelineExtension struct {
 	WrapPipelineCmds func(cmds string) string
 	AppendCmd        string
@@ -171,17 +171,17 @@ type pipelinePhases struct {
 // activated round-2 globally. Both gates have to pass:
 //
 //   - traceDrivenSrckeyPatterns set on the handler (kind opts in).
-//   - autotoolsConfig.convertBin / round2Enabled set on write-a
-//     (operator passed --convert-element-autotools etc, didn't
-//     pass --autotools-round1 to opt out).
+//   - traceConfig.convertBin / round2Enabled set on write-a
+//     (operator passed --convert-element-trace etc, didn't
+//     pass --trace-round1 to opt out).
 //
 // When false, RenderA / RenderB fall through to the legacy
 // install-genrule-in-A + placeholder-in-B shape; existing
 // fixtures and gates that don't enable round-2 keep working.
 func (h pipelineHandler) shouldUseRound2() bool {
 	return h.traceDrivenSrckeyPatterns != nil &&
-		autotoolsConfig.convertBin != "" &&
-		autotoolsConfig.round2Enabled
+		traceConfig.convertBin != "" &&
+		traceConfig.round2Enabled
 }
 
 func (h pipelineHandler) RenderA(elem *element, elemPkg string) error {
@@ -886,7 +886,7 @@ func renderPipelineCmdBody(p pipelinePhases, fuseSources bool, ext *pipelineExte
 
 	// Optional shell snippet that runs after the pipeline cmds
 	// but before the install-tree tar. Used to feed the trace
-	// produced by the wrapper into convert-element-autotools.
+	// produced by the wrapper into convert-element-trace.
 	appendCmd := ""
 	if ext != nil && ext.AppendCmd != "" {
 		appendCmd = "\n" + ext.AppendCmd + "\n"

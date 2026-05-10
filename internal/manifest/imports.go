@@ -179,7 +179,7 @@ func (r *Resolver) LookupLinkPath(path string) *Export {
 
 // LookupLinkLibrary returns the export that owns a `-l<name>` link
 // flag's <name>, or nil if no element claims it. Used by
-// convert-element-autotools to resolve link commands' -l<lib>
+// convert-element-trace to resolve link commands' -l<lib>
 // args (e.g., -lz → //elements/zlib:zlib) when the trace
 // itself doesn't produce a matching archive in-graph.
 func (r *Resolver) LookupLinkLibrary(name string) *Export {

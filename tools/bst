@@ -73,7 +73,7 @@ repo_root() {
 
 ensure_binaries() {
     # write-a + convert-element + build-tracer +
-    # convert-element-autotools all live under build/bin after
+    # convert-element-trace all live under build/bin after
     # `make all`. Shell out to make if anything's stale; make
     # is fast for a no-op build.
     root="$1"
@@ -170,13 +170,20 @@ cmd_build() {
     bst_flags="$(bst_collect "$leaf_abs")"
 
     # shellcheck disable=SC2086
+    # Round-1 trace-driven shape: project A is a marker, project B
+    # hosts the install genrule with build-tracer + convert-element-
+    # trace inline. Avoids the round-2 rendezvous infra (REAPI AC
+    # + cas-fuse / bb_clientd mount) that the wrapper doesn't aim to
+    # set up. Round-2 (publish/lookup binaries + bb_clientd) is the
+    # production deployment shape; the wrapper is for local dev.
     "$root/build/bin/write-a" \
         $bst_flags \
         --out "$project_a" \
         --out-b "$project_b" \
         --convert-element "$root/build/bin/convert-element" \
-        --convert-element-autotools "$root/build/bin/convert-element-autotools" \
-        --build-tracer-bin "$root/build/bin/build-tracer"
+        --convert-element-trace "$root/build/bin/convert-element-trace" \
+        --build-tracer-bin "$root/build/bin/build-tracer" \
+        --trace-round1
 
     # Pick the leaf target. autotools elements expose
     # <name>_install (the genrule producing install_tree.tar +

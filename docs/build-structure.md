@@ -19,7 +19,7 @@ project-A/
 │   └── BUILD.bazel         # bzl_library exports for the .bzl files
 ├── tools/
 │   ├── convert-element             # the cmake converter binary
-│   ├── convert-element-autotools   # the autotools converter binary
+│   ├── convert-element-trace   # the trace-driven converter binary (shared by autotools / make / manual / script / makemaker / modulebuild)
 │   ├── build-tracer                # process tracer binary
 │   ├── sources.json                # source-key → URL/digest catalogue
 │   └── BUILD.bazel                 # exports_files([...]) for the above
@@ -111,7 +111,7 @@ genrule(
         "srckey.txt",               # seed for the synthetic AC key
     ],
     outs = ["BUILD.bazel.out"],
-    tools = ["//tools:convert-element-autotools"],
+    tools = ["//tools:convert-element-trace"],
     cmd = """
         TRACE_DIR="$$(mktemp -d)"
         for src in $(SRCS); do
@@ -120,7 +120,7 @@ genrule(
                 */trace_dir/make-db.txt)  cp -L "$$src" "$$TRACE_DIR/make-db.txt"  ;;
             esac
         done
-        $(location //tools:convert-element-autotools) \
+        $(location //tools:convert-element-trace) \
             --trace-dir="$$TRACE_DIR" \
             --out-build="$(location BUILD.bazel.out)"
     """,
@@ -181,7 +181,7 @@ converter emits fine-grained cc rules. AC miss ⇒ the fileset is empty
 and the converter writes a placeholder; project B's install genrule
 runs, publishes the trace, and the next render of project A hits.
 
-Pass `--autotools-round1` to `write-a` to opt into the legacy
+Pass `--trace-round1` to `write-a` to opt into the legacy
 single-genrule shape (converter + install inline in one project-B
 action). See `docs/trace-driven-autotools.md` for that shape.
 
@@ -319,7 +319,7 @@ the surface area:
    `elements/<name>/BUILD.bazel`. The driver replaces the
    placeholder.
 6. **Tools staged in project A.** The translators
-   (`convert-element`, `convert-element-autotools`,
+   (`convert-element`, `convert-element-trace`,
    `build-tracer`) live under `project-A/tools/` and are
    referenced via `//tools:<name>` labels from per-element
    genrules' `tools = [...]`. The translator binary contract
@@ -359,10 +359,10 @@ Outputs:
 - `<bundle-dir>/lib/cmake/<Pkg>/...`: synth cmake-config files.
 - `read_paths.json`: include-paths cmake actually read (narrowing).
 
-### convert-element-autotools (kind:autotools native)
+### convert-element-trace (kind:autotools native)
 
 ```
-convert-element-autotools \
+convert-element-trace \
     --trace=<path>                       # strace text-format trace
     --out-build=<path>                   # write BUILD.bazel.out here
     [--imports-manifest=<path>]          # cross-element label map

@@ -19,7 +19,7 @@ func init() {
 // ninja + meson install` genrule), which is what FDSDK has been
 // running against since the pipelineHandler-based handler landed.
 //
-// The split mirrors autotoolsConfig: keep the kindHandler interface
+// The split mirrors traceConfig: keep the kindHandler interface
 // small (RenderA/RenderB don't take a config arg) while letting the
 // meson handler decide per-element whether to use native conversion.
 var mesonConfig struct {

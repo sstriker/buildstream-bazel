@@ -36,7 +36,7 @@ flowchart LR
 - **Project A** holds one Bazel package per element. Each package's
   `BUILD.bazel` is a small genrule that invokes the per-kind
   translator (e.g. `convert-element` for `kind:cmake`,
-  `convert-element-autotools` for `kind:autotools`) on the element's
+  `convert-element-trace` for `kind:autotools`) on the element's
   source tree. The genrule's output is a real `BUILD.bazel.out` —
   native cc rules — plus any cross-element side-channels (cmake
   config bundles, install-tree tarballs).
@@ -67,7 +67,7 @@ flowchart TB
     subgraph AUTO [kind:autotools — trace-driven]
         ASRC["autotools source"] --> ATRACE["build-tracer<br/>(ptrace wrap)"]
         ATRACE -- "configure + make + install" --> ATRACE2["execve trace"]
-        ATRACE2 --> ACONV["convert-element-autotools<br/>(parse + correlate)"]
+        ATRACE2 --> ACONV["convert-element-trace<br/>(parse + correlate)"]
         ACONV --> ABUILD["BUILD.bazel.out<br/>(cc_library / cc_binary)"]
     end
 ```
@@ -85,7 +85,7 @@ flowchart TB
 - **`kind:autotools`** has no codemodel-equivalent introspection.
   Instead, the install genrule wraps `./configure && make && make
   install` under `cmd/build-tracer`, which captures every successful
-  execve via ptrace. `cmd/convert-element-autotools` reads the
+  execve via ptrace. `cmd/convert-element-trace` reads the
   trace, classifies events into compile / link / archive,
   cross-correlates them (compile output `.o` paired with archive +
   link), and emits native `cc_library` / `cc_binary`. See
@@ -153,7 +153,7 @@ REAPI ActionCache endpoint — no separate registry service.
 | Static renderer | `cmd/write-a/` | `.bst` → project A + project B BUILD files |
 | cmake converter | `cmd/convert-element` (`converter/cmd/convert-element/`) | cmake source → BUILD.bazel.out |
 | Process tracer | `cmd/build-tracer/` | Wraps build cmd; emits execve trace |
-| autotools converter | `cmd/convert-element-autotools/` | Trace → BUILD.bazel.out |
+| Trace-driven converter | `cmd/convert-element-trace/` | Trace → BUILD.bazel.out (shared by autotools / make / manual / script / makemaker / modulebuild) |
 | Cross-element synth | `internal/synthprefix/` | Builds the cmake-config-bundle layout |
 | Imports manifest | `internal/manifest/` | Cross-element name → Bazel label resolution |
 | End-to-end gates | `scripts/meta-*.sh`, `Makefile e2e-*` | Drive the pipeline against fixtures |

@@ -46,28 +46,28 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 		}
 	}
 
-	// Snapshot + restore cmakeConfig / autotoolsConfig so the
+	// Snapshot + restore cmakeConfig / traceConfig so the
 	// test isn't order-dependent. The kind:cmake round-2
 	// fallback uses the same kind-agnostic round-2 binaries
 	// autotools does (build-tracer / trace-publish /
-	// trace-lookup); they live on autotoolsConfig (the shared
+	// trace-lookup); they live on traceConfig (the shared
 	// resolution target). Explicitly clear the autotools-
 	// round-2-specific fields so stageAutotoolsTools doesn't
 	// see leftover state from a prior test (notably
 	// .round2Enabled, which would alter staging assertions
 	// below).
 	prevC := cmakeConfig
-	prevA := autotoolsConfig
-	autotoolsConfig.convertBin = ""
-	autotoolsConfig.lookupBin = ""
-	autotoolsConfig.round2Enabled = false
-	autotoolsConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
-	autotoolsConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
-	autotoolsConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+	prevA := traceConfig
+	traceConfig.convertBin = ""
+	traceConfig.lookupBin = ""
+	traceConfig.round2Enabled = false
+	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
 	cmakeConfig.round2FallbackEnabled = true
 	t.Cleanup(func() {
 		cmakeConfig = prevC
-		autotoolsConfig = prevA
+		traceConfig = prevA
 	})
 
 	g, err := loadGraph([]string{bst}, "")

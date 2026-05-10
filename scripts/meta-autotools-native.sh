@@ -4,11 +4,11 @@
 #
 # Drives the full single-genrule design end-to-end:
 #
-#   1. cmd/write-a renders project A with --convert-element-autotools
+#   1. cmd/write-a renders project A with --convert-element-trace
 #      + --build-tracer-bin set. kind:autotools elements get a single
 #      install genrule with two outputs (install_tree.tar + the
 #      native BUILD.bazel.out) and tools = [build-tracer,
-#      convert-element-autotools].
+#      convert-element-trace].
 #   2. bazel build runs the genrule once. Inside the sandbox:
 #      build-tracer wraps the configure/build/install pipeline,
 #      capturing every execve into a trace file; convert-element-
@@ -37,7 +37,7 @@ mkdir -p "$bin_dir"
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-tracer" ./cmd/build-tracer
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element-autotools" ./cmd/convert-element-autotools
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-trace" ./cmd/convert-element-trace
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -52,14 +52,14 @@ fixture="testdata/meta-project/autotools-greet"
     --out "$A" \
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
-    --convert-element-autotools "$bin_dir/convert-element-autotools" \
+    --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
-    --autotools-round1
+    --trace-round1
 
 # Render-phase checks.
 for want in \
     "elements/greet/BUILD.bazel" \
-    "tools/convert-element-autotools" \
+    "tools/convert-element-trace" \
     "tools/build-tracer"; do
     if [ ! -f "$A/$want" ]; then
         echo "meta-autotools-native: missing rendered file $want in project A" >&2
@@ -69,7 +69,7 @@ done
 for marker in \
     '"BUILD.bazel.out"' \
     '"//tools:build-tracer"' \
-    '"//tools:convert-element-autotools"' \
+    '"//tools:convert-element-trace"' \
     'name = "greet_install"'; do
     if ! grep -qF -- "$marker" "$B/elements/greet/BUILD.bazel"; then
         echo "meta-autotools-native: rendered BUILD missing marker: $marker" >&2
@@ -118,7 +118,7 @@ run_bazel() {
 
 # Single-genrule shape: one bazel build runs build-tracer
 # wrapping configure/make/make install + the inline
-# convert-element-autotools call. Outputs:
+# convert-element-trace call. Outputs:
 # install_tree.tar + BUILD.bazel.out + make-db.txt +
 # install-mapping.json — all in one action, one cache key.
 #

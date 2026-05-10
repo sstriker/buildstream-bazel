@@ -81,14 +81,14 @@ func TestRound2_PopulatedTraceDirRunsFineMode(t *testing.T) {
 	}
 }
 
-// buildSelf compiles the convert-element-autotools binary into the
+// buildSelf compiles the convert-element-trace binary into the
 // test's tempdir. Used by tests that exercise the binary's flag
 // handling end-to-end (the in-process tests cover the parser /
 // emitter; these cover the dispatch layer).
 func buildSelf(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "convert-element-autotools")
+	bin := filepath.Join(tmp, "convert-element-trace")
 	cmd := exec.Command("go", "build", "-o", bin, ".")
 	out, err := cmd.CombinedOutput()
 	if err != nil {

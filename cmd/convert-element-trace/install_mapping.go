@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-// InstallMapping is the sidecar artifact convert-element-autotools
+// InstallMapping is the sidecar artifact convert-element-trace
 // emits when the make-database is available and the Makefile
 // declares an `install:` recipe. Each entry pairs a build-time
 // source (path relative to the build dir) with its install-tree

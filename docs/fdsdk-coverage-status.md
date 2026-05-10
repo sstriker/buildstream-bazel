@@ -28,55 +28,53 @@ counts is in
 
 ## Coverage today
 
+All trace-driven kinds (autotools / make / manual / script /
+makemaker / modulebuild) share the same deep-conversion shape
+through `convert-element-trace`. The converter operates on
+cc/ar execve events captured by `build-tracer` regardless of
+which build driver actually invoked them — the per-kind
+opt-in is one line on the kind's `pipelineHandler`
+(`traceDrivenSrckeyPatterns`). Operators activate the path
+by passing `--convert-element-trace` + `--build-tracer-bin` +
+`--trace-publish-bin` + `--trace-lookup-bin` to write-a; without
+those, the kinds fall back to their historical coarse
+install_tree.tar shape.
+
 | Kind | Count | % | Quality | Notes |
 |---|---|---|---|---|
-| `autotools` | 274 | 25.1 % | **deep (NEW)** | trace-driven via build-tracer + convert-element-autotools |
-| `meson` | 134 | 12.3 % | **deep (NEW)** | introspection-driven via convert-element-meson; Phase B install-plan fallback queued |
-| `pyproject` | 115 | 10.5 % | coarse | py_library / py_binary mapping deferred |
-| `manual` | 104 | 9.5 % | coarse | command-list driven; trace-driven path applicable |
+| `autotools` | 274 | 25.1 % | **deep** | trace-driven via build-tracer + convert-element-trace |
+| `meson` | 134 | 12.3 % | **deep** | introspection-driven via convert-element-meson; Phase B install-plan fallback queued |
+| `pyproject` | 115 | 10.5 % | coarse | py_library / py_binary mapping deferred (no shared trace-driven path; Python doesn't go through cc/ar) |
+| `manual` | 104 | 9.5 % | **deep** | trace-driven via convert-element-trace (when the element's commands invoke cc/ar through any wrapper) |
 | `stack` | 96 | 8.8 % | structural | filegroup composition over deps |
 | `cmake` | 75 | 6.9 % | **deep** | File API + trace-expand |
-| `make` | 59 | 5.4 % | coarse | command-list driven; trace-driven path applicable |
-| `script` | 53 | 4.9 % | coarse | command-list driven; trace-driven path applicable |
+| `make` | 59 | 5.4 % | **deep** | trace-driven via convert-element-trace (make-db hint additionally consumed when present) |
+| `script` | 53 | 4.9 % | **deep** | trace-driven via convert-element-trace |
 | `filter` | 42 | 3.8 % | structural | filegroup composition |
 | `flatpak_image` | 26 | 2.4 % | structural | install-tree manipulation |
 | `compose` | 25 | 2.3 % | structural | filegroup composition |
 | `import` | 22 | 2.0 % | structural | filegroup-only |
 | `collect_manifest` | 18 | 1.6 % | placeholder | v1 stub |
 | `collect_initial_scripts` | 15 | 1.4 % | **missing** | FDSDK-specific glue |
-| `makemaker` | 14 | 1.3 % | coarse | Perl ExtUtils::MakeMaker |
+| `makemaker` | 14 | 1.3 % | **deep** | trace-driven via convert-element-trace (Perl ExtUtils::MakeMaker still goes through cc/ar) |
 | `junction` | 8 | 0.7 % | orchestration | cross-project link, project-level concern |
 | `snap_image` | 6 | 0.5 % | structural | install-tree manipulation |
-| `bazel` | n/a | n/a | **passthrough (NEW)** | source ships its own BUILD; verbatim staging |
+| `bazel` | n/a | n/a | **passthrough** | source ships its own BUILD; verbatim staging |
 | `collect_integration` | 2 | 0.2 % | **missing** | FDSDK glue |
 | `check_forbidden` | 2 | 0.2 % | **missing** | CI assertion |
 | `flatpak_repo` | 1 | 0.1 % | **missing** | FDSDK glue |
-| `modulebuild` | 1 | 0.1 % | coarse | Perl Module::Build |
+| `modulebuild` | 1 | 0.1 % | **deep** | trace-driven via convert-element-trace (Perl Module::Build) |
 
-**Today: 25.1% (autotools) + 12.3% (meson) + 6.9% (cmake) = 44.3%
-of FDSDK has deep conversion.**
+**Today: 25.1 % (autotools) + 12.3 % (meson) + 9.5 % (manual)
++ 6.9 % (cmake) + 5.4 % (make) + 4.9 % (script) + 1.3 %
+(makemaker) + 0.1 % (modulebuild) = ~65.5 % of FDSDK has
+deep conversion.** Adding the structural kinds — whose
+quality follows their deps' — pushes the effective figure
+higher (`stack`/`filter`/`compose`/`import`/`flatpak_image`/
+`snap_image` together: ~19.8 %), but those don't have a
+build of their own to convert.
 
-## Highest-impact next: trace-driven for kind:make / kind:manual / kind:script
-
-Combined: 216 elements (19.8% of FDSDK). All are
-command-list-driven (no introspection surface). The
-trace-driven autotools converter is largely a *trace consumer*
-— `convert-element-autotools` cares about cc / ar execve
-events, not about how the build was driven. A small
-generalization would let it apply to any cc-based build that
-goes through a make / shell-script wrapper:
-
-- Rename `convert-element-autotools` → `convert-element-trace`.
-- Generalize the make-db hint integration: when the build
-  uses `make`, capture make-db; otherwise, skip.
-- Wire the trace-driven path into kind:make / kind:manual /
-  kind:script handlers (same `pipelineExtension` shape used
-  by the autotools handler today).
-
-Estimate: ~1-2 days. Each kind's handler becomes a 30-line
-extension wiring.
-
-## After that: pyproject
+## Highest-impact next: pyproject
 
 115 elements (10.5%). Python-shaped — Bazel's native rules
 are rules_python's `py_library` / `py_binary` /
@@ -114,14 +112,17 @@ high-impact items above.
 
 Tackle in order of impact-per-work-unit:
 
-1. ~~**meson** — biggest single chunk (12.3%).~~ Shipped Phase A
+1. ~~**meson** — biggest single chunk (12.3 %).~~ Shipped Phase A
    (introspection-driven deep conversion); Phase B install-plan
    fallback queued in `ROADMAP.md` Next.
-2. **trace-driven for make / manual / script** — quick win
-   (1-2 days, 19.8% of FDSDK becomes deep instead of coarse).
-3. **pyproject** — fresh translator (10.5%). Distinct shape
-   from cc-based.
+2. ~~**trace-driven for make / manual / script** (~19.8 %).~~
+   Shipped: same `pipelineHandler` opt-in shape kind:autotools
+   established. The kind-agnostic `convert-element-trace`
+   binary serves all six trace-driven kinds today.
+3. **pyproject** — fresh translator (10.5 %). Distinct shape
+   from cc-based; Python doesn't go through cc/ar so the trace-
+   driven path doesn't apply.
 4. **FDSDK glue** — last; small impact each.
 
-Net after these: **~75% of FDSDK has deep conversion** (vs.
-44% today).
+Net after these: **~76 % of FDSDK has deep conversion** (vs.
+~65 % today; ~32 % before the trace-driven generalization).

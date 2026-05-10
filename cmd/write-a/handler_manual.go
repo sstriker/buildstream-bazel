@@ -18,7 +18,7 @@ func init() {
 	// can tighten this for elements with predictable shapes.
 	//
 	// Round-2 dispatch activates whenever the trace-driven CLI
-	// is configured (autotoolsConfig.convertBin set +
+	// is configured (traceConfig.convertBin set +
 	// round2Enabled true) AND the kind opted in via
 	// traceDrivenSrckeyPatterns — see pipelineHandler.shouldUseRound2.
 	// Whether the converter recovers cc rules vs emits the

@@ -11,7 +11,7 @@
 #
 # The gate asserts:
 #   1. Render: project A's per-element BUILD wires the install
-#      genrule with build-tracer + convert-element-autotools +
+#      genrule with build-tracer + convert-element-trace +
 #      install-mapping.json output.
 #   2. Build: bazel build runs the tracer-wrapped pipeline +
 #      converter, producing install_tree.tar +
@@ -39,7 +39,7 @@ mkdir -p "$bin_dir"
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-tracer" ./cmd/build-tracer
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element-autotools" ./cmd/convert-element-autotools
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-trace" ./cmd/convert-element-trace
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -54,9 +54,9 @@ fixture="testdata/meta-project/autotools-multitarget"
     --out "$A" \
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element" \
-    --convert-element-autotools "$bin_dir/convert-element-autotools" \
+    --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
-    --autotools-round1
+    --trace-round1
 
 for marker in \
     '"BUILD.bazel.out"' \

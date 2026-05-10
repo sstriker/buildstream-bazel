@@ -92,13 +92,19 @@ make e2e-meta-hello
 make e2e-meta-autotools-native
 
 # 4. Convert your own BuildStream project.
+#    --trace-round1 picks the local-dev round-1 shape (project B
+#    hosts an install genrule with build-tracer + convert-element-
+#    trace inline). For the production round-2 shape, drop
+#    --trace-round1 and add --trace-publish-bin / --trace-lookup-bin
+#    (and ensure bb_clientd is up).
 build/bin/write-a \
     --bst path/to/yours.bst \
     --out /tmp/project-a \
     --out-b /tmp/project-b \
     --convert-element           build/bin/convert-element \
-    --convert-element-autotools build/bin/convert-element-autotools \
-    --build-tracer-bin          build/bin/build-tracer
+    --convert-element-trace     build/bin/convert-element-trace \
+    --build-tracer-bin          build/bin/build-tracer \
+    --trace-round1
 ```
 
 Then `cd /tmp/project-b && bazel build //...`. That's it.
@@ -151,7 +157,7 @@ clean-room implementation.
 |---|---|
 | `cmd/write-a/` | Renders project A + project B from a `.bst` graph. The thing you actually run. |
 | `cmd/build-tracer/` | Process tracer for the autotools native path (native ptrace + strace fallback, canonical output). |
-| `cmd/convert-element-autotools/` | Trace + `make -np` → native cc rules. |
+| `cmd/convert-element-trace/` | Trace + `make -np` → native cc rules. |
 | `converter/` | The cmake converter. cmake File API codemodel + `--trace-expand` → native cc rules. |
 | `orchestrator/` | Predecessor single-project orchestrator. Kept for the regression-diff machinery; new kinds land in `cmd/write-a/`. |
 | `internal/` | Shared packages — CAS, FUSE, manifest, shadow tree, fidelity. |

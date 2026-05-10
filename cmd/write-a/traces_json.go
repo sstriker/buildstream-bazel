@@ -77,7 +77,7 @@ func collectTraces(g *graph) (tracesJSON, error) {
 // in autotoolsHandler (handler_autotools_native.go) rather than
 // going through pipelineHandler's traceDrivenSrckeyPatterns
 // field. The autotools + pipeline arms only return non-nil when
-// autotoolsConfig.round2Enabled is set (with convertBin staged):
+// traceConfig.round2Enabled is set (with convertBin staged):
 // without round-2 active, those kinds don't reference
 // @trace_<elem>//:trace in their rendered BUILDs, so adding
 // per-element trace_repo entries to tools/traces.json would
@@ -87,7 +87,7 @@ func collectTraces(g *graph) (tracesJSON, error) {
 // fallback (Phase B) when cmakeConfig.round2FallbackEnabled is
 // set, independent of autotools round-2.
 func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
-	autotoolsRound2 := autotoolsConfig.convertBin != "" && autotoolsConfig.round2Enabled
+	autotoolsRound2 := traceConfig.convertBin != "" && traceConfig.round2Enabled
 	if kind == "autotools" {
 		if !autotoolsRound2 {
 			return nil

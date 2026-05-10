@@ -263,7 +263,7 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         make converter >/dev/null
         CGO_ENABLED=0 go build -o "$repo/build/bin/write-a" ./cmd/write-a
         CGO_ENABLED=0 go build -o "$repo/build/bin/build-tracer" ./cmd/build-tracer
-        CGO_ENABLED=0 go build -o "$repo/build/bin/convert-element-autotools" ./cmd/convert-element-autotools
+        CGO_ENABLED=0 go build -o "$repo/build/bin/convert-element-trace" ./cmd/convert-element-trace
 
         # Copy the fixture to a tmp dir and append a per-run nonce
         # to a file matching autotoolsSrckeyPatterns (configure is
@@ -291,7 +291,7 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
             --out "$PROJ_A" \
             --out-b "$PROJ_B" \
             --convert-element "$repo/build/bin/convert-element" \
-            --convert-element-autotools "$repo/build/bin/convert-element-autotools" \
+            --convert-element-trace "$repo/build/bin/convert-element-trace" \
             --build-tracer-bin "$repo/build/bin/build-tracer" \
             --trace-publish-bin "$repo/build/bin/trace-publish" \
             --trace-lookup-bin "$repo/build/bin/trace-lookup"

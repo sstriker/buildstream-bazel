@@ -37,7 +37,7 @@ graph TD
         WA["cmd/write-a\nStatic renderer — reads .bst graph,\nwrites project A + B BUILD files"]
         CE["converter/cmd/convert-element\nkind:cmake converter\ncmake File API → cc rules"]
         BT["cmd/build-tracer\nProcess tracer\nptrace / strace wrapper"]
-        CEA["cmd/convert-element-autotools\nkind:autotools converter\nTrace + make-db → cc_library / cc_binary"]
+        CEA["cmd/convert-element-trace\nTrace-driven converter (autotools / make / manual / script / makemaker / modulebuild)\nTrace + optional make-db → cc_library / cc_binary"]
         SP["cmd/source-push\nUploads source trees to CAS\n(dev/test; production uses bst source push)"]
         TL["cmd/trace-lookup\nQueries REAPI ActionCache for a\ncached trace at Bazel load time"]
         TP["cmd/trace-publish\nWrites trace to REAPI ActionCache\nunder SyntheticActionDigest(srckey)"]
@@ -166,7 +166,7 @@ Round-2 splits the work between project A (converter) and project B
 flowchart TB
     subgraph PA2["Project A — pass 2 (converter genrule)"]
         TRACELOOKUP["@trace_<elem>//:trace\n(load-time AC lookup\nvia rules/traces.bzl)"]
-        CEA2["convert-element-autotools\n--trace-dir=<staged>\n(parse + correlate)"]
+        CEA2["convert-element-trace\n--trace-dir=<staged>\n(parse + correlate)"]
         BUILD_OUT["BUILD.bazel.out\n(cc_library / cc_binary)\nor placeholder on AC miss"]
     end
 
@@ -191,7 +191,7 @@ flowchart TB
     TP2 -. "next pass 2:\nAC hit" .-> TRACELOOKUP
 ```
 
-Pass `--autotools-round1` to `write-a` for the legacy single-genrule shape
+Pass `--trace-round1` to `write-a` for the legacy single-genrule shape
 where the converter runs inline in project B.
 
 ### 4c. Pipeline kinds (kind:make, kind:manual, kind:script, …)
