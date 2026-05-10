@@ -520,23 +520,40 @@ func copyDirContents(srcDir, dstDir string) error {
 // "wipe everything under here" target would be catastrophic.
 // The function is the cheap first line before clearDirContents —
 // it doesn't try to be exhaustive, just to catch the obvious
-// foot-guns (empty path, relative path, root, dot, dot-dot,
-// /tmp, /home as a whole, etc.).
+// foot-guns. Both relative and absolute paths are permitted:
+// REAPI-driven conversions pass a relative path
+// ("toolchain-signal") inside the action's working directory,
+// so an absolute-only check would break that flow.
+//
+// Rejected:
+//
+//   - empty path
+//   - "/", ".", ".." (and any path that filepath.Clean reduces to one)
+//   - relative paths whose Clean form starts with ".." (would
+//     escape the cwd)
+//   - absolute paths that match a forbidden system root
+//     (/home, /root, /tmp, /var, /etc, /usr — top-level dirs
+//     the operator should never aim at as a wipe target).
 func guardDstDir(dstDir string) error {
 	if dstDir == "" {
 		return fmt.Errorf("copyDirContents: dstDir is empty")
-	}
-	if !filepath.IsAbs(dstDir) {
-		return fmt.Errorf("copyDirContents: dstDir %q must be an absolute path", dstDir)
 	}
 	clean := filepath.Clean(dstDir)
 	switch clean {
 	case "/", ".", "..":
 		return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (resolves to %q)", dstDir, clean)
 	}
-	// Reject likely-broad parents the operator should never aim
-	// at: top-level system dirs and the workspace caller is
-	// running inside.
+	// Relative path that escapes cwd? Reject — clearDirContents
+	// would happily blow away the parent.
+	if !filepath.IsAbs(clean) {
+		if clean == ".." || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (escapes cwd)", dstDir)
+		}
+		// Non-escaping relative path: REAPI-style
+		// "toolchain-signal" lands here. Allow.
+		return nil
+	}
+	// Absolute path: reject the obvious system-root foot-guns.
 	for _, forbid := range []string{"/", "/home", "/root", "/tmp", "/var", "/etc", "/usr"} {
 		if clean == forbid {
 			return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (matches forbidden root %q)", dstDir, forbid)
@@ -548,12 +565,28 @@ func guardDstDir(dstDir string) error {
 // clearDirContents removes the entries inside dir without
 // removing dir itself. Skips silently when dir doesn't exist
 // (the subsequent os.MkdirAll handles the create case).
+//
+// Rejects a symlinked dir: guardDstDir's string-only checks
+// don't help if the operator points the symlink at /, /etc,
+// etc. Lstat'ing here closes that hole — the symlink target's
+// contents are never wiped because we error out before reading
+// the directory.
 func clearDirContents(dir string) error {
-	entries, err := os.ReadDir(dir)
+	info, err := os.Lstat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("clearDirContents: refusing to clear symlinked dstDir %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("clearDirContents: %s is not a directory (mode %s)", dir, info.Mode())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		return err
 	}
 	for _, e := range entries {

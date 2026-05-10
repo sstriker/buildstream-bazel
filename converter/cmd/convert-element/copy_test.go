@@ -64,14 +64,14 @@ func TestCopyDirContents_HappyPath(t *testing.T) {
 func TestCopyDirContents_RejectsDangerousDstDir(t *testing.T) {
 	src := t.TempDir()
 	cases := map[string]string{
-		"empty":    "",
-		"relative": "out",
-		"dot":      ".",
-		"dot-dot":  "..",
-		"root":     "/",
-		"home":     "/home",
-		"tmp":      "/tmp",
-		"etc":      "/etc",
+		"empty":      "",
+		"dot":        ".",
+		"dot-dot":    "..",
+		"escapes-up": "../escape",
+		"root":       "/",
+		"home":       "/home",
+		"tmp":        "/tmp",
+		"etc":        "/etc",
 	}
 	for label, dst := range cases {
 		t.Run(label, func(t *testing.T) {
@@ -80,6 +80,75 @@ func TestCopyDirContents_RejectsDangerousDstDir(t *testing.T) {
 				t.Errorf("expected error for dst=%q; got nil", dst)
 			}
 		})
+	}
+}
+
+// TestCopyDirContents_AcceptsSafeRelativeDstDir: REAPI-driven
+// conversions pass --out-toolchain-signal-dir as a relative path
+// ("toolchain-signal") inside the action's working directory.
+// guardDstDir must let that through; only relative paths that
+// escape the cwd ("..", "../escape") get rejected.
+func TestCopyDirContents_AcceptsSafeRelativeDstDir(t *testing.T) {
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "x.json"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// chdir into parent so the relative dstDir resolves there.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(cwd)
+	if err := os.Chdir(parent); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyDirContents("src", "toolchain-signal"); err != nil {
+		t.Fatalf("copyDirContents with relative dst failed: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(parent, "toolchain-signal", "x.json"))
+	if err != nil {
+		t.Fatalf("expected x.json under relative dst: %v", err)
+	}
+	if string(got) != "ok" {
+		t.Errorf("relative-dst copy lost content: got %q", got)
+	}
+}
+
+// TestCopyDirContents_RejectsSymlinkedDstDir: dstDir as a
+// symlink to an arbitrary directory would let clearDirContents
+// wipe the symlink target. Lstat'ing dstDir up front before
+// reading its entries closes that hole.
+func TestCopyDirContents_RejectsSymlinkedDstDir(t *testing.T) {
+	parent := t.TempDir()
+	src := filepath.Join(parent, "src")
+	if err := os.Mkdir(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(parent, "real-target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "important.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(parent, "linked-dst")
+	if err := os.Symlink(target, dst); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+	err := copyDirContents(src, dst)
+	if err == nil {
+		t.Fatal("expected symlinked-dstDir rejection; got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q missing 'symlink'", err)
+	}
+	// And the symlink target's contents must NOT have been wiped.
+	if _, err := os.Stat(filepath.Join(target, "important.txt")); err != nil {
+		t.Errorf("symlink target was wiped (the bug we're guarding): %v", err)
 	}
 }
 

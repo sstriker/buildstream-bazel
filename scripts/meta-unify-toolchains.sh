@@ -30,7 +30,7 @@ mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/unify-toolchains" ./converter/cmd/unify-toolchains
 
 work_dir="$(mktemp -d)"
-trap "rm -rf '$work_dir'" EXIT
+trap 'rm -rf "$work_dir"' EXIT
 
 # Build the in-repo fixture generator (probe-cell-fixture) and use
 # it to mint probe.json artifacts for our matrix.

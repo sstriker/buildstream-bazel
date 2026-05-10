@@ -27,7 +27,7 @@ mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/render-project-a" ./converter/cmd/render-project-a
 
 work_dir="$(mktemp -d)"
-trap "rm -rf '$work_dir'" EXIT
+trap 'rm -rf "$work_dir"' EXIT
 
 # Build the platforms manifest.
 cat > "$work_dir/platforms.json" <<EOF
