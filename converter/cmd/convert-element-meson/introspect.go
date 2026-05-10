@@ -19,8 +19,9 @@ import (
 //
 // `target_sources` is heterogeneous in meson's JSON: cc-shaped entries
 // carry `language`/`compiler`/`parameters`/`sources`; the linker entry
-// carries `linker`/`parameters`. We split them at parse time into
-// CompileSources + Linker so downstream code doesn't have to re-classify.
+// carries `linker`/`parameters`. The parser keeps a single
+// TargetSources slice and tags entries via the `language` and `linker`
+// fields; consumers classify with TargetSource.IsCompile / .IsLinker.
 type Target struct {
 	Name            string         `json:"name"`
 	ID              string         `json:"id"`

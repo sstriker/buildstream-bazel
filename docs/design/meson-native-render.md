@@ -1,8 +1,10 @@
 # Meson native render — design
 
-Per `ROADMAP.md` "Next: kind:meson native render" and
-`docs/fdsdk-coverage-status.md` (12.3% of FDSDK; biggest single
-lift remaining after kind:cmake).
+Architecture recipe for `converter/cmd/convert-element-meson` —
+the Phase A introspection-driven kind:meson translator. Coverage
+context: `docs/fdsdk-coverage-status.md` (meson is 12.3% of
+FDSDK). Roadmap state: `ROADMAP.md` Done (Phase A) + Next
+(install-plan-driven Phase B fallback).
 
 This doc captures the v1 architecture, the patterns covered, and
 the patterns refused.
@@ -110,11 +112,23 @@ For each `target_sources` cc entry:
 
 For the linker entry within `target_sources`:
 
-- `parameters` are split: `-l<name>` references resolve via the
-  `depends` list (in-project) or the imports manifest (cross-
-  element / system). Bare `libfoo.a` references are matched
-  against in-project archive outputs by basename.
+- Bare archive references — `libfoo.a` / `libfoo.so` / SONAME-
+  versioned `libfoo.so.1.2.3` shapes — are matched against
+  in-project archive outputs by basename. Hits become `Deps`
+  entries; misses pass through into `LinkOpts` (so the action
+  still resolves at link time when the archive is on the system
+  path).
+- meson-injected linker defaults (`-Wl,--as-needed`,
+  `-Wl,--no-undefined`, `-Wl,-soname,*`, `-shared`, `-fPIC`) are
+  filtered — Bazel's cc toolchain emits the canonical form.
 - All other flags go into `LinkOpts`.
+- v1 doesn't parse `-l<name>` linker args. External library
+  resolution flows through the `dependencies` field
+  (intro-dependencies.json's `compile_args` / `link_args` fold
+  inline; cross-element binds resolve via the imports manifest
+  in `fillDeps`). If a future fixture exposes raw `-l`
+  references that need `LookupLinkLibrary`-style recovery
+  (mirroring kind:cmake), wire it in `fillLinkInfo`.
 
 ## Cross-element dependency resolution
 

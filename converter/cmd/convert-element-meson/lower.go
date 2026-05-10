@@ -387,7 +387,7 @@ func applyCompileParameters(out *ir.Target, params []string, opts LowerOptions) 
 		switch {
 		case strings.HasPrefix(p, "-I"):
 			path := strings.TrimPrefix(p, "-I")
-			if opts.BuildDir != "" && strings.HasPrefix(path, opts.BuildDir) {
+			if opts.BuildDir != "" && isUnderDir(path, opts.BuildDir) {
 				continue
 			}
 			rel := projectInclude(path, opts.SourceRoot)
@@ -512,9 +512,16 @@ func isMesonInjectedLinkFlag(p string) bool {
 }
 
 // fillDeps walks the in-project `depends` list and the external
-// `dependencies` list, populating out.Deps. Bare `-l<name>` items
-// surfaced from the linker entry's args are matched against the
-// imports manifest, mirroring kind:cmake's link-fragment recovery.
+// `dependencies` list, populating out.Deps. Bare-archive references
+// (`libfoo.a` / `libfoo.so` / SONAME-versioned shapes) in the
+// linker entry's parameters are matched against in-project archive
+// outputs by basename in fillLinkInfo. v1 doesn't yet parse `-l<name>`
+// linker args; cross-element link resolution for system libraries is
+// expected to flow through the `dependencies` field
+// (intro-dependencies.json's `link_args`) rather than raw `-l`
+// fragments. If a fixture exposes raw `-l` references that need
+// imports-manifest recovery (mirroring kind:cmake's
+// LookupLinkLibrary), wire it here.
 func fillDeps(out *ir.Target, t Target, byID, byName map[string]string, deps map[string]*Dependency, opts LowerOptions) error {
 	// In-project deps via `depends` (preferred — meson IDs are
 	// authoritative) or by name when an ID isn't recognized.
@@ -614,6 +621,24 @@ func relativizeSources(srcs []string, sourceRoot string) ([]string, error) {
 		out = append(out, p[len(sourceRoot)+1:])
 	}
 	return out, nil
+}
+
+// isUnderDir reports whether path is dir itself or a descendant
+// of dir. Plain `strings.HasPrefix(path, dir)` would match sibling
+// paths (`/tmp/bd2/include` falsely matches `/tmp/bd`); the
+// separator-anchored check rules them out. Both inputs are passed
+// through filepath.Clean so trailing slashes / repeated separators
+// don't sneak past the comparison.
+func isUnderDir(path, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	cp := filepath.Clean(path)
+	cd := filepath.Clean(dir)
+	if cp == cd {
+		return true
+	}
+	return strings.HasPrefix(cp, cd+string(filepath.Separator))
 }
 
 func appendUnique(in []string, item string) []string {

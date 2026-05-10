@@ -207,6 +207,84 @@ func TestLower_SoVersionedSuffix(t *testing.T) {
 	}
 }
 
+func TestIsUnderDir(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		dir  string
+		want bool
+	}{
+		{"same dir", "/tmp/bd", "/tmp/bd", true},
+		{"descendant", "/tmp/bd/sub/x", "/tmp/bd", true},
+		{"sibling-prefix not descendant", "/tmp/bd2/include", "/tmp/bd", false},
+		{"unrelated", "/usr/include", "/tmp/bd", false},
+		{"empty dir", "/anything", "", false},
+		{"trailing slash on dir", "/tmp/bd/x", "/tmp/bd/", true},
+	}
+	for _, c := range cases {
+		if got := isUnderDir(c.path, c.dir); got != c.want {
+			t.Errorf("%s: isUnderDir(%q, %q)=%v want %v", c.name, c.path, c.dir, got, c.want)
+		}
+	}
+}
+
+func TestApplyCompileParameters_BuildDirSiblingNotDropped(t *testing.T) {
+	// Regression for the strings.HasPrefix bug: an include that
+	// starts with the build-dir's path component but lives in a
+	// SIBLING dir must NOT be filtered out.
+	tgt := &ir.Target{}
+	applyCompileParameters(tgt, []string{
+		"-I/tmp/bd/private.p", // genuine build-dir include — drop
+		"-I/tmp/bd2/include",  // sibling-prefix — KEEP (as Copts since outside source-root)
+		"-I/src/include",      // source-tree include — KEEP (project to "include")
+	}, LowerOptions{
+		SourceRoot: "/src",
+		BuildDir:   "/tmp/bd",
+	})
+	for _, c := range tgt.Copts {
+		if strings.HasPrefix(c, "-I/tmp/bd/") {
+			t.Errorf("build-dir include leaked into copts: %q", c)
+		}
+	}
+	if !contains(tgt.Copts, "-I/tmp/bd2/include") {
+		t.Errorf("sibling-dir include incorrectly dropped; copts=%v", tgt.Copts)
+	}
+	if !contains(tgt.Includes, "include") {
+		t.Errorf("source-tree include not projected; includes=%v", tgt.Includes)
+	}
+}
+
+func TestRenderCustomCmd_RefusesEmbeddedAndUnreferencedTokens(t *testing.T) {
+	// Embedded @INPUT@ in a larger token must refuse.
+	if _, err := renderCustomCmd([]string{"--in=@INPUT@", "@OUTPUT@"}, []string{"a"}, []string{"b"}); err == nil ||
+		!strings.Contains(err.Error(), "unsupported-meson-custom-target") {
+		t.Errorf("embedded @INPUT@ accepted: %v", err)
+	}
+	// Indexed @OUTPUT0@ must refuse.
+	if _, err := renderCustomCmd([]string{"@OUTPUT0@"}, nil, []string{"b"}); err == nil ||
+		!strings.Contains(err.Error(), "unsupported-meson-custom-target") {
+		t.Errorf("indexed @OUTPUT0@ accepted: %v", err)
+	}
+	// argv with srcs but no @INPUT@ token must refuse.
+	if _, err := renderCustomCmd([]string{"cp", "/literal/path", "@OUTPUT@"}, []string{"a"}, []string{"b"}); err == nil ||
+		!strings.Contains(err.Error(), "doesn't reference @INPUT@") {
+		t.Errorf("argv missing @INPUT@ but with srcs accepted: %v", err)
+	}
+	// argv missing @OUTPUT@ must refuse.
+	if _, err := renderCustomCmd([]string{"cp", "@INPUT@", "/dst"}, []string{"a"}, []string{"b"}); err == nil ||
+		!strings.Contains(err.Error(), "doesn't reference @OUTPUT@") {
+		t.Errorf("argv missing @OUTPUT@ accepted: %v", err)
+	}
+	// Canonical liftable shape lifts.
+	got, err := renderCustomCmd([]string{"cp", "@INPUT@", "@OUTPUT@"}, []string{"a"}, []string{"b"})
+	if err != nil {
+		t.Fatalf("canonical shape refused: %v", err)
+	}
+	if !strings.Contains(got, "$(location a)") || !strings.Contains(got, "$(location b)") {
+		t.Errorf("canonical shape didn't substitute: %q", got)
+	}
+}
+
 func contains(xs []string, want string) bool {
 	for _, x := range xs {
 		if x == want {
