@@ -73,15 +73,23 @@ func run(argv []string) error {
 	}
 
 	// SelectKey assignment via elementfold.PickSelectKeys: the
-	// fold needs each cell tagged with a constraint label that
-	// uniquely identifies it within the matrix. Auto-detection
-	// handles single-axis and {linux, darwin}-style two-axis
-	// matrices; ambiguous ones (e.g. {linux_x86_64,
-	// linux_aarch64, darwin_arm64}) error out cleanly with a
-	// message naming the offending platform.
+	// fold needs each cell tagged with a label that uniquely
+	// identifies it within the matrix. Pre-set SelectKey values
+	// (populated from a cell's optional 4th field, the
+	// operator-declared config_setting label) are honoured
+	// as-is; PickSelectKeys auto-detects only for platforms
+	// without one. Auto-detection handles single-axis and
+	// {linux, darwin}-style two-axis matrices; ambiguous ones
+	// (e.g. {linux_x86_64, linux_aarch64, darwin_arm64}) error
+	// out cleanly with a message naming the offending platform
+	// unless the operator supplied a select_label for each.
 	platforms := make([]elementfold.Platform, len(parsed))
 	for i, c := range parsed {
-		platforms[i] = elementfold.Platform{Name: c.name, Constraints: c.constraints}
+		platforms[i] = elementfold.Platform{
+			Name:        c.name,
+			Constraints: c.constraints,
+			SelectKey:   c.selectLabel,
+		}
 	}
 	keys, err := elementfold.PickSelectKeys(platforms)
 	if err != nil {
@@ -129,21 +137,29 @@ type parsedCell struct {
 	name        string
 	constraints []string
 	irJSONPath  string
+	selectLabel string // empty = let PickSelectKeys auto-detect
 }
 
-// parseCell decodes "<name>|<c1,c2,...>|<path>". Requires
-// exactly two pipes: extra pipes (in any field) are rejected
-// rather than silently absorbed into the path so accidental
-// pipes in a path don't quietly mis-route. Commas split the
-// constraints. Empty name, no constraints, and empty path are
-// each rejected with a specific error. Pipe is the outer
-// separator (rather than ":") because Bazel constraint labels
-// embed colons (@platforms//os:linux); SplitN on ":" would
-// shred them.
+// parseCell decodes "<name>|<c1,c2,...>|<path>" or the
+// 4-field "<name>|<c1,c2,...>|<path>|<select_label>" form.
+// Requires exactly two or three pipes (3 or 4 fields): extra
+// pipes are rejected rather than silently absorbed into the
+// last field so accidental pipes in a path don't quietly
+// mis-route. Commas split the constraints. Empty name, no
+// constraints, and empty path are each rejected with a
+// specific error. Pipe is the outer separator (rather than
+// ":") because Bazel constraint labels embed colons
+// (@platforms//os:linux); SplitN on ":" would shred them.
+//
+// The optional 4th field is the operator-declared
+// config_setting label that overrides PickSelectKeys'
+// auto-detection — the escalation path for matrices where no
+// single constraint axis uniquely identifies each platform
+// (e.g. {linux_x86_64, linux_aarch64, darwin_arm64}).
 func parseCell(raw string) (parsedCell, error) {
 	parts := strings.Split(raw, "|")
-	if len(parts) != 3 {
-		return parsedCell{}, fmt.Errorf("expected exactly two %q separators in <name>|<constraints>|<path>; got %d field(s)", "|", len(parts))
+	if len(parts) < 3 || len(parts) > 4 {
+		return parsedCell{}, fmt.Errorf("expected 3 or 4 %q-separated fields (<name>|<constraints>|<path>[|<select_label>]); got %d", "|", len(parts))
 	}
 	name := strings.TrimSpace(parts[0])
 	if name == "" {
@@ -165,10 +181,19 @@ func parseCell(raw string) (parsedCell, error) {
 	if len(constraints) == 0 {
 		return parsedCell{}, fmt.Errorf("no constraints")
 	}
+	var selectLabel string
+	if len(parts) == 4 {
+		selectLabel = strings.TrimSpace(parts[3])
+		// Empty 4th field is treated as "absent" rather than
+		// rejected so operators can keep a uniform 4-pipe form
+		// across their cells and only fill in the override
+		// where it's needed.
+	}
 	return parsedCell{
 		name:        name,
 		constraints: constraints,
 		irJSONPath:  path,
+		selectLabel: selectLabel,
 	}, nil
 }
 

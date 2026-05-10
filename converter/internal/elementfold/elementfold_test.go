@@ -339,6 +339,67 @@ func TestPickSelectKeys_AmbiguousMatrix(t *testing.T) {
 	}
 }
 
+// TestPickSelectKeys_OperatorOverridesAll: same ambiguous
+// matrix the auto-detect path rejects, but every platform
+// supplies a SelectKey explicitly (the escalation contract:
+// operator declares a config_setting per platform in their
+// //platforms package). PickSelectKeys passes the supplied
+// keys through verbatim with no auto-detection.
+func TestPickSelectKeys_OperatorOverridesAll(t *testing.T) {
+	plats := []Platform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:linux_x86_64"},
+		{Name: "linux_aarch64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}, SelectKey: "//platforms:linux_aarch64"},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectKey: "//platforms:darwin_arm64"},
+	}
+	got, err := PickSelectKeys(plats)
+	if err != nil {
+		t.Fatalf("PickSelectKeys: %v", err)
+	}
+	want := map[string]string{
+		"linux_x86_64":  "//platforms:linux_x86_64",
+		"linux_aarch64": "//platforms:linux_aarch64",
+		"darwin_arm64":  "//platforms:darwin_arm64",
+	}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("platform %q: SelectKey = %q; want %q", name, got[name], w)
+		}
+	}
+}
+
+// TestPickSelectKeys_OperatorOverridesPartial: a mixed matrix
+// — some platforms have a SelectKey override, the rest
+// auto-detect off their constraints. The override platforms
+// pass through verbatim; their constraint labels are excluded
+// from the auto-detect count so they don't taint the
+// uniqueness check for the auto-detect platforms.
+func TestPickSelectKeys_OperatorOverridesPartial(t *testing.T) {
+	plats := []Platform{
+		// Two ambiguous platforms get explicit keys.
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:linux_x86_64"},
+		{Name: "linux_aarch64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}, SelectKey: "//platforms:linux_aarch64"},
+		// darwin auto-detects: its os:darwin is unique once the
+		// linux entries are out of the count.
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
+	}
+	got, err := PickSelectKeys(plats)
+	if err != nil {
+		t.Fatalf("PickSelectKeys: %v", err)
+	}
+	if got["linux_x86_64"] != "//platforms:linux_x86_64" {
+		t.Errorf("linux_x86_64 override = %q", got["linux_x86_64"])
+	}
+	if got["linux_aarch64"] != "//platforms:linux_aarch64" {
+		t.Errorf("linux_aarch64 override = %q", got["linux_aarch64"])
+	}
+	// darwin_arm64 has both os:darwin and cpu:arm64 unique once
+	// the two override platforms are excluded from the count;
+	// PickSelectKeys' lex-min tiebreaker picks cpu:arm64.
+	if got["darwin_arm64"] != "@platforms//cpu:arm64" {
+		t.Errorf("darwin_arm64 auto-detect = %q; want @platforms//cpu:arm64", got["darwin_arm64"])
+	}
+}
+
 // TestFold_PackageNameMismatch: the per-element fold composes
 // per-platform IRs of the SAME element. If their Package.Name
 // disagrees, that's a programmer error elsewhere in the flow,

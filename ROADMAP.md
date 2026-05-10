@@ -29,22 +29,36 @@ transition cleanly.
 
 ## Next
 
-- **Per-element multi-platform BUILD generation.** The unified
-  toolchain layout shipped (see Done) but per-element conversion
-  is still single-platform-host: `convert-element` runs once on
-  the host and bakes that viewpoint into each
-  `elements/<name>/BUILD.bazel`. The right model is to run
-  `convert-element` once per (element, platform) cell via the
-  Stage 4 project-A render skeleton, then fold the per-platform
-  IRs into one `BUILD.bazel` per element using `select()` over
-  `@platforms//{os,cpu}:*` for divergent srcs/hdrs/deps/copts/defines.
-  Compiler-level flags get stripped on the way through (they
-  belong in `cc_toolchain_config`). Initial scope: `kind:cmake`.
-  Reuses Stage 4's render skeleton + Stage 5's `Observe` (which
-  the future `internal/empfold/` extraction will generalize for
-  per-element use). Same project-A pattern, different worker
-  binary (`convert-element` instead of `probe-cell`), different
-  fold inputs.
+- **Per-platform fold for round-2 trace-driven kinds.** The
+  per-element orchestrate-time fold shipped for kind:cmake
+  Phase A (see Done — `internal/empfold`,
+  `converter/internal/elementfold`, `cmd/fold-element`,
+  per-element multi-platform BUILD generation), but the
+  round-2 path (kind:cmake Phase B fallback, kind:autotools,
+  kind:make, kind:makemaker, kind:modulebuild, kind:manual,
+  kind:script, kind:meson Phase B) doesn't yet have an
+  equivalent. Two unresolved cross-platform problems show up
+  when Bazel builds project B across more than one platform:
+  (1) the trace-publish/lookup rendezvous keys the AC by
+  `SyntheticActionDigest(srckey)` where srckey is computed
+  from sources only, so traces from different platforms
+  collide at the same AC key (a darwin trace published first
+  shadows the linux trace under the same srckey); (2) install
+  layouts diverge across platforms (`.so` vs `.dylib`,
+  multiarch lib dirs, arch-tagged binary names), so a
+  converter genrule consuming one platform's trace emits
+  stubs that don't match another platform's `install_tree.tar`.
+  Resolution sketch: extend the synthetic AC key with a
+  platform tag (REAPI Action.Platform digest or a
+  manifest-supplied platform name) and teach project A's
+  converter genrule to fold per-platform install plans the
+  same way `elementfold` folds per-platform IRs — emitting
+  per-target stubs with `select()`-gated path attributes
+  (`static_library = select({...: "lib/x86_64-linux-gnu/libfoo.a", ...})`).
+  Open design question: whether the round-2 converter genrule
+  itself runs per-platform (and the elementfold then composes
+  N converter outputs) or whether it consumes N traces
+  directly via a `_trace_repo` that fans out by platform.
 - **Element-signal consumption in the unifier.** Stage 6 capture
   is in (`--collect-toolchain-signal` flows fileapi replies into
   `<out>/elements/<name>/toolchain-signal/`). Pending: wire
@@ -202,6 +216,42 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Per-element multi-platform BUILD generation (kind:cmake Phase A).**
+  `convert-element` no longer bakes the host's viewpoint into each
+  per-element `BUILD.bazel`. The orchestrator's
+  `--platforms-json` flag (parallel to the toolchain unifier's
+  manifest) drives one `convert-element` REAPI Action per
+  (element, platform) cell; the resulting per-platform
+  `ir.Package` JSONs (emitted via convert-element's
+  `--out-ir-json`) feed `cmd/fold-element`, which composes them
+  into a single unified `BUILD.bazel` whose attributes carry
+  `select()` blocks for divergent srcs/hdrs/includes/defines/deps
+  and per-platform-routed copts/linkopts. `internal/empfold`
+  factors out the cardinality-partition primitive
+  (`toolchain.Observe` now uses it too).
+  `converter/internal/elementfold` enforces per-target
+  cross-cell agreement on scalar fields (Linkstatic, Alwayslink,
+  Genrule*, Test*, …) and folds the order-sensitive
+  copts/linkopts conservatively (identical sequences → flat
+  baseline; any divergence → empty baseline + each cell's full
+  sequence under its `SelectKey` so per-platform flag order
+  survives to the compiler). `PickSelectKeys` auto-detects
+  single-axis matrices ({linux, darwin} or {x86_64, arm64})
+  and honours an operator-supplied `select_label` per platform
+  for matrices where no constraint axis uniquely identifies
+  each cell ({linux_x86_64, linux_aarch64, darwin_arm64}) — the
+  operator declares a `config_setting` per platform in their
+  `//platforms` package and supplies its label, escaping the
+  auto-detect ambiguity error with an actionable contract. N=1
+  manifests render flat lists byte-identical to today's content
+  (the on-disk layout / Action digests differ because the
+  multi-platform path always emits `ir.json` and lands outputs
+  under per-platform subdirs; leave `--platforms-json` unset
+  for the byte-stable legacy route). Render gate:
+  `scripts/meta-element-fold.sh`. Scope is kind:cmake Phase A
+  only; trace-driven kinds and round-2 fallbacks have a
+  separate per-platform fold story queued in Next.
 
 - **`convert-element-autotools` → `convert-element-trace` rename.**
   The trace-driven converter has served kind:make / kind:manual /
