@@ -54,11 +54,28 @@ func Parse(body []byte) ([]toolchain.Variant, error) {
 		return nil, fmt.Errorf("kits: parse: %w", err)
 	}
 	out := make([]toolchain.Variant, 0, len(kits))
+	// seen maps a sanitized name back to the FIRST original kit
+	// name that produced it, so a collision error can name both
+	// kits unambiguously. Distinct kit names like "GCC 13" and
+	// "GCC-13" both sanitize to "gcc-13"; downstream uses
+	// Variant.Name as a map key (Observe's
+	// ResolvedToolchain.Variants) and a Bazel target name —
+	// silent overwrite would lose data and produce duplicate
+	// targets. Reject up front.
+	seen := map[string]string{}
 	for i, k := range kits {
 		if k.Name == "" {
 			return nil, fmt.Errorf("kits: kit at index %d has empty name", i)
 		}
-		v := toolchain.Variant{Name: sanitizeKitName(k.Name)}
+		sanitized := sanitizeKitName(k.Name)
+		if sanitized == "" {
+			return nil, fmt.Errorf("kits: kit %q at index %d sanitizes to empty Variant.Name (only non-alphanumeric runs?)", k.Name, i)
+		}
+		if prev, dup := seen[sanitized]; dup {
+			return nil, fmt.Errorf("kits: kits %q and %q both sanitize to %q; rename one so they produce distinct Variant.Name values", prev, k.Name, sanitized)
+		}
+		seen[sanitized] = k.Name
+		v := toolchain.Variant{Name: sanitized}
 		cache := map[string]string{}
 		if c := k.Compilers["C"]; c != "" {
 			cache["CMAKE_C_COMPILER"] = c

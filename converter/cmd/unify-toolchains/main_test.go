@@ -118,6 +118,34 @@ func TestRun_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestRegisterToolchainsCallPresent covers the tolerance of the
+// MODULE.bazel banner check: substring-only matching produced
+// false negatives on legitimate formatting variants. The regexp
+// must accept whitespace + single/double quotes + multi-arg calls.
+func TestRegisterToolchainsCallPresent(t *testing.T) {
+	cases := map[string]bool{
+		// canonical
+		`register_toolchains("//toolchains:all")`: true,
+		// single quotes
+		`register_toolchains('//toolchains:all')`: true,
+		// whitespace
+		"register_toolchains(\n    \"//toolchains:all\",\n)": true,
+		// extra args before / after
+		`register_toolchains(":foo", "//toolchains:all")`: true,
+		`register_toolchains("//toolchains:all", ":bar")`: true,
+		// not present
+		``:                                    false,
+		`module(name="x")`:                    false,
+		`register_toolchains("//foo:bar")`:    false,
+		`register_toolchains("//toolchains")`: false, // wrong target
+	}
+	for body, want := range cases {
+		if got := registerToolchainsCallPresent([]byte(body)); got != want {
+			t.Errorf("registerToolchainsCallPresent(%q) = %v, want %v", body, got, want)
+		}
+	}
+}
+
 // TestRun_NoCellsForPlatform demonstrates the "skip-with-warning"
 // behaviour: a platform listed in --platforms-json with no probe
 // cells in --probe-cells is dropped from the output (with a

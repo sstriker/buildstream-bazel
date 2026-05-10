@@ -22,7 +22,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
 )
@@ -104,10 +103,10 @@ func resolveCacheVars(p *configurePreset, byName map[string]*configurePreset, an
 	}
 	merged := map[string]string{}
 
-	// Inherits: deterministic order — the JSON field is either a
-	// string or an array; ParseInherits normalizes to a sorted
-	// slice for stability across runs.
-	for _, parentName := range p.parentsSorted() {
+	// Inherits: declared order — CMakePresets says later parents
+	// override earlier ones on key collision, so we walk parents
+	// in the order the JSON listed them.
+	for _, parentName := range p.parents() {
 		parent, ok := byName[parentName]
 		if !ok {
 			return nil, fmt.Errorf("presets: %q inherits unknown preset %q", p.Name, parentName)
@@ -154,19 +153,20 @@ type configurePreset struct {
 	CacheVariables map[string]cacheVarRaw `json:"cacheVariables"`
 }
 
-// parentsSorted returns the parent preset names from `inherits`
-// in deterministic order. The JSON field can be a single string or
-// an array of strings; both are normalized to a sorted slice. The
-// sort is alphabetical so two presets that differ only in inherits
-// list ordering produce byte-identical Variant output.
-func (p *configurePreset) parentsSorted() []string {
+// parents returns the parent preset names from `inherits` in
+// declared order. The JSON field can be a single string or an
+// array of strings; both shapes are normalized to a slice. Order
+// is preserved exactly because CMakePresets semantics says
+// "later inherited presets override earlier ones on key
+// collisions" — sorting alphabetically here would silently swap
+// which parent's value wins on a duplicate key.
+func (p *configurePreset) parents() []string {
 	if len(p.Inherits) == 0 {
 		return nil
 	}
 	// Try array first.
 	var arr []string
 	if err := json.Unmarshal(p.Inherits, &arr); err == nil {
-		sort.Strings(arr)
 		return arr
 	}
 	// Fall back to single string.

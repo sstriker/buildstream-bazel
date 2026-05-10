@@ -81,30 +81,42 @@ func TestParse_InheritsChainOverridesParent(t *testing.T) {
 }
 
 // TestParse_InheritsArray: the `inherits` field can be a string OR
-// an array of strings (later parents override earlier when keys
-// collide). Sorting the parent list keeps merge output deterministic
-// — two presets that differ only in inherits-list ordering must
-// produce byte-identical Variant output.
+// an array of strings, and later parents override earlier ones on
+// key collisions. CMakePresets defines this as the parent merge
+// rule, and the JSON array order is the operator's declared
+// intent — preserve it exactly. Two calls of `inherits: [p1, p2]`
+// vs `inherits: [p2, p1]` SHOULD produce different effective
+// values for keys both parents set.
 func TestParse_InheritsArray(t *testing.T) {
 	body := []byte(`{
 		"version": 3,
 		"configurePresets": [
 			{"name": "p1", "hidden": true, "cacheVariables": {"X": "p1"}},
 			{"name": "p2", "hidden": true, "cacheVariables": {"X": "p2", "Y": "p2-only"}},
-			{"name": "child", "inherits": ["p1", "p2"]}
+			{"name": "child_p1_first", "inherits": ["p1", "p2"]},
+			{"name": "child_p2_first", "inherits": ["p2", "p1"]}
 		]
 	}`)
 	got, err := Parse(body)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1; got %d", len(got))
+	if len(got) != 2 {
+		t.Fatalf("expected 2; got %d", len(got))
 	}
-	// Sorted-parents merge: p1 first, then p2 overrides X. Y from p2.
-	want := map[string]string{"X": "p2", "Y": "p2-only"}
-	if !reflect.DeepEqual(got[0].CacheVars, want) {
-		t.Errorf("got %+v, want %+v", got[0].CacheVars, want)
+	gotByName := map[string]map[string]string{}
+	for _, v := range got {
+		gotByName[v.Name] = v.CacheVars
+	}
+	// p1 first, then p2 overrides X; Y from p2.
+	wantP1First := map[string]string{"X": "p2", "Y": "p2-only"}
+	if !reflect.DeepEqual(gotByName["child_p1_first"], wantP1First) {
+		t.Errorf("child_p1_first: got %+v, want %+v", gotByName["child_p1_first"], wantP1First)
+	}
+	// p2 first, then p1 overrides X; Y still from p2 (p1 doesn't set it).
+	wantP2First := map[string]string{"X": "p1", "Y": "p2-only"}
+	if !reflect.DeepEqual(gotByName["child_p2_first"], wantP2First) {
+		t.Errorf("child_p2_first: got %+v, want %+v", gotByName["child_p2_first"], wantP2First)
 	}
 }
 

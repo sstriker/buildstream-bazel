@@ -95,6 +95,7 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 	if len(args.Platforms) == 0 {
 		return nil, fmt.Errorf("projecta: Platforms must be non-empty")
 	}
+	seenPlat := map[string]bool{}
 	for i, p := range args.Platforms {
 		if p.Name == "" {
 			return nil, fmt.Errorf("projecta: Platforms[%d] has empty Name", i)
@@ -107,10 +108,19 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 		if strings.ContainsRune(p.Name, '.') {
 			return nil, fmt.Errorf("projecta: Platforms[%d].Name %q contains '.', reserved as the <platform>.<variant> separator in probe artifact filenames", i, p.Name)
 		}
+		// Duplicate platform names → duplicate Bazel target names
+		// in the rendered BUILD.bazel (genrule(name="<plat>.<var>")
+		// repeats per platform per variant). Reject before Bazel
+		// has to.
+		if seenPlat[p.Name] {
+			return nil, fmt.Errorf("projecta: duplicate Platforms[].Name %q", p.Name)
+		}
+		seenPlat[p.Name] = true
 		if len(p.Constraints) == 0 {
 			return nil, fmt.Errorf("projecta: Platforms[%d] (%s) has no Constraints", i, p.Name)
 		}
 	}
+	seenVar := map[string]bool{}
 	for i, v := range args.Variants {
 		if v.Name == "" {
 			return nil, fmt.Errorf("projecta: Variants[%d] has empty Name", i)
@@ -128,6 +138,10 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 				return nil, fmt.Errorf("projecta: Variants[%d].Name %q contains %q; allowed: [a-zA-Z0-9_-]", i, v.Name, r)
 			}
 		}
+		if seenVar[v.Name] {
+			return nil, fmt.Errorf("projecta: duplicate Variants[].Name %q", v.Name)
+		}
+		seenVar[v.Name] = true
 	}
 
 	var b bytes.Buffer

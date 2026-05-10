@@ -43,6 +43,15 @@ func TestRenderToolchainProbe_RejectsMissingFields(t *testing.T) {
 		"variant name with slash": func(a *ToolchainProbeArgs) {
 			a.Variants[0].Name = "asan/extra"
 		},
+		"duplicate platform name": func(a *ToolchainProbeArgs) {
+			a.Platforms = append(a.Platforms, Platform{
+				Name:        a.Platforms[0].Name,
+				Constraints: a.Platforms[0].Constraints,
+			})
+		},
+		"duplicate variant name": func(a *ToolchainProbeArgs) {
+			a.Variants = append(a.Variants, toolchain.Variant{Name: a.Variants[0].Name})
+		},
 	}
 	for name, tw := range cases {
 		t.Run(name, func(t *testing.T) {

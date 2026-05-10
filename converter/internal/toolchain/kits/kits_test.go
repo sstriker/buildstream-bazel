@@ -2,6 +2,7 @@ package kits
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
@@ -127,5 +128,39 @@ func TestParse_EmptyNameRejected(t *testing.T) {
 	_, err := Parse(body)
 	if err == nil {
 		t.Fatal("expected error for empty name")
+	}
+}
+
+// TestParse_DuplicateSanitizedNamesRejected: two distinct kit
+// names that sanitize to the same Variant.Name (e.g. "GCC 13"
+// and "GCC-13" both → "gcc-13") would collide in
+// Observe.Variants and produce duplicate Bazel target names.
+// Parse must reject the second kit with an error naming both.
+func TestParse_DuplicateSanitizedNamesRejected(t *testing.T) {
+	body := []byte(`[
+		{"name": "GCC 13", "compilers": {"C": "/usr/bin/gcc-13"}},
+		{"name": "GCC-13", "compilers": {"C": "/usr/local/bin/gcc-13"}}
+	]`)
+	_, err := Parse(body)
+	if err == nil {
+		t.Fatal("expected duplicate-sanitized-name error")
+	}
+	for _, want := range []string{"GCC 13", "GCC-13", "gcc-13"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestParse_AllNonAlphanumericRejected: a kit name that consists
+// entirely of separators sanitizes to empty, which is
+// non-actionable — the resulting Variant has no usable name.
+// Reject with a clear error rather than producing a hidden
+// surprise.
+func TestParse_AllNonAlphanumericRejected(t *testing.T) {
+	body := []byte(`[{"name": "!!!"}]`)
+	_, err := Parse(body)
+	if err == nil {
+		t.Fatal("expected error for kit name that sanitizes to empty")
 	}
 }

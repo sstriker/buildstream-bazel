@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -224,7 +225,7 @@ func maybePrintSetupBanner(repoRoot string) error {
 		}
 		return err
 	}
-	if !strings.Contains(string(body), `register_toolchains("//toolchains:all")`) {
+	if !registerToolchainsCallPresent(body) {
 		fmt.Fprintln(os.Stderr, "")
 		fmt.Fprintln(os.Stderr, "  unify-toolchains: ONE-TIME SETUP")
 		fmt.Fprintln(os.Stderr, "  Your MODULE.bazel does not yet register the generated toolchains.")
@@ -237,4 +238,20 @@ func maybePrintSetupBanner(repoRoot string) error {
 		fmt.Fprintln(os.Stderr, "")
 	}
 	return nil
+}
+
+// registerToolchainsRE matches a `register_toolchains` call
+// referencing //toolchains:all tolerantly: optional whitespace
+// and newlines between tokens, either single or double quotes
+// around the label, and additional args before/after the
+// matched label (`register_toolchains(":foo", "//toolchains:all")`
+// matches too).
+var registerToolchainsRE = regexp.MustCompile(`(?s)register_toolchains\s*\([^)]*['"]//toolchains:all['"]`)
+
+// registerToolchainsCallPresent reports whether body contains a
+// register_toolchains call that references //toolchains:all. The
+// match is tolerant of whitespace, newlines, and quote-style so
+// the setup banner doesn't re-fire on a reformatted MODULE.bazel.
+func registerToolchainsCallPresent(body []byte) bool {
+	return registerToolchainsRE.Match(body)
 }
