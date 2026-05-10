@@ -29,6 +29,25 @@ var cmakeConfig struct {
 	// shape — keeps orchestrator-driven flows that don't stage
 	// the tool working unchanged.
 	configureFileBin string
+
+	// round2FallbackEnabled toggles the kind:cmake round-2
+	// fallback shape (Phase B; see
+	// docs/design/cmake-execute-process-round2-fallback.md).
+	// When true:
+	//   - Project A's converter genrule threads
+	//     `--unsupported-execute-process-fallback=true` into
+	//     convert-element's cmd, so classifier refusals
+	//     produce the placeholder shape instead of a Tier-1
+	//     exit.
+	//   - Project B emits a real install genrule (cmake
+	//     configure + ninja + install + tar under
+	//     build-tracer, plus inline trace-publish) — replaces
+	//     today's RenderB placeholder.
+	// Off (default) preserves the existing kind:cmake shape.
+	// Requires --build-tracer-bin + --trace-publish-bin so the
+	// install genrule can wrap the build and publish to the
+	// REAPI AC.
+	round2FallbackEnabled bool
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
@@ -230,6 +249,28 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, elemPkg); err != nil {
 		return err
 	}
+
+	// Round-2 fallback shape: write the install genrule as
+	// the package's BUILD.bazel directly — the placeholder is
+	// NOT emitted in this branch. Post-build the driver
+	// stages A's BUILD.bazel.out alongside this BUILD.bazel
+	// (same package), so labels declared in BUILD.bazel.out
+	// (cc_import / sh_binary stubs + the extract genrule
+	// referencing "install_tree.tar") resolve to this
+	// genrule's install_tree.tar output via same-package
+	// label resolution. See
+	// docs/design/cmake-execute-process-round2-fallback.md.
+	if cmakeConfig.round2FallbackEnabled {
+		// cmakeSrckeyPatterns() already includes "CMakeLists.txt"
+		// + "**/CMakeLists.txt" rules, so withCMakeListsRule
+		// would duplicate them in srckey-patterns.txt. Pass the
+		// pattern set straight through.
+		if err := renderSrckey(elem, elemPkg, cmakeSrckeyPatterns()); err != nil {
+			return err
+		}
+		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), cmakeRound2InstallBuild(elem))
+	}
+
 	// Placeholder BUILD; the driver script overwrites this after
 	// project-A's bazel build produces the converter's
 	// BUILD.bazel.out. Without the placeholder, Bazel would try to
@@ -400,9 +441,22 @@ filegroup(
 	prefixFlag := ""
 	importsFlag := ""
 	liftFlag := ""
+	fallbackFlag := ""
 	if cmakeConfig.configureFileBin != "" {
 		liftFlag = ` \
             --lift-configure-file=true`
+	}
+	// Phase B round-2 fallback: when enabled, convert-element
+	// is told to turn classifier refusals into the placeholder
+	// shape (cc_import / sh_binary stubs referencing
+	// install_tree.tar) instead of exiting Tier-1. The
+	// install_tree.tar reference resolves to Project B's
+	// install genrule (emitted by RenderB when the same flag
+	// is enabled) once the BUILD.bazel.out gets symlinked
+	// into B's package.
+	if cmakeConfig.round2FallbackEnabled {
+		fallbackFlag = ` \
+            --unsupported-execute-process-fallback=true`
 	}
 	if len(cmakeDepLabels) > 0 {
 		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
@@ -455,7 +509,7 @@ genrule(
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
-            --out-read-paths="$(location read_paths.json)"%[4]s%[5]s%[6]s
+            --out-read-paths="$(location read_paths.json)"%[4]s%[5]s%[6]s%[7]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element"],
@@ -476,7 +530,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag)
 	return b.String()
 }
 

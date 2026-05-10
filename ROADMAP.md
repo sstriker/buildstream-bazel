@@ -7,23 +7,33 @@ transition cleanly.
 
 ## Now
 
-- **`execute_process` recovery for kind:cmake.** Native lift
-  for the deterministic buckets (`cmake -E touch / copy /
+- **`execute_process` recovery for kind:cmake — Phase A (native
+  lift) + Phase B (round-2 fallback).** Phase A: native lift for
+  the deterministic buckets (`cmake -E touch / copy /
   copy_if_different`; file-producing tools with declared
   `OUTPUT_FILE`). Unliftable buckets (version stamps via
   `git rev-parse`, host probes like `uname -m / gcc --version`,
   multi-COMMAND pipelines, opaque shell scripts) emit a typed
   `unsupported-execute-process` Tier-1 failure with a per-call
-  triage report (file:line, bucket, reason, argv). File-producing
-  hoists carry a `cmake-codegen-execute-process-hoisted` audit
-  tag flagging the configure-time → build-time move. Phase B
-  (round-2 cmake fallback that routes unliftable elements
-  through a coarse `cmake configure + ninja + install` genrule,
-  mirroring kind:autotools/make round-2) is queued; until it
-  lands, projects with unliftable calls are excluded by the
-  orchestrator the same way other Tier-1 failures are. Recipe:
-  `docs/research/cmake_analysis.md` §9; failure schema:
-  `docs/failure-schema.md` `unsupported-execute-process`.
+  triage report. File-producing hoists carry a
+  `cmake-codegen-execute-process-hoisted` audit tag.
+
+  Phase B: opt-in `--cmake-round2-fallback` mode. When
+  enabled, A's converter genrule threads
+  `--unsupported-execute-process-fallback=true` so refusals
+  produce a placeholder shape (per-target `cc_import` /
+  `sh_binary` stubs from codemodel install destinations +
+  extract genrule referencing `install_tree.tar`); Project B
+  emits a real install genrule wrapping cmake configure +
+  ninja + install + tar under build-tracer + inline
+  trace-publish. Render gate
+  `scripts/meta-cmake-round2-fallback.sh`.
+
+  Recipe: `docs/design/cmake-execute-process-round2-fallback.md`.
+  Failure schema: `docs/failure-schema.md`
+  `unsupported-execute-process`. Trace-driven convergence
+  (using B's published trace to refine A's render beyond the
+  placeholder) is queued in `Later`.
 - **Multi-version cmake compatibility shakeout.** Per-object
   schema-major validation now lives in `fileapi/reply.go` and a
   non-blocking `e2e-latest-cmake` CI job runs the converter
