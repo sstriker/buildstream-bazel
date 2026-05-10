@@ -359,7 +359,7 @@ func main() {
 	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for the trace-driven round-2 path (the default when --convert-element-trace is set) AND for --cmake-round2-fallback — staged into Project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time. kind:cmake's round-2 fallback wires the same @trace_<elem>//:trace load-time lookup as the trace-driven kinds; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on), but the lookup is staged today so the follow-on is converter-side only.")
 	round1 := flag.Bool("trace-round1", false, "opt out of round-2 (the default trace-driven path). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / build / install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available. Previously named with an autotools- prefix; the trace-driven path now serves multiple kinds (autotools / make / manual / script / makemaker / modulebuild), so the prefix dropped the kind specificity.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
-	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin (trace-lookup is not yet wired for kind:cmake — the load-time @trace_<elem>//:trace lookup is queued behind the trace-driven convergence research follow-on). See docs/design/cmake-execute-process-round2-fallback.md.")
+	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
 	flag.Parse()
 
@@ -388,7 +388,7 @@ func main() {
 		log.Fatalf("--convert-element-trace requires --build-tracer-bin")
 	}
 	if *tracerBin != "" && *traceBin == "" && !*cmakeRound2Fallback {
-		log.Fatalf("--build-tracer-bin requires either --convert-element-trace (autotools round-{1,2}) or --cmake-round2-fallback (kind:cmake fallback)")
+		log.Fatalf("--build-tracer-bin requires either --convert-element-trace (the trace-driven round-{1,2} path for autotools / make / manual / script / makemaker / modulebuild kinds) or --cmake-round2-fallback (kind:cmake fallback)")
 	}
 	if *traceBin != "" {
 		abs, err := filepath.Abs(*traceBin)
@@ -1096,12 +1096,14 @@ func stageMesonConverter(outDir string) (string, error) {
 //     stages trace-publish + trace-lookup.
 //   - kind:cmake round-2 fallback active
 //     (cmakeConfig.round2FallbackEnabled set, with
-//     --build-tracer-bin and --trace-publish-bin on the CLI):
-//     stages build-tracer + trace-publish (no
-//     convert-element-trace — kind:cmake doesn't use it; no
-//     trace-lookup yet — the load-time @trace_<elem>//:trace
-//     lookup for cmake fallback is queued behind the trace-
-//     driven convergence research follow-on).
+//     --build-tracer-bin + --trace-publish-bin + --trace-
+//     lookup-bin on the CLI): stages build-tracer + trace-
+//     publish + trace-lookup (no convert-element-trace —
+//     kind:cmake has its own converter). The trace-lookup
+//     wiring is staged today; convert-element doesn't yet
+//     CONSUME the trace bytes for refusal-refinement (that
+//     follow-on is converter-side only — the staging here
+//     is part of what makes that future change small).
 //
 // Returns the additional exports_files entries the caller
 // needs to add to its tools/BUILD.bazel; nil + nil when no

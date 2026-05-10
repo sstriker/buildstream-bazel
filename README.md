@@ -92,13 +92,19 @@ make e2e-meta-hello
 make e2e-meta-autotools-native
 
 # 4. Convert your own BuildStream project.
+#    --trace-round1 picks the local-dev round-1 shape (project B
+#    hosts an install genrule with build-tracer + convert-element-
+#    trace inline). For the production round-2 shape, drop
+#    --trace-round1 and add --trace-publish-bin / --trace-lookup-bin
+#    (and ensure bb_clientd is up).
 build/bin/write-a \
     --bst path/to/yours.bst \
     --out /tmp/project-a \
     --out-b /tmp/project-b \
     --convert-element           build/bin/convert-element \
-    --convert-element-trace build/bin/convert-element-trace \
-    --build-tracer-bin          build/bin/build-tracer
+    --convert-element-trace     build/bin/convert-element-trace \
+    --build-tracer-bin          build/bin/build-tracer \
+    --trace-round1
 ```
 
 Then `cd /tmp/project-b && bazel build //...`. That's it.
