@@ -165,6 +165,128 @@ func TestInSourceTree(t *testing.T) {
 	}
 }
 
+// TestExtractExecuteProcess_FiltersCmakeInternal asserts that
+// only execute_process calls inside the source tree are
+// surfaced. cmake-internal calls (CMakeDetermineCompilerId
+// etc., living under /usr/share/cmake-*) are filtered out by
+// the inSourceTree gate — the converter isn't trying to "lift"
+// cmake's own toolchain probes.
+func TestExtractExecuteProcess_FiltersCmakeInternal(t *testing.T) {
+	trace := `{"args":["COMMAND","git","rev-parse","HEAD","OUTPUT_VARIABLE","GIT_SHA","OUTPUT_STRIP_TRAILING_WHITESPACE"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":12}
+{"args":["COMMAND","/usr/bin/cmake","-E","capabilities","RESULT_VARIABLE","r"],"cmd":"execute_process","file":"/usr/share/cmake-3.28/Modules/CMakeDetermineSystem.cmake","line":18}
+`
+	got := ExtractExecuteProcess([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 user execute_process (cmake-internal one filtered); got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.File != "/src/CMakeLists.txt" || c.Line != 12 {
+		t.Errorf("file/line: %+v want /src/CMakeLists.txt:12", c)
+	}
+	if len(c.Commands) != 1 ||
+		len(c.Commands[0]) != 3 ||
+		c.Commands[0][0] != "git" || c.Commands[0][2] != "HEAD" {
+		t.Errorf("commands: %+v want [[git rev-parse HEAD]]", c.Commands)
+	}
+	if c.OutputVariable != "GIT_SHA" {
+		t.Errorf("OutputVariable: %q want GIT_SHA", c.OutputVariable)
+	}
+}
+
+// TestExtractExecuteProcess_MultiCommandPipeline asserts that
+// each `COMMAND` clause becomes its own argv list in
+// Commands[]. Multiple-COMMAND form is cmake's pipeline syntax
+// (concurrent stages with stdout chaining) and the bucket
+// classifier needs the per-stage argv to decide whether the
+// pipeline is liftable.
+func TestExtractExecuteProcess_MultiCommandPipeline(t *testing.T) {
+	trace := `{"args":["COMMAND","grep","foo","input.txt","COMMAND","wc","-l","OUTPUT_VARIABLE","LINES","WORKING_DIRECTORY","/src/sub"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":1}
+`
+	got := ExtractExecuteProcess([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	c := got[0]
+	if len(c.Commands) != 2 {
+		t.Fatalf("commands: want 2 stages; got %+v", c.Commands)
+	}
+	if got, want := strings.Join(c.Commands[0], " "), "grep foo input.txt"; got != want {
+		t.Errorf("stage 0: %q want %q", got, want)
+	}
+	if got, want := strings.Join(c.Commands[1], " "), "wc -l"; got != want {
+		t.Errorf("stage 1: %q want %q", got, want)
+	}
+	if c.OutputVariable != "LINES" {
+		t.Errorf("OutputVariable: %q want LINES", c.OutputVariable)
+	}
+	if c.WorkingDirectory != "/src/sub" {
+		t.Errorf("WorkingDirectory: %q want /src/sub", c.WorkingDirectory)
+	}
+}
+
+// TestExtractExecuteProcess_OutputFileAndEnvironment exercises
+// OUTPUT_FILE (the file-producing bucket's signal) and
+// ENVIRONMENT (variadic — consumes KEY=value tokens until the
+// next keyword closes the list).
+func TestExtractExecuteProcess_OutputFileAndEnvironment(t *testing.T) {
+	trace := `{"args":["COMMAND","python3","gen.py","--in","spec.txt","OUTPUT_FILE","generated.h","ENVIRONMENT","PATH=/usr/bin","LANG=C","TIMEOUT","30"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":4}
+`
+	got := ExtractExecuteProcess([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	c := got[0]
+	if len(c.Commands) != 1 {
+		t.Fatalf("want 1 command stage, got %+v", c.Commands)
+	}
+	if got, want := strings.Join(c.Commands[0], " "), "python3 gen.py --in spec.txt"; got != want {
+		t.Errorf("argv: %q want %q", got, want)
+	}
+	if c.OutputFile != "generated.h" {
+		t.Errorf("OutputFile: %q want generated.h", c.OutputFile)
+	}
+	if len(c.Environment) != 2 ||
+		c.Environment[0] != "PATH=/usr/bin" || c.Environment[1] != "LANG=C" {
+		t.Errorf("Environment: %+v", c.Environment)
+	}
+	if c.Timeout != "30" {
+		t.Errorf("Timeout: %q want 30", c.Timeout)
+	}
+}
+
+// TestExtractExecuteProcess_NoCommandClauseDropped asserts that
+// a malformed event with no COMMAND clause is dropped silently
+// rather than surfacing as a zero-Commands call. cmake itself
+// rejects this shape; defensive parser behaviour keeps the
+// classifier from having to special-case empty-pipeline records.
+func TestExtractExecuteProcess_NoCommandClauseDropped(t *testing.T) {
+	trace := `{"args":["OUTPUT_VARIABLE","x"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":1}
+`
+	if got := ExtractExecuteProcess([]byte(trace), "/src"); len(got) != 0 {
+		t.Errorf("want 0 calls (no COMMAND clause); got %+v", got)
+	}
+}
+
+// TestExtractExecuteProcess_DecodeIntegration confirms that the
+// combined-pass Decode dispatches execute_process events into
+// d.ExecuteProcesses alongside the other extractor outputs —
+// the Lower converter's expected access path.
+func TestExtractExecuteProcess_DecodeIntegration(t *testing.T) {
+	trace := `{"args":["t","PUBLIC","inc"],"cmd":"target_include_directories","file":"/src/CMakeLists.txt","line":4}
+{"args":["COMMAND","git","describe","--tags","OUTPUT_VARIABLE","V"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}
+`
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.Includes) != 1 {
+		t.Errorf("Includes: want 1, got %d", len(d.Includes))
+	}
+	if len(d.ExecuteProcesses) != 1 {
+		t.Fatalf("ExecuteProcesses: want 1, got %d", len(d.ExecuteProcesses))
+	}
+	if d.ExecuteProcesses[0].OutputVariable != "V" {
+		t.Errorf("OutputVariable: %q want V", d.ExecuteProcesses[0].OutputVariable)
+	}
+}
+
 // TestExtract_RealCmakeTrace walks a hand-curated subset of
 // real cmake-3.28 trace lines (captured from the trace-test
 // fixture) to make sure the parser handles cmake's actual

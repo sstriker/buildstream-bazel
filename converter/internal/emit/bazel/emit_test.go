@@ -280,6 +280,123 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_ExecuteProcess_CMakeE_Golden exercises the
+// converter's execute_process recovery for the BucketCMakeE
+// path: a CMakeLists.txt calls
+// `execute_process(COMMAND ${CMAKE_COMMAND} -E touch ...)` at
+// configure time. The trace records the call; the bucket
+// classifier flags it as cmake-e/touch; the lifter emits a
+// genrule with cmd="touch $@", outs=[marker.stamp], and the
+// cmake-codegen-execute-process tag set. cc_library compile
+// of the unrelated source file is unaffected.
+func TestEmit_ExecuteProcess_CMakeE_Golden(t *testing.T) {
+	src, err := filepath.Abs("../../../testdata/sample-projects/execute-process-cmake-e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir, err := filepath.Abs("../../../testdata/fileapi/execute-process-cmake-e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: src,
+		BuildDir:       replyDir,
+		TraceRaw:       traceRaw,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = scrubSourceLine(got, src)
+
+	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "execute-process-cmake-e", "BUILD.bazel.golden")
+	if *update {
+		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestEmit_ExecuteProcess_FileProducing_Golden exercises the
+// converter's execute_process recovery for the
+// BucketFileProducing path: a CMakeLists.txt runs a Python
+// generator at configure time and redirects its stdout to a
+// build-tree header via OUTPUT_FILE. The lifter hoists the
+// call to a build-time genrule with scripts/gen.py + spec.txt
+// as Bazel-tracked srcs; the host-resolved python3 path is
+// stripped to basename for portability across executors. The
+// cmake-codegen-execute-process-hoisted tag flags the
+// configure-time → build-time move for audit queries.
+func TestEmit_ExecuteProcess_FileProducing_Golden(t *testing.T) {
+	src, err := filepath.Abs("../../../testdata/sample-projects/execute-process-file-producing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir, err := filepath.Abs("../../../testdata/fileapi/execute-process-file-producing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: src,
+		BuildDir:       replyDir,
+		TraceRaw:       traceRaw,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = scrubSourceLine(got, src)
+
+	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "execute-process-file-producing", "BUILD.bazel.golden")
+	if *update {
+		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 // TestEmit_MultiTarget_Golden exercises the cc_library / cc_binary
 // rule-kind dispatch + the static / shared distinction. Three
 // targets in one project: a STATIC library (linkstatic = True), a

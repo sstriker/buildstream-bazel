@@ -26,6 +26,7 @@ const (
 	UnsupportedTargetType          Code = "unsupported-target-type"
 	UnsupportedCustomCommand       Code = "unsupported-custom-command"
 	UnsupportedCustomCommandScript Code = "unsupported-custom-command-script"
+	UnsupportedExecuteProcess      Code = "unsupported-execute-process"
 	UnresolvedInclude              Code = "unresolved-include"
 	UnresolvedLinkDep              Code = "unresolved-link-dep"
 )

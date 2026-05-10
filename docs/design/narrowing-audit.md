@@ -291,6 +291,68 @@ templates are lifted. Don't add `exclude **/*.h.in` for
 elements with non-lifted templates; the audit will continue
 to flag those as undercoverage drift, correctly.
 
+## `execute_process` and subprocess reads
+
+`execute_process` is the dual of `configure_file` for narrowing
+purposes:
+
+- `configure_file(<.h.in> <.h>)` — cmake itself opens `.h.in`,
+  parses it, substitutes variables, writes `.h`. The cmake oracle
+  records `.h.in` in `RERUN_CMAKE`. The configure_file lift makes
+  `.h.in` Bazel-srcs covered, so the audit's now-true-positive
+  flag becomes a false positive — operators silence with an
+  explicit `exclude **/*.h.in` (see previous section).
+- `execute_process(COMMAND tool a b OUTPUT_FILE <out>)` — cmake
+  forks/execs `tool` with `[a, b]` in argv. The subprocess opens
+  `a` and `b` (or any other files); cmake itself does not. The
+  cmake oracle (`RERUN_CMAKE`'s implicit-input list) tracks
+  cmake-process file opens, not subprocess opens, so it does
+  **not** flag the subprocess inputs.
+
+Consequence: the converter's `execute_process` lift
+(`converter/internal/lower/execute_process.go`,
+`cmake-codegen-execute-process` tag set) needs no analog of
+`exclude **/*.h.in`. Subprocess inputs are absent from the
+oracle, so the audit is silent for them by default. The lift
+adds them as Bazel `srcs` of the recovered genrule, which is
+the correct place for runtime invalidation; convert-element's
+own srckey doesn't need to include them because their content
+does not affect the BUILD.bazel that convert-element emits.
+
+Empirical check (`execute-process-cmake-e/` and
+`execute-process-file-producing/` fixtures):
+
+```
+$ /tmp/convert-element --reply-dir=... --source-root=... \
+    --out-build=BUILD.bazel \
+    --out-cmake-configure-reads=cmake-reads.json
+$ cat cmake-reads.json
+["CMakeLists.txt"]
+$ echo "include CMakeLists.txt" > srckey-patterns.txt
+$ audit-narrowing --patterns=srckey-patterns.txt \
+    --cmake-reads=cmake-reads.json --out=undercomplete.txt
+$ wc -c < undercomplete.txt
+0
+```
+
+Patterns that *do* require srckey coverage even with the
+execute_process lift:
+
+- cmake-side reads upstream of the call:
+  `file(READ "manifest.txt" CONTENT)` followed by
+  `execute_process(... ${CONTENT} ...)`. cmake reads
+  `manifest.txt` → `RERUN_CMAKE` flags it → BUILD.bazel cmd
+  embeds the resolved value → manifest.txt edits change
+  BUILD.bazel → must be in srckey content. The audit catches
+  this; the lift doesn't change the requirement.
+- An in-tree generator that subsequently `include()`s a `.cmake`
+  file. Same shape: the included `.cmake` is cmake-tracked, so
+  RERUN_CMAKE flags it, and the audit demands srckey coverage.
+
+In short: the lift only makes subprocess-read files Bazel-srcs
+covered; the cmake-tracked reads continue to be the
+audit's responsibility, exactly as before.
+
 ## Files of interest
 
 - `cmd/audit-narrowing/main.go` — the audit CLI.

@@ -7,6 +7,23 @@ transition cleanly.
 
 ## Now
 
+- **`execute_process` recovery for kind:cmake.** Native lift
+  for the deterministic buckets (`cmake -E touch / copy /
+  copy_if_different`; file-producing tools with declared
+  `OUTPUT_FILE`). Unliftable buckets (version stamps via
+  `git rev-parse`, host probes like `uname -m / gcc --version`,
+  multi-COMMAND pipelines, opaque shell scripts) emit a typed
+  `unsupported-execute-process` Tier-1 failure with a per-call
+  triage report (file:line, bucket, reason, argv). File-producing
+  hoists carry a `cmake-codegen-execute-process-hoisted` audit
+  tag flagging the configure-time → build-time move. Phase B
+  (round-2 cmake fallback that routes unliftable elements
+  through a coarse `cmake configure + ninja + install` genrule,
+  mirroring kind:autotools/make round-2) is queued; until it
+  lands, projects with unliftable calls are excluded by the
+  orchestrator the same way other Tier-1 failures are. Recipe:
+  `docs/research/cmake_analysis.md` §9; failure schema:
+  `docs/failure-schema.md` `unsupported-execute-process`.
 - **Multi-version cmake compatibility shakeout.** Per-object
   schema-major validation now lives in `fileapi/reply.go` and a
   non-blocking `e2e-latest-cmake` CI job runs the converter
@@ -74,6 +91,24 @@ transition cleanly.
   through `lower/codegen.go` and `lower/configure_file.go`'s
   callers, classify each by what cmake feature they recover,
   and lift the cleanly-tractable cases.
+- **kind:cmake round-2 fallback for unliftable
+  `execute_process`.** Phase B follow-on to the Now-bullet
+  native lift. When `convert-element` exits with
+  `unsupported-execute-process`, the orchestrator should route
+  the element through a coarse "cmake configure + ninja +
+  install" genrule, exactly the way kind:autotools / make /
+  perl / manual / script round-2 handle elements that the
+  native renderer can't fully translate. Reuses
+  `cmd/build-tracer` (ptrace-wraps the build to capture every
+  subprocess including the configure-time `execute_process`
+  invocations), the `@trace_<elem>//:trace` AC-lookup repo
+  rule, and the inline `trace-publish` write-back. Opt-in via
+  the existing `traceDrivenSrckeyPatterns` field on
+  kind:cmake's `pipelineHandler` (see kind:make's one-line
+  precedent in `handler_make.go:makeSrckeyPatterns`). Render
+  gate: `meta-cmake-round2.sh`. The kind-agnostic live-AC gate
+  (`tools/e2e-meta-autotools-round2-live.sh`) covers
+  kind:cmake the moment it opts in.
 - **kind:meson** native render. Meson exposes
   `meson introspect --targets`, which is closer to cmake's File API
   than autotools' "you have to actually run it" introspection. The

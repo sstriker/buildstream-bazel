@@ -138,6 +138,49 @@ language (Python/sh) so the recovery emits an honest `genrule`.
 **Emission point:** `lower/genrule.go` — recognizer for `cmake -P`
 in the parsed ninja command.
 
+### `unsupported-execute-process`
+
+A `CMakeLists.txt` calls `execute_process` at configure time and the
+converter can't lift the call into a hermetic Bazel rule. cmake's
+`execute_process` runs an arbitrary subprocess at configure time; the
+liftability classifier (`converter/internal/lower/execute_process_classify.go`)
+sorts each call into one of five buckets:
+
+- `cmake-e` — invokes `cmake -E` with an op in the v1 supported set
+  (copy / copy_if_different / touch). Translated to a build-time
+  `genrule` with declared inputs and outputs; does not trigger this
+  code.
+- `file-producing` — declares an `OUTPUT_FILE`. Hoisted to a
+  build-time `genrule` tagged `cmake-codegen-execute-process-hoisted`
+  (the hoist moves work from configure-time to build-time, an
+  auditable behaviour change). Does not trigger this code.
+- `stamp` — looks like a version-stamp probe (git/hg/svn writing
+  `OUTPUT_VARIABLE` without `OUTPUT_FILE`). Needs a
+  `repository_ctx.execute()` analog; that infrastructure isn't built
+  yet, so v1 refuses with this code.
+- `probe` — looks like a host/toolchain probe (uname, gcc,
+  pkg-config, python, etc. writing `OUTPUT_VARIABLE`). Should fold
+  into `select()` over `@platforms` config_settings; v1 refuses.
+- `unknown` — multi-COMMAND pipeline, opaque shell script, or any
+  other unrecognized shape. v1 refuses.
+
+The failure aggregates every unliftable call in the project into a
+single Tier-1 emission so operators get one triage report listing
+each `file:line`, bucket, reason, and argv.
+
+**Operator action:** read the per-call list in `message`. For each
+unliftable call, either rework the `CMakeLists.txt` (e.g. replace the
+configure-time `execute_process` with `add_custom_command` so the
+work runs at build time with declared inputs/outputs) or wait for the
+Phase B round-2 cmake fallback (which routes the whole element
+through a coarse `cmake configure + ninja + install` genrule, the
+same shape kind:autotools round-2 uses for unconvertable autotools
+projects).
+
+**Emission point:** `lower.recoverExecuteProcess` —
+`converter/internal/lower/execute_process.go`, called from
+`lower.ToIR` after the trace decode.
+
 ### `unresolved-include` _(M2)_
 
 A compileGroup include path resolves to neither the source root, the

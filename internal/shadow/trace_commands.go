@@ -30,19 +30,21 @@ import (
 // called three Extract* functions back-to-back on the same trace)
 // uses this to pay the bytes.Split + json.Unmarshal cost once.
 type Decoded struct {
-	Reads       []string
-	Includes    []TargetIncludeCall
-	Links       []TargetLinkCall
-	ConfigFiles []ConfigureFileCall
+	Reads            []string
+	Includes         []TargetIncludeCall
+	Links            []TargetLinkCall
+	ConfigFiles      []ConfigureFileCall
+	ExecuteProcesses []ExecuteProcessCall
 }
 
-// Decode walks the trace once and dispatches every event to the four
+// Decode walks the trace once and dispatches every event to all
 // extractors at the same time. Equivalent in result to calling
 // ExtractReadPaths + ExtractTargetIncludes + ExtractTargetLinks +
-// ExtractConfigureFiles on the same trace, but pays the parse cost
-// once rather than four times. Reads is the deduped slash-style
-// source-tree path list; the three call lists preserve insertion
-// order from the trace.
+// ExtractConfigureFiles + ExtractExecuteProcess on the same trace,
+// but pays the parse cost once rather than per extractor. Reads
+// is the deduped slash-style source-tree path list; the four
+// call lists (Includes / Links / ConfigFiles / ExecuteProcesses)
+// preserve insertion order from the trace.
 func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
@@ -57,6 +59,9 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		}
 		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
 			d.ConfigFiles = append(d.ConfigFiles, call)
+		}
+		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
+			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
 		}
 	}
 	d.Reads = make([]string, 0, len(reads))
@@ -366,6 +371,297 @@ func inSourceTree(file, sourceRoot string) bool {
 	}
 	tail := file[len(sourceRoot):]
 	return tail == "" || tail[0] == '/' || tail[0] == '\\'
+}
+
+// ExecuteProcessCall records one user-written
+// execute_process(...) trace event. cmake's
+// `execute_process` runs an arbitrary subprocess at configure
+// time — a hermeticity violation by Bazel's analysis-then-action
+// model. Surfacing each call (with its argv pipeline, redirect
+// targets and writeback variables) lets the converter classify
+// it into liftable buckets (cmake -E builtins, file-producing
+// commands with declared OUTPUT_FILE) vs unliftable buckets
+// (probes, version stamps, opaque pipelines) and emit a typed
+// Tier-1 failure for the latter.
+//
+// v1 captures only the fields the classifier and lifter
+// consume:
+//   - Commands: one argv list per COMMAND clause; multi-COMMAND
+//     forms a pipeline (cmake runs the stages concurrently with
+//     stdout chained).
+//   - WorkingDirectory / Environment / Timeout: needed when
+//     hoisting a command to a build-time genrule.
+//   - OutputVariable / ResultVariable / ResultsVariable /
+//     ErrorVariable: writeback variables; their presence signals
+//     "this call shapes the cmake variable namespace" (the
+//     hard-to-lift case for non-stamp uses).
+//   - InputFile / OutputFile / ErrorFile: stdio redirect
+//     targets; OutputFile is the file-producing bucket's signal.
+//   - RawArgs: original token list, for failure-report context
+//     when classification refuses.
+//
+// Out-of-v1 fields (OUTPUT_QUIET, ERROR_QUIET, ENCODING,
+// COMMAND_ECHO, COMMAND_ERROR_IS_FATAL, ENVIRONMENT_MODIFICATION,
+// *STRIP_TRAILING_WHITESPACE, etc.) are intentionally not
+// modeled — none of them affect bucket selection or the lift's
+// shape. Add them when a classifier rule needs them.
+type ExecuteProcessCall struct {
+	File             string
+	Line             int
+	Commands         [][]string
+	WorkingDirectory string
+	Timeout          string
+	OutputVariable   string
+	ResultVariable   string
+	ResultsVariable  string
+	ErrorVariable    string
+	InputFile        string
+	OutputFile       string
+	ErrorFile        string
+	Environment      []string
+	RawArgs          []string
+}
+
+// ExtractExecuteProcess returns one entry per user-written
+// execute_process trace event whose `file` is inside
+// sourceRoot. cmake-internal calls (try_compile scratch in the
+// build dir, /usr/share/cmake-* probes during project()
+// language enabling, etc.) are filtered out — they aren't part
+// of the user's project intent and the converter isn't trying
+// to "lift" them.
+func ExtractExecuteProcess(traceRaw []byte, sourceRoot string) []ExecuteProcessCall {
+	var out []ExecuteProcessCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyExecuteProcess parses one trace event into an
+// ExecuteProcessCall, or returns (_, false) when the event
+// isn't an in-source-tree execute_process. Shared between the
+// legacy single-pass API and Decode's combined pass.
+//
+// cmake's execute_process arg syntax interleaves keywords with
+// values; COMMAND clauses form pipelines and consume tokens
+// until the next recognized keyword. ENVIRONMENT is variadic:
+// it consumes "KEY=value" tokens until another keyword
+// appears. Single-value keywords (WORKING_DIRECTORY, TIMEOUT,
+// *_VARIABLE, *_FILE) consume exactly one following token.
+// Flag-only keywords (OUTPUT_QUIET, ERROR_QUIET,
+// *_STRIP_TRAILING_WHITESPACE) take no value.
+//
+// Unknown tokens at the top level (i.e., not part of an open
+// COMMAND or ENVIRONMENT list) are dropped silently — cmake
+// adds new options across versions and a stricter rejection
+// would force the classifier to refuse otherwise-liftable calls
+// just because a v1 hasn't taught the parser about a benign
+// recent option.
+func classifyExecuteProcess(ev TraceEvent, sourceRoot string) (ExecuteProcessCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "execute_process") {
+		return ExecuteProcessCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return ExecuteProcessCall{}, false
+	}
+	if len(ev.Args) == 0 {
+		return ExecuteProcessCall{}, false
+	}
+
+	call := ExecuteProcessCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		RawArgs: append([]string(nil), ev.Args...),
+	}
+
+	// Iteration state: which "open list" the current token
+	// extends. cmake's syntax has two variadic clauses
+	// (COMMAND and ENVIRONMENT) — bare values append to whichever
+	// is currently open; encountering a known keyword closes
+	// the open list.
+	const (
+		listNone = iota
+		listCommand
+		listEnvironment
+	)
+	open := listNone
+	var currentCmd []string
+
+	flushCommand := func() {
+		if len(currentCmd) > 0 {
+			call.Commands = append(call.Commands, currentCmd)
+		}
+		currentCmd = nil
+	}
+
+	for i := 0; i < len(ev.Args); i++ {
+		a := ev.Args[i]
+		switch strings.ToUpper(a) {
+		case "COMMAND":
+			flushCommand()
+			open = listCommand
+			continue
+		case "WORKING_DIRECTORY":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.WorkingDirectory = ev.Args[i]
+			}
+			continue
+		case "TIMEOUT":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.Timeout = ev.Args[i]
+			}
+			continue
+		case "RESULT_VARIABLE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.ResultVariable = ev.Args[i]
+			}
+			continue
+		case "RESULTS_VARIABLE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.ResultsVariable = ev.Args[i]
+			}
+			continue
+		case "OUTPUT_VARIABLE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.OutputVariable = ev.Args[i]
+			}
+			continue
+		case "ERROR_VARIABLE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.ErrorVariable = ev.Args[i]
+			}
+			continue
+		case "INPUT_FILE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.InputFile = ev.Args[i]
+			}
+			continue
+		case "OUTPUT_FILE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.OutputFile = ev.Args[i]
+			}
+			continue
+		case "ERROR_FILE":
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.ErrorFile = ev.Args[i]
+			}
+			continue
+		case "ENVIRONMENT":
+			flushCommand()
+			open = listEnvironment
+			continue
+		case "OUTPUT_QUIET",
+			"ERROR_QUIET",
+			"OUTPUT_STRIP_TRAILING_WHITESPACE",
+			"ERROR_STRIP_TRAILING_WHITESPACE":
+			flushCommand()
+			open = listNone
+			continue
+		case "COMMAND_ERROR_IS_FATAL",
+			"COMMAND_ECHO",
+			"ENCODING":
+			// Single-value diagnostic options we don't model
+			// in v1 but must consume the value so subsequent
+			// keyword scanning doesn't trip on it.
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+			}
+			continue
+		case "ENVIRONMENT_MODIFICATION":
+			// Variadic ops list. Out-of-v1; close any open
+			// list and skip until the next recognized keyword.
+			flushCommand()
+			open = listNone
+			for i+1 < len(ev.Args) && !isExecuteProcessKeyword(ev.Args[i+1]) {
+				i++
+			}
+			continue
+		}
+
+		// Bare value: append to whichever list is open.
+		switch open {
+		case listCommand:
+			currentCmd = append(currentCmd, a)
+		case listEnvironment:
+			call.Environment = append(call.Environment, a)
+		default:
+			// Top-level bare value with no open list — cmake
+			// itself would error on this; drop silently here so
+			// the converter doesn't mis-read its meaning.
+		}
+	}
+	flushCommand()
+
+	if len(call.Commands) == 0 {
+		// No COMMAND clause — defensively skip. cmake itself
+		// rejects this shape, so we shouldn't see it in
+		// practice, but the parser stays honest about what it
+		// captured.
+		return ExecuteProcessCall{}, false
+	}
+	return call, true
+}
+
+// isExecuteProcessKeyword reports whether s is one of the
+// documented execute_process keyword tokens. Used to bound the
+// variadic ENVIRONMENT_MODIFICATION list (and is conservative
+// about case to match cmake's case-insensitive keyword
+// matching).
+func isExecuteProcessKeyword(s string) bool {
+	switch strings.ToUpper(s) {
+	case "COMMAND",
+		"WORKING_DIRECTORY",
+		"TIMEOUT",
+		"RESULT_VARIABLE",
+		"RESULTS_VARIABLE",
+		"OUTPUT_VARIABLE",
+		"ERROR_VARIABLE",
+		"INPUT_FILE",
+		"OUTPUT_FILE",
+		"ERROR_FILE",
+		"OUTPUT_QUIET",
+		"ERROR_QUIET",
+		"OUTPUT_STRIP_TRAILING_WHITESPACE",
+		"ERROR_STRIP_TRAILING_WHITESPACE",
+		"COMMAND_ERROR_IS_FATAL",
+		"COMMAND_ECHO",
+		"ENCODING",
+		"ENVIRONMENT",
+		"ENVIRONMENT_MODIFICATION":
+		return true
+	}
+	return false
 }
 
 // unwrapBuildInterface resolves the build-time view of a
