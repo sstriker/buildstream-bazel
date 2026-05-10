@@ -99,8 +99,34 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 		if p.Name == "" {
 			return nil, fmt.Errorf("projecta: Platforms[%d] has empty Name", i)
 		}
+		// '.' splits filenames in unify-toolchains
+		// (<platform>.<variant>.probe.json — strings.IndexByte('.')
+		// recovers the platform); a dotted platform name would land
+		// the cell under the wrong group. Reject up front rather
+		// than producing ambiguous artifacts.
+		if strings.ContainsRune(p.Name, '.') {
+			return nil, fmt.Errorf("projecta: Platforms[%d].Name %q contains '.', reserved as the <platform>.<variant> separator in probe artifact filenames", i, p.Name)
+		}
 		if len(p.Constraints) == 0 {
 			return nil, fmt.Errorf("projecta: Platforms[%d] (%s) has no Constraints", i, p.Name)
+		}
+	}
+	for i, v := range args.Variants {
+		if v.Name == "" {
+			return nil, fmt.Errorf("projecta: Variants[%d] has empty Name", i)
+		}
+		// Variant names become Bazel target name suffixes ("<plat>.<var>")
+		// and probe artifact filenames; reject characters Bazel doesn't
+		// accept in target names. The allowed set is the conservative
+		// subset used elsewhere in the project (alphanumerics + '_' + '-').
+		for _, r := range v.Name {
+			ok := (r >= 'a' && r <= 'z') ||
+				(r >= 'A' && r <= 'Z') ||
+				(r >= '0' && r <= '9') ||
+				r == '_' || r == '-'
+			if !ok {
+				return nil, fmt.Errorf("projecta: Variants[%d].Name %q contains %q; allowed: [a-zA-Z0-9_-]", i, v.Name, r)
+			}
 		}
 	}
 
@@ -138,7 +164,19 @@ func RenderToolchainProbe(args ToolchainProbeArgs) ([]byte, error) {
 func renderCellGenrule(b *bytes.Buffer, args ToolchainProbeArgs, p Platform, v toolchain.Variant, cell, out string) {
 	fmt.Fprintf(b, "genrule(\n")
 	fmt.Fprintf(b, "    name = %q,\n", cell)
-	fmt.Fprintf(b, "    srcs = [%q],\n", args.CmakeSourceLabel)
+	// CmakeListsLabel must be a direct prerequisite for the
+	// $(execpath ...) reference in cmd to resolve at analysis
+	// time. Bazel deduplicates inputs in the action's merkle
+	// tree, so listing it alongside the source filegroup that
+	// already includes it is safe.
+	if args.CmakeSourceLabel == args.CmakeListsLabel {
+		fmt.Fprintf(b, "    srcs = [%q],\n", args.CmakeSourceLabel)
+	} else {
+		fmt.Fprintf(b, "    srcs = [\n")
+		fmt.Fprintf(b, "        %q,\n", args.CmakeSourceLabel)
+		fmt.Fprintf(b, "        %q,\n", args.CmakeListsLabel)
+		fmt.Fprintf(b, "    ],\n")
+	}
 	fmt.Fprintf(b, "    outs = [%q],\n", out)
 	fmt.Fprintf(b, "    tools = [%q],\n", args.ProbeCellLabel)
 

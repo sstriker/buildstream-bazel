@@ -187,6 +187,48 @@ func TestEmitUnified_TwoPlatformsFullShape(t *testing.T) {
 	}
 }
 
+// TestEmitUnified_CXXFlagsRouteToCXXOnlyActions: the unified
+// cc_toolchain_config rule's _impl must call
+// _default_compile_flags_feature with cxx_flags so language-
+// specific flags (CMAKE_CXX_FLAGS) reach C++ compile actions
+// instead of being silently dropped.
+func TestEmitUnified_CXXFlagsRouteToCXXOnlyActions(t *testing.T) {
+	plat := PlatformToolchain{
+		Name:        "linux_x86_64",
+		Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"},
+		Resolved: &toolchain.ResolvedToolchain{
+			Base: &toolchain.Model{
+				HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+				TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+				Languages: map[string]toolchain.Language{
+					"C":   {CompilerID: "Clang", CompilerPath: "/usr/bin/clang", BaseFlags: []string{"-Wall"}},
+					"CXX": {CompilerID: "Clang", CompilerPath: "/usr/bin/clang++", BaseFlags: []string{"-std=c++20"}},
+				},
+			},
+		},
+	}
+	b, err := EmitUnified([]PlatformToolchain{plat}, UnifiedConfig{})
+	if err != nil {
+		t.Fatalf("EmitUnified: %v", err)
+	}
+	cfg := string(b.Files["toolchains/cc_toolchain_config.bzl"])
+	for _, want := range []string{
+		"_CXX_COMPILE_ACTIONS = [",
+		`"c++-compile",`,
+		"_default_compile_flags_feature(ctx.attr.compile_flags, ctx.attr.cxx_flags, ctx.attr.link_flags)",
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)
+		}
+	}
+
+	// And the rule instance carries the CXX-only flag bytes.
+	tcB := string(b.Files["toolchains/BUILD.bazel"])
+	if !strings.Contains(tcB, "cxx_flags = [\n        \"-std=c++20\",") {
+		t.Errorf("toolchains/BUILD.bazel missing cxx_flags = [\"-std=c++20\"]:\n%s", tcB)
+	}
+}
+
 // TestEmitUnified_Deterministic re-emits the same input twice and
 // diffs every output file. Without this, regenerating the unified
 // layout would churn cache keys.

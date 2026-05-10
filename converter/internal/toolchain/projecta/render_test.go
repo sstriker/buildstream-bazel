@@ -34,11 +34,21 @@ func TestRenderToolchainProbe_RejectsMissingFields(t *testing.T) {
 		"platform with no constraints": func(a *ToolchainProbeArgs) {
 			a.Platforms[0].Constraints = nil
 		},
+		"platform name with dot": func(a *ToolchainProbeArgs) {
+			a.Platforms[0].Name = "linux.x86_64"
+		},
+		"variant with empty name": func(a *ToolchainProbeArgs) {
+			a.Variants[0].Name = ""
+		},
+		"variant name with slash": func(a *ToolchainProbeArgs) {
+			a.Variants[0].Name = "asan/extra"
+		},
 	}
 	for name, tw := range cases {
 		t.Run(name, func(t *testing.T) {
 			args := mustGood
 			args.Platforms = append([]Platform(nil), mustGood.Platforms...)
+			args.Variants = append([]toolchain.Variant(nil), mustGood.Variants...)
 			tw(&args)
 			if _, err := RenderToolchainProbe(args); err == nil {
 				t.Errorf("expected error for %s", name)

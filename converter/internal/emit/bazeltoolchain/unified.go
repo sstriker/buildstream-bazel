@@ -248,6 +248,17 @@ func emitUnifiedConfigBzl(plats []PlatformToolchain, cfg UnifiedConfig) ([]byte,
     "lto-backend",
 ]
 
+# C++-only subset, used to route ctx.attr.cxx_flags to C++ actions
+# specifically. cmake puts -std=c++20 / -stdlib=... into
+# CMAKE_CXX_FLAGS rather than CMAKE_C_FLAGS, so a single shared
+# default_compile_flags slot would drop them silently.
+_CXX_COMPILE_ACTIONS = [
+    "c++-compile",
+    "c++-header-parsing",
+    "c++-module-compile",
+    "c++-module-codegen",
+]
+
 _ALL_LINK_ACTIONS = [
     "c++-link-executable",
     "c++-link-dynamic-library",
@@ -268,9 +279,28 @@ def _feature_with_flags(name, enabled, compile_flags, link_flags):
         ))
     return feature(name = name, enabled = enabled, flag_sets = flag_sets)
 
+def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
+    flag_sets = []
+    if compile_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = compile_flags)],
+        ))
+    if cxx_flags:
+        flag_sets.append(flag_set(
+            actions = _CXX_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = cxx_flags)],
+        ))
+    if link_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_LINK_ACTIONS,
+            flag_groups = [flag_group(flags = link_flags)],
+        ))
+    return feature(name = "default_compile_flags", enabled = True, flag_sets = flag_sets)
+
 def _impl(ctx):
     features = [
-        _feature_with_flags("default_compile_flags", True, ctx.attr.compile_flags, ctx.attr.link_flags),
+        _default_compile_flags_feature(ctx.attr.compile_flags, ctx.attr.cxx_flags, ctx.attr.link_flags),
 `)
 	for _, f := range featureSlots {
 		fmt.Fprintf(&b, "        _feature_with_flags(%q, False, ctx.attr.%s_compile_flags, ctx.attr.%s_link_flags),\n",

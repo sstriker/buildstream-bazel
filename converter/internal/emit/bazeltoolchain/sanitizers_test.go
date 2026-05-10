@@ -99,6 +99,49 @@ func TestEmitResolved_SanitizerVariantsRoutedToFeatures(t *testing.T) {
 	}
 }
 
+// TestEmit_CXXFlagsRouteToCXXOnlyActions: language-specific flags
+// (CMAKE_CXX_FLAGS) only apply to C++ compile actions, not C
+// compile or assemble. Without a C++-only flag_set, -std=c++20
+// / -stdlib=libc++ would be silently dropped from the toolchain.
+func TestEmit_CXXFlagsRouteToCXXOnlyActions(t *testing.T) {
+	rt := &toolchain.ResolvedToolchain{
+		Base: &toolchain.Model{
+			HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+			TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+			Languages: map[string]toolchain.Language{
+				"C": {
+					CompilerID:   "Clang",
+					CompilerPath: "/usr/bin/clang",
+					BaseFlags:    []string{"-Wall"},
+				},
+				"CXX": {
+					CompilerID:   "Clang",
+					CompilerPath: "/usr/bin/clang++",
+					BaseFlags:    []string{"-std=c++20", "-stdlib=libc++"},
+				},
+			},
+		},
+	}
+	b, err := EmitResolved(rt, Config{})
+	if err != nil {
+		t.Fatalf("EmitResolved: %v", err)
+	}
+	cfg := string(b.Files["cc_toolchain_config.bzl"])
+
+	// The .bzl declares a C++-only action set and routes _CXX_FLAGS
+	// at it via _default_compile_flags_feature.
+	if !strings.Contains(cfg, "_CXX_COMPILE_ACTIONS = [") {
+		t.Errorf("missing _CXX_COMPILE_ACTIONS constant in:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "_default_compile_flags_feature(_COMPILE_FLAGS, _CXX_FLAGS, _LINK_FLAGS)") {
+		t.Errorf("default_compile_flags doesn't route _CXX_FLAGS:\n%s", cfg)
+	}
+	// _CXX_FLAGS itself carries the cmake-derived bytes.
+	if !strings.Contains(cfg, "_CXX_FLAGS = [\n    \"-std=c++20\",\n    \"-stdlib=libc++\",") {
+		t.Errorf("_CXX_FLAGS missing the expected bytes:\n%s", cfg)
+	}
+}
+
 // TestEmitResolved_FeatureSlotsAlwaysPresent locks in the
 // invariant that even with an empty ResolvedToolchain (no
 // variants), all per-feature flag constants are emitted as empty

@@ -283,6 +283,11 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
 	// Action sets — copied from cc_toolchain_config_lib's standard
 	// constants. Inlined here so the .bzl has no transitive load
 	// dependency beyond cc_toolchain_config_lib itself.
+	// _CXX_COMPILE_ACTIONS is the C++-only subset; we use it to
+	// route _CXX_FLAGS at C++ compile actions specifically (cmake
+	// puts -std=c++20 / -stdlib=... into CMAKE_CXX_FLAGS, not
+	// CMAKE_C_FLAGS — the unified default_compile_flags feature
+	// alone would drop them silently).
 	buf.WriteString(`_ALL_COMPILE_ACTIONS = [
     "assemble",
     "preprocess-assemble",
@@ -292,6 +297,13 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
     "c++-module-compile",
     "c++-module-codegen",
     "lto-backend",
+]
+
+_CXX_COMPILE_ACTIONS = [
+    "c++-compile",
+    "c++-header-parsing",
+    "c++-module-compile",
+    "c++-module-codegen",
 ]
 
 _ALL_LINK_ACTIONS = [
@@ -314,9 +326,28 @@ def _feature_with_flags(name, enabled, compile_flags, link_flags):
         ))
     return feature(name = name, enabled = enabled, flag_sets = flag_sets)
 
+def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
+    flag_sets = []
+    if compile_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = compile_flags)],
+        ))
+    if cxx_flags:
+        flag_sets.append(flag_set(
+            actions = _CXX_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = cxx_flags)],
+        ))
+    if link_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_LINK_ACTIONS,
+            flag_groups = [flag_group(flags = link_flags)],
+        ))
+    return feature(name = "default_compile_flags", enabled = True, flag_sets = flag_sets)
+
 def _impl(ctx):
     features = [
-        _feature_with_flags("default_compile_flags", True, _COMPILE_FLAGS, _LINK_FLAGS),
+        _default_compile_flags_feature(_COMPILE_FLAGS, _CXX_FLAGS, _LINK_FLAGS),
 `)
 	for _, f := range featureSlots {
 		fmt.Fprintf(&buf, "        _feature_with_flags(%q, False, _%s_COMPILE_FLAGS, _%s_LINK_FLAGS),\n",

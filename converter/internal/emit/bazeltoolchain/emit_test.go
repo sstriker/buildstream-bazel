@@ -68,10 +68,12 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 		`_TOOL_PATHS = {`,
 		`"ar":`,
 		`"gcc":`,
-		`_feature_with_flags("default_compile_flags", True,`,
+		`_default_compile_flags_feature(_COMPILE_FLAGS, _CXX_FLAGS, _LINK_FLAGS)`,
 		`_feature_with_flags("asan", False,`,
 		`_feature_with_flags("tsan", False,`,
 		`_feature_with_flags("ubsan", False,`,
+		`_CXX_COMPILE_ACTIONS = [`,
+		`"c++-compile",`,
 		`def cc_toolchain_config(name):`,
 		`_cc_toolchain_config_rule(name = name)`,
 	} {

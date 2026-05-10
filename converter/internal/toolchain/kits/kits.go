@@ -12,10 +12,16 @@
 // operator effort.
 //
 // Schema source: https://github.com/microsoft/vscode-cmake-tools
-// /blob/main/docs/kits.md . Field decoding focuses on the four
-// items that affect cmake configure invocations: compilers (C/CXX),
-// toolchainFile, cmakeSettings, environmentVariables. Display-only
-// fields (name aliases, isTrusted, etc.) are ignored.
+// /blob/main/docs/kits.md . Field decoding focuses on the three
+// items that affect cmake configure invocations and lift cleanly
+// into Variant.CacheVars: compilers (C/CXX), toolchainFile, and
+// cmakeSettings. The schema's `environmentVariables` map is NOT
+// consumed today: cmakerun.Configure builds a fixed env for
+// determinism, and Variant has no env-var carrier. Wiring kit
+// env vars through to cmake invocations is a future change that
+// would require a Variant.Env field plus cmakerun.Options.Env
+// merge plumbing — out of scope here. Display-only fields (name
+// aliases, isTrusted, etc.) are also ignored.
 package kits
 
 import (
@@ -80,13 +86,15 @@ func Parse(body []byte) ([]toolchain.Variant, error) {
 	return out, nil
 }
 
-// kit is one entry in the kits.json array.
+// kit is one entry in the kits.json array. environmentVariables
+// is intentionally NOT decoded — we don't propagate env vars to
+// cmakerun today (see package doc); decoding it would imply
+// support that doesn't exist.
 type kit struct {
-	Name            string            `json:"name"`
-	Compilers       map[string]string `json:"compilers"`
-	ToolchainFile   string            `json:"toolchainFile"`
-	CmakeSettings   map[string]any    `json:"cmakeSettings"`
-	EnvironmentVars map[string]string `json:"environmentVariables"`
+	Name          string            `json:"name"`
+	Compilers     map[string]string `json:"compilers"`
+	ToolchainFile string            `json:"toolchainFile"`
+	CmakeSettings map[string]any    `json:"cmakeSettings"`
 }
 
 // stringify coerces a JSON-decoded cmakeSettings value to a string.
