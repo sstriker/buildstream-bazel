@@ -463,9 +463,11 @@ func copyDirContents(srcDir, dstDir string) error {
 	// dstDir comes from --out-toolchain-signal-dir. Reject empty
 	// or obviously-broad paths up front: an unguarded
 	// os.RemoveAll on "/", ".", or ".." would nuke anything
-	// reachable from the converter's cwd. We also forbid relative
-	// paths so a misuse like `./` or implicit cwd can't slip
-	// through; the orchestrator always passes an absolute path.
+	// reachable from the converter's cwd. Both relative and
+	// absolute paths are accepted (REAPI passes the relative
+	// "toolchain-signal" inside the action working dir); guardDstDir
+	// rejects only the dangerous shapes — see its docstring for
+	// the exact rules.
 	if err := guardDstDir(dstDir); err != nil {
 		return err
 	}
