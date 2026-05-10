@@ -363,6 +363,7 @@ func main() {
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
 	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. Same shape as the orchestrator's --platforms-json (one entry per platform: name, constraints, optional select_label, optional reapi_properties — write-a ignores reapi_properties). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; tools/traces.json gets N entries per element keyed `<elem>__<platform>` so the per-platform _trace_repo lookups don't collide. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
+	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -422,6 +423,16 @@ func main() {
 			log.Fatalf("convert-element-meson binary at %s: %v", abs, err)
 		}
 		mesonConfig.convertBin = abs
+	}
+	if *pyprojectBin != "" {
+		abs, err := filepath.Abs(*pyprojectBin)
+		if err != nil {
+			log.Fatalf("resolve convert-element-pyproject path: %v", err)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			log.Fatalf("convert-element-pyproject binary at %s: %v", abs, err)
+		}
+		pyprojectConfig.convertBin = abs
 	}
 	// kind:cmake round-2 fallback. Reuses the same build-tracer
 	// + trace-publish + trace-lookup staging the autotools
@@ -1028,6 +1039,13 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if mesonExport != "" {
 		exports = append(exports, mesonExport)
 	}
+	pyprojectExport, err := stagePyprojectConverter(outDir)
+	if err != nil {
+		return err
+	}
+	if pyprojectExport != "" {
+		exports = append(exports, pyprojectExport)
+	}
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {
@@ -1120,6 +1138,32 @@ func stageMesonConverter(outDir string) (string, error) {
 		return "", err
 	}
 	return "convert-element-meson", nil
+}
+
+// stagePyprojectConverter copies convert-element-pyproject into
+// outDir/tools/ when --convert-element-pyproject was set,
+// returning the exports_files entry the caller adds to
+// tools/BUILD.bazel. Mirrors stageMesonConverter — staged in
+// both project A and project B so the
+// `//tools:convert-element-pyproject` label resolves
+// regardless of which project the per-element BUILD ends up
+// in. Project A is the only side that *runs* the binary today;
+// project B's copy keeps the symmetry the other tools maintain.
+func stagePyprojectConverter(outDir string) (string, error) {
+	if pyprojectConfig.convertBin == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return "", err
+	}
+	stagedAt := filepath.Join(outDir, "tools", "convert-element-pyproject")
+	if err := copyFile(pyprojectConfig.convertBin, stagedAt); err != nil {
+		return "", fmt.Errorf("stage convert-element-pyproject: %w", err)
+	}
+	if err := os.Chmod(stagedAt, 0o755); err != nil {
+		return "", err
+	}
+	return "convert-element-pyproject", nil
 }
 
 // stageAutotoolsTools copies the trace-pipeline binaries into
@@ -1337,6 +1381,13 @@ func writeProjectB(g *graph, outDir string) error {
 	if mesonExport != "" {
 		exports = append(exports, mesonExport)
 	}
+	pyprojectExport, err := stagePyprojectConverter(outDir)
+	if err != nil {
+		return err
+	}
+	if pyprojectExport != "" {
+		exports = append(exports, pyprojectExport)
+	}
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {
@@ -1407,6 +1458,16 @@ func moduleBazelB(g *graph) string {
 # project B's bazel build runs.
 bazel_dep(name = "rules_cc", version = "0.0.17")
 `)
+	if pyprojectConfig.convertBin != "" && hasKind(g, "pyproject") {
+		// kind:pyproject's native render emits py_library /
+		// py_binary rules that load() against
+		// @rules_python//python:defs.bzl. Pin a stable release;
+		// the version follows rules_python's own bzlmod release
+		// cadence and is downloaded from bcr.bazel.build at
+		// project B's first bazel build.
+		b.WriteString(`bazel_dep(name = "rules_python", version = "0.40.0")
+`)
+	}
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
 	if traceConfig.round2Enabled {
 		traces, err := collectTraces(g)
@@ -1415,6 +1476,19 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 		}
 	}
 	return b.String()
+}
+
+// hasKind reports whether the graph has any element of the
+// given kind. Used to gate optional bazel_deps in project B's
+// MODULE.bazel (e.g. rules_python only when kind:pyproject is
+// active and rendered natively).
+func hasKind(g *graph, kind string) bool {
+	for _, elem := range g.Elements {
+		if elem != nil && elem.Bst != nil && elem.Bst.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // renderSourcesUseExtension emits the use_extension + use_repo

@@ -330,6 +330,27 @@ transition cleanly.
   only; trace-driven kinds and round-2 fallbacks have a
   separate per-platform fold story queued in Next.
 
+
+- **kind:pyproject native render (Phase A).** New
+  `converter/cmd/convert-element-pyproject` statically analyzes
+  `pyproject.toml` + the source tree and emits native
+  `py_library` / `py_binary` rules. Per-backend dispatch (flit /
+  hatchling / setuptools / poetry-core) drives package-
+  discovery; `[project.scripts]` entries become py_binary with a
+  generated entry shim. Typed Tier-1 refusals (`unsupported-
+  pyproject-{backend,c-extension,dynamic-metadata,package-
+  discovery}`, `unresolved-pyproject-dependency`,
+  `pyproject-parse-failed`) cover the patterns v1 doesn't lift;
+  the pipeline-shape fallback (existing handler unchanged)
+  catches the rest. Activated by passing
+  `--convert-element-pyproject <path>` to write-a; project B's
+  MODULE.bazel auto-adds `rules_python` when at least one
+  kind:pyproject element is present and the native path is on.
+  Render gate: `scripts/meta-pyproject.sh` against
+  `testdata/meta-project/pyproject-greet/` (representative
+  setuptools fixture). Recipe: `docs/design/pyproject-native-
+  render.md`. Coverage status:
+  `docs/fdsdk-coverage-status.md`.
 - **`convert-element-autotools` → `convert-element-trace` rename.**
   The trace-driven converter has served kind:make / kind:manual /
   kind:script / kind:makemaker / kind:modulebuild as well as

@@ -334,6 +334,97 @@ library + headers on the executor.
 
 **Emission point:** `cmd/convert-element-meson` `lower.fillDeps`.
 
+### `pyproject-parse-failed` _(kind:pyproject)_
+
+`pyproject.toml` couldn't be read or contains malformed TOML
+that go-toml's strict decoder rejected. The wrapped error
+includes the file path and the parser's diagnostic.
+
+**Operator action:** validate the TOML (e.g.
+`python -c "import tomllib; tomllib.loads(open('pyproject.toml').read())"`),
+fix syntax, re-render.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`parse.Load`.
+
+### `unsupported-pyproject-backend` _(kind:pyproject)_
+
+`[build-system].build-backend` is missing or names a backend
+v1 doesn't model. v1 supports `flit_core.buildapi`,
+`hatchling.build`, `setuptools.build_meta`, and
+`poetry.core.masonry.api`.
+
+**Operator action:** if the offending element ships a v1-
+supported backend but doesn't declare it explicitly, add a
+`[build-system]` block. Otherwise this element falls back to
+the pipeline shape (works, just not Bazel-incremental).
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`backends.Discover`.
+
+### `unsupported-pyproject-package-discovery` _(kind:pyproject)_
+
+A recognized backend whose discovery shape v1 can't statically
+resolve — most commonly setuptools without an explicit
+`[tool.setuptools].packages` config (setuptools' implicit
+auto-discovery is version-dependent and we don't run it),
+hatchling with VCS-tracked auto-discovery, or poetry without
+`[tool.poetry].packages`.
+
+**Operator action:** add an explicit `packages` list to the
+relevant `[tool.<backend>]` section, or accept the pipeline
+fallback.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`backends.discover<Backend>`.
+
+### `unsupported-pyproject-c-extension` _(kind:pyproject)_
+
+The source tree contains C / C++ / Cython / Rust files
+(`*.c`, `*.cc`, `*.cpp`, `*.cxx`, `*.pyx`, `*.pxd`, `*.pxi`,
+`*.rs`, `Cargo.toml`). v1 only converts pure-Python packages;
+extension support requires rules_python's C-extension
+toolchain or the queued Phase B install-plan fallback.
+
+**Operator action:** wait for the Phase B follow-up, or
+manually carve the extension out via the pipeline-shape
+fallback.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.refuseCExtensions`.
+
+### `unsupported-pyproject-dynamic-metadata` _(kind:pyproject)_
+
+`[project] dynamic = [...]` lists a load-bearing field
+(`version`, `dependencies`, `scripts`, `gui-scripts`,
+`entry-points`) that the build-backend would resolve at build
+time (setuptools_scm, hatch-vcs, etc.). v1 doesn't run the
+backend, so the resolved value isn't visible. Doc-only
+dynamic fields (`readme`, `description`) are accepted.
+
+**Operator action:** pin the dynamic field statically in
+pyproject.toml (e.g. replace `dynamic = ["version"]` with an
+explicit `version = "X.Y.Z"`), or accept the pipeline
+fallback.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.refuseDynamicMetadata`.
+
+### `unresolved-pyproject-dependency` _(kind:pyproject)_
+
+A `[project.dependencies]` entry (or a `[project.scripts]`
+entry pointing at an external module) that isn't covered by
+this element's own packages and isn't bound by the imports
+manifest under either the bare distribution name or the
+`<name>::<name>` convention bind. Distribution names are
+PEP 503-normalized (lowercase, `[-_.]+ → -`) before lookup.
+
+**Operator action:** add the providing element to the imports
+manifest, or pre-stage the dependency on the executor.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.resolveDeps` + `lower.lowerScripts`.
+
 ## Stability rules
 
 1. **Append-only.** Once a code is in this list, it stays. New

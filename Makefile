@@ -1,6 +1,6 @@
 .PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-meson e2e-meta-vars \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-meson e2e-meta-pyproject e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
@@ -204,6 +204,19 @@ e2e-meta-trace-round2-fold: check-tools converter
 # executor; bazel < 7 lacks bzlmod). See docs/design/meson-native-render.md.
 e2e-meta-meson: check-tools converter
 	scripts/meta-meson.sh
+
+# kind:pyproject native render acceptance gate. Single kind:pyproject
+# element (testdata/meta-project/pyproject-greet/) — a setuptools
+# layout with a [project.scripts] entry. write-a renders project A
+# with --convert-element-pyproject set so the per-element BUILD
+# invokes //tools:convert-element-pyproject against the staged
+# source tree, producing BUILD.bazel.out with native py_library +
+# py_binary rules. The render half always runs; the bazel-build
+# half self-skips unless BOTH bazel >= 7 AND python3 are on PATH
+# (the rendered py_binary needs python3 at run time; bazel < 7
+# lacks bzlmod). See docs/design/pyproject-native-render.md.
+e2e-meta-pyproject: check-tools converter
+	scripts/meta-pyproject.sh
 
 # Variable-resolver acceptance gate. Single kind:manual element
 # (testdata/meta-project/vars-greet/) whose .bst overrides %{prefix}

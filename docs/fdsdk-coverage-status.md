@@ -44,7 +44,7 @@ install_tree.tar shape.
 |---|---|---|---|---|
 | `autotools` | 274 | 25.1 % | **deep** | trace-driven via build-tracer + convert-element-trace |
 | `meson` | 134 | 12.3 % | **deep** | introspection-driven via convert-element-meson; Phase B install-plan fallback queued |
-| `pyproject` | 115 | 10.5 % | coarse | py_library / py_binary mapping deferred (no shared trace-driven path; Python doesn't go through cc/ar) |
+| `pyproject` | 115 | 10.5 % | **deep** | introspection-driven via convert-element-pyproject; per-backend dispatch covers flit / hatchling / setuptools / poetry-core; C-extension / dynamic-metadata / unknown-backend cases fall to the pipeline shape |
 | `manual` | 104 | 9.5 % | **deep** | trace-driven via convert-element-trace (when the element's commands invoke cc/ar through any wrapper) |
 | `stack` | 96 | 8.8 % | structural | filegroup composition over deps |
 | `cmake` | 75 | 6.9 % | **deep** | File API + trace-expand |
@@ -65,39 +65,14 @@ install_tree.tar shape.
 | `flatpak_repo` | 1 | 0.1 % | **missing** | FDSDK glue |
 | `modulebuild` | 1 | 0.1 % | **deep** | trace-driven via convert-element-trace (Perl Module::Build) |
 
-**Today: 25.1 % (autotools) + 12.3 % (meson) + 9.5 % (manual)
-+ 6.9 % (cmake) + 5.4 % (make) + 4.9 % (script) + 1.3 %
-(makemaker) + 0.1 % (modulebuild) = ~65.5 % of FDSDK has
-deep conversion.** Adding the structural kinds — whose
-quality follows their deps' — pushes the effective figure
-higher (`stack`/`filter`/`compose`/`import`/`flatpak_image`/
-`snap_image` together: ~19.8 %), but those don't have a
-build of their own to convert.
-
-## Highest-impact next: pyproject
-
-115 elements (10.5%). Python-shaped — Bazel's native rules
-are rules_python's `py_library` / `py_binary` /
-`py_console_script_binary`. pyproject.toml has structured
-metadata
-([PEP 621](https://peps.python.org/pep-0621/)) listing
-dependencies, scripts, and entry points.
-
-A `convert-element-pyproject` translator would:
-
-1. Parse `pyproject.toml` (stdlib `encoding/toml` not yet —
-   need a Go TOML parser; `github.com/pelletier/go-toml/v2`
-   is the standard).
-2. For each `[project.scripts]` entry, emit
-   `py_console_script_binary`.
-3. For each package directory under `[tool.<backend>.packages]`
-   (or auto-discovered), emit `py_library`.
-4. For `[project.dependencies]`, emit
-   `requirement("<name>")` references via rules_python's pip
-   integration (assumes a workspace pip lockfile).
-
-Different conversion shape than cc-based; a fresh translator.
-Estimate: ~1 week.
+**Today: 25.1 % (autotools) + 12.3 % (meson) + 10.5 %
+(pyproject) + 9.5 % (manual) + 6.9 % (cmake) + 5.4 % (make)
++ 4.9 % (script) + 1.3 % (makemaker) + 0.1 % (modulebuild) =
+~76.0 % of FDSDK has deep conversion.** Adding the structural
+kinds — whose quality follows their deps' — pushes the
+effective figure higher (`stack`/`filter`/`compose`/`import`/
+`flatpak_image`/`snap_image` together: ~19.8 %), but those
+don't have a build of their own to convert.
 
 ## Lowest priority: FDSDK-specific glue
 
@@ -119,10 +94,12 @@ Tackle in order of impact-per-work-unit:
    Shipped: same `pipelineHandler` opt-in shape kind:autotools
    established. The kind-agnostic `convert-element-trace`
    binary serves all six trace-driven kinds today.
-3. **pyproject** — fresh translator (10.5 %). Distinct shape
-   from cc-based; Python doesn't go through cc/ar so the trace-
-   driven path doesn't apply.
+3. ~~**pyproject** — fresh translator (10.5 %).~~ Shipped Phase
+   A (per-backend dispatch over flit / hatchling / setuptools /
+   poetry-core; C-extension / dynamic-metadata / unknown-
+   backend cases fall through to the pipeline shape).
 4. **FDSDK glue** — last; small impact each.
 
-Net after these: **~76 % of FDSDK has deep conversion** (vs.
-~65 % today; ~32 % before the trace-driven generalization).
+Coverage today: **~76 % of FDSDK has deep conversion** (vs.
+~65 % before pyproject; ~32 % before the trace-driven
+generalization).
