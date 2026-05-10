@@ -43,14 +43,12 @@ func TestEmitResolved_RoutesPerVariantFlagsViaMapping(t *testing.T) {
 		t.Fatalf("EmitResolved: %v", err)
 	}
 	cfg := string(b.Files["cc_toolchain_config.bzl"])
+	// Stage 2 emits flag lists as module-level Starlark constants
+	// (_COMPILE_FLAGS, _OPT_COMPILE_FLAGS, _DBG_COMPILE_FLAGS).
 	for _, want := range []string{
-		`compile_flags = [
-            "-Wall",`,
-		`opt_compile_flags = [
-            "-O3",`,
-		`dbg_compile_flags = [
-            "-O0",
-            "-g",`,
+		"_COMPILE_FLAGS = [\n    \"-Wall\",",
+		"_OPT_COMPILE_FLAGS = [\n    \"-O3\",",
+		"_DBG_COMPILE_FLAGS = [\n    \"-O0\",\n    \"-g\",",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)

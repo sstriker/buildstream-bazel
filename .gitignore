@@ -26,3 +26,13 @@ converter/testdata/sample-projects/libdrm/
 # write-a binary built at the repo root by `go build ./cmd/write-a`.
 # Anchored so cmd/write-a/ directory contents aren't swept up.
 /write-a
+
+# Converter command binaries built at the repo root by
+# `go build ./converter/cmd/<name>`. Anchored so the per-binary
+# source directories under converter/cmd/ aren't swept up.
+/convert-element
+/derive-toolchain
+/probe-cell
+/probe-cell-fixture
+/render-project-a
+/unify-toolchains

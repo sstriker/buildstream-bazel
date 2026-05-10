@@ -29,6 +29,41 @@ transition cleanly.
 
 ## Next
 
+- **Per-element multi-platform BUILD generation.** The unified
+  toolchain layout shipped (see Done) but per-element conversion
+  is still single-platform-host: `convert-element` runs once on
+  the host and bakes that viewpoint into each
+  `elements/<name>/BUILD.bazel`. The right model is to run
+  `convert-element` once per (element, platform) cell via the
+  Stage 4 project-A render skeleton, then fold the per-platform
+  IRs into one `BUILD.bazel` per element using `select()` over
+  `@platforms//{os,cpu}:*` for divergent srcs/hdrs/deps/copts/defines.
+  Compiler-level flags get stripped on the way through (they
+  belong in `cc_toolchain_config`). Initial scope: `kind:cmake`.
+  Reuses Stage 4's render skeleton + Stage 5's `Observe` (which
+  the future `internal/empfold/` extraction will generalize for
+  per-element use). Same project-A pattern, different worker
+  binary (`convert-element` instead of `probe-cell`), different
+  fold inputs.
+- **Element-signal consumption in the unifier.** Stage 6 capture
+  is in (`--collect-toolchain-signal` flows fileapi replies into
+  `<out>/elements/<name>/toolchain-signal/`). Pending: wire
+  `unify-toolchains --element-signal <dir>` to fold any
+  builtin-include / sysroot fact a real element exposes that
+  the dedicated probe missed into the platform's
+  `ResolvedToolchain.Base`. Needs platform-association heuristic
+  (orchestrator runs single-platform today; the signal directory
+  belongs to that one platform).
+- **Drop the hardcoded `defaultPlatform`.** The orchestrator's
+  REAPI Action.Platform fallback (linux/x86_64 + cmake/ninja/bwrap
+  pins) is transitional: once operators have
+  `//platforms:*` declared by the unifier, the orchestrator
+  should derive Action.Platform properties from the chosen
+  Bazel platform's constraint_values via a constraint→property
+  mapping. The CLI gets a `--target-platform=//platforms:linux_aarch64`
+  flag with no default; CI / e2e tests update to pass it
+  explicitly. Blocked on the unifier seeing real probe data
+  in CI so the platforms package exists at orchestrate time.
 - **Wire the narrowing-undercoverage audit into a CI gate.**
   All the plumbing is in:
   - cmake oracle via convert-element's
@@ -196,6 +231,55 @@ transition cleanly.
   `docs/design/cmake-execute-process-round2-fallback.md`.
   Failure schema: `docs/failure-schema.md`
   `unsupported-execute-process`.
+- **Unified multi-platform Bazel toolchain layout from CMake.**
+  Operators with cmake projects can now generate a normal-shaped
+  multi-platform Bazel toolchain layout — `//platforms`,
+  `//toolchains`, `cc_toolchain_config.bzl`, `.bazelrc` — driven
+  by per-cell cmake probes rendered as a Bazel project A:
+  - `cmakerun.Options.ExtraCacheVars` (Stage 1) plumbs arbitrary
+    `-D<k>=<v>` flags through, with sorted-key rendering for
+    determinism. `toolchain.Probe` now forwards every Variant
+    cache var (not just CMAKE_BUILD_TYPE).
+  - `toolchain.BazelFeature` (Stage 2) gains `Asan`, `Tsan`, `Msan`,
+    `Ubsan`, `Coverage`, `Lto`. `SanitizerVariants` is the canonical
+    catalog. `DefaultVariantMapping` classifies by
+    CMAKE_C_FLAGS / CMAKE_CXX_FLAGS content first, build-type second.
+  - `bazeltoolchain.emitConfigBzl` (Stage 2) now emits a hand-rolled
+    `cc_toolchain_config` rule built on `cc_toolchain_config_lib.bzl`
+    primitives — unix's feature list is sealed, hand-rolling lets us
+    add `feature("asan")`/`feature("tsan")`/etc. blocks fed by the
+    cmake-derived flag bundles.
+  - `internal/toolchain/presets` and `internal/toolchain/kits`
+    (Stage 3) parse `CMakePresets.json` and VSCode `cmake-kits.json`
+    into `[]Variant` for `VariantMatrix` consumption.
+    `converter/testdata/toolchain-probe/CMakePresets.json` is the
+    canonical catalog cross-checked against `SanitizerVariants` by
+    a unit test.
+  - `cmd/render-project-a` + `internal/toolchain/projecta` (Stage 4)
+    render a BUILD.bazel that drives the per-cell probe matrix:
+    one genrule per (variant, platform) cell with
+    `exec_compatible_with` carrying the platform's constraint set,
+    invoking `cmd/probe-cell` with the variant's `--cache-var` flags.
+    Cell artifacts serialize via `internal/toolchain/probejson`.
+  - `cmd/unify-toolchains` (Stage 5) reads probe.json artifacts
+    grouped by platform, folds each platform's cells through
+    `Observe`, and writes `platforms/BUILD.bazel`,
+    `toolchains/BUILD.bazel`, `toolchains/cc_toolchain_config.bzl`,
+    and `.bazelrc` into the operator's repo. `cc_toolchain_config.bzl`
+    is one attr-driven rule shared across all platforms (per-platform
+    data flows in via attrs). `.bazelrc` includes
+    `try-import %workspace%/user.bazelrc` so operator overrides
+    later-win. MODULE.bazel is intentionally untouched; a one-time
+    setup banner instructs the operator to add
+    `register_toolchains("//toolchains:all")`.
+  - Per-element toolchain signal capture (Stage 6) lands via
+    `convert-element --out-toolchain-signal-dir` + orchestrator
+    `Options.CollectToolchainSignal` + `orchestrate
+    --collect-toolchain-signal`. Sets the foundation for the
+    unifier to fold per-element builtin-include / sysroot facts
+    into each platform's `ResolvedToolchain.Base` (--element-signal
+    consumption is queued under Next).
+  - Render gates: `meta-render-project-a.sh` + `meta-unify-toolchains.sh`.
 - **Configure_file lift.** Per-element `*.h.in` templates are
   no longer load-bearing inputs of convert-element's cache key
   for elements whose templates lift. Convert-element captures

@@ -134,6 +134,19 @@ func run(a cli.Args) error {
 		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
 	}
 
+	// Stage 6: per-element toolchain signal capture. The unifier
+	// (Stage 5's cmd/unify-toolchains) optionally folds these
+	// into the platform's ResolvedToolchain.Base, picking up any
+	// builtin-include / sysroot fact a real element exposes that
+	// the dedicated toolchain probe missed. Off unless the caller
+	// (typically the orchestrator with --collect-toolchain-signal)
+	// opts in.
+	if a.OutToolchainSignalDir != "" {
+		if err := copyDirContents(replyDir, a.OutToolchainSignalDir); err != nil {
+			return fmt.Errorf("copy toolchain signal: %w", err)
+		}
+	}
+
 	var g *ninja.Graph
 	if ninjaPath != "" {
 		g, err = ninja.ParseFile(ninjaPath)
@@ -415,6 +428,175 @@ func compileCommandsPath(hostBuildDir, replyDir string) string {
 		}
 	}
 	return ""
+}
+
+// copyDirContents recursively copies srcDir's contents into dstDir,
+// creating dstDir if absent. Used by the Stage 6 toolchain-signal
+// capture: cmake's File API reply directory is small (a few JSON
+// files), so a recursive copy is cheap and a regular file/dir
+// shape is what the unifier's --element-signal consumer expects.
+//
+// Symlinks are skipped explicitly. filepath.Walk uses Lstat, so a
+// symlinked directory wouldn't be traversed and a file symlink
+// would be dereferenced by the os.ReadFile below (potentially
+// pulling data from outside srcDir). Cmake's fileapi never
+// produces symlinks, so the only way one would appear here is via
+// a hostile build dir; rejecting them keeps the captured tree
+// honest.
+func copyDirContents(srcDir, dstDir string) error {
+	// Lstat srcDir up front: filepath.Walk uses Lstat too but its
+	// rel == "." early-return would silently mask a symlinked
+	// srcDir as "no entries to copy" — the resulting empty
+	// dstDir would mislead downstream consumers. Reject the
+	// symlinked-root and the not-a-directory cases here so the
+	// error names the actual problem.
+	rootInfo, err := os.Lstat(srcDir)
+	if err != nil {
+		return fmt.Errorf("copyDirContents: stat srcDir: %w", err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("copyDirContents: refusing to copy symlinked srcDir %s", srcDir)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("copyDirContents: srcDir %s is not a directory (mode %s)", srcDir, rootInfo.Mode())
+	}
+	// dstDir comes from --out-toolchain-signal-dir. Reject empty
+	// or obviously-broad paths up front: an unguarded
+	// os.RemoveAll on "/", ".", or ".." would nuke anything
+	// reachable from the converter's cwd. Both relative and
+	// absolute paths are accepted (REAPI passes the relative
+	// "toolchain-signal" inside the action working dir); guardDstDir
+	// rejects only the dangerous shapes — see its docstring for
+	// the exact rules.
+	if err := guardDstDir(dstDir); err != nil {
+		return err
+	}
+	// Reset dstDir's CONTENTS (not the directory itself) so the
+	// result exactly mirrors srcDir without leaving stale JSONs.
+	// Removing the directory and recreating it would also work
+	// but interacts badly when dstDir is, say, a bind mount or
+	// a path the parent process expects to keep open.
+	if err := clearDirContents(dstDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return err
+	}
+	return filepath.Walk(srcDir, func(p string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(srcDir, p)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		// Reject anything that isn't a regular file or directory.
+		// fileapi only writes those; surfacing the unexpected
+		// type as an error catches a hostile build dir before
+		// it leaks data into the unifier's input.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("copyDirContents: refusing to copy symlink at %s", rel)
+		}
+		dst := filepath.Join(dstDir, rel)
+		if info.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("copyDirContents: refusing to copy non-regular file %s (mode %s)", rel, info.Mode())
+		}
+		body, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, info.Mode().Perm())
+	})
+}
+
+// guardDstDir refuses paths whose accidental misuse as a
+// "wipe everything under here" target would be catastrophic.
+// The function is the cheap first line before clearDirContents —
+// it doesn't try to be exhaustive, just to catch the obvious
+// foot-guns. Both relative and absolute paths are permitted:
+// REAPI-driven conversions pass a relative path
+// ("toolchain-signal") inside the action's working directory,
+// so an absolute-only check would break that flow.
+//
+// Rejected:
+//
+//   - empty path
+//   - "/", ".", ".." (and any path that filepath.Clean reduces to one)
+//   - relative paths whose Clean form starts with ".." (would
+//     escape the cwd)
+//   - absolute paths that match a forbidden system root
+//     (/home, /root, /tmp, /var, /etc, /usr — top-level dirs
+//     the operator should never aim at as a wipe target).
+func guardDstDir(dstDir string) error {
+	if dstDir == "" {
+		return fmt.Errorf("copyDirContents: dstDir is empty")
+	}
+	clean := filepath.Clean(dstDir)
+	switch clean {
+	case "/", ".", "..":
+		return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (resolves to %q)", dstDir, clean)
+	}
+	// Relative path that escapes cwd? Reject — clearDirContents
+	// would happily blow away the parent.
+	if !filepath.IsAbs(clean) {
+		if clean == ".." || strings.HasPrefix(clean, "../") {
+			return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (escapes cwd)", dstDir)
+		}
+		// Non-escaping relative path: REAPI-style
+		// "toolchain-signal" lands here. Allow.
+		return nil
+	}
+	// Absolute path: reject the obvious system-root foot-guns.
+	for _, forbid := range []string{"/", "/home", "/root", "/tmp", "/var", "/etc", "/usr"} {
+		if clean == forbid {
+			return fmt.Errorf("copyDirContents: refusing to operate on dstDir %q (matches forbidden root %q)", dstDir, forbid)
+		}
+	}
+	return nil
+}
+
+// clearDirContents removes the entries inside dir without
+// removing dir itself. Skips silently when dir doesn't exist
+// (the subsequent os.MkdirAll handles the create case).
+//
+// Rejects a symlinked dir: guardDstDir's string-only checks
+// don't help if the operator points the symlink at /, /etc,
+// etc. Lstat'ing here closes that hole — the symlink target's
+// contents are never wiped because we error out before reading
+// the directory.
+func clearDirContents(dir string) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("clearDirContents: refusing to clear symlinked dstDir %s", dir)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("clearDirContents: %s is not a directory (mode %s)", dir, info.Mode())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleError marshals a typed Tier-1 failure to OutFailure (if requested) and

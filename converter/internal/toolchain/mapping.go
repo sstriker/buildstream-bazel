@@ -14,29 +14,113 @@ import "strings"
 type VariantMapping func(v Variant) BazelFeature
 
 // BazelFeature identifies a slot in cc_toolchain_config. The
-// strings match Bazel's compilation_mode names where applicable;
-// custom feature names go through verbatim.
+// strings match Bazel's compilation_mode names where applicable
+// ("dbg", "opt") and the conventional --features=<name> spelling
+// for sanitizers / coverage / lto. Operators trigger them via
+// `bazel build --features=asan ...` (typically aliased through
+// .bazelrc as `--config=asan`).
 type BazelFeature string
 
 const (
-	BazelFeatureNone BazelFeature = ""
-	BazelFeatureDbg  BazelFeature = "dbg" // -> dbg_compile_flags / link
-	BazelFeatureOpt  BazelFeature = "opt" // -> opt_compile_flags / link
+	BazelFeatureNone     BazelFeature = ""
+	BazelFeatureDbg      BazelFeature = "dbg"      // -> dbg_compile_flags / link
+	BazelFeatureOpt      BazelFeature = "opt"      // -> opt_compile_flags / link
+	BazelFeatureAsan     BazelFeature = "asan"     // -fsanitize=address
+	BazelFeatureTsan     BazelFeature = "tsan"     // -fsanitize=thread
+	BazelFeatureMsan     BazelFeature = "msan"     // -fsanitize=memory
+	BazelFeatureUbsan    BazelFeature = "ubsan"    // -fsanitize=undefined
+	BazelFeatureCoverage BazelFeature = "coverage" // --coverage / -fprofile-instr-generate
+	BazelFeatureLto      BazelFeature = "lto"      // -flto
 )
 
-// DefaultVariantMapping is the standard cmake-build-type → Bazel
-// compilation_mode mapping. Variants without CMAKE_BUILD_TYPE in
-// their CacheVars route to BazelFeatureNone (their delta becomes
-// part of the baseline / always-on layer if the empirical
-// observer kept it there, or is dropped).
+// FeatureVariants is the canonical catalog of feature probe
+// variants — sanitizers, coverage, and LTO. Each entry's
+// CacheVars sets CMAKE_C_FLAGS / CMAKE_CXX_FLAGS to the
+// feature's expected flag bundle (CMAKE_BUILD_TYPE=Debug so the
+// optimizer doesn't elide instrumentation, except LTO which
+// pairs with Release). The catalog is the single source of
+// truth for what flags Stage 2's emit layer maps back onto
+// Bazel's `--features=<name>` slots.
 //
-//	CMAKE_BUILD_TYPE=Debug                    -> dbg
-//	CMAKE_BUILD_TYPE=Release | RelWithDebInfo
-//	  | MinSizeRel                            -> opt
+// Coverage and LTO live alongside the sanitizers because they
+// share the same shape (a flag bundle that activates via Bazel's
+// --features), even though they're not strictly sanitizers and
+// can be combined with one (asan + coverage is common).
 //
-// Operators with custom variants (sanitizer cells, alt-compiler
-// cells, cross-target cells) supply their own VariantMapping.
+// CMakePresets.json (Stage 3) carries the same catalog in JSON;
+// TestFeatureVariants_AllRouteCorrectly keeps the two in sync.
+var FeatureVariants = []Variant{
+	{
+		Name: "asan",
+		CacheVars: map[string]string{
+			"CMAKE_BUILD_TYPE": "Debug",
+			"CMAKE_C_FLAGS":    "-fsanitize=address -fno-omit-frame-pointer",
+			"CMAKE_CXX_FLAGS":  "-fsanitize=address -fno-omit-frame-pointer",
+		},
+	},
+	{
+		Name: "tsan",
+		CacheVars: map[string]string{
+			"CMAKE_BUILD_TYPE": "Debug",
+			"CMAKE_C_FLAGS":    "-fsanitize=thread",
+			"CMAKE_CXX_FLAGS":  "-fsanitize=thread",
+		},
+	},
+	{
+		Name: "msan",
+		CacheVars: map[string]string{
+			"CMAKE_BUILD_TYPE": "Debug",
+			"CMAKE_C_FLAGS":    "-fsanitize=memory -fno-omit-frame-pointer",
+			"CMAKE_CXX_FLAGS":  "-fsanitize=memory -fno-omit-frame-pointer",
+		},
+	},
+	{
+		Name: "ubsan",
+		CacheVars: map[string]string{
+			"CMAKE_BUILD_TYPE": "Debug",
+			"CMAKE_C_FLAGS":    "-fsanitize=undefined",
+			"CMAKE_CXX_FLAGS":  "-fsanitize=undefined",
+		},
+	},
+	{
+		Name: "coverage",
+		CacheVars: map[string]string{
+			"CMAKE_BUILD_TYPE": "Debug",
+			"CMAKE_C_FLAGS":    "--coverage",
+			"CMAKE_CXX_FLAGS":  "--coverage",
+		},
+	},
+	{
+		Name: "lto",
+		CacheVars: map[string]string{
+			"CMAKE_BUILD_TYPE": "Release",
+			"CMAKE_C_FLAGS":    "-flto",
+			"CMAKE_CXX_FLAGS":  "-flto",
+		},
+	},
+}
+
+// DefaultVariantMapping is the standard variant classifier. Order
+// of resolution:
+//
+//  1. CMAKE_C_FLAGS sanitizer / coverage / LTO substring → matching
+//     BazelFeature. A sanitizer-flavoured cell is classified by its
+//     flag content regardless of CMAKE_BUILD_TYPE so a "Debug + asan"
+//     cell still routes to "asan", not "dbg" — the build-type signal
+//     is the secondary axis there.
+//  2. CMAKE_BUILD_TYPE → dbg / opt. Debug → dbg; Release / MinSizeRel
+//     / RelWithDebInfo → opt.
+//  3. Otherwise → BazelFeatureNone (variant observed but not routed).
+//
+// Operators with custom variants supply their own VariantMapping
+// to the emit layer.
 func DefaultVariantMapping(v Variant) BazelFeature {
+	if f := classifyByFlagContent(v.CacheVars["CMAKE_C_FLAGS"]); f != BazelFeatureNone {
+		return f
+	}
+	if f := classifyByFlagContent(v.CacheVars["CMAKE_CXX_FLAGS"]); f != BazelFeatureNone {
+		return f
+	}
 	bt, ok := v.CacheVars["CMAKE_BUILD_TYPE"]
 	if !ok {
 		return BazelFeatureNone
@@ -49,4 +133,34 @@ func DefaultVariantMapping(v Variant) BazelFeature {
 	default:
 		return BazelFeatureNone
 	}
+}
+
+// classifyByFlagContent matches the sanitizer / coverage / LTO
+// substrings against a single flags string. Substring matching is
+// chosen over exact-token matching so "-fsanitize=address,undefined"
+// (combined sanitizers, valid in clang) routes to the first
+// detected sanitizer. The order of checks is documented in the
+// switch below; changing it changes which feature wins for a
+// combined-flags cell.
+func classifyByFlagContent(flags string) BazelFeature {
+	if flags == "" {
+		return BazelFeatureNone
+	}
+	switch {
+	case strings.Contains(flags, "-fsanitize=address"):
+		return BazelFeatureAsan
+	case strings.Contains(flags, "-fsanitize=thread"):
+		return BazelFeatureTsan
+	case strings.Contains(flags, "-fsanitize=memory"):
+		return BazelFeatureMsan
+	case strings.Contains(flags, "-fsanitize=undefined"):
+		return BazelFeatureUbsan
+	case strings.Contains(flags, "--coverage") ||
+		strings.Contains(flags, "-fprofile-instr-generate") ||
+		strings.Contains(flags, "-fprofile-arcs"):
+		return BazelFeatureCoverage
+	case strings.Contains(flags, "-flto"):
+		return BazelFeatureLto
+	}
+	return BazelFeatureNone
 }

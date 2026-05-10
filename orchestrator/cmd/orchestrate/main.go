@@ -41,27 +41,28 @@ func main() {
 	fs.SetOutput(os.Stderr)
 
 	var (
-		fdsdkRoot       = fs.String("fdsdk-root", "", "path to BuildStream root containing elements/")
-		elementsDir     = fs.String("elements-dir", "elements", "subdirectory under --fdsdk-root holding .bst files")
-		out             = fs.String("out", "out", "output root for converted elements + manifest")
-		sourcesBase     = fs.String("sources-base", "", "directory containing pre-staged source trees per element name (overrides per-element kind:local sources)")
-		converterBinary = fs.String("converter", "convert-element", "convert-element binary path or PATH name")
-		casFlag         = fs.String("cas", "", "cache substrate: local:<path> | grpc://host:port | grpcs://host:port (default: local:<out>/cache)")
-		casInstance     = fs.String("cas-instance", "", "REAPI instance_name (gRPC mode only)")
-		casCert         = fs.String("cas-tls-cert", "", "client certificate file for mTLS (gRPC mode only)")
-		casKey          = fs.String("cas-tls-key", "", "client private key file for mTLS (gRPC mode only)")
-		casCA           = fs.String("cas-ca", "", "trust-root CA bundle (gRPC mode only)")
-		casToken        = fs.String("cas-token-file", "", "file containing a bearer token (gRPC mode only)")
-		remoteExec      = fs.String("execute", "", "remote execution endpoint: grpc://host:port | grpcs://host:port. when set, conversions submit a REAPI Action instead of forking convert-element locally")
-		remoteExecInst  = fs.String("execute-instance", "", "REAPI Execute instance_name; defaults to --cas-instance")
-		concurrency     = fs.Int("concurrency", 0, "max in-flight per-element conversions (<=0 = NumCPU). Topology is preserved; deps still land before dependents.")
-		sourceCAS       = fs.String("source-cas", "", "REAPI Remote Asset endpoint for kind:remote-asset sources (e.g. grpc://host:port). Reuses --cas-* TLS / token plumbing.")
-		sourceCASInst   = fs.String("source-cas-instance", "", "Remote Asset instance_name; defaults to --cas-instance")
-		platformFlag    = fs.String("platform", "", "Action.platform overrides as comma-separated name=value (e.g. cmake-version=3.30.0,ninja-version=1.12.0). Overrides built-in defaults; the orchestrator MUST agree with workers on platform values to share cache hits.")
-		elemTimeout     = fs.Duration("element-timeout", 0, "per-element pipeline cap (e.g. 30m, 2h). Zero = orchestrator default (30m). Mirrored into Action.timeout for remote workers.")
-		toolchainCMake  = fs.String("toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake) passed to every per-element converter invocation. Skips cmake's compiler-detection probe — measurable per-conversion latency win.")
-		bazelBuild      = fs.String("bazel-build", "", "after a successful conversion, run `bazel build <target>` inside --out (e.g. //... or //elements/components/foo:bar). Requires bazel or bazelisk on PATH.")
-		logFormat       = fs.String("log-format", "text", "structured-log handler: text (human-readable, default) or json (one record per line for ingestion)")
+		fdsdkRoot              = fs.String("fdsdk-root", "", "path to BuildStream root containing elements/")
+		elementsDir            = fs.String("elements-dir", "elements", "subdirectory under --fdsdk-root holding .bst files")
+		out                    = fs.String("out", "out", "output root for converted elements + manifest")
+		sourcesBase            = fs.String("sources-base", "", "directory containing pre-staged source trees per element name (overrides per-element kind:local sources)")
+		converterBinary        = fs.String("converter", "convert-element", "convert-element binary path or PATH name")
+		casFlag                = fs.String("cas", "", "cache substrate: local:<path> | grpc://host:port | grpcs://host:port (default: local:<out>/cache)")
+		casInstance            = fs.String("cas-instance", "", "REAPI instance_name (gRPC mode only)")
+		casCert                = fs.String("cas-tls-cert", "", "client certificate file for mTLS (gRPC mode only)")
+		casKey                 = fs.String("cas-tls-key", "", "client private key file for mTLS (gRPC mode only)")
+		casCA                  = fs.String("cas-ca", "", "trust-root CA bundle (gRPC mode only)")
+		casToken               = fs.String("cas-token-file", "", "file containing a bearer token (gRPC mode only)")
+		remoteExec             = fs.String("execute", "", "remote execution endpoint: grpc://host:port | grpcs://host:port. when set, conversions submit a REAPI Action instead of forking convert-element locally")
+		remoteExecInst         = fs.String("execute-instance", "", "REAPI Execute instance_name; defaults to --cas-instance")
+		concurrency            = fs.Int("concurrency", 0, "max in-flight per-element conversions (<=0 = NumCPU). Topology is preserved; deps still land before dependents.")
+		sourceCAS              = fs.String("source-cas", "", "REAPI Remote Asset endpoint for kind:remote-asset sources (e.g. grpc://host:port). Reuses --cas-* TLS / token plumbing.")
+		sourceCASInst          = fs.String("source-cas-instance", "", "Remote Asset instance_name; defaults to --cas-instance")
+		platformFlag           = fs.String("platform", "", "Action.platform overrides as comma-separated name=value (e.g. cmake-version=3.30.0,ninja-version=1.12.0). Overrides built-in defaults; the orchestrator MUST agree with workers on platform values to share cache hits.")
+		elemTimeout            = fs.Duration("element-timeout", 0, "per-element pipeline cap (e.g. 30m, 2h). Zero = orchestrator default (30m). Mirrored into Action.timeout for remote workers.")
+		toolchainCMake         = fs.String("toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake) passed to every per-element converter invocation. Skips cmake's compiler-detection probe — measurable per-conversion latency win.")
+		bazelBuild             = fs.String("bazel-build", "", "after a successful conversion, run `bazel build <target>` inside --out (e.g. //... or //elements/components/foo:bar). Requires bazel or bazelisk on PATH.")
+		collectToolchainSignal = fs.Bool("collect-toolchain-signal", false, "ask each element's converter to copy its cmake File API reply into <out>/elements/<name>/toolchain-signal/. Off by default. Capture-only today: the on-disk format is the foundation for unify-toolchains' future consumer (queued under ROADMAP.md Next as 'Element-signal consumption in the unifier'); enabling this now lets a project accumulate signal so the unifier folds it on first use.")
+		logFormat              = fs.String("log-format", "text", "structured-log handler: text (human-readable, default) or json (one record per line for ingestion)")
 	)
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
@@ -155,19 +156,20 @@ func main() {
 	}
 
 	res, err := orchestrator.Run(ctx, orchestrator.Options{
-		Project:            proj,
-		Graph:              g,
-		Out:                *out,
-		SourcesBase:        *sourcesBase,
-		ConverterBinary:    *converterBinary,
-		Store:              store,
-		Executor:           executor,
-		Concurrency:        *concurrency,
-		SourceAsset:        sourceAsset,
-		Platform:           platform,
-		PerElementTimeout:  *elemTimeout,
-		ToolchainCMakeFile: *toolchainCMake,
-		Logger:             logger,
+		Project:                proj,
+		Graph:                  g,
+		Out:                    *out,
+		SourcesBase:            *sourcesBase,
+		ConverterBinary:        *converterBinary,
+		Store:                  store,
+		Executor:               executor,
+		Concurrency:            *concurrency,
+		SourceAsset:            sourceAsset,
+		Platform:               platform,
+		PerElementTimeout:      *elemTimeout,
+		ToolchainCMakeFile:     *toolchainCMake,
+		CollectToolchainSignal: *collectToolchainSignal,
+		Logger:                 logger,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "orchestrate: %v\n", err)

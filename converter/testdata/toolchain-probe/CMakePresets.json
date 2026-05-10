@@ -1,0 +1,91 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {"major": 3, "minor": 19, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "_base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "generator": "Ninja"
+    },
+    {
+      "name": "baseline",
+      "inherits": "_base",
+      "displayName": "Baseline (no overrides)"
+    },
+    {
+      "name": "debug",
+      "inherits": "_base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug"}
+    },
+    {
+      "name": "release",
+      "inherits": "_base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+    },
+    {
+      "name": "relwithdebinfo",
+      "inherits": "_base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo"}
+    },
+    {
+      "name": "minsizerel",
+      "inherits": "_base",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "MinSizeRel"}
+    },
+    {
+      "name": "asan",
+      "inherits": "_base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=address -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "_base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=thread",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
+      "name": "msan",
+      "inherits": "_base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=memory -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=memory -fno-omit-frame-pointer"
+      }
+    },
+    {
+      "name": "ubsan",
+      "inherits": "_base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "-fsanitize=undefined",
+        "CMAKE_CXX_FLAGS": "-fsanitize=undefined"
+      }
+    },
+    {
+      "name": "coverage",
+      "inherits": "_base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS": "--coverage",
+        "CMAKE_CXX_FLAGS": "--coverage"
+      }
+    },
+    {
+      "name": "lto",
+      "inherits": "_base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS": "-flto",
+        "CMAKE_CXX_FLAGS": "-flto"
+      }
+    }
+  ]
+}

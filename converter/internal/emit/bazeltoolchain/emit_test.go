@@ -56,15 +56,26 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 		}
 	}
 
-	// Structural assertions on cc_toolchain_config.bzl.
+	// Structural assertions on cc_toolchain_config.bzl. Stage 2
+	// switched to a hand-rolled rule built on
+	// cc_toolchain_config_lib.bzl primitives — the load + identity
+	// constants + feature() blocks are the durable contract.
 	for _, want := range []string{
-		`@bazel_tools//tools/cpp:unix_cc_toolchain_config.bzl`,
-		`def cc_toolchain_config(name):`,
-		`cpu = "x86_64"`,
-		`compiler = "gnu"`,
-		`tool_paths = {`,
+		`@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl`,
+		`"feature", "flag_group", "flag_set", "tool_path"`,
+		`_TARGET_CPU = "x86_64"`,
+		`_COMPILER = "gnu"`,
+		`_TOOL_PATHS = {`,
 		`"ar":`,
 		`"gcc":`,
+		`_default_compile_flags_feature(_COMPILE_FLAGS, _CXX_FLAGS, _LINK_FLAGS)`,
+		`_feature_with_flags("asan", False,`,
+		`_feature_with_flags("tsan", False,`,
+		`_feature_with_flags("ubsan", False,`,
+		`_CXX_COMPILE_ACTIONS = [`,
+		`"c++-compile",`,
+		`def cc_toolchain_config(name):`,
+		`_cc_toolchain_config_rule(name = name)`,
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)

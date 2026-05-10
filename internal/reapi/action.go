@@ -93,6 +93,17 @@ type Inputs struct {
 	// changing argv. Names are sorted into the proto for stable
 	// digests across hosts.
 	EnvVars map[string]string
+
+	// CollectToolchainSignal, when true, requests that
+	// convert-element copy its cmake File API reply directory into
+	// the action's output tree at <pathOutToolchainSignal>.
+	// Capture-only today: the on-disk format is the input shape
+	// for the future unifier-side consumer (queued under
+	// ROADMAP.md Next as "Element-signal consumption in the
+	// unifier"), which will fold any per-element builtin-include
+	// / sysroot fact the dedicated toolchain probe missed into
+	// each platform's ResolvedToolchain.Base.
+	CollectToolchainSignal bool
 }
 
 // BuiltAction is the result of Build: a complete REAPI Action plus
@@ -139,6 +150,15 @@ const (
 	pathOutFailure     = "failure.json"
 	pathOutReads       = "read_paths.json"
 	pathOutTimings     = "timings.json"
+
+	// pathOutToolchainSignal is the action's output directory for
+	// per-element fileapi reply contents (Stage 6). Activated by
+	// Inputs.CollectToolchainSignal. Capture-only today; the
+	// future unifier-side consumer (ROADMAP.md Next, "Element-
+	// signal consumption in the unifier") reads the resulting
+	// trees to fold per-element toolchain facts into each
+	// platform's ResolvedToolchain.Base.
+	pathOutToolchainSignal = "toolchain-signal"
 )
 
 // Build constructs the Action / Command / InputRoot for one conversion.
@@ -208,6 +228,9 @@ func buildCommand(in Inputs) *repb.Command {
 	if in.ToolchainCMakeFile != "" {
 		args = append(args, "--toolchain-cmake-file", pathToolchainCMake)
 	}
+	if in.CollectToolchainSignal {
+		args = append(args, "--out-toolchain-signal-dir", pathOutToolchainSignal)
+	}
 
 	platform := &repb.Platform{}
 	props := append([]PlatformProperty(nil), in.Platform...)
@@ -232,18 +255,23 @@ func buildCommand(in Inputs) *repb.Command {
 		})
 	}
 
+	outputs := []string{
+		pathOutBuild,
+		pathOutBundle,
+		pathOutFailure,
+		pathOutReads,
+		pathOutTimings,
+	}
+	if in.CollectToolchainSignal {
+		outputs = append(outputs, pathOutToolchainSignal)
+	}
+
 	return &repb.Command{
 		Arguments:            args,
 		EnvironmentVariables: envVars,
-		OutputPaths: []string{
-			pathOutBuild,
-			pathOutBundle,
-			pathOutFailure,
-			pathOutReads,
-			pathOutTimings,
-		},
-		WorkingDirectory: "",
-		Platform:         platform,
+		OutputPaths:          outputs,
+		WorkingDirectory:     "",
+		Platform:             platform,
 	}
 }
 
