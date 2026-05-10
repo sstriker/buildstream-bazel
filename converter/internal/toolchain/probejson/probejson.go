@@ -77,15 +77,85 @@ func Marshal(variant toolchain.Variant, reply *fileapi.Reply) ([]byte, error) {
 		Variant:       variant,
 		Reply: ReplyJSON{
 			Index:       reply.Index,
-			Codemodel:   reply.Codemodel,
+			Codemodel:   scrubCodemodelPaths(reply.Codemodel),
 			Toolchains:  reply.Toolchains,
-			CMakeFiles:  reply.CMakeFiles,
+			CMakeFiles:  scrubCMakeFilesPaths(reply.CMakeFiles),
 			Cache:       cache,
-			Targets:     reply.Targets,
-			Directories: reply.Directories,
+			Targets:     scrubTargetPaths(reply.Targets),
+			Directories: scrubDirectoryPaths(reply.Directories),
 		},
 	}
 	return json.MarshalIndent(p, "", "  ")
+}
+
+// scrubCodemodelPaths returns a value-copy of c with every
+// absolute build/source path cleared. cmake's File API records
+// these as the recording machine's paths (e.g.
+// /tmp/sandbox-abc/source); leaving them in place makes
+// probe.json host-specific even after volatile cache entries
+// are filtered, which defeats the cross-host fold the unifier
+// performs. Configurations[].Directories[] are deep-copied so
+// the caller's Reply isn't mutated.
+func scrubCodemodelPaths(c fileapi.Codemodel) fileapi.Codemodel {
+	c.Paths.Source = ""
+	c.Paths.Build = ""
+	if len(c.Configurations) > 0 {
+		cfgs := make([]fileapi.Configuration, len(c.Configurations))
+		for i, cfg := range c.Configurations {
+			if len(cfg.Directories) > 0 {
+				dirs := make([]fileapi.ConfigDirectory, len(cfg.Directories))
+				for j, d := range cfg.Directories {
+					d.Source = ""
+					d.Build = ""
+					dirs[j] = d
+				}
+				cfg.Directories = dirs
+			}
+			cfgs[i] = cfg
+		}
+		c.Configurations = cfgs
+	}
+	return c
+}
+
+// scrubCMakeFilesPaths clears the absolute source/build root
+// fields from a CMakeFiles object. Returns a value-copy so the
+// caller's Reply isn't mutated.
+func scrubCMakeFilesPaths(f fileapi.CMakeFiles) fileapi.CMakeFiles {
+	f.Paths.Source = ""
+	f.Paths.Build = ""
+	return f
+}
+
+// scrubTargetPaths clears Target.Paths in every entry of the map.
+// Returns a fresh map so the caller's Targets isn't mutated.
+func scrubTargetPaths(in map[string]fileapi.Target) map[string]fileapi.Target {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]fileapi.Target, len(in))
+	for k, t := range in {
+		t.Paths.Source = ""
+		t.Paths.Build = ""
+		out[k] = t
+	}
+	return out
+}
+
+// scrubDirectoryPaths clears Directory.Paths in every entry of
+// the map. Returns a fresh map so the caller's Directories isn't
+// mutated.
+func scrubDirectoryPaths(in map[string]fileapi.Directory) map[string]fileapi.Directory {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]fileapi.Directory, len(in))
+	for k, d := range in {
+		d.Paths.Source = ""
+		d.Paths.Build = ""
+		out[k] = d
+	}
+	return out
 }
 
 // filterVolatileCacheEntries drops fileapi cache entries whose

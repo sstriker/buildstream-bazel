@@ -84,13 +84,13 @@ func TestDefaultVariantMapping_FallsBackToCXXFlags(t *testing.T) {
 	}
 }
 
-// TestSanitizerVariants_AllRouteCorrectly is a contract test
-// between the SanitizerVariants catalog and DefaultVariantMapping:
+// TestFeatureVariants_AllRouteCorrectly is a contract test
+// between the FeatureVariants catalog and DefaultVariantMapping:
 // each catalog entry must classify to its named feature. If
 // somebody adds a sanitizer Variant whose flags don't match the
 // classifier, this test catches it.
-func TestSanitizerVariants_AllRouteCorrectly(t *testing.T) {
-	for _, v := range SanitizerVariants {
+func TestFeatureVariants_AllRouteCorrectly(t *testing.T) {
+	for _, v := range FeatureVariants {
 		t.Run(v.Name, func(t *testing.T) {
 			got := DefaultVariantMapping(v)
 			want := BazelFeature(v.Name)
@@ -101,11 +101,11 @@ func TestSanitizerVariants_AllRouteCorrectly(t *testing.T) {
 	}
 }
 
-// TestSanitizerVariants_ContainAllSanitizers asserts the catalog
-// covers every sanitizer BazelFeature the enum names. Adding a
-// new sanitizer feature without a catalog entry would skip it
-// from probe-time discovery.
-func TestSanitizerVariants_ContainAllSanitizers(t *testing.T) {
+// TestFeatureVariants_CoversAllFeatures asserts the catalog
+// covers every non-built-in BazelFeature (sanitizers + coverage
+// + lto). Adding a new feature without a catalog entry would
+// skip it from probe-time discovery.
+func TestFeatureVariants_CoversAllFeatures(t *testing.T) {
 	want := map[BazelFeature]bool{
 		BazelFeatureAsan:     false,
 		BazelFeatureTsan:     false,
@@ -114,12 +114,12 @@ func TestSanitizerVariants_ContainAllSanitizers(t *testing.T) {
 		BazelFeatureCoverage: false,
 		BazelFeatureLto:      false,
 	}
-	for _, v := range SanitizerVariants {
+	for _, v := range FeatureVariants {
 		want[BazelFeature(v.Name)] = true
 	}
 	for f, found := range want {
 		if !found {
-			t.Errorf("SanitizerVariants is missing an entry for %q", f)
+			t.Errorf("FeatureVariants is missing an entry for %q", f)
 		}
 	}
 }

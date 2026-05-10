@@ -231,6 +231,33 @@ func TestParse_CacheVariableEmptyStringValue(t *testing.T) {
 	}
 }
 
+// TestParse_CacheVariableNullMapsToEmpty: a JSON `null`
+// cacheVariable used to round-trip as the literal string "<nil>"
+// via fmt.Sprintf("%v", nil), which would emit -DKEY=<nil> to
+// cmake. Map null to the empty string instead — matches
+// kits.stringify and is the only intuitive interpretation.
+func TestParse_CacheVariableNullMapsToEmpty(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "p", "cacheVariables": {
+				"NULL_VAR": null,
+				"REAL_VAR": "real"
+			}}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if got[0].CacheVars["NULL_VAR"] != "" {
+		t.Errorf("NULL_VAR = %q; want empty", got[0].CacheVars["NULL_VAR"])
+	}
+	if got[0].CacheVars["REAL_VAR"] != "real" {
+		t.Errorf("REAL_VAR = %q; want real", got[0].CacheVars["REAL_VAR"])
+	}
+}
+
 // TestLoadFile_MissingReturnsNil keeps caller code clean — they can
 // union LoadFile("CMakePresets.json") + LoadFile("CMakeUserPresets.json")
 // without checking IsNotExist themselves. CMakeUserPresets.json is
@@ -249,7 +276,7 @@ func TestLoadFile_MissingReturnsNil(t *testing.T) {
 // converter/testdata/toolchain-probe/CMakePresets.json carries the
 // project's variant matrix (build types + sanitizers + coverage + lto).
 // This test loads it and asserts the catalog matches the Go-side
-// SanitizerVariants — the JSON is the single source of truth.
+// FeatureVariants — the JSON is the single source of truth.
 func TestLoadFile_ProbeProjectFixture(t *testing.T) {
 	got, err := LoadFile("../../../testdata/toolchain-probe/CMakePresets.json")
 	if err != nil {
@@ -266,7 +293,7 @@ func TestLoadFile_ProbeProjectFixture(t *testing.T) {
 
 	// Every SanitizerVariant must appear in the JSON catalog with
 	// matching CacheVars; this is the cross-check the plan calls for.
-	for _, want := range toolchain.SanitizerVariants {
+	for _, want := range toolchain.FeatureVariants {
 		got, ok := gotByName[want.Name]
 		if !ok {
 			t.Errorf("CMakePresets.json missing sanitizer preset %q", want.Name)

@@ -7,13 +7,13 @@ import (
 	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
 )
 
-// TestEmitResolved_SanitizerVariantsRoutedToFeatures: a probe matrix
+// TestEmitResolved_FeatureVariantsRoutedToFeatures: a probe matrix
 // containing asan / tsan / ubsan / coverage cells must produce
 // non-empty _ASAN_COMPILE_FLAGS / _TSAN_COMPILE_FLAGS / etc.
 // constants in the emitted .bzl. This is the Stage 2 contract:
 // `--features=asan` reaches the right flag bundle without the
 // operator authoring per-feature plumbing by hand.
-func TestEmitResolved_SanitizerVariantsRoutedToFeatures(t *testing.T) {
+func TestEmitResolved_FeatureVariantsRoutedToFeatures(t *testing.T) {
 	rt := &toolchain.ResolvedToolchain{
 		Base: &toolchain.Model{
 			HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},

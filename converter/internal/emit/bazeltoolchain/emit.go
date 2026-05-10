@@ -11,7 +11,7 @@
 //     block per BazelFeature whose flag bundle is non-empty:
 //     default_compile_flags + dbg + opt come from the standard probe
 //     matrix; asan/tsan/msan/ubsan/coverage/lto come from the
-//     SanitizerVariants probe catalog when present.
+//     FeatureVariants probe catalog when present.
 //
 // The output is a complete, drop-in repo subdirectory: a downstream
 // `bazel build --extra_toolchains=//path:linux_x86_64_cc_toolchain
@@ -225,7 +225,7 @@ var featureSlots = []toolchain.BazelFeature{
 //
 // Why hand-rolled: unix_cc_toolchain_config's feature list is
 // sealed; we need feature("asan") / feature("tsan") / etc. that
-// activate via `--features=<name>` from the SanitizerVariants
+// activate via `--features=<name>` from the FeatureVariants
 // probe data, and the upstream rule offers no extension surface
 // for that. Standard features (dbg, opt) are reproduced here in
 // the same flag-set shape unix_cc_toolchain_config uses.

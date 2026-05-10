@@ -444,6 +444,22 @@ func compileCommandsPath(hostBuildDir, replyDir string) string {
 // a hostile build dir; rejecting them keeps the captured tree
 // honest.
 func copyDirContents(srcDir, dstDir string) error {
+	// Lstat srcDir up front: filepath.Walk uses Lstat too but its
+	// rel == "." early-return would silently mask a symlinked
+	// srcDir as "no entries to copy" — the resulting empty
+	// dstDir would mislead downstream consumers. Reject the
+	// symlinked-root and the not-a-directory cases here so the
+	// error names the actual problem.
+	rootInfo, err := os.Lstat(srcDir)
+	if err != nil {
+		return fmt.Errorf("copyDirContents: stat srcDir: %w", err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("copyDirContents: refusing to copy symlinked srcDir %s", srcDir)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("copyDirContents: srcDir %s is not a directory (mode %s)", srcDir, rootInfo.Mode())
+	}
 	// Reset dstDir so the result exactly mirrors srcDir — without
 	// this, leftover JSONs from a prior run could mislead the
 	// downstream consumer (the unifier folds each file as a probe

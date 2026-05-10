@@ -70,6 +70,88 @@ func TestMarshal_NilReplyRejected(t *testing.T) {
 	}
 }
 
+// TestMarshal_ScrubsAbsolutePaths: cmake's File API records
+// absolute source/build paths in Codemodel.Paths,
+// CMakeFiles.Paths, every Target.Paths, every Directory.Paths,
+// and Configuration.Directories[]. Leaving them in probe.json
+// makes the artifact host-specific (sandbox roots, tmp suffixes)
+// even after Cache filtering. Marshal must zero them all so the
+// per-cell artifact compares byte-equal across hosts that ran
+// the same cmake graph.
+func TestMarshal_ScrubsAbsolutePaths(t *testing.T) {
+	const recordedSrc = "/var/build/recorder-host/source"
+	const recordedBuild = "/var/build/recorder-host/build"
+
+	reply := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: recordedSrc,
+				Build:  recordedBuild,
+			},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Directories: []fileapi.ConfigDirectory{{
+					Source: recordedSrc,
+					Build:  recordedBuild,
+				}},
+			}},
+		},
+		CMakeFiles: fileapi.CMakeFiles{
+			Paths: fileapi.CMakeFilePaths{
+				Source: recordedSrc,
+				Build:  recordedBuild,
+			},
+		},
+		Targets: map[string]fileapi.Target{
+			"hello": {
+				Name: "hello",
+				Paths: fileapi.TargetPaths{
+					Source: recordedSrc,
+					Build:  recordedBuild,
+				},
+			},
+		},
+		Directories: map[string]fileapi.Directory{
+			"directory-Release.json": func() fileapi.Directory {
+				var d fileapi.Directory
+				d.Paths.Source = recordedSrc
+				d.Paths.Build = recordedBuild
+				return d
+			}(),
+		},
+	}
+
+	body, err := Marshal(toolchain.Variant{Name: "baseline"}, reply)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got := string(body)
+	for _, leak := range []string{recordedSrc, recordedBuild, "/var/build/recorder-host"} {
+		if strings.Contains(got, leak) {
+			t.Errorf("absolute path %q leaked into probe.json:\n%s", leak, got)
+		}
+	}
+
+	// And the original input must NOT have been mutated (the
+	// scrub functions return value/map copies — verify the
+	// caller's Reply still carries the recorded paths).
+	if reply.Codemodel.Paths.Build != recordedBuild {
+		t.Errorf("Marshal mutated input Reply.Codemodel.Paths.Build")
+	}
+	if reply.CMakeFiles.Paths.Build != recordedBuild {
+		t.Errorf("Marshal mutated input Reply.CMakeFiles.Paths.Build")
+	}
+	if reply.Targets["hello"].Paths.Build != recordedBuild {
+		t.Errorf("Marshal mutated input Reply.Targets[hello].Paths.Build")
+	}
+	if reply.Directories["directory-Release.json"].Paths.Build != recordedBuild {
+		t.Errorf("Marshal mutated input Reply.Directories[..].Paths.Build")
+	}
+	if reply.Codemodel.Configurations[0].Directories[0].Build != recordedBuild {
+		t.Errorf("Marshal mutated input Reply.Codemodel.Configurations[0].Directories[0].Build")
+	}
+}
+
 // TestMarshal_FiltersVolatileCacheEntries: the build-dir-derived
 // cache entries cmake's File API emits (CMAKE_BINARY_DIR, every
 // *_BINARY_DIR, CMAKE_FIND_PACKAGE_REDIRECTS_DIR, log-file paths

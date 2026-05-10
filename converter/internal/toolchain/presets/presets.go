@@ -221,13 +221,19 @@ func (c cacheVarRaw) stringValue() (string, error) {
 	if err := json.Unmarshal(c.raw, &obj); err == nil && obj.Value != nil {
 		return *obj.Value, nil
 	}
-	// Bool / number — coerce via fmt. Reject anything else (an
-	// object without a value field, an array, etc.) so callers
-	// see a clear error rather than a garbled coercion.
+	// Bool / number — coerce via fmt. JSON null maps to the empty
+	// string (matches kits.stringify; the alternative
+	// fmt.Sprintf("%v", nil) emits the literal "<nil>" which would
+	// surface to cmake as -DKEY=<nil>, almost certainly unintended).
+	// Reject anything else (an object without a value field, an
+	// array, etc.) so callers see a clear error rather than a
+	// garbled coercion.
 	var v any
 	if err := json.Unmarshal(c.raw, &v); err == nil {
 		switch v.(type) {
-		case bool, float64, nil:
+		case nil:
+			return "", nil
+		case bool, float64:
 			return fmt.Sprintf("%v", v), nil
 		}
 	}

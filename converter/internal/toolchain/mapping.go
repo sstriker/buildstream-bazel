@@ -33,20 +33,23 @@ const (
 	BazelFeatureLto      BazelFeature = "lto"      // -flto
 )
 
-// SanitizerVariants is the canonical catalog of sanitizer probe
-// variants. Each entry's CacheVars sets CMAKE_C_FLAGS / CMAKE_CXX_FLAGS
-// to the sanitizer's expected flag bundle (CMAKE_BUILD_TYPE=Debug so
-// the optimizer doesn't elide instrumentation). The catalog is the
-// single source of truth for what flags Stage 2's emit layer maps
-// back onto Bazel's `--features=<name>` slots.
+// FeatureVariants is the canonical catalog of feature probe
+// variants — sanitizers, coverage, and LTO. Each entry's
+// CacheVars sets CMAKE_C_FLAGS / CMAKE_CXX_FLAGS to the
+// feature's expected flag bundle (CMAKE_BUILD_TYPE=Debug so the
+// optimizer doesn't elide instrumentation, except LTO which
+// pairs with Release). The catalog is the single source of
+// truth for what flags Stage 2's emit layer maps back onto
+// Bazel's `--features=<name>` slots.
 //
-// Coverage and LTO are intentionally separate from the four
-// sanitizers — they're not mutually exclusive with sanitizers and
-// frequently combined (asan + coverage is common).
+// Coverage and LTO live alongside the sanitizers because they
+// share the same shape (a flag bundle that activates via Bazel's
+// --features), even though they're not strictly sanitizers and
+// can be combined with one (asan + coverage is common).
 //
 // CMakePresets.json (Stage 3) carries the same catalog in JSON;
-// TestSanitizerVariants_MatchesPresetsJSON keeps the two in sync.
-var SanitizerVariants = []Variant{
+// TestFeatureVariants_AllRouteCorrectly keeps the two in sync.
+var FeatureVariants = []Variant{
 	{
 		Name: "asan",
 		CacheVars: map[string]string{

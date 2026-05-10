@@ -54,6 +54,50 @@ func TestCopyDirContents_HappyPath(t *testing.T) {
 	}
 }
 
+// TestCopyDirContents_RejectsSymlinkedSrcDir: filepath.Walk's
+// rel == "." early-return masks a symlinked srcDir as "no
+// entries to copy" — without an upfront Lstat the function
+// would silently produce an empty dstDir. Reject explicitly.
+func TestCopyDirContents_RejectsSymlinkedSrcDir(t *testing.T) {
+	parent := t.TempDir()
+	real := filepath.Join(parent, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+	dst := filepath.Join(parent, "dst")
+	err := copyDirContents(link, dst)
+	if err == nil {
+		t.Fatal("expected symlinked-srcDir rejection; got nil")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q missing 'symlink'", err)
+	}
+}
+
+// TestCopyDirContents_RejectsNonDirectorySrcDir covers the
+// "srcDir is a regular file" misuse (e.g. caller passed --reply
+// path instead of the dir). Without the upfront check, walk
+// would treat the file as the only entry, hit rel == ".", and
+// silently produce an empty dstDir.
+func TestCopyDirContents_RejectsNonDirectorySrcDir(t *testing.T) {
+	tmp := t.TempDir()
+	regular := filepath.Join(tmp, "file.txt")
+	if err := os.WriteFile(regular, []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := copyDirContents(regular, filepath.Join(tmp, "dst"))
+	if err == nil {
+		t.Fatal("expected non-directory rejection; got nil")
+	}
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error %q missing 'not a directory'", err)
+	}
+}
+
 // TestCopyDirContents_RejectsSymlink: a symlink in the source
 // tree (file or directory) is rejected explicitly. Cmake's
 // fileapi never writes symlinks, so seeing one means a hostile
