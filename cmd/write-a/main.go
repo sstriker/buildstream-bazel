@@ -360,6 +360,7 @@ func main() {
 	round1 := flag.Bool("autotools-round1", false, "opt out of round-2 (the default for kind:autotools when the trace-driven path is enabled). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / make / make-install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin (trace-lookup is not yet wired for kind:cmake — the load-time @trace_<elem>//:trace lookup is queued behind the trace-driven convergence research follow-on). See docs/design/cmake-execute-process-round2-fallback.md.")
+	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -409,6 +410,16 @@ func main() {
 			log.Fatalf("resolve cmake-configure-file path: %v", err)
 		}
 		cmakeConfig.configureFileBin = abs
+	}
+	if *mesonBin != "" {
+		abs, err := filepath.Abs(*mesonBin)
+		if err != nil {
+			log.Fatalf("resolve convert-element-meson path: %v", err)
+		}
+		if _, err := os.Stat(abs); err != nil {
+			log.Fatalf("convert-element-meson binary at %s: %v", abs, err)
+		}
+		mesonConfig.convertBin = abs
 	}
 	// kind:cmake round-2 fallback. Reuses the same build-tracer
 	// + trace-publish + trace-lookup staging the autotools
@@ -974,6 +985,13 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if cmakeFileExport != "" {
 		exports = append(exports, cmakeFileExport)
 	}
+	mesonExport, err := stageMesonConverter(outDir)
+	if err != nil {
+		return err
+	}
+	if mesonExport != "" {
+		exports = append(exports, mesonExport)
+	}
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {
@@ -1036,6 +1054,36 @@ func stageCmakeConfigureFileTool(outDir string) (string, error) {
 		return "", err
 	}
 	return "cmake-configure-file", nil
+}
+
+// stageMesonConverter copies convert-element-meson into outDir/tools/
+// when --convert-element-meson was set, returning the exports_files
+// entry the caller adds to tools/BUILD.bazel. Empty + nil when the
+// native path is disabled (the kind:meson handler then renders the
+// pipeline-shape fallback; nothing to stage).
+//
+// Staged in both project A and project B so the
+// `//tools:convert-element-meson` label resolves regardless of
+// which project the per-element BUILD ends up in. Project A is the
+// only side that *runs* the binary today; project B's staged copy
+// keeps the symmetry the cmake/autotools tools already maintain
+// (lets the driver-script staging flow re-run write-a against
+// either project without touching the tool wiring).
+func stageMesonConverter(outDir string) (string, error) {
+	if mesonConfig.convertBin == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return "", err
+	}
+	stagedAt := filepath.Join(outDir, "tools", "convert-element-meson")
+	if err := copyFile(mesonConfig.convertBin, stagedAt); err != nil {
+		return "", fmt.Errorf("stage convert-element-meson: %w", err)
+	}
+	if err := os.Chmod(stagedAt, 0o755); err != nil {
+		return "", err
+	}
+	return "convert-element-meson", nil
 }
 
 // stageAutotoolsTools copies the trace-pipeline binaries into
@@ -1220,6 +1268,13 @@ func writeProjectB(g *graph, outDir string) error {
 	}
 	if cmakeFileExport != "" {
 		exports = append(exports, cmakeFileExport)
+	}
+	mesonExport, err := stageMesonConverter(outDir)
+	if err != nil {
+		return err
+	}
+	if mesonExport != "" {
+		exports = append(exports, mesonExport)
 	}
 	exportsList := ""
 	for i, e := range exports {

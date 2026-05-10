@@ -222,6 +222,118 @@ changes when the upstream output changes).
 
 **Emission point:** `runner.processElement` early-out (M3a).
 
+### `meson-setup-failed` _(kind:meson)_
+
+`meson setup` returned non-zero, or its `meson-info/intro-*.json`
+artifacts couldn't be parsed. The Tier-1 `message` field carries
+the wrapped Go error (typically the `*exec.ExitError` plus a
+short context string); meson's own stdout/stderr is streamed
+through to the converter's stderr at run time, NOT captured into
+`failure.json`. Operators iterating on a failure read the meson
+output from the converter's stderr stream (or the orchestrator's
+per-element log).
+
+**Operator action:** investigate the meson failure as you would
+in a normal meson invocation, reading the streamed stderr. If
+the cause is a missing dependency (`dependency('foo', required:
+true)`), expose it via the imports manifest or pre-stage it on
+the executor.
+
+**Emission point:** `cmd/convert-element-meson` `runMesonSetup`
+return path + introspection load.
+
+### `unsupported-meson-target-type` _(kind:meson)_
+
+`meson introspect --targets` reported a target whose `type`
+isn't one of `static library` / `shared library` / `both libraries`
+/ `executable` / `custom` / `run`. v1 covers the cc-shaped types +
+custom_target's lift-friendly subset; `jar` and unknown values
+refuse here.
+
+**Operator action:** if the offending target is necessary,
+upgrade the converter to recognise it (and add a fixture). If
+it's incidental, condition the meson.build to skip declaring
+the target in this build (e.g. via an `if` guard the converter's
+configure pass evaluates to false). v1 lowers every introspected
+target regardless of `build_by_default`, so flipping that flag
+alone won't suppress the refusal — a future converter version
+could honor it; track in ROADMAP if it becomes a real operator
+ergonomics issue.
+
+**Emission point:** `cmd/convert-element-meson` `lower.Lower`
+type-switch default arm.
+
+### `unsupported-meson-subproject` _(kind:meson)_
+
+A target's `subproject` field is non-null, or one of its sources'
+absolute paths lies outside the `--source-root` prefix. v1 doesn't
+recurse into meson subprojects (`subprojects/foo`); each subproject
+should be its own kind:meson element.
+
+**Operator action:** split the meson subproject into its own
+element and add it to the imports manifest.
+
+**Emission point:** `cmd/convert-element-meson` `lower.Lower`
+subproject check + `relativizeSources`.
+
+### `unsupported-meson-custom-target` _(kind:meson)_
+
+A `custom_target()` whose shape v1 can't safely lift to a
+`genrule`: zero or multi-entry `target_sources`, empty command,
+opaque `@CURRENT_BUILD_DIR@` / `@SOURCE_ROOT@` / `@DEPFILE@` /
+indexed `@INPUT0@` substitutions, embedded `@INPUT@` / `@OUTPUT@`
+fragments (e.g. `--in=@INPUT@`), or a command that doesn't
+reference `@OUTPUT@` (would render a genrule that ignores its
+declared outputs).
+
+**Operator action:** narrow the custom_target to the canonical
+`command @INPUT@ -o @OUTPUT@` shape, or pre-generate the file
+under sources and treat it as static.
+
+**Emission point:** `cmd/convert-element-meson` `lower.lowerCustom`
++ `renderCustomCmd`.
+
+### `unsupported-meson-generated-sources` _(kind:meson)_
+
+A target's `target_sources` references `generated_sources`
+(custom_target outputs wired into a target's `srcs` via
+`files()` / generator outputs). v1 doesn't yet wire those into
+the cc rule's srcs; the producer would need an in-Bazel genrule
+the target's cc rule then depends on.
+
+**Operator action:** consume the generator output as a static
+file, or wait for the v2 generated-sources lift.
+
+**Emission point:** `cmd/convert-element-meson`
+`lower.fillSourcesAndFlags`.
+
+### `unsupported-meson-cross-compile` _(kind:meson)_
+
+A target's compile group has `machine: build` (cross-compile
+build-machine inputs), which v1 doesn't model. The meson
+intro-targets schema admits both `host` and `build` machines;
+mapping a `build` group requires a separate Bazel toolchain
+selection that v1 doesn't yet plumb.
+
+**Operator action:** disable the cross-compile path for v1, or
+pre-stage the build-machine artifacts.
+
+**Emission point:** `cmd/convert-element-meson`
+`lower.fillSourcesAndFlags`.
+
+### `unresolved-meson-dependency` _(kind:meson)_
+
+An external `dependency('foo')` resolved by meson but unbound
+on the Bazel side: not present in the imports manifest (under
+either `foo` or `foo::foo`) and lacking inline `compile_args` /
+`link_args` in `intro-dependencies.json`.
+
+**Operator action:** add the providing element to the imports
+manifest (mirrors the kind:cmake convention), or pre-stage the
+library + headers on the executor.
+
+**Emission point:** `cmd/convert-element-meson` `lower.fillDeps`.
+
 ## Stability rules
 
 1. **Append-only.** Once a code is in this list, it stays. New

@@ -1,6 +1,6 @@
 .PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-vars \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-meson e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
@@ -182,6 +182,18 @@ e2e-meta-make: check-tools converter
 # trace-driven kind including kind:make.
 e2e-meta-make-round2: check-tools converter
 	scripts/meta-make-round2.sh
+
+# kind:meson native render acceptance gate. Single kind:meson element
+# (testdata/meta-project/meson-greet/) — a static_library + executable
+# pair. write-a renders project A with --convert-element-meson set so
+# the per-element BUILD invokes //tools:convert-element-meson against
+# the staged source tree, producing BUILD.bazel.out with native
+# cc_library / cc_binary rules from `meson introspect`. The render
+# half always runs; the bazel-build half self-skips unless BOTH
+# bazel >= 7 AND meson are on PATH (the genrule needs meson on the
+# executor; bazel < 7 lacks bzlmod). See docs/design/meson-native-render.md.
+e2e-meta-meson: check-tools converter
+	scripts/meta-meson.sh
 
 # Variable-resolver acceptance gate. Single kind:manual element
 # (testdata/meta-project/vars-greet/) whose .bst overrides %{prefix}
