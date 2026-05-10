@@ -134,11 +134,13 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 //
 // The variable names matter because --normalize-prefix below
 // rewrites those exact prefixes into stable placeholders
-// (`/BUILD_ROOT/`, `/INSTALL_ROOT/`) for byte-stable canonical
-// traces. A configure step that bound a different variable
-// (BUILD_DIR, DESTDIR, ...) would land mktemp paths the
-// substitution can't match, breaking trace stability across
-// machines.
+// (`/BUILD_ROOT`, `/INSTALL_ROOT` — no trailing slash; the
+// substitution covers any byte sequence that begins with the
+// recording-machine value, slashed or otherwise) for byte-
+// stable canonical traces. A configure step that bound a
+// different variable (BUILD_DIR, DESTDIR, ...) would land
+// mktemp paths the substitution can't match, breaking trace
+// stability across machines.
 //
 // --parallel 1 mirrors `make -j1` in autotools round-2: serial
 // execution keeps the trace's process-spawn order stable so
