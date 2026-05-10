@@ -106,7 +106,11 @@ func resolveCacheVars(p *configurePreset, byName map[string]*configurePreset, an
 	// Inherits: declared order — CMakePresets says later parents
 	// override earlier ones on key collision, so we walk parents
 	// in the order the JSON listed them.
-	for _, parentName := range p.parents() {
+	parentNames, err := p.parents()
+	if err != nil {
+		return nil, fmt.Errorf("presets: %q: %w", p.Name, err)
+	}
+	for _, parentName := range parentNames {
 		parent, ok := byName[parentName]
 		if !ok {
 			return nil, fmt.Errorf("presets: %q inherits unknown preset %q", p.Name, parentName)
@@ -160,21 +164,29 @@ type configurePreset struct {
 // "later inherited presets override earlier ones on key
 // collisions" — sorting alphabetically here would silently swap
 // which parent's value wins on a duplicate key.
-func (p *configurePreset) parents() []string {
+//
+// Any other shape (number, object, mixed array, etc.) is
+// reported as an error rather than silently treated as
+// "no parents" — that flavour of mis-parse used to produce a
+// quietly wrong CacheVars merge.
+func (p *configurePreset) parents() ([]string, error) {
 	if len(p.Inherits) == 0 {
-		return nil
+		return nil, nil
 	}
 	// Try array first.
 	var arr []string
 	if err := json.Unmarshal(p.Inherits, &arr); err == nil {
-		return arr
+		return arr, nil
 	}
 	// Fall back to single string.
 	var s string
-	if err := json.Unmarshal(p.Inherits, &s); err == nil && s != "" {
-		return []string{s}
+	if err := json.Unmarshal(p.Inherits, &s); err == nil {
+		if s == "" {
+			return nil, fmt.Errorf("inherits is an empty string; expected a preset name or an array of names")
+		}
+		return []string{s}, nil
 	}
-	return nil
+	return nil, fmt.Errorf("inherits has unsupported shape: %s", string(p.Inherits))
 }
 
 // cacheVarRaw handles the two shapes a cacheVariables value can take:

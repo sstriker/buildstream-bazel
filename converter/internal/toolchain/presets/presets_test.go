@@ -120,6 +120,26 @@ func TestParse_InheritsArray(t *testing.T) {
 	}
 }
 
+// TestParse_InheritsRejectsMalformedShape: inherits whose value
+// is neither a string nor a string array (e.g. a number, object,
+// mixed array) used to silently parse as "no parents", producing
+// a quietly wrong CacheVars merge. Now an explicit parse error.
+func TestParse_InheritsRejectsMalformedShape(t *testing.T) {
+	cases := map[string]string{
+		"number":       `{"version":3,"configurePresets":[{"name":"p","inherits":42}]}`,
+		"object":       `{"version":3,"configurePresets":[{"name":"p","inherits":{"foo":"bar"}}]}`,
+		"mixed":        `{"version":3,"configurePresets":[{"name":"p","inherits":["a", 1]}]}`,
+		"empty-string": `{"version":3,"configurePresets":[{"name":"p","inherits":""}]}`,
+	}
+	for label, body := range cases {
+		t.Run(label, func(t *testing.T) {
+			if _, err := Parse([]byte(body)); err == nil {
+				t.Errorf("expected error for %s; got nil", label)
+			}
+		})
+	}
+}
+
 func TestParse_InheritsCycleRejected(t *testing.T) {
 	body := []byte(`{
 		"version": 3,

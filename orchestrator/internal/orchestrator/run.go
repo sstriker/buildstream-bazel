@@ -124,12 +124,14 @@ type Options struct {
 
 	// CollectToolchainSignal, when true, asks each element's
 	// converter to copy its cmake File API reply directory into
-	// <Out>/elements/<name>/toolchain-signal/. The unifier
-	// (cmd/unify-toolchains, Stage 5) consumes these via
-	// --element-signal to fold any per-element builtin-include /
-	// sysroot fact the dedicated toolchain probe missed. Off by
-	// default: existing flows that don't unify toolchains pay
-	// nothing for the extra directory copy.
+	// <Out>/elements/<name>/toolchain-signal/. Off by default:
+	// existing flows that don't unify toolchains pay nothing for
+	// the extra directory copy. Today's behaviour is capture-only:
+	// the on-disk shape is the input format for the future
+	// unifier-side consumer queued under ROADMAP.md Next as
+	// "Element-signal consumption in the unifier", which will
+	// fold per-element builtin-include / sysroot facts into each
+	// platform's ResolvedToolchain.Base.
 	CollectToolchainSignal bool
 
 	// Log is a back-compat shim: when set and Logger is nil, the

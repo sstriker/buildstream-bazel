@@ -83,13 +83,15 @@ type Args struct {
 
 	// OutToolchainSignalDir, when non-empty, causes convert-element
 	// to copy the cmake File API reply directory contents to this
-	// path after a successful configure. The unifier (Stage 5)
-	// optionally consumes these per-element replies via
-	// --element-signal to fold any builtin-include / sysroot fact
-	// observed in real elements that the dedicated toolchain probe
-	// missed. Off by default; the orchestrator opts in via
-	// CollectToolchainSignal so existing flows that don't unify
-	// toolchains pay nothing for the extra directory copy.
+	// path after a successful configure. Off by default; the
+	// orchestrator opts in via CollectToolchainSignal so existing
+	// flows that don't unify toolchains pay nothing for the extra
+	// directory copy. Capture-only today: the on-disk format is the
+	// input shape for the future unifier-side consumer (the
+	// "Element-signal consumption in the unifier" follow-up under
+	// ROADMAP.md Next), which will fold any per-element
+	// builtin-include / sysroot fact a real element exposes that
+	// the dedicated toolchain probe missed.
 	OutToolchainSignalDir string
 
 	// LiftConfigureFile toggles the configure_file recovery's

@@ -96,11 +96,13 @@ type Inputs struct {
 
 	// CollectToolchainSignal, when true, requests that
 	// convert-element copy its cmake File API reply directory into
-	// the action's output tree at <pathOutToolchainSignal>. The
-	// orchestrator uses this when it intends to feed
-	// unify-toolchains' --element-signal flag downstream — every
-	// element's reply contributes any builtin-include / sysroot
-	// fact the dedicated toolchain probe missed.
+	// the action's output tree at <pathOutToolchainSignal>.
+	// Capture-only today: the on-disk format is the input shape
+	// for the future unifier-side consumer (queued under
+	// ROADMAP.md Next as "Element-signal consumption in the
+	// unifier"), which will fold any per-element builtin-include
+	// / sysroot fact the dedicated toolchain probe missed into
+	// each platform's ResolvedToolchain.Base.
 	CollectToolchainSignal bool
 }
 
@@ -151,8 +153,11 @@ const (
 
 	// pathOutToolchainSignal is the action's output directory for
 	// per-element fileapi reply contents (Stage 6). Activated by
-	// Inputs.CollectToolchainSignal. The unifier (Stage 5) consumes
-	// the resulting trees via --element-signal.
+	// Inputs.CollectToolchainSignal. Capture-only today; the
+	// future unifier-side consumer (ROADMAP.md Next, "Element-
+	// signal consumption in the unifier") reads the resulting
+	// trees to fold per-element toolchain facts into each
+	// platform's ResolvedToolchain.Base.
 	pathOutToolchainSignal = "toolchain-signal"
 )
 
