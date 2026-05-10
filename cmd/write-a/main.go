@@ -487,7 +487,7 @@ func main() {
 	// binaries OR opt out via --trace-round1).
 	if traceConfig.convertBin != "" && !*round1 {
 		if *publishBin == "" || *lookupBin == "" {
-			log.Fatalf("kind:autotools round-2 (the default when --convert-element-trace is set) requires --trace-publish-bin and --trace-lookup-bin; pass --trace-round1 to opt back into the legacy single-genrule shape that doesn't need them")
+			log.Fatalf("trace-driven round-2 (the default for kinds opted into the trace-driven path — autotools / make / manual / script / makemaker / modulebuild — when --convert-element-trace is set) requires --trace-publish-bin and --trace-lookup-bin; pass --trace-round1 to opt back into the legacy single-genrule shape that doesn't need them")
 		}
 		pubAbs, err := filepath.Abs(*publishBin)
 		if err != nil {

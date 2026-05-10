@@ -19,7 +19,7 @@ project-A/
 │   └── BUILD.bazel         # bzl_library exports for the .bzl files
 ├── tools/
 │   ├── convert-element             # the cmake converter binary
-│   ├── convert-element-trace   # the autotools converter binary
+│   ├── convert-element-trace   # the trace-driven converter binary (shared by autotools / make / manual / script / makemaker / modulebuild)
 │   ├── build-tracer                # process tracer binary
 │   ├── sources.json                # source-key → URL/digest catalogue
 │   └── BUILD.bazel                 # exports_files([...]) for the above
