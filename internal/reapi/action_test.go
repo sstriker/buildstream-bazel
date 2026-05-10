@@ -187,6 +187,47 @@ func TestBuild_CollectToolchainSignal(t *testing.T) {
 	}
 }
 
+// TestBuild_EmitIRJSON: when on, the action gets the
+// --out-ir-json flag plus the ir.json output path, and the
+// action digest shifts so cached results from before the flip
+// don't get reused.
+func TestBuild_EmitIRJSON(t *testing.T) {
+	in := fixture(t, false, false)
+	a1, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build w/o IR JSON: %v", err)
+	}
+
+	in.EmitIRJSON = true
+	a2, err := Build(in)
+	if err != nil {
+		t.Fatalf("Build w/ IR JSON: %v", err)
+	}
+
+	argv := a2.Command.Arguments
+	hasFlag := false
+	hasPath := false
+	for i, a := range argv {
+		if a == "--out-ir-json" && i+1 < len(argv) && argv[i+1] == "ir.json" {
+			hasFlag = true
+		}
+	}
+	for _, p := range a2.Command.OutputPaths {
+		if p == "ir.json" {
+			hasPath = true
+		}
+	}
+	if !hasFlag {
+		t.Errorf("expected --out-ir-json ir.json in argv; got %v", argv)
+	}
+	if !hasPath {
+		t.Errorf("expected ir.json in OutputPaths; got %v", a2.Command.OutputPaths)
+	}
+	if a1.ActionDigest.Hash == a2.ActionDigest.Hash {
+		t.Errorf("ActionDigest unchanged with EmitIRJSON flip; should differ")
+	}
+}
+
 func TestBuild_TimeoutSetsAction(t *testing.T) {
 	in := fixture(t, false, false)
 	in.Timeout = 17 * time.Minute

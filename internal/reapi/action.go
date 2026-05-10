@@ -104,6 +104,16 @@ type Inputs struct {
 	// / sysroot fact the dedicated toolchain probe missed into
 	// each platform's ResolvedToolchain.Base.
 	CollectToolchainSignal bool
+
+	// EmitIRJSON, when true, asks convert-element to write the
+	// post-lower ir.Package as JSON to the action's output tree
+	// at <pathOutIRJSON>. The orchestrator's per-element multi-
+	// platform fold reads this JSON across N per-platform
+	// Actions and composes them into one unified BUILD.bazel
+	// (see internal/elementfold). Off for single-platform
+	// conversions; the rendered BUILD.bazel stays the canonical
+	// output there.
+	EmitIRJSON bool
 }
 
 // BuiltAction is the result of Build: a complete REAPI Action plus
@@ -159,6 +169,13 @@ const (
 	// trees to fold per-element toolchain facts into each
 	// platform's ResolvedToolchain.Base.
 	pathOutToolchainSignal = "toolchain-signal"
+
+	// pathOutIRJSON is the action's per-element ir.Package JSON
+	// output. Activated by Inputs.EmitIRJSON. Drives the
+	// per-element multi-platform fold: the orchestrator collects
+	// N of these (one per platform), feeds them through
+	// elementfold.Fold, and renders the unified BUILD.bazel.
+	pathOutIRJSON = "ir.json"
 )
 
 // Build constructs the Action / Command / InputRoot for one conversion.
@@ -231,6 +248,9 @@ func buildCommand(in Inputs) *repb.Command {
 	if in.CollectToolchainSignal {
 		args = append(args, "--out-toolchain-signal-dir", pathOutToolchainSignal)
 	}
+	if in.EmitIRJSON {
+		args = append(args, "--out-ir-json", pathOutIRJSON)
+	}
 
 	platform := &repb.Platform{}
 	props := append([]PlatformProperty(nil), in.Platform...)
@@ -264,6 +284,9 @@ func buildCommand(in Inputs) *repb.Command {
 	}
 	if in.CollectToolchainSignal {
 		outputs = append(outputs, pathOutToolchainSignal)
+	}
+	if in.EmitIRJSON {
+		outputs = append(outputs, pathOutIRJSON)
 	}
 
 	return &repb.Command{

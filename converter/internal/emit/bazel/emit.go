@@ -123,26 +123,26 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 	"strDict": strDict,
 }).Parse(`{{.RuleKind}}(
     name = "{{.Name}}",
-{{- if .Srcs}}
-    srcs = {{strList .Srcs}},
+{{- if .SrcsExpr}}
+    srcs = {{.SrcsExpr}},
 {{- end}}
-{{- if .Hdrs}}
-    hdrs = {{strList .Hdrs}},
+{{- if .HdrsExpr}}
+    hdrs = {{.HdrsExpr}},
 {{- end}}
-{{- if .Includes}}
-    includes = {{strList .Includes}},
+{{- if .IncludesExpr}}
+    includes = {{.IncludesExpr}},
 {{- end}}
-{{- if .Copts}}
-    copts = {{strList .Copts}},
+{{- if .CoptsExpr}}
+    copts = {{.CoptsExpr}},
 {{- end}}
-{{- if .Defines}}
-    defines = {{strList .Defines}},
+{{- if .DefinesExpr}}
+    defines = {{.DefinesExpr}},
 {{- end}}
-{{- if .Linkopts}}
-    linkopts = {{strList .Linkopts}},
+{{- if .LinkoptsExpr}}
+    linkopts = {{.LinkoptsExpr}},
 {{- end}}
-{{- if .Deps}}
-    deps = {{strList .Deps}},
+{{- if .DepsExpr}}
+    deps = {{.DepsExpr}},
 {{- end}}
 {{- if .Data}}
     data = {{strList .Data}},
@@ -239,23 +239,33 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 )
 `))
 
-// ccView projects ir.Target into the cc-rule template. List attributes are
-// pre-sorted; the emitter doesn't make policy decisions. Test-only fields
-// (Args, Env, Timeout, Data) stay zero except when RuleKind == "cc_test".
+// ccView projects ir.Target into the cc-rule template. The
+// *Expr fields are pre-rendered attribute values: each carries
+// either a flat Starlark list literal (when the IR target has
+// no PerPlatform deltas for that attribute) or a
+// "<flat> + select({...})" / "select({...})" composite (when
+// the per-element multi-platform fold populated the deltas).
+// Pre-rendering in Go keeps the template free of conditional
+// list-vs-select logic — the template just emits the raw
+// expression. An empty *Expr signals "omit this attribute"
+// (the template's `{{- if }}` guard does the right thing).
+//
+// Test-only fields (Args, Env, Timeout, Data) stay zero except
+// when RuleKind == "cc_test".
 type ccView struct {
-	RuleKind   string
-	Name       string
-	Srcs       []string
-	Hdrs       []string
-	Includes   []string
-	Copts      []string
-	Defines    []string
-	Linkopts   []string
-	Deps       []string
-	Linkstatic bool
-	Alwayslink bool
-	Tags       []string
-	Visibility []string
+	RuleKind     string
+	Name         string
+	SrcsExpr     string
+	HdrsExpr     string
+	IncludesExpr string
+	CoptsExpr    string
+	DefinesExpr  string
+	LinkoptsExpr string
+	DepsExpr     string
+	Linkstatic   bool
+	Alwayslink   bool
+	Tags         []string
+	Visibility   []string
 
 	// cc_test-only.
 	Args    []string
@@ -317,39 +327,79 @@ func emitCCTarget(w *bytes.Buffer, t ir.Target) error {
 }
 
 func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
-	v := ccView{
-		RuleKind:   t.Kind.String(),
-		Name:       t.Name,
-		Srcs:       sortedCopy(t.Srcs),
-		Hdrs:       sortedCopy(t.Hdrs),
-		Includes:   sortedCopy(t.Includes),
-		Copts:      append([]string(nil), t.Copts...), // preserve order; flag order matters
-		Defines:    sortedCopy(t.Defines),
-		Linkopts:   append([]string(nil), t.LinkOpts...), // preserve order
-		Deps:       sortedCopy(t.Deps),
-		Linkstatic: t.Linkstatic,
-		Alwayslink: t.Alwayslink,
-		Tags:       sortedCopy(t.Tags),
-		Visibility: append([]string(nil), t.Visibility...),
+	// Compute the per-attribute baselines first (matching the
+	// existing single-platform sort/order conventions), then fold
+	// in any per-platform deltas. cc_binary / cc_test fold their
+	// hdrs into srcs before rendering; the FUSE source-label
+	// rewrite applies after that fold. PerPlatform deltas are
+	// rewritten with the same source-label prefix where they
+	// describe per-platform srcs/hdrs.
+	srcs := sortedCopy(t.Srcs)
+	hdrs := sortedCopy(t.Hdrs)
+	includes := sortedCopy(t.Includes)
+	copts := append([]string(nil), t.Copts...) // preserve order; flag order matters
+	defines := sortedCopy(t.Defines)
+	linkopts := append([]string(nil), t.LinkOpts...) // preserve order
+	deps := sortedCopy(t.Deps)
+
+	// cc_binary doesn't accept `hdrs` (Bazel 9 errors out where
+	// older versions silently ignored). Fold any header into srcs
+	// so the translation unit still sees them, even though that's
+	// the rules_cc convention for binaries. cc_test inherits
+	// cc_binary's stricture, so apply the same fold there.
+	srcsSel := perPlatformAttr(t, "srcs")
+	hdrsSel := perPlatformAttr(t, "hdrs")
+	if (t.Kind == ir.KindCCBinary || t.Kind == ir.KindCCTest) && (len(hdrs) > 0 || len(hdrsSel) > 0) {
+		srcs = append(srcs, hdrs...)
+		sort.Strings(srcs)
+		hdrs = nil
+		// Per-platform hdrs deltas fold into the corresponding
+		// srcs delta arms so cc_binary/cc_test still see those
+		// headers as compilation inputs in their respective
+		// platforms.
+		if len(hdrsSel) > 0 {
+			if srcsSel == nil {
+				srcsSel = map[string][]string{}
+			}
+			for arm, items := range hdrsSel {
+				srcsSel[arm] = append(srcsSel[arm], items...)
+				// srcs is not order-sensitive: sort the merged
+				// arm so it matches the baseline path's
+				// sort-after-fold convention and so renders
+				// stably regardless of cell iteration order.
+				sort.Strings(srcsSel[arm])
+			}
+		}
+		hdrsSel = nil
 	}
-	// cc_binary doesn't accept `hdrs` (Bazel 9 errors out where older
-	// versions silently ignored). Fold any header into srcs so the
-	// translation unit still sees them, even though that's the
-	// rules_cc convention for binaries. cc_test inherits cc_binary's
-	// stricture, so apply the same fold there.
-	if (t.Kind == ir.KindCCBinary || t.Kind == ir.KindCCTest) && len(v.Hdrs) > 0 {
-		v.Srcs = append(append([]string{}, v.Srcs...), v.Hdrs...)
-		sort.Strings(v.Srcs)
-		v.Hdrs = nil
-	}
+
 	// FUSE-sources path: rewrite src + hdr paths to @src_<key>//:
 	// labels so project B compiles against digest-referenced
 	// inputs rather than relative paths. The `@…//:<path>` form
 	// preserves the path exactly (no leading slash) — Bazel's
-	// label parser handles it.
+	// label parser handles it. Per-platform delta arms get the
+	// same rewrite for the same reason.
 	if opts.SourceKey != "" {
-		v.Srcs = prefixWithSourceLabel(v.Srcs, opts.SourceKey)
-		v.Hdrs = prefixWithSourceLabel(v.Hdrs, opts.SourceKey)
+		srcs = prefixWithSourceLabel(srcs, opts.SourceKey)
+		hdrs = prefixWithSourceLabel(hdrs, opts.SourceKey)
+		srcsSel = prefixSelectWithSourceLabel(srcsSel, opts.SourceKey)
+		hdrsSel = prefixSelectWithSourceLabel(hdrsSel, opts.SourceKey)
+	}
+
+	v := ccView{
+		RuleKind:     t.Kind.String(),
+		Name:         t.Name,
+		SrcsExpr:     attrExpr(srcs, srcsSel),
+		HdrsExpr:     attrExpr(hdrs, hdrsSel),
+		IncludesExpr: attrExpr(includes, perPlatformAttr(t, "includes")),
+		CoptsExpr:    attrExpr(copts, perPlatformAttr(t, "copts")),
+		DefinesExpr:  attrExpr(defines, perPlatformAttr(t, "defines")),
+		LinkoptsExpr: attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
+		DepsExpr:     attrExpr(deps, perPlatformAttr(t, "deps")),
+		Linkstatic:   t.Linkstatic,
+		Alwayslink:   t.Alwayslink,
+		Tags:         sortedCopy(t.Tags),
+		Visibility:   append([]string(nil), t.Visibility...),
 	}
 	if t.Kind == ir.KindCCTest {
 		v.Args = append([]string(nil), t.TestArgs...) // preserve order; arg order matters
@@ -367,6 +417,41 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		}
 	}
 	return ccRuleTmpl.Execute(w, v)
+}
+
+// perPlatformAttr returns the per-platform delta map for the
+// named attribute. Nil-safe: returns nil when the IR target has
+// no PerPlatform map at all or no entry for the requested name.
+// The returned map is a shallow copy so emit-time mutations
+// (the cc_binary hdrs→srcs fold) don't bleed back into the
+// caller's IR.
+func perPlatformAttr(t ir.Target, name string) map[string][]string {
+	if len(t.PerPlatform) == 0 {
+		return nil
+	}
+	m, ok := t.PerPlatform[name]
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = append([]string(nil), v...)
+	}
+	return out
+}
+
+// prefixSelectWithSourceLabel applies prefixWithSourceLabel to
+// every arm of a select()-shaped delta map. Returns nil for nil
+// input so a "no delta" signal stays a "no delta" signal.
+func prefixSelectWithSourceLabel(sel map[string][]string, key string) map[string][]string {
+	if sel == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(sel))
+	for arm, items := range sel {
+		out[arm] = prefixWithSourceLabel(items, key)
+	}
+	return out
 }
 
 // prefixWithSourceLabel maps relative source paths to
@@ -492,4 +577,91 @@ func strList(items []string) string {
 	}
 	multi.WriteString("    ]")
 	return multi.String()
+}
+
+// attrExpr renders one cc-rule attribute's value combining a flat
+// baseline list with optional per-platform deltas. Returns:
+//
+//   - "" when both flat and sel are empty (caller omits the
+//     attribute entirely)
+//   - strList(flat) when sel is empty (existing single-platform
+//     behaviour, byte-identical to the pre-PerPlatform shape)
+//   - "select({...})" when only sel is non-empty (no baseline
+//     items shared across every platform)
+//   - "<flat> + select({...})" when both are non-empty
+//
+// The select() block always carries a "//conditions:default": []
+// arm so a Bazel build under a platform not in the select keys
+// resolves to an empty list rather than failing analysis. Arm
+// keys are emitted in sorted order so the rendered BUILD.bazel
+// is byte-stable across runs (map iteration is randomized).
+//
+// Arm-list contents are emitted in the caller-supplied order.
+// elementfold owns the per-attribute ordering convention: it
+// sorts order-insensitive attrs (srcs, hdrs, includes, defines,
+// deps) lexicographically and preserves cells' original sequence
+// for order-sensitive attrs (copts, linkopts). emit-time
+// fan-in (e.g. cc_binary's hdrs→srcs arm merge) is responsible
+// for sorting its own merged arms before passing them in.
+func attrExpr(flat []string, sel map[string][]string) string {
+	hasSel := len(sel) > 0
+	hasFlat := len(flat) > 0
+	if !hasSel && !hasFlat {
+		return ""
+	}
+	flatPart := ""
+	if hasFlat {
+		flatPart = strList(flat)
+	}
+	if !hasSel {
+		return flatPart
+	}
+	keys := make([]string, 0, len(sel))
+	for k := range sel {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b bytes.Buffer
+	b.WriteString("select({\n")
+	for _, k := range keys {
+		fmt.Fprintf(&b, "        %q: %s,\n", k, indentArmList(sel[k]))
+	}
+	b.WriteString(`        "//conditions:default": [],` + "\n")
+	b.WriteString("    })")
+
+	if hasFlat {
+		return flatPart + " + " + b.String()
+	}
+	return b.String()
+}
+
+// indentArmList renders a select() arm's value as a Starlark
+// list literal indented for a select({}) block at the cc-rule
+// attribute level (8 spaces leading on continuation lines, with
+// the closing bracket lining up with the arm's key column).
+// Empty list → "[]" inline; non-empty → multi-line so each
+// item gets its own line, regardless of brevity, because the
+// surrounding select() is already multi-line and a single-line
+// arm would visually clash.
+//
+// Items are rendered in the caller-supplied order: the
+// elementfold layer already produces arms in the right order
+// per attribute (lexicographic for srcs/hdrs/etc., original
+// sequence for order-sensitive copts/linkopts), and any
+// emit-time fan-in (e.g. cc_binary's hdrs→srcs fold) sorts
+// its merged arm explicitly before passing it down. Sorting
+// unconditionally here would re-order copts/linkopts deltas
+// out of the sequence the operator wrote.
+func indentArmList(items []string) string {
+	if len(items) == 0 {
+		return "[]"
+	}
+	var b bytes.Buffer
+	b.WriteString("[\n")
+	for _, s := range items {
+		fmt.Fprintf(&b, "            %q,\n", s)
+	}
+	b.WriteString("        ]")
+	return b.String()
 }
