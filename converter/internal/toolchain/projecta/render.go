@@ -198,7 +198,11 @@ func renderCellGenrule(b *bytes.Buffer, args ToolchainProbeArgs, p Platform, v t
 	for _, k := range sortedCacheVarKeys(v) {
 		fmt.Fprintf(b, "            --cache-var %s \\\n", shellQuote(k+"="+v.CacheVars[k]))
 	}
-	fmt.Fprintf(b, "            --out $(location %s)\n", out)
+	// Each cell has a single declared output, so $@ resolves to
+	// that output's exec-root path. The $(location ...) form would
+	// also work but $@ is shorter and matches the rest of this
+	// repo's genrules.
+	fmt.Fprintf(b, "            --out $@\n")
 	fmt.Fprintf(b, "    \"\"\",\n")
 	fmt.Fprintf(b, ")\n\n")
 }
@@ -227,8 +231,11 @@ func sortedCacheVarKeys(v toolchain.Variant) []string {
 // shellQuote wraps a string in single quotes for shell-safe
 // embedding inside the genrule's cmd. Single quotes preserve
 // every byte literally except a single quote itself, which we
-// escape via the standard '\” trick. This handles cmake's
-// flag values that include spaces, equals signs, etc.
+// escape via the standard close-quote / backslash-escaped quote
+// / open-quote sequence (single quote, backslash, single quote,
+// single quote — written literally as the four-byte run
+// `'\”`). This handles cmake's flag values that include spaces,
+// equals signs, etc.
 func shellQuote(s string) string {
 	if !strings.ContainsAny(s, " \t\n\"'\\$`!#&|;<>(){}[]*?") {
 		return "'" + s + "'"

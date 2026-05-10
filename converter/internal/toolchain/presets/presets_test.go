@@ -169,6 +169,36 @@ func TestParse_CacheVariableObjectShape(t *testing.T) {
 	}
 }
 
+// TestParse_CacheVariableEmptyStringValue covers the
+// `{"type": "STRING", "value": ""}` case: an intentionally-empty
+// value must round-trip as the empty string, not fall through
+// to the `%v` path and emit a map-like literal. The fix uses
+// *string presence detection instead of nil-vs-empty heuristics.
+func TestParse_CacheVariableEmptyStringValue(t *testing.T) {
+	body := []byte(`{
+		"version": 3,
+		"configurePresets": [
+			{"name": "p", "cacheVariables": {
+				"INTENTIONALLY_EMPTY": {"type": "STRING", "value": ""},
+				"NON_EMPTY": {"type": "STRING", "value": "real"}
+			}}
+		]
+	}`)
+	got, err := Parse(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1; got %d", len(got))
+	}
+	if v, ok := got[0].CacheVars["INTENTIONALLY_EMPTY"]; !ok || v != "" {
+		t.Errorf("INTENTIONALLY_EMPTY = %q (present=%v); want empty-string and present", v, ok)
+	}
+	if got[0].CacheVars["NON_EMPTY"] != "real" {
+		t.Errorf("NON_EMPTY = %q; want real", got[0].CacheVars["NON_EMPTY"])
+	}
+}
+
 // TestLoadFile_MissingReturnsNil keeps caller code clean — they can
 // union LoadFile("CMakePresets.json") + LoadFile("CMakeUserPresets.json")
 // without checking IsNotExist themselves. CMakeUserPresets.json is

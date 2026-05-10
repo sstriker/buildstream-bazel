@@ -192,22 +192,32 @@ func (c cacheVarRaw) stringValue() (string, error) {
 	if len(c.raw) == 0 {
 		return "", nil
 	}
-	// Object shape first.
-	var obj struct {
-		Value string `json:"value"`
-	}
-	if err := json.Unmarshal(c.raw, &obj); err == nil && obj.Value != "" {
-		return obj.Value, nil
-	}
-	// Plain string.
+	// Plain string first — the most common shape ("FOO": "bar").
 	var s string
 	if err := json.Unmarshal(c.raw, &s); err == nil {
 		return s, nil
 	}
-	// Bool / number — coerce via fmt.
+	// Object shape second: { "type": "STRING", "value": "..." }.
+	// Decode `value` as *string so an intentionally-empty
+	// `"value": ""` is distinguishable from "no value field" —
+	// without the pointer the empty string would be ambiguous
+	// with the zero value of a string-typed field on a non-object
+	// shape, and we'd fall through to the %v path.
+	var obj struct {
+		Value *string `json:"value"`
+	}
+	if err := json.Unmarshal(c.raw, &obj); err == nil && obj.Value != nil {
+		return *obj.Value, nil
+	}
+	// Bool / number — coerce via fmt. Reject anything else (an
+	// object without a value field, an array, etc.) so callers
+	// see a clear error rather than a garbled coercion.
 	var v any
 	if err := json.Unmarshal(c.raw, &v); err == nil {
-		return fmt.Sprintf("%v", v), nil
+		switch v.(type) {
+		case bool, float64, nil:
+			return fmt.Sprintf("%v", v), nil
+		}
 	}
 	return "", fmt.Errorf("unrecognized cacheVariable shape: %s", string(c.raw))
 }

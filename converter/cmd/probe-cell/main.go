@@ -52,6 +52,15 @@ func run() error {
 	if *outPath == "" {
 		return fmt.Errorf("--out is required")
 	}
+	if *variantName == "" {
+		// Allowing this would emit probe.json with an empty
+		// Variant.Name, which breaks unify-toolchains' grouping
+		// (the platform/variant filename split assumes both
+		// halves are non-empty) and makes artifacts ambiguous.
+		// Callers wanting "no overrides" should pass
+		// --variant=baseline explicitly.
+		return fmt.Errorf("--variant is required")
+	}
 
 	cv := map[string]string{}
 	for _, kv := range cacheVars {
