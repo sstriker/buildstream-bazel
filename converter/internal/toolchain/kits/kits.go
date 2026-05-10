@@ -11,17 +11,19 @@
 // VariantMatrix produces the full probe matrix without extra
 // operator effort.
 //
-// Schema source: https://github.com/microsoft/vscode-cmake-tools
-// /blob/main/docs/kits.md . Field decoding focuses on the three
-// items that affect cmake configure invocations and lift cleanly
-// into Variant.CacheVars: compilers (C/CXX), toolchainFile, and
-// cmakeSettings. The schema's `environmentVariables` map is NOT
-// consumed today: cmakerun.Configure builds a fixed env for
-// determinism, and Variant has no env-var carrier. Wiring kit
-// env vars through to cmake invocations is a future change that
-// would require a Variant.Env field plus cmakerun.Options.Env
-// merge plumbing — out of scope here. Display-only fields (name
-// aliases, isTrusted, etc.) are also ignored.
+// Schema source:
+// https://github.com/microsoft/vscode-cmake-tools/blob/main/docs/kits.md
+//
+// Field decoding focuses on the three items that affect cmake
+// configure invocations and lift cleanly into Variant.CacheVars:
+// compilers (C/CXX), toolchainFile, and cmakeSettings. The
+// schema's `environmentVariables` map is NOT consumed today:
+// cmakerun.Configure builds a fixed env for determinism, and
+// Variant has no env-var carrier. Wiring kit env vars through to
+// cmake invocations is a future change that would require a
+// Variant.Env field plus cmakerun.Options.Env merge plumbing —
+// out of scope here. Display-only fields (name aliases, isTrusted,
+// etc.) are also ignored.
 package kits
 
 import (
@@ -139,9 +141,14 @@ func stringify(v any) (string, error) {
 	}
 }
 
-// sanitizeKitName lowercases and substitutes non-alphanumeric runs
-// with hyphens so the Variant name is filesystem- and Bazel-label-
-// safe. "Clang 15 (x86_64)" → "clang-15-x86-64".
+// sanitizeKitName lowercases and substitutes runs of characters
+// outside [a-z0-9_] with a single hyphen so the Variant name is
+// filesystem- and Bazel-label-safe. Underscores survive verbatim
+// because cmake / Bazel both accept them.
+//
+//	"Clang 15 (x86_64)" → "clang-15-x86_64"
+//	"GCC-13!"           → "gcc-13"
+//	"  spaces  "        → "spaces"
 func sanitizeKitName(name string) string {
 	var b strings.Builder
 	prevDash := true // suppress leading dash

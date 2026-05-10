@@ -57,6 +57,14 @@ func run(args []string) error {
 		return fmt.Errorf("--platforms-json is required")
 	}
 
+	// presets.LoadFile returns (nil, nil) when the file is missing,
+	// which is the right shape for callers unioning Presets +
+	// UserPresets. Here --variants-from is required, so a missing
+	// or unreadable file is an operator error: surface it
+	// distinctly from "file present but empty configurePresets".
+	if _, err := os.Stat(*variantsFrom); err != nil {
+		return fmt.Errorf("--variants-from %s: %w", *variantsFrom, err)
+	}
 	variants, err := presets.LoadFile(*variantsFrom)
 	if err != nil {
 		return fmt.Errorf("load presets: %w", err)

@@ -244,12 +244,15 @@ func sortedCacheVarKeys(v toolchain.Variant) []string {
 
 // shellQuote wraps a string in single quotes for shell-safe
 // embedding inside the genrule's cmd. Single quotes preserve
-// every byte literally except a single quote itself, which we
-// escape via the standard close-quote / backslash-escaped quote
-// / open-quote sequence (single quote, backslash, single quote,
-// single quote — written literally as the four-byte run
-// `'\”`). This handles cmake's flag values that include spaces,
-// equals signs, etc.
+// every byte literally except a single quote itself; an embedded
+// single quote is escaped by closing the quoted run, emitting a
+// backslash-escaped single quote, and reopening the quoted run.
+// The literal four-byte sequence is omitted from this docstring
+// because some editors auto-correct adjacent ASCII apostrophes
+// to typographic quotes when the file is saved; the raw-string
+// literal in the implementation below is the source of truth.
+// This handles cmake's flag values that include spaces, equals
+// signs, etc.
 func shellQuote(s string) string {
 	if !strings.ContainsAny(s, " \t\n\"'\\$`!#&|;<>(){}[]*?") {
 		return "'" + s + "'"

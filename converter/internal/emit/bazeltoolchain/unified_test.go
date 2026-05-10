@@ -229,6 +229,61 @@ func TestEmitUnified_CXXFlagsRouteToCXXOnlyActions(t *testing.T) {
 	}
 }
 
+// TestEmitUnified_VariantMappingFlowsThrough: a UnifiedConfig
+// with a custom VariantMapping must affect which feature slot
+// each variant's flags land in. Without threading cfg.VariantMapping
+// into emitToolchainsBuild, the per-platform cc_toolchain_config
+// rule instances would silently fall back to DefaultVariantMapping
+// regardless of what the operator passed.
+func TestEmitUnified_VariantMappingFlowsThrough(t *testing.T) {
+	plat := PlatformToolchain{
+		Name:        "linux_x86_64",
+		Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"},
+		Resolved: &toolchain.ResolvedToolchain{
+			Base: &toolchain.Model{
+				HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+				TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+				Languages:      map[string]toolchain.Language{"C": {CompilerPath: "/usr/bin/gcc"}},
+			},
+			Variants: map[string]*toolchain.VariantDelta{
+				"asan": {
+					Spec: toolchain.Variant{
+						Name:      "asan",
+						CacheVars: map[string]string{"CMAKE_C_FLAGS": "-fsanitize=address"},
+					},
+					LanguageFlags: map[string][]string{"C": {"-fsanitize=address"}},
+				},
+			},
+		},
+	}
+
+	// Custom mapping: route everything to BazelFeatureNone.
+	// Default routing would land asan flags in _ASAN_COMPILE_FLAGS;
+	// the custom mapping should drop them.
+	cfg := UnifiedConfig{
+		VariantMapping: func(v toolchain.Variant) toolchain.BazelFeature {
+			return toolchain.BazelFeatureNone
+		},
+	}
+	b, err := EmitUnified([]PlatformToolchain{plat}, cfg)
+	if err != nil {
+		t.Fatalf("EmitUnified: %v", err)
+	}
+	tcB := string(b.Files["toolchains/BUILD.bazel"])
+	if strings.Contains(tcB, `"-fsanitize=address"`) {
+		t.Errorf("custom VariantMapping=None did not drop the asan flag\n%s", tcB)
+	}
+	// Sanity: same input under default mapping DOES route to asan slot.
+	bDefault, err := EmitUnified([]PlatformToolchain{plat}, UnifiedConfig{})
+	if err != nil {
+		t.Fatalf("EmitUnified default: %v", err)
+	}
+	tcDef := string(bDefault.Files["toolchains/BUILD.bazel"])
+	if !strings.Contains(tcDef, `"-fsanitize=address"`) {
+		t.Errorf("default mapping should route asan flag into a feature slot\n%s", tcDef)
+	}
+}
+
 // TestEmitUnified_Deterministic re-emits the same input twice and
 // diffs every output file. Without this, regenerating the unified
 // layout would churn cache keys.

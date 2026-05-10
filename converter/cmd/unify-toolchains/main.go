@@ -144,6 +144,27 @@ func loadPlatforms(path string) ([]platformSpec, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no platforms in %s", path)
 	}
+	// Validate each platform spec up front. The probe-cell filename
+	// convention (<platform>.<variant>.probe.json) and the per-
+	// platform fold both assume non-empty, dot-free, unique names
+	// with non-empty constraints; an invalid spec here would
+	// surface later as misleading "no probe cells found" warnings.
+	seen := map[string]bool{}
+	for i, p := range out {
+		if p.Name == "" {
+			return nil, fmt.Errorf("platforms[%d] in %s has empty name", i, path)
+		}
+		if strings.ContainsRune(p.Name, '.') {
+			return nil, fmt.Errorf("platforms[%d].name %q in %s contains '.', reserved as the <platform>.<variant> separator in probe artifact filenames", i, p.Name, path)
+		}
+		if seen[p.Name] {
+			return nil, fmt.Errorf("platforms[].name %q appears twice in %s", p.Name, path)
+		}
+		seen[p.Name] = true
+		if len(p.Constraints) == 0 {
+			return nil, fmt.Errorf("platforms[%d] (%s) in %s has no constraints", i, p.Name, path)
+		}
+	}
 	return out, nil
 }
 
