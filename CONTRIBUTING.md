@@ -105,8 +105,10 @@ Common failure modes and how to diagnose:
 - **Rendering project A or B**: `cmd/write-a/main.go`'s
   `writeProjectA` / `writeProjectB`. Per-element handlers
   in `cmd/write-a/handler_*.go`.
-- **The build trace** (autotools): `cmd/build-tracer/`.
-- **The autotools converter**: `cmd/convert-element-trace/`.
+- **The build trace**: `cmd/build-tracer/` (used by every
+  trace-driven kind).
+- **The trace-driven converter** (autotools / make / manual /
+  script / makemaker / modulebuild): `cmd/convert-element-trace/`.
 - **The cmake converter**: `converter/cmd/convert-element` +
   `converter/internal/`.
 - **Source-key + content-narrowing patterns**:
