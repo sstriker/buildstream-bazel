@@ -49,8 +49,9 @@ File API doesn't fully cover custom commands — meson's does).
 
 ```
                    ┌────────────────────────┐
-   source tree ──▶ │ meson setup <src> <bd> │ ──▶ <bd>/meson-info/*.json
+   source tree ──▶ │ meson setup <bd> <src> │ ──▶ <bd>/meson-info/*.json
                    └────────────────────────┘
+                   (meson CLI is build-dir first, source-dir second)
                                 │
                                 ▼
                    ┌──────────────────────────┐
@@ -192,9 +193,9 @@ follow-up.
   source staging into project A and project B).
 - Render gate `scripts/meta-meson.sh` mirroring `meta-hello.sh`:
   drives write-a end-to-end + a standalone-converter assertion
-  (skips the bazel-build half cleanly when bazel ≥ 7 or meson
-  isn't on PATH) against
-  `testdata/meta-project/meson-greet/`. Asserts the converter
-  produces `cc_library` for the static lib, `cc_binary` for the
-  executable, and (when bazel is present) the smoke binary
-  links + runs.
+  against `testdata/meta-project/meson-greet/`. The bazel-build
+  half self-skips when bazel < 7 (no bzlmod) is on PATH or when
+  bazel/meson are missing entirely; the render-half assertions
+  always run. Asserts the converter produces `cc_library` for
+  the static lib, `cc_binary` for the executable, and (when both
+  bazel ≥ 7 and meson are present) the smoke binary links + runs.

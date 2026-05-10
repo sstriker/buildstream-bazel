@@ -17,11 +17,11 @@
 #      verifies the binary prints "Hello from meson!".
 #
 # Bazel-availability gating: rendering checks always run; the bazel
-# build phases self-skip when no bazel >= 7 is on PATH and meson isn't
-# on PATH. If meson isn't installed, write-a still renders (the meson
-# converter binary is just a binary; it doesn't run during write-a),
-# but project A's `bazel build` step depends on `meson setup` working
-# inside the genrule so we self-skip there.
+# build phases self-skip when EITHER no bazel >= 7 is on PATH OR
+# meson isn't on PATH. If meson isn't installed, write-a still
+# renders (the meson converter binary is just a binary; it doesn't
+# run during write-a), but project A's `bazel build` step depends
+# on `meson setup` working inside the genrule so we self-skip there.
 
 set -eu
 

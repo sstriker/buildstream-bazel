@@ -9,8 +9,9 @@
 //
 // Pipeline:
 //
-//	meson setup <src> <bd>
-//	    └─▶ <bd>/meson-info/intro-*.json
+//	meson setup <bd> <src>      (meson's CLI is build-dir first,
+//	    └─▶ <bd>/meson-info/    source-dir second)
+//	    └─▶ intro-*.json
 //	parse  ─▶ Introspect
 //	lower  ─▶ ir.Package
 //	emit   ─▶ BUILD.bazel.out

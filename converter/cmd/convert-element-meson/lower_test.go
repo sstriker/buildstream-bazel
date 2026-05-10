@@ -171,6 +171,31 @@ func TestLower_FoldsBuiltinDependencyArgs(t *testing.T) {
 	}
 }
 
+func TestLower_RefusesMultiEntryCustomTarget(t *testing.T) {
+	// Two target_sources entries → multi-group / multi-COMMAND
+	// custom_target shape; v1 refuses rather than silently
+	// dropping the second entry's inputs.
+	intro := &Introspect{
+		ProjectInfo: ProjectInfo{Name: "p"},
+		Targets: []Target{
+			{
+				Name:     "ct",
+				ID:       "ct@cus",
+				Type:     "custom",
+				Filename: []string{"/bd/out.h"},
+				TargetSources: []TargetSource{
+					{Compiler: []string{"cp", "@INPUT@", "@OUTPUT@"}, Sources: []string{"/src/a.in"}},
+					{Compiler: []string{"sed", "@INPUT@"}, Sources: []string{"/src/b.in"}},
+				},
+			},
+		},
+	}
+	_, err := Lower(intro, LowerOptions{SourceRoot: "/src"})
+	if err == nil || !strings.Contains(err.Error(), "unsupported-meson-custom-target") {
+		t.Fatalf("want unsupported-meson-custom-target, got %v", err)
+	}
+}
+
 func TestLower_RefusesUnboundExternalDep(t *testing.T) {
 	intro := &Introspect{
 		ProjectInfo: ProjectInfo{Name: "p"},

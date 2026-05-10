@@ -205,6 +205,18 @@ func lowerCustom(t Target, opts LowerOptions) (*ir.Target, error) {
 		return nil, newFailure(unsupportedMesonCustomTarget,
 			"custom target %q has no target_sources", t.Name)
 	}
+	if len(t.TargetSources) != 1 {
+		// meson's custom_target() emits multiple target_sources
+		// entries when COMMAND chains span groups (multi-step
+		// shell pipelines, mixed-language inputs, etc.) — a
+		// shape v1 doesn't model. Refusing here keeps us from
+		// silently dropping the second-and-later entries' inputs/
+		// commands and rendering a genrule that doesn't match
+		// the meson target's actual recipe.
+		return nil, newFailure(unsupportedMesonCustomTarget,
+			"custom target %q has %d target_sources entries (multi-group / multi-COMMAND custom targets aren't lifted in v1)",
+			t.Name, len(t.TargetSources))
+	}
 	src := t.TargetSources[0]
 	if len(src.Compiler) == 0 {
 		return nil, newFailure(unsupportedMesonCustomTarget,
