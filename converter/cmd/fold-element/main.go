@@ -8,16 +8,19 @@
 //
 //	fold-element \
 //	    --out-build elements/libfoo/BUILD.bazel \
-//	    --cell linux_x86_64:@platforms//os:linux,@platforms//cpu:x86_64:elements/libfoo/linux_x86_64/ir.json \
-//	    --cell darwin_arm64:@platforms//os:darwin,@platforms//cpu:arm64:elements/libfoo/darwin_arm64/ir.json
+//	    --cell 'linux_x86_64|@platforms//os:linux,@platforms//cpu:x86_64|elements/libfoo/linux_x86_64/ir.json' \
+//	    --cell 'darwin_arm64|@platforms//os:darwin,@platforms//cpu:arm64|elements/libfoo/darwin_arm64/ir.json'
 //
-// The --cell flag's value is <name>:<constraint1,constraint2,...>:<ir.json path>
-// — three colon-separated fields, where the constraints field
-// is a comma-separated list of constraint_value labels. The
-// SelectKey for each cell is auto-detected via
-// elementfold.PickSelectKeys; multi-axis matrices that don't
-// admit a single varying axis surface as an error the operator
-// addresses (per the elementfold ROADMAP follow-up).
+// The --cell flag's value is <name>|<constraint1,constraint2,...>|<ir.json path>
+// — three pipe-separated fields, where the constraints field
+// is a comma-separated list of constraint_value labels. Pipe
+// is the outer separator because Bazel constraint labels
+// contain ":" (e.g. @platforms//os:linux), which would collide
+// with a colon-separated layout. The SelectKey for each cell
+// is auto-detected via elementfold.PickSelectKeys; multi-axis
+// matrices that don't admit a single varying axis surface as
+// an error the operator addresses (per the elementfold
+// ROADMAP follow-up).
 package main
 
 import (
@@ -123,16 +126,16 @@ type parsedCell struct {
 	irJSONPath  string
 }
 
-// parseCell decodes "<name>:<c1,c2,...>:<path>". Two colons
+// parseCell decodes "<name>|<c1,c2,...>|<path>". Two pipes
 // split the three fields; commas split the constraints. Empty
-// constraints ("") and empty paths are rejected.
+// constraints ("") and empty paths are rejected. Pipe is the
+// outer separator (rather than ":") because Bazel constraint
+// labels embed colons (@platforms//os:linux); SplitN on ":"
+// would shred them.
 func parseCell(raw string) (parsedCell, error) {
-	// SplitN with 3 keeps any colons in the path field intact
-	// (e.g. on Windows that's not a concern for this binary's
-	// actual use, but keeps the parser robust).
-	parts := strings.SplitN(raw, ":", 3)
+	parts := strings.SplitN(raw, "|", 3)
 	if len(parts) != 3 {
-		return parsedCell{}, fmt.Errorf("expected <name>:<constraints>:<path>")
+		return parsedCell{}, fmt.Errorf("expected <name>|<constraints>|<path>")
 	}
 	name := strings.TrimSpace(parts[0])
 	if name == "" {

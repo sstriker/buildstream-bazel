@@ -276,7 +276,10 @@ type foldCell struct {
 func (r *runner) runFoldElement(ctx context.Context, name, elemOut string, cells []foldCell) error {
 	args := []string{"--out-build", filepath.Join(elemOut, "BUILD.bazel")}
 	for _, c := range cells {
-		// --cell <name>:<constraint1,constraint2,...>:<irJSONPath>
+		// --cell <name>|<constraint1,constraint2,...>|<irJSONPath>
+		// Pipe separator: Bazel constraint labels embed colons
+		// (@platforms//os:linux), so a colon-separated layout
+		// would collide.
 		constraintsCSV := ""
 		for i, k := range c.platform.Constraints {
 			if i > 0 {
@@ -284,7 +287,7 @@ func (r *runner) runFoldElement(ctx context.Context, name, elemOut string, cells
 			}
 			constraintsCSV += k
 		}
-		args = append(args, "--cell", c.platform.Name+":"+constraintsCSV+":"+c.irJSONPath)
+		args = append(args, "--cell", c.platform.Name+"|"+constraintsCSV+"|"+c.irJSONPath)
 	}
 	cmd := exec.CommandContext(ctx, "fold-element", args...)
 	cmd.Stdout = logOf(r.opts)
