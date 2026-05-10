@@ -153,10 +153,50 @@ func TestFold_BooleanDisagreementRejected(t *testing.T) {
 	}
 }
 
-// TestFold_CoptsBaselinePlusDelta: copts shared across cells
-// fold to the flat baseline; cell-specific copts (e.g. an
-// arch-specific -mcpu flag) land in PerPlatform.
-func TestFold_CoptsBaselinePlusDelta(t *testing.T) {
+// TestFold_CoptsIdenticalSequenceFoldsToBaseline: when every
+// cell carries the same copts sequence, the merged target gets
+// that sequence as a flat baseline and no PerPlatform deltas.
+// This is the "no divergence" path; emit produces today's
+// pre-PerPlatform shape.
+func TestFold_CoptsIdenticalSequenceFoldsToBaseline(t *testing.T) {
+	mk := func(name string) Cell {
+		return Cell{
+			Platform: Platform{
+				Name:        name,
+				Constraints: []string{"@platforms//os:" + name},
+				SelectKey:   "@platforms//os:" + name,
+			},
+			Pkg: &ir.Package{Targets: []ir.Target{{
+				Name: "lib", Kind: ir.KindCCLibrary,
+				Copts: []string{"-Wall", "-O2"},
+			}}},
+		}
+	}
+	merged, err := Fold([]Cell{mk("linux"), mk("darwin")})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	wantBaseline := []string{"-Wall", "-O2"}
+	if !reflect.DeepEqual(got.Copts, wantBaseline) {
+		t.Errorf("baseline copts = %v; want %v", got.Copts, wantBaseline)
+	}
+	if _, has := got.PerPlatform["copts"]; has {
+		t.Errorf("expected no copts deltas when all cells agree; got %v",
+			got.PerPlatform["copts"])
+	}
+}
+
+// TestFold_CoptsDivergentSequenceRoutesFullLists: when copts
+// sequences differ across cells (extra items, reorder, or
+// both), the merged target's flat baseline is empty and each
+// cell's full copts sequence routes verbatim through its
+// SelectKey arm. Set-membership partitioning would be unsafe
+// for order-sensitive flags: it could re-sequence one
+// platform's flags into another's order and silently flip
+// compiler semantics (last-flag-wins, include precedence,
+// etc.).
+func TestFold_CoptsDivergentSequenceRoutesFullLists(t *testing.T) {
 	linux := Cell{
 		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
 		Pkg: &ir.Package{Targets: []ir.Target{{
@@ -176,23 +216,58 @@ func TestFold_CoptsBaselinePlusDelta(t *testing.T) {
 		t.Fatalf("Fold: %v", err)
 	}
 	got := merged.Targets[0]
-	// copts is order-sensitive: baseline preserves cells[0]'s
-	// original sequence (linux's [-Wall, -O2]) rather than
-	// sorting alphabetically.
-	wantBaseline := []string{"-Wall", "-O2"}
-	if !reflect.DeepEqual(got.Copts, wantBaseline) {
-		t.Errorf("baseline copts = %v; want %v", got.Copts, wantBaseline)
+	if len(got.Copts) != 0 {
+		t.Errorf("expected empty baseline copts when sequences diverge; got %v", got.Copts)
 	}
-	if got.PerPlatform["copts"]["@platforms//os:darwin"] == nil {
-		t.Errorf("expected darwin-specific copt; got %v", got.PerPlatform)
+	if !reflect.DeepEqual(got.PerPlatform["copts"]["@platforms//os:linux"],
+		[]string{"-Wall", "-O2"}) {
+		t.Errorf("linux copts arm = %v; want [-Wall -O2]",
+			got.PerPlatform["copts"]["@platforms//os:linux"])
 	}
-	if !reflect.DeepEqual(got.PerPlatform["copts"]["@platforms//os:darwin"], []string{"-mmacosx-version-min=11.0"}) {
-		t.Errorf("darwin copts delta = %v; want [-mmacosx-version-min=11.0]",
+	if !reflect.DeepEqual(got.PerPlatform["copts"]["@platforms//os:darwin"],
+		[]string{"-Wall", "-O2", "-mmacosx-version-min=11.0"}) {
+		t.Errorf("darwin copts arm = %v; want full darwin sequence",
 			got.PerPlatform["copts"]["@platforms//os:darwin"])
 	}
-	if _, hasLinux := got.PerPlatform["copts"]["@platforms//os:linux"]; hasLinux {
-		t.Errorf("linux should have no copts delta (its set is the baseline); got %v",
+}
+
+// TestFold_CoptsReorderRoutesFullLists: same flag set but in
+// different order across cells must NOT collapse to a baseline
+// — that would force one cell's order onto another and could
+// silently change last-flag-wins semantics. Both cells get the
+// full list under their SelectKey.
+func TestFold_CoptsReorderRoutesFullLists(t *testing.T) {
+	a := Cell{
+		Platform: Platform{Name: "a", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{Targets: []ir.Target{{
+			Name: "lib", Kind: ir.KindCCLibrary,
+			Copts: []string{"-O0", "-O2"}, // -O2 wins
+		}}},
+	}
+	b := Cell{
+		Platform: Platform{Name: "b", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{Targets: []ir.Target{{
+			Name: "lib", Kind: ir.KindCCLibrary,
+			Copts: []string{"-O2", "-O0"}, // -O0 wins
+		}}},
+	}
+	merged, err := Fold([]Cell{a, b})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if len(got.Copts) != 0 {
+		t.Errorf("expected empty baseline copts on reorder; got %v", got.Copts)
+	}
+	if !reflect.DeepEqual(got.PerPlatform["copts"]["@platforms//os:linux"],
+		[]string{"-O0", "-O2"}) {
+		t.Errorf("linux copts arm = %v; want [-O0 -O2]",
 			got.PerPlatform["copts"]["@platforms//os:linux"])
+	}
+	if !reflect.DeepEqual(got.PerPlatform["copts"]["@platforms//os:darwin"],
+		[]string{"-O2", "-O0"}) {
+		t.Errorf("darwin copts arm = %v; want [-O2 -O0]",
+			got.PerPlatform["copts"]["@platforms//os:darwin"])
 	}
 }
 

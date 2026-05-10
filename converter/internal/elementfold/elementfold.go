@@ -233,18 +233,31 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 	merged.Visibility = sortedUnion(extractStringSlice(variants, cells, func(t ir.Target) []string { return t.Visibility }))
 	merged.Tags = sortedUnion(extractStringSlice(variants, cells, func(t ir.Target) []string { return t.Tags }))
 
-	// Per-attribute item-set partition. For each named attr, lift
-	// each item to facts[item][cellName]=true; empfold.Partition
-	// returns baseline (items every cell observed) and deltas
-	// (items unique per cell). Baseline lands in the flat
-	// attribute slice; deltas land in PerPlatform under the
-	// cell's SelectKey.
+	// Per-attribute fold. Order-insensitive attrs (srcs, hdrs,
+	// includes, defines, deps) decompose into a set-membership
+	// partition: items every cell carries land in the flat
+	// baseline, items unique to a subset of cells land in
+	// PerPlatform[attr][SelectKey], all sorted lexicographically.
+	// Order-sensitive attrs (copts, linkopts) refuse the
+	// per-item partition because re-sequencing flags can flip
+	// compiler/linker semantics (last-flag-wins, include
+	// precedence, etc.). They fold conservatively: when every
+	// cell has byte-identical sequences, the baseline takes that
+	// shared sequence with no deltas; otherwise the baseline is
+	// empty and each cell's FULL sequence routes through its
+	// SelectKey arm verbatim — emit then renders the attribute as
+	// a bare select() so each platform sees its own original
+	// sequence at build time.
 	cellNames := make([]string, len(cells))
 	for i, c := range cells {
 		cellNames[i] = c.Platform.Name
 	}
 
 	for _, def := range targetAttrs {
+		if def.orderSensitive {
+			foldOrderSensitiveAttr(def, &merged, variants, cells)
+			continue
+		}
 		facts := map[string]map[string]bool{}
 		for _, c := range cells {
 			items := def.get(variants[c.Platform.Name])
@@ -257,52 +270,23 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 		}
 		baseline, deltas := empfold.Partition(cellNames, facts)
 
-		// Materialise the baseline. Order-sensitive attrs (copts,
-		// linkopts) preserve cells[0]'s original sequence;
-		// order-insensitive attrs sort lexicographically (matches
-		// emit/bazel's sortedCopy convention for srcs/hdrs/etc.).
-		var flat []string
-		if def.orderSensitive {
-			seq := def.get(variants[cells[0].Platform.Name])
-			flat = make([]string, 0, len(baseline))
-			for _, item := range seq {
-				if baseline[item] {
-					flat = append(flat, item)
-				}
-			}
-		} else {
-			flat = make([]string, 0, len(baseline))
-			for k := range baseline {
-				flat = append(flat, k)
-			}
-			sort.Strings(flat)
+		flat := make([]string, 0, len(baseline))
+		for k := range baseline {
+			flat = append(flat, k)
 		}
+		sort.Strings(flat)
 		def.set(&merged, flat)
 
-		// Per-cell deltas → PerPlatform[attr][selectKey] = delta items.
-		// Same order convention: walk the cell's own sequence for
-		// order-sensitive attrs; sort lexicographically otherwise.
 		for _, c := range cells {
 			d := deltas[c.Platform.Name]
 			if len(d) == 0 {
 				continue
 			}
-			var items []string
-			if def.orderSensitive {
-				seq := def.get(variants[c.Platform.Name])
-				items = make([]string, 0, len(d))
-				for _, item := range seq {
-					if d[item] {
-						items = append(items, item)
-					}
-				}
-			} else {
-				items = make([]string, 0, len(d))
-				for k := range d {
-					items = append(items, k)
-				}
-				sort.Strings(items)
+			items := make([]string, 0, len(d))
+			for k := range d {
+				items = append(items, k)
 			}
+			sort.Strings(items)
 			if merged.PerPlatform == nil {
 				merged.PerPlatform = map[string]map[string][]string{}
 			}
@@ -315,6 +299,40 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 	return &merged, nil
 }
 
+// foldOrderSensitiveAttr handles copts / linkopts. When every
+// cell carries the same sequence, the merged target gets that
+// sequence as a flat baseline (and no deltas — emit produces
+// today's pre-PerPlatform shape). When sequences diverge in any
+// way (extra items, reorder), each cell's full sequence is
+// stored verbatim under PerPlatform[attr][SelectKey] with the
+// flat baseline cleared, so emit renders a bare select() that
+// preserves per-platform ordering exactly.
+func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell) {
+	first := def.get(variants[cells[0].Platform.Name])
+	allEqual := true
+	for _, c := range cells[1:] {
+		if !sliceEqual(first, def.get(variants[c.Platform.Name])) {
+			allEqual = false
+			break
+		}
+	}
+	if allEqual {
+		def.set(merged, append([]string(nil), first...))
+		return
+	}
+	def.set(merged, nil)
+	if merged.PerPlatform == nil {
+		merged.PerPlatform = map[string]map[string][]string{}
+	}
+	if merged.PerPlatform[def.name] == nil {
+		merged.PerPlatform[def.name] = map[string][]string{}
+	}
+	for _, c := range cells {
+		seq := def.get(variants[c.Platform.Name])
+		merged.PerPlatform[def.name][c.Platform.SelectKey] = append([]string(nil), seq...)
+	}
+}
+
 // targetAttrs declares the IR attributes the fold partitions
 // per platform. Each entry names the Bazel attribute (matches
 // the keys emit/bazel looks up in Target.PerPlatform[name]) and
@@ -324,12 +342,14 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 // defines, deps) are unordered and sort lexicographically for
 // stable diffs (matching emit/bazel's sortedCopy convention on
 // the baseline side).
-var targetAttrs = []struct {
+type attrDef struct {
 	name           string
 	orderSensitive bool
 	get            func(ir.Target) []string
 	set            func(*ir.Target, []string)
-}{
+}
+
+var targetAttrs = []attrDef{
 	{"srcs", false, func(t ir.Target) []string { return t.Srcs }, func(t *ir.Target, v []string) { t.Srcs = v }},
 	{"hdrs", false, func(t ir.Target) []string { return t.Hdrs }, func(t *ir.Target, v []string) { t.Hdrs = v }},
 	{"includes", false, func(t ir.Target) []string { return t.Includes }, func(t *ir.Target, v []string) { t.Includes = v }},
@@ -343,12 +363,16 @@ var targetAttrs = []struct {
 // uniquely identifies each platform within the matrix.
 //
 // Algorithm: count each constraint label's occurrences across
-// the matrix. A label that appears exactly once uniquely
-// identifies its platform — assign it as that platform's
-// SelectKey. When a platform has multiple unique constraint
-// labels, the lexicographically-smallest one is chosen for
-// determinism (e.g. between "@platforms//cpu:x86_64" and
-// "@platforms//os:linux", `@platforms//cpu:...` sorts first).
+// the matrix, after de-duplicating each platform's own
+// constraint list (a platform that accidentally repeats a
+// label would otherwise inflate the global count and make a
+// valid matrix look ambiguous). A label that appears exactly
+// once uniquely identifies its platform — assign it as that
+// platform's SelectKey. When a platform has multiple unique
+// constraint labels, the lexicographically-smallest one is
+// chosen for determinism (e.g. between "@platforms//cpu:x86_64"
+// and "@platforms//os:linux", `@platforms//cpu:...` sorts
+// first).
 //
 // Returns an error naming the offending platform if any
 // platform has no constraint label that uniquely identifies it
@@ -358,16 +382,29 @@ var targetAttrs = []struct {
 // this MVP — for now, this error tells them to reduce the
 // matrix or split the conversion).
 func PickSelectKeys(platforms []Platform) (map[string]string, error) {
-	counts := map[string]int{}
-	for _, p := range platforms {
+	dedupedConstraints := make([][]string, len(platforms))
+	for i, p := range platforms {
+		seen := map[string]bool{}
+		uniq := make([]string, 0, len(p.Constraints))
 		for _, c := range p.Constraints {
+			if seen[c] {
+				continue
+			}
+			seen[c] = true
+			uniq = append(uniq, c)
+		}
+		dedupedConstraints[i] = uniq
+	}
+	counts := map[string]int{}
+	for _, cs := range dedupedConstraints {
+		for _, c := range cs {
 			counts[c]++
 		}
 	}
 	out := make(map[string]string, len(platforms))
-	for _, p := range platforms {
+	for i, p := range platforms {
 		var unique string
-		for _, c := range p.Constraints {
+		for _, c := range dedupedConstraints[i] {
 			if counts[c] != 1 {
 				continue
 			}

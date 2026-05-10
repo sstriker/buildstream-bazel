@@ -107,6 +107,7 @@ func loadPlatformsManifest(path string) ([]convertPlatform, error) {
 		return nil, fmt.Errorf("orchestrator: platforms manifest %s contains no platforms", path)
 	}
 	seen := map[string]bool{}
+	out := make([]convertPlatform, len(raw))
 	for i, e := range raw {
 		if err := safePlatformName(e.Name); err != nil {
 			return nil, fmt.Errorf("orchestrator: platforms[%d] in %s: invalid name %q: %w (names become path components and are embedded in --cell argv where %q is a delimiter; pick a name like 'linux_x86_64')", i, path, e.Name, err, "|")
@@ -118,15 +119,35 @@ func loadPlatformsManifest(path string) ([]convertPlatform, error) {
 		if len(e.Constraints) == 0 {
 			return nil, fmt.Errorf("orchestrator: platform %q in %s has no constraints", e.Name, path)
 		}
+		// Normalise + dedupe constraints so a manifest with
+		// trailing whitespace or an accidentally-repeated label
+		// fails fast with a targeted message rather than at
+		// PickSelectKeys' ambiguity check downstream. Constraints
+		// flow into the fold-element --cell argv (comma-joined)
+		// and into PickSelectKeys' uniqueness count, so both
+		// surfaces benefit from clean input.
+		normalised := make([]string, 0, len(e.Constraints))
+		seenC := map[string]bool{}
+		for j, raw := range e.Constraints {
+			c := strings.TrimSpace(raw)
+			if c == "" {
+				return nil, fmt.Errorf("orchestrator: platform %q in %s constraints[%d] is empty/whitespace", e.Name, path, j)
+			}
+			if strings.ContainsAny(c, ",|") {
+				return nil, fmt.Errorf("orchestrator: platform %q in %s constraints[%d] %q contains delimiter (',' or '|') — these would break --cell argv parsing", e.Name, path, j, c)
+			}
+			if seenC[c] {
+				return nil, fmt.Errorf("orchestrator: platform %q in %s constraints lists %q twice; each constraint label must appear at most once per platform", e.Name, path, c)
+			}
+			seenC[c] = true
+			normalised = append(normalised, c)
+		}
 		if len(e.REAPIProperties) == 0 {
 			return nil, fmt.Errorf("orchestrator: platform %q in %s has no reapi_properties; declare them explicitly so per-platform Actions route to the matching worker pool", e.Name, path)
 		}
-	}
-	out := make([]convertPlatform, len(raw))
-	for i, e := range raw {
 		out[i] = convertPlatform{
 			Name:            e.Name,
-			Constraints:     e.Constraints,
+			Constraints:     normalised,
 			REAPIProperties: e.REAPIProperties,
 		}
 	}
