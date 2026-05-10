@@ -174,14 +174,49 @@ func TestFailure_UnsupportedExecuteProcess_Aggregates(t *testing.T) {
 	}
 }
 
-// TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets
-// covers the Phase B fallback path: with
+// TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs
+// covers the Phase B fallback path post-Step-2.5: with
 // UnsupportedExecuteProcessFallback set, classifier refusals
-// (uname / git in this case) no longer exit Tier-1; ToIR
-// returns a placeholder ir.Package whose targets are the
-// codemodel's non-UTILITY targets as empty stubs (right Kind,
-// public visibility, marker tag, no srcs).
-func TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets(t *testing.T) {
+// no longer exit Tier-1. Instead ToIR returns a placeholder
+// ir.Package whose targets are per-target stubs derived from
+// the codemodel's Install destinations (cc_import for
+// STATIC/SHARED, sh_binary for EXECUTABLE), preceded by a
+// single extract genrule that untars install_tree.tar into
+// the install paths the stubs reference.
+func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.T) {
+	staticLib := fileapi.Target{
+		Name:       "thelib",
+		Type:       "STATIC_LIBRARY",
+		NameOnDisk: "libthelib.a",
+		Install: &fileapi.TargetInstall{
+			Destinations: []fileapi.TargetInstallDest{{Path: "lib"}},
+		},
+	}
+	sharedLib := fileapi.Target{
+		Name:       "shared",
+		Type:       "SHARED_LIBRARY",
+		NameOnDisk: "libshared.so.1",
+		Install: &fileapi.TargetInstall{
+			Destinations: []fileapi.TargetInstallDest{{Path: "lib"}},
+		},
+	}
+	exe := fileapi.Target{
+		Name:       "thetool",
+		Type:       "EXECUTABLE",
+		NameOnDisk: "thetool",
+		Install: &fileapi.TargetInstall{
+			Destinations: []fileapi.TargetInstallDest{{Path: "bin"}},
+		},
+	}
+	internalLib := fileapi.Target{
+		Name:       "internal",
+		Type:       "STATIC_LIBRARY",
+		NameOnDisk: "libinternal.a",
+		// No Install — not exposed across the round-2
+		// boundary; placeholder must skip.
+	}
+	utility := fileapi.Target{Name: "u", Type: "UTILITY"}
+
 	r := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{
 			Paths: fileapi.CodemodelPaths{Source: "/src"},
@@ -189,15 +224,19 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets(t *testin
 				Name: "Release",
 				Targets: []fileapi.ConfigTargetRef{
 					{Name: "thelib", Id: "thelib::@1"},
-					{Name: "thetool", Id: "thetool::@2"},
-					{Name: "noisy_utility", Id: "noisy_utility::@3"},
+					{Name: "shared", Id: "shared::@2"},
+					{Name: "thetool", Id: "thetool::@3"},
+					{Name: "internal", Id: "internal::@4"},
+					{Name: "u", Id: "u::@5"},
 				},
 			}},
 		},
 		Targets: map[string]fileapi.Target{
-			"thelib::@1":        {Name: "thelib", Type: "STATIC_LIBRARY"},
-			"thetool::@2":       {Name: "thetool", Type: "EXECUTABLE"},
-			"noisy_utility::@3": {Name: "noisy_utility", Type: "UTILITY"},
+			"thelib::@1":   staticLib,
+			"shared::@2":   sharedLib,
+			"thetool::@3":  exe,
+			"internal::@4": internalLib,
+			"u::@5":        utility,
 		},
 	}
 	traceRaw := []byte(
@@ -214,30 +253,87 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets(t *testin
 		t.Fatal("expected placeholder ir.Package, got nil")
 	}
 
-	// Per-target stubs: STATIC_LIBRARY → cc_library +
-	// linkstatic, EXECUTABLE → cc_binary, UTILITY → skipped.
-	gotKinds := map[string]ir.Kind{}
+	// Index by name. UTILITY target skipped, internal
+	// target (no install) skipped → only the 3 exposed
+	// targets + the extract genrule should be present.
+	byName := map[string]ir.Target{}
 	for _, target := range pkg.Targets {
-		gotKinds[target.Name] = target.Kind
+		byName[target.Name] = target
 	}
-	if len(gotKinds) != 2 {
-		t.Errorf("expected 2 stub targets (UTILITY skipped); got %+v", gotKinds)
+	if _, ok := byName["_install_tree_extract"]; !ok {
+		t.Errorf("expected _install_tree_extract genrule; got %+v", byName)
 	}
-	if gotKinds["thelib"] != ir.KindCCLibrary {
-		t.Errorf("thelib kind: %v want cc_library", gotKinds["thelib"])
+	if _, ok := byName["thelib"]; !ok {
+		t.Errorf("expected thelib stub; got %+v", byName)
 	}
-	if gotKinds["thetool"] != ir.KindCCBinary {
-		t.Errorf("thetool kind: %v want cc_binary", gotKinds["thetool"])
+	if _, ok := byName["shared"]; !ok {
+		t.Errorf("expected shared stub; got %+v", byName)
 	}
-	if _, present := gotKinds["noisy_utility"]; present {
-		t.Errorf("UTILITY target should be skipped from placeholder; got %+v", gotKinds)
+	if _, ok := byName["thetool"]; !ok {
+		t.Errorf("expected thetool stub; got %+v", byName)
+	}
+	if _, ok := byName["internal"]; ok {
+		t.Errorf("internal (no install) should be skipped from placeholder; got %+v", byName)
+	}
+	if _, ok := byName["u"]; ok {
+		t.Errorf("UTILITY target should be skipped from placeholder; got %+v", byName)
 	}
 
-	// Each stub carries the marker tag so audit queries can
-	// distinguish placeholder targets from fully-converted
-	// ones; visibility is public so downstream consumers can
-	// reference :thelib / :thetool the same way they would
-	// against a native-rendered element.
+	// STATIC_LIBRARY → cc_import + static_library.
+	thelib := byName["thelib"]
+	if thelib.Kind != ir.KindCCImport {
+		t.Errorf("thelib kind: %v want cc_import", thelib.Kind)
+	}
+	if thelib.StaticLibrary != "install_tree/lib/libthelib.a" {
+		t.Errorf("thelib StaticLibrary: %q want install_tree/lib/libthelib.a", thelib.StaticLibrary)
+	}
+	if thelib.SharedLibrary != "" {
+		t.Errorf("thelib SharedLibrary should be empty for STATIC; got %q", thelib.SharedLibrary)
+	}
+
+	// SHARED_LIBRARY → cc_import + shared_library.
+	shared := byName["shared"]
+	if shared.Kind != ir.KindCCImport {
+		t.Errorf("shared kind: %v want cc_import", shared.Kind)
+	}
+	if shared.SharedLibrary != "install_tree/lib/libshared.so.1" {
+		t.Errorf("shared SharedLibrary: %q want install_tree/lib/libshared.so.1", shared.SharedLibrary)
+	}
+
+	// EXECUTABLE → sh_binary + srcs[0] = bin path.
+	thetool := byName["thetool"]
+	if thetool.Kind != ir.KindShBinary {
+		t.Errorf("thetool kind: %v want sh_binary", thetool.Kind)
+	}
+	if len(thetool.Srcs) != 1 || thetool.Srcs[0] != "install_tree/bin/thetool" {
+		t.Errorf("thetool Srcs: %v want [install_tree/bin/thetool]", thetool.Srcs)
+	}
+
+	// Extract genrule: every per-target install path appears
+	// as one of its outs; src is the literal "install_tree.tar"
+	// label that write-a wires later.
+	extract := byName["_install_tree_extract"]
+	if extract.Kind != ir.KindGenrule {
+		t.Errorf("extract kind: %v want genrule", extract.Kind)
+	}
+	wantOuts := map[string]bool{
+		"install_tree/lib/libthelib.a":    true,
+		"install_tree/lib/libshared.so.1": true,
+		"install_tree/bin/thetool":        true,
+	}
+	if len(extract.GenruleOuts) != len(wantOuts) {
+		t.Errorf("extract GenruleOuts: %v want %v", extract.GenruleOuts, wantOuts)
+	}
+	for _, o := range extract.GenruleOuts {
+		if !wantOuts[o] {
+			t.Errorf("extract GenruleOuts unexpected entry %q", o)
+		}
+	}
+	if len(extract.Srcs) != 1 || extract.Srcs[0] != "install_tree.tar" {
+		t.Errorf("extract Srcs: %v want [install_tree.tar]", extract.Srcs)
+	}
+
+	// Marker tags + visibility on every emitted target.
 	for _, target := range pkg.Targets {
 		hasMarker := false
 		for _, tag := range target.Tags {
@@ -249,24 +345,17 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesCodemodelTargets(t *testin
 		if !hasMarker {
 			t.Errorf("target %q missing cmake-codegen-execute-process-fallback tag; tags=%v", target.Name, target.Tags)
 		}
-		if len(target.Visibility) != 1 || target.Visibility[0] != "//visibility:public" {
-			t.Errorf("target %q visibility: %v want [//visibility:public]", target.Name, target.Visibility)
-		}
-		// Stubs are intentionally empty bodies — the
-		// per-target install-destination wiring is queued
-		// behind IR support for cc_import attributes
-		// (Step 2.5 in docs/design/cmake-execute-process-round2-fallback.md).
-		if len(target.Srcs) != 0 {
-			t.Errorf("target %q srcs should be empty in v1 placeholder; got %v", target.Name, target.Srcs)
-		}
 	}
-
-	// STATIC_LIBRARY stub carries Linkstatic for fidelity
-	// with native render's STATIC_LIBRARY → cc_library +
-	// linkstatic dispatch.
-	for _, target := range pkg.Targets {
-		if target.Name == "thelib" && !target.Linkstatic {
-			t.Errorf("thelib placeholder should carry Linkstatic=true (mirrors native render's STATIC_LIBRARY shape)")
+	// Per-target stubs are public; the extract genrule is private.
+	for name, want := range map[string]string{
+		"thelib":                "//visibility:public",
+		"shared":                "//visibility:public",
+		"thetool":               "//visibility:public",
+		"_install_tree_extract": "//visibility:private",
+	} {
+		got := byName[name]
+		if len(got.Visibility) != 1 || got.Visibility[0] != want {
+			t.Errorf("%s visibility: %v want [%s]", name, got.Visibility, want)
 		}
 	}
 }

@@ -21,6 +21,7 @@ const (
 	KindCCInterface
 	KindGenrule
 	KindCCTest
+	KindShBinary
 )
 
 func (k Kind) String() string {
@@ -37,6 +38,8 @@ func (k Kind) String() string {
 		return "genrule"
 	case KindCCTest:
 		return "cc_test"
+	case KindShBinary:
+		return "sh_binary"
 	}
 	return "unknown"
 }
@@ -112,6 +115,31 @@ type Target struct {
 	// in docs/codegen-tags.md. Sorted by the emitter for deterministic
 	// output.
 	Tags []string
+
+	// cc_import-specific fields. Populated only when Kind ==
+	// KindCCImport. cc_import is the canonical Bazel rule for
+	// pre-built archives / shared libraries (and the
+	// kind:cmake round-2 fallback's per-target stub shape):
+	// static_library = single file label of the .a archive,
+	// shared_library = single file label of the .so / .dylib /
+	// .dll. Both are mutually exclusive in cmake's
+	// STATIC/SHARED/MODULE target-type sense, but cc_import
+	// itself accepts both attributes simultaneously (some
+	// libraries ship both forms); the IR treats them as
+	// independent strings so the lowering layer can carry
+	// either or both.
+
+	// StaticLibrary, when non-empty for KindCCImport, is the
+	// package-relative path (or full label) of the static
+	// archive — the .a file the cc_import wraps. Empty when
+	// the imported library has no static form.
+	StaticLibrary string
+
+	// SharedLibrary, when non-empty for KindCCImport, is the
+	// package-relative path (or full label) of the shared
+	// object / dynamic library. Empty when the imported
+	// library has no shared form.
+	SharedLibrary string
 
 	// Genrule-specific fields. Populated only when Kind == KindGenrule.
 

@@ -65,100 +65,164 @@ both build-wide, not per-element), which sacrifices native
 render's fine-grained `cc_library` / `cc_binary` outputs for
 projects that don't need the fallback.
 
-## Per-element fallback decision
+## Architecture: A converter + B install + round-2 rendezvous
 
-Three plausible places to make the "native vs fallback"
-decision per element. We pick (b).
+`kind:cmake` round-2 fallback uses the same architectural
+split that `kind:autotools` round-2 already established:
 
-(a) **At write-a time.** write-a runs a pre-pass that invokes
-    cmake configure + classification per element, learns which
-    fail Phase A's classifier, and emits round-2 shape only
-    for those. Cost: write-a becomes much more expensive (one
-    cmake configure per element, sequentially). Rejected —
-    write-a today is a parsing + emission pass; running cmake
-    pollutes the boundary and ties write-a's wallclock to
-    every cmake project's configure cost.
+- **Project A — converter genrule.** Runs `cmake configure` +
+  File API + `lower`. Decides per-element at action time
+  whether to emit native cc rules or the placeholder shape
+  in `BUILD.bazel.out`. `convert-element`'s executor
+  toolchain stays cmake-only — no ninja, no install. The
+  per-element decision is "what shape of `BUILD.bazel.out`
+  to write," not "what build to run."
+- **Project B — install genrule.** `build-tracer` wraps
+  `cmake -B build` + `cmake --build build` + `cmake --install
+  build`. Outputs `install_tree.tar` (split per cmake's
+  `install_manifest.txt` is a future optimisation; v1 emits
+  a single tar). Inline `trace-publish` lands the AC entry
+  keyed by `SyntheticActionDigest(srckey)`.
+- **Round-2 rendezvous.** A's converter genrule consumes
+  `@trace_<elem>//:trace` via load-time `_trace_repo` lookup
+  against the REAPI ActionCache. Same mechanism + same
+  helpers as kind:autotools round-2 (see
+  `docs/design/autotools-round2-rendezvous.md`).
 
-(b) **Inside the per-element converter genrule.** convert-element
-    runs as today; on `unsupported-execute-process` it writes
-    a *placeholder* `BUILD.bazel.out` that aliases the
-    element's expected library / binary names to a
-    sibling-emitted round-2 install_tree.tar. Both the native
-    converter genrule and the round-2 install genrule are
-    emitted per element. Cost: every `kind:cmake` element with
-    fallback enabled gets a round-2 install genrule alongside
-    its native converter genrule, doubling the build graph
-    width. The install genrule is only *built* when downstream
-    consumers reference it, which they only do when native
-    fails — so wallclock cost is paid only on the elements
-    that actually need the fallback.
+write-a's responsibility expands by exactly the kind:autotools
+amount: emit both A's converter genrule and B's install
+genrule for kind:cmake elements when round-2 fallback is
+enabled. The "is this element a fallback element" decision
+isn't write-a's — write-a uniformly emits both genrules for
+every kind:cmake element under round-2 mode. Bazel evaluates
+B's install genrule lazily; it's only built when A's
+`BUILD.bazel.out` references its outputs. Native-render
+elements emit cc rules that don't reference `install_tree.tar`,
+so B's install genrule sits unbuilt; fallback elements emit
+the placeholder shape that does reference it, so B's install
+genrule runs.
 
-(c) **Out-of-band manifest.** Operators see `unsupported-execute-process`
-    failures, edit a manifest declaring those elements
-    "round-2 only", re-run write-a. Cost: manual
-    bookkeeping, but fully precise about which elements pay
-    the cost. Rejected — duplicates information already in the
-    failure.json output; encourages the manifest and the
-    failure to drift apart.
+### Convergence: the trace turns refusal into refinement
+
+The round-2 rendezvous gives the architecture an interesting
+property: refused elements aren't permanently coarse. The
+first build of a given srckey hits the miss path (trace
+empty → placeholder shape with `cc_import` / `sh_binary`
+stubs); after pass-3 publishes the trace + AC entry,
+subsequent builds of the same srckey *anywhere* (CI, dev
+laptop, fresh executor) see the trace at A's load time and
+the converter can refine — possibly all the way to native
+cc rules for the previously-refused element, by reading the
+trace to learn what the unliftable `execute_process` actually
+did at the filesystem level.
+
+v1 of the converter doesn't do that refinement; it always
+emits the placeholder shape when classification refuses,
+regardless of whether a trace is available. The converger
+direction is the natural follow-on once placeholder-shape
+projects are in real use — it's queued as a Later bullet
+in `ROADMAP.md`.
+
+### Why not run the build inside convert-element
+
+Bolting `cmake --build` + `cmake --install` onto
+convert-element would keep the per-element decision in one
+place but at three real costs:
+
+1. **Toolchain expansion.** Executors that run convert-element
+   gain a ninja dependency and a DESTDIR-shaped sandbox.
+   Currently the convert-element action is a pure
+   static-analysis tool; conflating it with a build action
+   muddies the role.
+2. **No round-2 rendezvous.** The kind-agnostic
+   `_trace_repo` + `trace-publish` plumbing assumes B's
+   install genrule emits the trace; folding into A
+   means re-implementing the rendezvous A-side, with no
+   share with kind:autotools/make.
+3. **No convergence path.** With B emitting the trace, the
+   round-2 mechanism above — refused elements becoming
+   fine-grained over time — falls out for free. With A
+   doing the build, the trace would be A's own action's
+   fingerprint, not the upstream build's, defeating the
+   convergence direction.
+
+So the split lives where kind:autotools put it: A is
+analysis, B is build. write-a renders both.
 
 ## The shape
 
-Almost identical to `kind:autotools` round-2:
-
 ```
 write-a --cmake-round2-fallback  →
-  project A: per-element converter genrule (unchanged from native)
-             + per-element round-2-fallback alias group
-  project B: per-element round-2 install genrule (build-tracer-wrapped
-             cmake configure + ninja + install + trace-publish)
+  project A: per-element converter genrule
+             outs: [BUILD.bazel.out, ...]
+             cmd: convert-element --reply-dir=... \
+                  --unsupported-execute-process-fallback=true \
+                  --out-build=BUILD.bazel.out
+             load-time: @trace_<elem>//:trace via _trace_repo
+  project B: per-element install genrule
+             outs: [install_tree.tar, trace.log, ...]
+             cmd: build-tracer wraps:
+                  cmake -B build -G Ninja -S src \
+                  cmake --build build --parallel 1
+                  cmake --install build --prefix=$DESTDIR
+                  tar -C $DESTDIR -cf install_tree.tar .
+                  trace-publish (lands the AC entry)
 
 bazel build A//<elem>:<elem>_build
    pass-2 converter genrule:
-     cmake configure + File API reply + trace
-     convert-element runs lower.ToIR(...)
-       → success            ⇒ emit fine-grained cc_library / cc_binary
-       → unsupported-execute-process
-                            ⇒ emit placeholder BUILD.bazel.out:
-                                aliases pointing at <elem>_install_tree
+     load-time → _trace_repo lookup against AC
+                 → AC hit  ⇒ symlink trace dir into @trace_<elem>//
+                 → AC miss ⇒ empty fileset
+     action time → cmake configure + File API reply + trace.jsonl
+                   convert-element runs lower.ToIR(...)
+                     → native success ⇒ emit fine cc rules
+                     → unsupported-execute-process refusal AND
+                       fallback flag set ⇒ emit placeholder:
+                         * extract genrule untarring
+                           //<elem-pkg>:install_tree.tar
+                         * per-target stubs:
+                             STATIC/OBJECT → cc_import + static_library
+                             SHARED/MODULE → cc_import + shared_library
+                             EXECUTABLE    → sh_binary + srcs
+                             INTERFACE     → cc_library hdrs-only
 
 bazel build B//<elem>:<elem>_install
-   pass-3 install genrule:
+   pass-3 install genrule (only built when A's BUILD.bazel.out
+   references install_tree.tar — i.e. fallback path was taken):
      build-tracer wraps:
        cmake -B build [...]
        cmake --build build
        cmake --install build --prefix=$INSTALL_ROOT
      synthesize empty make-db.txt (cmake has no make-db; the
        trace-publish wire contract requires the slot)
-     trace-publish (defense-in-depth, lands AC entry)
+     trace-publish lands the AC entry
 ```
 
-The native render is untouched — projects without
-`execute_process` (or with only liftable buckets) keep
-emitting `cc_library` / `cc_binary` rules. The fallback is
-extra wiring that only kicks in on classifier refusal.
+Bazel evaluates B's install genrule lazily. Native-render
+elements emit cc rules that don't reference
+`install_tree.tar`; B's install genrule sits unbuilt for them.
+Fallback elements emit the placeholder shape that *does*
+reference `install_tree.tar`; B's install genrule runs.
 
 ## Convert-element's failure → placeholder transition
 
 Today, `convert-element` exits 1 on `unsupported-execute-process`
 and the genrule action fails. For the fallback, the genrule
-action must succeed even when classification refuses, but
-emit a placeholder BUILD that delegates to the round-2
-install_tree.tar.
+action must succeed even when classification refuses, and emit
+a placeholder BUILD whose per-target stubs delegate to
+Project B's `install_tree.tar`.
 
 Implementation: a new `--unsupported-execute-process-fallback`
 flag on `convert-element`. When set:
 
 - Classifier's refusal path no longer returns Tier-1; instead
-  `recoverExecuteProcess` returns a sentinel value the lowering
-  reads.
-- `lower.ToIR` returns a *placeholder* `ir.Package` whose shape
-  is described below — not raw aliases to a tar archive, but
-  per-target `cc_import` / `cc_library` / `sh_binary` / filegroup
-  rules referencing files extracted from the install_tree.
-- The genrule still writes `BUILD.bazel.out` and exits 0.
-- A sibling `failure.json` is still written so the orchestrator
-  / audit can see that fallback fired (with the same per-call
-  triage report Phase A emits).
+  `recoverExecuteProcess` returns a structured refusal slice
+  the lowering reads.
+- `lower.ToIR` calls `emitFallbackPlaceholder` to produce an
+  `ir.Package` of per-target stubs (shape described below).
+  Convert-element's executor toolchain is unchanged — still
+  cmake-only, no ninja, no install. The actual build work
+  lives in Project B's install genrule (Step 3, write-a side).
 
 ### Placeholder shape (per-target rules from install destinations)
 
@@ -166,56 +230,63 @@ Aliasing every cmake target to the coarse `install_tree.tar`
 doesn't work — Bazel can't link a tar archive into a
 downstream `cc_binary`. Downstream consumers expect the same
 ergonomics native render gives them: `deps = [":thelib"]`
-should pull in linkable artifacts and headers.
+should pull in linkable artifacts.
 
 The codemodel records `Target.Install.Destinations[].Path` per
-target (relative to `Target.Install.Prefix.Path`) plus
-`Target.NameOnDisk` (the artifact filename). Combined, that's
-enough to reconstruct each target's path inside the
-install_tree without parsing tar contents at action time. The
-placeholder generator walks the codemodel exactly the way
-`lower.lowerTarget` does today, but emits per-target stub
-rules instead of full cc rules.
-
-Sketch of the generated BUILD shape:
+target plus `Target.NameOnDisk` (the artifact filename).
+Combined, that's enough to reconstruct each target's path
+inside the install_tree without parsing tar contents at
+action time. `emitFallbackPlaceholder`
+(`converter/internal/lower/execute_process_fallback.go`) walks
+the codemodel and dispatches on `Target.Type`:
 
 ```python
 # One-time tar extract genrule. Outputs are enumerated from
-# Target.Install.Destinations + NameOnDisk, plus a header tree
-# under include/.
+# Target.Install.Destinations + NameOnDisk; the genrule's src
+# is "install_tree.tar" — a label that resolves once A's
+# BUILD.bazel.out is symlinked into Project B's package and
+# co-locates with B's install genrule (which produces
+# install_tree.tar as one of its outs).
 genrule(
-    name = "<elem>_install_tree_extract",
-    srcs = ["//<elem-pkg>:install_tree.tar"],
+    name = "_install_tree_extract",
+    srcs = ["install_tree.tar"],
     outs = [
-        "tree/lib/libthelib.a",
-        "tree/include/thelib.h",
-        "tree/bin/thetool",
-        # ...one entry per (target, install destination) plus
-        # the headers the codemodel records as installed.
+        "install_tree/lib/libthelib.a",
+        "install_tree/lib/libshared.so.1",
+        "install_tree/bin/thetool",
+        # ...one entry per (target, install destination).
     ],
-    cmd = "tar -C $(@D)/tree -xf $<",
+    cmd = "mkdir -p \"$(RULEDIR)/install_tree\" && tar -C \"$(RULEDIR)/install_tree\" -xf \"$(location install_tree.tar)\"",
+    tags = [
+        "cmake-codegen-execute-process-fallback",
+        "cmake-codegen-execute-process-fallback-extract",
+    ],
+    visibility = ["//visibility:private"],
 )
 
 # Per-target stub rules. Kind dispatch follows Target.Type:
 cc_import(
-    name = "thelib",                   # STATIC_LIBRARY
-    static_library = "tree/lib/libthelib.a",
-    hdrs = ["tree/include/thelib.h"],
+    name = "thelib",                   # STATIC_LIBRARY / OBJECT_LIBRARY
+    static_library = "install_tree/lib/libthelib.a",
+    tags = ["cmake-codegen-execute-process-fallback"],
     visibility = ["//visibility:public"],
 )
 cc_import(
-    name = "shared_lib",               # SHARED_LIBRARY
-    shared_library = "tree/lib/libshared_lib.so",
-    hdrs = [...],
+    name = "shared",                   # SHARED_LIBRARY / MODULE_LIBRARY
+    shared_library = "install_tree/lib/libshared.so.1",
+    tags = ["cmake-codegen-execute-process-fallback"],
+    visibility = ["//visibility:public"],
 )
 sh_binary(
     name = "thetool",                  # EXECUTABLE
-    srcs = ["tree/bin/thetool"],
+    srcs = ["install_tree/bin/thetool"],
+    tags = ["cmake-codegen-execute-process-fallback"],
+    visibility = ["//visibility:public"],
 )
 cc_library(
-    name = "headers_only",             # INTERFACE_LIBRARY
-    hdrs = [...],
-    includes = ["tree/include"],
+    name = "headers_only",             # INTERFACE_LIBRARY (header-only)
+    tags = ["cmake-codegen-execute-process-fallback"],
+    visibility = ["//visibility:public"],
 )
 ```
 
@@ -227,21 +298,26 @@ that's a clear signal: the target wasn't part of the install
 contract; either expose it via `install()` upstream or stop
 depending on it across the round-2 boundary.
 
-The codemodel also records `compileGroups[].includes[]` for
-each target, which `lower.lowerTarget` already walks for
-header discovery. The placeholder generator reuses that walk
-to populate `hdrs` on `cc_import` / `cc_library` rules from
-the installed `include/` tree, preserving the public-header
-contract.
+### Header wiring (deferred)
+
+`cc_import.hdrs` and `cc_library.hdrs` are not populated by
+the v1 placeholder. The codemodel's `Target.FileSets` records
+header sets per target with their install destinations; an
+analogous extract step could enumerate them as additional
+extract-genrule outs and feed them as `hdrs` on the per-target
+stubs. Deferred until a real fixture forces it; without
+hdrs, downstream `#include <thelib.h>` won't resolve through
+the placeholder, but the `deps` linkage still works for
+linkable artifacts.
 
 ### Why not filegroups everywhere?
 
-A simpler shape — emit a `filegroup(srcs = ["tree/lib/libthelib.a"])`
+A simpler shape — emit a `filegroup(srcs = ["lib/libthelib.a"])`
 per target — wouldn't satisfy `cc_binary`'s `deps` interface
 (filegroups don't carry the `CcInfo` provider). `cc_import`
-gets the linkable `CcInfo` automatically. We use `filegroup`
-only for the few target types that don't fit any cc_* rule
-(custom-command outputs, runtime data, etc.).
+gets the linkable `CcInfo` automatically. The placeholder
+uses `filegroup` only for the few target types that don't fit
+any cc_* rule.
 
 ## The kind-specific bits
 
@@ -318,23 +394,46 @@ ones but each leaves the tree in a runnable state.
    scaffolding. Lets the bucket-of-globs / build-tracer
    wrapping be reviewed in isolation before any wiring.
 2. **convert-element `--unsupported-execute-process-fallback`
-   flag.** When set, classifier refusals become a sentinel;
-   `lower.ToIR` emits a placeholder `ir.Package`. Add a
-   golden test for the placeholder shape. write-a doesn't yet
-   pass the flag, so live behavior is unchanged.
-3. **write-a `--cmake-round2-fallback` flag + per-element
-   round-2 install genrule emission.** When the flag is on
-   AND the element opts in (via a `.bst` field, or the
-   default for projects with detected `execute_process`),
-   write-a emits the round-2 install genrule alongside the
-   native converter genrule, and threads
-   `--unsupported-execute-process-fallback` into the
-   converter genrule's cmd. Render gate
-   `scripts/meta-cmake-round2-fallback.sh` lands here.
+   flag.** When set, classifier refusals stop exiting Tier-1;
+   `lower.ToIR` returns a placeholder `ir.Package` (initially
+   per-target empty stubs in PR #97; upgraded to full
+   per-target `cc_import` / `sh_binary` / extract-genrule
+   shape in Step 2.5 — PR #98). The flag is off by default;
+   existing flows unchanged.
+3. **write-a integration: emit Project B install genrule +
+   wire the round-2 rendezvous.** write-a's kind:cmake render
+   gains a round-2 mode that:
+   - threads `--unsupported-execute-process-fallback=true`
+     into A's converter genrule cmd;
+   - adds the `@trace_<elem>//:trace` load-time lookup to
+     A's converter genrule (kind-agnostic helpers in
+     `handler_pipeline_round2.go::renderTraceDrivenRound2A`
+     are reusable as-is);
+   - emits B's install genrule wrapping cmake configure +
+     ninja + install under `build-tracer` (using the
+     `wrapCmakePipelineCmds()` helper from Step 1) plus
+     inline `trace-publish`.
+   Render gate `scripts/meta-cmake-round2-fallback.sh` lands
+   here. Reuses `cmd/build-tracer`, `cmd/trace-publish`,
+   `cmd/trace-lookup`, and the synthetic-key digest from
+   `internal/tracenorm/synthkey.go` — all kind-agnostic.
 4. **Roadmap promotion + docs.** Move the ROADMAP `Later`
    bullet to `Now`/`Done` as the steps land. Update
    `docs/research/cmake_analysis.md` §9 to reflect the
    shipped fallback path.
+
+### Future: trace-driven convergence (research)
+
+A natural Step 5 (queued in ROADMAP `Later`): with B's trace
+available via `@trace_<elem>//:trace`, the converter can read
+it to learn what the unliftable `execute_process` actually
+spawned + wrote at the filesystem level — and potentially
+emit *fine-grained* `cc_library` / `cc_binary` rules for
+elements that originally refused. The first build of a given
+srckey hits the placeholder shape; subsequent builds *anywhere*
+(after pass-3 publishes) see the trace and refine. This makes
+fallback a transient state, not a permanent regression. v1
+doesn't ship this; it's tracked as a research direction.
 
 Each step ships with `go test ./...` clean, `gofmt -l .`
 empty, and the relevant render/live-AC gate green.
