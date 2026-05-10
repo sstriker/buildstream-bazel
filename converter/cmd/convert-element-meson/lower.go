@@ -647,7 +647,11 @@ func fillDeps(out *ir.Target, t Target, byID, byName map[string]string, deps map
 }
 
 // projectInclude maps an absolute include path to a source-root-relative
-// directory, or "" if path is outside the source root.
+// directory, or "" if path is outside the source root. Returns the
+// path with forward-slash separators so Bazel's `includes = [...]`
+// renders portably; the rest of the codebase follows the same
+// convention (Bazel paths/labels are `/`-separated regardless of
+// host OS).
 func projectInclude(path, sourceRoot string) string {
 	if sourceRoot == "" {
 		return ""
@@ -656,7 +660,7 @@ func projectInclude(path, sourceRoot string) string {
 		return "."
 	}
 	if strings.HasPrefix(path, sourceRoot+string(filepath.Separator)) {
-		return path[len(sourceRoot)+1:]
+		return filepath.ToSlash(path[len(sourceRoot)+1:])
 	}
 	return ""
 }
@@ -720,13 +724,17 @@ func relativizeOutputs(filenames []string, buildDir string) ([]string, error) {
 	return out, nil
 }
 
-// relativizeSources projects each absolute path to source-root-relative.
-// Sources outside the source tree (e.g. ones from a subproject) refuse.
+// relativizeSources projects each absolute path to source-root-
+// relative. Sources outside the source tree (e.g. ones from a
+// subproject) refuse. All returned paths use forward-slash
+// separators so Bazel `srcs = [...]` renders portably — Bazel's
+// label/path syntax is `/`-separated regardless of host OS, and
+// the rest of the converter codebase follows the same convention.
 func relativizeSources(srcs []string, sourceRoot string) ([]string, error) {
 	out := make([]string, 0, len(srcs))
 	for _, p := range srcs {
 		if !filepath.IsAbs(p) {
-			out = append(out, p)
+			out = append(out, filepath.ToSlash(p))
 			continue
 		}
 		if sourceRoot == "" {
@@ -739,7 +747,7 @@ func relativizeSources(srcs []string, sourceRoot string) ([]string, error) {
 			return nil, newFailure(unsupportedMesonSubproject,
 				"source path %q lies outside source root %q", p, sourceRoot)
 		}
-		out = append(out, p[len(sourceRoot)+1:])
+		out = append(out, filepath.ToSlash(p[len(sourceRoot)+1:]))
 	}
 	return out, nil
 }

@@ -276,6 +276,36 @@ func TestLower_SoVersionedSuffix(t *testing.T) {
 	}
 }
 
+func TestRelativizeSources_ForwardSlashes(t *testing.T) {
+	// Even on POSIX the inputs already use forward slashes; this
+	// regression test guards against future edits that drop the
+	// filepath.ToSlash call (Bazel labels/paths are `/`-separated
+	// regardless of host OS, and the rest of the converter
+	// follows the same convention).
+	got, err := relativizeSources([]string{"/src/sub/foo.c"}, "/src")
+	if err != nil {
+		t.Fatalf("relativizeSources: %v", err)
+	}
+	if len(got) != 1 || got[0] != "sub/foo.c" {
+		t.Errorf("relativizeSources: got %v want [sub/foo.c]", got)
+	}
+	for _, p := range got {
+		if strings.Contains(p, `\`) {
+			t.Errorf("relativizeSources output contains backslash: %q", p)
+		}
+	}
+}
+
+func TestProjectInclude_ForwardSlashes(t *testing.T) {
+	got := projectInclude("/src/sub/inc", "/src")
+	if got != "sub/inc" {
+		t.Errorf("projectInclude: got %q want sub/inc", got)
+	}
+	if strings.Contains(got, `\`) {
+		t.Errorf("projectInclude output contains backslash: %q", got)
+	}
+}
+
 func TestIsUnderDir(t *testing.T) {
 	cases := []struct {
 		name string

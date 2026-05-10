@@ -216,10 +216,22 @@ int main(void) {
 EOF
 
 run_bazel_tail "$B" build 10 //smoke:greet_smoke
-# `bazel run` similarly: capture to a log, propagate exit status,
-# then read the tail into smoke_out for the assertion below.
+# `bazel run` similarly: capture to a log, but disarm `set -e` for
+# the call so a non-zero rc still lets us print the log tail
+# (otherwise the script would exit silently and the smoke-target
+# breakage would be hard to diagnose). Mirrors run_bazel_tail's
+# pattern but keeps the captured stdout available for the smoke
+# assertion below.
 smoke_log="$work_dir/bazel-smoke-run.log"
+set +e
 run_bazel "$B" run //smoke:greet_smoke >"$smoke_log" 2>&1
+smoke_rc=$?
+set -e
+if [ "$smoke_rc" -ne 0 ]; then
+    echo "meta-meson: bazel run //smoke:greet_smoke failed (rc=$smoke_rc); last 20 lines:" >&2
+    tail -20 "$smoke_log" >&2
+    exit "$smoke_rc"
+fi
 smoke_out=$(tail -5 "$smoke_log")
 echo "meta-meson: smoke output: $smoke_out"
 if ! echo "$smoke_out" | grep -q "Hello from meson!"; then
