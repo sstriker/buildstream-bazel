@@ -42,18 +42,35 @@ type executeProcessOut struct {
 }
 
 // recoverExecuteProcess walks the trace's execute_process
-// calls, classifies each into a Bucket, and either emits a
-// Bazel genrule for the liftable buckets (cmake-e,
-// file-producing) or aggregates the unliftable ones into a
-// single typed Tier-1 failure.
+// calls, classifies each into a Bucket, and emits a Bazel
+// genrule for the liftable buckets (cmake-e, file-producing).
+// Unliftable buckets — plus lift attempts that fail their own
+// preconditions (e.g. cmake -E copy with an unresolvable
+// input path) — surface as a structured refusal slice the
+// caller dispositions:
 //
-// The aggregation is intentional: a project with many
-// execute_process calls (a common shape — version stamping +
-// toolchain probing + a few tool invocations) should produce
-// one triage report listing every offending call rather than N
-// converter runs uncovering them one at a time. The orchestrator
-// in M3 dedupes failure logs by (Code, message-prefix) so the
-// per-call detail goes after a stable prefix.
+//   - Phase A behaviour (UnsupportedExecuteProcessFallback off):
+//     ToIR turns the refusals into a single typed
+//     `unsupported-execute-process` Tier-1 failure listing
+//     every call's location, bucket, reason and argv.
+//   - Phase B fallback (UnsupportedExecuteProcessFallback on):
+//     ToIR ignores the refusals as errors and emits a
+//     placeholder ir.Package whose targets are empty
+//     cc_library / cc_binary / cc_library-interface stubs at
+//     this stage (Step 2 / PR #97), one per non-UTILITY
+//     codemodel target with public visibility, so downstream
+//     label references resolve at analysis time. Step 2.5
+//     (PR #98) extends the placeholder to wire those stubs
+//     to install_tree.tar via per-target cc_import / sh_binary
+//     reconstructed from Target.Install.Destinations +
+//     NameOnDisk.
+//
+// Returning structured data here keeps the per-call detail
+// available for either disposition. Callers that don't care
+// about fallback ignore the slice and treat non-empty as an
+// error condition (the legacy formatExecuteProcessFailure
+// helper renders it the same way the failure message did
+// before this refactor).
 //
 // Liftable buckets append to cc.Genrules (one ir.Target per
 // recovered call) and register the output path in
@@ -63,8 +80,15 @@ type executeProcessOut struct {
 // same way configureFileOut does for configure_file. Unliftable
 // buckets — and lift attempts that fail their own preconditions
 // (e.g. cmake -E copy with an unresolvable input path) — fall
-// through to the refusal aggregator.
-func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]executeProcessOut, error) {
+// through to the refusal aggregator returned alongside outs.
+//
+// Returns (outs, refusals) — never an error. The caller picks
+// the disposition: Phase A callers run formatExecuteProcessFailure
+// on a non-empty refusal slice to land the typed Tier-1 failure;
+// Phase B callers (--unsupported-execute-process-fallback set)
+// route the refusal slice into the placeholder ir.Package
+// emitter instead.
+func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -114,12 +138,21 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			})
 		}
 	}
-	if len(unsupported) > 0 {
-		return nil, failure.New(failure.UnsupportedExecuteProcess,
-			"%s", formatExecuteProcessRefusal(unsupported))
-	}
 	sort.Slice(outs, func(i, j int) bool { return outs[i].RelOutput < outs[j].RelOutput })
-	return outs, nil
+	return outs, unsupported
+}
+
+// formatExecuteProcessFailure converts a non-empty refusal
+// slice into the typed `unsupported-execute-process` Tier-1
+// error. Used by ToIR when Phase B fallback is off (the
+// default). Returns nil for an empty slice so callers can
+// chain the result idiomatically.
+func formatExecuteProcessFailure(refusals []executeProcessRefusal) error {
+	if len(refusals) == 0 {
+		return nil
+	}
+	return failure.New(failure.UnsupportedExecuteProcess,
+		"%s", formatExecuteProcessRefusal(refusals))
 }
 
 // liftCMakeE translates a recognized cmake -E builtin call

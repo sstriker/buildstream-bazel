@@ -84,6 +84,26 @@ type Options struct {
 	// codemodel-only behavior matches pre-trace lower output.
 	TraceRaw []byte
 
+	// UnsupportedExecuteProcessFallback toggles
+	// recoverExecuteProcess's refusal handling. When false
+	// (the default — preserves Phase A behaviour),
+	// classifier refusals (stamp / probe / unknown buckets)
+	// produce a typed unsupported-execute-process Tier-1
+	// failure. When true, refusals don't error; ToIR returns
+	// a placeholder ir.Package whose targets are **empty
+	// cc_library / cc_binary / cc_library-interface stubs**
+	// (one per non-UTILITY codemodel target, public
+	// visibility) so downstream label references still
+	// resolve at analysis time. The per-target artifact
+	// wiring (cc_import / sh_binary referencing install_tree.tar
+	// paths reconstructed from Target.Install.Destinations
+	// + NameOnDisk) lands in Step 2.5 — until then,
+	// downstream consumers' compile/link actions against the
+	// stubs fail. See
+	// docs/design/cmake-execute-process-round2-fallback.md
+	// for the architectural shape.
+	UnsupportedExecuteProcessFallback bool
+
 	// LiftConfigureFile toggles the configure_file recovery's
 	// lifted shape. When true (and a values namespace is
 	// available — either via CMakeVars below or via per-template
@@ -223,18 +243,46 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// (cmake -E builtins; file-producing tools with declared
 	// OUTPUT_FILE — translated to build-time genrules) and some
 	// aren't (version stamps, toolchain probes, opaque
-	// pipelines — refused with a typed Tier-1 failure).
-	// recoverExecuteProcess aggregates all unliftable calls
-	// into a single failure so projects with several
-	// execute_process invocations get one triage report rather
-	// than N converter runs uncovering them one at a time.
-	// Liftable buckets append to cc.Genrules + cc.OutToGenrule
-	// before lowerTarget runs so consumer attribution can
-	// attach generated artefacts to cc targets that include the
-	// build dir.
-	executeProcesses, err := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, cmakeBuild, cc)
-	if err != nil {
-		return nil, err
+	// pipelines).
+	//
+	// Disposition of the unliftable bucket depends on
+	// opts.UnsupportedExecuteProcessFallback:
+	//   - off (Phase A): aggregate into a single typed
+	//     unsupported-execute-process Tier-1 failure so
+	//     projects with several offending calls get one
+	//     triage report rather than N converter runs
+	//     uncovering them one at a time.
+	//   - on (Phase B fallback): emitFallbackPlaceholder
+	//     enumerates every non-UTILITY codemodel target as
+	//     an empty cc_library / cc_binary / cc_library-
+	//     interface stub so downstream label references
+	//     resolve at analysis time. Step 2.5 (PR #98)
+	//     extends the placeholder to wire those stubs to
+	//     Target.Install.Destinations via cc_import /
+	//     sh_binary; this PR (Step 2) only delivers the
+	//     analysis-time label-resolution shape.
+	//
+	// Liftable buckets always append to cc.Genrules +
+	// cc.OutToGenrule before lowerTarget runs so consumer
+	// attribution can attach generated artefacts to cc
+	// targets that include the build dir. The
+	// []executeProcessOut return is parallel to
+	// configureFileOut and feeds the same per-target
+	// attribution loop in lowerTarget below.
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, cmakeBuild, cc)
+	if len(executeProcessRefusals) > 0 {
+		if !opts.UnsupportedExecuteProcessFallback {
+			return nil, formatExecuteProcessFailure(executeProcessRefusals)
+		}
+		// Phase B fallback: emit a placeholder ir.Package
+		// rather than continuing into the native lowering
+		// path. The native path would either redo the
+		// refusal analysis or trip on the unliftable call
+		// later in lowerTarget; the placeholder is the
+		// cleaner cut, and it lets downstream consumers see
+		// per-target labels at analysis time even when the
+		// element itself can't be fine-converted.
+		return emitFallbackPlaceholder(r, hostSrc)
 	}
 
 	// Recover configure_file outputs from trace before lowering

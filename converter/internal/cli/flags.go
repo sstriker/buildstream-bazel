@@ -93,6 +93,26 @@ type Args struct {
 	// package doc for the cache-key analysis.
 	LiftConfigureFile bool
 
+	// UnsupportedExecuteProcessFallback toggles the
+	// recoverExecuteProcess refusal path's behaviour. Off
+	// (default): refusals exit Tier-1 with the typed
+	// `unsupported-execute-process` failure code, the same as
+	// today. On: refusals don't exit Tier-1; the converter
+	// instead emits a placeholder BUILD.bazel — at this stage
+	// (Step 2 / PR #97), an enumeration of the codemodel's
+	// non-UTILITY targets as **empty cc_library / cc_binary /
+	// cc_library-interface stubs** with public visibility, so
+	// downstream label references resolve at analysis time.
+	// Step 2.5 (PR #98) wires those stubs to the element's
+	// round-2 install_tree.tar via per-target cc_import /
+	// sh_binary rules reconstructed from
+	// Target.Install.Destinations + NameOnDisk; until then,
+	// downstream consumers' compile/link actions against the
+	// stubs will fail (analysis is the only contract this PR
+	// delivers). See
+	// docs/design/cmake-execute-process-round2-fallback.md.
+	UnsupportedExecuteProcessFallback bool
+
 	// AllowCMakeVersionMismatch lets the converter run with a cmake
 	// version below the architectural floor (3.20 — codemodel-v2 minimum).
 	// Local-dev only; M3 must never set this.
@@ -162,6 +182,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutTimings, "out-timings", "", "write JSON with per-phase wall-clock timings (cmake configure, translation, total)")
 	fs.StringVar(&a.OutCMakeConfigureReads, "out-cmake-configure-reads", "", "write JSON array of source-relative paths from build.ninja's RERUN_CMAKE implicit-input list (configure-time oracle)")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
+	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls (stamp / probe / unknown buckets), emit a placeholder BUILD.bazel listing every non-UTILITY codemodel target as an empty cc_library / cc_binary / cc_library-interface stub with public visibility — instead of exiting Tier-1 with unsupported-execute-process. Step 2 (this PR) only restores label resolution at analysis time; the per-target install_tree.tar wiring (cc_import / sh_binary referencing artifact paths derived from Target.Install.Destinations) lands in Step 2.5, after which downstream consumers' compile/link actions resolve as well. Off by default to preserve the strict-fail behaviour. See docs/design/cmake-execute-process-round2-fallback.md.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
