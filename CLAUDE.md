@@ -67,3 +67,56 @@ When something asks for the "correctness story" of a change — in a PR
 description, a commit message, or your own design notes — show that you
 ran these and what they printed. A green `go test ./...` plus the
 relevant render gate's `ok` line is usually enough.
+
+## PR review iteration
+
+When you create a PR (or are asked to land a stack of PRs), the default
+loop is:
+
+1. **Open the PR** with `mcp__github__create_pull_request`.
+2. **Subscribe** to PR activity for that PR with
+   `mcp__github__subscribe_pr_activity`. This delivers review comments
+   and CI status changes as `<github-webhook-activity>` messages that
+   wake the session — no polling, no `sleep` loops.
+3. **Request a Copilot review** with
+   `mcp__github__request_copilot_review`. Don't wait for someone to
+   trigger it manually.
+4. **End the turn**. Webhook events will wake you when the bot
+   responds.
+5. **When feedback lands**, fetch the full state with
+   `mcp__github__pull_request_read` (`get_review_comments` +
+   `get_check_runs`) and
+   triage each thread:
+   - **Real bugs** (broken behavior, logic errors, unresolved merge
+     conflict markers, CI failures): fix.
+   - **Doc / comment accuracy** (claim doesn't match implementation):
+     fix — comments rot; getting them right while the code is fresh is
+     cheap.
+   - **Architectural questions** (significant scope changes, new
+     dispatch shapes): ask the user before acting.
+   - **Already-resolved-by-an-earlier-fix** threads: skip; the bot's
+     auto-outdate heuristic catches up on the next review pass.
+6. **Push** the fixes. Use `--force-with-lease` for amends / squashes.
+7. **Re-request review** (step 3 again).
+8. **Loop** until the bot stops surfacing real bugs. Stop when the
+   only open threads are doc-style suggestions you've considered and
+   declined or that the bot will mark outdated on the next pass.
+
+For stacked PRs:
+
+- Address the bottom PR's feedback first, push, then rebase the rest
+  of the stack on top so each downstream PR picks up the fix.
+- If the same kind of bug surfaces at multiple levels of the stack
+  (e.g. a docstring claim landed at PR #N is still wrong at PR #N+2
+  because the rebase brought it forward), fix at the lowest level
+  that can hold the change cleanly; the chain rebase pulls it
+  forward.
+- Rebase conflicts on docs that have been edited at multiple stack
+  levels are common — resolve in favour of the most-current text
+  (the version closest to HEAD's intent), not the older snapshot
+  the cherry-pick brought in.
+
+Don't over-engineer the loop. Each iteration costs a re-review cycle
+on the operator's Anthropic account; batch related fixes into one
+push when the feedback is grouped, but a critical bug fix shouldn't
+wait for a doc nit on a different file.
