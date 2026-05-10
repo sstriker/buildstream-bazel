@@ -252,8 +252,13 @@ refuse here.
 
 **Operator action:** if the offending target is necessary,
 upgrade the converter to recognise it (and add a fixture). If
-it's incidental (a debug-only utility), exclude it via meson's
-`build_by_default: false` and rerun.
+it's incidental, condition the meson.build to skip declaring
+the target in this build (e.g. via an `if` guard the converter's
+configure pass evaluates to false). v1 lowers every introspected
+target regardless of `build_by_default`, so flipping that flag
+alone won't suppress the refusal — a future converter version
+could honor it; track in ROADMAP if it becomes a real operator
+ergonomics issue.
 
 **Emission point:** `cmd/convert-element-meson` `lower.Lower`
 type-switch default arm.

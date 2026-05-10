@@ -199,6 +199,20 @@ func TestRelativizeOutputs(t *testing.T) {
 	if len(got2) != 1 || got2[0] != "foo.h" {
 		t.Errorf("empty BuildDir: got %v want [foo.h]", got2)
 	}
+	// Absolute path outside buildDir refuses (was previously a
+	// silent basename fallback that could hide misconfiguration).
+	if _, err := relativizeOutputs([]string{"/elsewhere/foo.h"}, "/bd"); err == nil ||
+		!strings.Contains(err.Error(), "unsupported-meson-custom-target") {
+		t.Errorf("out-of-builddir abs path: want refusal, got %v", err)
+	}
+	// Relative path passes through (rare but legal).
+	got3, err := relativizeOutputs([]string{"gen/foo.h"}, "/bd")
+	if err != nil {
+		t.Fatalf("relativizeOutputs (relative): %v", err)
+	}
+	if len(got3) != 1 || got3[0] != "gen/foo.h" {
+		t.Errorf("relative path: got %v want [gen/foo.h]", got3)
+	}
 }
 
 func TestLower_RefusesMultiEntryCustomTarget(t *testing.T) {

@@ -348,14 +348,15 @@ func renderCustomCmd(argv, srcs, outs []string) (string, error) {
 //     identifiers, `--flag=value`). Keeps the rendered genrule
 //     readable in the BUILD output.
 //   - Single-quotes everything else, escaping embedded single
-//     quotes via the canonical four-character POSIX sequence
-//     ' \ ' '  i.e. close the open single-quote, output an
-//     escaped single-quote, then reopen the single-quote. This
-//     matches the strings.ReplaceAll(s, "'", `'\”`) call below
-//     (note the surrounding outer single-quotes the function
-//     itself adds). Covers the full POSIX shell metacharacter
-//     set (semicolon, pipe, ampersand, redirect, parens,
-//     newline, dollar, backtick, backslash, glob chars,
+//     quotes via the canonical POSIX sequence: close the open
+//     single-quote, emit a backslash-escaped single-quote, then
+//     reopen the single-quote. The implementation expresses this
+//     via strings.ReplaceAll(s, "'", "'"+`\`+"'"+"'") (or, more
+//     readably, the Go raw-string form a few lines below this
+//     comment) — followed by an outer "'"+ ... +"'" wrap that
+//     the function itself adds. Covers the full POSIX shell
+//     metacharacter set (semicolon, pipe, ampersand, redirect,
+//     parens, newline, dollar, backtick, backslash, glob chars,
 //     whitespace) without enumerating each one — anything that
 //     isn't in the safe set goes through quoting.
 func shellQuote(s string) string {
@@ -674,22 +675,39 @@ func projectInclude(path, sourceRoot string) string {
 //     usually signals the original meson target writes to
 //     distinct subdirs that this v1 lift can't structurally
 //     replicate.
-//   - paths the build-dir prefix doesn't cover. Falls back to
-//     the basename when BuildDir is empty (the live-cmake path
-//     always sets it; offline test fixtures may not).
+//   - absolute paths that don't lie under buildDir. The
+//     intro-targets schema is supposed to guarantee custom_target
+//     outputs land inside the build tree; an out-of-tree absolute
+//     path is anomalous (cross-project artifact, manually-set
+//     output prefix), and silently falling back to the basename
+//     would risk hiding a real misconfiguration. Surfacing it as
+//     a typed Tier-1 refusal lets the operator audit before the
+//     genrule renders something subtly wrong.
+//
+// Falls back to the basename when buildDir is empty — the live-
+// cmake / live-meson path always populates it, but offline test
+// fixtures and standalone-converter dev runs may not.
 func relativizeOutputs(filenames []string, buildDir string) ([]string, error) {
 	out := make([]string, 0, len(filenames))
 	seen := map[string]struct{}{}
 	for _, fn := range filenames {
 		var rel string
-		if buildDir != "" && filepath.IsAbs(fn) && isUnderDir(fn, buildDir) {
+		switch {
+		case buildDir == "":
+			rel = filepath.Base(fn)
+		case filepath.IsAbs(fn) && isUnderDir(fn, buildDir):
 			r, err := filepath.Rel(buildDir, fn)
 			if err != nil {
 				return nil, fmt.Errorf("relativize output %q: %w", fn, err)
 			}
 			rel = filepath.ToSlash(r)
-		} else {
-			rel = filepath.Base(fn)
+		case !filepath.IsAbs(fn):
+			// Already relative (rare but legal).
+			rel = filepath.ToSlash(fn)
+		default:
+			return nil, newFailure(unsupportedMesonCustomTarget,
+				"output path %q lies outside build dir %q — meson normally roots custom_target outputs at the build dir, so this likely indicates an unsupported manually-set output prefix",
+				fn, buildDir)
 		}
 		if _, dup := seen[rel]; dup {
 			return nil, newFailure(unsupportedMesonCustomTarget,
