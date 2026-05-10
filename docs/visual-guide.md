@@ -37,7 +37,7 @@ graph TD
         WA["cmd/write-a\nStatic renderer — reads .bst graph,\nwrites project A + B BUILD files"]
         CE["converter/cmd/convert-element\nkind:cmake converter\ncmake File API → cc rules"]
         BT["cmd/build-tracer\nProcess tracer\nptrace / strace wrapper"]
-        CEA["cmd/convert-element-trace\nkind:autotools converter\nTrace + make-db → cc_library / cc_binary"]
+        CEA["cmd/convert-element-trace\nTrace-driven converter (autotools / make / manual / script / makemaker / modulebuild)\nTrace + optional make-db → cc_library / cc_binary"]
         SP["cmd/source-push\nUploads source trees to CAS\n(dev/test; production uses bst source push)"]
         TL["cmd/trace-lookup\nQueries REAPI ActionCache for a\ncached trace at Bazel load time"]
         TP["cmd/trace-publish\nWrites trace to REAPI ActionCache\nunder SyntheticActionDigest(srckey)"]

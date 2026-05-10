@@ -23,16 +23,24 @@ func init() {
 	registerHandler(autotoolsHandler{})
 }
 
-// traceConfig holds the render-time settings for the
-// trace-driven autotools converter. Populated from main()'s
-// flags before the per-element render loop runs. Empty
-// convertBin disables the trace+convert wrap entirely
-// (rendered output is the unmodified pipeline shape).
+// traceConfig holds the render-time settings shared by every
+// kind that opts into the trace-driven path (autotools / make /
+// manual / script / makemaker / modulebuild) plus the
+// kind:cmake round-2 fallback's tool-staging needs (build-tracer
+// + trace-publish + trace-lookup land in tools/ regardless of
+// which kind activated round-2). Populated from main()'s flags
+// before the per-element render loop runs. Empty convertBin
+// disables the trace+convert wrap for the trace-driven kinds
+// entirely (rendered output is the unmodified pipeline shape);
+// the cmake-round2-fallback tool staging is gated by
+// cmakeConfig.round2FallbackEnabled instead, so it can activate
+// with convertBin empty.
 //
-// Package-level state keeps the kindHandler interface small
-// (RenderA / RenderB don't take a config arg) while letting
-// the autotools handler decide per-element whether to install
-// the extension hooks.
+// The struct lives in handler_autotools_native.go for historical
+// reasons (kind:autotools was the first opt-in) but is no longer
+// autotools-specific. Package-level state keeps the kindHandler
+// interface small (RenderA / RenderB don't take a config arg)
+// while letting each kind's handler consult the same flags.
 var traceConfig struct {
 	convertBin    string // absolute path to convert-element-trace
 	tracerBin     string // absolute path to build-tracer

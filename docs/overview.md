@@ -153,7 +153,7 @@ REAPI ActionCache endpoint — no separate registry service.
 | Static renderer | `cmd/write-a/` | `.bst` → project A + project B BUILD files |
 | cmake converter | `cmd/convert-element` (`converter/cmd/convert-element/`) | cmake source → BUILD.bazel.out |
 | Process tracer | `cmd/build-tracer/` | Wraps build cmd; emits execve trace |
-| autotools converter | `cmd/convert-element-trace/` | Trace → BUILD.bazel.out |
+| Trace-driven converter | `cmd/convert-element-trace/` | Trace → BUILD.bazel.out (shared by autotools / make / manual / script / makemaker / modulebuild) |
 | Cross-element synth | `internal/synthprefix/` | Builds the cmake-config-bundle layout |
 | Imports manifest | `internal/manifest/` | Cross-element name → Bazel label resolution |
 | End-to-end gates | `scripts/meta-*.sh`, `Makefile e2e-*` | Drive the pipeline against fixtures |
