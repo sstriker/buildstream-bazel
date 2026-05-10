@@ -97,7 +97,8 @@ transition cleanly.
   `unsupported-execute-process`, the round-2-style coarse
   "cmake configure + ninja + install" genrule takes over for
   that element — same destination as kind:autotools / make /
-  perl / manual / script, but reached differently. kind:cmake
+  makemaker / modulebuild / manual / script, but reached
+  differently. kind:cmake
   is **not** a `pipelineHandler` variant (no
   `traceDrivenSrckeyPatterns` field to flip; no
   `shouldUseRound2()` branch), and it doesn't have an
