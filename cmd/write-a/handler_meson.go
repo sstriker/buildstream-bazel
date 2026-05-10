@@ -186,10 +186,18 @@ genrule(
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR"%[3]s
-        # v1 emits an empty bundle dir. Tarring it directly produces
-        # a zero-entry tar, which is fine for the declared-output
-        # contract — downstream consumers don't yet read it.
-        tar -cf "$(location pkg-config-bundle.tar)" -C "$$BUNDLE_DIR" .
+        # v1 emits an empty bundle dir. We deliberately do NOT use
+        # "tar -C $$BUNDLE_DIR ." — that includes the "." directory
+        # entry with the bundle dir's mtime/uid/gid, making the tar
+        # non-deterministic across builds and invalidating Bazel's
+        # cache for unrelated reasons. Instead, tar an explicit
+        # empty file list via -T /dev/null, which produces a
+        # zero-content archive that's byte-identical run-to-run.
+        # When the bundle synthesis follow-up actually populates
+        # BUNDLE_DIR, switch to a determinism-preserving
+        # invocation (--sort=name --owner=0 --group=0 --mtime=@0)
+        # so producing-content stays cache-stable.
+        tar -cf "$(location pkg-config-bundle.tar)" -T /dev/null
     """,
     tools = ["//tools:convert-element-meson"],
 )

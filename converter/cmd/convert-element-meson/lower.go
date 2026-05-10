@@ -240,9 +240,9 @@ func lowerCustom(t Target, opts LowerOptions) (ir.Target, error) {
 	if err != nil {
 		return ir.Target{}, err
 	}
-	outs := make([]string, 0, len(t.Filename))
-	for _, fn := range t.Filename {
-		outs = append(outs, filepath.Base(fn))
+	outs, err := relativizeOutputs(t.Filename, opts.BuildDir)
+	if err != nil {
+		return ir.Target{}, fmt.Errorf("custom target %q: %w", t.Name, err)
 	}
 	if len(outs) == 0 {
 		return ir.Target{}, newFailure(unsupportedMesonCustomTarget,
@@ -335,11 +335,12 @@ func renderCustomCmd(argv, srcs, outs []string) (string, error) {
 //     identifiers, `--flag=value`). Keeps the rendered genrule
 //     readable in the BUILD output.
 //   - Single-quotes everything else, escaping embedded single
-//     quotes via the standard `'\”` dance. This covers the full
-//     POSIX shell metacharacter set (`;`, `|`, `&`, `<`, `>`,
-//     `(`, `)`, newline, `$`, “ ` “, `\`, glob chars,
-//     whitespace) without enumerating each one — anything that
-//     isn't in the safe set goes through quoting.
+//     quotes via the canonical `'\”` sequence (close-quote,
+//     escaped quote, reopen). This covers the full POSIX shell
+//     metacharacter set (`;`, `|`, `&`, `<`, `>`, `(`, `)`,
+//     newline, `$`, backtick, `\`, glob chars, whitespace)
+//     without enumerating each one — anything that isn't in the
+//     safe set goes through quoting.
 func shellQuote(s string) string {
 	if s == "" {
 		return "''"
@@ -640,6 +641,48 @@ func projectInclude(path, sourceRoot string) string {
 		return path[len(sourceRoot)+1:]
 	}
 	return ""
+}
+
+// relativizeOutputs projects a custom_target's `filename` paths
+// (intro-targets.json reports them as build-dir-rooted absolute
+// paths) onto build-dir-relative names suitable for a Bazel
+// genrule's `outs`. Preserves any subdir component
+// (e.g. `<build>/gen/out.h` → `gen/out.h`) so downstream rules
+// reading the output find it at the same relative path the
+// meson command writes to.
+//
+// Refuses on:
+//   - duplicate basenames once relativized — Bazel's `outs`
+//     attribute requires unique paths, and a name collision
+//     usually signals the original meson target writes to
+//     distinct subdirs that this v1 lift can't structurally
+//     replicate.
+//   - paths the build-dir prefix doesn't cover. Falls back to
+//     the basename when BuildDir is empty (the live-cmake path
+//     always sets it; offline test fixtures may not).
+func relativizeOutputs(filenames []string, buildDir string) ([]string, error) {
+	out := make([]string, 0, len(filenames))
+	seen := map[string]struct{}{}
+	for _, fn := range filenames {
+		var rel string
+		if buildDir != "" && filepath.IsAbs(fn) && isUnderDir(fn, buildDir) {
+			r, err := filepath.Rel(buildDir, fn)
+			if err != nil {
+				return nil, fmt.Errorf("relativize output %q: %w", fn, err)
+			}
+			rel = filepath.ToSlash(r)
+		} else {
+			rel = filepath.Base(fn)
+		}
+		if _, dup := seen[rel]; dup {
+			return nil, newFailure(unsupportedMesonCustomTarget,
+				"output basename collision after relativization: %q (filenames=%v) — Bazel genrule outs must be unique",
+				rel, filenames)
+		}
+		seen[rel] = struct{}{}
+		out = append(out, rel)
+	}
+	return out, nil
 }
 
 // relativizeSources projects each absolute path to source-root-relative.

@@ -171,6 +171,36 @@ func TestLower_FoldsBuiltinDependencyArgs(t *testing.T) {
 	}
 }
 
+func TestRelativizeOutputs(t *testing.T) {
+	// Subdir paths are preserved.
+	got, err := relativizeOutputs([]string{"/bd/gen/out.h", "/bd/foo.c"}, "/bd")
+	if err != nil {
+		t.Fatalf("relativizeOutputs: %v", err)
+	}
+	want := []string{"gen/out.h", "foo.c"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d]=%q want %q", i, got[i], want[i])
+		}
+	}
+	// Basename collision (same basename in two subdirs) refuses.
+	if _, err := relativizeOutputs([]string{"/bd/a.h", "/bd/sub/a.h"}, ""); err == nil ||
+		!strings.Contains(err.Error(), "unsupported-meson-custom-target") {
+		t.Errorf("collision case: want refusal, got %v", err)
+	}
+	// Empty BuildDir falls back to basename.
+	got2, err := relativizeOutputs([]string{"/anywhere/foo.h"}, "")
+	if err != nil {
+		t.Fatalf("relativizeOutputs (empty BuildDir): %v", err)
+	}
+	if len(got2) != 1 || got2[0] != "foo.h" {
+		t.Errorf("empty BuildDir: got %v want [foo.h]", got2)
+	}
+}
+
 func TestLower_RefusesMultiEntryCustomTarget(t *testing.T) {
 	// Two target_sources entries → multi-group / multi-COMMAND
 	// custom_target shape; v1 refuses rather than silently
