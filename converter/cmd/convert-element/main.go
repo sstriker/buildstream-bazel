@@ -435,9 +435,14 @@ func compileCommandsPath(hostBuildDir, replyDir string) string {
 // capture: cmake's File API reply directory is small (a few JSON
 // files), so a recursive copy is cheap and a regular file/dir
 // shape is what the unifier's --element-signal consumer expects.
-// Symlinks are dereferenced — fileapi never produces them, so
-// this is a defensive no-op that keeps the destination tree
-// portable.
+//
+// Symlinks are skipped explicitly. filepath.Walk uses Lstat, so a
+// symlinked directory wouldn't be traversed and a file symlink
+// would be dereferenced by the os.ReadFile below (potentially
+// pulling data from outside srcDir). Cmake's fileapi never
+// produces symlinks, so the only way one would appear here is via
+// a hostile build dir; rejecting them keeps the captured tree
+// honest.
 func copyDirContents(srcDir, dstDir string) error {
 	// Reset dstDir so the result exactly mirrors srcDir — without
 	// this, leftover JSONs from a prior run could mislead the
@@ -460,9 +465,19 @@ func copyDirContents(srcDir, dstDir string) error {
 		if rel == "." {
 			return nil
 		}
+		// Reject anything that isn't a regular file or directory.
+		// fileapi only writes those; surfacing the unexpected
+		// type as an error catches a hostile build dir before
+		// it leaks data into the unifier's input.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("copyDirContents: refusing to copy symlink at %s", rel)
+		}
 		dst := filepath.Join(dstDir, rel)
 		if info.IsDir() {
 			return os.MkdirAll(dst, 0o755)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("copyDirContents: refusing to copy non-regular file %s (mode %s)", rel, info.Mode())
 		}
 		body, err := os.ReadFile(p)
 		if err != nil {

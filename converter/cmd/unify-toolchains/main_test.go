@@ -145,6 +145,9 @@ func TestRegisterToolchainsCallPresent(t *testing.T) {
 		"# leading comment\n#register_toolchains('//toolchains:all')\n":      false,
 		// inline comment AFTER a real call still counts as registered.
 		`register_toolchains("//toolchains:all") # ok`: true,
+		// inline comment with the call inside it must NOT count.
+		`module()  # register_toolchains("//toolchains:all")`:                          false,
+		`load(":foo.bzl", "x")  # register_toolchains('//toolchains:all') in template`: false,
 	}
 	for body, want := range cases {
 		if got := registerToolchainsCallPresent([]byte(body)); got != want {

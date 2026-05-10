@@ -262,12 +262,14 @@ func maybePrintSetupBanner(repoRoot string) error {
 }
 
 // registerToolchainsRE matches a `register_toolchains` call
-// referencing //toolchains:all tolerantly: optional whitespace
-// and newlines between tokens, either single or double quotes
-// around the label, and additional args before/after the
-// matched label (`register_toolchains(":foo", "//toolchains:all")`
-// matches too).
-var registerToolchainsRE = regexp.MustCompile(`(?s)register_toolchains\s*\([^)]*['"]//toolchains:all['"]`)
+// referencing //toolchains:all. The (?m) anchor pins the call to
+// the start of a (possibly indented) line so an inline comment
+// like `module()  # register_toolchains("//toolchains:all")` does
+// NOT match — only a register_toolchains identifier that begins
+// its own logical line counts. Inside the parens we allow
+// whitespace, newlines, and additional args before/after the
+// label.
+var registerToolchainsRE = regexp.MustCompile(`(?m)^[ \t]*register_toolchains\s*\([^)]*['"]//toolchains:all['"]`)
 
 // commentedLineRE matches a Starlark comment line — optional
 // leading whitespace, then `#`, then the rest of the line. Used
