@@ -259,6 +259,25 @@ func run(a cli.Args) error {
 		return err
 	}
 
+	// Stage 6 of the per-element multi-platform plan: ship the
+	// lowered ir.Package as JSON alongside the rendered
+	// BUILD.bazel so the orchestrator's fold can compose
+	// per-platform IRs without re-parsing Bazel rules. Only the
+	// orchestrator's multi-platform path sets this; single-
+	// platform conversions ignore it.
+	if a.OutIRJSON != "" {
+		body, err := json.MarshalIndent(pkg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal ir.Package: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutIRJSON), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutIRJSON, body, 0o644); err != nil {
+			return err
+		}
+	}
+
 	if a.OutBundleDir != "" {
 		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{})
 		if err != nil {
