@@ -131,9 +131,21 @@ func run(a args) error {
 		infoDir = got
 	} else {
 		// Offline path: build dir is the meson-info's parent.
-		// filepath.Clean strips a trailing slash so a caller-
-		// supplied "/tmp/build/meson-info/" still yields
-		// "/tmp/build" rather than "/tmp/build/meson-info".
+		// Normalize the caller-supplied --info-dir to an
+		// absolute path first; intro-targets.json's `sources` /
+		// `filename` paths are absolute, and the lowering pass
+		// compares them against buildDir via prefix-match. A
+		// relative buildDir would never match those, so
+		// custom_target output relativization would refuse with
+		// "outside build dir" on every entry. filepath.Clean
+		// strips a trailing slash so a caller-supplied
+		// "/tmp/build/meson-info/" still yields "/tmp/build"
+		// rather than "/tmp/build/meson-info".
+		absInfo, err := filepath.Abs(infoDir)
+		if err != nil {
+			return fmt.Errorf("resolve --info-dir %q: %w", infoDir, err)
+		}
+		infoDir = absInfo
 		buildDir = filepath.Dir(filepath.Clean(infoDir))
 	}
 
