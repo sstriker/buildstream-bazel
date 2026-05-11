@@ -16,6 +16,7 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -346,7 +347,12 @@ func setuptoolsFind(fd *SetuptoolsFindDirective, sourceFiles []string) ([]Packag
 	}
 	matched := []string{}
 	for dotted := range pkgs {
-		if !setuptoolsIncluded(dotted, fd.Include, fd.Exclude) {
+		ok, err := setuptoolsIncluded(dotted, fd.Include, fd.Exclude)
+		if err != nil {
+			return nil, newFailure(unsupportedPyprojectPackageDiscovery,
+				"setuptools.packages.find: %v", err)
+		}
+		if !ok {
 			continue
 		}
 		matched = append(matched, dotted)
@@ -375,25 +381,40 @@ func setuptoolsFind(fd *SetuptoolsFindDirective, sourceFiles []string) ([]Packag
 // — closely aligned with filepath.Match for our `*` /
 // `[abc]` cases. We don't currently support `**` (it's not
 // part of fnmatch syntax setuptools uses).
-func setuptoolsIncluded(dotted string, include, exclude []string) bool {
+//
+// Surfaces malformed glob patterns (e.g. unbalanced `[`) as
+// an error rather than silently dropping packages. Callers
+// route these as typed Tier-1
+// `unsupported-pyproject-package-discovery` refusals so an
+// operator who mistypes a pattern sees a real refusal instead
+// of an inexplicably-shrunken package list.
+func setuptoolsIncluded(dotted string, include, exclude []string) (bool, error) {
 	if len(include) > 0 {
 		matched := false
 		for _, pat := range include {
-			if ok, _ := filepath.Match(pat, dotted); ok {
+			ok, err := filepath.Match(pat, dotted)
+			if err != nil {
+				return false, fmt.Errorf("include pattern %q: %v", pat, err)
+			}
+			if ok {
 				matched = true
 				break
 			}
 		}
 		if !matched {
-			return false
+			return false, nil
 		}
 	}
 	for _, pat := range exclude {
-		if ok, _ := filepath.Match(pat, dotted); ok {
-			return false
+		ok, err := filepath.Match(pat, dotted)
+		if err != nil {
+			return false, fmt.Errorf("exclude pattern %q: %v", pat, err)
+		}
+		if ok {
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // discoverPoetry handles poetry.core.masonry.api. Each

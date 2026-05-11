@@ -121,13 +121,20 @@ else
     echo "meta-pyproject: render OK; bazel not on PATH, skipping build phase"
     exit 0
 fi
-bazel_major=$("$BZL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
+# `$BZL --version` reports the Bazelisk wrapper version (a date)
+# when BZL=bazelisk, not the underlying Bazel — `awk '{print $2}'`
+# would parse it as non-numeric and force a spurious skip. Use
+# `$BZL version` and grep the `Build label:` line, which both
+# Bazel and Bazelisk emit in the same shape regardless of the
+# fronting wrapper.
+bazel_version_label=$("$BZL" version 2>&1 | awk -F': ' '/^Build label:/{print $2; exit}')
+bazel_major=$(printf '%s\n' "$bazel_version_label" | cut -d. -f1)
 case "$bazel_major" in
     [0-9]*) ;;
     *) bazel_major=0 ;;
 esac
 if [ "$bazel_major" -lt 7 ]; then
-    echo "meta-pyproject: render OK; bazel $($BZL --version | head -1) is < 7 (no bzlmod), skipping build phase"
+    echo "meta-pyproject: render OK; bazel ${bazel_version_label:-(unknown)} is < 7 (no bzlmod), skipping build phase"
     exit 0
 fi
 if ! command -v python3 >/dev/null; then
