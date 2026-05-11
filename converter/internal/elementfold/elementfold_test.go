@@ -204,6 +204,74 @@ func TestFold_PhantomTargetOnlyInLaterCell(t *testing.T) {
 	}
 }
 
+// TestFold_PhantomTargetEmptyOrderSensitiveAttrIsNoOp: a phantom
+// target whose present cells don't set copts/linkopts must NOT
+// emit a per-platform delta map full of empty arms. The IR
+// should leave PerPlatform["copts"] absent so emit omits the
+// attribute entirely (vs. rendering `copts = select({"<plat>": [],
+// "//conditions:default": []})` noise).
+func TestFold_PhantomTargetEmptyOrderSensitiveAttrIsNoOp(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{{
+				Name: "linuxonly",
+				Kind: ir.KindCCLibrary,
+				Srcs: []string{"a.c"},
+				// No copts / linkopts.
+			}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg:      &ir.Package{Targets: nil},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if _, has := got.PerPlatform["copts"]; has {
+		t.Errorf("phantom target with empty copts should leave PerPlatform[copts] unset; got %v", got.PerPlatform["copts"])
+	}
+	if _, has := got.PerPlatform["linkopts"]; has {
+		t.Errorf("phantom target with empty linkopts should leave PerPlatform[linkopts] unset; got %v", got.PerPlatform["linkopts"])
+	}
+}
+
+// TestFold_PhantomTargetEmptyScalarAttrIsNoOp: a phantom
+// cc_import target whose present cells don't populate one of
+// static_library / shared_library must NOT leave an empty
+// PerPlatformScalar entry. Pollutes the IR for downstream
+// readers that key by `_, ok := PerPlatformScalar[name]`.
+func TestFold_PhantomTargetEmptyScalarAttrIsNoOp(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{{
+				Name: "foo",
+				Kind: ir.KindCCImport,
+				// Neither StaticLibrary nor SharedLibrary set.
+			}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg:      &ir.Package{Targets: nil},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if _, has := got.PerPlatformScalar["static_library"]; has {
+		t.Errorf("phantom target with no static_library should leave PerPlatformScalar[static_library] unset; got %v", got.PerPlatformScalar["static_library"])
+	}
+	if _, has := got.PerPlatformScalar["shared_library"]; has {
+		t.Errorf("phantom target with no shared_library should leave PerPlatformScalar[shared_library] unset; got %v", got.PerPlatformScalar["shared_library"])
+	}
+}
+
 // TestFold_NameReuseAcrossKindsRejected: the union-by-(Name, Kind)
 // enumeration must reject the case where two cells use the same
 // target Name with different Kinds. Bazel rule names are unique

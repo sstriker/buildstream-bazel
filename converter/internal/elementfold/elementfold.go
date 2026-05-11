@@ -409,6 +409,23 @@ func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]
 		return
 	}
 	def.set(merged, nil)
+	// All present cells carry an empty sequence (common for
+	// phantom targets that just don't set copts/linkopts) →
+	// don't allocate per-platform arms. Emit treats nil and
+	// empty PerPlatform[name] identically, so this avoids
+	// rendering noise like `copts = select({"<plat>": [],
+	// "//conditions:default": []})` and keeps the IR shape
+	// "attribute simply isn't set."
+	anyNonEmpty := false
+	for _, c := range cells {
+		if len(def.get(variants[c.Platform.Name])) > 0 {
+			anyNonEmpty = true
+			break
+		}
+	}
+	if !anyNonEmpty {
+		return
+	}
 	if merged.PerPlatform == nil {
 		merged.PerPlatform = map[string]map[string][]string{}
 	}
@@ -503,16 +520,24 @@ func foldScalarAttr(def scalarAttrDef, merged *ir.Target, variants map[string]ir
 		return
 	}
 	def.set(merged, "")
-	if merged.PerPlatformScalar == nil {
-		merged.PerPlatformScalar = map[string]map[string]string{}
-	}
-	if merged.PerPlatformScalar[def.name] == nil {
-		merged.PerPlatformScalar[def.name] = map[string]string{}
-	}
+	// All present cells carry an empty value (common for
+	// phantom cc_import targets that just don't populate this
+	// path attr) → don't allocate a per-platform arm map. Emit
+	// treats nil and empty PerPlatformScalar[name] identically;
+	// short-circuiting here keeps the IR shape "attribute
+	// simply isn't set" rather than leaving a spurious empty
+	// entry that future readers might mistake for a populated
+	// delta map.
 	for _, c := range cells {
 		v := def.get(variants[c.Platform.Name])
 		if v == "" {
 			continue
+		}
+		if merged.PerPlatformScalar == nil {
+			merged.PerPlatformScalar = map[string]map[string]string{}
+		}
+		if merged.PerPlatformScalar[def.name] == nil {
+			merged.PerPlatformScalar[def.name] = map[string]string{}
 		}
 		merged.PerPlatformScalar[def.name][c.Platform.SelectKey] = v
 	}
