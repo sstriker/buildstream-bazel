@@ -310,6 +310,11 @@ func resolveDeps(p *Pyproject, pkgs []Package, imports *manifest.Resolver) ([]st
 			}
 			continue
 		}
+		if imports == nil {
+			return nil, newFailure(unresolvedPyprojectDependency,
+				"[project.dependencies] entry %q (normalized %q) isn't in this element's own packages, and no --imports-manifest was provided to look it up in. Pass --imports-manifest=<path> with a manifest entry that maps %q to a Bazel label.",
+				raw, norm, norm)
+		}
 		return nil, newFailure(unresolvedPyprojectDependency,
 			"[project.dependencies] entry %q (normalized %q) not bound by imports manifest and not in this element's own packages",
 			raw, norm)
@@ -403,6 +408,11 @@ func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, i
 			}
 		}
 		if dep == "" {
+			if imports == nil {
+				return nil, newFailure(unresolvedPyprojectDependency,
+					"[project.scripts] %q = %q: module %q isn't part of this element's own packages, and no --imports-manifest was provided to look it up in. Pass --imports-manifest=<path> with an entry that maps the top-level distribution name to a Bazel label.",
+					scriptName, spec, module)
+			}
 			return nil, newFailure(unresolvedPyprojectDependency,
 				"[project.scripts] %q = %q: module %q isn't part of this element's own packages and isn't bound by the imports manifest (the binary's py_library dep would dangle)",
 				scriptName, spec, module)

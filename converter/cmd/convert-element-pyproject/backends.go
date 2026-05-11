@@ -17,6 +17,7 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -446,16 +447,20 @@ func discoverPoetry(p *Pyproject, sourceFiles []string) ([]Package, error) {
 // allow the literal value `"."` to mean "the project root" —
 // the same as omitting the override altogether — but
 // materializePackage's prefix scan compares against
-// filepath.Rel-produced source paths that never carry a leading
-// `./`. Treat `.` (and trailing slashes / empty) as the root
-// shape and pass `""` through; otherwise filepath.Clean to
-// strip redundant separators (`src/` → `src`, `./src` → `src`).
+// walkSourceFiles-produced source paths (filepath.ToSlash'd, so
+// always forward-slash separated, and never carrying a leading
+// `./`). Treat `.` (and trailing slashes / empty) as the root
+// shape and pass `""` through; otherwise use path.Clean (the
+// forward-slash variant of filepath.Clean — needed so a
+// Windows operator doesn't get `\`-separated cleaning that
+// would then fail to prefix-match the slash-normalized source
+// list).
 func normalizePackageRoot(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" || s == "." {
 		return ""
 	}
-	s = filepath.Clean(s)
+	s = path.Clean(filepath.ToSlash(s))
 	if s == "." {
 		return ""
 	}
