@@ -161,13 +161,13 @@ BUILD; resolution order:
 
 ### Element-name facade target
 
-The per-package py_library names from the discovery
-walk don't necessarily match the .bst element name —
-setuptools normalizes dist-name to package directory (`python-
-dateutil` → `dateutil`), the script-collision rename suffixes
-`_lib`, and multi-package distributions have no single
-"primary" target. The convention bind
-`//elements/<elem>:<elem>` would dangle in any of those cases.
+The per-package py_library names from the discovery walk
+don't necessarily match the .bst element name — setuptools
+normalizes dist-name to package directory (`python-dateutil`
+→ `dateutil`), the script-collision rename suffixes `_lib`,
+and multi-package distributions have no single "primary"
+target. The convention bind `//elements/<elem>:<elem>` would
+dangle in any of those cases.
 
 To keep the convention working, write-a passes
 `--element-name=<elem.Name>` to the converter, and Lower
@@ -194,18 +194,72 @@ dist-name == package-name), no facade is emitted — the
 primary py_library itself serves as the element's stable
 label.
 
-## What's NOT covered (deferred follow-ups, tracked in ROADMAP Next/Later)
+## Phase B install-plan fallback (option A: per-element auto-detection)
 
-- **Phase B install-plan fallback** — analog of meson's queued
-  Phase B. For elements that refuse v1 (C extensions, unknown
-  backends, dynamic metadata), emit per-target `py_library`
-  stubs against an install_tree.tar that comes from project
-  B's install genrule (the existing pipeline shape's output).
-  Keeps Bazel labels resolvable for downstream consumers even
-  when the per-file lift fails.
+Shipped via `--pyproject-fallback`. When set (alongside
+`--convert-element-pyproject`), write-a probes each
+kind:pyproject element's pyproject.toml at render time by
+invoking the converter with `--probe`. The probe runs the full
+parse / discover / lower pipeline without writing output and
+exits 0 on would-succeed; non-zero otherwise. A Tier-1 refusal
+exits 1 with the typed failure on stderr; other non-zero exits
+(64 = CLI usage error; 65 = untyped/Tier-2 error covering
+anything that isn't a typed Tier-1 refusal — e.g. unreadable
+source tree, malformed imports manifest, an unhandled converter
+path) indicate probe / infrastructure problems rather than a
+typed refusal. write-a treats any non-zero exit as "would
+refuse" and routes to the pipeline-shape fallback. Per-element
+dispatch:
+
+- Probe exits 0 → render the native genrule
+  (//tools:convert-element-pyproject) — Phase A path.
+- Probe exits non-zero → render the pipeline-shape coarse
+  install genrule — same shape as the no-`--convert-element-
+  pyproject` default. Element still ships an install_tree.tar;
+  downstream consumers reference `//elements/<elem>:<elem>_install`.
+  Operator sees the per-element refusal reason on write-a's
+  stderr (matching the diagnostic the converter would emit at
+  action time).
+
+Probe results are memoized by element name so re-renders of the
+same graph don't re-spawn the binary. Keying by element name (not
+by source-tree abspath) avoids cross-contamination between two
+elements that share a source directory but declare different
+deps: the probe outcome depends on `elem.Deps` via the temp
+imports.json that write-a passes through `--imports-manifest`, so
+source-path alone isn't a safe key. Per-element spawn cost: well
+under a millisecond on a modest dev box; FDSDK's 115 kind:pyproject
+elements add ~1s to write-a render time.
+
+Operator UX: flip `--convert-element-pyproject +
+--pyproject-fallback` once; every kind:pyproject element renders
+correctly regardless of per-element backend / metadata shape.
+Refused elements are still install_tree.tar-shaped (no per-target
+Bazel labels — that's option B, queued separately), but the
+element BUILDs without operator intervention.
+
+Render gate: `scripts/meta-pyproject-fallback.sh` against a
+two-element fixture (one Phase-A-friendly setuptools element +
+one pdm-backend element that Phase A refuses).
+
+## What's NOT covered (deferred follow-ups, tracked in ROADMAP Later)
+
+- **Phase B option B: per-target py_library stubs** — emit
+  stubs that reference the install_tree.tar's contents via a
+  build-time extract genrule, so downstream consumers can
+  `deps = ["//elements/<elem>:<package>"]` even for refused-
+  by-Phase-A elements. Tricky because `py_library.srcs` wants
+  concrete .py files at analysis time, not genrule outputs —
+  needs a small Starlark wrapper rule. Option A above suffices
+  for FDSDK's element-graph use case (downstream consumers are
+  themselves elements that link the install tree); option B is
+  for non-element downstream consumers that want fine-grained
+  py_library deps.
 - **C extension support** — needs rules_python's
   C-extension toolchain (or `cc_library` deps via the existing
   trace-driven path). Distinct work; separate roadmap entry.
+  Phase B option A above handles C-extension elements coarsely
+  via the pipeline shape today.
 - **`pip_parse` integration for non-element deps** — for
   downstream non-FDSDK projects whose deps come from PyPI
   rather than from per-element converted graphs. FDSDK

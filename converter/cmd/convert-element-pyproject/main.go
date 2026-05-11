@@ -50,6 +50,7 @@ type args struct {
 	outFailure      string
 	importsManifest string
 	elementName     string
+	probe           bool
 }
 
 func main() {
@@ -71,6 +72,7 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	flags.StringVar(&a.outFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	flags.StringVar(&a.importsManifest, "imports-manifest", "", "path to JSON imports manifest mapping cross-element pyproject distribution names to Bazel labels (optional)")
 	flags.StringVar(&a.elementName, "element-name", "", "the .bst element name (optional). When set, emit a stable `py_library(name = <element-name>)` facade target that aggregates the per-package targets, so downstream consumers can reference the element via the convention bind `//elements/<element-name>:<element-name>` even when the primary py_library is named differently (e.g. setuptools' dist-name → package-name normalization, or script-name collision suffixing _lib).")
+	flags.BoolVar(&a.probe, "probe", false, "probe-only mode: parse + discover + lower without emitting output. Exit 0 on would-succeed; non-zero otherwise. Tier-1 refusals (typed pyproject codes, including unresolved-pyproject-dependency when --imports-manifest is omitted on a dep-bearing project) exit 1 with the failure on stderr. Exit 64 = CLI usage error; exit 65 = any other untyped/Tier-2 error (filesystem issues, malformed imports manifest, unhandled converter path — not necessarily a bug). write-a's --pyproject-fallback dispatch treats any non-zero exit as 'would refuse' and falls back to the pipeline shape, so the 0-vs-non-zero contract is what callers should rely on.")
 	if err := flags.Parse(argv); err != nil {
 		return a, exitUsage
 	}
@@ -124,6 +126,15 @@ func run(a args) error {
 		return err
 	}
 
+	// --probe stops here. Lower() returning nil error means the
+	// native render would succeed against this source tree; exit
+	// 0 without writing output. Operator (write-a's
+	// --pyproject-fallback dispatch) reads the exit code to
+	// decide native vs pipeline.
+	if a.probe {
+		return nil
+	}
+
 	body := Emit(targets)
 	if err := os.MkdirAll(filepath.Dir(a.outBuild), 0o755); err != nil {
 		return err
@@ -166,7 +177,12 @@ func handleError(a args, err error) int {
 	var tier1 *failure.Error
 	if errors.As(err, &tier1) {
 		fmt.Fprintf(os.Stderr, "convert-element-pyproject: %s\n", tier1.Error())
-		if a.outFailure != "" {
+		// Probe mode is contract-side-effect-free: callers (write-a's
+		// --pyproject-fallback dispatch) rely only on the exit code
+		// + stderr text. Skip writing --out-failure so a probe run
+		// can't unintentionally clobber a previous non-probe run's
+		// failure JSON.
+		if a.outFailure != "" && !a.probe {
 			payload, _ := json.MarshalIndent(map[string]any{
 				"tier":    1,
 				"code":    string(tier1.Code),

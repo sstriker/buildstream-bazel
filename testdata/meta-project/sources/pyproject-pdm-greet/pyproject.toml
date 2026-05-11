@@ -1,0 +1,14 @@
+[build-system]
+requires = ["pdm-backend"]
+# pdm-backend isn't in convert-element-pyproject's v1 allow-list,
+# so Phase A refuses with unsupported-pyproject-backend. With
+# --pyproject-fallback the element renders as the pipeline-
+# shape coarse install genrule instead.
+build-backend = "pdm.backend"
+
+[project]
+name = "pdmgreet"
+version = "0.1.0"
+
+[tool.pdm.build]
+package-dir = "src"

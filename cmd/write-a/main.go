@@ -364,6 +364,7 @@ func main() {
 	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. Same shape as the orchestrator's --platforms-json (one entry per platform: name, constraints, optional select_label, optional reapi_properties — write-a ignores reapi_properties). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; tools/traces.json gets N entries per element keyed `<elem>__<platform>` so the per-platform _trace_repo lookups don't collide. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
+	pyprojectFallback := flag.Bool("pyproject-fallback", false, "optional: per-element auto-detection. When set (alongside --convert-element-pyproject), write-a probes each element's pyproject.toml at render time (running the converter with --probe) and emits the pipeline-shape coarse install genrule for any element whose probe doesn't return exit 0. That covers typed Tier-1 refusals (the native render would refuse), CLI/usage errors (exit 64), untyped Tier-2 errors (exit 65 — filesystem issues, malformed imports manifest), spawn failures (binary missing / wrong arch), and timeouts (probe hung past the per-element deadline). Operators see per-element refusal reasons on stderr; refused elements are still install_tree.tar-shaped (no per-target Bazel labels, but the element builds).")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -433,6 +434,20 @@ func main() {
 			log.Fatalf("convert-element-pyproject binary at %s: %v", abs, err)
 		}
 		pyprojectConfig.convertBin = abs
+		// Belt-and-suspenders with writeProjectA's reset: the
+		// in-process entrypoint resets unconditionally, but
+		// resetting here too clears any state from a previous
+		// run before flag parsing completes — useful when a
+		// library caller mutates the package-global caches
+		// directly between runs and never reaches writeProjectA.
+		// See resetPyprojectCaches's doc-comment.
+		resetPyprojectCaches()
+	}
+	if *pyprojectFallback {
+		if pyprojectConfig.convertBin == "" {
+			log.Fatalf("--pyproject-fallback requires --convert-element-pyproject (the fallback flag drives per-element dispatch between the native genrule and the pipeline shape; with no native binary there's nothing to dispatch to)")
+		}
+		pyprojectConfig.fallbackEnabled = true
 	}
 	// kind:cmake round-2 fallback. Reuses the same build-tracer
 	// + trace-publish + trace-lookup staging the autotools
@@ -914,6 +929,18 @@ func loadElement(bstPath, includeBase, sourceCache string, options map[string]bs
 // element, then a per-element package under elements/<name>/ rendered
 // by the element's kind handler.
 func writeProjectA(g *graph, outDir, convertBin string) error {
+	// Reset the per-invocation pyproject caches at the entrypoint.
+	// The CLI's flag-parse-time reset (see main()) only catches
+	// the CLI process boundary; in-process callers — tests,
+	// library use — drive writeProjectA / writeProjectB directly
+	// and would otherwise see stale entries from a previous run.
+	// Resetting here matches the "once per write-a invocation"
+	// contract documented on pyprojectShouldUseNative +
+	// pyprojectNativeIncompatible regardless of entrypoint.
+	// (writeProjectB intentionally does NOT reset — its RenderB
+	// must see the cache populated by writeProjectA's RenderA so
+	// the per-element refusal diagnostic prints once, not twice.)
+	resetPyprojectCaches()
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
 	}
