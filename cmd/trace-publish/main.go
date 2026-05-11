@@ -68,7 +68,7 @@ func main() {
 	instance := flag.String("instance", "", "REAPI instance name; matches the publishing CAS endpoint's multi-tenancy prefix.")
 	srckey := flag.String("srckey", "", "per-element srckey hex (the content of srckey.txt); seeds the synthetic AC key.")
 	tracePath := flag.String("trace", "", "path to the canonicalized trace.log produced by build-tracer.")
-	makeDBPath := flag.String("make-db", "", "optional path to the filtered make-db.txt produced by the genrule's `make -np` post-step. Required for trace-driven kinds whose converter consumes the make-db (autotools / make / makemaker / modulebuild / manual / script); cmake round-2 fallback omits it (cmake's converter derives its IR from the trace + the File API directly).")
+	makeDBPath := flag.String("make-db", "", "optional path to the filtered make-db.txt produced by the genrule's `make -np` post-step. Pass it for trace-driven kinds whose converter expects make-db.txt in the published Directory (autotools / make / makemaker / modulebuild / manual / script — convert-element-trace reads it); omit it for cmake round-2 fallback (cmake's converter derives its IR from the trace + the cmake File API). Empty/omitted publishes a trace.log-only Directory; downstream converters that look for make-db.txt will see it absent and should handle that as their kind dictates.")
 	sourceRoot := flag.String("source-root", "", "absolute path to the element's source tree. Mirrors build-tracer's --source-root: when set, the defensive re-canonicalization filters openat lines to source-relative paths and strips the volatile fd return value (the trace doubles as a configure-time read oracle). When empty, openat lines drop entirely — preserves the legacy AC byte schema for elements not opted into the oracle.")
 	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace for round-2 trace-driven kinds whose install layout / build graph diverges across target platforms. Empty preserves the historical single-keyspace shape — single-platform operators upgrading past this flag keep their previously published AC entries valid. The matching trace-lookup invocation in rules/traces.bzl must pass the same tag for the publish/lookup rendezvous to hit.")
 	flag.Parse()
@@ -132,9 +132,11 @@ func publish(ctx context.Context, store cas.Store, srckey, platform, tracePath, 
 	// the legacy execve-only schema.
 	traceBody = tracenorm.CanonicalizeBytesWith(traceBody, tracenorm.Options{SourceRoot: sourceRoot})
 
-	// Pack the two-file trace dir as a REAPI Directory and
-	// upload every blob (root Directory + each file content)
-	// via FindMissing/PutBlob. We do this as PackDir + manual
+	// Pack the staged trace dir (trace.log alone for cmake
+	// round-2; trace.log + make-db.txt for the autotools-family
+	// kinds) as a REAPI Directory and upload every blob (root
+	// Directory + each file content) via FindMissing/PutBlob.
+	// We do this as PackDir + manual
 	// upload (rather than UploadDir) so we can also build +
 	// upload the Tree proto: Buildbarn's bb-storage wraps its
 	// AC backend in a completeness checker that walks the AR's
@@ -166,7 +168,7 @@ func publish(ctx context.Context, store cas.Store, srckey, platform, tracePath, 
 
 	// Build + upload the REAPI Tree proto. Tree.Root carries
 	// the root Directory; Children is empty for our flat
-	// 2-file layout. The Tree proto's bytes (digested
+	// 1-or-2-file layout. The Tree proto's bytes (digested
 	// deterministically via cas.DigestProto) are what the AC
 	// entry's TreeDigest references; the bb-storage
 	// completeness checker walks this to verify CAS coverage.

@@ -164,7 +164,10 @@ def _trace_repo_impl(rctx):
     # matches cmd/cas-fuse, bb_clientd users set it to
     # cas/<instance>/blobs/<digest_function> for the daemon's
     # canonical layout. Symlinking under trace_dir/ then globbing
-    # produces the 2-file filegroup the converter consumes.
+    # produces the filegroup the converter consumes (1 or 2
+    # files depending on the publishing kind — autotools-family
+    # publishes trace.log + make-db.txt, cmake round-2 publishes
+    # trace.log only).
     parts = line.split("/")
     if len(parts) != 2:
         rctx.file("BUILD.bazel", empty_build)
