@@ -30,9 +30,10 @@ type Package struct {
 	Name string
 
 	// Dir is the source-relative directory holding the
-	// package's __init__.py (or, for namespace packages,
-	// the namespace dir). Glob expressions in the emitted
-	// py_library are anchored at this dir.
+	// package's __init__.py. Used as the anchor for the
+	// discovery walk's depth-1 .py collection (see
+	// materializePackage) and surfaced verbatim for operator-
+	// facing refusal diagnostics.
 	Dir string
 
 	// ImportRoot is the source-relative directory the package
@@ -42,11 +43,12 @@ type Package struct {
 	// The emitted py_library's `imports = [<this>]` attribute.
 	ImportRoot string
 
-	// Sources are source-relative .py paths in this package.
-	// One py_library's srcs glob expands to (roughly) this
-	// list, but we capture them explicitly so the lift can
-	// emit exact srcs for layouts where glob() would over-
-	// match (e.g. nested test/ subdirs we want to exclude).
+	// Sources are source-relative .py paths in this package,
+	// collected at depth-1 only (siblings of __init__.py).
+	// emit.go writes them verbatim as the py_library's
+	// `srcs = [...]` list — explicit enumeration, NOT a
+	// `glob()` — so future test/ scratch .py the backend
+	// wouldn't have shipped don't accidentally enter the rule.
 	Sources []string
 }
 

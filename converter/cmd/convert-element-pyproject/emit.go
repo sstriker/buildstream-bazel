@@ -74,12 +74,14 @@ func emitPyLibrary(b *bytes.Buffer, t Target) {
 }
 
 // emitPyBinary renders a py_binary plus a sibling genrule
-// that materialises the entry shim. The shim is a 4-line
-// .py file that imports the entry module and dispatches the
-// entry function — universally compatible across rules_python
-// versions (avoids depending on py_console_script_binary,
-// which was added in rules_python 0.21+ and we don't pin
-// rules_python's version in project B's MODULE.bazel).
+// that materialises the entry shim. The shim is a 3-line
+// .py file (`import sys` / `from <module> import <func>` /
+// `sys.exit(<func>() or 0)`) that imports the entry module and
+// dispatches the entry function — universally compatible across
+// rules_python versions (avoids depending on
+// py_console_script_binary, which was added in rules_python
+// 0.21+ and we don't pin rules_python's version in project B's
+// MODULE.bazel).
 func emitPyBinary(b *bytes.Buffer, t Target) {
 	shimRule := t.Name + "_entry"
 	shimFile := t.Name + "_entry.py"
