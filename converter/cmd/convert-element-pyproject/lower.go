@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -253,7 +254,7 @@ func refuseCExtensions(srcs []string) error {
 				"source tree contains %q (%q): v1 only converts pure-Python packages; C / Cython / Rust extensions need the Phase B install-plan fallback (see ROADMAP).",
 				f, ext)
 		}
-		if filepath.Base(f) == "Cargo.toml" {
+		if path.Base(f) == "Cargo.toml" {
 			return newFailure(unsupportedPyprojectCExtension,
 				"source tree contains a Cargo.toml — Rust extensions aren't supported in v1.")
 		}

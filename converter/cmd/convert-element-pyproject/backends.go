@@ -175,8 +175,15 @@ func discoverHatchling(p *Pyproject, sourceFiles []string) ([]Package, error) {
 		// nested under `src` or `sub` rooted at `src/demo`.
 		// Operators wanting nested packages should declare each
 		// one explicitly (one entry per leaf package).
-		name := filepath.Base(dir)
-		root := filepath.Dir(dir)
+		// Source-relative paths from pyproject.toml are
+		// slash-separated everywhere in the converter pipeline
+		// (walkSourceFiles emits via filepath.ToSlash). Use
+		// path.Base/Dir, not filepath.Base/Dir, so a Windows
+		// host doesn't rewrite the separators to `\` and break
+		// the slash-based prefix matching that materializePackage
+		// does downstream.
+		name := path.Base(dir)
+		root := path.Dir(dir)
 		if root == "." {
 			root = ""
 		}
@@ -321,11 +328,11 @@ func setuptoolsFind(fd *SetuptoolsFindDirective, sourceFiles []string) ([]Packag
 		if !strings.HasPrefix(f, prefix) {
 			continue
 		}
-		base := filepath.Base(f)
+		base := path.Base(f)
 		if base != "__init__.py" {
 			continue
 		}
-		dir := filepath.Dir(f)
+		dir := path.Dir(f)
 		// Skip an __init__.py that lives at the find-where root
 		// itself — setuptools' model doesn't treat the root as a
 		// package; only directories UNDER the root are. Without
