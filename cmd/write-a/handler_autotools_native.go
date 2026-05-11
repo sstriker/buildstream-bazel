@@ -49,14 +49,21 @@ var traceConfig struct {
 	foldBin       string // absolute path to fold-element (multi-platform fold of N per-platform ir.Package JSONs). Empty when --platforms-json isn't set.
 	round2Enabled bool   // round-2 active: pivot project A from marker → converter genrule, project B from inline-converter → inline-trace-publish. Set when --convert-element-trace is supplied AND the operator did NOT pass --trace-round1; cleared when only round-1 is wanted.
 	// platforms, when non-empty, switches the trace-driven round-2
-	// render to per-platform fan-out: project A emits N converter
-	// genrules per element (one per (element, platform) cell) plus
-	// one fold-element genrule composing their ir.json outputs into
-	// a unified BUILD.bazel; project B emits N install genrules per
-	// element (one per platform), each with its CMAKE_TO_BAZEL_PLATFORM
-	// pinned. Empty (the default) preserves the single-platform
-	// shape — byte-stable goldens, single converter genrule per
-	// element, single install genrule per element.
+	// render to per-platform fan-out on the project A side: project
+	// A emits N converter genrules per element (one per (element,
+	// platform) cell) plus one fold-element genrule composing their
+	// ir.json outputs into a unified BUILD.bazel. tools/traces.json
+	// gains one entry per (element, platform) cell so the per-
+	// platform _trace_repo lookups don't collide. Project B's
+	// install genrule fan-out is queued as a follow-up — today's
+	// pipelineTraceExtensionRound2 / RenderB remain single-genrule
+	// regardless of --platforms-json and only read
+	// CMAKE_TO_BAZEL_PLATFORM from the action env, so the multi-
+	// platform path is render-shape complete on project A but
+	// runtime publishes only one platform's trace. Empty (the
+	// default) preserves the single-platform shape — byte-stable
+	// goldens, single converter genrule per element, single
+	// install genrule per element.
 	platforms []tracePlatform
 }
 

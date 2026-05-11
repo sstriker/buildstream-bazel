@@ -389,13 +389,15 @@ var scalarTargetAttrs = []scalarAttrDef{
 // on the empty value (the attribute simply isn't relevant — e.g.
 // a cc_import that only carries shared_library leaves
 // static_library empty) → flat stays empty, no delta. Cells
-// disagree → flat clears and each cell's value moves into
-// PerPlatformScalar[attr][SelectKey]. Empty values in the mixed
-// case are recorded too: a cell that lacks the path simply omits
-// its entry from the delta map, and emit renders the resulting
-// select() with no `//conditions:default` (a platform outside the
-// matrix is an analysis-time error, matching the matrix's scope
-// intent for scalar attrs where there's no sensible default).
+// disagree → flat clears and each cell's non-empty value moves
+// into PerPlatformScalar[attr][SelectKey]. Cells that lacked the
+// path simply omit their arm from the delta map; emit renders the
+// resulting select() with a trailing `"//conditions:default": None`
+// arm, so in-matrix platforms that omitted an arm AND out-of-matrix
+// platforms fall through to "attribute unset" (Bazel's treatment
+// of None for an optional path attr like cc_import.static_library)
+// — exactly the right outcome for the partial-platform cc_import
+// shape.
 func foldScalarAttr(def scalarAttrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell) {
 	first := def.get(variants[cells[0].Platform.Name])
 	allEqual := true

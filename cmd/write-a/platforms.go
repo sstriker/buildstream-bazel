@@ -139,10 +139,22 @@ func loadPlatformsManifest(path string) ([]tracePlatform, error) {
 // safePlatformName rejects names with characters that would
 // break derived label / path forms. Same conservative rule the
 // orchestrator's loader applies: letters, digits, underscore,
-// hyphen, period. Non-empty.
+// hyphen, period. Non-empty. Path-traversal forms (".", "..",
+// or any name containing "..") are rejected explicitly — platform
+// names land as path components (e.g. "<platform>/ir.json") and
+// embedded in derived Bazel repo / target names (e.g.
+// "trace_<elem>__<platform>"), so a `..` substring could escape
+// the per-element output dir or produce labels that confuse
+// Bazel's parser.
 func safePlatformName(s string) error {
 	if s == "" {
 		return fmt.Errorf("empty")
+	}
+	if s == "." || s == ".." {
+		return fmt.Errorf("reserved path component %q", s)
+	}
+	if strings.Contains(s, "..") {
+		return fmt.Errorf("contains path-traversal substring %q", "..")
 	}
 	for _, r := range s {
 		switch {
