@@ -370,16 +370,20 @@ func TestPickSelectKeys_OperatorOverridesAll(t *testing.T) {
 // TestPickSelectKeys_OperatorOverridesPartial: a mixed matrix
 // — some platforms have a SelectKey override, the rest
 // auto-detect off their constraints. The override platforms
-// pass through verbatim; their constraint labels are excluded
-// from the auto-detect count so they don't taint the
-// uniqueness check for the auto-detect platforms.
+// pass through verbatim; the auto-detect platforms must pick
+// constraint labels that are unique across the FULL matrix
+// (override-platform constraints included), not just within
+// the auto-detect subset, otherwise the rendered select()
+// would have multiple arms matching the same Bazel platform
+// at analysis time.
 func TestPickSelectKeys_OperatorOverridesPartial(t *testing.T) {
 	plats := []Platform{
 		// Two ambiguous platforms get explicit keys.
 		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:linux_x86_64"},
 		{Name: "linux_aarch64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}, SelectKey: "//platforms:linux_aarch64"},
-		// darwin auto-detects: its os:darwin is unique once the
-		// linux entries are out of the count.
+		// darwin auto-detects: cpu:arm64 is shared with
+		// linux_aarch64 (count=2 across the full matrix), so the
+		// auto-detect must skip it and pick os:darwin (count=1).
 		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
 	}
 	got, err := PickSelectKeys(plats)
@@ -392,11 +396,54 @@ func TestPickSelectKeys_OperatorOverridesPartial(t *testing.T) {
 	if got["linux_aarch64"] != "//platforms:linux_aarch64" {
 		t.Errorf("linux_aarch64 override = %q", got["linux_aarch64"])
 	}
-	// darwin_arm64 has both os:darwin and cpu:arm64 unique once
-	// the two override platforms are excluded from the count;
-	// PickSelectKeys' lex-min tiebreaker picks cpu:arm64.
-	if got["darwin_arm64"] != "@platforms//cpu:arm64" {
-		t.Errorf("darwin_arm64 auto-detect = %q; want @platforms//cpu:arm64", got["darwin_arm64"])
+	// darwin_arm64's cpu:arm64 collides with linux_aarch64's
+	// constraint set; auto-detect must pick os:darwin (the
+	// uniquely-counted constraint across the full matrix).
+	if got["darwin_arm64"] != "@platforms//os:darwin" {
+		t.Errorf("darwin_arm64 auto-detect = %q; want @platforms//os:darwin (cpu:arm64 collides with linux_aarch64)", got["darwin_arm64"])
+	}
+}
+
+// TestPickSelectKeys_RejectsDuplicateOverrideLabels: two
+// platforms supplying the same select_label is an operator
+// typo that would produce duplicate select() arms whose
+// per-platform deltas would silently overwrite each other in
+// PerPlatform. Reject up front with a message naming both
+// platforms.
+func TestPickSelectKeys_RejectsDuplicateOverrideLabels(t *testing.T) {
+	plats := []Platform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:shared"},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectKey: "//platforms:shared"},
+	}
+	_, err := PickSelectKeys(plats)
+	if err == nil {
+		t.Fatal("expected error for duplicate override labels")
+	}
+	if !strings.Contains(err.Error(), "linux_x86_64") || !strings.Contains(err.Error(), "darwin_arm64") {
+		t.Errorf("error %q should name both colliding platforms", err)
+	}
+}
+
+// TestPickSelectKeys_RejectsOverrideAutoCollision: an
+// override label that happens to equal another platform's
+// uniquely-counted constraint produces a duplicate-arm
+// collision the same way two operator-supplied labels would.
+// Final-key validation catches it.
+func TestPickSelectKeys_RejectsOverrideAutoCollision(t *testing.T) {
+	plats := []Platform{
+		// linux_x86_64 will auto-detect to @platforms//cpu:x86_64
+		// (uniquely-counted across the matrix).
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		// darwin_arm64's operator override pathologically chose
+		// the exact label linux_x86_64 auto-detected.
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectKey: "@platforms//cpu:x86_64"},
+	}
+	_, err := PickSelectKeys(plats)
+	if err == nil {
+		t.Fatal("expected error for override-vs-auto collision")
+	}
+	if !strings.Contains(err.Error(), "linux_x86_64") || !strings.Contains(err.Error(), "darwin_arm64") {
+		t.Errorf("error %q should name both colliding platforms", err)
 	}
 }
 
