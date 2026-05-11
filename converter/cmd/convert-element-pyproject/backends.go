@@ -254,8 +254,17 @@ func setuptoolsExplicit(packages []string, packageDir map[string]string, sourceF
 				k, v)
 		}
 	}
+	// Dedupe duplicate entries silently — `packages = ["foo",
+	// "foo"]` is functionally one declaration; emitting it as
+	// two py_library targets with the same name would produce
+	// an invalid BUILD file. First-occurrence wins.
+	seen := map[string]bool{}
 	out := make([]Package, 0, len(packages))
 	for _, dotted := range packages {
+		if seen[dotted] {
+			continue
+		}
+		seen[dotted] = true
 		pkg, err := materializePackage(dotted, root, sourceFiles)
 		if err != nil {
 			return nil, err
@@ -313,12 +322,24 @@ func setuptoolsFind(fd *SetuptoolsFindDirective, sourceFiles []string) ([]Packag
 			continue
 		}
 		dir := filepath.Dir(f)
+		// Skip an __init__.py that lives at the find-where root
+		// itself — setuptools' model doesn't treat the root as a
+		// package; only directories UNDER the root are. Without
+		// this guard, an `src/__init__.py` (with `where=["src"]`)
+		// would produce a degenerate dotted name that
+		// materializePackage couldn't resolve.
+		if dir == root || dir == "." {
+			continue
+		}
 		// Strip the find-where prefix to get a package-
 		// relative dir, then dots-to-slashes for the dotted
 		// name.
 		rel := dir
 		if root != "" {
 			rel = strings.TrimPrefix(dir, root+"/")
+		}
+		if rel == "" || rel == "." {
+			continue
 		}
 		dotted := strings.ReplaceAll(rel, "/", ".")
 		pkgs[dotted] = true

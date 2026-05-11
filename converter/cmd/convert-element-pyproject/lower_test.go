@@ -497,6 +497,52 @@ func TestLower_RefusesUnsafeScriptName(t *testing.T) {
 	}
 }
 
+func TestLower_SetuptoolsExplicitDedupesDuplicates(t *testing.T) {
+	// `packages = ["demo", "demo"]` is functionally one
+	// declaration; we dedupe rather than emit two py_library
+	// targets with the same name (which would produce an
+	// invalid BUILD file).
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo", "demo"}}
+	srcs := []string{"demo/__init__.py", "demo/cli.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Errorf("got %d packages, want 1 (duplicates deduped): %+v", len(pkgs), pkgs)
+	}
+}
+
+func TestLower_SetuptoolsFindSkipsRootInitPy(t *testing.T) {
+	// An `__init__.py` directly at the find-where root isn't
+	// a package in setuptools' model; the finder skips it
+	// instead of producing a degenerate dotted name that
+	// materializePackage couldn't resolve.
+	p := minimumProject("setuptools.build_meta")
+	nsT := true
+	_ = nsT
+	p.Tool.Setuptools = &Setuptools{
+		Packages: map[string]any{
+			"find": map[string]any{
+				"where": []any{"src"},
+			},
+		},
+	}
+	srcs := []string{
+		"src/__init__.py", // at the find-where root, should be skipped
+		"src/demo/__init__.py",
+		"src/demo/cli.py",
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Name != "demo" {
+		t.Errorf("got %+v want one package named demo (root __init__.py skipped)", pkgs)
+	}
+}
+
 func TestStripPEP508(t *testing.T) {
 	cases := map[string]string{
 		"foo":                                "foo",
