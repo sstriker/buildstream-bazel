@@ -280,6 +280,59 @@ func TestLower_ScriptDepFollowsLongestPrefix(t *testing.T) {
 	t.Errorf("sub-cli py_binary missing from %+v", out)
 }
 
+func TestLower_GUIScriptsEmitAsPyBinary(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	p.Project.GUIScripts = map[string]string{
+		"demo-gui": "demo.gui:main",
+	}
+	srcs := []string{"demo/__init__.py", "demo/gui.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var gotBinary *Target
+	for i := range out {
+		if out[i].Kind == KindPyBinary && out[i].Name == "demo-gui" {
+			gotBinary = &out[i]
+			break
+		}
+	}
+	if gotBinary == nil {
+		t.Fatalf("gui-script not lowered as py_binary: %+v", out)
+	}
+	if gotBinary.EntryDep != ":demo" {
+		t.Errorf("EntryDep=%q want :demo", gotBinary.EntryDep)
+	}
+}
+
+func TestLower_RefusesScriptsGUIScriptsCollision(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	p.Project.Scripts = map[string]string{
+		"shared": "demo.cli:main",
+	}
+	p.Project.GUIScripts = map[string]string{
+		"shared": "demo.gui:main",
+	}
+	srcs := []string{"demo/__init__.py", "demo/cli.py", "demo/gui.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	_, err = Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err == nil {
+		t.Fatal("Lower: want refusal for scripts ↔ gui-scripts name collision")
+	}
+	if !strings.Contains(err.Error(), "unsupported-pyproject-entry-point") {
+		t.Errorf("err=%v want unsupported-pyproject-entry-point", err)
+	}
+}
+
 func TestStripPEP508(t *testing.T) {
 	cases := map[string]string{
 		"foo":                                "foo",

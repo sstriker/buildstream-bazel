@@ -22,11 +22,14 @@ type Target struct {
 	Name string
 	Kind Kind
 
-	// py_library fields.
+	// py_library fields. (Package data — e.g.
+	// `tool.setuptools.package-data` — is parsed but not
+	// folded into a `data` attribute yet; see
+	// docs/design/pyproject-native-render.md's "What's NOT
+	// covered" section for the rationale.)
 	Srcs       []string
 	Imports    []string
 	Deps       []string
-	Data       []string
 	Visibility []string
 
 	// py_binary fields. EntryModule + EntryFunc are emitted
@@ -72,11 +75,23 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 		return nil, err
 	}
 
+	// Merge [project.scripts] and [project.gui-scripts]. Per
+	// PEP 621 the two tables have identical syntax — gui-scripts
+	// differs only in that it launches without a console window
+	// on Windows, which is platform-runtime behavior Bazel-native
+	// py_binary doesn't model. Treat them as one entry-point set
+	// for emission; refuse on key collision so authors don't
+	// silently shadow one with the other.
+	allScripts, err := mergeScripts(p.Project.Scripts, p.Project.GUIScripts)
+	if err != nil {
+		return nil, err
+	}
+
 	// Disambiguate any py_library whose Bazel-label collides
-	// with a [project.scripts] entry's name. Bazel target
-	// names must be unique within a package, and a single-
-	// module CLI (project "greet" with a console script also
-	// named "greet") would otherwise produce
+	// with a [project.scripts] / [project.gui-scripts] entry's
+	// name. Bazel target names must be unique within a package,
+	// and a single-module CLI (project "greet" with a console
+	// script also named "greet") would otherwise produce
 	// `py_library(name = "greet")` and `py_binary(name =
 	// "greet")` in the same BUILD. Rename the library to
 	// "<name>_lib" in that case; leave the binary using the
@@ -84,7 +99,7 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 	// The renamed label flows through to the binary's
 	// EntryDep below.
 	scriptNames := map[string]bool{}
-	for n := range p.Project.Scripts {
+	for n := range allScripts {
 		scriptNames[n] = true
 	}
 	labelByPkgName := map[string]string{}
@@ -96,7 +111,7 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 		labelByPkgName[pk.Name] = base
 	}
 
-	out := make([]Target, 0, len(pkgs)+len(p.Project.Scripts))
+	out := make([]Target, 0, len(pkgs)+len(allScripts))
 	for _, pk := range pkgs {
 		out = append(out, Target{
 			Name:       labelByPkgName[pk.Name],
@@ -108,12 +123,35 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 		})
 	}
 
-	scripts, err := lowerScripts(p, pkgs, labelByPkgName, opts.Imports)
+	scripts, err := lowerScripts(allScripts, labelByPkgName, opts.Imports)
 	if err != nil {
 		return nil, err
 	}
 	out = append(out, scripts...)
 	return out, nil
+}
+
+// mergeScripts unions [project.scripts] and [project.gui-scripts]
+// into a single name → entry-point map. Returns a typed Tier-1
+// failure when both tables declare the same name (Bazel would
+// otherwise emit two py_binary rules with the same target name).
+func mergeScripts(scripts, guiScripts map[string]string) (map[string]string, error) {
+	if len(scripts) == 0 && len(guiScripts) == 0 {
+		return nil, nil
+	}
+	merged := make(map[string]string, len(scripts)+len(guiScripts))
+	for n, v := range scripts {
+		merged[n] = v
+	}
+	for n, v := range guiScripts {
+		if existing, ok := merged[n]; ok {
+			return nil, newFailure(unsupportedPyprojectEntryPoint,
+				"entry-point name %q declared in both [project.scripts] (%q) and [project.gui-scripts] (%q); v1 can't disambiguate the two into distinct py_binary rules",
+				n, existing, v)
+		}
+		merged[n] = v
+	}
+	return merged, nil
 }
 
 // refuseDynamicMetadata rejects pyproject.toml shapes that
@@ -252,9 +290,9 @@ func lookupDistInManifest(imports *manifest.Resolver, raw, normalized string) *m
 	return nil
 }
 
-// lowerScripts maps [project.scripts] entries to py_binary
-// targets. Each entry's value is `module:func`; we attach a
-// dep on whichever py_library re-exports `module`:
+// lowerScripts maps a merged scripts + gui-scripts map to
+// py_binary targets. Each entry's value is `module:func`; we
+// attach a dep on whichever py_library re-exports `module`:
 //
 //  1. First try the in-graph packages (longest dotted-prefix
 //     match — most common case).
@@ -270,19 +308,19 @@ func lookupDistInManifest(imports *manifest.Resolver, raw, normalized string) *m
 // the Bazel-safe label it actually emitted as (potentially
 // with a "_lib" suffix when script-name collision-avoidance
 // kicked in).
-func lowerScripts(p *Pyproject, pkgs []Package, labelByPkgName map[string]string, imports *manifest.Resolver) ([]Target, error) {
-	if len(p.Project.Scripts) == 0 {
+func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, imports *manifest.Resolver) ([]Target, error) {
+	if len(scripts) == 0 {
 		return nil, nil
 	}
-	names := make([]string, 0, len(p.Project.Scripts))
-	for n := range p.Project.Scripts {
+	names := make([]string, 0, len(scripts))
+	for n := range scripts {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 
 	out := make([]Target, 0, len(names))
 	for _, scriptName := range names {
-		spec := p.Project.Scripts[scriptName]
+		spec := scripts[scriptName]
 		module, fn, err := parseEntryPoint(spec)
 		if err != nil {
 			return nil, fmt.Errorf("[project.scripts] %q: %w", scriptName, err)

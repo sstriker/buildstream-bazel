@@ -67,9 +67,6 @@ func emitPyLibrary(b *bytes.Buffer, t Target) {
 	if len(t.Deps) > 0 {
 		writeList(b, "deps", sortedCopy(t.Deps))
 	}
-	if len(t.Data) > 0 {
-		writeList(b, "data", sortedCopy(t.Data))
-	}
 	if len(t.Visibility) > 0 {
 		writeList(b, "visibility", t.Visibility)
 	}

@@ -94,11 +94,10 @@ the abstraction overhead at v1 scope.
 
 | pyproject.toml shape                    | Emitted Bazel rule |
 |-----------------------------------------|---------------------|
-| Top-level package directory `<pkg>/` (any backend) | `py_library(name="<pkg>", srcs=glob(["<pkg>/**/*.py"]), imports=[<root>], deps=[…], data=[…])`. One py_library per package directory (per the design call: not aggregated into a single project-wide rule). |
-| `[project.scripts]` `name = "module:func"` | `py_binary(name="<name>", srcs=[":<name>_entry"], main="<name>_entry.py", deps=[":<package>"])` plus a sibling `genrule(name="<name>_entry", outs=["<name>_entry.py"], cmd="…printf…")` that materialises a 4-line entry shim importing `module` and calling `func`. We don't use `py_console_script_binary` (added in rules_python ≥ 0.21) because this repo doesn't pin rules_python's version in project B's MODULE.bazel — the hand-rolled shim is universally compatible. |
+| Top-level package directory `<pkg>/` (any backend) | `py_library(name="<pkg>", srcs=[…enumerated .py paths…], imports=[<root>], deps=[…])`. One py_library per package directory (per the design call: not aggregated into a single project-wide rule). `srcs` is an explicit, sorted list of the .py files the discovery pass found — not a `glob()` — so future test files / scratch .py the backend wouldn't have shipped don't accidentally enter the rule. |
+| `[project.scripts]` / `[project.gui-scripts]` `name = "module:func"` | `py_binary(name="<name>", srcs=[":<name>_entry"], main="<name>_entry.py", deps=[":<package>"])` plus a sibling `genrule(name="<name>_entry", outs=["<name>_entry.py"], cmd="…printf…")` that materialises a 4-line entry shim importing `module` and calling `func`. We don't use `py_console_script_binary` (added in rules_python ≥ 0.21) because this repo doesn't pin rules_python's version in project B's MODULE.bazel — the hand-rolled shim is universally compatible. Per PEP 621 gui-scripts have identical syntax to scripts (the distinction is only that gui-scripts launch without a console window on Windows); v1 emits both as `py_binary` and refuses on key collision between the two tables. |
 | `[project.dependencies] foo = "*"` resolving to another in-graph element | `deps += [<imports-manifest label>]`. Convention bind: `<dep>::<dep>` → `//elements/<dep>:<dep>`. |
 | `[project.dependencies] foo` not in the manifest and not in the project's own packages | Refuse with `unresolved-pyproject-dependency`. |
-| Package data files (e.g. `tool.setuptools.package-data`) | Folded into the `py_library`'s `data` attribute as a globbed filegroup. |
 
 `imports = [<root>]` is the prefix the package lives at. For
 flat layouts (`<repo>/<pkg>/`) it's `["."]`. For src layouts
@@ -166,6 +165,17 @@ BUILD; resolution order:
   downstream non-FDSDK projects whose deps come from PyPI
   rather than from per-element converted graphs. FDSDK
   doesn't use this pattern (every dep is its own element).
+- **Package data files** (`tool.setuptools.package-data`,
+  `tool.hatch.build.targets.wheel.shared-data`,
+  `[project] include` / equivalents). The parser captures
+  `tool.setuptools.package-data` but the lift doesn't fold it
+  into `py_library`'s `data` attribute yet. Operators whose
+  packages bundle non-`.py` runtime resources (templates, JSON
+  assets) accept the Phase B fallback for now; the lift
+  treats their element as Python-only and the runtime
+  resources won't appear in `bazel run`'s runfiles. Phase B
+  (install_tree.tar fallback) sidesteps the issue by shipping
+  the whole install tree as a filegroup.
 
 ## write-a integration
 
