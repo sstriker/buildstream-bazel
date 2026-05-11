@@ -429,10 +429,10 @@ func PickSelectKeys(platforms []Platform) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(platforms))
 	for i, p := range platforms {
+		if _, dup := out[p.Name]; dup {
+			return nil, fmt.Errorf("elementfold: platform %q appears twice in PickSelectKeys input", p.Name)
+		}
 		if p.SelectKey != "" {
-			if dup, exists := out[p.Name]; exists {
-				return nil, fmt.Errorf("elementfold: platform %q appears twice in PickSelectKeys input (existing key %q)", p.Name, dup)
-			}
 			out[p.Name] = p.SelectKey
 			continue
 		}

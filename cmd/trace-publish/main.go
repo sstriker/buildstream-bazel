@@ -46,12 +46,12 @@ func main() {
 	instance := flag.String("instance", "", "REAPI instance name; matches the publishing CAS endpoint's multi-tenancy prefix.")
 	srckey := flag.String("srckey", "", "per-element srckey hex (the content of srckey.txt); seeds the synthetic AC key.")
 	tracePath := flag.String("trace", "", "path to the canonicalized trace.log produced by build-tracer.")
-	makeDBPath := flag.String("make-db", "", "path to the filtered make-db.txt produced by the genrule's `make -np` post-step.")
+	makeDBPath := flag.String("make-db", "", "optional path to the filtered make-db.txt produced by the genrule's `make -np` post-step. Required for trace-driven kinds whose converter consumes the make-db (autotools / make / makemaker / modulebuild / manual / script); cmake round-2 fallback omits it (cmake's converter derives its IR from the trace + the File API directly).")
 	sourceRoot := flag.String("source-root", "", "absolute path to the element's source tree. Mirrors build-tracer's --source-root: when set, the defensive re-canonicalization filters openat lines to source-relative paths and strips the volatile fd return value (the trace doubles as a configure-time read oracle). When empty, openat lines drop entirely — preserves the legacy AC byte schema for elements not opted into the oracle.")
 	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace for round-2 trace-driven kinds whose install layout / build graph diverges across target platforms. Empty preserves the historical single-keyspace shape — single-platform operators upgrading past this flag keep their previously published AC entries valid. The matching trace-lookup invocation in rules/traces.bzl must pass the same tag for the publish/lookup rendezvous to hit.")
 	flag.Parse()
 
-	if *addr == "" || *srckey == "" || *tracePath == "" || *makeDBPath == "" {
+	if *addr == "" || *srckey == "" || *tracePath == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -80,9 +80,21 @@ func publish(ctx context.Context, store cas.Store, srckey, platform, tracePath, 
 	if err != nil {
 		return fmt.Errorf("read trace: %w", err)
 	}
-	makeDBBody, err := os.ReadFile(makeDBPath)
-	if err != nil {
-		return fmt.Errorf("read make-db: %w", err)
+	// make-db.txt is optional: trace-driven autotools-family
+	// kinds publish it (convert-element-trace consumes it
+	// downstream), but cmake round-2 fallback has no equivalent
+	// (cmake's converter reads the trace + File API directly).
+	// Empty path → skip the read; the staged Directory below
+	// omits the make-db.txt entry rather than landing an empty
+	// file so a cmake publish doesn't tax the autotools
+	// converter's parser with a zero-byte make-db.
+	var makeDBBody []byte
+	if makeDBPath != "" {
+		makeDBBody, err = os.ReadFile(makeDBPath)
+		if err != nil {
+			return fmt.Errorf("read make-db: %w", err)
+		}
+		makeDBBody = tracenorm.FilterMakeDB(makeDBBody)
 	}
 
 	// Defensive re-canonicalization. The pipeline genrule already
@@ -97,7 +109,6 @@ func publish(ctx context.Context, store cas.Store, srckey, platform, tracePath, 
 	// sourceRoot is empty, openat lines drop and the bytes match
 	// the legacy execve-only schema.
 	traceBody = tracenorm.CanonicalizeBytesWith(traceBody, tracenorm.Options{SourceRoot: sourceRoot})
-	makeDBBody = tracenorm.FilterMakeDB(makeDBBody)
 
 	// Pack the two-file trace dir as a REAPI Directory and
 	// upload every blob (root Directory + each file content)
@@ -118,8 +129,10 @@ func publish(ctx context.Context, store cas.Store, srckey, platform, tracePath, 
 	if err := os.WriteFile(filepath.Join(stage, "trace.log"), traceBody, 0o644); err != nil {
 		return fmt.Errorf("write staged trace: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(stage, "make-db.txt"), makeDBBody, 0o644); err != nil {
-		return fmt.Errorf("write staged make-db: %w", err)
+	if makeDBPath != "" {
+		if err := os.WriteFile(filepath.Join(stage, "make-db.txt"), makeDBBody, 0o644); err != nil {
+			return fmt.Errorf("write staged make-db: %w", err)
+		}
 	}
 	tree, err := cas.PackDir(stage)
 	if err != nil {

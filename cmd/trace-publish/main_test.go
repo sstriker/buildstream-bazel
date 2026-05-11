@@ -153,6 +153,37 @@ func TestPublish_Idempotent(t *testing.T) {
 	}
 }
 
+// TestPublish_OmitMakeDB: cmake round-2 fallback publishes a
+// trace.log only — there's no make-db equivalent for cmake's
+// converter to consume. Passing an empty --make-db path skips
+// the read + stage step; the published Directory contains
+// only trace.log. The AC entry round-trips the same way the
+// 2-file shape does.
+func TestPublish_OmitMakeDB(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := t.TempDir()
+	tracePath := filepath.Join(src, "t.log")
+	if err := os.WriteFile(tracePath, []byte("cmake-trace\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Empty make-db path is the cmake round-2 shape.
+	if err := publish(ctx, store, "srckey-cmake", "", tracePath, "", ""); err != nil {
+		t.Fatalf("publish without make-db: %v", err)
+	}
+	key, _ := tracenorm.SyntheticActionDigest("srckey-cmake", "")
+	ar, err := store.GetActionResult(ctx, key)
+	if err != nil {
+		t.Fatalf("get-ac: %v", err)
+	}
+	if ar == nil || len(ar.OutputDirectories) != 1 {
+		t.Fatalf("expected one OutputDirectory; got %v", ar)
+	}
+}
+
 // TestPublish_NotFoundIsCleanError covers the consumer-side
 // pre-condition: lookup of an unpublished srckey returns
 // ErrNotFound, not an opaque gRPC error.

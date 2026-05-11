@@ -404,6 +404,28 @@ func TestPickSelectKeys_OperatorOverridesPartial(t *testing.T) {
 	}
 }
 
+// TestPickSelectKeys_RejectsDuplicateNames: two cells sharing
+// the same Platform.Name (with no SelectKey set on either)
+// must error with a name-collision message rather than
+// silently letting the second cell overwrite the first in the
+// internal map. The auto-detect path doesn't trigger the
+// final-key uniqueness check for this case — both cells would
+// just collapse into one entry — so the per-iteration
+// duplicate-name check is what guards it.
+func TestPickSelectKeys_RejectsDuplicateNames(t *testing.T) {
+	plats := []Platform{
+		{Name: "linux", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		{Name: "linux", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}},
+	}
+	_, err := PickSelectKeys(plats)
+	if err == nil {
+		t.Fatal("expected error for duplicate Platform.Name across auto-detect cells")
+	}
+	if !strings.Contains(err.Error(), "appears twice") {
+		t.Errorf("error %q should mention the duplicate-name shape", err)
+	}
+}
+
 // TestPickSelectKeys_RejectsDuplicateOverrideLabels: two
 // platforms supplying the same select_label is an operator
 // typo that would produce duplicate select() arms whose
