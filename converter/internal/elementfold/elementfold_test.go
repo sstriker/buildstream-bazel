@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 // TestFold_SingleCellIdentity: the N=1 degenerate case must

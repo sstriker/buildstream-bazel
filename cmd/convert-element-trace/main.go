@@ -41,6 +41,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -48,6 +49,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 	"github.com/sstriker/cmake-to-bazel/internal/manifest"
 )
 
@@ -55,6 +57,7 @@ func main() {
 	tracePath := flag.String("trace", "", "path to strace text-format output (`-f -e trace=execve -s 4096 -o <path>`). Required unless --trace-dir is set.")
 	traceDir := flag.String("trace-dir", "", "alternative to --trace + --make-db: a directory containing trace.log + make-db.txt (typically materialized from @trace_<key>//:trace by the round-2 converter genrule). Empty / non-existent / missing-trace.log ⇒ converter emits a placeholder BUILD.bazel.out (the round-2 boot phase signal: no published trace yet, project B keeps using its coarse install genrule until pass-3 publishes one).")
 	outBuild := flag.String("out-build", "", "path to write BUILD.bazel.out")
+	outIRJSON := flag.String("out-ir-json", "", "optional: path to write the recovered ir.Package as JSON, parallel to convert-element's --out-ir-json. Drives the orchestrator's per-element multi-platform fold for round-2 trace-driven kinds; ignored by single-platform flows. The legacy BUILD.bazel.out at --out-build is emitted independently.")
 	importsPath := flag.String("imports-manifest", "", "optional: path to imports.json mapping cross-element link libraries to Bazel labels")
 	makeDBPath := flag.String("make-db", "", "optional: path to `make -np` dump for post-build Makefile structural hints (target names, recipes, variables)")
 	outMapping := flag.String("out-install-mapping", "", "optional: path to write install-mapping.json sidecar (source → install-tree dest map; consumed by Phase 4 typed-filegroup work)")
@@ -83,6 +86,18 @@ func main() {
 			if err := writePlaceholderBuild(*outBuild); err != nil {
 				fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder: %v\n", err)
 				os.Exit(1)
+			}
+			// Multi-platform fold contract: the converter genrule
+			// must produce ir.json whenever --out-ir-json is set
+			// (Bazel's declared-outputs invariant), even in the
+			// round-2 boot phase where no trace is published yet.
+			// An empty ir.Package matches the placeholder
+			// BUILD.bazel — the fold composes empties to empty.
+			if *outIRJSON != "" {
+				if err := writePlaceholderIRJSON(*outIRJSON); err != nil {
+					fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder ir.json: %v\n", err)
+					os.Exit(1)
+				}
 			}
 			return
 		}
@@ -147,6 +162,32 @@ func main() {
 	graph := correlate(events)
 	out := emitBuild(graph, imports, makeDB, generatedHeaders)
 
+	// Per-element multi-platform fold for round-2 trace-driven
+	// kinds (ROADMAP.md "Per-platform fold"): when --out-ir-json
+	// is set, ship the recovered rules as an ir.Package JSON
+	// alongside the rendered BUILD.bazel. The orchestrator's
+	// fold consumes one ir.json per (element, platform) cell
+	// and composes them via fold-element. Single-platform
+	// invocations leave --out-ir-json unset; the BUILD.bazel.out
+	// remains the canonical artifact.
+	if *outIRJSON != "" {
+		rules := recoveredRules(graph, imports, makeDB, generatedHeaders)
+		pkg := toIR(rules)
+		body, err := json.MarshalIndent(pkg, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-trace: marshal ir.Package: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.MkdirAll(filepath.Dir(*outIRJSON), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-trace: mkdir ir.json: %v\n", err)
+			os.Exit(1)
+		}
+		if err := os.WriteFile(*outIRJSON, append(body, '\n'), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-trace: write ir.json: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	// Install-mapping sidecar: when --out-install-mapping is
 	// set AND we have a make-db, parse the install: recipe and
 	// emit the source → install-tree-dest map. Today's make-db
@@ -185,6 +226,90 @@ func main() {
 		fmt.Fprintf(os.Stderr, "convert-element-trace: write: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// writePlaceholderIRJSON emits the empty ir.Package the round-2
+// converter genrule produces when --out-ir-json is set and no
+// trace is published yet (the boot phase). Sibling of
+// writePlaceholderBuild — the converter genrule must satisfy
+// every declared output, and an empty ir.Package matches the
+// placeholder BUILD.bazel's "no recoverable targets" semantic.
+// fold-element composes empties to empty without complaint.
+func writePlaceholderIRJSON(outPath string) error {
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	body, err := json.MarshalIndent(ir.Package{}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(outPath, append(body, '\n'), 0o644)
+}
+
+// recoveredRules returns the same CCRule slice emitBuild
+// internally renders — buildRules' output with the (uniformly
+// applied) generated-headers list folded into each rule's Hdrs.
+// Factored out so the --out-ir-json path can serialize the
+// identical post-fold ruleset without duplicating the
+// generated-headers logic.
+func recoveredRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB, generatedHeaders []string) []CCRule {
+	rules := buildRules(g, imports, makeDB)
+	if len(generatedHeaders) > 0 {
+		hdrs := stableUnique(generatedHeaders)
+		for i := range rules {
+			rules[i].Hdrs = hdrs
+		}
+	}
+	return rules
+}
+
+// toIR maps the trace converter's local CCRule slice to the
+// shared ir.Package shape consumed by converter/internal/elementfold.
+// Single-platform conversions don't need this — emitBuild renders
+// BUILD.bazel.out directly — but the multi-platform fold for
+// round-2 trace-driven kinds composes N per-platform ir.Package
+// JSONs via fold-element, which only understands the shared IR.
+//
+// Mapping:
+//   - "cc_library" CCRule → ir.KindCCLibrary target with
+//     Linkstatic=true (mirrors emitBuild's "linkstatic = True"
+//     line on every cc_library it emits).
+//   - "cc_binary" CCRule → ir.KindCCBinary target.
+//   - Every target gets Visibility = ["//visibility:public"]
+//     to match emitBuild's blanket visibility on every rule.
+//
+// Package.Name and Package.SourceRoot are left empty: the
+// trace-driven converter has no project() name and the
+// orchestrator's fold doesn't need them (fold-element keys by
+// cell name, not by Package.Name).
+func toIR(rules []CCRule) ir.Package {
+	pkg := ir.Package{}
+	if len(rules) == 0 {
+		return pkg
+	}
+	pkg.Targets = make([]ir.Target, 0, len(rules))
+	for _, r := range rules {
+		t := ir.Target{
+			Name:       r.Name,
+			Srcs:       append([]string(nil), r.Srcs...),
+			Hdrs:       append([]string(nil), r.Hdrs...),
+			Copts:      append([]string(nil), r.Copts...),
+			Defines:    append([]string(nil), r.Defines...),
+			Deps:       append([]string(nil), r.Deps...),
+			Visibility: []string{"//visibility:public"},
+		}
+		switch r.RuleKind {
+		case "cc_library":
+			t.Kind = ir.KindCCLibrary
+			t.Linkstatic = true
+		case "cc_binary":
+			t.Kind = ir.KindCCBinary
+		default:
+			t.Kind = ir.KindUnknown
+		}
+		pkg.Targets = append(pkg.Targets, t)
+	}
+	return pkg
 }
 
 // writePlaceholderBuild emits the empty BUILD.bazel.out the

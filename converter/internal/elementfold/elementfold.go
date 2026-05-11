@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 	"github.com/sstriker/cmake-to-bazel/internal/empfold"
 )
 

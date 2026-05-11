@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 const helloWorldFixture = "../../testdata/fileapi/hello-world"

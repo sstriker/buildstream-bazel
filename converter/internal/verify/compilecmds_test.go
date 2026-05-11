@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/verify"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 // TestVerify_AgreesWhenIRMatches checks the green path: an IR target

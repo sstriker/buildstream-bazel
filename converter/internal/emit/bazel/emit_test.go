@@ -9,8 +9,8 @@ import (
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 	"github.com/sstriker/cmake-to-bazel/internal/manifest"
 )
 

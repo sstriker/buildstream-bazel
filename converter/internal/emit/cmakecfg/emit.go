@@ -25,7 +25,7 @@ import (
 	"path"
 	"text/template"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 // Bundle is the in-memory representation of one cmake-config directory.

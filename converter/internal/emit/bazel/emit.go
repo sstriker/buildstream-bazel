@@ -15,7 +15,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 // header is intentionally path-free so the emitted BUILD.bazel is
