@@ -616,6 +616,44 @@ func TestLower_SkipsElementNameFacadeOnCollision(t *testing.T) {
 	}
 }
 
+func TestLower_SetuptoolsExplicitDotPackageDir(t *testing.T) {
+	// `[tool.setuptools.package-dir]."" = "."` is a legal-but-
+	// redundant way to say "project root" — equivalent to
+	// omitting the package-dir override. Used to refuse with
+	// "no .py files found" because the `./demo/` prefix didn't
+	// match `filepath.Rel`-produced source paths (which lack
+	// the leading `./`). Now normalized to "" before lookup.
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{
+		Packages:   []any{"demo"},
+		PackageDir: map[string]string{"": "."},
+	}
+	srcs := []string{"demo/__init__.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Name != "demo" {
+		t.Errorf("got %+v want one package named demo", pkgs)
+	}
+}
+
+func TestLower_PoetryDotFrom(t *testing.T) {
+	// `[tool.poetry.packages]` with `from = "."` is also legal-
+	// but-redundant. Same normalization fix as the setuptools
+	// `package-dir`."" = "."` case above.
+	p := minimumProject("poetry.core.masonry.api")
+	p.Tool.Poetry = &Poetry{Packages: []PoetryPackage{{Include: "demo", From: "."}}}
+	srcs := []string{"demo/__init__.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Name != "demo" {
+		t.Errorf("got %+v want one package named demo", pkgs)
+	}
+}
+
 func TestStripPEP508(t *testing.T) {
 	cases := map[string]string{
 		"foo":                                "foo",

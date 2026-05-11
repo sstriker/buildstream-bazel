@@ -250,7 +250,7 @@ func setuptoolsExplicit(packages []string, packageDir map[string]string, sourceF
 	for k, v := range packageDir {
 		switch k {
 		case "":
-			root = strings.TrimSuffix(v, "/")
+			root = normalizePackageRoot(v)
 		default:
 			return nil, newFailure(unsupportedPyprojectPackageDiscovery,
 				"setuptools: per-package package-dir override (%q → %q) isn't supported in v1; only the root remap [tool.setuptools.package-dir.\"\" = \"src\"] form is recognized",
@@ -430,7 +430,7 @@ func discoverPoetry(p *Pyproject, sourceFiles []string) ([]Package, error) {
 	}
 	out := make([]Package, 0, len(p.Tool.Poetry.Packages))
 	for _, pp := range p.Tool.Poetry.Packages {
-		root := strings.TrimSuffix(pp.From, "/")
+		root := normalizePackageRoot(pp.From)
 		pkg, err := materializePackage(pp.Include, root, sourceFiles)
 		if err != nil {
 			return nil, err
@@ -438,6 +438,28 @@ func discoverPoetry(p *Pyproject, sourceFiles []string) ([]Package, error) {
 		out = append(out, pkg)
 	}
 	return out, nil
+}
+
+// normalizePackageRoot canonicalizes a package-root override
+// from setuptools' `[tool.setuptools.package-dir]."" = "..."` or
+// poetry's `[tool.poetry.packages].from = "..."`. Both backends
+// allow the literal value `"."` to mean "the project root" —
+// the same as omitting the override altogether — but
+// materializePackage's prefix scan compares against
+// filepath.Rel-produced source paths that never carry a leading
+// `./`. Treat `.` (and trailing slashes / empty) as the root
+// shape and pass `""` through; otherwise filepath.Clean to
+// strip redundant separators (`src/` → `src`, `./src` → `src`).
+func normalizePackageRoot(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "." {
+		return ""
+	}
+	s = filepath.Clean(s)
+	if s == "." {
+		return ""
+	}
+	return s
 }
 
 // materializePackage turns a (dotted-name, importRoot) pair
