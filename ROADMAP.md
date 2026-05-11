@@ -186,6 +186,33 @@ transition cleanly.
   (and against `bst workspace open`-modified element source trees).
   Goal: BuildStream developers' muscle memory keeps working through
   the transition.
+- **Proper target-presence delta in `elementfold`.** Today the
+  per-element multi-platform fold requires every cell to declare
+  the same `(Name, Kind)` target set; a target present on one
+  platform but absent on another is a Tier-1 fold error. The
+  current contract is intentional v1 scope — it keeps the IR
+  shape unchanged and matches kind:cmake Phase A's behaviour
+  — but the round-2 stub use case will eventually surface real
+  fixtures where one platform's `install_tree.tar` contains a
+  binary the other's doesn't (arch-specific tools, conditional
+  features). Two candidate shapes:
+  - **Phantom-target select.** Render the target unconditionally
+    with `select({absent_platforms: [], …})` on its path attrs;
+    consumers depending on the target see an empty list on the
+    platforms where it's absent and fail at compile time with a
+    legible "no inputs to this rule" message. Lowest-touch
+    elementfold change; the IR just learns to fold "present in
+    some cells" via PerPlatformScalar with the missing arms
+    omitted.
+  - **Alias-driven target gate.** Emit the target under a
+    suffixed name (`<target>_impl`) and an `alias(name = "<target>",
+    actual = select({plat_with: ":<target>_impl", plat_without:
+    "//:no-op"}))` wrapper. Cleaner semantically (consumers see
+    "no such target on this platform" at analysis time) but adds
+    two rules per target and depends on a `//:no-op` filegroup
+    every project A would carry.
+  Decision deferred — defer to whichever fixture surfaces first,
+  then pick the shape that fits its dep graph cleanly.
 
 ## Later (research / open questions)
 
