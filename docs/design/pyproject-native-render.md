@@ -95,7 +95,7 @@ the abstraction overhead at v1 scope.
 | pyproject.toml shape                    | Emitted Bazel rule |
 |-----------------------------------------|---------------------|
 | Top-level package directory `<pkg>/` (any backend) | `py_library(name="<pkg>", srcs=glob(["<pkg>/**/*.py"]), imports=[<root>], deps=[…], data=[…])`. One py_library per package directory (per the design call: not aggregated into a single project-wide rule). |
-| `[project.scripts]` `name = "module:func"` | `py_console_script_binary(name="<name>", pkg=":<package>", script="<name>")` when the consumer's Bazel ≥ rules_python's entry-points support; otherwise a hand-rolled `py_binary` whose `srcs` contains a generated entry-shim and whose `main` points at it. |
+| `[project.scripts]` `name = "module:func"` | `py_binary(name="<name>", srcs=[":<name>_entry"], main="<name>_entry.py", deps=[":<package>"])` plus a sibling `genrule(name="<name>_entry", outs=["<name>_entry.py"], cmd="…printf…")` that materialises a 4-line entry shim importing `module` and calling `func`. We don't use `py_console_script_binary` (added in rules_python ≥ 0.21) because this repo doesn't pin rules_python's version in project B's MODULE.bazel — the hand-rolled shim is universally compatible. |
 | `[project.dependencies] foo = "*"` resolving to another in-graph element | `deps += [<imports-manifest label>]`. Convention bind: `<dep>::<dep>` → `//elements/<dep>:<dep>`. |
 | `[project.dependencies] foo` not in the manifest and not in the project's own packages | Refuse with `unresolved-pyproject-dependency`. |
 | Package data files (e.g. `tool.setuptools.package-data`) | Folded into the `py_library`'s `data` attribute as a globbed filegroup. |
@@ -189,9 +189,9 @@ script overwrites.
   trigger condition.
 - Unit tests for the lowering pass
   (`cmd/convert-element-pyproject/lower_test.go`): py_library
-  emission for flat + src layouts, py_console_script_binary
-  emission, deps resolution via the imports manifest, the
-  full refusal taxonomy.
+  emission for flat + src layouts, py_binary + entry-shim
+  genrule emission for `[project.scripts]`, deps resolution
+  via the imports manifest, the full refusal taxonomy.
 - Write-a-side handler tests in
   `cmd/write-a/handler_pyproject_test.go`: pipeline-shape
   fallback when convertBin is unset; native-render shape when

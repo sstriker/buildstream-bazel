@@ -10,6 +10,7 @@ const (
 	unsupportedPyprojectCExtension       failure.Code = "unsupported-pyproject-c-extension"
 	unsupportedPyprojectDynamicMetadata  failure.Code = "unsupported-pyproject-dynamic-metadata"
 	unsupportedPyprojectPackageDiscovery failure.Code = "unsupported-pyproject-package-discovery"
+	unsupportedPyprojectEntryPoint       failure.Code = "unsupported-pyproject-entry-point"
 	unresolvedPyprojectDependency        failure.Code = "unresolved-pyproject-dependency"
 	pyprojectParseFailed                 failure.Code = "pyproject-parse-failed"
 )

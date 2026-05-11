@@ -342,24 +342,30 @@ func lookupPackageDep(module string, labelByPkgName map[string]string) string {
 // cmd attribute; a hostile entry like `mod'; rm -rf /; echo ':x`
 // could otherwise inject shell syntax into the rendered BUILD.
 // Python module names are `[A-Za-z_][A-Za-z0-9_]*` joined by `.`;
-// function names are `[A-Za-z_][A-Za-z0-9_]*`. Anything else is
-// rejected with a typed unsupported-pyproject-custom-target-style
-// refusal.
+// function names are `[A-Za-z_][A-Za-z0-9_]*`. Anything else
+// refuses with the typed Tier-1 unsupported-pyproject-entry-point
+// code so the orchestrator (and write-a's --pyproject-fallback
+// dispatch) routes the element to the pipeline-shape fallback
+// rather than aborting with a Tier-2 exit.
 func parseEntryPoint(spec string) (module, fn string, err error) {
 	idx := strings.IndexByte(spec, ':')
 	if idx < 0 {
-		return "", "", fmt.Errorf("entry point %q has no `:` separator (expected `module:func`)", spec)
+		return "", "", newFailure(unsupportedPyprojectEntryPoint,
+			"entry point %q has no `:` separator (expected `module:func`)", spec)
 	}
 	module = strings.TrimSpace(spec[:idx])
 	fn = strings.TrimSpace(spec[idx+1:])
 	if module == "" || fn == "" {
-		return "", "", fmt.Errorf("entry point %q has empty module or func", spec)
+		return "", "", newFailure(unsupportedPyprojectEntryPoint,
+			"entry point %q has empty module or func", spec)
 	}
 	if !isValidDottedModule(module) {
-		return "", "", fmt.Errorf("entry point %q: module %q isn't a valid dotted Python identifier (each component must match [A-Za-z_][A-Za-z0-9_]*); refusing to lift", spec, module)
+		return "", "", newFailure(unsupportedPyprojectEntryPoint,
+			"entry point %q: module %q isn't a valid dotted Python identifier (each component must match [A-Za-z_][A-Za-z0-9_]*)", spec, module)
 	}
 	if !isValidIdentifier(fn) {
-		return "", "", fmt.Errorf("entry point %q: function %q isn't a valid Python identifier ([A-Za-z_][A-Za-z0-9_]*); refusing to lift", spec, fn)
+		return "", "", newFailure(unsupportedPyprojectEntryPoint,
+			"entry point %q: function %q isn't a valid Python identifier ([A-Za-z_][A-Za-z0-9_]*)", spec, fn)
 	}
 	return module, fn, nil
 }

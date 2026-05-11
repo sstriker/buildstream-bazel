@@ -16,7 +16,6 @@
 package main
 
 import (
-	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -157,7 +156,14 @@ func discoverSetuptools(p *Pyproject, sourceFiles []string) ([]Package, error) {
 	}
 	find, err := p.Tool.Setuptools.FindDirective()
 	if err != nil {
-		return nil, fmt.Errorf("setuptools: decode packages.find: %w", err)
+		// Route TOML-shape mismatches through Tier-1 so the
+		// orchestrator (and write-a's --pyproject-fallback
+		// dispatch) treats the element as "refuse → pipeline
+		// fallback" instead of aborting with a Tier-2 exit.
+		// The original error message is preserved verbatim so
+		// the operator sees what go-toml actually objected to.
+		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
+			"setuptools: decode [tool.setuptools.packages.find]: %v", err)
 	}
 	if find == nil {
 		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
