@@ -134,7 +134,7 @@ case "$bazel_major" in
     *) bazel_major=0 ;;
 esac
 if [ "$bazel_major" -lt 7 ]; then
-    echo "meta-pyproject: render OK; bazel ${bazel_version_label:-(unknown)} is < 7 (no bzlmod), skipping build phase"
+    echo "meta-pyproject: render OK; bazel ${bazel_version_label:-unknown} is < 7 (no bzlmod), skipping build phase"
     exit 0
 fi
 if ! command -v python3 >/dev/null; then
