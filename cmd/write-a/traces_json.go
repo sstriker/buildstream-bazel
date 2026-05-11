@@ -30,6 +30,17 @@ import (
 type traceEntry struct {
 	Key    string `json:"key"`
 	Srckey string `json:"srckey"`
+	// Platform is the CMAKE_TO_BAZEL_PLATFORM tag this entry's
+	// trace-lookup uses. Empty (the default, legacy shape) means
+	// the rule falls back to the load-time env-var lookup —
+	// single-platform operators upgrading past this revision keep
+	// their existing --repo_env=CMAKE_TO_BAZEL_PLATFORM=... behavior.
+	// Non-empty means multi-platform mode: write-a emits one entry
+	// per (element, platform) cell with Key="<elem>__<platform>"
+	// and Platform="<platform-tag>", so a single Bazel build
+	// resolves N per-platform _trace_repo instances simultaneously
+	// without env-var conflict.
+	Platform string `json:"platform,omitempty"`
 }
 
 type tracesJSON struct {

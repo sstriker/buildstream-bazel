@@ -115,14 +115,20 @@ def _trace_repo_impl(rctx):
     mount = rctx.os.environ.get("CAS_FUSE_MOUNT", "")
     prefix = rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")
     lookup_bin = rctx.os.environ.get("TRACE_LOOKUP_BIN", "")
-    # CMAKE_TO_BAZEL_PLATFORM partitions the synthetic AC
-    # keyspace per target platform. Empty/unset preserves the
-    # legacy single-keyspace shape so single-platform operators
-    # upgrading past this rule revision keep their previously
-    # published AC entries reachable. The matching publish-side
-    # invocation in project B's install genrule must read the
-    # same env var (via --action_env) so the two sides agree.
-    platform_tag = rctx.os.environ.get("CMAKE_TO_BAZEL_PLATFORM", "")
+    # Platform tag: attr-driven when write-a's multi-platform
+    # mode populated it, env-driven otherwise. A single Bazel
+    # build resolves one _trace_repo per platform under multi-
+    # platform mode, each pinned to a specific tag via the attr
+    # so the per-platform AC lookups don't collide. Legacy
+    # single-platform shape falls back to the CMAKE_TO_BAZEL_PLATFORM
+    # env var (set via --repo_env), so operators upgrading past
+    # this revision keep their existing --repo_env wiring valid.
+    # The matching publish-side trace-publish in project B reads
+    # the same env var (via --action_env), so the legacy two
+    # sides stay aligned.
+    platform_tag = rctx.attr.platform
+    if platform_tag == "":
+        platform_tag = rctx.os.environ.get("CMAKE_TO_BAZEL_PLATFORM", "")
     rctx.file("WORKSPACE", "")
 
     # Empty fallback: any of the three env requirements absent
@@ -191,6 +197,15 @@ _trace_repo = repository_rule(
     implementation = _trace_repo_impl,
     attrs = {
         "srckey": attr.string(mandatory = True),
+        # Platform tag pinned at extension-time. Empty (the
+        # legacy default) makes the rule fall back to the
+        # CMAKE_TO_BAZEL_PLATFORM env var so single-platform
+        # operators upgrading past this revision don't need
+        # config changes. Non-empty pins the per-platform AC
+        # lookup so multi-platform builds resolve distinct
+        # @trace_<elem>__<platform>//:trace repos in one Bazel
+        # invocation without env-var conflict.
+        "platform": attr.string(default = ""),
     },
     environ = [
         "CAS_GRPC_ADDR",
@@ -215,6 +230,7 @@ def _traces_impl(module_ctx):
         _trace_repo(
             name = "trace_" + entry["key"],
             srckey = entry.get("srckey", ""),
+            platform = entry.get("platform", ""),
         )
 
 traces = module_extension(
