@@ -49,6 +49,7 @@ type args struct {
 	outBuild        string
 	outFailure      string
 	importsManifest string
+	elementName     string
 }
 
 func main() {
@@ -69,6 +70,7 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	flags.StringVar(&a.outBuild, "out-build", "BUILD.bazel.out", "destination path for generated BUILD.bazel.out")
 	flags.StringVar(&a.outFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	flags.StringVar(&a.importsManifest, "imports-manifest", "", "path to JSON imports manifest mapping cross-element pyproject distribution names to Bazel labels (optional)")
+	flags.StringVar(&a.elementName, "element-name", "", "the .bst element name (optional). When set, emit a stable `py_library(name = <element-name>)` facade target that aggregates the per-package targets, so downstream consumers can reference the element via the convention bind `//elements/<element-name>:<element-name>` even when the primary py_library is named differently (e.g. setuptools' dist-name → package-name normalization, or script-name collision suffixing _lib).")
 	if err := flags.Parse(argv); err != nil {
 		return a, exitUsage
 	}
@@ -116,6 +118,7 @@ func run(a args) error {
 	targets, err := Lower(p, pkgs, LowerOptions{
 		SourceFiles: srcs,
 		Imports:     imports,
+		ElementName: a.elementName,
 	})
 	if err != nil {
 		return err

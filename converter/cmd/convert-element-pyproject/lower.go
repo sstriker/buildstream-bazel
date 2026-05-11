@@ -58,6 +58,17 @@ type LowerOptions struct {
 	// dependencies (`[project.dependencies]` entries) onto
 	// Bazel labels via the shared imports manifest schema.
 	Imports *manifest.Resolver
+
+	// ElementName is the .bst element name. When set and no
+	// emitted py_library already has that name, Lower appends
+	// a facade py_library(name = ElementName, deps = [<all
+	// primary py_library labels>]) so downstream consumers can
+	// reference the element via the convention bind
+	// `//elements/<element-name>:<element-name>` even when the
+	// primary package's py_library is named differently
+	// (setuptools' dist-name → package-name normalization,
+	// script-name collision suffixing _lib, etc.).
+	ElementName string
 }
 
 // Lower turns the parsed Pyproject + discovered Package list
@@ -140,7 +151,44 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 		return nil, err
 	}
 	out = append(out, scripts...)
+
+	// Element-name facade. The imports.json contract (set by
+	// write-a's writePyprojectImportsManifest + the kind-agnostic
+	// convention bind) is that downstream consumers reach this
+	// element via `//elements/<element-name>:<element-name>`.
+	// The per-package py_library names above don't necessarily
+	// match — dist-name often differs from the package directory
+	// (setuptools normalization), and the script-collision
+	// rename can suffix the library with _lib. Emit a stable
+	// facade py_library that aggregates the per-package targets
+	// (no srcs of its own; deps pull each one in transitively)
+	// when ElementName is set AND not already a target name.
+	if opts.ElementName != "" && !targetNameExists(out, opts.ElementName) {
+		facadeDeps := make([]string, 0, len(pkgs))
+		for _, pk := range pkgs {
+			facadeDeps = append(facadeDeps, ":"+labelByPkgName[pk.Name])
+		}
+		out = append(out, Target{
+			Name:       opts.ElementName,
+			Kind:       KindPyLibrary,
+			Deps:       facadeDeps,
+			Visibility: []string{"//visibility:public"},
+		})
+	}
 	return out, nil
+}
+
+// targetNameExists reports whether any target in `targets` has
+// the given name. Used by the element-name facade emission to
+// avoid colliding with an existing primary py_library or
+// py_binary that happens to match the element name.
+func targetNameExists(targets []Target, name string) bool {
+	for _, t := range targets {
+		if t.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // mergeScripts unions [project.scripts] and [project.gui-scripts]

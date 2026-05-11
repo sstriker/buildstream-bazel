@@ -541,6 +541,81 @@ func TestLower_SetuptoolsFindSkipsRootInitPy(t *testing.T) {
 	}
 }
 
+func TestLower_EmitsElementNameFacade(t *testing.T) {
+	// Project's dist-name (`python-dateutil`) normalizes to a
+	// package directory (`dateutil`) different from the .bst
+	// element name (`python-dateutil`). The element-name
+	// facade lets downstream consumers reach the element via
+	// the convention bind `//elements/python-dateutil:python-dateutil`
+	// even though the primary py_library is named `dateutil`.
+	p := minimumProject("setuptools.build_meta")
+	p.Project.Name = "python-dateutil"
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"dateutil"}}
+	srcs := []string{"dateutil/__init__.py", "dateutil/parser.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{
+		SourceFiles: srcs,
+		ElementName: "python-dateutil",
+	})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var facade *Target
+	for i := range out {
+		if out[i].Name == "python-dateutil" && out[i].Kind == KindPyLibrary {
+			facade = &out[i]
+		}
+	}
+	if facade == nil {
+		t.Fatalf("missing element-name facade target named %q in %+v", "python-dateutil", out)
+	}
+	if len(facade.Srcs) != 0 {
+		t.Errorf("facade.Srcs=%v want empty (deps-only facade)", facade.Srcs)
+	}
+	foundDateutilDep := false
+	for _, d := range facade.Deps {
+		if d == ":dateutil" {
+			foundDateutilDep = true
+		}
+	}
+	if !foundDateutilDep {
+		t.Errorf("facade.Deps=%v missing :dateutil", facade.Deps)
+	}
+}
+
+func TestLower_SkipsElementNameFacadeOnCollision(t *testing.T) {
+	// When the element name matches an existing target (the
+	// common case — single-package element whose dist-name
+	// equals its package name), no facade is emitted and the
+	// primary py_library serves as the element's stable label.
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	srcs := []string{"demo/__init__.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{
+		SourceFiles: srcs,
+		ElementName: "demo",
+	})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	demoTargets := 0
+	for _, t := range out {
+		if t.Name == "demo" {
+			demoTargets++
+		}
+	}
+	if demoTargets != 1 {
+		t.Errorf("got %d targets named demo, want 1 (no duplicate facade): %+v", demoTargets, out)
+	}
+}
+
 func TestStripPEP508(t *testing.T) {
 	cases := map[string]string{
 		"foo":                                "foo",

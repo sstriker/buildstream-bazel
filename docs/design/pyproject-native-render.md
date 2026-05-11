@@ -1,7 +1,8 @@
 # Pyproject native render — design
 
 Architecture recipe for `converter/cmd/convert-element-pyproject` — the
-introspection-driven kind:pyproject translator. Coverage
+static-analysis kind:pyproject translator (parses pyproject.toml
++ walks the source tree; doesn't run the build backend). Coverage
 context: `docs/fdsdk-coverage-status.md` (pyproject is 10.5 %
 of FDSDK, the largest remaining coarse kind after the trace-
 driven generalization shipped). Roadmap state: `ROADMAP.md`
@@ -151,6 +152,41 @@ BUILD; resolution order:
 2. `LookupCMakeTarget("<dep>::<dep>")` — convention bind
    write-a uses by default.
 3. Otherwise: `unresolved-pyproject-dependency` refusal.
+
+### Element-name facade target
+
+The per-package py_library names emit_from the discovery
+walk don't necessarily match the .bst element name —
+setuptools normalizes dist-name to package directory (`python-
+dateutil` → `dateutil`), the script-collision rename suffixes
+`_lib`, and multi-package distributions have no single
+"primary" target. The convention bind
+`//elements/<elem>:<elem>` would dangle in any of those cases.
+
+To keep the convention working, write-a passes
+`--element-name=<elem.Name>` to the converter, and Lower
+appends a stable facade target whenever the element name
+doesn't already match an emitted target:
+
+```
+py_library(
+    name = "<element-name>",
+    deps = [
+        ":<primary-package-1>",
+        ":<primary-package-2>",
+        …
+    ],
+    visibility = ["//visibility:public"],
+)
+```
+
+The facade has no `srcs` of its own; the deps pull the
+per-package libraries' files into the dependency graph
+transitively. When element-name DOES match an existing
+target (the common case: single-package element with
+dist-name == package-name), no facade is emitted — the
+primary py_library itself serves as the element's stable
+label.
 
 ## What's NOT covered (deferred follow-ups, tracked in ROADMAP Next/Later)
 

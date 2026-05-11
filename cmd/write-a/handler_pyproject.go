@@ -176,6 +176,7 @@ genrule(
         done
         $(location //tools:convert-element-pyproject) \\
             --source-root="$$SHADOW" \\
+            --element-name="%[1]s" \\
             --out-build="$(location BUILD.bazel.out)"%[3]s
     """,
     tools = ["//tools:convert-element-pyproject"],

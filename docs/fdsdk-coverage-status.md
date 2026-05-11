@@ -44,7 +44,7 @@ install_tree.tar shape.
 |---|---|---|---|---|
 | `autotools` | 274 | 25.1 % | **deep** | trace-driven via build-tracer + convert-element-trace |
 | `meson` | 134 | 12.3 % | **deep** | introspection-driven via convert-element-meson; Phase B install-plan fallback queued |
-| `pyproject` | 115 | 10.5 % | **deep** | introspection-driven via convert-element-pyproject; per-backend dispatch covers flit / hatchling / setuptools / poetry-core; C-extension / dynamic-metadata / unknown-backend cases fall to the pipeline shape |
+| `pyproject` | 115 | 10.5 % | **deep** | static analysis of pyproject.toml + a source-tree walk via convert-element-pyproject (no build-backend introspection — pyproject.toml is structurally rich enough on its own); per-backend dispatch covers flit / hatchling / setuptools / poetry-core; C-extension / dynamic-metadata / unknown-backend cases fall to the pipeline shape |
 | `manual` | 104 | 9.5 % | **deep** | trace-driven via convert-element-trace (when the element's commands invoke cc/ar through any wrapper) |
 | `stack` | 96 | 8.8 % | structural | filegroup composition over deps |
 | `cmake` | 75 | 6.9 % | **deep** | File API + trace-expand |
