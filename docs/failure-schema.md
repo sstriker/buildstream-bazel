@@ -340,9 +340,13 @@ library + headers on the executor.
 that go-toml's strict decoder rejected. The wrapped error
 includes the file path and the parser's diagnostic.
 
-**Operator action:** validate the TOML (e.g.
-`python -c "import tomllib; tomllib.loads(open('pyproject.toml').read())"`),
-fix syntax, re-render.
+**Operator action:** validate the TOML and fix the syntax,
+then re-render. Python 3.11+ ships `tomllib` in the stdlib:
+`python3 -c "import tomllib; tomllib.loads(open('pyproject.toml').read())"`.
+On older Python, install `tomli` (a pure-Python backport of
+the same API) and use it instead:
+`pip install tomli && python3 -c "import tomli; tomli.loads(open('pyproject.toml').read())"`.
+Any other TOML validator works too.
 
 **Emission point:** `converter/cmd/convert-element-pyproject`
 `parse.Load`.

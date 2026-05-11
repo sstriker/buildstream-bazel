@@ -155,7 +155,7 @@ BUILD; resolution order:
 
 ### Element-name facade target
 
-The per-package py_library names emit_from the discovery
+The per-package py_library names from the discovery
 walk don't necessarily match the .bst element name —
 setuptools normalizes dist-name to package directory (`python-
 dateutil` → `dateutil`), the script-collision rename suffixes
