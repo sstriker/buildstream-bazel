@@ -50,7 +50,7 @@ func (pyprojectHandler) HasProjectABuild() bool                       { return t
 func (pyprojectHandler) DefaultReadPathsPatterns() *readPathsPatterns { return nil }
 
 func (pyprojectHandler) RenderA(elem *element, elemPkg string) error {
-	if pyprojectConfig.convertBin == "" {
+	if pyprojectConfig.convertBin == "" || pyprojectNativeIncompatible(elem) {
 		return pyprojectPipelineHandler().RenderA(elem, elemPkg)
 	}
 	srcStage := filepath.Join(elemPkg, "sources")
@@ -68,7 +68,7 @@ func (pyprojectHandler) RenderA(elem *element, elemPkg string) error {
 }
 
 func (pyprojectHandler) RenderB(elem *element, elemPkg string) error {
-	if pyprojectConfig.convertBin == "" {
+	if pyprojectConfig.convertBin == "" || pyprojectNativeIncompatible(elem) {
 		return pyprojectPipelineHandler().RenderB(elem, elemPkg)
 	}
 	if err := stageAllSources(elem, elemPkg); err != nil {
@@ -84,6 +84,54 @@ filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
 `, elem.Name)
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
 }
+
+// pyprojectNativeIncompatible reports whether the element's
+// shape would break the native genrule's `--source-root=$SHADOW`
+// invocation, forcing the pipeline-shape render even when the
+// operator has supplied --convert-element-pyproject.
+//
+//	multi-source: stageAllSources merges every source into one
+//	  shadow tree, but each source's contents land at distinct
+//	  shadow-relative paths. The converter expects a single
+//	  source-root containing one pyproject.toml.
+//	Sources[0].Directory!="": stageAllSources places the source
+//	  contents at `sources/<Directory>/...`, so pyproject.toml
+//	  ends up at $SHADOW/<Directory>/pyproject.toml — but the
+//	  genrule invokes the converter with `--source-root=$SHADOW`
+//	  (no Directory suffix), so the converter wouldn't find
+//	  pyproject.toml.
+//
+// These structural mismatches surface as confusing Bazel-build-
+// time errors today; routing to pipeline shape at write-a time
+// avoids the surprise. The per-element diagnostic is printed on
+// stderr exactly once (cached by element name across the back-
+// to-back RenderA / RenderB call pair). Operators see WHY a
+// particular Directory-set or multi-source element fell back.
+func pyprojectNativeIncompatible(elem *element) bool {
+	if cached, ok := pyprojectStructuralFallback[elem.Name]; ok {
+		return cached
+	}
+	if len(elem.Sources) > 1 {
+		fmt.Fprintf(os.Stderr, "kind:pyproject %s: %d sources declared; native render's genrule passes --source-root=$SHADOW with the merged staged tree, but the converter expects a single source-root with one pyproject.toml. Routing to pipeline shape (the wheel-build genrule handles multi-source fine).\n",
+			elem.Name, len(elem.Sources))
+		pyprojectStructuralFallback[elem.Name] = true
+		return true
+	}
+	if len(elem.Sources) == 1 && elem.Sources[0].Directory != "" {
+		fmt.Fprintf(os.Stderr, "kind:pyproject %s: source has Directory=%q; the native genrule stages it under that subpath, but invokes the converter with --source-root=$SHADOW (no Directory suffix). Routing to pipeline shape (which honors Directory via the pipeline handler's source staging).\n",
+			elem.Name, elem.Sources[0].Directory)
+		pyprojectStructuralFallback[elem.Name] = true
+		return true
+	}
+	pyprojectStructuralFallback[elem.Name] = false
+	return false
+}
+
+// pyprojectStructuralFallback memoizes pyprojectNativeIncompatible's
+// result by element name so the back-to-back RenderA / RenderB
+// pair prints the diagnostic at most once per element per
+// write-a invocation.
+var pyprojectStructuralFallback = map[string]bool{}
 
 // pyprojectPipelineHandler returns the pipeline-shape handler
 // used when the native path is disabled. Defaults mirror upstream
