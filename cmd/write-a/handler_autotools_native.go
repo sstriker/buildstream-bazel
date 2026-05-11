@@ -46,7 +46,18 @@ var traceConfig struct {
 	tracerBin     string // absolute path to build-tracer
 	publishBin    string // absolute path to trace-publish (round 2 publisher)
 	lookupBin     string // absolute path to trace-lookup (round 2 consumer; staged so CI can find it on PATH)
+	foldBin       string // absolute path to fold-element (multi-platform fold of N per-platform ir.Package JSONs). Empty when --platforms-json isn't set.
 	round2Enabled bool   // round-2 active: pivot project A from marker → converter genrule, project B from inline-converter → inline-trace-publish. Set when --convert-element-trace is supplied AND the operator did NOT pass --trace-round1; cleared when only round-1 is wanted.
+	// platforms, when non-empty, switches the trace-driven round-2
+	// render to per-platform fan-out: project A emits N converter
+	// genrules per element (one per (element, platform) cell) plus
+	// one fold-element genrule composing their ir.json outputs into
+	// a unified BUILD.bazel; project B emits N install genrules per
+	// element (one per platform), each with its CMAKE_TO_BAZEL_PLATFORM
+	// pinned. Empty (the default) preserves the single-platform
+	// shape — byte-stable goldens, single converter genrule per
+	// element, single install genrule per element.
+	platforms []tracePlatform
 }
 
 // autotoolsHandler picks the right pipelineHandler shape based
