@@ -1005,6 +1005,15 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports = append(exports, autotoolsExports...)
+	// fold-element only goes into project A's tools/: project A's
+	// per-element fold genrule consumes it. Project B's install
+	// genrules don't fold — they just run the build pipeline and
+	// publish per-platform traces — so writeProjectB skips this.
+	foldExports, err := stageFoldElement(outDir)
+	if err != nil {
+		return err
+	}
+	exports = append(exports, foldExports...)
 	cmakeFileExport, err := stageCmakeConfigureFileTool(outDir)
 	if err != nil {
 		return err
@@ -1218,6 +1227,29 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 		exports = append(exports, "trace-lookup")
 	}
 	return exports, nil
+}
+
+// stageFoldElement copies fold-element into the given project's
+// tools/, returning a one-element exports list when staged. Only
+// project A's per-element fold genrule consumes it (project B's
+// install genrules just publish per-platform traces; they don't
+// fold), so writeProjectB doesn't call this. No-op when
+// --fold-element-bin / --platforms-json weren't supplied.
+func stageFoldElement(outDir string) ([]string, error) {
+	if traceConfig.foldBin == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return nil, err
+	}
+	stagedFold := filepath.Join(outDir, "tools", "fold-element")
+	if err := copyFile(traceConfig.foldBin, stagedFold); err != nil {
+		return nil, fmt.Errorf("stage fold-element: %w", err)
+	}
+	if err := os.Chmod(stagedFold, 0o755); err != nil {
+		return nil, err
+	}
+	return []string{"fold-element"}, nil
 }
 
 // writeProjectB renders the consumer workspace project B reads

@@ -65,7 +65,8 @@ Mapping handler → gate:
 | `handler_autotools_native.go` | `scripts/meta-autotools-native.sh`, `scripts/meta-autotools-multitarget.sh`, `scripts/meta-autotools-tu-optflags.sh`, `scripts/meta-autotools-libtool-pic.sh` |
 | `handler_autotools.go` (coarse) | `scripts/meta-autotools.sh` |
 | `handler_manual.go` | `scripts/meta-manual.sh`, `scripts/meta-vars.sh` |
-| `handler_make.go` | `scripts/meta-make.sh` |
+| `handler_make.go` | `scripts/meta-make.sh`, `scripts/meta-make-round2.sh` |
+| `handler_pipeline_round2.go` (multi-platform) | `scripts/meta-trace-round2-fold.sh` |
 | `handler_compose.go` | `scripts/meta-compose.sh` |
 | `handler_filter.go` | `scripts/meta-filter.sh` |
 | `handler_import.go` | `scripts/meta-import.sh` |
