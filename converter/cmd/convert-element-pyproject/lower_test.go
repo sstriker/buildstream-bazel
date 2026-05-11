@@ -458,6 +458,45 @@ func TestLower_SetuptoolsRefusesNonStringPackagesEntry(t *testing.T) {
 	}
 }
 
+func TestLower_RefusesPEP420NamespacePackage(t *testing.T) {
+	// A configured package whose directory exists but has no
+	// __init__.py refuses (PEP 420 namespace shape) rather than
+	// emitting a py_library that wouldn't be importable.
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	srcs := []string{"demo/cli.py"} // No __init__.py.
+	_, err := Discover(p, srcs)
+	if err == nil {
+		t.Fatal("Discover: want refusal for namespace-package (no __init__.py)")
+	}
+	if !strings.Contains(err.Error(), "unsupported-pyproject-package-discovery") {
+		t.Errorf("err=%v want unsupported-pyproject-package-discovery", err)
+	}
+}
+
+func TestLower_RefusesUnsafeScriptName(t *testing.T) {
+	// PEP 621 quoted keys allow names that would muddle Bazel
+	// target / output paths; refuse on anything outside
+	// [A-Za-z0-9_.-].
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	p.Project.Scripts = map[string]string{
+		"bad/name": "demo.cli:main",
+	}
+	srcs := []string{"demo/__init__.py", "demo/cli.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	_, err = Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err == nil {
+		t.Fatal("Lower: want refusal for unsafe script name")
+	}
+	if !strings.Contains(err.Error(), "unsupported-pyproject-entry-point") {
+		t.Errorf("err=%v want unsupported-pyproject-entry-point", err)
+	}
+}
+
 func TestStripPEP508(t *testing.T) {
 	cases := map[string]string{
 		"foo":                                "foo",
@@ -468,6 +507,9 @@ func TestStripPEP508(t *testing.T) {
 		"foo == 1.0":                         "foo",
 		"foo!=2":                             "foo",
 		"foo~=1":                             "foo",
+		"foo(>=1.2)":                         "foo",
+		"foo,bar":                            "foo",
+		"foo @ https://example/foo.tar.gz":   "foo",
 	}
 	for in, want := range cases {
 		if got := stripPEP508(in); got != want {

@@ -420,10 +420,15 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 		dir = root + "/" + dir
 	}
 	prefix := dir + "/"
+	initPath := prefix + "__init__.py"
+	hasInit := false
 	var srcs []string
 	for _, f := range sourceFiles {
 		if !strings.HasPrefix(f, prefix) || !strings.HasSuffix(f, ".py") {
 			continue
+		}
+		if f == initPath {
+			hasInit = true
 		}
 		// Depth-1: the rest of the path after the package dir
 		// must not contain another `/` (would mean we're inside
@@ -437,6 +442,17 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 	if len(srcs) == 0 {
 		return Package{}, newFailure(unsupportedPyprojectPackageDiscovery,
 			"package %q (dir %q): no .py files found in source tree — pyproject.toml's package config disagrees with the source layout",
+			dotted, dir)
+	}
+	// PEP 420 namespace packages (no `__init__.py`) are not
+	// covered in v1: every discovery walker keys on the regular
+	// `__init__.py`-anchored shape, and emitting a py_library
+	// without that file produces a target that's not importable
+	// as a regular package. Refuse with the typed Tier-1 code so
+	// the Phase B fallback dispatch can pick this up cleanly.
+	if !hasInit {
+		return Package{}, newFailure(unsupportedPyprojectPackageDiscovery,
+			"package %q (dir %q): no __init__.py — v1 doesn't lift PEP 420 namespace packages (the resulting py_library wouldn't be importable as a regular package)",
 			dotted, dir)
 	}
 	importRoot := root

@@ -333,6 +333,11 @@ func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, i
 	out := make([]Target, 0, len(names))
 	for _, scriptName := range names {
 		spec := scripts[scriptName]
+		if !isValidBazelTargetName(scriptName) {
+			return nil, newFailure(unsupportedPyprojectEntryPoint,
+				"entry-point name %q can't be used as a Bazel target name (only ASCII letters / digits / `_` / `-` / `.` allowed; no `/`, no path traversal, no whitespace)",
+				scriptName)
+		}
 		module, fn, err := parseEntryPoint(spec)
 		if err != nil {
 			return nil, fmt.Errorf("[project.scripts] %q: %w", scriptName, err)
@@ -471,6 +476,33 @@ func isValidIdentifier(s string) bool {
 	return true
 }
 
+// isValidBazelTargetName reports whether s is safe to use as a
+// Bazel target name. Bazel allows ASCII letters/digits plus
+// `_`, `-`, `.`, `+`, `=`, `,`, `@`, `~` and `/` (with `/`
+// indicating a package boundary). We're conservative: only
+// allow `[A-Za-z0-9_.-]+` since PEP 621 quoted-key script names
+// can otherwise carry `/`, whitespace, `..`, or shell-special
+// characters that would either invalidate the genrule output
+// path or muddle the rendered BUILD shape. Anything outside
+// that subset refuses with unsupported-pyproject-entry-point.
+func isValidBazelTargetName(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z',
+			r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9',
+			r == '_', r == '-', r == '.':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // isValidDottedModule reports whether s is a non-empty
 // dot-separated list of valid Python identifiers (e.g.
 // "foo.bar.baz").
@@ -498,7 +530,13 @@ func stripPEP508(req string) string {
 			return req[:i]
 		case r == '[': // extras: foo[bar]
 			return req[:i]
+		case r == '(': // parenthesized version: foo(>=1.2)
+			return req[:i]
+		case r == ',': // chained version specs: foo>=1.2,<2
+			return req[:i]
 		case r == ';': // markers: foo; python_version<'3.10'
+			return req[:i]
+		case r == '@': // URL form: foo @ https://...
 			return req[:i]
 		case r == '<', r == '>', r == '=', r == '~', r == '!':
 			return req[:i]
