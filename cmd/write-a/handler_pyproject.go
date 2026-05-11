@@ -15,8 +15,14 @@ func init() {
 // native converter. Populated from main()'s --convert-element-
 // pyproject flag before the per-element render loop runs. Empty
 // convertBin disables the native path; kind:pyproject elements
-// then render as the historical pipeline shape (coarse `python
-// -m build` + `python -m installer` install genrule).
+// then render as the historical pipeline shape (coarse
+// `python -m build --wheel` followed by `python -m pip install
+// _bst_dist/*.whl` into %{install-root} — see
+// pyprojectPipelineHandler below). Upstream buildstream-plugins-
+// community ships an `installer`-based pipeline; this repo's
+// pipeline shape was authored against pip first and keeps that
+// shape so existing operator scripts that pass extra
+// `--pip-args=...` overrides keep working.
 //
 // The split mirrors mesonConfig / traceConfig: keep the
 // kindHandler interface small (RenderA / RenderB don't take a

@@ -201,11 +201,27 @@ func setuptoolsExplicit(packages []string, packageDir map[string]string, sourceF
 }
 
 // setuptoolsFind walks the source tree for directories that
-// contain an __init__.py (or, when `namespaces=true`, any
-// nested package marker), filtered by `include` / `exclude`
-// glob lists. The result is the universe of importable
-// packages setuptools would have shipped in the wheel.
+// contain an __init__.py and treats each as a package, filtered
+// by `include` / `exclude` glob lists. The result is the
+// universe of importable packages setuptools would have shipped
+// in the wheel.
+//
+// v1 doesn't implement setuptools' `namespaces=true` mode (PEP
+// 420 implicit namespace packages — directories without an
+// __init__.py that nevertheless participate in the import
+// graph). The discovery logic for those needs to walk
+// subdirectories looking for any python content and emit a
+// py_library per namespace component, which is structurally
+// different from the __init__.py-anchored walk below. Refuse
+// the namespaces=true shape with a typed Tier-1 error so the
+// operator can opt the element into the pipeline-shape
+// fallback rather than silently shipping an under-narrow
+// package list.
 func setuptoolsFind(fd *SetuptoolsFindDirective, sourceFiles []string) ([]Package, error) {
+	if fd.Namespaces != nil && *fd.Namespaces {
+		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
+			"setuptools: [tool.setuptools.packages.find].namespaces = true (PEP 420 namespace-package discovery) isn't supported in v1; use the pipeline-shape fallback or list packages explicitly via [tool.setuptools].packages = [...]")
+	}
 	if len(fd.Where) > 1 {
 		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
 			"setuptools: [tool.setuptools.packages.find] with multiple `where` entries (%v) isn't supported in v1", fd.Where)

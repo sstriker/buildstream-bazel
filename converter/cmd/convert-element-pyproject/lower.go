@@ -108,7 +108,7 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 		})
 	}
 
-	scripts, err := lowerScripts(p, pkgs, labelByPkgName)
+	scripts, err := lowerScripts(p, pkgs, labelByPkgName, opts.Imports)
 	if err != nil {
 		return nil, err
 	}
@@ -205,21 +205,12 @@ func resolveDeps(p *Pyproject, pkgs []Package, imports *manifest.Resolver) ([]st
 		if ownPackageNames[norm] {
 			continue
 		}
-		if imports != nil {
-			if ex := imports.LookupCMakeTarget(name); ex != nil {
-				if !seen[ex.BazelLabel] {
-					out = append(out, ex.BazelLabel)
-					seen[ex.BazelLabel] = true
-				}
-				continue
+		if ex := lookupDistInManifest(imports, name, norm); ex != nil {
+			if !seen[ex.BazelLabel] {
+				out = append(out, ex.BazelLabel)
+				seen[ex.BazelLabel] = true
 			}
-			if ex := imports.LookupCMakeTarget(name + "::" + name); ex != nil {
-				if !seen[ex.BazelLabel] {
-					out = append(out, ex.BazelLabel)
-					seen[ex.BazelLabel] = true
-				}
-				continue
-			}
+			continue
 		}
 		return nil, newFailure(unresolvedPyprojectDependency,
 			"[project.dependencies] entry %q (normalized %q) not bound by imports manifest and not in this element's own packages",
@@ -229,16 +220,57 @@ func resolveDeps(p *Pyproject, pkgs []Package, imports *manifest.Resolver) ([]st
 	return out, nil
 }
 
+// lookupDistInManifest tries the imports-manifest's
+// LookupCMakeTarget against several name variants so PEP 503
+// normalization (lowercase, runs of [-_.]+ → -) matches
+// regardless of whether the manifest authoring layer uses the
+// raw name from pyproject.toml or the normalized form. Tries,
+// in order: raw, normalized, raw `::` raw, normalized `::`
+// normalized. Returns nil when no variant matches or imports
+// is nil.
+//
+// Why we try multiple shapes rather than canonicalizing the
+// manifest at load time: the manifest schema is shared across
+// kinds (cmake / autotools / meson), and those use namespaced
+// CMake target names like `Glibc::c` where PEP 503
+// normalization would be wrong. Per-kind variant lookups keeps
+// the manifest's authoring contract kind-agnostic.
+func lookupDistInManifest(imports *manifest.Resolver, raw, normalized string) *manifest.Export {
+	if imports == nil {
+		return nil
+	}
+	for _, variant := range []string{
+		raw,
+		normalized,
+		raw + "::" + raw,
+		normalized + "::" + normalized,
+	} {
+		if ex := imports.LookupCMakeTarget(variant); ex != nil {
+			return ex
+		}
+	}
+	return nil
+}
+
 // lowerScripts maps [project.scripts] entries to py_binary
 // targets. Each entry's value is `module:func`; we attach a
-// dep on whichever in-graph py_library re-exports `module`,
-// or refuse with unresolved-pyproject-dependency when the
-// module isn't ours and isn't manifest-bound.
+// dep on whichever py_library re-exports `module`:
 //
-// labelByPkgName maps each package's dotted name to the
-// Bazel-safe label it actually emitted as (potentially with
-// a "_lib" suffix when collision-avoidance kicked in).
-func lowerScripts(p *Pyproject, pkgs []Package, labelByPkgName map[string]string) ([]Target, error) {
+//  1. First try the in-graph packages (longest dotted-prefix
+//     match — most common case).
+//  2. Otherwise try the imports manifest: the entry module's
+//     top-level component is treated as the distribution name
+//     and looked up under PEP 503 normalization. Matches the
+//     resolveDeps resolution shape so cross-element scripts
+//     (a console-script imported from a manifest-bound dep)
+//     work the same way [project.dependencies] entries do.
+//  3. Otherwise refuse with unresolved-pyproject-dependency.
+//
+// labelByPkgName maps each in-graph package's dotted name to
+// the Bazel-safe label it actually emitted as (potentially
+// with a "_lib" suffix when script-name collision-avoidance
+// kicked in).
+func lowerScripts(p *Pyproject, pkgs []Package, labelByPkgName map[string]string, imports *manifest.Resolver) ([]Target, error) {
 	if len(p.Project.Scripts) == 0 {
 		return nil, nil
 	}
@@ -255,14 +287,21 @@ func lowerScripts(p *Pyproject, pkgs []Package, labelByPkgName map[string]string
 		if err != nil {
 			return nil, fmt.Errorf("[project.scripts] %q: %w", scriptName, err)
 		}
-		// Attach a dep on whichever package directly contains
-		// the entry module. We walk the dotted prefix space:
-		// "foo.cli" matches package "foo" if "foo" exists, or
-		// "foo.cli" if it's a sub-package, etc.
+		// Step 1: in-graph longest-prefix match.
 		dep := lookupPackageDep(module, labelByPkgName)
+		// Step 2: imports manifest under PEP 503 normalization
+		// against the entry module's top-level component (which
+		// is the distribution name in the typical
+		// `dist_name.cli:main` shape).
+		if dep == "" {
+			topLevel := strings.SplitN(module, ".", 2)[0]
+			if ex := lookupDistInManifest(imports, topLevel, normalizeDistName(topLevel)); ex != nil {
+				dep = ex.BazelLabel
+			}
+		}
 		if dep == "" {
 			return nil, newFailure(unresolvedPyprojectDependency,
-				"[project.scripts] %q = %q: module %q isn't part of this element's own packages — v1 can't lift cross-element console scripts (the binary's py_library dep would dangle)",
+				"[project.scripts] %q = %q: module %q isn't part of this element's own packages and isn't bound by the imports manifest (the binary's py_library dep would dangle)",
 				scriptName, spec, module)
 		}
 		out = append(out, Target{
@@ -296,7 +335,16 @@ func lookupPackageDep(module string, labelByPkgName map[string]string) string {
 	return ":" + labelByPkgName[bestName]
 }
 
-// parseEntryPoint splits `module:func` per PEP 621.
+// parseEntryPoint splits `module:func` per PEP 621 and validates
+// both parts against Python identifier syntax. The strict-subset
+// validation is load-bearing: emit.go embeds module + func into
+// a shell-quoted `printf` snippet inside the generated genrule's
+// cmd attribute; a hostile entry like `mod'; rm -rf /; echo ':x`
+// could otherwise inject shell syntax into the rendered BUILD.
+// Python module names are `[A-Za-z_][A-Za-z0-9_]*` joined by `.`;
+// function names are `[A-Za-z_][A-Za-z0-9_]*`. Anything else is
+// rejected with a typed unsupported-pyproject-custom-target-style
+// refusal.
 func parseEntryPoint(spec string) (module, fn string, err error) {
 	idx := strings.IndexByte(spec, ':')
 	if idx < 0 {
@@ -307,7 +355,54 @@ func parseEntryPoint(spec string) (module, fn string, err error) {
 	if module == "" || fn == "" {
 		return "", "", fmt.Errorf("entry point %q has empty module or func", spec)
 	}
+	if !isValidDottedModule(module) {
+		return "", "", fmt.Errorf("entry point %q: module %q isn't a valid dotted Python identifier (each component must match [A-Za-z_][A-Za-z0-9_]*); refusing to lift", spec, module)
+	}
+	if !isValidIdentifier(fn) {
+		return "", "", fmt.Errorf("entry point %q: function %q isn't a valid Python identifier ([A-Za-z_][A-Za-z0-9_]*); refusing to lift", spec, fn)
+	}
 	return module, fn, nil
+}
+
+// isValidIdentifier reports whether s matches the Python
+// identifier subset `[A-Za-z_][A-Za-z0-9_]*`. Used by
+// parseEntryPoint to reject inputs that could escape the
+// shell-quoting in the generated entry-shim genrule.
+func isValidIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z',
+			r >= 'a' && r <= 'z',
+			r == '_':
+			continue
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				return false
+			}
+			continue
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// isValidDottedModule reports whether s is a non-empty
+// dot-separated list of valid Python identifiers (e.g.
+// "foo.bar.baz").
+func isValidDottedModule(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, part := range strings.Split(s, ".") {
+		if !isValidIdentifier(part) {
+			return false
+		}
+	}
+	return true
 }
 
 // stripPEP508 returns just the distribution name from a PEP
