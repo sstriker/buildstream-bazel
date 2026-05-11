@@ -342,6 +342,59 @@ func TestLower_GUIScriptsEmitAsPyBinary(t *testing.T) {
 	}
 }
 
+func TestLower_NestedPackagesUseDepth1WithParentDeps(t *testing.T) {
+	// When pyproject.toml declares both a parent and child
+	// package (the common output of setuptools' find()), each
+	// py_library should own only its own depth-1 .py files and
+	// the child should depend on the parent so `import demo.sub`
+	// pulls in both __init__.py files at Bazel analysis time.
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo", "demo.sub"}}
+	srcs := []string{
+		"demo/__init__.py",
+		"demo/util.py",
+		"demo/sub/__init__.py",
+		"demo/sub/cli.py",
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var demo, demoSub *Target
+	for i := range out {
+		switch out[i].Name {
+		case "demo":
+			demo = &out[i]
+		case "demo_sub":
+			demoSub = &out[i]
+		}
+	}
+	if demo == nil || demoSub == nil {
+		t.Fatalf("want both demo + demo_sub targets, got %+v", out)
+	}
+	// Depth-1: demo owns its own files only, NOT demo/sub/*.
+	for _, s := range demo.Srcs {
+		if strings.HasPrefix(s, "demo/sub/") {
+			t.Errorf("demo.Srcs leaks into sub-package: %q", s)
+		}
+	}
+	// Parent dep: demo_sub depends on :demo so import demo.sub
+	// pulls in demo/__init__.py.
+	foundParentDep := false
+	for _, d := range demoSub.Deps {
+		if d == ":demo" {
+			foundParentDep = true
+		}
+	}
+	if !foundParentDep {
+		t.Errorf("demo_sub.Deps=%v missing :demo parent", demoSub.Deps)
+	}
+}
+
 func TestLower_RefusesScriptsGUIScriptsCollision(t *testing.T) {
 	p := minimumProject("setuptools.build_meta")
 	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
@@ -362,6 +415,46 @@ func TestLower_RefusesScriptsGUIScriptsCollision(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported-pyproject-entry-point") {
 		t.Errorf("err=%v want unsupported-pyproject-entry-point", err)
+	}
+}
+
+func TestLower_HatchlingRefusesNestedPath(t *testing.T) {
+	// Hatchling's `packages = [...]` entries are wheel-root
+	// packages: the last segment is the package, everything
+	// before is the import root. A path like "src/demo/sub"
+	// is ambiguous (could be `sub` rooted at `src/demo`, or
+	// `demo.sub` rooted at `src`); v1 refuses rather than
+	// guess.
+	p := minimumProject("hatchling.build")
+	p.Tool.Hatch = &Hatch{Build: &HatchBuild{Targets: &HatchTargets{Wheel: &HatchWheel{
+		Packages: []string{"src/demo/sub"},
+	}}}}
+	srcs := []string{
+		"src/demo/__init__.py",
+		"src/demo/sub/__init__.py",
+		"src/demo/sub/cli.py",
+	}
+	_, err := Discover(p, srcs)
+	if err == nil {
+		t.Fatalf("Discover: want refusal for multi-segment prefix path")
+	}
+	if !strings.Contains(err.Error(), "unsupported-pyproject-package-discovery") {
+		t.Errorf("err=%v want unsupported-pyproject-package-discovery", err)
+	}
+}
+
+func TestLower_SetuptoolsRefusesNonStringPackagesEntry(t *testing.T) {
+	// Setuptools.ExplicitPackages used to silently drop non-
+	// string entries; now it routes to a typed Tier-1 refusal
+	// so a malformed TOML can't lead to a partial wheel.
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo", 42}}
+	_, err := Discover(p, []string{"demo/__init__.py"})
+	if err == nil {
+		t.Fatalf("Discover: want refusal for non-string packages entry")
+	}
+	if !strings.Contains(err.Error(), "unsupported-pyproject-package-discovery") {
+		t.Errorf("err=%v want unsupported-pyproject-package-discovery", err)
 	}
 }
 

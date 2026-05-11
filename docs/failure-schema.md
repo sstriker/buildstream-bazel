@@ -429,9 +429,12 @@ manifest, or pre-stage the dependency on the executor.
 
 A `[project.scripts]` / `[project.gui-scripts]` entry whose
 value couldn't be parsed as PEP 621 `module:func` (missing
-`:`, empty module/func, identifier with characters outside
-`[A-Za-z0-9_.]` that would otherwise let arbitrary shell
-syntax leak into the generated entry-shim genrule's `cmd`),
+`:`, empty module/func, identifier that isn't a valid
+Python identifier — each dotted component must match
+`[A-Za-z_][A-Za-z0-9_]*` and there must be at least one
+component, so digits-leading or empty components refuse;
+strict-subset enforcement prevents arbitrary shell syntax
+leaking into the generated entry-shim genrule's `cmd`),
 or a name declared in both `[project.scripts]` and
 `[project.gui-scripts]` (which would emit two `py_binary`
 rules with the same target name).

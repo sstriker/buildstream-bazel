@@ -161,11 +161,25 @@ func discoverHatchling(p *Pyproject, sourceFiles []string) ([]Package, error) {
 	for _, dir := range p.Tool.Hatch.Build.Targets.Wheel.Packages {
 		dir = strings.TrimSuffix(dir, "/")
 		// hatchling's `packages` entries are source-relative
-		// directory paths; the package name is the basename.
+		// directory paths. Hatch puts the LAST path segment at
+		// the wheel root (so `packages = ["src/demo"]` ships
+		// `demo/` in the wheel), and everything before that is
+		// the import-root prefix. v1 accepts paths with at most
+		// one leading segment (the import root, typically `src`)
+		// and refuses deeper nesting — there's no way to tell
+		// from the path alone whether the user meant `demo.sub`
+		// nested under `src` or `sub` rooted at `src/demo`.
+		// Operators wanting nested packages should declare each
+		// one explicitly (one entry per leaf package).
 		name := filepath.Base(dir)
 		root := filepath.Dir(dir)
 		if root == "." {
 			root = ""
+		}
+		if strings.Contains(root, "/") {
+			return nil, newFailure(unsupportedPyprojectPackageDiscovery,
+				"hatchling: [tool.hatch.build.targets.wheel].packages entry %q has a multi-segment prefix (%q); v1 supports `<importRoot>/<pkg>` shapes only — declare each leaf package as a separate entry to disambiguate",
+				dir, root)
 		}
 		pkg, err := materializePackage(name, root, sourceFiles)
 		if err != nil {
@@ -189,7 +203,12 @@ func discoverSetuptools(p *Pyproject, sourceFiles []string) ([]Package, error) {
 		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
 			"setuptools: v1 requires either [tool.setuptools].packages = [...] or [tool.setuptools.packages.find] (setuptools' implicit auto-discovery isn't statically resolvable)")
 	}
-	if explicit := p.Tool.Setuptools.ExplicitPackages(); len(explicit) > 0 {
+	explicit, err := p.Tool.Setuptools.ExplicitPackages()
+	if err != nil {
+		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
+			"setuptools: decode [tool.setuptools].packages: %v", err)
+	}
+	if len(explicit) > 0 {
 		return setuptoolsExplicit(explicit, p.Tool.Setuptools.PackageDir, sourceFiles)
 	}
 	find, err := p.Tool.Setuptools.FindDirective()
@@ -384,6 +403,17 @@ func discoverPoetry(p *Pyproject, sourceFiles []string) ([]Package, error) {
 // source tree (the package config disagrees with the source
 // layout — usually a sign of a typo or a missing
 // `package-dir` remap).
+//
+// Sources collection is depth-1 only: .py files directly in
+// the package directory, NOT recursive sub-directories. When a
+// pyproject.toml declares both `demo` and `demo.sub`, each
+// resulting py_library owns only its own __init__.py + sibling
+// modules; lower.go's Lower wires a `demo_sub` → `:demo` dep
+// so `import demo.sub` still pulls in both __init__.py files
+// at analysis time. Depth-1 prevents the same .py file from
+// appearing in multiple py_library `srcs` lists (which would
+// inflate each target's input set and muddle Bazel's
+// incremental-invalidation semantics).
 func materializePackage(dotted, root string, sourceFiles []string) (Package, error) {
 	dir := strings.ReplaceAll(dotted, ".", "/")
 	if root != "" {
@@ -392,9 +422,17 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 	prefix := dir + "/"
 	var srcs []string
 	for _, f := range sourceFiles {
-		if strings.HasPrefix(f, prefix) && strings.HasSuffix(f, ".py") {
-			srcs = append(srcs, f)
+		if !strings.HasPrefix(f, prefix) || !strings.HasSuffix(f, ".py") {
+			continue
 		}
+		// Depth-1: the rest of the path after the package dir
+		// must not contain another `/` (would mean we're inside
+		// a sub-package, which gets its own py_library).
+		rest := strings.TrimPrefix(f, prefix)
+		if strings.Contains(rest, "/") {
+			continue
+		}
+		srcs = append(srcs, f)
 	}
 	if len(srcs) == 0 {
 		return Package{}, newFailure(unsupportedPyprojectPackageDiscovery,

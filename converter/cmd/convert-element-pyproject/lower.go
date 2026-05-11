@@ -113,12 +113,24 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 
 	out := make([]Target, 0, len(pkgs)+len(allScripts))
 	for _, pk := range pkgs {
+		deps := append([]string(nil), depLabels...)
+		// Wire parent-package dep so `import demo.sub` pulls in
+		// demo's __init__.py at Bazel analysis time. materialize-
+		// Package collects .py depth-1 only, so each py_library
+		// owns just its own dir; the parent dep restores the
+		// transitive import semantics. Longest-prefix match
+		// against in-graph packages, so for {demo, demo.sub,
+		// demo.sub.cli}, demo.sub.cli → :demo_sub → :demo
+		// chains correctly.
+		if parent := longestInGraphParent(pk.Name, labelByPkgName); parent != "" {
+			deps = append(deps, ":"+parent)
+		}
 		out = append(out, Target{
 			Name:       labelByPkgName[pk.Name],
 			Kind:       KindPyLibrary,
 			Srcs:       append([]string(nil), pk.Sources...),
 			Imports:    []string{pk.ImportRoot},
-			Deps:       append([]string(nil), depLabels...),
+			Deps:       deps,
 			Visibility: []string{"//visibility:public"},
 		})
 	}
@@ -352,6 +364,30 @@ func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, i
 		})
 	}
 	return out, nil
+}
+
+// longestInGraphParent finds the longest in-graph package whose
+// dotted name is a strict prefix of `dotted` (matched at a `.`
+// boundary), then returns the Bazel label that package emitted
+// as. Returns "" when no parent is in the graph (top-level
+// package). Used to wire each py_library's parent-package dep
+// so `import a.b.c` pulls in a's and a.b's __init__.py files
+// transitively, even though materializePackage collects sources
+// at depth-1 only.
+func longestInGraphParent(dotted string, labelByPkgName map[string]string) string {
+	bestName := ""
+	for pkgName := range labelByPkgName {
+		if pkgName == dotted {
+			continue
+		}
+		if strings.HasPrefix(dotted, pkgName+".") && len(pkgName) > len(bestName) {
+			bestName = pkgName
+		}
+	}
+	if bestName == "" {
+		return ""
+	}
+	return labelByPkgName[bestName]
 }
 
 // lookupPackageDep finds the longest in-graph package whose

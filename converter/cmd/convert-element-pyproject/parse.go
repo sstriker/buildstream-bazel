@@ -141,23 +141,28 @@ type SetuptoolsFindDirective struct {
 
 // SetuptoolsExplicitPackages decodes the literal `Packages` list
 // when setuptools was configured with a static list (not a
-// find directive). Returns nil when `Packages` is absent or
-// is a find-directive map.
-func (s *Setuptools) ExplicitPackages() []string {
+// find directive). Returns (nil, nil) when `Packages` is absent
+// or is a find-directive map. Returns (nil, err) when the list
+// contains a non-string element — the caller surfaces it as a
+// typed Tier-1 refusal so silently-dropped entries can't lead
+// to a partial wheel.
+func (s *Setuptools) ExplicitPackages() ([]string, error) {
 	if s == nil || s.Packages == nil {
-		return nil
+		return nil, nil
 	}
 	raw, ok := s.Packages.([]any)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	out := make([]string, 0, len(raw))
-	for _, e := range raw {
-		if str, ok := e.(string); ok {
-			out = append(out, str)
+	for i, e := range raw {
+		str, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("[tool.setuptools].packages[%d] is %T, want string", i, e)
 		}
+		out = append(out, str)
 	}
-	return out
+	return out, nil
 }
 
 // FindDirective decodes setuptools' packages.find{} shape.
