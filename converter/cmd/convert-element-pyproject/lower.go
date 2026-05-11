@@ -536,14 +536,20 @@ func isValidIdentifier(s string) bool {
 }
 
 // isValidBazelTargetName reports whether s is safe to use as a
-// Bazel target name. Bazel allows ASCII letters/digits plus
-// `_`, `-`, `.`, `+`, `=`, `,`, `@`, `~` and `/` (with `/`
-// indicating a package boundary). We're conservative: only
-// allow `[A-Za-z0-9_.-]+` since PEP 621 quoted-key script names
-// can otherwise carry `/`, whitespace, `..`, or shell-special
-// characters that would either invalidate the genrule output
-// path or muddle the rendered BUILD shape. Anything outside
-// that subset refuses with unsupported-pyproject-entry-point.
+// Bazel target name. Bazel itself accepts a broader character
+// set in target names (letters, digits, `_`, `-`, `.`, `+`,
+// `=`, `,`, `@`, `~`, plus `/` as a literal part of the name —
+// not a package separator). We're stricter: only
+// `[A-Za-z0-9_.-]+`, since the target name flows into:
+//   - the py_binary rule name,
+//   - the sibling entry-shim genrule's `name`,
+//   - the genrule's `outs = ["<name>_entry.py"]` filename,
+//
+// and a PEP 621 quoted-key script with `/`, whitespace, `..`,
+// or shell-special characters would either invalidate the
+// genrule output path or muddle the rendered BUILD shape.
+// Anything outside that subset refuses with
+// unsupported-pyproject-entry-point.
 func isValidBazelTargetName(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false

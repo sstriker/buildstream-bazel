@@ -132,15 +132,20 @@ func run(a args) error {
 }
 
 // walkSourceFiles returns every regular file under root, as
-// source-relative slash-separated paths, sorted. The discovery
-// pass + lowering pass both consume this list.
+// source-relative slash-separated paths, sorted. Symlinks,
+// devices, sockets, and other non-regular entries are
+// skipped — the discovery + lowering passes only need the
+// names of materialized source files, and a stray symlink to
+// a path outside the source root would confuse the c-extension
+// scan and the package-directory walks. The discovery pass +
+// lowering pass both consume this list.
 func walkSourceFiles(root string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
+		if !d.Type().IsRegular() {
 			return nil
 		}
 		rel, err := filepath.Rel(root, path)
