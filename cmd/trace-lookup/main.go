@@ -28,7 +28,8 @@
 // Exit codes:
 //
 //	0 — successful lookup (hit or miss; stdout carries the result).
-//	1 — hard error (malformed args, gRPC failure, etc.).
+//	1 — hard error (gRPC dial failure, AC backend error, etc.).
+//	2 — usage error (missing required flag).
 //
 // Lookup miss is NOT an error — it's the normal "haven't built
 // this srckey yet" case the round-1 boot pipeline expects.
