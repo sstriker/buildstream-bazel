@@ -312,6 +312,41 @@ func TestEmit_PerPlatform_ShBinarySrcsDiverge(t *testing.T) {
 	}
 }
 
+// TestEmit_PhantomTarget_ListAttr: a target declared on only
+// one platform (phantom on the others) renders with a bare
+// select() on its list attrs — the elementfold layer leaves
+// the flat field empty and routes the single present cell's
+// items through PerPlatform[attr][selectKey]. Absent platforms
+// see "//conditions:default": [] and resolve to empty inputs,
+// which lets Bazel's dep-site diagnostic fire ("no inputs")
+// rather than silently inheriting another platform's data.
+func TestEmit_PhantomTarget_ListAttr(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "linuxonly",
+			Kind: ir.KindCCBinary,
+			PerPlatform: map[string]map[string][]string{
+				"srcs": {"@platforms//os:linux": {"main.c"}},
+			},
+			Visibility: []string{"//visibility:public"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	want := `srcs = select({
+        "@platforms//os:linux": [
+            "main.c",
+        ],
+        "//conditions:default": [],
+    }),`
+	if !strings.Contains(gotStr, want) {
+		t.Errorf("phantom-target srcs missing expected select shape; got:\n%s\n\nwant substring:\n%s", gotStr, want)
+	}
+}
+
 // TestEmit_PerPlatformScalar_EmptyPreservesLegacyShape: single-
 // platform cc_import targets (no PerPlatformScalar) must render
 // the historical `static_library = "path"` literal byte-

@@ -99,13 +99,89 @@ func TestFold_SrcsDivergeAcrossPlatforms(t *testing.T) {
 // TestFold_MissingTargetRejected: a target present in some
 // cells but missing from others is an error. select() can't
 // conditionally instantiate a target at the package level.
-func TestFold_MissingTargetRejected(t *testing.T) {
+// TestFold_PhantomTargetScalarAttr: the round-2 stub shape's
+// cc_import target may be present on only one platform (an
+// arch-specific binary, a feature gated by configure). Verify
+// the phantom-target fold routes StaticLibrary into
+// PerPlatformScalar with a single arm, leaving the flat
+// StaticLibrary empty so absent platforms don't inherit a path.
+func TestFold_PhantomTargetScalarAttr(t *testing.T) {
 	linux := Cell{
 		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
 		Pkg: &ir.Package{
 			Targets: []ir.Target{
-				{Name: "libfoo", Kind: ir.KindCCLibrary},
-				{Name: "linux_only", Kind: ir.KindCCBinary},
+				{Name: "linuxonly", Kind: ir.KindCCImport, StaticLibrary: "lib/x86_64-linux-gnu/liblinuxonly.a"},
+			},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg:      &ir.Package{Targets: nil},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if len(merged.Targets) != 1 {
+		t.Fatalf("merged.Targets: want 1, got %d", len(merged.Targets))
+	}
+	got := merged.Targets[0]
+	if got.StaticLibrary != "" {
+		t.Errorf("phantom target flat StaticLibrary should be empty; got %q", got.StaticLibrary)
+	}
+	wantStatic := map[string]string{"@platforms//os:linux": "lib/x86_64-linux-gnu/liblinuxonly.a"}
+	if !reflect.DeepEqual(got.PerPlatformScalar["static_library"], wantStatic) {
+		t.Errorf("PerPlatformScalar[static_library] = %v; want %v",
+			got.PerPlatformScalar["static_library"], wantStatic)
+	}
+}
+
+// TestFold_PhantomTargetOrderSensitive: copts on a phantom
+// target route through PerPlatform with a present-cell arm even
+// when only one cell carries the target — phantom forces
+// per-platform select() rendering so absent platforms don't see
+// a flat baseline that promises flags for a target they don't
+// have. Single-arm copts select() reads as
+// `select({plat_with: ["-O2"], "//conditions:default": []})`.
+func TestFold_PhantomTargetOrderSensitive(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{
+				{Name: "linuxonly", Kind: ir.KindCCLibrary, Srcs: []string{"a.c"}, Copts: []string{"-O2"}},
+			},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg:      &ir.Package{Targets: nil},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if len(got.Copts) != 0 {
+		t.Errorf("phantom target flat Copts should be empty; got %v", got.Copts)
+	}
+	wantCopts := map[string][]string{"@platforms//os:linux": {"-O2"}}
+	if !reflect.DeepEqual(got.PerPlatform["copts"], wantCopts) {
+		t.Errorf("PerPlatform[copts] = %v; want %v", got.PerPlatform["copts"], wantCopts)
+	}
+}
+
+// TestFold_PhantomTargetOnlyInLaterCell: union enumeration
+// includes targets that appear only in cells[1..]. They land
+// after cells[0]'s targets in declaration order. The byte-stable
+// invariant for the common case (all cells declare the same set)
+// is unaffected because cells[0]'s targets come first in the
+// union.
+func TestFold_PhantomTargetOnlyInLaterCell(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{
+				{Name: "shared", Kind: ir.KindCCLibrary, Srcs: []string{"a.c"}},
 			},
 		},
 	}
@@ -113,16 +189,86 @@ func TestFold_MissingTargetRejected(t *testing.T) {
 		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
 		Pkg: &ir.Package{
 			Targets: []ir.Target{
-				{Name: "libfoo", Kind: ir.KindCCLibrary},
+				{Name: "shared", Kind: ir.KindCCLibrary, Srcs: []string{"a.c"}},
+				{Name: "darwin_only", Kind: ir.KindCCBinary, Srcs: []string{"darwin/main.c"}},
 			},
 		},
 	}
-	_, err := Fold([]Cell{linux, darwin})
-	if err == nil {
-		t.Fatal("expected error for missing target")
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
 	}
-	if !strings.Contains(err.Error(), "linux_only") && !strings.Contains(err.Error(), "different") && !strings.Contains(err.Error(), "missing") && !strings.Contains(err.Error(), "targets but cell") {
-		t.Errorf("error %q should reference the missing-target shape", err)
+	if len(merged.Targets) != 2 {
+		t.Fatalf("merged.Targets: want 2, got %d", len(merged.Targets))
+	}
+	if merged.Targets[0].Name != "shared" || merged.Targets[1].Name != "darwin_only" {
+		t.Errorf("union order: want [shared darwin_only]; got [%s %s]",
+			merged.Targets[0].Name, merged.Targets[1].Name)
+	}
+}
+
+// TestFold_PhantomTarget covers the target-presence delta:
+// a target declared by some cells but not others folds into a
+// phantom-target select rather than erroring. The merged
+// Package includes the phantom target with PerPlatform arms
+// keyed only on the cells that declared it; absent cells
+// contribute no arm, and the rendered select() resolves to its
+// default ([]) on those platforms — Bazel consumers depending
+// on the target there see empty inputs and fail with a legible
+// "no inputs" diagnostic.
+func TestFold_PhantomTarget(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{
+				{Name: "libfoo", Kind: ir.KindCCLibrary, Srcs: []string{"foo.c"}},
+				{Name: "linux_only", Kind: ir.KindCCBinary, Srcs: []string{"main.c"}},
+			},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{
+				{Name: "libfoo", Kind: ir.KindCCLibrary, Srcs: []string{"foo.c"}},
+			},
+		},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold rejected phantom-target shape: %v", err)
+	}
+	// Both targets land in the merged Package — union of cells'
+	// target sets, in declaration order (cells[0]'s first).
+	if len(merged.Targets) != 2 {
+		t.Fatalf("merged.Targets: want 2 (union of cells), got %d (%v)", len(merged.Targets), merged.Targets)
+	}
+	if merged.Targets[0].Name != "libfoo" || merged.Targets[1].Name != "linux_only" {
+		t.Errorf("merged target order: want [libfoo linux_only]; got [%s %s]",
+			merged.Targets[0].Name, merged.Targets[1].Name)
+	}
+	// The phantom target's srcs lives in the linux arm only;
+	// flat baseline is empty so the darwin (absent) cell sees []
+	// at analysis time.
+	phantom := merged.Targets[1]
+	if len(phantom.Srcs) != 0 {
+		t.Errorf("phantom target's flat Srcs should be empty (linux-only); got %v", phantom.Srcs)
+	}
+	wantSrcsArm := map[string][]string{"@platforms//os:linux": {"main.c"}}
+	if !reflect.DeepEqual(phantom.PerPlatform["srcs"], wantSrcsArm) {
+		t.Errorf("phantom target srcs arm: want %v; got %v", wantSrcsArm, phantom.PerPlatform["srcs"])
+	}
+	// Non-phantom target stays byte-stable: both cells agree on
+	// srcs, both platforms in the matrix declare it → flat
+	// baseline ["foo.c"], no PerPlatform delta. This is the
+	// stability invariant the union enumeration is supposed to
+	// preserve for the common case.
+	libfoo := merged.Targets[0]
+	if !reflect.DeepEqual(libfoo.Srcs, []string{"foo.c"}) {
+		t.Errorf("non-phantom target flat Srcs: want [foo.c], got %v", libfoo.Srcs)
+	}
+	if len(libfoo.PerPlatform) != 0 {
+		t.Errorf("non-phantom target should have no PerPlatform; got %v", libfoo.PerPlatform)
 	}
 }
 

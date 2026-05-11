@@ -52,35 +52,46 @@ type Cell struct {
 // Fold composes N cells into one merged Package with per-
 // attribute select() deltas baked into Target.PerPlatform.
 //
-// All cells must agree on the Package's Name, and every cell
-// must declare the same Targets keyed by (Name, Kind). The
-// merged Package's SourceRoot is taken from cells[0] without
+// All cells must agree on the Package's Name. The merged
+// Package's SourceRoot is taken from cells[0] without
 // cross-cell validation: per-platform conversions can run on
 // distinct workers whose worker-local SourceRoot paths legitimately
 // differ, and the rendered BUILD.bazel doesn't reference
 // SourceRoot directly (FUSE source-key rewriting in emit/bazel
 // uses an out-of-band Options.SourceKey, not the IR field).
-// Targets present in some cells but missing from others are
-// rejected with an error: lifting a whole target into select()
-// at the package level is materially more complex than
-// per-attribute deltas (Bazel's select() applies to attribute
-// values, not to target existence) and is deferred per the plan.
+//
+// Target enumeration is the union of all cells' (Name, Kind)
+// keys, preserving cells[0]'s order first then any not-yet-seen
+// keys from cells[1..] in declaration order. When every cell
+// declares the same target set (the common case), this matches
+// cells[0]'s order exactly — single-platform goldens stay byte-
+// stable. When cells diverge, the fold takes the "phantom-target
+// select" shape: the absent platforms simply don't contribute to
+// the target's per-attr delta arms; emit/bazel renders the target
+// unconditionally with select() arms keyed only on the platforms
+// that have it. Bazel consumers depending on the target on an
+// absent platform see the rule's attrs resolve to empty (a list
+// attr's default-arm `[]` or a scalar attr's analysis-time
+// "no matching condition") and fail at the dep site with a
+// legible diagnostic — the right outcome for a target that
+// genuinely doesn't exist on that platform.
 //
 // Boolean attributes (Linkstatic, Alwayslink) and identity-like
 // fields (InstallDest, ArtifactName, LinkLanguage, the Genrule*
-// fields, the Test* fields) must match exactly across cells. A
-// disagreement signals a fundamentally divergent target shape
-// that select() can't express; the fold errors out so the
-// operator either declares the difference explicitly or reduces
-// the matrix.
+// fields, the Test* fields) must match exactly across the cells
+// that DECLARE the target. A disagreement among present cells
+// signals a fundamentally divergent target shape that select()
+// can't express; the fold errors out. Cells where the target
+// is absent contribute nothing to the comparison.
 //
 // StaticLibrary and SharedLibrary (the cc_import path attrs) fold
-// per platform: when every cell agrees they land in the flat
-// scalar field, and when they diverge the baseline clears and
-// each cell's path moves into PerPlatformScalar so emit renders
-// a select(). This is the round-2 fallback's main divergence axis
-// — `lib/x86_64-linux-gnu/libfoo.a` on linux vs `lib/libfoo.dylib`
-// on darwin lives at distinct paths inside install_tree.tar.
+// per platform: when every present cell agrees they land in the
+// flat scalar field, and when they diverge the baseline clears and
+// each present cell's path moves into PerPlatformScalar so emit
+// renders a select(). This is the round-2 fallback's main
+// divergence axis — `lib/x86_64-linux-gnu/libfoo.a` on linux vs
+// `lib/libfoo.dylib` on darwin lives at distinct paths inside
+// install_tree.tar.
 func Fold(cells []Cell) (*ir.Package, error) {
 	if len(cells) == 0 {
 		return nil, fmt.Errorf("elementfold: no cells")
@@ -111,9 +122,10 @@ func Fold(cells []Cell) (*ir.Package, error) {
 		}
 	}
 
-	// Build the per-target map keyed by (Name, Kind). All cells
-	// must agree on the key set; any cell missing a target the
-	// others have is an error.
+	// Build the per-target map keyed by (Name, Kind). Each cell
+	// can declare its own target set; absent cells contribute
+	// nothing to a given target's fold ("phantom-target select"
+	// shape).
 	type targetKey struct {
 		name string
 		kind ir.Kind
@@ -130,27 +142,38 @@ func Fold(cells []Cell) (*ir.Package, error) {
 		}
 		targetsByCell[c.Platform.Name] = m
 	}
-	// keyOrder follows cells[0]'s declared order. Every other
-	// cell must declare exactly the same target set (Name, Kind);
-	// missing or extra targets in another cell are rejected
-	// because select() can't conditionally instantiate a target
-	// at the package level.
-	keyOrder := make([]targetKey, 0, len(cells[0].Pkg.Targets))
-	for _, t := range cells[0].Pkg.Targets {
-		keyOrder = append(keyOrder, targetKey{t.Name, t.Kind})
-	}
-	for _, c := range cells[1:] {
-		if len(targetsByCell[c.Platform.Name]) != len(targetsByCell[cells[0].Platform.Name]) {
-			return nil, fmt.Errorf("elementfold: cell %q has %d targets but cell %q has %d; whole-target select() is not supported — declare every target in every platform's IR or reduce the matrix",
-				c.Platform.Name, len(targetsByCell[c.Platform.Name]),
-				cells[0].Platform.Name, len(targetsByCell[cells[0].Platform.Name]))
-		}
-		for _, k := range keyOrder {
-			if _, ok := targetsByCell[c.Platform.Name][k]; !ok {
-				return nil, fmt.Errorf("elementfold: target (%s, %s) missing from cell %q (present in cell %q); whole-target select() is not supported — declare the target unconditionally or reduce the matrix",
-					k.name, k.kind, c.Platform.Name, cells[0].Platform.Name)
+	// keyOrder is the union of all cells' target keys, taking
+	// cells[0]'s declared order first then any not-yet-seen
+	// keys from cells[1..]. When every cell happens to declare
+	// the same set (the common case), this matches cells[0]'s
+	// order exactly — preserving single-platform goldens byte-
+	// for-byte. When cells diverge, the union shape lets the
+	// fold emit a target that "phantoms" through the absent
+	// cells: present-cell deltas land in the rendered select()
+	// arms, absent cells contribute nothing.
+	keyOrder := make([]targetKey, 0)
+	seenKey := map[targetKey]bool{}
+	for _, c := range cells {
+		for _, t := range c.Pkg.Targets {
+			k := targetKey{t.Name, t.Kind}
+			if seenKey[k] {
+				continue
 			}
+			seenKey[k] = true
+			keyOrder = append(keyOrder, k)
 		}
+	}
+
+	// allCellNames is the full matrix's platform-name list,
+	// passed verbatim to empfold.Partition so phantom targets
+	// (those declared by only a subset of cells) get their
+	// per-attr deltas keyed by present-cell SelectKeys with NO
+	// flat baseline — Partition's "baseline = fact in every
+	// declared cell" rule naturally collapses to empty when
+	// absent cells contribute no facts.
+	allCellNames := make([]string, len(cells))
+	for i, c := range cells {
+		allCellNames[i] = c.Platform.Name
 	}
 
 	out := &ir.Package{
@@ -159,12 +182,27 @@ func Fold(cells []Cell) (*ir.Package, error) {
 		Targets:    make([]ir.Target, 0, len(keyOrder)),
 	}
 	for _, k := range keyOrder {
-		// Pull this target's variants from each cell.
+		// Per-target presence subset: only the cells that
+		// declared this target participate in scalar agreement
+		// and contribute facts to the list partition. Absent
+		// cells contribute nothing (no arm, no flat-baseline
+		// pressure), so the merged target's attrs route through
+		// per-present-platform select() arms while the rendered
+		// shape on absent platforms resolves to the rule's
+		// default (a list attr falls through "//conditions:default":
+		// [], a scalar attr fails at analysis with a clear
+		// "no condition matched" diagnostic).
+		presentCells := make([]Cell, 0, len(cells))
 		variants := make(map[string]ir.Target, len(cells))
 		for _, c := range cells {
-			variants[c.Platform.Name] = targetsByCell[c.Platform.Name][k]
+			t, ok := targetsByCell[c.Platform.Name][k]
+			if !ok {
+				continue
+			}
+			presentCells = append(presentCells, c)
+			variants[c.Platform.Name] = t
 		}
-		merged, err := foldTarget(variants, cells)
+		merged, err := foldTarget(variants, presentCells, allCellNames)
 		if err != nil {
 			return nil, fmt.Errorf("elementfold: target %s: %w", k.name, err)
 		}
@@ -174,10 +212,19 @@ func Fold(cells []Cell) (*ir.Package, error) {
 }
 
 // foldTarget applies the per-attribute fold to one target's
-// per-cell variants. The first cell's target is the seed for
-// non-list scalar fields (booleans, identity strings); the
-// other cells must agree on those fields.
-func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error) {
+// per-cell variants. `cells` is the subset of the full matrix
+// that DECLARED this target (the "present cells"); scalar /
+// boolean agreement runs across this subset only. `allCellNames`
+// names every cell in the full matrix, including those absent
+// for this target — used to seed empfold.Partition so phantom
+// targets (those declared by only some cells) produce
+// present-platform deltas with NO flat baseline.
+//
+// The first present cell is the seed for non-list scalar
+// agreement (booleans, identity strings); the rest must agree
+// across present cells. Absent cells contribute nothing — no
+// agreement pressure, no per-attr arm.
+func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []string) (*ir.Target, error) {
 	first := variants[cells[0].Platform.Name]
 	// Scalar / boolean attrs must agree across cells.
 	for _, c := range cells[1:] {
@@ -250,18 +297,27 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 	// SelectKey arm verbatim — emit then renders the attribute as
 	// a bare select() so each platform sees its own original
 	// sequence at build time.
-	cellNames := make([]string, len(cells))
-	for i, c := range cells {
-		cellNames[i] = c.Platform.Name
-	}
+	//
+	// Phantom targets (present in only a subset of the full
+	// matrix) seed Partition with `allCellNames`, which always
+	// includes the absent cells. Absent cells contribute no
+	// facts, so no item is "in every declared cell" — Partition's
+	// baseline collapses to empty and every present-cell
+	// observation routes to a per-present-platform delta arm.
+	// Order-sensitive and scalar attrs detect phantom shape via
+	// `phantom := len(cells) != len(allCellNames)` and force the
+	// per-platform-arm shape even when every present cell agrees,
+	// so absent platforms don't inherit a flat baseline that
+	// describes a target they don't have.
+	phantom := len(cells) != len(allCellNames)
 
 	for _, def := range scalarTargetAttrs {
-		foldScalarAttr(def, &merged, variants, cells)
+		foldScalarAttr(def, &merged, variants, cells, phantom)
 	}
 
 	for _, def := range targetAttrs {
 		if def.orderSensitive {
-			foldOrderSensitiveAttr(def, &merged, variants, cells)
+			foldOrderSensitiveAttr(def, &merged, variants, cells, phantom)
 			continue
 		}
 		facts := map[string]map[string]bool{}
@@ -274,7 +330,7 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 				facts[item][c.Platform.Name] = true
 			}
 		}
-		baseline, deltas := empfold.Partition(cellNames, facts)
+		baseline, deltas := empfold.Partition(allCellNames, facts)
 
 		flat := make([]string, 0, len(baseline))
 		for k := range baseline {
@@ -306,20 +362,25 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 }
 
 // foldOrderSensitiveAttr handles copts / linkopts. When every
-// cell carries the same sequence, the merged target gets that
-// sequence as a flat baseline (and no deltas — emit produces
-// today's pre-PerPlatform shape). When sequences diverge in any
-// way (extra items, reorder), each cell's full sequence is
-// stored verbatim under PerPlatform[attr][SelectKey] with the
-// flat baseline cleared, so emit renders a bare select() that
-// preserves per-platform ordering exactly.
-func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell) {
+// present cell carries the same sequence AND the target is NOT
+// phantom (i.e. every cell in the full matrix declares it), the
+// merged target gets that sequence as a flat baseline. When
+// sequences diverge OR the target is phantom (declared by only
+// a subset), each present cell's full sequence is stored verbatim
+// under PerPlatform[attr][SelectKey] with the flat baseline
+// cleared, so emit renders a bare select() that preserves
+// per-platform ordering exactly. Phantom forces the per-platform
+// shape even when present cells agree, so absent platforms don't
+// inherit a baseline describing a target they don't have.
+func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, phantom bool) {
 	first := def.get(variants[cells[0].Platform.Name])
-	allEqual := true
-	for _, c := range cells[1:] {
-		if !sliceEqual(first, def.get(variants[c.Platform.Name])) {
-			allEqual = false
-			break
+	allEqual := !phantom
+	if allEqual {
+		for _, c := range cells[1:] {
+			if !sliceEqual(first, def.get(variants[c.Platform.Name])) {
+				allEqual = false
+				break
+			}
 		}
 	}
 	if allEqual {
@@ -384,27 +445,36 @@ var scalarTargetAttrs = []scalarAttrDef{
 }
 
 // foldScalarAttr partitions one scalar attribute across cells.
-// All cells agree on the same non-empty value → that value lands
-// in the flat field, PerPlatformScalar untouched. All cells agree
-// on the empty value (the attribute simply isn't relevant — e.g.
-// a cc_import that only carries shared_library leaves
-// static_library empty) → flat stays empty, no delta. Cells
-// disagree → flat clears and each cell's non-empty value moves
-// into PerPlatformScalar[attr][SelectKey]. Cells that lacked the
-// path simply omit their arm from the delta map; emit renders the
-// resulting select() with a trailing `"//conditions:default": None`
-// arm, so in-matrix platforms that omitted an arm AND out-of-matrix
-// platforms fall through to "attribute unset" (Bazel's treatment
-// of None for an optional path attr like cc_import.static_library)
-// — exactly the right outcome for the partial-platform cc_import
-// shape.
-func foldScalarAttr(def scalarAttrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell) {
+// All present cells agree on the same non-empty value AND the
+// target is NOT phantom (declared by every cell in the matrix) →
+// that value lands in the flat field, PerPlatformScalar
+// untouched. All present cells agree on the empty value (the
+// attribute simply isn't relevant — e.g. a cc_import that only
+// carries shared_library leaves static_library empty) → flat
+// stays empty, no delta. Present cells disagree OR the target is
+// phantom → flat clears and each present cell's non-empty value
+// moves into PerPlatformScalar[attr][SelectKey]. Cells that
+// lacked the path simply omit their arm from the delta map; emit
+// renders the resulting select() with a trailing
+// `"//conditions:default": None` arm, so in-matrix platforms
+// that omitted an arm AND out-of-matrix platforms fall through
+// to "attribute unset" (Bazel's treatment of None for an
+// optional path attr like cc_import.static_library) — exactly
+// the right outcome for the partial-platform cc_import shape and
+// for the phantom-target case alike.
+//
+// Phantom forces the per-platform shape even when present cells
+// agree, so absent platforms don't see a flat scalar describing
+// a target they don't have.
+func foldScalarAttr(def scalarAttrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, phantom bool) {
 	first := def.get(variants[cells[0].Platform.Name])
-	allEqual := true
-	for _, c := range cells[1:] {
-		if def.get(variants[c.Platform.Name]) != first {
-			allEqual = false
-			break
+	allEqual := !phantom
+	if allEqual {
+		for _, c := range cells[1:] {
+			if def.get(variants[c.Platform.Name]) != first {
+				allEqual = false
+				break
+			}
 		}
 	}
 	if allEqual {
