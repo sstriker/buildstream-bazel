@@ -490,3 +490,190 @@ func TestFold_PackageNameMismatch(t *testing.T) {
 		t.Errorf("error %q should name Package.Name", err)
 	}
 }
+
+// TestFold_CCImportStaticLibraryDivergesAcrossPlatforms: the
+// round-2 fallback's main divergence axis. cells produce
+// cc_import stubs whose static_library paths reflect their
+// platform's install_tree.tar layout (multiarch lib dir on
+// linux, flat lib/ on darwin). The fold should land each cell's
+// path in PerPlatformScalar["static_library"][SelectKey] with
+// the flat StaticLibrary cleared, so emit renders a select().
+func TestFold_CCImportStaticLibraryDivergesAcrossPlatforms(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Name: "libfoo",
+			Targets: []ir.Target{{
+				Name:          "foo",
+				Kind:          ir.KindCCImport,
+				StaticLibrary: "lib/x86_64-linux-gnu/libfoo.a",
+			}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{
+			Name: "libfoo",
+			Targets: []ir.Target{{
+				Name:          "foo",
+				Kind:          ir.KindCCImport,
+				StaticLibrary: "lib/libfoo.a",
+			}},
+		},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	if len(merged.Targets) != 1 {
+		t.Fatalf("merged: want 1 target, got %d", len(merged.Targets))
+	}
+	got := merged.Targets[0]
+	if got.StaticLibrary != "" {
+		t.Errorf("flat StaticLibrary should be empty when cells disagree; got %q", got.StaticLibrary)
+	}
+	wantDeltas := map[string]string{
+		"@platforms//os:linux":  "lib/x86_64-linux-gnu/libfoo.a",
+		"@platforms//os:darwin": "lib/libfoo.a",
+	}
+	if !reflect.DeepEqual(got.PerPlatformScalar["static_library"], wantDeltas) {
+		t.Errorf("PerPlatformScalar[static_library] = %v; want %v", got.PerPlatformScalar["static_library"], wantDeltas)
+	}
+}
+
+// TestFold_CCImportStaticLibraryAgreesAcrossPlatforms: when every
+// cell happens to produce the same path (e.g. a single-arch
+// fixture, or a header-only library whose .a lives at the same
+// install path on every platform), the flat StaticLibrary holds
+// the value and PerPlatformScalar stays empty. This is the
+// byte-stability contract for round-2 stubs that don't diverge.
+func TestFold_CCImportStaticLibraryAgreesAcrossPlatforms(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Name: "libfoo",
+			Targets: []ir.Target{{
+				Name:          "foo",
+				Kind:          ir.KindCCImport,
+				StaticLibrary: "lib/libfoo.a",
+			}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{
+			Name: "libfoo",
+			Targets: []ir.Target{{
+				Name:          "foo",
+				Kind:          ir.KindCCImport,
+				StaticLibrary: "lib/libfoo.a",
+			}},
+		},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if got.StaticLibrary != "lib/libfoo.a" {
+		t.Errorf("flat StaticLibrary = %q; want lib/libfoo.a", got.StaticLibrary)
+	}
+	if len(got.PerPlatformScalar) != 0 {
+		t.Errorf("PerPlatformScalar should be empty when all cells agree; got %v", got.PerPlatformScalar)
+	}
+}
+
+// TestFold_CCImportPartialPlatformShape: cc_import where one
+// platform has only static_library and another has only
+// shared_library — the flat baseline clears for both attrs, and
+// each delta map only records the platform(s) that populated it.
+// Empty values are omitted from the delta map so emit doesn't
+// render `select({plat: ""})` (which would be a Bazel attribute
+// error).
+func TestFold_CCImportPartialPlatformShape(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Name: "libfoo",
+			Targets: []ir.Target{{
+				Name:          "foo",
+				Kind:          ir.KindCCImport,
+				StaticLibrary: "lib/libfoo.a",
+			}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{
+			Name: "libfoo",
+			Targets: []ir.Target{{
+				Name:          "foo",
+				Kind:          ir.KindCCImport,
+				SharedLibrary: "lib/libfoo.dylib",
+			}},
+		},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if got.StaticLibrary != "" || got.SharedLibrary != "" {
+		t.Errorf("flat path attrs should clear when cells disagree; got static=%q shared=%q", got.StaticLibrary, got.SharedLibrary)
+	}
+	wantStatic := map[string]string{"@platforms//os:linux": "lib/libfoo.a"}
+	if !reflect.DeepEqual(got.PerPlatformScalar["static_library"], wantStatic) {
+		t.Errorf("PerPlatformScalar[static_library] = %v; want %v", got.PerPlatformScalar["static_library"], wantStatic)
+	}
+	wantShared := map[string]string{"@platforms//os:darwin": "lib/libfoo.dylib"}
+	if !reflect.DeepEqual(got.PerPlatformScalar["shared_library"], wantShared) {
+		t.Errorf("PerPlatformScalar[shared_library] = %v; want %v", got.PerPlatformScalar["shared_library"], wantShared)
+	}
+}
+
+// TestFold_ShBinarySrcsDivergeAcrossPlatforms: sh_binary stubs
+// for EXECUTABLE targets reference the installed binary path
+// inside install_tree.tar. Arch-tagged binary names (e.g.
+// `bin/foo-x86_64` vs `bin/foo`) produce divergent srcs across
+// cells; the fold lifts each cell's srcs entry into PerPlatform
+// with no flat baseline (the items are disjoint), and emit
+// renders srcs as a bare select().
+func TestFold_ShBinarySrcsDivergeAcrossPlatforms(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Name: "tool",
+			Targets: []ir.Target{{
+				Name: "tool",
+				Kind: ir.KindShBinary,
+				Srcs: []string{"bin/tool-linux"},
+			}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{
+			Name: "tool",
+			Targets: []ir.Target{{
+				Name: "tool",
+				Kind: ir.KindShBinary,
+				Srcs: []string{"bin/tool-darwin"},
+			}},
+		},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if len(got.Srcs) != 0 {
+		t.Errorf("flat Srcs should be empty when items disjoint; got %v", got.Srcs)
+	}
+	wantSrcs := map[string][]string{
+		"@platforms//os:linux":  {"bin/tool-linux"},
+		"@platforms//os:darwin": {"bin/tool-darwin"},
+	}
+	if !reflect.DeepEqual(got.PerPlatform["srcs"], wantSrcs) {
+		t.Errorf("PerPlatform[srcs] = %v; want %v", got.PerPlatform["srcs"], wantSrcs)
+	}
+}

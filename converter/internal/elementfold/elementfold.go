@@ -68,11 +68,19 @@ type Cell struct {
 //
 // Boolean attributes (Linkstatic, Alwayslink) and identity-like
 // fields (InstallDest, ArtifactName, LinkLanguage, the Genrule*
-// fields, the Test* fields, StaticLibrary, SharedLibrary) must
-// match exactly across cells. A disagreement signals a
-// fundamentally divergent target shape that select() can't
-// express; the fold errors out so the operator either declares
-// the difference explicitly or reduces the matrix.
+// fields, the Test* fields) must match exactly across cells. A
+// disagreement signals a fundamentally divergent target shape
+// that select() can't express; the fold errors out so the
+// operator either declares the difference explicitly or reduces
+// the matrix.
+//
+// StaticLibrary and SharedLibrary (the cc_import path attrs) fold
+// per platform: when every cell agrees they land in the flat
+// scalar field, and when they diverge the baseline clears and
+// each cell's path moves into PerPlatformScalar so emit renders
+// a select(). This is the round-2 fallback's main divergence axis
+// — `lib/x86_64-linux-gnu/libfoo.a` on linux vs `lib/libfoo.dylib`
+// on darwin lives at distinct paths inside install_tree.tar.
 func Fold(cells []Cell) (*ir.Package, error) {
 	if len(cells) == 0 {
 		return nil, fmt.Errorf("elementfold: no cells")
@@ -192,12 +200,6 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 		if v.LinkLanguage != first.LinkLanguage {
 			return nil, fmt.Errorf("LinkLanguage disagrees: cell %q has %q, cell %q has %q", firstName, first.LinkLanguage, vName, v.LinkLanguage)
 		}
-		if v.StaticLibrary != first.StaticLibrary {
-			return nil, fmt.Errorf("StaticLibrary disagrees: cell %q has %q, cell %q has %q", firstName, first.StaticLibrary, vName, v.StaticLibrary)
-		}
-		if v.SharedLibrary != first.SharedLibrary {
-			return nil, fmt.Errorf("SharedLibrary disagrees: cell %q has %q, cell %q has %q", firstName, first.SharedLibrary, vName, v.SharedLibrary)
-		}
 		if v.GenruleCmd != first.GenruleCmd {
 			return nil, fmt.Errorf("GenruleCmd disagrees: cell %q has %q, cell %q has %q", firstName, first.GenruleCmd, vName, v.GenruleCmd)
 		}
@@ -251,6 +253,10 @@ func foldTarget(variants map[string]ir.Target, cells []Cell) (*ir.Target, error)
 	cellNames := make([]string, len(cells))
 	for i, c := range cells {
 		cellNames[i] = c.Platform.Name
+	}
+
+	for _, def := range scalarTargetAttrs {
+		foldScalarAttr(def, &merged, variants, cells)
 	}
 
 	for _, def := range targetAttrs {
@@ -357,6 +363,66 @@ var targetAttrs = []attrDef{
 	{"defines", false, func(t ir.Target) []string { return t.Defines }, func(t *ir.Target, v []string) { t.Defines = v }},
 	{"linkopts", true, func(t ir.Target) []string { return t.LinkOpts }, func(t *ir.Target, v []string) { t.LinkOpts = v }},
 	{"deps", false, func(t ir.Target) []string { return t.Deps }, func(t *ir.Target, v []string) { t.Deps = v }},
+}
+
+// scalarAttrDef declares one single-string attribute the fold
+// partitions per platform. The cc_import path attrs (static_library
+// / shared_library) are the v1 use case: install_tree.tar's path
+// layout diverges by platform (multiarch lib dirs, .so vs .dylib),
+// so two cells legitimately carry different values for the same
+// target. Folding them into PerPlatformScalar lets emit render a
+// select() instead of demanding cross-cell agreement.
+type scalarAttrDef struct {
+	name string
+	get  func(ir.Target) string
+	set  func(*ir.Target, string)
+}
+
+var scalarTargetAttrs = []scalarAttrDef{
+	{"static_library", func(t ir.Target) string { return t.StaticLibrary }, func(t *ir.Target, v string) { t.StaticLibrary = v }},
+	{"shared_library", func(t ir.Target) string { return t.SharedLibrary }, func(t *ir.Target, v string) { t.SharedLibrary = v }},
+}
+
+// foldScalarAttr partitions one scalar attribute across cells.
+// All cells agree on the same non-empty value → that value lands
+// in the flat field, PerPlatformScalar untouched. All cells agree
+// on the empty value (the attribute simply isn't relevant — e.g.
+// a cc_import that only carries shared_library leaves
+// static_library empty) → flat stays empty, no delta. Cells
+// disagree → flat clears and each cell's value moves into
+// PerPlatformScalar[attr][SelectKey]. Empty values in the mixed
+// case are recorded too: a cell that lacks the path simply omits
+// its entry from the delta map, and emit renders the resulting
+// select() with no `//conditions:default` (a platform outside the
+// matrix is an analysis-time error, matching the matrix's scope
+// intent for scalar attrs where there's no sensible default).
+func foldScalarAttr(def scalarAttrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell) {
+	first := def.get(variants[cells[0].Platform.Name])
+	allEqual := true
+	for _, c := range cells[1:] {
+		if def.get(variants[c.Platform.Name]) != first {
+			allEqual = false
+			break
+		}
+	}
+	if allEqual {
+		def.set(merged, first)
+		return
+	}
+	def.set(merged, "")
+	if merged.PerPlatformScalar == nil {
+		merged.PerPlatformScalar = map[string]map[string]string{}
+	}
+	if merged.PerPlatformScalar[def.name] == nil {
+		merged.PerPlatformScalar[def.name] = map[string]string{}
+	}
+	for _, c := range cells {
+		v := def.get(variants[c.Platform.Name])
+		if v == "" {
+			continue
+		}
+		merged.PerPlatformScalar[def.name][c.Platform.SelectKey] = v
+	}
 }
 
 // PickSelectKeys derives the select-arm label for each
