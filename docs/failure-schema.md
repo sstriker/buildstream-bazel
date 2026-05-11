@@ -440,9 +440,10 @@ rules with the same target name).
 pyproject.toml to a valid `module:func` form using only
 Python identifier characters (letters, digits, underscore;
 dots separating module components), or remove the duplicate
-key from one of the two scripts tables. Refused elements
-fall back to the pipeline-shape coarse install genrule when
-`--pyproject-fallback` is on.
+key from one of the two scripts tables. Once the queued
+Phase B per-element fallback (ROADMAP) is shipped, refused
+elements will route to the pipeline-shape coarse install
+genrule automatically.
 
 **Emission point:** `converter/cmd/convert-element-pyproject`
 `lower.parseEntryPoint` + `lower.mergeScripts`.

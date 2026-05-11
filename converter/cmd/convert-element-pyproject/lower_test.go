@@ -97,6 +97,38 @@ func TestLower_FlitBackend(t *testing.T) {
 	}
 }
 
+func TestLower_FlitSingleModule(t *testing.T) {
+	// Flit's single-file shape: <name>.py at the source root,
+	// no <name>/ package directory. The wheel ships exactly
+	// the .py file; we emit a py_library that mirrors that.
+	p := minimumProject("flit_core.buildapi")
+	p.Project.Name = "greet"
+	srcs := []string{"greet.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("got %d packages, want 1: %+v", len(pkgs), pkgs)
+	}
+	if pkgs[0].Name != "greet" {
+		t.Errorf("Name=%q want greet", pkgs[0].Name)
+	}
+	if len(pkgs[0].Sources) != 1 || pkgs[0].Sources[0] != "greet.py" {
+		t.Errorf("Sources=%v want [greet.py]", pkgs[0].Sources)
+	}
+	if pkgs[0].ImportRoot != "." {
+		t.Errorf("ImportRoot=%q want .", pkgs[0].ImportRoot)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if len(out) != 1 || out[0].Kind != KindPyLibrary {
+		t.Fatalf("got %+v want one py_library", out)
+	}
+}
+
 func TestLower_HatchlingExplicitPackages(t *testing.T) {
 	p := minimumProject("hatchling.build")
 	p.Tool.Hatch = &Hatch{Build: &HatchBuild{Targets: &HatchTargets{Wheel: &HatchWheel{

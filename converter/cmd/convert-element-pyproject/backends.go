@@ -83,9 +83,12 @@ func Discover(p *Pyproject, sourceFiles []string) ([]Package, error) {
 }
 
 // discoverFlit handles flit_core.buildapi. flit is single-
-// package: the wheel contains one top-level module/package
+// distribution: the wheel contains one top-level module/package
 // named via `[tool.flit.module].name` or, when absent, the
-// project name (with dots → slashes).
+// project name (with hyphens → underscores). flit's data model
+// recognizes both PACKAGE shape (`<name>/__init__.py` plus
+// siblings) and single-MODULE shape (just `<name>.py` at the
+// import root); v1 supports both, in that order of preference.
 func discoverFlit(p *Pyproject, sourceFiles []string) ([]Package, error) {
 	moduleName := ""
 	if p.Tool.Flit != nil && p.Tool.Flit.Module != nil {
@@ -98,11 +101,46 @@ func discoverFlit(p *Pyproject, sourceFiles []string) ([]Package, error) {
 		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
 			"flit_core: neither [tool.flit.module].name nor [project].name set; can't infer the package name")
 	}
+	if pkg, ok := flitSingleModule(moduleName, sourceFiles); ok {
+		return []Package{pkg}, nil
+	}
 	pkg, err := materializePackage(moduleName, "", sourceFiles)
 	if err != nil {
 		return nil, err
 	}
 	return []Package{pkg}, nil
+}
+
+// flitSingleModule returns a Package describing the
+// `<moduleName>.py` single-file flit shape when the source
+// tree contains exactly that file at the root (and no
+// `<moduleName>/` package directory shadowing it). Returns
+// ok=false when the shape doesn't match, leaving the caller to
+// fall back to package-directory discovery.
+func flitSingleModule(moduleName string, sourceFiles []string) (Package, bool) {
+	target := moduleName + ".py"
+	dirPrefix := moduleName + "/"
+	found := false
+	for _, f := range sourceFiles {
+		if f == target {
+			found = true
+		}
+		if strings.HasPrefix(f, dirPrefix) {
+			// A `<moduleName>/...` directory exists alongside the
+			// `<moduleName>.py` file. Flit would prefer the package
+			// shape; let the caller's materializePackage path handle it.
+			return Package{}, false
+		}
+	}
+	if !found {
+		return Package{}, false
+	}
+	return Package{
+		Name:       moduleName,
+		Dir:        ".",
+		ImportRoot: ".",
+		Sources:    []string{target},
+	}, true
 }
 
 // discoverHatchling handles hatchling.build. v1 only
@@ -157,11 +195,13 @@ func discoverSetuptools(p *Pyproject, sourceFiles []string) ([]Package, error) {
 	find, err := p.Tool.Setuptools.FindDirective()
 	if err != nil {
 		// Route TOML-shape mismatches through Tier-1 so the
-		// orchestrator (and write-a's --pyproject-fallback
-		// dispatch) treats the element as "refuse → pipeline
-		// fallback" instead of aborting with a Tier-2 exit.
-		// The original error message is preserved verbatim so
-		// the operator sees what go-toml actually objected to.
+		// orchestrator treats the element as a typed refusal
+		// (and so a future write-a per-element fallback —
+		// ROADMAP Phase B option A — can dispatch it to the
+		// pipeline shape) instead of aborting with a Tier-2
+		// exit. The original error message is preserved
+		// verbatim so the operator sees what go-toml actually
+		// objected to.
 		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
 			"setuptools: decode [tool.setuptools.packages.find]: %v", err)
 	}

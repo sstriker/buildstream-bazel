@@ -339,7 +339,7 @@ transition cleanly.
   discovery; `[project.scripts]` entries become py_binary with a
   generated entry shim. Typed Tier-1 refusals (`unsupported-
   pyproject-{backend,c-extension,dynamic-metadata,package-
-  discovery}`, `unresolved-pyproject-dependency`,
+  discovery,entry-point}`, `unresolved-pyproject-dependency`,
   `pyproject-parse-failed`) cover the patterns v1 doesn't lift;
   the pipeline-shape fallback (existing handler unchanged)
   catches the rest. Activated by passing

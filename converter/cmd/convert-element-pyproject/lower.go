@@ -382,9 +382,10 @@ func lookupPackageDep(module string, labelByPkgName map[string]string) string {
 // Python module names are `[A-Za-z_][A-Za-z0-9_]*` joined by `.`;
 // function names are `[A-Za-z_][A-Za-z0-9_]*`. Anything else
 // refuses with the typed Tier-1 unsupported-pyproject-entry-point
-// code so the orchestrator (and write-a's --pyproject-fallback
-// dispatch) routes the element to the pipeline-shape fallback
-// rather than aborting with a Tier-2 exit.
+// code, which the orchestrator routes as a typed Tier-1 failure
+// (and which a future write-a per-element fallback dispatch can
+// route to the pipeline-shape fallback — queued in ROADMAP as
+// Phase B option A) rather than aborting with a Tier-2 exit.
 func parseEntryPoint(spec string) (module, fn string, err error) {
 	idx := strings.IndexByte(spec, ':')
 	if idx < 0 {

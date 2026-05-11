@@ -108,7 +108,7 @@ returns this verbatim per package.
 
 | Backend | Discovery shape we recognize |
 |---------|------------------------------|
-| `flit_core.buildapi` | `tool.flit.module.name` (explicit) or default-by-project-name. Single-package backend. |
+| `flit_core.buildapi` | `tool.flit.module.name` (explicit) or default-by-project-name. Single-distribution backend; v1 recognizes both shapes flit supports: a `<name>/__init__.py` package OR a single-file `<name>.py` module at the source root. The single-file shape emits a `py_library` with `srcs = ["<name>.py"]` and `imports = ["."]`. |
 | `hatchling.build` | `tool.hatch.build.targets.wheel.packages` (explicit list). Auto-discovery via VCS-tracked files refused (we don't run git here). |
 | `setuptools.build_meta` | `tool.setuptools.packages = [...]` (explicit) or `tool.setuptools.packages.find{where, include, exclude}`. Dynamic auto-discovery (no `packages` config; setuptools' default behaviour) refused. |
 | `poetry.core.masonry.api` | `tool.poetry.packages = [{include = ...}]`. |
@@ -123,9 +123,10 @@ pipeline-shape coarse install genrule.
 | Code | When | Operator action |
 |------|------|-----------------|
 | `unsupported-pyproject-backend` | `[build-system].build-backend` not in v1 allow-list, or `[build-system]` block missing entirely. | If the backend is one of the v1 set, declare it explicitly. Otherwise this element falls back to the pipeline shape; works, just not Bazel-incremental. |
-| `unsupported-pyproject-c-extension` | Source tree contains `*.c`/`*.cpp`/`*.pyx`/`*.rs`/`Cargo.toml`/`setup.py:cmdclass`/`setup.py:ext_modules`. | Pure-Python repackage (rare), or wait for the Phase B install-plan fallback queued in ROADMAP. |
+| `unsupported-pyproject-c-extension` | Source tree contains `*.c`/`*.cpp`/`*.pyx`/`*.rs`/`Cargo.toml` (filename / extension scan only — v1 doesn't parse `setup.py`, so a `setup.py` declaring `ext_modules`/`cmdclass` without sibling extension-source files isn't detected here). | Pure-Python repackage (rare), or wait for the Phase B install-plan fallback queued in ROADMAP. |
 | `unsupported-pyproject-dynamic-metadata` | `[project] dynamic = […]` referencing `version` / `dependencies` / `scripts` (which the backend would compute at build time, e.g. via setuptools_scm or hatch-vcs). | Pin the dynamic field statically in pyproject.toml, or accept the pipeline fallback. |
 | `unsupported-pyproject-package-discovery` | A recognized backend whose discovery shape we couldn't statically resolve (e.g. setuptools without explicit packages config). | Add an explicit `tool.setuptools.packages = [...]` listing. |
+| `unsupported-pyproject-entry-point` | A `[project.scripts]` / `[project.gui-scripts]` entry whose value isn't a valid `module:func` (missing `:`, empty module/func, identifier outside `[A-Za-z0-9_.]` that would otherwise let arbitrary shell syntax leak into the generated entry-shim genrule), or a name declared in both tables (which would emit two `py_binary` rules with the same target name). | Fix the entry-point spec in pyproject.toml to a valid `module:func` form using Python identifier characters only, or remove the duplicate key. |
 | `unresolved-pyproject-dependency` | `[project.dependencies]` entry that's not in this element's own packages and not in the imports manifest. | Add the providing element to the imports manifest, or pre-stage the dep on the executor. |
 
 ## Anti-patterns and how v1 handles them
@@ -133,7 +134,7 @@ pipeline-shape coarse install genrule.
 - **`version = "from VCS"`** (setuptools_scm, hatch-vcs): listed under `[project] dynamic = ["version"]`. Refused — version comes from `git describe`, which the converter doesn't run. Operator action: pin a static version string.
 - **`[tool.setuptools.dynamic.readme] file = ["README.md"]`** — accepted. Dynamic *metadata* that doesn't affect the dep graph or sources is benign; we ignore the dynamic-readme entry.
 - **Console scripts pointing at deps**: `[project.scripts] foo = "external_pkg.cli:main"` — the entry shim still imports `external_pkg`, which must be a `deps` of the binary. If `external_pkg` doesn't resolve (not in our element's deps + not in the imports manifest), refuse with `unresolved-pyproject-dependency`.
-- **PEP 420 namespace packages** (no `__init__.py` in the namespace dir): accepted. Each constituent package gets its own `py_library`; consumers link them all to assemble the namespace.
+- **PEP 420 namespace packages** (no `__init__.py` in the namespace dir): NOT covered in v1. The discovery walkers (flit / hatchling / setuptools / poetry-core) all key on `__init__.py` to identify package directories, and setuptools' `tool.setuptools.packages.find { namespaces = true }` mode is explicitly refused with `unsupported-pyproject-package-discovery`. Operator action: declare each leaf package explicitly (so each constituent has an `__init__.py`-bearing directory we recognize), or accept the pipeline-shape fallback. True PEP 420 lift requires walking `*.py` without an `__init__.py` anchor and would need a per-backend convention for naming the resulting py_library — deferred.
 - **Optional dependencies** (`[project.optional-dependencies]` aka extras): NOT folded into the rendered `py_library.deps`. Bazel's analysis-phase model can't represent "user opts into extras at install time". Operators wanting the extras path stage the relevant elements explicitly. v1 just emits the base deps.
 
 ## Cross-element dependency resolution
