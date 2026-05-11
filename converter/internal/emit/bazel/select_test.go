@@ -188,11 +188,15 @@ func TestEmit_PerPlatform_CCBinaryFoldsHdrsIntoSrcs(t *testing.T) {
 
 // TestEmit_PerPlatformScalar_CCImportStaticLibrary: round-2
 // fallback stubs whose install_tree.tar path diverges across
-// platforms render cc_import.static_library as a bare select()
-// keyed on the per-platform path. No flat baseline (scalars
-// don't compose under "+") and no "//conditions:default" arm
-// (a scalar attr has no sensible empty fallback; out-of-matrix
-// platforms fail analysis with a clear message).
+// platforms render cc_import.static_library as a select() keyed
+// on the per-platform path with a trailing "//conditions:default":
+// None arm. The default arm matters even when every in-matrix
+// platform has a value: it makes out-of-matrix builds resolve to
+// "attribute unset" instead of failing analysis on a missing arm.
+// And for the partial-platform shape (one platform supplies
+// static_library only, another supplies shared_library only) it's
+// what stops the otherwise-absent platform from hitting a
+// no-matching-condition error.
 func TestEmit_PerPlatformScalar_CCImportStaticLibrary(t *testing.T) {
 	pkg := &ir.Package{
 		Targets: []ir.Target{{
@@ -215,6 +219,7 @@ func TestEmit_PerPlatformScalar_CCImportStaticLibrary(t *testing.T) {
 	want := `static_library = select({
         "@platforms//os:darwin": "lib/libfoo.a",
         "@platforms//os:linux": "lib/x86_64-linux-gnu/libfoo.a",
+        "//conditions:default": None,
     }),`
 	if !strings.Contains(gotStr, want) {
 		t.Errorf("cc_import.static_library missing expected select() shape; got:\n%s\n\nwant substring:\n%s", gotStr, want)
@@ -224,19 +229,17 @@ func TestEmit_PerPlatformScalar_CCImportStaticLibrary(t *testing.T) {
 	if strings.Contains(gotStr, "shared_library") {
 		t.Errorf("cc_import unexpectedly rendered shared_library; got:\n%s", gotStr)
 	}
-	if strings.Contains(gotStr, "//conditions:default") {
-		t.Errorf("scalar select() must not include //conditions:default; got:\n%s", gotStr)
-	}
 }
 
 // TestEmit_PerPlatformScalar_CCImportPartialPlatformShape: cells
 // disagree on which path attr to populate — one platform supplies
 // static_library only, another supplies shared_library only. The
 // select() for each attr lists only the platforms that contribute
-// a value; the absent platform isn't represented as an empty
-// string (would be a Bazel attribute error). The cc_import target
-// still renders cleanly because each attr's select() partitions
-// the matrix on its own.
+// a value; the OTHER in-matrix platform resolves to None (attribute
+// unset) via the "//conditions:default" arm. cc_import accepts
+// missing static_library / shared_library, so each platform sees a
+// half-populated cc_import — the right outcome: each platform's
+// downstream uses the half that exists there.
 func TestEmit_PerPlatformScalar_CCImportPartialPlatformShape(t *testing.T) {
 	pkg := &ir.Package{
 		Targets: []ir.Target{{
@@ -257,9 +260,11 @@ func TestEmit_PerPlatformScalar_CCImportPartialPlatformShape(t *testing.T) {
 	for _, want := range []string{
 		`static_library = select({
         "@platforms//os:linux": "lib/libfoo.a",
+        "//conditions:default": None,
     }),`,
 		`shared_library = select({
         "@platforms//os:darwin": "lib/libfoo.dylib",
+        "//conditions:default": None,
     }),`,
 	} {
 		if !strings.Contains(gotStr, want) {

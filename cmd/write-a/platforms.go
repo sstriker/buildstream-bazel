@@ -23,7 +23,13 @@ import (
 // tracePlatform is the per-platform record write-a's multi-
 // platform mode threads through to the trace-driven handlers.
 // Each entry drives one converter genrule + one trace_repo
-// instance in project A, plus one install genrule in project B.
+// instance in project A — the project-A render fans out per
+// platform and a fold-element genrule composes the per-platform
+// ir.json outputs. Project B's install-genrule fan-out is a
+// queued follow-up; today every entry shares the single install
+// genrule project B already emits, so multi-platform mode is
+// render-shape complete on the A side but at runtime publishes
+// only one platform's trace.
 type tracePlatform struct {
 	// Name is the platform identifier. Used as the URL-safe
 	// suffix on derived names: "trace_<elem>__<name>" for the

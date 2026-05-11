@@ -472,18 +472,21 @@ func perPlatformScalarAttr(t ir.Target, name string) map[string]string {
 //   - the quoted literal when sel is empty (single-platform
 //     shape; byte-identical to the pre-PerPlatformScalar
 //     emission).
-//   - a bare `select({...})` block when sel is non-empty.
-//     Unlike the list case there's no `<flat> + select()` form:
-//     scalars don't compose under "+", so when cells disagree
-//     the elementfold layer clears the flat baseline and every
-//     arm carries the platform's full path.
-//
-// No `//conditions:default` arm: a scalar attribute has no
-// sensible empty-default (an empty static_library is a separate
-// build error from "wrong path"), and the matrix's scope intent
-// is to cover every platform the operator declared. A platform
-// outside the matrix matches no arm and fails at analysis time
-// with a clear message — the right outcome.
+//   - a `select({...})` block with a trailing
+//     `"//conditions:default": None` arm when sel is non-empty.
+//     Unlike the list case there's no `<flat> + select()` form
+//     (scalars don't compose under "+"), but the default arm IS
+//     present so in-matrix platforms without a value for this
+//     attribute fall through to "attribute unset" rather than
+//     hitting a missing-arm analysis error. The partial-platform
+//     cc_import case — linux has only static_library, darwin has
+//     only shared_library — needs this: a build for darwin sees
+//     `static_library = select({linux: "...", "//conditions:default": None})`
+//     and Bazel treats static_library as unset (cc_import's
+//     default), the right outcome instead of an analysis error.
+//     Out-of-matrix platforms also resolve to None (attribute
+//     unset), which matches the "this target doesn't apply
+//     outside the declared matrix" semantic.
 func scalarAttrExpr(flat string, sel map[string]string) string {
 	hasSel := len(sel) > 0
 	hasFlat := flat != ""
@@ -503,6 +506,7 @@ func scalarAttrExpr(flat string, sel map[string]string) string {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "        %q: %q,\n", k, sel[k])
 	}
+	b.WriteString(`        "//conditions:default": None,` + "\n")
 	b.WriteString("    })")
 	return b.String()
 }
