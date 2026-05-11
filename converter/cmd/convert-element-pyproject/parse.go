@@ -128,10 +128,11 @@ func Load(path string) (*Pyproject, error) {
 	return &p, nil
 }
 
-// SetuptoolsFindDirective decodes setuptools' `[tool.setuptools.packages.find]`
-// shape from the raw `Packages` TOML value. Returns ok=false
+// SetuptoolsFindDirective is the decoded
+// `[tool.setuptools.packages.find]` shape. Populated by
+// `(*Setuptools).FindDirective()`, which returns (nil, nil)
 // when `Packages` is a list (operator gave an explicit package
-// list) or absent.
+// list) or absent, and (nil, err) on a TOML decode failure.
 type SetuptoolsFindDirective struct {
 	Where      []string `toml:"where"`
 	Include    []string `toml:"include"`

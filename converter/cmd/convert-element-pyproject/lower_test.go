@@ -520,8 +520,6 @@ func TestLower_SetuptoolsFindSkipsRootInitPy(t *testing.T) {
 	// instead of producing a degenerate dotted name that
 	// materializePackage couldn't resolve.
 	p := minimumProject("setuptools.build_meta")
-	nsT := true
-	_ = nsT
 	p.Tool.Setuptools = &Setuptools{
 		Packages: map[string]any{
 			"find": map[string]any{

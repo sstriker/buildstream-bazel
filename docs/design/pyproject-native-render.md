@@ -1,6 +1,6 @@
 # Pyproject native render — design
 
-Architecture recipe for `cmd/convert-element-pyproject` — the
+Architecture recipe for `converter/cmd/convert-element-pyproject` — the
 introspection-driven kind:pyproject translator. Coverage
 context: `docs/fdsdk-coverage-status.md` (pyproject is 10.5 %
 of FDSDK, the largest remaining coarse kind after the trace-
@@ -81,9 +81,11 @@ the build backend.
                        BUILD.bazel.out
 ```
 
-`cmd/convert-element-pyproject/main.go` is a sibling of
-`converter/cmd/convert-element-meson/main.go` and
-`cmd/convert-element-trace/main.go`. Unlike the cc-shaped
+`converter/cmd/convert-element-pyproject/main.go` is a sibling
+of `converter/cmd/convert-element-meson/main.go` (and
+`cmd/convert-element-trace/main.go`, which still lives under
+top-level `cmd/` rather than `converter/cmd/` for historical
+reasons). Unlike the cc-shaped
 converters it does NOT lower into the shared
 `converter/internal/ir` (which is cc-only) — py_* rules have
 their own attribute set and a separate emit. The duplicated
@@ -188,21 +190,21 @@ genrule (the existing handler unchanged). When set, the
 handler renders project A like kind:cmake / kind:meson do
 (per-element genrule invoking `//tools:convert-element-
 pyproject` against a staged source tree, producing
-BUILD.bazel.out + a placeholder pkg-bundle.tar); project B
-writes the `BUILD_NOT_YET_STAGED` placeholder that the driver
-script overwrites.
+`BUILD.bazel.out` as its single declared output — no bundle
+artifact in v1; cross-element resolution is purely via the
+imports manifest); project B writes the `BUILD_NOT_YET_STAGED`
+placeholder that the driver script overwrites.
 
 ## Tests and render gate
 
-- Unit tests for the pyproject parser
-  (`cmd/convert-element-pyproject/parse_test.go`): each
-  recognized backend's discovery shape; each refusal code's
-  trigger condition.
-- Unit tests for the lowering pass
-  (`cmd/convert-element-pyproject/lower_test.go`): py_library
-  emission for flat + src layouts, py_binary + entry-shim
-  genrule emission for `[project.scripts]`, deps resolution
-  via the imports manifest, the full refusal taxonomy.
+- Unit tests for the lowering pass + per-backend discovery
+  (`converter/cmd/convert-element-pyproject/lower_test.go`):
+  each recognized backend's discovery shape; py_library
+  emission for flat + src layouts; py_binary + entry-shim
+  genrule emission for `[project.scripts]` and
+  `[project.gui-scripts]`; deps resolution via the imports
+  manifest; the full refusal taxonomy (each Tier-1 code's
+  trigger condition).
 - Write-a-side handler tests in
   `cmd/write-a/handler_pyproject_test.go`: pipeline-shape
   fallback when convertBin is unset; native-render shape when
