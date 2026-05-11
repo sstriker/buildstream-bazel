@@ -204,6 +204,57 @@ func TestFold_PhantomTargetOnlyInLaterCell(t *testing.T) {
 	}
 }
 
+// TestFold_NameReuseAcrossKindsRejected: the union-by-(Name, Kind)
+// enumeration must reject the case where two cells use the same
+// target Name with different Kinds. Bazel rule names are unique
+// per package regardless of kind, so folding both versions into
+// the merged Package would emit an invalid BUILD file.
+func TestFold_NameReuseAcrossKindsRejected(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{{Name: "foo", Kind: ir.KindCCLibrary}},
+		},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{{Name: "foo", Kind: ir.KindCCBinary}},
+		},
+	}
+	_, err := Fold([]Cell{linux, darwin})
+	if err == nil {
+		t.Fatal("expected error for Name reuse across distinct Kinds")
+	}
+	if !strings.Contains(err.Error(), "foo") || !strings.Contains(err.Error(), "unique per package") {
+		t.Errorf("error %q should name the offending Name and explain the per-package uniqueness rule", err)
+	}
+}
+
+// TestFold_SameCellNameReuseAcrossKindsRejected: even within a
+// single cell, the same Name with different Kinds is rejected.
+// The per-cell duplicate check keyed by (Name, Kind) would let
+// this through (the keys differ), so the cross-cell Name-uniqueness
+// pass catches it.
+func TestFold_SameCellNameReuseAcrossKindsRejected(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{
+			Targets: []ir.Target{
+				{Name: "foo", Kind: ir.KindCCLibrary},
+				{Name: "foo", Kind: ir.KindCCBinary},
+			},
+		},
+	}
+	_, err := Fold([]Cell{linux})
+	if err == nil {
+		t.Fatal("expected error for Name reuse across Kinds in a single cell")
+	}
+	if !strings.Contains(err.Error(), "foo") || !strings.Contains(err.Error(), "unique per package") {
+		t.Errorf("error %q should name the offending Name", err)
+	}
+}
+
 // TestFold_PhantomTarget covers the target-presence delta:
 // a target declared by some cells but not others folds into a
 // phantom-target select rather than erroring. The merged

@@ -153,10 +153,28 @@ func Fold(cells []Cell) (*ir.Package, error) {
 	// fold emit a target that "phantoms" through the absent
 	// cells: present-cell deltas land in the rendered select()
 	// arms, absent cells contribute nothing.
+	//
+	// Reject Name reuse across distinct Kinds: the merged target
+	// list is a Bazel package, where rule names must be unique
+	// regardless of kind. Two cells declaring `foo` as cc_library
+	// and cc_binary respectively would each fold to a separate
+	// merged target with the same Bazel `name`, producing an
+	// invalid BUILD file. Same goes for a single cell that
+	// declares two targets with the same Name and different Kind
+	// — the per-cell duplicate check above keyed by (Name, Kind)
+	// would miss that, so we catch both shapes here in one pass.
 	keyOrder := make([]targetKey, 0)
 	seenKey := map[targetKey]bool{}
+	nameToKind := map[string]ir.Kind{}
+	nameToCell := map[string]string{}
 	for _, c := range cells {
 		for _, t := range c.Pkg.Targets {
+			if prevKind, dup := nameToKind[t.Name]; dup && prevKind != t.Kind {
+				return nil, fmt.Errorf("elementfold: target Name %q appears with kind %s in cell %q AND kind %s in cell %q; Bazel rule names must be unique per package regardless of kind, so the merged target list can't carry both",
+					t.Name, prevKind, nameToCell[t.Name], t.Kind, c.Platform.Name)
+			}
+			nameToKind[t.Name] = t.Kind
+			nameToCell[t.Name] = c.Platform.Name
 			k := targetKey{t.Name, t.Kind}
 			if seenKey[k] {
 				continue
