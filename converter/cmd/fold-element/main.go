@@ -11,16 +11,33 @@
 //	    --cell 'linux_x86_64|@platforms//os:linux,@platforms//cpu:x86_64|elements/libfoo/linux_x86_64/ir.json' \
 //	    --cell 'darwin_arm64|@platforms//os:darwin,@platforms//cpu:arm64|elements/libfoo/darwin_arm64/ir.json'
 //
-// The --cell flag's value is <name>|<constraint1,constraint2,...>|<ir.json path>
-// — three pipe-separated fields, where the constraints field
-// is a comma-separated list of constraint_value labels. Pipe
-// is the outer separator because Bazel constraint labels
-// contain ":" (e.g. @platforms//os:linux), which would collide
-// with a colon-separated layout. The SelectKey for each cell
-// is auto-detected via elementfold.PickSelectKeys; multi-axis
-// matrices that don't admit a single varying axis surface as
-// an error the operator addresses (per the elementfold
-// ROADMAP follow-up).
+// For matrices where no single constraint axis uniquely
+// identifies each platform (e.g. {linux_x86_64,
+// linux_aarch64, darwin_arm64} — `@platforms//os:linux` and
+// `@platforms//cpu:arm64` each appear twice), the operator
+// declares a `config_setting` per platform in their
+// //platforms package and supplies its label as the optional
+// 4th --cell field:
+//
+//	fold-element \
+//	    --out-build elements/libfoo/BUILD.bazel \
+//	    --cell 'linux_x86_64|@platforms//os:linux,@platforms//cpu:x86_64|.../ir.json|//platforms:linux_x86_64' \
+//	    --cell 'linux_aarch64|@platforms//os:linux,@platforms//cpu:arm64|.../ir.json|//platforms:linux_aarch64' \
+//	    --cell 'darwin_arm64|@platforms//os:darwin,@platforms//cpu:arm64|.../ir.json|//platforms:darwin_arm64'
+//
+// The --cell flag's value is
+// <name>|<constraint1,constraint2,...>|<ir.json path>[|<select_label>]
+// — three or four pipe-separated fields, where the
+// constraints field is a comma-separated list of
+// constraint_value labels. Pipe is the outer separator
+// because Bazel constraint labels contain ":" (e.g.
+// @platforms//os:linux), which would collide with a
+// colon-separated layout. Without the 4th field, the
+// SelectKey for each cell is auto-detected via
+// elementfold.PickSelectKeys; with it, the operator-supplied
+// label is honoured verbatim. Mixed matrices (some cells
+// override, others auto-detect) are supported as long as the
+// final SelectKey set is unique across the matrix.
 package main
 
 import (
@@ -47,7 +64,7 @@ func run(argv []string) error {
 	fs := flag.NewFlagSet("fold-element", flag.ContinueOnError)
 	outBuild := fs.String("out-build", "", "destination path for the unified BUILD.bazel")
 	var cells stringSliceFlag
-	fs.Var(&cells, "cell", "<name>|<constraint1,constraint2,...>|<ir.json path>; repeat for each platform (pipe is the outer separator because Bazel constraint labels embed colons)")
+	fs.Var(&cells, "cell", "<name>|<constraint1,constraint2,...>|<ir.json path>[|<select_label>]; repeat for each platform. Pipe is the outer separator because Bazel constraint labels embed colons. The optional 4th field is the operator-declared config_setting label that overrides PickSelectKeys' auto-detection (the escalation path for ambiguous multi-axis matrices like {linux_x86_64, linux_aarch64, darwin_arm64}).")
 	if err := fs.Parse(argv); err != nil {
 		return err
 	}

@@ -1,25 +1,47 @@
-// trace-publish takes a per-element {trace.log, make-db.txt} pair
-// produced by the kind:autotools coarse pass-3 genrule, packs it
-// as a REAPI Directory, uploads every blob to CAS, and writes an
-// ActionResult into the action cache under a synthetic key derived
-// from the element's srckey.
+// trace-publish takes a per-element trace.log (and optionally a
+// make-db.txt) produced by a kind's coarse-build genrule, packs
+// it as a REAPI Directory, uploads every blob to CAS, and writes
+// an ActionResult into the action cache under a synthetic key
+// derived from the element's srckey and an optional platform tag.
+//
+// File set published depends on the calling kind:
+//
+//   - autotools / make / makemaker / modulebuild / manual /
+//     script: trace.log + make-db.txt (convert-element-trace
+//     consumes both).
+//   - cmake round-2 fallback: trace.log only (cmake's converter
+//     derives its IR from the trace + the cmake File API, not
+//     from make-db).
 //
 // The synthetic key is the rendezvous: cmd/trace-lookup, run by
 // project A's _trace_repo Bazel rule at load time, computes the
-// same key from the same srckey and reads back the AC entry. AC
-// hit + verified blobs ⇒ the lookup prints the trace's root
-// Directory digest, which the repo rule symlinks under cas-fuse /
-// bb_clientd's `<mount>/blobs/directory/<digest>` mount.
+// same key from the same (srckey, platform) and reads back the
+// AC entry. AC hit + verified blobs ⇒ the lookup prints the
+// trace's root Directory digest, which the repo rule symlinks
+// under cas-fuse / bb_clientd's `<mount>/blobs/directory/<digest>`
+// mount.
 //
-// Usage (invoked from inside the autotools install genrule, after
-// the build has produced trace.log + make-db.txt):
+// Usage:
 //
 //	trace-publish \
 //	    --cas=<grpc-addr> \
-//	    --srckey=<hex>     \
-//	    --trace=<path>     \
-//	    --make-db=<path>   \
+//	    --srckey=<hex>      \
+//	    --trace=<path>      \
+//	    [--make-db=<path>]  \
+//	    [--platform=<tag>]  \
 //	    [--instance=<name>]
+//
+// --make-db: optional. Empty / omitted → publish trace.log only
+// (cmake round-2 shape). Non-empty → publish the 2-file
+// autotools-family shape.
+//
+// --platform: optional. Empty / omitted preserves the historical
+// single-keyspace shape (single-platform operators see no
+// change; previously published AC entries stay reachable).
+// Non-empty partitions the AC keyspace per target platform via
+// REAPI's native Action.Platform mechanism so two platforms'
+// traces against the same source content don't collide. The
+// matching trace-lookup invocation must pass the same tag.
 //
 // Idempotent: republishing the same canonicalized trace is a no-op
 // (CAS is content-addressable; AC update with an identical body is

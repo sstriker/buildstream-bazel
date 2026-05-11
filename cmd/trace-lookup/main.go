@@ -1,9 +1,10 @@
 // trace-lookup is the consumer side of the round-2 rendezvous.
 // It runs at Bazel load time inside project A's _trace_repo
 // repository rule (see cmd/write-a/traces_bzl.go). Given a
-// srckey, it computes the synthetic Action digest, queries the
-// REAPI ActionCache, verifies the trace blob is still in CAS,
-// and prints the trace's root Directory digest on stdout.
+// srckey (and optionally a platform tag), it computes the
+// synthetic Action digest, queries the REAPI ActionCache,
+// verifies the trace blob is still in CAS, and prints the
+// trace's root Directory digest on stdout.
 //
 // The repo rule reads stdout: empty ⇒ AC miss / blob missing /
 // no CAS configured ⇒ empty trace fileset (the converter then
@@ -13,7 +14,16 @@
 //
 // Usage:
 //
-//	trace-lookup --cas=<grpc-addr> --srckey=<hex> [--instance=<name>]
+//	trace-lookup --cas=<grpc-addr> --srckey=<hex> \
+//	    [--platform=<tag>] [--instance=<name>]
+//
+// --platform: optional. Empty / omitted preserves the historical
+// single-keyspace shape — single-platform operators see no
+// behaviour change; AC entries published before the platform
+// flag was added remain reachable. Non-empty partitions the AC
+// keyspace per target platform (via REAPI Action.Platform), so
+// the lookup hits only the trace the matching publish side
+// tagged with the same value.
 //
 // Exit codes:
 //
