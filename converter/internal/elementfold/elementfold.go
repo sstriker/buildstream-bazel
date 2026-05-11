@@ -70,11 +70,13 @@ type Cell struct {
 // the target's per-attr delta arms; emit/bazel renders the target
 // unconditionally with select() arms keyed only on the platforms
 // that have it. Bazel consumers depending on the target on an
-// absent platform see the rule's attrs resolve to empty (a list
-// attr's default-arm `[]` or a scalar attr's analysis-time
-// "no matching condition") and fail at the dep site with a
-// legible diagnostic — the right outcome for a target that
-// genuinely doesn't exist on that platform.
+// absent platform see the rule's attrs resolve to the default
+// arm — `[]` for list attrs (the select's `//conditions:default`)
+// or `None` for scalar attrs (Bazel treats that as "attribute
+// unset" per cc_import's optional-path-attr semantics). Empty
+// inputs or unset path attrs fail at the dep site with a legible
+// diagnostic — the right outcome for a target that genuinely
+// doesn't exist on that platform.
 //
 // Boolean attributes (Linkstatic, Alwayslink) and identity-like
 // fields (InstallDest, ArtifactName, LinkLanguage, the Genrule*
