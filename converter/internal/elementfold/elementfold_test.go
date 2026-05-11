@@ -339,6 +339,136 @@ func TestPickSelectKeys_AmbiguousMatrix(t *testing.T) {
 	}
 }
 
+// TestPickSelectKeys_OperatorOverridesAll: same ambiguous
+// matrix the auto-detect path rejects, but every platform
+// supplies a SelectKey explicitly (the escalation contract:
+// operator declares a config_setting per platform in their
+// //platforms package). PickSelectKeys passes the supplied
+// keys through verbatim with no auto-detection.
+func TestPickSelectKeys_OperatorOverridesAll(t *testing.T) {
+	plats := []Platform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:linux_x86_64"},
+		{Name: "linux_aarch64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}, SelectKey: "//platforms:linux_aarch64"},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectKey: "//platforms:darwin_arm64"},
+	}
+	got, err := PickSelectKeys(plats)
+	if err != nil {
+		t.Fatalf("PickSelectKeys: %v", err)
+	}
+	want := map[string]string{
+		"linux_x86_64":  "//platforms:linux_x86_64",
+		"linux_aarch64": "//platforms:linux_aarch64",
+		"darwin_arm64":  "//platforms:darwin_arm64",
+	}
+	for name, w := range want {
+		if got[name] != w {
+			t.Errorf("platform %q: SelectKey = %q; want %q", name, got[name], w)
+		}
+	}
+}
+
+// TestPickSelectKeys_OperatorOverridesPartial: a mixed matrix
+// — some platforms have a SelectKey override, the rest
+// auto-detect off their constraints. The override platforms
+// pass through verbatim; the auto-detect platforms must pick
+// constraint labels that are unique across the FULL matrix
+// (override-platform constraints included), not just within
+// the auto-detect subset, otherwise the rendered select()
+// would have multiple arms matching the same Bazel platform
+// at analysis time.
+func TestPickSelectKeys_OperatorOverridesPartial(t *testing.T) {
+	plats := []Platform{
+		// Two ambiguous platforms get explicit keys.
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:linux_x86_64"},
+		{Name: "linux_aarch64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}, SelectKey: "//platforms:linux_aarch64"},
+		// darwin auto-detects: cpu:arm64 is shared with
+		// linux_aarch64 (count=2 across the full matrix), so the
+		// auto-detect must skip it and pick os:darwin (count=1).
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
+	}
+	got, err := PickSelectKeys(plats)
+	if err != nil {
+		t.Fatalf("PickSelectKeys: %v", err)
+	}
+	if got["linux_x86_64"] != "//platforms:linux_x86_64" {
+		t.Errorf("linux_x86_64 override = %q", got["linux_x86_64"])
+	}
+	if got["linux_aarch64"] != "//platforms:linux_aarch64" {
+		t.Errorf("linux_aarch64 override = %q", got["linux_aarch64"])
+	}
+	// darwin_arm64's cpu:arm64 collides with linux_aarch64's
+	// constraint set; auto-detect must pick os:darwin (the
+	// uniquely-counted constraint across the full matrix).
+	if got["darwin_arm64"] != "@platforms//os:darwin" {
+		t.Errorf("darwin_arm64 auto-detect = %q; want @platforms//os:darwin (cpu:arm64 collides with linux_aarch64)", got["darwin_arm64"])
+	}
+}
+
+// TestPickSelectKeys_RejectsDuplicateNames: two cells sharing
+// the same Platform.Name (with no SelectKey set on either)
+// must error with a name-collision message rather than
+// silently letting the second cell overwrite the first in the
+// internal map. The auto-detect path doesn't trigger the
+// final-key uniqueness check for this case — both cells would
+// just collapse into one entry — so the per-iteration
+// duplicate-name check is what guards it.
+func TestPickSelectKeys_RejectsDuplicateNames(t *testing.T) {
+	plats := []Platform{
+		{Name: "linux", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		{Name: "linux", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}},
+	}
+	_, err := PickSelectKeys(plats)
+	if err == nil {
+		t.Fatal("expected error for duplicate Platform.Name across auto-detect cells")
+	}
+	if !strings.Contains(err.Error(), "appears twice") {
+		t.Errorf("error %q should mention the duplicate-name shape", err)
+	}
+}
+
+// TestPickSelectKeys_RejectsDuplicateOverrideLabels: two
+// platforms supplying the same select_label is an operator
+// typo that would produce duplicate select() arms whose
+// per-platform deltas would silently overwrite each other in
+// PerPlatform. Reject up front with a message naming both
+// platforms.
+func TestPickSelectKeys_RejectsDuplicateOverrideLabels(t *testing.T) {
+	plats := []Platform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}, SelectKey: "//platforms:shared"},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectKey: "//platforms:shared"},
+	}
+	_, err := PickSelectKeys(plats)
+	if err == nil {
+		t.Fatal("expected error for duplicate override labels")
+	}
+	if !strings.Contains(err.Error(), "linux_x86_64") || !strings.Contains(err.Error(), "darwin_arm64") {
+		t.Errorf("error %q should name both colliding platforms", err)
+	}
+}
+
+// TestPickSelectKeys_RejectsOverrideAutoCollision: an
+// override label that happens to equal another platform's
+// uniquely-counted constraint produces a duplicate-arm
+// collision the same way two operator-supplied labels would.
+// Final-key validation catches it.
+func TestPickSelectKeys_RejectsOverrideAutoCollision(t *testing.T) {
+	plats := []Platform{
+		// linux_x86_64 will auto-detect to @platforms//cpu:x86_64
+		// (uniquely-counted across the matrix).
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		// darwin_arm64's operator override pathologically chose
+		// the exact label linux_x86_64 auto-detected.
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectKey: "@platforms//cpu:x86_64"},
+	}
+	_, err := PickSelectKeys(plats)
+	if err == nil {
+		t.Fatal("expected error for override-vs-auto collision")
+	}
+	if !strings.Contains(err.Error(), "linux_x86_64") || !strings.Contains(err.Error(), "darwin_arm64") {
+		t.Errorf("error %q should name both colliding platforms", err)
+	}
+}
+
 // TestFold_PackageNameMismatch: the per-element fold composes
 // per-platform IRs of the SAME element. If their Package.Name
 // disagrees, that's a programmer error elsewhere in the flow,

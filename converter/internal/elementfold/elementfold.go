@@ -359,28 +359,49 @@ var targetAttrs = []attrDef{
 	{"deps", false, func(t ir.Target) []string { return t.Deps }, func(t *ir.Target, v []string) { t.Deps = v }},
 }
 
-// PickSelectKeys auto-detects the constraint label that
-// uniquely identifies each platform within the matrix.
+// PickSelectKeys derives the select-arm label for each
+// platform in the matrix, honouring operator overrides where
+// present and auto-detecting from constraints otherwise.
 //
-// Algorithm: count each constraint label's occurrences across
-// the matrix, after de-duplicating each platform's own
-// constraint list (a platform that accidentally repeats a
-// label would otherwise inflate the global count and make a
-// valid matrix look ambiguous). A label that appears exactly
-// once uniquely identifies its platform — assign it as that
-// platform's SelectKey. When a platform has multiple unique
-// constraint labels, the lexicographically-smallest one is
-// chosen for determinism (e.g. between "@platforms//cpu:x86_64"
-// and "@platforms//os:linux", `@platforms//cpu:...` sorts
-// first).
+// Override path: any platform whose SelectKey is already
+// populated by the caller is passed through verbatim. This is
+// the escalation path for matrices where no single constraint
+// axis uniquely identifies each platform (the classic
+// {linux_x86_64, linux_aarch64, darwin_arm64} shape): the
+// operator declares a config_setting per platform in their
+// //platforms package and supplies its label as SelectKey.
 //
-// Returns an error naming the offending platform if any
-// platform has no constraint label that uniquely identifies it
-// in the matrix. The operator's escalation path then is to
-// declare a config_setting per platform in their //platforms
-// package and pass those labels in explicitly (a follow-up to
-// this MVP — for now, this error tells them to reduce the
-// matrix or split the conversion).
+// Auto-detection (for platforms with empty SelectKey): count
+// each constraint label's occurrences across THE FULL MATRIX
+// (override platforms included), after de-duplicating each
+// platform's own constraint list. A label that appears
+// exactly once uniquely identifies its platform — assign it
+// as that platform's SelectKey. When a platform has multiple
+// unique constraint labels, the lexicographically-smallest
+// one is chosen for determinism.
+//
+// Counting across the FULL matrix matters: at Bazel analysis
+// time the rendered select() sees every arm, so an
+// auto-detected key that collides with an override platform's
+// constraint set (e.g. picking @platforms//cpu:arm64 for
+// darwin_arm64 when linux_aarch64 also carries that
+// constraint) would produce "multiple conditions match"
+// failures. Restricting the count to the auto-detect subset
+// would mask that.
+//
+// Post-pick validation: collect every final SelectKey and
+// reject any duplicate. Catches operator typos
+// (two platforms share an override label) and
+// override-vs-auto collisions (an operator-supplied label
+// that happens to equal an auto-detect platform's
+// constraint).
+//
+// Returns an error naming the offending platform if a
+// platform without an operator-supplied SelectKey has no
+// constraint label that uniquely identifies it across the
+// full matrix. The actionable response is to declare a
+// config_setting per platform in //platforms and rerun with
+// select_label set.
 func PickSelectKeys(platforms []Platform) (map[string]string, error) {
 	dedupedConstraints := make([][]string, len(platforms))
 	for i, p := range platforms {
@@ -395,6 +416,11 @@ func PickSelectKeys(platforms []Platform) (map[string]string, error) {
 		}
 		dedupedConstraints[i] = uniq
 	}
+	// Count constraint labels across the full matrix —
+	// override-platform constraints included — so the
+	// uniqueness check matches the analysis-time view of the
+	// rendered select() block (every arm contributes; Bazel
+	// errors on multiple-condition matches).
 	counts := map[string]int{}
 	for _, cs := range dedupedConstraints {
 		for _, c := range cs {
@@ -403,6 +429,13 @@ func PickSelectKeys(platforms []Platform) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(platforms))
 	for i, p := range platforms {
+		if _, dup := out[p.Name]; dup {
+			return nil, fmt.Errorf("elementfold: platform %q appears twice in PickSelectKeys input", p.Name)
+		}
+		if p.SelectKey != "" {
+			out[p.Name] = p.SelectKey
+			continue
+		}
 		var unique string
 		for _, c := range dedupedConstraints[i] {
 			if counts[c] != 1 {
@@ -413,9 +446,24 @@ func PickSelectKeys(platforms []Platform) (map[string]string, error) {
 			}
 		}
 		if unique == "" {
-			return nil, fmt.Errorf("elementfold: platform %q has no constraint that uniquely identifies it within the matrix; declare a config_setting in your //platforms package", p.Name)
+			return nil, fmt.Errorf("elementfold: platform %q has no constraint that uniquely identifies it within the matrix; declare a config_setting in your //platforms package and pass its label via select_label", p.Name)
 		}
 		out[p.Name] = unique
+	}
+	// Final-key uniqueness check: catches two operators
+	// supplying the same override label and the rare
+	// override-vs-auto collision (an operator-supplied label
+	// that happens to equal an auto-detect platform's
+	// uniquely-counted constraint). Either case would land
+	// duplicate select() arms whose deltas would silently
+	// overwrite each other in PerPlatform.
+	keyToName := make(map[string]string, len(out))
+	for _, p := range platforms {
+		k := out[p.Name]
+		if prev, dup := keyToName[k]; dup {
+			return nil, fmt.Errorf("elementfold: platforms %q and %q both resolve to SelectKey %q; supply distinct select_label values per platform in your //platforms package", prev, p.Name, k)
+		}
+		keyToName[k] = p.Name
 	}
 	return out, nil
 }

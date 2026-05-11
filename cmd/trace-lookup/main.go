@@ -1,9 +1,10 @@
 // trace-lookup is the consumer side of the round-2 rendezvous.
 // It runs at Bazel load time inside project A's _trace_repo
 // repository rule (see cmd/write-a/traces_bzl.go). Given a
-// srckey, it computes the synthetic Action digest, queries the
-// REAPI ActionCache, verifies the trace blob is still in CAS,
-// and prints the trace's root Directory digest on stdout.
+// srckey (and optionally a platform tag), it computes the
+// synthetic Action digest, queries the REAPI ActionCache,
+// verifies the trace blob is still in CAS, and prints the
+// trace's root Directory digest on stdout.
 //
 // The repo rule reads stdout: empty ⇒ AC miss / blob missing /
 // no CAS configured ⇒ empty trace fileset (the converter then
@@ -13,12 +14,22 @@
 //
 // Usage:
 //
-//	trace-lookup --cas=<grpc-addr> --srckey=<hex> [--instance=<name>]
+//	trace-lookup --cas=<grpc-addr> --srckey=<hex> \
+//	    [--platform=<tag>] [--instance=<name>]
+//
+// --platform: optional. Empty / omitted preserves the historical
+// single-keyspace shape — single-platform operators see no
+// behaviour change; AC entries published before the platform
+// flag was added remain reachable. Non-empty partitions the AC
+// keyspace per target platform (via REAPI Action.Platform), so
+// the lookup hits only the trace the matching publish side
+// tagged with the same value.
 //
 // Exit codes:
 //
 //	0 — successful lookup (hit or miss; stdout carries the result).
-//	1 — hard error (malformed args, gRPC failure, etc.).
+//	1 — hard error (gRPC dial failure, AC backend error, etc.).
+//	2 — usage error (missing required flag).
 //
 // Lookup miss is NOT an error — it's the normal "haven't built
 // this srckey yet" case the round-1 boot pipeline expects.
@@ -41,6 +52,7 @@ func main() {
 	addr := flag.String("cas", "", "REAPI gRPC address (host:port). Empty/unset ⇒ lookup miss (load-time fallback shape).")
 	instance := flag.String("instance", "", "REAPI instance name; matches the AC endpoint's multi-tenancy prefix.")
 	srckey := flag.String("srckey", "", "per-element srckey hex (the content of srckey.txt); seeds the synthetic AC key.")
+	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace. Must match the tag the publishing side (trace-publish) used for the same srckey. Empty preserves the historical single-keyspace shape — single-platform operators upgrading past this flag keep their previously published entries reachable.")
 	flag.Parse()
 
 	if *srckey == "" {
@@ -71,7 +83,7 @@ func main() {
 	}
 	defer store.Close()
 
-	digest, err := lookup(ctx, store, *srckey)
+	digest, err := lookup(ctx, store, *srckey, *platform)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "trace-lookup: %v\n", err)
 		os.Exit(1)
@@ -89,8 +101,8 @@ func main() {
 // (AC entry absent OR blob evicted); both publisher
 // "haven't built this yet" and CAS-eviction shapes route
 // through the same coarse-fallback path.
-func lookup(ctx context.Context, store cas.Store, srckey string) (*cas.Digest, error) {
-	key, err := tracenorm.SyntheticActionDigest(srckey)
+func lookup(ctx context.Context, store cas.Store, srckey, platform string) (*cas.Digest, error) {
+	key, err := tracenorm.SyntheticActionDigest(srckey, platform)
 	if err != nil {
 		return nil, fmt.Errorf("synth-key: %w", err)
 	}

@@ -29,22 +29,32 @@ transition cleanly.
 
 ## Next
 
-- **Per-element multi-platform BUILD generation.** The unified
-  toolchain layout shipped (see Done) but per-element conversion
-  is still single-platform-host: `convert-element` runs once on
-  the host and bakes that viewpoint into each
-  `elements/<name>/BUILD.bazel`. The right model is to run
-  `convert-element` once per (element, platform) cell via the
-  Stage 4 project-A render skeleton, then fold the per-platform
-  IRs into one `BUILD.bazel` per element using `select()` over
-  `@platforms//{os,cpu}:*` for divergent srcs/hdrs/deps/copts/defines.
-  Compiler-level flags get stripped on the way through (they
-  belong in `cc_toolchain_config`). Initial scope: `kind:cmake`.
-  Reuses Stage 4's render skeleton + Stage 5's `Observe` (which
-  the future `internal/empfold/` extraction will generalize for
-  per-element use). Same project-A pattern, different worker
-  binary (`convert-element` instead of `probe-cell`), different
-  fold inputs.
+- **Per-platform fold for round-2 trace-driven kinds.** The
+  per-element orchestrate-time fold shipped for kind:cmake
+  Phase A (see Done — `internal/empfold`,
+  `converter/internal/elementfold`, `cmd/fold-element`,
+  per-element multi-platform BUILD generation), and the
+  trace publish/lookup rendezvous can now partition its AC
+  keyspace by platform (also Done — `SyntheticActionDigest`
+  takes a platform tag; `trace-publish` / `trace-lookup` /
+  `rules/traces.bzl` plumb `--platform` end to end via
+  `CMAKE_TO_BAZEL_PLATFORM`). What's still queued for the
+  round-2 path (kind:cmake Phase B fallback, kind:autotools,
+  kind:make, kind:makemaker, kind:modulebuild, kind:manual,
+  kind:script, kind:meson Phase B): the converter genrule
+  itself runs in project A and emits a single
+  `BUILD.bazel.out` per element today. With diverging
+  per-platform install layouts (`.so` vs `.dylib`, multiarch
+  lib dirs, arch-tagged binary names), one platform's
+  converter output doesn't match another platform's
+  `install_tree.tar` — the platform-partitioned AC alone
+  isn't enough; the rendered stubs need `select()`-gated
+  path attributes
+  (`static_library = select({...: "lib/x86_64-linux-gnu/libfoo.a", ...})`).
+  Open design question: whether the round-2 converter genrule
+  itself runs per-platform (and `elementfold` composes N
+  converter outputs) or whether it consumes N traces directly
+  via a `_trace_repo` that fans out by platform.
 - **Element-signal consumption in the unifier.** Stage 6 capture
   is in (`--collect-toolchain-signal` flows fileapi replies into
   `<out>/elements/<name>/toolchain-signal/`). Pending: wire
@@ -202,6 +212,63 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Platform-tagged synthetic AC key for trace publish/lookup.**
+  `tracenorm.SyntheticActionDigest` takes a platform tag in
+  addition to srckey; non-empty tags partition the synthetic
+  AC keyspace so two platforms' traces against the same source
+  content land at distinct AC keys instead of one shadowing
+  the other. Empty platform preserves the historical
+  2-argument shape exactly — single-platform operators
+  upgrading past this revision keep their previously published
+  AC entries valid. `trace-publish` / `trace-lookup` gain a
+  `--platform` flag; `rules/traces.bzl`'s `_trace_repo` reads
+  `CMAKE_TO_BAZEL_PLATFORM` from the operator's `--repo_env`
+  and passes it to `trace-lookup`; project B's install
+  genrules (cmake round-2 + the autotools-family pipeline)
+  read the same env var via `--action_env` and pass it to
+  `trace-publish`. The publish/lookup rendezvous now hits
+  only when both sides agree on the platform — a darwin
+  trace and a linux trace coexist in the AC without
+  collision. The matching converter-side fold of per-platform
+  install plans is still queued under Next as
+  "Per-platform fold for round-2 trace-driven kinds".
+
+- **Per-element multi-platform BUILD generation (kind:cmake Phase A).**
+  `convert-element` no longer bakes the host's viewpoint into each
+  per-element `BUILD.bazel`. The orchestrator's
+  `--platforms-json` flag (parallel to the toolchain unifier's
+  manifest) drives one `convert-element` REAPI Action per
+  (element, platform) cell; the resulting per-platform
+  `ir.Package` JSONs (emitted via convert-element's
+  `--out-ir-json`) feed `cmd/fold-element`, which composes them
+  into a single unified `BUILD.bazel` whose attributes carry
+  `select()` blocks for divergent srcs/hdrs/includes/defines/deps
+  and per-platform-routed copts/linkopts. `internal/empfold`
+  factors out the cardinality-partition primitive
+  (`toolchain.Observe` now uses it too).
+  `converter/internal/elementfold` enforces per-target
+  cross-cell agreement on scalar fields (Linkstatic, Alwayslink,
+  Genrule*, Test*, …) and folds the order-sensitive
+  copts/linkopts conservatively (identical sequences → flat
+  baseline; any divergence → empty baseline + each cell's full
+  sequence under its `SelectKey` so per-platform flag order
+  survives to the compiler). `PickSelectKeys` auto-detects
+  single-axis matrices ({linux, darwin} or {x86_64, arm64})
+  and honours an operator-supplied `select_label` per platform
+  for matrices where no constraint axis uniquely identifies
+  each cell ({linux_x86_64, linux_aarch64, darwin_arm64}) — the
+  operator declares a `config_setting` per platform in their
+  `//platforms` package and supplies its label, escaping the
+  auto-detect ambiguity error with an actionable contract. N=1
+  manifests render flat lists byte-identical to today's content
+  (the on-disk layout / Action digests differ because the
+  multi-platform path always emits `ir.json` and lands outputs
+  under per-platform subdirs; leave `--platforms-json` unset
+  for the byte-stable legacy route). Render gate:
+  `scripts/meta-element-fold.sh`. Scope is kind:cmake Phase A
+  only; trace-driven kinds and round-2 fallbacks have a
+  separate per-platform fold story queued in Next.
 
 - **`convert-element-autotools` → `convert-element-trace` rename.**
   The trace-driven converter has served kind:make / kind:manual /

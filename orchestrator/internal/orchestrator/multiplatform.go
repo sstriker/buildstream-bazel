@@ -72,19 +72,37 @@ func safePlatformName(name string) error {
 // convertPlatform is the orchestrator-side per-platform spec
 // the multi-platform fan-out consumes. Carries the constraint
 // labels (passed through to fold-element so the rendered
-// BUILD.bazel's select() arms reference them) and the REAPI
+// BUILD.bazel's select() arms reference them), the REAPI
 // Action.Platform properties (used to route per-platform
-// Actions to the matching worker pool).
+// Actions to the matching worker pool), and an optional
+// operator-declared SelectLabel that overrides
+// elementfold.PickSelectKeys' auto-detection — needed for
+// matrices where no single constraint axis uniquely
+// identifies each platform (the classic
+// {linux_x86_64, linux_aarch64, darwin_arm64} shape, where
+// `@platforms//os:linux` and `@platforms//cpu:arm64` each
+// appear twice).
 type convertPlatform struct {
 	Name            string
 	Constraints     []string
+	SelectLabel     string
 	REAPIProperties []reapi.PlatformProperty
 }
 
 // platformsManifestEntry mirrors the JSON shape on disk.
+// SelectLabel ("select_label") is optional; when set, the
+// operator commits to declaring a `config_setting` with that
+// label in their //platforms package, and the rendered
+// select() in the per-element BUILD.bazel keys arms on it
+// instead of on a raw constraint_value. When unset across all
+// platforms the auto-detection path (single varying axis) is
+// the only contract; mixing some-set / some-unset is fine —
+// the ones with select_label use it, the ones without
+// auto-detect from constraints.
 type platformsManifestEntry struct {
 	Name            string                   `json:"name"`
 	Constraints     []string                 `json:"constraints"`
+	SelectLabel     string                   `json:"select_label,omitempty"`
 	REAPIProperties []reapi.PlatformProperty `json:"reapi_properties"`
 }
 
@@ -145,9 +163,16 @@ func loadPlatformsManifest(path string) ([]convertPlatform, error) {
 		if len(e.REAPIProperties) == 0 {
 			return nil, fmt.Errorf("orchestrator: platform %q in %s has no reapi_properties; declare them explicitly so per-platform Actions route to the matching worker pool", e.Name, path)
 		}
+		selectLabel := strings.TrimSpace(e.SelectLabel)
+		if selectLabel != "" {
+			if strings.ContainsAny(selectLabel, ",|") {
+				return nil, fmt.Errorf("orchestrator: platform %q in %s select_label %q contains delimiter (',' or '|') — these would break --cell argv parsing", e.Name, path, selectLabel)
+			}
+		}
 		out[i] = convertPlatform{
 			Name:            e.Name,
 			Constraints:     normalised,
+			SelectLabel:     selectLabel,
 			REAPIProperties: e.REAPIProperties,
 		}
 	}
@@ -367,18 +392,18 @@ type foldCell struct {
 func (r *runner) runFoldElement(ctx context.Context, name, elemOut string, cells []foldCell) error {
 	args := []string{"--out-build", filepath.Join(elemOut, "BUILD.bazel")}
 	for _, c := range cells {
-		// --cell <name>|<constraint1,constraint2,...>|<irJSONPath>
+		// --cell <name>|<constraint1,constraint2,...>|<irJSONPath>[|<select_label>]
 		// Pipe separator: Bazel constraint labels embed colons
 		// (@platforms//os:linux), so a colon-separated layout
-		// would collide.
-		constraintsCSV := ""
-		for i, k := range c.platform.Constraints {
-			if i > 0 {
-				constraintsCSV += ","
-			}
-			constraintsCSV += k
+		// would collide. The optional 4th field is the operator-
+		// declared config_setting label that overrides the
+		// auto-detected SelectKey when set.
+		constraintsCSV := strings.Join(c.platform.Constraints, ",")
+		raw := c.platform.Name + "|" + constraintsCSV + "|" + c.irJSONPath
+		if c.platform.SelectLabel != "" {
+			raw += "|" + c.platform.SelectLabel
 		}
-		args = append(args, "--cell", c.platform.Name+"|"+constraintsCSV+"|"+c.irJSONPath)
+		args = append(args, "--cell", raw)
 	}
 	bin := r.foldElementAbs
 	if bin == "" {

@@ -179,4 +179,28 @@ if ! grep -qF "linux_aarch64" "$work_dir/ambig.stderr"; then
     exit 1
 fi
 
-echo "meta-element-fold: ok (multi-platform fold + select() rendering + N=1 degenerate identity + ambiguous-matrix rejection)"
+# Operator-supplied select_label resolves the ambiguous matrix:
+# same {linux_x86_64, linux_aarch64, darwin_arm64} shape that
+# auto-detect rejects, but each cell carries its config_setting
+# label as a 4th --cell field. Fold succeeds; rendered select()
+# arms key on the operator's labels.
+out_build_ambig_ok="$work_dir/BUILD.ambig.ok.bazel"
+"$bin_dir/fold-element" \
+    --out-build "$out_build_ambig_ok" \
+    --cell "linux_x86_64|@platforms//os:linux,@platforms//cpu:x86_64|$work_dir/linux.ir.json|//platforms:linux_x86_64" \
+    --cell "linux_aarch64|@platforms//os:linux,@platforms//cpu:arm64|$work_dir/aarch64.ir.json|//platforms:linux_aarch64" \
+    --cell "darwin_arm64|@platforms//os:darwin,@platforms//cpu:arm64|$work_dir/darwin.ir.json|//platforms:darwin_arm64"
+
+if [ ! -f "$out_build_ambig_ok" ]; then
+    echo "select_label path: fold-element did not produce $out_build_ambig_ok" >&2
+    exit 1
+fi
+for arm in '"//platforms:linux_x86_64"' '"//platforms:linux_aarch64"' '"//platforms:darwin_arm64"'; do
+    if ! grep -qF -- "$arm" "$out_build_ambig_ok"; then
+        echo "select_label path: rendered BUILD.bazel missing arm $arm" >&2
+        cat "$out_build_ambig_ok" >&2
+        exit 1
+    fi
+done
+
+echo "meta-element-fold: ok (multi-platform fold + select() rendering + N=1 degenerate identity + ambiguous-matrix rejection + select_label override)"
