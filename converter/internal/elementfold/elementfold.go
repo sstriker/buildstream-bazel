@@ -190,8 +190,9 @@ func Fold(cells []Cell) (*ir.Package, error) {
 		// per-present-platform select() arms while the rendered
 		// shape on absent platforms resolves to the rule's
 		// default (a list attr falls through "//conditions:default":
-		// [], a scalar attr fails at analysis with a clear
-		// "no condition matched" diagnostic).
+		// [], a scalar attr falls through "//conditions:default":
+		// None — Bazel treats that as "attribute unset" per the
+		// optional-path-attr semantics on cc_import).
 		presentCells := make([]Cell, 0, len(cells))
 		variants := make(map[string]ir.Target, len(cells))
 		for _, c := range cells {

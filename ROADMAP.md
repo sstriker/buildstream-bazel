@@ -232,9 +232,10 @@ transition cleanly.
   present cells agree, so absent platforms don't inherit a flat
   baseline that promises content for a target they don't have.
   Bazel consumers depending on a phantom target on an absent
-  platform see attrs resolve to `[]` (list attr's
-  `//conditions:default`) or fail with a clean "no condition
-  matched" analysis-time diagnostic (scalar attr) — the right
+  platform see attrs resolve to `[]` (a list attr's
+  `//conditions:default`) or to `None` (a scalar attr's
+  `//conditions:default`, treated by Bazel as "attribute unset"
+  per cc_import's optional-path-attr semantics) — the right
   outcome for a target that genuinely doesn't exist on that
   platform. Picked the **phantom-target select** shape over the
   alias-driven gate variant: lowest-touch change to `elementfold`,

@@ -96,9 +96,6 @@ func TestFold_SrcsDivergeAcrossPlatforms(t *testing.T) {
 	}
 }
 
-// TestFold_MissingTargetRejected: a target present in some
-// cells but missing from others is an error. select() can't
-// conditionally instantiate a target at the package level.
 // TestFold_PhantomTargetScalarAttr: the round-2 stub shape's
 // cc_import target may be present on only one platform (an
 // arch-specific binary, a feature gated by configure). Verify
