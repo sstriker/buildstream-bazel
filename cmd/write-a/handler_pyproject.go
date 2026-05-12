@@ -146,20 +146,24 @@ var pyprojectStructuralFallback = map[string]bool{}
 // `build-args` carries the default `--wheel --no-isolation` so
 // an operator overriding `variables: build-args: ...` in their
 // .bst element actually changes the rendered command.
-// `installer-args` is intentionally absent — upstream uses it
-// with `python -m installer`, but our `pip install` shape has
-// no equivalent knob, and keeping a documented-but-ignored var
-// is more confusing than not having it.
+// `installer-args` is kept as an empty no-op even though our
+// pip-based install command doesn't consume it: variables.go's
+// substituteCmd hard-fails on `%{undefined}` references, and
+// existing kind:pyproject elements carried over from upstream
+// templates commonly carry `%{installer-args}` references in
+// their own commands or overrides. Keeping the default avoids
+// breaking those at render time.
 func pyprojectPipelineHandler() pipelineHandler {
 	return pipelineHandler{
 		kindName: "pyproject",
 		defaultVars: map[string]string{
-			"python":        "python3",
-			"pip":           "pip",
-			"python-prefix": "%{prefix}/lib/python3",
-			"pip-args":      `--no-build-isolation --no-deps --no-index --target="%{install-root}%{python-prefix}"`,
-			"build-args":    "--wheel --no-isolation",
-			"dist-dir":      "_bst_dist",
+			"python":         "python3",
+			"pip":            "pip",
+			"python-prefix":  "%{prefix}/lib/python3",
+			"pip-args":       `--no-build-isolation --no-deps --no-index --target="%{install-root}%{python-prefix}"`,
+			"build-args":     "--wheel --no-isolation",
+			"installer-args": "",
+			"dist-dir":       "_bst_dist",
 		},
 		defaults: pipelineDefaults{
 			Build: []string{
