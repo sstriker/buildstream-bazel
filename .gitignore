@@ -32,6 +32,7 @@ converter/testdata/sample-projects/libdrm/
 # source directories under converter/cmd/ aren't swept up.
 /convert-element
 /convert-element-meson
+/convert-element-pyproject
 /derive-toolchain
 /probe-cell
 /probe-cell-fixture

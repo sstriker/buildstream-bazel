@@ -334,6 +334,130 @@ library + headers on the executor.
 
 **Emission point:** `cmd/convert-element-meson` `lower.fillDeps`.
 
+### `pyproject-parse-failed` _(kind:pyproject)_
+
+`pyproject.toml` couldn't be read or contains malformed TOML
+that go-toml's strict decoder rejected. The wrapped error
+includes the file path and the parser's diagnostic.
+
+**Operator action:** validate the TOML and fix the syntax,
+then re-render. Python 3.11+ ships `tomllib` in the stdlib:
+`python3 -c "import tomllib; tomllib.loads(open('pyproject.toml').read())"`.
+On older Python, install `tomli` (a pure-Python backport of
+the same API) and use it instead:
+`pip install tomli && python3 -c "import tomli; tomli.loads(open('pyproject.toml').read())"`.
+Any other TOML validator works too.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`parse.Load`.
+
+### `unsupported-pyproject-backend` _(kind:pyproject)_
+
+`[build-system].build-backend` is missing or names a backend
+v1 doesn't model. v1 supports `flit_core.buildapi`,
+`hatchling.build`, `setuptools.build_meta`, and
+`poetry.core.masonry.api`.
+
+**Operator action:** if the offending element ships a v1-
+supported backend but doesn't declare it explicitly, add a
+`[build-system]` block. Otherwise wait for the queued Phase B
+install-plan fallback (per-element write-a-time dispatch that
+routes refused elements through the pipeline shape) or re-render
+without `--convert-element-pyproject` so the kind defaults to
+the pipeline shape for every element.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`backends.Discover`.
+
+### `unsupported-pyproject-package-discovery` _(kind:pyproject)_
+
+A recognized backend whose discovery shape v1 can't statically
+resolve — most commonly setuptools without an explicit
+`[tool.setuptools].packages` config (setuptools' implicit
+auto-discovery is version-dependent and we don't run it),
+hatchling with VCS-tracked auto-discovery, or poetry without
+`[tool.poetry].packages`.
+
+**Operator action:** add an explicit `packages` list to the
+relevant `[tool.<backend>]` section, or accept the pipeline
+fallback.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`backends.discover<Backend>`.
+
+### `unsupported-pyproject-c-extension` _(kind:pyproject)_
+
+The source tree contains C / C++ / Cython / Rust files
+(`*.c`, `*.cc`, `*.cpp`, `*.cxx`, `*.pyx`, `*.pxd`, `*.pxi`,
+`*.rs`, `Cargo.toml`). v1 only converts pure-Python packages;
+extension support requires rules_python's C-extension
+toolchain or the queued Phase B install-plan fallback.
+
+**Operator action:** wait for the Phase B follow-up, or
+manually carve the extension out via the pipeline-shape
+fallback.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.refuseCExtensions`.
+
+### `unsupported-pyproject-dynamic-metadata` _(kind:pyproject)_
+
+`[project] dynamic = [...]` lists a load-bearing field
+(`version`, `dependencies`, `scripts`, `gui-scripts`,
+`entry-points`) that the build-backend would resolve at build
+time (setuptools_scm, hatch-vcs, etc.). v1 doesn't run the
+backend, so the resolved value isn't visible. Doc-only
+dynamic fields (`readme`, `description`) are accepted.
+
+**Operator action:** pin the dynamic field statically in
+pyproject.toml (e.g. replace `dynamic = ["version"]` with an
+explicit `version = "X.Y.Z"`), or accept the pipeline
+fallback.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.refuseDynamicMetadata`.
+
+### `unresolved-pyproject-dependency` _(kind:pyproject)_
+
+A `[project.dependencies]` entry (or a `[project.scripts]`
+entry pointing at an external module) that isn't covered by
+this element's own packages and isn't bound by the imports
+manifest under either the bare distribution name or the
+`<name>::<name>` convention bind. Distribution names are
+PEP 503-normalized (lowercase, `[-_.]+ → -`) before lookup.
+
+**Operator action:** add the providing element to the imports
+manifest, or pre-stage the dependency on the executor.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.resolveDeps` + `lower.lowerScripts`.
+
+### `unsupported-pyproject-entry-point` _(kind:pyproject)_
+
+A `[project.scripts]` / `[project.gui-scripts]` entry whose
+value couldn't be parsed as PEP 621 `module:func` (missing
+`:`, empty module/func, identifier that isn't a valid
+Python identifier — each dotted component must match
+`[A-Za-z_][A-Za-z0-9_]*` and there must be at least one
+component, so digits-leading or empty components refuse;
+strict-subset enforcement prevents arbitrary shell syntax
+leaking into the generated entry-shim genrule's `cmd`),
+or a name declared in both `[project.scripts]` and
+`[project.gui-scripts]` (which would emit two `py_binary`
+rules with the same target name).
+
+**Operator action:** fix the entry-point spec in
+pyproject.toml to a valid `module:func` form using only
+Python identifier characters (letters, digits, underscore;
+dots separating module components), or remove the duplicate
+key from one of the two scripts tables. Once the queued
+Phase B per-element fallback (ROADMAP) is shipped, refused
+elements will route to the pipeline-shape coarse install
+genrule automatically.
+
+**Emission point:** `converter/cmd/convert-element-pyproject`
+`lower.parseEntryPoint` + `lower.mergeScripts`.
+
 ## Stability rules
 
 1. **Append-only.** Once a code is in this list, it stays. New
