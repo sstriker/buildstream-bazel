@@ -68,7 +68,7 @@ func emitPyLibrary(b *bytes.Buffer, t Target) {
 		writeList(b, "deps", sortedCopy(t.Deps))
 	}
 	if len(t.Visibility) > 0 {
-		writeList(b, "visibility", t.Visibility)
+		writeList(b, "visibility", sortedCopy(t.Visibility))
 	}
 	b.WriteString(")\n")
 }
@@ -102,7 +102,7 @@ func emitPyBinary(b *bytes.Buffer, t Target) {
 		writeList(b, "deps", []string{t.EntryDep})
 	}
 	if len(t.Visibility) > 0 {
-		writeList(b, "visibility", t.Visibility)
+		writeList(b, "visibility", sortedCopy(t.Visibility))
 	}
 	b.WriteString(")\n")
 }
