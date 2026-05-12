@@ -710,12 +710,26 @@ func composeMultiPlatformInstallBuild(elem *element, bodies []string, platforms 
 	}
 	// Trailing "//conditions:default": [] arm matches the
 	// convention emit/bazel uses for list-attr select() blocks.
-	// Out-of-matrix builds (e.g. someone targeting a platform
-	// not in --platforms-json) resolve install_tree.tar to an
-	// empty list rather than failing analysis with a "no
+	// Platforms whose constraints don't match any of the
+	// rendered select() arm keys resolve install_tree.tar to
+	// an empty list rather than failing analysis with a "no
 	// matching condition" diagnostic on the filegroup itself —
 	// the failure surfaces at the consumer, where it points at
 	// what's actually missing.
+	//
+	// "Don't match any arm" is the precise condition, not "out
+	// of matrix": PickSelectKeys may auto-detect a single-axis
+	// constraint (commonly `@platforms//cpu:*`), so a build
+	// platform that wasn't in the manifest but happens to share
+	// the chosen axis with one of the matrix cells (e.g. a
+	// hypothetical `linux_x86_64_v2` matching the manifest's
+	// `linux_x86_64` cell's `@platforms//cpu:x86_64` arm) will
+	// pick that arm's tarball rather than fall through to the
+	// default. Operators who need strict in-matrix-only matching
+	// supply per-platform select_label / config_setting labels
+	// (see PickSelectKeys' escalation path), which scope the arm
+	// keys to operator-declared config_settings rather than
+	// shared constraint axes.
 	b.WriteString(`        "//conditions:default": [],` + "\n")
 	b.WriteString("    }),\n")
 	b.WriteString(")\n")
