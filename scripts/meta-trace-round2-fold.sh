@@ -156,5 +156,42 @@ if [ ! -x "$A/tools/fold-element" ]; then
     exit 1
 fi
 
+# Project B side: N install genrules + top-level :install_tree.tar
+# filegroup that select()s per-platform. Each genrule's outputs land
+# under <platform>/, exec_compatible_with carries the constraint
+# set, and trace-publish bakes --platform=<plat> literally so each
+# cell publishes under its own AC partition.
+b_build="$B/elements/greet/BUILD.bazel"
+for marker in \
+    'name = "greet_install_linux_x86_64"' \
+    'name = "greet_install_darwin_arm64"' \
+    '"linux_x86_64/install_tree.tar"' \
+    '"darwin_arm64/install_tree.tar"' \
+    '"linux_x86_64/trace.log"' \
+    '"darwin_arm64/trace.log"' \
+    '"linux_x86_64/make-db.txt"' \
+    '"darwin_arm64/make-db.txt"' \
+    'exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"]' \
+    'exec_compatible_with = ["@platforms//os:darwin", "@platforms//cpu:arm64"]' \
+    '--platform="linux_x86_64"' \
+    '--platform="darwin_arm64"' \
+    'name = "install_tree.tar"' \
+    '"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]' \
+    '"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]'; do
+    if ! grep -qF -- "$marker" "$b_build"; then
+        echo "meta-trace-round2-fold: B-side BUILD missing marker: $marker" >&2
+        cat "$b_build" >&2
+        exit 1
+    fi
+done
+
+# Legacy single-platform genrule name must NOT appear under
+# multi-platform mode.
+if grep -qF -- 'name = "greet_install"' "$b_build"; then
+    echo "meta-trace-round2-fold: B-side unexpectedly contains legacy 'greet_install' name (no platform suffix)" >&2
+    cat "$b_build" >&2
+    exit 1
+fi
+
 echo "meta-trace-round2-fold: render OK"
 echo "meta-trace-round2-fold: ok"

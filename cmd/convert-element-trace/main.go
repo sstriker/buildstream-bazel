@@ -266,7 +266,7 @@ func recoveredRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB, genera
 }
 
 // toIR maps the trace converter's local CCRule slice to the
-// shared ir.Package shape consumed by converter/internal/elementfold.
+// shared ir.Package shape consumed by converter/elementfold.
 // Single-platform conversions don't need this — emitBuild renders
 // BUILD.bazel.out directly — but the multi-platform fold for
 // round-2 trace-driven kinds composes N per-platform ir.Package

@@ -178,7 +178,7 @@ func renderTraceDrivenRound2AMultiPlatform(elem *element, elemPkg, kindName stri
 # trace repo (@trace_%[1]s__<platform>//:trace) and emits one
 # ir.Package JSON. The trailing fold-element genrule composes
 # the N ir.json files into the unified BUILD.bazel.out via
-# converter/internal/elementfold — items shared across every
+# converter/elementfold — items shared across every
 # platform stay flat; per-platform deltas land under select()
 # arms keyed by each platform's constraint axis (or operator-
 # supplied select_label for matrices the auto-detect can't
@@ -312,10 +312,16 @@ func foldCellArg(p tracePlatform, irPath string) string {
 // dep headers / libraries. autotools passes []string{"autotools"};
 // kind:make passes []string{"make"}; cross-kind dep wiring is a
 // follow-up once the fixtures land.
-func pipelineTraceExtensionRound2(elem *element, depKindAllow []string) *pipelineExtension {
+//
+// platform / outputPrefix / nameSuffix / execCompatibleWith are
+// the per-platform fan-out knobs the project-B caller populates
+// when emitting N install genrules per element. All four are
+// empty in the single-platform legacy path; the rendered shape
+// matches the pre-fan-out goldens byte-for-byte.
+func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tracePlatform) *pipelineExtension {
 	ext := &pipelineExtension{
 		WrapPipelineCmds: wrapAutotoolsPipelineCmds,
-		AppendCmd:        pipelineTracePublishStep(elem.Name),
+		AppendCmd:        pipelineTracePublishStep(elem.Name, plat.Name, plat.Name),
 		ExtraOuts: []string{
 			"trace.log",
 			"make-db.txt",
@@ -331,6 +337,11 @@ func pipelineTraceExtensionRound2(elem *element, depKindAllow []string) *pipelin
 		// autotoolsHandler.RenderB) calls renderSrckey before
 		// the genrule fires so the file exists at action time.
 		ExtraSrcs: []string{"srckey.txt"},
+	}
+	if plat.Name != "" {
+		ext.OutputPrefix = plat.Name
+		ext.NameSuffix = "_" + plat.Name
+		ext.ExecCompatibleWith = append([]string(nil), plat.Constraints...)
 	}
 
 	allow := map[string]bool{}
@@ -369,9 +380,34 @@ func pipelineTraceExtensionRound2(elem *element, depKindAllow []string) *pipelin
 // `|| true` keeps the genrule action alive). For kinds whose
 // build never produces a Makefile (kind:script edge cases),
 // make-db.txt ends up empty — the converter tolerates that.
-func pipelineTracePublishStep(elemName string) string {
+//
+// platform is the CMAKE_TO_BAZEL_PLATFORM tag pinned at render
+// time when the project B side is fanning out per-platform.
+// Empty falls back to the env-driven shape (single-platform
+// legacy operators set the env via --action_env). outputPrefix
+// is the per-platform OutputPrefix that prefixes the trace.log
+// and make-db.txt $(location) references — must agree with the
+// extension's ExtraOuts so the cmd writes to the right declared
+// output paths.
+func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
 	_ = elemName // reserved for future per-element diagnostics
-	return `        # === make-db post-process (round 2) ===
+	trace := "trace.log"
+	makeDB := "make-db.txt"
+	if outputPrefix != "" {
+		trace = outputPrefix + "/trace.log"
+		makeDB = outputPrefix + "/make-db.txt"
+	}
+	// publishPlatform is the literal value the trace-publish
+	// invocation sends as --platform=. When the caller supplied
+	// a platform tag (multi-platform fan-out), bake it in so the
+	// AC entry lands under the matching partition. Otherwise
+	// preserve the env-driven shape — single-platform operators
+	// still set CMAKE_TO_BAZEL_PLATFORM via --action_env.
+	publishPlatform := `$${CMAKE_TO_BAZEL_PLATFORM:-}`
+	if platform != "" {
+		publishPlatform = platform
+	}
+	return fmt.Sprintf(`        # === make-db post-process (round 2) ===
         # Same sed filter the autotools install genrule applies
         # inline (drop variant lines whose bytes drift across
         # runs of an otherwise-identical build: mtimes,
@@ -383,11 +419,11 @@ func pipelineTracePublishStep(elemName string) string {
             | sed -e "s|$$INSTALL_ROOT|/INSTALL_ROOT|g" \
                   -e "s|$$BUILD_ROOT|/BUILD_ROOT|g" \
                   -e "s|$${DEP_PREFIX:-/__unset_dep_prefix__}|/DEP_PREFIX|g" \
-            > "$$EXEC_ROOT/$(location make-db.txt)"
+            > "$$EXEC_ROOT/$(location %[2]s)"
 
         # Surface the canonical trace.log as a declared output of
         # this genrule. trace-publish reads it from here.
-        cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/$(location trace.log)"
+        cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/$(location %[1]s)"
 
         # Publish to the AC iff a remote is configured. Empty
         # CAS_GRPC_ADDR ⇒ skip (e.g. local dev without buildbarn);
@@ -398,17 +434,19 @@ func pipelineTracePublishStep(elemName string) string {
         # readable when a developer is debugging.
         cd "$$EXEC_ROOT"
         if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
-            # CMAKE_TO_BAZEL_PLATFORM partitions the synthetic AC
-            # keyspace per target platform (matches the env var
-            # rules/traces.bzl's _trace_repo reads at load time).
-            # Operators with a multi-platform Bazel build set it
-            # via --action_env=CMAKE_TO_BAZEL_PLATFORM=...; unset
-            # preserves the historical single-keyspace shape.
+            # --platform= partitions the synthetic AC keyspace
+            # per target platform. Multi-platform fan-out bakes
+            # the platform tag literally into this argv so each
+            # of N per-platform genrules publishes under its own
+            # tag. Single-platform legacy operators leave platform
+            # empty here; the env-var fallback
+            # (--action_env=CMAKE_TO_BAZEL_PLATFORM=...) keeps
+            # working.
             $(location //tools:trace-publish) \
                 --cas="$${CAS_GRPC_ADDR}" \
                 --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \
-                --platform="$${CMAKE_TO_BAZEL_PLATFORM:-}" \
-                --trace="$(location trace.log)" \
-                --make-db="$(location make-db.txt)" >/dev/null
-        fi`
+                --platform="%[3]s" \
+                --trace="$(location %[1]s)" \
+                --make-db="$(location %[2]s)" >/dev/null
+        fi`, trace, makeDB, publishPlatform)
 }

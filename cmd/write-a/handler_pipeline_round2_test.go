@@ -374,3 +374,155 @@ func TestWriter_TraceDrivenRound2A_OperatorSelectLabelOverride(t *testing.T) {
 		}
 	}
 }
+
+// TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB: project
+// B's per-element render under --platforms-json emits N install
+// genrules (one per platform) plus a top-level filegroup at
+// :install_tree.tar that select()s the matching per-platform
+// tarball. Each genrule:
+//
+//   - Names "<elem>_install_<platform>" (suffixed so N coexist)
+//   - Outputs land under <platform>/ subdir (no collisions)
+//   - exec_compatible_with carries the platform's constraint set
+//   - trace-publish call bakes --platform=<plat> literally so each
+//     cell publishes under the matching AC partition (vs reading
+//     CMAKE_TO_BAZEL_PLATFORM from the action env, which can't
+//     differ across N siblings in one Bazel build).
+//
+// Downstream //elements/<dep>:install_tree.tar references still
+// resolve correctly via the top-level filegroup's select().
+func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "Makefile"), []byte("all:\n\techo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "elem.bst")
+	if err := os.WriteFile(bst, []byte("kind: make\nsources:\n- kind: local\n  path: "+srcDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"convert-element-trace-fake", "build-tracer-fake", "trace-publish-fake", "trace-lookup-fake", "fold-element-fake"} {
+		if err := os.WriteFile(filepath.Join(tmp, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := traceConfig
+	traceConfig.convertBin = filepath.Join(tmp, "convert-element-trace-fake")
+	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+	traceConfig.foldBin = filepath.Join(tmp, "fold-element-fake")
+	traceConfig.round2Enabled = true
+	traceConfig.platforms = []tracePlatform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
+	}
+	t.Cleanup(func() { traceConfig = prev })
+
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	outA := filepath.Join(tmp, "A")
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectA(g, outA, binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	bBody, err := os.ReadFile(filepath.Join(outB, "elements/elem/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(bBody)
+
+	// Two install genrules, names suffixed by platform.
+	for _, want := range []string{
+		`name = "elem_install_linux_x86_64"`,
+		`name = "elem_install_darwin_arm64"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform project B missing %q\n%s", want, got)
+		}
+	}
+
+	// Outputs land under <platform>/ subdirs so the N genrules
+	// don't collide.
+	for _, want := range []string{
+		`"linux_x86_64/install_tree.tar"`,
+		`"linux_x86_64/trace.log"`,
+		`"linux_x86_64/make-db.txt"`,
+		`"darwin_arm64/install_tree.tar"`,
+		`"darwin_arm64/trace.log"`,
+		`"darwin_arm64/make-db.txt"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform project B missing prefixed output %q\n%s", want, got)
+		}
+	}
+
+	// exec_compatible_with routes each install action to the
+	// matching executor pool. The constraint set is the same
+	// labels the platforms manifest declared.
+	for _, want := range []string{
+		`exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"]`,
+		`exec_compatible_with = ["@platforms//os:darwin", "@platforms//cpu:arm64"]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform project B missing exec_compatible_with %q\n%s", want, got)
+		}
+	}
+
+	// trace-publish bakes the platform tag literally so each
+	// per-platform action publishes under its own AC partition.
+	// (Env-var fallback would collide — N parallel actions can't
+	// disagree on CMAKE_TO_BAZEL_PLATFORM from --action_env.)
+	for _, want := range []string{
+		`--platform="linux_x86_64"`,
+		`--platform="darwin_arm64"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform project B trace-publish missing baked --platform=%q\n%s", want, got)
+		}
+	}
+
+	// Top-level filegroup at :install_tree.tar select()s the
+	// per-platform tarball. Downstream
+	// //elements/<dep>:install_tree.tar references stay valid;
+	// each consumer's build platform picks the right cell.
+	// PickSelectKeys' auto-detect picks the lex-smallest unique
+	// constraint axis; for {linux_x86_64, darwin_arm64} that's
+	// the cpu axis (`@platforms//cpu:` < `@platforms//os:`
+	// alphabetically) rather than os. Operators who want os-
+	// keyed arms supply select_label per platform in the
+	// platforms manifest — see TestWriter_TraceDriven
+	// Round2A_OperatorSelectLabelOverride for that escalation.
+	for _, want := range []string{
+		`name = "install_tree.tar"`,
+		`srcs = select({`,
+		`"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]`,
+		`"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform project B missing top-level install_tree.tar filegroup marker %q\n%s", want, got)
+		}
+	}
+
+	// Legacy single-platform shape MUST NOT appear: no bare
+	// "elem_install" name, no unprefixed install_tree.tar /
+	// trace.log outputs.
+	for _, banned := range []string{
+		`name = "elem_install"`,
+		`"install_tree.tar", "trace.log"`, // the un-prefixed outs list
+	} {
+		if strings.Contains(got, banned) {
+			t.Errorf("multi-platform project B unexpectedly contains legacy single-platform shape %q\n%s", banned, got)
+		}
+	}
+}

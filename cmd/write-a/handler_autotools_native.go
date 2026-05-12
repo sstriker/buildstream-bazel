@@ -254,7 +254,15 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 		// it would just invalidate the install genrule's cache
 		// key on every imports.json change with no behavioral
 		// effect.
-		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"})
+		// kind:autotools per-platform render is queued under
+		// ROADMAP Next ("Per-platform fold for round-2 trace-
+		// driven kinds — kind:autotools per-platform render");
+		// today's autotoolsHandler always renders single-
+		// platform regardless of --platforms-json. Pass an empty
+		// tracePlatform{} so pipelineTraceExtensionRound2 emits
+		// the byte-stable legacy shape with no OutputPrefix /
+		// NameSuffix / ExecCompatibleWith.
+		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"}, tracePlatform{})
 		return h, nil
 	}
 	// Round 1: converter runs inline in B's install genrule, so
