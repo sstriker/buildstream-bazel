@@ -341,8 +341,13 @@ transition cleanly.
   pyproject-{backend,c-extension,dynamic-metadata,package-
   discovery,entry-point}`, `unresolved-pyproject-dependency`,
   `pyproject-parse-failed`) cover the patterns v1 doesn't lift;
-  the pipeline-shape fallback (existing handler unchanged)
-  catches the rest. Activated by passing
+  with `--convert-element-pyproject` set those refusals fail
+  the per-element genrule at bazel-build time. Routing refused
+  elements to the pipeline-shape fallback automatically is the
+  Phase B install-plan fallback follow-up (queued); today's
+  operator escape is to re-render without
+  `--convert-element-pyproject` to take the pipeline default
+  for the whole graph. Activated by passing
   `--convert-element-pyproject <path>` to write-a; project B's
   MODULE.bazel auto-adds `rules_python` when at least one
   kind:pyproject element is present and the native path is on.
