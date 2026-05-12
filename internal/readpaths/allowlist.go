@@ -1,0 +1,136 @@
+package readpaths
+
+// Allowlist: per-element "expected drift" file declaring paths
+// the narrowing-undercoverage audit may legitimately report.
+//
+// Lives next to srckey-patterns.txt in the same syntax family
+// — `#` comments + blank lines are ignored, every other line
+// is one exact-match source-relative path. No glob grammar:
+// each entry is a deliberate per-path declaration that says
+// "yes, this file is read at action time AND yes, that's
+// expected behavior for v1." The exact-match shape keeps the
+// allowlist reviewable in PR (a glob could mask unrelated
+// drift the operator didn't intend to silence).
+//
+// Typical entries are templates that the configure_file lift
+// refuses (Substitute hasn't modeled some option, or the
+// values dump filtered a referenced variable). The audit
+// flags these correctly; the operator adds the path here as a
+// deliberate "yes, this is the legacy bytes-embedded shape,
+// the .h.in content stays in srckey." The
+// `cmake-codegen-lifted` tag is the inverse audit query:
+// genrules WITHOUT that tag are the elements whose .h.in
+// templates legitimately live in the allowlist.
+//
+// Round-trip with the audit's report: an audit miss line and
+// an allowlist line have identical syntax, so silencing a new
+// drift entry is `cat undercomplete.txt >> srckey-expected-drift.txt`
+// — modulo manual review of which paths to actually accept.
+//
+// nil/empty allowlist signals "no expected drift declared".
+
+import (
+	"bufio"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+)
+
+// Allowlist is the parsed expected-drift file.
+type Allowlist struct {
+	paths map[string]struct{}
+}
+
+// NewAllowlist returns an empty allowlist. Nil receivers on
+// Contains / Len / Format work too — both are safe to call on
+// a nil pointer — so most callers can leave the slot zero-
+// valued when no allowlist is declared.
+func NewAllowlist() *Allowlist {
+	return &Allowlist{paths: map[string]struct{}{}}
+}
+
+// ParseAllowlist reads an expected-drift-format stream. label
+// is used in error messages (typically the source path or
+// "<inline>"). Blank lines and `#`-prefixed comments are
+// dropped; every other line is taken as one exact-match path.
+// Whitespace inside a line is not significant — the line is
+// trimmed before being recorded, so leading/trailing spaces
+// won't cause a path mismatch against the audit's report.
+func ParseAllowlist(r io.Reader, label string) (*Allowlist, error) {
+	a := NewAllowlist()
+	scanner := bufio.NewScanner(r)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		raw := strings.TrimSpace(scanner.Text())
+		if raw == "" || strings.HasPrefix(raw, "#") {
+			continue
+		}
+		// Strip trailing inline comments: `path/foo.h # known unliftable`.
+		if i := strings.Index(raw, " #"); i >= 0 {
+			raw = strings.TrimSpace(raw[:i])
+			if raw == "" {
+				continue
+			}
+		}
+		if strings.ContainsAny(raw, " \t") {
+			// Path component containing whitespace would either
+			// be a typo or a malicious filename; the source-tree
+			// paths the audit emits are slash-separated and
+			// whitespace-free, so flag this as malformed rather
+			// than silently storing something the audit will
+			// never match.
+			return nil, fmt.Errorf("%s:%d: whitespace in allowlist entry %q (expected one source-relative path per line)", label, lineNum, raw)
+		}
+		a.paths[raw] = struct{}{}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	return a, nil
+}
+
+// Contains reports whether p is on the allowlist. nil receivers
+// always return false (the no-allowlist default — every audit
+// miss is real drift).
+func (a *Allowlist) Contains(p string) bool {
+	if a == nil || a.paths == nil {
+		return false
+	}
+	_, ok := a.paths[p]
+	return ok
+}
+
+// Len returns the number of allowlisted paths. nil receivers
+// return 0.
+func (a *Allowlist) Len() int {
+	if a == nil {
+		return 0
+	}
+	return len(a.paths)
+}
+
+// Format serializes the allowlist to its canonical on-disk
+// representation: one path per line, sorted lexically, no
+// trailing newline after the last entry but every line ends
+// with `\n`. nil receivers and empty allowlists both render
+// as an empty byte slice — write-a emits the file unconditionally
+// for shape predictability, and an empty file round-trips
+// through ParseAllowlist to an empty Allowlist.
+func (a *Allowlist) Format() []byte {
+	if a == nil || len(a.paths) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(a.paths))
+	for k := range a.paths {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('\n')
+	}
+	return []byte(b.String())
+}

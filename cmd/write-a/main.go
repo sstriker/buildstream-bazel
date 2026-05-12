@@ -47,6 +47,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
 	"gopkg.in/yaml.v3"
 )
 
@@ -282,6 +283,14 @@ type element struct {
 	// consumed by kind:cmake's handler today; pipeline-shape
 	// handlers stage everything regardless.
 	Patterns *readPathsPatterns
+
+	// ExpectedDrift is the parsed <element>.expected-drift.txt
+	// content (also committed alongside the .bst). Nil when the
+	// file is absent — that's the default "no expected drift"
+	// case, i.e. every audit miss is real drift. Staged into
+	// project A as srckey-expected-drift.txt and consumed by
+	// cmd/audit-narrowing --allowlist to filter the miss list.
+	ExpectedDrift *readpaths.Allowlist
 
 	// RealPaths / ZeroPaths are derived during the cmake handler's
 	// per-element rendering: real files staged on disk, zero paths
@@ -871,7 +880,15 @@ func loadElement(bstPath, includeBase, sourceCache string, options map[string]bs
 		return nil, fmt.Errorf("load read-paths patterns for %s: %w", bstPath, err)
 	}
 
-	elem := &element{Name: name, Bst: &f, Patterns: patterns}
+	// Load <element>.expected-drift.txt sibling if present.
+	// Absent → nil allowlist → "every audit miss is real drift"
+	// default in the narrowing-undercoverage audit.
+	drift, err := loadExpectedDrift(bstPath)
+	if err != nil {
+		return nil, fmt.Errorf("load expected-drift for %s: %w", bstPath, err)
+	}
+
+	elem := &element{Name: name, Bst: &f, Patterns: patterns, ExpectedDrift: drift}
 
 	// Source resolution is per-kind. cmake / manual / autotools /
 	// import / … pull a kind:local source tree from disk; stack /

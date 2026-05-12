@@ -188,17 +188,26 @@ func matchesSrckeyPatterns(patterns *readPathsPatterns, path string) bool {
 }
 
 // renderSrckey writes srckey.txt + srckey-breakdown.txt +
-// srckey-patterns.txt to elemPkg. All three files are byte-
-// stable as long as the source tree is byte-stable + patterns
-// are unchanged. The breakdown is human-readable: one line per
-// source path with status (content / name) and the file's
-// sha256 (when content-included). srckey.txt is the sha256 of
-// the breakdown's bytes. srckey-patterns.txt is the resolved
-// pattern set in read-paths.txt syntax — the surface
-// cmd/audit-narrowing reads to compare against the action-time
-// read oracle and flag undercoverage drift. Empty patterns
-// (the conservative no-narrow default) round-trip as an empty
-// file; the audit treats that as "everything covered".
+// srckey-patterns.txt + srckey-expected-drift.txt to elemPkg.
+// All four files are byte-stable as long as the source tree is
+// byte-stable + patterns + expected-drift are unchanged.
+//
+//   - srckey-breakdown.txt: human-readable; one line per source
+//     path with status (content / name) and the file's sha256
+//     (when content-included).
+//   - srckey.txt: sha256 of the breakdown's bytes.
+//   - srckey-patterns.txt: resolved pattern set in read-paths.txt
+//     syntax — the surface cmd/audit-narrowing reads to compare
+//     against the action-time read oracle and flag undercoverage
+//     drift. Empty patterns (the conservative no-narrow default)
+//     round-trip as an empty file; the audit treats that as
+//     "everything covered".
+//   - srckey-expected-drift.txt: per-element allowlist of paths
+//     the audit may legitimately report (typically .h.in
+//     templates the configure_file lift refused; see the
+//     `cmake-codegen-lifted` audit tag for the inverse query).
+//     nil/empty allowlist round-trips as an empty file. The
+//     audit consumes this via --allowlist=<path>.
 func renderSrckey(elem *element, elemPkg string, patterns *readPathsPatterns) error {
 	hash, breakdown, err := computeSrckey(elem, patterns)
 	if err != nil {
@@ -208,6 +217,9 @@ func renderSrckey(elem *element, elemPkg string, patterns *readPathsPatterns) er
 		return err
 	}
 	if err := writeFile(filepath.Join(elemPkg, "srckey-patterns.txt"), patterns.Format()); err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(elemPkg, "srckey-expected-drift.txt"), string(elem.ExpectedDrift.Format())); err != nil {
 		return err
 	}
 	return writeFile(filepath.Join(elemPkg, "srckey.txt"), hash+"\n")
