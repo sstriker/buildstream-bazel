@@ -118,14 +118,19 @@ returns this verbatim per package.
 
 Anything else (`pdm.backend`, `setuptools.build_meta:__legacy__`,
 `mesonpy`, `scikit-build-core`, custom backends) refuses with
-`unsupported-pyproject-backend` and falls back to the existing
-pipeline-shape coarse install genrule.
+`unsupported-pyproject-backend`. With `--convert-element-pyproject`
+set, the per-element native genrule fails at bazel-build time
+(Tier-1 surface). To route refused elements through the pipeline
+shape automatically, operators need either the queued Phase B
+install-plan fallback (per-element write-a-time dispatch) or to
+re-render without `--convert-element-pyproject` so every
+kind:pyproject element takes the pipeline default.
 
 ## Typed Tier-1 refusals
 
 | Code | When | Operator action |
 |------|------|-----------------|
-| `unsupported-pyproject-backend` | `[build-system].build-backend` not in v1 allow-list, or `[build-system]` block missing entirely. | If the backend is one of the v1 set, declare it explicitly. Otherwise this element falls back to the pipeline shape; works, just not Bazel-incremental. |
+| `unsupported-pyproject-backend` | `[build-system].build-backend` not in v1 allow-list, or `[build-system]` block missing entirely. | If the backend is one of the v1 set, declare it explicitly. Otherwise wait for the queued Phase B install-plan fallback (per-element write-a-time dispatch) or re-render without `--convert-element-pyproject` (pipeline shape is the no-flag default). |
 | `unsupported-pyproject-c-extension` | Source tree contains `*.c`/`*.cpp`/`*.pyx`/`*.rs`/`Cargo.toml` (filename / extension scan only — v1 doesn't parse `setup.py`, so a `setup.py` declaring `ext_modules`/`cmdclass` without sibling extension-source files isn't detected here). | Pure-Python repackage (rare), or wait for the Phase B install-plan fallback queued in ROADMAP. |
 | `unsupported-pyproject-dynamic-metadata` | `[project] dynamic = […]` referencing `version` / `dependencies` / `scripts` (which the backend would compute at build time, e.g. via setuptools_scm or hatch-vcs). | Pin the dynamic field statically in pyproject.toml, or accept the pipeline fallback. |
 | `unsupported-pyproject-package-discovery` | A recognized backend whose discovery shape we couldn't statically resolve (e.g. setuptools without explicit packages config). | Add an explicit `tool.setuptools.packages = [...]` listing. |

@@ -360,8 +360,11 @@ v1 doesn't model. v1 supports `flit_core.buildapi`,
 
 **Operator action:** if the offending element ships a v1-
 supported backend but doesn't declare it explicitly, add a
-`[build-system]` block. Otherwise this element falls back to
-the pipeline shape (works, just not Bazel-incremental).
+`[build-system]` block. Otherwise wait for the queued Phase B
+install-plan fallback (per-element write-a-time dispatch that
+routes refused elements through the pipeline shape) or re-render
+without `--convert-element-pyproject` so the kind defaults to
+the pipeline shape for every element.
 
 **Emission point:** `converter/cmd/convert-element-pyproject`
 `backends.Discover`.
