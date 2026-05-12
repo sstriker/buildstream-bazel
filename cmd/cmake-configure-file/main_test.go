@@ -164,6 +164,34 @@ func TestRun_ContentBase64Empty(t *testing.T) {
 	}
 }
 
+// TestRun_RejectsInvariantViolations asserts the run-side
+// guard that backs main's CLI gate: a programmatic caller (or
+// a future CLI reshuffle) that forgets to set one of inPath /
+// hasContent — or sets both — must surface an explicit error
+// rather than silently rendering an empty template (which
+// produces a deceptively well-formed output file).
+func TestRun_RejectsInvariantViolations(t *testing.T) {
+	tmp := t.TempDir()
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+
+	// Neither set.
+	if err := run(valuesPath, "", false, "", outPath, configurefile.Options{}); err == nil {
+		t.Errorf("neither inPath nor hasContent: expected error")
+	}
+	// Both set.
+	tmplPath := filepath.Join(tmp, "in.txt")
+	if err := os.WriteFile(tmplPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(valuesPath, tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
+		t.Errorf("both inPath and hasContent: expected error")
+	}
+}
+
 // TestRun_ContentBase64Malformed asserts the decoder surfaces a
 // clear error on a broken blob rather than silently treating it
 // as an empty template.

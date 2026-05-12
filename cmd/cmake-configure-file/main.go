@@ -212,10 +212,23 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 // either inPath (INPUT form; inPath != "") or the
 // --content-base64 blob (CONTENT form; hasContent == true,
 // content may be the empty string for the empty-template
-// case), substitutes, and writes the rendered output. The
-// caller (main) is responsible for asserting exactly one of
-// inPath / hasContent is set; run trusts that invariant.
+// case), substitutes, and writes the rendered output.
+//
+// Invariant: exactly one of inPath / hasContent must be set.
+// main enforces this from the CLI argv shape; run validates
+// it again so future programmatic callers (and any reshuffled
+// CLI parsing) can't silently slip through with neither set
+// (which would degenerate to "render an empty template" — a
+// suspiciously well-formed output that masks the bug) or
+// both set (which is ambiguous about which template source
+// wins).
 func run(valuesPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
+	switch {
+	case inPath == "" && !hasContent:
+		return fmt.Errorf("internal: neither inPath nor hasContent set; main's CLI gate should have rejected this argv")
+	case inPath != "" && hasContent:
+		return fmt.Errorf("internal: both inPath and hasContent set; main's CLI gate should have rejected this argv")
+	}
 	values, err := loadValues(valuesPath)
 	if err != nil {
 		return fmt.Errorf("load values %s: %w", valuesPath, err)
@@ -226,7 +239,7 @@ func run(valuesPath, inPath string, hasContent bool, content, outPath string, op
 		if err != nil {
 			return fmt.Errorf("read template %s: %w", inPath, err)
 		}
-	} else if hasContent {
+	} else {
 		tmpl, err = base64.StdEncoding.DecodeString(content)
 		if err != nil {
 			return fmt.Errorf("decode --content-base64: %w", err)

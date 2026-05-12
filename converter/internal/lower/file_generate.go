@@ -293,8 +293,11 @@ func fileGenerateOptions(call shadow.FileGenerateCall) (configurefile.Options, e
 // False positives are harmless — they only force the legacy
 // bytes-embedded shape, which is sound (just less cache-key
 // friendly). False negatives would silently produce a wrong
-// lift; the verify-pass in pickValues catches those, so this
-// is a fast-path short-circuit rather than the soundness gate.
+// lift; the direct `Substitute(template, nil, opts) == rendered`
+// verify-pass in buildFileGenerateGenrule (and the analogous
+// pickValues-driven check in configure_file's buildConfigureFileGenrule)
+// catches those, so this is a fast-path short-circuit rather
+// than the soundness gate.
 func hasGenex(template []byte) bool {
 	return bytes.Contains(template, []byte("$<"))
 }
