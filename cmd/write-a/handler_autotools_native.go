@@ -65,6 +65,20 @@ var traceConfig struct {
 	// goldens, single converter genrule per element, single
 	// install genrule per element.
 	platforms []tracePlatform
+
+	// traceSourceRoot, when true, threads --source-root=$$BUILD_ROOT
+	// into wrapAutotoolsPipelineCmds's build-tracer invocation so
+	// openat events get captured into the recovered trace. Without
+	// it, build-tracer drops openat events entirely (the legacy
+	// AC byte schema for trace-driven kinds, kept stable for
+	// existing AC entries). Opting in is the precondition for the
+	// narrowing-undercoverage audit's trace oracle to fire for
+	// round-2 trace-driven kinds; flipping the flag for an element
+	// invalidates that element's AC entry (one-shot rebake). Today
+	// the flag is global rather than per-element — CI and e2e
+	// fixtures opt in unconditionally; production deployments opt
+	// in once they've absorbed the AC churn.
+	traceSourceRoot bool
 }
 
 // autotoolsHandler picks the right pipelineHandler shape based
@@ -410,6 +424,20 @@ func autotoolsDepExtractCmd() string {
 // `cd "$$BUILD_ROOT"` by the time this runs, so the bare
 // relative path wouldn't find the staged binary.
 func wrapAutotoolsPipelineCmds(cmds string) string {
+	// --source-root opts the tracer into capturing openat events
+	// (filtered to the source tree). Required for the narrowing-
+	// undercoverage audit's trace oracle to fire; without it,
+	// openat events are dropped and only the cmake oracle carries
+	// signal for trace-driven kinds. Opting in here changes the
+	// trace bytes → changes the published AC entry; controlled
+	// per-build via the --trace-source-root write-a flag so
+	// existing AC entries stay valid until the operator chooses
+	// to rebake.
+	sourceRootFlag := ""
+	if traceConfig.traceSourceRoot {
+		sourceRootFlag = ` \
+            --source-root="$$BUILD_ROOT"`
+	}
 	return fmt.Sprintf(`        # Snapshot the build dir's existing .h files BEFORE
         # configure runs. After the tracer-wrapped pipeline
         # completes, a second snapshot diffs against this one to
@@ -441,7 +469,7 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
         "$$EXEC_ROOT/$(location //tools:build-tracer)" \
             --normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT" \
             --normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT" \
-            --normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX" \
+            --normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"%s \
             --out="$$AUTOTOOLS_TRACE" -- sh -c '
 %s
 '
@@ -454,7 +482,7 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
         POST_HEADERS_LIST="$$(mktemp)"
         ( cd "$$BUILD_ROOT" && find . -type f -name '*.h' | sort > "$$POST_HEADERS_LIST" )
         comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST" > "$$EXEC_ROOT/$(location generated-headers.txt)"
-`, cmds)
+`, sourceRootFlag, cmds)
 }
 
 // autotoolsConverterStep is the shell snippet inserted between
