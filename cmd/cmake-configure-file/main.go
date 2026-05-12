@@ -20,9 +20,25 @@
 //
 // Exactly one of the positional <input> path or --content-base64
 // must be supplied. The CONTENT-form blob carries the raw
-// template bytes; substitution rules are identical between the
-// two modes — cmake's file(GENERATE) and configure_file share
-// the @VAR@/${VAR}/#cmakedefine* surface.
+// template bytes. Substitution shape per caller:
+//
+//   - configure_file lifts pass full `--values=<map>` and the
+//     default option set (substitution active): @VAR@,
+//     ${VAR}, #cmakedefine, #cmakedefine01 — and the relevant
+//     subset of @ONLY, ESCAPE_QUOTES, NEWLINE_STYLE flags.
+//   - file(GENERATE) lifts pass `--copy-only` with an empty
+//     `--values={}` and only NEWLINE_STYLE varying: cmake's
+//     file(GENERATE) is verbatim emit (no @VAR@/${VAR}/
+//     #cmakedefine substitution) — only generator expressions
+//     and NEWLINE_STYLE shape the bytes, and genex-bearing
+//     templates short-circuit to the legacy bytes-embedded
+//     genrule rather than this tool. Using --copy-only ensures
+//     a later template edit that adds an @VAR@ marker stays
+//     byte-equal to what cmake's file(GENERATE) would have
+//     produced.
+//   - cmake -E configure_file lifts behave like configure_file
+//     lifts (the cmake -E op is documented as the same
+//     substitution surface).
 //
 // The companion lift in converter/internal/lower
 // (configureFileLiftedCmd / fileGenerateLiftedCmd) emits genrules

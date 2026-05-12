@@ -18,7 +18,7 @@ genrule(
     name = "gen_version_h",
     srcs = ["src/version.h.in"],
     outs = ["version.h"],
-    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --values=\"$$VALUES\" \"$(location src/version.h.in)\" \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
+    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --copy-only --values=\"$$VALUES\" \"$(location src/version.h.in)\" \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
     tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",
@@ -32,7 +32,7 @@ genrule(
 genrule(
     name = "gen_banner_h",
     outs = ["banner.h"],
-    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --values=\"$$VALUES\" --content-base64=I2RlZmluZSBCQU5ORVIgImZnbGliIDAuOS4wIgo= \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
+    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --copy-only --values=\"$$VALUES\" --content-base64=I2RlZmluZSBCQU5ORVIgImZnbGliIDAuOS4wIgo= \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
     tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",

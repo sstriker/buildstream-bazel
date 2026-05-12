@@ -55,8 +55,15 @@ func hasTag(tags []string, want string) bool {
 // tools=//tools:cmake-configure-file, cmake-codegen-lifted
 // tag, and a cmd that references the template via $(location).
 func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
-	template := "#define VERSION \"@VERSION@\"\n"
-	rendered := []byte("#define VERSION \"1.2.3\"\n")
+	// file(GENERATE) is verbatim emit (CopyOnly=true on the
+	// Bazel-time tool); template == rendered is the verify-pass
+	// for genex-free shapes. cmakeVars must not bloat the
+	// resulting cmd — the lift always passes an empty values
+	// dict regardless of what the operator's namespace looks
+	// like, so we can pass a populated cmakeVars here and still
+	// expect the cmd to carry `{}`.
+	template := "#define BANNER \"hi\"\n"
+	rendered := []byte("#define BANNER \"hi\"\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/banner.h.in", template, "banner.h", rendered)
 	calls := []shadow.FileGenerateCall{{
 		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
@@ -88,6 +95,15 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 	if !strings.Contains(g.GenruleCmd, "$(location src/banner.h.in)") {
 		t.Errorf("cmd should reference $(location src/banner.h.in); got %q", g.GenruleCmd)
 	}
+	// file(GENERATE) lifts always pass --copy-only + empty
+	// values JSON — cmakeVars don't ride into the cmd.
+	if !strings.Contains(g.GenruleCmd, "--copy-only") {
+		t.Errorf("file(GENERATE) lifted cmd should carry --copy-only; got %q", g.GenruleCmd)
+	}
+	// base64("{}") == "e30=" — the empty values dict.
+	if !strings.Contains(g.GenruleCmd, "echo e30= | base64 -d") {
+		t.Errorf("file(GENERATE) lifted cmd should embed an empty values dict (base64 \"{}\" == \"e30=\"); got %q", g.GenruleCmd)
+	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted tag missing: %v", g.Tags)
 	}
@@ -105,7 +121,11 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 // the cmd (instead of a srcs+$(location) reference) and emits
 // the same cmake-codegen-lifted tag.
 func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
-	template := "ver=@VERSION@\n"
+	// file(GENERATE CONTENT) is verbatim emit — the Content
+	// string and rendered bytes match by construction (cmake's
+	// argument-parsing already substituted any ${VAR} before
+	// the file(GENERATE) call ran).
+	template := "ver=9.9\n"
 	rendered := []byte("ver=9.9\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "ver.txt", rendered)
 	calls := []shadow.FileGenerateCall{{
@@ -129,6 +149,9 @@ func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 	wantBlob := "--content-base64=" + base64.StdEncoding.EncodeToString([]byte(template))
 	if !strings.Contains(g.GenruleCmd, wantBlob) {
 		t.Errorf("cmd should embed --content-base64 of the template; got %q", g.GenruleCmd)
+	}
+	if !strings.Contains(g.GenruleCmd, "--copy-only") {
+		t.Errorf("file(GENERATE) CONTENT-form lifted cmd should carry --copy-only; got %q", g.GenruleCmd)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted tag missing: %v", g.Tags)

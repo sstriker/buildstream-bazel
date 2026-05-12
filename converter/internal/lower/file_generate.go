@@ -206,10 +206,25 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		return genexLegacy
 	}
 
-	values, ok := pickValues(templateBody, rendered, opts, cmakeVars)
-	if !ok {
+	// Verify-pass for file(GENERATE): the lift's contract is
+	// `Substitute(template, {}, {CopyOnly:true, NewlineStyle:N})
+	// == rendered`. file(GENERATE) doesn't do @VAR@/${VAR}/
+	// #cmakedefine substitution (CopyOnly skips all three), so
+	// passing the cmake namespace via cmakeVars is both wasteful
+	// (bloats BUILD.bazel/cmd with the full dump) AND wrong:
+	// a later template edit that adds an @VAR@ marker would
+	// substitute under the lifted-with-cmakeVars shape but
+	// emit-verbatim under cmake's actual file(GENERATE)
+	// semantics. Bypass pickValues entirely; the values dict
+	// is unconditionally empty for file(GENERATE) lifts.
+	if !bytes.Equal(configurefile.Substitute(templateBody, nil, opts), rendered) {
+		// Verify-pass failed — most likely an unmodeled
+		// NEWLINE_STYLE rewrite or some other surface cmake
+		// applied that we haven't captured. Soundness:
+		// fall back to legacy bytes-embedded shape.
 		return legacy
 	}
+	values := map[string]string{}
 
 	cmd, err := fileGenerateLiftedCmd(inRel, templateBody, values, opts, isContentForm)
 	if err != nil {
@@ -238,13 +253,21 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 // to legacy (with the rendered bytes already accounting for
 // cmake's actual choice).
 //
-// Unlike configure_file, file(GENERATE) has no @ONLY /
-// COPYONLY / ESCAPE_QUOTES — cmake's docs don't list them for
-// the GENERATE subcommand. configurefile.Options' other fields
-// default to zero, which matches the @VAR@-and-${VAR} both-on,
-// no-escape, no-copy-only default.
+// CopyOnly is always set: file(GENERATE) is NOT configure_file
+// — it does NOT do @VAR@/${VAR}/#cmakedefine substitution.
+// Its body-transform surface is exactly (a) generator-
+// expression resolution (handled in cmake; the lifter's
+// hasGenex short-circuit routes genex-bearing templates to
+// legacy) and (b) NEWLINE_STYLE rewriting. CopyOnly=true on
+// the Bazel-time tool produces the same byte transform —
+// verbatim copy modulo line terminators — which is what
+// matches cmake's semantics regardless of what @VAR@ markers
+// the user later adds to the template.
+//
+// AtOnly / EscapeQuotes are not applicable to file(GENERATE);
+// they stay at their zero values.
 func fileGenerateOptions(call shadow.FileGenerateCall) (configurefile.Options, error) {
-	out := configurefile.Options{}
+	out := configurefile.Options{CopyOnly: true}
 	switch strings.ToUpper(call.NewlineStyle) {
 	case "":
 		out.NewlineStyle = configurefile.NewlineDefault
