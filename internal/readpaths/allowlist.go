@@ -131,9 +131,12 @@ func (a *Allowlist) Len() int {
 // line (including the last) terminated by `\n`. The trailing
 // newline keeps the format compatible with text-tool conventions
 // — `cat`, `grep`, `wc -l`, and editors treat the last line as
-// terminated. nil receivers and empty allowlists both render
-// as an empty byte slice — write-a emits the file unconditionally
-// for shape predictability, and an empty file round-trips
+// terminated. nil receivers and empty allowlists both return a
+// nil slice (`len() == 0`, distinct from an explicit `[]byte{}`
+// but interchangeable with it for io.Writer / string()
+// purposes — `string(nil) == ""`). write-a emits the file
+// unconditionally for shape predictability via
+// `string(allowlist.Format())`, and an empty file round-trips
 // through ParseAllowlist to an empty Allowlist.
 func (a *Allowlist) Format() []byte {
 	if a == nil || len(a.paths) == 0 {
