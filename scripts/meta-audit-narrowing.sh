@@ -102,17 +102,19 @@ if ! "$bin_dir/convert-element" \
     --out-build="$throwaway_build" \
     --out-cmake-configure-reads="$elem_dir/cmake-reads.json" \
     >"$convert_log" 2>&1; then
-    # convert-element may fail on a fresh CI runner if cmake's
-    # missing or the source tree's prereqs aren't installed.
-    # Treat that as a non-blocking skip rather than a hard
-    # fail — the audit gate's job is to surface drift when the
-    # oracle CAN be captured, not to babysit the runner's
-    # cmake availability. BUT surface the captured stdout +
-    # stderr so a real regression (vs. just-missing-cmake) is
-    # diagnosable from CI logs.
-    echo "meta-audit-narrowing: convert-element failed for $elem (skipping audit); captured output follows:" >&2
+    # check-tools (the Makefile dep for e2e-audit-narrowing)
+    # already validates the cmake / ninja / bwrap prereqs
+    # this convert-element invocation needs, so a non-zero
+    # exit here is a real regression — propagate it rather
+    # than masking with an exit-0 skip. CI's
+    # continue-on-error: true on the calling step preserves
+    # the gate's soft-blocking shape; this script staying
+    # honest about failures keeps the diagnostics actionable
+    # (the captured stdout + stderr below is for the
+    # operator's benefit, not for hiding the failure).
+    echo "meta-audit-narrowing: convert-element failed for $elem; captured output follows:" >&2
     cat "$convert_log" >&2
-    exit 0
+    exit 1
 fi
 
 # Walk + accumulate.

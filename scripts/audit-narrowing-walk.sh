@@ -56,6 +56,12 @@ bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/audit-narrowing" ./cmd/audit-narrowing
 
+# Ensure the combined report's parent dir exists even when the
+# caller supplied a path in a not-yet-created directory; `: >`
+# would fail otherwise. The default (<artifact-dir>/audit-combined.txt)
+# always has the parent in place from artifact_dir, so this is a
+# defensive guard for explicit-path callers.
+mkdir -p "$(dirname "$combined_report")"
 : > "$combined_report"
 
 # Per-element walk. The shell `for` loop expands the glob in
@@ -141,6 +147,15 @@ done
 # this is just a friendly summary). wc -l on an empty file
 # emits "0", so the unconditional message is informative even
 # in the clean case.
+# Sort the combined report so its contents are byte-stable
+# across environments (POSIX leaves glob-expansion order
+# implementation-defined; on Linux it's lexical but BSD ports
+# of /bin/sh can differ). Sorting in-place gives reviewers a
+# byte-stable diff when the report grows or shrinks across PRs.
+if [ -s "$combined_report" ]; then
+    LC_ALL=C sort -o "$combined_report" "$combined_report"
+fi
+
 drift_count="$(wc -l < "$combined_report" | tr -d ' ')"
 echo "audit-narrowing-walk: $drift_count drift entries under $artifact_dir" >&2
 echo "audit-narrowing-walk: combined report at $combined_report" >&2

@@ -24,8 +24,10 @@ package readpaths
 //
 // Round-trip with the audit's report: an audit miss line and
 // an allowlist line have identical syntax, so silencing a new
-// drift entry is `cat undercomplete.txt >> srckey-expected-drift.txt`
-// — modulo manual review of which paths to actually accept.
+// drift entry is `cat audit-report.txt >> srckey-expected-drift.txt`
+// (the per-element file scripts/audit-narrowing-walk.sh writes
+// next to srckey-patterns.txt) — modulo manual review of which
+// paths to actually accept.
 //
 // nil/empty allowlist signals "no expected drift declared".
 
