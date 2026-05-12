@@ -9,6 +9,7 @@ import (
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
 	"github.com/sstriker/cmake-to-bazel/internal/shadow"
 )
 
@@ -88,7 +89,7 @@ type executeProcessOut struct {
 // Phase B callers (--unsupported-execute-process-fallback set)
 // route the refusal slice into the placeholder ir.Package
 // emitter instead.
-func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
+func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -103,7 +104,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
-			rels, reason, ok := liftCMakeE(call, v, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+			rels, reason, ok := liftCMakeE(call, v, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
 			if !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
 					File:   call.File,
@@ -170,7 +171,7 @@ func formatExecuteProcessFailure(refusals []executeProcessRefusal) error {
 // existing add_custom_command lifter so audit queries can
 // split the two cleanly even though they take different
 // trace-vs-ninja paths to recover.
-func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
 	argv := call.Commands[0] // single-COMMAND guaranteed by Classify
 	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op
 	args := argv[3:]
@@ -179,6 +180,8 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 		return liftCMakeETouch(args, recordedBuildDir, cc)
 	case "copy", "copy_if_different":
 		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "configure_file":
+		return liftCMakeEConfigureFile(args, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
 	}
 	return nil, "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
@@ -267,6 +270,136 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 	})
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, "", true
+}
+
+// liftCMakeEConfigureFile translates `cmake -E configure_file
+// <input> <output>` into a Bazel-time genrule that invokes
+// //tools:cmake-configure-file (not cmake at action time), so
+// the lift removes cmake from the executor's dependency surface
+// for projects that use this shape from execute_process.
+//
+// v1 accepts only the 2-arg form. cmake -E configure_file's
+// flag list (--copy-only / --escape-quotes / --at-only /
+// -D<KEY>=<value>) is rejected for now — supporting -D would
+// require harvesting the supplied key/value pairs into a values
+// dict, which the existing dump-vars namespace doesn't supply.
+// A real fixture with flags can lift this restriction.
+//
+// Substitution behaviour: when invoked from execute_process at
+// configure time, cmake -E configure_file evaluates against the
+// parent cmake's process environment (not the parent's
+// CMakeLists.txt variable namespace). configurefile.Extract's
+// reverse-engineering from (template, rendered) bytes recovers
+// whatever substitutions cmake actually applied, which is what
+// the verify-pass needs to reproduce the rendering. cmakeVars
+// is consulted first (parity with configure_file's lifter) for
+// the case where the operator's CMakeLists.txt also surfaced
+// matching env-shaped variables.
+//
+// Tags: the cmake-codegen-cmake-e family plus
+// execute-process-op=configure_file, with cmake-codegen-lifted
+// added when the verify-pass succeeds. Reuses
+// configureFileLegacyCmd for the bytes-embedded fallback and
+// configureFileLiftedCmd for the lifted shape so the recovered
+// genrule looks structurally like a configure_file lift.
+func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
+	if len(args) != 2 {
+		return nil, fmt.Sprintf("cmake -E configure_file: v1 supports the 2-arg form only (got %d args)", len(args)), false
+	}
+	src, dst := args[0], args[1]
+	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+	if !ok {
+		return nil, fmt.Sprintf("cmake -E configure_file: source %q is not under the source root", src), false
+	}
+	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	if !ok {
+		return nil, fmt.Sprintf("cmake -E configure_file: destination %q is not under the build dir", dst), false
+	}
+	if _, exists := cc.OutToGenrule[dstRel]; exists {
+		return []string{dstRel}, "", true
+	}
+
+	// Resolve template + rendered bytes. The recording-machine
+	// source path is reconstructed via hostSrcDir; the rendered
+	// output lives under hostBuildDir (parity with
+	// recoverConfigureFiles's path-resolution shape).
+	templatePath := filepath.Join(hostSrcDir, srcRel)
+	template, terr := os.ReadFile(templatePath)
+	if terr != nil {
+		return nil, fmt.Sprintf("cmake -E configure_file: can't read template %q: %v", srcRel, terr), false
+	}
+	rendered, rerr := os.ReadFile(filepath.Join(hostBuildDir, dstRel))
+	if rerr != nil {
+		return nil, fmt.Sprintf("cmake -E configure_file: can't read rendered output %q: %v", dstRel, rerr), false
+	}
+
+	name := executeProcessGenruleName(dstRel)
+	target := buildCMakeEConfigureFileGenrule(name, srcRel, dstRel, template, rendered, liftEnabled, cmakeVars)
+	cc.Genrules = append(cc.Genrules, target)
+	cc.OutToGenrule[dstRel] = name
+	return []string{dstRel}, "", true
+}
+
+// buildCMakeEConfigureFileGenrule mirrors buildConfigureFileGenrule's
+// lifted-vs-legacy decision tree, scoped to cmake -E configure_file
+// (no @ONLY / COPYONLY / ESCAPE_QUOTES options in v1; future
+// fixtures can lift those restrictions). Genex in the template
+// short-circuits to legacy — same exit shape as the
+// file(GENERATE) lifter.
+func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rendered []byte, liftEnabled bool, cmakeVars map[string]string) ir.Target {
+	opts := configurefile.Options{}
+	legacy := ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		Srcs:        []string{srcRel},
+		GenruleCmd:  configureFileLegacyCmd(dstRel, rendered),
+		GenruleOuts: []string{dstRel},
+		Tags:        cmakeEConfigureFileTags(false),
+		Visibility:  []string{"//visibility:private"},
+	}
+	if !liftEnabled {
+		return legacy
+	}
+	if hasGenex(template) {
+		return legacy
+	}
+	values, ok := pickValues(template, rendered, opts, cmakeVars)
+	if !ok {
+		return legacy
+	}
+	cmd, err := configureFileLiftedCmd(srcRel, dstRel, values, opts)
+	if err != nil {
+		return legacy
+	}
+	return ir.Target{
+		Name:         name,
+		Kind:         ir.KindGenrule,
+		Srcs:         []string{srcRel},
+		GenruleCmd:   cmd,
+		GenruleOuts:  []string{dstRel},
+		GenruleTools: []string{"//tools:cmake-configure-file"},
+		Tags:         cmakeEConfigureFileTags(true),
+		Visibility:   []string{"//visibility:private"},
+	}
+}
+
+// cmakeEConfigureFileTags returns the cmake-codegen tag set for
+// a recovered `cmake -E configure_file` call. Mirrors
+// cmakeETags("configure_file") and adds cmake-codegen-lifted
+// when the verify-pass succeeded.
+func cmakeEConfigureFileTags(lifted bool) []string {
+	tags := []string{
+		"cmake-codegen",
+		"cmake-codegen-cmake-e",
+		"cmake-codegen-driver=cmake_e",
+		"cmake-codegen-execute-process",
+		"cmake-codegen-execute-process-op=configure_file",
+	}
+	if lifted {
+		tags = append(tags, "cmake-codegen-lifted")
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 // liftFileProducing translates an execute_process call with a

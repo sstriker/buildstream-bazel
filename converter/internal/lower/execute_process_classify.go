@@ -90,6 +90,7 @@ var supportedCMakeEOps = map[string]string{
 	"copy":              "copy a single file",
 	"copy_if_different": "copy a single file (no-op if dst is byte-identical)",
 	"touch":             "create an empty file",
+	"configure_file":    "@VAR@/${VAR}/#cmakedefine substitution from input template",
 }
 
 // supportedCMakeEOpsList renders the allow-list as a stable,

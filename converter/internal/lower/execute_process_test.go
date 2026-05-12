@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -18,7 +20,7 @@ func TestRecoverExecuteProcess_LiftCMakeETouch(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "touch", "/build/marker.stamp"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -66,7 +68,7 @@ func TestRecoverExecuteProcess_LiftCMakeECopy(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "copy", "/src/inputs/template.cfg", "/build/staged/template.cfg"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -97,7 +99,7 @@ func TestRecoverExecuteProcess_LiftCMakeECopy_RejectsSourceOutsideTree(t *testin
 		Commands: [][]string{{"cmake", "-E", "copy", "/usr/share/foo/data.bin", "/build/staged/data.bin"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
 	if len(refusals) == 0 {
 		t.Fatal("expected refusal")
 	}
@@ -125,7 +127,7 @@ func TestRecoverExecuteProcess_LiftFileProducing(t *testing.T) {
 		OutputFile: "/build/generated.h",
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -187,7 +189,7 @@ func TestRecoverExecuteProcess_LiftFileProducing_SourceRootArgv(t *testing.T) {
 		OutputFile: "/build/generated.h",
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals: %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -243,7 +245,7 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 			}
 			tc.mut(&call)
 			cc := newCodegenContext()
-			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "/build", cc)
+			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, cc)
 			if len(refusals) == 0 {
 				t.Fatalf("expected refusal")
 			}
@@ -255,6 +257,145 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 				t.Errorf("no genrule should be appended on refusal; got %+v", cc.Genrules)
 			}
 		})
+	}
+}
+
+// TestRecoverExecuteProcess_LiftCMakeEConfigureFile covers the
+// cmake -E configure_file lift. Verify-pass succeeds when the
+// template + rendered bytes have a recoverable values dict;
+// emit a genrule whose cmd invokes //tools:cmake-configure-file
+// (no cmake on the executor) with srcs anchoring the template
+// and the cmake-codegen-lifted tag set.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	template := "ver=@VER@\n"
+	rendered := []byte("ver=2.0\n")
+	if err := os.MkdirAll(filepath.Join(hostSrc, "inc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, "inc", "v.h.in"), []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostBuild, "gen.h"), rendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line: 8,
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			filepath.Join(hostSrc, "inc", "v.h.in"),
+			filepath.Join(hostBuild, "gen.h"),
+		}},
+	}}
+	cc := newCodegenContext()
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("expected lift, got refusals: %+v", refusals)
+	}
+	if len(outs) != 1 || outs[0].RelOutput != "gen.h" {
+		t.Fatalf("outs: %+v", outs)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if len(g.Srcs) != 1 || g.Srcs[0] != "inc/v.h.in" {
+		t.Errorf("srcs: %v want [inc/v.h.in]", g.Srcs)
+	}
+	if len(g.GenruleTools) != 1 || g.GenruleTools[0] != "//tools:cmake-configure-file" {
+		t.Errorf("tools: %v", g.GenruleTools)
+	}
+	wantTags := map[string]bool{
+		"cmake-codegen":                                   true,
+		"cmake-codegen-cmake-e":                           true,
+		"cmake-codegen-driver=cmake_e":                    true,
+		"cmake-codegen-execute-process":                   true,
+		"cmake-codegen-execute-process-op=configure_file": true,
+		"cmake-codegen-lifted":                            true,
+	}
+	if len(g.Tags) != len(wantTags) {
+		t.Errorf("tags: %v want %v", g.Tags, wantTags)
+	}
+	for _, tg := range g.Tags {
+		if !wantTags[tg] {
+			t.Errorf("unexpected tag %q in %v", tg, g.Tags)
+		}
+	}
+}
+
+// TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback
+// asserts that liftEnabled=false keeps the lift on the legacy
+// bytes-embedded shape: srcs still anchors the template (for
+// audit purposes), but the cmd base64-decodes the rendered
+// bytes and tools is empty.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "t.in"), []byte("v=@VER@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostBuild, "t.out"), []byte("v=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			filepath.Join(hostSrc, "t.in"),
+			filepath.Join(hostBuild, "t.out"),
+		}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleTools) != 0 {
+		t.Errorf("liftEnabled=false should not stage tools; got %v", g.GenruleTools)
+	}
+	if !strings.Contains(g.GenruleCmd, "base64 -d") {
+		t.Errorf("legacy cmd should base64-decode rendered bytes; got %q", g.GenruleCmd)
+	}
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-lifted" {
+			t.Errorf("lifted tag should NOT be present when liftEnabled=false: %v", g.Tags)
+		}
+	}
+}
+
+// TestRecoverExecuteProcess_LiftCMakeEConfigureFile_RefusesFlags
+// asserts that v1 refuses cmake -E configure_file forms that
+// carry flags (--copy-only, --escape-quotes, --at-only, -D...).
+// These need real fixtures + values-recovery plumbing before
+// the lift can extend safely; until then, refusing keeps the
+// classifier honest about coverage.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_RefusesFlags(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "x.in"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostBuild, "x.out"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			"--copy-only",
+			filepath.Join(hostSrc, "x.in"),
+			filepath.Join(hostBuild, "x.out"),
+		}},
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if len(refusals) != 1 {
+		t.Fatalf("want 1 refusal for flag-bearing form; got %+v", refusals)
+	}
+	if !strings.Contains(refusals[0].Reason, "v1 supports the 2-arg form only") {
+		t.Errorf("refusal reason: %q", refusals[0].Reason)
 	}
 }
 
@@ -279,7 +420,7 @@ func TestRecoverExecuteProcess_LiftPlusRefuse(t *testing.T) {
 		},
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
 	if len(refusals) == 0 {
 		t.Fatal("expected refusal for the git call")
 	}

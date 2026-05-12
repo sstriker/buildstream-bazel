@@ -271,7 +271,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// []executeProcessOut return is parallel to
 	// configureFileOut and feeds the same per-target
 	// attribution loop in lowerTarget below.
-	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, cmakeBuild, cc)
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
 	if len(executeProcessRefusals) > 0 {
 		if !opts.UnsupportedExecuteProcessFallback {
 			return nil, formatExecuteProcessFailure(executeProcessRefusals)
