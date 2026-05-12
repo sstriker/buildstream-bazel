@@ -27,7 +27,7 @@ include cmake/*.cmake
 	]`)
 	out := filepath.Join(tmp, "report.txt")
 
-	if err := run(patterns, cmakeReads, "", out); err != nil {
+	if err := run(patterns, cmakeReads, "", "", out); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	got := mustRead(t, out)
@@ -46,7 +46,7 @@ func TestRun_CmakeOracleClean(t *testing.T) {
 	mustWrite(t, cmakeReads, `["CMakeLists.txt"]`)
 	out := filepath.Join(tmp, "report.txt")
 
-	if err := run(patterns, cmakeReads, "", out); err != nil {
+	if err := run(patterns, cmakeReads, "", "", out); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if got := mustRead(t, out); got != "" {
@@ -75,7 +75,7 @@ openat(AT_FDCWD, "scripts/build-aux.sh", O_RDONLY|O_CLOEXEC) = ?
 openat(AT_FDCWD, "data/lookup.table", O_RDONLY|O_CLOEXEC) = ?
 `)
 	out := filepath.Join(tmp, "report.txt")
-	if err := run(patterns, "", trace, out); err != nil {
+	if err := run(patterns, "", trace, "", out); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	got := mustRead(t, out)
@@ -98,7 +98,7 @@ func TestRun_BothOracles(t *testing.T) {
 openat(AT_FDCWD, "cmake/probe.cmake", O_RDONLY) = ?
 `)
 	out := filepath.Join(tmp, "report.txt")
-	if err := run(patterns, cmakeReads, trace, out); err != nil {
+	if err := run(patterns, cmakeReads, trace, "", out); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	got := mustRead(t, out)
@@ -120,11 +120,66 @@ func TestRun_NilPatternsCoversEverything(t *testing.T) {
 	cmakeReads := filepath.Join(tmp, "cmake-reads.json")
 	mustWrite(t, cmakeReads, `["a.txt", "b/c.txt", "d/e/f.txt"]`)
 	out := filepath.Join(tmp, "report.txt")
-	if err := run(patterns, cmakeReads, "", out); err != nil {
+	if err := run(patterns, cmakeReads, "", "", out); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if got := mustRead(t, out); got != "" {
 		t.Errorf("no-narrow patterns should produce empty report; got %q", got)
+	}
+}
+
+// TestRun_AllowlistFiltersMisses exercises the --allowlist
+// flow: an oracle path the patterns don't cover BUT the
+// expected-drift file lists is subtracted from the report
+// before it's written. The remaining uncovered paths stay
+// in. This is the gate's "soft signal" mechanism — operators
+// declare known-unliftable templates and the audit stops
+// flagging them, but unrelated drift still surfaces.
+func TestRun_AllowlistFiltersMisses(t *testing.T) {
+	tmp := t.TempDir()
+	patterns := filepath.Join(tmp, "patterns.txt")
+	mustWrite(t, patterns, "include CMakeLists.txt\n")
+	cmakeReads := filepath.Join(tmp, "cmake-reads.json")
+	mustWrite(t, cmakeReads, `[
+		"CMakeLists.txt",
+		"src/config.h.in",
+		"src/version.h.in",
+		"src/unexpected.h.in"
+	]`)
+	allowlist := filepath.Join(tmp, "expected-drift.txt")
+	mustWrite(t, allowlist, `# Templates the configure_file lift refused.
+src/config.h.in
+src/version.h.in
+`)
+	out := filepath.Join(tmp, "report.txt")
+
+	if err := run(patterns, cmakeReads, "", allowlist, out); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := mustRead(t, out)
+	want := "src/unexpected.h.in\n"
+	if got != want {
+		t.Errorf("allowlist-filtered report mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestRun_AllowlistMissingFileErrors: a typo'd --allowlist
+// path should fail fast rather than silently behave as if
+// no allowlist were declared (which would surface the
+// allowlisted paths as drift and noise the gate).
+func TestRun_AllowlistMissingFileErrors(t *testing.T) {
+	tmp := t.TempDir()
+	patterns := filepath.Join(tmp, "patterns.txt")
+	mustWrite(t, patterns, "include CMakeLists.txt\n")
+	cmakeReads := filepath.Join(tmp, "cmake-reads.json")
+	mustWrite(t, cmakeReads, `["CMakeLists.txt"]`)
+	out := filepath.Join(tmp, "report.txt")
+	err := run(patterns, cmakeReads, "", filepath.Join(tmp, "no-such-allowlist.txt"), out)
+	if err == nil {
+		t.Fatal("expected error on missing allowlist file")
+	}
+	if !strings.Contains(err.Error(), "load allowlist") {
+		t.Errorf("error %q missing load-allowlist prefix", err)
 	}
 }
 
@@ -136,7 +191,7 @@ func TestRun_MissingPatternsFile(t *testing.T) {
 	cmakeReads := filepath.Join(tmp, "cmake-reads.json")
 	mustWrite(t, cmakeReads, `["a"]`)
 	out := filepath.Join(tmp, "report.txt")
-	err := run(filepath.Join(tmp, "nonexistent.txt"), cmakeReads, "", out)
+	err := run(filepath.Join(tmp, "nonexistent.txt"), cmakeReads, "", "", out)
 	if err == nil {
 		t.Fatal("expected error on missing patterns file")
 	}

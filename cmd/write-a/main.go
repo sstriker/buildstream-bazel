@@ -47,6 +47,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
 	"gopkg.in/yaml.v3"
 )
 
@@ -283,6 +284,14 @@ type element struct {
 	// handlers stage everything regardless.
 	Patterns *readPathsPatterns
 
+	// ExpectedDrift is the parsed <element>.expected-drift.txt
+	// content (also committed alongside the .bst). Nil when the
+	// file is absent — that's the default "no expected drift"
+	// case, i.e. every audit miss is real drift. Staged into
+	// project A as srckey-expected-drift.txt and consumed by
+	// cmd/audit-narrowing --allowlist to filter the miss list.
+	ExpectedDrift *readpaths.Allowlist
+
 	// RealPaths / ZeroPaths are derived during the cmake handler's
 	// per-element rendering: real files staged on disk, zero paths
 	// handed to the zero_files starlark rule.
@@ -358,6 +367,7 @@ func main() {
 	publishBin := flag.String("trace-publish-bin", "", "optional: path to cmd/trace-publish. Required for the trace-driven round-2 path (the default when --convert-element-trace is set) and for --cmake-round2-fallback — staged into Project B's tools/ so the round-2 install genrule can publish its trace to the REAPI ActionCache.")
 	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for the trace-driven round-2 path (the default when --convert-element-trace is set) AND for --cmake-round2-fallback — staged into Project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time. kind:cmake's round-2 fallback wires the same @trace_<elem>//:trace load-time lookup as the trace-driven kinds; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on), but the lookup is staged today so the follow-on is converter-side only.")
 	round1 := flag.Bool("trace-round1", false, "opt out of round-2 (the default trace-driven path). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / build / install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available. Previously named with an autotools- prefix; the trace-driven path now serves multiple kinds (autotools / make / manual / script / makemaker / modulebuild), so the prefix dropped the kind specificity.")
+	traceSourceRoot := flag.Bool("trace-source-root", false, "optional: thread --source-root=$$BUILD_ROOT into every build-tracer invocation emitted by wrapAutotoolsPipelineCmds — both the round-2 install genrule for trace-driven kinds and the round-1 single-genrule shape, since both go through the same wrapper. Required to populate the narrowing-undercoverage audit's trace oracle (without it, build-tracer drops openat events entirely — preserves the legacy AC byte schema for trace-driven kinds at the cost of an empty trace oracle). Flipping the flag invalidates existing AC entries for any trace-driven element rendered by this build (one-shot rebake; the round-2 wire-half AC keyspace and the round-1 single-action cache both shift). Off (the default) keeps existing AC entries valid; CI / e2e fixtures opt in to exercise the audit gate. See docs/design/narrowing-audit.md.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
@@ -529,6 +539,14 @@ func main() {
 		traceConfig.lookupBin = lkAbs
 		traceConfig.round2Enabled = true
 	}
+
+	// Opt-in: thread --source-root=$$BUILD_ROOT into the round-2
+	// install genrule's build-tracer invocation so the trace
+	// oracle (openat events) populates for the narrowing audit.
+	// Default off because flipping it invalidates existing AC
+	// entries for trace-driven kinds; CI / e2e fixtures opt in
+	// to exercise the gate.
+	traceConfig.traceSourceRoot = *traceSourceRoot
 
 	// Multi-platform fold for round-2 trace-driven kinds: when
 	// --platforms-json is set, project A's per-element render
@@ -871,7 +889,15 @@ func loadElement(bstPath, includeBase, sourceCache string, options map[string]bs
 		return nil, fmt.Errorf("load read-paths patterns for %s: %w", bstPath, err)
 	}
 
-	elem := &element{Name: name, Bst: &f, Patterns: patterns}
+	// Load <element>.expected-drift.txt sibling if present.
+	// Absent → nil allowlist → "every audit miss is real drift"
+	// default in the narrowing-undercoverage audit.
+	drift, err := loadExpectedDrift(bstPath)
+	if err != nil {
+		return nil, fmt.Errorf("load expected-drift for %s: %w", bstPath, err)
+	}
+
+	elem := &element{Name: name, Bst: &f, Patterns: patterns, ExpectedDrift: drift}
 
 	// Source resolution is per-kind. cmake / manual / autotools /
 	// import / … pull a kind:local source tree from disk; stack /

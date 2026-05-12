@@ -55,9 +55,10 @@ func main() {
 	patternsPath := flag.String("patterns", "", "path to a read-paths.txt-format pattern file (the per-element pattern set to test). Required.")
 	cmakeReads := flag.String("cmake-reads", "", "path to a JSON array of source-relative paths from convert-element's --out-cmake-configure-reads. Optional.")
 	tracePath := flag.String("trace", "", "path to a canonicalized trace.log (build-tracer output post-canonicalize); openat read events are extracted via tracenorm.ExtractReads. Optional.")
+	allowlistPath := flag.String("allowlist", "", "path to a srckey-expected-drift.txt-format file (one source-relative path per line, `#` comments). Entries are subtracted from the miss list before the report is written. Optional; absent → no allowlist filtering.")
 	outPath := flag.String("out", "", "destination for the undercoverage report (one path per line, sorted). Required.")
 	flag.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: audit-narrowing --patterns=<file> [--cmake-reads=<file>] [--trace=<file>] --out=<file>")
+		fmt.Fprintln(os.Stderr, "usage: audit-narrowing --patterns=<file> [--cmake-reads=<file>] [--trace=<file>] [--allowlist=<file>] --out=<file>")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -71,16 +72,21 @@ func main() {
 		os.Exit(2)
 	}
 
-	if err := run(*patternsPath, *cmakeReads, *tracePath, *outPath); err != nil {
+	if err := run(*patternsPath, *cmakeReads, *tracePath, *allowlistPath, *outPath); err != nil {
 		fmt.Fprintf(os.Stderr, "audit-narrowing: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(patternsPath, cmakeReadsPath, tracePath, outPath string) error {
+func run(patternsPath, cmakeReadsPath, tracePath, allowlistPath, outPath string) error {
 	pp, err := loadPatterns(patternsPath)
 	if err != nil {
 		return fmt.Errorf("load patterns: %w", err)
+	}
+
+	allow, err := loadAllowlist(allowlistPath)
+	if err != nil {
+		return fmt.Errorf("load allowlist: %w", err)
 	}
 
 	reads, err := loadOracle(cmakeReadsPath, tracePath)
@@ -90,9 +96,18 @@ func run(patternsPath, cmakeReadsPath, tracePath, outPath string) error {
 
 	miss := []string{}
 	for _, p := range reads {
-		if !pp.Match(p) {
-			miss = append(miss, p)
+		if pp.Match(p) {
+			continue
 		}
+		if allow.Contains(p) {
+			// Operator declared this path expected; the audit
+			// stays silent for it. The `cmake-codegen-lifted`
+			// inverse-tag query helps reviewers spot which
+			// entries should be removed once a future lift
+			// covers them.
+			continue
+		}
+		miss = append(miss, p)
 	}
 	sort.Strings(miss)
 
@@ -106,6 +121,24 @@ func loadPatterns(path string) (*readpaths.Patterns, error) {
 	}
 	defer f.Close()
 	return readpaths.Parse(f, path)
+}
+
+// loadAllowlist reads an expected-drift file. Empty path
+// returns a nil Allowlist (Contains always-false; every miss
+// becomes real drift). A path that points at a missing file
+// returns an error — passing --allowlist=<file> with a typo'd
+// path should surface fast, not silently behave as if no
+// allowlist were declared.
+func loadAllowlist(path string) (*readpaths.Allowlist, error) {
+	if path == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return readpaths.ParseAllowlist(f, path)
 }
 
 // loadOracle returns the deduped union of the oracle path sets. At

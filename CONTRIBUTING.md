@@ -15,7 +15,7 @@ Decide based on what you touched:
 | `cmd/write-a/handler_*.go` (any handler) | the relevant `scripts/meta-*.sh` render gate (see [render gates](#render-gates)) |
 | `cmd/build-tracer/` | `go test ./cmd/build-tracer/...` plus a render gate that exercises the autotools native path (`scripts/meta-autotools-native.sh`) |
 | `cmd/convert-element-trace/` | `go test ./cmd/convert-element-trace/...` plus the autotools render gates |
-| `cmd/audit-narrowing/`, `internal/readpaths/`, `internal/tracenorm/reads.go`, `converter/internal/ninja/configure_reads.go` | `go test ./cmd/audit-narrowing/... ./internal/readpaths/... ./internal/tracenorm/... ./converter/internal/ninja/...` (the audit consumes outputs of both oracles; recipe in [`docs/design/narrowing-audit.md`](docs/design/narrowing-audit.md)) |
+| `cmd/audit-narrowing/`, `internal/readpaths/`, `internal/tracenorm/reads.go`, `converter/internal/ninja/configure_reads.go`, `cmd/write-a/expected_drift.go`, `scripts/audit-narrowing-walk.sh`, `scripts/meta-audit-narrowing.sh` | `go test ./cmd/audit-narrowing/... ./internal/readpaths/... ./internal/tracenorm/... ./converter/internal/ninja/...` plus `make e2e-audit-narrowing` (the soft-launch CI gate; recipe in [`docs/design/narrowing-audit.md`](docs/design/narrowing-audit.md)) |
 | `converter/...` (cmake-side) | `go test ./converter/...` (unit), `make e2e-orchestrate` (needs cmake + bwrap) |
 | `Makefile` / `scripts/` | the script(s) you touched, plus run their `make e2e-meta-*` target if it exists |
 | Anything in `docs/` | nothing. CI's docs jobs render via GitHub markdown. |

@@ -3,7 +3,7 @@
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
-        e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
+        e2e-meta-conditional e2e-meta-script e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake convert-and-build \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
 
@@ -118,6 +118,23 @@ e2e-orchestrate-scale: orchestrator
 # alone are still a useful regression gate.
 e2e-meta-hello: check-tools converter
 	scripts/meta-hello.sh
+
+# Narrowing-undercoverage audit gate (soft launch). Renders a
+# small meta-project with write-a, invokes convert-element
+# offline to populate the cmake oracle (cmake-reads.json per
+# kind:cmake element), then runs scripts/audit-narrowing-walk.sh
+# to accumulate per-element drift. The script exits non-zero
+# when drift is detected — the make target inherits that exit
+# code so this make invocation fails just like any other check
+# target. The soft-vs-blocking dial lives in the CI step that
+# calls this target: `continue-on-error: true` keeps the job
+# green while the allowlist mechanism stabilizes against a
+# representative fixture set; flipping it to false promotes
+# the gate to blocking (a real one-line YAML change because
+# the script's exit code already discriminates). Recipe:
+# docs/design/narrowing-audit.md.
+e2e-audit-narrowing: check-tools converter
+	scripts/meta-audit-narrowing.sh
 
 # Phase 2 acceptance gate for the meta-project. Multi-element fixture
 # (testdata/meta-project/two-libs/) — two kind:cmake elements + one
