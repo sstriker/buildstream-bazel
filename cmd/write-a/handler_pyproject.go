@@ -137,25 +137,36 @@ var pyprojectStructuralFallback = map[string]bool{}
 // used when the native path is disabled. Defaults mirror upstream
 // buildstream-plugins-community's pyproject.{py,yaml} (see
 // docs/design/pyproject-native-render.md for the upstream
-// snippet).
+// snippet), with one shape difference: upstream installs via
+// `python -m installer`, this repo's pipeline uses
+// `python -m pip install` so existing operator scripts that
+// pass extra `--pip-args=...` overrides keep working.
+// `dist-dir` defaults to `_bst_dist` to avoid colliding with a
+// project's own `./dist/` if its sources already ship one;
+// `build-args` carries the default `--wheel --no-isolation` so
+// an operator overriding `variables: build-args: ...` in their
+// .bst element actually changes the rendered command.
+// `installer-args` is intentionally absent — upstream uses it
+// with `python -m installer`, but our `pip install` shape has
+// no equivalent knob, and keeping a documented-but-ignored var
+// is more confusing than not having it.
 func pyprojectPipelineHandler() pipelineHandler {
 	return pipelineHandler{
 		kindName: "pyproject",
 		defaultVars: map[string]string{
-			"python":         "python3",
-			"pip":            "pip",
-			"python-prefix":  "%{prefix}/lib/python3",
-			"pip-args":       `--no-build-isolation --no-deps --no-index --target="%{install-root}%{python-prefix}"`,
-			"build-args":     "--wheel --no-isolation",
-			"installer-args": "",
-			"dist-dir":       "dist",
+			"python":        "python3",
+			"pip":           "pip",
+			"python-prefix": "%{prefix}/lib/python3",
+			"pip-args":      `--no-build-isolation --no-deps --no-index --target="%{install-root}%{python-prefix}"`,
+			"build-args":    "--wheel --no-isolation",
+			"dist-dir":      "_bst_dist",
 		},
 		defaults: pipelineDefaults{
 			Build: []string{
-				`%{python} -m build --wheel --no-isolation --outdir _bst_dist .`,
+				`%{python} -m build %{build-args} --outdir %{dist-dir} .`,
 			},
 			Install: []string{
-				`%{python} -m %{pip} install %{pip-args} _bst_dist/*.whl`,
+				`%{python} -m %{pip} install %{pip-args} %{dist-dir}/*.whl`,
 			},
 		},
 	}
