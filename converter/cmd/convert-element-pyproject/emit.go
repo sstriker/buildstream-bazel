@@ -37,6 +37,13 @@ func Emit(targets []Target) []byte {
 			emitPyLibrary(&b, t)
 		case KindPyBinary:
 			emitPyBinary(&b, t)
+		default:
+			// Fail fast on an unknown Kind rather than silently
+			// dropping the target — a partially-rendered BUILD
+			// with a missing rule is harder to diagnose than a
+			// panic at convert time, and Lower's Kind setter is
+			// the only code path that ever populates this field.
+			panic(fmt.Sprintf("convert-element-pyproject: emit: unknown Target.Kind %v for target %q (Lower must set Kind to one of KindPyLibrary / KindPyBinary)", t.Kind, t.Name))
 		}
 	}
 	return b.Bytes()

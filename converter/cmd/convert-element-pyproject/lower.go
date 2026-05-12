@@ -284,10 +284,18 @@ func resolveDeps(p *Pyproject, pkgs []Package, imports *manifest.Resolver) ([]st
 	for _, pk := range pkgs {
 		// Distribution names are case-insensitive and
 		// hyphen/underscore-equivalent (PEP 503 normalization).
+		// pk.Name carries the discovered package's fully
+		// qualified dotted name; matching deps against this
+		// canonical form catches the typical
+		// `[project].name = "google-cloud-storage"` /
+		// package = `google/cloud/storage/` case. Adding the
+		// top-level component ("google") here would
+		// over-approximate ownership and silently suppress a
+		// legitimate external dep on a different dist that
+		// happens to share that prefix (e.g. a real `google`
+		// dist) — so only the fully qualified form is
+		// recorded.
 		ownPackageNames[normalizeDistName(pk.Name)] = true
-		// Top-level package name in case [project].name uses
-		// a dotted-prefix scheme.
-		ownPackageNames[normalizeDistName(strings.SplitN(pk.Name, ".", 2)[0])] = true
 	}
 	if p.Project.Name != "" {
 		ownPackageNames[normalizeDistName(p.Project.Name)] = true

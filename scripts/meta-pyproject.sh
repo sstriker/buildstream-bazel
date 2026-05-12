@@ -91,9 +91,15 @@ done
 # pyproject against the fixture directly and verify py_library
 # + py_binary land in the output.
 out_build="$work_dir/BUILD.bazel.out"
+# Keep stderr on the script's stderr (don't redirect to
+# /dev/null) — with `set -e` a failure here exits the gate, and
+# the converter's Tier-1 refusal message is the only operator-
+# visible signal in the CI log. stdout is suppressed because
+# the assertions below grep the on-disk BUILD.bazel.out, not
+# the converter's stdout.
 "$bin_dir/convert-element-pyproject" \
     --source-root "$repo_root/testdata/meta-project/sources/pyproject-greet" \
-    --out-build "$out_build" >/dev/null 2>&1
+    --out-build "$out_build" >/dev/null
 for marker in \
     'py_library' \
     'name = "greet_lib"' \
