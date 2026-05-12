@@ -34,17 +34,19 @@ type Decoded struct {
 	Includes         []TargetIncludeCall
 	Links            []TargetLinkCall
 	ConfigFiles      []ConfigureFileCall
+	FileGenerates    []FileGenerateCall
 	ExecuteProcesses []ExecuteProcessCall
 }
 
 // Decode walks the trace once and dispatches every event to all
 // extractors at the same time. Equivalent in result to calling
 // ExtractReadPaths + ExtractTargetIncludes + ExtractTargetLinks +
-// ExtractConfigureFiles + ExtractExecuteProcess on the same trace,
-// but pays the parse cost once rather than per extractor. Reads
-// is the deduped slash-style source-tree path list; the four
-// call lists (Includes / Links / ConfigFiles / ExecuteProcesses)
-// preserve insertion order from the trace.
+// ExtractConfigureFiles + ExtractFileGenerate + ExtractExecuteProcess
+// on the same trace, but pays the parse cost once rather than per
+// extractor. Reads is the deduped slash-style source-tree path
+// list; the call lists (Includes / Links / ConfigFiles /
+// FileGenerates / ExecuteProcesses) preserve insertion order from
+// the trace.
 func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
@@ -59,6 +61,9 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		}
 		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
 			d.ConfigFiles = append(d.ConfigFiles, call)
+		}
+		if call, ok := classifyFileGenerate(ev, sourceRoot); ok {
+			d.FileGenerates = append(d.FileGenerates, call)
 		}
 		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
@@ -330,6 +335,212 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 		Output:  ev.Args[1],
 		Options: append([]string(nil), ev.Args[2:]...),
 	}, true
+}
+
+// FileGenerateCall records one user-written
+// file(GENERATE OUTPUT <out> [INPUT <in> | CONTENT <bytes>]
+//
+//	[CONDITION <cond>] [TARGET <tgt>] [NEWLINE_STYLE <style>]
+//	[NO_SOURCE_PERMISSIONS | USE_SOURCE_PERMISSIONS]
+//	[FILE_PERMISSIONS <perms>...] [PERMISSIONS <perms>...]) call.
+//
+// cmake evaluates file(GENERATE) at generate-time — after
+// --trace-expand's variable expansion but before the build
+// runs — so the trace records the call with any `$<...>`
+// generator expressions still literal in OUTPUT / INPUT /
+// CONTENT / CONDITION. The lifter pairs each call with the
+// rendered bytes cmake wrote to the build dir at end-of-
+// generate (analogous to how configure_file pairs with its
+// rendered output), then either lifts to a template+values
+// genrule when the call is genex-free and the verify-pass
+// reproduces the bytes, or falls back to the legacy bytes-
+// embedded shape.
+//
+// Mutual exclusion: cmake itself rejects a call that
+// declares both INPUT and CONTENT, so exactly one is set
+// on a well-formed call. The classifier mirrors that by
+// dropping both-keywords-present calls as malformed, so
+// downstream consumers can rely on HasInput XOR HasContent
+// after a successful classify.
+//
+// HasInput / HasContent track whether the keyword was
+// PRESENT in the trace args, independent of whether its
+// value was the empty string. cmake accepts and emits
+// `file(GENERATE OUTPUT ... CONTENT "")` (a legitimate
+// empty-file emission) and the lifter has to distinguish
+// that from `no CONTENT keyword supplied at all`. String-
+// emptiness as the discriminator would collapse the two
+// shapes and route the empty-body case to legacy fallback.
+//
+// v1 captures only the fields the lifter consumes. PERMISSIONS
+// / FILE_PERMISSIONS / USE_SOURCE_PERMISSIONS /
+// NO_SOURCE_PERMISSIONS affect mode bits, not content bytes
+// — Bazel's genrule sets its own mode and downstream
+// compilers don't care about config.h-shape header modes,
+// so they're parsed-and-dropped like configure_file's
+// permission tokens. NewlineStyle is captured because cmake
+// re-emits line terminators per the style choice even when
+// CONTENT is verbatim, so the lifter has to feed it to
+// configurefile.Substitute for byte-equal verify-pass.
+type FileGenerateCall struct {
+	File         string
+	Line         int
+	Output       string
+	Input        string // populated when HasInput == true
+	HasInput     bool   // true iff the INPUT keyword was present in the trace args
+	Content      string // populated when HasContent == true; may be the empty string
+	HasContent   bool   // true iff the CONTENT keyword was present in the trace args
+	Condition    string // empty if no CONDITION clause
+	Target       string
+	NewlineStyle string // "" / "UNIX" / "LF" / "DOS" / "WIN32" / "CRLF" — passed through verbatim
+	RawArgs      []string
+}
+
+// ExtractFileGenerate returns one entry per user-written
+// file(GENERATE ...) trace event whose `file` is inside
+// sourceRoot. cmake-internal file(GENERATE) usage is rare
+// (the command is user-facing by design), but the
+// source-tree filter keeps the extractor honest with the
+// configure_file / execute_process siblings.
+func ExtractFileGenerate(traceRaw []byte, sourceRoot string) []FileGenerateCall {
+	var out []FileGenerateCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyFileGenerate(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyFileGenerate parses one trace event into a
+// FileGenerateCall, or returns (_, false) when the event
+// isn't an in-source-tree file(GENERATE ...). The classifier
+// walks the keyword sequence cmake's documentation specifies:
+// OUTPUT / INPUT / CONTENT each consume one value;
+// CONDITION / TARGET / NEWLINE_STYLE each consume one value;
+// PERMISSIONS / FILE_PERMISSIONS are variadic and consume
+// tokens until the next recognized keyword; USE_/NO_SOURCE_
+// PERMISSIONS are flag-only.
+//
+// Unknown tokens at the top level are dropped silently —
+// matches the execute_process classifier's tolerance for
+// cmake-version-added options that don't affect the lift.
+func classifyFileGenerate(ev TraceEvent, sourceRoot string) (FileGenerateCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "file") {
+		return FileGenerateCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return FileGenerateCall{}, false
+	}
+	if len(ev.Args) == 0 || !strings.EqualFold(ev.Args[0], "GENERATE") {
+		return FileGenerateCall{}, false
+	}
+
+	call := FileGenerateCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		RawArgs: append([]string(nil), ev.Args...),
+	}
+
+	// Skip the "GENERATE" subcommand at index 0; walk keywords.
+	for i := 1; i < len(ev.Args); i++ {
+		a := ev.Args[i]
+		switch strings.ToUpper(a) {
+		case "OUTPUT":
+			if i+1 < len(ev.Args) {
+				i++
+				call.Output = ev.Args[i]
+			}
+			continue
+		case "INPUT":
+			if i+1 < len(ev.Args) {
+				i++
+				call.Input = ev.Args[i]
+				call.HasInput = true
+			}
+			continue
+		case "CONTENT":
+			if i+1 < len(ev.Args) {
+				i++
+				call.Content = ev.Args[i]
+				call.HasContent = true
+			}
+			continue
+		case "CONDITION":
+			if i+1 < len(ev.Args) {
+				i++
+				call.Condition = ev.Args[i]
+			}
+			continue
+		case "TARGET":
+			if i+1 < len(ev.Args) {
+				i++
+				call.Target = ev.Args[i]
+			}
+			continue
+		case "NEWLINE_STYLE":
+			if i+1 < len(ev.Args) {
+				i++
+				call.NewlineStyle = ev.Args[i]
+			}
+			continue
+		case "PERMISSIONS", "FILE_PERMISSIONS":
+			// Variadic permission list — consume tokens until
+			// the next recognized keyword. v1 ignores the
+			// values (mode bits don't affect lift shape).
+			for i+1 < len(ev.Args) && !isFileGenerateKeyword(ev.Args[i+1]) {
+				i++
+			}
+			continue
+		case "USE_SOURCE_PERMISSIONS",
+			"NO_SOURCE_PERMISSIONS":
+			// Flag-only — no value to consume.
+			continue
+		}
+		// Unknown top-level token: drop silently (parity with
+		// the execute_process classifier's tolerance).
+	}
+
+	if call.Output == "" {
+		// Malformed call (cmake itself rejects a GENERATE
+		// without OUTPUT). Defensive: drop.
+		return FileGenerateCall{}, false
+	}
+	if !call.HasInput && !call.HasContent {
+		// cmake requires exactly one of INPUT / CONTENT. Note
+		// the keyword-presence check, not the value-emptiness
+		// check: `CONTENT ""` is a legitimate empty-file
+		// emission and the extractor preserves it.
+		return FileGenerateCall{}, false
+	}
+	if call.HasInput && call.HasContent {
+		// cmake rejects both-keywords-present as malformed
+		// too. Mirror that here so the lifter's "exactly one
+		// of HasInput / HasContent" invariant actually holds.
+		return FileGenerateCall{}, false
+	}
+	return call, true
+}
+
+// isFileGenerateKeyword reports whether s is one of the
+// documented file(GENERATE) keyword tokens. Used to bound the
+// variadic PERMISSIONS / FILE_PERMISSIONS lists. Case-
+// insensitive to match cmake's keyword matching.
+func isFileGenerateKeyword(s string) bool {
+	switch strings.ToUpper(s) {
+	case "OUTPUT",
+		"INPUT",
+		"CONTENT",
+		"CONDITION",
+		"TARGET",
+		"NEWLINE_STYLE",
+		"PERMISSIONS",
+		"FILE_PERMISSIONS",
+		"USE_SOURCE_PERMISSIONS",
+		"NO_SOURCE_PERMISSIONS":
+		return true
+	}
+	return false
 }
 
 // inScopeForTarget combines two checks for whether a trace

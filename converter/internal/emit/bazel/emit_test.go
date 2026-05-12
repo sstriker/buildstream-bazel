@@ -282,6 +282,69 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_FileGenerate_Golden round-trips the file-generate
+// sample project through Lower + bazel.Emit and compares to
+// the captured BUILD.bazel.golden. Exercises three shapes the
+// lifter covers:
+//
+//   - INPUT-form, genex-free: srcs anchors the template,
+//     cmake-configure-file invocation in cmd, cmake-codegen-
+//     lifted tag set.
+//   - CONTENT-form, genex-free: --content-base64 inline body
+//     in cmd, no srcs entry, cmake-codegen-lifted tag set.
+//   - CONTENT-form with $<CONFIG>: legacy bytes-embedded shape,
+//     cmake-codegen-file-generate-genex audit tag, no lifted
+//     tag.
+func TestEmit_FileGenerate_Golden(t *testing.T) {
+	src, err := filepath.Abs("../../../testdata/sample-projects/file-generate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir, err := filepath.Abs("../../../testdata/fileapi/file-generate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot:    src,
+		BuildDir:          replyDir,
+		TraceRaw:          traceRaw,
+		LiftConfigureFile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = scrubSourceLine(got, src)
+
+	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "file-generate", "BUILD.bazel.golden")
+	if *update {
+		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 // TestEmit_ExecuteProcess_Fallback_Shape locks in the
 // rendered shape of the kind:cmake round-2 fallback
 // placeholder: extract genrule with install_tree.tar src and

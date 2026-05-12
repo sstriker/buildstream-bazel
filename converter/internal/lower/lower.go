@@ -187,6 +187,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// otherwise look identical to "decode never ran".
 	var traceDecoded bool
 	var decodedConfigureFiles []shadow.ConfigureFileCall
+	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
@@ -220,6 +221,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 		decodedConfigureFiles = decoded.ConfigFiles
+		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
 	}
 
@@ -269,7 +271,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// []executeProcessOut return is parallel to
 	// configureFileOut and feeds the same per-target
 	// attribution loop in lowerTarget below.
-	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, cmakeBuild, cc)
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
 	if len(executeProcessRefusals) > 0 {
 		if !opts.UnsupportedExecuteProcessFallback {
 			return nil, formatExecuteProcessFailure(executeProcessRefusals)
@@ -306,6 +308,27 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 	}
 
+	// file(GENERATE) recovery — sister to configure_file's lift.
+	// Outputs land in cc.Genrules / cc.OutToGenrule before
+	// lowerTarget runs; the returned slice feeds lowerTarget's
+	// consumer-attribution loop the same way configureFiles does.
+	// Reuses opts.LiftConfigureFile as the lift opt-in: both
+	// lifters require the same Bazel-time tool (//tools:cmake-
+	// configure-file) and the same cmakeVars namespace dump, so
+	// flipping them together keeps the operator's flag surface
+	// minimal. Only the decoded-trace path drives this — the
+	// pre-trace fallback that re-parses opts.TraceRaw doesn't
+	// surface a file(GENERATE) extractor today (none of the
+	// pre-Decode callers need it).
+	var fileGenerates []fileGenerateOut
+	if traceDecoded {
+		var err error
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Build the in-codebase id -> Bazel-rule-name map up front so dep
 	// lowering can map t.Dependencies[].Id to a label without re-walking
 	// configurations. UTILITY targets (add_custom_target nodes) are
@@ -329,7 +352,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], configureFiles, executeProcesses)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], configureFiles, fileGenerates, executeProcesses)
 		if err != nil {
 			return nil, err
 		}
@@ -360,7 +383,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, configureFiles []configureFileOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -549,6 +572,51 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 		if len(addedHdrs) > 0 {
 			irt.Hdrs = append(irt.Hdrs, addedHdrs...)
+			irt.Tags = append(irt.Tags, "has-cmake-codegen")
+		}
+	}
+
+	// file(GENERATE) consumer attribution. Sister block to the
+	// configure_file walk above; file(GENERATE) outputs can be
+	// any extension (config-shaped .h, license blobs, generated
+	// source, .json manifests, etc.) so we branch on extension
+	// like the execute_process walk below — headers go to hdrs,
+	// other artefacts go to srcs.
+	if len(fileGenerates) > 0 && len(targetBuildIncs) > 0 {
+		var addedHdrs, addedSrcs []string
+		seenHdr := map[string]bool{}
+		seenSrc := map[string]bool{}
+		for _, fg := range fileGenerates {
+			match := false
+			for inc := range targetBuildIncs {
+				if isPathPrefix(inc, fg.RelOutput) {
+					match = true
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(fg.RelOutput))
+			if headerExts[ext] {
+				if !seenHdr[fg.RelOutput] {
+					seenHdr[fg.RelOutput] = true
+					addedHdrs = append(addedHdrs, fg.RelOutput)
+				}
+				continue
+			}
+			if !seenSrc[fg.RelOutput] {
+				seenSrc[fg.RelOutput] = true
+				addedSrcs = append(addedSrcs, fg.RelOutput)
+			}
+		}
+		if len(addedHdrs) > 0 {
+			irt.Hdrs = append(irt.Hdrs, addedHdrs...)
+		}
+		if len(addedSrcs) > 0 {
+			irt.Srcs = append(irt.Srcs, addedSrcs...)
+		}
+		if len(addedHdrs) > 0 || len(addedSrcs) > 0 {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}

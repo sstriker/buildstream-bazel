@@ -104,6 +104,30 @@ record_one() {
             mkdir -p "$out/$(dirname "$rel")"
             cp "$abs_out" "$out/$rel"
         done < <(jq -r 'select(.cmd == "configure_file") | .args[1] // empty' "$build/trace.jsonl")
+
+        # Same stash treatment for file(GENERATE) outputs.
+        # cmake evaluates file(GENERATE) at generate-time (after
+        # configure ends), so the rendered output exists in the
+        # build dir after cmake exits. lower's file_generate
+        # recovery reads each output's bytes from the build dir
+        # at convert-element time; the offline fixture needs them
+        # captured here. Trace records the call as cmd=="file"
+        # with args[0]=="GENERATE"; the OUTPUT value follows the
+        # "OUTPUT" keyword in the args list (variadic keyword
+        # walk, so use jq to find it positionally).
+        while IFS= read -r abs_out; do
+            [[ -z "$abs_out" ]] && continue
+            [[ "$abs_out" == "$build/"* ]] || continue
+            [[ -f "$abs_out" ]] || continue
+            rel="${abs_out#"$build/"}"
+            mkdir -p "$out/$(dirname "$rel")"
+            cp "$abs_out" "$out/$rel"
+        done < <(jq -r '
+            select(.cmd == "file" and (.args | length) >= 3 and (.args[0] | ascii_upcase) == "GENERATE")
+            | .args as $a
+            | range(1; ($a | length) - 1) as $i
+            | select(($a[$i] | ascii_upcase) == "OUTPUT") | $a[$i+1]
+        ' "$build/trace.jsonl")
     fi
 
     echo "    -> $(find "$out" -type f | wc -l) files in $out"

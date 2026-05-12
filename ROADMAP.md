@@ -111,15 +111,6 @@ transition cleanly.
     `pipelineTracePublishStep` doesn't). Without this the
     trace oracle is empty and only the cmake side carries
     signal.
-- **Same lift shape for `file(GENERATE)` and cmake-builtin
-  `add_custom_command`s.** Wherever `lower/` currently reads
-  bytes from the build dir to embed in a genrule's `cmd`, the
-  same cache-key issue applies. The configure_file lift's
-  pattern (template + values + Bazel-time tool) is reusable
-  for these other configure-time codegen surfaces; sweep
-  through `lower/codegen.go` and `lower/configure_file.go`'s
-  callers, classify each by what cmake feature they recover,
-  and lift the cleanly-tractable cases.
 - **kind:cmake round-2 fallback for unliftable
   `execute_process`.** Phase B follow-on to the Now-bullet
   native lift. When `convert-element` exits with
@@ -188,6 +179,48 @@ transition cleanly.
   the transition.
 ## Later (research / open questions)
 
+- **Generator-expression evaluation in lifted genrules.** The
+  configure_file lift's verify-pass falls back to the legacy
+  bytes-embedded shape when `Substitute(template, vars, opts)`
+  doesn't reproduce cmake's rendered output. The main driver
+  of that fallback is `$<...>` generator expressions — cmake
+  resolves these at generate-time (after `--trace-expand`'s
+  variable expansion), so the trace records the call with the
+  genex still literal in the args. configure_file itself
+  doesn't accept genexes (per cmake's docs) so the fallback is
+  rare there, but `file(GENERATE)` accepts the full genex
+  surface in OUTPUT, CONTENT, INPUT, and CONDITION; lifted
+  rendering for that shape requires evaluating genexes at
+  Bazel time. Motivation for tackling this: every additional
+  call we lift shrinks the narrowing-undercoverage audit's
+  allowlist (the legacy shape leaves the template content-
+  load-bearing in srckey, so an audit on a project with many
+  unliftable `file(GENERATE)` calls accumulates noise). Two
+  realistic v1 shapes for the work: (a) classify the genex
+  surface, support the common configure-time-resolvable subset
+  in Go (`$<CONFIG:...>`, `$<COMPILER_ID:...>`,
+  `$<PLATFORM_ID:...>`, `$<TARGET_PROPERTY:...>` over already-
+  captured properties), and leave target-evaluator-dependent
+  forms (`$<TARGET_FILE:...>`, `$<TARGET_OBJECTS:...>`) on the
+  legacy shape; (b) capture the resolved bytes plus the
+  rendered-genex-input map at convert-element time and re-emit
+  bytes from the values dict at Bazel time without re-
+  evaluating, sidestepping the evaluator entirely (a
+  "structured base64" lift — values JSON carries the rendered
+  bytes broken into invariant chunks). The (b) shape doesn't
+  buy you safety against new-genex additions to a template,
+  but does decouple BUILD.bazel content from the rendered
+  bytes for the unchanged case. The choice between them is
+  open until a real fixture forces it. **OUTPUT-side genex
+  is a separate sub-problem**: cmake also allows `$<...>` in
+  the OUTPUT filename and CONDITION, and the trace records
+  the unresolved string. v1's file(GENERATE) lifter drops
+  these calls entirely (no rel to anchor against; no audit
+  tag rides along). A real evaluator covers both cases at
+  once; the (b) "structured base64" shape doesn't, because
+  it relies on having a known OUTPUT filename to read
+  rendered bytes from.
+
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
   available to the action at exec time without it being in the AC
@@ -212,6 +245,30 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Same lift shape for `file(GENERATE)` and bytes-embedding
+  `cmake -E configure_file`.** The bytes-into-genrule-cmd
+  surface in `lower/configure_file.go`'s legacy
+  base64-of-rendered fallback shape is now also reachable —
+  but rarely taken — by the file(GENERATE) lifter
+  (`lower/file_generate.go`) and the cmake -E configure_file
+  branch of the cmake-E lifter
+  (`lower/execute_process.go::liftCMakeEConfigureFile`).
+  `shadow.ExtractFileGenerate` extracts the new call kind from
+  cmake's trace; the trace-recording script
+  (`tools/fixtures/record-fileapi.sh`) stashes rendered outputs
+  alongside the configure_file stash so offline tests have the
+  bytes the lifter expects. The Bazel-time tool
+  (`cmd/cmake-configure-file`) gained a `--content-base64`
+  mode so the CONTENT form of file(GENERATE) (no on-disk
+  template) can ride the lifted shape without staging a fake
+  srcs entry. Tags split lifted vs legacy via
+  `cmake-codegen-lifted` and call out the genex fallback via
+  `cmake-codegen-file-generate-genex` so the audit can find the
+  set the future "Generator-expression evaluation in lifted
+  genrules" Later bullet targets. Render gate:
+  `scripts/meta-file-generate.sh`. Fixture:
+  `converter/testdata/sample-projects/file-generate/`.
 
 - **Target-presence delta in `elementfold` — phantom-target select.**
   A target declared by some cells but absent from others no longer
