@@ -114,10 +114,14 @@ Plumbing:
 
 When `--source-root` is empty, openat events drop entirely —
 preserves the legacy AC byte schema for elements not opted into
-the oracle. Per-element opt-in (passing `--source-root` into the
-round-2 install genrule's build-tracer / trace-publish
-invocations) is on the roadmap; today the trace oracle is opt-in
-per binary invocation, not per element.
+the oracle. Per-build opt-in via write-a's `--trace-source-root`
+flag flips the round-2 install genrule's build-tracer invocation
+to pass `--source-root="$$BUILD_ROOT"`; flipping the flag for
+a build invalidates that build's previously-published AC entries
+for trace-driven kinds (one-shot rebake). CI / e2e fixtures opt
+in to populate the trace oracle for the audit gate; production
+deployments stay on the legacy byte schema until they choose to
+rebake.
 
 ## The audit tool
 
@@ -389,3 +393,81 @@ audit's responsibility, exactly as before.
   `--cmake-configure-file-bin` is set.
 - `cmd/write-a/read_paths_patterns.go` — `writeNarrowingPatterns`,
   `withCMakeListsRule`.
+- `cmd/write-a/expected_drift.go` — `loadExpectedDrift`; reads
+  `<elem>.expected-drift.txt` next to `<elem>.read-paths.txt`.
+- `internal/readpaths/allowlist.go` — `Allowlist` type + parser
+  + `Format` serializer shared between write-a and the audit.
+- `scripts/audit-narrowing-walk.sh` — per-element walker the
+  CI gate drives.
+- `scripts/meta-audit-narrowing.sh` — CI gate's outer script:
+  render meta-project + populate cmake oracle + run the walker.
+
+## The allowlist (`srckey-expected-drift.txt`)
+
+Per-element file declaring paths the audit may legitimately
+report. Lives at `<elem>.expected-drift.txt` next to
+`<elem>.read-paths.txt` in the source tree; write-a stages it
+as `srckey-expected-drift.txt` in project A's per-element
+directory next to `srckey-patterns.txt`. Format:
+
+```
+# Templates the configure_file lift refused (no values dump or
+# Substitute hasn't modeled an option).
+src/legacy/foo.h.in
+include/bar.h.in
+```
+
+- One source-relative path per line; no glob grammar. Each
+  entry is a deliberate per-path declaration that survives PR
+  review (a glob could mask unrelated drift the operator
+  didn't intend to silence).
+- `#` introduces a comment to end-of-line; blank lines are
+  ignored.
+- The file's syntax is identical to `audit-narrowing`'s output
+  format: `cat audit-report.txt >> <elem>.expected-drift.txt`
+  is a valid (manually-reviewed) silencing flow.
+
+Inverse-tag audit query for spotting which entries should be
+removed once a future lift covers them: `bazel query 'attr(
+"tags", "cmake-codegen-lifted", //elements/<elem>:all)'` lists
+the templates whose lifts succeeded. Any `.h.in` on the
+allowlist whose corresponding genrule now carries
+`cmake-codegen-lifted` is a stale entry safe to delete.
+
+`cmd/audit-narrowing --allowlist=<path>` consumes the file;
+entries in the allowlist are subtracted from the miss list
+before the report is written. Missing file (`--allowlist=`
+pointing at a typo'd path) fails fast — silently behaving as
+"no allowlist" would noise the gate.
+
+## The CI gate
+
+`make e2e-audit-narrowing` drives the full chain end-to-end:
+
+1. Render a meta-project (today: `hello-world.bst`) with
+   write-a → project A.
+2. For each kind:cmake element, invoke `convert-element` offline
+   against the element's source tree with
+   `--out-cmake-configure-reads=cmake-reads.json`, writing the
+   oracle next to `srckey-patterns.txt` in project A.
+3. Run `scripts/audit-narrowing-walk.sh` against project A's
+   `elements/` directory. The walker discovers each element's
+   patterns + (optionally) `srckey-expected-drift.txt`, locates
+   the cmake / trace oracle, runs `cmd/audit-narrowing`, and
+   accumulates per-element drift into a combined report.
+
+Exit status is always 0 — `audit-narrowing` and the walker
+both follow the "report is the signal, not the exit status"
+contract. The CI step running the gate uses
+`continue-on-error: true` so a non-empty combined report
+doesn't fail the build (soft gate). Promotion to blocking is a
+one-line CI change: flip `continue-on-error` to false once the
+representative fixture set's allowlists have stabilized.
+
+The trace-side oracle requires `--trace-source-root` on the
+write-a invocation that produced the meta-project; without it,
+build-tracer drops openat events and the trace oracle is
+empty. The CI gate today exercises only the cmake oracle for
+kind:cmake — a trace-driven sibling gate (build-tracer + the
+trace.log capture) is queued behind a build-tracer-on-CI
+fixture landing.

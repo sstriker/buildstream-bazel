@@ -75,42 +75,22 @@ transition cleanly.
   flag with no default; CI / e2e tests update to pass it
   explicitly. Blocked on the unifier seeing real probe data
   in CI so the platforms package exists at orchestrate time.
-- **Wire the narrowing-undercoverage audit into a CI gate.**
-  All the plumbing is in:
-  - cmake oracle via convert-element's
-    `--out-cmake-configure-reads`.
-  - trace oracle via build-tracer's `--source-root` flag +
-    `tracenorm.ExtractReads`.
-  - per-element pattern surface emitted by write-a as
-    `srckey-patterns.txt`.
-  - `cmd/audit-narrowing` consumes patterns + oracle(s) and
-    emits a sorted undercoverage report.
-  - configure_file lift (`--cmake-configure-file-bin` on
-    write-a) makes `*.h.in` safe to mark
-    `exclude **/*.h.in` in patterns for elements whose
-    templates lifted: with the full cmake-variable namespace
-    captured into the values JSON
-    (`cmakerun.filterVolatilePaths`), template edits that add
-    `@VAR@` markers resolve correctly through the Bazel-time
-    tool without convert-element rerunning. The
-    `cmake-codegen-lifted` tag distinguishes lifted vs legacy
-    genrules; legacy ones still have `.h.in` content-load-bearing
-    and shouldn't be excluded.
-  
-  Missing piece: actually run the audit somewhere. Two
-  conversations to have before flipping the gate on:
-  - **Policy**: hard-fail on any drift, or accept a per-element
-    allowlist of expected misses? Templates that didn't lift
-    (the v1 Extract can't recover values from every shape)
-    keep flagging their `.h.in` correctly. A whitelist mechanism
-    plus an "expected drift" file alongside
-    `srckey-patterns.txt` is the realistic landing.
-  - **Per-element opt-in to capture** for trace-driven kinds:
-    pass `--source-root` into the round-2 install genrule's
-    build-tracer + trace-publish invocations (today
-    `pipelineTracePublishStep` doesn't). Without this the
-    trace oracle is empty and only the cmake side carries
-    signal.
+- **Promote the narrowing-audit CI gate from soft to blocking.**
+  Soft launch shipped (see Done — `make e2e-audit-narrowing`
+  with `continue-on-error: true`). The remaining work is
+  policy plus fixture coverage: once a representative set of
+  meta-projects has stabilized expected-drift allowlists
+  (`srckey-expected-drift.txt` per element), flip
+  `continue-on-error` to false on the CI step. Until then,
+  promotion is gated on accumulated signal — operators need
+  to see real drift hit the gate without affecting their
+  builds, decide which entries deserve the allowlist vs
+  which deserve a pattern fix, and let the allowlist set
+  converge. Trace-side coverage (the build-tracer + trace.log
+  oracle for round-2 trace-driven kinds) also needs a CI
+  fixture: `--trace-source-root` is wired but no e2e job
+  exercises it yet, so the gate today only covers the cmake
+  oracle.
 - **kind:cmake round-2 fallback for unliftable
   `execute_process`.** Phase B follow-on to the Now-bullet
   native lift. When `convert-element` exits with
@@ -245,6 +225,44 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Narrowing-undercoverage audit CI gate (soft launch).**
+  The audit (`cmd/audit-narrowing`) now runs in CI as
+  `make e2e-audit-narrowing` via
+  `scripts/meta-audit-narrowing.sh` (render the meta-project,
+  invoke `convert-element` offline to populate
+  `cmake-reads.json` per kind:cmake element, walk
+  `scripts/audit-narrowing-walk.sh` to accumulate the combined
+  report). The CI step uses `continue-on-error: true` so the
+  gate is non-blocking — drift surfaces on stderr (and the
+  combined report file) without failing the build while
+  operators accumulate signal about real-world drift. The two
+  open conversations the previous Next bullet flagged
+  resolved as:
+  - **Allowlist** (`<elem>.expected-drift.txt` next to
+    `<elem>.read-paths.txt`, staged as
+    `srckey-expected-drift.txt` in project A): one path per
+    line, no glob grammar — each entry is a deliberate
+    per-path declaration. Format mirrors audit-narrowing's
+    output so `cat audit-report.txt >> <elem>.expected-drift.txt`
+    is a valid (manually-reviewed) silencing flow.
+    `cmd/audit-narrowing --allowlist=<path>` subtracts entries
+    before writing the report. The `cmake-codegen-lifted` tag
+    is the inverse-audit query for spotting stale entries
+    (an allowlisted `.h.in` whose corresponding genrule now
+    carries `cmake-codegen-lifted` is safe to delete).
+  - **Per-build trace-side capture**: write-a learns
+    `--trace-source-root` which threads
+    `--source-root="$$BUILD_ROOT"` into the round-2 install
+    genrule's build-tracer invocation. Default off (preserves
+    the legacy AC byte schema for trace-driven kinds);
+    flipping the flag invalidates that build's AC entries for
+    those kinds (one-shot rebake). CI / e2e fixtures opt in
+    to populate the trace oracle; production deployments stay
+    on the legacy byte schema until they choose to rebake.
+  Promotion to blocking is queued in the Next section, gated
+  on real-world signal accumulation. Recipe + policy in
+  `docs/design/narrowing-audit.md`.
 
 - **Same lift shape for `file(GENERATE)` and bytes-embedding
   `cmake -E configure_file`.** The bytes-into-genrule-cmd
