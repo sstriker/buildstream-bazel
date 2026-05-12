@@ -176,7 +176,46 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 			Visibility: []string{"//visibility:public"},
 		})
 	}
+	// Final uniqueness check across every emitted target name.
+	// Bazel target names must be unique within a package, so two
+	// targets with the same Name would produce an invalid BUILD.
+	// The library/binary/facade emission paths above each handle
+	// their own narrow collision case (BazelLabel's dot-to-
+	// underscore rewrite for sibling packages, the script-name
+	// /library-name `_lib` suffix, the element-name facade's
+	// targetNameExists guard), but they don't cross-check each
+	// other — a real package literally named `<x>_lib` would
+	// collide with the renamed `<x>` library when `<x>` is also
+	// a script name, and `a.b` + `a_b` siblings both BazelLabel
+	// to `a_b`. Surface as a typed Tier-1 refusal so the element
+	// either falls back to the pipeline shape or the operator
+	// renames one of the conflicting packages, rather than
+	// emitting an invalid BUILD that bazel rejects with a less
+	// actionable error.
+	if collision := firstTargetNameCollision(out); collision != "" {
+		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
+			"target-name collision: %q is emitted by more than one rule (typically a sibling-package shape like `a.b` vs `a_b` whose Bazel labels both reduce to `a_b`, or a script-collision _lib suffix matching a literal `<x>_lib` package). Rename one of the conflicting packages in pyproject.toml.",
+			collision)
+	}
 	return out, nil
+}
+
+// firstTargetNameCollision returns the first target name that
+// appears more than once in targets, or "" if every name is
+// unique. Used by Lower's final cross-rule uniqueness check
+// before emission — the per-rule emission paths handle their
+// own narrow collisions, but only the combined view can catch
+// cross-rule shapes (sibling-package dot/underscore equivalence,
+// _lib suffix vs literal `<x>_lib` package).
+func firstTargetNameCollision(targets []Target) string {
+	seen := map[string]bool{}
+	for _, t := range targets {
+		if seen[t.Name] {
+			return t.Name
+		}
+		seen[t.Name] = true
+	}
+	return ""
 }
 
 // targetNameExists reports whether any target in `targets` has

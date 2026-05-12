@@ -418,6 +418,36 @@ func TestLower_RefusesScriptsGUIScriptsCollision(t *testing.T) {
 	}
 }
 
+func TestLower_RefusesPackageNameCollisionAfterBazelLabel(t *testing.T) {
+	// `a.b` and `a_b` are distinct Python packages but
+	// Package.BazelLabel rewrites dots to underscores, so both
+	// reduce to `a_b`. Lower's final cross-rule uniqueness check
+	// must surface this as a typed Tier-1 refusal so the element
+	// falls back to the pipeline shape (or the operator renames),
+	// not as an invalid BUILD that bazel rejects later.
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"a.b", "a_b"}}
+	srcs := []string{
+		"a/__init__.py",
+		"a/b/__init__.py",
+		"a_b/__init__.py",
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	_, err = Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err == nil {
+		t.Fatal("Lower: want refusal for `a.b` vs `a_b` BazelLabel collision")
+	}
+	if !strings.Contains(err.Error(), "unsupported-pyproject-package-discovery") {
+		t.Errorf("err=%v want unsupported-pyproject-package-discovery", err)
+	}
+	if !strings.Contains(err.Error(), `"a_b"`) {
+		t.Errorf("err=%v should name the colliding target `a_b`", err)
+	}
+}
+
 func TestLower_HatchlingRefusesNestedPath(t *testing.T) {
 	// Hatchling's `packages = [...]` entries are wheel-root
 	// packages: the last segment is the package, everything
