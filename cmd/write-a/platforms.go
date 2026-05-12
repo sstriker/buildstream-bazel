@@ -38,11 +38,14 @@ import (
 // platform suffix even when multi-platform mode is active.
 type tracePlatform struct {
 	// Name is the platform identifier. Used as the URL-safe
-	// suffix on derived names: "trace_<elem>__<name>" for the
+	// suffix on derived names — "trace_<elem>__<name>" for the
 	// per-platform _trace_repo, "<elem>/<name>/ir.json" for the
-	// per-platform converter output, "<name>" as the SelectKey
-	// constraint axis for fold-element when SelectLabel is
-	// empty.
+	// per-platform converter output, "<name>" as the
+	// project-B install genrule's NameSuffix /
+	// OutputPrefix — and nothing else. The select() arm label
+	// for this platform is SelectKey, derived from Constraints
+	// + SelectLabel by resolvePlatformSelectKeys at
+	// loadPlatformsManifest time.
 	Name string
 
 	// Constraints are the Bazel constraint_value labels (e.g.

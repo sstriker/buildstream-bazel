@@ -665,7 +665,7 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 		}
 		bodies = append(bodies, body)
 	}
-	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), composeMultiPlatformInstallBuild(elem, bodies, traceConfig.platforms))
+	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), composeMultiPlatformInstallBuild(bodies, traceConfig.platforms))
 }
 
 // composeMultiPlatformInstallBuild stitches N per-platform install-
@@ -675,7 +675,7 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 // filegroup at ":install_tree.tar" select()s the matching
 // per-platform tarball so downstream //elements/<dep>:install_tree.tar
 // references stay valid.
-func composeMultiPlatformInstallBuild(elem *element, bodies []string, platforms []tracePlatform) string {
+func composeMultiPlatformInstallBuild(bodies []string, platforms []tracePlatform) string {
 	var b strings.Builder
 	for i, body := range bodies {
 		if i > 0 {
