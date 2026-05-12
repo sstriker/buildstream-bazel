@@ -57,6 +57,22 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 	var out []fileGenerateOut
 	seenRel := map[string]bool{}
 	for _, call := range calls {
+		if hasGenex([]byte(call.Output)) {
+			// cmake allows generator expressions in OUTPUT
+			// (e.g. `$<CONFIG>` in the filename) and writes
+			// the resolved filename at generate-time, but the
+			// trace records the literal `$<...>` string —
+			// we have no way to map it back to the on-disk
+			// filename without a genex evaluator. v1 drops
+			// the call as an unsupported shape; the ROADMAP
+			// "Generator-expression evaluation in lifted
+			// genrules" Later bullet covers the path forward.
+			// Same exit shape as the CONTENT/INPUT genex
+			// fallback's audit tag, just at the OUTPUT level
+			// where we can't emit a placeholder either (no
+			// known rel to attach).
+			continue
+		}
 		if !filepath.IsAbs(call.Output) {
 			// Relative outputs can't be anchored without
 			// per-call binary-dir context (cmake resolves
@@ -152,14 +168,14 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	}
 
 	// Source the template body. Exactly one of HasInput /
-	// HasContent is true on a well-formed call (the extractor
-	// enforces that); a defensive prefer-Input mirrors
-	// configure_file's INPUT-form shape when both are
-	// accidentally set. Keyword-presence (not value-emptiness)
-	// is the discriminator: `file(GENERATE CONTENT "")` is a
-	// legitimate empty-file emission and the lifter routes it
-	// through the CONTENT form so `--content-base64=<empty>`
-	// carries the empty body to the Bazel-time tool.
+	// HasContent is true after a successful classify (the
+	// extractor enforces XOR — both-keywords-present is
+	// rejected as malformed). Keyword-presence (not
+	// value-emptiness) is the discriminator:
+	// `file(GENERATE CONTENT "")` is a legitimate empty-file
+	// emission and the lifter routes it through the CONTENT
+	// form so `--content-base64=<empty>` carries the empty
+	// body to the Bazel-time tool.
 	var templateBody []byte
 	var inRel string // package-relative path; empty for the CONTENT form
 	isContentForm := false

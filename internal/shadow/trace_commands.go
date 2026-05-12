@@ -357,11 +357,11 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 // embedded shape.
 //
 // Mutual exclusion: cmake itself rejects a call that
-// declares both INPUT and CONTENT, so exactly one is
-// non-empty on a well-formed call. The classifier records
-// whichever appears; if cmake recorded a malformed call
-// with both set the lifter chooses Input (the file-form is
-// closer to configure_file's shape, so reuses more code).
+// declares both INPUT and CONTENT, so exactly one is set
+// on a well-formed call. The classifier mirrors that by
+// dropping both-keywords-present calls as malformed, so
+// downstream consumers can rely on HasInput XOR HasContent
+// after a successful classify.
 //
 // HasInput / HasContent track whether the keyword was
 // PRESENT in the trace args, independent of whether its
@@ -511,6 +511,12 @@ func classifyFileGenerate(ev TraceEvent, sourceRoot string) (FileGenerateCall, b
 		// the keyword-presence check, not the value-emptiness
 		// check: `CONTENT ""` is a legitimate empty-file
 		// emission and the extractor preserves it.
+		return FileGenerateCall{}, false
+	}
+	if call.HasInput && call.HasContent {
+		// cmake rejects both-keywords-present as malformed
+		// too. Mirror that here so the lifter's "exactly one
+		// of HasInput / HasContent" invariant actually holds.
 		return FileGenerateCall{}, false
 	}
 	return call, true

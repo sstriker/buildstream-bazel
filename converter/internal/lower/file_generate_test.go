@@ -320,6 +320,39 @@ func TestRecoverFileGenerate_SkipsCollisionWithOtherLifter(t *testing.T) {
 	}
 }
 
+// TestRecoverFileGenerate_OutputGenexDropped covers the case
+// where the OUTPUT path itself contains a generator expression
+// (`$<CONFIG>` in the filename). The trace records the literal
+// `$<...>` so the lifter can't map it back to the on-disk
+// filename without a genex evaluator. v1 drops the call —
+// surfacing it as a failed disk read would be misleading
+// (the build dir read would still fail even with a complete
+// fixture), and there's no rel to attach to a placeholder
+// genrule. Same Later-roadmap-bullet refusal class as the
+// CONTENT/INPUT-genex fallback, just at the OUTPUT level
+// where no audit tag can ride along.
+func TestRecoverFileGenerate_OutputGenexDropped(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	calls := []shadow.FileGenerateCall{{
+		File:       filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:     filepath.Join(hostBuild, "$<CONFIG>/banner.h"),
+		Content:    "hi\n",
+		HasContent: true,
+	}}
+	cc := newCodegenContext()
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("OUTPUT genex should drop the call; got %+v", out)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("OUTPUT genex should not emit a genrule; got %+v", cc.Genrules)
+	}
+}
+
 // TestHasGenex covers the genex detector: any "$<" substring
 // triggers true regardless of position, balance, or contents.
 func TestHasGenex(t *testing.T) {

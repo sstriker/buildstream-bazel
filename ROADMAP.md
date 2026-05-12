@@ -211,7 +211,15 @@ transition cleanly.
   buy you safety against new-genex additions to a template,
   but does decouple BUILD.bazel content from the rendered
   bytes for the unchanged case. The choice between them is
-  open until a real fixture forces it.
+  open until a real fixture forces it. **OUTPUT-side genex
+  is a separate sub-problem**: cmake also allows `$<...>` in
+  the OUTPUT filename and CONDITION, and the trace records
+  the unresolved string. v1's file(GENERATE) lifter drops
+  these calls entirely (no rel to anchor against; no audit
+  tag rides along). A real evaluator covers both cases at
+  once; the (b) "structured base64" shape doesn't, because
+  it relies on having a known OUTPUT filename to read
+  rendered bytes from.
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be

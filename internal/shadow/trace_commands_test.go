@@ -413,6 +413,19 @@ func TestExtractFileGenerate_EmptyContentPreserved(t *testing.T) {
 	}
 }
 
+// TestExtractFileGenerate_BothInputAndContentDropped covers
+// the case where cmake records a malformed call carrying both
+// INPUT and CONTENT keywords. cmake itself rejects this shape;
+// the extractor mirrors that so the lifter can rely on
+// HasInput XOR HasContent after a successful classify.
+func TestExtractFileGenerate_BothInputAndContentDropped(t *testing.T) {
+	trace := `{"args":["GENERATE","OUTPUT","x.h","INPUT","x.in","CONTENT","fallback\n"],"cmd":"file","file":"/src/CMakeLists.txt","line":1}
+`
+	if got := ExtractFileGenerate([]byte(trace), "/src"); len(got) != 0 {
+		t.Errorf("both-keywords-set should be rejected; got %+v", got)
+	}
+}
+
 // TestExtractFileGenerate_MalformedDropped covers cmake's
 // own well-formedness rules: a call with no OUTPUT, or with
 // neither INPUT nor CONTENT, is rejected by cmake itself; the
