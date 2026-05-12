@@ -308,3 +308,138 @@ func TestExtract_RealCmakeTrace(t *testing.T) {
 		t.Errorf("missed configure_file with extra fields")
 	}
 }
+
+// TestExtractFileGenerate_InputForm walks the INPUT shape:
+// file(GENERATE OUTPUT <out> INPUT <in> CONDITION <c> NEWLINE_STYLE UNIX).
+// CONDITION is recorded verbatim — evaluation happens at
+// generate-time, not in the extractor.
+func TestExtractFileGenerate_InputForm(t *testing.T) {
+	trace := `{"args":["GENERATE","OUTPUT","gen.h","INPUT","gen.h.in","CONDITION","$<CONFIG:Release>","NEWLINE_STYLE","UNIX"],"cmd":"file","file":"/src/CMakeLists.txt","line":11}
+`
+	got := ExtractFileGenerate([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.File != "/src/CMakeLists.txt" || c.Line != 11 {
+		t.Errorf("file/line: %+v want /src/CMakeLists.txt:11", c)
+	}
+	if c.Output != "gen.h" {
+		t.Errorf("Output: %q want gen.h", c.Output)
+	}
+	if c.Input != "gen.h.in" {
+		t.Errorf("Input: %q want gen.h.in", c.Input)
+	}
+	if c.Content != "" {
+		t.Errorf("Content: %q want empty (INPUT form)", c.Content)
+	}
+	if c.Condition != "$<CONFIG:Release>" {
+		t.Errorf("Condition: %q", c.Condition)
+	}
+	if c.NewlineStyle != "UNIX" {
+		t.Errorf("NewlineStyle: %q want UNIX", c.NewlineStyle)
+	}
+}
+
+// TestExtractFileGenerate_ContentForm covers the CONTENT shape
+// where the substitution body lives inline as a string argument
+// rather than as an INPUT file path.
+func TestExtractFileGenerate_ContentForm(t *testing.T) {
+	trace := `{"args":["GENERATE","OUTPUT","banner.h","CONTENT","#define BANNER \"hi\"\n","TARGET","mytarget"],"cmd":"file","file":"/src/CMakeLists.txt","line":3}
+`
+	got := ExtractFileGenerate([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Input != "" {
+		t.Errorf("Input: %q want empty (CONTENT form)", c.Input)
+	}
+	if c.Content != "#define BANNER \"hi\"\n" {
+		t.Errorf("Content: %q", c.Content)
+	}
+	if c.Target != "mytarget" {
+		t.Errorf("Target: %q want mytarget", c.Target)
+	}
+}
+
+// TestExtractFileGenerate_FiltersNonGenerateAndOutOfTree
+// confirms two filter axes: (a) non-GENERATE file()
+// subcommands (READ / WRITE / COPY / ...) are ignored; (b)
+// file(GENERATE) calls from outside the source tree (e.g.
+// cmake-internal modules) are filtered like configure_file
+// and execute_process.
+func TestExtractFileGenerate_FiltersNonGenerateAndOutOfTree(t *testing.T) {
+	trace := `{"args":["READ","/src/foo.txt","V"],"cmd":"file","file":"/src/CMakeLists.txt","line":1}
+{"args":["WRITE","/src/out.txt","hi"],"cmd":"file","file":"/src/CMakeLists.txt","line":2}
+{"args":["GENERATE","OUTPUT","/build/internal.h","CONTENT","internal\n"],"cmd":"file","file":"/usr/share/cmake-3.28/Modules/CMakeSomething.cmake","line":42}
+{"args":["GENERATE","OUTPUT","ok.h","CONTENT","ok\n"],"cmd":"file","file":"/src/CMakeLists.txt","line":12}
+`
+	got := ExtractFileGenerate([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 user file(GENERATE); got %d (%+v)", len(got), got)
+	}
+	if got[0].Output != "ok.h" {
+		t.Errorf("output: %q want ok.h", got[0].Output)
+	}
+}
+
+// TestExtractFileGenerate_MalformedDropped covers cmake's
+// own well-formedness rules: a call with no OUTPUT, or with
+// neither INPUT nor CONTENT, is rejected by cmake itself; the
+// extractor drops these defensively rather than surfacing
+// FileGenerateCall records the lifter can't act on.
+func TestExtractFileGenerate_MalformedDropped(t *testing.T) {
+	trace := `{"args":["GENERATE","INPUT","x.in"],"cmd":"file","file":"/src/CMakeLists.txt","line":1}
+{"args":["GENERATE","OUTPUT","y.h"],"cmd":"file","file":"/src/CMakeLists.txt","line":2}
+{"args":["GENERATE"],"cmd":"file","file":"/src/CMakeLists.txt","line":3}
+`
+	if got := ExtractFileGenerate([]byte(trace), "/src"); len(got) != 0 {
+		t.Errorf("want 0 (all malformed); got %+v", got)
+	}
+}
+
+// TestExtractFileGenerate_PermissionsConsumed asserts that
+// the variadic PERMISSIONS / FILE_PERMISSIONS lists are
+// consumed up to the next keyword, so subsequent keywords
+// (e.g. CONDITION) are still recognized. Permission tokens
+// themselves are dropped — the lifter doesn't care about mode
+// bits.
+func TestExtractFileGenerate_PermissionsConsumed(t *testing.T) {
+	trace := `{"args":["GENERATE","OUTPUT","p.h","CONTENT","p\n","FILE_PERMISSIONS","OWNER_READ","OWNER_WRITE","GROUP_READ","CONDITION","TRUE"],"cmd":"file","file":"/src/CMakeLists.txt","line":1}
+`
+	got := ExtractFileGenerate([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	c := got[0]
+	if c.Output != "p.h" {
+		t.Errorf("Output: %q want p.h", c.Output)
+	}
+	if c.Condition != "TRUE" {
+		t.Errorf("Condition: %q want TRUE (permissions list should have been bounded)", c.Condition)
+	}
+}
+
+// TestExtractFileGenerate_DecodeIntegration confirms Decode's
+// combined-pass dispatch routes file(GENERATE) events into
+// d.FileGenerates alongside the other extractor outputs.
+func TestExtractFileGenerate_DecodeIntegration(t *testing.T) {
+	trace := `{"args":["t","PUBLIC","inc"],"cmd":"target_include_directories","file":"/src/CMakeLists.txt","line":4}
+{"args":["GENERATE","OUTPUT","gen.h","CONTENT","hi\n"],"cmd":"file","file":"/src/CMakeLists.txt","line":7}
+{"args":["in.h.in","out.h"],"cmd":"configure_file","file":"/src/CMakeLists.txt","line":9}
+`
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.Includes) != 1 {
+		t.Errorf("Includes: want 1, got %d", len(d.Includes))
+	}
+	if len(d.ConfigFiles) != 1 {
+		t.Errorf("ConfigFiles: want 1, got %d", len(d.ConfigFiles))
+	}
+	if len(d.FileGenerates) != 1 {
+		t.Fatalf("FileGenerates: want 1, got %d", len(d.FileGenerates))
+	}
+	if d.FileGenerates[0].Output != "gen.h" || d.FileGenerates[0].Content != "hi\n" {
+		t.Errorf("FileGenerate[0]: %+v", d.FileGenerates[0])
+	}
+}
