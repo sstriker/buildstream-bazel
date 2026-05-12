@@ -186,34 +186,6 @@ transition cleanly.
   (and against `bst workspace open`-modified element source trees).
   Goal: BuildStream developers' muscle memory keeps working through
   the transition.
-- **Proper target-presence delta in `elementfold`.** Today the
-  per-element multi-platform fold requires every cell to declare
-  the same `(Name, Kind)` target set; a target present on one
-  platform but absent on another is a Tier-1 fold error. The
-  current contract is intentional v1 scope — it keeps the IR
-  shape unchanged and matches kind:cmake Phase A's behaviour
-  — but the round-2 stub use case will eventually surface real
-  fixtures where one platform's `install_tree.tar` contains a
-  binary the other's doesn't (arch-specific tools, conditional
-  features). Two candidate shapes:
-  - **Phantom-target select.** Render the target unconditionally
-    with `select({absent_platforms: [], …})` on its path attrs;
-    consumers depending on the target see an empty list on the
-    platforms where it's absent and fail at compile time with a
-    legible "no inputs to this rule" message. Lowest-touch
-    elementfold change; the IR just learns to fold "present in
-    some cells" via PerPlatformScalar with the missing arms
-    omitted.
-  - **Alias-driven target gate.** Emit the target under a
-    suffixed name (`<target>_impl`) and an `alias(name = "<target>",
-    actual = select({plat_with: ":<target>_impl", plat_without:
-    "//:no-op"}))` wrapper. Cleaner semantically (consumers see
-    "no such target on this platform" at analysis time) but adds
-    two rules per target and depends on a `//:no-op` filegroup
-    every project A would carry.
-  Decision deferred — defer to whichever fixture surfaces first,
-  then pick the shape that fits its dep graph cleanly.
-
 ## Later (research / open questions)
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
@@ -240,6 +212,35 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Target-presence delta in `elementfold` — phantom-target select.**
+  A target declared by some cells but absent from others no longer
+  errors out the fold; it lands in the merged Package with its
+  attrs routed through `PerPlatform` / `PerPlatformScalar` arms
+  keyed only on the present cells. `Fold`'s target enumeration is
+  now the union of every cell's `(Name, Kind)` set (taking
+  cells[0]'s order first then any not-yet-seen keys), so single-
+  platform goldens stay byte-stable when every cell declares the
+  same set. `foldTarget` takes a `(presentCells, allCellNames)`
+  pair: scalar/boolean agreement runs across present cells only,
+  while `empfold.Partition` sees the full matrix so phantom
+  targets collapse the flat baseline to empty (absent cells
+  contribute no facts, no fact is "in every cell," nothing lands
+  in baseline) — every present-cell observation routes to a
+  delta arm. `foldOrderSensitiveAttr` / `foldScalarAttr` take a
+  `phantom` flag and force the per-platform shape even when
+  present cells agree, so absent platforms don't inherit a flat
+  baseline that promises content for a target they don't have.
+  Bazel consumers depending on a phantom target on an absent
+  platform see attrs resolve to `[]` (a list attr's
+  `//conditions:default`) or to `None` (a scalar attr's
+  `//conditions:default`, treated by Bazel as "attribute unset"
+  per cc_import's optional-path-attr semantics) — the right
+  outcome for a target that genuinely doesn't exist on that
+  platform. Picked the **phantom-target select** shape over the
+  alias-driven gate variant: lowest-touch change to `elementfold`,
+  no `//:no-op` filegroup overhead in every project A, no two-
+  rules-per-target multiplication.
 
 - **Per-platform fold for round-2 trace-driven kinds — project A,
   pipelineHandler kinds.** First half of the per-platform fold
