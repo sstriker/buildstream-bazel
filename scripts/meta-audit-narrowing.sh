@@ -19,9 +19,11 @@
 #      once a build-tracer-on-CI fixture lands.
 #   3. Run scripts/audit-narrowing-walk.sh against the
 #      populated tree. The combined report is the gate's
-#      signal — non-empty means drift; this v1 gate is
-#      non-blocking (exit 0 either way) and surfaces the
-#      report so reviewers can see the surface.
+#      signal — non-empty means drift, and this script exits
+#      non-zero so `make e2e-audit-narrowing` fails like any
+#      other check target. The soft-vs-blocking dial lives in
+#      the CI step (continue-on-error), not in this script's
+#      exit-code policy.
 #
 # Why hello-world: it's the smallest kind:cmake meta-project
 # fixture in tree (one element, one .c, no configure_file or

@@ -24,12 +24,23 @@
 #     audit-report.txt next to the patterns file. Empty report
 #     is the clean signal.
 #
-# Exit status is always 0; the combined report (one
-# `<elem>: <path>` line per drift entry, sorted) is the
-# soft-gate signal. CI gates that want hard-fail-on-drift can
-# `[ ! -s combined-report.txt ]` and fail when it isn't empty
-# — the gate's blocking decision lives one level up, not in
-# this walker.
+# Exit status:
+#   - 0 on a successful walk, regardless of how much drift the
+#     combined report ends up listing. The combined report
+#     (one `<elem>: <path>` line per drift entry, sorted) is
+#     the signal; this walker is policy-agnostic, deferring
+#     the soft-vs-blocking decision to its caller.
+#   - 2 on argv/dir validation failures (missing
+#     artifact-dir, etc.) — fail-fast at the call site rather
+#     than running a silent no-op.
+#   - Non-zero from `set -eu` if `go build` or any
+#     audit-narrowing invocation fails. Those are infrastructure
+#     errors, not drift — surfacing them as failures matches
+#     every other build/test tool's contract.
+# CI gates that want hard-fail-on-drift can `[ ! -s
+# combined-report.txt ]` and fail when it isn't empty — the
+# gate's drift policy lives one level up (see
+# scripts/meta-audit-narrowing.sh), not in this walker.
 #
 # Usage:
 #   audit-narrowing-walk.sh <artifact-dir> [<combined-report-path>]
