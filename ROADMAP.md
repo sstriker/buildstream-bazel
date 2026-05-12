@@ -111,15 +111,31 @@ transition cleanly.
     `pipelineTracePublishStep` doesn't). Without this the
     trace oracle is empty and only the cmake side carries
     signal.
-- **Same lift shape for `file(GENERATE)` and cmake-builtin
+- **Same lift shape for `file(GENERATE)` and bytes-embedding
   `add_custom_command`s.** Wherever `lower/` currently reads
   bytes from the build dir to embed in a genrule's `cmd`, the
-  same cache-key issue applies. The configure_file lift's
-  pattern (template + values + Bazel-time tool) is reusable
-  for these other configure-time codegen surfaces; sweep
-  through `lower/codegen.go` and `lower/configure_file.go`'s
-  callers, classify each by what cmake feature they recover,
-  and lift the cleanly-tractable cases.
+  same cache-key issue applies. Triage shows the only such
+  site today is `configureFileLegacyCmd` in
+  `lower/configure_file.go`; the `recoverGenrule` path in
+  `lower/genrule.go` emits ninja's `$COMMAND` literally and
+  doesn't bake body bytes. So in practice the lift surface is
+  dominated by `file(GENERATE)` (parallel shape to
+  configure_file: rendered bytes land in the build dir; INPUT
+  variant carries an `@VAR@`/`${VAR}` template; CONTENT
+  variant carries an inline string; both can carry generator
+  expressions). The matching `add_custom_command` subset is
+  the `COMMAND cmake -E configure_file ...` shape (and any
+  other future bytes-embedding sub-shape we add to the cmake-E
+  lifter); both reuse the existing values namespace dump
+  (`cmakerun/dump-vars.cmake`) and the Bazel-time tool
+  (`//tools:cmake-configure-file`). The configure_file lift's
+  verify-pass (`Substitute(template, values, opts) == rendered`)
+  is the soundness gate: lift when it succeeds; fall back to
+  the legacy bytes-embedding shape (and leave the template
+  content-load-bearing in srckey) when it doesn't —
+  generator-expression-bearing calls fall through that exit
+  in v1 (see the "Generator-expression evaluation in lifted
+  genrules" Later bullet for why).
 - **kind:cmake round-2 fallback for unliftable
   `execute_process`.** Phase B follow-on to the Now-bullet
   native lift. When `convert-element` exits with
@@ -187,6 +203,40 @@ transition cleanly.
   Goal: BuildStream developers' muscle memory keeps working through
   the transition.
 ## Later (research / open questions)
+
+- **Generator-expression evaluation in lifted genrules.** The
+  configure_file lift's verify-pass falls back to the legacy
+  bytes-embedded shape when `Substitute(template, vars, opts)`
+  doesn't reproduce cmake's rendered output. The main driver
+  of that fallback is `$<...>` generator expressions — cmake
+  resolves these at generate-time (after `--trace-expand`'s
+  variable expansion), so the trace records the call with the
+  genex still literal in the args. configure_file itself
+  doesn't accept genexes (per cmake's docs) so the fallback is
+  rare there, but `file(GENERATE)` accepts the full genex
+  surface in OUTPUT, CONTENT, INPUT, and CONDITION; lifted
+  rendering for that shape requires evaluating genexes at
+  Bazel time. Motivation for tackling this: every additional
+  call we lift shrinks the narrowing-undercoverage audit's
+  allowlist (the legacy shape leaves the template content-
+  load-bearing in srckey, so an audit on a project with many
+  unliftable `file(GENERATE)` calls accumulates noise). Two
+  realistic v1 shapes for the work: (a) classify the genex
+  surface, support the common configure-time-resolvable subset
+  in Go (`$<CONFIG:...>`, `$<COMPILER_ID:...>`,
+  `$<PLATFORM_ID:...>`, `$<TARGET_PROPERTY:...>` over already-
+  captured properties), and leave target-evaluator-dependent
+  forms (`$<TARGET_FILE:...>`, `$<TARGET_OBJECTS:...>`) on the
+  legacy shape; (b) capture the resolved bytes plus the
+  rendered-genex-input map at convert-element time and re-emit
+  bytes from the values dict at Bazel time without re-
+  evaluating, sidestepping the evaluator entirely (a
+  "structured base64" lift — values JSON carries the rendered
+  bytes broken into invariant chunks). The (b) shape doesn't
+  buy you safety against new-genex additions to a template,
+  but does decouple BUILD.bazel content from the rendered
+  bytes for the unchanged case. The choice between them is
+  open until a real fixture forces it.
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
