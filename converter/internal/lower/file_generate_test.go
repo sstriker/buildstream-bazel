@@ -343,6 +343,42 @@ func TestRecoverFileGenerate_SkipsCollisionWithOtherLifter(t *testing.T) {
 	}
 }
 
+// TestRecoverFileGenerate_InputArgGenexTagsLegacy covers the
+// INPUT-arg genex case: cmake allows `$<...>` in the INPUT
+// path itself (resolved at generate-time) and the trace keeps
+// it literal. The lifter can't find the on-disk template, but
+// must still tag the legacy fallback with
+// cmake-codegen-file-generate-genex so the audit signal
+// matches the body-level genex case.
+func TestRecoverFileGenerate_InputArgGenexTagsLegacy(t *testing.T) {
+	rendered := []byte("v=1\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "v.h", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:   filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output: filepath.Join(hostBuild, "v.h"),
+		// $<CONFIG> in the INPUT path: cmake would resolve at
+		// generate-time, the trace records the unresolved
+		// string, and resolveTemplatePath would otherwise just
+		// fail silently.
+		Input:    filepath.Join(hostSrc, "$<CONFIG>/v.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("expected legacy genrule emission; got %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("INPUT-arg genex must NOT carry cmake-codegen-lifted; got %v", g.Tags)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+		t.Errorf("INPUT-arg genex must carry the genex audit tag; got %v", g.Tags)
+	}
+}
+
 // TestRecoverFileGenerate_OutputGenexDropped covers the case
 // where the OUTPUT path itself contains a generator expression
 // (`$<CONFIG>` in the filename). The trace records the literal

@@ -181,6 +181,20 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	isContentForm := false
 	switch {
 	case call.HasInput:
+		// cmake allows generator expressions in the INPUT
+		// argument itself (e.g. `INPUT $<CONFIG>/foo.in`) —
+		// the trace keeps the literal `$<...>` so
+		// resolveTemplatePath / os.ReadFile would just fail
+		// on the bogus path and we'd fall back to legacy
+		// without the audit signal. Catch the arg-level
+		// genex up front so the same cmake-codegen-file-
+		// generate-genex tag rides along on the legacy
+		// fallback, matching the body-level check below.
+		if hasGenex([]byte(call.Input)) {
+			genexLegacy := legacy
+			genexLegacy.Tags = fileGenerateTags(false, true)
+			return genexLegacy
+		}
 		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 		if !ok {
 			return legacy
@@ -198,8 +212,10 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		return legacy
 	}
 
-	// Generator expression in the template → skip lift, tag
-	// the legacy fallback so the audit can find it.
+	// Generator expression in the template body → skip lift,
+	// tag the legacy fallback so the audit can find it.
+	// (INPUT-arg genex is caught above before path resolution;
+	// CONTENT-arg genex hits the same check via templateBody.)
 	if hasGenex(templateBody) {
 		genexLegacy := legacy
 		genexLegacy.Tags = fileGenerateTags(false, true)
