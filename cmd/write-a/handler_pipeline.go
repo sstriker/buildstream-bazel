@@ -877,11 +877,22 @@ package(default_visibility = ["//visibility:public"])
 // `exec_compatible_with = [...]` genrule attribute. Empty list
 // returns the empty string so single-platform legacy goldens
 // don't pick up a stray attribute.
+//
+// Constraints are sorted before emission so semantically-
+// equivalent platform manifests (operators listing constraints
+// in different orders) produce byte-identical BUILD output —
+// matches the precedent in
+// converter/internal/toolchain/projecta/render.go which sorts
+// constraint_values before rendering exec_compatible_with too.
+// exec_compatible_with is set-typed in Bazel; ordering carries
+// no semantics.
 func execCompatibleWithAttr(constraints []string) string {
 	if len(constraints) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("    exec_compatible_with = %s,\n", strList(constraints))
+	sorted := append([]string(nil), constraints...)
+	sort.Strings(sorted)
+	return fmt.Sprintf("    exec_compatible_with = %s,\n", strList(sorted))
 }
 
 // strList renders a Go []string as a Bazel string list.

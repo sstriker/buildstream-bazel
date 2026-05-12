@@ -478,10 +478,13 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 
 	// exec_compatible_with routes each install action to the
 	// matching executor pool. The constraint set is the same
-	// labels the platforms manifest declared.
+	// labels the platforms manifest declared, sorted at emit
+	// time so semantically-equivalent manifests produce byte-
+	// identical output. After sort, `@platforms//cpu:` precedes
+	// `@platforms//os:` alphabetically.
 	for _, want := range []string{
-		`exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"]`,
-		`exec_compatible_with = ["@platforms//os:darwin", "@platforms//cpu:arm64"]`,
+		`exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]`,
+		`exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("multi-platform project B missing exec_compatible_with %q\n%s", want, got)
