@@ -33,8 +33,8 @@ transition cleanly.
   shipped (see Done — project A converter fan-out + fold for
   pipelineHandler kinds, project B install fan-out for
   pipelineHandler kinds, kind:autotools per-platform install
-  fan-out via `autotoolsHandler` reusing `pipelineHandler.
-  renderPipelineRound2B`). What's left:
+  fan-out via `autotoolsHandler` reusing
+  `pipelineHandler.renderPipelineRound2B`). What's left:
   - **kind:cmake Phase B fallback per-platform render.** The
     converter genrule already exists
     (`handler_cmake_round2.go`); needs the fan-out wired on
@@ -319,8 +319,9 @@ transition cleanly.
 - **Per-platform fold for round-2 trace-driven kinds —
   kind:autotools project B install fan-out.** kind:autotools
   joins the per-platform install fan-out story by reusing
-  `pipelineHandler.renderPipelineRound2B`. `autotoolsHandler.
-  RenderB`'s round-2 branch dispatches to it directly (was
+  `pipelineHandler.renderPipelineRound2B`.
+  `autotoolsHandler.RenderB`'s round-2 branch dispatches to it
+  directly (was
   `h.RenderA` before, the legacy single-genrule path);
   `autotoolsPipelineHandlerForElement` already wired the
   pipelineHandler instance with `kindName: "autotools"`, so

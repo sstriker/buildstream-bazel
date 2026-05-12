@@ -278,8 +278,11 @@ func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		`"darwin_arm64/trace.log"`,
 		`"linux_x86_64/generated-headers.txt"`,
 		`"darwin_arm64/generated-headers.txt"`,
-		`exec_compatible_with = ["@platforms//os:linux", "@platforms//cpu:x86_64"]`,
-		`exec_compatible_with = ["@platforms//os:darwin", "@platforms//cpu:arm64"]`,
+		// exec_compatible_with renders sorted (matches the
+		// projecta/render.go precedent): @platforms//cpu:
+		// precedes @platforms//os: alphabetically.
+		`exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]`,
+		`exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]`,
 		`--platform="linux_x86_64"`,
 		`--platform="darwin_arm64"`,
 		`name = "install_tree.tar"`,
