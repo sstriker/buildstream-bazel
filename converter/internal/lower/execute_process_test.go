@@ -327,9 +327,12 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile(t *testing.T) {
 
 // TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback
 // asserts that liftEnabled=false keeps the lift on the legacy
-// bytes-embedded shape: srcs still anchors the template (for
-// audit purposes), but the cmd base64-decodes the rendered
-// bytes and tools is empty.
+// bytes-embedded shape: the cmd base64-decodes the rendered
+// bytes, tools is empty, and srcs is also empty (the legacy
+// cmd doesn't reference the template, so staging it would
+// create confusing rebuild semantics — a template edit would
+// invalidate the genrule but the action would re-emit the same
+// baked-in bytes).
 func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback(t *testing.T) {
 	hostSrc := t.TempDir()
 	hostBuild := t.TempDir()
@@ -354,6 +357,9 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback(t *t
 	g := cc.Genrules[0]
 	if len(g.GenruleTools) != 0 {
 		t.Errorf("liftEnabled=false should not stage tools; got %v", g.GenruleTools)
+	}
+	if len(g.Srcs) != 0 {
+		t.Errorf("liftEnabled=false should not stage srcs (legacy cmd doesn't use the template); got %v", g.Srcs)
 	}
 	if !strings.Contains(g.GenruleCmd, "base64 -d") {
 		t.Errorf("legacy cmd should base64-decode rendered bytes; got %q", g.GenruleCmd)
