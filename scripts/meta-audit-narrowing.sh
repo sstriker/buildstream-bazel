@@ -56,7 +56,14 @@ mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 
 work_dir="$(mktemp -d)"
-trap "rm -rf '$work_dir'" EXIT
+# Single-quote the trap body so $work_dir expands at trap-exec
+# time (vs. trap-set time). The script keeps working either
+# way today — work_dir is already in scope when this line
+# runs — but the single-quoted idiom is the standard "shell
+# trap takes a literal string to eval later" shape, and
+# survives future refactors that might shift the trap above
+# the assignment.
+trap 'rm -rf "$work_dir"' EXIT
 
 A="$work_dir/A"
 B="$work_dir/B"
