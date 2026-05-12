@@ -10,9 +10,15 @@
 // When a backend's discovery shape can't be statically
 // resolved (e.g. setuptools without an explicit `packages`
 // config), the function returns a typed
-// unsupported-pyproject-package-discovery failure so the
-// operator gets a clear Tier-1 signal and the converter
-// falls back to the pipeline shape.
+// unsupported-pyproject-package-discovery failure. The
+// converter itself doesn't fall back — it just exits with
+// the Tier-1 code and surfaces the message on stderr. Any
+// pipeline-shape routing is the caller's responsibility
+// (write-a's --pyproject-fallback dispatch reads the
+// typed exit and chooses the pipeline shape; operators
+// without that flag re-render without
+// --convert-element-pyproject to take the pipeline default
+// for the whole graph).
 package main
 
 import (

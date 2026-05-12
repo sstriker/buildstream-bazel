@@ -187,11 +187,12 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 	// other — a real package literally named `<x>_lib` would
 	// collide with the renamed `<x>` library when `<x>` is also
 	// a script name, and `a.b` + `a_b` siblings both BazelLabel
-	// to `a_b`. Surface as a typed Tier-1 refusal so the element
-	// either falls back to the pipeline shape or the operator
-	// renames one of the conflicting packages, rather than
-	// emitting an invalid BUILD that bazel rejects with a less
-	// actionable error.
+	// to `a_b`. Surface as a typed Tier-1 refusal so the
+	// element's caller (write-a's --pyproject-fallback dispatch
+	// reading the typed exit) can route to the pipeline shape,
+	// or the operator renames one of the conflicting packages,
+	// rather than emitting an invalid BUILD that bazel rejects
+	// with a less actionable error.
 	if collision := firstTargetNameCollision(out); collision != "" {
 		return nil, newFailure(unsupportedPyprojectPackageDiscovery,
 			"target-name collision: %q is emitted by more than one rule (typically a sibling-package shape like `a.b` vs `a_b` whose Bazel labels both reduce to `a_b`, or a script-collision _lib suffix matching a literal `<x>_lib` package). Rename one of the conflicting packages in pyproject.toml.",
@@ -350,10 +351,10 @@ func resolveDeps(p *Pyproject, pkgs []Package, imports *manifest.Resolver) ([]st
 		// starts with a non-name char (e.g. `,foo`, `>=1.2`):
 		// a malformed PEP 508 string the user almost certainly
 		// didn't mean to silently drop. Surface as Tier-1 so the
-		// element either falls back to the pipeline shape or the
-		// operator fixes the typo, rather than building an
-		// under-approximated deps graph that would import-fail
-		// at runtime.
+		// caller (write-a's --pyproject-fallback dispatch) can
+		// route to the pipeline shape, or the operator fixes the
+		// typo, rather than building an under-approximated deps
+		// graph that would import-fail at runtime.
 		if strings.TrimSpace(raw) == "" {
 			continue
 		}
