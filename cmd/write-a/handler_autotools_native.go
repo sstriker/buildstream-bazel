@@ -68,16 +68,21 @@ var traceConfig struct {
 
 	// traceSourceRoot, when true, threads --source-root=$$BUILD_ROOT
 	// into wrapAutotoolsPipelineCmds's build-tracer invocation so
-	// openat events get captured into the recovered trace. Without
-	// it, build-tracer drops openat events entirely (the legacy
-	// AC byte schema for trace-driven kinds, kept stable for
-	// existing AC entries). Opting in is the precondition for the
-	// narrowing-undercoverage audit's trace oracle to fire for
-	// round-2 trace-driven kinds; flipping the flag for an element
-	// invalidates that element's AC entry (one-shot rebake). Today
-	// the flag is global rather than per-element — CI and e2e
-	// fixtures opt in unconditionally; production deployments opt
-	// in once they've absorbed the AC churn.
+	// openat events get captured into the recovered trace. The
+	// wrapper is used by both round-1 (single-genrule shape) and
+	// round-2 (separate install genrule) trace-driven pipelines,
+	// so the flag's effect spans both — flipping it shifts the
+	// trace bytes for every trace-driven element this build
+	// renders. Without it, build-tracer drops openat events
+	// entirely (the legacy AC byte schema for trace-driven kinds,
+	// kept stable for existing AC entries). Opting in is the
+	// precondition for the narrowing-undercoverage audit's trace
+	// oracle to fire; flipping the flag invalidates the AC
+	// entries for the trace-driven elements this build touched
+	// (one-shot rebake). Today the flag is global rather than
+	// per-element — CI and e2e fixtures opt in unconditionally;
+	// production deployments opt in once they've absorbed the
+	// AC churn.
 	traceSourceRoot bool
 }
 

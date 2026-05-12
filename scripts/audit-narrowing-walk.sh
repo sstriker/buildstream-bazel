@@ -96,11 +96,25 @@ for elem_path in "$artifact_dir"/*/; do
         have_oracle=1
     fi
     if [ -f "$trace_log" ]; then
-        set -- "$@" "--trace=$trace_log"
-        have_oracle=1
+        # An effectively-empty trace.log (no openat events —
+        # build-tracer ran without --source-root so openat
+        # capture was disabled) would extract an empty read
+        # set and let audit-narrowing report "clean" against a
+        # mute oracle. Treat that as "no oracle" so the
+        # operator sees a skip instead of a silent false
+        # negative. tracenorm.ExtractReads keys on lines
+        # starting with `openat(`; a literal grep for the
+        # marker matches its parser without us having to
+        # re-implement canonicalization.
+        if grep -q '^openat(' "$trace_log"; then
+            set -- "$@" "--trace=$trace_log"
+            have_oracle=1
+        else
+            echo "audit-narrowing-walk: $elem_name has trace.log but no openat events (build-tracer ran without --source-root?); ignoring trace oracle for this element" >&2
+        fi
     fi
     if [ "$have_oracle" -eq 0 ]; then
-        echo "audit-narrowing-walk: $elem_name has srckey-patterns.txt but no oracle (cmake-reads.json or trace.log); skipping" >&2
+        echo "audit-narrowing-walk: $elem_name has srckey-patterns.txt but no oracle (cmake-reads.json or non-empty trace.log); skipping" >&2
         continue
     fi
     if [ -f "$drift_file" ]; then

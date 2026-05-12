@@ -47,10 +47,12 @@ cd "$repo_root"
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 
-# Build prereqs. convert-element and write-a + the audit-
-# narrowing-walk.sh script's build step (it builds
-# cmd/audit-narrowing itself).
-make converter >/dev/null
+# Build prereqs. convert-element is built by the Makefile's
+# e2e-audit-narrowing target's `converter` dependency before
+# this script runs, so the script doesn't repeat that build.
+# write-a isn't part of `make converter`, so it needs its own
+# go build. audit-narrowing itself is built inside
+# scripts/audit-narrowing-walk.sh below.
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 
 work_dir="$(mktemp -d)"
@@ -71,9 +73,13 @@ if [ ! -d "$elements_dir" ]; then
     exit 1
 fi
 
-# Per kind:cmake element, populate cmake-reads.json. The
-# fixture has one element (hello-world); the loop handles
-# future multi-element fixtures uniformly.
+# Populate cmake-reads.json for the kind:cmake element in this
+# fixture. Hard-coded to hello-world today because the v1 gate
+# uses that single-element fixture; growing to multi-element
+# fixtures will require kind:cmake detection logic (probably
+# walking write-a's emitted layout for elements that have an
+# element-specific cmake reply / build.ninja sibling), which is
+# queued behind real-world drift signal accumulation.
 #
 # convert-element runs cmake configure against the element's
 # source root, emitting --out-cmake-configure-reads (the
@@ -90,20 +96,24 @@ fi
 
 src_root="$(pwd)/testdata/meta-project/sources/hello-world"
 throwaway_build="$work_dir/throwaway-BUILD.bazel"
-"$bin_dir/convert-element" \
+convert_log="$work_dir/convert-element.log"
+if ! "$bin_dir/convert-element" \
     --source-root="$src_root" \
     --out-build="$throwaway_build" \
     --out-cmake-configure-reads="$elem_dir/cmake-reads.json" \
-    >/dev/null 2>&1 || {
+    >"$convert_log" 2>&1; then
     # convert-element may fail on a fresh CI runner if cmake's
     # missing or the source tree's prereqs aren't installed.
     # Treat that as a non-blocking skip rather than a hard
     # fail — the audit gate's job is to surface drift when the
     # oracle CAN be captured, not to babysit the runner's
-    # cmake availability.
-    echo "meta-audit-narrowing: convert-element failed for $elem (likely missing cmake or source-tree prereqs on this runner); skipping audit" >&2
+    # cmake availability. BUT surface the captured stdout +
+    # stderr so a real regression (vs. just-missing-cmake) is
+    # diagnosable from CI logs.
+    echo "meta-audit-narrowing: convert-element failed for $elem (skipping audit); captured output follows:" >&2
+    cat "$convert_log" >&2
     exit 0
-}
+fi
 
 # Walk + accumulate.
 "$repo_root/scripts/audit-narrowing-walk.sh" "$elements_dir"
