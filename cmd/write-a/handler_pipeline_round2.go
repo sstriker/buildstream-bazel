@@ -320,7 +320,13 @@ func foldCellArg(p tracePlatform, irPath string) string {
 // matches the pre-fan-out goldens byte-for-byte.
 func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tracePlatform) *pipelineExtension {
 	ext := &pipelineExtension{
-		WrapPipelineCmds: wrapAutotoolsPipelineCmds,
+		// Pass the per-platform output prefix into the
+		// wrapper so the generated-headers.txt diff lands at
+		// the genrule's actual declared output path
+		// (<plat>/generated-headers.txt under multi-platform
+		// fan-out, bare generated-headers.txt under the
+		// single-platform legacy shape).
+		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, plat.Name) },
 		AppendCmd:        pipelineTracePublishStep(elem.Name, plat.Name, plat.Name),
 		ExtraOuts: []string{
 			"trace.log",

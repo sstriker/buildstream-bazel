@@ -175,6 +175,8 @@ for marker in \
     'exec_compatible_with = ["@platforms//os:darwin", "@platforms//cpu:arm64"]' \
     '--platform="linux_x86_64"' \
     '--platform="darwin_arm64"' \
+    '$(location linux_x86_64/generated-headers.txt)' \
+    '$(location darwin_arm64/generated-headers.txt)' \
     'name = "install_tree.tar"' \
     '"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]' \
     '"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]' \

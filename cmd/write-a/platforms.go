@@ -27,11 +27,15 @@ import (
 // Each entry drives one converter genrule + one trace_repo
 // instance in project A — the project-A render fans out per
 // platform and a fold-element genrule composes the per-platform
-// ir.json outputs. Project B's install-genrule fan-out is a
-// queued follow-up; today every entry shares the single install
-// genrule project B already emits, so multi-platform mode is
-// render-shape complete on the A side but at runtime publishes
-// only one platform's trace.
+// ir.json outputs — and one install genrule + one
+// install_tree.tar select() arm in project B for kinds that
+// went through the per-platform install fan-out. The fan-out
+// covers pipelineHandler kinds (kind:make / manual / script /
+// makemaker / modulebuild) today; kind:autotools and kind:cmake
+// Phase B fallback are queued under ROADMAP Next ("Per-platform
+// fold for round-2 trace-driven kinds") — until those land,
+// elements of those kinds run a single install genrule with no
+// platform suffix even when multi-platform mode is active.
 type tracePlatform struct {
 	// Name is the platform identifier. Used as the URL-safe
 	// suffix on derived names: "trace_<elem>__<name>" for the

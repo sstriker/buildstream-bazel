@@ -501,6 +501,21 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		}
 	}
 
+	// wrapAutotoolsPipelineCmds writes the post-build header
+	// diff to $(location <plat>/generated-headers.txt) — must
+	// agree with the genrule's per-platform declared output
+	// path. Using the unprefixed name would resolve against a
+	// label that doesn't exist as an out and Bazel would fail
+	// at action time.
+	for _, want := range []string{
+		`$(location linux_x86_64/generated-headers.txt)`,
+		`$(location darwin_arm64/generated-headers.txt)`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform project B header diff missing prefixed location %q\n%s", want, got)
+		}
+	}
+
 	// Top-level filegroup at :install_tree.tar select()s the
 	// per-platform tarball. Downstream
 	// //elements/<dep>:install_tree.tar references stay valid;
