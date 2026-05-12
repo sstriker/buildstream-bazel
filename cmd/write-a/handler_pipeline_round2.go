@@ -359,7 +359,34 @@ func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tra
 		if dep == nil || !allow[dep.Bst.Kind] {
 			continue
 		}
-		depLabels = append(depLabels, fmt.Sprintf("//elements/%s:install_tree.tar", dep.Name))
+		// Multi-platform mode: depend on the dep's per-platform
+		// install_tree.tar output directly rather than the
+		// top-level select()-filegroup. Bazel's select()
+		// resolves on the build's TARGET platform, not the
+		// dependent action's exec_compatible_with, so when N
+		// per-platform install actions run in one Bazel
+		// invocation they would all see the same select-
+		// resolved tar (the target platform's) rather than
+		// each platform's matching tar. Pointing at
+		// `//elements/<dep>:<plat>/install_tree.tar` directly
+		// — the per-platform output file the dep's
+		// `<dep>_install_<plat>` genrule declared — bypasses
+		// the select and routes each action to the matching
+		// per-platform dep. The top-level
+		// :install_tree.tar filegroup stays valid for
+		// downstream consumers that don't have their own
+		// per-platform fan-out.
+		//
+		// Single-platform legacy mode (plat.Name == ""):
+		// the dep's per-element render also emitted a single
+		// :install_tree.tar genrule output without any
+		// platform prefix, so the legacy label form points at
+		// the right thing as before.
+		if plat.Name != "" {
+			depLabels = append(depLabels, fmt.Sprintf("//elements/%s:%s/install_tree.tar", dep.Name, plat.Name))
+		} else {
+			depLabels = append(depLabels, fmt.Sprintf("//elements/%s:install_tree.tar", dep.Name))
+		}
 	}
 	if len(depLabels) > 0 {
 		ext.DepLabels = depLabels

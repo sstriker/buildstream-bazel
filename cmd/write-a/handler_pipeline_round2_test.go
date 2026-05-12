@@ -559,3 +559,58 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		}
 	}
 }
+
+// TestPipelineTraceExtensionRound2_DepLabelsPerPlatform: when
+// multi-platform mode is active (non-empty platform), each
+// per-platform install genrule's DepLabels must point at the
+// dep's per-platform output file directly
+// (//elements/<dep>:<plat>/install_tree.tar), NOT the top-level
+// :install_tree.tar select()-filegroup.
+//
+// The select-filegroup resolves on the build's TARGET platform,
+// not each install action's exec_compatible_with. When N
+// per-platform install actions for a single element run in one
+// Bazel invocation, all N would see the same target-platform-
+// resolved tar — wrong. Pointing at the per-platform output
+// file directly bypasses the select and routes each action to
+// the matching dep's tarball.
+//
+// Single-platform legacy mode keeps the bare
+// //elements/<dep>:install_tree.tar label so existing render
+// goldens stay byte-stable.
+func TestPipelineTraceExtensionRound2_DepLabelsPerPlatform(t *testing.T) {
+	dep := &element{Name: "libdep", Bst: &bstFile{Kind: "autotools"}}
+	elem := &element{
+		Name: "consumer",
+		Bst:  &bstFile{Kind: "autotools"},
+		Deps: []*element{dep},
+	}
+
+	cases := []struct {
+		name string
+		plat tracePlatform
+		want string
+	}{
+		{
+			name: "single-platform legacy uses bare filegroup label",
+			plat: tracePlatform{},
+			want: "//elements/libdep:install_tree.tar",
+		},
+		{
+			name: "multi-platform routes per-platform output file directly",
+			plat: tracePlatform{Name: "linux_x86_64"},
+			want: "//elements/libdep:linux_x86_64/install_tree.tar",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ext := pipelineTraceExtensionRound2(elem, []string{"autotools"}, tc.plat)
+			if len(ext.DepLabels) != 1 {
+				t.Fatalf("DepLabels: want 1 entry, got %d (%v)", len(ext.DepLabels), ext.DepLabels)
+			}
+			if ext.DepLabels[0] != tc.want {
+				t.Errorf("DepLabels[0] = %q, want %q", ext.DepLabels[0], tc.want)
+			}
+		})
+	}
+}
