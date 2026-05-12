@@ -229,7 +229,7 @@ func (h pipelineHandler) RenderA(elem *element, elemPkg string) error {
 // the project-B per-platform fan-out can compose N bodies plus a
 // top-level select()-filegroup in one file.
 func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) error {
-	body, err := h.renderInstallGenruleBody(elem, elemPkg)
+	body, err := h.renderInstallGenruleBody(elem, elemPkg, false)
 	if err != nil {
 		return err
 	}
@@ -246,8 +246,11 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 // Returns the body as a string so a caller composing multiple
 // install genrules in one BUILD.bazel (the project-B per-platform
 // fan-out) can stitch them together without writing intermediate
-// files.
-func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string) (string, error) {
+// files. skipStaging suppresses the per-call source-tree copy
+// when the caller already staged sources once for the element
+// (the multi-platform fan-out's case — N renders share one
+// `<elemPkg>/sources/` tree).
+func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string, skipStaging bool) (string, error) {
 	var cfg pipelineCfg
 	// Decode the .bst's config: only when it's actually present;
 	// otherwise leave cfg zero (all phases nil → use defaults).
@@ -368,7 +371,7 @@ func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string)
 	// rule). Multi-source / Directory / kind:local elements still
 	// stage; same shape as cmakeHandler's gating.
 	fuseKey := pipelineFuseEligible(elem)
-	if fuseKey == "" {
+	if fuseKey == "" && !skipStaging {
 		if err := stagePipelineSources(elem, elemPkg); err != nil {
 			return "", err
 		}
@@ -631,15 +634,32 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName}, tracePlatform{})
 		return h2.renderInstallGenrule(elem, elemPkg)
 	}
-	// Multi-platform path. Render N install-genrule bodies, then
-	// stitch them together (sharing the top-of-file `package(...)`
-	// header so the rendered BUILD.bazel is valid Bazel) plus a
-	// top-level select()-filegroup at install_tree.tar.
+	// Multi-platform path. Stage sources once per element (the
+	// N per-platform genrules all reference the same
+	// <elemPkg>/sources/ tree via $(SRCS)), then render N
+	// install-genrule bodies and stitch them together
+	// (sharing the top-of-file `package(...)` header so the
+	// rendered BUILD.bazel is valid Bazel) plus a top-level
+	// select()-filegroup at install_tree.tar.
+	//
+	// FUSE-sources eligibility check mirrors what
+	// renderInstallGenruleBody would do internally: when the
+	// element qualifies for the FUSE source-tree shape, no
+	// on-disk staging happens (the genrule pulls from
+	// @src_<key>//:tree). Skipping it here for the FUSE-eligible
+	// case avoids a no-op call to stagePipelineSources.
+	if pipelineFuseEligible(elem) == "" {
+		if err := stagePipelineSources(elem, elemPkg); err != nil {
+			return err
+		}
+	}
 	bodies := make([]string, 0, len(traceConfig.platforms))
 	for _, plat := range traceConfig.platforms {
 		h2 := h
 		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName}, plat)
-		body, err := h2.renderInstallGenruleBody(elem, elemPkg)
+		// skipStaging: sources already staged once above, so
+		// the per-platform body render skips its internal call.
+		body, err := h2.renderInstallGenruleBody(elem, elemPkg, true)
 		if err != nil {
 			return fmt.Errorf("element %q (kind:%s) platform %q: %w", elem.Name, h.kindName, plat.Name, err)
 		}
@@ -688,6 +708,15 @@ func composeMultiPlatformInstallBuild(elem *element, bodies []string, platforms 
 	for _, p := range sorted {
 		fmt.Fprintf(&b, "        %q: [%q],\n", p.SelectKey, p.Name+"/install_tree.tar")
 	}
+	// Trailing "//conditions:default": [] arm matches the
+	// convention emit/bazel uses for list-attr select() blocks.
+	// Out-of-matrix builds (e.g. someone targeting a platform
+	// not in --platforms-json) resolve install_tree.tar to an
+	// empty list rather than failing analysis with a "no
+	// matching condition" diagnostic on the filegroup itself —
+	// the failure surfaces at the consumer, where it points at
+	// what's actually missing.
+	b.WriteString(`        "//conditions:default": [],` + "\n")
 	b.WriteString("    }),\n")
 	b.WriteString(")\n")
 	return b.String()

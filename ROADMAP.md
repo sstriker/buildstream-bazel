@@ -343,8 +343,8 @@ transition cleanly.
   `pipelineExtension` struct gains three new knobs
   (`OutputPrefix`, `NameSuffix`, `ExecCompatibleWith`) so the
   rendering helpers stay one code path; empty values preserve
-  the single-platform byte-stable shape exactly. `pipeline-
-  TracePublishStep` takes `platform` + `outputPrefix`
+  the single-platform byte-stable shape exactly.
+  `pipelineTracePublishStep` takes `platform` + `outputPrefix`
   parameters so the trace-publish argv and `$(location ...)`
   references resolve to the right per-platform paths.
   `converter/internal/elementfold` → `converter/elementfold`

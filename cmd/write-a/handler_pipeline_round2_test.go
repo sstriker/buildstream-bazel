@@ -517,6 +517,12 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		`srcs = select({`,
 		`"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]`,
 		`"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]`,
+		// Trailing default arm matches emit/bazel's list-attr
+		// select() convention: out-of-matrix builds resolve to
+		// an empty list rather than failing analysis on the
+		// filegroup itself; the failure surfaces at the
+		// downstream consumer where it actually applies.
+		`"//conditions:default": [],`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("multi-platform project B missing top-level install_tree.tar filegroup marker %q\n%s", want, got)

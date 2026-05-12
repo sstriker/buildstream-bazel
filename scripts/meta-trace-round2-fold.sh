@@ -177,7 +177,8 @@ for marker in \
     '--platform="darwin_arm64"' \
     'name = "install_tree.tar"' \
     '"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]' \
-    '"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]'; do
+    '"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]' \
+    '"//conditions:default": [],'; do
     if ! grep -qF -- "$marker" "$b_build"; then
         echo "meta-trace-round2-fold: B-side BUILD missing marker: $marker" >&2
         cat "$b_build" >&2
