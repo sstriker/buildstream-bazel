@@ -306,6 +306,17 @@ func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuil
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E configure_file: v1 supports the 2-arg form only (got %d args)", len(args)), false
 	}
+	if hostBuildDir == "" {
+		// Trace-only / offline path with no build-dir stash:
+		// we can't read the rendered bytes, so skip the call
+		// gracefully. Matches recoverConfigureFiles's and
+		// recoverFileGenerate's no-build-dir behavior — every
+		// recovery surface that needs the live build dir
+		// degrades to "do nothing" rather than refusing,
+		// because ToIR is expected to work in trace-only
+		// contexts.
+		return nil, "", true
+	}
 	src, dst := args[0], args[1]
 	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
 	if !ok {
@@ -322,15 +333,18 @@ func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuil
 	// Resolve template + rendered bytes. The recording-machine
 	// source path is reconstructed via hostSrcDir; the rendered
 	// output lives under hostBuildDir (parity with
-	// recoverConfigureFiles's path-resolution shape).
+	// recoverConfigureFiles's path-resolution shape). Either
+	// missing means the offline fixture / live tree is
+	// incomplete; soft-skip rather than refusing, parity with
+	// recoverConfigureFiles's read-error treatment.
 	templatePath := filepath.Join(hostSrcDir, srcRel)
 	template, terr := os.ReadFile(templatePath)
 	if terr != nil {
-		return nil, fmt.Sprintf("cmake -E configure_file: can't read template %q: %v", srcRel, terr), false
+		return nil, "", true
 	}
 	rendered, rerr := os.ReadFile(filepath.Join(hostBuildDir, dstRel))
 	if rerr != nil {
-		return nil, fmt.Sprintf("cmake -E configure_file: can't read rendered output %q: %v", dstRel, rerr), false
+		return nil, "", true
 	}
 
 	name := executeProcessGenruleName(dstRel)

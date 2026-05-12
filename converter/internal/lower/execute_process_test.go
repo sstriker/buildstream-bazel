@@ -371,6 +371,70 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback(t *t
 	}
 }
 
+// TestRecoverExecuteProcess_LiftCMakeEConfigureFile_NoBuildDirSoftSkips
+// covers the trace-only / offline path where lower.Options.BuildDir
+// is unset: liftCMakeEConfigureFile can't read rendered bytes
+// without it, and surfacing every cmake -E configure_file call
+// as a refusal would force every offline ToIR run to flip
+// --unsupported-execute-process-fallback. Soft-skip instead
+// (no genrule emitted, no refusal recorded), parity with
+// recoverConfigureFiles and recoverFileGenerate.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_NoBuildDirSoftSkips(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "t.in"), []byte("v=@VER@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			filepath.Join(hostSrc, "t.in"),
+			"/build/t.out",
+		}},
+	}}
+	cc := newCodegenContext()
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", true, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("empty hostBuildDir should soft-skip, not refuse; got refusals %+v", refusals)
+	}
+	if len(outs) != 0 {
+		t.Errorf("no outs should be produced when hostBuildDir is empty; got %+v", outs)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("no genrules should be produced when hostBuildDir is empty; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftCMakeEConfigureFile_MissingRenderedSoftSkips
+// covers the live-build-dir-set-but-output-missing case (stale
+// fixture, deleted output, etc.). Same soft-skip behavior as
+// the no-build-dir case, parity with recoverConfigureFiles's
+// per-call read-error treatment.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_MissingRenderedSoftSkips(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "t.in"), []byte("v=@VER@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No t.out in hostBuild — simulates the rendered output going missing.
+	calls := []shadow.ExecuteProcessCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			filepath.Join(hostSrc, "t.in"),
+			filepath.Join(hostBuild, "t.out"),
+		}},
+	}}
+	cc := newCodegenContext()
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("missing rendered output should soft-skip, not refuse; got %+v", refusals)
+	}
+	if len(outs) != 0 || len(cc.Genrules) != 0 {
+		t.Errorf("no outputs expected on soft-skip; got outs=%+v genrules=%+v", outs, cc.Genrules)
+	}
+}
+
 // TestRecoverExecuteProcess_LiftCMakeEConfigureFile_RefusesFlags
 // asserts that v1 refuses cmake -E configure_file forms that
 // carry flags (--copy-only, --escape-quotes, --at-only, -D...).
