@@ -331,6 +331,25 @@ transition cleanly.
   separate per-platform fold story queued in Next.
 
 
+- **kind:pyproject Phase B install-plan fallback (option A:
+  per-element auto-detection).** Stacked on Phase A. New
+  `--pyproject-fallback` write-a flag activates per-element
+  dispatch: write-a probes each element's pyproject.toml at
+  render time (running the converter binary with `--probe`,
+  which runs the parse/discover/lower pipeline without writing
+  output) and emits the pipeline-shape coarse install genrule
+  for elements that would refuse, the native genrule for
+  elements that would succeed. Operator flips the flag once
+  and every kind:pyproject element renders correctly
+  regardless of per-element backend / metadata shape.
+  Refused-element diagnostics surface on write-a's stderr.
+  Render gate: `scripts/meta-pyproject-fallback.sh` against a
+  two-element fixture (one Phase-A-friendly setuptools
+  element + one pdm-backend element refused by Phase A).
+  Recipe: `docs/design/pyproject-native-render.md` "Phase B"
+  section. Coverage status: every kind:pyproject element in
+  FDSDK now renders without operator intervention, taking
+  pyproject's effective coverage to 100 %.
 - **kind:pyproject native render (Phase A).** New
   `converter/cmd/convert-element-pyproject` statically analyzes
   `pyproject.toml` + the source tree and emits native
