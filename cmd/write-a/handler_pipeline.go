@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-
-	"github.com/sstriker/cmake-to-bazel/converter/elementfold"
 )
 
 // pipelineDefaults is the per-kind default phase command set. Each
@@ -675,19 +673,10 @@ func composeMultiPlatformInstallBuild(elem *element, bodies []string, platforms 
 	// Top-level filegroup: routes a consumer's
 	// //elements/<dep>:install_tree.tar reference to the right
 	// per-platform tarball. Per-platform select() arms key on
-	// the platform's SelectKey (whatever PickSelectKeys derives
-	// from the platform's constraints + operator-supplied
-	// select_label override), so the same multi-axis matrix
-	// the project-A fold uses applies here too.
-	plats := make([]elementfold.Platform, len(platforms))
-	for i, p := range platforms {
-		plats[i] = elementfold.Platform{
-			Name:        p.Name,
-			Constraints: p.Constraints,
-			SelectKey:   p.SelectLabel,
-		}
-	}
-	keys, _ := elementfold.PickSelectKeys(plats) // validated upstream at flag parse
+	// the platform's pre-resolved SelectKey (loadPlatformsManifest
+	// ran PickSelectKeys at flag-parse time, so every platform's
+	// SelectKey is populated here without any error path to
+	// handle).
 	b.WriteString("\nfilegroup(\n")
 	fmt.Fprintf(&b, "    name = %q,\n", "install_tree.tar")
 	b.WriteString("    srcs = select({\n")
@@ -695,9 +684,9 @@ func composeMultiPlatformInstallBuild(elem *element, bodies []string, platforms 
 	// deterministic.
 	sorted := make([]tracePlatform, len(platforms))
 	copy(sorted, platforms)
-	sort.Slice(sorted, func(i, j int) bool { return keys[sorted[i].Name] < keys[sorted[j].Name] })
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].SelectKey < sorted[j].SelectKey })
 	for _, p := range sorted {
-		fmt.Fprintf(&b, "        %q: [%q],\n", keys[p.Name], p.Name+"/install_tree.tar")
+		fmt.Fprintf(&b, "        %q: [%q],\n", p.SelectKey, p.Name+"/install_tree.tar")
 	}
 	b.WriteString("    }),\n")
 	b.WriteString(")\n")

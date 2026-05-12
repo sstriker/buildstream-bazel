@@ -234,6 +234,9 @@ func TestWriter_PipelineKindsRound2_MultiPlatform(t *testing.T) {
 		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
 		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
 	}
+	if err := resolvePlatformSelectKeys(traceConfig.platforms); err != nil {
+		t.Fatalf("resolvePlatformSelectKeys: %v", err)
+	}
 	t.Cleanup(func() { traceConfig = prev })
 
 	g, err := loadGraph([]string{bst}, "")
@@ -346,6 +349,9 @@ func TestWriter_TraceDrivenRound2A_OperatorSelectLabelOverride(t *testing.T) {
 		{Name: "linux_aarch64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"}, SelectLabel: "//platforms:linux_aarch64"},
 		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}, SelectLabel: "//platforms:darwin_arm64"},
 	}
+	if err := resolvePlatformSelectKeys(traceConfig.platforms); err != nil {
+		t.Fatalf("resolvePlatformSelectKeys: %v", err)
+	}
 	t.Cleanup(func() { traceConfig = prev })
 
 	g, err := loadGraph([]string{bst}, "")
@@ -420,6 +426,9 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 	traceConfig.platforms = []tracePlatform{
 		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
 		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
+	}
+	if err := resolvePlatformSelectKeys(traceConfig.platforms); err != nil {
+		t.Fatalf("resolvePlatformSelectKeys: %v", err)
 	}
 	t.Cleanup(func() { traceConfig = prev })
 
