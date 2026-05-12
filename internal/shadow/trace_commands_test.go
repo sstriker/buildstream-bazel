@@ -327,11 +327,11 @@ func TestExtractFileGenerate_InputForm(t *testing.T) {
 	if c.Output != "gen.h" {
 		t.Errorf("Output: %q want gen.h", c.Output)
 	}
-	if c.Input != "gen.h.in" {
-		t.Errorf("Input: %q want gen.h.in", c.Input)
+	if c.Input != "gen.h.in" || !c.HasInput {
+		t.Errorf("Input: %q HasInput: %v want (gen.h.in, true)", c.Input, c.HasInput)
 	}
-	if c.Content != "" {
-		t.Errorf("Content: %q want empty (INPUT form)", c.Content)
+	if c.Content != "" || c.HasContent {
+		t.Errorf("Content: %q HasContent: %v want (empty, false) for INPUT form", c.Content, c.HasContent)
 	}
 	if c.Condition != "$<CONFIG:Release>" {
 		t.Errorf("Condition: %q", c.Condition)
@@ -352,11 +352,11 @@ func TestExtractFileGenerate_ContentForm(t *testing.T) {
 		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
 	}
 	c := got[0]
-	if c.Input != "" {
-		t.Errorf("Input: %q want empty (CONTENT form)", c.Input)
+	if c.Input != "" || c.HasInput {
+		t.Errorf("Input: %q HasInput: %v want (empty, false) for CONTENT form", c.Input, c.HasInput)
 	}
-	if c.Content != "#define BANNER \"hi\"\n" {
-		t.Errorf("Content: %q", c.Content)
+	if c.Content != "#define BANNER \"hi\"\n" || !c.HasContent {
+		t.Errorf("Content: %q HasContent: %v", c.Content, c.HasContent)
 	}
 	if c.Target != "mytarget" {
 		t.Errorf("Target: %q want mytarget", c.Target)
@@ -381,6 +381,35 @@ func TestExtractFileGenerate_FiltersNonGenerateAndOutOfTree(t *testing.T) {
 	}
 	if got[0].Output != "ok.h" {
 		t.Errorf("output: %q want ok.h", got[0].Output)
+	}
+}
+
+// TestExtractFileGenerate_EmptyContentPreserved covers the
+// `file(GENERATE OUTPUT ... CONTENT "")` shape: cmake accepts
+// this and writes an empty output file. The extractor must
+// preserve the call (HasContent=true, Content="") rather than
+// drop it as malformed — the lifter routes it through the
+// CONTENT-form lift so the empty-template invariant rides into
+// the genrule shape.
+func TestExtractFileGenerate_EmptyContentPreserved(t *testing.T) {
+	trace := `{"args":["GENERATE","OUTPUT","empty.txt","CONTENT",""],"cmd":"file","file":"/src/CMakeLists.txt","line":5}
+`
+	got := ExtractFileGenerate([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("CONTENT \"\" should be preserved; got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Output != "empty.txt" {
+		t.Errorf("Output: %q want empty.txt", c.Output)
+	}
+	if c.Content != "" {
+		t.Errorf("Content: %q want empty string", c.Content)
+	}
+	if !c.HasContent {
+		t.Errorf("HasContent must be true even when Content == \"\"")
+	}
+	if c.HasInput {
+		t.Errorf("HasInput must be false for CONTENT form")
 	}
 }
 

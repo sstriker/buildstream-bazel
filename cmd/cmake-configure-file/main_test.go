@@ -31,7 +31,7 @@ func TestRun_FixtureMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "config.h")
-	if err := run(valuesPath, tmplPath, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -60,7 +60,7 @@ func TestRun_AtOnlyFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, tmplPath, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
+	if err := run(valuesPath, tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -84,7 +84,7 @@ func TestRun_NullValuesIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, tmplPath, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, _ := os.ReadFile(outPath)
@@ -101,6 +101,7 @@ func TestRun_MissingValuesFile(t *testing.T) {
 	}
 	err := run(filepath.Join(tmp, "no-such-values.json"),
 		filepath.Join(tmp, "in.txt"),
+		false,
 		"",
 		filepath.Join(tmp, "out.txt"),
 		configurefile.Options{})
@@ -122,7 +123,7 @@ func TestRun_ContentBase64Mode(t *testing.T) {
 	tmpl := "#define BANNER \"@BANNER@\"\n"
 	blob := base64.StdEncoding.EncodeToString([]byte(tmpl))
 	outPath := filepath.Join(tmp, "out.h")
-	if err := run(valuesPath, "", blob, outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", true, blob, outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -135,6 +136,34 @@ func TestRun_ContentBase64Mode(t *testing.T) {
 	}
 }
 
+// TestRun_ContentBase64Empty exercises the
+// `file(GENERATE CONTENT "")` shape: the CONTENT keyword is
+// present but the body is the empty string. hasContent=true +
+// content="" must produce an empty output file, not fall through
+// to the no-template branch (which would write whatever zero-
+// value bytes Substitute returns for a nil template — still
+// empty, but only by coincidence; the explicit branch makes
+// the intent unambiguous).
+func TestRun_ContentBase64Empty(t *testing.T) {
+	tmp := t.TempDir()
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+	// Empty body: base64 of "" is the empty string.
+	if err := run(valuesPath, "", true, "", outPath, configurefile.Options{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) != 0 {
+		t.Errorf("empty CONTENT should produce empty output; got %q", body)
+	}
+}
+
 // TestRun_ContentBase64Malformed asserts the decoder surfaces a
 // clear error on a broken blob rather than silently treating it
 // as an empty template.
@@ -144,7 +173,7 @@ func TestRun_ContentBase64Malformed(t *testing.T) {
 	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(valuesPath, "", "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
+	err := run(valuesPath, "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
 	if err == nil {
 		t.Fatal("expected error on malformed --content-base64")
 	}

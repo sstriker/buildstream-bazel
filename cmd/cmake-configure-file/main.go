@@ -93,9 +93,34 @@ import (
 	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
 )
 
+// optionalString is a flag.Value that tracks whether a string
+// flag was supplied on the command line, independent of whether
+// its value was the empty string. Used for --content-base64
+// where the empty-string value is meaningful (base64 of an
+// empty template body, for `file(GENERATE CONTENT "")` lifts);
+// flag.String would conflate that with "flag not supplied".
+type optionalString struct {
+	set bool
+	val string
+}
+
+func (o *optionalString) String() string {
+	if o == nil {
+		return ""
+	}
+	return o.val
+}
+
+func (o *optionalString) Set(s string) error {
+	o.set = true
+	o.val = s
+	return nil
+}
+
 func main() {
 	valuesPath := flag.String("values", "", "path to JSON file containing the {VAR: value, ...} substitution map. Required.")
-	contentBase64 := flag.String("content-base64", "", "base64-encoded inline template body (mutually exclusive with the positional <input> path). Used by file(GENERATE CONTENT ...) lifts where the template has no on-disk srcs anchor.")
+	var contentBase64 optionalString
+	flag.Var(&contentBase64, "content-base64", "base64-encoded inline template body (mutually exclusive with the positional <input> path). Used by file(GENERATE CONTENT ...) lifts where the template has no on-disk srcs anchor. An explicit `--content-base64=` (empty value) is treated as the literal empty template — distinct from omitting the flag.")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
 	copyOnly := flag.Bool("copy-only", false, "skip ALL substitution (@VAR@, ${VAR}, #cmakedefine*) and emit the template verbatim. Mirrors configure_file's COPYONLY flag.")
 	escapeQuotes := flag.Bool("escape-quotes", false, "backslash-escape `\"` (and `\\\\`) in expanded values. Mirrors configure_file's ESCAPE_QUOTES flag.")
@@ -108,8 +133,9 @@ func main() {
 
 	args := flag.Args()
 	// Argv shape:
-	//   INPUT form:   --values=v <input> <output>     (2 positional)
-	//   CONTENT form: --values=v --content-base64=b <output>  (1 positional)
+	//   INPUT form:   --values=v <input> <output>          (2 positional)
+	//   CONTENT form: --values=v --content-base64=b <output> (1 positional;
+	//                 b may be the empty string for the empty-template case)
 	// Mutual exclusion: setting both --content-base64 and a positional
 	// <input> is ambiguous about which template source wins, so reject
 	// at the CLI rather than picking silently.
@@ -118,12 +144,12 @@ func main() {
 	case *valuesPath == "":
 		flag.Usage()
 		os.Exit(2)
-	case *contentBase64 != "" && len(args) == 1:
+	case contentBase64.set && len(args) == 1:
 		// CONTENT form: just <output>.
-	case *contentBase64 == "" && len(args) == 2:
+	case !contentBase64.set && len(args) == 2:
 		// INPUT form: <input> <output>.
 		hasInputPath = true
-	case *contentBase64 != "" && len(args) == 2:
+	case contentBase64.set && len(args) == 2:
 		fmt.Fprintln(os.Stderr, "cmake-configure-file: --content-base64 and positional <input> are mutually exclusive")
 		os.Exit(2)
 	default:
@@ -145,7 +171,7 @@ func main() {
 	if hasInputPath {
 		inPath = args[0]
 	}
-	if err := run(*valuesPath, inPath, *contentBase64, outPath, opts); err != nil {
+	if err := run(*valuesPath, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
@@ -167,12 +193,13 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 }
 
 // run loads the values JSON, sources the template body from
-// either inPath (INPUT form; inPath != "") or contentBase64
-// (CONTENT form; contentBase64 != ""), substitutes, and writes
-// the rendered output. The caller (main) is responsible for
-// asserting exactly one of inPath / contentBase64 is non-empty;
-// run trusts that invariant.
-func run(valuesPath, inPath, contentBase64, outPath string, opts configurefile.Options) error {
+// either inPath (INPUT form; inPath != "") or the
+// --content-base64 blob (CONTENT form; hasContent == true,
+// content may be the empty string for the empty-template
+// case), substitutes, and writes the rendered output. The
+// caller (main) is responsible for asserting exactly one of
+// inPath / hasContent is set; run trusts that invariant.
+func run(valuesPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
 	values, err := loadValues(valuesPath)
 	if err != nil {
 		return fmt.Errorf("load values %s: %w", valuesPath, err)
@@ -183,8 +210,8 @@ func run(valuesPath, inPath, contentBase64, outPath string, opts configurefile.O
 		if err != nil {
 			return fmt.Errorf("read template %s: %w", inPath, err)
 		}
-	} else {
-		tmpl, err = base64.StdEncoding.DecodeString(contentBase64)
+	} else if hasContent {
+		tmpl, err = base64.StdEncoding.DecodeString(content)
 		if err != nil {
 			return fmt.Errorf("decode --content-base64: %w", err)
 		}

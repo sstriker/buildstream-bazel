@@ -363,6 +363,15 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 // with both set the lifter chooses Input (the file-form is
 // closer to configure_file's shape, so reuses more code).
 //
+// HasInput / HasContent track whether the keyword was
+// PRESENT in the trace args, independent of whether its
+// value was the empty string. cmake accepts and emits
+// `file(GENERATE OUTPUT ... CONTENT "")` (a legitimate
+// empty-file emission) and the lifter has to distinguish
+// that from `no CONTENT keyword supplied at all`. String-
+// emptiness as the discriminator would collapse the two
+// shapes and route the empty-body case to legacy fallback.
+//
 // v1 captures only the fields the lifter consumes. PERMISSIONS
 // / FILE_PERMISSIONS / USE_SOURCE_PERMISSIONS /
 // NO_SOURCE_PERMISSIONS affect mode bits, not content bytes
@@ -377,8 +386,10 @@ type FileGenerateCall struct {
 	File         string
 	Line         int
 	Output       string
-	Input        string // empty when the call uses CONTENT
-	Content      string // empty when the call uses INPUT
+	Input        string // populated when HasInput == true
+	HasInput     bool   // true iff the INPUT keyword was present in the trace args
+	Content      string // populated when HasContent == true; may be the empty string
+	HasContent   bool   // true iff the CONTENT keyword was present in the trace args
 	Condition    string // empty if no CONDITION clause
 	Target       string
 	NewlineStyle string // "" / "UNIX" / "LF" / "DOS" / "WIN32" / "CRLF" — passed through verbatim
@@ -445,12 +456,14 @@ func classifyFileGenerate(ev TraceEvent, sourceRoot string) (FileGenerateCall, b
 			if i+1 < len(ev.Args) {
 				i++
 				call.Input = ev.Args[i]
+				call.HasInput = true
 			}
 			continue
 		case "CONTENT":
 			if i+1 < len(ev.Args) {
 				i++
 				call.Content = ev.Args[i]
+				call.HasContent = true
 			}
 			continue
 		case "CONDITION":
@@ -493,8 +506,11 @@ func classifyFileGenerate(ev TraceEvent, sourceRoot string) (FileGenerateCall, b
 		// without OUTPUT). Defensive: drop.
 		return FileGenerateCall{}, false
 	}
-	if call.Input == "" && call.Content == "" {
-		// Same — cmake requires exactly one of INPUT / CONTENT.
+	if !call.HasInput && !call.HasContent {
+		// cmake requires exactly one of INPUT / CONTENT. Note
+		// the keyword-presence check, not the value-emptiness
+		// check: `CONTENT ""` is a legitimate empty-file
+		// emission and the extractor preserves it.
 		return FileGenerateCall{}, false
 	}
 	return call, true

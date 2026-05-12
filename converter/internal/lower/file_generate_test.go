@@ -59,9 +59,10 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 	rendered := []byte("#define VERSION \"1.2.3\"\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/banner.h.in", template, "banner.h", rendered)
 	calls := []shadow.FileGenerateCall{{
-		File:   filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output: filepath.Join(hostBuild, "banner.h"),
-		Input:  filepath.Join(hostSrc, "src/banner.h.in"),
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "banner.h"),
+		Input:    filepath.Join(hostSrc, "src/banner.h.in"),
+		HasInput: true,
 	}}
 	cc := newCodegenContext()
 	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.2.3"}, cc)
@@ -108,9 +109,10 @@ func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 	rendered := []byte("ver=9.9\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "ver.txt", rendered)
 	calls := []shadow.FileGenerateCall{{
-		File:    filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output:  filepath.Join(hostBuild, "ver.txt"),
-		Content: template,
+		File:       filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:     filepath.Join(hostBuild, "ver.txt"),
+		Content:    template,
+		HasContent: true,
 	}}
 	cc := newCodegenContext()
 	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "9.9"}, cc)
@@ -143,9 +145,10 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 	rendered := []byte("tag=1;ver=1.0\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
 	calls := []shadow.FileGenerateCall{{
-		File:   filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output: filepath.Join(hostBuild, "g.out"),
-		Input:  filepath.Join(hostSrc, "src/g.in"),
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
 	}}
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.0"}, cc); err != nil {
@@ -175,9 +178,10 @@ func TestRecoverFileGenerate_LegacyWhenLiftDisabled(t *testing.T) {
 	rendered := []byte("ver=1.0\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
 	calls := []shadow.FileGenerateCall{{
-		File:   filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output: filepath.Join(hostBuild, "g.out"),
-		Input:  filepath.Join(hostSrc, "src/g.in"),
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
 	}}
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, map[string]string{"VERSION": "1.0"}, cc); err != nil {
@@ -204,9 +208,10 @@ func TestRecoverFileGenerate_MissingRenderedOutputDropsCall(t *testing.T) {
 	hostSrc := t.TempDir()
 	hostBuild := t.TempDir()
 	calls := []shadow.FileGenerateCall{{
-		File:    filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output:  filepath.Join(hostBuild, "skipped.txt"),
-		Content: "anything\n",
+		File:       filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:     filepath.Join(hostBuild, "skipped.txt"),
+		Content:    "anything\n",
+		HasContent: true,
 	}}
 	cc := newCodegenContext()
 	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
@@ -228,9 +233,10 @@ func TestRecoverFileGenerate_DedupesDuplicateOutputs(t *testing.T) {
 	rendered := []byte("hi\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "g.txt", rendered)
 	call := shadow.FileGenerateCall{
-		File:    filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output:  filepath.Join(hostBuild, "g.txt"),
-		Content: "hi\n",
+		File:       filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:     filepath.Join(hostBuild, "g.txt"),
+		Content:    "hi\n",
+		HasContent: true,
 	}
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate([]shadow.FileGenerateCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
@@ -238,6 +244,43 @@ func TestRecoverFileGenerate_DedupesDuplicateOutputs(t *testing.T) {
 	}
 	if len(cc.Genrules) != 1 {
 		t.Errorf("dedupe failed; got %d genrules", len(cc.Genrules))
+	}
+}
+
+// TestRecoverFileGenerate_ContentEmpty_Lifted covers the
+// `file(GENERATE OUTPUT ... CONTENT "")` shape: a legitimate
+// cmake invocation that writes an empty output file. The
+// lifter must distinguish this from "no CONTENT supplied at
+// all" — string-emptiness as the discriminator would collapse
+// the two and force a legacy fallback (or worse, skip the
+// call). HasContent=true + Content="" should route through
+// the CONTENT-form lift with --content-base64= carrying the
+// empty body.
+func TestRecoverFileGenerate_ContentEmpty_Lifted(t *testing.T) {
+	rendered := []byte{} // cmake writes an empty file
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "empty.txt", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:       filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:     filepath.Join(hostBuild, "empty.txt"),
+		Content:    "",
+		HasContent: true,
+	}}
+	cc := newCodegenContext()
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 || out[0].RelOutput != "empty.txt" {
+		t.Fatalf("outs: %+v", out)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("CONTENT \"\" should still lift; tags: %v", g.Tags)
+	}
+	// --content-base64= followed by a non-blob (space, then
+	// "$@") confirms the empty body rode through.
+	if !strings.Contains(g.GenruleCmd, "--content-base64= ") {
+		t.Errorf("cmd should carry --content-base64= (empty blob); got %q", g.GenruleCmd)
 	}
 }
 

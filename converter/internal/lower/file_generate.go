@@ -137,14 +137,20 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		return legacy
 	}
 
-	// Source the template body. Exactly one of Input / Content
-	// is non-empty on a well-formed call (the extractor enforces
-	// this); a defensive prefer-Input mirrors configure_file's
-	// INPUT-form shape when both are accidentally set.
+	// Source the template body. Exactly one of HasInput /
+	// HasContent is true on a well-formed call (the extractor
+	// enforces that); a defensive prefer-Input mirrors
+	// configure_file's INPUT-form shape when both are
+	// accidentally set. Keyword-presence (not value-emptiness)
+	// is the discriminator: `file(GENERATE CONTENT "")` is a
+	// legitimate empty-file emission and the lifter routes it
+	// through the CONTENT form so `--content-base64=<empty>`
+	// carries the empty body to the Bazel-time tool.
 	var templateBody []byte
 	var inRel string // package-relative path; empty for the CONTENT form
 	isContentForm := false
-	if call.Input != "" {
+	switch {
+	case call.HasInput:
 		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 		if !ok {
 			return legacy
@@ -155,10 +161,10 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		}
 		templateBody = body
 		inRel = rel
-	} else if call.Content != "" {
+	case call.HasContent:
 		templateBody = []byte(call.Content)
 		isContentForm = true
-	} else {
+	default:
 		return legacy
 	}
 
