@@ -98,7 +98,12 @@ func Discover(p *Pyproject, sourceFiles []string) ([]Package, error) {
 // project name (with hyphens → underscores). flit's data model
 // recognizes both PACKAGE shape (`<name>/__init__.py` plus
 // siblings) and single-MODULE shape (just `<name>.py` at the
-// import root); v1 supports both, in that order of preference.
+// import root); v1 supports both. The implementation checks
+// the single-MODULE shape first (cheap exact-path probe) and
+// falls back to PACKAGE-shape discovery on miss. Real projects
+// don't ship both at the same root — if they did, single-MODULE
+// would win, but that combination is structurally ambiguous and
+// flit itself would refuse to build it.
 func discoverFlit(p *Pyproject, sourceFiles []string) ([]Package, error) {
 	moduleName := ""
 	if p.Tool.Flit != nil && p.Tool.Flit.Module != nil {
