@@ -40,7 +40,8 @@
 #     errors, not drift — surfacing them as failures matches
 #     every other build/test tool's contract.
 # CI gates that want hard-fail-on-drift can `[ ! -s
-# combined-report.txt ]` and fail when it isn't empty — the
+# <artifact-dir>/audit-combined.txt ]` (or the caller-supplied
+# <combined-report-path>) and fail when it isn't empty — the
 # gate's drift policy lives one level up (see
 # scripts/meta-audit-narrowing.sh), not in this walker.
 #
