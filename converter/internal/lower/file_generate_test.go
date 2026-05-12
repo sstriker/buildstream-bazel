@@ -284,6 +284,42 @@ func TestRecoverFileGenerate_ContentEmpty_Lifted(t *testing.T) {
 	}
 }
 
+// TestRecoverFileGenerate_SkipsCollisionWithOtherLifter
+// covers the cross-surface dedup: if another codegen lifter
+// (configure_file or execute_process) already claimed an
+// output path, recoverFileGenerate must skip rather than
+// append a duplicate Bazel rule. cmake itself rejects two
+// writers to the same path, so the case is "shouldn't
+// happen" — but the guard keeps the recovered BUILD valid
+// if it does.
+func TestRecoverFileGenerate_SkipsCollisionWithOtherLifter(t *testing.T) {
+	rendered := []byte("hi\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "g.txt", rendered)
+	cc := newCodegenContext()
+	// Pre-seed OutToGenrule as if a sibling lifter already
+	// recovered "g.txt".
+	cc.OutToGenrule["g.txt"] = "gen_existing_from_other_lifter"
+	calls := []shadow.FileGenerateCall{{
+		File:       filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:     filepath.Join(hostBuild, "g.txt"),
+		Content:    "hi\n",
+		HasContent: true,
+	}}
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("collision should produce 0 outs; got %+v", out)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("collision should not append a genrule; got %+v", cc.Genrules)
+	}
+	if cc.OutToGenrule["g.txt"] != "gen_existing_from_other_lifter" {
+		t.Errorf("collision should not overwrite the sibling lifter's claim; got %q", cc.OutToGenrule["g.txt"])
+	}
+}
+
 // TestHasGenex covers the genex detector: any "$<" substring
 // triggers true regardless of position, balance, or contents.
 func TestHasGenex(t *testing.T) {

@@ -90,6 +90,18 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 			continue
 		}
 
+		if _, exists := cc.OutToGenrule[rel]; exists {
+			// Some other lifter (configure_file, execute_process)
+			// already claimed this output path. Two recoveries
+			// emitting the same rel would land duplicate rule
+			// names + colliding outs in BUILD.bazel. cmake itself
+			// rejects two writers to the same output, so this is
+			// the "shouldn't happen with a sane CMakeLists" case;
+			// defensive skip mirrors the execute_process lifters
+			// and keeps the recovered BUILD valid.
+			continue
+		}
+
 		name := configureFileGenruleName(rel) // reuse the gen_<path> namer
 		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars)
 		cc.Genrules = append(cc.Genrules, gen)
@@ -110,8 +122,10 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // requires:
 //
 //   - liftEnabled, AND
-//   - The template body is sourceable (INPUT file resolvable
-//     under source root, OR CONTENT string non-empty), AND
+//   - The template-source keyword is present (HasInput → INPUT
+//     file resolvable under source root, OR HasContent → the
+//     CONTENT string, which may legitimately be the empty
+//     string for the empty-file emission shape), AND
 //   - The template body has no generator expressions, AND
 //   - configurefile.Substitute(template, values, opts) ==
 //     rendered for some values map (the verify-pass — caught
