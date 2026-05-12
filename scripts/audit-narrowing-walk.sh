@@ -14,12 +14,14 @@
 #           audit-report.txt             # written by this script
 #
 # Per-element behavior:
-#   - srckey-patterns.txt absent → element skipped silently
-#     (e.g. a stack/compose element with nothing to audit).
-#   - Neither oracle present → element skipped silently with a
-#     stderr note (the audit needs at least one oracle; an
-#     element opted in for trace-source-root but without the
-#     trace.log captured yet falls in this bucket).
+#   - srckey-patterns.txt absent → element skipped silently,
+#     no output (e.g. a stack/compose element with nothing to
+#     audit).
+#   - Neither oracle present → element skipped with a stderr
+#     note explaining why (the audit needs at least one
+#     oracle; an element opted in for trace-source-root but
+#     without the trace.log captured yet falls in this
+#     bucket).
 #   - Either oracle present → run audit-narrowing, write
 #     audit-report.txt next to the patterns file. Empty report
 #     is the clean signal.
@@ -65,7 +67,16 @@ fi
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
-CGO_ENABLED=0 go build -o "$bin_dir/audit-narrowing" ./cmd/audit-narrowing
+# `go build ./cmd/audit-narrowing` resolves the relative
+# package path against the cwd, so the build has to run from
+# repo_root (not whatever directory the caller invoked the
+# walker from). Subshell scope keeps the cd local — the
+# per-element loop below stays in the caller's directory so
+# artifact_dir paths remain consistent.
+(
+    cd "$repo_root"
+    CGO_ENABLED=0 go build -o "$bin_dir/audit-narrowing" ./cmd/audit-narrowing
+)
 
 # Ensure the combined report's parent dir exists even when the
 # caller supplied a path in a not-yet-created directory; `: >`
