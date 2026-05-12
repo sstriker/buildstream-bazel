@@ -1465,6 +1465,21 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 		// the version follows rules_python's own bzlmod release
 		// cadence and is downloaded from bcr.bazel.build at
 		// project B's first bazel build.
+		//
+		// Added whenever --convert-element-pyproject is set and
+		// the graph contains any kind:pyproject element — even if
+		// every such element is forced to the pipeline shape by
+		// pyprojectNativeIncompatible (multi-source / Directory
+		// set) or by Phase B's per-element fallback. The
+		// alternative (gating on whether at least one element
+		// will actually render natively) would require running
+		// the per-element structural / probe checks here at
+		// MODULE.bazel rendering time, which is well outside this
+		// helper's scope. The extra registry fetch for
+		// rules_python is a small cost vs the architectural
+		// complexity of threading per-element render decisions
+		// through the module-deps emit; ROADMAP notes the gating
+		// as a follow-up if it ever becomes load-bearing.
 		b.WriteString(`bazel_dep(name = "rules_python", version = "0.40.0")
 `)
 	}

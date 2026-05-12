@@ -296,9 +296,25 @@ func resolveDeps(p *Pyproject, pkgs []Package, imports *manifest.Resolver) ([]st
 	out := []string{}
 	seen := map[string]bool{}
 	for _, raw := range p.Project.Dependencies {
+		// Empty entries (`[project.dependencies] = [""]`) are
+		// always-skipped no-ops, not an under-approximation
+		// risk — there's nothing to resolve. But a non-empty raw
+		// that stripPEP508 reduces to "" means the requirement
+		// starts with a non-name char (e.g. `,foo`, `>=1.2`):
+		// a malformed PEP 508 string the user almost certainly
+		// didn't mean to silently drop. Surface as Tier-1 so the
+		// element either falls back to the pipeline shape or the
+		// operator fixes the typo, rather than building an
+		// under-approximated deps graph that would import-fail
+		// at runtime.
+		if strings.TrimSpace(raw) == "" {
+			continue
+		}
 		name := stripPEP508(raw)
 		if name == "" {
-			continue
+			return nil, newFailure(unresolvedPyprojectDependency,
+				"[project.dependencies] entry %q isn't a parseable PEP 508 requirement (stripped to an empty distribution name — the requirement starts with a non-name character like `,` / `;` / `>=` / `@`, or otherwise doesn't begin with a valid identifier). Fix the entry to start with the distribution name (e.g. `requests>=2.0` not `>=2.0`).",
+				raw)
 		}
 		norm := normalizeDistName(name)
 		if ownPackageNames[norm] {

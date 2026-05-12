@@ -162,8 +162,19 @@ func discoverHatchling(p *Pyproject, sourceFiles []string) ([]Package, error) {
 			"hatchling: v1 requires [tool.hatch.build.targets.wheel].packages to be an explicit list (auto-discovery via VCS-tracked sources isn't statically resolvable)")
 	}
 	out := make([]Package, 0, len(p.Tool.Hatch.Build.Targets.Wheel.Packages))
+	// Dedupe duplicate entries silently — mirrors setuptoolsExplicit:
+	// `packages = ["src/demo", "src/demo"]` is one declaration;
+	// emitting two py_library targets with the same name would
+	// produce an invalid BUILD. First-occurrence wins. Key on the
+	// post-TrimSuffix path so trailing-slash variants ("src/demo"
+	// vs "src/demo/") collapse to one entry.
+	seen := map[string]bool{}
 	for _, dir := range p.Tool.Hatch.Build.Targets.Wheel.Packages {
 		dir = strings.TrimSuffix(dir, "/")
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
 		// hatchling's `packages` entries are source-relative
 		// directory paths. Hatch puts the LAST path segment at
 		// the wheel root (so `packages = ["src/demo"]` ships
@@ -437,8 +448,20 @@ func discoverPoetry(p *Pyproject, sourceFiles []string) ([]Package, error) {
 			"poetry-core: v1 requires an explicit [tool.poetry].packages list (poetry's auto-discovery isn't statically resolvable)")
 	}
 	out := make([]Package, 0, len(p.Tool.Poetry.Packages))
+	// Dedupe duplicate entries silently — mirrors setuptoolsExplicit /
+	// discoverHatchling. Two entries are equivalent when their
+	// resulting (root, include) pair matches after the same
+	// normalizePackageRoot canonicalization materializePackage
+	// applies; otherwise two distinct `from=` overrides for the
+	// same `include=` should still emit two libraries.
+	seen := map[string]bool{}
 	for _, pp := range p.Tool.Poetry.Packages {
 		root := normalizePackageRoot(pp.From)
+		key := root + "\x00" + pp.Include
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		pkg, err := materializePackage(pp.Include, root, sourceFiles)
 		if err != nil {
 			return nil, err
