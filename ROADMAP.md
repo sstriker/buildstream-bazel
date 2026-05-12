@@ -77,20 +77,24 @@ transition cleanly.
   in CI so the platforms package exists at orchestrate time.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
-  with `continue-on-error: true`). The remaining work is
-  policy plus fixture coverage: once a representative set of
-  meta-projects has stabilized expected-drift allowlists
-  (`srckey-expected-drift.txt` per element), flip
-  `continue-on-error` to false on the CI step. Until then,
-  promotion is gated on accumulated signal — operators need
-  to see real drift hit the gate without affecting their
-  builds, decide which entries deserve the allowlist vs
-  which deserve a pattern fix, and let the allowlist set
-  converge. Trace-side coverage (the build-tracer + trace.log
-  oracle for round-2 trace-driven kinds) also needs a CI
-  fixture: `--trace-source-root` is wired but no e2e job
-  exercises it yet, so the gate today only covers the cmake
-  oracle.
+  exits non-zero on drift; the CI step uses
+  `continue-on-error: true` to keep the build green). The
+  remaining work is policy plus fixture coverage: once a
+  representative set of meta-projects has stabilized
+  expected-drift allowlists (`srckey-expected-drift.txt` per
+  element), flipping `continue-on-error` to false on the CI
+  step promotes the gate to blocking. The flip is a real
+  one-line YAML change because the script's exit code
+  already differentiates clean vs drift — nothing else
+  needs to move. Until then, promotion is gated on
+  accumulated signal: operators need to see real drift hit
+  the gate without affecting their builds, decide which
+  entries deserve the allowlist vs which deserve a pattern
+  fix, and let the allowlist set converge. Trace-side
+  coverage (the build-tracer + trace.log oracle for round-2
+  trace-driven kinds) also needs a CI fixture:
+  `--trace-source-root` is wired but no e2e job exercises
+  it yet, so the gate today only covers the cmake oracle.
 - **kind:cmake round-2 fallback for unliftable
   `execute_process`.** Phase B follow-on to the Now-bullet
   native lift. When `convert-element` exits with
@@ -233,12 +237,14 @@ transition cleanly.
   invoke `convert-element` offline to populate
   `cmake-reads.json` per kind:cmake element, walk
   `scripts/audit-narrowing-walk.sh` to accumulate the combined
-  report). The CI step uses `continue-on-error: true` so the
-  gate is non-blocking — drift surfaces on stderr (and the
-  combined report file) without failing the build while
-  operators accumulate signal about real-world drift. The two
-  open conversations the previous Next bullet flagged
-  resolved as:
+  report). The meta script exits non-zero on drift (the
+  underlying primitives — `cmd/audit-narrowing` and the
+  walker — stay policy-agnostic with "exit 0, report is the
+  signal", but the meta script IS the policy layer); the CI
+  step uses `continue-on-error: true` so the gate is
+  non-blocking while operators accumulate signal about
+  real-world drift. The two open conversations the previous
+  Next bullet flagged resolved as:
   - **Allowlist** (`<elem>.expected-drift.txt` next to
     `<elem>.read-paths.txt`, staged as
     `srckey-expected-drift.txt` in project A): one path per

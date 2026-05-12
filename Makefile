@@ -123,13 +123,16 @@ e2e-meta-hello: check-tools converter
 # small meta-project with write-a, invokes convert-element
 # offline to populate the cmake oracle (cmake-reads.json per
 # kind:cmake element), then runs scripts/audit-narrowing-walk.sh
-# to accumulate per-element drift. The combined report is the
-# soft-gate signal — non-empty means drift but the gate is
-# non-blocking in this v1; CI's continue-on-error: true keeps
-# the build green while the allowlist mechanism is exercised.
-# Promotes to blocking via the CI workflow once representative
-# fixtures and their srckey-expected-drift.txt allowlists have
-# stabilized. Recipe: docs/design/narrowing-audit.md.
+# to accumulate per-element drift. The script exits non-zero
+# when drift is detected — the make target inherits that exit
+# code so this make invocation fails just like any other check
+# target. The soft-vs-blocking dial lives in the CI step that
+# calls this target: `continue-on-error: true` keeps the job
+# green while the allowlist mechanism stabilizes against a
+# representative fixture set; flipping it to false promotes
+# the gate to blocking (a real one-line YAML change because
+# the script's exit code already discriminates). Recipe:
+# docs/design/narrowing-audit.md.
 e2e-audit-narrowing: check-tools converter
 	scripts/meta-audit-narrowing.sh
 

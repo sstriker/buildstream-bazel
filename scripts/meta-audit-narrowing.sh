@@ -33,11 +33,15 @@
 # drift-detection logic itself is covered by
 # cmd/audit-narrowing's unit tests.
 #
-# Non-blocking by design: the CI step that calls this script
-# uses `continue-on-error: true` so a non-empty combined
-# report doesn't fail the build. Once the allowlist has
-# stabilized against a representative fixture set, the gate
-# can be promoted to blocking (one-line CI change).
+# Exit shape: 0 on a clean audit, non-zero when the combined
+# report is non-empty (drift detected) OR when any prereq
+# (convert-element, the walker) failed. The soft-vs-blocking
+# dial lives one level up in the CI step:
+# `continue-on-error: true` keeps drift from failing the build
+# while signal accumulates; flipping it to false promotes the
+# gate to blocking. Keeping the policy decision in the CI
+# workflow (rather than gated on a flag inside this script)
+# makes the promotion a real one-line YAML change.
 
 set -eu
 
@@ -134,15 +138,21 @@ if [ ! -f "$combined" ]; then
 fi
 
 if [ -s "$combined" ]; then
-    echo "meta-audit-narrowing: drift detected (soft signal — gate is non-blocking):" >&2
+    echo "meta-audit-narrowing: drift detected:" >&2
     cat "$combined" >&2
-else
-    echo "meta-audit-narrowing: clean (no drift across audited elements)" >&2
+    # Exit non-zero on drift so the soft-vs-blocking dial is
+    # entirely a property of the CI step (continue-on-error)
+    # rather than this script. The underlying primitives
+    # (cmd/audit-narrowing, scripts/audit-narrowing-walk.sh)
+    # still follow the "exit 0, report is the signal" pattern
+    # because they're policy-agnostic; this meta script IS
+    # the policy layer (it bundles the gate's render + oracle-
+    # populate + walk + report shape into one CI-callable
+    # surface), so non-zero on drift here makes
+    # "flip continue-on-error to false" a real promotion
+    # gesture rather than a misleading docs claim.
+    exit 1
 fi
 
-# Exit 0 unconditionally — the report is the signal, not the
-# exit status (matches cmd/audit-narrowing's own contract).
-# The CI step's continue-on-error: true would also handle a
-# non-zero exit, but keeping this script honest about its
-# soft-gate role makes the contract explicit at call sites.
+echo "meta-audit-narrowing: clean (no drift across audited elements)" >&2
 exit 0
