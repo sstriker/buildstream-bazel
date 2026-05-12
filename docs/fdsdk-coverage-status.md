@@ -44,7 +44,7 @@ install_tree.tar shape.
 |---|---|---|---|---|
 | `autotools` | 274 | 25.1 % | **deep** | trace-driven via build-tracer + convert-element-trace |
 | `meson` | 134 | 12.3 % | **deep** | introspection-driven via convert-element-meson; Phase B install-plan fallback queued |
-| `pyproject` | 115 | 10.5 % | **deep** | static analysis of pyproject.toml + a source-tree walk via convert-element-pyproject (no build-backend introspection — pyproject.toml is structurally rich enough on its own); per-backend dispatch covers flit / hatchling / setuptools / poetry-core; C-extension / dynamic-metadata / unknown-backend cases Tier-1 refuse — with `--convert-element-pyproject` set the per-element genrule fails at bazel-build time, so operators either re-render without the flag (pipeline-shape default) or opt in to the Phase B install-plan fallback (`--pyproject-fallback`, per-element write-a-time dispatch) |
+| `pyproject` | 115 | 10.5 % | **deep** | static analysis of pyproject.toml + a source-tree walk via convert-element-pyproject (no build-backend introspection — pyproject.toml is structurally rich enough on its own); per-backend dispatch covers flit / hatchling / setuptools / poetry-core; C-extension / dynamic-metadata / unknown-backend cases Tier-1 refuse — with `--convert-element-pyproject` set the per-element genrule fails at bazel-build time, so operators re-render without the flag to take the pipeline-shape default (per-element write-a-time dispatch that routes refused elements to the pipeline shape automatically is the queued Phase B install-plan fallback follow-up) |
 | `manual` | 104 | 9.5 % | **deep** | trace-driven via convert-element-trace (when the element's commands invoke cc/ar through any wrapper) |
 | `stack` | 96 | 8.8 % | structural | filegroup composition over deps |
 | `cmake` | 75 | 6.9 % | **deep** | File API + trace-expand |
@@ -99,8 +99,9 @@ Tackle in order of impact-per-work-unit:
    poetry-core; C-extension / dynamic-metadata / unknown-
    backend cases Tier-1 refuse — operators re-render without
    `--convert-element-pyproject` to take the pipeline-shape
-   default, or opt in to the Phase B install-plan fallback for
-   per-element write-a-time dispatch).
+   default; per-element write-a-time dispatch for refused
+   elements is the queued Phase B install-plan fallback
+   follow-up).
 4. **FDSDK glue** — last; small impact each.
 
 Coverage today: **~76 % of FDSDK has deep conversion** (vs.

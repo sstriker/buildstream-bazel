@@ -12,13 +12,13 @@
 // config), the function returns a typed
 // unsupported-pyproject-package-discovery failure. The
 // converter itself doesn't fall back — it just exits with
-// the Tier-1 code and surfaces the message on stderr. Any
-// pipeline-shape routing is the caller's responsibility
-// (write-a's --pyproject-fallback dispatch reads the
-// typed exit and chooses the pipeline shape; operators
-// without that flag re-render without
-// --convert-element-pyproject to take the pipeline default
-// for the whole graph).
+// the Tier-1 code and surfaces the message on stderr. The
+// operator's escape today is to re-render without
+// --convert-element-pyproject so the whole graph takes the
+// pipeline-shape default; a per-element write-a-time
+// dispatch that consumes the typed exit and routes refused
+// elements automatically is the queued Phase B follow-up
+// (see ROADMAP).
 package main
 
 import (
