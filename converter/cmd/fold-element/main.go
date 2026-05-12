@@ -50,7 +50,7 @@ import (
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/elementfold"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 func main() {

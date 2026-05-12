@@ -29,32 +29,33 @@ transition cleanly.
 
 ## Next
 
-- **Per-platform fold for round-2 trace-driven kinds.** The
-  per-element orchestrate-time fold shipped for kind:cmake
-  Phase A (see Done — `internal/empfold`,
-  `converter/internal/elementfold`, `cmd/fold-element`,
-  per-element multi-platform BUILD generation), and the
-  trace publish/lookup rendezvous can now partition its AC
-  keyspace by platform (also Done — `SyntheticActionDigest`
-  takes a platform tag; `trace-publish` / `trace-lookup` /
-  `rules/traces.bzl` plumb `--platform` end to end via
-  `CMAKE_TO_BAZEL_PLATFORM`). What's still queued for the
-  round-2 path (kind:cmake Phase B fallback, kind:autotools,
-  kind:make, kind:makemaker, kind:modulebuild, kind:manual,
-  kind:script, kind:meson Phase B): the converter genrule
-  itself runs in project A and emits a single
-  `BUILD.bazel.out` per element today. With diverging
-  per-platform install layouts (`.so` vs `.dylib`, multiarch
-  lib dirs, arch-tagged binary names), one platform's
-  converter output doesn't match another platform's
-  `install_tree.tar` — the platform-partitioned AC alone
-  isn't enough; the rendered stubs need `select()`-gated
-  path attributes
-  (`static_library = select({...: "lib/x86_64-linux-gnu/libfoo.a", ...})`).
-  Open design question: whether the round-2 converter genrule
-  itself runs per-platform (and `elementfold` composes N
-  converter outputs) or whether it consumes N traces directly
-  via a `_trace_repo` that fans out by platform.
+- **Per-platform fold for round-2 trace-driven kinds.** First
+  half shipped (see Done — `convert-element-trace --out-ir-json`,
+  `ir.Target.PerPlatformScalar` for cc_import path attrs,
+  elementfold's scalar-attr per-platform delta, `_trace_repo`
+  `platform` attr, write-a `--platforms-json` driving project A
+  fan-out for pipelineHandler kinds — kind:make / manual /
+  script / makemaker / modulebuild). What's left:
+  - **Project B per-platform install genrules.** Project A's
+    fan-out is in; project B still emits one install genrule
+    per element. End-to-end correctness needs N install
+    genrules so `trace-publish` lands N AC entries with
+    distinct platform tags. Mechanical wiring — the inline
+    publish step already reads `CMAKE_TO_BAZEL_PLATFORM` at
+    action time.
+  - **kind:autotools per-platform render.** Same shape as
+    pipelineHandler's, just at the `autotoolsHandler`
+    dispatch site (`handler_autotools_native.go`).
+  - **kind:cmake Phase B fallback per-platform render.** The
+    converter genrule already exists
+    (`handler_cmake_round2.go`); needs the fan-out wired.
+  - **kind:meson Phase B per-platform render** when Phase B
+    lands.
+
+  The cc_import scalar-select() rendering already handles the
+  diverging path-attr case (`.so` vs `.dylib`, multiarch lib
+  dirs, arch-tagged binary names) for the install_tree.tar
+  stub shape. Render gate: `scripts/meta-trace-round2-fold.sh`.
 - **Element-signal consumption in the unifier.** Stage 6 capture
   is in (`--collect-toolchain-signal` flows fileapi replies into
   `<out>/elements/<name>/toolchain-signal/`). Pending: wire
@@ -185,6 +186,33 @@ transition cleanly.
   (and against `bst workspace open`-modified element source trees).
   Goal: BuildStream developers' muscle memory keeps working through
   the transition.
+- **Proper target-presence delta in `elementfold`.** Today the
+  per-element multi-platform fold requires every cell to declare
+  the same `(Name, Kind)` target set; a target present on one
+  platform but absent on another is a Tier-1 fold error. The
+  current contract is intentional v1 scope — it keeps the IR
+  shape unchanged and matches kind:cmake Phase A's behaviour
+  — but the round-2 stub use case will eventually surface real
+  fixtures where one platform's `install_tree.tar` contains a
+  binary the other's doesn't (arch-specific tools, conditional
+  features). Two candidate shapes:
+  - **Phantom-target select.** Render the target unconditionally
+    with `select({absent_platforms: [], …})` on its path attrs;
+    consumers depending on the target see an empty list on the
+    platforms where it's absent and fail at compile time with a
+    legible "no inputs to this rule" message. Lowest-touch
+    elementfold change; the IR just learns to fold "present in
+    some cells" via PerPlatformScalar with the missing arms
+    omitted.
+  - **Alias-driven target gate.** Emit the target under a
+    suffixed name (`<target>_impl`) and an `alias(name = "<target>",
+    actual = select({plat_with: ":<target>_impl", plat_without:
+    "//:no-op"}))` wrapper. Cleaner semantically (consumers see
+    "no such target on this platform" at analysis time) but adds
+    two rules per target and depends on a `//:no-op` filegroup
+    every project A would carry.
+  Decision deferred — defer to whichever fixture surfaces first,
+  then pick the shape that fits its dep graph cleanly.
 
 ## Later (research / open questions)
 
@@ -212,6 +240,37 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Per-platform fold for round-2 trace-driven kinds — project A,
+  pipelineHandler kinds.** First half of the per-platform fold
+  for round-2: project A's per-element converter render fans out
+  one genrule per (element, platform) cell plus a fold-element
+  genrule composing the N `ir.Package` JSONs into one
+  `BUILD.bazel.out`. `convert-element-trace` gained
+  `--out-ir-json` and the trace converter's recovered rules now
+  flow through the shared `converter/ir.Package` so
+  `fold-element` + `converter/internal/elementfold` compose them
+  the same way they compose kind:cmake Phase A IRs. The IR also
+  gained `PerPlatformScalar` for cc_import path attrs (the
+  round-2 stub shape's main divergence axis: `.so` vs `.dylib`,
+  multiarch lib dirs); `emit/bazel` renders `static_library =
+  select({...: "lib/x86_64-linux-gnu/libfoo.a", ...})` for it.
+  `rules/traces.bzl`'s `_trace_repo` gained a `platform` attr
+  so a single Bazel build resolves N per-platform
+  `@trace_<elem>__<platform>//:trace` repos without env-var
+  conflict; legacy single-platform path stays byte-stable
+  (empty attr → env-var fallback). `cmd/write-a` opt-in:
+  `--platforms-json` + `--fold-element-bin`. Scope today is
+  pipelineHandler-shaped kinds (kind:make / manual / script /
+  makemaker / modulebuild); kind:autotools and kind:cmake
+  Phase B fallback share the same shape and ship in follow-up
+  commits on the same branch. Project B's per-platform install
+  fan-out is queued under Next ("Per-platform fold for round-2
+  trace-driven kinds"); without it, multi-platform end-to-end
+  publishes only one platform's trace at runtime, so the
+  feature is render-shape complete but not yet runtime-
+  complete. Render gate:
+  `scripts/meta-trace-round2-fold.sh`.
 
 - **Platform-tagged synthetic AC key for trace publish/lookup.**
   `tracenorm.SyntheticActionDigest` takes a platform tag in

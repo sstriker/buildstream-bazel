@@ -15,7 +15,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 // header is intentionally path-free so the emitted BUILD.bazel is
@@ -176,19 +176,24 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 // attribute set is fundamentally different — it wraps a
 // pre-built archive / shared object (StaticLibrary /
 // SharedLibrary as single-file label refs) plus optional hdrs;
-// no srcs / copts / defines / deps.
+// no srcs / copts / defines / deps. The *Expr fields are
+// pre-rendered strings: a quoted path literal when every cell
+// agrees, or a `select({...})` block when elementfold's per-
+// platform fold populated PerPlatformScalar (round-2 fallback
+// path attrs diverge between linux multiarch lib dirs and
+// darwin .dylib paths).
 var ccImportTmpl = template.Must(template.New("cc_import").Funcs(template.FuncMap{
 	"strList": strList,
 }).Parse(`cc_import(
     name = "{{.Name}}",
-{{- if .StaticLibrary}}
-    static_library = "{{.StaticLibrary}}",
+{{- if .StaticLibraryExpr}}
+    static_library = {{.StaticLibraryExpr}},
 {{- end}}
-{{- if .SharedLibrary}}
-    shared_library = "{{.SharedLibrary}}",
+{{- if .SharedLibraryExpr}}
+    shared_library = {{.SharedLibraryExpr}},
 {{- end}}
-{{- if .Hdrs}}
-    hdrs = {{strList .Hdrs}},
+{{- if .HdrsExpr}}
+    hdrs = {{.HdrsExpr}},
 {{- end}}
 {{- if .Tags}}
     tags = {{strList .Tags}},
@@ -203,12 +208,17 @@ var ccImportTmpl = template.Must(template.New("cc_import").Funcs(template.FuncMa
 // single-element srcs (the executable) — no hdrs, no copts.
 // Used by the kind:cmake round-2 fallback's per-target stubs
 // for EXECUTABLE targets, where the placeholder references
-// the installed binary path directly.
+// the installed binary path directly. SrcsExpr is the pre-
+// rendered list expression — flat literal when single-platform,
+// `select({...})` (or `[…] + select({...})`) when elementfold
+// populated PerPlatform["srcs"] for the round-2 multi-platform
+// fan-out (where the install_tree.tar's binary path is
+// arch-tagged on some platforms).
 var shBinaryTmpl = template.Must(template.New("sh_binary").Funcs(template.FuncMap{
 	"strList": strList,
 }).Parse(`sh_binary(
     name = "{{.Name}}",
-    srcs = {{strList .Srcs}},
+    srcs = {{.SrcsExpr}},
 {{- if .Tags}}
     tags = {{strList .Tags}},
 {{- end}}
@@ -285,38 +295,50 @@ type genruleView struct {
 }
 
 // ccImportView projects ir.Target into the cc_import template.
+// The *Expr fields are pre-rendered attribute values: a quoted
+// literal when the IR target has no per-platform delta, or a
+// `select({...})` block when elementfold populated
+// PerPlatformScalar / PerPlatform for the round-2 multi-platform
+// fan-out. Pre-rendering in Go keeps the template free of
+// scalar-vs-select branching — an empty *Expr signals "omit the
+// attribute" (the template's `{{- if }}` guard does the right
+// thing).
 type ccImportView struct {
-	Name          string
-	StaticLibrary string
-	SharedLibrary string
-	Hdrs          []string
-	Tags          []string
-	Visibility    []string
+	Name              string
+	StaticLibraryExpr string
+	SharedLibraryExpr string
+	HdrsExpr          string
+	Tags              []string
+	Visibility        []string
 }
 
 // shBinaryView projects ir.Target into the sh_binary template.
+// SrcsExpr is pre-rendered; sh_binary requires srcs so the field
+// is never empty in practice — the fold's target-set-agreement
+// invariant means every cell declares srcs, and emit always
+// produces a list literal or a select() expression.
 type shBinaryView struct {
 	Name       string
-	Srcs       []string
+	SrcsExpr   string
 	Tags       []string
 	Visibility []string
 }
 
 func emitCCImport(w *bytes.Buffer, t ir.Target) error {
 	return ccImportTmpl.Execute(w, ccImportView{
-		Name:          t.Name,
-		StaticLibrary: t.StaticLibrary,
-		SharedLibrary: t.SharedLibrary,
-		Hdrs:          sortedCopy(t.Hdrs),
-		Tags:          sortedCopy(t.Tags),
-		Visibility:    append([]string(nil), t.Visibility...),
+		Name:              t.Name,
+		StaticLibraryExpr: scalarAttrExpr(t.StaticLibrary, perPlatformScalarAttr(t, "static_library")),
+		SharedLibraryExpr: scalarAttrExpr(t.SharedLibrary, perPlatformScalarAttr(t, "shared_library")),
+		HdrsExpr:          attrExpr(sortedCopy(t.Hdrs), perPlatformAttr(t, "hdrs")),
+		Tags:              sortedCopy(t.Tags),
+		Visibility:        append([]string(nil), t.Visibility...),
 	})
 }
 
 func emitShBinary(w *bytes.Buffer, t ir.Target) error {
 	return shBinaryTmpl.Execute(w, shBinaryView{
 		Name:       t.Name,
-		Srcs:       sortedCopy(t.Srcs),
+		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
 		Tags:       sortedCopy(t.Tags),
 		Visibility: append([]string(nil), t.Visibility...),
 	})
@@ -417,6 +439,76 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		}
 	}
 	return ccRuleTmpl.Execute(w, v)
+}
+
+// perPlatformScalarAttr returns the per-platform scalar delta map
+// for the named attribute. Nil-safe: returns nil when the IR
+// target has no PerPlatformScalar map or no entry for the
+// requested name. Used by emitCCImport for static_library /
+// shared_library, which are single-string attrs (cc_import's
+// path attrs) that fold differently from the list-shaped
+// PerPlatform.
+func perPlatformScalarAttr(t ir.Target, name string) map[string]string {
+	if len(t.PerPlatformScalar) == 0 {
+		return nil
+	}
+	m, ok := t.PerPlatformScalar[name]
+	if !ok || len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// scalarAttrExpr renders a single-string cc-rule attribute's
+// value. Returns:
+//
+//   - "" when both flat and sel are empty (caller omits the
+//     attribute entirely — cc_import targets that only carry one
+//     of static_library / shared_library leave the other empty).
+//   - the quoted literal when sel is empty (single-platform
+//     shape; byte-identical to the pre-PerPlatformScalar
+//     emission).
+//   - a `select({...})` block with a trailing
+//     `"//conditions:default": None` arm when sel is non-empty.
+//     Unlike the list case there's no `<flat> + select()` form
+//     (scalars don't compose under "+"), but the default arm IS
+//     present so in-matrix platforms without a value for this
+//     attribute fall through to "attribute unset" rather than
+//     hitting a missing-arm analysis error. The partial-platform
+//     cc_import case — linux has only static_library, darwin has
+//     only shared_library — needs this: a build for darwin sees
+//     `static_library = select({linux: "...", "//conditions:default": None})`
+//     and Bazel treats static_library as unset (cc_import's
+//     default), the right outcome instead of an analysis error.
+//     Out-of-matrix platforms also resolve to None (attribute
+//     unset), which matches the "this target doesn't apply
+//     outside the declared matrix" semantic.
+func scalarAttrExpr(flat string, sel map[string]string) string {
+	hasSel := len(sel) > 0
+	hasFlat := flat != ""
+	if !hasSel && !hasFlat {
+		return ""
+	}
+	if !hasSel {
+		return fmt.Sprintf("%q", flat)
+	}
+	keys := make([]string, 0, len(sel))
+	for k := range sel {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b bytes.Buffer
+	b.WriteString("select({\n")
+	for _, k := range keys {
+		fmt.Fprintf(&b, "        %q: %q,\n", k, sel[k])
+	}
+	b.WriteString(`        "//conditions:default": None,` + "\n")
+	b.WriteString("    })")
+	return b.String()
 }
 
 // perPlatformAttr returns the per-platform delta map for the

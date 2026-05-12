@@ -30,6 +30,17 @@ import (
 type traceEntry struct {
 	Key    string `json:"key"`
 	Srckey string `json:"srckey"`
+	// Platform is the CMAKE_TO_BAZEL_PLATFORM tag this entry's
+	// trace-lookup uses. Empty (the default, legacy shape) means
+	// the rule falls back to the load-time env-var lookup —
+	// single-platform operators upgrading past this revision keep
+	// their existing --repo_env=CMAKE_TO_BAZEL_PLATFORM=... behavior.
+	// Non-empty means multi-platform mode: write-a emits one entry
+	// per (element, platform) cell with Key="<elem>__<platform>"
+	// and Platform="<platform-tag>", so a single Bazel build
+	// resolves N per-platform _trace_repo instances simultaneously
+	// without env-var conflict.
+	Platform string `json:"platform,omitempty"`
 }
 
 type tracesJSON struct {
@@ -50,6 +61,13 @@ type tracesJSON struct {
 //
 // Computed-on-demand rather than stored on element so the
 // per-kind patterns stay scoped to the kind's handler.
+//
+// Multi-platform mode (--platforms-json): one entry per
+// (element, platform) cell, keyed "<elem>__<platform>" with
+// the platform tag set. Single-platform legacy mode (the
+// default, traceConfig.platforms empty) emits one entry per
+// element keyed by element name with the platform tag empty,
+// matching the byte-stable historical render exactly.
 func collectTraces(g *graph) (tracesJSON, error) {
 	var entries []traceEntry
 	for _, elem := range g.Elements {
@@ -61,7 +79,17 @@ func collectTraces(g *graph) (tracesJSON, error) {
 		if err != nil {
 			return tracesJSON{}, fmt.Errorf("element %q: compute srckey: %w", elem.Name, err)
 		}
-		entries = append(entries, traceEntry{Key: elem.Name, Srckey: hash})
+		if len(traceConfig.platforms) == 0 {
+			entries = append(entries, traceEntry{Key: elem.Name, Srckey: hash})
+			continue
+		}
+		for _, p := range traceConfig.platforms {
+			entries = append(entries, traceEntry{
+				Key:      elem.Name + "__" + p.Name,
+				Srckey:   hash,
+				Platform: p.Name,
+			})
+		}
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
 	return tracesJSON{Traces: entries}, nil

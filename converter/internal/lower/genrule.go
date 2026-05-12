@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ir"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
+	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
 // codegenContext carries state from genrule recovery and CTest

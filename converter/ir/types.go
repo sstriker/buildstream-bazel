@@ -200,4 +200,29 @@ type Target struct {
 	// emitter doesn't have to translate; the lowercase form is
 	// the key callers should use ("srcs" not "Srcs").
 	PerPlatform map[string]map[string][]string
+
+	// PerPlatformScalar is PerPlatform's sibling for single-string
+	// attributes — cc_import.static_library and shared_library
+	// today. The outer key is the IR attribute name in lowercase
+	// Bazel-attribute spelling ("static_library", "shared_library");
+	// the inner key is the select() arm label; the value is the
+	// single path string for that arm (no flat baseline; scalars
+	// don't compose under "+").
+	//
+	// Arms are present only for platforms that contribute a non-
+	// empty value: the partial-platform cc_import shape — linux
+	// supplies static_library only, darwin supplies shared_library
+	// only — produces a map with one arm per platform that
+	// populated each attr. emit/bazel adds a trailing
+	// `"//conditions:default": None` arm at render time so in-
+	// matrix platforms that omitted an arm AND out-of-matrix
+	// platforms fall through to "attribute unset" rather than
+	// hitting a missing-condition analysis error.
+	//
+	// Populated by elementfold only when the underlying scalar
+	// field (StaticLibrary / SharedLibrary) diverges across cells.
+	// When every cell agrees, the value lives in the flat scalar
+	// field and PerPlatformScalar stays empty so single-platform
+	// emission stays byte-identical.
+	PerPlatformScalar map[string]map[string]string
 }

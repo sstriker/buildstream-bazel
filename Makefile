@@ -1,6 +1,6 @@
 .PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-meson e2e-meta-vars \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-meson e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script fdsdk-reality-check \
@@ -182,6 +182,16 @@ e2e-meta-make: check-tools converter
 # trace-driven kind including kind:make.
 e2e-meta-make-round2: check-tools converter
 	scripts/meta-make-round2.sh
+
+# Per-platform fold acceptance gate for round-2 trace-driven kinds.
+# Exercises kind:make with a two-platform manifest passed via
+# --platforms-json. Verifies project A renders N per-platform
+# converter genrules + one fold-element genrule composing them;
+# tools/traces.json + MODULE.bazel use_repo() block reflect the
+# per-platform repo names. Render-half only; the live-AC contract
+# is exercised by tools/e2e-meta-autotools-round2-live.sh.
+e2e-meta-trace-round2-fold: check-tools converter
+	scripts/meta-trace-round2-fold.sh
 
 # kind:meson native render acceptance gate. Single kind:meson element
 # (testdata/meta-project/meson-greet/) — a static_library + executable

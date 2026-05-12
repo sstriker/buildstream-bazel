@@ -119,7 +119,7 @@ Pipeline, in order:
    undermarks. Mostly used to fish out genrules.
 5. **Lower** — `converter/internal/lower/lower.go` is the brain.
    It turns the typed File API + ninja outputs into
-   `converter/internal/ir/types.go` (`Package`, `Target`, `Source`,
+   `converter/ir/types.go` (`Package`, `Target`, `Source`,
    `Genrule`, `ImportedTarget`). Most converter bugs land here.
 6. **Emit** — `converter/internal/emit/bazel/emit.go` renders the
    IR as a `BUILD.bazel` (with `load("@rules_cc//cc:defs.bzl", …)`),

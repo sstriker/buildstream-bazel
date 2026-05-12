@@ -361,6 +361,8 @@ func main() {
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
+	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. Same shape as the orchestrator's --platforms-json (one entry per platform: name, constraints, optional select_label, optional reapi_properties — write-a ignores reapi_properties). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; tools/traces.json gets N entries per element keyed `<elem>__<platform>` so the per-platform _trace_repo lookups don't collide. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
+	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
 	flag.Parse()
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
@@ -500,6 +502,31 @@ func main() {
 		}
 		traceConfig.lookupBin = lkAbs
 		traceConfig.round2Enabled = true
+	}
+
+	// Multi-platform fold for round-2 trace-driven kinds: when
+	// --platforms-json is set, project A's per-element render
+	// fans out one converter genrule per platform and one
+	// fold-element genrule composing their ir.json outputs.
+	// Requires --fold-element-bin so the fold tool is staged
+	// into project A's tools/.
+	if *platformsJSON != "" {
+		if *foldBin == "" {
+			log.Fatalf("--platforms-json requires --fold-element-bin (the fold tool composes N per-platform ir.json outputs into one BUILD.bazel)")
+		}
+		if !traceConfig.round2Enabled {
+			log.Fatalf("--platforms-json requires the trace-driven round-2 path (--convert-element-trace + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin without --trace-round1); the per-platform fold only applies to round-2's per-element converter genrule")
+		}
+		fAbs, err := filepath.Abs(*foldBin)
+		if err != nil {
+			log.Fatalf("resolve fold-element path: %v", err)
+		}
+		traceConfig.foldBin = fAbs
+		platforms, err := loadPlatformsManifest(*platformsJSON)
+		if err != nil {
+			log.Fatalf("%v", err)
+		}
+		traceConfig.platforms = platforms
 	}
 
 	g, err := loadGraph(bstPaths, *sourceCache)
@@ -978,6 +1005,15 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports = append(exports, autotoolsExports...)
+	// fold-element only goes into project A's tools/: project A's
+	// per-element fold genrule consumes it. Project B's install
+	// genrules don't fold — they just run the build pipeline and
+	// publish per-platform traces — so writeProjectB skips this.
+	foldExports, err := stageFoldElement(outDir)
+	if err != nil {
+		return err
+	}
+	exports = append(exports, foldExports...)
 	cmakeFileExport, err := stageCmakeConfigureFileTool(outDir)
 	if err != nil {
 		return err
@@ -1191,6 +1227,29 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 		exports = append(exports, "trace-lookup")
 	}
 	return exports, nil
+}
+
+// stageFoldElement copies fold-element into the given project's
+// tools/, returning a one-element exports list when staged. Only
+// project A's per-element fold genrule consumes it (project B's
+// install genrules just publish per-platform traces; they don't
+// fold), so writeProjectB doesn't call this. No-op when
+// --fold-element-bin / --platforms-json weren't supplied.
+func stageFoldElement(outDir string) ([]string, error) {
+	if traceConfig.foldBin == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return nil, err
+	}
+	stagedFold := filepath.Join(outDir, "tools", "fold-element")
+	if err := copyFile(traceConfig.foldBin, stagedFold); err != nil {
+		return nil, fmt.Errorf("stage fold-element: %w", err)
+	}
+	if err := os.Chmod(stagedFold, 0o755); err != nil {
+		return nil, err
+	}
+	return []string{"fold-element"}, nil
 }
 
 // writeProjectB renders the consumer workspace project B reads

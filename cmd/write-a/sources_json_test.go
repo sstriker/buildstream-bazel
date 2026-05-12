@@ -189,3 +189,33 @@ func TestRenderTracesBzl_ParameterizesPathPrefix(t *testing.T) {
 		t.Errorf("rendered traces.bzl still contains the hardcoded /blobs/directory/ shape")
 	}
 }
+
+// TestRenderTracesBzl_AttrPlatformOverridesEnv: under multi-
+// platform write-a renders distinct _trace_repo instances per
+// (element, platform) cell, each with a pinned `platform` attr.
+// The repo rule must prefer the attr over the env var so two
+// per-platform repos in one Bazel invocation don't collide on
+// CMAKE_TO_BAZEL_PLATFORM. Empty attr keeps the legacy env-var
+// fallback for single-platform operators.
+func TestRenderTracesBzl_AttrPlatformOverridesEnv(t *testing.T) {
+	got := renderTracesBzl()
+	for _, want := range []string{
+		// The repository rule declares the platform attr with an
+		// empty-string default so legacy single-platform renders
+		// (which don't populate it) keep working.
+		`"platform": attr.string(default = "")`,
+		// The impl prefers the attr; only falls back to env when
+		// the attr is empty.
+		`platform_tag = rctx.attr.platform`,
+		`if platform_tag == "":`,
+		`platform_tag = rctx.os.environ.get("CMAKE_TO_BAZEL_PLATFORM", "")`,
+		// The module extension forwards the per-entry platform
+		// field from traces.json to the rule. Legacy entries
+		// without the field default to "" via .get().
+		`platform = entry.get("platform", ""),`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("rendered traces.bzl missing per-platform marker %q\n%s", want, got)
+		}
+	}
+}
