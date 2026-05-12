@@ -92,10 +92,13 @@ mkdir -p "$(dirname "$combined_report")"
 # subdirs) skips cleanly. find -mindepth 1 -maxdepth 1 -type d
 # would also work but is harder to read.
 for elem_path in "$artifact_dir"/*/; do
-    # Trailing slash guards against the glob's no-match case
-    # in shells that leave the literal pattern when nothing
-    # expands; "for" iterates zero times in that case here too,
-    # but we double-check the path is a directory.
+    # POSIX sh has no nullglob, so when the artifact tree has
+    # no element subdirectories the glob stays literal and the
+    # loop runs once with elem_path == "<artifact_dir>/*/" —
+    # the trailing slash AND the `-d` test below absorb that
+    # case. (find -mindepth 1 -maxdepth 1 -type d would avoid
+    # the literal-pattern dance but reads less naturally; the
+    # `-d` guard keeps either input shape safe.)
     [ -d "$elem_path" ] || continue
     elem_name="$(basename "$elem_path")"
 

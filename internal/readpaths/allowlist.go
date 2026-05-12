@@ -24,9 +24,17 @@ package readpaths
 //
 // Round-trip with the audit's report: an audit miss line and
 // an allowlist line have identical syntax, so silencing a new
-// drift entry is `cat audit-report.txt >> srckey-expected-drift.txt`
-// (the per-element file scripts/audit-narrowing-walk.sh writes
-// next to srckey-patterns.txt) — modulo manual review of which
+// drift entry is `cat audit-report.txt >> <bst-dir>/<elem>.expected-drift.txt`
+// — the source-of-truth file lives next to the element's
+// `<elem>.bst` and `<elem>.read-paths.txt` and gets committed
+// alongside them. write-a stages the file as
+// `srckey-expected-drift.txt` in project A's per-element
+// directory (a build artifact, not edited directly);
+// scripts/audit-narrowing-walk.sh writes the per-element
+// `audit-report.txt` containing the unsuppressed drift the
+// operator should triage. Workflow: edit the source-of-truth
+// `.expected-drift.txt` in the .bst directory, not the
+// staged copy in project A — modulo manual review of which
 // paths to actually accept.
 //
 // nil/empty allowlist signals "no expected drift declared".
