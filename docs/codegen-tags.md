@@ -17,8 +17,13 @@ Applied to the `genrule` that the converter emits.
 | Tag | When emitted | Stability |
 |---|---|---|
 | `cmake-codegen` | Always, on every recovered genrule. | append-only |
-| `cmake-codegen-driver=<name>` | Always. `<name>` is the first command-token after `cd ... &&` (or the first token if no chdir), with wrappers (`env`, `sh -c`, `taskset`, …) stripped via a recognizer list. Falls back to `unknown` if extraction fails — never omitted. | append-only |
+| `cmake-codegen-driver=<name>` | Always. `<name>` is the first command-token after `cd ... &&` (or the first token if no chdir), with wrappers (`env`, `sh -c`, `taskset`, …) stripped via a recognizer list. Falls back to `unknown` if extraction fails — never omitted. `<name>` is `cmake_e` for cmake -E recoveries, `file_generate` for file(GENERATE) recoveries, `configure_file` for configure_file recoveries. | append-only |
 | `cmake-codegen-cmake-e` | Command invokes `${CMAKE_COMMAND} -E <op>` and the converter translated the op to a native Bazel idiom (e.g. `cp $< $@`). | append-only |
+| `cmake-codegen-execute-process-op=<op>` | execute_process-derived cmake -E call carries the op name (`touch` / `copy` / `copy_if_different` / `configure_file`) so audits can split lifted ops without re-parsing the cmd. | append-only |
+| `cmake-codegen-configure-file` | configure_file-derived genrule (either lifted or legacy bytes-embedded). | append-only |
+| `cmake-codegen-file-generate` | file(GENERATE)-derived genrule (either lifted or legacy bytes-embedded). Distinguishes from configure_file via the driver=file_generate facet on the same rule. | append-only |
+| `cmake-codegen-file-generate-genex` | file(GENERATE) call with a `$<...>` generator expression in INPUT / CONTENT — the lift short-circuited to the legacy bytes-embedded shape because configurefile.Substitute doesn't evaluate genex. Mutually exclusive with cmake-codegen-lifted on the same rule. Future genex-evaluation work (see ROADMAP "Generator-expression evaluation in lifted genrules") targets exactly this set. | append-only |
+| `cmake-codegen-lifted` | Genrule emits via a Bazel-time tool (`//tools:cmake-configure-file`) reading a values dict + a template (srcs entry for INPUT form, or `--content-base64` inline blob for CONTENT form). The template body — not the rendered output — drives the cmd, so editing the template invalidates the genrule through Bazel's source graph rather than through convert-element rerun. Applied by the configure_file, file(GENERATE), and cmake -E configure_file lifters. | append-only |
 | `cmake-codegen-tool-from-target` | The driver tool is itself a target inside this element (typical of generator binaries built earlier in the same project). Useful for build-graph layering checks. | append-only |
 | `cmake-codegen-source-only` | Output is consumed only as a `srcs`/`hdrs` entry of a downstream cc_library/cc_binary — i.e. the codegen exists purely to feed the compile graph. | append-only |
 | `cmake-codegen-script` | Command runs `${CMAKE_COMMAND} -P script.cmake`. Architectural refusal: the converter emits this tag on the failing rule's placeholder so the operator sees the exact site, then exits with `failure.json` `code: unsupported-custom-command-script`. | append-only |
@@ -54,6 +59,13 @@ bazel query 'attr("tags", "has-cmake-codegen", //...)'
 
 # Codegen rules that translate to native Bazel idioms (no cmake at runtime).
 bazel query 'attr("tags", "cmake-codegen-cmake-e", //...)'
+
+# Lifted-shape codegen (BUILD.bazel content decoupled from rendered output).
+bazel query 'attr("tags", "cmake-codegen-lifted", //...)'
+
+# file(GENERATE) calls that fell back to legacy because of a generator
+# expression — the future genex-evaluation work targets exactly this set.
+bazel query 'attr("tags", "cmake-codegen-file-generate-genex", //...)'
 ```
 
 A wrapper at `tools/audit/list-codegen.sh` exposes these query shapes
