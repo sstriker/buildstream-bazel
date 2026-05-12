@@ -1,6 +1,6 @@
 .PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-audit-narrowing fdsdk-reality-check \
@@ -209,6 +209,13 @@ e2e-meta-make-round2: check-tools converter
 # is exercised by tools/e2e-meta-autotools-round2-live.sh.
 e2e-meta-trace-round2-fold: check-tools converter
 	scripts/meta-trace-round2-fold.sh
+
+# Sibling of e2e-meta-trace-round2-fold for kind:autotools.
+# Same per-platform install-fan-out shape (project A converter +
+# project B install genrules + top-level select()-filegroup), at
+# the autotoolsHandler dispatch site. Render-half only.
+e2e-meta-autotools-round2-multiplatform: check-tools converter
+	scripts/meta-autotools-round2-multiplatform.sh
 
 # kind:meson native render acceptance gate. Single kind:meson element
 # (testdata/meta-project/meson-greet/) — a static_library + executable

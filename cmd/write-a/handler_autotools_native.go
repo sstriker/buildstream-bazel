@@ -158,12 +158,32 @@ func (autotoolsHandler) RenderB(elem *element, elemPkg string) error {
 	// //tools:convert-element-trace resolve in B because
 	// stageAutotoolsTools already staged them at writeProjectB
 	// time (PR #67).
+	//
+	// Round-2 also gets per-platform fan-out via
+	// renderPipelineRound2B when --platforms-json is set: same
+	// single-platform shape as h.RenderA when the matrix is
+	// unset, plus the N per-platform install genrules + top-
+	// level select()-filegroup when it's populated. Round-1
+	// keeps the existing h.RenderA path because the round-1
+	// extension (autotoolsTraceExtension) wraps the converter
+	// inline alongside the install action — a different
+	// genrule shape from the round-2 trace-publish wrapper that
+	// renderPipelineRound2B's single-platform branch
+	// constructs, so calling renderPipelineRound2B in round-1
+	// would overwrite the round-1 extension and lose the inline
+	// converter step.
 	h, err := autotoolsPipelineHandlerForElement(elem, elemPkg)
 	if err != nil {
 		return err
 	}
-	if err := h.RenderA(elem, elemPkg); err != nil {
-		return err
+	if traceConfig.round2Enabled {
+		if err := h.renderPipelineRound2B(elem, elemPkg); err != nil {
+			return err
+		}
+	} else {
+		if err := h.RenderA(elem, elemPkg); err != nil {
+			return err
+		}
 	}
 	// Emit srckey.txt + srckey-breakdown.txt — the per-element
 	// build-graph identity used by the trace-driven registry

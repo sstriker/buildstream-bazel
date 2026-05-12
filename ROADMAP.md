@@ -29,14 +29,12 @@ transition cleanly.
 
 ## Next
 
-- **Per-platform fold for round-2 trace-driven kinds.** Two-
-  thirds shipped (see Done — project A converter fan-out + fold
-  for pipelineHandler kinds, project B install fan-out for
-  pipelineHandler kinds). What's left:
-  - **kind:autotools per-platform render.** Same shape as
-    pipelineHandler's (project A converter + project B
-    install fan-out), at the `autotoolsHandler` dispatch
-    site (`handler_autotools_native.go`).
+- **Per-platform fold for round-2 trace-driven kinds.** Most
+  shipped (see Done — project A converter fan-out + fold for
+  pipelineHandler kinds, project B install fan-out for
+  pipelineHandler kinds, kind:autotools per-platform install
+  fan-out via `autotoolsHandler` reusing `pipelineHandler.
+  renderPipelineRound2B`). What's left:
   - **kind:cmake Phase B fallback per-platform render.** The
     converter genrule already exists
     (`handler_cmake_round2.go`); needs the fan-out wired on
@@ -47,7 +45,10 @@ transition cleanly.
   The cc_import scalar-select() rendering already handles the
   diverging path-attr case (`.so` vs `.dylib`, multiarch lib
   dirs, arch-tagged binary names) for the install_tree.tar
-  stub shape. Render gate: `scripts/meta-trace-round2-fold.sh`.
+  stub shape. Render gates:
+  `scripts/meta-trace-round2-fold.sh` (pipelineHandler
+  kinds) + `scripts/meta-autotools-round2-multiplatform.sh`
+  (kind:autotools).
 - **Element-signal consumption in the unifier.** Stage 6 capture
   is in (`--collect-toolchain-signal` flows fileapi replies into
   `<out>/elements/<name>/toolchain-signal/`). Pending: wire
@@ -314,6 +315,33 @@ transition cleanly.
   alias-driven gate variant: lowest-touch change to `elementfold`,
   no `//:no-op` filegroup overhead in every project A, no two-
   rules-per-target multiplication.
+
+- **Per-platform fold for round-2 trace-driven kinds —
+  kind:autotools project B install fan-out.** kind:autotools
+  joins the per-platform install fan-out story by reusing
+  `pipelineHandler.renderPipelineRound2B`. `autotoolsHandler.
+  RenderB`'s round-2 branch dispatches to it directly (was
+  `h.RenderA` before, the legacy single-genrule path);
+  `autotoolsPipelineHandlerForElement` already wired the
+  pipelineHandler instance with `kindName: "autotools"`, so
+  the fan-out's per-platform extension construction
+  (`pipelineTraceExtensionRound2(elem, []string{"autotools"},
+  plat)`) and `depKindAllow` agree with the pre-fan-out
+  shape. Single-platform autotools renders the same legacy
+  `<elem>_install` genrule as before (the function's
+  empty-platforms branch); multi-platform mode produces N
+  install genrules + the top-level
+  `:install_tree.tar` select()-filegroup.
+  Round-1 autotools is gated out — its
+  `autotoolsTraceExtension` (which wraps the converter inline
+  alongside the install action via the BUILD.bazel.out +
+  install-mapping.json outs) is incompatible with the round-2
+  trace-publish wrapper that `renderPipelineRound2B`
+  constructs, so the round-1 path keeps the existing
+  `h.RenderA` call. Render gate:
+  `scripts/meta-autotools-round2-multiplatform.sh` (sibling
+  of `meta-trace-round2-fold.sh`); test:
+  `TestWriter_AutotoolsRound2_MultiPlatform_ProjectB`.
 
 - **Per-platform fold for round-2 trace-driven kinds — project B
   install fan-out, pipelineHandler kinds.** Second half of the
