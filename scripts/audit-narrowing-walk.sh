@@ -82,35 +82,35 @@ for elem_path in "$artifact_dir"/*/; do
     drift_file="$elem_path/srckey-expected-drift.txt"
     report="$elem_path/audit-report.txt"
 
-    oracle_args=""
+    # Build optional flags as positional args via `set --` so
+    # each flag stays a single argv entry even when its embedded
+    # path contains spaces. Concatenating + relying on word-
+    # splitting would break for any artifact tree under a path
+    # like `/Users/Alice Doe/...` — the audit binary would see
+    # `--cmake-reads=/Users/Alice` as one arg and `Doe/...` as
+    # another.
+    set --
+    have_oracle=0
     if [ -f "$cmake_reads" ]; then
-        oracle_args="$oracle_args --cmake-reads=$cmake_reads"
+        set -- "$@" "--cmake-reads=$cmake_reads"
+        have_oracle=1
     fi
     if [ -f "$trace_log" ]; then
-        oracle_args="$oracle_args --trace=$trace_log"
+        set -- "$@" "--trace=$trace_log"
+        have_oracle=1
     fi
-    if [ -z "$oracle_args" ]; then
+    if [ "$have_oracle" -eq 0 ]; then
         echo "audit-narrowing-walk: $elem_name has srckey-patterns.txt but no oracle (cmake-reads.json or trace.log); skipping" >&2
         continue
     fi
-
-    allowlist_args=""
     if [ -f "$drift_file" ]; then
-        allowlist_args="--allowlist=$drift_file"
+        set -- "$@" "--allowlist=$drift_file"
     fi
 
-    # Word-splitting on $oracle_args / $allowlist_args is
-    # intentional — they're constructed as flag fragments
-    # whitespace-separated above. The flags themselves don't
-    # contain whitespace (paths above are quoted in case the
-    # artifact_dir has spaces, but the shell-built fragments
-    # split cleanly).
-    # shellcheck disable=SC2086
     "$bin_dir/audit-narrowing" \
         --patterns="$patterns" \
-        $oracle_args \
-        $allowlist_args \
-        --out="$report"
+        --out="$report" \
+        "$@"
 
     # Project the per-element report into the combined report
     # with the elem name as a prefix so consumers don't have

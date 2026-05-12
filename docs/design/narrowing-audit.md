@@ -421,8 +421,15 @@ include/bar.h.in
   entry is a deliberate per-path declaration that survives PR
   review (a glob could mask unrelated drift the operator
   didn't intend to silence).
-- `#` introduces a comment to end-of-line; blank lines are
-  ignored.
+- Comments: a line whose first non-whitespace character is `#`
+  is a full-line comment. Inline comments are recognized only
+  in the specific ` #` form (space-then-hash) — text from
+  there to end-of-line is dropped. A `#` without a preceding
+  space stays part of the path, so `weird#dir/foo.h` parses
+  as the literal path. Blank / whitespace-only lines are
+  ignored. Whitespace INSIDE a path is rejected (the audit's
+  reports are slash-separated and whitespace-free, so an
+  internally-spaced entry would never match).
 - The file's syntax is identical to `audit-narrowing`'s output
   format: `cat audit-report.txt >> <elem>.expected-drift.txt`
   is a valid (manually-reviewed) silencing flow.

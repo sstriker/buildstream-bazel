@@ -52,11 +52,24 @@ func NewAllowlist() *Allowlist {
 
 // ParseAllowlist reads an expected-drift-format stream. label
 // is used in error messages (typically the source path or
-// "<inline>"). Blank lines and `#`-prefixed comments are
-// dropped; every other line is taken as one exact-match path.
-// Whitespace inside a line is not significant — the line is
-// trimmed before being recorded, so leading/trailing spaces
-// won't cause a path mismatch against the audit's report.
+// "<inline>").
+//
+// Parsing rules:
+//   - Lines whose first non-whitespace char is `#` are
+//     full-line comments and are dropped.
+//   - Blank / whitespace-only lines are dropped.
+//   - Every other line is one exact-match source-relative path.
+//   - Leading + trailing whitespace is trimmed (so an indented
+//     entry stays equal to the audit's report); whitespace
+//     INSIDE the path is an error — the audit's reports are
+//     slash-separated and whitespace-free, and an internally-
+//     spaced entry would never match anything the oracle
+//     reports.
+//   - Trailing inline comments are recognized in the specific
+//     form ` #` (space-then-hash); the text from there to
+//     end-of-line is dropped. A `#` without a preceding space
+//     stays part of the path (so a path like
+//     `weird#dir/foo.h` is parsed as-is).
 func ParseAllowlist(r io.Reader, label string) (*Allowlist, error) {
 	a := NewAllowlist()
 	scanner := bufio.NewScanner(r)
@@ -112,9 +125,11 @@ func (a *Allowlist) Len() int {
 }
 
 // Format serializes the allowlist to its canonical on-disk
-// representation: one path per line, sorted lexically, no
-// trailing newline after the last entry but every line ends
-// with `\n`. nil receivers and empty allowlists both render
+// representation: one path per line, sorted lexically, every
+// line (including the last) terminated by `\n`. The trailing
+// newline keeps the format compatible with text-tool conventions
+// — `cat`, `grep`, `wc -l`, and editors treat the last line as
+// terminated. nil receivers and empty allowlists both render
 // as an empty byte slice — write-a emits the file unconditionally
 // for shape predictability, and an empty file round-trips
 // through ParseAllowlist to an empty Allowlist.
