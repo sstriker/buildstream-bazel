@@ -507,11 +507,17 @@ to those entries; each is independently shippable.
   unconditional `include()` in project B's MODULE.bazel) so
   operators can layer their own `bazel_dep` / `use_extension`
   / `register_toolchains` declarations without editing the
-  converter-owned file. write-a writes a comment-only stub
+  converter-owned file. Also ships
+  `tools/gazelle-rewritable.json` (operator-owned patterns
+  list) + `cmd/relax-keeps` (a targeted post-conversion
+  step that strips Phase-7a `# keep` markers from genrules
+  whose cmd matches a declared rewritable pattern). Lets
+  continuous-conversion loops auto-rewrite recognized
+  patterns (protoc → proto_library, etc.) without losing
+  literal-CMake fidelity for unrecognized ones. write-a
+  writes comment-only stubs for both operator-owned files
   on first render and preserves operator edits on
-  subsequent re-renders. Enables the operator-side gazelle
-  step (custom rulesets, genrule → native-rule rewriting via
-  custom gazelle extensions). See
+  subsequent re-renders. See
   `docs/design/operator-gazelle-step.md`.
 - **Phase 8b** (queued) — optional orchestrator-driven
   gazelle invocation against the elements that

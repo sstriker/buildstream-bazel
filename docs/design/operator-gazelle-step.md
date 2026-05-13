@@ -106,9 +106,18 @@ Phase 7a emits a whole-rule `# keep` marker on every `genrule(...)`
 touch the rule on subsequent `gazelle fix` runs. **By default, the
 converter's literal-CMake fidelity wins.**
 
-### Opt-in: remove `# keep`, let gazelle's custom extension rewrite
+### Opt-in: declare rewritable patterns, let `relax-keeps` + gazelle handle the rest
 
-To convert specific genrules into native rules:
+Manually editing every BUILD to drop `# keep` is fine for a
+one-off conversion, but it's **prohibitive in a continuous-
+conversion loop**: every re-conversion would re-emit the `# keep`
+and clobber the operator's edit. Instead, the operator declares
+WHICH genrule cmd patterns their gazelle setup can handle, and a
+post-conversion tool (`cmd/relax-keeps`) strips the `# keep` from
+matching genrules surgically on every continuous re-conversion
+run.
+
+To convert specific genrule shapes into native rules:
 
 1. **Wire the custom extension into `overlay.MODULE.bazel`**:
    ```
@@ -118,22 +127,39 @@ To convert specific genrules into native rules:
    (Or your own custom gazelle plugin — see `bazel-contrib/`
    ecosystem for examples.)
 
-2. **Remove the `# keep` marker** from the genrule(s) you want
-   rewritten. e.g., in
-   `elements/myelem/BUILD.bazel`:
-   ```diff
-    genrule(
-        name = "myelem_proto_gen",
-        srcs = ["myelem.proto"],
-        outs = ["myelem.pb.cc", "myelem.pb.h"],
-        cmd = "$(location @protobuf//:protoc) ...",
-   -)  # keep
-   +)
+2. **Declare the matching cmd pattern in
+   `tools/gazelle-rewritable.json`** (operator-owned;
+   write-a emits a comment-only stub with empty patterns
+   list on first render and preserves operator edits on
+   subsequent re-renders, just like `overlay.MODULE.bazel`):
+   ```json
+   {
+     "version": 1,
+     "patterns": [
+       {"name": "protoc", "cmd_contains": "protoc"}
+     ]
+   }
    ```
+   The `cmd_contains` field is a simple substring matcher
+   against the genrule's `cmd` attribute.
 
-3. **Run `bazel run //:gazelle`** — the custom extension scans the
-   un-kept genrules, recognizes the `protoc` cmd pattern, and
-   rewrites:
+3. **The orchestrator's continuous-conversion pipeline** runs
+   `cmd/relax-keeps --root=<projectB> elements/<just-converted>...`
+   between staging and the gazelle invocation. relax-keeps:
+   - Reads `tools/gazelle-rewritable.json`.
+   - Walks only the listed package paths (the elements that
+     re-converted on this run — sourced from orchestrator's
+     `res.Converted`, mirroring the same incremental model
+     `build-cc-index` and the targeted-gazelle invocation
+     use).
+   - For each genrule with `# keep` whose `cmd` matches any
+     configured pattern, strips the `# keep` marker.
+   - Non-matching genrules and genrules outside the targeted
+     packages keep their markers intact.
+
+4. **Run `bazel run //:gazelle -- elements/<just-converted>...`**
+   — the custom extension scans the un-kept genrules,
+   recognizes the `protoc` cmd pattern, and rewrites:
    ```diff
    -genrule(
    -    name = "myelem_proto_gen",
@@ -251,3 +277,10 @@ Three reasons:
   `protoc` and emits `proto_library` + `cc_proto_library`.
   A second case in the same file pins the other direction:
   a `# keep`'d genrule must survive a rewriter pass untouched.
+- `cmd/relax-keeps/main.go` — the operator-config-driven
+  `# keep`-stripping tool that lets continuous-conversion
+  loops auto-rewrite recognized genrule patterns without
+  losing literal-CMake fidelity for unrecognized ones.
+  Reads `tools/gazelle-rewritable.json`. Targeted invocation:
+  `relax-keeps --root=<projectB> elements/<just-converted>...`
+  (or full-walk fallback for ad-hoc manual runs).

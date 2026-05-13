@@ -1417,6 +1417,17 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "tools", "python_modules.json"), "{}\n"); err != nil {
 		return err
 	}
+	// Phase 8: operator-owned gazelle-rewritable.json stub.
+	// Lists genrule cmd-substring patterns the operator's
+	// gazelle setup can rewrite. Empty `patterns: []` default
+	// means relax-keeps is a no-op on continuous-conversion
+	// runs (no behavior change vs pre-Phase-8). Operator adds
+	// patterns when they wire a gazelle extension that handles
+	// the corresponding genrule kind. See
+	// docs/design/operator-gazelle-step.md.
+	if err := writeRewritableStubIfAbsent(outDir); err != nil {
+		return fmt.Errorf("gazelle-rewritable stub: %w", err)
+	}
 	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		traces, err := collectTraces(g)
 		if err != nil {
@@ -1661,6 +1672,60 @@ func writeOverlayStubIfAbsent(outDir string) error {
 		return fmt.Errorf("stat %s: %w", p, err)
 	}
 	return os.WriteFile(p, []byte(overlayModuleBazelStub), 0o644)
+}
+
+// gazelleRewritableStub is the comment-only initial content
+// of project B's operator-owned tools/gazelle-rewritable.json
+// file. Same first-write-wins discipline as the overlay
+// stub: write-a writes this once if missing; operator edits
+// survive subsequent re-renders.
+//
+// Default is an empty patterns list, so cmd/relax-keeps is a
+// no-op on continuous-conversion runs until the operator
+// declares which genrule cmd substrings their gazelle setup
+// can rewrite.
+const gazelleRewritableStub = `{
+  "_comment": [
+    "Operator-owned config consumed by cmd/relax-keeps.",
+    "",
+    "List the genrule cmd substrings that the gazelle",
+    "extensions wired into overlay.MODULE.bazel can rewrite.",
+    "For each pattern, relax-keeps strips the converter's",
+    "# keep marker from matching genrules so the operator's",
+    "gazelle invocation can rewrite them into native rules",
+    "(proto_library, cc_proto_library, etc.) on every",
+    "continuous-conversion run.",
+    "",
+    "Default empty patterns list = no relaxation; literal",
+    "CMake fidelity is preserved on every continuous run.",
+    "",
+    "Example after wiring gazelle_proto into overlay.MODULE.bazel:",
+    "  {\"version\": 1, \"patterns\": [",
+    "    {\"name\": \"protoc\", \"cmd_contains\": \"protoc\"}",
+    "  ]}",
+    "",
+    "See docs/design/operator-gazelle-step.md."
+  ],
+  "version": 1,
+  "patterns": []
+}
+`
+
+// writeRewritableStubIfAbsent creates project B's
+// tools/gazelle-rewritable.json with the empty-patterns stub
+// when the file doesn't already exist. Same idempotency
+// discipline as writeOverlayStubIfAbsent.
+func writeRewritableStubIfAbsent(outDir string) error {
+	p := filepath.Join(outDir, "tools", "gazelle-rewritable.json")
+	if _, err := os.Stat(p); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat %s: %w", p, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(p, []byte(gazelleRewritableStub), 0o644)
 }
 
 // hasKind reports whether the graph has any element of the

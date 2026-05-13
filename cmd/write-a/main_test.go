@@ -160,11 +160,30 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	if !strings.Contains(string(overlay), "operator-owned MODULE.bazel fragment") {
 		t.Errorf("overlay.MODULE.bazel stub missing operator-facing comment:\n%s", overlay)
 	}
+	// Phase 8: rewritable-patterns stub (consumed by
+	// cmd/relax-keeps). Default empty patterns list so
+	// continuous-conversion loops see no behavior change
+	// until the operator declares which genrules their
+	// gazelle setup can rewrite.
+	rewritablePath := filepath.Join(outB, "tools", "gazelle-rewritable.json")
+	rewritable, err := os.ReadFile(rewritablePath)
+	if err != nil {
+		t.Fatalf("missing tools/gazelle-rewritable.json stub: %v", err)
+	}
+	for _, want := range []string{`"version": 1`, `"patterns": []`, "Operator-owned config consumed by cmd/relax-keeps"} {
+		if !strings.Contains(string(rewritable), want) {
+			t.Errorf("gazelle-rewritable.json stub missing %q:\n%s", want, rewritable)
+		}
+	}
 	// Phase 8: re-rendering project B must preserve operator
-	// edits to the overlay. Simulate an edit and re-run write
-	// to confirm the file isn't clobbered.
-	const operatorEdit = "# operator-added: pin gazelle\nbazel_dep(name = \"gazelle\", version = \"0.40.0\")\n"
-	if err := os.WriteFile(overlayPath, []byte(operatorEdit), 0o644); err != nil {
+	// edits to BOTH the overlay and the rewritable-patterns
+	// config. Simulate edits and re-run write to confirm.
+	const operatorOverlayEdit = "# operator-added: pin gazelle\nbazel_dep(name = \"gazelle\", version = \"0.40.0\")\n"
+	const operatorRewritableEdit = `{"version": 1, "patterns": [{"name": "protoc", "cmd_contains": "protoc"}]}` + "\n"
+	if err := os.WriteFile(overlayPath, []byte(operatorOverlayEdit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rewritablePath, []byte(operatorRewritableEdit), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := writeProjectB(g, outB); err != nil {
@@ -174,8 +193,15 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(afterRerun) != operatorEdit {
-		t.Errorf("write-a clobbered operator's overlay edits on re-render:\nwant: %q\ngot: %q", operatorEdit, afterRerun)
+	if string(afterRerun) != operatorOverlayEdit {
+		t.Errorf("write-a clobbered operator's overlay edits on re-render:\nwant: %q\ngot: %q", operatorOverlayEdit, afterRerun)
+	}
+	afterRewritable, err := os.ReadFile(rewritablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterRewritable) != operatorRewritableEdit {
+		t.Errorf("write-a clobbered operator's rewritable edits on re-render:\nwant: %q\ngot: %q", operatorRewritableEdit, afterRewritable)
 	}
 	bPlaceholder, err := os.ReadFile(filepath.Join(outB, "elements/hello/BUILD.bazel"))
 	if err != nil {
