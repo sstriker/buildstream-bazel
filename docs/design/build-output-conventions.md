@@ -447,16 +447,19 @@ to those entries; each is independently shippable.
   `bazel.build/buildtools/build`. Result: `buildifier --mode=fix`
   is a no-op.
 - **Phase 4** — `implementation_deps` split IR + emit
-  plumbing. `ir.Target.ImplementationDeps` is the new field;
-  `bazel.Emit` renders `implementation_deps = [...]` when
-  populated, after `deps` in the rendered attribute order per
-  buildifier's `NamePriority`. The CMake codemodel-v2 / Meson
-  introspection / trace-driven paths do not yet carry the
-  PUBLIC/PRIVATE/INTERFACE scope signal to populate the field
-  (see "Lossy paths" above) — the IR shape is ready; the
-  populate path will follow when a signal source surfaces
-  (codemodel v3, manifest override, or a parsed-CMakeLists
-  hint).
+  plumbing + trace-driven populate path.
+  `ir.Target.ImplementationDeps` is the new field; `bazel.Emit`
+  renders `implementation_deps = [...]` when populated, in the
+  priority-0 alpha block before `deps` per buildifier's
+  `NamePriority`. **Populate path**: the cmake-side lowering
+  consults `shadow.Decode`'s `target_link_libraries` keyword
+  arm (PUBLIC / PRIVATE / INTERFACE / "" for the legacy
+  positional shape) and routes PRIVATE deps to
+  `ImplementationDeps`. When no trace is available
+  (codemodel-only path) or the dep wasn't named in any
+  keyword-scoped call, the dep falls through to `Deps` —
+  strictly safe (matches pre-Phase-4 behavior). Meson
+  introspection and pyproject paths leave the field unset.
 - **Phase 5** — entry-shim strict mode (`if __name__ ==
   "__main__":` detection) and `__main__.py` package-bin
   detection.

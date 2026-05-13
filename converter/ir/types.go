@@ -133,15 +133,18 @@ type Target struct {
 	// primary input today) does NOT carry per-dependency
 	// PUBLIC/PRIVATE scope — it exposes only a flat
 	// Target.Dependencies list and the rendered link
-	// commandFragments. Meson introspection and the trace-driven
-	// path likewise have no scope signal. Consequently every
-	// current producer leaves ImplementationDeps unset and
-	// folds every dep into Deps, matching the pre-Phase-4
-	// behaviour byte-for-byte. The IR shape is ready for a
-	// future signal source — codemodel addition (CMake 4.x has
-	// proposed this), a parsed-CMakeLists hint via backtrace,
-	// or a manifest-level operator override — without further
-	// IR or emit changes. Documented in
+	// commandFragments. The shadow trace, however, DOES carry
+	// the keyword: cmake records each target_link_libraries
+	// call with its PUBLIC/PRIVATE/INTERFACE arm, and
+	// internal/shadow/trace_commands.go decodes the arms into
+	// per-target lib→keyword maps. The cmake-codemodel
+	// lowering consults that map and routes PRIVATE deps to
+	// ImplementationDeps. Codemodel-only paths (no
+	// --trace-format=json-v1 run available) leave the field
+	// unset and fold every dep into Deps — strictly safe,
+	// matches pre-Phase-4 behaviour byte-for-byte. Meson
+	// introspection and pyproject paths likewise have no scope
+	// signal and leave the field unset. Documented in
 	// docs/design/build-output-conventions.md.
 	ImplementationDeps []string
 

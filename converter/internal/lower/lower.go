@@ -178,6 +178,21 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
 	var traceLinkLibs map[string][]string             // target → ordered list of cmake lib names from target_link_libraries (all visibility arms, dedup-preserved)
+	// traceLinkScope maps target → libName → cmake keyword
+	// ("PUBLIC", "PRIVATE", "INTERFACE", or "" for the legacy
+	// keyword-less positional shape — which cmake treats as
+	// PUBLIC). Populated alongside traceLinkLibs from the same
+	// shadow.Decode pass; consumed by lowerTarget to route
+	// PRIVATE deps to ir.Target.ImplementationDeps per Phase 4
+	// (parsed-from-trace signal).
+	//
+	// First-write-wins on duplicate (target, lib) pairs across
+	// arms: cmake itself allows multiple target_link_libraries
+	// calls with conflicting keywords, but the upstream-most
+	// scope governs propagation. The codemodel's
+	// commandFragments resolve to the same final link line
+	// regardless; the keyword recovery here is best-effort.
+	var traceLinkScope map[string]map[string]string
 	// traceDecoded tracks whether shadow.Decode ran; when true,
 	// decodedConfigureFiles holds the configure_file extractions
 	// from that single pass and the configure_file recovery
@@ -208,8 +223,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 		traceLinkLibs = map[string][]string{}
+		traceLinkScope = map[string]map[string]string{}
 		for _, call := range decoded.Links {
 			seen := map[string]bool{}
+			if _, ok := traceLinkScope[call.Target]; !ok {
+				traceLinkScope[call.Target] = map[string]string{}
+			}
 			for _, grp := range call.Groups {
 				for _, lib := range grp.Libs {
 					if seen[lib] {
@@ -217,6 +236,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 					}
 					seen[lib] = true
 					traceLinkLibs[call.Target] = append(traceLinkLibs[call.Target], lib)
+					// First-write-wins so an earlier
+					// target_link_libraries(t PUBLIC bar) call
+					// doesn't get overwritten by a later
+					// target_link_libraries(t PRIVATE bar) — the
+					// effective semantics in cmake itself are
+					// not well-defined when the same library is
+					// listed twice with different keywords, but
+					// the upstream-most call governs header
+					// propagation in the typical case.
+					if _, ok := traceLinkScope[call.Target][lib]; !ok {
+						traceLinkScope[call.Target][lib] = grp.Visibility
+					}
 				}
 			}
 		}
@@ -352,7 +383,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], configureFiles, fileGenerates, executeProcesses)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses)
 		if err != nil {
 			return nil, err
 		}
@@ -383,7 +414,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -717,22 +748,43 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	//   2. In-codebase UTILITY target -> skip silently (no Bazel equivalent)
 	//   3. CMake target name in imports manifest -> bazel_label
 	//   4. Otherwise -> Tier-1 unresolved-link-dep.
+	//
+	// Phase 4 enrichment: when traceLinkScope (the cmake-side
+	// PUBLIC/PRIVATE/INTERFACE keyword recovered by shadow.Decode
+	// from the trace) records this dep as PRIVATE, route the
+	// resolved Bazel label to irt.ImplementationDeps rather than
+	// irt.Deps — matching `implementation_deps = [...]` on the
+	// emitted cc_library, which prevents the dep's headers from
+	// propagating to consumers. Unknown scope (no trace, or the
+	// dep wasn't named in any target_link_libraries call —
+	// possible for cmake-generated dependency edges that aren't
+	// user-authored, like cyclical-static-archive helpers) falls
+	// through to the historical `irt.Deps` routing — strictly
+	// safe (PUBLIC default forwards headers, which is the cmake
+	// default for non-keyword target_link_libraries usage).
 	for _, dep := range t.Dependencies {
+		// Resolve label; routing decision (Deps vs
+		// ImplementationDeps) folds in after.
+		var label string
 		if name, ok := idToName[dep.Id]; ok {
-			irt.Deps = append(irt.Deps, ":"+name)
+			label = ":" + name
+		} else if utilityIDs[dep.Id] {
 			continue
+		} else {
+			cmakeName := stripIDHash(dep.Id)
+			if export := imports.LookupCMakeTarget(cmakeName); export != nil {
+				label = export.BazelLabel
+			} else {
+				return nil, failure.New(failure.UnresolvedLinkDep,
+					"target %q depends on %q which is neither in-codebase nor in the imports manifest",
+					t.Name, cmakeName)
+			}
 		}
-		if utilityIDs[dep.Id] {
-			continue
+		if depScopeIsPrivate(traceLinkScope, dep, idToName) {
+			irt.ImplementationDeps = append(irt.ImplementationDeps, label)
+		} else {
+			irt.Deps = append(irt.Deps, label)
 		}
-		cmakeName := stripIDHash(dep.Id)
-		if export := imports.LookupCMakeTarget(cmakeName); export != nil {
-			irt.Deps = append(irt.Deps, export.BazelLabel)
-			continue
-		}
-		return nil, failure.New(failure.UnresolvedLinkDep,
-			"target %q depends on %q which is neither in-codebase nor in the imports manifest",
-			t.Name, cmakeName)
 	}
 
 	// Out-of-tree link fragments. CMake records IMPORTED_LOCATION paths
@@ -740,9 +792,17 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// paths under the synth-prefix tree. The orchestrator's imports
 	// manifest carries each export's link paths so we can rewrite those
 	// fragments to Bazel labels.
+	//
+	// The seen-set spans Deps + ImplementationDeps so a dep already
+	// routed to either bucket by the t.Dependencies loop above
+	// doesn't get re-appended to Deps here (which would duplicate
+	// it across both buckets and produce an invalid BUILD).
 	if t.Link != nil {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {
+			seen[d] = true
+		}
+		for _, d := range irt.ImplementationDeps {
 			seen[d] = true
 		}
 		for _, frag := range t.Link.CommandFragments {
@@ -759,7 +819,15 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			if export := imports.LookupLinkPath(path); export != nil {
 				if !seen[export.BazelLabel] {
 					seen[export.BazelLabel] = true
-					irt.Deps = append(irt.Deps, export.BazelLabel)
+					// Trace-scope routing: if the
+					// underlying cmake lib name is recorded
+					// PRIVATE in traceLinkScope, route the
+					// label to ImplementationDeps.
+					if traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+						irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+					} else {
+						irt.Deps = append(irt.Deps, export.BazelLabel)
+					}
 				}
 			}
 		}
@@ -775,16 +843,30 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// are appended (deduped). Non-IMPORTED libs (in-codebase target
 	// names) already came in via t.Dependencies above and are
 	// covered by the seen-map.
+	//
+	// The seen-set spans Deps + ImplementationDeps so a dep already
+	// routed to ImplementationDeps by the t.Dependencies loop above
+	// doesn't get re-appended to Deps here.
 	if t.Type == "STATIC_LIBRARY" && len(traceLinkLibs) > 0 {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {
+			seen[d] = true
+		}
+		for _, d := range irt.ImplementationDeps {
 			seen[d] = true
 		}
 		for _, lib := range traceLinkLibs {
 			if export := imports.LookupCMakeTarget(lib); export != nil {
 				if !seen[export.BazelLabel] {
 					seen[export.BazelLabel] = true
-					irt.Deps = append(irt.Deps, export.BazelLabel)
+					// Trace-scope routing: route PRIVATE
+					// imports to ImplementationDeps, others
+					// to Deps.
+					if traceLinkScope != nil && traceLinkScope[lib] == "PRIVATE" {
+						irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+					} else {
+						irt.Deps = append(irt.Deps, export.BazelLabel)
+					}
 				}
 			}
 		}
@@ -1018,6 +1100,61 @@ func stringSliceContains(s []string, v string) bool {
 	for _, e := range s {
 		if e == v {
 			return true
+		}
+	}
+	return false
+}
+
+// scopeForLabelLib looks up a cmake lib name in the
+// trace-recovered link-scope map and returns the keyword
+// recorded for it (PUBLIC / PRIVATE / INTERFACE), or "" when
+// the lib isn't recorded.
+//
+// Distinct from depScopeIsPrivate's idToName-aware lookup
+// because callers here already have the cmake name from
+// `manifest.Export.CMakeTarget`, not a codemodel
+// `TargetDependency` id.
+func scopeForLabelLib(traceLinkScope map[string]string, cmakeName string) string {
+	if cmakeName == "" {
+		return ""
+	}
+	return traceLinkScope[cmakeName]
+}
+
+// depScopeIsPrivate reports whether a dep entry was recorded
+// as PRIVATE in the trace-recovered target_link_libraries
+// call. Returns false when:
+//   - traceLinkScope is nil (no trace was decoded — codemodel-
+//     only path),
+//   - the dep's name wasn't found in any keyword-scoped trace
+//     entry for this target (the call used the legacy
+//     keyword-less positional shape, OR the dep was a cmake-
+//     synthesized edge that doesn't surface in trace),
+//   - the recorded keyword is PUBLIC, INTERFACE, or empty.
+//
+// The cmake-name match strips the codemodel id hash; for
+// in-codebase deps it also tries the literal target name
+// (which is what cmake records in the trace). For external
+// imports the namespaced cmake name (`Foo::bar`) is what
+// appears in trace and what stripIDHash produces — direct
+// match.
+func depScopeIsPrivate(traceLinkScope map[string]string, dep fileapi.TargetDependency, idToName map[string]string) bool {
+	if len(traceLinkScope) == 0 {
+		return false
+	}
+	cmakeName := stripIDHash(dep.Id)
+	// Try the literal cmake name first (covers
+	// imports-manifest deps that carry their namespace).
+	if scope, ok := traceLinkScope[cmakeName]; ok {
+		return scope == "PRIVATE"
+	}
+	// Also try the per-codemodel target-name registry: cmake's
+	// trace records in-codebase deps under the bare target name
+	// (e.g. "uses_hello"), not the codemodel id form. idToName
+	// gives us that bare name; look it up.
+	if name, ok := idToName[dep.Id]; ok {
+		if scope, ok2 := traceLinkScope[name]; ok2 {
+			return scope == "PRIVATE"
 		}
 	}
 	return false
