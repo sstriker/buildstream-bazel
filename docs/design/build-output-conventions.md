@@ -186,8 +186,13 @@ Attribute rules:
 - `deps` resolves via the imports-manifest mapping (see "Roundtrip
   artifacts" below).
 - `conftest.py` is lifted into its own `py_library(name =
-  "conftest", testonly = True)` and wired as a `deps` entry of
-  every sibling `py_test`. Matches rules_python's gazelle plugin.
+  "<pkg>_conftest", testonly = True)` and wired as a `deps`
+  entry of the sibling `py_test`. The `<pkg>_` namespace
+  prefix differs from rules_python gazelle plugin's bare
+  `conftest` name; we use the namespaced form to avoid
+  cross-package target-name collisions when multiple
+  packages in the same BUILD ship conftests
+  (`converter/cmd/convert-element-pyproject/lower.go`).
 
 ### `py_binary`
 
@@ -221,7 +226,7 @@ gazelle's package-bin convention.
 py_test(
     name = "demo_test",
     srcs = ["test_demo.py"],
-    deps = [":demo", ":conftest"],
+    deps = [":demo", ":demo_conftest"],
 )
 ```
 
@@ -390,8 +395,9 @@ emits the most we can extract; the rest is operator-managed.
 
 | Input | Lossy attribute | Effect |
 | --- | --- | --- |
-| Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Everything maps to `deps`; no `implementation_deps` split. Documented in the meson handler. |
-| Trace-driven path | Link scope (PUBLIC vs PRIVATE) | Everything maps to `deps`; no `implementation_deps` split. Documented in `cmd/convert-element-trace/main.go`. |
+| CMake codemodel-v2 (alone) | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | codemodel-v2 in isolation exposes only a flat `Target.Dependencies` list (no per-dep scope) and the rendered link `commandFragments`. The cmake handler runs codemodel and shadow trace together, however — the trace records each `target_link_libraries` call with its keyword arm, and `internal/shadow/trace_commands.go` decodes the arms into per-target lib→keyword maps. Phase 4 wires those maps through `lower/lower.go:lowerTarget` to route PRIVATE deps onto `ImplementationDeps`. So end-to-end, kind:cmake with trace enabled DOES populate the split; a hypothetical codemodel-only invocation (no trace decoded) would fold everything into `Deps`. |
+| Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Same shape as CMake — meson's `meson introspect` likewise reports no per-dep scope. Folds everything into `Deps`. |
+| Trace-driven path | Link scope (PUBLIC vs PRIVATE) | The trace-driven converter recovers cc rules from `cc/ar` execve events; the link command-line carries `-lfoo` flags but not the PUBLIC/PRIVATE keyword that drove the cmake `target_link_libraries()` call. Folds into `Deps`. |
 | pyproject entry shims (shim mode) | Pure-Bazel `py_binary` shape | `py_binary` references a genrule-materialized shim instead of the module file directly. Operators can opt into strict-mode (default) to get the cleaner shape. |
 
 ## Won't-do — architectural mismatches, not deferrals
@@ -440,18 +446,86 @@ to those entries; each is independently shippable.
   renderers (cc, py, write-a format-string handlers) onto
   `bazel.build/buildtools/build`. Result: `buildifier --mode=fix`
   is a no-op.
-- **Phase 4** — `implementation_deps` split via CMake
-  `target_link_libraries(PUBLIC|PRIVATE|INTERFACE)` propagation
-  through IR.
+- **Phase 4** — `implementation_deps` split IR + emit
+  plumbing + trace-driven populate path.
+  `ir.Target.ImplementationDeps` is the new field; `bazel.Emit`
+  renders `implementation_deps = [...]` when populated, in the
+  priority-0 alpha block before `deps` per buildifier's
+  `NamePriority`. **Populate path**: the cmake-side lowering
+  consults `shadow.Decode`'s `target_link_libraries` keyword
+  arm (PUBLIC / PRIVATE / INTERFACE / "" for the legacy
+  positional shape) and routes PRIVATE deps to
+  `ImplementationDeps`. When no trace is available
+  (codemodel-only path) or the dep wasn't named in any
+  keyword-scoped call, the dep falls through to `Deps` —
+  strictly safe (matches pre-Phase-4 behavior). Meson
+  introspection and pyproject paths leave the field unset.
 - **Phase 5** — entry-shim strict mode (`if __name__ ==
   "__main__":` detection) and `__main__.py` package-bin
   detection.
 - **Phase 6** — conventions doc + ROADMAP updates (this doc + the
   phase-index entries).
-- **Phase 7** — gazelle roundtrip: `tools/cc_index.json`,
-  `tools/python_modules.json`, `# keep` markers, `#
-  gazelle:resolve` / `cc_search` directives,
-  `scripts/meta-gazelle-roundtrip.sh` conformance gate.
+- **Phase 7** — gazelle roundtrip. Split across two PRs for
+  reviewable scope:
+  - **Phase 7a** — `# keep` markers on load-bearing attribute
+    lines (cc_* copts/defines/linkopts/includes/tags/
+    linkstatic/alwayslink/include_prefix/strip_include_prefix,
+    cc_test args/env/timeout/data, cc_import-shape attrs,
+    py_library/py_test imports/pyi_srcs/testonly, py_binary
+    strict-shape main/srcs, package(...) and genrule /
+    filegroup whole-rule keeps). Implemented as a buildtools-
+    AST post-pass in the cc + py emitters' canonicalize step.
+    Markers are inert without gazelle (a # comment any tool
+    ignores), so the change is decoupled from Phase 7b.
+  - **Phase 7b** — gazelle metadata foundation. Project B's
+    MODULE.bazel ships the three `# gazelle:cc_indexfile` /
+    `# gazelle:cc_use_builtin_bzlmod_index` /
+    `# gazelle:python_module_mapping` directives;
+    `tools/cc_index.json` + `tools/python_modules.json` ship
+    alongside `tools/sources.json` as `exports_files`-
+    declared paths the directives reference. Both index
+    files start as empty `{}` content; Phase 7c populates
+    them.
+  - **Phase 7c** — populate the index files from per-element
+    exports via a new `cmd/build-cc-index` Go binary that
+    walks project B's staged BUILD.bazel files post-conversion
+    and writes `tools/cc_index.json` (header path → label,
+    sourced from each `cc_library`'s `hdrs` slice plus the
+    `.h`/`.hpp`/`.hxx` subset of its `srcs` — the codemodel
+    sometimes lists private headers in `srcs`, so widening the
+    index entries from srcs-side captures pre-existing
+    under-reporting cheaply) + `tools/python_modules.json`
+    (`py_binary` / `py_library` name → label). Bundled with
+    `scripts/meta-gazelle-roundtrip.sh` as a conformance gate
+    that asserts: the populated index has the expected
+    header→label mappings, and (when `buildifier` is on PATH)
+    Phase 3's no-op contract still holds post-Phase-7a/b/c.
+    The `# gazelle:resolve` directives for cross-element deps
+    are queued as a Phase 7d follow-up once `gazelle_cc` is
+    wired in.
+- **Phase 8** — operator overlay (`overlay.MODULE.bazel` +
+  unconditional `include()` in project B's MODULE.bazel) so
+  operators can layer their own `bazel_dep` / `use_extension`
+  / `register_toolchains` declarations without editing the
+  converter-owned file. Also ships
+  `tools/gazelle-rewritable.json` (operator-owned patterns
+  list) + `cmd/relax-keeps` (a targeted post-conversion
+  step that strips Phase-7a `# keep` markers from genrules
+  whose cmd matches a declared rewritable pattern). Lets
+  continuous-conversion loops auto-rewrite recognized
+  patterns (protoc → proto_library, etc.) without losing
+  literal-CMake fidelity for unrecognized ones. write-a
+  writes comment-only stubs for both operator-owned files
+  on first render and preserves operator edits on
+  subsequent re-renders. See
+  `docs/design/operator-gazelle-step.md`.
+- **Phase 8b** (queued) — optional orchestrator-driven
+  gazelle invocation against the elements that
+  re-converted on the current run
+  (`bazel run //:gazelle -- elements/<changed elements>`),
+  gated behind a `--enable-gazelle` opt-in. Builds on
+  Phase 8's overlay file (the operator's gazelle/gazelle_cc
+  `bazel_dep`s live there).
 
 The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,

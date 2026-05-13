@@ -85,8 +85,10 @@ for f in MODULE.bazel BUILD.bazel \
         exit 1
     fi
 done
-# Stack's project-B BUILD references both deps.
-for ref in '"//elements/lib-a:lib-a"' '"//elements/lib-b:lib-b"'; do
+# Stack's project-B BUILD references both deps. Phase 3's
+# buildtools-canonical formatter shortens `//pkg:pkg` to `//pkg`
+# when the target name matches the package basename.
+for ref in '"//elements/lib-a"' '"//elements/lib-b"'; do
     if ! grep -qF "$ref" "$B/elements/runtime/BUILD.bazel"; then
         echo "meta-stack: project B stack BUILD missing dep ref $ref" >&2
         cat "$B/elements/runtime/BUILD.bazel" >&2
@@ -109,8 +111,8 @@ case "$bazel_major" in
     [0-9]*) ;;
     *) bazel_major=0 ;;
 esac
-if [ "$bazel_major" -lt 7 ]; then
-    echo "meta-stack: render OK; bazel $($BZL --version | head -1) is < 7 (no bzlmod), skipping build phase"
+if [ "$bazel_major" -lt 9 ]; then
+    echo "meta-stack: render OK; bazel $($BZL --version | head -1) is < 9 (Bazel 9 is the floor: bzlmod + load() requirement for cc_*), skipping build phase"
     exit 0
 fi
 

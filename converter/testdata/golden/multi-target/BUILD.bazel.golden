@@ -2,33 +2,41 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
+package(default_visibility = ["//visibility:public"])  # keep
+
 cc_binary(
     name = "multibin",
-    srcs = ["include/multi.h", "src/main.c"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
+    srcs = [
+        "include/multi.h",
+        "src/main.c",
+    ],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
     deps = [":multistatic"],
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "multishared",
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
-    includes = ["include"],
-    copts = ["-O3", "-fPIC"],
-    defines = ["NDEBUG", "multishared_EXPORTS"],
-    visibility = ["//visibility:public"],
+    copts = [
+        "-O3",
+        "-fPIC",
+    ],  # keep
+    defines = [
+        "NDEBUG",
+        "multishared_EXPORTS",
+    ],  # keep
+    includes = ["include"],  # keep
 )
 
 cc_library(
     name = "multistatic",
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )

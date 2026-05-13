@@ -2,13 +2,20 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])  # keep
+
 cc_library(
     name = "visi",
     srcs = ["src/visi.c"],
-    hdrs = ["include/private/internal.h", "include/visi.h"],
-    includes = ["include"],
-    copts = ["-O3", "-Iinclude/private"],
-    defines = ["NDEBUG"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
+    hdrs = [
+        "include/private/internal.h",
+        "include/visi.h",
+    ],
+    copts = [
+        "-O3",
+        "-Iinclude/private",
+    ],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )

@@ -56,7 +56,44 @@ type Package struct {
 	// `srcs = [...]` list — explicit enumeration, NOT a
 	// `glob()` — so future test/ scratch .py the backend
 	// wouldn't have shipped don't accidentally enter the rule.
+	// Excludes test-pattern files, .pyi stubs, and conftest.py
+	// (those land in TestSources / PyiSources / HasConftest
+	// respectively).
 	Sources []string
+
+	// TestSources are source-relative .py paths that match
+	// rules_python gazelle's test-file convention: filename
+	// stem starts with `test_` OR ends with `_test`. Emit
+	// these as a sibling py_test rule, separate from the
+	// package's main py_library, so an operator running
+	// `bazel test //...` sees per-package test targets without
+	// the library's runtime srcs polluting the test action.
+	TestSources []string
+
+	// PyiSources are source-relative .pyi stub files at
+	// depth-1 (rules_python gazelle's `pyi_srcs` attribute).
+	// Emit on py_library when non-empty so type-checking
+	// consumers see the stubs alongside the runtime modules.
+	PyiSources []string
+
+	// HasConftest reports whether this package's directory
+	// contains a conftest.py. Drives the conftest-lift
+	// emission in Lower: a separate py_library(name =
+	// "<pkg>_conftest", testonly = True) target the
+	// sibling py_test depends on, mirroring rules_python's
+	// gazelle convention.
+	HasConftest bool
+
+	// HasMain reports whether this package's directory
+	// contains a __main__.py at depth-1. Drives the Phase 5
+	// `<pkg>_bin` emission in Lower: a separate
+	// py_binary(name = "<pkg>_bin", srcs = ["<pkg>/__main__.py"],
+	// main = "<pkg>/__main__.py", deps = [":<pkg>"]) target
+	// matching `python -m <pkg>` behavior. Independent of
+	// [project.scripts] entries; per
+	// `docs/design/build-output-conventions.md`'s py_binary
+	// section.
+	HasMain bool
 }
 
 // BazelLabel is the Bazel-safe form of Package.Name (dots →
@@ -533,14 +570,15 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 	}
 	prefix := dir + "/"
 	initPath := prefix + "__init__.py"
+	conftestPath := prefix + "conftest.py"
+	mainPath := prefix + "__main__.py"
 	hasInit := false
-	var srcs []string
+	hasConftest := false
+	hasMain := false
+	var srcs, testSrcs, pyiSrcs []string
 	for _, f := range sourceFiles {
-		if !strings.HasPrefix(f, prefix) || !strings.HasSuffix(f, ".py") {
+		if !strings.HasPrefix(f, prefix) {
 			continue
-		}
-		if f == initPath {
-			hasInit = true
 		}
 		// Depth-1: the rest of the path after the package dir
 		// must not contain another `/` (would mean we're inside
@@ -549,7 +587,30 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 		if strings.Contains(rest, "/") {
 			continue
 		}
-		srcs = append(srcs, f)
+		switch {
+		case strings.HasSuffix(f, ".pyi"):
+			pyiSrcs = append(pyiSrcs, f)
+		case f == conftestPath:
+			hasConftest = true
+		case strings.HasSuffix(f, ".py"):
+			if f == initPath {
+				hasInit = true
+			}
+			if f == mainPath {
+				hasMain = true
+			}
+			// Test-file convention (rules_python gazelle plugin):
+			// filename stem starts with `test_` or ends with
+			// `_test`. Lifted to a sibling py_test target by
+			// Lower; excluded from the package's main py_library
+			// srcs so the runtime library doesn't carry test code.
+			stem := strings.TrimSuffix(rest, ".py")
+			if strings.HasPrefix(stem, "test_") || strings.HasSuffix(stem, "_test") {
+				testSrcs = append(testSrcs, f)
+				continue
+			}
+			srcs = append(srcs, f)
+		}
 	}
 	if len(srcs) == 0 {
 		return Package{}, newFailure(unsupportedPyprojectPackageDiscovery,
@@ -572,9 +633,13 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 		importRoot = "."
 	}
 	return Package{
-		Name:       dotted,
-		Dir:        dir,
-		ImportRoot: importRoot,
-		Sources:    srcs,
+		Name:        dotted,
+		Dir:         dir,
+		ImportRoot:  importRoot,
+		Sources:     srcs,
+		TestSources: testSrcs,
+		PyiSources:  pyiSrcs,
+		HasConftest: hasConftest,
+		HasMain:     hasMain,
 	}, nil
 }

@@ -30,7 +30,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
+	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
 	"github.com/sstriker/cmake-to-bazel/internal/manifest"
 )

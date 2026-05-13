@@ -126,6 +126,17 @@ jobs:
         continue-on-error: true
         run: make e2e-audit-narrowing 2>&1 | tee -a /tmp/cijob.log
 
+      - name: Install buildifier (for gazelle-roundtrip gate)
+        run: |
+          go install github.com/bazelbuild/buildtools/buildifier@latest
+          # GOBIN defaults to $HOME/go/bin in setup-go; expose it
+          # on PATH so the meta-gazelle-roundtrip.sh sub-shell
+          # finds buildifier without an absolute-path probe.
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+
+      - name: gazelle-roundtrip e2e (Phase 7c)
+        run: make e2e-meta-gazelle-roundtrip 2>&1 | tee -a /tmp/cijob.log
+
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 

@@ -151,21 +151,25 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 		// codemodel-side root keeps the prefix match stable
 		// across machines.
 		hdrs := installHeadersFor(t, r.Codemodel.Paths.Source)
-		// Known gap: hdrs land on cc_import without an include-
-		// path export. Bazel's cc_import emitter doesn't render
-		// the `includes` attribute, so downstream consumers
-		// using `#include <foo.h>` (or `<sub/foo.h>`) won't
-		// resolve through the placeholder even though the
-		// header file is in the genrule's outs. Direct
-		// `#include "install_tree/include/foo.h"` works.
-		// Resolving the gap properly needs either (a) extending
-		// the emitter to render cc_import.includes, or
-		// (b) wrapping the cc_import in a cc_library that adds
-		// `strip_include_prefix = "install_tree/include"`. A
-		// real fixture exercising cross-element header consumption
-		// drives that decision; until then the headers are
-		// declared so the extract genrule keeps the files
-		// available, but bare-bracket includes won't resolve.
+		// Known gap (Phase 2 partial): hdrs land on cc_import
+		// without an include-path export. Bazel's cc_import
+		// rule doesn't actually accept an `includes` attribute
+		// (or `include_prefix` / `strip_include_prefix`), so
+		// downstream consumers using `#include <foo.h>` (or
+		// `<sub/foo.h>`) won't resolve through the placeholder
+		// even though the header file is in the genrule's outs.
+		// Direct `#include "install_tree/include/foo.h"` works.
+		// The canonical fix is to wrap the cc_import in a
+		// cc_library that adds `strip_include_prefix =
+		// "install_tree/include"` — the IR now carries
+		// IncludePrefix / StripIncludePrefix fields (Phase 2)
+		// and the emitter renders them on cc_library, so the
+		// remaining work is to emit a sibling cc_library here
+		// alongside the cc_import. A real fixture exercising
+		// cross-element header consumption drives the
+		// implementation; until then the headers are declared
+		// so the extract genrule keeps the files available, but
+		// bare-bracket includes won't resolve.
 
 		switch t.Type {
 		case "STATIC_LIBRARY", "OBJECT_LIBRARY":

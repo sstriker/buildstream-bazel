@@ -117,6 +117,9 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 		"BUILD.bazel",
 		"elements/hello/BUILD.bazel",
 		"elements/hello/CMakeLists.txt",
+		// Phase 7b: gazelle metadata files.
+		"tools/cc_index.json",
+		"tools/python_modules.json",
 	} {
 		if _, err := os.Stat(filepath.Join(outB, want)); err != nil {
 			t.Errorf("missing rendered file %q in project B: %v", want, err)
@@ -126,8 +129,79 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Phase 7b: MODULE.bazel ships the three gazelle config
+	// directives so operator-driven `gazelle fix` runs can wire
+	// dep resolution against the converter-emitted metadata
+	// files. The directives are inert if gazelle isn't
+	// installed.
+	for _, want := range []string{
+		"# gazelle:cc_indexfile tools/cc_index.json",
+		"# gazelle:cc_use_builtin_bzlmod_index true",
+		"# gazelle:python_module_mapping tools/python_modules.json",
+	} {
+		if !strings.Contains(string(bModule), want) {
+			t.Errorf("project B MODULE.bazel missing %q:\n%s", want, bModule)
+		}
+	}
 	if !strings.Contains(string(bModule), `bazel_dep(name = "rules_cc"`) {
 		t.Errorf("project B MODULE.bazel missing rules_cc bazel_dep:\n%s", bModule)
+	}
+	// Phase 8: MODULE.bazel includes the operator-owned overlay
+	// file, and write-a wrote a stub at the overlay path that
+	// the operator can edit. The stub stays comment-only.
+	if !strings.Contains(string(bModule), `include("//:overlay.MODULE.bazel")`) {
+		t.Errorf("project B MODULE.bazel missing operator-overlay include():\n%s", bModule)
+	}
+	overlayPath := filepath.Join(outB, "overlay.MODULE.bazel")
+	overlay, err := os.ReadFile(overlayPath)
+	if err != nil {
+		t.Fatalf("missing overlay.MODULE.bazel stub: %v", err)
+	}
+	if !strings.Contains(string(overlay), "operator-owned MODULE.bazel fragment") {
+		t.Errorf("overlay.MODULE.bazel stub missing operator-facing comment:\n%s", overlay)
+	}
+	// Phase 8: rewritable-patterns stub (consumed by
+	// cmd/relax-keeps). Default empty patterns list so
+	// continuous-conversion loops see no behavior change
+	// until the operator declares which genrules their
+	// gazelle setup can rewrite.
+	rewritablePath := filepath.Join(outB, "tools", "gazelle-rewritable.json")
+	rewritable, err := os.ReadFile(rewritablePath)
+	if err != nil {
+		t.Fatalf("missing tools/gazelle-rewritable.json stub: %v", err)
+	}
+	for _, want := range []string{`"version": 1`, `"patterns": []`, "Operator-owned config consumed by cmd/relax-keeps"} {
+		if !strings.Contains(string(rewritable), want) {
+			t.Errorf("gazelle-rewritable.json stub missing %q:\n%s", want, rewritable)
+		}
+	}
+	// Phase 8: re-rendering project B must preserve operator
+	// edits to BOTH the overlay and the rewritable-patterns
+	// config. Simulate edits and re-run write to confirm.
+	const operatorOverlayEdit = "# operator-added: pin gazelle\nbazel_dep(name = \"gazelle\", version = \"0.40.0\")\n"
+	const operatorRewritableEdit = `{"version": 1, "patterns": [{"name": "protoc", "cmd_contains": "protoc"}]}` + "\n"
+	if err := os.WriteFile(overlayPath, []byte(operatorOverlayEdit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rewritablePath, []byte(operatorRewritableEdit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("re-render writeProjectB: %v", err)
+	}
+	afterRerun, err := os.ReadFile(overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterRerun) != operatorOverlayEdit {
+		t.Errorf("write-a clobbered operator's overlay edits on re-render:\nwant: %q\ngot: %q", operatorOverlayEdit, afterRerun)
+	}
+	afterRewritable, err := os.ReadFile(rewritablePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterRewritable) != operatorRewritableEdit {
+		t.Errorf("write-a clobbered operator's rewritable edits on re-render:\nwant: %q\ngot: %q", operatorRewritableEdit, afterRewritable)
 	}
 	bPlaceholder, err := os.ReadFile(filepath.Join(outB, "elements/hello/BUILD.bazel"))
 	if err != nil {
@@ -445,8 +519,8 @@ func TestWriter_StackElementShape(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`name = "runtime"`,
-		`"//elements/lib-a:lib-a"`,
-		`"//elements/lib-b:lib-b"`,
+		`"//elements/lib-a"`,
+		`"//elements/lib-b"`,
 	} {
 		if !strings.Contains(string(stackBBuild), marker) {
 			t.Errorf("project B runtime BUILD missing %q\n--body--\n%s", marker, stackBBuild)
@@ -1054,7 +1128,13 @@ func TestWriter_ImportElementShape(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`name = "imp"`,
-		`glob(["**/*"], exclude = ["BUILD.bazel"])`,
+		// Phase 3's buildtools-canonical formatter wraps the
+		// glob() call across lines (it has 2 list args).
+		// Assert on individual substrings instead of the inline
+		// shape.
+		`glob(`,
+		`"**/*"`,
+		`exclude = ["BUILD.bazel"]`,
 		`kind:import`,
 	} {
 		if !strings.Contains(string(importB), marker) {
@@ -1116,7 +1196,7 @@ config:
 	}
 	for _, marker := range []string{
 		`name = "lib-headers"`,
-		`"//elements/lib:lib"`,
+		`"//elements/lib"`,
 		`kind:filter`,
 		`# include domains: [public-headers]`,
 		`# exclude domains: [runtime]`,
@@ -1205,8 +1285,8 @@ func TestWriter_ComposeElementShape(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`name = "bundle"`,
-		`"//elements/a:a"`,
-		`"//elements/b:b"`,
+		`"//elements/a"`,
+		`"//elements/b"`,
 		`kind:compose`,
 	} {
 		if !strings.Contains(string(composeB), marker) {

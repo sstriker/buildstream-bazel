@@ -79,16 +79,102 @@ type Target struct {
 	// path of dependents.
 	Includes []string
 
+	// IncludePrefix, when non-empty, renders as the
+	// `include_prefix` attribute on cc_library / cc_binary /
+	// cc_test. Bazel prepends the prefix to every header path
+	// a consumer sees via this target's hdrs — e.g.
+	// `include_prefix = "myelem"` rewrites
+	// `hdrs = ["api.h"]` so a downstream `#include
+	// "myelem/api.h"` resolves. Matches gazelle_cc's
+	// directive-driven attribute; see
+	// docs/design/build-output-conventions.md.
+	//
+	// NOT emitted on cc_import — stock rules_cc's cc_import
+	// doesn't accept these attributes; the canonical fix for
+	// the round-2 fallback's bracket-include consumers is
+	// wrapping cc_import in a cc_library that uses
+	// strip_include_prefix (the wrap doesn't ship yet; see
+	// converter/internal/lower/execute_process_fallback.go
+	// for the gap comment).
+	IncludePrefix string
+
+	// StripIncludePrefix, when non-empty, renders as the
+	// `strip_include_prefix` attribute on the same rule
+	// kinds (cc_library / cc_binary / cc_test). Bazel strips
+	// the prefix from header paths before applying
+	// IncludePrefix — typical usage pairs them:
+	// `strip_include_prefix = "include"` +
+	// `include_prefix = "myelem"` turns
+	// `hdrs = ["include/myelem/api.h"]` into a consumer-side
+	// `#include "myelem/api.h"`.
+	StripIncludePrefix string
+
 	// Copts, Defines, Linkopts pass through to the cc_* rule of the same name.
 	Copts    []string
 	Defines  []string
 	LinkOpts []string
 
-	// Deps are Bazel labels to other targets.
+	// Deps are Bazel labels to other targets whose headers are
+	// reachable through this target's public hdrs. Maps to
+	// `deps = [...]` on the emitted rule. Per gazelle_cc canon,
+	// targets reached via `PUBLIC` or `INTERFACE`
+	// target_link_libraries() in CMake belong here.
 	Deps []string
 
-	// Visibility defaults to package-private when empty; the emitter writes
-	// the explicit slice if set.
+	// ImplementationDeps are Bazel labels to other targets used
+	// only in this target's .cc files (`PRIVATE`
+	// target_link_libraries() in CMake). Maps to
+	// `implementation_deps = [...]` on the emitted rule —
+	// headers from these deps are NOT exposed transitively to
+	// consumers of this library, giving stricter header hygiene
+	// than a single Deps list.
+	//
+	// Signal availability: CMake codemodel-v2 (the converter's
+	// primary input today) does NOT carry per-dependency
+	// PUBLIC/PRIVATE scope — it exposes only a flat
+	// Target.Dependencies list and the rendered link
+	// commandFragments. The shadow trace, however, DOES carry
+	// the keyword: cmake records each target_link_libraries
+	// call with its PUBLIC/PRIVATE/INTERFACE arm, and
+	// internal/shadow/trace_commands.go decodes the arms into
+	// per-target lib→keyword maps. The cmake-codemodel
+	// lowering consults that map and routes PRIVATE deps to
+	// ImplementationDeps. Codemodel-only paths (no
+	// --trace-format=json-v1 run available) leave the field
+	// unset and fold every dep into Deps — strictly safe,
+	// matches pre-Phase-4 behaviour byte-for-byte. Meson
+	// introspection and pyproject paths likewise have no scope
+	// signal and leave the field unset. Documented in
+	// docs/design/build-output-conventions.md.
+	ImplementationDeps []string
+
+	// Visibility carries the per-target Bazel visibility list
+	// as pure data. The IR stays policy-free: what "empty"
+	// means and how non-empty lists render is the consuming
+	// emitter's call. Common cases the IR exposes:
+	//   - cmake codemodel-lowering (lower/lower.go) commonly
+	//     leaves Visibility unset on most targets.
+	//   - lower/execute_process.go, lower/configure_file.go,
+	//     and lower/genrule.go populate it explicitly with
+	//     stricter scopes like `["//visibility:private"]` for
+	//     internal helpers.
+	//   - meson and trace producers populate it explicitly
+	//     with `["//visibility:public"]`.
+	//
+	// Emitter-side rendering policy lives in the emitter's own
+	// docs, not here. `converter/emit/bazel` (the shared cc
+	// emitter, used by convert-element / convert-element-meson
+	// / fold-element / convert-element-trace) writes a file-
+	// head `package(default_visibility = ["//visibility:public"])`
+	// and emits a per-rule `visibility = [...]` line only when
+	// Visibility differs from that default; empty Visibility
+	// takes the package default. Other emitters
+	// (`converter/cmd/convert-element-pyproject/emit.go`,
+	// `cmd/write-a/handler_*.go`'s direct BUILD writers) make
+	// their own visibility-rendering choices and should
+	// document them next to their emit code. See
+	// docs/design/build-output-conventions.md for the cc
+	// emitter's convention and its gazelle_cc lineage.
 	Visibility []string
 
 	// Linkstatic / Alwayslink only meaningful for KindCCLibrary.

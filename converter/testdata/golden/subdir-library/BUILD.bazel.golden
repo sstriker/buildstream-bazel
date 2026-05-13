@@ -2,25 +2,31 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])  # keep
+
 cc_library(
     name = "toplib",
     srcs = ["src/toplib.c"],
-    hdrs = ["include/toplib.h", "include/util.h"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
+    hdrs = [
+        "include/toplib.h",
+        "include/util.h",
+    ],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
     deps = [":util"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "util",
     srcs = ["src/util/util.c"],
-    hdrs = ["include/toplib.h", "include/util.h"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
+    hdrs = [
+        "include/toplib.h",
+        "include/util.h",
+    ],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )

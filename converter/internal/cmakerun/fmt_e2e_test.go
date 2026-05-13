@@ -25,9 +25,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ctest"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/cmakecfg"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"

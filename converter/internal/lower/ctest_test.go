@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ctest"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
@@ -209,12 +209,16 @@ func TestEmit_CCTest(t *testing.T) {
 		t.Fatalf("Emit: %v", err)
 	}
 	body := string(out)
+	// Phase 3's buildtools-canonical formatting wraps 2+ entry
+	// dicts/lists across lines, so assert on per-entry substrings
+	// rather than inline `{...}` / `[...]` shapes for env.
 	for _, want := range []string{
 		`cc_test(`,
 		`name = "myt"`,
 		`srcs = ["x.cc"]`,
 		`args = ["--gtest_filter=*"]`,
-		`env = {"BAR": "2", "FOO": "1"}`,
+		`"BAR": "2"`,
+		`"FOO": "1"`,
 		`timeout = "30s"`,
 		`data = ["data.txt"]`,
 		`tags = ["exclusive"]`,

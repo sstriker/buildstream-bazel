@@ -50,7 +50,7 @@ fixture under `testdata/meta-project/`. They're shell scripts
 because they shell out to `write-a`, `bazel`, and bazel-built
 artifacts; Go test harness wouldn't add anything.
 
-Bazel build inside a render gate is gated on `bazel >= 7` being
+Bazel build inside a render gate is gated on `bazel >= 9` being
 on `$PATH`. When bazel is unavailable, the gate runs the
 **render** half (write-a output) and skips the bazel-build half
 with a `skipping build phase` message. **That partial run is
@@ -144,7 +144,7 @@ working on actually exercises.
 
 ### For render gates' bazel-build half
 
-The `scripts/meta-*.sh` gates skip cleanly when bazel ≥ 7
+The `scripts/meta-*.sh` gates skip cleanly when bazel ≥ 9
 isn't on PATH; install only when you want to exercise the
 build half locally.
 

@@ -2,13 +2,14 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])  # keep
+
 cc_library(
     name = "hello",
     srcs = ["hello.c"],
     hdrs = ["include/hello.h"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )

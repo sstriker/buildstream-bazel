@@ -2,24 +2,28 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])  # keep
+
 cc_library(
     name = "objlib_archive",
     srcs = ["src/main.c"],
     hdrs = ["include/objlib.h"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
     deps = [":objlib_obj"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "objlib_obj",
-    srcs = ["src/a.c", "src/b.c"],
+    srcs = [
+        "src/a.c",
+        "src/b.c",
+    ],
     hdrs = ["include/objlib.h"],
-    includes = ["include"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    alwayslink = True,
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    alwayslink = True,  # keep
 )

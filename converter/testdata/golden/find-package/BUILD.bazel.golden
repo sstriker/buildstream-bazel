@@ -2,13 +2,20 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])  # keep
+
 cc_library(
     name = "usepkg",
     srcs = ["src/usepkg.c"],
     hdrs = ["include/usepkg.h"],
-    includes = ["include"],
-    copts = ["-O3", "-fPIC"],
-    defines = ["NDEBUG", "usepkg_EXPORTS"],
-    deps = ["//elements/zlib:zlib"],
-    visibility = ["//visibility:public"],
+    copts = [
+        "-O3",
+        "-fPIC",
+    ],  # keep
+    defines = [
+        "NDEBUG",
+        "usepkg_EXPORTS",
+    ],  # keep
+    includes = ["include"],  # keep
+    deps = ["//elements/zlib"],
 )

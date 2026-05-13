@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
+	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
@@ -16,15 +16,15 @@ import (
 var _ = flag.Lookup("update") // emit_test.go declares the -update flag
 
 func TestEmit_CodegenTarget_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/codegen-target")
+	src, err := filepath.Abs("../../testdata/sample-projects/codegen-target")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/codegen-target")
+	r, err := fileapi.Load("../../testdata/fileapi/codegen-target")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	g, err := ninja.ParseFile("../../../testdata/fileapi/codegen-target/build.ninja")
+	g, err := ninja.ParseFile("../../testdata/fileapi/codegen-target/build.ninja")
 	if err != nil {
 		t.Fatalf("ninja Parse: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestEmit_CodegenTarget_Golden(t *testing.T) {
 	}
 	got = scrubBuildTmp(got)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "codegen-target", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "codegen-target", "BUILD.bazel.golden")
 	if isUpdate() {
 		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 			t.Fatal(err)
