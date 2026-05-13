@@ -48,7 +48,7 @@ transition cleanly.
     `cmd/convert-element-trace/main.go`'s inline `renderRules` into
     `bazel.Emit(toIR(rules))` (`toIR()` already exists at line 287
     of trace's main.go). Sort + trim `load()` lines in
-    `convert-element-pyproject/emit.go` and drop the dead `cc_test`
+    `converter/cmd/convert-element-pyproject/emit.go` and drop the dead `cc_test`
     load entry at trace's main.go:1071.
   - **Phase 2 — attribute completeness.** Add `include_prefix` /
     `strip_include_prefix` to IR (plumbed from CMake

@@ -43,6 +43,19 @@ Gazelle's per-language emission shape — the target.
   means our output is byte-equal to what buildifier would have
   produced.
 
+## Reading conventions
+
+File paths and CLI flag names in this doc are stable
+references anchored on `main`. The PR that introduces this
+doc stacks on an upstream branch authored before the
+kind:pyproject converter merged; on that stack base, paths
+like `converter/cmd/convert-element-pyproject/...` and flags
+like `--convert-element-pyproject` resolve only after the
+stack rebases onto `main` (which it will before merge).
+Reviewers reading the stack-base view should treat those
+references as forward-looking; once the stack lands, the
+referenced files and flags exist as named.
+
 ## Per-rule-kind shape
 
 ### `cc_library`
@@ -76,10 +89,15 @@ Attribute rules:
   `target_link_libraries`). `implementation_deps` holds deps used
   only in this library's `.cc` files (`PRIVATE` in CMake). This
   matches gazelle_cc's split exactly.
-- `linkstatic` / `alwayslink` emit only when the upstream
-  explicitly indicates them (CMake `STATIC_LIBRARY` /
-  `OBJECT_LIBRARY` types). Otherwise omitted — gazelle_cc's
-  convention.
+- `linkstatic` / `alwayslink` emit when the upstream input
+  explicitly indicates them. "Explicit" means: CMake codemodel
+  reports the target as `STATIC_LIBRARY` (→ `linkstatic = True`)
+  or `OBJECT_LIBRARY` (→ `alwayslink = True`), or the trace
+  driver observed an `ar` invocation producing a `.a` archive
+  (→ `linkstatic = True` because the recovered target IS a
+  static library by construction). In every other case the
+  attributes are omitted — gazelle_cc's convention, which we
+  match for hand-authored Bazel cc_library compatibility.
 - `copts` / `defines` / `linkopts` / `includes` emit when the
   upstream has values for them. gazelle_cc treats these as
   operator-owned because it has no input source; we have rich
@@ -371,7 +389,7 @@ Some inputs don't carry the full Gazelle-target shape. Project B
 emits the most we can extract; the rest is operator-managed.
 
 | Input | Lossy attribute | Effect |
-|---|---|---|
+| --- | --- | --- |
 | Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Everything maps to `deps`; no `implementation_deps` split. Documented in the meson handler. |
 | Trace-driven path | Link scope (PUBLIC vs PRIVATE) | Everything maps to `deps`; no `implementation_deps` split. Documented in `cmd/convert-element-trace/main.go`. |
 | pyproject entry shims (shim mode) | Pure-Bazel `py_binary` shape | `py_binary` references a genrule-materialized shim instead of the module file directly. Operators can opt into strict-mode (default) to get the cleaner shape. |
@@ -412,7 +430,7 @@ The contract above is realized in seven phases, tracked in
 to those entries; each is independently shippable.
 
 - **Phase 1** — internal consistency: visibility unification
-  across `bazel.Emit` and `convert-element-pyproject/emit.go`;
+  across `bazel.Emit` and `converter/cmd/convert-element-pyproject/emit.go`;
   fold trace's inline renderer into `bazel.Emit(toIR(rules))`;
   load-line canonicalization.
 - **Phase 2** — attribute completeness: `include_prefix` /
