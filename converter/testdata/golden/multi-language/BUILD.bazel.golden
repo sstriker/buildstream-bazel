@@ -2,13 +2,14 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])
+
 cc_library(
     name = "multilang",
     hdrs = ["include/multilang.h"],
     includes = ["include"],
     deps = [":multilang_c", ":multilang_cxx"],
     linkstatic = True,
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
