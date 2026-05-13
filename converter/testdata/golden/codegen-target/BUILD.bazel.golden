@@ -2,16 +2,16 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "codegen",
     srcs = ["src/codegen.c"],
     hdrs = ["version.h"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    linkstatic = True,
-    tags = ["has-cmake-codegen"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    linkstatic = True,  # keep
+    tags = ["has-cmake-codegen"],  # keep
 )
 
 genrule(
@@ -25,4 +25,4 @@ genrule(
         "cmake-codegen-source-only",
     ],
     visibility = ["//visibility:private"],
-)
+)  # keep

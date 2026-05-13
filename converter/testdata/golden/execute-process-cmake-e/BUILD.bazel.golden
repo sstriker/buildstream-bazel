@@ -2,14 +2,14 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "thelib",
     srcs = ["src/lib.c"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    linkstatic = True,
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    linkstatic = True,  # keep
 )
 
 genrule(
@@ -24,4 +24,4 @@ genrule(
         "cmake-codegen-execute-process-op=touch",
     ],
     visibility = ["//visibility:private"],
-)
+)  # keep

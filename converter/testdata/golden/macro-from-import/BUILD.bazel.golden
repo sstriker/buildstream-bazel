@@ -2,15 +2,15 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "mfi",
     srcs = ["src/mfi.c"],
     hdrs = ["include/mfi.h"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    includes = ["include"],
-    linkstatic = True,
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
     deps = ["//elements/zlib"],
 )

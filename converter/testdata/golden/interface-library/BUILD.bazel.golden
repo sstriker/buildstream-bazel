@@ -2,7 +2,7 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_binary")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_binary(
     name = "iflib_demo",
@@ -10,7 +10,7 @@ cc_binary(
         "include/iflib/iflib.hpp",
         "src/demo.cpp",
     ],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    includes = ["include"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
 )
