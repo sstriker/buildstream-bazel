@@ -220,14 +220,14 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 // off the path basename). The bytes never touch disk; the
 // name is purely a parse-mode hint.
 //
-// On a parse error we fall back to the unmodified template
-// output. Parse failures here would mean the templates are
-// emitting syntactically invalid Bazel — a programming error
-// that should be caught in tests, not silently masked at
-// render time. The fallback preserves the legacy shape so
-// existing consumers don't break on the corrupt-template
-// path; the test suite is the right place to catch
-// regressions before they ship.
+// On a parse error we panic — see the inline comment in
+// the function body for rationale. The templates in this
+// package are the only source of the body bytes, so a
+// parse failure means the emitter regressed to producing
+// syntactically invalid Bazel. Silent fallback would let
+// the buildifier-no-op contract break without a test-
+// visible trigger; the panic surfaces it loudly in the
+// test suite instead.
 func canonicalize(body []byte) []byte {
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
