@@ -597,17 +597,21 @@ func TestEmitBuild_GeneratedHeaders(t *testing.T) {
 	got := emitBuild(correlate(events), nil, nil, []string{"config.h", "fficonfig.h"})
 
 	for _, marker := range []string{
+		// cc_library carries the generated headers in `hdrs`.
 		`hdrs = ["config.h", "fficonfig.h"]`,
+		// cc_binary folds headers into `srcs` because Bazel 9
+		// doesn't accept `hdrs` on cc_binary — the shared emitter
+		// (converter/emit/bazel) does the fold. The result is
+		// still that the generated headers appear in every
+		// emitted target's input set, just under attribute names
+		// each rule kind accepts.
+		`srcs = ["config.h", "fficonfig.h", "myapp.c"]`,
 		`name = "foo"`,
 		`name = "myapp"`,
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("missing marker %q\n--body--\n%s", marker, got)
 		}
-	}
-	// Both rules (cc_library AND cc_binary) should carry hdrs.
-	if strings.Count(got, `hdrs = ["config.h", "fficonfig.h"]`) != 2 {
-		t.Errorf("expected hdrs on every emitted rule; got:\n%s", got)
 	}
 }
 

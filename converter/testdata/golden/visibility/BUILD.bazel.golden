@@ -2,6 +2,8 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])
+
 cc_library(
     name = "visi",
     srcs = ["src/visi.c"],
@@ -10,5 +12,4 @@ cc_library(
     copts = ["-O3", "-Iinclude/private"],
     defines = ["NDEBUG"],
     linkstatic = True,
-    visibility = ["//visibility:public"],
 )

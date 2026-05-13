@@ -49,7 +49,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/cmake-to-bazel/converter/elementfold"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
+	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
