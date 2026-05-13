@@ -487,12 +487,22 @@ to those entries; each is independently shippable.
     files start as empty `{}` content; Phase 7c populates
     them.
   - **Phase 7c** — populate the index files from per-element
-    exports (cc_library hdrs × label; pyproject scripts);
-    add `# gazelle:resolve` directives for cross-element
-    deps gazelle can't resolve from headers alone;
-    `scripts/meta-gazelle-roundtrip.sh` conformance gate
-    (buildifier no-op + gazelle no-op + new-source-pickup
-    smoke).
+    exports via a new `cmd/build-cc-index` Go binary that
+    walks project B's staged BUILD.bazel files post-conversion
+    and writes `tools/cc_index.json` (header path → label,
+    sourced from each `cc_library`'s `hdrs` slice plus the
+    `.h`/`.hpp`/`.hxx` subset of its `srcs` — the codemodel
+    sometimes lists private headers in `srcs`, so widening the
+    index entries from srcs-side captures pre-existing
+    under-reporting cheaply) + `tools/python_modules.json`
+    (`py_binary` / `py_library` name → label). Bundled with
+    `scripts/meta-gazelle-roundtrip.sh` as a conformance gate
+    that asserts: the populated index has the expected
+    header→label mappings, and (when `buildifier` is on PATH)
+    Phase 3's no-op contract still holds post-Phase-7a/b/c.
+    The `# gazelle:resolve` directives for cross-element deps
+    are queued as a Phase 7d follow-up once `gazelle_cc` is
+    wired in.
 
 The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,
