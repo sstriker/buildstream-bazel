@@ -296,11 +296,11 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 //     cmake-codegen-file-generate-genex audit tag, no lifted
 //     tag.
 func TestEmit_FileGenerate_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/file-generate")
+	src, err := filepath.Abs("../../testdata/sample-projects/file-generate")
 	if err != nil {
 		t.Fatal(err)
 	}
-	replyDir, err := filepath.Abs("../../../testdata/fileapi/file-generate")
+	replyDir, err := filepath.Abs("../../testdata/fileapi/file-generate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestEmit_FileGenerate_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "file-generate", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "file-generate", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
