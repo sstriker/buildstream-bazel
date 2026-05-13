@@ -77,15 +77,19 @@ func Emit(targets []Target) []byte {
 	// wrapping, dict wrapping, and label normalization fall
 	// out of the formatter's default Rewriter pass.
 	// `BUILD.bazel` filename hint dispatches the parser into
-	// TypeBuild semantics. On parse error (a programming
-	// failure in this emitter, not a runtime fault), the
-	// unmodified bytes flow through so legacy consumers
-	// don't break; the test suite catches the regression
-	// before it ships.
+	// TypeBuild semantics. A parse failure is a
+	// programming failure in this emitter — the body
+	// bytes came from emitPyLibrary / emitPyBinary /
+	// emitPyTest's format-string emit, so a parse error
+	// means we regressed to writing syntactically invalid
+	// Bazel. Panic so the test suite surfaces the
+	// diagnostic rather than silently writing
+	// non-canonical output (which would break the Phase 3
+	// buildifier-no-op contract).
 	body := b.Bytes()
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
-		return body
+		panic(fmt.Sprintf("convert-element-pyproject.Emit: emit produced unparseable BUILD bytes: %v\n%s", err, body))
 	}
 	return build.Format(f)
 }

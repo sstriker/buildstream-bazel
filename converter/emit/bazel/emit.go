@@ -205,7 +205,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return canonicalize(buf.Bytes())
+	return canonicalize(buf.Bytes()), nil
 }
 
 // canonicalize routes the template-assembled BUILD text
@@ -228,12 +228,21 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 // existing consumers don't break on the corrupt-template
 // path; the test suite is the right place to catch
 // regressions before they ship.
-func canonicalize(body []byte) ([]byte, error) {
+func canonicalize(body []byte) []byte {
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
-		return body, nil
+		// This emitter's templates are the only source of
+		// the body bytes; a buildtools-Parse failure here
+		// means the templates regressed to producing
+		// syntactically invalid Bazel. Surface loudly so
+		// the test suite sees the diagnostic, rather than
+		// silently swallowing and quietly writing
+		// non-canonical output (which would break the
+		// Phase 3 buildifier-no-op contract without a
+		// test-visible trigger).
+		panic(fmt.Sprintf("bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body))
 	}
-	return build.Format(f), nil
+	return build.Format(f)
 }
 
 var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{

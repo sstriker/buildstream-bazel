@@ -1628,14 +1628,18 @@ func writeFile(path, content string) error {
 	// Matched by basename so the .bzl / .json / MODULE.bazel
 	// writers above pass through unchanged (Phase 3's contract is
 	// BUILD-file scope; .bzl and MODULE.bazel are in scope for
-	// Phase 7's roundtrip work). A parse failure here would mean
-	// a per-handler emitter produced syntactically invalid Bazel
-	// — surfaced loudly via the test suite, not silently masked
-	// at write time, so the fallback returns the raw bytes.
+	// Phase 7's roundtrip work). A parse failure here means a
+	// per-handler emitter regressed to producing syntactically
+	// invalid Bazel — panic so the test suite sees the
+	// diagnostic, rather than silently writing non-canonical
+	// output (which would break the Phase 3 buildifier-no-op
+	// contract without a test-visible trigger).
 	if filepath.Base(path) == "BUILD.bazel" {
-		if f, err := build.Parse(path, body); err == nil {
-			body = build.Format(f)
+		f, err := build.Parse(path, body)
+		if err != nil {
+			panic(fmt.Sprintf("write-a.writeFile: per-handler emitter produced unparseable BUILD %s: %v\n%s", path, err, body))
 		}
+		body = build.Format(f)
 	}
 	return os.WriteFile(path, body, 0o644)
 }
