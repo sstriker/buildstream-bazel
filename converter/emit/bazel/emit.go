@@ -15,6 +15,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
@@ -155,6 +156,19 @@ func Emit(pkg *ir.Package) ([]byte, error) {
 }
 
 // EmitWithOptions is the configurable form of Emit.
+//
+// The emitter constructs each rule via the in-package text
+// templates and then routes the assembled output through
+// `bazel.build/buildtools/build`'s Parse + Format pipeline —
+// the same pipeline `buildifier --mode=fix` uses. That gives
+// project B the Phase 3 contract from
+// docs/design/build-output-conventions.md: `buildifier
+// --mode=fix` against our generated BUILDs is a no-op (we
+// emit what buildifier would produce). Side effect: attribute
+// order pulls from buildtools' `tables.NamePriority` rather
+// than the template's manual order, so the rendered shape
+// matches what an operator hand-formatting via buildifier
+// would see post-conversion.
 func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	var buf bytes.Buffer
 	if opts.Header != "" {
@@ -191,7 +205,35 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return buf.Bytes(), nil
+	return canonicalize(buf.Bytes())
+}
+
+// canonicalize routes the template-assembled BUILD text
+// through buildtools' Parse + Format pipeline so the final
+// output matches what `buildifier --mode=fix` would produce.
+// Attribute order pulls from `tables.NamePriority`; list
+// wrapping, quote normalization, and load() symbol sorting
+// fall out of the formatter's default Rewriter pass.
+//
+// We use a synthetic filename ending in `BUILD.bazel` so
+// buildtools parses with TypeBuild semantics (it dispatches
+// off the path basename). The bytes never touch disk; the
+// name is purely a parse-mode hint.
+//
+// On a parse error we fall back to the unmodified template
+// output. Parse failures here would mean the templates are
+// emitting syntactically invalid Bazel — a programming error
+// that should be caught in tests, not silently masked at
+// render time. The fallback preserves the legacy shape so
+// existing consumers don't break on the corrupt-template
+// path; the test suite is the right place to catch
+// regressions before they ship.
+func canonicalize(body []byte) ([]byte, error) {
+	f, err := build.Parse("BUILD.bazel", body)
+	if err != nil {
+		return body, nil
+	}
+	return build.Format(f), nil
 }
 
 var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{

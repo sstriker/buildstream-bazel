@@ -180,7 +180,12 @@ func TestCorrelate_LibAndApp(t *testing.T) {
 		`load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")`,
 		`cc_library(`,
 		`name = "foo"`,
-		`srcs = ["bar.c", "foo.c"]`,
+		// Phase 3 swapped the renderer through buildtools-AST
+		// formatting; multi-element lists wrap across lines,
+		// so assert on the per-element substrings rather than
+		// the inline `["bar.c", "foo.c"]` shape.
+		`"bar.c"`,
+		`"foo.c"`,
 		`copts = ["-fstack-protector-strong"]`,
 		`defines = ["FOO=1"]`,
 		`linkstatic = True`,
@@ -259,7 +264,11 @@ func TestEmitBuild_ImportsManifestFallback(t *testing.T) {
 		{Kind: EventLink, Out: "myapp", Srcs: []string{"myapp.c"}, Libs: []string{"z"}},
 	}
 	got := emitBuild(correlate(events), imports, nil, nil)
-	if !strings.Contains(got, `deps = ["//elements/zlib:zlib"]`) {
+	// Phase 3's buildtools-canonical formatter shortens
+	// `//pkg:pkg` to `//pkg` (canonical when the target name
+	// matches the package basename). Either form refers to the
+	// same Bazel target; assert the short canonical shape.
+	if !strings.Contains(got, `deps = ["//elements/zlib"]`) {
 		t.Errorf("expected deps to resolve -lz via manifest:\n%s", got)
 	}
 
@@ -596,16 +605,16 @@ func TestEmitBuild_GeneratedHeaders(t *testing.T) {
 	}
 	got := emitBuild(correlate(events), nil, nil, []string{"config.h", "fficonfig.h"})
 
+	// Phase 3's buildtools-canonical formatting wraps 2+ entry
+	// lists; assert on per-entry substrings rather than inline
+	// `[...]` shapes for the generated-header lists. cc_library
+	// carries them in hdrs; cc_binary folds them into srcs
+	// because Bazel 9 doesn't accept hdrs on cc_binary.
 	for _, marker := range []string{
-		// cc_library carries the generated headers in `hdrs`.
-		`hdrs = ["config.h", "fficonfig.h"]`,
-		// cc_binary folds headers into `srcs` because Bazel 9
-		// doesn't accept `hdrs` on cc_binary — the shared emitter
-		// (converter/emit/bazel) does the fold. The result is
-		// still that the generated headers appear in every
-		// emitted target's input set, just under attribute names
-		// each rule kind accepts.
-		`srcs = ["config.h", "fficonfig.h", "myapp.c"]`,
+		`hdrs = [`,
+		`"config.h"`,
+		`"fficonfig.h"`,
+		`"myapp.c"`,
 		`name = "foo"`,
 		`name = "myapp"`,
 	} {

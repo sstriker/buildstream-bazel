@@ -8,9 +8,9 @@ cc_library(
     name = "mfi",
     srcs = ["src/mfi.c"],
     hdrs = ["include/mfi.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
-    deps = ["//elements/zlib:zlib"],
+    includes = ["include"],
     linkstatic = True,
+    deps = ["//elements/zlib"],
 )

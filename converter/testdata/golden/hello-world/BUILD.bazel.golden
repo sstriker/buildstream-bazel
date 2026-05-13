@@ -8,8 +8,8 @@ cc_library(
     name = "hello",
     srcs = ["hello.c"],
     hdrs = ["include/hello.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["include"],
     linkstatic = True,
 )

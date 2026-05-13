@@ -7,9 +7,15 @@ package(default_visibility = ["//visibility:public"])
 cc_library(
     name = "visi",
     srcs = ["src/visi.c"],
-    hdrs = ["include/private/internal.h", "include/visi.h"],
-    includes = ["include"],
-    copts = ["-O3", "-Iinclude/private"],
+    hdrs = [
+        "include/private/internal.h",
+        "include/visi.h",
+    ],
+    copts = [
+        "-O3",
+        "-Iinclude/private",
+    ],
     defines = ["NDEBUG"],
+    includes = ["include"],
     linkstatic = True,
 )

@@ -8,19 +8,22 @@ cc_library(
     name = "objlib_archive",
     srcs = ["src/main.c"],
     hdrs = ["include/objlib.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
-    deps = [":objlib_obj"],
+    includes = ["include"],
     linkstatic = True,
+    deps = [":objlib_obj"],
 )
 
 cc_library(
     name = "objlib_obj",
-    srcs = ["src/a.c", "src/b.c"],
+    srcs = [
+        "src/a.c",
+        "src/b.c",
+    ],
     hdrs = ["include/objlib.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["include"],
     alwayslink = True,
 )
