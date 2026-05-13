@@ -87,8 +87,24 @@ type Target struct {
 	// Deps are Bazel labels to other targets.
 	Deps []string
 
-	// Visibility defaults to package-private when empty; the emitter writes
-	// the explicit slice if set.
+	// Visibility, when non-empty, emits as a per-rule
+	// `visibility = [...]` attribute on the rendered Bazel
+	// rule. The emitter elides the per-rule attribute when
+	// Visibility equals the package-level default
+	// (`["//visibility:public"]`, emitted as
+	// `package(default_visibility=...)` at file head) per
+	// gazelle_cc's "package default + per-rule override only"
+	// convention; see docs/design/build-output-conventions.md.
+	//
+	// Empty Visibility resolves to the package-level default
+	// (i.e. `//visibility:public`) by virtue of the
+	// `package(default_visibility=...)` line at the top of
+	// every emitted BUILD. Producers that want a stricter
+	// scope on a target must populate Visibility with the
+	// explicit override (e.g. `["//visibility:private"]`);
+	// every current producer does so explicitly, so the
+	// "empty → public" resolution is a contract callers can
+	// rely on rather than a defaulting accident.
 	Visibility []string
 
 	// Linkstatic / Alwayslink only meaningful for KindCCLibrary.
