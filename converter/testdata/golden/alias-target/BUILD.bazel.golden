@@ -8,17 +8,20 @@ cc_library(
     name = "aliaslib",
     srcs = ["src/aliaslib.c"],
     hdrs = ["include/aliaslib.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["include"],
     linkstatic = True,
 )
 
 cc_binary(
     name = "aliaslib_demo",
-    srcs = ["include/aliaslib.h", "src/demo.c"],
-    includes = ["include"],
+    srcs = [
+        "include/aliaslib.h",
+        "src/demo.c",
+    ],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["include"],
     deps = [":aliaslib"],
 )

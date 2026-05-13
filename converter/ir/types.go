@@ -114,8 +114,39 @@ type Target struct {
 	Defines  []string
 	LinkOpts []string
 
-	// Deps are Bazel labels to other targets.
+	// Deps are Bazel labels to other targets whose headers are
+	// reachable through this target's public hdrs. Maps to
+	// `deps = [...]` on the emitted rule. Per gazelle_cc canon,
+	// targets reached via `PUBLIC` or `INTERFACE`
+	// target_link_libraries() in CMake belong here.
 	Deps []string
+
+	// ImplementationDeps are Bazel labels to other targets used
+	// only in this target's .cc files (`PRIVATE`
+	// target_link_libraries() in CMake). Maps to
+	// `implementation_deps = [...]` on the emitted rule —
+	// headers from these deps are NOT exposed transitively to
+	// consumers of this library, giving stricter header hygiene
+	// than a single Deps list.
+	//
+	// Signal availability: CMake codemodel-v2 (the converter's
+	// primary input today) does NOT carry per-dependency
+	// PUBLIC/PRIVATE scope — it exposes only a flat
+	// Target.Dependencies list and the rendered link
+	// commandFragments. The shadow trace, however, DOES carry
+	// the keyword: cmake records each target_link_libraries
+	// call with its PUBLIC/PRIVATE/INTERFACE arm, and
+	// internal/shadow/trace_commands.go decodes the arms into
+	// per-target lib→keyword maps. The cmake-codemodel
+	// lowering consults that map and routes PRIVATE deps to
+	// ImplementationDeps. Codemodel-only paths (no
+	// --trace-format=json-v1 run available) leave the field
+	// unset and fold every dep into Deps — strictly safe,
+	// matches pre-Phase-4 behaviour byte-for-byte. Meson
+	// introspection and pyproject paths likewise have no scope
+	// signal and leave the field unset. Documented in
+	// docs/design/build-output-conventions.md.
+	ImplementationDeps []string
 
 	// Visibility carries the per-target Bazel visibility list
 	// as pure data. The IR stays policy-free: what "empty"

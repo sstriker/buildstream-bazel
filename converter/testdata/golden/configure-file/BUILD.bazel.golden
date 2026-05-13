@@ -8,9 +8,9 @@ cc_library(
     name = "cfglib",
     srcs = ["src/cfglib.c"],
     hdrs = ["config.h"],
-    includes = ["src"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["src"],
     linkstatic = True,
     tags = ["has-cmake-codegen"],
 )
@@ -20,12 +20,12 @@ genrule(
     srcs = ["src/config.h.in"],
     outs = ["config.h"],
     cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo eyJDRkdMSUJfVkVSU0lPTl9NQUpPUiI6IjEiLCJDRkdMSUJfVkVSU0lPTl9NSU5PUiI6IjIifQ== | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --at-only --values=\"$$VALUES\" \"$(location src/config.h.in)\" \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
-    tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",
         "cmake-codegen-configure-file",
         "cmake-codegen-driver=configure_file",
         "cmake-codegen-lifted",
     ],
+    tools = ["//tools:cmake-configure-file"],
     visibility = ["//visibility:private"],
 )

@@ -8,8 +8,14 @@ cc_library(
     name = "genex",
     srcs = ["src/genex.c"],
     hdrs = ["include/genex.h"],
+    copts = [
+        "-O3",
+        "-Wall",
+    ],
+    defines = [
+        "NDEBUG",
+        "RELEASE_BUILD=1",
+    ],
     includes = ["include"],
-    copts = ["-O3", "-Wall"],
-    defines = ["NDEBUG", "RELEASE_BUILD=1"],
     linkstatic = True,
 )

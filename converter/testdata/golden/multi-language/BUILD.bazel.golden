@@ -8,17 +8,23 @@ cc_library(
     name = "multilang",
     hdrs = ["include/multilang.h"],
     includes = ["include"],
-    deps = [":multilang_c", ":multilang_cxx"],
     linkstatic = True,
+    deps = [
+        ":multilang_c",
+        ":multilang_cxx",
+    ],
 )
 
 cc_library(
     name = "multilang_c",
     srcs = ["src/c_part.c"],
     hdrs = ["include/multilang.h"],
-    includes = ["include"],
-    copts = ["-O3", "-std=c11"],
+    copts = [
+        "-O3",
+        "-std=c11",
+    ],
     defines = ["NDEBUG"],
+    includes = ["include"],
     linkstatic = True,
     visibility = ["//visibility:private"],
 )
@@ -27,9 +33,12 @@ cc_library(
     name = "multilang_cxx",
     srcs = ["src/cxx_part.cpp"],
     hdrs = ["include/multilang.h"],
-    includes = ["include"],
-    copts = ["-O3", "-std=c++17"],
+    copts = [
+        "-O3",
+        "-std=c++17",
+    ],
     defines = ["NDEBUG"],
+    includes = ["include"],
     linkstatic = True,
     visibility = ["//visibility:private"],
 )

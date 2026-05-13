@@ -482,9 +482,14 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 	// time so semantically-equivalent manifests produce byte-
 	// identical output. After sort, `@platforms//cpu:` precedes
 	// `@platforms//os:` alphabetically.
+	// Phase 3's buildtools-canonical formatter wraps the
+	// 2-element list across lines; assert on per-element
+	// substrings within the exec_compatible_with neighborhood.
 	for _, want := range []string{
-		`exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]`,
-		`exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]`,
+		`"@platforms//cpu:x86_64"`,
+		`"@platforms//os:linux"`,
+		`"@platforms//cpu:arm64"`,
+		`"@platforms//os:darwin"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("multi-platform project B missing exec_compatible_with %q\n%s", want, got)
@@ -533,8 +538,11 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 	for _, want := range []string{
 		`name = "install_tree.tar"`,
 		`srcs = select({`,
-		`"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]`,
-		`"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]`,
+		// Phase 3's buildtools-canonical formatter wraps the
+		// single-key arms across lines; assert on the value
+		// substring rather than the inline `"key": [...]` shape.
+		`["linux_x86_64/install_tree.tar"]`,
+		`["darwin_arm64/install_tree.tar"]`,
 		// Trailing default arm matches emit/bazel's list-attr
 		// select() convention: out-of-matrix builds resolve to
 		// an empty list rather than failing analysis on the

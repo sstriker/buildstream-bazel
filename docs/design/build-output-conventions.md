@@ -395,8 +395,9 @@ emits the most we can extract; the rest is operator-managed.
 
 | Input | Lossy attribute | Effect |
 | --- | --- | --- |
-| Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Everything maps to `deps`; no `implementation_deps` split. Documented in the meson handler. |
-| Trace-driven path | Link scope (PUBLIC vs PRIVATE) | Everything maps to `deps`; no `implementation_deps` split. Documented in `cmd/convert-element-trace/main.go`. |
+| CMake codemodel-v2 (alone) | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | codemodel-v2 in isolation exposes only a flat `Target.Dependencies` list (no per-dep scope) and the rendered link `commandFragments`. The cmake handler runs codemodel and shadow trace together, however — the trace records each `target_link_libraries` call with its keyword arm, and `internal/shadow/trace_commands.go` decodes the arms into per-target lib→keyword maps. Phase 4 wires those maps through `lower/lower.go:lowerTarget` to route PRIVATE deps onto `ImplementationDeps`. So end-to-end, kind:cmake with trace enabled DOES populate the split; a hypothetical codemodel-only invocation (no trace decoded) would fold everything into `Deps`. |
+| Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Same shape as CMake — meson's `meson introspect` likewise reports no per-dep scope. Folds everything into `Deps`. |
+| Trace-driven path | Link scope (PUBLIC vs PRIVATE) | The trace-driven converter recovers cc rules from `cc/ar` execve events; the link command-line carries `-lfoo` flags but not the PUBLIC/PRIVATE keyword that drove the cmake `target_link_libraries()` call. Folds into `Deps`. |
 | pyproject entry shims (shim mode) | Pure-Bazel `py_binary` shape | `py_binary` references a genrule-materialized shim instead of the module file directly. Operators can opt into strict-mode (default) to get the cleaner shape. |
 
 ## Won't-do — architectural mismatches, not deferrals
@@ -445,9 +446,20 @@ to those entries; each is independently shippable.
   renderers (cc, py, write-a format-string handlers) onto
   `bazel.build/buildtools/build`. Result: `buildifier --mode=fix`
   is a no-op.
-- **Phase 4** — `implementation_deps` split via CMake
-  `target_link_libraries(PUBLIC|PRIVATE|INTERFACE)` propagation
-  through IR.
+- **Phase 4** — `implementation_deps` split IR + emit
+  plumbing + trace-driven populate path.
+  `ir.Target.ImplementationDeps` is the new field; `bazel.Emit`
+  renders `implementation_deps = [...]` when populated, in the
+  priority-0 alpha block before `deps` per buildifier's
+  `NamePriority`. **Populate path**: the cmake-side lowering
+  consults `shadow.Decode`'s `target_link_libraries` keyword
+  arm (PUBLIC / PRIVATE / INTERFACE / "" for the legacy
+  positional shape) and routes PRIVATE deps to
+  `ImplementationDeps`. When no trace is available
+  (codemodel-only path) or the dep wasn't named in any
+  keyword-scoped call, the dep falls through to `Deps` —
+  strictly safe (matches pre-Phase-4 behavior). Meson
+  introspection and pyproject paths leave the field unset.
 - **Phase 5** — entry-shim strict mode (`if __name__ ==
   "__main__":` detection) and `__main__.py` package-bin
   detection.

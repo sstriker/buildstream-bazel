@@ -47,6 +47,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
 	"gopkg.in/yaml.v3"
 )
@@ -1618,7 +1619,29 @@ func writeFile(path, content string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(content), 0o644)
+	body := []byte(content)
+	// Phase 3 canonicalization for BUILD.bazel files: route
+	// content through buildtools-AST Parse + Format so write-a's
+	// per-handler emitters land in the same buildifier-canonical
+	// shape `converter/emit/bazel` and
+	// `converter/cmd/convert-element-pyproject` produce.
+	// Matched by basename so the .bzl / .json / MODULE.bazel
+	// writers above pass through unchanged (Phase 3's contract is
+	// BUILD-file scope; .bzl and MODULE.bazel are in scope for
+	// Phase 7's roundtrip work). A parse failure here means a
+	// per-handler emitter regressed to producing syntactically
+	// invalid Bazel — panic so the test suite sees the
+	// diagnostic, rather than silently writing non-canonical
+	// output (which would break the Phase 3 buildifier-no-op
+	// contract without a test-visible trigger).
+	if filepath.Base(path) == "BUILD.bazel" {
+		f, err := build.Parse(path, body)
+		if err != nil {
+			panic(fmt.Sprintf("write-a.writeFile: per-handler emitter produced unparseable BUILD %s: %v\n%s", path, err, body))
+		}
+		body = build.Format(f)
+	}
+	return os.WriteFile(path, body, 0o644)
 }
 
 // copyFile copies src to dst, creating parent dirs.

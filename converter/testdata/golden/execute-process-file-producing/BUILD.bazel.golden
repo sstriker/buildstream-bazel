@@ -16,7 +16,10 @@ cc_library(
 
 genrule(
     name = "exec_generated_h",
-    srcs = ["scripts/gen.py", "spec.txt"],
+    srcs = [
+        "scripts/gen.py",
+        "spec.txt",
+    ],
     outs = ["generated.h"],
     cmd = "mkdir -p \"$$(dirname \"$@\")\" && python3 $(location scripts/gen.py) $(location spec.txt) > \"$@\"",
     tags = [

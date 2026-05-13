@@ -15,6 +15,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )
 
@@ -155,6 +156,19 @@ func Emit(pkg *ir.Package) ([]byte, error) {
 }
 
 // EmitWithOptions is the configurable form of Emit.
+//
+// The emitter constructs each rule via the in-package text
+// templates and then routes the assembled output through
+// `bazel.build/buildtools/build`'s Parse + Format pipeline —
+// the same pipeline `buildifier --mode=fix` uses. That gives
+// project B the Phase 3 contract from
+// docs/design/build-output-conventions.md: `buildifier
+// --mode=fix` against our generated BUILDs is a no-op (we
+// emit what buildifier would produce). Side effect: attribute
+// order pulls from buildtools' `tables.NamePriority` rather
+// than the template's manual order, so the rendered shape
+// matches what an operator hand-formatting via buildifier
+// would see post-conversion.
 func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	var buf bytes.Buffer
 	if opts.Header != "" {
@@ -191,7 +205,44 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return buf.Bytes(), nil
+	return canonicalize(buf.Bytes()), nil
+}
+
+// canonicalize routes the template-assembled BUILD text
+// through buildtools' Parse + Format pipeline so the final
+// output matches what `buildifier --mode=fix` would produce.
+// Attribute order pulls from `tables.NamePriority`; list
+// wrapping, quote normalization, and load() symbol sorting
+// fall out of the formatter's default Rewriter pass.
+//
+// We use a synthetic filename ending in `BUILD.bazel` so
+// buildtools parses with TypeBuild semantics (it dispatches
+// off the path basename). The bytes never touch disk; the
+// name is purely a parse-mode hint.
+//
+// On a parse error we panic — see the inline comment in
+// the function body for rationale. The templates in this
+// package are the only source of the body bytes, so a
+// parse failure means the emitter regressed to producing
+// syntactically invalid Bazel. Silent fallback would let
+// the buildifier-no-op contract break without a test-
+// visible trigger; the panic surfaces it loudly in the
+// test suite instead.
+func canonicalize(body []byte) []byte {
+	f, err := build.Parse("BUILD.bazel", body)
+	if err != nil {
+		// This emitter's templates are the only source of
+		// the body bytes; a buildtools-Parse failure here
+		// means the templates regressed to producing
+		// syntactically invalid Bazel. Surface loudly so
+		// the test suite sees the diagnostic, rather than
+		// silently swallowing and quietly writing
+		// non-canonical output (which would break the
+		// Phase 3 buildifier-no-op contract without a
+		// test-visible trigger).
+		panic(fmt.Sprintf("bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body))
+	}
+	return build.Format(f)
 }
 
 var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
@@ -225,6 +276,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- end}}
 {{- if .DepsExpr}}
     deps = {{.DepsExpr}},
+{{- end}}
+{{- if .ImplementationDepsExpr}}
+    implementation_deps = {{.ImplementationDepsExpr}},
 {{- end}}
 {{- if .Data}}
     data = {{strList .Data}},
@@ -345,21 +399,22 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 // Test-only fields (Args, Env, Timeout, Data) stay zero except
 // when RuleKind == "cc_test".
 type ccView struct {
-	RuleKind           string
-	Name               string
-	SrcsExpr           string
-	HdrsExpr           string
-	IncludesExpr       string
-	IncludePrefix      string
-	StripIncludePrefix string
-	CoptsExpr          string
-	DefinesExpr        string
-	LinkoptsExpr       string
-	DepsExpr           string
-	Linkstatic         bool
-	Alwayslink         bool
-	Tags               []string
-	Visibility         []string
+	RuleKind               string
+	Name                   string
+	SrcsExpr               string
+	HdrsExpr               string
+	IncludesExpr           string
+	IncludePrefix          string
+	StripIncludePrefix     string
+	CoptsExpr              string
+	DefinesExpr            string
+	LinkoptsExpr           string
+	DepsExpr               string
+	ImplementationDepsExpr string
+	Linkstatic             bool
+	Alwayslink             bool
+	Tags                   []string
+	Visibility             []string
 
 	// cc_test-only.
 	Args    []string
@@ -447,6 +502,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	defines := sortedCopy(t.Defines)
 	linkopts := append([]string(nil), t.LinkOpts...) // preserve order
 	deps := sortedCopy(t.Deps)
+	implementationDeps := sortedCopy(t.ImplementationDeps)
 
 	// cc_binary doesn't accept `hdrs` (Bazel 9 errors out where
 	// older versions silently ignored). Fold any header into srcs
@@ -493,21 +549,22 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 
 	v := ccView{
-		RuleKind:           t.Kind.String(),
-		Name:               t.Name,
-		SrcsExpr:           attrExpr(srcs, srcsSel),
-		HdrsExpr:           attrExpr(hdrs, hdrsSel),
-		IncludesExpr:       attrExpr(includes, perPlatformAttr(t, "includes")),
-		IncludePrefix:      t.IncludePrefix,
-		StripIncludePrefix: t.StripIncludePrefix,
-		CoptsExpr:          attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:        attrExpr(defines, perPlatformAttr(t, "defines")),
-		LinkoptsExpr:       attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
-		DepsExpr:           attrExpr(deps, perPlatformAttr(t, "deps")),
-		Linkstatic:         t.Linkstatic,
-		Alwayslink:         t.Alwayslink,
-		Tags:               sortedCopy(t.Tags),
-		Visibility:         nonDefaultVisibility(t.Visibility),
+		RuleKind:               t.Kind.String(),
+		Name:                   t.Name,
+		SrcsExpr:               attrExpr(srcs, srcsSel),
+		HdrsExpr:               attrExpr(hdrs, hdrsSel),
+		IncludesExpr:           attrExpr(includes, perPlatformAttr(t, "includes")),
+		IncludePrefix:          t.IncludePrefix,
+		StripIncludePrefix:     t.StripIncludePrefix,
+		CoptsExpr:              attrExpr(copts, perPlatformAttr(t, "copts")),
+		DefinesExpr:            attrExpr(defines, perPlatformAttr(t, "defines")),
+		LinkoptsExpr:           attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
+		DepsExpr:               attrExpr(deps, perPlatformAttr(t, "deps")),
+		ImplementationDepsExpr: attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
+		Linkstatic:             t.Linkstatic,
+		Alwayslink:             t.Alwayslink,
+		Tags:                   sortedCopy(t.Tags),
+		Visibility:             nonDefaultVisibility(t.Visibility),
 	}
 	if t.Kind == ir.KindCCTest {
 		v.Args = append([]string(nil), t.TestArgs...) // preserve order; arg order matters
