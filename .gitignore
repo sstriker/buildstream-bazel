@@ -38,3 +38,15 @@ converter/testdata/sample-projects/libdrm/
 /probe-cell-fixture
 /render-project-a
 /unify-toolchains
+
+# Defensive: prevent stray binaries built into the repo root
+# when developers run `go build ./cmd/...` without an -o flag
+# (the canonical path is build/bin/<name> per Makefile).
+/build-cc-index
+/relax-keeps
+/write-a
+/convert-element
+/convert-element-meson
+/convert-element-pyproject
+/convert-element-trace
+/build-tracer
