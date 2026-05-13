@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/sstriker/cmake-to-bazel/converter/elementfold"
 )
 
 // tracePlatform is the per-platform record write-a's multi-
@@ -25,18 +27,25 @@ import (
 // Each entry drives one converter genrule + one trace_repo
 // instance in project A — the project-A render fans out per
 // platform and a fold-element genrule composes the per-platform
-// ir.json outputs. Project B's install-genrule fan-out is a
-// queued follow-up; today every entry shares the single install
-// genrule project B already emits, so multi-platform mode is
-// render-shape complete on the A side but at runtime publishes
-// only one platform's trace.
+// ir.json outputs — and one install genrule + one
+// install_tree.tar select() arm in project B for kinds that
+// went through the per-platform install fan-out. The fan-out
+// covers pipelineHandler kinds (kind:make / manual / script /
+// makemaker / modulebuild) today; kind:autotools and kind:cmake
+// Phase B fallback are queued under ROADMAP Next ("Per-platform
+// fold for round-2 trace-driven kinds") — until those land,
+// elements of those kinds run a single install genrule with no
+// platform suffix even when multi-platform mode is active.
 type tracePlatform struct {
 	// Name is the platform identifier. Used as the URL-safe
-	// suffix on derived names: "trace_<elem>__<name>" for the
+	// suffix on derived names — "trace_<elem>__<name>" for the
 	// per-platform _trace_repo, "<elem>/<name>/ir.json" for the
-	// per-platform converter output, "<name>" as the SelectKey
-	// constraint axis for fold-element when SelectLabel is
-	// empty.
+	// per-platform converter output, "<name>" as the
+	// project-B install genrule's NameSuffix /
+	// OutputPrefix — and nothing else. The select() arm label
+	// for this platform is SelectKey, derived from Constraints
+	// + SelectLabel by resolvePlatformSelectKeys at
+	// loadPlatformsManifest time.
 	Name string
 
 	// Constraints are the Bazel constraint_value labels (e.g.
@@ -51,6 +60,16 @@ type tracePlatform struct {
 	// no single constraint axis uniquely identifies each
 	// platform (e.g. {linux_x86_64, linux_aarch64, darwin_arm64}).
 	SelectLabel string
+
+	// SelectKey is the resolved select() arm label this platform
+	// uses in rendered Bazel select() blocks (project A's fold,
+	// project B's install_tree.tar filegroup). Populated by
+	// loadPlatformsManifest via elementfold.PickSelectKeys after
+	// the matrix is loaded, so consumers can read it directly
+	// without re-validating. The same algorithm runs at fold-
+	// element invocation time on the project A side, so both
+	// consumers pick matching labels for the same matrix.
+	SelectKey string
 }
 
 // platformsManifestEntry mirrors the on-disk JSON shape.
@@ -133,7 +152,53 @@ func loadPlatformsManifest(path string) ([]tracePlatform, error) {
 			SelectLabel: selectLabel,
 		}
 	}
+	// Pre-validate the matrix via the same select-key
+	// derivation fold-element runs at invocation time, and
+	// cache the resolved keys on each tracePlatform. Catches
+	// ambiguous matrices ({linux_x86_64, linux_aarch64,
+	// darwin_arm64} without operator-supplied select_labels)
+	// + duplicate override labels at write-a startup, with the
+	// clear "no constraint that uniquely identifies it"
+	// diagnostic — rather than deep in render where a nil keys
+	// map would surface as a degenerate select() block with
+	// empty arm labels.
+	if err := resolvePlatformSelectKeys(out); err != nil {
+		return nil, fmt.Errorf("write-a: platforms manifest %s: %w", path, err)
+	}
 	return out, nil
+}
+
+// resolvePlatformSelectKeys runs elementfold.PickSelectKeys over
+// a tracePlatform slice and writes the resolved label back to
+// each entry's SelectKey field. Factored out of
+// loadPlatformsManifest so tests that construct tracePlatform
+// values directly (without going through manifest loading) can
+// share the same resolution pass — the invariant "every
+// tracePlatform consumed by write-a has SelectKey populated"
+// holds for both production and test paths.
+//
+// Mutates the slice in place. Returns the error from
+// PickSelectKeys unchanged (callers wrap with context).
+func resolvePlatformSelectKeys(platforms []tracePlatform) error {
+	if len(platforms) == 0 {
+		return nil
+	}
+	in := make([]elementfold.Platform, len(platforms))
+	for i, p := range platforms {
+		in[i] = elementfold.Platform{
+			Name:        p.Name,
+			Constraints: p.Constraints,
+			SelectKey:   p.SelectLabel,
+		}
+	}
+	keys, err := elementfold.PickSelectKeys(in)
+	if err != nil {
+		return err
+	}
+	for i := range platforms {
+		platforms[i].SelectKey = keys[platforms[i].Name]
+	}
+	return nil
 }
 
 // safePlatformName rejects names with characters that would

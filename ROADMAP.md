@@ -29,26 +29,18 @@ transition cleanly.
 
 ## Next
 
-- **Per-platform fold for round-2 trace-driven kinds.** First
-  half shipped (see Done — `convert-element-trace --out-ir-json`,
-  `ir.Target.PerPlatformScalar` for cc_import path attrs,
-  elementfold's scalar-attr per-platform delta, `_trace_repo`
-  `platform` attr, write-a `--platforms-json` driving project A
-  fan-out for pipelineHandler kinds — kind:make / manual /
-  script / makemaker / modulebuild). What's left:
-  - **Project B per-platform install genrules.** Project A's
-    fan-out is in; project B still emits one install genrule
-    per element. End-to-end correctness needs N install
-    genrules so `trace-publish` lands N AC entries with
-    distinct platform tags. Mechanical wiring — the inline
-    publish step already reads `CMAKE_TO_BAZEL_PLATFORM` at
-    action time.
+- **Per-platform fold for round-2 trace-driven kinds.** Two-
+  thirds shipped (see Done — project A converter fan-out + fold
+  for pipelineHandler kinds, project B install fan-out for
+  pipelineHandler kinds). What's left:
   - **kind:autotools per-platform render.** Same shape as
-    pipelineHandler's, just at the `autotoolsHandler`
-    dispatch site (`handler_autotools_native.go`).
+    pipelineHandler's (project A converter + project B
+    install fan-out), at the `autotoolsHandler` dispatch
+    site (`handler_autotools_native.go`).
   - **kind:cmake Phase B fallback per-platform render.** The
     converter genrule already exists
-    (`handler_cmake_round2.go`); needs the fan-out wired.
+    (`handler_cmake_round2.go`); needs the fan-out wired on
+    both sides.
   - **kind:meson Phase B per-platform render** when Phase B
     lands.
 
@@ -323,6 +315,59 @@ transition cleanly.
   no `//:no-op` filegroup overhead in every project A, no two-
   rules-per-target multiplication.
 
+- **Per-platform fold for round-2 trace-driven kinds — project B
+  install fan-out, pipelineHandler kinds.** Second half of the
+  fold: when `--platforms-json` is set, project B's per-element
+  install render fans out to N install genrules (one per
+  platform) instead of one. Each genrule:
+  - Names `<elem>_install_<platform>` so N coexist in one
+    package.
+  - Outputs land under `<platform>/install_tree.tar`,
+    `<platform>/trace.log`, `<platform>/make-db.txt`,
+    `<platform>/generated-headers.txt` so there are no path
+    collisions.
+  - `exec_compatible_with` carries the platform's constraint
+    set — Bazel routes the install action to a matching
+    executor pool so the linux build doesn't try to run on a
+    darwin worker.
+  - The inline `trace-publish` call bakes `--platform=<plat>`
+    literally into the argv so each cell publishes under the
+    matching AC partition; the env-var fallback
+    (`--action_env=CMAKE_TO_BAZEL_PLATFORM=...`) can't differ
+    across N parallel actions in one Bazel build.
+
+  A top-level filegroup at `:install_tree.tar` `select()`s the
+  matching per-platform tarball so downstream
+  `//elements/<dep>:install_tree.tar` references resolve
+  correctly at each consumer's build platform. The
+  `pipelineExtension` struct gains three new knobs
+  (`OutputPrefix`, `NameSuffix`, `ExecCompatibleWith`) so the
+  rendering helpers stay one code path; empty values preserve
+  the single-platform byte-stable shape exactly.
+  `pipelineTracePublishStep` takes `platform` + `outputPrefix`
+  parameters so the trace-publish argv and `$(location ...)`
+  references resolve to the right per-platform paths.
+  `converter/internal/elementfold` → `converter/elementfold`
+  promotion (same precedent as the earlier `ir` promotion)
+  so write-a can call `elementfold.PickSelectKeys` to derive
+  the per-platform select() arm labels — both project A's
+  fold and project B's install-tree filegroup pick the same
+  labels for the same matrix.
+
+  Together with the project A fan-out (also Done, below), this
+  closes the runtime gap: a multi-platform render now publishes
+  N AC entries with distinct platform tags AND the project A
+  side resolves N per-platform `_trace_repo` lookups, so a
+  single Bazel build sees the right trace for each platform's
+  install. Render gate:
+  `scripts/meta-trace-round2-fold.sh` covers both sides;
+  `TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB`
+  asserts the rendered B-side shape end to end. Scope today
+  is pipelineHandler-shaped kinds (kind:make / manual /
+  script / makemaker / modulebuild); kind:autotools and
+  kind:cmake Phase B fallback have the same shape ahead of
+  them in Next.
+
 - **Per-platform fold for round-2 trace-driven kinds — project A,
   pipelineHandler kinds.** First half of the per-platform fold
   for round-2: project A's per-element converter render fans out
@@ -331,7 +376,7 @@ transition cleanly.
   `BUILD.bazel.out`. `convert-element-trace` gained
   `--out-ir-json` and the trace converter's recovered rules now
   flow through the shared `converter/ir.Package` so
-  `fold-element` + `converter/internal/elementfold` compose them
+  `fold-element` + `converter/elementfold` compose them
   the same way they compose kind:cmake Phase A IRs. The IR also
   gained `PerPlatformScalar` for cc_import path attrs (the
   round-2 stub shape's main divergence axis: `.so` vs `.dylib`,
@@ -388,7 +433,7 @@ transition cleanly.
   and per-platform-routed copts/linkopts. `internal/empfold`
   factors out the cardinality-partition primitive
   (`toolchain.Observe` now uses it too).
-  `converter/internal/elementfold` enforces per-target
+  `converter/elementfold` enforces per-target
   cross-cell agreement on scalar fields (Linkstatic, Alwayslink,
   Genrule*, Test*, …) and folds the order-sensitive
   copts/linkopts conservatively (identical sequences → flat

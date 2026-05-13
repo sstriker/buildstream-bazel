@@ -17,7 +17,7 @@ func TestWrapAutotoolsPipelineCmds_DefaultDoesNotPassSourceRoot(t *testing.T) {
 	t.Cleanup(func() { traceConfig = prev })
 	traceConfig.traceSourceRoot = false
 
-	got := wrapAutotoolsPipelineCmds("./configure && make")
+	got := wrapAutotoolsPipelineCmds("./configure && make", "")
 	if strings.Contains(got, "--source-root") {
 		t.Errorf("default render carries --source-root; AC byte schema would invalidate.\n%s", got)
 	}
@@ -32,7 +32,7 @@ func TestWrapAutotoolsPipelineCmds_OptInPassesSourceRoot(t *testing.T) {
 	t.Cleanup(func() { traceConfig = prev })
 	traceConfig.traceSourceRoot = true
 
-	got := wrapAutotoolsPipelineCmds("./configure && make")
+	got := wrapAutotoolsPipelineCmds("./configure && make", "")
 	if !strings.Contains(got, `--source-root="$$BUILD_ROOT"`) {
 		t.Errorf("opt-in render missing --source-root=$$BUILD_ROOT.\n%s", got)
 	}

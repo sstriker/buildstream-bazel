@@ -48,7 +48,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/elementfold"
+	"github.com/sstriker/cmake-to-bazel/converter/elementfold"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
 )

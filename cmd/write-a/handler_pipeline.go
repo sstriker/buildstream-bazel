@@ -127,6 +127,32 @@ type pipelineExtension struct {
 	// so the pipeline can find the deps' headers and
 	// libraries. No-op when DepLabels is empty.
 	DepExtractCmd string
+
+	// Multi-platform install-genrule knobs. All three are zero-
+	// valued in the single-platform legacy path (preserving byte-
+	// stable goldens) and populated by the project-B per-platform
+	// fan-out — one pipelineExtension per (element, platform)
+	// cell.
+	//
+	//   - OutputPrefix prefixes every declared output (install_tree.tar
+	//     and ExtraOuts) with "<platform>/" so the N per-platform
+	//     genrules don't collide on output paths. Cmd-side
+	//     $(location <out>) references compose with the prefix so
+	//     the genrule's shell sees the correct exec-root-relative
+	//     path at action time.
+	//
+	//   - NameSuffix appends to the genrule's name (e.g.
+	//     "<elem>_install_linux_x86_64"). Required when N install
+	//     genrules coexist in one BUILD.bazel.
+	//
+	//   - ExecCompatibleWith is the constraint_value label set
+	//     passed through to the genrule's exec_compatible_with
+	//     attribute. Routes the action to a matching executor
+	//     pool so the linux build doesn't try to run on a darwin
+	//     worker.
+	OutputPrefix       string
+	NameSuffix         string
+	ExecCompatibleWith []string
 }
 
 func (h pipelineHandler) Kind() string                                 { return h.kindName }
@@ -197,24 +223,40 @@ func (h pipelineHandler) RenderA(elem *element, elemPkg string) error {
 	return h.renderInstallGenrule(elem, elemPkg)
 }
 
-// renderInstallGenrule is the legacy install-genrule rendering —
+// renderInstallGenrule writes the legacy single-platform install-
+// genrule BUILD.bazel for an element to elemPkg. Thin wrapper over
+// renderInstallGenruleBody, which returns the rendered string so
+// the project-B per-platform fan-out can compose N bodies plus a
+// top-level select()-filegroup in one file.
+func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) error {
+	body, err := h.renderInstallGenruleBody(elem, elemPkg, false)
+	if err != nil {
+		return err
+	}
+	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), body)
+}
+
+// renderInstallGenruleBody is the legacy install-genrule rendering —
 // the shape pipelineHandler.RenderA emits when the kind isn't
 // opted into round-2 (or when round-2 is globally disabled). The
 // genrule's outs include install_tree.tar; cmd stages sources,
 // runs configure/build/install/strip phases, and tars
 // %{install-root}.
 //
-// Factored out as a separate method so RenderB can also call it
-// when round-2 is active — round-2 moves this same genrule from
-// project A into project B (where it ends with a trace-publish
-// step instead of being the user-facing target).
-func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) error {
+// Returns the body as a string so a caller composing multiple
+// install genrules in one BUILD.bazel (the project-B per-platform
+// fan-out) can stitch them together without writing intermediate
+// files. skipStaging suppresses the per-call source-tree copy
+// when the caller already staged sources once for the element
+// (the multi-platform fan-out's case — N renders share one
+// `<elemPkg>/sources/` tree).
+func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string, skipStaging bool) (string, error) {
 	var cfg pipelineCfg
 	// Decode the .bst's config: only when it's actually present;
 	// otherwise leave cfg zero (all phases nil → use defaults).
 	if !elem.Bst.Config.IsZero() {
 		if err := elem.Bst.Config.Decode(&cfg); err != nil {
-			return fmt.Errorf("element %q (kind:%s): parse config: block: %w", elem.Name, h.kindName, err)
+			return "", fmt.Errorf("element %q (kind:%s): parse config: block: %w", elem.Name, h.kindName, err)
 		}
 	}
 	// Per-phase fallback: nil pointer → handler default; non-nil
@@ -233,7 +275,7 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 
 	dispatch, err := dispatchSpaceForElement(elem, elem.ProjectConfOptions)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Resolution helper: variable-resolve + substitute every phase
@@ -329,9 +371,9 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 	// rule). Multi-source / Directory / kind:local elements still
 	// stage; same shape as cmakeHandler's gating.
 	fuseKey := pipelineFuseEligible(elem)
-	if fuseKey == "" {
+	if fuseKey == "" && !skipStaging {
 		if err := stagePipelineSources(elem, elemPkg); err != nil {
-			return err
+			return "", err
 		}
 	}
 
@@ -340,10 +382,9 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 		// vars at graph-load time): single-string cmd.
 		phases, err := resolveAt(nil)
 		if err != nil {
-			return err
+			return "", err
 		}
-		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"),
-			renderPipelineBuild(elem, dispatch, []dispatchGroup{{Phases: phases}}, fuseKey, h.extension))
+		return renderPipelineBuild(elem, dispatch, []dispatchGroup{{Phases: phases}}, fuseKey, h.extension), nil
 	}
 
 	// Cross-product of all dispatch variables' values. Each tuple
@@ -380,7 +421,7 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 				lastSkipErr = err
 				continue
 			}
-			return err
+			return "", err
 		}
 		key := groupKey{
 			strings.Join(phases.Configure, "\x00"),
@@ -405,7 +446,7 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 		// All tuples skipped — surface the last underlying
 		// resolution error so the operator sees which variable
 		// is the culprit.
-		return fmt.Errorf("element %q (kind:%s): every dispatch tuple was unresolvable; check (?): branch coverage vs option values; last error: %v",
+		return "", fmt.Errorf("element %q (kind:%s): every dispatch tuple was unresolvable; check (?): branch coverage vs option values; last error: %v",
 			elem.Name, h.kindName, lastSkipErr)
 	}
 	// Dedup-collapse: if every dispatch tuple resolves identically,
@@ -413,11 +454,9 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 	// the single-string form to keep the BUILD readable.
 	if len(groups) == 1 {
 		groups[0] = dispatchGroup{Phases: groups[0].Phases}
-		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"),
-			renderPipelineBuild(elem, nil, groups, fuseKey, h.extension))
+		return renderPipelineBuild(elem, nil, groups, fuseKey, h.extension), nil
 	}
-	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"),
-		renderPipelineBuild(elem, dispatch, groups, fuseKey, h.extension))
+	return renderPipelineBuild(elem, dispatch, groups, fuseKey, h.extension), nil
 }
 
 // archSuffix shapes an arch identifier into a parenthetical for
@@ -545,9 +584,7 @@ func (h pipelineHandler) RenderB(elem *element, elemPkg string) error {
 		// dead input under the install action's merkle and
 		// cause unnecessary cache invalidation when only the
 		// imports manifest changes.
-		h2 := h
-		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName})
-		if err := h2.renderInstallGenrule(elem, elemPkg); err != nil {
+		if err := h.renderPipelineRound2B(elem, elemPkg); err != nil {
 			return err
 		}
 		// srckey.txt feeds trace-publish (it derives the
@@ -567,6 +604,136 @@ func (h pipelineHandler) RenderB(elem *element, elemPkg string) error {
 filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
 `, elem.Name, h.kindName)
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), body)
+}
+
+// renderPipelineRound2B emits project B's per-element BUILD for
+// the round-2 trace-driven path. Two shapes:
+//
+//   - Single-platform legacy (traceConfig.platforms empty): one
+//     install genrule named "<elem>_install" with the standard
+//     trace-publish step appended. The trace-publish call reads
+//     CMAKE_TO_BAZEL_PLATFORM from the action env (operators
+//     pass --action_env to pin the publish-side platform tag).
+//     Byte-stable with the pre-fan-out rendered goldens.
+//
+//   - Multi-platform fan-out (traceConfig.platforms non-empty):
+//     N install genrules, one per platform, each with the
+//     platform's constraint set in exec_compatible_with so Bazel
+//     routes the action to a matching executor pool. Each
+//     genrule's outputs land under "<platform>/" so the N
+//     genrules don't collide, and each one's trace-publish step
+//     bakes its platform tag literally into the --platform= argv
+//     so each cell publishes under the matching AC partition.
+//     A top-level filegroup at ":install_tree.tar" select()s the
+//     right per-platform tarball so downstream
+//     //elements/<dep>:install_tree.tar references resolve
+//     correctly at the consumer's build platform.
+func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) error {
+	if len(traceConfig.platforms) == 0 {
+		h2 := h
+		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName}, tracePlatform{})
+		return h2.renderInstallGenrule(elem, elemPkg)
+	}
+	// Multi-platform path. Stage sources once per element (the
+	// N per-platform genrules all reference the same
+	// <elemPkg>/sources/ tree via $(SRCS)), then render N
+	// install-genrule bodies and stitch them together
+	// (sharing the top-of-file `package(...)` header so the
+	// rendered BUILD.bazel is valid Bazel) plus a top-level
+	// select()-filegroup at install_tree.tar.
+	//
+	// FUSE-sources eligibility check mirrors what
+	// renderInstallGenruleBody would do internally: when the
+	// element qualifies for the FUSE source-tree shape, no
+	// on-disk staging happens (the genrule pulls from
+	// @src_<key>//:tree). Skipping it here for the FUSE-eligible
+	// case avoids a no-op call to stagePipelineSources.
+	if pipelineFuseEligible(elem) == "" {
+		if err := stagePipelineSources(elem, elemPkg); err != nil {
+			return err
+		}
+	}
+	bodies := make([]string, 0, len(traceConfig.platforms))
+	for _, plat := range traceConfig.platforms {
+		h2 := h
+		h2.extension = pipelineTraceExtensionRound2(elem, []string{h.kindName}, plat)
+		// skipStaging: sources already staged once above, so
+		// the per-platform body render skips its internal call.
+		body, err := h2.renderInstallGenruleBody(elem, elemPkg, true)
+		if err != nil {
+			return fmt.Errorf("element %q (kind:%s) platform %q: %w", elem.Name, h.kindName, plat.Name, err)
+		}
+		bodies = append(bodies, body)
+	}
+	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), composeMultiPlatformInstallBuild(bodies, traceConfig.platforms))
+}
+
+// composeMultiPlatformInstallBuild stitches N per-platform install-
+// genrule body strings into one BUILD.bazel: the first body's
+// `package(...)` header survives as the file header, subsequent
+// bodies have their header stripped, and a trailing top-level
+// filegroup at ":install_tree.tar" select()s the matching
+// per-platform tarball so downstream //elements/<dep>:install_tree.tar
+// references stay valid.
+func composeMultiPlatformInstallBuild(bodies []string, platforms []tracePlatform) string {
+	var b strings.Builder
+	for i, body := range bodies {
+		if i > 0 {
+			// renderPipelineBuild prepends a fixed package(...)
+			// header to every body. The first body's header
+			// becomes the file header; strip the duplicate
+			// headers from the rest by dropping everything
+			// before the first `genrule(`.
+			if idx := strings.Index(body, "genrule("); idx >= 0 {
+				body = body[idx:]
+			}
+		}
+		b.WriteString(body)
+	}
+	// Top-level filegroup: routes a consumer's
+	// //elements/<dep>:install_tree.tar reference to the right
+	// per-platform tarball. Per-platform select() arms key on
+	// the platform's pre-resolved SelectKey (loadPlatformsManifest
+	// ran PickSelectKeys at flag-parse time, so every platform's
+	// SelectKey is populated here without any error path to
+	// handle).
+	b.WriteString("\nfilegroup(\n")
+	fmt.Fprintf(&b, "    name = %q,\n", "install_tree.tar")
+	b.WriteString("    srcs = select({\n")
+	// Stable sort by SelectKey so the rendered output is
+	// deterministic.
+	sorted := make([]tracePlatform, len(platforms))
+	copy(sorted, platforms)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].SelectKey < sorted[j].SelectKey })
+	for _, p := range sorted {
+		fmt.Fprintf(&b, "        %q: [%q],\n", p.SelectKey, p.Name+"/install_tree.tar")
+	}
+	// Trailing "//conditions:default": [] arm matches the
+	// convention emit/bazel uses for list-attr select() blocks.
+	// Platforms whose constraints don't match any of the
+	// rendered select() arm keys resolve install_tree.tar to
+	// an empty list rather than failing analysis with a "no
+	// matching condition" diagnostic on the filegroup itself —
+	// the failure surfaces at the consumer, where it points at
+	// what's actually missing.
+	//
+	// "Don't match any arm" is the precise condition, not "out
+	// of matrix": PickSelectKeys may auto-detect a single-axis
+	// constraint (commonly `@platforms//cpu:*`), so a build
+	// platform that wasn't in the manifest but happens to share
+	// the chosen axis with one of the matrix cells (e.g. a
+	// hypothetical `linux_x86_64_v2` matching the manifest's
+	// `linux_x86_64` cell's `@platforms//cpu:x86_64` arm) will
+	// pick that arm's tarball rather than fall through to the
+	// default. Operators who need strict in-matrix-only matching
+	// supply per-platform select_label / config_setting labels
+	// (see PickSelectKeys' escalation path), which scope the arm
+	// keys to operator-declared config_settings rather than
+	// shared constraint axes.
+	b.WriteString(`        "//conditions:default": [],` + "\n")
+	b.WriteString("    }),\n")
+	b.WriteString(")\n")
+	return b.String()
 }
 
 // mergeWithDefault returns the user-supplied slice when non-nil,
@@ -677,25 +844,69 @@ package(default_visibility = ["//visibility:public"])
 	}
 	srcsAttr += "]"
 
-	outs := []string{"install_tree.tar"}
+	// Apply the per-platform OutputPrefix (set only by project-B's
+	// per-platform install fan-out) so each (element, platform)
+	// cell's outputs live under a distinct subdirectory and don't
+	// collide. Empty prefix is the legacy single-platform shape;
+	// outs render byte-identical to before.
+	prefix := ""
+	nameSuffix := ""
+	var execCompatibleWith []string
+	if ext != nil {
+		prefix = ext.OutputPrefix
+		nameSuffix = ext.NameSuffix
+		execCompatibleWith = ext.ExecCompatibleWith
+	}
+	rawOuts := []string{"install_tree.tar"}
 	var tools []string
 	if ext != nil {
-		outs = append(outs, ext.ExtraOuts...)
+		rawOuts = append(rawOuts, ext.ExtraOuts...)
 		tools = append(tools, ext.ExtraTools...)
+	}
+	outs := rawOuts
+	if prefix != "" {
+		outs = make([]string, len(rawOuts))
+		for i, o := range rawOuts {
+			outs[i] = prefix + "/" + o
+		}
 	}
 
 	fmt.Fprintf(&b, `genrule(
-    name = "%[1]s_install",
+    name = "%[1]s_install%[6]s",
     srcs = %[3]s,
     outs = %[4]s,
     cmd = %[2]s,
-%[5]s)
+%[5]s%[7]s)
 `, elem.Name,
 		renderPipelineCmdAttr(dispatch, groups, fuseKey != "", ext),
 		srcsAttr,
 		strList(outs),
-		toolsAttr(tools))
+		toolsAttr(tools),
+		nameSuffix,
+		execCompatibleWithAttr(execCompatibleWith))
 	return b.String()
+}
+
+// execCompatibleWithAttr renders the optional
+// `exec_compatible_with = [...]` genrule attribute. Empty list
+// returns the empty string so single-platform legacy goldens
+// don't pick up a stray attribute.
+//
+// Constraints are sorted before emission so semantically-
+// equivalent platform manifests (operators listing constraints
+// in different orders) produce byte-identical BUILD output —
+// matches the precedent in
+// converter/internal/toolchain/projecta/render.go which sorts
+// constraint_values before rendering exec_compatible_with too.
+// exec_compatible_with is set-typed in Bazel; ordering carries
+// no semantics.
+func execCompatibleWithAttr(constraints []string) string {
+	if len(constraints) == 0 {
+		return ""
+	}
+	sorted := append([]string(nil), constraints...)
+	sort.Strings(sorted)
+	return fmt.Sprintf("    exec_compatible_with = %s,\n", strList(sorted))
 }
 
 // strList renders a Go []string as a Bazel string list.
@@ -874,6 +1085,16 @@ func renderPipelineCmdBody(p pipelinePhases, fuseSources bool, ext *pipelineExte
 	if fuseSources {
 		stripFrom = "tree_dir/"
 	}
+	// installTar names the install_tree.tar output the cmd's tar
+	// step writes to. Single-platform legacy shape: bare
+	// "install_tree.tar". Per-platform install fan-out: the
+	// OutputPrefix-prefixed path so each cell's output lives at
+	// its own location. $(location ...) takes the declared-output
+	// path verbatim, so the prefix has to be embedded here.
+	installTar := "install_tree.tar"
+	if ext != nil && ext.OutputPrefix != "" {
+		installTar = ext.OutputPrefix + "/install_tree.tar"
+	}
 
 	// Resolved configure/build/install/strip command block.
 	// pipelineExtension.WrapPipelineCmds rewrites this when
@@ -952,8 +1173,8 @@ func renderPipelineCmdBody(p pipelinePhases, fuseSources bool, ext *pipelineExte
         # cache-miss on the changed tar input).
         cd "$$EXEC_ROOT"
         tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
-            -cf "$(location install_tree.tar)" -C "$$INSTALL_ROOT" .
-    """`, cmds, renderEnvExports(p.Env), stripFrom, appendCmd, depExtractCmd)
+            -cf "$(location %[6]s)" -C "$$INSTALL_ROOT" .
+    """`, cmds, renderEnvExports(p.Env), stripFrom, appendCmd, depExtractCmd, installTar)
 }
 
 // renderEnvExports emits one `export K=V` line per env entry,

@@ -254,7 +254,15 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 		// it would just invalidate the install genrule's cache
 		// key on every imports.json change with no behavioral
 		// effect.
-		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"})
+		// kind:autotools per-platform render is queued under
+		// ROADMAP Next ("Per-platform fold for round-2 trace-
+		// driven kinds — kind:autotools per-platform render");
+		// today's autotoolsHandler always renders single-
+		// platform regardless of --platforms-json. Pass an empty
+		// tracePlatform{} so pipelineTraceExtensionRound2 emits
+		// the byte-stable legacy shape with no OutputPrefix /
+		// NameSuffix / ExecCompatibleWith.
+		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"}, tracePlatform{})
 		return h, nil
 	}
 	// Round 1: converter runs inline in B's install genrule, so
@@ -346,7 +354,12 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 // that would let us re-introduce the split.
 func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension {
 	ext := &pipelineExtension{
-		WrapPipelineCmds: wrapAutotoolsPipelineCmds,
+		// kind:autotools is single-platform today (per-platform
+		// fan-out queued in ROADMAP Next), so the wrapper's
+		// outputPrefix is always "". The generated-headers.txt
+		// $(location ...) reference resolves to the legacy
+		// unprefixed declared output.
+		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, "") },
 		AppendCmd:        autotoolsConverterStep(hasImports),
 		ExtraOuts: []string{
 			"BUILD.bazel.out",
@@ -428,7 +441,19 @@ func autotoolsDepExtractCmd() string {
 // exec-root-relative path; pipelineHandler's prelude already
 // `cd "$$BUILD_ROOT"` by the time this runs, so the bare
 // relative path wouldn't find the staged binary.
-func wrapAutotoolsPipelineCmds(cmds string) string {
+//
+// outputPrefix is the same OutputPrefix the surrounding
+// pipelineExtension applies to declared outputs — empty for
+// the legacy single-platform shape, "<platform>" for the
+// project-B per-platform install fan-out. The
+// generated-headers.txt diff is written to that prefix so
+// $(location <prefix>/generated-headers.txt) resolves to the
+// genrule's actual declared output path.
+func wrapAutotoolsPipelineCmds(cmds, outputPrefix string) string {
+	generatedHeaders := "generated-headers.txt"
+	if outputPrefix != "" {
+		generatedHeaders = outputPrefix + "/generated-headers.txt"
+	}
 	// --source-root opts the tracer into capturing openat events
 	// (filtered to the source tree). Required for the narrowing-
 	// undercoverage audit's trace oracle to fire; without it,
@@ -474,9 +499,9 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
         "$$EXEC_ROOT/$(location //tools:build-tracer)" \
             --normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT" \
             --normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT" \
-            --normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"%s \
+            --normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"%[1]s \
             --out="$$AUTOTOOLS_TRACE" -- sh -c '
-%s
+%[2]s
 '
 
         # Post-pipeline header snapshot. comm -13 = lines in the
@@ -486,8 +511,8 @@ func wrapAutotoolsPipelineCmds(cmds string) string {
         # leading "./" before adding to BUILD.bazel.out.
         POST_HEADERS_LIST="$$(mktemp)"
         ( cd "$$BUILD_ROOT" && find . -type f -name '*.h' | sort > "$$POST_HEADERS_LIST" )
-        comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST" > "$$EXEC_ROOT/$(location generated-headers.txt)"
-`, sourceRootFlag, cmds)
+        comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST" > "$$EXEC_ROOT/$(location %[3]s)"
+`, sourceRootFlag, cmds, generatedHeaders)
 }
 
 // autotoolsConverterStep is the shell snippet inserted between
