@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/internal/reapi"
+	"github.com/sstriker/buildstream-bazel/internal/reapi"
 )
 
 // resolveFoldElementBinary picks the fold-element binary to spawn.

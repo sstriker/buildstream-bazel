@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 )
 
 // TestRun_FixtureMatch round-trips the configure-file sample

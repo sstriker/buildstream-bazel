@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/bazelbuild/buildtools/build"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // header is intentionally path-free so the emitted BUILD.bazel is

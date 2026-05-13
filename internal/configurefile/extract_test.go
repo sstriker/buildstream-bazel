@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 )
 
 // TestExtract_FixtureRoundTrip: the load-bearing test for the

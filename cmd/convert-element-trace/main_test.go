@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // TestParseExecveLine covers the strace text-format shape for

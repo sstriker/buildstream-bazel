@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
-	"github.com/sstriker/cmake-to-bazel/internal/cas/fakecas"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas/fakecas"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 // TestRun_CacheShare_TwoOrchestratorsViaSharedAC is the M5 architectural

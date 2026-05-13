@@ -11,7 +11,7 @@ import (
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 // SynthesizeResult walks a local output directory after a successful

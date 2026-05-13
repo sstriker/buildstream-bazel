@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 // stageOutputs writes the converter's typical post-run layout under

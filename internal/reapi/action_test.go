@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 // fixture writes the standard four-input layout under a tmpdir and

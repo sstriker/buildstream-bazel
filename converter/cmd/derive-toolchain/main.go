@@ -32,10 +32,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazeltoolchain"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/cmaketoolchain"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/bazeltoolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmaketoolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 func main() {

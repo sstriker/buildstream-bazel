@@ -27,7 +27,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // Mismatch is one disagreement between compile_commands.json and the

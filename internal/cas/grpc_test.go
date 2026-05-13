@@ -9,7 +9,7 @@ import (
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 	"google.golang.org/genproto/googleapis/bytestream"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas/fakecas"
+	"github.com/sstriker/buildstream-bazel/internal/cas/fakecas"
 )
 
 // startFakeCAS spins up an in-process gRPC server and returns a connected

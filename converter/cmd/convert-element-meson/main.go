@@ -30,9 +30,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 const (

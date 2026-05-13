@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 )
 
 // TestExecuteProcess_ConsumerAttribution_HeaderUnderBuildInclude

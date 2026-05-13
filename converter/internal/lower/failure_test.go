@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // Surface tests: each Tier-1 code emitted by lower has at least one synthetic

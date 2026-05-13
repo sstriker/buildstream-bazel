@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 // TestUploadDir asserts cas.UploadDir packs a host directory, uploads

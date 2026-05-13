@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 // TestRun_PerElementTimeout: stub sleeps longer than the per-element

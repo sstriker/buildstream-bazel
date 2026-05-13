@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
 )
 
 func TestResolve_LocalRelative(t *testing.T) {

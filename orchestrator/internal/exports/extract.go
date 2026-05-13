@@ -16,7 +16,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // addLibraryRe matches lines like

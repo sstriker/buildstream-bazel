@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 func TestMarshalUnmarshal_RoundTrip(t *testing.T) {

@@ -19,7 +19,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/elementfold"
+	"github.com/sstriker/buildstream-bazel/converter/elementfold"
 )
 
 // tracePlatform is the per-platform record write-a's multi-

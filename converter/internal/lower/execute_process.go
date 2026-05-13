@@ -7,10 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
-	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // isExistingDir reports whether p is a directory on disk.

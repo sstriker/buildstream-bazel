@@ -34,7 +34,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 // LoadFile reads cmake-kits.json and returns one Variant per kit.

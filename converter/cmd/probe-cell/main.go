@@ -22,10 +22,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/cmakerun"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain/probejson"
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/probejson"
 )
 
 func main() {

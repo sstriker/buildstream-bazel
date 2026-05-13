@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestToIR_LibraryAndBinaryMapping verifies the trace-driven

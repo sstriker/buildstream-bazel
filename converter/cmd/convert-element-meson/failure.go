@@ -6,7 +6,7 @@
 // See docs/failure-schema.md for the canonical enumeration.
 package main
 
-import "github.com/sstriker/cmake-to-bazel/converter/internal/failure"
+import "github.com/sstriker/buildstream-bazel/converter/internal/failure"
 
 const (
 	mesonSetupFailed                 failure.Code = "meson-setup-failed"

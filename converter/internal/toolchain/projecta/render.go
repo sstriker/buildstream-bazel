@@ -23,7 +23,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 // Platform pairs a stable name with the constraint_value labels

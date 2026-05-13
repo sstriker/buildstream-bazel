@@ -43,8 +43,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
-	"github.com/sstriker/cmake-to-bazel/internal/tracenorm"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/tracenorm"
 )
 
 func main() {

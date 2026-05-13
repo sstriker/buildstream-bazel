@@ -29,7 +29,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 func main() {

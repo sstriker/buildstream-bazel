@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
+	"github.com/sstriker/buildstream-bazel/internal/readpaths"
 )
 
 func TestParse_RoundTrip(t *testing.T) {

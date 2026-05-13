@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
+	"github.com/sstriker/buildstream-bazel/internal/readpaths"
 )
 
 // TestParseAllowlist_HappyPath exercises the common shape: a

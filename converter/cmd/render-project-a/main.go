@@ -22,8 +22,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain/presets"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain/projecta"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/presets"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/projecta"
 )
 
 func main() {

@@ -8,10 +8,10 @@ import (
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
-	"github.com/sstriker/cmake-to-bazel/internal/cas/fakecas"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas/fakecas"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 // TestRun_M3D_RemoteAssetSourcesEndToEnd is the M3d-step-1 keystone

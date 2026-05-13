@@ -48,9 +48,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/elementfold"
-	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/elementfold"
+	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 func main() {

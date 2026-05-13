@@ -23,7 +23,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 func TestE2E_BazelBuild_DownstreamConsumesConvertedRepos(t *testing.T) {

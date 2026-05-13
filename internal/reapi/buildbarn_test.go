@@ -37,8 +37,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
-	"github.com/sstriker/cmake-to-bazel/internal/reapi"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/reapi"
 )
 
 func TestE2E_Buildbarn_ExecuteSyntheticAction(t *testing.T) {

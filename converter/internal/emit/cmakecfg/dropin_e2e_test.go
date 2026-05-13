@@ -18,9 +18,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/cmakecfg"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 )
 
 func TestE2E_HelloWorld_BundleDropIn(t *testing.T) {

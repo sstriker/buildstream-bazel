@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestRound2_EmptyTraceDirEmitsPlaceholder verifies the boot-phase

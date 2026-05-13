@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
 func TestProjectToSourceTree_FiltersStdlibAndBuildTree(t *testing.T) {

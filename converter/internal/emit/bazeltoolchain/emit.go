@@ -28,7 +28,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 // Config knobs the operator passes per emission. None are required;

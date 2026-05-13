@@ -3,7 +3,7 @@ package lower
 import (
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // TestClassify_Buckets is the truth-table covering each

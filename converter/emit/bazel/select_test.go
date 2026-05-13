@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestEmit_PerPlatform_BaselinePlusSelect: a target with both

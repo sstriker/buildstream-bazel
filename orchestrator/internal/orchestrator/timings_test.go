@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 // TestRun_TimingsAggregation: a successful pass writes per-element

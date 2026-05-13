@@ -10,9 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
-	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // configureFileOut is one recovered configure_file emission: the

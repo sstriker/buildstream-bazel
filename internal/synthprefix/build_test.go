@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/synthprefix"
+	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
 )
 
 // helloBundle mirrors what convert-element emits for hello-world: three

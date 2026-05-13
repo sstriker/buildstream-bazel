@@ -36,8 +36,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/bsttranslate"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/bsttranslate"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
 )
 
 func main() {

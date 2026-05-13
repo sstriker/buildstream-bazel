@@ -3,9 +3,9 @@ package lower_test
 import (
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // TestToIR_PrivateDepRoutesToImplementationDeps covers the

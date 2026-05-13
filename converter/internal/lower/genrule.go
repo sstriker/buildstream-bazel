@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // codegenContext carries state from genrule recovery and CTest
