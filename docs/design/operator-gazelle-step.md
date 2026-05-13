@@ -177,7 +177,7 @@ To convert specific genrule shapes into native rules:
    +)
    ```
 
-4. **Update downstream `deps`**. The downstream `cc_library` that
+5. **Update downstream `deps`**. The downstream `cc_library` that
    used to depend on `:myelem_proto_gen` now needs to depend on
    `:myelem_cc_proto`. gazelle_cc's header-scan resolver
    (Phase 7b/c) handles this automatically when the operator
@@ -186,7 +186,7 @@ To convert specific genrule shapes into native rules:
    //elements/myelem:myelem_cc_proto` when the custom extension
    wrote the new rule).
 
-5. **`bazel build`** — verify the rewrite is functionally
+6. **`bazel build`** — verify the rewrite is functionally
    equivalent.
 
 ### Realistic candidates for rewriting
