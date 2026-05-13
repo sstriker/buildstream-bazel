@@ -23,7 +23,7 @@ type Target struct {
 	Name string
 	Kind Kind
 
-	// py_library fields. (Package data — e.g.
+	// py_library / py_test fields. (Package data — e.g.
 	// `tool.setuptools.package-data` — is parsed but not
 	// folded into a `data` attribute yet; see
 	// docs/design/pyproject-native-render.md's "What's NOT
@@ -32,6 +32,18 @@ type Target struct {
 	Imports    []string
 	Deps       []string
 	Visibility []string
+
+	// PyiSrcs are depth-1 .pyi stub files. Emit as
+	// `pyi_srcs = [...]` on py_library / py_test when
+	// non-empty. Matches rules_python gazelle plugin's
+	// attribute one-for-one.
+	PyiSrcs []string
+
+	// Testonly, when true, emits `testonly = True` on the
+	// rule. Used by the conftest-lift target (the
+	// `<pkg>_conftest` py_library that sibling py_tests
+	// depend on).
+	Testonly bool
 
 	// py_binary fields. EntryModule + EntryFunc are emitted
 	// alongside a generated entry-shim genrule when Kind ==
@@ -47,6 +59,14 @@ type Kind int
 const (
 	KindPyLibrary Kind = iota + 1
 	KindPyBinary
+	// KindPyTest renders as `py_test(...)`. Used for test
+	// files detected by materializePackage (filename stem
+	// `test_*` or `*_test`). Per rules_python gazelle's
+	// convention: one sibling py_test per package directory
+	// with test files, named "<package>_test", carrying the
+	// package's library as its primary dep plus any sibling
+	// conftest target.
+	KindPyTest
 )
 
 // LowerOptions tunes the lowering pass.
@@ -141,10 +161,55 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 			Name:       labelByPkgName[pk.Name],
 			Kind:       KindPyLibrary,
 			Srcs:       append([]string(nil), pk.Sources...),
+			PyiSrcs:    append([]string(nil), pk.PyiSources...),
 			Imports:    []string{pk.ImportRoot},
 			Deps:       deps,
 			Visibility: []string{"//visibility:public"},
 		})
+
+		// conftest.py lift (per rules_python gazelle's
+		// convention): each package directory containing a
+		// conftest.py gets its own py_library(testonly = True)
+		// that sibling py_tests depend on. Named
+		// "<package>_conftest" — namespaced under the package
+		// to avoid collisions when multiple packages in the
+		// same BUILD ship conftests. Wires only the depth-1
+		// conftest.py as srcs; pytest finds it at test time
+		// via the conftest discovery mechanism.
+		conftestLabel := ""
+		if pk.HasConftest {
+			conftestName := labelByPkgName[pk.Name] + "_conftest"
+			conftestLabel = ":" + conftestName
+			out = append(out, Target{
+				Name:       conftestName,
+				Kind:       KindPyLibrary,
+				Srcs:       []string{pk.Dir + "/conftest.py"},
+				Imports:    []string{pk.ImportRoot},
+				Testonly:   true,
+				Visibility: []string{"//visibility:public"},
+			})
+		}
+
+		// py_test emission for the package's test files.
+		// Sibling target named "<package>_test"; deps include
+		// the package's library (so the test sees the runtime
+		// it's exercising) and any sibling conftest.
+		if len(pk.TestSources) > 0 {
+			testDeps := []string{":" + labelByPkgName[pk.Name]}
+			if conftestLabel != "" {
+				testDeps = append(testDeps, conftestLabel)
+			}
+			testDeps = append(testDeps, depLabels...)
+			out = append(out, Target{
+				Name:       labelByPkgName[pk.Name] + "_test",
+				Kind:       KindPyTest,
+				Srcs:       append([]string(nil), pk.TestSources...),
+				PyiSrcs:    append([]string(nil), pk.PyiSources...),
+				Imports:    []string{pk.ImportRoot},
+				Deps:       testDeps,
+				Visibility: []string{"//visibility:public"},
+			})
+		}
 	}
 
 	scripts, err := lowerScripts(allScripts, labelByPkgName, opts.Imports)
