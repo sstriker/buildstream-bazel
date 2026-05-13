@@ -68,9 +68,16 @@ else
     exit 0
 fi
 bazel_major=$("$BZL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
+# Strict-numeric check: bazel --version sometimes prefixes
+# its output with timestamps or wrapper banners on CI runners
+# (bazelisk under `set -x` shows lines like `[08:30:42]`); the
+# `awk $2` extraction can pick those up, and a `cut -d.` of a
+# non-version string yields garbage. Require bazel_major to be
+# all digits before doing arithmetic — otherwise treat as
+# "version unknown, skip build phase" rather than letting the
+# subsequent [ ... -lt 7 ] error out with "Illegal number".
 case "$bazel_major" in
-    [0-9]*) ;;
-    *) bazel_major=0 ;;
+    ''|*[!0-9]*) bazel_major=0 ;;
 esac
 if [ "$bazel_major" -lt 7 ]; then
     echo "meta-gazelle-roundtrip: render OK; bazel $($BZL --version | head -1) is < 7 (no bzlmod), skipping build phase"
@@ -112,10 +119,14 @@ cp "$build_out_a" "$B/elements/hello-world/BUILD.bazel"
 
 # Assertions: hello-world's exported header must map to the
 # canonical label. Phase 3's label shortening (//pkg:pkg → //pkg)
-# applies — the hello-world cc_library is named "hello-world"
-# matching the package basename.
+# applies only when the cc_library's target name equals the
+# package basename. The hello-world fixture's CMakeLists defines
+# `add_library(hello ...)` — target "hello" in package
+# "elements/hello-world" — so basename ("hello-world") differs
+# from target name ("hello") and the canonical form keeps the
+# `:hello` tail.
 expected_header="elements/hello-world/include/hello.h"
-expected_label="//elements/hello-world"
+expected_label="//elements/hello-world:hello"
 if ! grep -qE "\"$expected_header\":[[:space:]]*\"$expected_label\"" "$B/tools/cc_index.json"; then
     echo "meta-gazelle-roundtrip: cc_index.json missing $expected_header → $expected_label mapping" >&2
     cat "$B/tools/cc_index.json" >&2
