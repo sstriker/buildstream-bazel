@@ -15,6 +15,8 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+
+	"github.com/bazelbuild/buildtools/build"
 )
 
 // Emit renders the BUILD.bazel.out body for a slice of
@@ -67,7 +69,25 @@ func Emit(targets []Target) []byte {
 			panic(fmt.Sprintf("convert-element-pyproject: emit: unknown Target.Kind %v for target %q (Lower must set Kind to one of KindPyLibrary / KindPyBinary / KindPyTest)", t.Kind, t.Name))
 		}
 	}
-	return b.Bytes()
+	// Phase 3 canonicalization: route the
+	// fmt.Fprintf-assembled output through
+	// buildtools-AST Parse + Format so the rendered shape
+	// matches what `buildifier --mode=fix` would produce.
+	// Attribute order pulls from `tables.NamePriority`; list
+	// wrapping, dict wrapping, and label normalization fall
+	// out of the formatter's default Rewriter pass.
+	// `BUILD.bazel` filename hint dispatches the parser into
+	// TypeBuild semantics. On parse error (a programming
+	// failure in this emitter, not a runtime fault), the
+	// unmodified bytes flow through so legacy consumers
+	// don't break; the test suite catches the regression
+	// before it ships.
+	body := b.Bytes()
+	f, err := build.Parse("BUILD.bazel", body)
+	if err != nil {
+		return body
+	}
+	return build.Format(f)
 }
 
 func anyKind(targets []Target, k Kind) bool {
