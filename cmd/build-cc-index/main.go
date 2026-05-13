@@ -39,7 +39,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
@@ -299,26 +298,16 @@ func stringListArg(call *build.CallExpr, attr string) []string {
 	return nil
 }
 
-// writeJSON marshals m to a deterministic JSON object
-// (alphabetical keys) and writes it to path. Creates parent
-// directories as needed.
+// writeJSON marshals m to a deterministic JSON object and
+// writes it to path. Creates parent directories as needed.
+// json.MarshalIndent sorts string-keyed maps alphabetically
+// by default, so the marshaled output is byte-stable across
+// runs without any intermediate sort.
 func writeJSON(p string, m map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	ordered := make(map[string]string, len(m))
-	for _, k := range keys {
-		ordered[k] = m[k]
-	}
-	// json.Marshal sorts maps alphabetically by default, so
-	// the intermediate sort is for the sake of the loop
-	// below; the on-disk output is deterministic.
-	body, err := json.MarshalIndent(ordered, "", "  ")
+	body, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
