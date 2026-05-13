@@ -376,7 +376,7 @@ transition cleanly.
   `BUILD.bazel.out`. `convert-element-trace` gained
   `--out-ir-json` and the trace converter's recovered rules now
   flow through the shared `converter/ir.Package` so
-  `fold-element` + `converter/internal/elementfold` compose them
+  `fold-element` + `converter/elementfold` compose them
   the same way they compose kind:cmake Phase A IRs. The IR also
   gained `PerPlatformScalar` for cc_import path attrs (the
   round-2 stub shape's main divergence axis: `.so` vs `.dylib`,
@@ -433,7 +433,7 @@ transition cleanly.
   and per-platform-routed copts/linkopts. `internal/empfold`
   factors out the cardinality-partition primitive
   (`toolchain.Observe` now uses it too).
-  `converter/internal/elementfold` enforces per-target
+  `converter/elementfold` enforces per-target
   cross-cell agreement on scalar fields (Linkstatic, Alwayslink,
   Genrule*, Test*, …) and folds the order-sensitive
   copts/linkopts conservatively (identical sequences → flat
