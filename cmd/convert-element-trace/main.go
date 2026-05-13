@@ -971,7 +971,7 @@ func renderRules(rules []CCRule) (string, error) {
 	pkg := toIR(rules)
 	body, err := bazel.EmitWithOptions(&pkg, bazel.Options{Header: traceBuildHeader})
 	if err != nil {
-		return "", fmt.Errorf("bazel.Emit: %w", err)
+		return "", fmt.Errorf("bazel.EmitWithOptions: %w", err)
 	}
 	return string(body), nil
 }
