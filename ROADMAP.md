@@ -70,7 +70,7 @@ transition cleanly.
     into its own `py_library(testonly = True)` and auto-wire as
     dep of sibling `py_test`s.
   - **Phase 3 — buildtools-AST migration.** Replace the
-    `text/template` renderer in `converter/internal/emit/bazel/emit.go`,
+    `text/template` renderer in `converter/emit/bazel/emit.go`,
     the `fmt.Fprintf` emit in
     `converter/cmd/convert-element-pyproject/emit.go`, and the
     format-string emits in write-a's per-handler files with
