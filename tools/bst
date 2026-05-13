@@ -88,14 +88,18 @@ bst_collect() {
     # without requiring the user to enumerate it.
     leaf="$1"
     leaf_abs="$(cd "$(dirname "$leaf")" && pwd)/$(basename "$leaf")"
-    leaf_dir="$(dirname "$leaf_abs")"
 
-    # Simple iterative walker. Visited set keyed on absolute path.
+    # Simple iterative walker. todo is a newline-separated queue;
+    # visited is a pipe-delimited set used to dedup. Both are
+    # accumulated as multi-line strings (POSIX sh, no arrays).
     todo="$leaf_abs"
     visited=""
     while [ -n "$todo" ]; do
-        cur="$(echo "$todo" | head -1)"
-        todo="$(echo "$todo" | tail -n +2)"
+        cur="$(printf '%s\n' "$todo" | head -1)"
+        todo="$(printf '%s\n' "$todo" | tail -n +2)"
+        # Skip empty lines (the append-with-newline pattern below
+        # can introduce them when todo was empty).
+        [ -z "$cur" ] && continue
         case "$visited" in
             *"|$cur|"*) continue ;;
         esac
@@ -104,30 +108,48 @@ bst_collect() {
             echo "bst: $cur not found" >&2
             return 1
         fi
-        # Extract dep .bst names from `depends:` / `build-depends:`
-        # / `runtime-depends:` blocks. The reference shape is a
-        # YAML list of bare strings. Map-form (filename: ..., ...)
-        # also supported via filename: lookup.
+        # Extract dep names from `depends:` / `build-depends:` /
+        # `runtime-depends:` blocks. BuildStream allows three shapes:
+        # bare string (`- foo.bst` or `- foo`); inline dict
+        # (`- filename: foo.bst`); and a sub-block dict where
+        # `filename:` is on its own line. Accept all three. write-a
+        # itself trims a trailing `.bst` and accepts bare names too
+        # (cmd/write-a/main.go:766), so it's safe to do the same.
+        # Top-level YAML lists in BuildStream .bst files are often
+        # flush-left (`- foo` at column 0), so the leading-space
+        # match must allow zero spaces.
         deps="$(awk '
             /^[[:space:]]*(depends|build-depends|runtime-depends)[[:space:]]*:[[:space:]]*$/ { in_deps=1; next }
             /^[a-zA-Z]/ && !/^[[:space:]]/ { in_deps=0 }
-            in_deps && /^[[:space:]]+-[[:space:]]+[^ {}\[]+\.bst/ { gsub(/^[[:space:]]+-[[:space:]]+/, "", $0); print }
-            in_deps && /^[[:space:]]+-[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
-                gsub(/^[[:space:]]+-[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print
+            in_deps && /^[[:space:]]*-[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
+                gsub(/^[[:space:]]*-[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print; next
             }
             in_deps && /^[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
-                gsub(/^[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print
+                gsub(/^[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print; next
+            }
+            in_deps && /^[[:space:]]*-[[:space:]]+[^ {}\[][^ ]*[[:space:]]*$/ {
+                gsub(/^[[:space:]]*-[[:space:]]+/, "", $0); print
             }
         ' "$cur" 2>/dev/null || true)"
         for dep in $deps; do
+            # Append .bst if the dep is a bare element name (write-a
+            # accepts both forms; we always want the file on disk).
+            case "$dep" in
+                *.bst) dep_file="$dep" ;;
+                *)     dep_file="$dep.bst" ;;
+            esac
             # Resolve dep path: relative to current .bst's dir.
-            dep_abs="$(cd "$(dirname "$cur")" && cd "$(dirname "$dep")" 2>/dev/null && pwd)/$(basename "$dep")"
-            todo="$todo
+            dep_abs="$(cd "$(dirname "$cur")" && cd "$(dirname "$dep_file")" 2>/dev/null && pwd)/$(basename "$dep_file")"
+            if [ -z "$todo" ]; then
+                todo="$dep_abs"
+            else
+                todo="$todo
 $dep_abs"
+            fi
         done
     done
     # Emit deduped, sorted --bst flags.
-    echo "$visited" | tr '|' '\n' | sort -u | while read -r p; do
+    printf '%s\n' "$visited" | tr '|' '\n' | sort -u | while read -r p; do
         [ -z "$p" ] && continue
         printf -- '--bst %s ' "$p"
     done

@@ -1,4 +1,4 @@
-.PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
+.PHONY: all converter orchestrator diff history bst-translate derive-toolchain build-tracer convert-element-trace test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
@@ -31,8 +31,10 @@ BST_TRANSLATE := $(BIN_DIR)/orchestrate-bst-translate
 DERIVE_TOOLCHAIN := $(BIN_DIR)/derive-toolchain
 WRITE_A      := $(BIN_DIR)/write-a
 SOURCE_PUSH  := $(BIN_DIR)/source-push
+BUILD_TRACER := $(BIN_DIR)/build-tracer
+CONVERT_ELEMENT_TRACE := $(BIN_DIR)/convert-element-trace
 
-all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push
+all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace
 
 converter: $(CONVERTER)
 
@@ -49,6 +51,10 @@ derive-toolchain: $(DERIVE_TOOLCHAIN)
 write-a: $(WRITE_A)
 
 source-push: $(SOURCE_PUSH)
+
+build-tracer: $(BUILD_TRACER)
+
+convert-element-trace: $(CONVERT_ELEMENT_TRACE)
 
 $(CONVERTER):
 	@mkdir -p $(BIN_DIR)
@@ -81,6 +87,14 @@ $(WRITE_A):
 $(SOURCE_PUSH):
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(SOURCE_PUSH) ./cmd/source-push
+
+$(BUILD_TRACER):
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_TRACER) ./cmd/build-tracer
+
+$(CONVERT_ELEMENT_TRACE):
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERT_ELEMENT_TRACE) ./cmd/convert-element-trace
 
 # Unit tests: pre-recorded File API fixtures, no cmake required.
 test:
@@ -118,6 +132,16 @@ e2e-orchestrate-scale: orchestrator
 # alone are still a useful regression gate.
 e2e-meta-hello: check-tools converter
 	scripts/meta-hello.sh
+
+# Render-half smoke test for tools/bst (the BuildStream-style CLI
+# wrapper around write-a). Exercises three render shapes (kind:cmake,
+# kind:autotools, multi-element graph with flush-left bare-name
+# deps) plus the workspace open/close round-trip. Bazel-build half
+# is out of scope — the wrapper shells out to whatever bazel is on
+# PATH, and that side is covered by the per-kind render + bazel-side
+# e2e gates.
+e2e-meta-bst-wrapper: all
+	scripts/meta-bst-wrapper.sh
 
 # Narrowing-undercoverage audit gate (soft launch). Renders a
 # small meta-project with write-a, invokes convert-element-cmake

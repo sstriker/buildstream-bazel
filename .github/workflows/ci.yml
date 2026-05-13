@@ -114,6 +114,9 @@ jobs:
       - name: toolchain-skip e2e (configure-time win)
         run: make e2e-toolchain-skip 2>&1 | tee -a /tmp/cijob.log
 
+      - name: bst wrapper smoke test
+        run: make e2e-meta-bst-wrapper 2>&1 | tee -a /tmp/cijob.log
+
       - name: Narrowing-undercoverage audit (non-blocking soft gate)
         # Soft launch: `make e2e-audit-narrowing` exits non-zero
         # when the combined drift report is non-empty (real signal),

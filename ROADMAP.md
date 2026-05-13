@@ -162,10 +162,6 @@ transition cleanly.
   (`runtime`/`devel`/`man`) gives a richer signal than cmake's
   destination-path inference; structural recipe parallels
   `docs/design/cmake-execute-process-round2-fallback.md`.
-- **`bst` wrapper** so `bst build` works against a converted project
-  (and against `bst workspace open`-modified element source trees).
-  Goal: BuildStream developers' muscle memory keeps working through
-  the transition.
 - **Optional orchestrator-driven gazelle step (Phase 8b)** —
   builds on Phase 8's operator overlay. When the operator
   declares `gazelle` / `gazelle_cc` (and any custom rewriting
@@ -231,10 +227,10 @@ transition cleanly.
   source cache via `--repo_env`, write-a-time registry) and rules
   out two; the third is the path forward but the value-vs-complexity
   trade-off is open.
-- **kind coverage breadth.** `kind:script` / `kind:pyproject` /
-  `kind:flatpak_image` / `kind:snap_image` / `kind:collect_*` all
-  have placeholder handlers today. Each kind is bounded work; what's
-  not bounded is the question of which kinds are graph-recoverable
+- **kind coverage breadth.** `kind:flatpak_image` /
+  `kind:snap_image` / `kind:collect_*` all have placeholder
+  handlers today. Each kind is bounded work; what's not
+  bounded is the question of which kinds are graph-recoverable
   vs need-to-stay-coarse.
 - **Drop the host-toolchain assumption from CI / e2e gates.**
   Several gates expect cmake / ninja / bwrap / fuse3 installed on
@@ -248,6 +244,27 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`bst` wrapper.** `tools/bst` is a POSIX-sh BuildStream-style
+  CLI wrapper around write-a so `bst build <element.bst>` keeps
+  working against a converted project. Supports
+  `bst build / show / workspace open|close|reset`. The `build`
+  subcommand walks the .bst graph (transitive `depends:` /
+  `build-depends:` / `runtime-depends:` — bare names AND
+  `.bst`-suffixed forms; flush-left and indented YAML list
+  styles), runs write-a in the round-1 trace-driven shape
+  (no REAPI AC / bb_clientd needed for local dev), then shells
+  out to `bazel build` against the rendered project B. Bazel
+  isn't required at render time — when it's absent the wrapper
+  prints the target line and stops cleanly. `workspace open`
+  copies the element's kind:local sources to a scratch dir and
+  rewrites the .bst's `sources: - path:` so subsequent
+  `bst build` picks up edits; `workspace close` restores from
+  a deterministic `.bst-bazel-orig` backup. Render gate:
+  `scripts/meta-bst-wrapper.sh` (`make e2e-meta-bst-wrapper`)
+  covers kind:cmake + kind:autotools + multi-element graph +
+  workspace round-trip. The wrapper is BuildStream-developer
+  muscle-memory glue for the transition window; teams that
+  prefer the Bazel CLI directly can ignore it.
 - **Rename `convert-element` → `convert-element-cmake`** for
   consistency with the rest of the per-kind converter family
   (`convert-element-meson`, `convert-element-trace`,
