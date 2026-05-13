@@ -242,7 +242,152 @@ func canonicalize(body []byte) []byte {
 		// test-visible trigger).
 		panic(fmt.Sprintf("bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body))
 	}
+	addKeepMarkers(f)
 	return build.Format(f)
+}
+
+// addKeepMarkers walks every rule in f and tags load-bearing
+// attribute lines (and whole rules, for genrule / filegroup)
+// with `# keep` comments. Per docs/design/build-output-
+// conventions.md's Phase 7a roundtrip spec: these markers
+// prevent a downstream `gazelle fix` run from rewriting
+// values the converter extracted from CMake/Meson/trace —
+// signals gazelle wouldn't be able to re-derive from
+// post-conversion sources alone.
+//
+// The marker scope follows the conventions doc's table:
+//
+//   - cc_library / cc_binary / cc_test: copts, defines,
+//     linkopts, includes, tags, linkstatic, alwayslink,
+//     include_prefix, strip_include_prefix.
+//   - cc_test additionally: args, env, timeout, data.
+//   - cc_import: includes (when present), system_provided,
+//     alwayslink (per the rule schema differences).
+//   - genrule + filegroup: whole-rule keep (closing-paren
+//     suffix comment).
+//   - package(...): whole-rule keep.
+//
+// The marker doesn't trigger when gazelle isn't installed —
+// it's an inert # comment to any tool that doesn't look for
+// it. Phase 3's buildifier-canonical contract is preserved:
+// buildifier honors the keep markers and doesn't reformat
+// the tagged lines.
+func addKeepMarkers(f *build.File) {
+	for _, stmt := range f.Stmt {
+		call, ok := stmt.(*build.CallExpr)
+		if !ok {
+			continue
+		}
+		kind := callRuleKind(call)
+		switch kind {
+		case "genrule", "filegroup", "package":
+			markCallKeep(call)
+		case "cc_library", "cc_binary", "cc_test":
+			markAttrsKeep(call, ccKeepAttrs(kind))
+		case "cc_import":
+			markAttrsKeep(call, ccImportKeepAttrs)
+		}
+	}
+}
+
+// callRuleKind returns the rule kind for a CallExpr (e.g.
+// "cc_library", "genrule") or "" if the call's function
+// position isn't a bare identifier. Top-level BUILD calls
+// are typically Ident-headed; load() is the exception (it's
+// an Ident but routed elsewhere via stmt type).
+func callRuleKind(call *build.CallExpr) string {
+	if ident, ok := call.X.(*build.Ident); ok {
+		return ident.Name
+	}
+	return ""
+}
+
+// markCallKeep appends a `# keep` suffix comment to the
+// CallExpr itself. The formatter renders this on the line
+// of the closing `)` of the call.
+func markCallKeep(call *build.CallExpr) {
+	if hasKeepSuffix(call.Comment().Suffix) {
+		return
+	}
+	call.Comment().Suffix = append(call.Comment().Suffix, build.Comment{Token: "# keep"})
+}
+
+// markAttrsKeep walks the call's positional/keyword args
+// and tags each AssignExpr whose LHS is one of attrNames
+// with a `# keep` suffix.
+func markAttrsKeep(call *build.CallExpr, attrNames map[string]bool) {
+	if len(attrNames) == 0 {
+		return
+	}
+	for _, arg := range call.List {
+		assign, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := assign.LHS.(*build.Ident)
+		if !ok {
+			continue
+		}
+		if !attrNames[ident.Name] {
+			continue
+		}
+		if hasKeepSuffix(assign.Comment().Suffix) {
+			continue
+		}
+		assign.Comment().Suffix = append(assign.Comment().Suffix, build.Comment{Token: "# keep"})
+	}
+}
+
+// hasKeepSuffix reports whether the comment slice already
+// contains a `# keep` marker. Used to make addKeepMarkers
+// idempotent — calling canonicalize twice on the same body
+// (e.g. round-tripping through write-a's BUILD.bazel
+// canonicalize plus the embedded one here) doesn't double
+// up markers.
+func hasKeepSuffix(comments []build.Comment) bool {
+	for _, c := range comments {
+		if strings.TrimSpace(c.Token) == "# keep" {
+			return true
+		}
+	}
+	return false
+}
+
+// ccKeepAttrs returns the set of attribute names that
+// receive `# keep` markers for a cc_* rule kind. cc_test
+// gets the cc_library set plus its test-only attributes.
+func ccKeepAttrs(kind string) map[string]bool {
+	base := map[string]bool{
+		"copts":                true,
+		"defines":              true,
+		"linkopts":             true,
+		"includes":             true,
+		"tags":                 true,
+		"linkstatic":           true,
+		"alwayslink":           true,
+		"include_prefix":       true,
+		"strip_include_prefix": true,
+	}
+	if kind == "cc_test" {
+		base["args"] = true
+		base["env"] = true
+		base["timeout"] = true
+		base["data"] = true
+	}
+	return base
+}
+
+// ccImportKeepAttrs are the keep-tagged attributes on
+// cc_import — the rule schema differs from cc_library and
+// excludes most of the compile-side attrs. `includes` shows
+// up on cc_import only when emit-time wrapping inserts it
+// (Phase 2-prep work).
+var ccImportKeepAttrs = map[string]bool{
+	"includes":        true,
+	"system_provided": true,
+	"alwayslink":      true,
+	"static_library":  true,
+	"shared_library":  true,
 }
 
 var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{

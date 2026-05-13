@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
 )
@@ -91,7 +92,90 @@ func Emit(targets []Target) []byte {
 	if err != nil {
 		panic(fmt.Sprintf("convert-element-pyproject.Emit: emit produced unparseable BUILD bytes: %v\n%s", err, body))
 	}
+	addKeepMarkers(f)
 	return build.Format(f)
+}
+
+// addKeepMarkers tags load-bearing attribute lines with
+// `# keep` comments so a downstream `gazelle fix` run won't
+// rewrite values the converter extracted from pyproject.toml.
+// Per Phase 7a of docs/design/build-output-conventions.md.
+//
+// Scope follows the conventions doc:
+//   - py_library / py_test: imports, pyi_srcs, testonly.
+//   - py_binary (strict shape): main + srcs (entry-module
+//     path is load-bearing per Phase 5).
+//   - package(...): whole-rule keep.
+func addKeepMarkers(f *build.File) {
+	for _, stmt := range f.Stmt {
+		call, ok := stmt.(*build.CallExpr)
+		if !ok {
+			continue
+		}
+		kind := pyCallRuleKind(call)
+		switch kind {
+		case "package":
+			pyMarkCallKeep(call)
+		case "py_library", "py_test":
+			pyMarkAttrsKeep(call, pyLibraryKeepAttrs)
+		case "py_binary":
+			pyMarkAttrsKeep(call, pyBinaryKeepAttrs)
+		}
+	}
+}
+
+var pyLibraryKeepAttrs = map[string]bool{
+	"imports":  true,
+	"pyi_srcs": true,
+	"testonly": true,
+}
+
+var pyBinaryKeepAttrs = map[string]bool{
+	"main": true,
+	"srcs": true,
+}
+
+func pyCallRuleKind(call *build.CallExpr) string {
+	if ident, ok := call.X.(*build.Ident); ok {
+		return ident.Name
+	}
+	return ""
+}
+
+func pyMarkCallKeep(call *build.CallExpr) {
+	if pyHasKeepSuffix(call.Comment().Suffix) {
+		return
+	}
+	call.Comment().Suffix = append(call.Comment().Suffix, build.Comment{Token: "# keep"})
+}
+
+func pyMarkAttrsKeep(call *build.CallExpr, attrNames map[string]bool) {
+	for _, arg := range call.List {
+		assign, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := assign.LHS.(*build.Ident)
+		if !ok {
+			continue
+		}
+		if !attrNames[ident.Name] {
+			continue
+		}
+		if pyHasKeepSuffix(assign.Comment().Suffix) {
+			continue
+		}
+		assign.Comment().Suffix = append(assign.Comment().Suffix, build.Comment{Token: "# keep"})
+	}
+}
+
+func pyHasKeepSuffix(comments []build.Comment) bool {
+	for _, c := range comments {
+		if strings.TrimSpace(c.Token) == "# keep" {
+			return true
+		}
+	}
+	return false
 }
 
 func anyKind(targets []Target, k Kind) bool {

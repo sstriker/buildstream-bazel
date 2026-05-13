@@ -2,13 +2,13 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "multilang",
     hdrs = ["include/multilang.h"],
-    includes = ["include"],
-    linkstatic = True,
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
     deps = [
         ":multilang_c",
         ":multilang_cxx",
@@ -22,10 +22,10 @@ cc_library(
     copts = [
         "-O3",
         "-std=c11",
-    ],
-    defines = ["NDEBUG"],
-    includes = ["include"],
-    linkstatic = True,
+    ],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
     visibility = ["//visibility:private"],
 )
 
@@ -36,9 +36,9 @@ cc_library(
     copts = [
         "-O3",
         "-std=c++17",
-    ],
-    defines = ["NDEBUG"],
-    includes = ["include"],
-    linkstatic = True,
+    ],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
     visibility = ["//visibility:private"],
 )

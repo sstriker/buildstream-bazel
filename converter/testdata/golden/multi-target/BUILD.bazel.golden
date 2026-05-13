@@ -2,7 +2,7 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_binary(
     name = "multibin",
@@ -10,9 +10,9 @@ cc_binary(
         "include/multi.h",
         "src/main.c",
     ],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    includes = ["include"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
     deps = [":multistatic"],
 )
 
@@ -23,20 +23,20 @@ cc_library(
     copts = [
         "-O3",
         "-fPIC",
-    ],
+    ],  # keep
     defines = [
         "NDEBUG",
         "multishared_EXPORTS",
-    ],
-    includes = ["include"],
+    ],  # keep
+    includes = ["include"],  # keep
 )
 
 cc_library(
     name = "multistatic",
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    includes = ["include"],
-    linkstatic = True,
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )
