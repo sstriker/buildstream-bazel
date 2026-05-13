@@ -86,11 +86,17 @@ transition cleanly.
     (no shim). Otherwise keep the entry-shim genrule. Detect
     `<pkg>/__main__.py` and emit `py_binary(name="<pkg>_bin", ...)`.
     Add `--always-emit-entry-shim` for back-compat.
-  - **Phase 6 — conventions doc + ROADMAP queue (this PR).**
-    `docs/design/build-output-conventions.md` documents the
-    per-rule-kind shape, attribute order, visibility model,
+  - **Phase 6 — conventions doc + ROADMAP queue (this PR's own
+    diff).** `docs/design/build-output-conventions.md` documents
+    the per-rule-kind shape, attribute order, visibility model,
     lossy paths, deliberate divergences, and phase index. This
-    ROADMAP entry queues phases 1-5 and 7.
+    ROADMAP entry queues phases 1-5 and 7. Phase 6's PR is
+    intentionally doc-only — the *files this PR adds or
+    modifies* are the doc + this ROADMAP entry. Reviewers seeing
+    code in the PR's diff are viewing the cumulative base→head
+    delta which includes the stack's upstream PRs (per-platform
+    install fan-out, etc.); those changes belong to their own
+    PRs in the stack, not Phase 6.
   - **Phase 7 — gazelle roundtrip.** Emit
     `tools/cc_index.json` (header → label map for gazelle_cc's
     resolver) and `tools/python_modules.json` (dist-name → label
