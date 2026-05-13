@@ -762,6 +762,16 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// through to the historical `irt.Deps` routing — strictly
 	// safe (PUBLIC default forwards headers, which is the cmake
 	// default for non-keyword target_link_libraries usage).
+	//
+	// Rule-kind gating: only cc_library supports
+	// `implementation_deps` in stock rules_cc. cc_binary /
+	// cc_test / cc_import don't accept the attribute, and bazel
+	// rejects it at analysis time. For non-library kinds the
+	// scope distinction is moot — a binary has no consumers
+	// (it's a leaf), and a cc_import wraps a pre-built archive
+	// whose link interface is fixed at build time — so fold
+	// PRIVATE deps into `irt.Deps` for those kinds.
+	allowsImplementationDeps := irt.Kind == ir.KindCCLibrary
 	for _, dep := range t.Dependencies {
 		// Resolve label; routing decision (Deps vs
 		// ImplementationDeps) folds in after.
@@ -780,7 +790,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					t.Name, cmakeName)
 			}
 		}
-		if depScopeIsPrivate(traceLinkScope, dep, idToName) {
+		if allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName) {
 			irt.ImplementationDeps = append(irt.ImplementationDeps, label)
 		} else {
 			irt.Deps = append(irt.Deps, label)
@@ -821,9 +831,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					seen[export.BazelLabel] = true
 					// Trace-scope routing: if the
 					// underlying cmake lib name is recorded
-					// PRIVATE in traceLinkScope, route the
-					// label to ImplementationDeps.
-					if traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+					// PRIVATE in traceLinkScope AND the
+					// target accepts implementation_deps
+					// (cc_library only), route to
+					// ImplementationDeps. Otherwise fold
+					// into Deps — cc_binary / cc_test /
+					// cc_import don't accept the attribute.
+					if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
 						irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
 					} else {
 						irt.Deps = append(irt.Deps, export.BazelLabel)
@@ -860,9 +874,15 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				if !seen[export.BazelLabel] {
 					seen[export.BazelLabel] = true
 					// Trace-scope routing: route PRIVATE
-					// imports to ImplementationDeps, others
-					// to Deps.
-					if traceLinkScope != nil && traceLinkScope[lib] == "PRIVATE" {
+					// imports to ImplementationDeps only on
+					// targets that accept the attribute
+					// (cc_library — the STATIC_LIBRARY guard
+					// above already ensures this for the
+					// outer if, but make the rule-kind check
+					// explicit for parallel structure with
+					// the t.Dependencies + Link.CommandFragments
+					// paths). Otherwise fold into Deps.
+					if allowsImplementationDeps && traceLinkScope != nil && traceLinkScope[lib] == "PRIVATE" {
 						irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
 					} else {
 						irt.Deps = append(irt.Deps, export.BazelLabel)

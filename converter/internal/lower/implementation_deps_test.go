@@ -188,6 +188,67 @@ func TestToIR_NoTraceFallsBackToDeps(t *testing.T) {
 	}
 }
 
+// TestToIR_CCBinaryPrivateDepFoldsIntoDeps covers the
+// rule-kind gating: cc_binary doesn't accept
+// `implementation_deps` (stock rules_cc reserves it for
+// cc_library only). PRIVATE deps on EXECUTABLE targets must
+// fold into `Deps` even when the trace records the keyword.
+//
+// Regression guard: this was the failure mode in PR #123's
+// `bazel-e2e` CI job — a cc_binary's BUILD.bazel emitted
+// `implementation_deps = [...]` and bazel rejected the load
+// at analysis time.
+func TestToIR_CCBinaryPrivateDepFoldsIntoDeps(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "client_bin", Id: "client_bin::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"client_bin::@1": {
+				Name:    "client_bin",
+				Type:    "EXECUTABLE",
+				Sources: []fileapi.TargetSource{{Path: "main.c", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language: "C", SourceIndexes: []int{0},
+				}},
+				Dependencies: []fileapi.TargetDependency{
+					{Id: "Glibc::c::@somehash"},
+				},
+			},
+		},
+	}
+	rsv, _ := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/glibc",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Glibc::c",
+				BazelLabel:  "//elements/components/glibc:c",
+			}},
+		}},
+	})
+	trace := []byte(`{"args":["client_bin","PRIVATE","Glibc::c"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n")
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		Imports:        rsv,
+		TraceRaw:       trace,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if len(tgt.ImplementationDeps) != 0 {
+		t.Errorf("ImplementationDeps = %v, want [] (cc_binary doesn't accept the attribute)", tgt.ImplementationDeps)
+	}
+	if len(tgt.Deps) != 1 || tgt.Deps[0] != "//elements/components/glibc:c" {
+		t.Errorf("Deps = %v, want [//elements/components/glibc:c]", tgt.Deps)
+	}
+}
+
 // TestToIR_InCodebasePrivateDepRoutesToImplementationDeps
 // covers the in-codebase target case: when the trace
 // records `target_link_libraries(consumer PRIVATE helper)`
