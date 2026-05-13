@@ -59,8 +59,8 @@ case "$bazel_major" in
     [0-9]*) ;;
     *) bazel_major=0 ;;
 esac
-if [ "$bazel_major" -lt 7 ]; then
-    echo "meta-autotools-tu-optflags: render OK; bazel < 7 (no bzlmod), skipping build phase"
+if [ "$bazel_major" -lt 9 ]; then
+    echo "meta-autotools-tu-optflags: render OK; bazel < 9 (Bazel 9 is the floor: bzlmod + load() requirement for cc_*), skipping build phase"
     exit 0
 fi
 

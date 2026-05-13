@@ -75,12 +75,12 @@ bazel_major=$("$BZL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
 # non-version string yields garbage. Require bazel_major to be
 # all digits before doing arithmetic — otherwise treat as
 # "version unknown, skip build phase" rather than letting the
-# subsequent [ ... -lt 7 ] error out with "Illegal number".
+# subsequent [ ... -lt 9 ] error out with "Illegal number".
 case "$bazel_major" in
     ''|*[!0-9]*) bazel_major=0 ;;
 esac
-if [ "$bazel_major" -lt 7 ]; then
-    echo "meta-gazelle-roundtrip: render OK; bazel $($BZL --version | head -1) is < 7 (no bzlmod), skipping build phase"
+if [ "$bazel_major" -lt 9 ]; then
+    echo "meta-gazelle-roundtrip: render OK; bazel $($BZL --version | head -1) is < 9 (Bazel 9 is the floor: bzlmod + load() requirement for cc_*), skipping build phase"
     exit 0
 fi
 
