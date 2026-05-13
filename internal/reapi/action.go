@@ -1,5 +1,5 @@
 // Package reapi builds REAPI Action / Command / ActionResult shapes
-// for one convert-element conversion. Local execution stays in M5; this
+// for one convert-element-cmake conversion. Local execution stays in M5; this
 // package gives the cache layer (and M3b's eventual remote execution)
 // the wire-stable shapes they consume.
 //
@@ -10,7 +10,7 @@
 //	prefix/                ← synth-prefix (--prefix-dir, optional)
 //	imports.json           ← imports manifest (--imports-manifest, optional)
 //	toolchain.cmake        ← derive-toolchain output (--toolchain-cmake-file, optional)
-//	bin/convert-element    ← the converter binary, +x
+//	bin/convert-element-cmake    ← the converter binary, +x
 //
 // Canonical output paths (declared in Command.output_paths):
 //
@@ -72,7 +72,7 @@ type Inputs struct {
 	// --toolchain-cmake-file=toolchain.cmake.
 	ToolchainCMakeFile string
 
-	// ConverterBin is the local path to the convert-element binary.
+	// ConverterBin is the local path to the convert-element-cmake binary.
 	// Required.
 	ConverterBin string
 
@@ -95,7 +95,7 @@ type Inputs struct {
 	EnvVars map[string]string
 
 	// CollectToolchainSignal, when true, requests that
-	// convert-element copy its cmake File API reply directory into
+	// convert-element-cmake copy its cmake File API reply directory into
 	// the action's output tree at <pathOutToolchainSignal>.
 	// Capture-only today: the on-disk format is the input shape
 	// for the future unifier-side consumer (queued under
@@ -105,7 +105,7 @@ type Inputs struct {
 	// each platform's ResolvedToolchain.Base.
 	CollectToolchainSignal bool
 
-	// EmitIRJSON, when true, asks convert-element to write the
+	// EmitIRJSON, when true, asks convert-element-cmake to write the
 	// post-lower ir.Package as JSON to the action's output tree
 	// at <pathOutIRJSON>. The orchestrator's per-element multi-
 	// platform fold reads this JSON across N per-platform
@@ -154,7 +154,7 @@ const (
 	pathImports        = "imports.json"
 	pathToolchainCMake = "toolchain.cmake"
 	pathBinDir         = "bin"
-	pathConverter      = "convert-element"
+	pathConverter      = "convert-element-cmake"
 	pathOutBuild       = "BUILD.bazel"
 	pathOutBundle      = "cmake-config"
 	pathOutFailure     = "failure.json"
@@ -351,7 +351,7 @@ func buildInputRoot(in Inputs) (*InputRoot, error) {
 		})
 	}
 
-	// bin/convert-element
+	// bin/convert-element-cmake
 	binDir, binDigest, err := buildBinDir(ir, in.ConverterBin)
 	if err != nil {
 		return nil, err
@@ -397,7 +397,7 @@ func graftSubtree(ir *InputRoot, parent *repb.Directory, name, hostPath string) 
 	return nil
 }
 
-// buildBinDir creates the bin/ Directory holding only convert-element
+// buildBinDir creates the bin/ Directory holding only convert-element-cmake
 // (executable). Returns the directory proto and its digest.
 func buildBinDir(ir *InputRoot, converterBin string) (*repb.Directory, *cas.Digest, error) {
 	d, err := cas.DigestFile(converterBin)

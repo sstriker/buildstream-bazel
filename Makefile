@@ -23,7 +23,7 @@ GOFLAGS   ?=
 BUILD_DIR ?= build
 BIN_DIR   := $(BUILD_DIR)/bin
 
-CONVERTER    := $(BIN_DIR)/convert-element
+CONVERTER    := $(BIN_DIR)/convert-element-cmake
 ORCHESTRATOR := $(BIN_DIR)/orchestrate
 DIFF         := $(BIN_DIR)/orchestrate-diff
 HISTORY      := $(BIN_DIR)/orchestrate-history
@@ -52,7 +52,7 @@ source-push: $(SOURCE_PUSH)
 
 $(CONVERTER):
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERTER) ./converter/cmd/convert-element
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERTER) ./converter/cmd/convert-element-cmake
 
 $(ORCHESTRATOR):
 	@mkdir -p $(BIN_DIR)
@@ -111,7 +111,7 @@ e2e-orchestrate-scale: orchestrator
 # Phase 1 acceptance gate for the meta-project (Bazel-as-orchestrator)
 # shape (docs/whole-project-plan.md). Renders project A and project B
 # from the hello-world fixture via cmd/write-a, then drives the full
-# two-pass pipeline: bazel build A (runs convert-element via genrule)
+# two-pass pipeline: bazel build A (runs convert-element-cmake via genrule)
 # -> stage A's BUILD.bazel.out into B -> bazel build + run B's smoke
 # binary linking against the converted cc_library. Skips the bazel
 # phases cleanly when bazel >= 7 isn't on PATH; the rendering checks
@@ -120,7 +120,7 @@ e2e-meta-hello: check-tools converter
 	scripts/meta-hello.sh
 
 # Narrowing-undercoverage audit gate (soft launch). Renders a
-# small meta-project with write-a, invokes convert-element
+# small meta-project with write-a, invokes convert-element-cmake
 # offline to populate the cmake oracle (cmake-reads.json per
 # kind:cmake element), then runs scripts/audit-narrowing-walk.sh
 # to accumulate per-element drift. The script exits non-zero
@@ -159,7 +159,7 @@ e2e-meta-bazel-passthrough: check-tools converter
 # find_package(prod CONFIG REQUIRED) + target_link_libraries(prod::prod).
 # Asserts: write-a renders the cross-element bundle staging + an
 # imports.json synthesis file; bazel build of cons resolves the
-# dep against the staged bundle; convert-element's STATIC IMPORTED
+# dep against the staged bundle; convert-element-cmake's STATIC IMPORTED
 # dep recovery emits deps = ["//elements/prod:prod"] in the
 # converted output.
 e2e-meta-cross-cmake: check-tools converter
@@ -490,7 +490,7 @@ e2e-toolchain-skip: check-tools converter orchestrator derive-toolchain
 # Fidelity gate. Parameterized harness: hello-world is the smoke
 # fixture; fmt (when fetched via `fetch-fmt`) is the real-world
 # fixture. Each fixture builds the project two ways (cmake reference
-# vs convert-element + bazel) and asserts symbol equivalence on the
+# vs convert-element-cmake + bazel) and asserts symbol equivalence on the
 # resulting library. Each new delta is recorded in
 # docs/fidelity-known-deltas.md.
 e2e-fidelity: check-tools converter

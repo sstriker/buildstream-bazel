@@ -39,7 +39,7 @@ fixture="testdata/meta-project/bazel-passthrough"
     --bst "$fixture/passthrough.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element"
+    --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase asserts.
 if grep -qE '(genrule|cc_library|cc_binary|filegroup)\(' "$A/elements/passthrough/BUILD.bazel"; then

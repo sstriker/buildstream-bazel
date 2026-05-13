@@ -87,7 +87,7 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	// A-side: converter genrule threads the fallback flag AND
 	// pulls @trace_<elem>//:trace into srcs (the load-time AC
 	// lookup; trace-driven convergence research follow-on
-	// teaches convert-element to consume the trace).
+	// teaches convert-element-cmake to consume the trace).
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/demo/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	// build-tracer + trace-publish + trace-lookup stage into
 	// both projects' tools/. Wiring all three at once means
 	// the trace-driven convergence research follow-on
-	// (teaching convert-element to consume @trace_<elem>//:trace
+	// (teaching convert-element-cmake to consume @trace_<elem>//:trace
 	// to refine refusals into fine cc rules) is purely a
 	// converter-side change — no further write-a work.
 	for _, project := range []string{outA, outB} {

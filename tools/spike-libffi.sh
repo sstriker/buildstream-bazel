@@ -114,7 +114,7 @@ render_rc=0
     --bst "$bst" \
     --out "$out_a" \
     --out-b "$out_b" \
-    --convert-element "$repo/build/bin/convert-element" \
+    --convert-element-cmake "$repo/build/bin/convert-element-cmake" \
     --convert-element-trace "$repo/build/bin/convert-element-trace" \
     --build-tracer-bin "$repo/build/bin/build-tracer" \
     --trace-round1 \

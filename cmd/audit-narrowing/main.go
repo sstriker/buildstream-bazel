@@ -7,7 +7,7 @@
 // Two oracle inputs, either or both:
 //
 //	--cmake-reads=<path>   JSON array of source-relative paths
-//	                       produced by convert-element's
+//	                       produced by convert-element-cmake's
 //	                       --out-cmake-configure-reads (build.ninja's
 //	                       RERUN_CMAKE deps projected onto the source
 //	                       tree).
@@ -53,7 +53,7 @@ import (
 
 func main() {
 	patternsPath := flag.String("patterns", "", "path to a read-paths.txt-format pattern file (the per-element pattern set to test). Required.")
-	cmakeReads := flag.String("cmake-reads", "", "path to a JSON array of source-relative paths from convert-element's --out-cmake-configure-reads. Optional.")
+	cmakeReads := flag.String("cmake-reads", "", "path to a JSON array of source-relative paths from convert-element-cmake's --out-cmake-configure-reads. Optional.")
 	tracePath := flag.String("trace", "", "path to a canonicalized trace.log (build-tracer output post-canonicalize); openat read events are extracted via tracenorm.ExtractReads. Optional.")
 	allowlistPath := flag.String("allowlist", "", "path to a srckey-expected-drift.txt-format file (one source-relative path per line, `#` comments). Entries are subtracted from the miss list before the report is written. Optional; absent → no allowlist filtering.")
 	outPath := flag.String("out", "", "destination for the undercoverage report (one path per line, sorted). Required.")

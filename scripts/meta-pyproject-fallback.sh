@@ -46,7 +46,7 @@ B="$work_dir/B"
     --bst testdata/meta-project/pyproject-pdm-greet.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-pyproject "$bin_dir/convert-element-pyproject" \
     --pyproject-fallback 2>"$work_dir/write-a.stderr"
 

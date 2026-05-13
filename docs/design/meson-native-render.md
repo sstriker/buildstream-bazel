@@ -76,7 +76,7 @@ File API doesn't fully cover custom commands — meson's does).
 ```
 
 The `converter/cmd/convert-element-meson/main.go` binary is a
-sibling of `converter/cmd/convert-element/main.go` (the cmake
+sibling of `converter/cmd/convert-element-cmake/main.go` (the cmake
 converter). Both consume an external build-system's introspection
 and produce IR + BUILD.bazel.out via the same emit package.
 

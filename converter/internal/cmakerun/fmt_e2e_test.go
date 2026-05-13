@@ -1,6 +1,6 @@
 //go:build e2e
 
-// fmt_e2e exercises the full convert-element pipeline against the fmt
+// fmt_e2e exercises the full convert-element-cmake pipeline against the fmt
 // library — the M2 acceptance package. We fetch fmt out-of-band (Makefile
 // `fetch-fmt` or CI step), point the test at the local checkout, and
 // assert:

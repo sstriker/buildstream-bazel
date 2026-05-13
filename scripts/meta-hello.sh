@@ -5,7 +5,7 @@
 #
 #   1. cmd/write-a renders project A (the meta workspace) and project B
 #      (the consumer workspace).
-#   2. bazel build in project A invokes convert-element via the per-
+#   2. bazel build in project A invokes convert-element-cmake via the per-
 #      element genrule, producing BUILD.bazel.out + cmake-config-bundle.
 #   3. The driver stages project A's BUILD.bazel.out into project B's
 #      elements/<name>/BUILD.bazel (overwriting the
@@ -46,12 +46,12 @@ B="$work_dir/B"
     --bst testdata/meta-project/hello-world.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element"
+    --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase checks. Always run; don't gate on bazel.
 for f in MODULE.bazel BUILD.bazel \
         rules/zero_files.bzl rules/BUILD.bazel \
-        tools/convert-element tools/BUILD.bazel \
+        tools/convert-element-cmake tools/BUILD.bazel \
         elements/hello-world/BUILD.bazel \
         elements/hello-world/sources/CMakeLists.txt; do
     if [ ! -f "$A/$f" ]; then
@@ -195,7 +195,7 @@ sha_smoke_initial=$(sha_of "$B/bazel-bin/smoke/hello_smoke")
 # The meta-project shape's two cache-stability claims:
 #
 #   Scenario A (edit hello.c — NOT in cmake's read set):
-#     - Project A: convert-element cache-hits (zero_files makes the
+#     - Project A: convert-element-cmake cache-hits (zero_files makes the
 #       genrule's input merkle stable across hello.c content changes).
 #     - Project B: cc_library recompiles, since hello.c is in its
 #       srcs. Smoke binary recompiles. This is expected; the win is
@@ -204,14 +204,14 @@ sha_smoke_initial=$(sha_of "$B/bazel-bin/smoke/hello_smoke")
 #       (no sibling here, so the check is just A's stability).
 #
 #   Scenario B (edit CMakeLists.txt comment — IS in the read set):
-#     - Project A: convert-element re-runs (CMakeLists is real),
+#     - Project A: convert-element-cmake re-runs (CMakeLists is real),
 #       but produces byte-identical output (cmake's parser strips
 #       comments before the codemodel).
 #     - Project B: cc_library + smoke do NOT recompile. CMakeLists
 #       isn't in any cc_* rule's srcs, and the staged BUILD.bazel
 #       (from A) is byte-identical, so the action keys downstream
 #       are unchanged. Strictly stronger than today's orchestrator
-#       semantics where any source-tree edit re-ran convert-element
+#       semantics where any source-tree edit re-ran convert-element-cmake
 #       AND triggered downstream rebuilds.
 echo
 echo "=== cache-stability: setting up writable source tree ==="
@@ -247,7 +247,7 @@ rerender_with_feedback() {
         --bst "$edit_bst" \
         --out "$A" \
         --out-b "$B" \
-        --convert-element "$bin_dir/convert-element" \
+        --convert-element-cmake "$bin_dir/convert-element-cmake" \
         --read-paths-feedback "$feedback" >/dev/null
 }
 

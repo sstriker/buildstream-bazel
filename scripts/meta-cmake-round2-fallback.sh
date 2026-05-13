@@ -10,7 +10,7 @@
 #
 #   1. Project A's per-element converter genrule threads
 #      --unsupported-execute-process-fallback=true into
-#      convert-element so classifier refusals on
+#      convert-element-cmake so classifier refusals on
 #      execute_process produce the placeholder shape (per-target
 #      cc_import / sh_binary stubs + extract genrule pointing
 #      at install_tree.tar) instead of exiting Tier-1.
@@ -56,7 +56,7 @@ fixture="testdata/meta-project"
     --bst "$fixture/hello-world.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \
     --trace-lookup-bin "$bin_dir/trace-lookup" \
@@ -65,11 +65,11 @@ fixture="testdata/meta-project"
 # A-side: converter genrule threads the fallback flag AND
 # pulls @trace_hello-world//:trace into srcs (the load-time AC
 # lookup; trace-driven convergence research follow-on teaches
-# convert-element to consume the trace).
+# convert-element-cmake to consume the trace).
 a_build="$A/elements/hello-world/BUILD.bazel"
 for marker in \
     '--unsupported-execute-process-fallback=true' \
-    '"//tools:convert-element"' \
+    '"//tools:convert-element-cmake"' \
     '"@trace_hello-world//:trace"'; do
     if ! grep -qF -- "$marker" "$a_build"; then
         echo "meta-cmake-round2-fallback: A-side BUILD missing marker: $marker" >&2
@@ -136,7 +136,7 @@ fi
 # build-tracer + trace-publish + trace-lookup stage into both
 # projects' tools/. Wiring all three at once means the
 # trace-driven convergence research follow-on (teaching
-# convert-element to consume @trace_<elem>//:trace to refine
+# convert-element-cmake to consume @trace_<elem>//:trace to refine
 # refusals into fine cc rules) is purely a converter-side
 # change — no further write-a / staging work.
 for path in \

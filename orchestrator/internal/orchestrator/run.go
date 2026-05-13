@@ -2,7 +2,7 @@
 //
 // The Run function walks the element graph in dependency-first topo order
 // and invokes the converter once per kind:cmake element. M3a uses os/exec
-// against a real `convert-element` binary; M3b will swap the same call
+// against a real `convert-element-cmake` binary; M3b will swap the same call
 // shape for a REAPI Action submission.
 //
 // Outputs land under <Out>/elements/<elem-name>/. A successful conversion
@@ -67,8 +67,8 @@ type Options struct {
 	// the test fixture and by orchestrators that pre-stage sources.
 	SourcesBase string
 
-	// ConverterBinary is the path to the convert-element binary. Defaults
-	// to "convert-element" (PATH lookup).
+	// ConverterBinary is the path to the convert-element-cmake binary. Defaults
+	// to "convert-element-cmake" (PATH lookup).
 	ConverterBinary string
 
 	// FoldElementBinary is the path to the fold-element binary used
@@ -85,7 +85,7 @@ type Options struct {
 	Store cas.Store
 
 	// Executor, when non-nil, takes over per-element execution on AC
-	// miss: instead of running convert-element locally via os/exec,
+	// miss: instead of running convert-element-cmake locally via os/exec,
 	// the orchestrator submits the Action to Executor.Execute and
 	// uses the returned ActionResult. M3b's GRPCExecutor goes through
 	// REAPI's Execution service. Nil = local exec (M5 default).
@@ -224,7 +224,7 @@ type Result struct {
 	Converted   []string
 	Failed      []FailureRecord
 	CacheHits   []string // elements whose outputs came from the action cache
-	CacheMisses []string // elements that ran convert-element this pass
+	CacheMisses []string // elements that ran convert-element-cmake this pass
 
 	// Timings aggregates per-phase wall-clock durations across all
 	// elements that ran the converter this pass (cache-hits skip the
@@ -255,7 +255,7 @@ type TimingsSummary struct {
 }
 
 // ElementTimings is one element's per-phase wall-clock seconds, as
-// reported by convert-element.
+// reported by convert-element-cmake.
 type ElementTimings struct {
 	CMakeConfigureSecs float64 `json:"cmake_configure_seconds"`
 	TranslationSecs    float64 `json:"translation_seconds"`
@@ -294,7 +294,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	}
 	conv := opts.ConverterBinary
 	if conv == "" {
-		conv = "convert-element"
+		conv = "convert-element-cmake"
 	}
 	convAbs, err := exec.LookPath(conv)
 	if err != nil {
@@ -1097,7 +1097,7 @@ func buildPrefixForElement(prefixRoot, name string, g *element.Graph, depRecords
 // allowlisted paths. cmake's access(R_OK)-only configure-time semantics
 // (docs/cmake_analysis.md §0) make a shadow tree configure-equivalent to the
 // real one for every non-allowlisted file. The orchestrator points
-// convert-element at the shadow tree so content-only edits to .c files
+// convert-element-cmake at the shadow tree so content-only edits to .c files
 // are absorbed at the cache key (M3a step 6).
 func buildShadowForElement(shadowRoot, name, realSrc string, m shadow.Matcher) (string, error) {
 	dst := filepath.Join(shadowRoot, filepath.FromSlash(name))
@@ -1225,7 +1225,7 @@ func loadReadPaths(path string) ([]string, error) {
 }
 
 // elementTimings captures one element's per-phase wall-clock timings,
-// as written by convert-element's --out-timings flag. Missing file
+// as written by convert-element-cmake's --out-timings flag. Missing file
 // (cache hit, older converter, etc.) is silently skipped — timings
 // are an operator UX feature, not a correctness requirement.
 type elementTimings struct {

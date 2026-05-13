@@ -10,7 +10,7 @@
 #      (the allowlist; empty for fixtures without per-element
 #      drift declarations).
 #   2. Populate the cmake oracle per kind:cmake element by
-#      invoking convert-element offline against the element's
+#      invoking convert-element-cmake offline against the element's
 #      source tree with --out-cmake-configure-reads, writing
 #      cmake-reads.json next to the element's pattern file.
 #      For trace-driven kinds the trace oracle is empty (no
@@ -37,7 +37,7 @@
 #
 # Exit shape: 0 on a clean audit, non-zero when the combined
 # report is non-empty (drift detected) OR when any prereq
-# (convert-element, the walker) failed. The soft-vs-blocking
+# (convert-element-cmake, the walker) failed. The soft-vs-blocking
 # dial lives one level up in the CI step:
 # `continue-on-error: true` keeps drift from failing the build
 # while signal accumulates; flipping it to false promotes the
@@ -53,7 +53,7 @@ cd "$repo_root"
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 
-# Build prereqs. convert-element is built by the Makefile's
+# Build prereqs. convert-element-cmake is built by the Makefile's
 # e2e-audit-narrowing target's `converter` dependency before
 # this script runs, so the script doesn't repeat that build.
 # write-a isn't part of `make converter`, so it needs its own
@@ -78,7 +78,7 @@ B="$work_dir/B"
     --bst testdata/meta-project/hello-world.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" >/dev/null
+    --convert-element-cmake "$bin_dir/convert-element-cmake" >/dev/null
 
 elements_dir="$A/elements"
 if [ ! -d "$elements_dir" ]; then
@@ -94,7 +94,7 @@ fi
 # element-specific cmake reply / build.ninja sibling), which is
 # queued behind real-world drift signal accumulation.
 #
-# convert-element runs cmake configure against the element's
+# convert-element-cmake runs cmake configure against the element's
 # source root, emitting --out-cmake-configure-reads (the
 # RERUN_CMAKE implicit-input projection) and a throwaway
 # BUILD.bazel.out. We only care about the cmake-reads side
@@ -109,15 +109,15 @@ fi
 
 src_root="$(pwd)/testdata/meta-project/sources/hello-world"
 throwaway_build="$work_dir/throwaway-BUILD.bazel"
-convert_log="$work_dir/convert-element.log"
-if ! "$bin_dir/convert-element" \
+convert_log="$work_dir/convert-element-cmake.log"
+if ! "$bin_dir/convert-element-cmake" \
     --source-root="$src_root" \
     --out-build="$throwaway_build" \
     --out-cmake-configure-reads="$elem_dir/cmake-reads.json" \
     >"$convert_log" 2>&1; then
     # check-tools (the Makefile dep for e2e-audit-narrowing)
     # already validates the cmake / ninja / bwrap prereqs
-    # this convert-element invocation needs, so a non-zero
+    # this convert-element-cmake invocation needs, so a non-zero
     # exit here is a real regression — propagate it rather
     # than masking with an exit-0 skip. CI's
     # continue-on-error: true on the calling step preserves
@@ -125,7 +125,7 @@ if ! "$bin_dir/convert-element" \
     # honest about failures keeps the diagnostics actionable
     # (the captured stdout + stderr below is for the
     # operator's benefit, not for hiding the failure).
-    echo "meta-audit-narrowing: convert-element failed for $elem; captured output follows:" >&2
+    echo "meta-audit-narrowing: convert-element-cmake failed for $elem; captured output follows:" >&2
     cat "$convert_log" >&2
     exit 1
 fi

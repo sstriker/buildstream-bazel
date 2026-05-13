@@ -1007,7 +1007,7 @@ func TestEmit_MacroFromImport_Golden(t *testing.T) {
 // configure time, so what surfaces in CompileGroups[].Includes
 // / Defines / Compile-fragments is the resolved-for-this-config
 // values, not generator-expression literals. Confirms
-// convert-element doesn't trip on the expressions and emits
+// convert-element-cmake doesn't trip on the expressions and emits
 // the resolved values cleanly. Known clean — no gap.
 func TestEmit_GeneratorExpressions_Golden(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/generator-expressions")

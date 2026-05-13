@@ -59,7 +59,7 @@ tripped through 2'). The build can link against them.
 
 cmake exposes structured introspection (File API codemodel
 + `--trace-expand`). Pass 2's per-element action runs
-`convert-element` against zero-stubbed sources (real bytes
+`convert-element-cmake` against zero-stubbed sources (real bytes
 for files cmake reads at configure time; zero stubs for
 files cmake's `file(GLOB)` walks but doesn't read). Output:
 fine-grained `cc_library` / `cc_binary` rules in project B's

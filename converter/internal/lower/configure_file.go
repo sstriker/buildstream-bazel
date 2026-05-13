@@ -355,7 +355,7 @@ func configureFileGenruleName(rel string) string {
 // Soundness consequence: the rendered bytes appear in the
 // genrule's cmd, so the .h.in template content drives the
 // BUILD.bazel content; the .h.in must remain content-included
-// in convert-element's srckey for soundness. Audit catches
+// in convert-element-cmake's srckey for soundness. Audit catches
 // this case (it's the cmake-side oracle's whole point); the
 // fix is the lifted shape, taken when Extract succeeds.
 func configureFileLegacyCmd(rel string, body []byte) string {
@@ -381,7 +381,7 @@ func configureFileLegacyCmd(rel string, body []byte) string {
 // would have been — but the cache-key shape IS the win:
 // BUILD.bazel content is decoupled from .h.in content (only
 // the cmake-variable namespace shows up here), so editing
-// .h.in cache-hits convert-element instead of rerunning it.
+// .h.in cache-hits convert-element-cmake instead of rerunning it.
 // That's the lift's whole point; size is incidental.
 func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts configurefile.Options) (string, error) {
 	body, err := json.Marshal(values)

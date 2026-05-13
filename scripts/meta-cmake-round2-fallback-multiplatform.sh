@@ -20,7 +20,7 @@
 #
 # Project A's converter genrule is unchanged here — under
 # multi-platform mode, the orchestrator's existing kind:cmake
-# multi-platform fan-out (PR #112) runs convert-element N
+# multi-platform fan-out (PR #112) runs convert-element-cmake N
 # times per element AT ORCHESTRATE TIME, then fold-element
 # composes the per-platform IRs. Write-a's project A output
 # for cmake round-2-fallback is the same shape the existing
@@ -78,7 +78,7 @@ fixture="testdata/meta-project"
     --bst "$fixture/hello-world.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \

@@ -21,7 +21,7 @@ func fixture(t *testing.T, withImports, withPrefix bool) Inputs {
 	mustWrite(t, filepath.Join(shadow, "CMakeLists.txt"), "project(x)\n")
 	mustWrite(t, filepath.Join(shadow, "src", "x.c"), "")
 
-	conv := filepath.Join(root, "convert-element")
+	conv := filepath.Join(root, "convert-element-cmake")
 	mustWrite(t, conv, "#!/bin/sh\necho fake\n")
 	if err := os.Chmod(conv, 0o755); err != nil {
 		t.Fatalf("chmod: %v", err)
@@ -123,7 +123,7 @@ func TestBuild_ArgvHasCanonicalPaths(t *testing.T) {
 	}
 	args := a.Command.Arguments
 	want := []string{
-		"bin/convert-element",
+		"bin/convert-element-cmake",
 		"--source-root", "source",
 		"--out-build", "BUILD.bazel",
 		"--out-bundle-dir", "cmake-config",

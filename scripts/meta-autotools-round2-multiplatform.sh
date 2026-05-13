@@ -72,7 +72,7 @@ fixture="testdata/meta-project/autotools-greet"
     --bst "$fixture/greet.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-publish-bin "$bin_dir/trace-publish" \

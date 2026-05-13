@@ -42,7 +42,7 @@ type Platform struct {
 }
 
 // Cell is one (platform, IR) pair: the IR Package that one
-// platform's convert-element call produced, paired with the
+// platform's convert-element-cmake call produced, paired with the
 // platform identity the fold attaches its deltas under.
 type Cell struct {
 	Platform Platform

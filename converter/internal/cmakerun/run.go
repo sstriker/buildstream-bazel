@@ -97,7 +97,7 @@ type Options struct {
 	// operator-supplied CMAKE_PROJECT_TOP_LEVEL_INCLUDES value
 	// and (b) emit a "manually-specified variables were not
 	// used" warning on cmake < 3.24 (the variable was added
-	// there). convert-element only flips this on when
+	// there). convert-element-cmake only flips this on when
 	// --lift-configure-file is set.
 	DumpVars bool
 

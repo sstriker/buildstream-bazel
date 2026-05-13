@@ -40,7 +40,7 @@ fixture="testdata/meta-project/autotools-config-h"
     --bst "$fixture/config-h.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-round1

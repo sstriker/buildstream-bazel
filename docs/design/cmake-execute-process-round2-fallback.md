@@ -43,7 +43,7 @@ Same destination, different dispatch — but still bounded
 `RenderB` that don't go through either dispatcher. The round-1 /
 round-2 split there isn't a configure-then-make-then-install
 shape; it's a single per-element genrule that runs
-`convert-element` against cmake's File API reply. There's no
+`convert-element-cmake` against cmake's File API reply. There's no
 `traceDrivenSrckeyPatterns` field to set; no `shouldUseRound2`
 branch to flip; and no autotools-style `round2Enabled` config
 that would route every element through round-2 either.
@@ -57,7 +57,7 @@ So Phase B can't be a one-line opt-in. The choice is between:
 
 Option (2) is what this doc proposes: **`kind:cmake` keeps its
 native render as the primary path, and the round-2 shape is a
-per-element fallback that activates when convert-element exits
+per-element fallback that activates when convert-element-cmake exits
 with `unsupported-execute-process`**. Option (1) would force
 every `kind:cmake` element through the round-2 path
 unconditionally (the pipeline-kinds and autotools opt-ins are
@@ -73,7 +73,7 @@ split that `kind:autotools` round-2 already established:
 - **Project A — converter genrule.** Runs `cmake configure` +
   File API + `lower`. Decides per-element at action time
   whether to emit native cc rules or the placeholder shape
-  in `BUILD.bazel.out`. `convert-element`'s executor
+  in `BUILD.bazel.out`. `convert-element-cmake`'s executor
   toolchain stays cmake-only — no ninja, no install. The
   per-element decision is "what shape of `BUILD.bazel.out`
   to write," not "what build to run."
@@ -123,15 +123,15 @@ direction is the natural follow-on once placeholder-shape
 projects are in real use — it's queued as a Later bullet
 in `ROADMAP.md`.
 
-### Why not run the build inside convert-element
+### Why not run the build inside convert-element-cmake
 
 Bolting `cmake --build` + `cmake --install` onto
-convert-element would keep the per-element decision in one
+convert-element-cmake would keep the per-element decision in one
 place but at three real costs:
 
-1. **Toolchain expansion.** Executors that run convert-element
+1. **Toolchain expansion.** Executors that run convert-element-cmake
    gain a ninja dependency and a DESTDIR-shaped sandbox.
-   Currently the convert-element action is a pure
+   Currently the convert-element-cmake action is a pure
    static-analysis tool; conflating it with a build action
    muddies the role.
 2. **No round-2 rendezvous.** The kind-agnostic
@@ -155,7 +155,7 @@ analysis, B is build. write-a renders both.
 write-a --cmake-round2-fallback  →
   project A: per-element converter genrule
              outs: [BUILD.bazel.out, ...]
-             cmd: convert-element --reply-dir=... \
+             cmd: convert-element-cmake --reply-dir=... \
                   --unsupported-execute-process-fallback=true \
                   --out-build=BUILD.bazel.out
              load-time: @trace_<elem>//:trace via _trace_repo
@@ -174,7 +174,7 @@ bazel build A//<elem>:<elem>_build
                  → AC hit  ⇒ symlink trace dir into @trace_<elem>//
                  → AC miss ⇒ empty fileset
      action time → cmake configure + File API reply + trace.jsonl
-                   convert-element runs lower.ToIR(...)
+                   convert-element-cmake runs lower.ToIR(...)
                      → native success ⇒ emit fine cc rules
                      → unsupported-execute-process refusal AND
                        fallback flag set ⇒ emit placeholder:
@@ -206,14 +206,14 @@ reference `install_tree.tar`; B's install genrule runs.
 
 ## Convert-element's failure → placeholder transition
 
-Today, `convert-element` exits 1 on `unsupported-execute-process`
+Today, `convert-element-cmake` exits 1 on `unsupported-execute-process`
 and the genrule action fails. For the fallback, the genrule
 action must succeed even when classification refuses, and emit
 a placeholder BUILD whose per-target stubs delegate to
 Project B's `install_tree.tar`.
 
 Implementation: a new `--unsupported-execute-process-fallback`
-flag on `convert-element`. When set:
+flag on `convert-element-cmake`. When set:
 
 - Classifier's refusal path no longer returns Tier-1; instead
   `recoverExecuteProcess` returns a structured refusal slice
@@ -393,7 +393,7 @@ ones but each leaves the tree in a runnable state.
    pure functions with unit tests. No call sites yet — pure
    scaffolding. Lets the bucket-of-globs / build-tracer
    wrapping be reviewed in isolation before any wiring.
-2. **convert-element `--unsupported-execute-process-fallback`
+2. **convert-element-cmake `--unsupported-execute-process-fallback`
    flag.** When set, classifier refusals stop exiting Tier-1;
    `lower.ToIR` returns a placeholder `ir.Package` (initially
    per-target empty stubs in PR #97; upgraded to full

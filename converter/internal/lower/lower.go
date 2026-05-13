@@ -60,7 +60,7 @@ type Options struct {
 	// bytes of configure_file outputs and embed them into Bazel
 	// genrules. Empty disables configure_file recovery.
 	//
-	// Production: the live cmake build dir convert-element just
+	// Production: the live cmake build dir convert-element-cmake just
 	// configured.
 	// Offline tests: the fixture dir, which record-fileapi.sh
 	// stashes configured outputs into mirroring the build-dir
@@ -123,7 +123,7 @@ type Options struct {
 	// genrule's Substitute, replacing per-template Extract.
 	// With every cmake variable in hand, .h.in edits that
 	// introduce new @VAR@/${VAR} markers always resolve
-	// correctly without convert-element rerunning — closes the
+	// correctly without convert-element-cmake rerunning — closes the
 	// soundness gap the per-template Extract had. Empty (e.g.
 	// offline --reply-dir tests, or a configure that fatal-
 	// erred before the dump-vars hook fired) falls back to

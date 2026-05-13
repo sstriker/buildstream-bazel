@@ -1,6 +1,6 @@
 // convert-element-meson translates one meson source tree into a
 // BUILD.bazel.out via meson's introspection JSON. Sister binary of
-// converter/cmd/convert-element (the cmake-side translator).
+// converter/cmd/convert-element-cmake (the cmake-side translator).
 //
 // One invocation handles exactly one source tree. Run by write-a's
 // per-element genrule (kind:meson) when --convert-element-meson is

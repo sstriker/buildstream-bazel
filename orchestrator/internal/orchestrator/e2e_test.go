@@ -1,6 +1,6 @@
 //go:build e2e
 
-// e2e_test runs the orchestrator against the real convert-element binary
+// e2e_test runs the orchestrator against the real convert-element-cmake binary
 // and the fdsdk-subset fixture. Both kind:cmake elements (hello,
 // uses-hello) should convert cleanly under bwrap.
 //
@@ -21,17 +21,17 @@ import (
 )
 
 func TestE2E_Orchestrate_StubSubset(t *testing.T) {
-	conv, err := exec.LookPath("convert-element")
+	conv, err := exec.LookPath("convert-element-cmake")
 	if err != nil {
 		// CI builds the binary into build/bin/ via the Makefile; fall back
 		// to that location so `make e2e-orchestrate` works without the
 		// binary being on $PATH.
 		repoRoot, _ := filepath.Abs("../../..")
-		fallback := filepath.Join(repoRoot, "build", "bin", "convert-element")
+		fallback := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
 		if _, ferr := os.Stat(fallback); ferr == nil {
 			conv = fallback
 		} else {
-			t.Skipf("convert-element not found (PATH=%v fallback=%v)", err, ferr)
+			t.Skipf("convert-element-cmake not found (PATH=%v fallback=%v)", err, ferr)
 		}
 	}
 
@@ -56,7 +56,7 @@ func TestE2E_Orchestrate_StubSubset(t *testing.T) {
 		t.Errorf("Failed = %v, want []", res.Failed)
 	}
 
-	// Per-element artifacts that real convert-element produces.
+	// Per-element artifacts that real convert-element-cmake produces.
 	// `cmake-config/` is in synth-prefix layout (lib/cmake/<Pkg>/...) —
 	// see internal/synthprefix.BuildSlice + the converter's
 	// --out-bundle-dir flow.

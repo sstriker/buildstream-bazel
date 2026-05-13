@@ -8,7 +8,7 @@ import (
 
 // Extract reverse-engineers the values dict that cmake used at
 // configure time, given the template (.h.in) and the rendered
-// output cmake produced. The lift in convert-element calls this
+// output cmake produced. The lift in convert-element-cmake calls this
 // to capture values without re-running cmake or parsing
 // CMakeCache.txt — cmake already did the substitution; we just
 // recover the inputs from the inputs+output pair.

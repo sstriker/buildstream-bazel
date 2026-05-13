@@ -63,7 +63,7 @@ const synthKeyPlatformProperty = "cmake-to-bazel/target-platform/v1"
 // The cmake Phase-A orchestrator path doesn't go through this
 // AC rendezvous at all — its multi-platform fan-out partitions
 // the action keyspace naturally via REAPI Action.Platform on
-// the per-platform convert-element Actions themselves.
+// the per-platform convert-element-cmake Actions themselves.
 func SyntheticActionDigest(srckey, platform string) (*cas.Digest, error) {
 	cmd := &repb.Command{
 		Arguments: []string{synthKeyArgv0, srckey},

@@ -290,7 +290,7 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
             --bst "$FIXTURE/greet.bst" \
             --out "$PROJ_A" \
             --out-b "$PROJ_B" \
-            --convert-element "$repo/build/bin/convert-element" \
+            --convert-element-cmake "$repo/build/bin/convert-element-cmake" \
             --convert-element-trace "$repo/build/bin/convert-element-trace" \
             --build-tracer-bin "$repo/build/bin/build-tracer" \
             --trace-publish-bin "$repo/build/bin/trace-publish" \

@@ -42,7 +42,7 @@ type DepBundle struct {
 // BuildSlice creates dst as a single-package CMAKE_PREFIX_PATH-shaped
 // slice from a FLAT input directory of `<Pkg>*.cmake` files plus the
 // stubs scanned out of those files. dst must not exist; BuildSlice
-// creates it. Used by `convert-element --out-bundle-dir` to produce
+// creates it. Used by `convert-element-cmake --out-bundle-dir` to produce
 // the per-element bundle.
 //
 // For each input (typically one per call):
@@ -100,7 +100,7 @@ func BuildSlice(dst string, deps []DepBundle) error {
 // merging each dep's already-synth-prefix-shaped bundle directory into
 // dst. dst must not exist; Build creates it.
 //
-// Each bundle (produced by `convert-element --out-bundle-dir`, which
+// Each bundle (produced by `convert-element-cmake --out-bundle-dir`, which
 // runs BuildSlice internally) carries its own
 // `lib/cmake/<Pkg>/<Pkg>{Config,Targets,Targets-<config>}.cmake` plus
 // zero-byte stubs at the IMPORTED_LOCATION paths and mkdir-stubs at the
@@ -278,7 +278,7 @@ func copyFile(src, dst string) error {
 //
 //	<bundleDir>/lib/cmake/<Pkg>/<Pkg>Config.cmake
 //
-// (the shape `BuildSlice` produces inside `convert-element`'s
+// (the shape `BuildSlice` produces inside `convert-element-cmake`'s
 // `--out-bundle-dir`). PkgFromBundle finds the unique
 // `<Pkg>Config.cmake` under `lib/cmake/*/` and returns `<Pkg>`.
 func PkgFromBundle(bundleDir string) (string, error) {

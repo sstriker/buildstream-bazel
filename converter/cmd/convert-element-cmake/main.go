@@ -1,4 +1,4 @@
-// convert-element converts one CMake source tree into a fully-declared
+// convert-element-cmake converts one CMake source tree into a fully-declared
 // BUILD.bazel plus a synthetic <Pkg>Config.cmake bundle. Each invocation
 // handles exactly one codebase; the M3 orchestrator drives many such
 // invocations across a project (one REAPI action per codebase) and also
@@ -712,7 +712,7 @@ func cmakeConfigDestination(dest, pkgName string) bool {
 func handleError(a cli.Args, err error) int {
 	var tier1 *failure.Error
 	if errors.As(err, &tier1) {
-		fmt.Fprintf(os.Stderr, "convert-element: %s\n", tier1.Error())
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: %s\n", tier1.Error())
 		if a.OutFailure != "" {
 			payload, _ := json.MarshalIndent(map[string]any{
 				"tier":    1,
@@ -724,6 +724,6 @@ func handleError(a cli.Args, err error) int {
 		}
 		return cli.ExitTier1
 	}
-	fmt.Fprintf(os.Stderr, "convert-element: %v\n", err)
+	fmt.Fprintf(os.Stderr, "convert-element-cmake: %v\n", err)
 	return cli.ExitTier2
 }

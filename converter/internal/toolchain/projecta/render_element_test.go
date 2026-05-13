@@ -9,13 +9,13 @@ import (
 // element-convert matrix and asserts the structural invariants:
 // per-cell genrule names, per-cell outputs, exec_compatible_with
 // constraints, the filegroup that aggregates every output, and
-// the convert-element invocation shape.
+// the convert-element-cmake invocation shape.
 func TestRenderElementConvert_FullMatrix(t *testing.T) {
 	args := ElementConvertArgs{
 		ElementName:         "libfoo",
 		CmakeSourceLabel:    "//elements/libfoo:source",
 		CmakeListsLabel:     "//elements/libfoo:CMakeLists.txt",
-		ConvertElementLabel: "//tools:convert-element",
+		ConvertElementLabel: "//tools:convert-element-cmake",
 		Platforms: []Platform{
 			{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
 			{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
@@ -38,8 +38,8 @@ func TestRenderElementConvert_FullMatrix(t *testing.T) {
 		`@platforms//cpu:x86_64`,
 		`@platforms//os:darwin`,
 		`@platforms//cpu:arm64`,
-		`tools = ["//tools:convert-element"]`,
-		`$(location //tools:convert-element)`,
+		`tools = ["//tools:convert-element-cmake"]`,
+		`$(location //tools:convert-element-cmake)`,
 		`--source-root $$(dirname $(execpath //elements/libfoo:CMakeLists.txt))`,
 		`--out-build $(location libfoo.linux_x86_64.BUILD.bazel)`,
 		`--out-ir-json $(location libfoo.linux_x86_64.ir.json)`,
@@ -60,7 +60,7 @@ func TestRenderElementConvert_OptionalArgsPlumbedConditionally(t *testing.T) {
 		ElementName:             "libbar",
 		CmakeSourceLabel:        "//elements/libbar:source",
 		CmakeListsLabel:         "//elements/libbar:CMakeLists.txt",
-		ConvertElementLabel:     "//tools:convert-element",
+		ConvertElementLabel:     "//tools:convert-element-cmake",
 		ImportsManifestLabel:    "//elements/libbar:imports.json",
 		PrefixDirLabel:          "//elements/libbar:prefix",
 		ToolchainCMakeFileLabel: "//toolchains:linux_x86_64.cmake",
@@ -95,7 +95,7 @@ func TestRenderElementConvert_RejectsMissingFields(t *testing.T) {
 		ElementName:         "libfoo",
 		CmakeSourceLabel:    "//probe:source",
 		CmakeListsLabel:     "//probe:CMakeLists.txt",
-		ConvertElementLabel: "//tools:convert-element",
+		ConvertElementLabel: "//tools:convert-element-cmake",
 		Platforms: []Platform{
 			{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux"}},
 		},

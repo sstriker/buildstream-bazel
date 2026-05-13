@@ -44,7 +44,7 @@ var importedLocationStanzaRe = regexp.MustCompile(`set_target_properties\(\s*([A
 // job (the orchestrator stamps the `//elements/<name>:<target>` label
 // after picking up the raw exports).
 //
-// The bundle layout is what `convert-element --out-bundle-dir` writes
+// The bundle layout is what `convert-element-cmake --out-bundle-dir` writes
 // via `synthprefix.BuildSlice`:
 //
 //	<bundleDir>/lib/cmake/<Pkg>/<Pkg>Targets.cmake

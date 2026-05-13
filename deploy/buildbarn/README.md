@@ -135,7 +135,7 @@ new images before merging.
 ## Production worker image (out of scope here)
 
 bb-runner-bare exec's whatever command the action declares. For our
-real conversion flow (`bin/convert-element ...`) the worker
+real conversion flow (`bin/convert-element-cmake ...`) the worker
 container needs to provide:
 
 - The bare runner binary (or any runner — bare is just easiest)

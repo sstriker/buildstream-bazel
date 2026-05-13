@@ -11,7 +11,7 @@
 // link, only resolve the imported target.
 //
 // Gated behind the `e2e` build tag — needs real cmake + bwrap +
-// convert-element to run.
+// convert-element-cmake to run.
 package orchestrator_test
 
 import (
@@ -25,14 +25,14 @@ import (
 )
 
 func TestE2E_CMakeConsumer_FindPackageAgainstSynthPrefix(t *testing.T) {
-	conv, err := exec.LookPath("convert-element")
+	conv, err := exec.LookPath("convert-element-cmake")
 	if err != nil {
 		repoRoot, _ := filepath.Abs("../../..")
-		fallback := filepath.Join(repoRoot, "build", "bin", "convert-element")
+		fallback := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
 		if _, ferr := os.Stat(fallback); ferr == nil {
 			conv = fallback
 		} else {
-			t.Skipf("convert-element not found (%v / %v)", err, ferr)
+			t.Skipf("convert-element-cmake not found (%v / %v)", err, ferr)
 		}
 	}
 

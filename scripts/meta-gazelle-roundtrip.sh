@@ -48,7 +48,7 @@ B="$work_dir/B"
     --bst testdata/meta-project/hello-world.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element"
+    --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Validate the Phase 7b/8 stub files write-a emitted exist.
 # - cc_index.json + python_modules.json start as `{}` (Phase 7c

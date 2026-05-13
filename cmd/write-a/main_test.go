@@ -31,7 +31,7 @@ sources:
 // any actions.
 func fakeConvertBin(t *testing.T, dir string) string {
 	t.Helper()
-	bin := filepath.Join(dir, "convert-element")
+	bin := filepath.Join(dir, "convert-element-cmake")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 		"BUILD.bazel",
 		"rules/zero_files.bzl",
 		"rules/BUILD.bazel",
-		"tools/convert-element",
+		"tools/convert-element-cmake",
 		"tools/BUILD.bazel",
 		"elements/hello/BUILD.bazel",
 		"elements/hello/sources/CMakeLists.txt",
@@ -211,8 +211,8 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 		t.Errorf("project B element BUILD missing placeholder marker:\n%s", bPlaceholder)
 	}
 
-	// The element's BUILD references the staged convert-element via
-	// tools = [//tools:convert-element], merges sources via the
+	// The element's BUILD references the staged convert-element-cmake via
+	// tools = [//tools:convert-element-cmake], merges sources via the
 	// shadow-build cmd, and produces the three expected outputs.
 	body, err := os.ReadFile(filepath.Join(outA, "elements/hello/BUILD.bazel"))
 	if err != nil {
@@ -220,13 +220,13 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	}
 	got := string(body)
 	for _, marker := range []string{
-		`tools = ["//tools:convert-element"]`,
+		`tools = ["//tools:convert-element-cmake"]`,
 		`for src in $(SRCS)`,
 		`rel="$${src##*sources/}"`,
 		`"BUILD.bazel.out"`,
 		`"read_paths.json"`,
 		`"cmake-config-bundle.tar"`,
-		`$(location //tools:convert-element)`,
+		`$(location //tools:convert-element-cmake)`,
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("rendered BUILD missing marker %q\n--body--\n%s", marker, got)
@@ -237,9 +237,9 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 // TestWriter_CmakeElementStagesDepBundles covers the cross-
 // cmake-element staging path: a kind:cmake element whose deps
 // list names another kind:cmake element gets the dep's
-// cmake-config bundle staged at convert-element action time
+// cmake-config bundle staged at convert-element-cmake action time
 // under $PREFIX/lib/cmake/<dep>/, with --prefix-dir=$PREFIX
-// passed to convert-element. find_package(<DepPkg> CONFIG)
+// passed to convert-element-cmake. find_package(<DepPkg> CONFIG)
 // inside the consumer's CMakeLists then resolves against the
 // staged bundle.
 //

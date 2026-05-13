@@ -25,7 +25,7 @@ Three layers consume the same source identity:
 - `write-a` reads source metadata (kind, url, ref) at render time
   and emits Bazel labels + a digest for each source.
 - Project A's per-element genrules consume sources to feed
-  `convert-element` or `convert-element-trace`.
+  `convert-element-cmake` or `convert-element-trace`.
 - Project B's per-element targets (`cc_library` and friends)
   consume sources to compile downstream.
 
@@ -103,14 +103,14 @@ genrule(
     name = "expat_converted",
     srcs = ["@src_a1b2c3...//:tree"],
     outs = [...],
-    cmd = "$(location //tools:convert-element) ...",
-    tools = ["//tools:convert-element"],
+    cmd = "$(location //tools:convert-element-cmake) ...",
+    tools = ["//tools:convert-element-cmake"],
 )
 ```
 
 ```python
 # project B's elements/expat/BUILD.bazel (after the driver
-# stages convert-element's output)
+# stages convert-element-cmake's output)
 cc_library(
     name = "expat",
     srcs = ["@src_a1b2c3...//:tree"],  # via converter's output
@@ -291,7 +291,7 @@ adaptive feedback to **explicit inclusion/exclusion patterns**.
 
 Today's flow (`--read-paths-feedback`):
 
-1. First run: every file flows as real to convert-element. The
+1. First run: every file flows as real to convert-element-cmake. The
    converter writes `read_paths.json` listing what it actually
    read.
 2. Subsequent runs: write-a reads the previous `read_paths.json`
@@ -315,7 +315,7 @@ New flow:
    ```
 2. **Default when no file exists**: the entire source tree is
    real (equivalent to `include **/*`). This matches the
-   conservative pre-narrowing behaviour — convert-element runs
+   conservative pre-narrowing behaviour — convert-element-cmake runs
    against every file. The patterns file is an opt-in tightening
    for elements where the action-cache benefit is worth the
    maintenance cost.
@@ -325,7 +325,7 @@ New flow:
    source's CAS Directory exposes via metadata listings (no byte
    read needed).
 4. Pattern generation is explicit and out-of-band. A
-   `--regenerate-read-paths` mode of `convert-element` (or a
+   `--regenerate-read-paths` mode of `convert-element-cmake` (or a
    sibling tool) traces one run and writes the pattern file; the
    author commits it. Drift is human-noticed (build hits a
    missing-file error in cmake) rather than action-cache-stable.

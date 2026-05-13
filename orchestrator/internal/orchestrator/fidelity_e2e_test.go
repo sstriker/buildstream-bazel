@@ -1,7 +1,7 @@
 //go:build e2e
 
 // fidelity_e2e_test is the fidelity gate: build a cmake project two
-// ways (cmake reference vs convert-element + bazel build) and assert
+// ways (cmake reference vs convert-element-cmake + bazel build) and assert
 // the resulting libraries' `nm --defined-only` symbol sets are
 // equivalent.
 //
@@ -22,7 +22,7 @@
 // converter bugs surface (see docs/fidelity-known-deltas.md).
 //
 // Gated behind the existing `e2e` build tag; depends on real
-// cmake + bazel/bazelisk + convert-element + nm.
+// cmake + bazel/bazelisk + convert-element-cmake + nm.
 package orchestrator_test
 
 import (
@@ -44,7 +44,7 @@ type fidelityCase struct {
 
 	// SourceRoot is the absolute path to the cmake project root used
 	// for both the reference (`cmake … && cmake --build`) and the
-	// converted (convert-element + bazel build) builds. Required.
+	// converted (convert-element-cmake + bazel build) builds. Required.
 	SourceRoot string
 
 	// LibName is the symbol-diffed library's target name. The
@@ -139,7 +139,7 @@ func runSymbolFidelityCase(t *testing.T, c fidelityCase) {
 			c.Name, c.LibName, cmakeBuild, dirEntries(cmakeBuild))
 	}
 
-	// Path B: convert-element + bazel build. Direct convert-element
+	// Path B: convert-element-cmake + bazel build. Direct convert-element-cmake
 	// call (no orchestrator) so failures isolate on the converter's
 	// translation logic.
 	convOut := t.TempDir()
