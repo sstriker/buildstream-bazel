@@ -114,8 +114,36 @@ type Target struct {
 	Defines  []string
 	LinkOpts []string
 
-	// Deps are Bazel labels to other targets.
+	// Deps are Bazel labels to other targets whose headers are
+	// reachable through this target's public hdrs. Maps to
+	// `deps = [...]` on the emitted rule. Per gazelle_cc canon,
+	// targets reached via `PUBLIC` or `INTERFACE`
+	// target_link_libraries() in CMake belong here.
 	Deps []string
+
+	// ImplementationDeps are Bazel labels to other targets used
+	// only in this target's .cc files (`PRIVATE`
+	// target_link_libraries() in CMake). Maps to
+	// `implementation_deps = [...]` on the emitted rule —
+	// headers from these deps are NOT exposed transitively to
+	// consumers of this library, giving stricter header hygiene
+	// than a single Deps list.
+	//
+	// Signal availability: CMake codemodel-v2 (the converter's
+	// primary input today) does NOT carry per-dependency
+	// PUBLIC/PRIVATE scope — it exposes only a flat
+	// Target.Dependencies list and the rendered link
+	// commandFragments. Meson introspection and the trace-driven
+	// path likewise have no scope signal. Consequently every
+	// current producer leaves ImplementationDeps unset and
+	// folds every dep into Deps, matching the pre-Phase-4
+	// behaviour byte-for-byte. The IR shape is ready for a
+	// future signal source — codemodel addition (CMake 4.x has
+	// proposed this), a parsed-CMakeLists hint via backtrace,
+	// or a manifest-level operator override — without further
+	// IR or emit changes. Documented in
+	// docs/design/build-output-conventions.md.
+	ImplementationDeps []string
 
 	// Visibility carries the per-target Bazel visibility list
 	// as pure data. The IR stays policy-free: what "empty"

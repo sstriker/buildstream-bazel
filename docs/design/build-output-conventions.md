@@ -395,8 +395,9 @@ emits the most we can extract; the rest is operator-managed.
 
 | Input | Lossy attribute | Effect |
 | --- | --- | --- |
-| Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Everything maps to `deps`; no `implementation_deps` split. Documented in the meson handler. |
-| Trace-driven path | Link scope (PUBLIC vs PRIVATE) | Everything maps to `deps`; no `implementation_deps` split. Documented in `cmd/convert-element-trace/main.go`. |
+| CMake codemodel-v2 | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | codemodel exposes only a flat `Target.Dependencies` list (no per-dep scope) and the rendered link `commandFragments`. The IR's `ImplementationDeps` field is plumbed and the emitter renders `implementation_deps = [...]` when set, but no current lowering populates it — every CMake-derived dep folds into `Deps`. The split activates when a future codemodel version, a parsed-CMakeLists backtrace hint, or a manifest-level operator override supplies the scope signal. |
+| Meson introspection | `target_link_libraries` PUBLIC/PRIVATE/INTERFACE scope | Same shape as CMake — meson's `meson introspect` likewise reports no per-dep scope. Folds everything into `Deps`. |
+| Trace-driven path | Link scope (PUBLIC vs PRIVATE) | The trace-driven converter recovers cc rules from `cc/ar` execve events; the link command-line carries `-lfoo` flags but not the PUBLIC/PRIVATE keyword that drove the cmake `target_link_libraries()` call. Folds into `Deps`. |
 | pyproject entry shims (shim mode) | Pure-Bazel `py_binary` shape | `py_binary` references a genrule-materialized shim instead of the module file directly. Operators can opt into strict-mode (default) to get the cleaner shape. |
 
 ## Won't-do — architectural mismatches, not deferrals
@@ -445,9 +446,17 @@ to those entries; each is independently shippable.
   renderers (cc, py, write-a format-string handlers) onto
   `bazel.build/buildtools/build`. Result: `buildifier --mode=fix`
   is a no-op.
-- **Phase 4** — `implementation_deps` split via CMake
-  `target_link_libraries(PUBLIC|PRIVATE|INTERFACE)` propagation
-  through IR.
+- **Phase 4** — `implementation_deps` split IR + emit
+  plumbing. `ir.Target.ImplementationDeps` is the new field;
+  `bazel.Emit` renders `implementation_deps = [...]` when
+  populated, after `deps` in the rendered attribute order per
+  buildifier's `NamePriority`. The CMake codemodel-v2 / Meson
+  introspection / trace-driven paths do not yet carry the
+  PUBLIC/PRIVATE/INTERFACE scope signal to populate the field
+  (see "Lossy paths" above) — the IR shape is ready; the
+  populate path will follow when a signal source surfaces
+  (codemodel v3, manifest override, or a parsed-CMakeLists
+  hint).
 - **Phase 5** — entry-shim strict mode (`if __name__ ==
   "__main__":` detection) and `__main__.py` package-bin
   detection.

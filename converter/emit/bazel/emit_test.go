@@ -1140,3 +1140,78 @@ func TestEmit_Visibility_Golden(t *testing.T) {
 		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
+
+// TestEmit_ImplementationDeps covers Phase 4's
+// implementation_deps split. The IR field is populated
+// directly here (the CMake codemodel-lowering path has no
+// signal source for PUBLIC/PRIVATE scope today; the test
+// exercises the emit-side rendering against a hand-built
+// Target). Buildifier's NamePriority places
+// implementation_deps after deps in the rendered attribute
+// order — both at priority 0, with deps drifting to priority
+// 4 ahead of alwayslink. Confirms the new IR field renders
+// when set without disrupting the deps-only case.
+func TestEmit_ImplementationDeps(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name:               "lib",
+				Kind:               ir.KindCCLibrary,
+				Srcs:               []string{"lib.cc"},
+				Hdrs:               []string{"lib.h"},
+				Deps:               []string{"//public:dep"},
+				ImplementationDeps: []string{"//internal:helper"},
+			},
+		},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, marker := range []string{
+		`deps = ["//public:dep"]`,
+		`implementation_deps = ["//internal:helper"]`,
+	} {
+		if !strings.Contains(string(got), marker) {
+			t.Errorf("missing marker %q\n--body--\n%s", marker, got)
+		}
+	}
+	// implementation_deps appears BEFORE deps in the buildifier-
+	// canonical attribute order: implementation_deps lives in
+	// the priority-0 alpha block while `deps` has its own
+	// NamePriority slot (4) that floats it later in the rule.
+	// Confirms our emit lands the canonical shape gazelle_cc
+	// users expect on a cc_library with both attributes set.
+	implIdx := strings.Index(string(got), "implementation_deps =")
+	// `deps =` is a substring of `implementation_deps =`; match
+	// the bare `\n    deps =` to find the standalone occurrence.
+	depsIdx := strings.Index(string(got), "\n    deps =")
+	if implIdx < 0 || depsIdx < 0 || implIdx > depsIdx {
+		t.Errorf("expected implementation_deps before deps; impl=%d deps=%d", implIdx, depsIdx)
+	}
+}
+
+// TestEmit_NoImplementationDeps_OmitsAttribute confirms the
+// rendered output stays byte-stable when ImplementationDeps
+// is empty — the field's mere presence on ir.Target must not
+// emit an empty `implementation_deps = []` attribute that
+// would noise up every existing cc_library golden.
+func TestEmit_NoImplementationDeps_OmitsAttribute(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name: "lib",
+				Kind: ir.KindCCLibrary,
+				Srcs: []string{"lib.cc"},
+				Deps: []string{"//public:dep"},
+			},
+		},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(string(got), "implementation_deps") {
+		t.Errorf("expected implementation_deps attribute to be omitted when empty:\n%s", got)
+	}
+}

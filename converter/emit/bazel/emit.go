@@ -268,6 +268,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .DepsExpr}}
     deps = {{.DepsExpr}},
 {{- end}}
+{{- if .ImplementationDepsExpr}}
+    implementation_deps = {{.ImplementationDepsExpr}},
+{{- end}}
 {{- if .Data}}
     data = {{strList .Data}},
 {{- end}}
@@ -387,21 +390,22 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 // Test-only fields (Args, Env, Timeout, Data) stay zero except
 // when RuleKind == "cc_test".
 type ccView struct {
-	RuleKind           string
-	Name               string
-	SrcsExpr           string
-	HdrsExpr           string
-	IncludesExpr       string
-	IncludePrefix      string
-	StripIncludePrefix string
-	CoptsExpr          string
-	DefinesExpr        string
-	LinkoptsExpr       string
-	DepsExpr           string
-	Linkstatic         bool
-	Alwayslink         bool
-	Tags               []string
-	Visibility         []string
+	RuleKind               string
+	Name                   string
+	SrcsExpr               string
+	HdrsExpr               string
+	IncludesExpr           string
+	IncludePrefix          string
+	StripIncludePrefix     string
+	CoptsExpr              string
+	DefinesExpr            string
+	LinkoptsExpr           string
+	DepsExpr               string
+	ImplementationDepsExpr string
+	Linkstatic             bool
+	Alwayslink             bool
+	Tags                   []string
+	Visibility             []string
 
 	// cc_test-only.
 	Args    []string
@@ -489,6 +493,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	defines := sortedCopy(t.Defines)
 	linkopts := append([]string(nil), t.LinkOpts...) // preserve order
 	deps := sortedCopy(t.Deps)
+	implementationDeps := sortedCopy(t.ImplementationDeps)
 
 	// cc_binary doesn't accept `hdrs` (Bazel 9 errors out where
 	// older versions silently ignored). Fold any header into srcs
@@ -535,21 +540,22 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 
 	v := ccView{
-		RuleKind:           t.Kind.String(),
-		Name:               t.Name,
-		SrcsExpr:           attrExpr(srcs, srcsSel),
-		HdrsExpr:           attrExpr(hdrs, hdrsSel),
-		IncludesExpr:       attrExpr(includes, perPlatformAttr(t, "includes")),
-		IncludePrefix:      t.IncludePrefix,
-		StripIncludePrefix: t.StripIncludePrefix,
-		CoptsExpr:          attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:        attrExpr(defines, perPlatformAttr(t, "defines")),
-		LinkoptsExpr:       attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
-		DepsExpr:           attrExpr(deps, perPlatformAttr(t, "deps")),
-		Linkstatic:         t.Linkstatic,
-		Alwayslink:         t.Alwayslink,
-		Tags:               sortedCopy(t.Tags),
-		Visibility:         nonDefaultVisibility(t.Visibility),
+		RuleKind:               t.Kind.String(),
+		Name:                   t.Name,
+		SrcsExpr:               attrExpr(srcs, srcsSel),
+		HdrsExpr:               attrExpr(hdrs, hdrsSel),
+		IncludesExpr:           attrExpr(includes, perPlatformAttr(t, "includes")),
+		IncludePrefix:          t.IncludePrefix,
+		StripIncludePrefix:     t.StripIncludePrefix,
+		CoptsExpr:              attrExpr(copts, perPlatformAttr(t, "copts")),
+		DefinesExpr:            attrExpr(defines, perPlatformAttr(t, "defines")),
+		LinkoptsExpr:           attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
+		DepsExpr:               attrExpr(deps, perPlatformAttr(t, "deps")),
+		ImplementationDepsExpr: attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
+		Linkstatic:             t.Linkstatic,
+		Alwayslink:             t.Alwayslink,
+		Tags:                   sortedCopy(t.Tags),
+		Visibility:             nonDefaultVisibility(t.Visibility),
 	}
 	if t.Kind == ir.KindCCTest {
 		v.Args = append([]string(nil), t.TestArgs...) // preserve order; arg order matters
