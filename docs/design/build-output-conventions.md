@@ -130,7 +130,7 @@ maps. We do, because our round-2 fallback is exactly that input
 shape.
 
 Attributes: `static_library` and/or `shared_library` (string or
-`select({})`), `hdrs`, `includes` (Phase 2.2 — pending), per-rule
+`select({})`), `hdrs`, `includes` (Phase 2 — pending), per-rule
 `visibility` only when overriding.
 
 ### `sh_binary`
@@ -207,10 +207,13 @@ py_test(
 )
 ```
 
-Test detection follows gazelle_cc's filename-stem convention
-applied to Python: `HasPrefix(stem, "test_") ||
+Test detection follows the rules_python Gazelle plugin's
+filename-stem convention: `HasPrefix(stem, "test_") ||
 HasSuffix(stem, "_test")`, plus files under `test*/`
-directories.
+directories. The same filename-stem shape (without the
+`*_test.py` extension) is what gazelle_cc uses for its
+`*_test.cc` detection on the C++ side — both extensions
+converge on the same idiom.
 
 ### `genrule`
 
