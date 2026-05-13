@@ -29,6 +29,103 @@ transition cleanly.
 
 ## Next
 
+- **Normalize emitted BUILD shape to Bazel/Gazelle conventions
+  for post-conversion roundtrip.** Project B is the post-conversion
+  artifact: operators take it over and maintain it as a plain
+  Bazel/Gazelle project. Our output should look like what a human
+  using `EngFlow/gazelle_cc` (for cc) and
+  `bazel-contrib/rules_python/gazelle` (for py) would have written,
+  so `buildifier --mode=fix` is a no-op and `gazelle fix` preserves
+  our emit (and resolves deps for operator-added sources later
+  using metadata we ship). Architectural recipe:
+  `docs/design/build-output-conventions.md`. Seven independently
+  shippable phases:
+
+  *(File paths and CLI flags in the bullets below name the
+  post-stack state. The kind:pyproject converter
+  (`converter/cmd/convert-element-pyproject/...`) and its
+  `--convert-element-pyproject` flag land in Phase 2; bullets
+  that reference these paths or that flag should be read as
+  forward-looking. Once the stack rebases onto `main`, every
+  reference resolves as named.)*
+
+  - **Phase 1 — internal renderer consistency.** Unify visibility
+    under `package(default_visibility = ...)` + per-rule overrides
+    only; drop the three-way split between `bazel.Emit`'s per-rule
+    `visibility` and write-a handlers' package-level form. Fold
+    `cmd/convert-element-trace/main.go`'s inline `renderRules` into
+    `bazel.Emit(toIR(rules))` (`toIR()` already exists at line 287
+    of trace's main.go). Sort + trim `load()` lines in
+    `converter/cmd/convert-element-pyproject/emit.go` and drop the dead `cc_test`
+    load entry at trace's main.go:1071.
+  - **Phase 2 — attribute completeness.** Add `include_prefix` /
+    `strip_include_prefix` to IR (plumbed from CMake
+    `target_include_directories(... BASE_DIRS ...)` and codemodel
+    `INTERFACE_INCLUDE_DIRECTORIES`). Render `cc_import.includes`
+    for the round-2 fallback (closes the gap acknowledged at
+    `converter/internal/lower/execute_process_fallback.go:154-168`).
+    Emit `py_test` for test-pattern files (`HasPrefix(stem,
+    "test_") || HasSuffix(stem, "_test")` + files under `test*/`
+    directories). Add `pyi_srcs` discovery. Lift `conftest.py`
+    into its own `py_library(testonly = True)` and auto-wire as
+    dep of sibling `py_test`s.
+  - **Phase 3 — buildtools-AST migration.** Replace the
+    `text/template` renderer in `converter/emit/bazel/emit.go`,
+    the `fmt.Fprintf` emit in
+    `converter/cmd/convert-element-pyproject/emit.go`, and the
+    format-string emits in write-a's per-handler files with
+    `bazel.build/buildtools/build` AST construction. Pull
+    attribute order from `tables.NamePriority`. Contract:
+    `buildifier --mode=fix` against generated BUILDs is a no-op.
+    Big golden refresh; lifts the three-renderer split to a single
+    AST primitive.
+  - **Phase 4 — `implementation_deps` split.** Plumb CMake
+    `target_link_libraries(... PUBLIC|PRIVATE|INTERFACE ...)`
+    through codemodel parse → IR (`Target.ImplementationDeps`,
+    `Target.InterfaceDeps`). PUBLIC/INTERFACE → `deps`, PRIVATE →
+    `implementation_deps`. Meson + trace paths map everything to
+    `deps` (no PUBLIC/PRIVATE signal in their inputs); document
+    the lossy translation.
+  - **Phase 5 — entry-shim strict mode + `__main__.py` detection.**
+    For `[project.scripts]` entries: textual scan of the entry
+    module's source; if it ends with `if __name__ ==
+    "__main__":`-style block, emit
+    `py_binary(srcs=[entry-module], main=entry-module)` directly
+    (no shim). Otherwise keep the entry-shim genrule. Detect
+    `<pkg>/__main__.py` and emit `py_binary(name="<pkg>_bin", ...)`.
+    Add `--always-emit-entry-shim` for back-compat.
+  - **Phase 6 — conventions doc + ROADMAP queue (this PR's own
+    diff).** `docs/design/build-output-conventions.md` documents
+    the per-rule-kind shape, attribute order, visibility model,
+    lossy paths, deliberate divergences, and phase index. This
+    ROADMAP entry queues phases 1-5 and 7. Phase 6's PR is
+    intentionally doc-only — the *files this PR adds or
+    modifies* are the doc + this ROADMAP entry. Reviewers seeing
+    code in the PR's diff are viewing the cumulative base→head
+    delta which includes the stack's upstream PRs (per-platform
+    install fan-out, etc.); those changes belong to their own
+    PRs in the stack, not Phase 6.
+  - **Phase 7 — gazelle roundtrip.** Emit
+    `tools/cc_index.json` (header → label map for gazelle_cc's
+    resolver) and `tools/python_modules.json` (dist-name → label
+    map for rules_python gazelle's resolver). Add MODULE.bazel
+    directives: `# gazelle:cc_indexfile`,
+    `# gazelle:cc_use_builtin_bzlmod_index true`,
+    `# gazelle:python_module_mapping`. Emit `# keep` markers on
+    every generated `genrule` / `filegroup` and on attribute
+    values gazelle would otherwise rewrite (`cc_library.copts`,
+    `defines`, `linkopts`, `includes`, `tags`,
+    `cc_test.args`/`env`/`timeout`/`data`,
+    `py_library.imports`/`pyi_srcs`,
+    `package(default_visibility = ...)`). Emit
+    `# gazelle:resolve` directives for cross-element deps the
+    header/import scan can't resolve. Mirror our `includes`
+    values into `# gazelle:cc_search` directives. New gate
+    `scripts/meta-gazelle-roundtrip.sh` exercises the contract
+    end-to-end: `buildifier --mode=fix` is a no-op, `gazelle fix`
+    is a no-op, and adding a new `#include` to a source file
+    triggers gazelle to add the right `deps` entry on rerun.
+
 - **Per-platform fold for round-2 trace-driven kinds.** Mostly
   shipped (see Done — project A converter fan-out + fold for
   pipelineHandler kinds, project B install fan-out for

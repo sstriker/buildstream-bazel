@@ -49,21 +49,24 @@ var traceConfig struct {
 	foldBin       string // absolute path to fold-element (multi-platform fold of N per-platform ir.Package JSONs). Empty when --platforms-json isn't set.
 	round2Enabled bool   // round-2 active: pivot project A from marker → converter genrule, project B from inline-converter → inline-trace-publish. Set when --convert-element-trace is supplied AND the operator did NOT pass --trace-round1; cleared when only round-1 is wanted.
 	// platforms, when non-empty, switches the trace-driven round-2
-	// render to per-platform fan-out on the project A side: project
-	// A emits N converter genrules per element (one per (element,
-	// platform) cell) plus one fold-element genrule composing their
-	// ir.json outputs into a unified BUILD.bazel. tools/traces.json
-	// gains one entry per (element, platform) cell so the per-
-	// platform _trace_repo lookups don't collide. Project B's
-	// install genrule fan-out is queued as a follow-up — today's
-	// pipelineTraceExtensionRound2 / RenderB remain single-genrule
-	// regardless of --platforms-json and only read
-	// CMAKE_TO_BAZEL_PLATFORM from the action env, so the multi-
-	// platform path is render-shape complete on project A but
-	// runtime publishes only one platform's trace. Empty (the
-	// default) preserves the single-platform shape — byte-stable
-	// goldens, single converter genrule per element, single
-	// install genrule per element.
+	// render to per-platform fan-out on both project sides:
+	// project A emits N converter genrules per element (one per
+	// (element, platform) cell) plus one fold-element genrule
+	// composing their ir.json outputs into a unified BUILD.bazel;
+	// project B emits N install genrules per element via
+	// renderPipelineRound2B's multi-platform branch, each
+	// baking --platform=<name> into the trace-publish step and
+	// carrying exec_compatible_with constraints + an
+	// install_tree.tar select() arm. tools/traces.json gains
+	// one entry per (element, platform) cell so the per-platform
+	// _trace_repo lookups don't collide. The fan-out covers
+	// every cc-emitting trace-driven kind today
+	// (pipelineHandler kinds, kind:autotools via the round-2
+	// RenderB dispatch, kind:cmake Phase B fallback via
+	// renderCmakeRound2B). Empty (the default) preserves the
+	// single-platform shape — byte-stable goldens, single
+	// converter genrule per element, single install genrule per
+	// element.
 	platforms []tracePlatform
 
 	// traceSourceRoot, when true, threads --source-root=$$BUILD_ROOT
@@ -274,14 +277,18 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 		// it would just invalidate the install genrule's cache
 		// key on every imports.json change with no behavioral
 		// effect.
-		// kind:autotools per-platform render is queued under
-		// ROADMAP Next ("Per-platform fold for round-2 trace-
-		// driven kinds — kind:autotools per-platform render");
-		// today's autotoolsHandler always renders single-
-		// platform regardless of --platforms-json. Pass an empty
-		// tracePlatform{} so pipelineTraceExtensionRound2 emits
-		// the byte-stable legacy shape with no OutputPrefix /
-		// NameSuffix / ExecCompatibleWith.
+		// Pass an empty tracePlatform{} so
+		// pipelineTraceExtensionRound2 emits the byte-stable
+		// legacy shape with no OutputPrefix / NameSuffix /
+		// ExecCompatibleWith. The multi-platform fan-out for
+		// kind:autotools is driven separately by RenderB
+		// (which dispatches to renderPipelineRound2B and walks
+		// traceConfig.platforms to emit N install genrules);
+		// this extension-construction site stays single-
+		// platform because pipelineTraceExtensionRound2's
+		// extension threads into the *converter* genrule
+		// (project-A side), and project-A fan-out is the
+		// orchestrator's job via --platforms-json, not write-a's.
 		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"}, tracePlatform{})
 		return h, nil
 	}
@@ -374,11 +381,16 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 // that would let us re-introduce the split.
 func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension {
 	ext := &pipelineExtension{
-		// kind:autotools is single-platform today (per-platform
-		// fan-out queued in ROADMAP Next), so the wrapper's
-		// outputPrefix is always "". The generated-headers.txt
-		// $(location ...) reference resolves to the legacy
-		// unprefixed declared output.
+		// autotoolsTraceExtension is the round-1 path: the
+		// converter runs inline in project B's install genrule
+		// and there's exactly one such genrule per element
+		// regardless of --platforms-json. The wrapper's
+		// outputPrefix is always "" because there's only one
+		// declared `install_tree.tar` output for the
+		// generated-headers.txt $(location ...) reference to
+		// resolve against. Round-2's per-platform install
+		// fan-out is the separate renderPipelineRound2B call
+		// site in RenderB above.
 		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, "") },
 		AppendCmd:        autotoolsConverterStep(hasImports),
 		ExtraOuts: []string{
