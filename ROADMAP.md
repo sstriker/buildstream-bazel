@@ -41,6 +41,14 @@ transition cleanly.
   `docs/design/build-output-conventions.md`. Seven independently
   shippable phases:
 
+  *(File paths and CLI flags in the bullets below name the
+  post-stack state. The kind:pyproject converter
+  (`converter/cmd/convert-element-pyproject/...`) and its
+  `--convert-element-pyproject` flag land in Phase 2; bullets
+  that reference these paths or that flag should be read as
+  forward-looking. Once the stack rebases onto `main`, every
+  reference resolves as named.)*
+
   - **Phase 1 — internal renderer consistency.** Unify visibility
     under `package(default_visibility = ...)` + per-rule overrides
     only; drop the three-way split between `bazel.Emit`'s per-rule
