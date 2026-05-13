@@ -330,7 +330,7 @@ genrule(
 // `:install_tree.tar` so downstream
 // //elements/<dep>:install_tree.tar references resolve to the
 // matching per-platform tarball.
-func renderCmakeRound2B(elem *element, elemPkg string) string {
+func renderCmakeRound2B(elem *element) string {
 	if len(traceConfig.platforms) == 0 {
 		return cmakeRound2InstallBuild(elem, tracePlatform{})
 	}

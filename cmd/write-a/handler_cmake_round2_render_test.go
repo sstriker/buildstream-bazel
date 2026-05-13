@@ -270,7 +270,12 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"build-tracer-fake", "trace-publish-fake", "trace-lookup-fake", "fold-element-fake"} {
+	// --platforms-json hard-requires the trace-driven round-2
+	// path (main.go's platform gating rejects --platforms-json
+	// without round-2); mirror that flag combination here.
+	// convert-element-trace-fake unlocks round2Enabled =
+	// true, the same shape production CLI lands.
+	for _, name := range []string{"convert-element-trace-fake", "build-tracer-fake", "trace-publish-fake", "trace-lookup-fake", "fold-element-fake"} {
 		if err := os.WriteFile(filepath.Join(tmp, name),
 			[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
@@ -278,13 +283,12 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 	}
 	prevC := cmakeConfig
 	prevA := traceConfig
-	traceConfig.convertBin = ""
-	traceConfig.lookupBin = ""
-	traceConfig.round2Enabled = false
+	traceConfig.convertBin = filepath.Join(tmp, "convert-element-trace-fake")
 	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
 	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
 	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
 	traceConfig.foldBin = filepath.Join(tmp, "fold-element-fake")
+	traceConfig.round2Enabled = true
 	traceConfig.platforms = []tracePlatform{
 		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
 		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
