@@ -1,6 +1,6 @@
 # Three-pass flow: 1 → 2 → 3 (and the 2' → 3' follow-up for autotools)
 
-The cmake-to-bazel converter is a 3-pass system. Each pass has
+The buildstream-bazel converter is a 3-pass system. Each pass has
 its own caching story, and the optimization opportunities look
 very different depending on which pass you're in. **Pass 3 is
 where the real builds live** — pass 2 is meta-graph processing
