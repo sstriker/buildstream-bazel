@@ -196,6 +196,6 @@ mattering.
    `converter/testdata/golden/<name>/BUILD.bazel.golden` either
    directly or via the test's `-update` flag.
 4. Add a `TestEmit_<Name>_Golden` to
-   `converter/internal/emit/bazel/emit_test.go` that loads the
+   `converter/emit/bazel/emit_test.go` that loads the
    fixture + golden + asserts equivalence.
 5. Document any surfaced gaps under "Open deltas" above.
