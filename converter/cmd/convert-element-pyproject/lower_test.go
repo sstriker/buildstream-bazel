@@ -734,8 +734,8 @@ func TestLower_TestFilesEmitPyTest(t *testing.T) {
 	srcs := []string{
 		"demo/__init__.py",
 		"demo/cli.py",
-		"demo/test_cli.py",   // matches HasPrefix "test_"
-		"demo/util_test.py",  // matches HasSuffix "_test"
+		"demo/test_cli.py",  // matches HasPrefix "test_"
+		"demo/util_test.py", // matches HasSuffix "_test"
 	}
 	pkgs, err := Discover(p, srcs)
 	if err != nil {
