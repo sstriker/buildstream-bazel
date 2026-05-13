@@ -235,3 +235,113 @@ func TestWriter_CmakeRound2Fallback_OffByDefault(t *testing.T) {
 		t.Errorf("project B should NOT emit install genrule when fallback is off; got:\n%s", bBody)
 	}
 }
+
+// TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB: with
+// --platforms-json set + --cmake-round2-fallback enabled,
+// project B's per-element render fans out to N install
+// genrules (one per platform) + a top-level select()-filegroup
+// at :install_tree.tar. Same shape pipelineHandler kinds and
+// kind:autotools got in #114 / #115, just at the cmake handler
+// dispatch site.
+//
+// Each per-platform install genrule:
+//   - Names "<elem>_install_<platform>"
+//   - Outputs land under <platform>/install_tree.tar + <platform>/trace.log
+//   - exec_compatible_with carries the platform's constraint set
+//     (sorted for byte stability)
+//   - trace-publish bakes --platform=<plat> literally
+//
+// Downstream //elements/<dep>:install_tree.tar references stay
+// valid via the top-level filegroup; out-of-arm builds resolve
+// to "//conditions:default": [].
+func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "CMakeLists.txt"),
+		[]byte("cmake_minimum_required(VERSION 3.20)\nproject(demo C)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "demo.bst")
+	if err := os.WriteFile(bst,
+		[]byte("kind: cmake\nsources:\n- kind: local\n  path: "+srcDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"build-tracer-fake", "trace-publish-fake", "trace-lookup-fake", "fold-element-fake"} {
+		if err := os.WriteFile(filepath.Join(tmp, name),
+			[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prevC := cmakeConfig
+	prevA := traceConfig
+	traceConfig.convertBin = ""
+	traceConfig.lookupBin = ""
+	traceConfig.round2Enabled = false
+	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+	traceConfig.foldBin = filepath.Join(tmp, "fold-element-fake")
+	traceConfig.platforms = []tracePlatform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
+	}
+	if err := resolvePlatformSelectKeys(traceConfig.platforms); err != nil {
+		t.Fatalf("resolvePlatformSelectKeys: %v", err)
+	}
+	cmakeConfig.round2FallbackEnabled = true
+	t.Cleanup(func() {
+		cmakeConfig = prevC
+		traceConfig = prevA
+	})
+
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	outA := filepath.Join(tmp, "A")
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectA(g, outA, binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	bBody, err := os.ReadFile(filepath.Join(outB, "elements/demo/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(bBody)
+
+	for _, want := range []string{
+		`name = "demo_install_linux_x86_64"`,
+		`name = "demo_install_darwin_arm64"`,
+		`"linux_x86_64/install_tree.tar"`,
+		`"darwin_arm64/install_tree.tar"`,
+		`"linux_x86_64/trace.log"`,
+		`"darwin_arm64/trace.log"`,
+		// exec_compatible_with sorted (@platforms//cpu:* precedes @platforms//os:*).
+		`exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]`,
+		`exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]`,
+		`--platform="linux_x86_64"`,
+		`--platform="darwin_arm64"`,
+		// Top-level filegroup routes consumers.
+		`name = "install_tree.tar"`,
+		`"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]`,
+		`"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]`,
+		`"//conditions:default": [],`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("cmake round-2 fallback multi-platform project B missing %q\n%s", want, got)
+		}
+	}
+
+	// Legacy single-platform genrule name must NOT appear.
+	if strings.Contains(got, `name = "demo_install"`) {
+		t.Errorf("cmake round-2 fallback multi-platform project B unexpectedly contains legacy 'demo_install' name (no platform suffix)\n%s", got)
+	}
+}

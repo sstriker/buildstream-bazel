@@ -268,7 +268,7 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 		if err := renderSrckey(elem, elemPkg, cmakeSrckeyPatterns()); err != nil {
 			return err
 		}
-		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), cmakeRound2InstallBuild(elem))
+		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), renderCmakeRound2B(elem, elemPkg))
 	}
 
 	// Placeholder BUILD; the driver script overwrites this after
