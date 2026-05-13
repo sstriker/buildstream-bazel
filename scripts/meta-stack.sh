@@ -85,8 +85,10 @@ for f in MODULE.bazel BUILD.bazel \
         exit 1
     fi
 done
-# Stack's project-B BUILD references both deps.
-for ref in '"//elements/lib-a:lib-a"' '"//elements/lib-b:lib-b"'; do
+# Stack's project-B BUILD references both deps. Phase 3's
+# buildtools-canonical formatter shortens `//pkg:pkg` to `//pkg`
+# when the target name matches the package basename.
+for ref in '"//elements/lib-a"' '"//elements/lib-b"'; do
     if ! grep -qF "$ref" "$B/elements/runtime/BUILD.bazel"; then
         echo "meta-stack: project B stack BUILD missing dep ref $ref" >&2
         cat "$B/elements/runtime/BUILD.bazel" >&2

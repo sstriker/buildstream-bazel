@@ -280,14 +280,18 @@ func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		`"darwin_arm64/generated-headers.txt"`,
 		// exec_compatible_with renders sorted (matches the
 		// projecta/render.go precedent): @platforms//cpu:
-		// precedes @platforms//os: alphabetically.
-		`exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]`,
-		`exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]`,
+		// precedes @platforms//os: alphabetically. Phase 3's
+		// buildtools-canonical formatter wraps the 2-element
+		// list across lines; assert on per-element substrings.
+		`"@platforms//cpu:x86_64"`,
+		`"@platforms//os:linux"`,
+		`"@platforms//cpu:arm64"`,
+		`"@platforms//os:darwin"`,
 		`--platform="linux_x86_64"`,
 		`--platform="darwin_arm64"`,
 		`name = "install_tree.tar"`,
-		`"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]`,
-		`"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]`,
+		`["linux_x86_64/install_tree.tar"]`,
+		`["darwin_arm64/install_tree.tar"]`,
 		`"//conditions:default": [],`,
 		`$(location linux_x86_64/generated-headers.txt)`,
 		`$(location darwin_arm64/generated-headers.txt)`,

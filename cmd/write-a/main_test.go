@@ -445,8 +445,8 @@ func TestWriter_StackElementShape(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`name = "runtime"`,
-		`"//elements/lib-a:lib-a"`,
-		`"//elements/lib-b:lib-b"`,
+		`"//elements/lib-a"`,
+		`"//elements/lib-b"`,
 	} {
 		if !strings.Contains(string(stackBBuild), marker) {
 			t.Errorf("project B runtime BUILD missing %q\n--body--\n%s", marker, stackBBuild)
@@ -1054,7 +1054,13 @@ func TestWriter_ImportElementShape(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`name = "imp"`,
-		`glob(["**/*"], exclude = ["BUILD.bazel"])`,
+		// Phase 3's buildtools-canonical formatter wraps the
+		// glob() call across lines (it has 2 list args).
+		// Assert on individual substrings instead of the inline
+		// shape.
+		`glob(`,
+		`"**/*"`,
+		`exclude = ["BUILD.bazel"]`,
 		`kind:import`,
 	} {
 		if !strings.Contains(string(importB), marker) {
@@ -1116,7 +1122,7 @@ config:
 	}
 	for _, marker := range []string{
 		`name = "lib-headers"`,
-		`"//elements/lib:lib"`,
+		`"//elements/lib"`,
 		`kind:filter`,
 		`# include domains: [public-headers]`,
 		`# exclude domains: [runtime]`,
@@ -1205,8 +1211,8 @@ func TestWriter_ComposeElementShape(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`name = "bundle"`,
-		`"//elements/a:a"`,
-		`"//elements/b:b"`,
+		`"//elements/a"`,
+		`"//elements/b"`,
 		`kind:compose`,
 	} {
 		if !strings.Contains(string(composeB), marker) {
