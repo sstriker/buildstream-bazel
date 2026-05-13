@@ -263,6 +263,28 @@ transition cleanly.
   mechanical but touches a lot of files; defer until the Phase
   4-7 stack lands so the rename rebase doesn't fight active
   feature work.
+- **Rename Go module path `cmake-to-bazel` →
+  `buildstream-bazel`** so the module + repo name agree.
+  `github.com/sstriker/cmake-to-bazel` predates the project's
+  framing as a BuildStream-side conversion tool (cmake was
+  just the first translator we built; the project is broader
+  now — autotools/meson/pyproject all live here too). The
+  repo on GitHub is `sstriker/buildstream-bazel`; only the Go
+  module path still carries the old name. Touches:
+  - `go.mod` module declaration (1 line).
+  - Every `import "github.com/sstriker/cmake-to-bazel/..."`
+    statement across the source tree (~327 occurrences in
+    161 files per a quick `grep -rn cmake-to-bazel` count;
+    mostly `.go` and a handful of `.md` / `.yml` / `Makefile`
+    / `*.sh` references).
+  - Any cached module-path strings in fixtures / goldens —
+    the codegen-target test fixture may carry the path,
+    needs verification.
+  Pure mechanical sed; the work is the rebase coordination
+  (this clashes with every active PR's imports). Queue with
+  the `convert-element` → `convert-element-cmake` rename;
+  do both as a single "rename pass" PR once the Phase 4-8
+  stack lands.
 - **Optional orchestrator-driven gazelle step (Phase 8b)** —
   builds on Phase 8's operator overlay. When the operator
   declares `gazelle` / `gazelle_cc` (and any custom rewriting
