@@ -2,16 +2,16 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "aliaslib",
     srcs = ["src/aliaslib.c"],
     hdrs = ["include/aliaslib.h"],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    includes = ["include"],
-    linkstatic = True,
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )
 
 cc_binary(
@@ -20,8 +20,8 @@ cc_binary(
         "include/aliaslib.h",
         "src/demo.c",
     ],
-    copts = ["-O3"],
-    defines = ["NDEBUG"],
-    includes = ["include"],
+    copts = ["-O3"],  # keep
+    defines = ["NDEBUG"],  # keep
+    includes = ["include"],  # keep
     deps = [":aliaslib"],
 )

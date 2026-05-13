@@ -2,7 +2,7 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "genex",
@@ -11,11 +11,11 @@ cc_library(
     copts = [
         "-O3",
         "-Wall",
-    ],
+    ],  # keep
     defines = [
         "NDEBUG",
         "RELEASE_BUILD=1",
-    ],
-    includes = ["include"],
-    linkstatic = True,
+    ],  # keep
+    includes = ["include"],  # keep
+    linkstatic = True,  # keep
 )

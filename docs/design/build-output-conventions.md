@@ -465,10 +465,23 @@ to those entries; each is independently shippable.
   detection.
 - **Phase 6** — conventions doc + ROADMAP updates (this doc + the
   phase-index entries).
-- **Phase 7** — gazelle roundtrip: `tools/cc_index.json`,
-  `tools/python_modules.json`, `# keep` markers, `#
-  gazelle:resolve` / `cc_search` directives,
-  `scripts/meta-gazelle-roundtrip.sh` conformance gate.
+- **Phase 7** — gazelle roundtrip. Split across two PRs for
+  reviewable scope:
+  - **Phase 7a** — `# keep` markers on load-bearing attribute
+    lines (cc_* copts/defines/linkopts/includes/tags/
+    linkstatic/alwayslink/include_prefix/strip_include_prefix,
+    cc_test args/env/timeout/data, cc_import-shape attrs,
+    py_library/py_test imports/pyi_srcs/testonly, py_binary
+    strict-shape main/srcs, package(...) and genrule /
+    filegroup whole-rule keeps). Implemented as a buildtools-
+    AST post-pass in the cc + py emitters' canonicalize step.
+    Markers are inert without gazelle (a # comment any tool
+    ignores), so the change is decoupled from Phase 7b.
+  - **Phase 7b** — `tools/cc_index.json` +
+    `tools/python_modules.json` generation, MODULE.bazel
+    `# gazelle:` directives pointing at them, `#
+    gazelle:resolve` directives for cross-element deps,
+    `scripts/meta-gazelle-roundtrip.sh` conformance gate.
 
 The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,

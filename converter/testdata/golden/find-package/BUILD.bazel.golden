@@ -2,7 +2,7 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
-package(default_visibility = ["//visibility:public"])
+package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "usepkg",
@@ -11,11 +11,11 @@ cc_library(
     copts = [
         "-O3",
         "-fPIC",
-    ],
+    ],  # keep
     defines = [
         "NDEBUG",
         "usepkg_EXPORTS",
-    ],
-    includes = ["include"],
+    ],  # keep
+    includes = ["include"],  # keep
     deps = ["//elements/zlib"],
 )
