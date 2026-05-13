@@ -47,10 +47,31 @@ type Target struct {
 
 	// py_binary fields. EntryModule + EntryFunc are emitted
 	// alongside a generated entry-shim genrule when Kind ==
-	// KindPyBinary.
+	// KindPyBinary AND Main is empty (the shim path).
 	EntryModule string
 	EntryFunc   string
 	EntryDep    string // ":<package>" — the py_library this script imports
+
+	// Main, when non-empty for KindPyBinary, switches the
+	// emission shape from "generate an entry-shim genrule"
+	// to "point py_binary directly at a source file". Strict
+	// mode (rules_python gazelle's canonical shape): the
+	// emitted py_binary uses `srcs = [<Main>]` + `main =
+	// <Main>` + `deps = [<EntryDep>]`, no sibling genrule.
+	// Populated by Lower for two cases:
+	//
+	//   - A [project.scripts] entry whose target module's
+	//     source file contains `if __name__ == "__main__":`
+	//     and the operator hasn't opted into the
+	//     back-compat shim path via --always-emit-entry-shim.
+	//   - A package directory containing __main__.py — emitted
+	//     unconditionally as `<pkg>_bin` per
+	//     `docs/design/build-output-conventions.md`'s py_binary
+	//     section (matches `python -m <pkg>`).
+	//
+	// Empty Main leaves emit.go on the shim path, byte-stable
+	// with pre-Phase-5 output.
+	Main string
 }
 
 // Kind discriminates Target shapes.
@@ -90,6 +111,29 @@ type LowerOptions struct {
 	// (setuptools' dist-name → package-name normalization,
 	// script-name collision suffixing _lib, etc.).
 	ElementName string
+
+	// ReadSource, when non-nil, reads a source-relative .py
+	// file's bytes. lowerScripts calls it for each
+	// [project.scripts] entry to detect whether the target
+	// module self-invokes via `if __name__ == "__main__":`,
+	// which selects the strict-mode py_binary shape (no entry-
+	// shim genrule). When nil, Lower skips the self-invoke
+	// check and falls back to the shim path for every script
+	// — same as setting AlwaysEmitEntryShim. main.go (the
+	// non-test caller) passes a closure backed by os.ReadFile
+	// rooted at --source-root.
+	ReadSource func(relPath string) ([]byte, error)
+
+	// AlwaysEmitEntryShim, when true, forces the historical
+	// shim-genrule path for every [project.scripts] py_binary
+	// even when the target module self-invokes. Operator
+	// opt-in (--always-emit-entry-shim) for projects whose
+	// entry modules contain incompatible top-level side
+	// effects (state mutations, sys.exit-before-main, etc.)
+	// that the shim's clean `from <m> import <f>; sys.exit(f()
+	// or 0)` shape avoids. Default false matches the
+	// conventions doc's strict-by-default shape.
+	AlwaysEmitEntryShim bool
 }
 
 // Lower turns the parsed Pyproject + discovered Package list
@@ -216,11 +260,45 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 		}
 	}
 
-	scripts, err := lowerScripts(allScripts, labelByPkgName, opts.Imports)
+	scripts, err := lowerScripts(allScripts, pkgs, labelByPkgName, opts)
 	if err != nil {
 		return nil, err
 	}
 	out = append(out, scripts...)
+
+	// `__main__.py` package-bin emission. Per
+	// `docs/design/build-output-conventions.md`'s py_binary
+	// section: a package directory containing `__main__.py`
+	// is `python -m <pkg>`-runnable; matching rules_python's
+	// gazelle convention, we emit an unconditional
+	// `py_binary(name = "<pkg>_bin", srcs = ["<pkg>/__main__.py"],
+	// main = "<pkg>/__main__.py", deps = [":<pkg>"])`.
+	// Independent of [project.scripts] — a package can ship
+	// both a scripts entry-point AND a __main__.py runnable
+	// form, and operators expect both to be reachable from
+	// Bazel.
+	for _, pk := range pkgs {
+		if !pk.HasMain {
+			continue
+		}
+		binName := labelByPkgName[pk.Name] + "_bin"
+		if targetNameExists(out, binName) {
+			// Collision against a user-declared script-name
+			// rename or an element-name facade; skip rather
+			// than producing a duplicate. The renamed library
+			// + script binary already cover the entry-point.
+			continue
+		}
+		mainPath := path.Join(pk.Dir, "__main__.py")
+		out = append(out, Target{
+			Name:       binName,
+			Kind:       KindPyBinary,
+			Main:       mainPath,
+			Srcs:       []string{mainPath},
+			EntryDep:   ":" + labelByPkgName[pk.Name],
+			Visibility: []string{"//visibility:public"},
+		})
+	}
 
 	// Element-name facade. The imports.json contract (set by
 	// write-a's writePyprojectImportsManifest + the kind-agnostic
@@ -507,7 +585,14 @@ func lookupDistInManifest(imports *manifest.Resolver, raw, normalized string) *m
 // the Bazel-safe label it actually emitted as (potentially
 // with a "_lib" suffix when script-name collision-avoidance
 // kicked in).
-func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, imports *manifest.Resolver) ([]Target, error) {
+//
+// pkgs is the discovered Package list; needed to resolve an
+// entry-point module dotted name to a source-relative .py
+// path for the Phase 5 self-invoke detection.
+//
+// opts carries the Phase 5 knobs: ReadSource for self-invoke
+// detection and AlwaysEmitEntryShim for the operator opt-out.
+func lowerScripts(scripts map[string]string, pkgs []Package, labelByPkgName map[string]string, opts LowerOptions) ([]Target, error) {
 	if len(scripts) == 0 {
 		return nil, nil
 	}
@@ -537,12 +622,12 @@ func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, i
 		// `dist_name.cli:main` shape).
 		if dep == "" {
 			topLevel := strings.SplitN(module, ".", 2)[0]
-			if ex := lookupDistInManifest(imports, topLevel, normalizeDistName(topLevel)); ex != nil {
+			if ex := lookupDistInManifest(opts.Imports, topLevel, normalizeDistName(topLevel)); ex != nil {
 				dep = ex.BazelLabel
 			}
 		}
 		if dep == "" {
-			if imports == nil {
+			if opts.Imports == nil {
 				return nil, newFailure(unresolvedPyprojectDependency,
 					"[project.scripts] %q = %q: module %q isn't part of this element's own packages, and no --imports-manifest was provided to look it up in. Pass --imports-manifest=<path> with an entry that maps the top-level distribution name to a Bazel label.",
 					scriptName, spec, module)
@@ -551,16 +636,156 @@ func lowerScripts(scripts map[string]string, labelByPkgName map[string]string, i
 				"[project.scripts] %q = %q: module %q isn't part of this element's own packages and isn't bound by the imports manifest (the binary's py_library dep would dangle)",
 				scriptName, spec, module)
 		}
-		out = append(out, Target{
+		t := Target{
 			Name:        scriptName,
 			Kind:        KindPyBinary,
 			EntryModule: module,
 			EntryFunc:   fn,
 			EntryDep:    dep,
 			Visibility:  []string{"//visibility:public"},
-		})
+		}
+		// Phase 5: strict-mode self-invoke detection. When the
+		// target module's source file contains `if __name__ ==
+		// "__main__":`, emit `py_binary` pointing directly at
+		// the module file — no sibling shim genrule. Falls back
+		// to the shim path when:
+		//   - AlwaysEmitEntryShim is set (operator opt-in),
+		//   - ReadSource is nil (no I/O available; e.g. probe
+		//     mode or a caller that didn't wire the callback),
+		//   - the entry module's source file can't be located
+		//     in pkgs (cross-element scripts reaching modules
+		//     outside this element's own package list),
+		//   - the file's bytes can't be read,
+		//   - the bytes don't contain a self-invoke pattern.
+		// The shim path stays universally compatible.
+		if !opts.AlwaysEmitEntryShim && opts.ReadSource != nil {
+			if srcPath, ok := entryModuleSourcePath(module, pkgs); ok {
+				if content, rerr := opts.ReadSource(srcPath); rerr == nil && hasSelfInvoke(content) {
+					t.Main = srcPath
+					t.Srcs = []string{srcPath}
+				}
+			}
+		}
+		out = append(out, t)
 	}
 	return out, nil
+}
+
+// entryModuleSourcePath maps an entry-point dotted module to
+// a source-relative .py file path by locating the longest
+// in-graph package whose dotted name is a prefix of `module`,
+// then matching the remaining tail against one of that
+// package's source files.
+//
+// Returns ("", false) when the module doesn't resolve to a
+// single file in any in-graph package — typically a cross-
+// element module reached via the imports manifest, or a
+// module path that targets the package's __init__.py
+// directly (a self-invoke check on __init__.py is unusual;
+// fall back to the shim path).
+func entryModuleSourcePath(module string, pkgs []Package) (string, bool) {
+	bestIdx := -1
+	bestLen := -1
+	for i, pk := range pkgs {
+		if module == pk.Name || strings.HasPrefix(module, pk.Name+".") {
+			if len(pk.Name) > bestLen {
+				bestLen = len(pk.Name)
+				bestIdx = i
+			}
+		}
+	}
+	if bestIdx < 0 {
+		return "", false
+	}
+	pk := pkgs[bestIdx]
+	// The remaining-tail-after-package is the leaf module name
+	// (or "" when module == pk.Name, which means the entry-point
+	// targets the package's __init__.py).
+	tail := strings.TrimPrefix(module, pk.Name)
+	tail = strings.TrimPrefix(tail, ".")
+	if tail == "" {
+		// Entry-point targets the package's __init__.py.
+		// Less common shape; let the shim path handle it.
+		return "", false
+	}
+	if strings.Contains(tail, ".") {
+		// Sub-sub-module that lives in a child package, not
+		// in this package's depth-1 source list. The longest-
+		// prefix-match-loop above picked the closest package;
+		// if even that one's depth-1 doesn't have the file,
+		// fall back to the shim path.
+		return "", false
+	}
+	want := tail + ".py"
+	for _, s := range pk.Sources {
+		if path.Base(s) == want {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// hasSelfInvoke reports whether the given Python source
+// contains an `if __name__ == "__main__":` guard at module
+// scope. We do a textual scan rather than a real Python AST
+// parse: the import is light, the false-positive rate is
+// negligible (the literal string is essentially unique in
+// real .py files outside the guard pattern), and a
+// false negative (caller falls back to the shim path) is
+// strictly conservative — the shim path is always correct,
+// it just produces an extra genrule.
+//
+// Accepts both quote styles (`"__main__"` and `'__main__'`)
+// and tolerates whitespace variations around the operator.
+// Doesn't try to detect nested-block guards (e.g. one inside
+// a function body) — those aren't the runnable shape and the
+// scan's conservative approximation is fine for them.
+func hasSelfInvoke(src []byte) bool {
+	// Walk lines; skip leading whitespace; skip comments;
+	// match the canonical guard with either quote style and
+	// whitespace tolerance.
+	for _, raw := range strings.Split(string(src), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if !strings.HasPrefix(line, "if") {
+			continue
+		}
+		// Collapse interior whitespace then probe both quoting
+		// variants. Both shapes — `if __name__ == "__main__":`
+		// and `if __name__ == '__main__':` — are PEP 8-canonical
+		// and equivalent at runtime.
+		collapsed := collapseSpaces(line)
+		if strings.HasPrefix(collapsed, `if __name__ == "__main__"`) ||
+			strings.HasPrefix(collapsed, `if __name__ == '__main__'`) ||
+			strings.HasPrefix(collapsed, `if "__main__" == __name__`) ||
+			strings.HasPrefix(collapsed, `if '__main__' == __name__`) {
+			return true
+		}
+	}
+	return false
+}
+
+// collapseSpaces replaces every run of ASCII whitespace
+// (space or tab) with a single space. Used by hasSelfInvoke
+// so `if __name__   ==    "__main__":` matches the canonical
+// `if __name__ == "__main__":` form.
+func collapseSpaces(s string) string {
+	var b strings.Builder
+	prevSpace := false
+	for _, r := range s {
+		if r == ' ' || r == '\t' {
+			if !prevSpace {
+				b.WriteByte(' ')
+				prevSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		prevSpace = false
+	}
+	return b.String()
 }
 
 // longestInGraphParent finds the longest in-graph package whose
