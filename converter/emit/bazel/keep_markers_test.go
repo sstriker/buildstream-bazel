@@ -89,10 +89,7 @@ func TestEmit_KeepMarkers_Idempotent(t *testing.T) {
 	// Re-canonicalize the already-emitted body — simulates
 	// what write-a does when it re-canonicalizes BUILD.bazel-
 	// named files via its own buildtools pass.
-	out2, err := canonicalize(out1)
-	if err != nil {
-		t.Fatalf("canonicalize: %v", err)
-	}
+	out2 := canonicalize(out1)
 	// Each marker should appear exactly once per attribute.
 	for _, attr := range []string{"copts", "defines"} {
 		count := strings.Count(string(out2), attr+` = `)
