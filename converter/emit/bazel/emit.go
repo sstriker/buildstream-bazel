@@ -379,9 +379,16 @@ func ccKeepAttrs(kind string) map[string]bool {
 
 // ccImportKeepAttrs are the keep-tagged attributes on
 // cc_import — the rule schema differs from cc_library and
-// excludes most of the compile-side attrs. `includes` shows
-// up on cc_import only when emit-time wrapping inserts it
-// (Phase 2-prep work).
+// excludes most of the compile-side attrs. Per Phase 2's
+// `execute_process_fallback.go` gap update, stock
+// rules_cc's cc_import doesn't actually accept `includes`
+// either; the canonical fix for the round-2 fallback's
+// bracket-include consumers is wrapping cc_import in a
+// cc_library that uses strip_include_prefix. The
+// `includes` entry stays in this map defensively for any
+// future emit-time wrap that targets cc_import directly.
+// `static_library` / `shared_library` carry the per-
+// platform select() shapes the round-2 fallback emits.
 var ccImportKeepAttrs = map[string]bool{
 	"includes":        true,
 	"system_provided": true,
