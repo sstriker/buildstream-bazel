@@ -441,10 +441,6 @@ func autotoolsDepExtractCmd() string {
 // exec-root-relative path; pipelineHandler's prelude already
 // `cd "$$BUILD_ROOT"` by the time this runs, so the bare
 // relative path wouldn't find the staged binary.
-// Bazel resolves $(location //tools:build-tracer) to an
-// exec-root-relative path; pipelineHandler's prelude already
-// `cd "$$BUILD_ROOT"` by the time this runs, so the bare
-// relative path wouldn't find the staged binary.
 //
 // outputPrefix is the same OutputPrefix the surrounding
 // pipelineExtension applies to declared outputs — empty for
