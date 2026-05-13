@@ -83,6 +83,17 @@ type Package struct {
 	// sibling py_test depends on, mirroring rules_python's
 	// gazelle convention.
 	HasConftest bool
+
+	// HasMain reports whether this package's directory
+	// contains a __main__.py at depth-1. Drives the Phase 5
+	// `<pkg>_bin` emission in Lower: a separate
+	// py_binary(name = "<pkg>_bin", srcs = ["<pkg>/__main__.py"],
+	// main = "<pkg>/__main__.py", deps = [":<pkg>"]) target
+	// matching `python -m <pkg>` behavior. Independent of
+	// [project.scripts] entries; per
+	// `docs/design/build-output-conventions.md`'s py_binary
+	// section.
+	HasMain bool
 }
 
 // BazelLabel is the Bazel-safe form of Package.Name (dots →
@@ -560,8 +571,10 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 	prefix := dir + "/"
 	initPath := prefix + "__init__.py"
 	conftestPath := prefix + "conftest.py"
+	mainPath := prefix + "__main__.py"
 	hasInit := false
 	hasConftest := false
+	hasMain := false
 	var srcs, testSrcs, pyiSrcs []string
 	for _, f := range sourceFiles {
 		if !strings.HasPrefix(f, prefix) {
@@ -582,6 +595,9 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 		case strings.HasSuffix(f, ".py"):
 			if f == initPath {
 				hasInit = true
+			}
+			if f == mainPath {
+				hasMain = true
 			}
 			// Test-file convention (rules_python gazelle plugin):
 			// filename stem starts with `test_` or ends with
@@ -624,5 +640,6 @@ func materializePackage(dotted, root string, sourceFiles []string) (Package, err
 		TestSources: testSrcs,
 		PyiSources:  pyiSrcs,
 		HasConftest: hasConftest,
+		HasMain:     hasMain,
 	}, nil
 }

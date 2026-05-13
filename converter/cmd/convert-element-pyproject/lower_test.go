@@ -857,6 +857,227 @@ func TestLower_PyiSrcsCollected(t *testing.T) {
 	}
 }
 
+// TestLower_StrictModeSelfInvokingScript covers Phase 5's
+// canonical py_binary shape: when the entry module self-
+// invokes via `if __name__ == "__main__":`, Lower populates
+// Target.Main with the entry module's source-relative path
+// and Target.Srcs with the single-element list. Emit then
+// renders a py_binary with no shim genrule.
+func TestLower_StrictModeSelfInvokingScript(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	p.Project.Scripts = map[string]string{
+		"greet": "demo.cli:main",
+	}
+	srcs := []string{"demo/__init__.py", "demo/cli.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	readSource := func(rel string) ([]byte, error) {
+		if rel == "demo/cli.py" {
+			return []byte("def main():\n    print('hi')\n\nif __name__ == \"__main__\":\n    main()\n"), nil
+		}
+		return nil, nil
+	}
+	out, err := Lower(p, pkgs, LowerOptions{
+		SourceFiles: srcs,
+		ReadSource:  readSource,
+	})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var bin *Target
+	for i := range out {
+		if out[i].Kind == KindPyBinary && out[i].Name == "greet" {
+			bin = &out[i]
+			break
+		}
+	}
+	if bin == nil {
+		t.Fatalf("greet py_binary missing: %+v", out)
+	}
+	if bin.Main != "demo/cli.py" {
+		t.Errorf("Main=%q want demo/cli.py (self-invoke detected)", bin.Main)
+	}
+	if !equalStringSlice(bin.Srcs, []string{"demo/cli.py"}) {
+		t.Errorf("Srcs=%v want [demo/cli.py]", bin.Srcs)
+	}
+	if bin.EntryDep != ":demo" {
+		t.Errorf("EntryDep=%q want :demo", bin.EntryDep)
+	}
+}
+
+// TestLower_ShimModeNonSelfInvokingScript covers the Phase 5
+// fallback: when the entry module DOESN'T self-invoke,
+// Target.Main stays empty and emit renders the legacy shim
+// genrule + py_binary shape.
+func TestLower_ShimModeNonSelfInvokingScript(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	p.Project.Scripts = map[string]string{
+		"greet": "demo.cli:main",
+	}
+	srcs := []string{"demo/__init__.py", "demo/cli.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	readSource := func(rel string) ([]byte, error) {
+		return []byte("def main():\n    print('hi')\n"), nil // no guard
+	}
+	out, err := Lower(p, pkgs, LowerOptions{
+		SourceFiles: srcs,
+		ReadSource:  readSource,
+	})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	for _, t0 := range out {
+		if t0.Kind == KindPyBinary && t0.Name == "greet" {
+			if t0.Main != "" {
+				t.Errorf("Main=%q want empty (entry module doesn't self-invoke)", t0.Main)
+			}
+			return
+		}
+	}
+	t.Fatalf("greet py_binary missing: %+v", out)
+}
+
+// TestLower_AlwaysEmitEntryShimForcesShim covers the operator
+// opt-out: --always-emit-entry-shim forces the shim path even
+// when the entry module DOES self-invoke. Target.Main stays
+// empty, byte-identical to pre-Phase-5 output.
+func TestLower_AlwaysEmitEntryShimForcesShim(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	p.Project.Scripts = map[string]string{
+		"greet": "demo.cli:main",
+	}
+	srcs := []string{"demo/__init__.py", "demo/cli.py"}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	readSource := func(rel string) ([]byte, error) {
+		return []byte("if __name__ == \"__main__\":\n    main()\n"), nil
+	}
+	out, err := Lower(p, pkgs, LowerOptions{
+		SourceFiles:         srcs,
+		ReadSource:          readSource,
+		AlwaysEmitEntryShim: true,
+	})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	for _, t0 := range out {
+		if t0.Kind == KindPyBinary && t0.Name == "greet" {
+			if t0.Main != "" {
+				t.Errorf("Main=%q want empty (AlwaysEmitEntryShim forces shim path)", t0.Main)
+			}
+			return
+		}
+	}
+	t.Fatalf("greet py_binary missing: %+v", out)
+}
+
+// TestLower_PackageMainPyEmitsBinTarget covers Phase 5's
+// __main__.py detection: a package directory containing
+// __main__.py gets an unconditional `<pkg>_bin` py_binary
+// pointing directly at the file, matching `python -m <pkg>`.
+func TestLower_PackageMainPyEmitsBinTarget(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	srcs := []string{
+		"demo/__init__.py",
+		"demo/__main__.py",
+		"demo/cli.py",
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if !pkgs[0].HasMain {
+		t.Errorf("HasMain=false want true (package contains __main__.py)")
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var bin *Target
+	for i := range out {
+		if out[i].Name == "demo_bin" {
+			bin = &out[i]
+			break
+		}
+	}
+	if bin == nil {
+		t.Fatalf("demo_bin missing: %+v", out)
+	}
+	if bin.Kind != KindPyBinary {
+		t.Errorf("Kind=%v want KindPyBinary", bin.Kind)
+	}
+	if bin.Main != "demo/__main__.py" {
+		t.Errorf("Main=%q want demo/__main__.py", bin.Main)
+	}
+	if !equalStringSlice(bin.Srcs, []string{"demo/__main__.py"}) {
+		t.Errorf("Srcs=%v want [demo/__main__.py]", bin.Srcs)
+	}
+	if bin.EntryDep != ":demo" {
+		t.Errorf("EntryDep=%q want :demo", bin.EntryDep)
+	}
+}
+
+// TestHasSelfInvoke_VariantQuotes covers both quote-style
+// variants of the canonical `if __name__ == "__main__":`
+// pattern. PEP 8 prefers double quotes, but single quotes
+// are equally valid Python; both must trigger the strict-
+// mode emission shape.
+func TestHasSelfInvoke_VariantQuotes(t *testing.T) {
+	cases := map[string]bool{
+		`if __name__ == "__main__":`:      true,
+		`if __name__ == '__main__':`:      true,
+		`if "__main__" == __name__:`:      true,
+		`if __name__   ==    "__main__":`: true,
+		`# if __name__ == "__main__":`:    false, // commented out
+		`def f():\n    pass`:              false, // no guard
+		`if name == "__main__":`:          false, // wrong identifier
+	}
+	for src, want := range cases {
+		got := hasSelfInvoke([]byte(src))
+		if got != want {
+			t.Errorf("hasSelfInvoke(%q) = %v, want %v", src, got, want)
+		}
+	}
+}
+
+// TestEntryModuleSourcePath covers the entry-point dotted-
+// name to source-relative .py path resolver. Crucial for the
+// self-invoke detector to know which file to scan.
+func TestEntryModuleSourcePath(t *testing.T) {
+	pkgs := []Package{
+		{Name: "demo", Sources: []string{"src/demo/__init__.py", "src/demo/cli.py"}},
+		{Name: "demo.sub", Sources: []string{"src/demo/sub/__init__.py", "src/demo/sub/runner.py"}},
+	}
+	cases := []struct {
+		module  string
+		wantOk  bool
+		wantSrc string
+	}{
+		{"demo.cli", true, "src/demo/cli.py"},
+		{"demo.sub.runner", true, "src/demo/sub/runner.py"},
+		{"demo.sub", false, ""},    // targets __init__.py — shim path
+		{"unknown.mod", false, ""}, // not in graph
+	}
+	for _, c := range cases {
+		got, ok := entryModuleSourcePath(c.module, pkgs)
+		if ok != c.wantOk || got != c.wantSrc {
+			t.Errorf("entryModuleSourcePath(%q) = (%q, %v); want (%q, %v)",
+				c.module, got, ok, c.wantSrc, c.wantOk)
+		}
+	}
+}
+
 func equalStringSlice(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -157,16 +157,65 @@ func emitPyTest(b *bytes.Buffer, t Target) {
 	b.WriteString(")\n")
 }
 
-// emitPyBinary renders a py_binary plus a sibling genrule
-// that materialises the entry shim. The shim is a 3-line
-// .py file (`import sys` / `from <module> import <func>` /
-// `sys.exit(<func>() or 0)`) that imports the entry module and
-// dispatches the entry function — universally compatible across
-// rules_python versions (avoids depending on
-// py_console_script_binary, which was added in rules_python
-// 0.21+ and we don't pin rules_python's version in project B's
-// MODULE.bazel).
+// emitPyBinary renders a py_binary. Two shapes:
+//
+//   - **Strict shape (Phase 5 default)**: when Target.Main is
+//     set (the entry module self-invokes via `if __name__ ==
+//     "__main__":` or the target is a `<pkg>_bin` for a
+//     package containing `__main__.py`), emit a single
+//     py_binary pointing directly at the module file with
+//     no shim genrule:
+//     ```
+//     py_binary(name=..., srcs=[<Main>], main=<Main>, deps=[<EntryDep>])
+//     ```
+//     Matches rules_python gazelle plugin's canonical shape.
+//
+//   - **Shim shape (Phase 5 fallback / pre-Phase-5 default)**:
+//     when Target.Main is empty (the entry module doesn't
+//     self-invoke, or operator passed `--always-emit-entry-shim`),
+//     render a sibling genrule that materializes a 3-line
+//     entry shim (`import sys` / `from <module> import <func>`
+//     / `sys.exit(<func>() or 0)`) plus a py_binary consuming
+//     the shim. Universally compatible across rules_python
+//     versions and works for entry modules that don't carry
+//     their own `__name__ == "__main__"` guard.
 func emitPyBinary(b *bytes.Buffer, t Target) {
+	if t.Main != "" {
+		emitPyBinaryStrict(b, t)
+		return
+	}
+	emitPyBinaryShim(b, t)
+}
+
+// emitPyBinaryStrict renders the Phase 5 canonical
+// py_binary-with-source-file shape — no shim genrule.
+func emitPyBinaryStrict(b *bytes.Buffer, t Target) {
+	fmt.Fprintf(b, "py_binary(\n    name = %q,\n", t.Name)
+	srcs := t.Srcs
+	if len(srcs) == 0 {
+		// Defensive: Lower populates both Main and Srcs in
+		// lockstep, but if a future producer forgets Srcs we
+		// derive a single-element list from Main rather than
+		// emitting a syntactically-invalid py_binary.
+		srcs = []string{t.Main}
+	}
+	writeList(b, "srcs", sortedCopy(srcs))
+	fmt.Fprintf(b, "    main = %q,\n", t.Main)
+	if t.EntryDep != "" {
+		writeList(b, "deps", []string{t.EntryDep})
+	}
+	if len(t.Visibility) > 0 {
+		writeList(b, "visibility", sortedCopy(t.Visibility))
+	}
+	b.WriteString(")\n")
+}
+
+// emitPyBinaryShim renders the legacy
+// genrule-makes-a-shim + py_binary-imports-shim shape.
+// Preserved verbatim for operator opt-in
+// (`--always-emit-entry-shim`) and for entry modules that
+// don't self-invoke.
+func emitPyBinaryShim(b *bytes.Buffer, t Target) {
 	shimRule := t.Name + "_entry"
 	shimFile := t.Name + "_entry.py"
 	// The genrule cmd is a single shell line, not a here-doc,
