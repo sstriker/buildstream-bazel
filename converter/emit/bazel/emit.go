@@ -208,6 +208,12 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .IncludesExpr}}
     includes = {{.IncludesExpr}},
 {{- end}}
+{{- if .IncludePrefix}}
+    include_prefix = "{{.IncludePrefix}}",
+{{- end}}
+{{- if .StripIncludePrefix}}
+    strip_include_prefix = "{{.StripIncludePrefix}}",
+{{- end}}
 {{- if .CoptsExpr}}
     copts = {{.CoptsExpr}},
 {{- end}}
@@ -339,19 +345,21 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 // Test-only fields (Args, Env, Timeout, Data) stay zero except
 // when RuleKind == "cc_test".
 type ccView struct {
-	RuleKind     string
-	Name         string
-	SrcsExpr     string
-	HdrsExpr     string
-	IncludesExpr string
-	CoptsExpr    string
-	DefinesExpr  string
-	LinkoptsExpr string
-	DepsExpr     string
-	Linkstatic   bool
-	Alwayslink   bool
-	Tags         []string
-	Visibility   []string
+	RuleKind           string
+	Name               string
+	SrcsExpr           string
+	HdrsExpr           string
+	IncludesExpr       string
+	IncludePrefix      string
+	StripIncludePrefix string
+	CoptsExpr          string
+	DefinesExpr        string
+	LinkoptsExpr       string
+	DepsExpr           string
+	Linkstatic         bool
+	Alwayslink         bool
+	Tags               []string
+	Visibility         []string
 
 	// cc_test-only.
 	Args    []string
@@ -485,19 +493,21 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 
 	v := ccView{
-		RuleKind:     t.Kind.String(),
-		Name:         t.Name,
-		SrcsExpr:     attrExpr(srcs, srcsSel),
-		HdrsExpr:     attrExpr(hdrs, hdrsSel),
-		IncludesExpr: attrExpr(includes, perPlatformAttr(t, "includes")),
-		CoptsExpr:    attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:  attrExpr(defines, perPlatformAttr(t, "defines")),
-		LinkoptsExpr: attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
-		DepsExpr:     attrExpr(deps, perPlatformAttr(t, "deps")),
-		Linkstatic:   t.Linkstatic,
-		Alwayslink:   t.Alwayslink,
-		Tags:         sortedCopy(t.Tags),
-		Visibility:   nonDefaultVisibility(t.Visibility),
+		RuleKind:           t.Kind.String(),
+		Name:               t.Name,
+		SrcsExpr:           attrExpr(srcs, srcsSel),
+		HdrsExpr:           attrExpr(hdrs, hdrsSel),
+		IncludesExpr:       attrExpr(includes, perPlatformAttr(t, "includes")),
+		IncludePrefix:      t.IncludePrefix,
+		StripIncludePrefix: t.StripIncludePrefix,
+		CoptsExpr:          attrExpr(copts, perPlatformAttr(t, "copts")),
+		DefinesExpr:        attrExpr(defines, perPlatformAttr(t, "defines")),
+		LinkoptsExpr:       attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
+		DepsExpr:           attrExpr(deps, perPlatformAttr(t, "deps")),
+		Linkstatic:         t.Linkstatic,
+		Alwayslink:         t.Alwayslink,
+		Tags:               sortedCopy(t.Tags),
+		Visibility:         nonDefaultVisibility(t.Visibility),
 	}
 	if t.Kind == ir.KindCCTest {
 		v.Args = append([]string(nil), t.TestArgs...) // preserve order; arg order matters
