@@ -2,6 +2,8 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])
+
 cc_library(
     name = "mfi",
     srcs = ["src/mfi.c"],
@@ -11,5 +13,4 @@ cc_library(
     defines = ["NDEBUG"],
     deps = ["//elements/zlib:zlib"],
     linkstatic = True,
-    visibility = ["//visibility:public"],
 )

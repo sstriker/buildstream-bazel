@@ -2,6 +2,8 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
+package(default_visibility = ["//visibility:public"])
+
 cc_library(
     name = "cfglib",
     srcs = ["src/cfglib.c"],
@@ -11,7 +13,6 @@ cc_library(
     defines = ["NDEBUG"],
     linkstatic = True,
     tags = ["has-cmake-codegen"],
-    visibility = ["//visibility:public"],
 )
 
 genrule(

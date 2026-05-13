@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazel"
+	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
 	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
 	"github.com/sstriker/cmake-to-bazel/converter/ir"
@@ -17,11 +17,11 @@ import (
 var update = flag.Bool("update", false, "overwrite *.golden files instead of comparing")
 
 func TestEmit_HelloWorld_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/hello-world")
+	src, err := filepath.Abs("../../testdata/sample-projects/hello-world")
 	if err != nil {
 		t.Fatalf("abs: %v", err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/hello-world")
+	r, err := fileapi.Load("../../testdata/fileapi/hello-world")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -39,7 +39,7 @@ func TestEmit_HelloWorld_Golden(t *testing.T) {
 	// comment; replace it with a stable token before comparison.
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "hello-world", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "hello-world", "BUILD.bazel.golden")
 	if *update {
 		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 			t.Fatal(err)
@@ -78,11 +78,11 @@ func TestEmit_HelloWorld_Golden(t *testing.T) {
 //     target_include_directories owns the path. Hdrs detection is
 //     over-inclusive across a multi-CMakeLists project.
 func TestEmit_SubdirLibrary_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/subdir-library")
+	src, err := filepath.Abs("../../testdata/sample-projects/subdir-library")
 	if err != nil {
 		t.Fatalf("abs: %v", err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/subdir-library")
+	r, err := fileapi.Load("../../testdata/fileapi/subdir-library")
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestEmit_SubdirLibrary_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "subdir-library", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "subdir-library", "BUILD.bazel.golden")
 	if *update {
 		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
 			t.Fatal(err)
@@ -142,11 +142,11 @@ func scrubSourceLine(b []byte, src string) []byte {
 // bytes by digest-stable Bazel label rather than by relative
 // filesystem path.
 func TestEmit_WithSourceKey_PrefixesLabels(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/hello-world")
+	src, err := filepath.Abs("../../testdata/sample-projects/hello-world")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/hello-world")
+	r, err := fileapi.Load("../../testdata/fileapi/hello-world")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,11 +183,11 @@ func TestEmit_WithSourceKey_PrefixesLabels(t *testing.T) {
 // regression guard against the new option leaking into the
 // existing test fixtures.
 func TestEmit_NoSourceKey_PreservesLegacyPaths(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/hello-world")
+	src, err := filepath.Abs("../../testdata/sample-projects/hello-world")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/hello-world")
+	r, err := fileapi.Load("../../testdata/fileapi/hello-world")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,11 +233,11 @@ func contains(haystack, needle string) bool {
 // (legacy base64-of-rendered cmd, no srcs) takes over when
 // Extract can't recover values for a template.
 func TestEmit_ConfigureFile_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/configure-file")
+	src, err := filepath.Abs("../../testdata/sample-projects/configure-file")
 	if err != nil {
 		t.Fatal(err)
 	}
-	replyDir, err := filepath.Abs("../../../testdata/fileapi/configure-file")
+	replyDir, err := filepath.Abs("../../testdata/fileapi/configure-file")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "configure-file", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "configure-file", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -296,11 +296,11 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 //     cmake-codegen-file-generate-genex audit tag, no lifted
 //     tag.
 func TestEmit_FileGenerate_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/file-generate")
+	src, err := filepath.Abs("../../testdata/sample-projects/file-generate")
 	if err != nil {
 		t.Fatal(err)
 	}
-	replyDir, err := filepath.Abs("../../../testdata/fileapi/file-generate")
+	replyDir, err := filepath.Abs("../../testdata/fileapi/file-generate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestEmit_FileGenerate_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "file-generate", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "file-generate", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -473,11 +473,11 @@ func TestEmit_CCImport_SharedLibrary(t *testing.T) {
 // cmake-codegen-execute-process tag set. cc_library compile
 // of the unrelated source file is unaffected.
 func TestEmit_ExecuteProcess_CMakeE_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/execute-process-cmake-e")
+	src, err := filepath.Abs("../../testdata/sample-projects/execute-process-cmake-e")
 	if err != nil {
 		t.Fatal(err)
 	}
-	replyDir, err := filepath.Abs("../../../testdata/fileapi/execute-process-cmake-e")
+	replyDir, err := filepath.Abs("../../testdata/fileapi/execute-process-cmake-e")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestEmit_ExecuteProcess_CMakeE_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "execute-process-cmake-e", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "execute-process-cmake-e", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -532,11 +532,11 @@ func TestEmit_ExecuteProcess_CMakeE_Golden(t *testing.T) {
 // cmake-codegen-execute-process-hoisted tag flags the
 // configure-time → build-time move for audit queries.
 func TestEmit_ExecuteProcess_FileProducing_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/execute-process-file-producing")
+	src, err := filepath.Abs("../../testdata/sample-projects/execute-process-file-producing")
 	if err != nil {
 		t.Fatal(err)
 	}
-	replyDir, err := filepath.Abs("../../../testdata/fileapi/execute-process-file-producing")
+	replyDir, err := filepath.Abs("../../testdata/fileapi/execute-process-file-producing")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,7 +562,7 @@ func TestEmit_ExecuteProcess_FileProducing_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "execute-process-file-producing", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "execute-process-file-producing", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -587,11 +587,11 @@ func TestEmit_ExecuteProcess_FileProducing_Golden(t *testing.T) {
 // binary (cc_binary, hdrs folded into srcs per Bazel 9). All emit
 // in one BUILD with the right rule kind per target.
 func TestEmit_MultiTarget_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/multi-target")
+	src, err := filepath.Abs("../../testdata/sample-projects/multi-target")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/multi-target")
+	r, err := fileapi.Load("../../testdata/fileapi/multi-target")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ func TestEmit_MultiTarget_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "multi-target", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "multi-target", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -632,11 +632,11 @@ func TestEmit_MultiTarget_Golden(t *testing.T) {
 // imports-manifest plumbing surfaces real out-of-tree deps as
 // stable Bazel labels rather than absolute /usr/lib paths.
 func TestEmit_FindPackage_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/find-package")
+	src, err := filepath.Abs("../../testdata/sample-projects/find-package")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/find-package")
+	r, err := fileapi.Load("../../testdata/fileapi/find-package")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -654,7 +654,7 @@ func TestEmit_FindPackage_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "find-package", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "find-package", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -681,11 +681,11 @@ func TestEmit_FindPackage_Golden(t *testing.T) {
 // consults the trace's target_link_libraries call to
 // surface the dep.
 func TestEmit_FindPackageStatic_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/find-package-static")
+	src, err := filepath.Abs("../../testdata/sample-projects/find-package-static")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/find-package-static")
+	r, err := fileapi.Load("../../testdata/fileapi/find-package-static")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +693,7 @@ func TestEmit_FindPackageStatic_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load imports manifest: %v", err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/find-package-static/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/find-package-static/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestEmit_FindPackageStatic_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "find-package-static", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "find-package-static", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -735,11 +735,11 @@ func TestEmit_FindPackageStatic_Golden(t *testing.T) {
 // the same Bazel label that ZLIB::ZLIB would resolve to —
 // alternative names, same underlying system lib.
 func TestEmit_PkgConfig_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/pkg-config")
+	src, err := filepath.Abs("../../testdata/sample-projects/pkg-config")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/pkg-config")
+	r, err := fileapi.Load("../../testdata/fileapi/pkg-config")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -747,7 +747,7 @@ func TestEmit_PkgConfig_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load imports manifest: %v", err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/pkg-config/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/pkg-config/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestEmit_PkgConfig_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "pkg-config", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "pkg-config", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -790,15 +790,15 @@ func TestEmit_PkgConfig_Golden(t *testing.T) {
 // a clean :aliaslib reference. No special-case code in lower
 // — this test is a regression guard against future changes.
 func TestEmit_AliasTarget_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/alias-target")
+	src, err := filepath.Abs("../../testdata/sample-projects/alias-target")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/alias-target")
+	r, err := fileapi.Load("../../testdata/fileapi/alias-target")
 	if err != nil {
 		t.Fatal(err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/alias-target/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/alias-target/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -812,7 +812,7 @@ func TestEmit_AliasTarget_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "alias-target", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "alias-target", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -841,15 +841,15 @@ func TestEmit_AliasTarget_Golden(t *testing.T) {
 // objects flow naturally via Bazel's link-once-per-consumer
 // shape.
 func TestEmit_ObjectLibrary_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/object-library")
+	src, err := filepath.Abs("../../testdata/sample-projects/object-library")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/object-library")
+	r, err := fileapi.Load("../../testdata/fileapi/object-library")
 	if err != nil {
 		t.Fatal(err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/object-library/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/object-library/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -863,7 +863,7 @@ func TestEmit_ObjectLibrary_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "object-library", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "object-library", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -897,15 +897,15 @@ func TestEmit_ObjectLibrary_Golden(t *testing.T) {
 // install(EXPORT)) is a separate concern — the
 // orchestrator's cmakecfg-bundle path covers that.
 func TestEmit_InterfaceLibrary_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/interface-library")
+	src, err := filepath.Abs("../../testdata/sample-projects/interface-library")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/interface-library")
+	r, err := fileapi.Load("../../testdata/fileapi/interface-library")
 	if err != nil {
 		t.Fatal(err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/interface-library/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/interface-library/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -919,7 +919,7 @@ func TestEmit_InterfaceLibrary_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "interface-library", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "interface-library", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -954,15 +954,15 @@ func TestEmit_InterfaceLibrary_Golden(t *testing.T) {
 // for ZLIB even though the target_link_libraries call lives
 // in the producer's Helpers.cmake.
 func TestEmit_MacroFromImport_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/macro-from-import/consumer")
+	src, err := filepath.Abs("../../testdata/sample-projects/macro-from-import/consumer")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/macro-from-import")
+	r, err := fileapi.Load("../../testdata/fileapi/macro-from-import")
 	if err != nil {
 		t.Fatal(err)
 	}
-	importsPath, err := filepath.Abs("../../../testdata/sample-projects/macro-from-import/imports.json")
+	importsPath, err := filepath.Abs("../../testdata/sample-projects/macro-from-import/imports.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -970,7 +970,7 @@ func TestEmit_MacroFromImport_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load imports manifest: %v", err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/macro-from-import/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/macro-from-import/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -984,7 +984,7 @@ func TestEmit_MacroFromImport_Golden(t *testing.T) {
 	}
 	got = scrubSourceLine(got, src)
 
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "macro-from-import", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "macro-from-import", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -1010,11 +1010,11 @@ func TestEmit_MacroFromImport_Golden(t *testing.T) {
 // convert-element doesn't trip on the expressions and emits
 // the resolved values cleanly. Known clean — no gap.
 func TestEmit_GeneratorExpressions_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/generator-expressions")
+	src, err := filepath.Abs("../../testdata/sample-projects/generator-expressions")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/generator-expressions")
+	r, err := fileapi.Load("../../testdata/fileapi/generator-expressions")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1027,7 +1027,7 @@ func TestEmit_GeneratorExpressions_Golden(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = scrubSourceLine(got, src)
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "generator-expressions", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "generator-expressions", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -1058,11 +1058,11 @@ func TestEmit_GeneratorExpressions_Golden(t *testing.T) {
 // Fix shape (deferred): split multi-language targets into one
 // cc_library per language. See docs/cmake-conversion-deltas.md.
 func TestEmit_MultiLanguage_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/multi-language")
+	src, err := filepath.Abs("../../testdata/sample-projects/multi-language")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/multi-language")
+	r, err := fileapi.Load("../../testdata/fileapi/multi-language")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1075,7 +1075,7 @@ func TestEmit_MultiLanguage_Golden(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = scrubSourceLine(got, src)
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "multi-language", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "multi-language", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
@@ -1103,15 +1103,15 @@ func TestEmit_MultiLanguage_Golden(t *testing.T) {
 // headers don't surface in `hdrs` because discoverHeaders
 // only walks the public include set.
 func TestEmit_Visibility_Golden(t *testing.T) {
-	src, err := filepath.Abs("../../../testdata/sample-projects/visibility")
+	src, err := filepath.Abs("../../testdata/sample-projects/visibility")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../../testdata/fileapi/visibility")
+	r, err := fileapi.Load("../../testdata/fileapi/visibility")
 	if err != nil {
 		t.Fatal(err)
 	}
-	traceRaw, err := os.ReadFile("../../../testdata/fileapi/visibility/trace.jsonl")
+	traceRaw, err := os.ReadFile("../../testdata/fileapi/visibility/trace.jsonl")
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
@@ -1124,7 +1124,7 @@ func TestEmit_Visibility_Golden(t *testing.T) {
 		t.Fatal(err)
 	}
 	got = scrubSourceLine(got, src)
-	goldenPath := filepath.Join("..", "..", "..", "testdata", "golden", "visibility", "BUILD.bazel.golden")
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "visibility", "BUILD.bazel.golden")
 	if *update {
 		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
 		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {

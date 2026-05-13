@@ -3,7 +3,7 @@
 // Target list. Output is deterministic: list attributes are
 // sorted; targets emit in the order Lower returned them.
 //
-// Doesn't reuse converter/internal/emit/bazel — that package
+// Doesn't reuse converter/emit/bazel — that package
 // is cc-shaped (cc_library / cc_binary / cc_import / cc_test).
 // py rules have a smaller attribute set and a different
 // `imports` semantic; the duplication is small and the

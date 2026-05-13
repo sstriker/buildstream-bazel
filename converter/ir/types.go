@@ -87,8 +87,33 @@ type Target struct {
 	// Deps are Bazel labels to other targets.
 	Deps []string
 
-	// Visibility defaults to package-private when empty; the emitter writes
-	// the explicit slice if set.
+	// Visibility carries the per-target Bazel visibility list
+	// as pure data. The IR stays policy-free: what "empty"
+	// means and how non-empty lists render is the consuming
+	// emitter's call. Common cases the IR exposes:
+	//   - cmake codemodel-lowering (lower/lower.go) commonly
+	//     leaves Visibility unset on most targets.
+	//   - lower/execute_process.go, lower/configure_file.go,
+	//     and lower/genrule.go populate it explicitly with
+	//     stricter scopes like `["//visibility:private"]` for
+	//     internal helpers.
+	//   - meson and trace producers populate it explicitly
+	//     with `["//visibility:public"]`.
+	//
+	// Emitter-side rendering policy lives in the emitter's own
+	// docs, not here. `converter/emit/bazel` (the shared cc
+	// emitter, used by convert-element / convert-element-meson
+	// / fold-element / convert-element-trace) writes a file-
+	// head `package(default_visibility = ["//visibility:public"])`
+	// and emits a per-rule `visibility = [...]` line only when
+	// Visibility differs from that default; empty Visibility
+	// takes the package default. Other emitters
+	// (`converter/cmd/convert-element-pyproject/emit.go`,
+	// `cmd/write-a/handler_*.go`'s direct BUILD writers) make
+	// their own visibility-rendering choices and should
+	// document them next to their emit code. See
+	// docs/design/build-output-conventions.md for the cc
+	// emitter's convention and its gazelle_cc lineage.
 	Visibility []string
 
 	// Linkstatic / Alwayslink only meaningful for KindCCLibrary.

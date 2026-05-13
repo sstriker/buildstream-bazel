@@ -1,5 +1,5 @@
 // Lowering meson introspection into the IR consumed by
-// converter/internal/emit/bazel.
+// converter/emit/bazel.
 //
 // Per-target translation:
 //
@@ -56,7 +56,7 @@ type LowerOptions struct {
 }
 
 // Lower translates the introspection bundle into an ir.Package
-// ready for converter/internal/emit/bazel.Emit. Returns a typed
+// ready for converter/emit/bazel.Emit. Returns a typed
 // failure (Tier-1 code) on unsupported shapes, or a generic error
 // on internal mismatches.
 func Lower(intro *Introspect, opts LowerOptions) (*ir.Package, error) {

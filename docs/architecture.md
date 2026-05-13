@@ -121,7 +121,7 @@ Pipeline, in order:
    It turns the typed File API + ninja outputs into
    `converter/ir/types.go` (`Package`, `Target`, `Source`,
    `Genrule`, `ImportedTarget`). Most converter bugs land here.
-6. **Emit** — `converter/internal/emit/bazel/emit.go` renders the
+6. **Emit** — `converter/emit/bazel/emit.go` renders the
    IR as a `BUILD.bazel` (with `load("@rules_cc//cc:defs.bzl", …)`),
    and `converter/internal/emit/cmaketoolchain` /
    `converter/internal/emit/bazeltoolchain` emit the cmake bundle and
