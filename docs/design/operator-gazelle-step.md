@@ -242,3 +242,12 @@ Three reasons:
   emission.
 - `cmd/build-cc-index/main.go` — Phase 7c's index-population tool
   the gazelle resolution depends on.
+- `converter/emit/bazel/protoc_rewrite_test.go` — end-to-end
+  regression test for the protobuf example above. Exercises
+  (a) the converter's genrule emission shape (cmd contains
+  `protoc`, .pb.cc/.pb.h outs, Phase 7a `# keep` marker),
+  (b) `# keep` removal as an operator step, and (c) a
+  reference buildtools-AST rewriter that pattern-matches on
+  `protoc` and emits `proto_library` + `cc_proto_library`.
+  A second case in the same file pins the other direction:
+  a `# keep`'d genrule must survive a rewriter pass untouched.
