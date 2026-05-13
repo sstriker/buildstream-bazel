@@ -29,16 +29,12 @@ transition cleanly.
 
 ## Next
 
-- **Per-platform fold for round-2 trace-driven kinds.** Most
+- **Per-platform fold for round-2 trace-driven kinds.** Mostly
   shipped (see Done — project A converter fan-out + fold for
   pipelineHandler kinds, project B install fan-out for
   pipelineHandler kinds, kind:autotools per-platform install
-  fan-out via `autotoolsHandler` reusing
-  `pipelineHandler.renderPipelineRound2B`). What's left:
-  - **kind:cmake Phase B fallback per-platform render.** The
-    converter genrule already exists
-    (`handler_cmake_round2.go`); needs the fan-out wired on
-    both sides.
+  fan-out, kind:cmake Phase B fallback per-platform install
+  fan-out). What's left:
   - **kind:meson Phase B per-platform render** when Phase B
     lands.
 
@@ -48,7 +44,9 @@ transition cleanly.
   stub shape. Render gates:
   `scripts/meta-trace-round2-fold.sh` (pipelineHandler
   kinds) + `scripts/meta-autotools-round2-multiplatform.sh`
-  (kind:autotools).
+  (kind:autotools) +
+  `scripts/meta-cmake-round2-fallback-multiplatform.sh`
+  (kind:cmake Phase B fallback).
 - **Element-signal consumption in the unifier.** Stage 6 capture
   is in (`--collect-toolchain-signal` flows fileapi replies into
   `<out>/elements/<name>/toolchain-signal/`). Pending: wire
@@ -315,6 +313,29 @@ transition cleanly.
   alias-driven gate variant: lowest-touch change to `elementfold`,
   no `//:no-op` filegroup overhead in every project A, no two-
   rules-per-target multiplication.
+
+- **Per-platform fold for round-2 trace-driven kinds —
+  kind:cmake Phase B fallback project B install fan-out.**
+  kind:cmake's round-2 fallback (`--cmake-round2-fallback`)
+  joins the per-platform install fan-out story.
+  `cmakeRound2InstallBuild` gained `tracePlatform` parameters
+  (NameSuffix / OutputPrefix / sorted ExecCompatibleWith /
+  baked `--platform=`) mirroring the pipelineHandler
+  `OutputPrefix` knob trio from #114. A new
+  `renderCmakeRound2B` dispatcher hands the single-platform
+  legacy path through unchanged (byte-stable) and the
+  multi-platform path through `composeMultiPlatformInstallBuild`
+  — same `:install_tree.tar` select()-filegroup with a
+  `"//conditions:default": []` arm.
+  Project A's side under cmake round-2 fallback is unchanged
+  here — the orchestrator's existing multi-platform fan-out
+  for kind:cmake (PR #112) runs convert-element per-platform
+  at orchestrate time, and fold-element composes the
+  per-platform IRs (placeholder or native, depending on
+  whether the classifier refused) into the unified
+  `BUILD.bazel`. Render gate:
+  `scripts/meta-cmake-round2-fallback-multiplatform.sh`. Test:
+  `TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB`.
 
 - **Per-platform fold for round-2 trace-driven kinds —
   kind:autotools project B install fan-out.** kind:autotools
