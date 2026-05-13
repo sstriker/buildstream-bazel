@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/cmakerun"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 )
 
 // Variant identifies one cmake configure invocation in the probe

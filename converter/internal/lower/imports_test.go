@@ -4,10 +4,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // TestToIR_CrossElementDep_ResolvedViaManifest exercises the manifest

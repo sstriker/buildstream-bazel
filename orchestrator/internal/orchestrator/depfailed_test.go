@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 // TestRun_DepFailed_OnlyHelloFails: only hello fails Tier-1; uses-hello

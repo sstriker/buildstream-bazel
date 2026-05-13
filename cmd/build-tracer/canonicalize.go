@@ -8,7 +8,7 @@ package main
 // internal/tracenorm for the actual transforms.
 
 import (
-	"github.com/sstriker/cmake-to-bazel/internal/tracenorm"
+	"github.com/sstriker/buildstream-bazel/internal/tracenorm"
 )
 
 // prefixSub is the local alias build-tracer's flag layer wraps.

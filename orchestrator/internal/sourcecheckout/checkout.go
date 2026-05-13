@@ -33,8 +33,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
 )
 
 // Resolver checks out source trees on demand and caches them under

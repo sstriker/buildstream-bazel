@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // Bucket is the per-execute_process classification label that

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 func TestDefaultAllowlist(t *testing.T) {

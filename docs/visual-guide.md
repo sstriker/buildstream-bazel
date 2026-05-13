@@ -1,4 +1,4 @@
-# Visual guide to cmake-to-bazel
+# Visual guide to buildstream-bazel
 
 A diagram-first tour of the codebase.  
 For prose depth see [`docs/overview.md`](overview.md),

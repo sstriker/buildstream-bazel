@@ -47,7 +47,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // Inputs are the per-element bits a Translator needs to produce

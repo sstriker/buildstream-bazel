@@ -8,11 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/cmakerun"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // TestE2E_HelloWorld_ShadowTree validates the architectural keystone: running

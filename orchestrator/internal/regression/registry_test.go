@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/regression"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/regression"
 )
 
 // snap builds a deterministic Snapshot for testing — caller controls the

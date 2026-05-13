@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 func TestParse_BasicShape(t *testing.T) {

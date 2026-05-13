@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // fileGenerateTestSetup writes a host source tree containing a

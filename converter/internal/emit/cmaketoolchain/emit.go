@@ -22,7 +22,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 // Emit renders a Model as the bytes of a CMake toolchain file. The

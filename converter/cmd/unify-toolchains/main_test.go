@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain/probejson"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/probejson"
 )
 
 // TestRun_EndToEnd exercises the whole flow: fixture probe.json

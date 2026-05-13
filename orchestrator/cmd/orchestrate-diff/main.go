@@ -22,7 +22,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/regression"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/regression"
 )
 
 const (

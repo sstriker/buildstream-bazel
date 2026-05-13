@@ -35,9 +35,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/bazeltoolchain"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain/probejson"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/bazeltoolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/probejson"
 )
 
 func main() {

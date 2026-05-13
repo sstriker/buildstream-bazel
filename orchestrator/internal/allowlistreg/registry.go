@@ -25,7 +25,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // File is the on-disk schema. Versioned so M4 can fence on incompatible

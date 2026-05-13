@@ -25,13 +25,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/emit/bazel"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/cmakerun"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ctest"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/emit/cmakecfg"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/lower"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
 // fmtSourceRoot is where the test expects to find a fmt checkout. The

@@ -34,7 +34,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/fidelity"
+	"github.com/sstriker/buildstream-bazel/internal/fidelity"
 )
 
 // fidelityCase configures one parameterized run of the fidelity harness.

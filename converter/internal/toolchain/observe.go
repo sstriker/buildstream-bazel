@@ -20,7 +20,7 @@
 
 package toolchain
 
-import "github.com/sstriker/cmake-to-bazel/internal/empfold"
+import "github.com/sstriker/buildstream-bazel/internal/empfold"
 
 // ResolvedToolchain is the empirical fold of N ProbeResults. The
 // baseline slot holds everything observed identically across every

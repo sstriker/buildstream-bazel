@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/bazelbuild/buildtools/build"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestProtocFlow_RegressionGuard exercises the documented

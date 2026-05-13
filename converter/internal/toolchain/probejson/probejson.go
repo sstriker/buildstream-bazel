@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 // SchemaVersion is the on-disk format version. Bump when the

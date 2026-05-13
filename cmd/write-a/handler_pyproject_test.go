@@ -269,7 +269,7 @@ func TestPyprojectElement_FallbackDispatch(t *testing.T) {
 	// is what pyprojectConfig.convertBin will point at.
 	pyprojectBin := filepath.Join(tmp, "convert-element-pyproject")
 	build := exec.Command("go", "build", "-o", pyprojectBin,
-		"github.com/sstriker/cmake-to-bazel/converter/cmd/convert-element-pyproject")
+		"github.com/sstriker/buildstream-bazel/converter/cmd/convert-element-pyproject")
 	build.Stderr = os.Stderr
 	if err := build.Run(); err != nil {
 		t.Fatalf("build convert-element-pyproject: %v", err)

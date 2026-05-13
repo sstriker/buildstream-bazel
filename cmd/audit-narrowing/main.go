@@ -47,8 +47,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
-	"github.com/sstriker/cmake-to-bazel/internal/tracenorm"
+	"github.com/sstriker/buildstream-bazel/internal/readpaths"
+	"github.com/sstriker/buildstream-bazel/internal/tracenorm"
 )
 
 func main() {

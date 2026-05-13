@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // Target is one Bazel rule the emit pass renders. Discriminated

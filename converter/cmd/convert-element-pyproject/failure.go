@@ -3,7 +3,7 @@
 // this list it stays.
 package main
 
-import "github.com/sstriker/cmake-to-bazel/converter/internal/failure"
+import "github.com/sstriker/buildstream-bazel/converter/internal/failure"
 
 const (
 	unsupportedPyprojectBackend          failure.Code = "unsupported-pyproject-backend"

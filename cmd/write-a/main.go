@@ -48,7 +48,7 @@ import (
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
-	"github.com/sstriker/cmake-to-bazel/internal/readpaths"
+	"github.com/sstriker/buildstream-bazel/internal/readpaths"
 	"gopkg.in/yaml.v3"
 )
 

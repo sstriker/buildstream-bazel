@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
 )
 
 func TestTranslateElement_GitSource(t *testing.T) {

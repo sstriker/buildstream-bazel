@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/orchestrator"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 
 // TestMain double-duties: when invoked with ORCHESTRATOR_STUB_CONVERTER=1 it

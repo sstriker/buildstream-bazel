@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 func TestRenderToolchainProbe_RejectsMissingFields(t *testing.T) {

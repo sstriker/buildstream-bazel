@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestEmit_KeepMarkers covers Phase 7a's `# keep` injection

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
 func mustParse(t *testing.T, src string) *ninja.Graph {

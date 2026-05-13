@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/allowlistreg"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/allowlistreg"
 )
 
 func TestRegistry_RoundTrip(t *testing.T) {

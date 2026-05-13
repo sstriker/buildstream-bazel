@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 )
 
 func TestSubstitute_AtVarsBasic(t *testing.T) {

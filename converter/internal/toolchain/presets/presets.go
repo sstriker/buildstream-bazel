@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
 
 // LoadFile reads a CMakePresets.json (or CMakeUserPresets.json) and

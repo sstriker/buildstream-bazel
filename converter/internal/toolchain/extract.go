@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 )
 
 // FromReply turns one cmake File API reply into a Model. Pure

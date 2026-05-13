@@ -19,8 +19,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
-	"github.com/sstriker/cmake-to-bazel/internal/empfold"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/empfold"
 )
 
 // Platform names the matrix entry the corresponding cell came

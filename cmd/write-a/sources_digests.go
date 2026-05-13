@@ -17,7 +17,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 // populateDigests packs the on-disk source-cache tree for each

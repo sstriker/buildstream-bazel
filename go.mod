@@ -1,4 +1,4 @@
-module github.com/sstriker/cmake-to-bazel
+module github.com/sstriker/buildstream-bazel
 
 go 1.25.0
 

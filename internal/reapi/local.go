@@ -12,7 +12,7 @@ import (
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
 )
 
 // LocalExecutor runs a BuiltAction in-process: it ensures every input

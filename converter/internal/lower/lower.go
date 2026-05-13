@@ -15,13 +15,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ctest"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/failure"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
-	"github.com/sstriker/cmake-to-bazel/converter/internal/ninja"
-	"github.com/sstriker/cmake-to-bazel/converter/ir"
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // Options controls behavior that the orchestrator (M3) overrides per-package.

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/sstriker/cmake-to-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 )
 
 // TestObserve_PartitionsCacheVarsByObservedAgreement: hand-build

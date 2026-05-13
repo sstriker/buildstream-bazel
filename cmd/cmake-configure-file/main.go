@@ -106,7 +106,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sstriker/cmake-to-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 )
 
 // optionalString is a flag.Value that tracks whether a string

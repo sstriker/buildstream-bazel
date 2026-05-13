@@ -39,15 +39,15 @@ import (
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 
-	"github.com/sstriker/cmake-to-bazel/internal/cas"
-	"github.com/sstriker/cmake-to-bazel/internal/manifest"
-	"github.com/sstriker/cmake-to-bazel/internal/reapi"
-	"github.com/sstriker/cmake-to-bazel/internal/shadow"
-	"github.com/sstriker/cmake-to-bazel/internal/synthprefix"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/allowlistreg"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/element"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/exports"
-	"github.com/sstriker/cmake-to-bazel/orchestrator/internal/sourcecheckout"
+	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/reapi"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/allowlistreg"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/exports"
+	"github.com/sstriker/buildstream-bazel/orchestrator/internal/sourcecheckout"
 )
 
 // Options configures one Run call.
