@@ -721,3 +721,150 @@ func TestNormalizeDistName(t *testing.T) {
 		}
 	}
 }
+
+// TestLower_TestFilesEmitPyTest covers Phase 2's py_test
+// emission: a package directory containing `test_*.py` /
+// `*_test.py` files produces a sibling py_test target whose
+// deps point at the package's library. The library's own srcs
+// must NOT include the test files — they belong to the py_test
+// rule, not the runtime library.
+func TestLower_TestFilesEmitPyTest(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	srcs := []string{
+		"demo/__init__.py",
+		"demo/cli.py",
+		"demo/test_cli.py",   // matches HasPrefix "test_"
+		"demo/util_test.py",  // matches HasSuffix "_test"
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %d targets, want 2 (py_library + py_test); targets=%+v", len(out), out)
+	}
+	lib, test := out[0], out[1]
+	if lib.Kind != KindPyLibrary || lib.Name != "demo" {
+		t.Errorf("target[0]=%+v want demo/py_library", lib)
+	}
+	// Library srcs must exclude the test files.
+	wantLibSrcs := []string{"demo/__init__.py", "demo/cli.py"}
+	if !equalStringSlice(lib.Srcs, wantLibSrcs) {
+		t.Errorf("library.Srcs=%v want %v", lib.Srcs, wantLibSrcs)
+	}
+	if test.Kind != KindPyTest || test.Name != "demo_test" {
+		t.Errorf("target[1]=%+v want demo_test/py_test", test)
+	}
+	wantTestSrcs := []string{"demo/test_cli.py", "demo/util_test.py"}
+	if !equalStringSlice(test.Srcs, wantTestSrcs) {
+		t.Errorf("test.Srcs=%v want %v", test.Srcs, wantTestSrcs)
+	}
+	// Test must dep on the library.
+	if len(test.Deps) == 0 || test.Deps[0] != ":demo" {
+		t.Errorf("test.Deps=%v want [:demo, ...]", test.Deps)
+	}
+}
+
+// TestLower_ConftestLiftEmitsSeparateLibrary covers Phase 2's
+// conftest.py lift: a package directory containing conftest.py
+// emits a sibling py_library(name = "<pkg>_conftest",
+// testonly = True) target that the package's py_test depends
+// on (when one is emitted). Mirrors rules_python gazelle's
+// convention exactly.
+func TestLower_ConftestLiftEmitsSeparateLibrary(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	srcs := []string{
+		"demo/__init__.py",
+		"demo/cli.py",
+		"demo/conftest.py",
+		"demo/test_cli.py",
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if len(out) != 3 {
+		t.Fatalf("got %d targets, want 3 (py_library + conftest + py_test); targets=%+v", len(out), out)
+	}
+	// Conftest target shape.
+	conftest := out[1]
+	if conftest.Kind != KindPyLibrary || conftest.Name != "demo_conftest" {
+		t.Errorf("target[1]=%+v want demo_conftest/py_library", conftest)
+	}
+	if !conftest.Testonly {
+		t.Errorf("conftest.Testonly=false; want true")
+	}
+	if len(conftest.Srcs) != 1 || conftest.Srcs[0] != "demo/conftest.py" {
+		t.Errorf("conftest.Srcs=%v want [demo/conftest.py]", conftest.Srcs)
+	}
+	// The conftest.py file is NOT in the library's srcs.
+	lib := out[0]
+	for _, s := range lib.Srcs {
+		if s == "demo/conftest.py" {
+			t.Errorf("library.Srcs includes conftest.py: %v", lib.Srcs)
+		}
+	}
+	// Test wires conftest as a dep.
+	test := out[2]
+	wantTestDeps := []string{":demo", ":demo_conftest"}
+	if len(test.Deps) < 2 || test.Deps[0] != wantTestDeps[0] || test.Deps[1] != wantTestDeps[1] {
+		t.Errorf("test.Deps=%v want %v (plus depLabels)", test.Deps, wantTestDeps)
+	}
+}
+
+// TestLower_PyiSrcsCollected covers Phase 2's pyi_srcs
+// discovery: depth-1 .pyi files in a package directory land
+// on the py_library's PyiSrcs slice. Emit.go renders them as
+// `pyi_srcs = [...]`.
+func TestLower_PyiSrcsCollected(t *testing.T) {
+	p := minimumProject("setuptools.build_meta")
+	p.Tool.Setuptools = &Setuptools{Packages: []any{"demo"}}
+	srcs := []string{
+		"demo/__init__.py",
+		"demo/cli.py",
+		"demo/cli.pyi",
+	}
+	pkgs, err := Discover(p, srcs)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	out, err := Lower(p, pkgs, LowerOptions{SourceFiles: srcs})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("got %d targets, want 1 (py_library only); targets=%+v", len(out), out)
+	}
+	lib := out[0]
+	if len(lib.PyiSrcs) != 1 || lib.PyiSrcs[0] != "demo/cli.pyi" {
+		t.Errorf("PyiSrcs=%v want [demo/cli.pyi]", lib.PyiSrcs)
+	}
+	// .pyi must not enter regular srcs.
+	for _, s := range lib.Srcs {
+		if strings.HasSuffix(s, ".pyi") {
+			t.Errorf("library.Srcs unexpectedly contains .pyi: %v", lib.Srcs)
+		}
+	}
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
