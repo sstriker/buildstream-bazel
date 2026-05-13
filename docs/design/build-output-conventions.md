@@ -503,6 +503,23 @@ to those entries; each is independently shippable.
     The `# gazelle:resolve` directives for cross-element deps
     are queued as a Phase 7d follow-up once `gazelle_cc` is
     wired in.
+- **Phase 8** — operator overlay (`overlay.MODULE.bazel` +
+  unconditional `include()` in project B's MODULE.bazel) so
+  operators can layer their own `bazel_dep` / `use_extension`
+  / `register_toolchains` declarations without editing the
+  converter-owned file. write-a writes a comment-only stub
+  on first render and preserves operator edits on
+  subsequent re-renders. Enables the operator-side gazelle
+  step (custom rulesets, genrule → native-rule rewriting via
+  custom gazelle extensions). See
+  `docs/design/operator-gazelle-step.md`.
+- **Phase 8b** (queued) — optional orchestrator-driven
+  gazelle invocation against the elements that
+  re-converted on the current run
+  (`bazel run //:gazelle -- elements/<changed elements>`),
+  gated behind a `--enable-gazelle` opt-in. Builds on
+  Phase 8's overlay file (the operator's gazelle/gazelle_cc
+  `bazel_dep`s live there).
 
 The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,

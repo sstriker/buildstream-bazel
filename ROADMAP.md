@@ -263,6 +263,18 @@ transition cleanly.
   mechanical but touches a lot of files; defer until the Phase
   4-7 stack lands so the rename rebase doesn't fight active
   feature work.
+- **Optional orchestrator-driven gazelle step (Phase 8b)** —
+  builds on Phase 8's operator overlay. When the operator
+  declares `gazelle` / `gazelle_cc` (and any custom rewriting
+  extensions) in `overlay.MODULE.bazel`, the orchestrator
+  can invoke `bazel run //:gazelle -- elements/<just-converted>`
+  immediately after staging, targeting only the packages that
+  re-converted on the current run (`orchestrator/cmd/orchestrate`
+  already tracks `res.Converted`). Gated behind a
+  `--enable-gazelle` opt-in flag; default off until the
+  custom-extension story stabilizes per operator preference.
+  See `docs/design/operator-gazelle-step.md` for the full
+  workflow.
 
 ## Later (research / open questions)
 

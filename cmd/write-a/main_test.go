@@ -146,6 +146,37 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	if !strings.Contains(string(bModule), `bazel_dep(name = "rules_cc"`) {
 		t.Errorf("project B MODULE.bazel missing rules_cc bazel_dep:\n%s", bModule)
 	}
+	// Phase 8: MODULE.bazel includes the operator-owned overlay
+	// file, and write-a wrote a stub at the overlay path that
+	// the operator can edit. The stub stays comment-only.
+	if !strings.Contains(string(bModule), `include("//:overlay.MODULE.bazel")`) {
+		t.Errorf("project B MODULE.bazel missing operator-overlay include():\n%s", bModule)
+	}
+	overlayPath := filepath.Join(outB, "overlay.MODULE.bazel")
+	overlay, err := os.ReadFile(overlayPath)
+	if err != nil {
+		t.Fatalf("missing overlay.MODULE.bazel stub: %v", err)
+	}
+	if !strings.Contains(string(overlay), "operator-owned MODULE.bazel fragment") {
+		t.Errorf("overlay.MODULE.bazel stub missing operator-facing comment:\n%s", overlay)
+	}
+	// Phase 8: re-rendering project B must preserve operator
+	// edits to the overlay. Simulate an edit and re-run write
+	// to confirm the file isn't clobbered.
+	const operatorEdit = "# operator-added: pin gazelle\nbazel_dep(name = \"gazelle\", version = \"0.40.0\")\n"
+	if err := os.WriteFile(overlayPath, []byte(operatorEdit), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("re-render writeProjectB: %v", err)
+	}
+	afterRerun, err := os.ReadFile(overlayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterRerun) != operatorEdit {
+		t.Errorf("write-a clobbered operator's overlay edits on re-render:\nwant: %q\ngot: %q", operatorEdit, afterRerun)
+	}
 	bPlaceholder, err := os.ReadFile(filepath.Join(outB, "elements/hello/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
