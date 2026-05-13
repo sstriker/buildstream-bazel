@@ -117,6 +117,9 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 		"BUILD.bazel",
 		"elements/hello/BUILD.bazel",
 		"elements/hello/CMakeLists.txt",
+		// Phase 7b: gazelle metadata files.
+		"tools/cc_index.json",
+		"tools/python_modules.json",
 	} {
 		if _, err := os.Stat(filepath.Join(outB, want)); err != nil {
 			t.Errorf("missing rendered file %q in project B: %v", want, err)
@@ -125,6 +128,20 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	bModule, err := os.ReadFile(filepath.Join(outB, "MODULE.bazel"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Phase 7b: MODULE.bazel ships the three gazelle config
+	// directives so operator-driven `gazelle fix` runs can wire
+	// dep resolution against the converter-emitted metadata
+	// files. The directives are inert if gazelle isn't
+	// installed.
+	for _, want := range []string{
+		"# gazelle:cc_indexfile tools/cc_index.json",
+		"# gazelle:cc_use_builtin_bzlmod_index true",
+		"# gazelle:python_module_mapping tools/python_modules.json",
+	} {
+		if !strings.Contains(string(bModule), want) {
+			t.Errorf("project B MODULE.bazel missing %q:\n%s", want, bModule)
+		}
 	}
 	if !strings.Contains(string(bModule), `bazel_dep(name = "rules_cc"`) {
 		t.Errorf("project B MODULE.bazel missing rules_cc bazel_dep:\n%s", bModule)

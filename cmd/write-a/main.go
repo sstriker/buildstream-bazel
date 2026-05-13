@@ -1393,6 +1393,24 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "tools", "sources.json"), string(srcJSON)); err != nil {
 		return err
 	}
+	// Phase 7b: gazelle metadata stubs. cc_index.json maps
+	// header path → Bazel label for gazelle_cc's header-scan
+	// resolver; python_modules.json maps distribution name →
+	// label for rules_python gazelle plugin. Both ship as
+	// stable filesystem paths the MODULE.bazel directives
+	// reference. Empty `{}` content is operator-populated
+	// today (Phase 7c will wire automatic population from
+	// per-element exports). Even empty, having the files
+	// here means an operator-driven `gazelle fix` run won't
+	// error on a missing path — it just falls back to
+	// gazelle's built-in resolvers (bzlmod registry index
+	// for cc, no-op for py).
+	if err := writeFile(filepath.Join(outDir, "tools", "cc_index.json"), "{}\n"); err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(outDir, "tools", "python_modules.json"), "{}\n"); err != nil {
+		return err
+	}
 	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		traces, err := collectTraces(g)
 		if err != nil {
@@ -1412,7 +1430,7 @@ func writeProjectB(g *graph, outDir string) error {
 	// without these tools the //tools:build-tracer +
 	// //tools:convert-element-trace labels resolve to
 	// nothing in the B-side BUILD.
-	exports := []string{"sources.json"}
+	exports := []string{"sources.json", "cc_index.json", "python_modules.json"}
 	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		exports = append(exports, "traces.json")
 	}
@@ -1505,6 +1523,27 @@ bazel_dep(name = "bazel_skylib", version = "1.7.1")
 func moduleBazelB(g *graph) string {
 	var b strings.Builder
 	b.WriteString(`module(name = "meta_project_b", version = "0.0.0")
+
+# Phase 7b gazelle-config directives. Project B is the
+# post-conversion artifact the operator owns; gazelle (cc +
+# rules_python plugin) reads these directives to drive
+# header-scan dep resolution against the tools/cc_index.json
+# + tools/python_modules.json metadata files the converter
+# emits. Inert when gazelle isn't installed.
+#
+# - cc_indexfile points gazelle_cc at our header → label map.
+# - cc_use_builtin_bzlmod_index turns on gazelle_cc's own
+#   bzlmod-registry index so external deps (abseil-cpp,
+#   protobuf, ...) resolve without our manifest having to
+#   carry every transitive header.
+# - python_module_mapping points the rules_python gazelle
+#   plugin at our dist-name → label map.
+#
+# The metadata files themselves ship in tools/ alongside
+# sources.json; see docs/design/build-output-conventions.md.
+# gazelle:cc_indexfile tools/cc_index.json
+# gazelle:cc_use_builtin_bzlmod_index true
+# gazelle:python_module_mapping tools/python_modules.json
 
 # rules_cc is what the cmake-converter emits load() lines against
 # (load("@rules_cc//cc:defs.bzl", "cc_library")). Pin a recent stable

@@ -477,11 +477,22 @@ to those entries; each is independently shippable.
     AST post-pass in the cc + py emitters' canonicalize step.
     Markers are inert without gazelle (a # comment any tool
     ignores), so the change is decoupled from Phase 7b.
-  - **Phase 7b** — `tools/cc_index.json` +
-    `tools/python_modules.json` generation, MODULE.bazel
-    `# gazelle:` directives pointing at them, `#
-    gazelle:resolve` directives for cross-element deps,
-    `scripts/meta-gazelle-roundtrip.sh` conformance gate.
+  - **Phase 7b** — gazelle metadata foundation. Project B's
+    MODULE.bazel ships the three `# gazelle:cc_indexfile` /
+    `# gazelle:cc_use_builtin_bzlmod_index` /
+    `# gazelle:python_module_mapping` directives;
+    `tools/cc_index.json` + `tools/python_modules.json` ship
+    alongside `tools/sources.json` as `exports_files`-
+    declared paths the directives reference. Both index
+    files start as empty `{}` content; Phase 7c populates
+    them.
+  - **Phase 7c** — populate the index files from per-element
+    exports (cc_library hdrs × label; pyproject scripts);
+    add `# gazelle:resolve` directives for cross-element
+    deps gazelle can't resolve from headers alone;
+    `scripts/meta-gazelle-roundtrip.sh` conformance gate
+    (buildifier no-op + gazelle no-op + new-source-pickup
+    smoke).
 
 The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,
