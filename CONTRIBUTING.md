@@ -62,7 +62,7 @@ Mapping handler → gate:
 | Handler | Gate(s) |
 |---|---|
 | `handler_cmake.go` | `scripts/meta-hello.sh`, `scripts/meta-stack.sh`, `scripts/meta-cross-cmake.sh` |
-| `handler_autotools_native.go` | `scripts/meta-autotools-native.sh`, `scripts/meta-autotools-multitarget.sh`, `scripts/meta-autotools-tu-optflags.sh`, `scripts/meta-autotools-libtool-pic.sh` |
+| `handler_autotools_native.go` | `scripts/meta-autotools-native.sh`, `scripts/meta-autotools-multitarget.sh`, `scripts/meta-autotools-tu-optflags.sh`, `scripts/meta-autotools-libtool-pic.sh`, `scripts/meta-autotools-round2-multiplatform.sh` |
 | `handler_autotools.go` (coarse) | `scripts/meta-autotools.sh` |
 | `handler_manual.go` | `scripts/meta-manual.sh`, `scripts/meta-vars.sh` |
 | `handler_make.go` | `scripts/meta-make.sh`, `scripts/meta-make-round2.sh` |

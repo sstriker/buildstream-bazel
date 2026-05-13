@@ -198,3 +198,107 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		}
 	}
 }
+
+// TestWriter_AutotoolsRound2_MultiPlatform_ProjectB: kind:autotools
+// shares the same project-B per-platform install fan-out shape
+// pipelineHandler kinds use (kind:make / manual / script /
+// makemaker / modulebuild). With --platforms-json set + round-2
+// active, an autotools element renders N install genrules in
+// project B + a top-level select()-filegroup at install_tree.tar
+// — same shape TestWriter_PipelineKindsRound2_MultiPlatform_
+// ProjectB asserts for kind:make, just at the autotoolsHandler
+// dispatch site.
+func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "configure"),
+		[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "Makefile.in"),
+		[]byte("all:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "auto.bst")
+	if err := os.WriteFile(bst, []byte("kind: autotools\nsources:\n- kind: local\n  path: "+srcDir+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"convert-element-trace-fake", "build-tracer-fake", "trace-publish-fake", "trace-lookup-fake", "fold-element-fake"} {
+		if err := os.WriteFile(filepath.Join(tmp, name),
+			[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := traceConfig
+	traceConfig.convertBin = filepath.Join(tmp, "convert-element-trace-fake")
+	traceConfig.tracerBin = filepath.Join(tmp, "build-tracer-fake")
+	traceConfig.publishBin = filepath.Join(tmp, "trace-publish-fake")
+	traceConfig.lookupBin = filepath.Join(tmp, "trace-lookup-fake")
+	traceConfig.foldBin = filepath.Join(tmp, "fold-element-fake")
+	traceConfig.round2Enabled = true
+	traceConfig.platforms = []tracePlatform{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"}},
+		{Name: "darwin_arm64", Constraints: []string{"@platforms//os:darwin", "@platforms//cpu:arm64"}},
+	}
+	if err := resolvePlatformSelectKeys(traceConfig.platforms); err != nil {
+		t.Fatalf("resolvePlatformSelectKeys: %v", err)
+	}
+	t.Cleanup(func() { traceConfig = prev })
+
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	outA := filepath.Join(tmp, "A")
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectA(g, outA, binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	bBody, err := os.ReadFile(filepath.Join(outB, "elements/auto/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(bBody)
+
+	// N per-platform install genrules + top-level filegroup.
+	for _, want := range []string{
+		`name = "auto_install_linux_x86_64"`,
+		`name = "auto_install_darwin_arm64"`,
+		`"linux_x86_64/install_tree.tar"`,
+		`"darwin_arm64/install_tree.tar"`,
+		`"linux_x86_64/trace.log"`,
+		`"darwin_arm64/trace.log"`,
+		`"linux_x86_64/generated-headers.txt"`,
+		`"darwin_arm64/generated-headers.txt"`,
+		// exec_compatible_with renders sorted (matches the
+		// projecta/render.go precedent): @platforms//cpu:
+		// precedes @platforms//os: alphabetically.
+		`exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]`,
+		`exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]`,
+		`--platform="linux_x86_64"`,
+		`--platform="darwin_arm64"`,
+		`name = "install_tree.tar"`,
+		`"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]`,
+		`"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]`,
+		`"//conditions:default": [],`,
+		`$(location linux_x86_64/generated-headers.txt)`,
+		`$(location darwin_arm64/generated-headers.txt)`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("multi-platform autotools project B missing %q\n%s", want, got)
+		}
+	}
+
+	// Legacy single-platform genrule name must NOT appear.
+	if strings.Contains(got, `name = "auto_install"`) {
+		t.Errorf("multi-platform autotools project B unexpectedly contains legacy 'auto_install' name (no platform suffix)\n%s", got)
+	}
+}
