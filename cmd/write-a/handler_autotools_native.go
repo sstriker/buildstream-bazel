@@ -274,14 +274,18 @@ func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipeline
 		// it would just invalidate the install genrule's cache
 		// key on every imports.json change with no behavioral
 		// effect.
-		// kind:autotools per-platform render is queued under
-		// ROADMAP Next ("Per-platform fold for round-2 trace-
-		// driven kinds — kind:autotools per-platform render");
-		// today's autotoolsHandler always renders single-
-		// platform regardless of --platforms-json. Pass an empty
-		// tracePlatform{} so pipelineTraceExtensionRound2 emits
-		// the byte-stable legacy shape with no OutputPrefix /
-		// NameSuffix / ExecCompatibleWith.
+		// Pass an empty tracePlatform{} so
+		// pipelineTraceExtensionRound2 emits the byte-stable
+		// legacy shape with no OutputPrefix / NameSuffix /
+		// ExecCompatibleWith. The multi-platform fan-out for
+		// kind:autotools is driven separately by RenderB
+		// (which dispatches to renderPipelineRound2B and walks
+		// traceConfig.platforms to emit N install genrules);
+		// this extension-construction site stays single-
+		// platform because pipelineTraceExtensionRound2's
+		// extension threads into the *converter* genrule
+		// (project-A side), and project-A fan-out is the
+		// orchestrator's job via --platforms-json, not write-a's.
 		h.extension = pipelineTraceExtensionRound2(elem, []string{"autotools"}, tracePlatform{})
 		return h, nil
 	}

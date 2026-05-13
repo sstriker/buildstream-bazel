@@ -31,11 +31,13 @@ import (
 // install_tree.tar select() arm in project B for kinds that
 // went through the per-platform install fan-out. The fan-out
 // covers pipelineHandler kinds (kind:make / manual / script /
-// makemaker / modulebuild) today; kind:autotools and kind:cmake
-// Phase B fallback are queued under ROADMAP Next ("Per-platform
-// fold for round-2 trace-driven kinds") — until those land,
-// elements of those kinds run a single install genrule with no
-// platform suffix even when multi-platform mode is active.
+// makemaker / modulebuild), kind:autotools (RenderB routes
+// through renderPipelineRound2B), and kind:cmake Phase B
+// fallback (renderCmakeRound2B), so every cc-emitting trace-
+// driven kind participates today. kind:meson Phase B is the
+// last queued bullet under ROADMAP Next ("Per-platform fold
+// for round-2 trace-driven kinds") — pending the Phase B
+// landing itself.
 type tracePlatform struct {
 	// Name is the platform identifier. Used as the URL-safe
 	// suffix on derived names — "trace_<elem>__<name>" for the
