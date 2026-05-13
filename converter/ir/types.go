@@ -79,6 +79,36 @@ type Target struct {
 	// path of dependents.
 	Includes []string
 
+	// IncludePrefix, when non-empty, renders as the
+	// `include_prefix` attribute on cc_library / cc_binary /
+	// cc_test. Bazel prepends the prefix to every header path
+	// a consumer sees via this target's hdrs — e.g.
+	// `include_prefix = "myelem"` rewrites
+	// `hdrs = ["api.h"]` so a downstream `#include
+	// "myelem/api.h"` resolves. Matches gazelle_cc's
+	// directive-driven attribute; see
+	// docs/design/build-output-conventions.md.
+	//
+	// NOT emitted on cc_import — stock rules_cc's cc_import
+	// doesn't accept these attributes; the canonical fix for
+	// the round-2 fallback's bracket-include consumers is
+	// wrapping cc_import in a cc_library that uses
+	// strip_include_prefix (the wrap doesn't ship yet; see
+	// converter/internal/lower/execute_process_fallback.go
+	// for the gap comment).
+	IncludePrefix string
+
+	// StripIncludePrefix, when non-empty, renders as the
+	// `strip_include_prefix` attribute on the same rule
+	// kinds (cc_library / cc_binary / cc_test). Bazel strips
+	// the prefix from header paths before applying
+	// IncludePrefix — typical usage pairs them:
+	// `strip_include_prefix = "include"` +
+	// `include_prefix = "myelem"` turns
+	// `hdrs = ["include/myelem/api.h"]` into a consumer-side
+	// `#include "myelem/api.h"`.
+	StripIncludePrefix string
+
 	// Copts, Defines, Linkopts pass through to the cc_* rule of the same name.
 	Copts    []string
 	Defines  []string
