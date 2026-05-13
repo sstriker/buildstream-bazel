@@ -16,6 +16,7 @@ require (
 
 require (
 	cloud.google.com/go/longrunning v0.8.0 // indirect
+	github.com/bazelbuild/buildtools v0.0.0-20260319080235-05d2ebe49b0f // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.32.0 // indirect

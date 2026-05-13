@@ -7,10 +7,14 @@ package(default_visibility = ["//visibility:public"])
 cc_library(
     name = "fglib",
     srcs = ["src/fglib.c"],
-    hdrs = ["banner.h", "config_tag.h", "version.h"],
-    includes = ["src"],
+    hdrs = [
+        "banner.h",
+        "config_tag.h",
+        "version.h",
+    ],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["src"],
     linkstatic = True,
     tags = ["has-cmake-codegen"],
 )
@@ -20,13 +24,13 @@ genrule(
     srcs = ["src/version.h.in"],
     outs = ["version.h"],
     cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --copy-only --values=\"$$VALUES\" \"$(location src/version.h.in)\" \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
-    tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",
         "cmake-codegen-driver=file_generate",
         "cmake-codegen-file-generate",
         "cmake-codegen-lifted",
     ],
+    tools = ["//tools:cmake-configure-file"],
     visibility = ["//visibility:private"],
 )
 
@@ -34,13 +38,13 @@ genrule(
     name = "gen_banner_h",
     outs = ["banner.h"],
     cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && $(location //tools:cmake-configure-file) --copy-only --values=\"$$VALUES\" --content-base64=I2RlZmluZSBCQU5ORVIgImZnbGliIDAuOS4wIgo= \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; exit $$rc",
-    tools = ["//tools:cmake-configure-file"],
     tags = [
         "cmake-codegen",
         "cmake-codegen-driver=file_generate",
         "cmake-codegen-file-generate",
         "cmake-codegen-lifted",
     ],
+    tools = ["//tools:cmake-configure-file"],
     visibility = ["//visibility:private"],
 )
 

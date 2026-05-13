@@ -6,10 +6,13 @@ package(default_visibility = ["//visibility:public"])
 
 cc_binary(
     name = "multibin",
-    srcs = ["include/multi.h", "src/main.c"],
-    includes = ["include"],
+    srcs = [
+        "include/multi.h",
+        "src/main.c",
+    ],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["include"],
     deps = [":multistatic"],
 )
 
@@ -17,17 +20,23 @@ cc_library(
     name = "multishared",
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
+    copts = [
+        "-O3",
+        "-fPIC",
+    ],
+    defines = [
+        "NDEBUG",
+        "multishared_EXPORTS",
+    ],
     includes = ["include"],
-    copts = ["-O3", "-fPIC"],
-    defines = ["NDEBUG", "multishared_EXPORTS"],
 )
 
 cc_library(
     name = "multistatic",
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
+    includes = ["include"],
     linkstatic = True,
 )

@@ -8,9 +8,9 @@ cc_library(
     name = "usepkgst",
     srcs = ["src/usepkgst.c"],
     hdrs = ["include/usepkgst.h"],
-    includes = ["include"],
     copts = ["-O3"],
     defines = ["NDEBUG"],
-    deps = ["//elements/zlib:zlib"],
+    includes = ["include"],
     linkstatic = True,
+    deps = ["//elements/zlib"],
 )
