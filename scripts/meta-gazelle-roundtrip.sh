@@ -36,6 +36,7 @@ mkdir -p "$bin_dir"
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/build-cc-index" ./cmd/build-cc-index
+CGO_ENABLED=0 go build -o "$bin_dir/relax-keeps" ./cmd/relax-keeps
 
 work_dir="$(mktemp -d)"
 trap "rm -rf '$work_dir'" EXIT
@@ -49,14 +50,24 @@ B="$work_dir/B"
     --out-b "$B" \
     --convert-element "$bin_dir/convert-element"
 
-# Validate the Phase 7b stub files write-a emitted exist and are
-# valid JSON. (They start as `{}`; Phase 7c rewrites them.)
-for f in tools/cc_index.json tools/python_modules.json; do
+# Validate the Phase 7b/8 stub files write-a emitted exist.
+# - cc_index.json + python_modules.json start as `{}` (Phase 7c
+#   rewrites them).
+# - gazelle-rewritable.json starts as a comment + empty patterns
+#   list (Phase 8 — operator-edited to declare rewritable
+#   genrule patterns).
+for f in tools/cc_index.json tools/python_modules.json tools/gazelle-rewritable.json; do
     if [ ! -f "$B/$f" ]; then
-        echo "meta-gazelle-roundtrip: Phase 7b stub $f missing in project B" >&2
+        echo "meta-gazelle-roundtrip: Phase 7b/8 stub $f missing in project B" >&2
         exit 1
     fi
 done
+# overlay.MODULE.bazel at project B root (Phase 8 operator-owned
+# overlay loaded by MODULE.bazel's include()).
+if [ ! -f "$B/overlay.MODULE.bazel" ]; then
+    echo "meta-gazelle-roundtrip: Phase 8 overlay.MODULE.bazel missing in project B" >&2
+    exit 1
+fi
 
 # Bazel phase: same gating as meta-hello.sh.
 if command -v bazel >/dev/null; then
@@ -133,6 +144,20 @@ if ! grep -qE "\"$expected_header\":[[:space:]]*\"$expected_label\"" "$B/tools/c
     exit 1
 fi
 echo "meta-gazelle-roundtrip: cc_index.json populated; hello.h → $expected_label"
+
+# === relax-keeps with default empty patterns is a no-op ===
+# Sanity check: continuous-conversion loops invoke relax-keeps
+# unconditionally; the empty default in tools/gazelle-rewritable.json
+# must produce no BUILD changes.
+build_before=$(cat "$B/elements/hello-world/BUILD.bazel")
+"$bin_dir/relax-keeps" --root "$B" elements/hello-world
+build_after=$(cat "$B/elements/hello-world/BUILD.bazel")
+if [ "$build_before" != "$build_after" ]; then
+    echo "meta-gazelle-roundtrip: relax-keeps modified BUILD with default empty patterns:" >&2
+    diff <(echo "$build_before") <(echo "$build_after") >&2 || true
+    exit 1
+fi
+echo "meta-gazelle-roundtrip: relax-keeps (empty patterns) is a no-op as expected"
 
 # === Optional: buildifier no-op contract ===
 # Phase 3 promised buildifier --mode=fix is a no-op against our
