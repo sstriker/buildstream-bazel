@@ -200,11 +200,15 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 				testDeps = append(testDeps, conftestLabel)
 			}
 			testDeps = append(testDeps, depLabels...)
+			// PyiSrcs intentionally NOT duplicated onto the
+			// py_test target: the stubs ship on the package's
+			// py_library, which the test deps onto — so the
+			// stubs are transitively reachable to consumers of
+			// the test target without us emitting them twice.
 			out = append(out, Target{
 				Name:       labelByPkgName[pk.Name] + "_test",
 				Kind:       KindPyTest,
 				Srcs:       append([]string(nil), pk.TestSources...),
-				PyiSrcs:    append([]string(nil), pk.PyiSources...),
 				Imports:    []string{pk.ImportRoot},
 				Deps:       testDeps,
 				Visibility: []string{"//visibility:public"},

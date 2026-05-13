@@ -186,8 +186,13 @@ Attribute rules:
 - `deps` resolves via the imports-manifest mapping (see "Roundtrip
   artifacts" below).
 - `conftest.py` is lifted into its own `py_library(name =
-  "conftest", testonly = True)` and wired as a `deps` entry of
-  every sibling `py_test`. Matches rules_python's gazelle plugin.
+  "<pkg>_conftest", testonly = True)` and wired as a `deps`
+  entry of the sibling `py_test`. The `<pkg>_` namespace
+  prefix differs from rules_python gazelle plugin's bare
+  `conftest` name; we use the namespaced form to avoid
+  cross-package target-name collisions when multiple
+  packages in the same BUILD ship conftests
+  (`converter/cmd/convert-element-pyproject/lower.go`).
 
 ### `py_binary`
 
@@ -221,7 +226,7 @@ gazelle's package-bin convention.
 py_test(
     name = "demo_test",
     srcs = ["test_demo.py"],
-    deps = [":demo", ":conftest"],
+    deps = [":demo", ":demo_conftest"],
 )
 ```
 
