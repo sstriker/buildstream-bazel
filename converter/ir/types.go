@@ -96,15 +96,17 @@ type Target struct {
 	// gazelle_cc's "package default + per-rule override only"
 	// convention; see docs/design/build-output-conventions.md.
 	//
-	// Empty Visibility resolves to the package-level default
-	// (i.e. `//visibility:public`) by virtue of the
+	// Empty (zero-value) Visibility resolves to the package-
+	// level default `//visibility:public` by virtue of the
 	// `package(default_visibility=...)` line at the top of
-	// every emitted BUILD. Producers that want a stricter
-	// scope on a target must populate Visibility with the
-	// explicit override (e.g. `["//visibility:private"]`);
-	// every current producer does so explicitly, so the
-	// "empty → public" resolution is a contract callers can
-	// rely on rather than a defaulting accident.
+	// every emitted BUILD. This is the common case across
+	// producers — the cmake codemodel-lowering path leaves
+	// Visibility unset on most targets and relies on the
+	// package default. Producers that want a stricter scope
+	// on a specific target populate Visibility explicitly
+	// (e.g. `["//visibility:private"]` for internal helpers
+	// in lower/execute_process.go, lower/configure_file.go,
+	// and lower/genrule.go).
 	Visibility []string
 
 	// Linkstatic / Alwayslink only meaningful for KindCCLibrary.
