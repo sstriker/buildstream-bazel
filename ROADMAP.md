@@ -63,6 +63,32 @@ transition cleanly.
   (kind:autotools) +
   `scripts/meta-cmake-round2-fallback-multiplatform.sh`
   (kind:cmake Phase B fallback).
+- **Cross-element configure-step bootstrap for non-cmake deps.**
+  A `kind:cmake` / `kind:meson` element converts in pass 2 by
+  running cmake/meson *configure*, which needs build-config
+  metadata (`<Pkg>Config.cmake` / `.pc` / real headers+libs) for
+  every `find_package` / `pkg_check_modules` dep. For a
+  `kind:cmake` dep that metadata is a pass-2 codemodel artifact
+  (`cmake_config_bundle`, shipped). For a trace-based dep
+  (autotools/make/manual/script/makemaker/modulebuild) it only
+  exists after the dep's pass-3 install build — a pass-ordering
+  inversion, and `cmakeDepBundleLabels` skips non-cmake deps
+  silently today. Plan: generalize the round-2 AC rendezvous —
+  the trace-based dep's pass-3 install genrule synthesizes a
+  config bundle from its real install tree and publishes it to
+  the REAPI AC (`cmd/config-publish` + a
+  `SyntheticConfigDigest` keyspace alongside the trace one);
+  the cmake consumer's pass-2 genrule consumes
+  `@cfgbundle_<dep>//:bundle` via a load-time AC lookup
+  mirroring `@trace_<elem>//:trace`. AC miss ⇒ deferred
+  placeholder (default) or a `.bst`-public-data stub bundle
+  (opt-in). The driver script becomes a fixpoint loop over the
+  DAG (build A as far as it can, stage, build B skipping
+  placeholders, repeat until nothing new publishes). Full
+  design — including the all-cmake case, the rejected
+  direct-Bazel-edge alternative, and why project B stays
+  self-contained at the fixpoint — in
+  `docs/design/cross-element-config-rendezvous.md`.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
