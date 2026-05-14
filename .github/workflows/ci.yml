@@ -58,9 +58,6 @@ jobs:
       - name: Unit tests
         run: make test 2>&1 | tee -a /tmp/cijob.log
 
-      - name: Scale-fixture concurrency gate (no e2e tooling needed)
-        run: make e2e-orchestrate-scale 2>&1 | tee -a /tmp/cijob.log
-
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 
@@ -104,9 +101,6 @@ jobs:
 
       - name: fmt e2e (M2 acceptance)
         run: make e2e-fmt 2>&1 | tee -a /tmp/cijob.log
-
-      - name: orchestrate e2e (M3a step 2)
-        run: make e2e-orchestrate 2>&1 | tee -a /tmp/cijob.log
 
       - name: cmake-consumer e2e (M5 step 11)
         run: make e2e-cmake-consumer 2>&1 | tee -a /tmp/cijob.log
@@ -213,25 +207,16 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build converter + orchestrator
-        # The real-converter Buildbarn execute test
-        # (TestE2E_Buildbarn_ExecuteRealConvertElement) uploads
-        # build/bin/convert-element-cmake into CAS as the Action's binary,
-        # so the converter binary must exist before the test runs.
-        run: make converter orchestrator 2>&1 | tee -a /tmp/cijob.log
+      - name: Build converter
+        run: make converter 2>&1 | tee -a /tmp/cijob.log
 
       - name: Build custom bb-runner image (cmake/ninja/bwrap layered on bb-runner-bare)
         # Building the worker image as an explicit step surfaces
         # Dockerfile / apt-repo issues independently of the test run
         # below. docker compose up would build it implicitly anyway,
-        # but the failure mode there is opaque.
+        # but the failure mode there is opaque. The remote-execution
+        # gate below (e2e-meta-buildbarn-re) needs this image.
         run: docker compose -f deploy/buildbarn/docker-compose.yml build bb-runner-bare 2>&1 | tee -a /tmp/cijob.log
-
-      - name: Run M5 cache-share keystone against real bb-storage
-        run: make e2e-buildbarn 2>&1 | tee -a /tmp/cijob.log
-
-      - name: Run M3b Execute keystone against real Buildbarn workers
-        run: make e2e-buildbarn-execute 2>&1 | tee -a /tmp/cijob.log
 
       - name: Run source-push roundtrip against real bb-storage (PR #59)
         # Pack a synthetic source tree, push every blob into CAS via

@@ -179,8 +179,7 @@ clean-room implementation.
 | `cmd/build-tracer/` | Process tracer for the autotools native path (native ptrace + strace fallback, canonical output). |
 | `cmd/convert-element-trace/` | Trace + `make -np` → native cc rules. |
 | `converter/` | The cmake converter. cmake File API codemodel + `--trace-expand` → native cc rules. |
-| `orchestrator/` | Predecessor multi-element driver, being absorbed into the write-a + Bazel path (see [`docs/design/orchestrator-absorption.md`](docs/design/orchestrator-absorption.md)). Down to the scheduler itself — `cmd/orchestrate` + `internal/orchestrator`; its libraries and analysis tools have re-homed under `internal/` and `cmd/`. |
-| `internal/` | Shared packages — CAS, REAPI, manifest, shadow tree, fidelity, the `.bst` element parser, and the re-homed orchestrator libraries (regression, sourcecheckout, exports, …). |
+| `internal/` | Shared packages — CAS, REAPI, manifest, shadow tree, fidelity, the `.bst` element parser, and the libraries re-homed from the now-deleted orchestrator (regression, sourcecheckout, exports, …). The legacy `orchestrator/` predecessor was fully absorbed into the write-a + Bazel path; see [`docs/design/orchestrator-absorption.md`](docs/design/orchestrator-absorption.md). |
 | `testdata/meta-project/` | End-to-end fixtures driven by the gates under `scripts/`. |
 | `docs/` | Architecture references; see [`ROADMAP.md`](ROADMAP.md) for what's done / next. |
 

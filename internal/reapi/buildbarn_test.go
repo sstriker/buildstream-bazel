@@ -1,12 +1,17 @@
 //go:build buildbarn
 
-// buildbarn_test exercises the M3b REAPI Execute path against a real
-// Buildbarn deployment brought up via deploy/buildbarn/docker-compose.yml.
+// buildbarn_test exercises the REAPI Execute path (reapi.Executor)
+// against a real Buildbarn deployment brought up via
+// deploy/buildbarn/docker-compose.yml: it submits Actions through the
+// scheduler at :8983 and verifies the worker actually runs them.
 //
-// Distinct from the M5 cache-share test in
-// orchestrator/internal/orchestrator/buildbarn_test.go, which only
-// hits CAS+AC. These tests submit Actions through the scheduler at
-// :8983 and verify the worker actually runs them.
+// Not wired into CI. Its `e2e-buildbarn-execute` gate retired with
+// the orchestrator absorption (docs/design/orchestrator-absorption.md):
+// the orchestrator was reapi.Executor's production consumer, and the
+// write-a + Bazel path drives remote execution through Bazel's own
+// REAPI client (covered by the e2e-meta-buildbarn-re gate), not
+// reapi.Executor. Kept as a manually-runnable `-tags=buildbarn` test;
+// whether reapi.Executor is still worth carrying is a follow-up.
 //
 // Two tests:
 //

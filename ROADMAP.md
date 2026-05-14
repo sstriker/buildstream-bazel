@@ -45,10 +45,10 @@ transition cleanly.
   exported-header / import-module data (it carries include
   *directories* and *distribution names* today, not the
   resolver-shaped keys gazelle needs). That schema extension
-  is downstream of the imports-manifest *producer* settling,
-  which the `orchestrator/` absorption
-  (`docs/design/orchestrator-absorption.md`) is still
-  reshaping — so this is sequenced after that fold.
+  is downstream of the imports-manifest *producer* settling;
+  with the `orchestrator/` absorption now complete
+  (`docs/design/orchestrator-absorption.md`), the producer side
+  is stable and this is unblocked.
   `# gazelle:resolve` directives are an operator escape hatch,
   not converter output; see
   `docs/design/build-output-conventions.md`.
@@ -87,19 +87,20 @@ transition cleanly.
   `unify-toolchains --element-signal <dir>` to fold any
   builtin-include / sysroot fact a real element exposes that
   the dedicated probe missed into the platform's
-  `ResolvedToolchain.Base`. Needs platform-association heuristic
-  (orchestrator runs single-platform today; the signal directory
-  belongs to that one platform).
-- **Drop the hardcoded `defaultPlatform`.** The orchestrator's
-  REAPI Action.Platform fallback (linux/x86_64 + cmake/ninja/bwrap
-  pins) is transitional: once operators have
-  `//platforms:*` declared by the unifier, the orchestrator
-  should derive Action.Platform properties from the chosen
-  Bazel platform's constraint_values via a constraint→property
-  mapping. The CLI gets a `--target-platform=//platforms:linux_aarch64`
-  flag with no default; CI / e2e tests update to pass it
-  explicitly. Blocked on the unifier seeing real probe data
-  in CI so the platforms package exists at orchestrate time.
+  `ResolvedToolchain.Base`. Needs a platform-association
+  heuristic (a write-a render targets one platform per run today;
+  the signal directory belongs to that one platform).
+- **Per-platform `exec_properties` routing for write-a + Bazel.**
+  `write-a`'s `--platforms-json` carries a `reapi_properties`
+  field it currently ignores: when the rendered project's
+  per-element converter genrules run on a Buildbarn cluster via
+  `--remote_executor`, each platform's worker pool has to be
+  selected by the genrule's Bazel `exec_properties`. Define the
+  `reapi_properties → exec_properties` mapping and have write-a
+  emit a `platform()` per declared platform. This is the live
+  remainder of what the deleted orchestrator's hardcoded
+  `defaultPlatform` / `Action.Platform` fallback used to do; it's
+  the open question in `docs/design/orchestrator-absorption.md`.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
@@ -182,35 +183,6 @@ transition cleanly.
   (`runtime`/`devel`/`man`) gives a richer signal than cmake's
   destination-path inference; structural recipe parallels
   `docs/design/cmake-execute-process-round2-fallback.md`.
-- **Fold `orchestrator/` into the write-a + Bazel path.** The
-  repo has two multi-element drivers: the original
-  `orchestrator/cmd/orchestrate` (one-pass: it *is* the
-  scheduler, owns a REAPI/CAS/AC layer, fans out to a remote
-  Buildbarn cluster) and the newer write-a + Bazel-as-
-  orchestrator shape (two-pass: write-a renders, Bazel
-  schedules). Only the write-a path can express the trace-
-  driven 3 → 2′ loop that non-cmake kinds need, so it's the
-  one with a future — the orchestrator can't absorb it, only
-  the other way around. The orchestrator's distinctive asset,
-  REAPI remote-execution fan-out, is largely redundant once
-  Bazel is the scheduler (Bazel speaks REAPI natively against a
-  Buildbarn cluster) — but that redundancy has to be *proven* by
-  a real CI gate (write-a + Bazel + Buildbarn, build-without-the-
-  bytes) before the scheduler is deleted. Progress: steps 1–5
-  shipped. `tools/bst`'s shell graph-walker is gone (write-a's
-  `--bst-root` does leaf-rooted discovery through the render's
-  own parser); the parser rejects junction-crossing deps with a
-  clear diagnostic; and the orchestrator's libraries + analysis
-  tools have all re-homed — `internal/element`, `regression`,
-  `sourcecheckout`, `exports`, `allowlistreg`, `bsttranslate`
-  under `internal/`, `bst-translate` / `orchestrate-diff` /
-  `orchestrate-history` under `cmd/`, with dead `internal/translate`
-  deleted. `orchestrator/` is now down to the scheduler itself
-  (`cmd/orchestrate` + `internal/orchestrator`). Remaining: the
-  RE/bwotb CI gate, then deleting the scheduler. Full
-  capability-by-capability map (delete / re-home / keep) and PR
-  sequencing: `docs/design/orchestrator-absorption.md`.
-
 ## Later (research / open questions)
 
 - **Generator-expression evaluation in lifted genrules.** The
@@ -280,6 +252,47 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Folded `orchestrator/` into the write-a + Bazel path.** The
+  repo had two multi-element drivers: the original
+  `orchestrator/cmd/orchestrate` (one-pass — it *was* the
+  scheduler, owned a REAPI/CAS/AC layer, fanned out to a remote
+  Buildbarn cluster) and the write-a + Bazel two-pass shape
+  (write-a renders, Bazel schedules). Only the write-a path can
+  express the trace-driven 3 → 2′ loop non-cmake kinds need, so
+  the orchestrator was absorbed into it and deleted. Shipped as a
+  PR sequence (`docs/design/orchestrator-absorption.md` has the
+  full capability map):
+  - **`tools/bst` → `--bst-root`** — write-a does leaf-rooted
+    `.bst` discovery through the render's own parser; the shell
+    awk graph-walker is gone.
+  - **Parser consolidation** — the write-a parser rejects
+    junction-crossing deps with a clear diagnostic, matching the
+    rigor of the orchestrator's `element` package.
+  - **Re-homed the libraries + tools** — `internal/element`,
+    `regression`, `sourcecheckout`, `exports`, `allowlistreg`,
+    `bsttranslate` moved under `internal/`; `bst-translate`,
+    `orchestrate-diff`, `orchestrate-history` under `cmd/`; dead
+    `internal/translate` deleted.
+  - **RE/bwotb CI gate** — `make e2e-meta-buildbarn-re` drives a
+    rendered project A's converter genrule against the real
+    `deploy/buildbarn/` stack via Bazel-native `--remote_executor`,
+    asserting it executes on a worker build-without-the-bytes —
+    the production-path replacement for the orchestrator's
+    Go-harness `e2e-buildbarn*` coverage. `BST_RE_GATE_REQUIRE`
+    makes a green CI run mean the gate actually ran.
+  - **Re-homed the converter-behaviour e2e gates** — `e2e-fidelity`
+    / `-fmt`, `e2e-cmake-consumer`, `e2e-toolchain-skip` became
+    converter e2e tests under `converter/cmd/convert-element-cmake/`;
+    `e2e-bazel-build`'s coverage moved into `scripts/meta-cross-cmake.sh`
+    (a project-B build phase). None had genuinely needed the
+    orchestrator — it was just their test driver.
+  - **Deleted the scheduler** — `orchestrator/cmd/orchestrate` +
+    `orchestrator/internal/orchestrator` + the orchestrator-specific
+    gates + `orchestrator/testdata/` are gone; the `orchestrator/`
+    tree no longer exists. Follow-ups noted in the design doc:
+    re-homing regression's run-vs-run e2e onto a write-a-path
+    "run" definition, and assessing whether `reapi.Executor` (now
+    without a production consumer) is worth carrying.
 - **`bst` wrapper.** `tools/bst` is a POSIX-sh BuildStream-style
   CLI wrapper around write-a so `bst build <element.bst>` keeps
   working against a converted project. Supports

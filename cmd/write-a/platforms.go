@@ -4,14 +4,14 @@ package main
 // round-2 trace-driven kinds (and, in follow-ups, kind:cmake
 // Phase B and kind:meson Phase B).
 //
-// Format mirrors orchestrator/internal/orchestrator/multiplatform.go's
-// platformsManifestEntry, minus the reapi_properties field: write-a
-// runs at render time and emits Bazel BUILD files, so it doesn't
-// route REAPI Actions per platform — the platforms manifest's
-// REAPIProperties slice only matters to the orchestrator's
-// per-platform convert-element-cmake Action fan-out (kind:cmake Phase A).
-// A single platforms.json on disk serves both consumers; each
-// reads the fields it cares about and ignores the rest.
+// The manifest format carries an optional reapi_properties field per
+// platform that write-a ignores: write-a runs at render time and
+// emits Bazel BUILD files, so per-platform executor routing is a
+// Bazel exec_properties concern, not write-a's. (reapi_properties was
+// consumed by the legacy orchestrator's per-platform REAPI Action
+// fan-out, removed in the orchestrator absorption —
+// docs/design/orchestrator-absorption.md.) write-a reads the fields
+// it cares about and ignores the rest.
 
 import (
 	"encoding/json"
