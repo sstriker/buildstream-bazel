@@ -189,17 +189,20 @@ transition cleanly.
   the other way around. The orchestrator's distinctive asset,
   REAPI remote-execution fan-out, is largely redundant once
   Bazel is the scheduler (Bazel speaks REAPI natively against a
-  Buildbarn cluster). What genuinely needs re-homing rather than
-  deleting: the rigorous dep-graph code in
-  `orchestrator/internal/element` (cycle detection, topo sort,
-  junction handling) and the analysis tooling
-  (`orchestrate-diff`, `orchestrate-history`,
-  `orchestrate-bst-translate`, the regression / fingerprint
-  registry), none of which are scheduler concerns. Step 1
-  shipped: `tools/bst` no longer reimplements .bst graph
-  walking in shell — write-a's `--bst-root` does leaf-rooted
-  discovery through the same parser the render uses, so the
-  repo is down from three .bst graph walkers to two. Full
+  Buildbarn cluster) — but that redundancy has to be *proven* by
+  a real CI gate (write-a + Bazel + Buildbarn, build-without-the-
+  bytes) before the scheduler is deleted. Progress: steps 1–5
+  shipped. `tools/bst`'s shell graph-walker is gone (write-a's
+  `--bst-root` does leaf-rooted discovery through the render's
+  own parser); the parser rejects junction-crossing deps with a
+  clear diagnostic; and the orchestrator's libraries + analysis
+  tools have all re-homed — `internal/element`, `regression`,
+  `sourcecheckout`, `exports`, `allowlistreg`, `bsttranslate`
+  under `internal/`, `bst-translate` / `orchestrate-diff` /
+  `orchestrate-history` under `cmd/`, with dead `internal/translate`
+  deleted. `orchestrator/` is now down to the scheduler itself
+  (`cmd/orchestrate` + `internal/orchestrator`). Remaining: the
+  RE/bwotb CI gate, then deleting the scheduler. Full
   capability-by-capability map (delete / re-home / keep) and PR
   sequencing: `docs/design/orchestrator-absorption.md`.
 

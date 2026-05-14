@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/element"
 	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 

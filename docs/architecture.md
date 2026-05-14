@@ -47,21 +47,13 @@ converter/                  single-element converter (the per-package brain)
   internal/toolchain        cmake probe + variant fold (Observe)
   internal/failure          failure.json schema + Tier 1 classifiers
 
-orchestrator/               multi-element driver
+orchestrator/               legacy multi-element driver (being absorbed
+                            into the write-a + Bazel path — see
+                            docs/design/orchestrator-absorption.md)
   cmd/orchestrate           main entry point
-  cmd/orchestrate-bst-translate  rewrites .bst sources to kind:remote-asset
-  cmd/orchestrate-diff      compares two runs; exit 2 on regression
-  cmd/orchestrate-history   queries fingerprint history for churn / drift
-  internal/element          .bst project loader, dep graph, kind filtering
   internal/orchestrator     concurrency loop, AC/CAS layer, REAPI submit path
-  internal/sourcecheckout   resolves source spec → local tree (local/git/remote-asset)
-  internal/bsttranslate     .bst rewrites to kind:remote-asset
-  internal/synthprefix      per-element CMAKE_PREFIX_PATH stub trees
-  internal/exports          parse <Pkg>Targets.cmake → imports manifest
-  internal/regression       run-vs-run diff, fingerprint registry
-  internal/allowlistreg     per-package shadow-tree allowlist registry
 
-internal/                   shared substrates (used by both binaries)
+internal/                   shared substrates
   cas                       local content-addressable store, CAS interface
   reapi                     REAPI Action submission (Executor, GRPCExecutor)
   fidelity                  symbol-set + behavioral diffs (used by tests)
@@ -69,13 +61,23 @@ internal/                   shared substrates (used by both binaries)
   shadow                    path-only-stat shadow-tree creator + read-path tracer
   readpaths                 shared pattern matcher for write-a + audit-narrowing
   tracenorm                 canonicalize / openat filtering / SyntheticActionDigest
+  element                   .bst project loader, dep graph, kind filtering
+  synthprefix               per-element CMAKE_PREFIX_PATH stub trees
+  sourcecheckout            resolves source spec → local tree (local/git/remote-asset)
+  exports                   parse <Pkg>Targets.cmake → imports manifest
+  regression                run-vs-run diff, fingerprint registry
+  allowlistreg              per-package shadow-tree allowlist registry
+  bsttranslate              .bst rewrites to kind:remote-asset
 
-cmd/                        write-a-side binaries + the trace-driven half
+cmd/                        write-a-side binaries + re-homed orchestrator tools
   build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
   trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
   trace-lookup/             A-side load-time AC reader for round-2 _trace_repo
   audit-narrowing/          patterns × oracle → undercoverage report
   write-a/                  meta-project renderer (per-kind handlers)
+  bst-translate/            rewrites .bst sources to kind:remote-asset
+  orchestrate-diff/         compares two runs; exit 2 on regression
+  orchestrate-history/      queries fingerprint history for churn / drift
 
 deploy/buildbarn/           local-dev REAPI cluster
   docker-compose.yml        bb-storage + bb-scheduler + bb-worker + bb-runner-bare
@@ -151,19 +153,19 @@ directory, walks the element graph and runs one converter per
 Pipeline, in order:
 
 1. **Element discovery** —
-   `orchestrator/internal/element/project.go` reads the .bst files
+   `internal/element/project.go` reads the .bst files
    directly (no `bst` binary involved at this stage),
    `BuildGraph()` builds the dep DAG, `FilterByKind("cmake")` drops
    non-cmake elements onto the deferred list.
 2. **Source resolution** —
-   `orchestrator/internal/sourcecheckout` resolves each element's
+   `internal/sourcecheckout` resolves each element's
    `sources:` spec to a local tree. Handles `local:`, `git:`, and
    `kind: remote-asset` (CAS-resolved). Caches under
    `--cache-dir`. `bsttranslate` is the offline cousin: rewrites .bst
    sources to `kind: remote-asset` so subsequent runs hit CAS instead
    of fresh git clones.
 3. **Synth-prefix staging** —
-   `orchestrator/internal/synthprefix/build.go` builds a per-element
+   `internal/synthprefix/build.go` builds a per-element
    `CMAKE_PREFIX_PATH` tree from each dep's already-emitted cmake
    bundle. Creates zero-byte stubs at every `IMPORTED_LOCATION_<CFG>`
    path the bundle references so cmake's `find_package()` resolves
@@ -179,7 +181,7 @@ Pipeline, in order:
    Either way, the per-element output directory is then ingested via
    `internal/cas` so re-runs deterministically reuse outputs.
 5. **Imports manifest** —
-   `orchestrator/internal/exports/extract.go` parses the freshly-emitted
+   `internal/exports/extract.go` parses the freshly-emitted
    `<Pkg>Targets.cmake` and folds it into a per-element imports
    manifest the converter consumes when it sees a `find_package()`
    that resolves to another converted element.
@@ -196,7 +198,7 @@ concurrency=1/8/32 and asserts byte-identical output across levels.
 `orchestrate-diff` and `orchestrate-history` are post-run analysis
 tools: diff compares two `converted.json`s and reports newly-failed
 elements (exit 2 if any), history queries
-`orchestrator/internal/regression`'s fingerprint registry to surface
+`internal/regression`'s fingerprint registry to surface
 churn or per-element drift.
 
 ## Shared substrates
@@ -236,7 +238,7 @@ read-paths the converter actually saw, so a run's
 `read_paths.json` records every file the conversion was sensitive
 to. The `internal/shadow/trace.go` parser handles that; the per-
 package allowlist registry lives in
-`orchestrator/internal/allowlistreg`.
+`internal/allowlistreg`.
 
 ### `internal/readpaths`
 

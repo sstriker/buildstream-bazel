@@ -1,4 +1,4 @@
-// orchestrate-bst-translate rewrites a BuildStream element tree's
+// bst-translate rewrites a BuildStream element tree's
 // .bst files to use kind:remote-asset sources instead of the original
 // kind:git / kind:tar / etc.
 //
@@ -7,7 +7,7 @@
 //  1. Operator's existing pipeline runs `bst source push --remote=<cas>`
 //     to populate the project's source CAS, binding asset URIs to
 //     Directory digests.
-//  2. orchestrate-bst-translate --in elements/ --out elements-cas/
+//  2. bst-translate --in elements/ --out elements-cas/
 //     produces a parallel tree where every translatable source is
 //     rewritten to kind:remote-asset.
 //  3. orchestrate --fdsdk-root=<wherever> --elements-dir=elements-cas
@@ -22,7 +22,7 @@
 // however it likes (typically: a script that runs `bst show` per
 // element and binds via the Remote Asset Push API).
 //
-// See orchestrator/internal/bsttranslate/translate.go for the URI
+// See internal/bsttranslate/translate.go for the URI
 // scheme + qualifier convention.
 package main
 
@@ -36,12 +36,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/bsttranslate"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/bsttranslate"
+	"github.com/sstriker/buildstream-bazel/internal/element"
 )
 
 func main() {
-	flags := flag.NewFlagSet("orchestrate-bst-translate", flag.ContinueOnError)
+	flags := flag.NewFlagSet("bst-translate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	in := flags.String("in", "", "input directory containing .bst element files (recursive)")
 	out := flags.String("out", "", "output directory; created if absent. .bst files are rewritten here.")
@@ -49,14 +49,14 @@ func main() {
 		os.Exit(64)
 	}
 	if *in == "" || *out == "" {
-		fmt.Fprintln(os.Stderr, "orchestrate-bst-translate: --in and --out are required")
+		fmt.Fprintln(os.Stderr, "bst-translate: --in and --out are required")
 		flags.Usage()
 		os.Exit(64)
 	}
 
 	count, err := translateTree(*in, *out)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "orchestrate-bst-translate: %v\n", err)
+		fmt.Fprintf(os.Stderr, "bst-translate: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "translated %d element(s) from %s -> %s\n", count, *in, *out)

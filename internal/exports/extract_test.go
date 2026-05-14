@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/internal/exports"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/exports"
 )
 
 // helloTargetsCMake is a verbatim copy of the shape convert-element-cmake emits
