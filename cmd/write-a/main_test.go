@@ -458,6 +458,24 @@ func TestWriter_RejectsMissingDep(t *testing.T) {
 	}
 }
 
+func TestWriter_RejectsJunctionDep(t *testing.T) {
+	// A junction-crossing dep must surface a clear "junctions not
+	// yet supported" error, not fall through to the confusing
+	// unknown-element path.
+	tmp := t.TempDir()
+	a := makeCmakeBst(t, tmp, "a")
+	if err := appendJunctionDep(a, "other.bst", "someproject.bst"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadGraph([]string{a}, "")
+	if err == nil {
+		t.Fatalf("expected junction-dep rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "junction") {
+		t.Errorf("error %q should mention junctions", err)
+	}
+}
+
 func TestDiscoverBstGraph_WalksTransitiveDeps(t *testing.T) {
 	// Diamond: root depends on a + b; both depend on leaf. Discovery
 	// from root must reach all four, with leaf deduped to one entry,
@@ -522,6 +540,24 @@ func TestDiscoverBstGraph_RejectsMissingDepFile(t *testing.T) {
 	}
 	if _, err := discoverBstGraph(rootBst, ""); err == nil {
 		t.Errorf("expected error for dep with no .bst on disk, got nil")
+	}
+}
+
+func TestDiscoverBstGraph_RejectsJunctionDep(t *testing.T) {
+	// Discovery rejects junction-crossing deps up front, mirroring
+	// loadGraph — so it doesn't instead fail trying to resolve the
+	// junctioned filename as a missing sibling .bst.
+	tmp := t.TempDir()
+	rootBst := makeCmakeBst(t, tmp, "root")
+	if err := appendJunctionDep(rootBst, "other.bst", "someproject.bst"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := discoverBstGraph(rootBst, "")
+	if err == nil {
+		t.Fatalf("expected junction-dep rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "junction") {
+		t.Errorf("error %q should mention junctions", err)
 	}
 }
 
@@ -3104,10 +3140,11 @@ build-depends:
 	}
 }
 
-// TestWriter_DepMapFormParsed covers the junction-targeted dep
-// shape: "- filename: foo.bst, junction: jx.bst, config: {...}".
-// For v1 we resolve by Filename; junction + config are parsed but
-// inert.
+// TestWriter_DepMapFormParsed covers the map-form dep shape:
+// "- filename: foo.bst, config: {...}". The dep resolves by
+// Filename; config: is parsed and recorded on the bstDep but
+// otherwise inert. Junction-targeted deps are a separate case —
+// loadGraph rejects them (see TestWriter_RejectsJunctionDep).
 func TestWriter_DepMapFormParsed(t *testing.T) {
 	tmp := t.TempDir()
 	a := makeCmakeBst(t, tmp, "a")
@@ -3116,7 +3153,6 @@ func TestWriter_DepMapFormParsed(t *testing.T) {
 
 build-depends:
 - filename: a.bst
-  junction: somejunction.bst
   config:
     location: "%{sysroot}"
 `
@@ -3131,11 +3167,8 @@ build-depends:
 	if len(bElem.Deps) != 1 || bElem.Deps[0].Name != "a" {
 		t.Errorf("map-form dep not resolved by Filename; got Deps=%v", bElem.Deps)
 	}
-	// The Junction + Config fields are recorded on the bstDep entry
-	// but inert — verify they round-tripped through the unmarshal.
-	if got := bElem.Bst.BuildDepends[0].Junction; got != "somejunction.bst" {
-		t.Errorf("junction not recorded on bstDep; got %q", got)
-	}
+	// The Config field is recorded on the bstDep entry but inert —
+	// verify it round-tripped through the unmarshal.
 	if bElem.Bst.BuildDepends[0].Config.IsZero() {
 		t.Errorf("dep config not recorded on bstDep")
 	}
@@ -3171,6 +3204,19 @@ func appendDepends(bstPath string, deps []string) error {
 	for _, d := range deps {
 		body = append(body, "- "+d+"\n"...)
 	}
+	return os.WriteFile(bstPath, body, 0o644)
+}
+
+// appendJunctionDep appends a map-form `depends:` entry that crosses
+// a junction — the shape write-a's parser must reject rather than
+// silently ignore.
+func appendJunctionDep(bstPath, filename, junction string) error {
+	body, err := os.ReadFile(bstPath)
+	if err != nil {
+		return err
+	}
+	body = append(body, ("depends:\n- filename: " + filename +
+		"\n  junction: " + junction + "\n")...)
 	return os.WriteFile(bstPath, body, 0o644)
 }
 

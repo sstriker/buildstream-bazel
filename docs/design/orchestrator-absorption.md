@@ -124,10 +124,21 @@ keeping a second implementation alive.
    `Makefile` so binary targets actually rebuild on source
    change (they had no prerequisites), which `tools/bst`'s
    `ensure_binaries` was silently relying on.
-2. **Parser consolidation.** Port `internal/element`'s junction
-   handling into the write-a parser; add a project-rooted entry
-   point if needed. Don't delete `element` yet — its consumers
-   are still live. 2 → 1 effective walkers.
+2. **Parser consolidation** *(in progress)*. `internal/element`'s
+   one piece of rigor the write-a parser lacked — explicit
+   rejection of junction-crossing deps — is now ported:
+   `loadGraph` and `discoverBstGraph` both fail with a clear
+   "junctions not yet supported" diagnostic instead of letting a
+   junctioned filename fall through to a confusing
+   "not in the graph" / missing-sibling error. A project-rooted
+   (walk-all-`.bst`-under-a-directory) entry point is *not* added
+   speculatively — `internal/element`'s `ReadProject` shape is
+   only needed by `orchestrate` (deleted in step 6) and
+   `orchestrate-bst-translate` (re-homed in step 4), so that
+   entry point lands with step 4 if it's still wanted then.
+   `internal/element` is not deleted yet — its consumers are
+   still live — but the write-a parser now has feature parity, so
+   it is the sole walker the live write-a path needs.
 3. **Re-home the analysis tooling.** Move `orchestrate-diff` /
    `orchestrate-history` to `cmd/`, `internal/regression` to
    `internal/`. Repoint `LoadRun` at the write-a path's run
