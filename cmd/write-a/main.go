@@ -354,7 +354,8 @@ func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 func main() {
 	log.SetFlags(0)
 	var bstPaths stringList
-	flag.Var(&bstPaths, "bst", "path to a .bst file. Repeatable; pass once per element.")
+	flag.Var(&bstPaths, "bst", "path to a .bst file. Repeatable; pass once per element. The caller must enumerate the full element set; use --bst-root instead to discover it from a single leaf.")
+	bstRoot := flag.String("bst-root", "", "path to a single leaf .bst file. write-a walks its depends / build-depends / runtime-depends graph on disk and renders every reachable element — the leaf-rooted counterpart to enumerating the set via repeated --bst. Mutually exclusive with --bst.")
 	outA := flag.String("out", "", "output directory for project A (the meta workspace whose genrules run convert-element-cmake)")
 	outB := flag.String("out-b", "", "optional: output directory for project B (the consumer workspace built against project A's outputs). When unset, only project A is rendered.")
 	convertBin := flag.String("convert-element-cmake", "", "path to the convert-element-cmake binary (will be referenced from project-A's tools/)")
@@ -377,6 +378,17 @@ func main() {
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
 	pyprojectFallback := flag.Bool("pyproject-fallback", false, "optional: per-element auto-detection. When set (alongside --convert-element-pyproject), write-a probes each element's pyproject.toml at render time (running the converter with --probe) and emits the pipeline-shape coarse install genrule for any element whose probe doesn't return exit 0. That covers typed Tier-1 refusals (the native render would refuse), CLI/usage errors (exit 64), untyped Tier-2 errors (exit 65 — filesystem issues, malformed imports manifest), spawn failures (binary missing / wrong arch), and timeouts (probe hung past the per-element deadline). Operators see per-element refusal reasons on stderr; refused elements are still install_tree.tar-shaped (no per-target Bazel labels, but the element builds).")
 	flag.Parse()
+
+	if *bstRoot != "" {
+		if len(bstPaths) > 0 {
+			log.Fatalf("--bst-root and --bst are mutually exclusive: --bst-root discovers the element graph from one leaf .bst, --bst takes the explicit pre-enumerated set")
+		}
+		discovered, err := discoverBstGraph(*bstRoot, *sourceCache)
+		if err != nil {
+			log.Fatalf("discover .bst graph from %s: %v", *bstRoot, err)
+		}
+		bstPaths = discovered
+	}
 
 	if len(bstPaths) == 0 || *outA == "" || *convertBin == "" {
 		flag.Usage()
@@ -623,6 +635,90 @@ func main() {
 		}
 		fmt.Printf("wrote project B at %s\n", *outB)
 	}
+}
+
+// discoverBstGraph walks the depends / build-depends / runtime-depends
+// graph rooted at rootBst, resolving every dependency reference to a
+// .bst file on disk, and returns the deduped, sorted set of .bst paths
+// (the root included). It's the leaf-rooted counterpart to handing
+// loadGraph an explicit, pre-enumerated --bst set: callers point
+// write-a at one element and the loader recovers the rest.
+//
+// Parsing goes through loadElement — the same parser loadGraph uses —
+// so (?): conditional folding and (@): includes are honored
+// identically; discovery and the render that follows can't disagree
+// about a .bst's dependency list.
+//
+// Dependency-reference resolution mirrors loadGraph's element keying:
+//
+//   - With project.conf: references are element-root-relative, so
+//     "foo/bar.bst" resolves to <ElementRoot>/foo/bar.bst.
+//   - Without project.conf: references resolve as siblings of the
+//     referring .bst — the basename-keyed fixture shape.
+//
+// A bare reference with no ".bst" suffix picks one up, matching
+// BuildStream and loadGraph's strings.TrimSuffix tolerance.
+func discoverBstGraph(rootBst, sourceCache string) ([]string, error) {
+	rootAbs, err := filepath.Abs(rootBst)
+	if err != nil {
+		return nil, err
+	}
+	info, err := loadProjectInfoFromBst(rootAbs)
+	if err != nil {
+		return nil, fmt.Errorf("load project.conf: %w", err)
+	}
+
+	visited := map[string]bool{}
+	var queue []string
+	enqueue := func(p string) {
+		if !visited[p] {
+			visited[p] = true
+			queue = append(queue, p)
+		}
+	}
+	enqueue(rootAbs)
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		includeBase := info.ProjectRoot
+		if includeBase == "" {
+			includeBase = filepath.Dir(cur)
+		}
+		elem, err := loadElement(cur, includeBase, sourceCache, info.Options)
+		if err != nil {
+			return nil, err
+		}
+		var deps []bstDep
+		deps = append(deps, elem.Bst.Depends...)
+		deps = append(deps, elem.Bst.BuildDepends...)
+		deps = append(deps, elem.Bst.RuntimeDepends...)
+		for _, dep := range deps {
+			for _, fn := range dep.expandedFilenames() {
+				if !strings.HasSuffix(fn, ".bst") {
+					fn += ".bst"
+				}
+				var depPath string
+				if info.ElementRoot != "" {
+					depPath = filepath.Join(info.ElementRoot, fn)
+				} else {
+					depPath = filepath.Join(filepath.Dir(cur), fn)
+				}
+				if _, err := os.Stat(depPath); err != nil {
+					return nil, fmt.Errorf("element %s depends on %q, which does not resolve to a .bst on disk (looked for %s): %w",
+						cur, fn, depPath, err)
+				}
+				enqueue(depPath)
+			}
+		}
+	}
+
+	paths := make([]string, 0, len(visited))
+	for p := range visited {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // loadGraph parses every .bst path in input order, then resolves

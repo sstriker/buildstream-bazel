@@ -109,6 +109,26 @@ build/bin/write-a \
 
 Then `cd /tmp/project-b && bazel build //...`. That's it.
 
+### `bst`-style wrapper (optional)
+
+If your team is more comfortable with BuildStream's CLI than with
+Bazel's, `tools/bst` is a thin wrapper that forwards `bst build`,
+`bst show`, and `bst workspace open|close` to the equivalent
+write-a + bazel-build sequence. Same end state — project A + B
+under a per-element cache dir — without re-learning the Bazel CLI
+upfront:
+
+```sh
+tools/bst build path/to/yours.bst
+tools/bst workspace open path/to/yours.bst /tmp/scratch   # edit sources
+tools/bst build path/to/yours.bst                         # picks up edits
+tools/bst workspace close path/to/yours.bst               # restore
+```
+
+Once teams are comfortable invoking `bazel build` against project
+B directly, the wrapper becomes optional. The render half is
+covered by `make e2e-meta-bst-wrapper`.
+
 You'll need Bazel ≥ 7 (bzlmod) to consume the output — project
 B is a normal Bazel workspace with `cc_library` / `cc_binary`
 rules and no CAS-mount machinery, so any Bazel that supports

@@ -72,65 +72,12 @@ repo_root() {
 }
 
 ensure_binaries() {
-    # write-a + convert-element + build-tracer +
+    # write-a + convert-element-cmake + build-tracer +
     # convert-element-trace all live under build/bin after
     # `make all`. Shell out to make if anything's stale; make
     # is fast for a no-op build.
     root="$1"
     ( cd "$root" && make -s all >/dev/null )
-}
-
-bst_collect() {
-    # Given a leaf .bst path, walk depends/build-depends
-    # transitively and emit `--bst <abspath>` flag pairs for
-    # every reachable .bst, deduped, sorted. write-a's --bst
-    # is repeatable; this is how we feed it the full graph
-    # without requiring the user to enumerate it.
-    leaf="$1"
-    leaf_abs="$(cd "$(dirname "$leaf")" && pwd)/$(basename "$leaf")"
-    leaf_dir="$(dirname "$leaf_abs")"
-
-    # Simple iterative walker. Visited set keyed on absolute path.
-    todo="$leaf_abs"
-    visited=""
-    while [ -n "$todo" ]; do
-        cur="$(echo "$todo" | head -1)"
-        todo="$(echo "$todo" | tail -n +2)"
-        case "$visited" in
-            *"|$cur|"*) continue ;;
-        esac
-        visited="$visited|$cur|"
-        if [ ! -f "$cur" ]; then
-            echo "bst: $cur not found" >&2
-            return 1
-        fi
-        # Extract dep .bst names from `depends:` / `build-depends:`
-        # / `runtime-depends:` blocks. The reference shape is a
-        # YAML list of bare strings. Map-form (filename: ..., ...)
-        # also supported via filename: lookup.
-        deps="$(awk '
-            /^[[:space:]]*(depends|build-depends|runtime-depends)[[:space:]]*:[[:space:]]*$/ { in_deps=1; next }
-            /^[a-zA-Z]/ && !/^[[:space:]]/ { in_deps=0 }
-            in_deps && /^[[:space:]]+-[[:space:]]+[^ {}\[]+\.bst/ { gsub(/^[[:space:]]+-[[:space:]]+/, "", $0); print }
-            in_deps && /^[[:space:]]+-[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
-                gsub(/^[[:space:]]+-[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print
-            }
-            in_deps && /^[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
-                gsub(/^[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print
-            }
-        ' "$cur" 2>/dev/null || true)"
-        for dep in $deps; do
-            # Resolve dep path: relative to current .bst's dir.
-            dep_abs="$(cd "$(dirname "$cur")" && cd "$(dirname "$dep")" 2>/dev/null && pwd)/$(basename "$dep")"
-            todo="$todo
-$dep_abs"
-        done
-    done
-    # Emit deduped, sorted --bst flags.
-    echo "$visited" | tr '|' '\n' | sort -u | while read -r p; do
-        [ -z "$p" ] && continue
-        printf -- '--bst %s ' "$p"
-    done
 }
 
 cache_dir_for() {
@@ -167,20 +114,23 @@ cmd_build() {
     project_b="$cache/B"
     mkdir -p "$cache"
 
-    bst_flags="$(bst_collect "$leaf_abs")"
-
-    # shellcheck disable=SC2086
     # Round-1 trace-driven shape: project A is a marker, project B
     # hosts the install genrule with build-tracer + convert-element-
     # trace inline. Avoids the round-2 rendezvous infra (REAPI AC
     # + cas-fuse / bb_clientd mount) that the wrapper doesn't aim to
     # set up. Round-2 (publish/lookup binaries + bb_clientd) is the
     # production deployment shape; the wrapper is for local dev.
+    #
+    # --bst-root hands write-a the leaf .bst; write-a walks the
+    # depends / build-depends / runtime-depends graph on disk
+    # itself (loadElement-based discovery — the same parser the
+    # render uses), so the wrapper doesn't reimplement .bst graph
+    # walking in shell.
     "$root/build/bin/write-a" \
-        $bst_flags \
+        --bst-root "$leaf_abs" \
         --out "$project_a" \
         --out-b "$project_b" \
-        --convert-element "$root/build/bin/convert-element" \
+        --convert-element-cmake "$root/build/bin/convert-element-cmake" \
         --convert-element-trace "$root/build/bin/convert-element-trace" \
         --build-tracer-bin "$root/build/bin/build-tracer" \
         --trace-round1
@@ -197,6 +147,24 @@ cmd_build() {
             ;;
     esac
     target="//elements/${elem_name}:${target_name}"
+
+    # BST_SKIP_BAZEL forces render-only mode: do the write-a render,
+    # print the target line, stop — never shell out to bazel even
+    # when it's on PATH. Render-half CI gates (scripts/meta-bst-
+    # wrapper.sh) set this so they exercise the wrapper's render
+    # path deterministically regardless of whether the runner image
+    # ships bazel / bazelisk.
+    if [ -n "${BST_SKIP_BAZEL:-}" ]; then
+        cat <<EOF >&2
+bst build: rendered project A + B at:
+  $project_a
+  $project_b
+
+BST_SKIP_BAZEL set; skipping the bazel-build step. Target:
+  cd $project_b && bazel build $target
+EOF
+        return 0
+    fi
 
     BAZEL="${BAZEL:-bazel}"
     if ! command -v "$BAZEL" >/dev/null && command -v bazelisk >/dev/null; then

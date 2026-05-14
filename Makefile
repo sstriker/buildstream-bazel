@@ -1,4 +1,4 @@
-.PHONY: all converter orchestrator diff history bst-translate derive-toolchain test test-e2e e2e-hello-world e2e-fmt \
+.PHONY: all converter orchestrator diff history bst-translate derive-toolchain build-tracer convert-element-trace test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
@@ -31,8 +31,19 @@ BST_TRANSLATE := $(BIN_DIR)/orchestrate-bst-translate
 DERIVE_TOOLCHAIN := $(BIN_DIR)/derive-toolchain
 WRITE_A      := $(BIN_DIR)/write-a
 SOURCE_PUSH  := $(BIN_DIR)/source-push
+BUILD_TRACER := $(BIN_DIR)/build-tracer
+CONVERT_ELEMENT_TRACE := $(BIN_DIR)/convert-element-trace
 
-all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push
+# Every Go binary target lists GO_SRC as a prerequisite. Coarse (any
+# .go change rebuilds every binary) but correct — the alternative,
+# prerequisite-free file targets, meant `make all` treated an existing
+# binary as up-to-date forever and never rebuilt stale code, so
+# `tools/bst`'s ensure_binaries silently ran whatever was last built.
+# `go build`'s own incremental cache keeps the rebuild near-instant
+# when nothing actually changed.
+GO_SRC := $(shell find . -name '*.go' -not -path './$(BUILD_DIR)/*') go.mod go.sum
+
+all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace
 
 converter: $(CONVERTER)
 
@@ -50,37 +61,49 @@ write-a: $(WRITE_A)
 
 source-push: $(SOURCE_PUSH)
 
-$(CONVERTER):
+build-tracer: $(BUILD_TRACER)
+
+convert-element-trace: $(CONVERT_ELEMENT_TRACE)
+
+$(CONVERTER): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERTER) ./converter/cmd/convert-element-cmake
 
-$(ORCHESTRATOR):
+$(ORCHESTRATOR): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(ORCHESTRATOR) ./orchestrator/cmd/orchestrate
 
-$(DIFF):
+$(DIFF): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(DIFF) ./orchestrator/cmd/orchestrate-diff
 
-$(HISTORY):
+$(HISTORY): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(HISTORY) ./orchestrator/cmd/orchestrate-history
 
-$(BST_TRANSLATE):
+$(BST_TRANSLATE): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BST_TRANSLATE) ./orchestrator/cmd/orchestrate-bst-translate
 
-$(DERIVE_TOOLCHAIN):
+$(DERIVE_TOOLCHAIN): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(DERIVE_TOOLCHAIN) ./converter/cmd/derive-toolchain
 
-$(WRITE_A):
+$(WRITE_A): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(WRITE_A) ./cmd/write-a
 
-$(SOURCE_PUSH):
+$(SOURCE_PUSH): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(SOURCE_PUSH) ./cmd/source-push
+
+$(BUILD_TRACER): $(GO_SRC)
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_TRACER) ./cmd/build-tracer
+
+$(CONVERT_ELEMENT_TRACE): $(GO_SRC)
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERT_ELEMENT_TRACE) ./cmd/convert-element-trace
 
 # Unit tests: pre-recorded File API fixtures, no cmake required.
 test:
@@ -118,6 +141,16 @@ e2e-orchestrate-scale: orchestrator
 # alone are still a useful regression gate.
 e2e-meta-hello: check-tools converter
 	scripts/meta-hello.sh
+
+# Render-half smoke test for tools/bst (the BuildStream-style CLI
+# wrapper around write-a). Exercises three render shapes (kind:cmake,
+# kind:autotools, multi-element graph with flush-left bare-name
+# deps) plus the workspace open/close round-trip. Bazel-build half
+# is out of scope — the wrapper shells out to whatever bazel is on
+# PATH, and that side is covered by the per-kind render + bazel-side
+# e2e gates.
+e2e-meta-bst-wrapper: all
+	scripts/meta-bst-wrapper.sh
 
 # Narrowing-undercoverage audit gate (soft launch). Renders a
 # small meta-project with write-a, invokes convert-element-cmake
