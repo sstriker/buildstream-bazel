@@ -8,13 +8,10 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/element"
 )
 
-// fixtureRoot still points under orchestrator/ because the
-// fdsdk-subset fixture's .bst files carry source paths tuned to
-// that directory depth, and 7 of its 8 consumers are orchestrator
-// tests. It relocates to a non-orchestrator testdata/ home when
-// orchestrator/ is deleted (absorption step 7), at which point only
-// this test and internal/regression's e2e test still reference it.
-const fixtureRoot = "../../orchestrator/testdata/fdsdk-subset"
+// fdsdk-subset relocated to the repo-root testdata/ when orchestrator/
+// was deleted in the absorption (docs/design/orchestrator-absorption.md);
+// this test is now its only consumer.
+const fixtureRoot = "../../testdata/fdsdk-subset"
 
 func TestParseElement_ManualWithBareDeps(t *testing.T) {
 	el, err := element.ParseElement(

@@ -7,10 +7,9 @@ package main
 // bytes for elements with kind:git_repo / kind:tar / etc., not
 // just metadata records on resolvedSource. The --source-cache
 // flag closes the gap: callers pre-populate
-// <cache>/<source-key>/ trees (via the existing
-// orchestrator/internal/sourcecheckout layer or by hand for
-// tests), and write-a's loader treats those entries as if they
-// were kind:local sources at staging time.
+// <cache>/<source-key>/ trees (via the `internal/sourcecheckout`
+// layer or by hand for tests), and write-a's loader treats those
+// entries as if they were kind:local sources at staging time.
 //
 // sourceKey is the deterministic content key write-a derives per
 // non-kind:local source — SHA-256 of the source's canonical

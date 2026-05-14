@@ -1,10 +1,10 @@
-.PHONY: all converter orchestrator diff history bst-translate derive-toolchain build-tracer convert-element-trace test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-orchestrate e2e-orchestrate-scale e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
+.PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-audit-narrowing fdsdk-reality-check \
-        buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake convert-and-build \
+        buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -24,7 +24,6 @@ BUILD_DIR ?= build
 BIN_DIR   := $(BUILD_DIR)/bin
 
 CONVERTER    := $(BIN_DIR)/convert-element-cmake
-ORCHESTRATOR := $(BIN_DIR)/orchestrate
 DIFF         := $(BIN_DIR)/orchestrate-diff
 HISTORY      := $(BIN_DIR)/orchestrate-history
 BST_TRANSLATE := $(BIN_DIR)/bst-translate
@@ -43,11 +42,9 @@ CONVERT_ELEMENT_TRACE := $(BIN_DIR)/convert-element-trace
 # when nothing actually changed.
 GO_SRC := $(shell find . -name '*.go' -not -path './$(BUILD_DIR)/*') go.mod go.sum
 
-all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace
+all: converter diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace
 
 converter: $(CONVERTER)
-
-orchestrator: $(ORCHESTRATOR)
 
 diff: $(DIFF)
 
@@ -68,10 +65,6 @@ convert-element-trace: $(CONVERT_ELEMENT_TRACE)
 $(CONVERTER): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERTER) ./converter/cmd/convert-element-cmake
-
-$(ORCHESTRATOR): $(GO_SRC)
-	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(ORCHESTRATOR) ./orchestrator/cmd/orchestrate
 
 $(DIFF): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
@@ -118,18 +111,6 @@ e2e-hello-world: check-tools converter
 
 e2e-fmt: check-tools converter fetch-fmt
 	$(GO) test -tags=e2e -run TestE2E_Fmt ./converter/...
-
-e2e-orchestrate: check-tools converter orchestrator
-	$(GO) test -tags=e2e -run TestE2E_Orchestrate ./orchestrator/...
-
-# Scale-fixture concurrency gate. Drives the orchestrator over a 50-element
-# synthetic graph (orchestrator/testdata/fdsdk-scale/) at concurrency=1/8/32
-# and asserts byte-identical per-element outputs across levels. Surfaces AC
-# eviction races, queue-depth imbalances, and goroutine-pool bugs that the
-# 3-element fdsdk-subset can't exercise. Uses the test binary's stub
-# converter — no cmake/bwrap/ninja needed.
-e2e-orchestrate-scale: orchestrator
-	$(GO) test -run TestRun_Scale_DeterministicAcrossLevels -timeout 300s ./orchestrator/internal/orchestrator/...
 
 # Phase 1 acceptance gate for the meta-project (Bazel-as-orchestrator)
 # shape (docs/whole-project-plan.md). Renders project A and project B
@@ -697,57 +678,6 @@ bb-clientd-down:
 e2e-hello-bbclientd: converter source-push write-a
 	./tools/e2e-hello-bbclientd.sh
 
-e2e-buildbarn: buildbarn-up
-	$(GO) test -tags=buildbarn -run TestE2E_Buildbarn ./orchestrator/...
-	$(MAKE) buildbarn-down
-
-# M3b execution validation against real Buildbarn workers (scheduler +
-# bb-worker + bb-runner-bare from the same docker-compose stack).
-# Runs both the synthetic /bin/sh round-trip test and the real-converter
-# test (which depends on the custom worker image at
-# deploy/buildbarn/runner/Dockerfile having cmake/ninja/bwrap installed).
-# `make converter` is a prerequisite of the real-converter test; if the
-# binary isn't present that subtest skips with a clear message.
-e2e-buildbarn-execute: converter buildbarn-up
-	@# On test failure, dump per-container logs before tearing down so
-	@# CI shows worker/scheduler/runner state when "No workers exist"
-	@# or similar registration-side errors fire. /-/healthy says "the
-	@# diagnostics http server bound" but says nothing about whether
-	@# bb-worker has finished registering against bb-scheduler:8984;
-	@# the logs disambiguate.
-	@$(GO) test -tags=buildbarn -run TestE2E_Buildbarn_Execute ./internal/reapi/...; \
-	  ec=$$?; \
-	  if [ $$ec -ne 0 ]; then \
-	    echo "=== container state ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) ps -a; \
-	    echo "=== bb-runner-bare inspect (RestartCount, ExitCode, OOMKilled) ==="; \
-	    docker inspect bb-runner-bare --format='RestartCount={{.RestartCount}} State.Status={{.State.Status}} ExitCode={{.State.ExitCode}} OOMKilled={{.State.OOMKilled}} Error="{{.State.Error}}"' || true; \
-	    echo "=== bb-runner-bare healthcheck history ==="; \
-	    docker inspect bb-runner-bare --format='{{range .State.Health.Log}}{{.Start}} ExitCode={{.ExitCode}} Output={{.Output | printf "%q"}}{{println}}{{end}}' || true; \
-	    echo "=== bb-runner-bare procs ==="; \
-	    docker top bb-runner-bare || true; \
-	    echo "=== bb-runner-bare find for runner.sock anywhere ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-runner-bare find / -name 'runner.sock' -o -name 'runner' -type s 2>/dev/null || true; \
-	    echo "=== bb-runner-bare /worker tree ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-runner-bare ls -lR /worker 2>&1 || true; \
-	    echo "=== bb-runner-bare /tmp ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-runner-bare ls -la /tmp 2>&1 || true; \
-	    for svc in bb-worker bb-scheduler bb-runner-bare bb-storage; do \
-	      echo "=== $$svc logs ==="; \
-	      docker compose -f $(BUILDBARN_COMPOSE) logs --no-color --timestamps --tail=100 $$svc; \
-	    done; \
-	    echo "=== bb-runner-bare /worker/build view ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-runner-bare ls -la /worker/build/ || true; \
-	    echo "=== bb-worker /worker/build view ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-worker ls -la /worker/build/ || true; \
-	    echo "=== bb-worker uid/gid ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-worker id || true; \
-	    echo "=== bb-runner-bare uid/gid ==="; \
-	    docker compose -f $(BUILDBARN_COMPOSE) exec -T bb-runner-bare id || true; \
-	  fi; \
-	  $(MAKE) buildbarn-down; \
-	  exit $$ec
-
 # Local-dev bazelisk bootstrap. Installs to ~/.local/bin by default
 # (override with PREFIX=). The bazel-tagged e2e tests self-skip when
 # bazel is missing; this gets them out of skip-mode without operators
@@ -762,19 +692,6 @@ install-bazelisk:
 # slips past local dev and only fires in CI.
 install-cmake:
 	tools/install-pinned-cmake.sh
-
-# Full pipeline: convert an FDSDK-style root, then bazel build inside
-# the resulting <out>/. Requires bazel or bazelisk on PATH (run
-# `make install-bazelisk` first if missing). Override BAZEL_TARGET to
-# build a specific label instead of //... .
-#
-#   make convert-and-build FDSDK_ROOT=/path/to/fdsdk OUT=/tmp/out
-#   make convert-and-build FDSDK_ROOT=/path/to/fdsdk OUT=/tmp/out BAZEL_TARGET=//elements/components/foo:bar
-convert-and-build: converter orchestrator
-	@[ -n "$(FDSDK_ROOT)" ] || (echo "set FDSDK_ROOT=path/to/fdsdk-root"; exit 1)
-	@[ -n "$(OUT)" ] || (echo "set OUT=output-dir"; exit 1)
-	$(ORCHESTRATOR) --fdsdk-root $(FDSDK_ROOT) --out $(OUT) --converter $(CONVERTER) --bazel-build $(or $(BAZEL_TARGET),//...)
-
 # Fetch the M2 acceptance package out-of-band. Idempotent.
 fetch-fmt:
 	@if [ ! -d "$(FMT_DIR)" ]; then \

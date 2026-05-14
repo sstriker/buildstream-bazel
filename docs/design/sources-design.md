@@ -416,12 +416,11 @@ explosion is bounded — most options have 1–3 values.
 
 ## Out of scope for this design
 
-- **Per-element source-graph caching at the orchestrator level.**
-  The existing `orchestrator/internal/sourcecheckout` provides
-  per-element caching against an on-disk dir; the new flow keeps
-  that as the source-of-truth for "what got fetched" but moves
-  the consumption to CAS. The CAS / orchestrator-cache split is a
-  separate refactor.
+- **Per-element source-graph caching in the source-checkout layer.**
+  The existing `internal/sourcecheckout` provides per-element
+  caching against an on-disk dir; the new flow keeps that as the
+  source-of-truth for "what got fetched" but moves the consumption
+  to CAS. The CAS / on-disk-cache split is a separate refactor.
 - **Cross-junction source sharing.** Multi-project graphs where
   junctions reference sources from another project's
   `bst source push` namespace. v1 handles single-project graphs.

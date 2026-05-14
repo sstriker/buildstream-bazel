@@ -9,18 +9,19 @@ For a diagram-first tour of the same material see
 ## Goal in one paragraph
 
 Take a BuildStream project (the FreeDesktop SDK is the working target)
-and produce a Bazel build that builds the same artifacts. The pipeline
-runs cmake against each `kind: cmake` element in a sandbox, reads
-cmake's File API + ninja graph, lowers the result to an internal
-representation, and emits both a `BUILD.bazel` (so Bazel can drive the
-build) and a synthesized cmake-config bundle (so downstream cmake
-consumers still resolve `find_package()`). Every element's outputs are
-content-addressed in CAS; an orchestrator coordinates the multi-element
-graph, materializes cross-element source/dependency trees, and
-optionally submits the per-element conversion as a REAPI Action so a
-remote Buildbarn cluster can fan out the work. The trace-driven
-two-pass meta-project shape (`cmd/write-a` + Bazel-as-orchestrator)
-extends the same conversion model to non-cmake kinds — `kind:autotools`
+and produce a Bazel build that builds the same artifacts. The
+single-element converter runs cmake against a `kind: cmake` element in
+a sandbox, reads cmake's File API + ninja graph, lowers the result to
+an internal representation, and emits both a `BUILD.bazel` (so Bazel
+can drive the build) and a synthesized cmake-config bundle (so
+downstream cmake consumers still resolve `find_package()`). The
+multi-element driver is **`cmd/write-a` + Bazel**: write-a renders a
+two-pass meta-project (project A runs the per-element converters as
+Bazel genrules; project B is the consumer workspace built against
+project A's outputs), and **Bazel** schedules the cross-element work —
+including, against a Buildbarn cluster, fanning per-element conversions
+out across a remote executor pool via Bazel-native `--remote_executor`.
+The same two-pass model extends to non-cmake kinds — `kind:autotools`
 (round-1 coarse + round-2 trace-driven), `kind:make`, `kind:makemaker`,
 `kind:modulebuild`, `kind:manual`, `kind:script`, and `kind:meson`
 (introspection-driven Phase A) are all shipped via the per-kind
@@ -47,15 +48,24 @@ converter/                  single-element converter (the per-package brain)
   internal/toolchain        cmake probe + variant fold (Observe)
   internal/failure          failure.json schema + Tier 1 classifiers
 
-orchestrator/               legacy multi-element driver (being absorbed
-                            into the write-a + Bazel path — see
-                            docs/design/orchestrator-absorption.md)
-  cmd/orchestrate           main entry point
-  internal/orchestrator     concurrency loop, AC/CAS layer, REAPI submit path
+cmd/                        the write-a + Bazel driver, its tooling, and
+                            the re-homed analysis tools
+  write-a/                  meta-project renderer (per-kind handlers) — the multi-element driver
+  stage-b/                  stages project A's BUILD.bazel.out into project B; reports the changed-element set
+  build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
+  trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
+  trace-lookup/             A-side load-time AC reader for round-2 _trace_repo
+  convert-element-trace/    trace + `make -np` → native cc rules (trace-driven kinds)
+  audit-narrowing/          patterns × oracle → undercoverage report
+  build-cc-index/ relax-keeps/  gazelle-roundtrip support (Phase 7/8b)
+  source-push/              packs a source tree into CAS via the REAPI wire format
+  bst-translate/            rewrites .bst sources to kind:remote-asset
+  orchestrate-diff/         compares two runs; exit 2 on regression
+  orchestrate-history/      queries fingerprint history for churn / drift
 
 internal/                   shared substrates
   cas                       local content-addressable store, CAS interface
-  reapi                     REAPI Action submission (Executor, GRPCExecutor)
+  reapi                     REAPI Action-cache + Action-submission layer
   fidelity                  symbol-set + behavioral diffs (used by tests)
   manifest                  per-package + per-run JSON schemas
   shadow                    path-only-stat shadow-tree creator + read-path tracer
@@ -69,26 +79,14 @@ internal/                   shared substrates
   allowlistreg              per-package shadow-tree allowlist registry
   bsttranslate              .bst rewrites to kind:remote-asset
 
-cmd/                        write-a-side binaries + re-homed orchestrator tools
-  build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
-  trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
-  trace-lookup/             A-side load-time AC reader for round-2 _trace_repo
-  audit-narrowing/          patterns × oracle → undercoverage report
-  write-a/                  meta-project renderer (per-kind handlers)
-  bst-translate/            rewrites .bst sources to kind:remote-asset
-  orchestrate-diff/         compares two runs; exit 2 on regression
-  orchestrate-history/      queries fingerprint history for churn / drift
+tools/bst                   BuildStream-style CLI wrapper around write-a (`bst build` muscle memory)
 
 deploy/buildbarn/           local-dev REAPI cluster
   docker-compose.yml        bb-storage + bb-scheduler + bb-worker + bb-runner-bare
   config/*.jsonnet          per-service configs
   runner/Dockerfile         custom bb-runner image with cmake/ninja/bwrap
 
-tools/                      maintenance scripts (not on the runtime path)
-  fixtures/                 record-fileapi.sh + scale-fixture generator
-  audit/                    misc one-off audit helpers
-  install-bazelisk.sh       local-dev bazel bootstrap
-
+scripts/ tools/             render-gate scripts + maintenance helpers
 docs/                       milestone plans, schema docs, known-deltas
 .github/                    CI workflow + post-failure-tail composite action
 ```
@@ -130,12 +128,13 @@ Pipeline, in order:
    the cc_toolchain rules respectively.
 7. **Manifest** — `internal/manifest` writes `manifest.json` (sha256
    of every output, the toolchain fingerprint, the failure tier if
-   any).
+   any). `--out-timings` optionally records per-phase wall-clock
+   (cmake configure / translation / total).
 
 Tiered failures land in `converter/internal/failure/failure.go`.
 Tier-1 (`unsupported-target-type`, `configure-failed`,
-`unresolved-include`, …) means "this element can't convert; the run
-continues without it." Tier-2/3 abort the orchestrator run.
+`unresolved-include`, …) means "this element can't convert" without
+aborting; Tier-2/3 are hard errors.
 
 `derive-toolchain` is a sister binary that runs cmake against a tiny
 probe project and emits a `cc_toolchain_config.bzl` + `BUILD.bazel`
@@ -143,63 +142,40 @@ for downstream Bazel consumers, plus a `toolchain.cmake` that
 pre-populates cmake's compiler-probe cache so per-element conversions
 skip the expensive probe.
 
-### `orchestrate`
+### `write-a`
 
-Multi-element driver. Given a BuildStream project root and an output
-directory, walks the element graph and runs one converter per
-`kind: cmake` element in topological order, then writes a top-level
-`converted.json` manifest.
+Multi-element driver. Given a `.bst` graph, renders a **two-pass
+meta-project** and lets **Bazel** schedule the cross-element work.
 
-Pipeline, in order:
+- **Project A** (the meta workspace): one per-element genrule that
+  invokes the per-kind converter (`convert-element-cmake` for
+  `kind:cmake`, `convert-element-trace` + `build-tracer` for the
+  trace-driven kinds, `convert-element-meson` for `kind:meson`, …).
+  `bazel build` in project A runs those genrules; each emits a
+  `BUILD.bazel.out` (the converted rules) plus, for `kind:cmake`,
+  a `cmake-config-bundle.tar`. Cross-element `kind:cmake` deps are
+  staged on `CMAKE_PREFIX_PATH` inside the consumer's genrule so
+  `find_package()` resolves.
+- **Staging** — `cmd/stage-b` copies each element's `BUILD.bazel.out`
+  from project A's `bazel-bin` over project B's
+  `elements/<name>/BUILD.bazel`, and reports the set of elements whose
+  staged content actually changed (a content diff — the "what just
+  re-converted" signal).
+- **Project B** (the consumer workspace): the staged per-element
+  `BUILD.bazel`s plus the element source trees. `bazel build` in
+  project B compiles the converted `cc_*` rules; cross-element labels
+  are `//elements/<name>:<target>` and resolve within the module.
 
-1. **Element discovery** —
-   `internal/element/project.go` reads the .bst files
-   directly (no `bst` binary involved at this stage),
-   `BuildGraph()` builds the dep DAG, `FilterByKind("cmake")` drops
-   non-cmake elements onto the deferred list.
-2. **Source resolution** —
-   `internal/sourcecheckout` resolves each element's
-   `sources:` spec to a local tree. Handles `local:`, `git:`, and
-   `kind: remote-asset` (CAS-resolved). Caches under
-   `--cache-dir`. `bsttranslate` is the offline cousin: rewrites .bst
-   sources to `kind: remote-asset` so subsequent runs hit CAS instead
-   of fresh git clones.
-3. **Synth-prefix staging** —
-   `internal/synthprefix/build.go` builds a per-element
-   `CMAKE_PREFIX_PATH` tree from each dep's already-emitted cmake
-   bundle. Creates zero-byte stubs at every `IMPORTED_LOCATION_<CFG>`
-   path the bundle references so cmake's `find_package()` resolves
-   without any actual built artifacts present.
-4. **Per-element conversion** —
-   `orchestrator/internal/orchestrator/run.go:processElement` is the
-   per-element worker. Two execution modes:
-   - **Local** (default): `convertOne()` runs `convert-element-cmake` via
-     `os/exec` against the staged source root.
-   - **Remote** (`--execute`): `remoteExecute()` packages the
-     element's input root into REAPI inputs, submits an Action via
-     `internal/reapi`, and downloads outputs from CAS.
-   Either way, the per-element output directory is then ingested via
-   `internal/cas` so re-runs deterministically reuse outputs.
-5. **Imports manifest** —
-   `internal/exports/extract.go` parses the freshly-emitted
-   `<Pkg>Targets.cmake` and folds it into a per-element imports
-   manifest the converter consumes when it sees a `find_package()`
-   that resolves to another converted element.
-6. **Run-level manifest** — `converted.json` records every element's
-   digest + status; consumed by `bazel/converted_pkg_repo.bzl` and
-   `orchestrate-diff`.
-
-Concurrency is `--concurrency` workers over the dep DAG; each element
-waits for its deps' synth-prefix to land before it starts. The
-50-element scale fixture under
-`orchestrator/testdata/fdsdk-scale/` exercises this loop at
-concurrency=1/8/32 and asserts byte-identical output across levels.
-
-`orchestrate-diff` and `orchestrate-history` are post-run analysis
-tools: diff compares two `converted.json`s and reports newly-failed
-elements (exit 2 if any), history queries
-`internal/regression`'s fingerprint registry to surface
-churn or per-element drift.
+The per-kind dispatch lives in `cmd/write-a/` (one handler file per
+kind). `tools/bst` is a BuildStream-style CLI wrapper so `bst build`
+muscle memory keeps working through the conversion. The
+re-homed analysis tools — `orchestrate-diff` (compares two runs,
+exit 2 on regression) and `orchestrate-history` (queries
+`internal/regression`'s fingerprint registry for churn / drift) — and
+`bst-translate` (rewrites `.bst` sources to `kind:remote-asset`) sit
+beside write-a under `cmd/`; they came out of the now-deleted
+orchestrator in the absorption (see
+[`docs/design/orchestrator-absorption.md`](design/orchestrator-absorption.md)).
 
 ## Shared substrates
 
@@ -207,26 +183,29 @@ churn or per-element drift.
 
 Local content-addressable store with an interface that matches the
 REAPI CAS shape (`FindMissing`, `BatchUpdate`, `BatchRead`,
-`Read`/`Write` for streaming). The orchestrator uses it both as its
-own per-element output cache and as the staging area for inputs it
-uploads to a remote Buildbarn.
+`Read`/`Write` for streaming). `cmd/source-push` uses it to pack
+source trees into a real Buildbarn CAS over the REAPI wire format.
 
 ### `internal/reapi`
 
-Thin Action-submission layer. `Executor` is the surface
-(`Execute(ctx, ActionDigest) → ActionResult`); `GRPCExecutor` talks
-to a real REAPI Execution service. Input-tree construction and
-output-blob download are the orchestrator's job — `reapi` doesn't
-expose CAS or AC clients of its own; callers reuse `internal/cas`
-for that.
+REAPI client layer. The Action-cache surface (`UpdateActionResult` /
+`GetActionResult`) backs `cmd/trace-publish` and `cmd/trace-lookup` —
+the round-2 trace-rendezvous wire contract. The `Executor`
+Action-submission surface (`Execute(ctx, ActionDigest) → ActionResult`,
+`GRPCExecutor` against a real REAPI Execution service) was the
+now-deleted orchestrator's per-element fan-out path; the write-a +
+Bazel driver instead drives remote execution through Bazel's own
+native REAPI client (`--remote_executor`), so `reapi.Executor` no
+longer has a production consumer — its `-tags=buildbarn` test is kept
+manually-runnable. See
+[`docs/design/orchestrator-absorption.md`](design/orchestrator-absorption.md).
 
 ### `internal/manifest`
 
-JSON schemas for per-package `manifest.json` and run-level
-`converted.json`. The orchestrator's `<out>/MODULE.bazel` makes the
-output directory a self-contained bzlmod project; cross-element
-`BazelLabel`s in the per-element imports manifests are
-`//elements/<name>:<target>`-shaped.
+JSON schemas for per-package `manifest.json` and run-level manifests.
+write-a renders `MODULE.bazel` for projects A and B, making each a
+self-contained bzlmod project; cross-element `BazelLabel`s in the
+per-element imports manifests are `//elements/<name>:<target>`-shaped.
 
 ### `internal/shadow`
 
@@ -268,44 +247,44 @@ side, sourced from openat capture). Recipe + scope:
 Symbol-tier and behavioral-tier diff library. `DiffSymbols` compares
 `SymbolSet`s extracted via `nm`/`objdump`; `DiffBehavior` runs a
 test binary under both build paths and compares stdout/stderr/exit.
-Used by `orchestrator/internal/orchestrator/fidelity_e2e_test.go`,
-which is the M5b acceptance gate (parameterized over fixtures —
-hello-world for smoke, fmt for real-world). Not currently a runtime
-gate on conversion — only a test.
+Used by `converter/cmd/convert-element-cmake/fidelity_e2e_test.go`,
+the fidelity gate (parameterized over fixtures — hello-world for
+smoke, fmt for real-world). Not a runtime gate on conversion — only
+a test.
 
 ## Downstream Bazel envelope
 
-The orchestrator's `<out>/` is a self-contained bzlmod project. The
-orchestrator emits `<out>/MODULE.bazel` declaring `bazel_dep` on
-`rules_cc`; each converted element lives at
-`<out>/elements/<name>/BUILD.bazel`, with the source root's top-level
-entries symlinked at the package root so the converter's
-relative-path `srcs`/`hdrs` resolve. Cross-element labels are
-`//elements/<name>:<target>` and resolve directly within the module.
+write-a's project B is a self-contained bzlmod project: a rendered
+`MODULE.bazel` declaring `bazel_dep` on `rules_cc`, each converted
+element at `elements/<name>/BUILD.bazel`, with the element's source
+tree alongside so the converter's relative-path `srcs`/`hdrs`
+resolve. Cross-element labels are `//elements/<name>:<target>` and
+resolve directly within the module.
 
-The bazel-build downstream e2e
-(`orchestrator/internal/orchestrator/bazelbuild_test.go`) runs the
-orchestrator over the FDSDK subset, then runs
-`bazel build //elements/components/uses-hello:uses_hello_bin`
-directly inside `<out>/`.
+`scripts/meta-cross-cmake.sh` is the downstream-build gate: it renders
+a cross-element `kind:cmake` graph, builds project A, `stage-b`'s into
+project B, and `bazel build`s the consumer there — the cross-element
+converted `cc` deps link end to end. The full two-pass round-trip
+including a smoke binary is `scripts/meta-hello.sh`.
 
 ## Build / test targets
 
 `Makefile` is the dev surface. The shapes that matter:
 
-- `make` — builds all five Go binaries into `build/bin/`.
+- `make` — builds the Go binaries into `build/bin/`.
 - `make test` — unit tests (no cmake required; pre-recorded fixtures).
 - `make e2e-hello-world` / `make e2e-fmt` — converter e2e against
   checked-in / fetched cmake projects (build tag `e2e`).
-- `make e2e-orchestrate` / `make e2e-orchestrate-scale` — orchestrator
-  end-to-end and 50-element scale gate.
-- `make e2e-cmake-consumer` / `make e2e-bazel-build` — downstream
-  consumer gates (cmake-side and bazel-side).
-- `make e2e-toolchain-skip` — derive-toolchain integration gate.
-- `make e2e-fidelity` / `make e2e-fidelity-fmt` — symbol+behavioral
-  fidelity gate.
-- `make e2e-buildbarn` / `make e2e-buildbarn-execute` — real-Buildbarn
-  cache + execute gates (require docker compose).
+- `make e2e-fidelity` / `make e2e-fidelity-fmt` — symbol-equivalence
+  fidelity gate (cmake reference vs convert-element-cmake + bazel).
+- `make e2e-cmake-consumer` — downstream `find_package()` resolves a
+  converted element's synthesized cmake-config bundle.
+- `make e2e-toolchain-skip` — derive-toolchain configure-skip gate.
+- `make e2e-meta-*` — the write-a render + two-pass-build gates, one
+  per kind / shape (`meta-hello`, `meta-cross-cmake`, `meta-stack`,
+  the autotools / meson / pyproject families, …).
+- `make e2e-meta-buildbarn-re` — write-a + Bazel + real Buildbarn
+  remote-execution + build-without-the-bytes gate.
 
 `.github/workflows/ci.yml` is the CI surface. Four jobs: `unit`,
 `e2e` (cmake+bwrap), `bazel-e2e`, `buildbarn-e2e`. Each step pipes
@@ -319,13 +298,19 @@ last 150 lines to the PR on failure.
 bb-scheduler, bb-worker, and bb-runner-bare. The runner is a custom
 image (`deploy/buildbarn/runner/Dockerfile`) that layers cmake,
 ninja, and bubblewrap onto upstream's distroless `bb-runner-bare`
-at the versions the orchestrator's `defaultPlatform` declares
-(currently 3.28.3 / 1.11.1 / 0.8.0). Per-service jsonnet configs
-live in `deploy/buildbarn/config/`.
+at the pinned versions (currently 3.28.3 / 1.11.1 / 0.8.0, matching
+`deploy/buildbarn/config/worker.jsonnet`'s advertised platform
+properties). Per-service jsonnet configs live in
+`deploy/buildbarn/config/`.
 
-This stack is what `make e2e-buildbarn-execute` exercises. It is
-the local-dev REAPI substrate; production deployments would point
-the orchestrator's `--execute` flag at a real cluster.
+This stack is the local-dev REAPI substrate. `make e2e-meta-buildbarn-re`
+points a rendered project A's converter genrule at it via Bazel-native
+`--remote_executor` and asserts the genrule executes on a real worker
+build-without-the-bytes; `make e2e-source-push` and
+`make e2e-meta-autotools-round2-live` exercise the CAS / AC wire
+contracts against it. A production deployment is the same shape at
+scale: point `bazel build`'s `--remote_executor` / `--remote_cache` at
+the real cluster.
 
 ## Where to start reading
 
@@ -335,12 +320,11 @@ If you're new and want a single thread through the codebase:
    in 80 readable lines.
 2. `converter/internal/lower/lower.go` — where most converter logic
    actually lives.
-3. `orchestrator/cmd/orchestrate/main.go` and
-   `orchestrator/internal/orchestrator/run.go` — the multi-element
-   driver.
-4. `orchestrator/internal/orchestrator/run.go`'s `writeBzlmodProject`
-   — emits `<out>/MODULE.bazel` so the orchestrator output is a
-   self-contained, directly-buildable bzlmod project.
-5. `orchestrator/internal/orchestrator/fidelity_e2e_test.go` — the
-   e2e test that proves the whole stack produces the same artifacts
-   cmake would.
+3. `cmd/write-a/main.go` — the multi-element driver: `.bst` graph in,
+   two-pass meta-project out.
+4. `scripts/meta-hello.sh` — the full two-pass round-trip (write-a →
+   `bazel build` A → `stage-b` → `bazel build` B → smoke binary) as a
+   readable shell script.
+5. `converter/cmd/convert-element-cmake/fidelity_e2e_test.go` — the
+   e2e test that proves the stack produces the same artifacts cmake
+   would.
