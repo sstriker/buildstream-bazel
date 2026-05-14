@@ -111,7 +111,7 @@ Common failure modes and how to diagnose:
   trace-driven kind).
 - **The trace-driven converter** (autotools / make / manual /
   script / makemaker / modulebuild): `cmd/convert-element-trace/`.
-- **The cmake converter**: `converter/cmd/convert-element` +
+- **The cmake converter**: `converter/cmd/convert-element-cmake` +
   `converter/internal/`.
 - **Source-key + content-narrowing patterns**:
   `cmd/write-a/srckey.go` + per-handler

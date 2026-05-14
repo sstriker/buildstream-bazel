@@ -1,4 +1,4 @@
-// orchestrate walks a BuildStream-style element tree, runs convert-element
+// orchestrate walks a BuildStream-style element tree, runs convert-element-cmake
 // on every kind:cmake element in dependency-first order, and stages the
 // outputs under <out>/.
 //
@@ -45,14 +45,14 @@ func main() {
 		elementsDir            = fs.String("elements-dir", "elements", "subdirectory under --fdsdk-root holding .bst files")
 		out                    = fs.String("out", "out", "output root for converted elements + manifest")
 		sourcesBase            = fs.String("sources-base", "", "directory containing pre-staged source trees per element name (overrides per-element kind:local sources)")
-		converterBinary        = fs.String("converter", "convert-element", "convert-element binary path or PATH name")
+		converterBinary        = fs.String("converter", "convert-element-cmake", "convert-element-cmake binary path or PATH name")
 		casFlag                = fs.String("cas", "", "cache substrate: local:<path> | grpc://host:port | grpcs://host:port (default: local:<out>/cache)")
 		casInstance            = fs.String("cas-instance", "", "REAPI instance_name (gRPC mode only)")
 		casCert                = fs.String("cas-tls-cert", "", "client certificate file for mTLS (gRPC mode only)")
 		casKey                 = fs.String("cas-tls-key", "", "client private key file for mTLS (gRPC mode only)")
 		casCA                  = fs.String("cas-ca", "", "trust-root CA bundle (gRPC mode only)")
 		casToken               = fs.String("cas-token-file", "", "file containing a bearer token (gRPC mode only)")
-		remoteExec             = fs.String("execute", "", "remote execution endpoint: grpc://host:port | grpcs://host:port. when set, conversions submit a REAPI Action instead of forking convert-element locally")
+		remoteExec             = fs.String("execute", "", "remote execution endpoint: grpc://host:port | grpcs://host:port. when set, conversions submit a REAPI Action instead of forking convert-element-cmake locally")
 		remoteExecInst         = fs.String("execute-instance", "", "REAPI Execute instance_name; defaults to --cas-instance")
 		concurrency            = fs.Int("concurrency", 0, "max in-flight per-element conversions (<=0 = NumCPU). Topology is preserved; deps still land before dependents.")
 		sourceCAS              = fs.String("source-cas", "", "REAPI Remote Asset endpoint for kind:remote-asset sources (e.g. grpc://host:port). Reuses --cas-* TLS / token plumbing.")

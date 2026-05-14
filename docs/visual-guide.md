@@ -35,7 +35,7 @@ Both workspaces are then built by ordinary `bazel build //...`.
 graph TD
     subgraph Binaries["🛠 Binaries (cmd/)"]
         WA["cmd/write-a\nStatic renderer — reads .bst graph,\nwrites project A + B BUILD files"]
-        CE["converter/cmd/convert-element\nkind:cmake converter\ncmake File API → cc rules"]
+        CE["converter/cmd/convert-element-cmake\nkind:cmake converter\ncmake File API → cc rules"]
         BT["cmd/build-tracer\nProcess tracer\nptrace / strace wrapper"]
         CEA["cmd/convert-element-trace\nTrace-driven converter (autotools / make / manual / script / makemaker / modulebuild)\nTrace + optional make-db → cc_library / cc_binary"]
         SP["cmd/source-push\nUploads source trees to CAS\n(dev/test; production uses bst source push)"]
@@ -101,7 +101,7 @@ flowchart TB
 
     subgraph PA["📁 Project A (meta workspace)"]
         PAMOD["MODULE.bazel"]
-        PATOOLS["tools/\nconvert-element\nbuild-tracer\ntrace-lookup\ntrace-publish"]
+        PATOOLS["tools/\nconvert-element-cmake\nbuild-tracer\ntrace-lookup\ntrace-publish"]
         PABUILD["elements/<name>/BUILD.bazel\n(converter genrule for kind:cmake;\nround-2 converter genrule for kind:autotools)"]
         PASRC["elements/<name>/\n@src_<key>//:tree (CAS-backed)\nor sources/ (staged, default dev path)"]
     end
@@ -248,14 +248,14 @@ converter output. The handler only inserts a placeholder BUILD
 ```mermaid
 flowchart LR
     subgraph PROD["Producer element (kind:cmake)"]
-        PCONV["convert-element\n(emits cmake-config-bundle.tar)"]
+        PCONV["convert-element-cmake\n(emits cmake-config-bundle.tar)"]
         PBUNDLE["lib/cmake/Pkg/\nPkgConfig.cmake\n+ zero-byte IMPORTED_LOCATION stubs"]
     end
 
     subgraph CONS["Consumer element (kind:cmake)"]
         EXTRACT["$PREFIX extract\n(tar -xf bundle)"]
         CFIND["cmake find_package(Pkg CONFIG)\nresolves in $PREFIX"]
-        CCONV["convert-element\n(--prefix-dir=$PREFIX\n--imports-manifest)"]
+        CCONV["convert-element-cmake\n(--prefix-dir=$PREFIX\n--imports-manifest)"]
         CDEPS["BUILD.bazel.out\ndeps = [//elements/producer:producer, ...]"]
     end
 
@@ -336,7 +336,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     SRC3["Source bytes\n(CAS digest)"]
-    TOOL["Translator binary\n(convert-element version)"]
+    TOOL["Translator binary\n(convert-element-cmake version)"]
     KEY["Bazel ActionCache key\n= hash(inputs + tool)"]
     RESULT["ActionResult\n(BUILD.bazel.out, bundles, …)"]
     REMOTE["Remote cache\n(buildbarn in CI;\nBazel local cache for dev)"]

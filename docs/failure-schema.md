@@ -48,7 +48,7 @@ generator-expression.
 **Operator action:** read `message`; fix the package CMakeLists or
 provide the missing dependency in the imports manifest.
 
-**Emission point:** `cmd/convert-element/main.go` — wrapping
+**Emission point:** `cmd/convert-element-cmake/main.go` — wrapping
 `cmakerun.Configure`'s error.
 
 ### `fileapi-missing`

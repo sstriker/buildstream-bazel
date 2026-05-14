@@ -18,7 +18,7 @@ project-A/
 │   ├── sources.bzl         # @src_<key>// repo rule (FUSE-sources mode)
 │   └── BUILD.bazel         # bzl_library exports for the .bzl files
 ├── tools/
-│   ├── convert-element             # the cmake converter binary
+│   ├── convert-element-cmake             # the cmake converter binary
 │   ├── convert-element-trace   # the trace-driven converter binary (shared by autotools / make / manual / script / makemaker / modulebuild)
 │   ├── build-tracer                # process tracer binary
 │   ├── sources.json                # source-key → URL/digest catalogue
@@ -64,14 +64,14 @@ genrule(
             cp -L "$$src" "$$SHADOW/$$rel"
         done
         BUNDLE_DIR="$$(mktemp -d)"
-        $(location //tools:convert-element) \
+        $(location //tools:convert-element-cmake) \
             --source-root="$$SHADOW" \
             --out-build="$(location BUILD.bazel.out)" \
             --out-bundle-dir="$$BUNDLE_DIR" \
             --out-read-paths="$(location read_paths.json)"
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
-    tools = ["//tools:convert-element"],
+    tools = ["//tools:convert-element-cmake"],
 )
 
 filegroup(name = "build_bazel",          srcs = ["BUILD.bazel.out"])
@@ -319,7 +319,7 @@ the surface area:
    `elements/<name>/BUILD.bazel`. The driver replaces the
    placeholder.
 6. **Tools staged in project A.** The translators
-   (`convert-element`, `convert-element-trace`,
+   (`convert-element-cmake`, `convert-element-trace`,
    `build-tracer`) live under `project-A/tools/` and are
    referenced via `//tools:<name>` labels from per-element
    genrules' `tools = [...]`. The translator binary contract
@@ -330,7 +330,7 @@ the surface area:
    `cmd/trace-lookup`) the REAPI ActionCache doubles as a
    srckey → trace registry; no separate registry service is required.
 
-The translator binaries themselves (`convert-element` etc.) are
+The translator binaries themselves (`convert-element-cmake` etc.) are
 the implementation detail of *this* converter — a sibling tool
 could replace them with its own per-kind translators as long as
 the generated workspace's label / output / staging contracts
@@ -341,10 +341,10 @@ stay the same.
 For the per-element genrule's tools, here's what each binary
 expects:
 
-### convert-element (kind:cmake)
+### convert-element-cmake (kind:cmake)
 
 ```
-convert-element \
+convert-element-cmake \
     --source-root=<dir>                  # cmake source tree
     --out-build=<path>                   # write BUILD.bazel.out here
     --out-bundle-dir=<dir>               # write cmake-config bundle here

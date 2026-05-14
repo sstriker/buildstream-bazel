@@ -123,7 +123,7 @@ build/bin/write-a \
     --out "$PROJ_A" \
     --out-b "$PROJ_B" \
     --source-cache "$CACHE" \
-    --convert-element build/bin/convert-element \
+    --convert-element-cmake build/bin/convert-element-cmake \
     --use-fuse-sources
 
 echo "== verify generated structure =="

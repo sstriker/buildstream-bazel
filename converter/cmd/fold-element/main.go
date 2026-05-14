@@ -2,7 +2,7 @@
 // one unified BUILD.bazel via elementfold + bazel.Emit. The
 // orchestrator's per-element multi-platform fan-out spawns
 // this binary as a post-process step after the per-platform
-// convert-element Actions complete.
+// convert-element-cmake Actions complete.
 //
 // Usage:
 //

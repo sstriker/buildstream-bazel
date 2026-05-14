@@ -91,7 +91,7 @@ while IFS='|' read -r path desc; do
         --bst "$elem_dir/$(basename "$path")" \
         --out "$out_a" \
         --out-b "$out_b" \
-        --convert-element "$bin_dir/convert-element" 2>&1 >/dev/null) || true
+        --convert-element-cmake "$bin_dir/convert-element-cmake" 2>&1 >/dev/null) || true
     if [ -z "$err" ]; then
         ok=$((ok+1))
         report="$report\n  OK      $path"
@@ -130,7 +130,7 @@ while IFS='|' read -r path desc; do
         --bst "$src" \
         --out "$out_a" \
         --out-b "$out_b" \
-        --convert-element "$bin_dir/convert-element" 2>&1 >/dev/null) || true
+        --convert-element-cmake "$bin_dir/convert-element-cmake" 2>&1 >/dev/null) || true
     if [ -z "$err" ]; then
         in_place_ok=$((in_place_ok+1))
         in_place_report="$in_place_report\n  OK      $path"
@@ -211,7 +211,7 @@ synth_err=$("$bin_dir/write-a" \
     --bst "$synth_dir/elements/components/data.bst" \
     --out "$synth_dir/A" \
     --out-b "$synth_dir/B" \
-    --convert-element "$bin_dir/convert-element" 2>&1 >/dev/null) || true
+    --convert-element-cmake "$bin_dir/convert-element-cmake" 2>&1 >/dev/null) || true
 # Confirm the multi-source / directory: source actually staged
 # correctly (parse + dep resolution is necessary but not sufficient;
 # the BUILD render must land the files at the expected paths).
@@ -256,7 +256,7 @@ while IFS='|' read -r path desc; do
         err=$("$bin_dir/write-a" "$@" \
             --out "$out_a" \
             --out-b "$out_b" \
-            --convert-element "$bin_dir/convert-element" 2>&1 >/dev/null) || true
+            --convert-element-cmake "$bin_dir/convert-element-cmake" 2>&1 >/dev/null) || true
         if [ -z "$err" ]; then
             final_err=""
             break

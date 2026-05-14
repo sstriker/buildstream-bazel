@@ -17,7 +17,7 @@ import (
 )
 
 // TestMain double-duties: when invoked with ORCHESTRATOR_STUB_CONVERTER=1 it
-// behaves as a stub `convert-element` binary instead of running the test
+// behaves as a stub `convert-element-cmake` binary instead of running the test
 // suite. This lets the orchestrator unit tests exec the test binary itself
 // as the converter — no separate fixture binary, no shell-script
 // dependence.
@@ -28,7 +28,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// stubConverter parses the convert-element flag surface (just enough), then
+// stubConverter parses the convert-element-cmake flag surface (just enough), then
 // produces success / Tier-1 / Tier-2 outputs as directed by env.
 func stubConverter() int {
 	fs := flag.NewFlagSet("stub", flag.ContinueOnError)
@@ -110,7 +110,7 @@ func stubConverter() int {
 			// element layouts.
 			pkg := strings.ToLower(filepath.Base(elementName))
 			// Synth-prefix layout: cmake-config files live under
-			// lib/cmake/<Pkg>/. Mirrors what real convert-element writes
+			// lib/cmake/<Pkg>/. Mirrors what real convert-element-cmake writes
 			// via synthprefix.BuildSlice.
 			pkgDir := filepath.Join(*outBundle, "lib", "cmake", pkg)
 			if err := os.MkdirAll(pkgDir, 0o755); err != nil {
@@ -177,7 +177,7 @@ func TestRun_StubSuccess(t *testing.T) {
 	// after the source root's basename — which is now the shadow tree
 	// path the orchestrator builds (last segment matches the element
 	// name's last segment). cmake-config/ is in synth-prefix layout
-	// (lib/cmake/<Pkg>/...) — mirrors what real convert-element writes
+	// (lib/cmake/<Pkg>/...) — mirrors what real convert-element-cmake writes
 	// via synthprefix.BuildSlice.
 	for _, want := range []string{
 		"elements/components/hello/BUILD.bazel",

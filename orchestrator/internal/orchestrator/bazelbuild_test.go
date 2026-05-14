@@ -3,7 +3,7 @@
 // bazelbuild_test exercises the M3 downstream-Bazel acceptance gate:
 //
 //  1. Run the orchestrator against the fdsdk-subset fixture using the
-//     real convert-element binary. Outputs land at <out>/elements/<name>/
+//     real convert-element-cmake binary. Outputs land at <out>/elements/<name>/
 //     and the orchestrator emits <out>/MODULE.bazel making <out>/ a
 //     self-contained bzlmod project.
 //  2. Run `bazel build //elements/components/uses-hello:uses_hello_bin`
@@ -29,14 +29,14 @@ import (
 func TestE2E_BazelBuild_DownstreamConsumesConvertedRepos(t *testing.T) {
 	bazel := lookupBazel(t)
 
-	conv, err := exec.LookPath("convert-element")
+	conv, err := exec.LookPath("convert-element-cmake")
 	if err != nil {
 		repoRoot, _ := filepath.Abs("../../..")
-		fallback := filepath.Join(repoRoot, "build", "bin", "convert-element")
+		fallback := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
 		if _, ferr := os.Stat(fallback); ferr == nil {
 			conv = fallback
 		} else {
-			t.Skipf("convert-element not found (%v / %v)", err, ferr)
+			t.Skipf("convert-element-cmake not found (%v / %v)", err, ferr)
 		}
 	}
 

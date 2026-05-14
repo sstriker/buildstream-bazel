@@ -163,7 +163,7 @@ type Target struct {
 	//
 	// Emitter-side rendering policy lives in the emitter's own
 	// docs, not here. `converter/emit/bazel` (the shared cc
-	// emitter, used by convert-element / convert-element-meson
+	// emitter, used by convert-element-cmake / convert-element-meson
 	// / fold-element / convert-element-trace) writes a file-
 	// head `package(default_visibility = ["//visibility:public"])`
 	// and emits a per-rule `visibility = [...]` line only when

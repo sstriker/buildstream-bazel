@@ -339,7 +339,7 @@ func (r *runner) processElementMultiPlatform(
 	// converter's internal packages (elementfold, ir,
 	// emit/bazel); the orchestrator can't import them
 	// directly, so we shell out — same pattern the orchestrator
-	// uses for convert-element itself.
+	// uses for convert-element-cmake itself.
 	if err := r.runFoldElement(ctx, name, elemOut, cells); err != nil {
 		// Fold-time errors (target shape diverges in a way
 		// select() can't express; an ambiguous matrix; etc.)

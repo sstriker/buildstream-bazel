@@ -50,10 +50,10 @@ header coincidentally shares a name with an unrelated target
 source files for `#include "..."` directives is deterministic
 (no name guessing), but expands the converter's action input
 set to include every `.c` / `.cpp` source file it reads. That
-means every source-file edit invalidates convert-element's
+means every source-file edit invalidates convert-element-cmake's
 cache and triggers a re-run. The current behaviour (read only
 the codemodel / cmakeFiles / compile_commands / build.ninja)
-keeps convert-element re-runs gated on CMakeLists / cmake-cache
+keeps convert-element-cmake re-runs gated on CMakeLists / cmake-cache
 changes, which are rare. Trading rare re-runs for precise hdrs
 isn't worth it — the hdrs duplication is a cosmetic BUILD-file
 diff, not a build-time correctness issue.
@@ -191,7 +191,7 @@ mattering.
    `converter/testdata/sample-projects/<name>/`.
 2. `tools/fixtures/record-fileapi.sh <name>` records the
    File API reply into `converter/testdata/fileapi/<name>/`.
-3. Run convert-element manually to produce the BUILD; compare
+3. Run convert-element-cmake manually to produce the BUILD; compare
    against expectation. Pin as
    `converter/testdata/golden/<name>/BUILD.bazel.golden` either
    directly or via the test's `-update` flag.

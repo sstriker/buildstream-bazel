@@ -1,5 +1,5 @@
 // Package cli holds flag parsing, validation, and CLI exit codes for
-// convert-element. Kept separate from main so it's testable without a process
+// convert-element-cmake. Kept separate from main so it's testable without a process
 // boundary.
 package cli
 
@@ -81,7 +81,7 @@ type Args struct {
 	// undercoverage drift.
 	OutCMakeConfigureReads string
 
-	// OutToolchainSignalDir, when non-empty, causes convert-element
+	// OutToolchainSignalDir, when non-empty, causes convert-element-cmake
 	// to copy the cmake File API reply directory contents to this
 	// path after a successful configure. Off by default; the
 	// orchestrator opts in via CollectToolchainSignal so existing
@@ -94,7 +94,7 @@ type Args struct {
 	// the dedicated toolchain probe missed.
 	OutToolchainSignalDir string
 
-	// OutIRJSON, when non-empty, causes convert-element to write
+	// OutIRJSON, when non-empty, causes convert-element-cmake to write
 	// the post-lower ir.Package as JSON to this path alongside
 	// the rendered BUILD.bazel. The orchestrator's per-element
 	// multi-platform fold consumes this JSON directly: re-parsing
@@ -196,7 +196,7 @@ type Args struct {
 // Parse reads argv (without program name), populates Args, and prints usage
 // to stderr if invalid. Returns ExitUsage on bad input.
 func Parse(argv []string, stderr io.Writer) (Args, int) {
-	fs := flag.NewFlagSet("convert-element", flag.ContinueOnError)
+	fs := flag.NewFlagSet("convert-element-cmake", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	a := Args{}
 	fs.StringVar(&a.SourceRoot, "source-root", "", "absolute path to the CMake project root")
@@ -212,7 +212,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls (stamp / probe / unknown buckets), emit a placeholder BUILD.bazel listing every non-UTILITY codemodel target as an empty cc_library / cc_binary / cc_library-interface stub with public visibility — instead of exiting Tier-1 with unsupported-execute-process. Step 2 (this PR) only restores label resolution at analysis time; the per-target install_tree.tar wiring (cc_import / sh_binary referencing artifact paths derived from Target.Install.Destinations) lands in Step 2.5, after which downstream consumers' compile/link actions resolve as well. Off by default to preserve the strict-fail behaviour. See docs/design/cmake-execute-process-round2-fallback.md.")
-	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
+	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
@@ -226,7 +226,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 		a.Verify = true
 	}
 	if a.SourceRoot == "" && a.ReplyDir == "" {
-		fmt.Fprintln(stderr, "convert-element: must set --source-root or --reply-dir")
+		fmt.Fprintln(stderr, "convert-element-cmake: must set --source-root or --reply-dir")
 		fs.Usage()
 		return a, ExitUsage
 	}

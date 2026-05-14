@@ -167,15 +167,15 @@ func deriveToolchainCMake(t *testing.T, deriveBin string) string {
 }
 
 func lookupConverter(t *testing.T) string {
-	if p, err := exec.LookPath("convert-element"); err == nil {
+	if p, err := exec.LookPath("convert-element-cmake"); err == nil {
 		return p
 	}
 	repoRoot, _ := filepath.Abs("../../..")
-	fallback := filepath.Join(repoRoot, "build", "bin", "convert-element")
+	fallback := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
 	if _, err := os.Stat(fallback); err == nil {
 		return fallback
 	}
-	t.Skip("convert-element not on PATH and not in build/bin/")
+	t.Skip("convert-element-cmake not on PATH and not in build/bin/")
 	return ""
 }
 

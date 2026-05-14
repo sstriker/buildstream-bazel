@@ -41,7 +41,7 @@ fixture="testdata/meta-project/import-greet"
     --bst "$fixture/greeting.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element"
+    --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase checks: project A.
 for f in MODULE.bazel BUILD.bazel \

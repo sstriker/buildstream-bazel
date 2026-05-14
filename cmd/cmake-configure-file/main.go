@@ -71,7 +71,7 @@
 // inlined into the cmd as a base64 blob containing the FULL
 // cmake variable namespace at configure time (a few KB to tens
 // of KB) so any @VAR@/${VAR}/#cmakedefine the user later adds
-// to the template resolves correctly without convert-element
+// to the template resolves correctly without convert-element-cmake
 // rerunning. Smaller than embedding the full rendered output
 // AND independent of .h.in content; .h.in becomes safely
 // name-only for srckey purposes. Volatile path-bearing
@@ -84,7 +84,7 @@
 // bytes themselves are in the cmd (base64-encoded). Editing
 // CMakeLists.txt's CONTENT string changes the blob and thus
 // BUILD.bazel; CMakeLists.txt is already content-included in
-// srckey so this re-runs convert-element correctly. The win
+// srckey so this re-runs convert-element-cmake correctly. The win
 // vs. the legacy bytes-embedded shape is that BUILD.bazel
 // content reflects the template, not the rendered output —
 // edits to values (variables) re-render without changing the
@@ -92,7 +92,7 @@
 //
 // We could move the values to a separate sidecar file (with
 // `srcs = [".h.in", ":gen_*_values"]`); the inline form keeps
-// convert-element's output set unchanged (just BUILD.bazel) at
+// convert-element-cmake's output set unchanged (just BUILD.bazel) at
 // the cost of a marginally longer cmd. Inline is the v1 shape;
 // the sidecar form is a follow-up if the cmd's length becomes
 // a problem in practice.

@@ -14,7 +14,7 @@
 #   2. Bazel-build: bazel build //elements/cons:cons_converted in
 #      project A. cmake's find_package(prod CONFIG) inside the
 #      consumer action resolves against the staged bundle; the trace
-#      records target_link_libraries(cons prod::prod); convert-element's
+#      records target_link_libraries(cons prod::prod); convert-element-cmake's
 #      STATIC IMPORTED dep recovery (with the imports manifest) emits
 #      `deps = ["//elements/prod:prod"]` in the consumer's BUILD.bazel.out.
 #   3. Asserts the dep edge surfaces in the converted output.
@@ -31,7 +31,7 @@ trap 'rm -rf "$work_dir"' EXIT
 bin_dir="$work_dir/bin"
 mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element" ./converter/cmd/convert-element
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-cmake" ./converter/cmd/convert-element-cmake
 
 A="$work_dir/A"
 B="$work_dir/B"
@@ -41,7 +41,7 @@ B="$work_dir/B"
     --bst testdata/meta-project/cross-cmake/cons.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element"
+    --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase checks.
 for want in \
@@ -97,7 +97,7 @@ run_bazel() {
 }
 
 # Build the consumer; bazel transitively builds the producer's
-# bundle so the convert-element action for cons gets it staged on
+# bundle so the convert-element-cmake action for cons gets it staged on
 # CMAKE_PREFIX_PATH.
 run_bazel "$A" build //elements/cons:cons_converted 2>&1 | tail -10
 cons_build="$A/bazel-bin/elements/cons/BUILD.bazel.out"

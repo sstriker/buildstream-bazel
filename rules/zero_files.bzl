@@ -1,7 +1,7 @@
 """Materializes zero-length stub files at declared paths.
 
 Used by the meta-project (project A) to compose per-element shadow
-trees: a convert-element genrule's `srcs` is the union of real source
+trees: a convert-element-cmake genrule's `srcs` is the union of real source
 files (referenced via `glob(...)` or labels) plus zero-length stubs
 for paths cmake's `file(GLOB)` walks would naturally see but cmake
 configure doesn't actually open.
@@ -15,7 +15,7 @@ Why two reasons converge on the same primitive:
    sees the entry, can't read content, but content was never
    relevant for a pure walk.
 
-2. **Cache-key stability.** A convert-element action's input
+2. **Cache-key stability.** A convert-element-cmake action's input
    merkle includes the content of every declared srcs entry.
    Stubbing files cmake never opens means edits to those files'
    real content don't reshape the action key — cache hits across

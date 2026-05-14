@@ -8,7 +8,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
 )
 
-// helloBundle mirrors what convert-element emits for hello-world: three
+// helloBundle mirrors what convert-element-cmake emits for hello-world: three
 // .cmake files with a single STATIC_LIBRARY imported target.
 func writeHelloBundle(t *testing.T, dir string) {
 	t.Helper()

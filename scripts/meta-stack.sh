@@ -10,7 +10,7 @@
 #      elements + a no-target marker package for the stack.
 #      Project B gets the cc_library placeholders + stack's
 #      filegroup composing dep labels.
-#   2. bazel build in project A runs convert-element on each cmake
+#   2. bazel build in project A runs convert-element-cmake on each cmake
 #      element, producing per-element BUILD.bazel.out files.
 #   3. The driver stages A's BUILD.bazel.outs into B for each cmake
 #      element. Stack doesn't need staging (write-a already wrote
@@ -49,11 +49,11 @@ fixture="testdata/meta-project/two-libs"
     --bst "$fixture/runtime.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element"
+    --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase checks. Project A: per-element BUILD for each .bst.
 for f in MODULE.bazel BUILD.bazel \
-        rules/zero_files.bzl tools/convert-element \
+        rules/zero_files.bzl tools/convert-element-cmake \
         elements/lib-a/BUILD.bazel \
         elements/lib-a/sources/CMakeLists.txt \
         elements/lib-b/BUILD.bazel \

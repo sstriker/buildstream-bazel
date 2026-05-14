@@ -46,13 +46,13 @@ B="$work_dir/B"
     --bst testdata/meta-project/pyproject-greet.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-pyproject "$bin_dir/convert-element-pyproject"
 
 # Render-phase checks. Always run; don't gate on bazel.
 for f in MODULE.bazel BUILD.bazel \
         rules/zero_files.bzl rules/BUILD.bazel \
-        tools/convert-element tools/convert-element-pyproject tools/BUILD.bazel \
+        tools/convert-element-cmake tools/convert-element-pyproject tools/BUILD.bazel \
         elements/pyproject-greet/BUILD.bazel \
         elements/pyproject-greet/sources/pyproject.toml \
         elements/pyproject-greet/sources/src/greet/cli.py; do

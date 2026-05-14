@@ -13,7 +13,7 @@ func init() { registerHandler(cmakeHandler{}) }
 // cmakeConfig holds the per-run config the kind:cmake handler
 // needs from CLI flags. Populated by main.go on --cmake-configure-
 // file-bin; consumed by the per-element render to opt
-// convert-element into the configure_file lift (see
+// convert-element-cmake into the configure_file lift (see
 // internal/configurefile package doc + ROADMAP.md).
 var cmakeConfig struct {
 	// configureFileBin is the absolute path to the
@@ -21,7 +21,7 @@ var cmakeConfig struct {
 	//   - writeProjectA / writeProjectB stage the binary into
 	//     their tools/ dir and add it to exports_files.
 	//   - The per-cmake-element genrule cmd includes
-	//     `--lift-configure-file=true` so convert-element emits
+	//     `--lift-configure-file=true` so convert-element-cmake emits
 	//     the lifted shape (.h.in as srcs +
 	//     //tools:cmake-configure-file invocation) when its
 	//     reverse-extract succeeds.
@@ -36,7 +36,7 @@ var cmakeConfig struct {
 	// When true:
 	//   - Project A's converter genrule threads
 	//     `--unsupported-execute-process-fallback=true` into
-	//     convert-element's cmd, so classifier refusals
+	//     convert-element-cmake's cmd, so classifier refusals
 	//     produce the placeholder shape instead of a Tier-1
 	//     exit.
 	//   - Project B emits a real install genrule (cmake
@@ -51,7 +51,7 @@ var cmakeConfig struct {
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
-// genrule invoking convert-element under Bazel's action graph; the
+// genrule invoking convert-element-cmake under Bazel's action graph; the
 // project-B side is a placeholder the driver script overwrites with
 // project A's converted BUILD.bazel.out plus the user's full source
 // tree (project B's cc_library compiles against the real source bytes).
@@ -185,7 +185,7 @@ func (cmakeHandler) RenderA(elem *element, elemPkg string) error {
 // This is a best-effort convention bind. Real-world cmake
 // projects whose namespace/target shape diverges from
 // `<elem>::<elem>` won't resolve. A follow-up pass should let
-// convert-element emit per-element exports metadata that
+// convert-element-cmake emit per-element exports metadata that
 // write-a stitches in here at action time, replacing the
 // convention guess.
 func writeCmakeImportsManifest(elem *element, elemPkg string) error {
@@ -421,7 +421,7 @@ filegroup(
 	if len(cmakeDepLabels) > 0 {
 		// imports.json was rendered at write-a time
 		// alongside this BUILD; stage it into the action so
-		// convert-element's manifest lookup resolves
+		// convert-element-cmake's manifest lookup resolves
 		// IMPORTED-target names from the consumer's deps to
 		// the right Bazel labels.
 		srcsList += `, "imports.json"`
@@ -431,7 +431,7 @@ filegroup(
 		// lookup against the REAPI ActionCache; AC hit means
 		// a previous Project B run published the build's
 		// trace, AC miss means the trace fileset is empty.
-		// convert-element doesn't consume the trace yet (the
+		// convert-element-cmake doesn't consume the trace yet (the
 		// trace-driven convergence research follow-on
 		// teaches it to refine refusals into fine cc rules
 		// from the trace); wiring the lookup now means that
@@ -445,7 +445,7 @@ filegroup(
 	// prefix slice (lib/cmake/<DepPkg>/*.cmake plus zero-byte
 	// IMPORTED_LOCATION stubs and INTERFACE_INCLUDE_DIRECTORIES
 	// directories — produced by synthprefix.Build inside
-	// convert-element). One `tar -xf` per dep into a shared
+	// convert-element-cmake). One `tar -xf` per dep into a shared
 	// $PREFIX overlays each slice; cmake's
 	// find_package(<DepPkg> CONFIG) resolves against the
 	// stitched tree and the IMPORTED-target EXISTS checks
@@ -459,7 +459,7 @@ filegroup(
 		liftFlag = ` \
             --lift-configure-file=true`
 	}
-	// Phase B round-2 fallback: when enabled, convert-element
+	// Phase B round-2 fallback: when enabled, convert-element-cmake
 	// is told to turn classifier refusals into the placeholder
 	// shape (cc_import / sh_binary stubs referencing
 	// install_tree.tar) instead of exiting Tier-1. The
@@ -518,14 +518,14 @@ genrule(
         # CMakeLists resolves against it. No-op when the element
         # has no kind:cmake deps.
 %[3]s        BUNDLE_DIR="$$(mktemp -d)"
-        $(location //tools:convert-element) \\
+        $(location //tools:convert-element-cmake) \\
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)"%[4]s%[5]s%[6]s%[7]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
-    tools = ["//tools:convert-element"],
+    tools = ["//tools:convert-element-cmake"],
 )
 
 # Typed exports project B consumes. Phase 1/2 emit the converter's
@@ -538,7 +538,7 @@ filegroup(
 
 # Cross-element handle: downstream cmake elements reference this
 # label in their own genrule srcs, which extracts the tar into
-# $PREFIX/lib/cmake/<this>/ at convert-element action time.
+# $PREFIX/lib/cmake/<this>/ at convert-element-cmake action time.
 filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
@@ -551,7 +551,7 @@ filegroup(
 // Bazel label of its `cmake_config_bundle` filegroup. Used by
 // the cmake handler to stage one cmake-config tar per dep
 // under $PREFIX/lib/cmake/<dep>/ inside the consumer's
-// convert-element action.
+// convert-element-cmake action.
 type cmakeDepBundleLabel struct {
 	DepName string
 	Label   string
@@ -649,7 +649,7 @@ zero_files(
 	// Fallback: when the element has no patterns + no source-cache
 	// hit (so partitionSources didn't run / produced nothing),
 	// reach for the opaque :tree filegroup so we still feed
-	// convert-element a non-empty input set. This matches the
+	// convert-element-cmake a non-empty input set. This matches the
 	// pre-narrowing "everything real" default.
 	if srcsList == "" {
 		srcsList = fmt.Sprintf("%q", "@src_"+sourceKey+"//:tree")
@@ -695,7 +695,7 @@ genrule(
             ln -s "$$PWD/$$src" "$$SHADOW/$$rel"
         done
         BUNDLE_DIR="$$(mktemp -d)"
-        $(location //tools:convert-element) \\
+        $(location //tools:convert-element-cmake) \\
             --source-root="$$SHADOW" \\
             --source-key="%[2]s" \\
             --out-build="$(location BUILD.bazel.out)" \\
@@ -703,7 +703,7 @@ genrule(
             --out-read-paths="$(location read_paths.json)"
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
-    tools = ["//tools:convert-element"],
+    tools = ["//tools:convert-element-cmake"],
 )
 
 filegroup(

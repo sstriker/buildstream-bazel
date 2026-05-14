@@ -198,7 +198,7 @@ func cmakeRound2InstallBuild(elem *element, plat tracePlatform) string {
 # ActionCache (when CAS_GRPC_ADDR is set).
 #
 # Pairs with Project A's converter genrule running
-# convert-element with --unsupported-execute-process-fallback=true.
+# convert-element-cmake with --unsupported-execute-process-fallback=true.
 # When the classifier refuses, A's BUILD.bazel.out (symlinked
 # into this package post-build) emits a cc_import / sh_binary
 # placeholder shape whose extract genrule references

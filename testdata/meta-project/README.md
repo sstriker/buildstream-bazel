@@ -17,7 +17,7 @@ in `docs/whole-project-plan.md`. Eleven fixtures so far:
   producer's `cmake_config_bundle` filegroup as an action
   input, extracts it under `$PREFIX/lib/cmake/<dep>/` at
   genrule time, and passes `--prefix-dir=$PREFIX` to
-  convert-element. Render-only Go test in
+  convert-element-cmake. Render-only Go test in
   `cmd/write-a/main_test.go`
   (`TestWriter_CmakeElementStagesDepBundles`); end-to-end
   bazel-build acceptance is gated on bzlmod-capable bazel
@@ -90,15 +90,15 @@ testdata/meta-project/
 1. `cmd/write-a` parses `hello-world.bst`, resolves the `kind: local`
    source, and renders **two** workspaces:
    - **Project A** (the meta workspace): `MODULE.bazel`,
-     `tools/convert-element` (staged binary), `rules/zero_files.bzl`,
+     `tools/convert-element-cmake` (staged binary), `rules/zero_files.bzl`,
      and `elements/hello-world/BUILD.bazel` containing one `genrule`
-     that invokes `convert-element` plus a `zero_files` target for
+     that invokes `convert-element-cmake` plus a `zero_files` target for
      any source paths the converter doesn't read.
    - **Project B** (the consumer workspace): `MODULE.bazel`
      (`bazel_dep` on `rules_cc`), the user's source tree under
      `elements/hello-world/`, and a `BUILD_NOT_YET_STAGED`
      placeholder waiting for project A's converted output.
-2. `bazel build` in project A runs the genrule; convert-element
+2. `bazel build` in project A runs the genrule; convert-element-cmake
    emits `BUILD.bazel.out` (a `cc_library` declaration) plus
    `cmake-config-bundle.tar` and `read_paths.json`.
 3. The driver overwrites project B's per-element `BUILD.bazel`
@@ -114,11 +114,11 @@ testdata/meta-project/
 After the round-trip succeeds, two cache-stability assertions
 through both projects:
 
-- **Scenario A** (`hello.c` content edit): convert-element cache-hits
+- **Scenario A** (`hello.c` content edit): convert-element-cmake cache-hits
   in project A (zero-stub-backed input merkle is content-stable
   across edits to non-read source files); project B's smoke binary
   still prints "Hello, World!".
-- **Scenario B** (CMakeLists.txt comment edit): convert-element
+- **Scenario B** (CMakeLists.txt comment edit): convert-element-cmake
   re-runs in project A (CMakeLists is real) but produces a
   byte-identical `BUILD.bazel.out` (cmake's parser strips comments
   before the codemodel); project B's smoke binary sha is unchanged
@@ -128,7 +128,7 @@ through both projects:
 
 The element source tree is a verbatim copy of
 `converter/testdata/sample-projects/hello-world/` — the smallest
-cmake project that exercises the full convert-element pipeline
+cmake project that exercises the full convert-element-cmake pipeline
 (cc_library + install + cmake-config export). Reusing it keeps
 the gate's correctness anchored to existing fixture coverage.
 
@@ -157,7 +157,7 @@ convention where `kind: stack` references its deps as
    (per-element genrules for the two cmake elements + a no-target
    marker package for `runtime`) and project B (cc_library
    placeholders + the runtime filegroup composing dep labels).
-2. `bazel build` in project A runs convert-element on each cmake
+2. `bazel build` in project A runs convert-element-cmake on each cmake
    element.
 3. The driver stages each cmake element's `BUILD.bazel.out` into
    project B's `elements/<name>/BUILD.bazel`.

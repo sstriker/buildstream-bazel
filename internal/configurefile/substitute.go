@@ -23,8 +23,8 @@
 //
 // The substitution runs at Bazel time with .h.in as a real srcs.
 // Editing .h.in invalidates the genrule directly through Bazel's
-// source graph — convert-element doesn't have to rerun. The
-// values dict (captured at convert-element time by
+// source graph — convert-element-cmake doesn't have to rerun. The
+// values dict (captured at convert-element-cmake time by
 // reverse-extracting from cmake's rendered output) goes inline
 // in the cmd; it changes only when CMakeLists.txt-driven
 // variables change, which already invalidates srckey via the

@@ -31,7 +31,7 @@ current vs. queued state.
 
 ```
 converter/                  single-element converter (the per-package brain)
-  cmd/convert-element/      CLI entry point (cmake)
+  cmd/convert-element-cmake/      CLI entry point (cmake)
   cmd/convert-element-meson/  CLI entry point (meson; introspection-driven, see docs/design/meson-native-render.md)
   cmd/derive-toolchain/     emits cc_toolchain + toolchain.cmake from a cmake probe
   internal/cli              flag parsing + exit codes
@@ -93,7 +93,7 @@ docs/                       milestone plans, schema docs, known-deltas
 
 ## The two binaries
 
-### `convert-element`
+### `convert-element-cmake`
 
 Single-package converter. Given an extracted source root + cmake build
 options, produces a directory containing `BUILD.bazel`, a
@@ -171,7 +171,7 @@ Pipeline, in order:
 4. **Per-element conversion** —
    `orchestrator/internal/orchestrator/run.go:processElement` is the
    per-element worker. Two execution modes:
-   - **Local** (default): `convertOne()` runs `convert-element` via
+   - **Local** (default): `convertOne()` runs `convert-element-cmake` via
      `os/exec` against the staged source root.
    - **Remote** (`--execute`): `remoteExecute()` packages the
      element's input root into REAPI inputs, submits an Action via
@@ -254,7 +254,7 @@ this package's `Rule` and `Patterns`. See
 Diffs an element's narrowing patterns against an action-time
 read oracle and reports paths the oracle says were read but the
 patterns leave name-only. Two oracle inputs accepted (either
-or both): a JSON array from `convert-element`'s
+or both): a JSON array from `convert-element-cmake`'s
 `--out-cmake-configure-reads` (cmake-side, sourced from
 build.ninja's `RERUN_CMAKE` deps), and a canonicalized
 `trace.log` from `build-tracer --source-root=...` (trace-driven
@@ -329,7 +329,7 @@ the orchestrator's `--execute` flag at a real cluster.
 
 If you're new and want a single thread through the codebase:
 
-1. `converter/cmd/convert-element/main.go` — the converter pipeline
+1. `converter/cmd/convert-element-cmake/main.go` — the converter pipeline
    in 80 readable lines.
 2. `converter/internal/lower/lower.go` — where most converter logic
    actually lives.

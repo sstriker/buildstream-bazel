@@ -209,7 +209,7 @@ jobs:
       - name: Build converter + orchestrator
         # The real-converter Buildbarn execute test
         # (TestE2E_Buildbarn_ExecuteRealConvertElement) uploads
-        # build/bin/convert-element into CAS as the Action's binary,
+        # build/bin/convert-element-cmake into CAS as the Action's binary,
         # so the converter binary must exist before the test runs.
         run: make converter orchestrator 2>&1 | tee -a /tmp/cijob.log
 
@@ -289,8 +289,8 @@ jobs:
         # without needing --allow-cmake-version-mismatch.
         run: make e2e-hello-world 2>&1 | tee -a /tmp/cijob.log
 
-      - name: convert-element binary against latest cmake
-        # Drives the convert-element CLI explicitly with the
+      - name: convert-element-cmake binary against latest cmake
+        # Drives the convert-element-cmake CLI explicitly with the
         # version-mismatch escape hatch so the fileapi schema-major
         # check is the actual tripwire on the binary path. If a
         # future cmake bumps codemodel/cache/toolchains/cmakeFiles
@@ -299,7 +299,7 @@ jobs:
         # crash.
         run: |
           tmpdir=$(mktemp -d)
-          ./build/bin/convert-element \
+          ./build/bin/convert-element-cmake \
             --source-root converter/testdata/sample-projects/hello-world \
             --out-build "$tmpdir/BUILD.bazel" \
             --allow-cmake-version-mismatch \

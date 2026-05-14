@@ -15,7 +15,7 @@
 //     accept, worker materialize+exec+package, ActionResult).
 //
 //   - TestE2E_Buildbarn_ExecuteRealConvertElement: drives a real
-//     conversion (cmake configure + convert-element) inside the
+//     conversion (cmake configure + convert-element-cmake) inside the
 //     custom worker image. Requires the worker image to have cmake /
 //     ninja / bwrap pre-installed; see deploy/buildbarn/runner/Dockerfile.
 //
@@ -158,17 +158,17 @@ func TestE2E_Buildbarn_ExecuteSyntheticAction(t *testing.T) {
 }
 
 // TestE2E_Buildbarn_ExecuteRealConvertElement submits a genuine
-// convert-element Action through the worker — proves the custom worker
+// convert-element-cmake Action through the worker — proves the custom worker
 // image (deploy/buildbarn/runner/Dockerfile) actually has cmake /
 // ninja / bwrap reachable on the runner's PATH and the conversion
 // pipeline can run end-to-end inside the container.
 //
 // The previous synthetic-action test only validated that bytes flow
 // through the protocol; this one validates that real cmake actually
-// configures and convert-element actually emits BUILD.bazel + a cmake-
+// configures and convert-element-cmake actually emits BUILD.bazel + a cmake-
 // config bundle.
 //
-// Skips if convert-element is not present at build/bin/convert-element
+// Skips if convert-element-cmake is not present at build/bin/convert-element-cmake
 // (operator must `make converter` first).
 func TestE2E_Buildbarn_ExecuteRealConvertElement(t *testing.T) {
 	casEndpoint := envOr("BUILDBARN_CAS_ENDPOINT", "127.0.0.1:8980")
@@ -181,14 +181,14 @@ func TestE2E_Buildbarn_ExecuteRealConvertElement(t *testing.T) {
 		t.Skipf("Buildbarn scheduler %s unreachable: %v", execEndpoint, err)
 	}
 
-	// Locate the convert-element binary built by `make converter`.
+	// Locate the convert-element-cmake binary built by `make converter`.
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
 	}
-	converterBin := filepath.Join(repoRoot, "build", "bin", "convert-element")
+	converterBin := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
 	if _, err := os.Stat(converterBin); err != nil {
-		t.Skipf("convert-element binary not built (%s): run `make converter` first", converterBin)
+		t.Skipf("convert-element-cmake binary not built (%s): run `make converter` first", converterBin)
 	}
 
 	shadowDir := filepath.Join(repoRoot, "converter", "testdata", "sample-projects", "hello-world")
@@ -227,7 +227,7 @@ func TestE2E_Buildbarn_ExecuteRealConvertElement(t *testing.T) {
 		},
 		// PATH must be set explicitly: REAPI Actions run with only
 		// the env vars declared in Command.environment_variables, NOT
-		// the worker's container PATH. Without this, convert-element's
+		// the worker's container PATH. Without this, convert-element-cmake's
 		// child cmake invocation fails with
 		//   cmakerun: cmake not on PATH: exec: "cmake": executable
 		//   file not found in $PATH
@@ -259,7 +259,7 @@ func TestE2E_Buildbarn_ExecuteRealConvertElement(t *testing.T) {
 				stderr = fmt.Sprintf("<fetch failed: %v>", gerr)
 			}
 		}
-		t.Fatalf("convert-element ExitCode = %d, want 0\n  stderr digest: %v\n  stderr:\n%s",
+		t.Fatalf("convert-element-cmake ExitCode = %d, want 0\n  stderr digest: %v\n  stderr:\n%s",
 			ar.ExitCode, ar.StderrDigest, stderr)
 	}
 

@@ -21,9 +21,9 @@ leave name-only.
 write-a --in <bst>/ --out-a <A>/ ...
 
 # 2. Capture an oracle.
-#    (a) cmake elements: convert-element emits the oracle as a
+#    (a) cmake elements: convert-element-cmake emits the oracle as a
 #    sibling JSON file when --out-cmake-configure-reads is set.
-convert-element \
+convert-element-cmake \
     --source-root <element-source-tree> \
     --out-build BUILD.bazel \
     --out-cmake-configure-reads cmake-reads.json
@@ -83,7 +83,7 @@ Plumbing:
   raw list out of the parsed graph.
 - `ninja.ProjectToSourceTree(inputs, sourceRoot, buildDir)` — filters
   to in-source paths; sorts + dedupes.
-- `convert-element --out-cmake-configure-reads <path>` — writes the
+- `convert-element-cmake --out-cmake-configure-reads <path>` — writes the
   projected list as a JSON array.
 
 ### trace-driven oracle (build-tracer's openat capture)
@@ -222,12 +222,12 @@ tool + `lower/configure_file.go` lifted-shape emission). When
 write-a is invoked with `--cmake-configure-file-bin=<path>`:
 
   - The tool is staged into project A and project B `tools/`.
-  - Per-element convert-element genrules pass
+  - Per-element convert-element-cmake genrules pass
     `--lift-configure-file=true`, which makes lower emit a
     genrule with `srcs = ["<.h.in>"]` and
     `tools = ["//tools:cmake-configure-file"]`. The .h.in
     content drives the genrule's Bazel cache key directly
-    (via `srcs`), not via convert-element's BUILD.bazel content.
+    (via `srcs`), not via convert-element-cmake's BUILD.bazel content.
   - `*.h.in` is now safely name-only for srckey purposes.
 
 After enabling the lift, the oracle will still flag `*.h.in`
@@ -254,7 +254,7 @@ sound rather than aspirational.
 The "safe to exclude" claim relies on the lifted genrule's
 substitution tool having access to whatever cmake variable
 the template references — even ones the user adds in a
-later edit without rerunning convert-element. With the
+later edit without rerunning convert-element-cmake. With the
 **full-namespace values dump** (see
 `converter/internal/cmakerun/dump-vars.cmake`) every cmake
 variable observed at configure time is captured into the
@@ -319,15 +319,15 @@ Consequence: the converter's `execute_process` lift
 `exclude **/*.h.in`. Subprocess inputs are absent from the
 oracle, so the audit is silent for them by default. The lift
 adds them as Bazel `srcs` of the recovered genrule, which is
-the correct place for runtime invalidation; convert-element's
+the correct place for runtime invalidation; convert-element-cmake's
 own srckey doesn't need to include them because their content
-does not affect the BUILD.bazel that convert-element emits.
+does not affect the BUILD.bazel that convert-element-cmake emits.
 
 Empirical check (`execute-process-cmake-e/` and
 `execute-process-file-producing/` fixtures):
 
 ```
-$ /tmp/convert-element --reply-dir=... --source-root=... \
+$ /tmp/convert-element-cmake --reply-dir=... --source-root=... \
     --out-build=BUILD.bazel \
     --out-cmake-configure-reads=cmake-reads.json
 $ cat cmake-reads.json
@@ -367,7 +367,7 @@ audit's responsibility, exactly as before.
 - `converter/internal/ninja/configure_reads.go` — cmake-side
   `ProjectToSourceTree`.
 - `converter/internal/ninja/graph.go` — `ReconfigureInputs()`.
-- `converter/cmd/convert-element/main.go` — `--out-cmake-configure-reads`
+- `converter/cmd/convert-element-cmake/main.go` — `--out-cmake-configure-reads`
   emission + `--lift-configure-file` toggle.
 - `internal/tracenorm/canonicalize.go` — Options.SourceRoot,
   openat filtering, fd-strip.
@@ -453,7 +453,7 @@ pointing at a typo'd path) fails fast — silently behaving as
 
 1. Render a meta-project (today: `hello-world.bst`) with
    write-a → project A.
-2. For each kind:cmake element, invoke `convert-element` offline
+2. For each kind:cmake element, invoke `convert-element-cmake` offline
    against the element's source tree with
    `--out-cmake-configure-reads=cmake-reads.json`, writing the
    oracle next to `srckey-patterns.txt` in project A.

@@ -62,7 +62,7 @@ func Load(replyDir string) (*Reply, error) {
 			continue
 		}
 		if obj.Version.Major != want {
-			return nil, fmt.Errorf("fileapi: %s schema major %d.%d not supported (this loader handles major %d); upgrade convert-element or pin cmake to a compatible version",
+			return nil, fmt.Errorf("fileapi: %s schema major %d.%d not supported (this loader handles major %d); upgrade convert-element-cmake or pin cmake to a compatible version",
 				obj.Kind, obj.Version.Major, obj.Version.Minor, want)
 		}
 		switch obj.Kind {

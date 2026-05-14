@@ -45,13 +45,13 @@ B="$work_dir/B"
     --bst testdata/meta-project/meson-greet.bst \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-meson "$bin_dir/convert-element-meson"
 
 # Render-phase checks. Always run; don't gate on bazel.
 for f in MODULE.bazel BUILD.bazel \
         rules/zero_files.bzl rules/BUILD.bazel \
-        tools/convert-element tools/convert-element-meson tools/BUILD.bazel \
+        tools/convert-element-cmake tools/convert-element-meson tools/BUILD.bazel \
         elements/meson-greet/BUILD.bazel \
         elements/meson-greet/sources/meson.build \
         elements/meson-greet/sources/src/greet.c; do

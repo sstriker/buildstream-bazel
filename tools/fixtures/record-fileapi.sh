@@ -110,7 +110,7 @@ record_one() {
         # configure ends), so the rendered output exists in the
         # build dir after cmake exits. lower's file_generate
         # recovery reads each output's bytes from the build dir
-        # at convert-element time; the offline fixture needs them
+        # at convert-element-cmake time; the offline fixture needs them
         # captured here. Trace records the call as cmd=="file"
         # with args[0]=="GENERATE"; the OUTPUT value follows the
         # "OUTPUT" keyword in the args list (variadic keyword

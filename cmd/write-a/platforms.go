@@ -9,7 +9,7 @@ package main
 // runs at render time and emits Bazel BUILD files, so it doesn't
 // route REAPI Actions per platform — the platforms manifest's
 // REAPIProperties slice only matters to the orchestrator's
-// per-platform convert-element Action fan-out (kind:cmake Phase A).
+// per-platform convert-element-cmake Action fan-out (kind:cmake Phase A).
 // A single platforms.json on disk serves both consumers; each
 // reads the fields it cares about and ignores the rest.
 

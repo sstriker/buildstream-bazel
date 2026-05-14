@@ -28,9 +28,9 @@ func orchestrateOnce(t *testing.T, out string) {
 	t.Helper()
 	repoRoot, _ := filepath.Abs("../../..")
 	fixture := filepath.Join(repoRoot, "orchestrator", "testdata", "fdsdk-subset")
-	conv := filepath.Join(repoRoot, "build", "bin", "convert-element")
+	conv := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
 	if _, err := os.Stat(conv); err != nil {
-		t.Skipf("convert-element binary not built (run `make converter` first): %v", err)
+		t.Skipf("convert-element-cmake binary not built (run `make converter` first): %v", err)
 	}
 
 	proj, err := element.ReadProject(fixture, "elements")

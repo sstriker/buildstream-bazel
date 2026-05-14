@@ -2,7 +2,7 @@
 # meta-file-generate.sh — render gate for the file(GENERATE)
 # lifter (Commit 3/4/5 of the lift-GENERATED PR).
 #
-# Runs convert-element against the captured file-generate
+# Runs convert-element-cmake against the captured file-generate
 # fixture and asserts the rendered BUILD.bazel contains the
 # expected genrule shapes for all three lift modes:
 #
@@ -16,7 +16,7 @@
 #
 # The Go test (TestEmit_FileGenerate_Golden) covers the same
 # round-trip with full byte-stability; this gate exercises the
-# binary's CLI surface so a regression in convert-element's
+# binary's CLI surface so a regression in convert-element-cmake's
 # flag plumbing or output writer also catches.
 #
 # Why a separate gate: parallel to meta-element-fold.sh and the
@@ -31,7 +31,7 @@ cd "$repo_root"
 
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
-CGO_ENABLED=0 go build -o "$bin_dir/convert-element" ./converter/cmd/convert-element
+CGO_ENABLED=0 go build -o "$bin_dir/convert-element-cmake" ./converter/cmd/convert-element-cmake
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
@@ -40,14 +40,14 @@ src="$repo_root/converter/testdata/sample-projects/file-generate"
 reply="$repo_root/converter/testdata/fileapi/file-generate"
 out_build="$work_dir/BUILD.bazel"
 
-"$bin_dir/convert-element" \
+"$bin_dir/convert-element-cmake" \
     --source-root "$src" \
     --reply-dir "$reply" \
     --lift-configure-file=true \
     --out-build "$out_build"
 
 if [ ! -f "$out_build" ]; then
-    echo "convert-element did not produce $out_build" >&2
+    echo "convert-element-cmake did not produce $out_build" >&2
     exit 1
 fi
 
@@ -90,14 +90,14 @@ fi
 
 # Determinism: re-run, byte-diff outputs.
 out_build_2="$work_dir/BUILD.bazel.2"
-"$bin_dir/convert-element" \
+"$bin_dir/convert-element-cmake" \
     --source-root "$src" \
     --reply-dir "$reply" \
     --lift-configure-file=true \
     --out-build "$out_build_2"
 
 if ! diff -q "$out_build" "$out_build_2" >/dev/null; then
-    echo "convert-element output not deterministic across runs" >&2
+    echo "convert-element-cmake output not deterministic across runs" >&2
     diff -u "$out_build" "$out_build_2" >&2
     exit 1
 fi

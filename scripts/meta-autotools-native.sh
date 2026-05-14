@@ -12,7 +12,7 @@
 #   2. bazel build runs the genrule once. Inside the sandbox:
 #      build-tracer wraps the configure/build/install pipeline,
 #      capturing every execve into a trace file; convert-element-
-#      autotools reads the trace and emits BUILD.bazel.out with
+#      trace reads the trace and emits BUILD.bazel.out with
 #      native cc_library / cc_binary targets.
 #   3. The driver extracts BUILD.bazel.out from project A's
 #      bazel-bin and asserts the native shape (cc_binary or
@@ -51,7 +51,7 @@ fixture="testdata/meta-project/autotools-greet"
     --bst "$fixture/greet.bst" \
     --out "$A" \
     --out-b "$B" \
-    --convert-element "$bin_dir/convert-element" \
+    --convert-element-cmake "$bin_dir/convert-element-cmake" \
     --convert-element-trace "$bin_dir/convert-element-trace" \
     --build-tracer-bin "$bin_dir/build-tracer" \
     --trace-round1

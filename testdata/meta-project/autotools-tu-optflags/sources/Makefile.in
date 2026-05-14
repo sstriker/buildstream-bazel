@@ -6,7 +6,7 @@ bindir = $(prefix)/bin
 # hotloop.o always optimizes, even when the global CFLAGS is -O0.
 # The make-db captures this as `hotloop.o: CFLAGS += -O2`; the
 # trace captures the actual `cc -O0 -g -O2 -c hotloop.c` line.
-# convert-element-autotools cross-references the two so the
+# convert-element-trace cross-references the two so the
 # per-target -O2 survives the default-toolchain strip.
 hotloop.o: CFLAGS += -O2
 

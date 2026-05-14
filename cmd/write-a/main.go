@@ -355,9 +355,9 @@ func main() {
 	log.SetFlags(0)
 	var bstPaths stringList
 	flag.Var(&bstPaths, "bst", "path to a .bst file. Repeatable; pass once per element.")
-	outA := flag.String("out", "", "output directory for project A (the meta workspace whose genrules run convert-element)")
+	outA := flag.String("out", "", "output directory for project A (the meta workspace whose genrules run convert-element-cmake)")
 	outB := flag.String("out-b", "", "optional: output directory for project B (the consumer workspace built against project A's outputs). When unset, only project A is rendered.")
-	convertBin := flag.String("convert-element", "", "path to the convert-element binary (will be referenced from project-A's tools/)")
+	convertBin := flag.String("convert-element-cmake", "", "path to the convert-element-cmake binary (will be referenced from project-A's tools/)")
 	sourceCache := flag.String("source-cache", "", "optional: directory of pre-fetched source trees, indexed by source-key. Non-kind:local sources whose key (SHA of kind+url+ref) hits a directory under this cache stage as if they were kind:local at that path. Callers populate the cache via the orchestrator's source-checkout layer or by hand for tests; write-a itself doesn't fetch.")
 	useFuseSources := flag.Bool("use-fuse-sources", false, "experimental: render kind:cmake elements to consume sources via @src_<key>//:tree (the FUSE-mounted CAS path) rather than staging files into elements/<name>/sources/. Requires cas-fuse running and CAS_FUSE_MOUNT passed to bazel via --repo_env.")
 	hostArch := flag.String("host-arch", "", "override the static host_arch dispatch variable (default: auto-detected from the build host).")
@@ -366,11 +366,11 @@ func main() {
 	traceBin := flag.String("convert-element-trace", "", "optional: path to convert-element-trace. When set (alongside --build-tracer-bin), every trace-driven kind (autotools / make / manual / script / makemaker / modulebuild) renders with the trace-driven native converter; round-2 (default) wires it via project A's per-element converter genrule, round-1 (opt-out via --trace-round1) wires it inline in project B's install genrule.")
 	tracerBin := flag.String("build-tracer-bin", "", "optional: path to build-tracer. Required when --convert-element-trace is set, and required when --cmake-round2-fallback is set (Project B's kind:cmake install genrule wraps cmake configure / build / install under build-tracer).")
 	publishBin := flag.String("trace-publish-bin", "", "optional: path to cmd/trace-publish. Required for the trace-driven round-2 path (the default when --convert-element-trace is set) and for --cmake-round2-fallback — staged into Project B's tools/ so the round-2 install genrule can publish its trace to the REAPI ActionCache.")
-	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for the trace-driven round-2 path (the default when --convert-element-trace is set) AND for --cmake-round2-fallback — staged into Project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time. kind:cmake's round-2 fallback wires the same @trace_<elem>//:trace load-time lookup as the trace-driven kinds; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on), but the lookup is staged today so the follow-on is converter-side only.")
+	lookupBin := flag.String("trace-lookup-bin", "", "optional: path to cmd/trace-lookup. Required for the trace-driven round-2 path (the default when --convert-element-trace is set) AND for --cmake-round2-fallback — staged into Project A's tools/ so the _trace_repo Bazel rule (rules/traces.bzl) can shell out at load time. The repo rule reads TRACE_LOOKUP_BIN from --repo_env at bazel build time, so the absolute path matters at build time, not render time. kind:cmake's round-2 fallback wires the same @trace_<elem>//:trace load-time lookup as the trace-driven kinds; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on), but the lookup is staged today so the follow-on is converter-side only.")
 	round1 := flag.Bool("trace-round1", false, "opt out of round-2 (the default trace-driven path). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / build / install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available. Previously named with an autotools- prefix; the trace-driven path now serves multiple kinds (autotools / make / manual / script / makemaker / modulebuild), so the prefix dropped the kind specificity.")
 	traceSourceRoot := flag.Bool("trace-source-root", false, "optional: thread --source-root=$$BUILD_ROOT into every build-tracer invocation emitted by wrapAutotoolsPipelineCmds — both the round-2 install genrule for trace-driven kinds and the round-1 single-genrule shape, since both go through the same wrapper. Required to populate the narrowing-undercoverage audit's trace oracle (without it, build-tracer drops openat events entirely — preserves the legacy AC byte schema for trace-driven kinds at the cost of an empty trace oracle). Flipping the flag invalidates existing AC entries for any trace-driven element rendered by this build (one-shot rebake; the round-2 wire-half AC keyspace and the round-1 single-action cache both shift). Off (the default) keeps existing AC entries valid; CI / e2e fixtures opt in to exercise the audit gate. See docs/design/narrowing-audit.md.")
-	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
-	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
+	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
+	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
 	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. Same shape as the orchestrator's --platforms-json (one entry per platform: name, constraints, optional select_label, optional reapi_properties — write-a ignores reapi_properties). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; tools/traces.json gets N entries per element keyed `<elem>__<platform>` so the per-platform _trace_repo lookups don't collide. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
@@ -469,7 +469,7 @@ func main() {
 	//     genrule, landing the AC entry keyed by srckey.
 	//   - trace-lookup runs at A's load time (via the
 	//     @trace_<elem>//:trace _trace_repo rule) so a previous
-	//     Project B run's trace is available at convert-element
+	//     Project B run's trace is available at convert-element-cmake
 	//     action time.
 	// All three are kind-agnostic; resolved here when
 	// --cmake-round2-fallback is set without
@@ -481,13 +481,13 @@ func main() {
 		}
 		// The FUSE-sources kind:cmake template
 		// (cmakeElementBuildFuse) renders a different
-		// convert-element invocation that doesn't yet thread the
-		// fallback flag (or other convert-element flags). Until
+		// convert-element-cmake invocation that doesn't yet thread the
+		// fallback flag (or other convert-element-cmake flags). Until
 		// that template grows feature parity, reject the
 		// combination outright rather than silently letting
 		// classifier refusals Tier-1-exit on FUSE-mode runs.
 		if *useFuseSources {
-			log.Fatalf("--cmake-round2-fallback is incompatible with --use-fuse-sources today; the FUSE template doesn't yet thread --unsupported-execute-process-fallback into convert-element. Drop one of the flags.")
+			log.Fatalf("--cmake-round2-fallback is incompatible with --use-fuse-sources today; the FUSE template doesn't yet thread --unsupported-execute-process-fallback into convert-element-cmake. Drop one of the flags.")
 		}
 		// build-tracer / trace-publish abs paths are resolved
 		// above (trace-driven round-2 path uses the same flags),
@@ -587,10 +587,10 @@ func main() {
 
 	convertAbs, err := filepath.Abs(*convertBin)
 	if err != nil {
-		log.Fatalf("resolve convert-element path: %v", err)
+		log.Fatalf("resolve convert-element-cmake path: %v", err)
 	}
 	if _, err := os.Stat(convertAbs); err != nil {
-		log.Fatalf("convert-element binary at %s: %v", convertAbs, err)
+		log.Fatalf("convert-element-cmake binary at %s: %v", convertAbs, err)
 	}
 
 	useFuseSourcesGlobal = *useFuseSources
@@ -1042,22 +1042,22 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		}
 	}
 
-	// Stage the convert-element binary into project A's tools/ so the
+	// Stage the convert-element-cmake binary into project A's tools/ so the
 	// per-element genrule sees it as a hermetic input via tools = [...].
 	// `exports_files` keeps Bazel's load() footprint minimal — no
 	// sh_binary, no rules_cc dependency. Production wiring would
-	// build convert-element via a go_binary rule.
+	// build convert-element-cmake via a go_binary rule.
 	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
 		return err
 	}
-	stagedBin := filepath.Join(outDir, "tools", "convert-element")
+	stagedBin := filepath.Join(outDir, "tools", "convert-element-cmake")
 	if err := copyFile(convertBin, stagedBin); err != nil {
-		return fmt.Errorf("stage convert-element: %w", err)
+		return fmt.Errorf("stage convert-element-cmake: %w", err)
 	}
 	if err := os.Chmod(stagedBin, 0o755); err != nil {
 		return err
 	}
-	exports := []string{"convert-element", "sources.json"}
+	exports := []string{"convert-element-cmake", "sources.json"}
 	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
 		exports = append(exports, "traces.json")
 	}
@@ -1142,7 +1142,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 // Symmetric staging in project A + project B keeps the
 // per-element BUILD.bazel.out's `//tools:cmake-configure-file`
 // label resolving regardless of which project hosts the
-// genrule. The convert-element action that runs in project A
+// genrule. The convert-element-cmake action that runs in project A
 // doesn't itself invoke this binary — only project B's
 // downstream Bazel build does — but both projects keep a
 // staged copy so the meta-driver script doesn't have to know
@@ -1234,7 +1234,7 @@ func stagePyprojectConverter(outDir string) (string, error) {
 //     lookup-bin on the CLI): stages build-tracer + trace-
 //     publish + trace-lookup (no convert-element-trace —
 //     kind:cmake has its own converter). The trace-lookup
-//     wiring is staged today; convert-element doesn't yet
+//     wiring is staged today; convert-element-cmake doesn't yet
 //     CONSUME the trace bytes for refusal-refinement (that
 //     follow-on is converter-side only — the staging here
 //     is part of what makes that future change small).
@@ -1484,7 +1484,7 @@ func writeProjectB(g *graph, outDir string) error {
 		}
 		exportsList += fmt.Sprintf("%q", e)
 	}
-	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("# tools/ holds the JSON inputs the sources extension reads + the\n# trace-driven autotools binaries (build-tracer / convert-element-\n# autotools) the install genrule references.\nexports_files([%s])\n", exportsList)); err != nil {
+	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("# tools/ holds the JSON inputs the sources extension reads + the\n# trace-driven binaries (build-tracer / convert-element-trace) the\n# install genrule references.\nexports_files([%s])\n", exportsList)); err != nil {
 		return err
 	}
 

@@ -8,7 +8,7 @@
 // (docs/whole-project-plan.md, Bazel-as-orchestrator / two-pass
 // meta-project) moves the host to **Bazel itself**: project A's
 // per-element genrule invokes the per-kind translator as a binary
-// (typically `cmd/convert-element` for kind:cmake, sibling binaries
+// (typically `cmd/convert-element-cmake` for kind:cmake, sibling binaries
 // for kind:meson and friends), with Bazel's action graph + cache
 // taking over what the in-process orchestrator's executor + cache used
 // to do. The Translate signature in this package is what each
@@ -26,7 +26,7 @@
 //     against fakes.
 //   - Registry: kind -> Translator dispatch. Now used by (a) tests
 //     that drive multiple kinds in one process, and (b) a possible
-//     multi-kind `convert-element` binary that flag-dispatches via
+//     multi-kind `convert-element-cmake` binary that flag-dispatches via
 //     `--kind=<X>` to keep CI's tool-image footprint small. The
 //     production project-A genrule references a specific binary; the
 //     Registry is not its primary user.

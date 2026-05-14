@@ -101,7 +101,7 @@ build/bin/write-a \
     --bst path/to/yours.bst \
     --out /tmp/project-a \
     --out-b /tmp/project-b \
-    --convert-element           build/bin/convert-element \
+    --convert-element-cmake           build/bin/convert-element-cmake \
     --convert-element-trace     build/bin/convert-element-trace \
     --build-tracer-bin          build/bin/build-tracer \
     --trace-round1

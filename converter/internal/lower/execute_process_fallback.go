@@ -59,7 +59,7 @@ type fallbackStub struct {
 // install_tree.tar as one of its outs (Step 3, write-a side
 // — wraps cmake configure + ninja + install under
 // build-tracer + inline trace-publish). Same Bazel package =
-// label resolution succeeds. convert-element's executor
+// label resolution succeeds. convert-element-cmake's executor
 // toolchain stays cmake-only; the build work lives in B.
 //
 // Targets with no Install block — utility, internal-only

@@ -35,7 +35,7 @@ flowchart LR
 
 - **Project A** holds one Bazel package per element. Each package's
   `BUILD.bazel` is a small genrule that invokes the per-kind
-  translator (e.g. `convert-element` for `kind:cmake`,
+  translator (e.g. `convert-element-cmake` for `kind:cmake`,
   `convert-element-trace` for `kind:autotools`) on the element's
   source tree. The genrule's output is a real `BUILD.bazel.out` —
   native cc rules — plus any cross-element side-channels (cmake
@@ -61,7 +61,7 @@ Two paths today, with parallels:
 flowchart TB
     subgraph CMAKE [kind:cmake — File-API-driven]
         CSRC["cmake source"] --> CCMAKE["cmake configure<br/>(File API + trace)"]
-        CCMAKE --> CCONV["convert-element<br/>(lower + emit)"]
+        CCMAKE --> CCONV["convert-element-cmake<br/>(lower + emit)"]
         CCONV --> CBUILD["BUILD.bazel.out<br/>(cc_library / cc_binary)"]
     end
     subgraph AUTO [kind:autotools — trace-driven]
@@ -104,9 +104,9 @@ resolve at the consumer's convert-time:
 
 ```mermaid
 flowchart LR
-    PSRC["producer source"] --> PCONV["producer's<br/>convert-element"]
+    PSRC["producer source"] --> PCONV["producer's<br/>convert-element-cmake"]
     PCONV --> PBUNDLE["lib/cmake/Pkg/PkgConfig.cmake<br/>+ libfoo.a stubs<br/>(synth-prefix bundle)"]
-    PBUNDLE -. "tar -xf in $PREFIX" .-> CCONV["consumer's<br/>convert-element"]
+    PBUNDLE -. "tar -xf in $PREFIX" .-> CCONV["consumer's<br/>convert-element-cmake"]
     CSRC["consumer source"] --> CCONV
     CCONV --> CBUILD["BUILD.bazel.out<br/>deps = [//elements/producer:producer, ...]"]
 ```
@@ -114,7 +114,7 @@ flowchart LR
 The consumer's genrule lists every cmake dep's
 `cmake_config_bundle` filegroup as a srcs entry, extracts each tar
 into a shared `$PREFIX`, and passes `--prefix-dir=$PREFIX` to
-convert-element. cmake's `find_package(<Pkg> CONFIG)` then resolves
+convert-element-cmake. cmake's `find_package(<Pkg> CONFIG)` then resolves
 against the staged tree. `internal/synthprefix` builds the per-bundle
 layout (lib/cmake/<Pkg>/*.cmake + zero-byte stubs at every
 IMPORTED_LOCATION path so `if(NOT EXISTS)` checks pass).
@@ -151,7 +151,7 @@ REAPI ActionCache endpoint — no separate registry service.
 | Component | Path | Role |
 |---|---|---|
 | Static renderer | `cmd/write-a/` | `.bst` → project A + project B BUILD files |
-| cmake converter | `cmd/convert-element` (`converter/cmd/convert-element/`) | cmake source → BUILD.bazel.out |
+| cmake converter | `cmd/convert-element-cmake` (`converter/cmd/convert-element-cmake/`) | cmake source → BUILD.bazel.out |
 | Process tracer | `cmd/build-tracer/` | Wraps build cmd; emits execve trace |
 | Trace-driven converter | `cmd/convert-element-trace/` | Trace → BUILD.bazel.out (shared by autotools / make / manual / script / makemaker / modulebuild) |
 | Cross-element synth | `internal/synthprefix/` | Builds the cmake-config-bundle layout |
