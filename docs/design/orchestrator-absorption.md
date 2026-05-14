@@ -201,6 +201,17 @@ keeping a second implementation alive.
    (`--remote_download_minimal`). That covers **pass A** — the
    converter genrule.
 
+   So a green `buildbarn-e2e` job can't be a *silent* skip, the
+   CI step sets `BST_RE_GATE_REQUIRE=1`: the gate's one
+   bazel-availability skip path becomes a hard failure under that
+   flag (every other path already either succeeds or hard-fails).
+   Green ⟹ the gate actually ran the remote build. The platform
+   wiring was additionally verified out-of-band with `bazel
+   aquery` against a rendered project A: the `convert-element-cmake`
+   genrule resolves its execution platform to `//platforms:buildbarn`
+   with `ExecutionInfo` exactly matching `worker.jsonnet`'s
+   advertised properties.
+
    **Follow-up (pass B)** has two parts:
 
    - *cc-toolchain-for-RBE.* Project B's `cc_*` compiles on the

@@ -262,6 +262,13 @@ jobs:
         # output stays build-without-the-bytes. The production-path
         # replacement for the orchestrator's Go-harness e2e-buildbarn*
         # coverage — see docs/design/orchestrator-absorption.md.
+        #
+        # BST_RE_GATE_REQUIRE=1 turns the gate's bazel-availability
+        # skip into a hard failure: this step IS the bazel build, so a
+        # green job must mean it actually ran, not that it quietly
+        # opted out. bazelisk is installed above, so it will run.
+        env:
+          BST_RE_GATE_REQUIRE: "1"
         run: make e2e-meta-buildbarn-re 2>&1 | tee -a /tmp/cijob.log
 
       - uses: ./.github/actions/post-failure-tail

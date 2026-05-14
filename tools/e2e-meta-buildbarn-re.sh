@@ -55,7 +55,18 @@ if [ -n "$BAZEL" ]; then
     case "$bazel_major" in ''|*[!0-9]*) bazel_major=0 ;; esac
 fi
 if [ -z "$BAZEL" ] || [ "$bazel_major" -lt 9 ]; then
-    echo "e2e-meta-buildbarn-re: bazel >= 9 not on PATH; skipping (this gate IS the bazel build)"
+    msg="e2e-meta-buildbarn-re: bazel >= 9 not on PATH"
+    # BST_RE_GATE_REQUIRE closes the one silent-skip hole. This gate
+    # IS a `bazel build` against Buildbarn — every other path through
+    # the script either succeeds or hard-fails — so without this, a
+    # green CI job can't be distinguished from a quiet opt-out. CI
+    # sets BST_RE_GATE_REQUIRE=1; a green buildbarn-e2e job then means
+    # the gate actually ran the remote build and its assertions held.
+    if [ -n "${BST_RE_GATE_REQUIRE:-}" ]; then
+        echo "$msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure, not a skip" >&2
+        exit 1
+    fi
+    echo "$msg; skipping (this gate IS the bazel build)"
     exit 0
 fi
 
@@ -122,12 +133,24 @@ build --remote_download_minimal
 EOF
 
 # --- pass A: converter genrule on a real Buildbarn worker -------------
+# META_BAZEL_STARTUP_ARGS / META_BAZEL_BUILD_ARGS let restricted
+# environments inject overrides — most usefully `--registry=...` when
+# bcr.bazel.build isn't reachable (point it at the github-raw BCR
+# mirror) and a `--host_jvm_args` truststore path. Empty by default;
+# CI runners reach bcr directly and need nothing. Same knobs as
+# scripts/meta-hello.sh.
+META_BAZEL_STARTUP_ARGS=${META_BAZEL_STARTUP_ARGS:-}
+META_BAZEL_BUILD_ARGS=${META_BAZEL_BUILD_ARGS:-}
+
 exec_log="$work_dir/exec-a.json"
 build_log="$work_dir/build-a.log"
 echo "e2e-meta-buildbarn-re: bazel build //elements/hello-world:hello-world_converted (remote)"
+# shellcheck disable=SC2086 # META_BAZEL_*_ARGS are intentionally word-split.
 ( cd "$A" && "$BAZEL" --output_user_root="$work_dir/.bazel" \
+    $META_BAZEL_STARTUP_ARGS \
     build //elements/hello-world:hello-world_converted \
-    --execution_log_json_file="$exec_log" ) 2>&1 | tee "$build_log" | tail -15
+    --execution_log_json_file="$exec_log" \
+    $META_BAZEL_BUILD_ARGS ) 2>&1 | tee "$build_log" | tail -15
 
 # Assertion (a): the converter genrule executed on a remote worker.
 # --strategy=Genrule=remote already makes a non-remote genrule a build
