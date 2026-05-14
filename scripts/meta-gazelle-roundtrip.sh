@@ -1,30 +1,35 @@
 #!/bin/sh
-# meta-gazelle-roundtrip.sh — Phase 7c/7d acceptance gate for the
+# meta-gazelle-roundtrip.sh — Phase 7c/7d/8b acceptance gate for the
 # gazelle-roundtrip story.
 #
 # Drives the full pipeline against the hello-world fixture, then
 # exercises the post-conversion gazelle-prep contract:
 #
 #   1. write-a + bazel-build pass (same as scripts/meta-hello.sh)
-#      produces a staged project B.
-#   2. Phase 7d: the staged BUILD.bazel carries the
+#      produces project A's per-element BUILD.bazel.out.
+#   2. stage-b copies the converted outputs into project B and
+#      reports the `elements/<name>` packages whose content changed
+#      ($changed) — the Phase 8b "what just re-converted" signal.
+#      An idempotent re-stage must report nothing changed.
+#   3. Phase 7d: the staged BUILD.bazel carries the
 #      `# gazelle:cc_search` file-head directive mirroring the
 #      emitted cc_library's `includes`.
-#   3. build-cc-index walks project B's elements/ to populate
+#   4. build-cc-index walks project B's elements/ to populate
 #      tools/cc_index.json + tools/python_modules.json from the
 #      emitted cc_library hdrs (plus the .h-in-srcs cheap
 #      mitigation) and any py_library / py_binary names.
-#   4. Assertions on the populated indexes — the known hello-
+#   5. Assertions on the populated indexes — the known hello-
 #      world headers must resolve to the expected labels.
-#   5. (Optional) Run buildifier --mode=fix against project B and
+#   6. Phase 8b tail: relax-keeps, then `bazel run //:gazelle`,
+#      both targeted at $changed (not the whole workspace). Both
+#      steps skip outright on an empty changed set — an unguarded
+#      relax-keeps / `gazelle --` with no args degrades to a full
+#      project-B walk. The gazelle invocation is further guarded
+#      on the //:gazelle target existing — present → run; absent
+#      (gazelle_cc not yet a bazel_dep) → skip with a message.
+#      Both the populated and empty-set tail paths are exercised.
+#   7. (Optional) Run buildifier --mode=diff against project B and
 #      assert no diff. Skipped if buildifier isn't on PATH.
-#   6. (Optional) Add a smoke source file with `#include
-#      "hello.h"` to a new package in project B; run gazelle and
-#      assert the resulting BUILD's deps resolves the dep to
-#      //elements/hello-world. Skipped if gazelle isn't reachable
-#      (requires both `bazel` and the gazelle_cc bzlmod
-#      registration in the rendered MODULE.bazel — not yet
-#      added).
 #
 # Run from repo root: scripts/meta-gazelle-roundtrip.sh
 
@@ -38,6 +43,7 @@ mkdir -p "$bin_dir"
 
 make converter >/dev/null
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
+CGO_ENABLED=0 go build -o "$bin_dir/stage-b" ./cmd/stage-b
 CGO_ENABLED=0 go build -o "$bin_dir/build-cc-index" ./cmd/build-cc-index
 CGO_ENABLED=0 go build -o "$bin_dir/relax-keeps" ./cmd/relax-keeps
 
@@ -114,6 +120,41 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
+# phase8b_relax <changed-list>
+# relax-keeps over just the changed elements, guarded on a
+# non-empty set. An unguarded `relax-keeps` with no package args
+# falls back to a full project-B walk (see cmd/relax-keeps's own
+# docs) — so with nothing re-converted the guard skips it outright
+# rather than silently widening the tail to O(workspace).
+phase8b_relax() {
+    if [ -z "$1" ]; then
+        echo "meta-gazelle-roundtrip: no elements changed; skipping relax-keeps"
+        return 0
+    fi
+    # shellcheck disable=SC2086 # $1 is a newline list fed as args.
+    "$bin_dir/relax-keeps" --root "$B" $1
+}
+
+# phase8b_gazelle <changed-list>
+# `bazel run //:gazelle` over just the changed elements, guarded
+# on a non-empty set (a bare `gazelle --` with nothing after the
+# `--` rewrites the whole workspace) and on the //:gazelle target
+# existing (gazelle_cc isn't a bazel_dep yet — pending a bcr
+# release; absent → skip with a message).
+phase8b_gazelle() {
+    if [ -z "$1" ]; then
+        echo "meta-gazelle-roundtrip: no elements changed; skipping gazelle invocation"
+        return 0
+    fi
+    if (cd "$B" && "$BZL" --output_user_root="$bzl_cache" query //:gazelle) >/dev/null 2>&1; then
+        # shellcheck disable=SC2086 # $1 is a newline list fed as args.
+        run_bazel "$B" run //:gazelle -- $1 2>&1 | tail -5
+        echo "meta-gazelle-roundtrip: gazelle ran, targeted at changed elements: [$1]"
+    else
+        echo "meta-gazelle-roundtrip: //:gazelle not defined (gazelle_cc not yet a bazel_dep); skipping gazelle invocation"
+    fi
+}
+
 # === Project A build (produces BUILD.bazel.out) ===
 run_bazel "$A" build //elements/hello-world:hello-world_converted 2>&1 | tail -5
 build_out_a="$A/bazel-bin/elements/hello-world/BUILD.bazel.out"
@@ -122,8 +163,30 @@ if [ ! -f "$build_out_a" ]; then
     exit 1
 fi
 
-# === Stage A's output into B ===
-cp "$build_out_a" "$B/elements/hello-world/BUILD.bazel"
+# === Stage A's output into B (Phase 8b: changed-element signal) ===
+# stage-b copies every element's converted BUILD.bazel.out into
+# project B and prints the `elements/<name>` packages whose content
+# actually changed. That changed set is what the targeted gazelle
+# step below consumes — the write-a + Bazel path's replacement for
+# the orchestrator's res.Converted.
+changed=$("$bin_dir/stage-b" --project-a "$A" --project-b "$B")
+if ! printf '%s\n' "$changed" | grep -qx "elements/hello-world"; then
+    echo "meta-gazelle-roundtrip: stage-b did not report elements/hello-world as changed on first stage" >&2
+    echo "  changed set was: [$changed]" >&2
+    exit 1
+fi
+echo "meta-gazelle-roundtrip: stage-b staged + reported changed: [$changed]"
+
+# Re-stage with no re-conversion in between: stage-b must report an
+# empty changed set. This proves the signal is a content diff, not a
+# blind copy — a driver re-running the pipeline without source edits
+# would skip the gazelle step entirely.
+restage=$("$bin_dir/stage-b" --project-a "$A" --project-b "$B")
+if [ -n "$restage" ]; then
+    echo "meta-gazelle-roundtrip: stage-b reported changes on an idempotent re-stage: [$restage]" >&2
+    exit 1
+fi
+echo "meta-gazelle-roundtrip: stage-b re-stage is a no-op (content-diff signal works)"
 
 # === Phase 7d: # gazelle:cc_search directive present ===
 # The hello-world fixture's CMakeLists sets
@@ -162,19 +225,22 @@ if ! grep -qE "\"$expected_header\":[[:space:]]*\"$expected_label\"" "$B/tools/c
 fi
 echo "meta-gazelle-roundtrip: cc_index.json populated; hello.h → $expected_label"
 
-# === relax-keeps with default empty patterns is a no-op ===
-# Sanity check: continuous-conversion loops invoke relax-keeps
-# unconditionally; the empty default in tools/gazelle-rewritable.json
-# must produce no BUILD changes.
+# === Phase 8b: targeted relax-keeps over the changed elements ===
+# The Phase 8b gazelle tail runs relax-keeps + gazelle over only the
+# elements stage-b reported as changed (`$changed`), not the whole
+# workspace. Here that's `elements/hello-world`. With the default
+# empty patterns list in tools/gazelle-rewritable.json, relax-keeps
+# must produce no BUILD changes — the operator hasn't opted any
+# genrule pattern into rewriting yet.
 build_before=$(cat "$B/elements/hello-world/BUILD.bazel")
-"$bin_dir/relax-keeps" --root "$B" elements/hello-world
+phase8b_relax "$changed"
 build_after=$(cat "$B/elements/hello-world/BUILD.bazel")
 if [ "$build_before" != "$build_after" ]; then
     echo "meta-gazelle-roundtrip: relax-keeps modified BUILD with default empty patterns:" >&2
     diff <(echo "$build_before") <(echo "$build_after") >&2 || true
     exit 1
 fi
-echo "meta-gazelle-roundtrip: relax-keeps (empty patterns) is a no-op as expected"
+echo "meta-gazelle-roundtrip: relax-keeps (empty patterns, targeted at \$changed) is a no-op as expected"
 
 # === Optional: buildifier no-op contract ===
 # Phase 3 promised buildifier --mode=fix is a no-op against our
@@ -201,12 +267,28 @@ else
     echo "meta-gazelle-roundtrip: buildifier not on PATH; skipping no-op assertion"
 fi
 
-# === Gazelle resolution smoke (deferred wiring) ===
-# Running actual gazelle requires gazelle_cc to be declared in
-# project B's MODULE.bazel (it isn't yet — Phase 7c ships the
-# metadata files and the directives that reference them; landing
-# the bazel_dep is left for the operator or a follow-up that
-# bumps the bcr-pinned gazelle_cc version once it's published
-# there). The cc_index.json content + MODULE.bazel directives
-# above are the contract this gate enforces today.
-echo "meta-gazelle-roundtrip: ok (write-a render + bazel-build + build-cc-index + buildifier no-op)"
+# === Phase 8b: targeted gazelle over the changed elements ===
+# The post-conversion gazelle step is an opt-in tail on the driver:
+# once the operator declares gazelle / gazelle_cc in
+# overlay.MODULE.bazel, the driver runs
+# `bazel run //:gazelle -- <changed elements>` so only the packages
+# that re-converted on this run get rewritten. This gate IS such a
+# driver — it always attempts the tail. phase8b_gazelle self-guards
+# on the //:gazelle target existing (gazelle_cc isn't a bazel_dep
+# yet — pending a bcr release; absent → skip with a message).
+phase8b_gazelle "$changed"
+
+# Exercise the empty-changed-set guard. An idempotent re-run
+# produces an empty changed set (proven above: $restage is empty),
+# and both tail steps must then skip outright. Without the guard,
+# `relax-keeps` with no args falls back to a full project-B walk
+# and `bazel run //:gazelle --` with nothing after the `--`
+# rewrites the whole workspace — both silently turning the
+# "targeted, O(changed)" tail into O(workspace), the exact thing
+# Phase 8b exists to avoid. The main tail above always runs with
+# the non-empty first $changed, so the no-op path is covered here.
+echo "meta-gazelle-roundtrip: exercising the empty-changed-set tail guard"
+phase8b_relax "$restage"
+phase8b_gazelle "$restage"
+
+echo "meta-gazelle-roundtrip: ok (write-a render + bazel-build + stage-b + build-cc-index + relax-keeps + buildifier no-op + Phase 8b gazelle tail)"

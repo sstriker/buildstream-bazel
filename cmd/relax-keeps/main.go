@@ -22,8 +22,9 @@
 // them.
 //
 // Per Phase 8 of docs/design/build-output-conventions.md.
-// Designed to run after build-cc-index and before any
-// gazelle invocation in the orchestrator pipeline.
+// Designed to run after build-cc-index and before the
+// `bazel run //:gazelle` step of the write-a + Bazel
+// driver's Phase 8b gazelle tail.
 //
 // See docs/design/operator-gazelle-step.md for the full
 // post-conversion + gazelle workflow.
@@ -129,15 +130,14 @@ func run(a args) error {
 		return nil
 	}
 	// Targeted vs full-walk: when the caller passes a list
-	// of package paths (typically the elements that bazel
-	// build A re-converted on this run, sourced from
-	// orchestrator's res.Converted), only walk those
-	// subtrees. The orchestrator pipeline uses this for
+	// of package paths (typically the elements that
+	// re-converted on this run — the `$changed` list
+	// cmd/stage-b emits), only walk those subtrees. The
+	// write-a + Bazel driver's Phase 8b tail uses this for
 	// incremental relaxation — O(packages_changed) instead
 	// of O(workspace). When no packages are given, fall
-	// back to a full project-B walk; the meta-gazelle-
-	// roundtrip render gate + ad-hoc manual invocations
-	// use this fallback.
+	// back to a full project-B walk, used by ad-hoc manual
+	// invocations.
 	roots := []string{a.root}
 	if len(a.packages) > 0 {
 		roots = roots[:0]
@@ -149,10 +149,8 @@ func run(a args) error {
 	for _, r := range roots {
 		// Skip roots that don't exist — happens when the
 		// caller passes a package path that didn't actually
-		// produce output on this run (the orchestrator's
-		// res.Converted slice can include elements that
-		// failed conversion). filepath.WalkDir would error
-		// otherwise.
+		// produce output on this run. filepath.WalkDir would
+		// error otherwise.
 		if _, err := os.Stat(r); os.IsNotExist(err) {
 			continue
 		}
