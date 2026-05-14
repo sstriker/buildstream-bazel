@@ -1,5 +1,5 @@
 #!/bin/sh
-# meta-gazelle-roundtrip.sh — Phase 7c acceptance gate for the
+# meta-gazelle-roundtrip.sh — Phase 7c/7d acceptance gate for the
 # gazelle-roundtrip story.
 #
 # Drives the full pipeline against the hello-world fixture, then
@@ -7,21 +7,24 @@
 #
 #   1. write-a + bazel-build pass (same as scripts/meta-hello.sh)
 #      produces a staged project B.
-#   2. build-cc-index walks project B's elements/ to populate
+#   2. Phase 7d: the staged BUILD.bazel carries the
+#      `# gazelle:cc_search` file-head directive mirroring the
+#      emitted cc_library's `includes`.
+#   3. build-cc-index walks project B's elements/ to populate
 #      tools/cc_index.json + tools/python_modules.json from the
 #      emitted cc_library hdrs (plus the .h-in-srcs cheap
 #      mitigation) and any py_library / py_binary names.
-#   3. Assertions on the populated indexes — the known hello-
+#   4. Assertions on the populated indexes — the known hello-
 #      world headers must resolve to the expected labels.
-#   4. (Optional) Run buildifier --mode=fix against project B and
+#   5. (Optional) Run buildifier --mode=fix against project B and
 #      assert no diff. Skipped if buildifier isn't on PATH.
-#   5. (Optional) Add a smoke source file with `#include
+#   6. (Optional) Add a smoke source file with `#include
 #      "hello.h"` to a new package in project B; run gazelle and
 #      assert the resulting BUILD's deps resolves the dep to
 #      //elements/hello-world. Skipped if gazelle isn't reachable
 #      (requires both `bazel` and the gazelle_cc bzlmod
-#      registration in the rendered MODULE.bazel — Phase 7c may
-#      not yet have added that).
+#      registration in the rendered MODULE.bazel — not yet
+#      added).
 #
 # Run from repo root: scripts/meta-gazelle-roundtrip.sh
 
@@ -121,6 +124,20 @@ fi
 
 # === Stage A's output into B ===
 cp "$build_out_a" "$B/elements/hello-world/BUILD.bazel"
+
+# === Phase 7d: # gazelle:cc_search directive present ===
+# The hello-world fixture's CMakeLists sets
+# target_include_directories(hello ... include), so the emitted
+# cc_library carries includes = ["include"] and the cc emitter
+# must mirror it as a file-head `# gazelle:cc_search include`
+# directive (deduped + sorted across the package's targets).
+staged_build="$B/elements/hello-world/BUILD.bazel"
+if ! grep -qx "# gazelle:cc_search include" "$staged_build"; then
+    echo "meta-gazelle-roundtrip: staged BUILD.bazel missing '# gazelle:cc_search include' directive (Phase 7d)" >&2
+    cat "$staged_build" >&2
+    exit 1
+fi
+echo "meta-gazelle-roundtrip: # gazelle:cc_search directive present (Phase 7d)"
 
 # === Populate cc_index.json + python_modules.json ===
 "$bin_dir/build-cc-index" \

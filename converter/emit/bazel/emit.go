@@ -99,6 +99,41 @@ func nonDefaultVisibility(vis []string) []string {
 	return append([]string(nil), vis...)
 }
 
+// emitGazelleCcSearch writes `# gazelle:cc_search <dir>` file-head
+// directives mirroring the union of every target's `includes`
+// attribute values. Per docs/design/build-output-conventions.md
+// Phase 7d: gazelle_cc's header-scan resolver needs the same
+// include search paths the converter extracted from CMake so an
+// operator-added `#include` of an in-tree header resolves to the
+// right label on `gazelle fix`. The directive is package-scoped,
+// so the union across targets (deduped, sorted) is the right
+// granularity.
+//
+// Inert when gazelle isn't installed — it's a plain `#` comment
+// to any tool that doesn't look for it. No-op when no target
+// carries `includes`, keeping includes-free goldens byte-stable.
+func emitGazelleCcSearch(buf *bytes.Buffer, pkg *ir.Package) {
+	seen := map[string]struct{}{}
+	var dirs []string
+	for _, t := range pkg.Targets {
+		for _, d := range t.Includes {
+			if _, ok := seen[d]; ok {
+				continue
+			}
+			seen[d] = struct{}{}
+			dirs = append(dirs, d)
+		}
+	}
+	if len(dirs) == 0 {
+		return
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		fmt.Fprintf(buf, "# gazelle:cc_search %s\n", d)
+	}
+	buf.WriteString("\n")
+}
+
 // emitLoad writes a single `load("@rules_cc//cc:defs.bzl", ...)` line
 // covering every cc_* symbol used by pkg's targets. Symbols are sorted
 // for byte-stability. Returns nothing if pkg has no cc_* targets.
@@ -176,6 +211,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	} else {
 		buf.WriteString(header)
 	}
+	emitGazelleCcSearch(&buf, pkg)
 	emitLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 

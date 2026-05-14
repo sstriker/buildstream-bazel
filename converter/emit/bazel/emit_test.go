@@ -1215,3 +1215,74 @@ func TestEmit_NoImplementationDeps_OmitsAttribute(t *testing.T) {
 		t.Errorf("expected implementation_deps attribute to be omitted when empty:\n%s", got)
 	}
 }
+
+// TestEmit_GazelleCcSearch_UnionDedupSort confirms the Phase 7d
+// `# gazelle:cc_search` file-head directives mirror the union of
+// every target's `includes`, deduped across targets and emitted
+// in sorted order. Two targets share "include"; one adds "src".
+// The directives must render once each, sorted, above the load()
+// line — the conventional gazelle-directive placement.
+func TestEmit_GazelleCcSearch_UnionDedupSort(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name:     "b",
+				Kind:     ir.KindCCLibrary,
+				Srcs:     []string{"b.cc"},
+				Includes: []string{"src", "include"},
+			},
+			{
+				Name:     "a",
+				Kind:     ir.KindCCLibrary,
+				Srcs:     []string{"a.cc"},
+				Includes: []string{"include"},
+			},
+		},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	body := string(got)
+	incIdx := strings.Index(body, "# gazelle:cc_search include")
+	srcIdx := strings.Index(body, "# gazelle:cc_search src")
+	loadIdx := strings.Index(body, "load(")
+	if incIdx < 0 || srcIdx < 0 {
+		t.Fatalf("missing cc_search directive(s):\n%s", body)
+	}
+	// Sorted: "include" before "src".
+	if incIdx > srcIdx {
+		t.Errorf("cc_search directives not sorted: include=%d src=%d\n%s", incIdx, srcIdx, body)
+	}
+	// File-head: above the load() line.
+	if loadIdx >= 0 && srcIdx > loadIdx {
+		t.Errorf("cc_search directives must precede load(): src=%d load=%d\n%s", srcIdx, loadIdx, body)
+	}
+	// Deduped: "include" appears exactly once despite two targets
+	// declaring it.
+	if n := strings.Count(body, "# gazelle:cc_search include\n"); n != 1 {
+		t.Errorf("cc_search include directive emitted %d times, want 1\n%s", n, body)
+	}
+}
+
+// TestEmit_NoGazelleCcSearch_OmitsDirective confirms a package
+// whose targets carry no `includes` emits no `# gazelle:cc_search`
+// line at all — keeps includes-free goldens byte-stable.
+func TestEmit_NoGazelleCcSearch_OmitsDirective(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name: "lib",
+				Kind: ir.KindCCLibrary,
+				Srcs: []string{"lib.cc"},
+			},
+		},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(string(got), "# gazelle:cc_search") {
+		t.Errorf("expected no cc_search directive when no target has includes:\n%s", got)
+	}
+}

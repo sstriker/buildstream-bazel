@@ -360,22 +360,61 @@ Emitted on:
 - `py_library.imports` / `pyi_srcs` attributes.
 - `package(default_visibility = ...)` line.
 
-### `# gazelle:resolve` directives
+### `# gazelle:cc_search` directives (Phase 7d — emitted)
 
-For dep edges gazelle can't resolve from `#include` /
-`import` lines alone (cross-element via the imports manifest,
-script entry points pointing at modules in other elements). Emit
-per-element in the element's BUILD when needed:
+`converter/emit/bazel` writes `# gazelle:cc_search <dir>`
+file-head directives mirroring the **union** of every target's
+`includes` attribute values — deduped across the package's
+targets, sorted, rendered above the `load()` line in the
+conventional gazelle-directive position. They give gazelle_cc's
+header-scan resolver the same include search paths the converter
+extracted from CMake, so an operator-added `#include` of an
+in-tree header resolves to the right label on `gazelle fix`.
+Inert when gazelle isn't installed (a plain `#` comment); no
+directive is emitted when no target carries `includes`, keeping
+includes-free goldens byte-stable.
+
+### `# gazelle:resolve` directives (operator escape hatch — not emitted)
+
+`# gazelle:resolve cc <header> <label>` /
+`# gazelle:resolve py <module> <label>` directives are an
+**operator-authored escape hatch**, not converter output. They
+exist for the cases where gazelle's resolver gets a specific
+edge wrong and the operator wants to pin it:
 
 ```
 # gazelle:resolve cc external/myelem/api.h //elements/myelem:myelem
 # gazelle:resolve py demo_other //elements/other:other
 ```
 
-### `# gazelle:cc_search`
+The converter does **not** emit these, by design. Its job for
+cross-element resolution is to populate the *index files*
+(`cc_index.json` / `python_modules.json`), which gazelle's
+resolvers consult globally — not to second-guess, per BUILD,
+which edges gazelle will miss. Two reasons the per-BUILD form
+can't be the converter's responsibility:
 
-Mirrors our `cc_library.includes` attribute values so gazelle's
-header-scan resolver finds in-tree headers at the right paths.
+- **The key shape isn't available at convert time.** A
+  `# gazelle:resolve cc` directive is keyed on the *header path*
+  as it appears in an `#include`; `# gazelle:resolve py` on the
+  *import-module name*. The imports manifest carries cross-
+  element **include directories** and **distribution names**,
+  not the header files or import-module names gazelle's
+  resolvers key on. An element converts in isolation — it never
+  sees a cross-element dep's header/module universe.
+- **Sibling-element edges already resolve via the index.**
+  `build-cc-index` walks project B's own BUILD files, so a
+  sibling element's headers are already in `cc_index.json`. The
+  only uncovered case is genuinely-*external* repos, whose
+  header/module universe lives outside project B entirely.
+
+Closing that external-repo gap is index-file work, not
+directive work: `build-cc-index` consuming the imports manifest
+(and the manifest carrying exported-header / import-module data)
+— see `ROADMAP.md`. That work is downstream of the imports-
+manifest *producer* settling, which the `orchestrator/`
+absorption (`docs/design/orchestrator-absorption.md`) is still
+reshaping.
 
 ### Conformance gate
 
@@ -500,9 +539,17 @@ to those entries; each is independently shippable.
     that asserts: the populated index has the expected
     header→label mappings, and (when `buildifier` is on PATH)
     Phase 3's no-op contract still holds post-Phase-7a/b/c.
-    The `# gazelle:resolve` directives for cross-element deps
-    are queued as a Phase 7d follow-up once `gazelle_cc` is
-    wired in.
+  - **Phase 7d** — `# gazelle:cc_search` directives. The cc
+    emitter writes `# gazelle:cc_search <dir>` file-head
+    directives mirroring the union of every target's `includes`
+    so gazelle_cc's header-scan resolver finds in-tree headers
+    at the same search paths the converter extracted from CMake.
+    The `# gazelle:resolve` directives originally scoped here
+    are *not* converter output — see the "`# gazelle:resolve`
+    directives" section above for why they're an operator
+    escape hatch and what the actual remaining converter-side
+    cross-element work is (index-file population from the
+    imports manifest).
 - **Phase 8** — operator overlay (`overlay.MODULE.bazel` +
   unconditional `include()` in project B's MODULE.bazel) so
   operators can layer their own `bazel_dep` / `use_extension`
@@ -531,5 +578,5 @@ The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,
 Phase 4 closes the deps-shape gap with gazelle_cc, Phase 5
 closes the py-binary-shape gap with rules_python's plugin,
-Phase 6 freezes the contract in writing, and Phase 7 lights up
-the roundtrip story end-to-end.
+Phase 6 freezes the contract in writing, and Phase 7 (a–d)
+lights up the roundtrip story end-to-end.

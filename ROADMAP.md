@@ -29,19 +29,39 @@ transition cleanly.
 
 ## Next
 
-- **Phase 7d — `# gazelle:resolve` directives for cross-element
-  deps.** The gazelle roundtrip (Phases 7a–7c) shipped: `# keep`
-  markers, the `cc_index.json` / `python_modules.json` resolver
-  files, the MODULE.bazel directives, and the
-  `scripts/meta-gazelle-roundtrip.sh` conformance gate are all on
-  `main`. What's left is the cross-element-dep half: emit
-  `# gazelle:resolve cc <header> <label>` /
-  `# gazelle:resolve py <module> <label>` directives for deps the
-  header/import scan can't resolve on its own, plus mirroring our
-  `includes` values into `# gazelle:cc_search` directives. Queued
-  as a follow-up (per `docs/design/build-output-conventions.md`)
-  until `gazelle_cc`'s resolver behavior stabilizes — the rest of
-  the roundtrip contract holds without it.
+- **Cross-element index-file population from the imports
+  manifest.** The gazelle roundtrip is otherwise complete:
+  Phases 7a–7d shipped (`# keep` markers, `cc_index.json` /
+  `python_modules.json` resolver files, the MODULE.bazel
+  directives, the `scripts/meta-gazelle-roundtrip.sh`
+  conformance gate, and the `# gazelle:cc_search` directives —
+  see Done). What's left is the *external-repo* cross-element
+  edge: `build-cc-index` walks project B's own BUILD files, so
+  sibling-element headers/modules already land in the index,
+  but a genuinely-external dep's header/module universe lives
+  outside project B and only the imports manifest knows the
+  label. Closing it means `build-cc-index` consuming the
+  imports manifest — which first needs the manifest to carry
+  exported-header / import-module data (it carries include
+  *directories* and *distribution names* today, not the
+  resolver-shaped keys gazelle needs). That schema extension
+  is downstream of the imports-manifest *producer* settling,
+  which the `orchestrator/` absorption
+  (`docs/design/orchestrator-absorption.md`) is still
+  reshaping — so this is sequenced after that fold.
+  `# gazelle:resolve` directives are an operator escape hatch,
+  not converter output; see
+  `docs/design/build-output-conventions.md`.
+  **Acceptance criterion for the eventual gazelle_cc wiring
+  pass:** verify `# gazelle:cc_search` consumes package-relative
+  paths the same way `cc_library.includes` does. Phase 7d emits
+  the directive mirroring `includes` verbatim, but — like 7b's
+  MODULE.bazel directives — it's inert-pending-gazelle: the unit
+  tests + render gate assert the directive *text*, nothing runs
+  it against real gazelle_cc. If `cc_search` expects a different
+  path frame (repo- or workspace-relative), every emitted
+  directive is subtly wrong, so the path-frame equivalence is a
+  checklist item for whoever lands the bzlmod registration.
 
 - **Per-platform fold for round-2 trace-driven kinds.** Mostly
   shipped (see Done — project A converter fan-out + fold for
@@ -356,12 +376,15 @@ transition cleanly.
     emits `py_binary(name="<pkg>_bin", ...)`;
     `--always-emit-entry-shim` for back-compat.
   - **Phase 6** — the conventions doc itself.
-  - **Phases 7a–7c** — gazelle roundtrip foundation: `# keep`
-    markers on load-bearing attributes; `cc_index.json` /
+  - **Phases 7a–7d** — gazelle roundtrip: `# keep` markers on
+    load-bearing attributes; `cc_index.json` /
     `python_modules.json` resolver files + MODULE.bazel
     directives; `scripts/meta-gazelle-roundtrip.sh` conformance
-    gate. (`# gazelle:resolve` for cross-element deps is the
-    remaining Phase 7d follow-up — see `Next`.)
+    gate; `# gazelle:cc_search` file-head directives mirroring
+    each package's `includes`. (`# gazelle:resolve` is an
+    operator escape hatch, not converter output; external-repo
+    cross-element index population is the one remaining sliver
+    — see `Next`.)
   - **Phase 8** — operator-owned `overlay.MODULE.bazel` seam +
     `docs/design/operator-gazelle-step.md` workflow; `cmd/relax-keeps`
     + `tools/gazelle-rewritable.json` for continuous-conversion
