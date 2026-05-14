@@ -79,13 +79,16 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 		flags.Usage()
 		return a, exitUsage
 	}
-	for name, p := range map[string]*string{"--project-a": &a.projectA, "--project-b": &a.projectB} {
-		abs, err := filepath.Abs(*p)
+	for _, r := range []struct {
+		name string
+		p    *string
+	}{{"--project-a", &a.projectA}, {"--project-b", &a.projectB}} {
+		abs, err := filepath.Abs(*r.p)
 		if err != nil {
-			fmt.Fprintf(stderr, "stage-b: resolve %s %q: %v\n", name, *p, err)
+			fmt.Fprintf(stderr, "stage-b: resolve %s %q: %v\n", r.name, *r.p, err)
 			return a, exitUsage
 		}
-		*p = abs
+		*r.p = abs
 	}
 	return a, exitSuccess
 }

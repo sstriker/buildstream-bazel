@@ -21,11 +21,13 @@
 #   5. Assertions on the populated indexes — the known hello-
 #      world headers must resolve to the expected labels.
 #   6. Phase 8b tail: relax-keeps, then `bazel run //:gazelle`,
-#      both targeted at $changed (not the whole workspace). The
-#      gazelle invocation is guarded on the //:gazelle target
-#      existing — present → run; absent (gazelle_cc not yet a
-#      bazel_dep) → skip with a message. The changed-element
-#      plumbing is exercised unconditionally.
+#      both targeted at $changed (not the whole workspace). Both
+#      steps skip outright on an empty changed set — an unguarded
+#      relax-keeps / `gazelle --` with no args degrades to a full
+#      project-B walk. The gazelle invocation is further guarded
+#      on the //:gazelle target existing — present → run; absent
+#      (gazelle_cc not yet a bazel_dep) → skip with a message.
+#      Both the populated and empty-set tail paths are exercised.
 #   7. (Optional) Run buildifier --mode=diff against project B and
 #      assert no diff. Skipped if buildifier isn't on PATH.
 #
@@ -118,6 +120,41 @@ run_bazel() {
         "$cmd" "$@" $META_BAZEL_BUILD_ARGS)
 }
 
+# phase8b_relax <changed-list>
+# relax-keeps over just the changed elements, guarded on a
+# non-empty set. An unguarded `relax-keeps` with no package args
+# falls back to a full project-B walk (see cmd/relax-keeps's own
+# docs) — so with nothing re-converted the guard skips it outright
+# rather than silently widening the tail to O(workspace).
+phase8b_relax() {
+    if [ -z "$1" ]; then
+        echo "meta-gazelle-roundtrip: no elements changed; skipping relax-keeps"
+        return 0
+    fi
+    # shellcheck disable=SC2086 # $1 is a newline list fed as args.
+    "$bin_dir/relax-keeps" --root "$B" $1
+}
+
+# phase8b_gazelle <changed-list>
+# `bazel run //:gazelle` over just the changed elements, guarded
+# on a non-empty set (a bare `gazelle --` with nothing after the
+# `--` rewrites the whole workspace) and on the //:gazelle target
+# existing (gazelle_cc isn't a bazel_dep yet — pending a bcr
+# release; absent → skip with a message).
+phase8b_gazelle() {
+    if [ -z "$1" ]; then
+        echo "meta-gazelle-roundtrip: no elements changed; skipping gazelle invocation"
+        return 0
+    fi
+    if (cd "$B" && "$BZL" --output_user_root="$bzl_cache" query //:gazelle) >/dev/null 2>&1; then
+        # shellcheck disable=SC2086 # $1 is a newline list fed as args.
+        run_bazel "$B" run //:gazelle -- $1 2>&1 | tail -5
+        echo "meta-gazelle-roundtrip: gazelle ran, targeted at changed elements: [$1]"
+    else
+        echo "meta-gazelle-roundtrip: //:gazelle not defined (gazelle_cc not yet a bazel_dep); skipping gazelle invocation"
+    fi
+}
+
 # === Project A build (produces BUILD.bazel.out) ===
 run_bazel "$A" build //elements/hello-world:hello-world_converted 2>&1 | tail -5
 build_out_a="$A/bazel-bin/elements/hello-world/BUILD.bazel.out"
@@ -196,8 +233,7 @@ echo "meta-gazelle-roundtrip: cc_index.json populated; hello.h → $expected_lab
 # must produce no BUILD changes — the operator hasn't opted any
 # genrule pattern into rewriting yet.
 build_before=$(cat "$B/elements/hello-world/BUILD.bazel")
-# shellcheck disable=SC2086 # $changed is a newline list fed as args.
-"$bin_dir/relax-keeps" --root "$B" $changed
+phase8b_relax "$changed"
 build_after=$(cat "$B/elements/hello-world/BUILD.bazel")
 if [ "$build_before" != "$build_after" ]; then
     echo "meta-gazelle-roundtrip: relax-keeps modified BUILD with default empty patterns:" >&2
@@ -237,21 +273,22 @@ fi
 # overlay.MODULE.bazel, the driver runs
 # `bazel run //:gazelle -- <changed elements>` so only the packages
 # that re-converted on this run get rewritten. This gate IS such a
-# driver — it always attempts the tail.
-#
-# Running actual gazelle still needs gazelle_cc declared as a
-# bazel_dep in project B (it isn't yet — landing the bazel_dep waits
-# on a bcr-pinned gazelle_cc release). So the invocation is guarded
-# on the //:gazelle target existing: present → run it targeted at
-# $changed; absent → skip with a message. The changed-element
-# plumbing above (stage-b → $changed → relax-keeps) is exercised
-# unconditionally regardless.
-if (cd "$B" && "$BZL" --output_user_root="$bzl_cache" query //:gazelle) >/dev/null 2>&1; then
-    # shellcheck disable=SC2086 # $changed is a newline list fed as args.
-    run_bazel "$B" run //:gazelle -- $changed 2>&1 | tail -5
-    echo "meta-gazelle-roundtrip: gazelle ran, targeted at changed elements: [$changed]"
-else
-    echo "meta-gazelle-roundtrip: //:gazelle not defined (gazelle_cc not yet a bazel_dep); skipping gazelle invocation"
-fi
+# driver — it always attempts the tail. phase8b_gazelle self-guards
+# on the //:gazelle target existing (gazelle_cc isn't a bazel_dep
+# yet — pending a bcr release; absent → skip with a message).
+phase8b_gazelle "$changed"
+
+# Exercise the empty-changed-set guard. An idempotent re-run
+# produces an empty changed set (proven above: $restage is empty),
+# and both tail steps must then skip outright. Without the guard,
+# `relax-keeps` with no args falls back to a full project-B walk
+# and `bazel run //:gazelle --` with nothing after the `--`
+# rewrites the whole workspace — both silently turning the
+# "targeted, O(changed)" tail into O(workspace), the exact thing
+# Phase 8b exists to avoid. The main tail above always runs with
+# the non-empty first $changed, so the no-op path is covered here.
+echo "meta-gazelle-roundtrip: exercising the empty-changed-set tail guard"
+phase8b_relax "$restage"
+phase8b_gazelle "$restage"
 
 echo "meta-gazelle-roundtrip: ok (write-a render + bazel-build + stage-b + build-cc-index + relax-keeps + buildifier no-op + Phase 8b gazelle tail)"
