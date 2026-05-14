@@ -39,15 +39,15 @@ import (
 
 	repb "github.com/bazelbuild/remote-apis/build/bazel/remote/execution/v2"
 
+	"github.com/sstriker/buildstream-bazel/internal/allowlistreg"
 	"github.com/sstriker/buildstream-bazel/internal/cas"
 	"github.com/sstriker/buildstream-bazel/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/exports"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/reapi"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sourcecheckout"
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/allowlistreg"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/exports"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/sourcecheckout"
 )
 
 // Options configures one Run call.
