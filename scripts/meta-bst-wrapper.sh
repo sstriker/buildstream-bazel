@@ -7,12 +7,15 @@
 # element source trees). Goal: BuildStream muscle memory survives
 # the transition.
 #
-# This gate exercises the render half (no Bazel required) against
-# three fixtures, plus the workspace open/close cycle on a copy of
-# the cmake hello-world fixture. Bazel-build half is intentionally
-# out of scope — the wrapper's bazel-build invocation is a thin
-# shell-out to whatever Bazel is on PATH, and Bazel runs go through
-# the existing per-kind render gates.
+# This gate exercises the render half against three fixtures, plus
+# the workspace open/close cycle on a copy of the cmake hello-world
+# fixture. The bazel-build half is intentionally out of scope — the
+# wrapper's bazel-build invocation is a thin shell-out to whatever
+# Bazel is on PATH, and Bazel runs go through the existing per-kind
+# render gates. We force render-only mode via BST_SKIP_BAZEL rather
+# than relying on Bazel being absent: GitHub-hosted runner images
+# ship bazelisk, so without the opt-out the wrapper would shell out
+# to a real (and here unwanted) `bazel build`.
 #
 # Coverage:
 #
@@ -43,6 +46,10 @@ trap 'rm -rf "$work_dir"' EXIT
 # ~/.cache/buildstream-bazel; pinning lets the gate run from a
 # clean slate every time.
 export BST_CACHE_DIR="$work_dir/cache"
+
+# Render-only: this gate covers the wrapper's render path, not its
+# bazel-build shell-out. See the header comment.
+export BST_SKIP_BAZEL=1
 
 # 1) kind:cmake single-element.
 out_1="$(./tools/bst build testdata/meta-project/hello-world.bst 2>&1)"

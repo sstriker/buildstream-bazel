@@ -148,6 +148,24 @@ cmd_build() {
     esac
     target="//elements/${elem_name}:${target_name}"
 
+    # BST_SKIP_BAZEL forces render-only mode: do the write-a render,
+    # print the target line, stop — never shell out to bazel even
+    # when it's on PATH. Render-half CI gates (scripts/meta-bst-
+    # wrapper.sh) set this so they exercise the wrapper's render
+    # path deterministically regardless of whether the runner image
+    # ships bazel / bazelisk.
+    if [ -n "${BST_SKIP_BAZEL:-}" ]; then
+        cat <<EOF >&2
+bst build: rendered project A + B at:
+  $project_a
+  $project_b
+
+BST_SKIP_BAZEL set; skipping the bazel-build step. Target:
+  cd $project_b && bazel build $target
+EOF
+        return 0
+    fi
+
     BAZEL="${BAZEL:-bazel}"
     if ! command -v "$BAZEL" >/dev/null && command -v bazelisk >/dev/null; then
         BAZEL=bazelisk
