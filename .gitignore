@@ -44,6 +44,7 @@ converter/testdata/sample-projects/libdrm/
 # (the canonical path is build/bin/<name> per Makefile).
 /build-cc-index
 /relax-keeps
+/stage-b
 /write-a
 /convert-element
 /convert-element-meson

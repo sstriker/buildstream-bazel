@@ -566,13 +566,19 @@ to those entries; each is independently shippable.
   on first render and preserves operator edits on
   subsequent re-renders. See
   `docs/design/operator-gazelle-step.md`.
-- **Phase 8b** (queued) — optional orchestrator-driven
-  gazelle invocation against the elements that
-  re-converted on the current run
-  (`bazel run //:gazelle -- elements/<changed elements>`),
-  gated behind a `--enable-gazelle` opt-in. Builds on
-  Phase 8's overlay file (the operator's gazelle/gazelle_cc
-  `bazel_dep`s live there).
+- **Phase 8b** — the write-a + Bazel driver's opt-in gazelle
+  tail. `cmd/stage-b` stages project A's converted
+  `BUILD.bazel.out`s into project B and emits the
+  changed-element signal (a content diff over the staged
+  BUILDs — the write-a + Bazel path's replacement for the
+  orchestrator's `res.Converted`). A driver feeds that
+  `$changed` list into `relax-keeps` + a targeted
+  `bazel run //:gazelle -- $changed`. "Opt in" = the driver
+  includes the tail once the operator has wired
+  gazelle/gazelle_cc into Phase 8's overlay file; there is no
+  `--enable-gazelle` flag because the driver is a script.
+  `scripts/meta-gazelle-roundtrip.sh` is the reference driver +
+  conformance gate. See `docs/design/operator-gazelle-step.md`.
 
 The phases progress strictly: Phase 1 unifies the renderers,
 Phase 2 closes attribute gaps, Phase 3 makes buildifier happy,

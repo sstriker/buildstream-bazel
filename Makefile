@@ -285,13 +285,16 @@ e2e-meta-meson: check-tools converter
 e2e-meta-pyproject: check-tools converter
 	scripts/meta-pyproject.sh
 
-# Phase 7c acceptance gate for the gazelle-roundtrip story.
-# Renders hello-world, runs project A's bazel build, stages the
-# converted BUILD.bazel into project B, runs build-cc-index to
-# populate tools/cc_index.json + tools/python_modules.json, and
-# (when buildifier is on PATH) asserts the Phase 3 no-op
-# contract still holds. Bazel + buildifier are both optional —
-# render assertions always run.
+# Phase 7c/7d/8b acceptance gate for the gazelle-roundtrip story.
+# Renders hello-world, runs project A's bazel build, then stage-b
+# stages the converted BUILD.bazel into project B and reports the
+# changed-element set; asserts the staged BUILD carries the Phase 7d
+# `# gazelle:cc_search` directive; runs build-cc-index to populate
+# tools/cc_index.json + tools/python_modules.json; runs the Phase 8b
+# tail (relax-keeps + targeted `bazel run //:gazelle`, the latter
+# guarded on the //:gazelle target existing); and (when buildifier
+# is on PATH) asserts the Phase 3 no-op contract still holds.
+# Bazel + buildifier are both optional — render assertions always run.
 e2e-meta-gazelle-roundtrip: check-tools converter
 	scripts/meta-gazelle-roundtrip.sh
 

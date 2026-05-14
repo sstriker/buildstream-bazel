@@ -182,21 +182,6 @@ transition cleanly.
   (`runtime`/`devel`/`man`) gives a richer signal than cmake's
   destination-path inference; structural recipe parallels
   `docs/design/cmake-execute-process-round2-fallback.md`.
-- **Optional orchestrator-driven gazelle step (Phase 8b)** —
-  builds on Phase 8's operator overlay. When the operator
-  declares `gazelle` / `gazelle_cc` (and any custom rewriting
-  extensions) in `overlay.MODULE.bazel`, the orchestrator
-  can invoke `bazel run //:gazelle -- elements/<just-converted>`
-  immediately after staging, targeting only the packages that
-  re-converted on the current run (`orchestrator/cmd/orchestrate`
-  already tracks `res.Converted`). Gated behind a
-  `--enable-gazelle` opt-in flag; default off until the
-  custom-extension story stabilizes per operator preference.
-  See `docs/design/operator-gazelle-step.md` for the full
-  workflow. **Note:** this bullet is written against
-  `orchestrator/cmd/orchestrate` as the driver; the
-  orchestrator-absorption work below may re-home it onto the
-  write-a + Bazel path before it ships.
 - **Fold `orchestrator/` into the write-a + Bazel path.** The
   repo has two multi-element drivers: the original
   `orchestrator/cmd/orchestrate` (one-pass: it *is* the
@@ -388,8 +373,26 @@ transition cleanly.
   - **Phase 8** — operator-owned `overlay.MODULE.bazel` seam +
     `docs/design/operator-gazelle-step.md` workflow; `cmd/relax-keeps`
     + `tools/gazelle-rewritable.json` for continuous-conversion
-    auto-rewrite; `cmd/build-cc-index`. (Orchestrator automation
-    of the gazelle step is the separate Phase 8b item in `Next`.)
+    auto-rewrite; `cmd/build-cc-index`.
+  - **Phase 8b** — the write-a + Bazel driver's opt-in gazelle
+    tail. `cmd/stage-b` stages project A's converted
+    `BUILD.bazel.out`s into project B and emits the
+    changed-element signal (a content diff — the write-a + Bazel
+    path's replacement for the orchestrator's `res.Converted`,
+    and more precise: a genrule that re-ran but emitted identical
+    bytes is correctly reported unchanged). A driver feeds that
+    `$changed` list into `relax-keeps` + a targeted
+    `bazel run //:gazelle -- $changed`; `scripts/meta-gazelle-roundtrip.sh`
+    is the reference driver and conformance gate. "Opt in" =
+    the driver includes the tail once the operator has wired
+    gazelle / gazelle_cc into `overlay.MODULE.bazel` (there is
+    no orchestrator and no `--enable-gazelle` flag — the driver
+    is a script). The one boundary: the actual
+    `bazel run //:gazelle` needs `gazelle_cc` declared as a
+    `bazel_dep`, which waits on a bcr-published gazelle_cc
+    release; the gate runs the tail guarded on the `//:gazelle`
+    target existing, exercising the changed-element plumbing
+    unconditionally either way.
 - **Narrowing-undercoverage audit CI gate (soft launch).**
   The audit (`cmd/audit-narrowing`) now runs in CI as
   `make e2e-audit-narrowing` via

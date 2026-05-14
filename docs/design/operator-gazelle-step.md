@@ -37,7 +37,8 @@ gazelle_cc, custom rulesets) without the converter touching them.
                      |
                      v
 +---------------------------------------+
-| stage A→B                             |  copy converted BUILDs into B
+| stage-b A→B                           |  copy converted BUILDs into B;
+|                                       |  report the changed elements
 +--------------------+------------------+
                      |
                      v
@@ -48,8 +49,8 @@ gazelle_cc, custom rulesets) without the converter touching them.
                      |
                      v
 +---------------------------------------+
-| (operator-driven)                     |  one-time, before first
-| bazel run //:gazelle                  |  bazel build B run
+| (opt-in tail — Phase 8b)              |  relax-keeps + targeted
+| relax-keeps + bazel run //:gazelle    |  `bazel run //:gazelle -- <changed>`
 +--------------------+------------------+
                      |
                      v
@@ -59,9 +60,47 @@ gazelle_cc, custom rulesets) without the converter touching them.
 +---------------------------------------+
 ```
 
-Steps 1-4 are automated (write-a + the orchestrator). Step 5 is
-**operator-driven, one-time, opt-in** — described in detail below.
-Step 6 is the operator's normal Bazel workflow forever after.
+Steps 1-4 are the always-on part of the write-a + Bazel **driver**
+(the pipeline `scripts/meta-gazelle-roundtrip.sh` demonstrates end to
+end). Step 5 — `relax-keeps` + `bazel run //:gazelle` — is the
+**opt-in tail**: a driver includes it once the operator has wired
+gazelle / gazelle_cc into `overlay.MODULE.bazel`. It is targeted at
+just the elements that re-converted on this run (see "The
+changed-element signal" below). Step 6 is the operator's normal Bazel
+workflow forever after.
+
+There is no separate `--enable-gazelle` CLI flag: the write-a + Bazel
+path's driver is a script (the `meta-*.sh` family today), so "opt in"
+means "the driver includes the step-5 tail." If a single Go driver
+binary eventually owns the sequence, `--enable-gazelle` becomes a real
+flag on it.
+
+## The changed-element signal
+
+The step-5 tail only wants to touch the elements that **re-converted**
+on the current run — `O(changed)` instead of `O(workspace)`. In the
+orchestrator world that list was `res.Converted`. On the write-a +
+Bazel path it falls out of the staging step: `cmd/stage-b` copies
+every element's `bazel-bin/elements/<name>/BUILD.bazel.out` into
+project B's `elements/<name>/BUILD.bazel` and prints, one
+`elements/<name>` per line, the packages whose staged content
+actually **changed** versus what was already there.
+
+This content diff is more precise than `res.Converted`: an element
+whose converter genrule re-ran but emitted byte-identical output is
+correctly reported as *unchanged* and skipped by the gazelle tail.
+Elements with no project-A converted output (kind:stack / filter /
+import — write-a renders their project-B starlark directly) are
+skipped entirely; there is nothing converted to re-run gazelle
+against.
+
+A driver feeds that list straight into both step-5 commands:
+
+```
+changed=$(stage-b --project-a "$A" --project-b "$B")
+relax-keeps --root "$B" $changed
+bazel run //:gazelle -- $changed
+```
 
 ## The MODULE.bazel overlay
 
@@ -143,15 +182,15 @@ To convert specific genrule shapes into native rules:
    The `cmd_contains` field is a simple substring matcher
    against the genrule's `cmd` attribute.
 
-3. **The orchestrator's continuous-conversion pipeline** runs
+3. **The driver's step-5 tail** runs
    `cmd/relax-keeps --root=<projectB> elements/<just-converted>...`
    between staging and the gazelle invocation. relax-keeps:
    - Reads `tools/gazelle-rewritable.json`.
-   - Walks only the listed package paths (the elements that
-     re-converted on this run — sourced from orchestrator's
-     `res.Converted`, mirroring the same incremental model
-     `build-cc-index` and the targeted-gazelle invocation
-     use).
+   - Walks only the listed package paths — the elements that
+     re-converted on this run, the `$changed` list `stage-b`
+     emitted (see "The changed-element signal" above), the
+     same incremental input the targeted-gazelle invocation
+     uses.
    - For each genrule with `# keep` whose `cmd` matches any
      configured pattern, strips the `# keep` marker.
    - Non-matching genrules and genrules outside the targeted
@@ -225,12 +264,13 @@ rewrites). Two reductions:
    want gazelle to touch — e.g., the protobuf ones — this is the
    fast path.
 
-The orchestrator (`orchestrator/cmd/orchestrate`) already tracks
-`res.Converted` (the elements that re-converted on this run). A
-future Phase 8b could plumb that list into a targeted gazelle
-invocation as an optional step — `--enable-gazelle`-style opt-in,
-default off until the custom-extension story stabilizes per
-operator preference.
+Phase 8b wires this targeting into the driver automatically: the
+step-5 tail runs `bazel run //:gazelle -- $changed`, where `$changed`
+is the `stage-b`-emitted set of elements that re-converted on this
+run (see "The changed-element signal" above). The operator opts in by
+including the tail in their driver once gazelle / gazelle_cc is
+declared in `overlay.MODULE.bazel`; `scripts/meta-gazelle-roundtrip.sh`
+is a reference driver that does exactly this.
 
 ## Why we don't run gazelle by default
 
@@ -262,12 +302,17 @@ Three reasons:
 
 - `docs/design/build-output-conventions.md` — the contract this
   workflow targets.
-- `ROADMAP.md` — Phase 8 (operator overlay) and Phase 8b (queued:
-  optional orchestrator-driven gazelle step).
+- `ROADMAP.md` — Phase 8 (operator overlay) and Phase 8b (the
+  driver's opt-in gazelle tail, fed by `stage-b`'s changed-element
+  signal).
 - `cmd/write-a/main.go`'s `moduleBazelB` + the new `overlay.MODULE.bazel`
   emission.
+- `cmd/stage-b/main.go` — Phase 8b's stage-A→B step + the
+  changed-element signal the targeted gazelle tail consumes.
 - `cmd/build-cc-index/main.go` — Phase 7c's index-population tool
   the gazelle resolution depends on.
+- `scripts/meta-gazelle-roundtrip.sh` — the reference driver that
+  runs the full pipeline including the Phase 8b opt-in tail.
 - `converter/emit/bazel/protoc_rewrite_test.go` — end-to-end
   regression test for the protobuf example above. Exercises
   (a) the converter's genrule emission shape (cmd contains
@@ -283,4 +328,5 @@ Three reasons:
   losing literal-CMake fidelity for unrecognized ones.
   Reads `tools/gazelle-rewritable.json`. Targeted invocation:
   `relax-keeps --root=<projectB> elements/<just-converted>...`
-  (or full-walk fallback for ad-hoc manual runs).
+  (fed the `stage-b` `$changed` list; full-walk fallback for
+  ad-hoc manual runs).
