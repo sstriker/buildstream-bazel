@@ -52,6 +52,16 @@ transition cleanly.
   `# gazelle:resolve` directives are an operator escape hatch,
   not converter output; see
   `docs/design/build-output-conventions.md`.
+  **Acceptance criterion for the eventual gazelle_cc wiring
+  pass:** verify `# gazelle:cc_search` consumes package-relative
+  paths the same way `cc_library.includes` does. Phase 7d emits
+  the directive mirroring `includes` verbatim, but — like 7b's
+  MODULE.bazel directives — it's inert-pending-gazelle: the unit
+  tests + render gate assert the directive *text*, nothing runs
+  it against real gazelle_cc. If `cc_search` expects a different
+  path frame (repo- or workspace-relative), every emitted
+  directive is subtly wrong, so the path-frame equivalence is a
+  checklist item for whoever lands the bzlmod registration.
 
 - **Per-platform fold for round-2 trace-driven kinds.** Mostly
   shipped (see Done — project A converter fan-out + fold for
