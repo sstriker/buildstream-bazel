@@ -151,19 +151,30 @@ keeping a second implementation alive.
    `internal/element` is not deleted yet — its consumers are
    still live — but the write-a parser now has feature parity, so
    it is the sole walker the live write-a path needs.
-3. **Re-home the analysis tooling.** Move `orchestrate-diff` /
-   `orchestrate-history` to `cmd/`, `internal/regression` to
-   `internal/`. Repoint `LoadRun` at the write-a path's run
-   outputs. Keep CI green by keeping the old binaries building
-   until the new ones are wired.
-4. **Re-home `bst-translate`.** `orchestrate-bst-translate` →
-   `cmd/bst-translate`, `internal/bsttranslate` → `internal/`.
-   Near-pure move.
-5. **Re-home the source + manifest helpers.** `sourcecheckout`
-   as the `--source-cache` populator; `exports` and
-   `allowlistreg` evaluated against the write-a path's existing
-   `readpaths` / narrowing audit — re-home or merge as the
-   overlap analysis dictates.
+   Also done in this pass: `orchestrator/internal/element` moved
+   to `internal/element` (it's a leaf, and every re-homed package
+   depends on it), and the dead `orchestrator/internal/translate`
+   (zero importers) was deleted.
+3. **Re-home the analysis tooling** *(done — move only)*.
+   `internal/regression` → `internal/regression`,
+   `orchestrate-diff` / `orchestrate-history` → `cmd/`. Binary
+   names kept for now. `regression`'s production code imports
+   only `internal/element`; the `internal/orchestrator` coupling
+   is confined to its `e2e`-tagged test, flagged in-file.
+   **Still open:** repointing `LoadRun` at the write-a path's run
+   outputs (the "what is a run" question below) — that functional
+   rework, and the binary rename that naturally rides with it,
+   is follow-up, not part of the move.
+4. **Re-home `bst-translate`** *(done)*. `orchestrate-bst-translate`
+   → `cmd/bst-translate` (binary renamed), `internal/bsttranslate`
+   → `internal/`. Near-pure move; only `internal/element` in its
+   import set.
+5. **Re-home the source + manifest helpers** *(done — move only)*.
+   `sourcecheckout`, `exports`, `allowlistreg` → `internal/`. Each
+   imported only already-shared `internal/` packages, so these
+   were pure moves. **Still open:** wiring `sourcecheckout` as the
+   `--source-cache` populator, and the `allowlistreg` vs
+   `internal/readpaths` overlap analysis — follow-up.
 6. **Stand up the write-a + Bazel + Buildbarn remote-execution
    gate.** A CI job that drives `write-a` → `bazel build` against
    the real `deploy/buildbarn/` stack with Bazel-native
