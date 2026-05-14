@@ -27,7 +27,7 @@ CONVERTER    := $(BIN_DIR)/convert-element-cmake
 ORCHESTRATOR := $(BIN_DIR)/orchestrate
 DIFF         := $(BIN_DIR)/orchestrate-diff
 HISTORY      := $(BIN_DIR)/orchestrate-history
-BST_TRANSLATE := $(BIN_DIR)/orchestrate-bst-translate
+BST_TRANSLATE := $(BIN_DIR)/bst-translate
 DERIVE_TOOLCHAIN := $(BIN_DIR)/derive-toolchain
 WRITE_A      := $(BIN_DIR)/write-a
 SOURCE_PUSH  := $(BIN_DIR)/source-push
@@ -83,7 +83,7 @@ $(HISTORY): $(GO_SRC)
 
 $(BST_TRANSLATE): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BST_TRANSLATE) ./orchestrator/cmd/orchestrate-bst-translate
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BST_TRANSLATE) ./cmd/bst-translate
 
 $(DERIVE_TOOLCHAIN): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
