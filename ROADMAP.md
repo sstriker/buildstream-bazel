@@ -81,15 +81,6 @@ transition cleanly.
   (kind:autotools) +
   `scripts/meta-cmake-round2-fallback-multiplatform.sh`
   (kind:cmake Phase B fallback).
-- **Element-signal consumption in the unifier.** Stage 6 capture
-  is in (`--collect-toolchain-signal` flows fileapi replies into
-  `<out>/elements/<name>/toolchain-signal/`). Pending: wire
-  `unify-toolchains --element-signal <dir>` to fold any
-  builtin-include / sysroot fact a real element exposes that
-  the dedicated probe missed into the platform's
-  `ResolvedToolchain.Base`. Needs a platform-association
-  heuristic (a write-a render targets one platform per run today;
-  the signal directory belongs to that one platform).
 - **Per-platform `exec_properties` routing for write-a + Bazel.**
   `write-a`'s `--platforms-json` carries a `reapi_properties`
   field it currently ignores: when the rendered project's
@@ -798,6 +789,27 @@ transition cleanly.
   `docs/design/cmake-execute-process-round2-fallback.md`.
   Failure schema: `docs/failure-schema.md`
   `unsupported-execute-process`.
+- **Element-signal consumption in the unifier.** `unify-toolchains`
+  gained `--element-signal <dir>` (optional, repeatable): it loads
+  the per-element toolchain-signal reply dirs that
+  `convert-element-cmake --out-toolchain-signal-dir` captures and
+  folds any builtin include / link search root a real element
+  exposed — a sysroot leg a `find_package` added, a vendored-SDK
+  include dir a project-side toolchain file injected — that the
+  dedicated probe matrix missed into the matching platform's
+  `ResolvedToolchain.Base`. The merge is strictly additive (a path
+  the probe already recorded keeps its place; only languages
+  already present in `Base` are touched) and lives in
+  `toolchain.FoldElementSignal`. Platform association is heuristic:
+  the signal's observed `TargetPlatform` is matched against each
+  platform's probe-derived `Base.TargetPlatform`, with a
+  single-platform fast path — a write-a render targets one platform
+  per run, so the signal directory belongs to that one platform
+  even when the recorded reply carries no `CMAKE_SYSTEM_NAME`.
+  Signals that match zero platforms or are ambiguous across several
+  are skipped with a stderr diagnostic; signal consumption is
+  best-effort enrichment, not a hard input. Render gate:
+  `scripts/meta-unify-toolchains.sh` (section 9).
 - **Unified multi-platform Bazel toolchain layout from CMake.**
   Operators with cmake projects can now generate a normal-shaped
   multi-platform Bazel toolchain layout — `//platforms`,
@@ -844,8 +856,9 @@ transition cleanly.
     `Options.CollectToolchainSignal` + `orchestrate
     --collect-toolchain-signal`. Sets the foundation for the
     unifier to fold per-element builtin-include / sysroot facts
-    into each platform's `ResolvedToolchain.Base` (--element-signal
-    consumption is queued under Next).
+    into each platform's `ResolvedToolchain.Base` (consumed by the
+    unifier's `--element-signal` fold — see the **Element-signal
+    consumption in the unifier** entry).
   - Render gates: `meta-render-project-a.sh` + `meta-unify-toolchains.sh`.
 - **Configure_file lift.** Per-element `*.h.in` templates are
   no longer load-bearing inputs of convert-element-cmake's cache key

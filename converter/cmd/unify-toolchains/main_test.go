@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +117,122 @@ func TestRun_EndToEnd(t *testing.T) {
 			t.Errorf("toolchains/BUILD.bazel missing %q", want)
 		}
 	}
+}
+
+// TestRun_ElementSignal_FoldsBuiltinDirs exercises --element-signal:
+// a per-element toolchain-signal reply dir carrying an implicit
+// include directory the probe matrix never saw gets folded into the
+// platform's cc_toolchain_config cxx_builtin_include_directories.
+// Single-platform run, so the association heuristic's "the signal
+// directory belongs to that one platform" fast path applies.
+func TestRun_ElementSignal_FoldsBuiltinDirs(t *testing.T) {
+	tmp := t.TempDir()
+	probeDir := filepath.Join(tmp, "cells")
+	if err := os.MkdirAll(probeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := fileapi.Load("../../testdata/fileapi/hello-world")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := probejson.Marshal(toolchain.Variant{Name: "baseline"}, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(probeDir, "linux_x86_64.baseline.probe.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	platsPath := filepath.Join(tmp, "platforms.json")
+	if err := os.WriteFile(platsPath, []byte(`[
+		{"name": "linux_x86_64", "constraints": ["@platforms//os:linux", "@platforms//cpu:x86_64"]}
+	]`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Element-signal directory: a copy of the hello-world reply with
+	// one extra implicit include dir the probe matrix never saw.
+	const extraDir = "/opt/vendored-sdk/include"
+	sigParent := filepath.Join(tmp, "signals")
+	copyReplyWithExtraInclude(t, "../../testdata/fileapi/hello-world", filepath.Join(sigParent, "libgreet"), extraDir)
+
+	repoRoot := filepath.Join(tmp, "repo")
+	args := []string{
+		"--probe-cells", probeDir,
+		"--platforms-json", platsPath,
+		"--repo-root", repoRoot,
+		"--element-signal", sigParent,
+	}
+	if err := run(args); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	tcB, err := os.ReadFile(filepath.Join(repoRoot, "toolchains/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tcB), extraDir) {
+		t.Errorf("toolchains/BUILD.bazel missing folded element-signal include dir %q\n%s", extraDir, tcB)
+	}
+}
+
+// copyReplyWithExtraInclude copies a cmake fileapi reply dir from src
+// to dst, appending extra to every toolchain's implicit
+// includeDirectories along the way. The index still references the
+// (unchanged) object filenames, so fileapi.Load resolves the patched
+// reply normally.
+func copyReplyWithExtraInclude(t *testing.T, src, dst, extra string) {
+	t.Helper()
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasPrefix(e.Name(), "toolchains-v1-") {
+			b = patchToolchainsInclude(t, b, extra)
+		}
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func patchToolchainsInclude(t *testing.T, body []byte, extra string) []byte {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	tcs, ok := doc["toolchains"].([]any)
+	if !ok {
+		t.Fatal("toolchains json: no toolchains array")
+	}
+	for _, tc := range tcs {
+		comp := tc.(map[string]any)["compiler"].(map[string]any)
+		impl, ok := comp["implicit"].(map[string]any)
+		if !ok {
+			impl = map[string]any{}
+			comp["implicit"] = impl
+		}
+		inc, _ := impl["includeDirectories"].([]any)
+		impl["includeDirectories"] = append(inc, extra)
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // TestRegisterToolchainsCallPresent covers the tolerance of the
