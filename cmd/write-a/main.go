@@ -694,6 +694,15 @@ func discoverBstGraph(rootBst, sourceCache string) ([]string, error) {
 		deps = append(deps, elem.Bst.BuildDepends...)
 		deps = append(deps, elem.Bst.RuntimeDepends...)
 		for _, dep := range deps {
+			// Junction-crossing deps aren't supported yet; reject
+			// before trying to resolve the filename on disk (where
+			// it would otherwise fail as a missing sibling .bst).
+			// Mirrors loadGraph's check so discovery and the render
+			// that follows agree on what's in scope.
+			if dep.Junction != "" {
+				return nil, fmt.Errorf("element %s depends on %q via junction %q (junctions not yet supported)",
+					cur, strings.Join(dep.expandedFilenames(), ", "), dep.Junction)
+			}
 			for _, fn := range dep.expandedFilenames() {
 				if !strings.HasSuffix(fn, ".bst") {
 					fn += ".bst"
@@ -854,6 +863,18 @@ func loadGraph(bstPaths []string, sourceCache string) (*graph, error) {
 		}
 		for _, class := range buildClasses {
 			for _, dep := range class.deps {
+				// Junction-crossing deps (a dependency in another
+				// BuildStream project, reached via a junction
+				// element) aren't supported yet. Reject them with a
+				// clear diagnostic rather than letting the filename
+				// fall through to the unknown-element path below,
+				// where it would surface as a confusing "not in the
+				// graph" error — or, worse, silently resolve against
+				// a same-named local element.
+				if dep.Junction != "" {
+					return nil, fmt.Errorf("element %q depends on %q via junction %q (junctions not yet supported)",
+						elem.Name, strings.Join(dep.expandedFilenames(), ", "), dep.Junction)
+				}
 				// List-form deps (filename: [a.bst, b.bst]) expand to
 				// N edges; the shared config: applies to each.
 				for _, fn := range dep.expandedFilenames() {
