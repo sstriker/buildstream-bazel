@@ -12,7 +12,7 @@
 #   2. bazel build runs the genrule once. Inside the sandbox:
 #      build-tracer wraps the configure/build/install pipeline,
 #      capturing every execve into a trace file; convert-element-
-#      autotools reads the trace and emits BUILD.bazel.out with
+#      trace reads the trace and emits BUILD.bazel.out with
 #      native cc_library / cc_binary targets.
 #   3. The driver extracts BUILD.bazel.out from project A's
 #      bazel-bin and asserts the native shape (cc_binary or

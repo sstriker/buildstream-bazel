@@ -1484,7 +1484,7 @@ func writeProjectB(g *graph, outDir string) error {
 		}
 		exportsList += fmt.Sprintf("%q", e)
 	}
-	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("# tools/ holds the JSON inputs the sources extension reads + the\n# trace-driven autotools binaries (build-tracer / convert-element-\n# autotools) the install genrule references.\nexports_files([%s])\n", exportsList)); err != nil {
+	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("# tools/ holds the JSON inputs the sources extension reads + the\n# trace-driven binaries (build-tracer / convert-element-trace) the\n# install genrule references.\nexports_files([%s])\n", exportsList)); err != nil {
 		return err
 	}
 

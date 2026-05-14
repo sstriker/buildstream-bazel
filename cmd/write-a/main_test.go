@@ -603,8 +603,8 @@ func TestWriter_AutotoolsElementShape(t *testing.T) {
 // trace-driven path is enabled. Foundation for the
 // architectural move (docs/three-pass-flow.md) where the
 // autotools install genrule lives in project B's BUILD —
-// the //tools:build-tracer + //tools:convert-element-
-// autotools labels need to resolve in B too.
+// the //tools:build-tracer + //tools:convert-element-trace
+// labels need to resolve in B too.
 //
 // Without this staging, B-side rendering of the install
 // genrule (a follow-up PR) would break with "no such
