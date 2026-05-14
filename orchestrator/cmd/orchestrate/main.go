@@ -31,8 +31,8 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/sstriker/buildstream-bazel/internal/cas"
+	"github.com/sstriker/buildstream-bazel/internal/element"
 	"github.com/sstriker/buildstream-bazel/internal/reapi"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
 	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
 )
 

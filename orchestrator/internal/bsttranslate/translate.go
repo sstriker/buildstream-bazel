@@ -35,7 +35,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/element"
 )
 
 // TranslateElement returns a copy of el with each translatable source

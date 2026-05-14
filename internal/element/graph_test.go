@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/element"
 )
 
 func TestBuildGraph_FromFixture(t *testing.T) {

@@ -34,7 +34,7 @@ import (
 	"sort"
 
 	"github.com/sstriker/buildstream-bazel/internal/cas"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/element"
 )
 
 // Resolver checks out source trees on demand and caches them under
