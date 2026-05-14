@@ -162,21 +162,32 @@ transition cleanly.
   (`runtime`/`devel`/`man`) gives a richer signal than cmake's
   destination-path inference; structural recipe parallels
   `docs/design/cmake-execute-process-round2-fallback.md`.
-- **Optional orchestrator-driven gazelle step (Phase 8b)** —
-  builds on Phase 8's operator overlay. When the operator
+- **Automated post-conversion gazelle step (Phase 8b).**
+  Builds on Phase 8's operator overlay: when the operator
   declares `gazelle` / `gazelle_cc` (and any custom rewriting
-  extensions) in `overlay.MODULE.bazel`, the orchestrator
-  can invoke `bazel run //:gazelle -- elements/<just-converted>`
-  immediately after staging, targeting only the packages that
-  re-converted on the current run (`orchestrator/cmd/orchestrate`
-  already tracks `res.Converted`). Gated behind a
-  `--enable-gazelle` opt-in flag; default off until the
-  custom-extension story stabilizes per operator preference.
-  See `docs/design/operator-gazelle-step.md` for the full
-  workflow. **Note:** this bullet is written against
-  `orchestrator/cmd/orchestrate` as the driver; the
-  orchestrator-absorption work below may re-home it onto the
-  write-a + Bazel path before it ships.
+  extensions) in `overlay.MODULE.bazel`, the conversion driver
+  invokes `relax-keeps` + `build-cc-index` + `bazel run
+  //:gazelle -- elements/<just-converted>` immediately after
+  staging, targeting only the packages that re-converted on
+  the current run. Gated behind a `--enable-gazelle` opt-in;
+  default off until the custom-extension story stabilizes per
+  operator preference. See `docs/design/operator-gazelle-step.md`
+  for the manual workflow this automates.
+
+  **This is blocked on the `orchestrator/` absorption below,
+  and was re-scoped because of it.** The original framing put
+  this on `orchestrator/cmd/orchestrate` (which already tracks
+  `res.Converted`), but that binary is on the absorption's
+  delete list — building `--enable-gazelle` against it would
+  be throwaway work. On the write-a + Bazel path, the two
+  prerequisites this step needs don't exist yet: a **driver**
+  that owns the `write-a → bazel build A → stage → bazel build
+  B` sequence end-to-end, and a **"what just re-converted"
+  signal** (the write-a-path equivalent of `res.Converted`).
+  Both are exactly what the absorption is still defining — its
+  "What is a 'run'?" open question. Phase 8b lands once the
+  absorption establishes the driver + run model; until then it
+  has no stable substrate to attach to.
 - **Fold `orchestrator/` into the write-a + Bazel path.** The
   repo has two multi-element drivers: the original
   `orchestrator/cmd/orchestrate` (one-pass: it *is* the
