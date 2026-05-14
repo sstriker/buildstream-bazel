@@ -245,6 +245,25 @@ jobs:
         # contract round-2's _trace_repo Bazel rule depends on.
         run: make e2e-meta-autotools-round2-live 2>&1 | tee -a /tmp/cijob.log
 
+      - name: Install bazelisk (for the remote-execution gate)
+        # The remote-execution gate below IS a `bazel build`; it
+        # self-skips if no bazel >= 9 is on PATH, so install it
+        # explicitly rather than rely on the runner image.
+        run: |
+          curl -L --fail -o /tmp/bazelisk \
+            https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
+          sudo install -m 0755 /tmp/bazelisk /usr/local/bin/bazelisk
+          sudo ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
+
+      - name: Run write-a + Bazel remote-execution + bwotb gate
+        # Drives the rendered project A's convert-element-cmake genrule
+        # against the real Buildbarn stack via Bazel-native
+        # --remote_executor, asserting it executes on a worker and the
+        # output stays build-without-the-bytes. The production-path
+        # replacement for the orchestrator's Go-harness e2e-buildbarn*
+        # coverage — see docs/design/orchestrator-absorption.md.
+        run: make e2e-meta-buildbarn-re 2>&1 | tee -a /tmp/cijob.log
+
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 

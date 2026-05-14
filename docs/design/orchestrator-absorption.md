@@ -176,23 +176,43 @@ keeping a second implementation alive.
    `--source-cache` populator, and the `allowlistreg` vs
    `internal/readpaths` overlap analysis — follow-up.
 6. **Stand up the write-a + Bazel + Buildbarn remote-execution
-   gate.** A CI job that drives `write-a` → `bazel build` against
-   the real `deploy/buildbarn/` stack with Bazel-native
-   `--remote_executor`, verifying (a) per-element converter
-   genrules actually execute on Buildbarn workers — the RE
-   semantics the orchestrator's Action-submission path covers
-   today via `e2e-buildbarn` / `e2e-buildbarn-execute` — and
-   (b) the build stays **build-without-the-bytes**
-   (`--remote_download_minimal`, or the bb_clientd mount), with
-   intermediate outputs never materialized locally. The job must
-   exercise the production-intended setup end to end; it is
-   explicitly *not* allowed to lean on a bespoke Go test harness
-   or any code path kept alive only for CI. This step is
-   independent of steps 3–5 and can be done in parallel, but it
-   must be green and stable before step 7. The current
-   `e2e-buildbarn` / `e2e-buildbarn-execute` jobs are *replaced*
-   by this gate, not merely dropped — the coverage has to move,
-   not vanish.
+   gate** *(v1 shipped; pass B is follow-up)*. A CI job that
+   drives `write-a` → `bazel build` against the real
+   `deploy/buildbarn/` stack with Bazel-native `--remote_executor`,
+   verifying (a) per-element converter genrules actually execute
+   on Buildbarn workers — the RE semantics the orchestrator's
+   Action-submission path covers today via `e2e-buildbarn` /
+   `e2e-buildbarn-execute` — and (b) the build stays
+   **build-without-the-bytes** (`--remote_download_minimal`, or
+   the bb_clientd mount), with intermediate outputs never
+   materialized locally. The job must exercise the
+   production-intended setup end to end; it is explicitly *not*
+   allowed to lean on a bespoke Go test harness or any code path
+   kept alive only for CI.
+
+   **Shipped:** `tools/e2e-meta-buildbarn-re.sh` (`make
+   e2e-meta-buildbarn-re`, wired into the `buildbarn-e2e` CI job).
+   It renders project A from the kind:cmake hello-world fixture,
+   injects an operator-style `.bazelrc` + `platform()` pointing at
+   bb-storage `:8980` / bb-scheduler `:8983`, and asserts the
+   `convert-element-cmake` genrule executes remotely
+   (`--strategy=Genrule=remote` makes a local fallback a hard
+   failure) with its output never materialized locally
+   (`--remote_download_minimal`). That covers **pass A** — the
+   converter genrule.
+
+   **Follow-up (pass B):** project B's `cc_*` compiles on the
+   remote worker additionally need a cc-toolchain-for-RBE
+   configuration (the rendered project uses the autodetected
+   *local* toolchain today, which won't resolve against a remote
+   exec platform). Pass A alone already exercises the core thesis
+   — a converter genrule running remotely, bytes staying remote.
+
+   This step is independent of steps 3–5 and can be done in
+   parallel, but it must be green and stable before step 7. The
+   current `e2e-buildbarn` / `e2e-buildbarn-execute` jobs are
+   *replaced* by this gate, not merely dropped — the coverage has
+   to move, not vanish.
 7. **Delete the scheduler.** Remove `orchestrator/cmd/orchestrate`,
    `orchestrator/internal/orchestrator`, and (now that its
    consumers have moved) `orchestrator/internal/element`. The
