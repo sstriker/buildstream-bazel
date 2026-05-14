@@ -40,13 +40,25 @@ The orchestrator's `internal/orchestrator` REAPI path is
 re-implementing, in ~1700 lines of Go, a slice of what Bazel
 already does.
 
-The thing to verify before deleting (see Open questions): that
-Bazel-native RBE covers the orchestrator's **platform routing**
-— the orchestrator's `--platforms-json` carries
-`reapi_properties` per platform; write-a's `--platforms-json`
-deliberately ignores that field today. Per-platform executor
-routing has to land on the Bazel-platform / `exec_properties`
-side before the orchestrator's routing can be dropped.
+But "largely redundant" is a claim that has to be **proven by a
+real CI gate**, not assumed. Before the orchestrator's REAPI
+path is deleted, a CI job must show the write-a + Bazel path
+running per-element conversions on a real Buildbarn cluster via
+Bazel-native `--remote_executor`, *and* doing so build-without-
+the-bytes (`--remote_download_minimal` / the bb_clientd mount)
+so intermediate artifacts never round-trip through local disk.
+That gate exercises the production-intended setup — real
+`bazel`, the `deploy/buildbarn/` stack — **not** a Go test
+harness or any code kept alive only to satisfy CI. It is step 6
+of the sequence below, and step 7 (the delete) blocks on it
+being green and stable.
+
+One genuinely open sub-question rides along: the orchestrator's
+`--platforms-json` carries `reapi_properties` per platform for
+per-platform executor routing; write-a's `--platforms-json`
+deliberately ignores that field today. That routing has to land
+on the Bazel-platform / `exec_properties` side, and the step 6
+gate is where it gets verified.
 
 ## Isolation check (done)
 
@@ -133,7 +145,7 @@ keeping a second implementation alive.
    "not in the graph" / missing-sibling error. A project-rooted
    (walk-all-`.bst`-under-a-directory) entry point is *not* added
    speculatively — `internal/element`'s `ReadProject` shape is
-   only needed by `orchestrate` (deleted in step 6) and
+   only needed by `orchestrate` (deleted in step 7) and
    `orchestrate-bst-translate` (re-homed in step 4), so that
    entry point lands with step 4 if it's still wanted then.
    `internal/element` is not deleted yet — its consumers are
@@ -152,23 +164,45 @@ keeping a second implementation alive.
    `allowlistreg` evaluated against the write-a path's existing
    `readpaths` / narrowing audit — re-home or merge as the
    overlap analysis dictates.
-6. **Delete the scheduler.** Remove `orchestrator/cmd/orchestrate`,
+6. **Stand up the write-a + Bazel + Buildbarn remote-execution
+   gate.** A CI job that drives `write-a` → `bazel build` against
+   the real `deploy/buildbarn/` stack with Bazel-native
+   `--remote_executor`, verifying (a) per-element converter
+   genrules actually execute on Buildbarn workers — the RE
+   semantics the orchestrator's Action-submission path covers
+   today via `e2e-buildbarn` / `e2e-buildbarn-execute` — and
+   (b) the build stays **build-without-the-bytes**
+   (`--remote_download_minimal`, or the bb_clientd mount), with
+   intermediate outputs never materialized locally. The job must
+   exercise the production-intended setup end to end; it is
+   explicitly *not* allowed to lean on a bespoke Go test harness
+   or any code path kept alive only for CI. This step is
+   independent of steps 3–5 and can be done in parallel, but it
+   must be green and stable before step 7. The current
+   `e2e-buildbarn` / `e2e-buildbarn-execute` jobs are *replaced*
+   by this gate, not merely dropped — the coverage has to move,
+   not vanish.
+7. **Delete the scheduler.** Remove `orchestrator/cmd/orchestrate`,
    `orchestrator/internal/orchestrator`, and (now that its
-   consumers have moved) `orchestrator/internal/element`. Drop
-   or replace the `e2e-orchestrate` / `e2e-orchestrate-scale`
-   CI jobs. Update `docs/architecture.md` + `README.md`. Move
-   the `ROADMAP.md` bullet to Done.
+   consumers have moved) `orchestrator/internal/element`. The
+   `e2e-buildbarn` / `e2e-buildbarn-execute` jobs retire here
+   (their coverage moved to step 6's gate); the `e2e-orchestrate`
+   / `e2e-orchestrate-scale` jobs are dropped. Update
+   `docs/architecture.md` + `README.md`. Move the `ROADMAP.md`
+   bullet to Done.
 
-After step 6 the `orchestrator/` tree is empty and removed.
+After step 7 the `orchestrator/` tree is empty and removed.
 
 ## Open questions
 
-- **REAPI parity.** Confirm Bazel-native RBE against Buildbarn
-  covers everything the orchestrator's per-element Action
-  submission did — specifically per-platform executor routing
-  via `reapi_properties`. write-a's `--platforms-json` ignores
-  that field today; it has to land on the Bazel
-  `exec_properties` side before step 6.
+- **Per-platform executor routing.** Step 6's gate proves
+  Bazel-native RBE covers per-element conversion on Buildbarn,
+  but the orchestrator's `reapi_properties`-driven per-platform
+  routing is the one piece with no write-a equivalent yet — it
+  has to land on the Bazel-platform / `exec_properties` side.
+  The open question is the exact mapping from `--platforms-json`'s
+  `reapi_properties` onto `exec_properties` on the converter
+  genrules; resolved as part of step 6.
 - **What is a "run" for the regression diff?** `internal/regression`'s
   `LoadRun` reads `orchestrate`'s `converted.json` /
   `failures.json` / `determinism.json`. The write-a path's
