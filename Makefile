@@ -75,11 +75,11 @@ $(ORCHESTRATOR): $(GO_SRC)
 
 $(DIFF): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(DIFF) ./orchestrator/cmd/orchestrate-diff
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(DIFF) ./cmd/orchestrate-diff
 
 $(HISTORY): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
-	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(HISTORY) ./orchestrator/cmd/orchestrate-history
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(HISTORY) ./cmd/orchestrate-history
 
 $(BST_TRANSLATE): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)

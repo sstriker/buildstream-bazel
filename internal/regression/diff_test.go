@@ -3,7 +3,7 @@ package regression_test
 import (
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/regression"
+	"github.com/sstriker/buildstream-bazel/internal/regression"
 )
 
 // helper that builds a Run inline. The diff layer doesn't care about the

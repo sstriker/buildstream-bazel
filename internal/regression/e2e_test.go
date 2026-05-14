@@ -17,8 +17,14 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/regression"
+	// Temporary backwards dependency: this e2e gate produces the two
+	// runs it diffs by invoking the legacy orchestrator. It's behind
+	// the `e2e` build tag so it doesn't taint the normal build. When
+	// orchestrator/ is deleted (absorption step 7) this test is
+	// rewritten to produce runs via the write-a + Bazel path — the
+	// "what is a run" question in docs/design/orchestrator-absorption.md.
 	"github.com/sstriker/buildstream-bazel/orchestrator/internal/orchestrator"
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/regression"
 )
 
 // orchestrateOnce runs the orchestrator once against the fdsdk-subset

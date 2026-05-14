@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/regression"
+	"github.com/sstriker/buildstream-bazel/internal/regression"
 )
 
 // stageRun writes a minimal <root>/manifest/{converted,failures,determinism}.json

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/orchestrator/internal/regression"
+	"github.com/sstriker/buildstream-bazel/internal/regression"
 )
 
 func TestAnalyze_CountsAppearedDisappearedChurned(t *testing.T) {
