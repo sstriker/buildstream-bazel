@@ -41,8 +41,18 @@ elif command -v bazelisk >/dev/null; then
 fi
 bazel_major=0
 if [ -n "$BAZEL" ]; then
-    bazel_major=$("$BAZEL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
-    case "$bazel_major" in [0-9]*) ;; *) bazel_major=0 ;; esac
+    # Capture the version output first, parse it second. Piping a live
+    # `bazelisk --version` straight through `head` can SIGPIPE the
+    # still-running bazelisk (it downloads bazel on first use), which
+    # `set -o pipefail` then turns into a script-killing failure
+    # before we've printed anything. `|| true` keeps a genuine
+    # bazelisk failure a clean skip rather than a crash.
+    bazel_version_out=$("$BAZEL" --version 2>&1 || true)
+    # Match the `bazel <version>` line specifically — bazelisk may
+    # print download-progress lines ahead of it on a cold runner.
+    bazel_major=$(printf '%s\n' "$bazel_version_out" \
+        | awk '/^bazel [0-9]/{print $2; exit}' | cut -d. -f1)
+    case "$bazel_major" in ''|*[!0-9]*) bazel_major=0 ;; esac
 fi
 if [ -z "$BAZEL" ] || [ "$bazel_major" -lt 9 ]; then
     echo "e2e-meta-buildbarn-re: bazel >= 9 not on PATH; skipping (this gate IS the bazel build)"
