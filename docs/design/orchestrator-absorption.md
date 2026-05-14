@@ -201,12 +201,35 @@ keeping a second implementation alive.
    (`--remote_download_minimal`). That covers **pass A** — the
    converter genrule.
 
-   **Follow-up (pass B):** project B's `cc_*` compiles on the
-   remote worker additionally need a cc-toolchain-for-RBE
-   configuration (the rendered project uses the autodetected
-   *local* toolchain today, which won't resolve against a remote
-   exec platform). Pass A alone already exercises the core thesis
-   — a converter genrule running remotely, bytes staying remote.
+   **Follow-up (pass B)** has two parts:
+
+   - *cc-toolchain-for-RBE.* Project B's `cc_*` compiles on the
+     remote worker need a cc-toolchain whose exec platform is the
+     Buildbarn worker — the rendered project uses the autodetected
+     *local* toolchain today, which won't resolve against a remote
+     exec platform.
+   - *A → B staging under bwotb.* The two-pass driver stages A's
+     `BUILD.bazel.out` into B's `elements/<name>/BUILD.bazel`. A's
+     outputs are tiny (`BUILD` text — a few KB), so downloading
+     them isn't a meaningful "downloaded the bytes" violation; the
+     bytes that matter are the converter genrule's intermediates
+     and B's compile outputs, both of which stay remote. But it
+     can be made fully clean: with bb-clientd's RemoteOutputService
+     (`--experimental_remote_output_service`), A's `bazel-bin` *is*
+     the bb-clientd-served tree, so the stage step becomes a
+     symlink from B into A's output path rather than a `cp` —
+     neither pass materializes A's outputs locally. The pass-B gate
+     must *verify* (not assume) that Bazel's loading phase follows
+     a `BUILD.bazel` symlink into the bb-clientd tree; the symlink
+     only matters at loading time, so remote execution of B's
+     compiles is unaffected. The symlink is the minimal fix to the
+     *current* staging model — the cleaner long-term shape is B
+     consuming A's converted targets as a real Bazel dependency
+     with no manual staging at all, but that's a larger write-a
+     rendering change.
+
+   Pass A alone already exercises the core thesis — a converter
+   genrule running remotely, bytes staying remote.
 
    This step is independent of steps 3–5 and can be done in
    parallel, but it must be green and stable before step 7. The
