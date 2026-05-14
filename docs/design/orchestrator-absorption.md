@@ -71,9 +71,15 @@ path; every component below is independently movable or
 deletable.
 
 Shared substrate already lives at the repo-root `internal/`
-(`cas`, `reapi`, `manifest`, `fidelity`, `shadow`, `readpaths`,
+(`cas`, `manifest`, `fidelity`, `shadow`, `readpaths`,
 `tracenorm`, `synthprefix`) and is **not** part of
-`orchestrator/` — it stays put regardless.
+`orchestrator/` — it stays put regardless. (`internal/reapi` was
+the one exception: a repo-root package that turned out to be
+*entirely* orchestrator REAPI-submission machinery — Action
+build / submit / result-materialize — with no other consumer, so
+it was deleted with the scheduler. The trace-rendezvous AC path
+`trace-publish` / `trace-lookup` rely on lives in `internal/cas`
++ `internal/tracenorm`, not `reapi`.)
 
 ## Capability map
 
@@ -288,6 +294,36 @@ keeping a second implementation alive.
 
 After step 7 the `orchestrator/` tree is empty and removed.
 
+## Step 8 — follow-ups (done)
+
+Two follow-ups were noted during the sequence and have since shipped:
+
+- **The regression "run" definition.** `internal/regression`'s
+  `LoadRun` reads a `<run>/manifest/{converted,failures,determinism}.json`
+  triple — the orchestrator's run-output schema. `cmd/run-manifest`
+  re-homes the *producer*: it walks a built project A's
+  `bazel-bin/elements/<name>/` and emits `converted.json` +
+  `determinism.json` in that same schema, so `orchestrate-diff` /
+  `orchestrate-history` work unchanged. It deliberately omits
+  `failures.json`: the orchestrator's regression model assumed
+  *soft* Tier-1 failures (the run completed, `failures.json`
+  recorded casualties), but the write-a + Bazel path is *hard*-fail
+  — a Tier-1 makes `bazel build` in project A fail outright, so a
+  run that exists has no failed elements. Net: fingerprint-drift
+  detection across two successful runs re-homes cleanly
+  (`scripts/meta-regression.sh`, `make e2e-meta-regression`);
+  newly-failed detection would need write-a to grow a soft-failure
+  render mode — itself a separate decision, not pursued.
+  `determinism.json` fingerprints `BUILD.bazel.out` only — the
+  sibling `cmake-config-bundle.tar` embeds file mtimes and isn't
+  byte-stable across runs.
+- **`internal/reapi` deleted.** It turned out the *whole* package —
+  not just `reapi.Executor` — was orchestrator REAPI-submission
+  machinery (Action build / submit / result-materialize) with no
+  other consumer; `trace-publish` / `trace-lookup` use
+  `internal/cas` + `internal/tracenorm` for the AC path, not
+  `reapi`. Deleted outright.
+
 ## Open questions
 
 - **Per-platform executor routing.** Step 6's gate proves
@@ -297,13 +333,7 @@ After step 7 the `orchestrator/` tree is empty and removed.
   has to land on the Bazel-platform / `exec_properties` side.
   The open question is the exact mapping from `--platforms-json`'s
   `reapi_properties` onto `exec_properties` on the converter
-  genrules; resolved as part of step 6.
-- **What is a "run" for the regression diff?** `internal/regression`'s
-  `LoadRun` reads `orchestrate`'s `converted.json` /
-  `failures.json` / `determinism.json`. The write-a path's
-  equivalent "run output" is the rendered project A/B plus the
-  Bazel build result. Step 3 has to define that schema before
-  diff / history can be repointed.
+  genrules. Tracked as a `Next` bullet in `ROADMAP.md`.
 - **`allowlistreg` vs `readpaths`.** Both track per-element
-  cmake-read paths. Determine in step 5 whether `allowlistreg`
-  re-homes whole or partly collapses into `internal/readpaths`.
+  cmake-read paths. Whether `allowlistreg` stays standalone or
+  partly collapses into `internal/readpaths` is still open.

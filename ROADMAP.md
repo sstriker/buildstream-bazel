@@ -289,10 +289,18 @@ transition cleanly.
   - **Deleted the scheduler** — `orchestrator/cmd/orchestrate` +
     `orchestrator/internal/orchestrator` + the orchestrator-specific
     gates + `orchestrator/testdata/` are gone; the `orchestrator/`
-    tree no longer exists. Follow-ups noted in the design doc:
-    re-homing regression's run-vs-run e2e onto a write-a-path
-    "run" definition, and assessing whether `reapi.Executor` (now
-    without a production consumer) is worth carrying.
+    tree no longer exists.
+  - **Follow-ups closed** — `cmd/run-manifest` snapshots a built
+    project A into the run-manifest schema `internal/regression`
+    consumes, so the run-vs-run regression e2e re-homes onto the
+    write-a path (`scripts/meta-regression.sh`,
+    `make e2e-meta-regression`: no-drift invariant + drift
+    detection; newly-failed detection is out — the write-a path
+    hard-fails rather than soft-recording Tier-1s). And
+    `internal/reapi` was deleted outright — the whole package, not
+    just `reapi.Executor`, was orchestrator REAPI-submission
+    machinery with no other consumer (`trace-publish` /
+    `trace-lookup` use `internal/cas` + `internal/tracenorm`).
 - **`bst` wrapper.** `tools/bst` is a POSIX-sh BuildStream-style
   CLI wrapper around write-a so `bst build <element.bst>` keeps
   working against a converted project. Supports

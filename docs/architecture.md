@@ -52,6 +52,7 @@ cmd/                        the write-a + Bazel driver, its tooling, and
                             the re-homed analysis tools
   write-a/                  meta-project renderer (per-kind handlers) — the multi-element driver
   stage-b/                  stages project A's BUILD.bazel.out into project B; reports the changed-element set
+  run-manifest/             snapshots a built project A into the run-manifest shape regression diffs on
   build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
   trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
   trace-lookup/             A-side load-time AC reader for round-2 _trace_repo
@@ -64,8 +65,7 @@ cmd/                        the write-a + Bazel driver, its tooling, and
   orchestrate-history/      queries fingerprint history for churn / drift
 
 internal/                   shared substrates
-  cas                       local content-addressable store, CAS interface
-  reapi                     REAPI Action-cache + Action-submission layer
+  cas                       local content-addressable store, CAS interface (incl. REAPI AC surface)
   fidelity                  symbol-set + behavioral diffs (used by tests)
   manifest                  per-package + per-run JSON schemas
   shadow                    path-only-stat shadow-tree creator + read-path tracer
@@ -184,27 +184,25 @@ orchestrator in the absorption (see
 Local content-addressable store with an interface that matches the
 REAPI CAS shape (`FindMissing`, `BatchUpdate`, `BatchRead`,
 `Read`/`Write` for streaming). `cmd/source-push` uses it to pack
-source trees into a real Buildbarn CAS over the REAPI wire format.
-
-### `internal/reapi`
-
-REAPI client layer. The Action-cache surface (`UpdateActionResult` /
-`GetActionResult`) backs `cmd/trace-publish` and `cmd/trace-lookup` —
-the round-2 trace-rendezvous wire contract. The `Executor`
-Action-submission surface (`Execute(ctx, ActionDigest) → ActionResult`,
-`GRPCExecutor` against a real REAPI Execution service) was the
-now-deleted orchestrator's per-element fan-out path; the write-a +
-Bazel driver instead drives remote execution through Bazel's own
-native REAPI client (`--remote_executor`), so `reapi.Executor` no
-longer has a production consumer — its `-tags=buildbarn` test is kept
-manually-runnable. See
-[`docs/design/orchestrator-absorption.md`](design/orchestrator-absorption.md).
+source trees into a real Buildbarn CAS over the REAPI wire format;
+`cmd/trace-publish` / `cmd/trace-lookup` use its Action-cache surface
+(`UpdateActionResult` / `GetActionResult`) for the round-2
+trace-rendezvous wire contract. (REAPI *execution* — submitting
+per-element conversions as Actions — was the orchestrator's job,
+implemented in a since-deleted `internal/reapi` package; the write-a +
+Bazel driver drives remote execution through Bazel's own native REAPI
+client instead. See
+[`docs/design/orchestrator-absorption.md`](design/orchestrator-absorption.md).)
 
 ### `internal/manifest`
 
-JSON schemas for per-package `manifest.json` and run-level manifests.
-write-a renders `MODULE.bazel` for projects A and B, making each a
-self-contained bzlmod project; cross-element `BazelLabel`s in the
+The imports-manifest schema + resolver: `<Pkg>Targets.cmake`-derived
+`Element` / `Export` records mapping out-of-tree cmake targets to
+`//elements/<name>:<target>` Bazel labels, which the converter
+consumes when a `find_package()` resolves to another converted
+element. write-a renders `MODULE.bazel` for projects A and B, making
+each a self-contained bzlmod project; cross-element `BazelLabel`s in
+the
 per-element imports manifests are `//elements/<name>:<target>`-shaped.
 
 ### `internal/shadow`
@@ -283,6 +281,9 @@ including a smoke binary is `scripts/meta-hello.sh`.
 - `make e2e-meta-*` — the write-a render + two-pass-build gates, one
   per kind / shape (`meta-hello`, `meta-cross-cmake`, `meta-stack`,
   the autotools / meson / pyproject families, …).
+- `make e2e-meta-regression` — run-vs-run regression gate
+  (`run-manifest` snapshots a built project A; `orchestrate-diff`
+  diffs two runs for output drift).
 - `make e2e-meta-buildbarn-re` — write-a + Bazel + real Buildbarn
   remote-execution + build-without-the-bytes gate.
 

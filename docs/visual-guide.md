@@ -44,9 +44,8 @@ graph TD
     end
 
     subgraph SharedLibs["📚 Shared packages (internal/)"]
-        CAS["internal/cas\nCAS client + packer + tree\n(REAPI CAS interface)"]
-        REAPI["internal/reapi\nREAPI Action submission\n(GRPCExecutor — orchestrator path)"]
-        MANIFEST["internal/manifest\nPer-element + run-level\nJSON schemas"]
+        CAS["internal/cas\nCAS client + packer + tree\n(REAPI CAS + ActionCache interface)"]
+        MANIFEST["internal/manifest\nImports-manifest schema +\nfind_package resolver"]
         SHADOW["internal/shadow\nShadow-tree creator\n+ trace path parser"]
         SYNTH["internal/synthprefix\nPer-element cmake-config-bundle\nstub tree builder"]
         TRACENORM["internal/tracenorm\nTrace canonicalization\n(pid strip, gcc temp paths, AC key)"]

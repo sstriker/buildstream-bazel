@@ -1,9 +1,9 @@
-.PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
+.PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
-        e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-audit-narrowing fdsdk-reality-check \
+        e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
 
@@ -32,6 +32,7 @@ WRITE_A      := $(BIN_DIR)/write-a
 SOURCE_PUSH  := $(BIN_DIR)/source-push
 BUILD_TRACER := $(BIN_DIR)/build-tracer
 CONVERT_ELEMENT_TRACE := $(BIN_DIR)/convert-element-trace
+RUN_MANIFEST := $(BIN_DIR)/run-manifest
 
 # Every Go binary target lists GO_SRC as a prerequisite. Coarse (any
 # .go change rebuilds every binary) but correct — the alternative,
@@ -42,7 +43,7 @@ CONVERT_ELEMENT_TRACE := $(BIN_DIR)/convert-element-trace
 # when nothing actually changed.
 GO_SRC := $(shell find . -name '*.go' -not -path './$(BUILD_DIR)/*') go.mod go.sum
 
-all: converter diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace
+all: converter diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace run-manifest
 
 converter: $(CONVERTER)
 
@@ -61,6 +62,8 @@ source-push: $(SOURCE_PUSH)
 build-tracer: $(BUILD_TRACER)
 
 convert-element-trace: $(CONVERT_ELEMENT_TRACE)
+
+run-manifest: $(RUN_MANIFEST)
 
 $(CONVERTER): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
@@ -97,6 +100,10 @@ $(BUILD_TRACER): $(GO_SRC)
 $(CONVERT_ELEMENT_TRACE): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERT_ELEMENT_TRACE) ./cmd/convert-element-trace
+
+$(RUN_MANIFEST): $(GO_SRC)
+	@mkdir -p $(BIN_DIR)
+	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(RUN_MANIFEST) ./cmd/run-manifest
 
 # Unit tests: pre-recorded File API fixtures, no cmake required.
 test:
@@ -178,6 +185,16 @@ e2e-meta-bazel-passthrough: check-tools converter
 # converted output.
 e2e-meta-cross-cmake: check-tools converter
 	scripts/meta-cross-cmake.sh
+
+# Run-vs-run regression gate. Renders + builds project A from the
+# cross-cmake fixture twice, snapshots each build with cmd/run-manifest,
+# and diffs the two with orchestrate-diff: asserts a content edit cmake
+# never reads doesn't shift BUILD.bazel.out (no-drift invariant) and a
+# real CMakeLists change does (drift detection). The write-a + Bazel
+# path's replacement for the orchestrator's regression e2e; see
+# docs/design/orchestrator-absorption.md.
+e2e-meta-regression: check-tools converter
+	scripts/meta-regression.sh
 
 # Phase 3 first-cut acceptance gate. Single kind:manual element
 # (testdata/meta-project/manual-greet/) whose install-commands
