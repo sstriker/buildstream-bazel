@@ -173,7 +173,35 @@ transition cleanly.
   `--enable-gazelle` opt-in flag; default off until the
   custom-extension story stabilizes per operator preference.
   See `docs/design/operator-gazelle-step.md` for the full
-  workflow.
+  workflow. **Note:** this bullet is written against
+  `orchestrator/cmd/orchestrate` as the driver; the
+  orchestrator-absorption work below may re-home it onto the
+  write-a + Bazel path before it ships.
+- **Fold `orchestrator/` into the write-a + Bazel path.** The
+  repo has two multi-element drivers: the original
+  `orchestrator/cmd/orchestrate` (one-pass: it *is* the
+  scheduler, owns a REAPI/CAS/AC layer, fans out to a remote
+  Buildbarn cluster) and the newer write-a + Bazel-as-
+  orchestrator shape (two-pass: write-a renders, Bazel
+  schedules). Only the write-a path can express the trace-
+  driven 3 → 2′ loop that non-cmake kinds need, so it's the
+  one with a future — the orchestrator can't absorb it, only
+  the other way around. The orchestrator's distinctive asset,
+  REAPI remote-execution fan-out, is largely redundant once
+  Bazel is the scheduler (Bazel speaks REAPI natively against a
+  Buildbarn cluster). What genuinely needs re-homing rather than
+  deleting: the rigorous dep-graph code in
+  `orchestrator/internal/element` (cycle detection, topo sort,
+  junction handling) and the analysis tooling
+  (`orchestrate-diff`, `orchestrate-history`,
+  `orchestrate-bst-translate`, the regression / fingerprint
+  registry), none of which are scheduler concerns. Step 1
+  shipped: `tools/bst` no longer reimplements .bst graph
+  walking in shell — write-a's `--bst-root` does leaf-rooted
+  discovery through the same parser the render uses, so the
+  repo is down from three .bst graph walkers to two. Full
+  capability-by-capability map (delete / re-home / keep) and PR
+  sequencing: `docs/design/orchestrator-absorption.md`.
 
 ## Later (research / open questions)
 
@@ -248,18 +276,20 @@ transition cleanly.
   CLI wrapper around write-a so `bst build <element.bst>` keeps
   working against a converted project. Supports
   `bst build / show / workspace open|close|reset`. The `build`
-  subcommand walks the .bst graph (transitive `depends:` /
-  `build-depends:` / `runtime-depends:` — bare names AND
-  `.bst`-suffixed forms; flush-left and indented YAML list
-  styles), runs write-a in the round-1 trace-driven shape
-  (no REAPI AC / bb_clientd needed for local dev), then shells
-  out to `bazel build` against the rendered project B. Bazel
-  isn't required at render time — when it's absent the wrapper
-  prints the target line and stops cleanly. `workspace open`
-  copies the element's kind:local sources to a scratch dir and
-  rewrites the .bst's `sources: - path:` so subsequent
-  `bst build` picks up edits; `workspace close` restores from
-  a deterministic `.bst-bazel-orig` backup. Render gate:
+  subcommand hands the leaf .bst to write-a's `--bst-root` flag,
+  which walks the `depends:` / `build-depends:` /
+  `runtime-depends:` graph on disk via the same `loadElement`
+  parser the render uses — so the wrapper no longer reimplements
+  .bst graph walking in shell. It then runs write-a in the
+  round-1 trace-driven shape (no REAPI AC / bb_clientd needed
+  for local dev) and shells out to `bazel build` against the
+  rendered project B. Bazel isn't required at render time —
+  when it's absent the wrapper prints the target line and stops
+  cleanly. `workspace open` copies the element's kind:local
+  sources to a scratch dir and rewrites the .bst's
+  `sources: - path:` so subsequent `bst build` picks up edits;
+  `workspace close` restores from a deterministic
+  `.bst-bazel-orig` backup. Render gate:
   `scripts/meta-bst-wrapper.sh` (`make e2e-meta-bst-wrapper`)
   covers kind:cmake + kind:autotools + multi-element graph +
   workspace round-trip. The wrapper is BuildStream-developer

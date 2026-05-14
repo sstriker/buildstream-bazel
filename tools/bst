@@ -72,87 +72,12 @@ repo_root() {
 }
 
 ensure_binaries() {
-    # write-a + convert-element + build-tracer +
+    # write-a + convert-element-cmake + build-tracer +
     # convert-element-trace all live under build/bin after
     # `make all`. Shell out to make if anything's stale; make
     # is fast for a no-op build.
     root="$1"
     ( cd "$root" && make -s all >/dev/null )
-}
-
-bst_collect() {
-    # Given a leaf .bst path, walk depends/build-depends
-    # transitively and emit `--bst <abspath>` flag pairs for
-    # every reachable .bst, deduped, sorted. write-a's --bst
-    # is repeatable; this is how we feed it the full graph
-    # without requiring the user to enumerate it.
-    leaf="$1"
-    leaf_abs="$(cd "$(dirname "$leaf")" && pwd)/$(basename "$leaf")"
-
-    # Simple iterative walker. todo is a newline-separated queue;
-    # visited is a pipe-delimited set used to dedup. Both are
-    # accumulated as multi-line strings (POSIX sh, no arrays).
-    todo="$leaf_abs"
-    visited=""
-    while [ -n "$todo" ]; do
-        cur="$(printf '%s\n' "$todo" | head -1)"
-        todo="$(printf '%s\n' "$todo" | tail -n +2)"
-        # Skip empty lines (the append-with-newline pattern below
-        # can introduce them when todo was empty).
-        [ -z "$cur" ] && continue
-        case "$visited" in
-            *"|$cur|"*) continue ;;
-        esac
-        visited="$visited|$cur|"
-        if [ ! -f "$cur" ]; then
-            echo "bst: $cur not found" >&2
-            return 1
-        fi
-        # Extract dep names from `depends:` / `build-depends:` /
-        # `runtime-depends:` blocks. BuildStream allows three shapes:
-        # bare string (`- foo.bst` or `- foo`); inline dict
-        # (`- filename: foo.bst`); and a sub-block dict where
-        # `filename:` is on its own line. Accept all three. write-a
-        # itself trims a trailing `.bst` and accepts bare names too
-        # (cmd/write-a/main.go:766), so it's safe to do the same.
-        # Top-level YAML lists in BuildStream .bst files are often
-        # flush-left (`- foo` at column 0), so the leading-space
-        # match must allow zero spaces.
-        deps="$(awk '
-            /^[[:space:]]*(depends|build-depends|runtime-depends)[[:space:]]*:[[:space:]]*$/ { in_deps=1; next }
-            /^[a-zA-Z]/ && !/^[[:space:]]/ { in_deps=0 }
-            in_deps && /^[[:space:]]*-[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
-                gsub(/^[[:space:]]*-[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print; next
-            }
-            in_deps && /^[[:space:]]+filename[[:space:]]*:[[:space:]]+/ {
-                gsub(/^[[:space:]]+filename[[:space:]]*:[[:space:]]+/, "", $0); print; next
-            }
-            in_deps && /^[[:space:]]*-[[:space:]]+[^ {}\[][^ ]*[[:space:]]*$/ {
-                gsub(/^[[:space:]]*-[[:space:]]+/, "", $0); print
-            }
-        ' "$cur" 2>/dev/null || true)"
-        for dep in $deps; do
-            # Append .bst if the dep is a bare element name (write-a
-            # accepts both forms; we always want the file on disk).
-            case "$dep" in
-                *.bst) dep_file="$dep" ;;
-                *)     dep_file="$dep.bst" ;;
-            esac
-            # Resolve dep path: relative to current .bst's dir.
-            dep_abs="$(cd "$(dirname "$cur")" && cd "$(dirname "$dep_file")" 2>/dev/null && pwd)/$(basename "$dep_file")"
-            if [ -z "$todo" ]; then
-                todo="$dep_abs"
-            else
-                todo="$todo
-$dep_abs"
-            fi
-        done
-    done
-    # Emit deduped, sorted --bst flags.
-    printf '%s\n' "$visited" | tr '|' '\n' | sort -u | while read -r p; do
-        [ -z "$p" ] && continue
-        printf -- '--bst %s ' "$p"
-    done
 }
 
 cache_dir_for() {
@@ -189,20 +114,23 @@ cmd_build() {
     project_b="$cache/B"
     mkdir -p "$cache"
 
-    bst_flags="$(bst_collect "$leaf_abs")"
-
-    # shellcheck disable=SC2086
     # Round-1 trace-driven shape: project A is a marker, project B
     # hosts the install genrule with build-tracer + convert-element-
     # trace inline. Avoids the round-2 rendezvous infra (REAPI AC
     # + cas-fuse / bb_clientd mount) that the wrapper doesn't aim to
     # set up. Round-2 (publish/lookup binaries + bb_clientd) is the
     # production deployment shape; the wrapper is for local dev.
+    #
+    # --bst-root hands write-a the leaf .bst; write-a walks the
+    # depends / build-depends / runtime-depends graph on disk
+    # itself (loadElement-based discovery — the same parser the
+    # render uses), so the wrapper doesn't reimplement .bst graph
+    # walking in shell.
     "$root/build/bin/write-a" \
-        $bst_flags \
+        --bst-root "$leaf_abs" \
         --out "$project_a" \
         --out-b "$project_b" \
-        --convert-element "$root/build/bin/convert-element" \
+        --convert-element-cmake "$root/build/bin/convert-element-cmake" \
         --convert-element-trace "$root/build/bin/convert-element-trace" \
         --build-tracer-bin "$root/build/bin/build-tracer" \
         --trace-round1

@@ -458,6 +458,73 @@ func TestWriter_RejectsMissingDep(t *testing.T) {
 	}
 }
 
+func TestDiscoverBstGraph_WalksTransitiveDeps(t *testing.T) {
+	// Diamond: root depends on a + b; both depend on leaf. Discovery
+	// from root must reach all four, with leaf deduped to one entry,
+	// and the result must feed loadGraph cleanly.
+	tmp := t.TempDir()
+	leafBst := makeCmakeBst(t, tmp, "leaf")
+	aBst := makeCmakeBst(t, tmp, "a")
+	bBst := makeCmakeBst(t, tmp, "b")
+	rootBst := makeCmakeBst(t, tmp, "root")
+	if err := appendDepends(aBst, []string{"leaf"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendDepends(bBst, []string{"leaf"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendDepends(rootBst, []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := discoverBstGraph(rootBst, "")
+	if err != nil {
+		t.Fatalf("discoverBstGraph: %v", err)
+	}
+	want := []string{aBst, bBst, leafBst, rootBst} // sorted
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("discovered = %v, want %v", got, want)
+	}
+	if _, err := loadGraph(got, ""); err != nil {
+		t.Errorf("loadGraph on discovered set: %v", err)
+	}
+}
+
+func TestDiscoverBstGraph_WithProjectConf(t *testing.T) {
+	// With a project.conf in play, dependency references resolve
+	// element-root-relative rather than as siblings of the referrer.
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "project.conf"),
+		[]byte("name: discovery-fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	leafBst := makeCmakeBst(t, tmp, "leaf")
+	rootBst := makeCmakeBst(t, tmp, "root")
+	if err := appendDepends(rootBst, []string{"leaf.bst"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := discoverBstGraph(rootBst, "")
+	if err != nil {
+		t.Fatalf("discoverBstGraph: %v", err)
+	}
+	want := []string{leafBst, rootBst}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("discovered = %v, want %v", got, want)
+	}
+}
+
+func TestDiscoverBstGraph_RejectsMissingDepFile(t *testing.T) {
+	tmp := t.TempDir()
+	rootBst := makeCmakeBst(t, tmp, "root")
+	if err := appendDepends(rootBst, []string{"nonexistent"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := discoverBstGraph(rootBst, ""); err == nil {
+		t.Errorf("expected error for dep with no .bst on disk, got nil")
+	}
+}
+
 func TestWriter_StackElementShape(t *testing.T) {
 	tmp := t.TempDir()
 	libA := makeCmakeBst(t, tmp, "lib-a")

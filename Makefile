@@ -34,6 +34,15 @@ SOURCE_PUSH  := $(BIN_DIR)/source-push
 BUILD_TRACER := $(BIN_DIR)/build-tracer
 CONVERT_ELEMENT_TRACE := $(BIN_DIR)/convert-element-trace
 
+# Every Go binary target lists GO_SRC as a prerequisite. Coarse (any
+# .go change rebuilds every binary) but correct — the alternative,
+# prerequisite-free file targets, meant `make all` treated an existing
+# binary as up-to-date forever and never rebuilt stale code, so
+# `tools/bst`'s ensure_binaries silently ran whatever was last built.
+# `go build`'s own incremental cache keeps the rebuild near-instant
+# when nothing actually changed.
+GO_SRC := $(shell find . -name '*.go' -not -path './$(BUILD_DIR)/*') go.mod go.sum
+
 all: converter orchestrator diff history bst-translate derive-toolchain write-a source-push build-tracer convert-element-trace
 
 converter: $(CONVERTER)
@@ -56,43 +65,43 @@ build-tracer: $(BUILD_TRACER)
 
 convert-element-trace: $(CONVERT_ELEMENT_TRACE)
 
-$(CONVERTER):
+$(CONVERTER): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERTER) ./converter/cmd/convert-element-cmake
 
-$(ORCHESTRATOR):
+$(ORCHESTRATOR): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(ORCHESTRATOR) ./orchestrator/cmd/orchestrate
 
-$(DIFF):
+$(DIFF): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(DIFF) ./orchestrator/cmd/orchestrate-diff
 
-$(HISTORY):
+$(HISTORY): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(HISTORY) ./orchestrator/cmd/orchestrate-history
 
-$(BST_TRANSLATE):
+$(BST_TRANSLATE): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BST_TRANSLATE) ./orchestrator/cmd/orchestrate-bst-translate
 
-$(DERIVE_TOOLCHAIN):
+$(DERIVE_TOOLCHAIN): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(DERIVE_TOOLCHAIN) ./converter/cmd/derive-toolchain
 
-$(WRITE_A):
+$(WRITE_A): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(WRITE_A) ./cmd/write-a
 
-$(SOURCE_PUSH):
+$(SOURCE_PUSH): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(SOURCE_PUSH) ./cmd/source-push
 
-$(BUILD_TRACER):
+$(BUILD_TRACER): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(BUILD_TRACER) ./cmd/build-tracer
 
-$(CONVERT_ELEMENT_TRACE):
+$(CONVERT_ELEMENT_TRACE): $(GO_SRC)
 	@mkdir -p $(BIN_DIR)
 	CGO_ENABLED=0 $(GO) build $(GOFLAGS) -o $(CONVERT_ELEMENT_TRACE) ./cmd/convert-element-trace
 
