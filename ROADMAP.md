@@ -29,39 +29,21 @@ transition cleanly.
 
 ## Next
 
-- **Cross-element index-file population from the imports
-  manifest.** The gazelle roundtrip is otherwise complete:
-  Phases 7a–7d shipped (`# keep` markers, `cc_index.json` /
-  `python_modules.json` resolver files, the MODULE.bazel
-  directives, the `scripts/meta-gazelle-roundtrip.sh`
-  conformance gate, and the `# gazelle:cc_search` directives —
-  see Done). What's left is the *external-repo* cross-element
-  edge: `build-cc-index` walks project B's own BUILD files, so
-  sibling-element headers/modules already land in the index,
-  but a genuinely-external dep's header/module universe lives
-  outside project B and only the imports manifest knows the
-  label. Closing it means `build-cc-index` consuming the
-  imports manifest — which first needs the manifest to carry
-  exported-header / import-module data (it carries include
-  *directories* and *distribution names* today, not the
-  resolver-shaped keys gazelle needs). That schema extension
-  is downstream of the imports-manifest *producer* settling;
-  with the `orchestrator/` absorption now complete
-  (`docs/design/orchestrator-absorption.md`), the producer side
-  is stable and this is unblocked.
-  `# gazelle:resolve` directives are an operator escape hatch,
-  not converter output; see
-  `docs/design/build-output-conventions.md`.
-  **Acceptance criterion for the eventual gazelle_cc wiring
-  pass:** verify `# gazelle:cc_search` consumes package-relative
-  paths the same way `cc_library.includes` does. Phase 7d emits
-  the directive mirroring `includes` verbatim, but — like 7b's
-  MODULE.bazel directives — it's inert-pending-gazelle: the unit
-  tests + render gate assert the directive *text*, nothing runs
-  it against real gazelle_cc. If `cc_search` expects a different
-  path frame (repo- or workspace-relative), every emitted
-  directive is subtly wrong, so the path-frame equivalence is a
-  checklist item for whoever lands the bzlmod registration.
+- **gazelle_cc bzlmod wiring: `# gazelle:cc_search` path-frame
+  check.** Phase 7d emits a `# gazelle:cc_search` file-head
+  directive mirroring each package's `cc_library.includes`
+  verbatim, but — like 7b's MODULE.bazel directives — it's
+  inert-pending-gazelle: the unit tests + render gate assert the
+  directive *text*, nothing runs it against real gazelle_cc.
+  **Acceptance criterion for whoever lands the gazelle_cc bzlmod
+  registration:** verify `# gazelle:cc_search` consumes
+  package-relative paths the same way `cc_library.includes` does.
+  If `cc_search` expects a different path frame (repo- or
+  workspace-relative), every emitted directive is subtly wrong, so
+  the path-frame equivalence is a checklist item for the
+  registration pass. (`# gazelle:resolve` directives are an
+  operator escape hatch, not converter output; see
+  `docs/design/build-output-conventions.md`.)
 
 - **Per-platform fold for round-2 trace-driven kinds.** Mostly
   shipped (see Done — project A converter fan-out + fold for
@@ -316,6 +298,25 @@ transition cleanly.
   `.vars.dump` filename, AC-keyspace protocol IDs in
   `internal/tracenorm/synthkey.go`, docker image name, and
   byte-stable testdata fixture paths) deliberately preserved.
+- **Cross-element index-file population from the imports manifest.**
+  `build-cc-index` gained `--imports-manifest`: alongside the BUILD
+  walk that already lands sibling-element headers / module names in
+  `cc_index.json` / `python_modules.json`, it now folds the imports
+  manifest's per-export `exported_headers` / `import_modules`
+  entries — the external-repo cross-element edge, where a
+  genuinely-external dep's header / module universe lives outside
+  project B and only the manifest knows the resolving Bazel label.
+  The fold runs after the walk with first-write-wins, so in-project
+  entries always beat the manifest (it gap-fills the external edge
+  only). The `manifest.Export` schema gained `exported_headers` /
+  `import_modules` (append-only, `omitempty`) — the resolver-shaped
+  keys gazelle indexes, distinct from the existing
+  `interface_includes` (include *directories*) and `link_libraries`
+  (flag fragments / distribution names); `Resolver.AllExports`
+  enumerates them deterministically. Render gate:
+  `scripts/meta-gazelle-roundtrip.sh` exercises the fold in its
+  bazel-build half; the `build-cc-index` + `manifest` unit tests
+  cover the bazel-free path.
 - **Normalize emitted BUILD shape to Bazel/Gazelle conventions
   for post-conversion roundtrip.** Project B now looks like what
   a human using `EngFlow/gazelle_cc` + `rules_python/gazelle`

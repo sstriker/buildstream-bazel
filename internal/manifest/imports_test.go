@@ -3,6 +3,7 @@ package manifest_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -113,6 +114,60 @@ func TestIndex_RejectsEmptyExportFields(t *testing.T) {
 				t.Errorf("expected error")
 			}
 		})
+	}
+}
+
+// TestExportedHeadersAndModules covers the schema extension: the
+// exported_headers / import_modules fields round-trip through Load,
+// and AllExports returns every export in a deterministic
+// element-name-sorted order.
+func TestExportedHeadersAndModules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "imports.json")
+	body := `{
+  "version": 1,
+  "elements": [
+    {
+      "name": "zlib",
+      "exports": [
+        {"cmake_target": "ZLIB::ZLIB", "bazel_label": "@zlib//:zlib", "exported_headers": ["zlib.h", "zconf.h"]}
+      ]
+    },
+    {
+      "name": "aaa",
+      "exports": [
+        {"cmake_target": "AAA::AAA", "bazel_label": "@aaa//:aaa", "import_modules": ["aaa"]}
+      ]
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if got := r.LookupCMakeTarget("ZLIB::ZLIB").ExportedHeaders; !reflect.DeepEqual(got, []string{"zlib.h", "zconf.h"}) {
+		t.Errorf("ExportedHeaders = %v", got)
+	}
+	if got := r.LookupCMakeTarget("AAA::AAA").ImportModules; !reflect.DeepEqual(got, []string{"aaa"}) {
+		t.Errorf("ImportModules = %v", got)
+	}
+
+	all := r.AllExports()
+	if len(all) != 2 {
+		t.Fatalf("AllExports len = %d, want 2", len(all))
+	}
+	// Sorted by element name: "aaa" before "zlib".
+	if all[0].CMakeTarget != "AAA::AAA" || all[1].CMakeTarget != "ZLIB::ZLIB" {
+		t.Errorf("AllExports order = [%q, %q], want [AAA::AAA, ZLIB::ZLIB]", all[0].CMakeTarget, all[1].CMakeTarget)
+	}
+
+	var nilR *manifest.Resolver
+	if nilR.AllExports() != nil {
+		t.Errorf("nil resolver AllExports should be nil")
 	}
 }
 

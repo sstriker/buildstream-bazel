@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 )
 
 // Imports is the top-level manifest object.
@@ -65,6 +66,27 @@ type Export struct {
 	// prefix root. Lower matches link-fragment paths against this list to
 	// rewrite them as the export's BazelLabel.
 	LinkPaths []string `json:"link_paths,omitempty"`
+
+	// ExportedHeaders lists the header include-path keys gazelle's cc
+	// header-scan resolver consults — each string as it would appear
+	// in a downstream `#include "..."` / `#include <...>` line, e.g.
+	// "openssl/ssl.h". build-cc-index folds each into cc_index.json
+	// mapped to BazelLabel. This is the resolver-shaped counterpart
+	// of InterfaceIncludes (which carries include *directories*, not
+	// the per-header keys gazelle indexes): it closes the
+	// external-repo edge where a genuinely-external dep's header
+	// universe lives outside project B and only the manifest knows
+	// the label. Sibling-element headers don't need this — they
+	// already land in cc_index.json via build-cc-index's BUILD walk.
+	ExportedHeaders []string `json:"exported_headers,omitempty"`
+
+	// ImportModules lists the Python import / distribution names a
+	// downstream `import <name>` resolves to this export. build-cc-
+	// index folds each into python_modules.json mapped to BazelLabel.
+	// Same role for the python resolver that ExportedHeaders plays
+	// for the cc one: the resolver-shaped keys, distinct from
+	// LinkLibraries' flag-fragment / distribution-name values.
+	ImportModules []string `json:"import_modules,omitempty"`
 }
 
 // Load reads and parses an imports manifest from disk. Returns a Resolver
@@ -195,6 +217,28 @@ func (r *Resolver) LookupElement(name string) *Element {
 		return nil
 	}
 	return r.byElement[name]
+}
+
+// AllExports returns every export across all elements in a
+// deterministic order — by element name, then by each element's
+// declared export order. build-cc-index uses this to fold
+// exported-header / import-module entries into the gazelle resolver
+// files with stable first-write-wins semantics on manifest-internal
+// key collisions.
+func (r *Resolver) AllExports() []*Export {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.byElement))
+	for name := range r.byElement {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out []*Export
+	for _, name := range names {
+		out = append(out, r.byElement[name].Exports...)
+	}
+	return out
 }
 
 // Empty reports whether the resolver carries any imports. Used by callers

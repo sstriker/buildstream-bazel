@@ -24,6 +24,16 @@
 // once per project-B render; output is deterministic and
 // idempotent.
 //
+// With --imports-manifest set, build-cc-index also folds the
+// imports manifest's exported-header / import-module entries into
+// the two files. The BUILD walk covers sibling elements (their
+// headers and module names are in project B's own BUILD files);
+// the manifest covers the external-repo edge — a genuinely-external
+// dep whose header / module universe lives outside project B, where
+// only the manifest knows the resolving Bazel label. In-project
+// (walk-derived) entries win on collision; the manifest only
+// gap-fills.
+//
 // Per Phase 7c of docs/design/build-output-conventions.md. The
 // stub `{}` files Phase 7b wrote get rewritten in place — the
 // stable file paths the MODULE.bazel `# gazelle:cc_indexfile` /
@@ -42,6 +52,7 @@ import (
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 const (
@@ -51,9 +62,10 @@ const (
 )
 
 type args struct {
-	root         string
-	outCCIndex   string
-	outPyModules string
+	root            string
+	outCCIndex      string
+	outPyModules    string
+	importsManifest string
 }
 
 func main() {
@@ -74,6 +86,7 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	flags.StringVar(&a.root, "root", "", "absolute path to the project-B root (the directory containing MODULE.bazel and elements/)")
 	flags.StringVar(&a.outCCIndex, "out-cc-index", "tools/cc_index.json", "destination path for the cc header → label map, relative to --root")
 	flags.StringVar(&a.outPyModules, "out-python-modules", "tools/python_modules.json", "destination path for the python dist-name → label map, relative to --root")
+	flags.StringVar(&a.importsManifest, "imports-manifest", "", "optional path to an imports manifest; its exported_headers / import_modules entries are folded into the resolver files for the external-repo cross-element edge (in-project BUILD-walk entries win on collision)")
 	if err := flags.Parse(argv); err != nil {
 		return a, exitUsage
 	}
@@ -134,6 +147,14 @@ func run(a args) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if a.importsManifest != "" {
+		r, err := manifest.Load(a.importsManifest)
+		if err != nil {
+			return err
+		}
+		foldManifest(r, ccIndex, pyMods)
 	}
 
 	if err := writeJSON(filepath.Join(a.root, a.outCCIndex), ccIndex); err != nil {
@@ -203,6 +224,25 @@ func harvestPackage(f *build.File, pkg string, ccIndex, pyMods map[string]string
 			// gazelle plugin's convention). Record so a
 			// cross-element `import <dist_name>` resolves.
 			pyMods[name] = label
+		}
+	}
+}
+
+// foldManifest folds the imports manifest's exported-header /
+// import-module entries into the resolver maps. Runs after the BUILD
+// walk so in-project entries are already recorded; `rec`'s
+// first-write-wins then makes the manifest a pure gap-fill — a header
+// or module that a project-B BUILD file already claims keeps that
+// claim, and the manifest only supplies the external-repo edge.
+// Manifest-internal collisions resolve deterministically via
+// AllExports' stable ordering.
+func foldManifest(r *manifest.Resolver, ccIndex, pyMods map[string]string) {
+	for _, ex := range r.AllExports() {
+		for _, h := range ex.ExportedHeaders {
+			rec(ccIndex, h, ex.BazelLabel)
+		}
+		for _, m := range ex.ImportModules {
+			rec(pyMods, m, ex.BazelLabel)
 		}
 	}
 }
