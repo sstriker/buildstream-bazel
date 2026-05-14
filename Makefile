@@ -1,7 +1,7 @@
 .PHONY: all converter orchestrator diff history bst-translate derive-toolchain build-tracer convert-element-trace test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-orchestrate e2e-orchestrate-scale e2e-bazel-build e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
+        e2e-orchestrate e2e-orchestrate-scale e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-buildbarn e2e-buildbarn-execute \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip \
-        e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools \
+        e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake convert-and-build \
@@ -514,27 +514,29 @@ e2e-meta-script: check-tools converter
 fdsdk-reality-check:
 	scripts/fdsdk-reality-check.sh
 
-# M5 downstream-build acceptance gate. Requires bazel/bazelisk on PATH
-# in addition to the standard cmake/ninja/bwrap; if absent the test
-# self-skips (runtime LookPath check). Spins the orchestrator against
-# the FDSDK subset, then runs `bazel build //:smoke` against a
-# downstream consumer that depends on a converted element.
-e2e-bazel-build: check-tools converter orchestrator
-	$(GO) test -tags=e2e -run TestE2E_BazelBuild ./orchestrator/...
+# M5 downstream-build acceptance gate — re-homed from the
+# orchestrator's TestE2E_BazelBuild onto the write-a + Bazel path:
+# e2e-meta-cross-cmake renders a cross-element kind:cmake graph with
+# write-a, builds project A, stage-b's into project B, and bazel-
+# builds the consumer there (cross-element converted cc deps link
+# end-to-end). See e2e-meta-cross-cmake above and
+# docs/design/orchestrator-absorption.md.
 
 # M5 CMake-side acceptance gate. Configures a downstream find_package
-# consumer against the orchestrator's synth-prefix tree. No bazel
-# required; just real cmake + bwrap (already covered by check-tools).
-e2e-cmake-consumer: check-tools converter orchestrator
-	$(GO) test -tags=e2e -run TestE2E_CMakeConsumer ./orchestrator/...
+# consumer against a convert-element-cmake-synthesized cmake-config
+# bundle. No bazel required; just real cmake + bwrap (already covered
+# by check-tools).
+e2e-cmake-consumer: check-tools converter
+	$(GO) test -tags=e2e -run TestE2E_CMakeConsumer ./converter/cmd/convert-element-cmake/
 
-# Toolchain configure-skip e2e: runs the orchestrator twice against the
-# fdsdk-subset (without and with --toolchain-cmake-file) and asserts
-# the second pass's cumulative cmake-configure wall-clock is shorter.
-# Validates the derive-toolchain -> toolchain.cmake -> cmakerun
-# integration end-to-end.
-e2e-toolchain-skip: check-tools converter orchestrator derive-toolchain
-	$(GO) test -tags=e2e -run TestE2E_Toolchain_SkipReducesConfigureTime ./orchestrator/...
+# Toolchain configure-skip e2e: runs convert-element-cmake twice
+# against the hello-world fixture (without and with
+# --toolchain-cmake-file) and asserts the with-file run's
+# cmake_configure_seconds (from --out-timings) is shorter. Validates
+# the derive-toolchain -> toolchain.cmake -> cmakerun integration
+# end-to-end.
+e2e-toolchain-skip: check-tools converter derive-toolchain
+	$(GO) test -tags=e2e -run TestE2E_Toolchain_SkipReducesConfigureTime ./converter/cmd/convert-element-cmake/
 
 # Fidelity gate. Parameterized harness: hello-world is the smoke
 # fixture; fmt (when fetched via `fetch-fmt`) is the real-world
@@ -543,12 +545,12 @@ e2e-toolchain-skip: check-tools converter orchestrator derive-toolchain
 # resulting library. Each new delta is recorded in
 # docs/fidelity-known-deltas.md.
 e2e-fidelity: check-tools converter
-	$(GO) test -tags=e2e -run TestE2E_Fidelity ./orchestrator/...
+	$(GO) test -tags=e2e -run TestE2E_Fidelity ./converter/cmd/convert-element-cmake/
 
 # Same as e2e-fidelity but ensures the fmt fixture is fetched first
 # so TestE2E_Fidelity_Fmt_SymbolEquivalent doesn't self-skip.
 e2e-fidelity-fmt: check-tools converter fetch-fmt
-	$(GO) test -tags=e2e -run TestE2E_Fidelity_Fmt ./orchestrator/...
+	$(GO) test -tags=e2e -run TestE2E_Fidelity_Fmt ./converter/cmd/convert-element-cmake/
 
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,

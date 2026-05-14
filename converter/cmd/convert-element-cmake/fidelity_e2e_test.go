@@ -1,29 +1,27 @@
 //go:build e2e
 
-// fidelity_e2e_test is the fidelity gate: build a cmake project two
-// ways (cmake reference vs convert-element-cmake + bazel build) and assert
-// the resulting libraries' `nm --defined-only` symbol sets are
-// equivalent.
+// fidelity_e2e_test is the converter fidelity gate: build a cmake
+// project two ways (cmake reference vs convert-element-cmake + bazel
+// build) and assert the resulting libraries' `nm --defined-only`
+// symbol sets are equivalent.
 //
-// Why this test matters: TestE2E_BazelBuild_DownstreamConsumesConvertedRepos
-// proves the conversion plumbing works end-to-end (bazel build
-// succeeds), but says nothing about whether the bazel-built
-// artifact is faithful to what cmake would have produced. Without
-// fidelity validation, "converts cleanly" just means "translation
-// parses cleanly", not "produces correct binaries".
+// Why this test matters: a clean conversion only means "translation
+// parses cleanly", not "produces correct binaries". Symbol-tier is
+// the load-bearing assertion: same set of defined symbols means the
+// same translation units compiled with effectively-equivalent flags.
 //
-// Symbol-tier is the load-bearing assertion: same set of defined
-// symbols means same translation units compiled with effectively-
-// equivalent flags. Behavioral-tier (running the binaries and
-// comparing exit/stdout/stderr) extends to fixtures with executables.
+// This gate was re-homed from orchestrator/internal/orchestrator/ as
+// part of the orchestrator absorption (docs/design/orchestrator-
+// absorption.md). It never actually used the orchestrator — it calls
+// convert-element-cmake directly, so failures isolate on the
+// converter's translation logic — it just lived next to the
+// orchestrator's other e2e gates for the shared helpers, which now
+// travel with it here.
 //
-// The harness is parameterized via fidelityCase. Hello-world is the
-// minimal smoke fixture; fmt is the real-world test where
-// converter bugs surface (see docs/fidelity-known-deltas.md).
-//
-// Gated behind the existing `e2e` build tag; depends on real
-// cmake + bazel/bazelisk + convert-element-cmake + nm.
-package orchestrator_test
+// Gated behind the `e2e` build tag; depends on real cmake +
+// bazel/bazelisk + convert-element-cmake + nm. CI runs the two cases
+// via `make e2e-fidelity` and `make e2e-fidelity-fmt`.
+package main
 
 import (
 	"context"
@@ -65,7 +63,7 @@ type fidelityCase struct {
 }
 
 func TestE2E_Fidelity_HelloWorld_SymbolEquivalent(t *testing.T) {
-	helloSrc, err := filepath.Abs("../../../converter/testdata/sample-projects/hello-world")
+	helloSrc, err := filepath.Abs("../../testdata/sample-projects/hello-world")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +225,6 @@ func findStaticArchive(root, name string) string {
 
 // copyTreeFiltered mirrors src into dst, skipping cmake build dirs and
 // version-control artifacts that don't belong in a Bazel workspace.
-// Symlinks land as their resolved targets; out-of-tree symlinks are
-// skipped.
 func copyTreeFiltered(src, dst string) error {
 	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -289,6 +285,15 @@ func pickStaticArchive(s string) string {
 	return ""
 }
 
+func dirEntries(dir string) []string {
+	es, _ := os.ReadDir(dir)
+	out := make([]string, 0, len(es))
+	for _, e := range es {
+		out = append(out, e.Name())
+	}
+	return out
+}
+
 func mustRun(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
 	cmd.Stdout = testLog{t}
@@ -316,11 +321,39 @@ func mustWriteString(t *testing.T, dst, body string) {
 	}
 }
 
-func dirEntries(dir string) []string {
-	es, _ := os.ReadDir(dir)
-	out := make([]string, 0, len(es))
-	for _, e := range es {
-		out = append(out, e.Name())
+// testLog adapts *testing.T into an io.Writer so subprocess stdout /
+// stderr lands in the test log.
+type testLog struct{ t *testing.T }
+
+func (l testLog) Write(p []byte) (int, error) {
+	l.t.Logf("%s", strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+// lookupBazel returns the bazelisk / bazel binary, or skips.
+func lookupBazel(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"bazelisk", "bazel"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
 	}
-	return out
+	t.Skip("bazel/bazelisk not on PATH; skipping fidelity gate")
+	return ""
+}
+
+// lookupConverter returns convert-element-cmake from PATH, falling
+// back to build/bin/ (repo root is three levels up from this dir).
+func lookupConverter(t *testing.T) string {
+	t.Helper()
+	if p, err := exec.LookPath("convert-element-cmake"); err == nil {
+		return p
+	}
+	repoRoot, _ := filepath.Abs("../../..")
+	fallback := filepath.Join(repoRoot, "build", "bin", "convert-element-cmake")
+	if _, err := os.Stat(fallback); err == nil {
+		return fallback
+	}
+	t.Skip("convert-element-cmake not on PATH and not in build/bin/")
+	return ""
 }

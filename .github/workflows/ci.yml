@@ -173,11 +173,15 @@ jobs:
           sudo ln -sf /usr/local/bin/bazelisk /usr/local/bin/bazel
           bazel version | head -3 || true
 
-      - name: Build converter + orchestrator
-        run: make converter orchestrator 2>&1 | tee -a /tmp/cijob.log
+      - name: Build converter
+        run: make converter 2>&1 | tee -a /tmp/cijob.log
 
-      - name: bazel-build downstream e2e (M5 step 10)
-        run: make e2e-bazel-build 2>&1 | tee -a /tmp/cijob.log
+      - name: downstream bazel build e2e (cross-element kind:cmake)
+        # Re-homed from the orchestrator's TestE2E_BazelBuild onto the
+        # write-a + Bazel path: render a cross-element kind:cmake
+        # graph, build project A, stage-b into B, bazel-build the
+        # consumer there. See docs/design/orchestrator-absorption.md.
+        run: make e2e-meta-cross-cmake 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity e2e — hello-world (smoke fixture)
         run: make e2e-fidelity 2>&1 | tee -a /tmp/cijob.log

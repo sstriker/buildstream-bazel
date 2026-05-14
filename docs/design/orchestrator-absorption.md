@@ -247,14 +247,44 @@ keeping a second implementation alive.
    current `e2e-buildbarn` / `e2e-buildbarn-execute` jobs are
    *replaced* by this gate, not merely dropped — the coverage has
    to move, not vanish.
-7. **Delete the scheduler.** Remove `orchestrator/cmd/orchestrate`,
-   `orchestrator/internal/orchestrator`, and (now that its
-   consumers have moved) `orchestrator/internal/element`. The
-   `e2e-buildbarn` / `e2e-buildbarn-execute` jobs retire here
-   (their coverage moved to step 6's gate); the `e2e-orchestrate`
-   / `e2e-orchestrate-scale` jobs are dropped. Update
-   `docs/architecture.md` + `README.md`. Move the `ROADMAP.md`
-   bullet to Done.
+7. **Re-home the converter-behaviour e2e gates, then delete the
+   scheduler.** A late discovery: `orchestrator/internal/orchestrator`
+   isn't only the scheduler — it's the *test harness* for ~7 e2e
+   gates, and four of them (`e2e-fidelity` / `-fmt`,
+   `e2e-cmake-consumer`, `e2e-toolchain-skip`, `e2e-bazel-build`)
+   test **converter behaviour** and merely use `orchestrator.Run()`
+   as a driver. Those are re-homed first, so deleting the
+   orchestrator leaves no coverage gap:
+
+   - *(done — gate re-home)* `e2e-fidelity` / `-fmt`,
+     `e2e-cmake-consumer`, `e2e-toolchain-skip` move to converter
+     e2e tests under `converter/cmd/convert-element-cmake/` — none
+     actually needed the orchestrator (fidelity/cmake-consumer call
+     `convert-element-cmake` directly; toolchain-skip reads the
+     `cmake_configure_seconds` the converter already writes via
+     `--out-timings`). `e2e-bazel-build` re-homes onto the write-a +
+     Bazel path: `scripts/meta-cross-cmake.sh` gains a project-B
+     phase (`stage-b` → `bazel build //elements/cons:cons`), and is
+     wired into CI (it had a Makefile target but no CI step, which
+     is how a stale assertion in it had rotted). The orchestrator's
+     four gate test files are deleted with the re-home.
+     `internal/regression/e2e_test.go` is also deleted here — it ran
+     the orchestrator twice to diff; re-homing *that* onto the
+     write-a path is the "what is a run" open question below. (It
+     also resolved a latent Go internal-import violation: it had
+     imported `orchestrator/internal/orchestrator` ever since
+     `regression` moved out of `orchestrator/`, legal only because
+     no CI step builds it under `-tags=e2e`.)
+   - *(remaining — delete)* Remove `orchestrator/cmd/orchestrate`
+     and `orchestrator/internal/orchestrator` (plus the
+     orchestrator-specific `e2e_test.go` / `buildbarn_test.go` and
+     `orchestrator/testdata/`). The `e2e-buildbarn` /
+     `e2e-buildbarn-execute` jobs retire (their coverage moved to
+     step 6's gate); `e2e-orchestrate` / `e2e-orchestrate-scale` are
+     dropped. `internal/element` already lives at `internal/` (moved
+     in step 3), so nothing to delete there. Update
+     `docs/architecture.md` + `README.md`. Move the `ROADMAP.md`
+     bullet to Done.
 
 After step 7 the `orchestrator/` tree is empty and removed.
 
