@@ -114,8 +114,8 @@ done
 # Project B: N install genrules + top-level filegroup.
 b_build="$B/elements/greet/BUILD.bazel"
 for marker in \
-    'name = "greet_install_linux_x86_64"' \
-    'name = "greet_install_darwin_arm64"' \
+    'name = "greet_trace_build_linux_x86_64"' \
+    'name = "greet_trace_build_darwin_arm64"' \
     '"linux_x86_64/install_tree.tar"' \
     '"darwin_arm64/install_tree.tar"' \
     '"linux_x86_64/trace.log"' \
@@ -144,7 +144,7 @@ done
 
 # Legacy single-platform genrule name must NOT appear under
 # multi-platform mode.
-if grep -qF -- 'name = "greet_install"' "$b_build"; then
+if grep -qF -- 'name = "greet_trace_build"' "$b_build"; then
     echo "meta-autotools-round2-multiplatform: B-side unexpectedly contains legacy 'greet_install' name (no platform suffix)" >&2
     cat "$b_build" >&2
     exit 1

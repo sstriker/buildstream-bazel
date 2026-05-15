@@ -126,7 +126,8 @@ done
 # B-side: real install genrule replaces the placeholder.
 b_build="$B/elements/meson-greet/BUILD.bazel"
 for marker in \
-    'name = "meson-greet_install"' \
+    'name = "meson-greet_trace_build"' \
+    'tags = ["trace_build"]' \
     '"install_tree.tar"' \
     '"trace.log"' \
     '"//tools:build-tracer"' \

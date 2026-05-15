@@ -124,7 +124,8 @@ done
 # B-side: real install genrule replaces the placeholder.
 b_build="$B/elements/hello-world/BUILD.bazel"
 for marker in \
-    'name = "hello-world_install"' \
+    'name = "hello-world_trace_build"' \
+    'tags = ["trace_build"]' \
     '"install_tree.tar"' \
     '"trace.log"' \
     '"//tools:build-tracer"' \

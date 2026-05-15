@@ -142,10 +142,12 @@ config:
 					t.Errorf("[kind:%s] project A round-2 BUILD missing %q\n%s", tc.kind, want, aBody)
 				}
 			}
-			// A must NOT host the legacy install genrule under round-2,
+			// A must NOT host the install genrule under round-2
+			// (whether `_install` legacy or `_trace_build` new),
 			// and must NOT carry the legacy external-repo trace label.
 			for _, banned := range []string{
 				`name = "elem_install"`,
+				`name = "elem_trace_build"`,
 				`"@trace_elem//:trace"`,
 			} {
 				if strings.Contains(string(aBody), banned) {
@@ -181,7 +183,8 @@ config:
 				t.Fatal(err)
 			}
 			for _, want := range []string{
-				`name = "elem_install"`,
+				`name = "elem_trace_build"`,
+				`tags = ["trace_build"]`,
 				`"install_tree.tar"`,
 				`"trace.log"`,
 				`"make-db.txt"`,
@@ -459,8 +462,9 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 
 	// Two install genrules, names suffixed by platform.
 	for _, want := range []string{
-		`name = "elem_install_linux_x86_64"`,
-		`name = "elem_install_darwin_arm64"`,
+		`name = "elem_trace_build_linux_x86_64"`,
+		`name = "elem_trace_build_darwin_arm64"`,
+		`tags = ["trace_build"]`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("multi-platform project B missing %q\n%s", want, got)
@@ -562,10 +566,11 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 	}
 
 	// Legacy single-platform shape MUST NOT appear: no bare
-	// "elem_install" name, no unprefixed install_tree.tar /
-	// trace.log outputs.
+	// "elem_install" or unsuffixed "elem_trace_build" name, no
+	// unprefixed install_tree.tar / trace.log outputs.
 	for _, banned := range []string{
 		`name = "elem_install"`,
+		`name = "elem_trace_build",`,
 		`"install_tree.tar", "trace.log"`, // the un-prefixed outs list
 	} {
 		if strings.Contains(got, banned) {

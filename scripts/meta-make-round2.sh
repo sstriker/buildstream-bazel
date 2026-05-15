@@ -80,7 +80,7 @@ done
 # A-side must NOT contain the legacy install genrule or the
 # legacy load-time @trace_*//:trace external-repo label.
 for banned in \
-    'name = "greet_install"' \
+    'name = "greet_trace_build"' \
     '"@trace_greet//:trace"'; do
     if grep -qF -- "$banned" "$a_build"; then
         echo "meta-make-round2: A-side unexpectedly contains $banned" >&2
@@ -123,7 +123,8 @@ done
 # B-side: install genrule + trace-publish; converter is gone.
 b_build="$B/elements/greet/BUILD.bazel"
 for marker in \
-    'name = "greet_install"' \
+    'name = "greet_trace_build"' \
+    'tags = ["trace_build"]' \
     '"install_tree.tar"' \
     '"trace.log"' \
     '"make-db.txt"' \

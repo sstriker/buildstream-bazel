@@ -148,7 +148,8 @@ func TestMesonRound2InstallBuild_RenderShape(t *testing.T) {
 	got := mesonRound2InstallBuild(elem, tracePlatform{})
 
 	for _, want := range []string{
-		`name = "demo_install"`,
+		`name = "demo_trace_build"`,
+		`tags = ["trace_build"]`,
 		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"//tools:build-tracer"`,
@@ -166,10 +167,12 @@ func TestMesonRound2InstallBuild_RenderShape(t *testing.T) {
 		}
 	}
 	// Single-platform shape: no exec_compatible_with, no path
-	// prefix on outs, env-var fallback for --platform=.
+	// prefix on outs, env-var fallback for --platform=. Also no
+	// per-platform-suffixed name and no legacy `_install` shape.
 	for _, unwanted := range []string{
 		"exec_compatible_with",
-		`name = "demo_install_`,
+		`name = "demo_trace_build_`,
+		`name = "demo_install"`,
 	} {
 		if strings.Contains(got, unwanted) {
 			t.Errorf("mesonRound2InstallBuild single-platform output unexpectedly contains %q\n%s", unwanted, got)
@@ -190,7 +193,8 @@ func TestMesonRound2InstallBuild_MultiPlatform(t *testing.T) {
 	got := mesonRound2InstallBuild(elem, plat)
 
 	for _, want := range []string{
-		`name = "demo_install_linux_x86_64"`,
+		`name = "demo_trace_build_linux_x86_64"`,
+		`tags = ["trace_build"]`,
 		`"linux_x86_64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
 		`exec_compatible_with`,

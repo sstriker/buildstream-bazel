@@ -123,7 +123,8 @@ done
 # step; converter is gone.
 b_build="$B/elements/greet/BUILD.bazel"
 for marker in \
-    'name = "greet_install"' \
+    'name = "greet_trace_build"' \
+    'tags = ["trace_build"]' \
     '"install_tree.tar"' \
     '"trace.log"' \
     '"make-db.txt"' \

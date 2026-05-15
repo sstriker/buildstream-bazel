@@ -180,7 +180,8 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`name = "auto_install"`,
+		`name = "auto_trace_build"`,
+		`tags = ["trace_build"]`,
 		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"make-db.txt"`,
@@ -277,8 +278,9 @@ func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
 
 	// N per-platform install genrules + top-level filegroup.
 	for _, want := range []string{
-		`name = "auto_install_linux_x86_64"`,
-		`name = "auto_install_darwin_arm64"`,
+		`name = "auto_trace_build_linux_x86_64"`,
+		`name = "auto_trace_build_darwin_arm64"`,
+		`tags = ["trace_build"]`,
 		`"linux_x86_64/install_tree.tar"`,
 		`"darwin_arm64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
@@ -308,8 +310,14 @@ func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		}
 	}
 
-	// Legacy single-platform genrule name must NOT appear.
-	if strings.Contains(got, `name = "auto_install"`) {
-		t.Errorf("multi-platform autotools project B unexpectedly contains legacy 'auto_install' name (no platform suffix)\n%s", got)
+	// Legacy single-platform genrule name (`_install` or
+	// unsuffixed `_trace_build`) must NOT appear.
+	for _, banned := range []string{
+		`name = "auto_install"`,
+		`name = "auto_trace_build",`,
+	} {
+		if strings.Contains(got, banned) {
+			t.Errorf("multi-platform autotools project B unexpectedly contains legacy unsuffixed name %q\n%s", banned, got)
+		}
 	}
 }

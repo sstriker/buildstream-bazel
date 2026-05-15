@@ -153,6 +153,16 @@ type pipelineExtension struct {
 	OutputPrefix       string
 	NameSuffix         string
 	ExecCompatibleWith []string
+
+	// IsTraceBuild flips the install genrule into the
+	// "trace_build" naming + tagging shape: target name becomes
+	// "<elem>_trace_build" (instead of the legacy
+	// "<elem>_install") and tags includes "trace_build" so the
+	// convergence driver (see ROADMAP cross-element bootstrap
+	// item) can query the set via Bazel's attr() filter. Set by
+	// the round-2 trace-driven path; round-1 / legacy installs
+	// keep the historical "<elem>_install" naming + no tag.
+	IsTraceBuild bool
 }
 
 func (h pipelineHandler) Kind() string                                 { return h.kindName }
@@ -871,19 +881,34 @@ package(default_visibility = ["//visibility:public"])
 		}
 	}
 
+	// Round-2 (IsTraceBuild) renames the genrule to
+	// "<elem>_trace_build" and tags it with "trace_build" so
+	// `bazel query attr(tags, trace_build, //...)` finds the
+	// set the convergence driver needs to (re-)build. Round-1
+	// / legacy installs keep the historical "<elem>_install"
+	// name + no tag for byte-stable goldens.
+	stem := "install"
+	tagsAttr := ""
+	if ext != nil && ext.IsTraceBuild {
+		stem = "trace_build"
+		tagsAttr = "    tags = [\"trace_build\"],\n"
+	}
+
 	fmt.Fprintf(&b, `genrule(
-    name = "%[1]s_install%[6]s",
+    name = "%[1]s_%[8]s%[6]s",
     srcs = %[3]s,
     outs = %[4]s,
     cmd = %[2]s,
-%[5]s%[7]s)
+%[5]s%[7]s%[9]s)
 `, elem.Name,
 		renderPipelineCmdAttr(dispatch, groups, fuseKey != "", ext),
 		srcsAttr,
 		strList(outs),
 		toolsAttr(tools),
 		nameSuffix,
-		execCompatibleWithAttr(execCompatibleWith))
+		execCompatibleWithAttr(execCompatibleWith),
+		stem,
+		tagsAttr)
 	return b.String()
 }
 
