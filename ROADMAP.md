@@ -45,19 +45,25 @@ transition cleanly.
   operator escape hatch, not converter output; see
   `docs/design/build-output-conventions.md`.)
 
-- **Per-platform fold for round-2 trace-driven kinds.** Mostly
+- **Per-platform fold for round-2 trace-driven kinds —
+  kind:meson Phase B sibling.** The four other kinds are
   shipped (see Done — project A converter fan-out + fold for
   pipelineHandler kinds, project B install fan-out for
   pipelineHandler kinds, kind:autotools per-platform install
   fan-out, kind:cmake Phase B fallback per-platform install
-  fan-out). What's left:
-  - **kind:meson Phase B per-platform render** when Phase B
-    lands.
+  fan-out). kind:meson's Phase B (the install-plan-driven
+  fallback shape) shipped without a multi-platform install
+  fan-out — `mesonRound2InstallBuild` accepts a tracePlatform
+  param and the multi-platform unit test covers the per-
+  platform emission, but no end-to-end multi-platform render
+  gate exists yet. Promote the kind:meson sibling once an
+  FDSDK fixture surfaces the need (mirrors the
+  `meta-cmake-round2-fallback-multiplatform.sh` shape).
 
   The cc_import scalar-select() rendering already handles the
   diverging path-attr case (`.so` vs `.dylib`, multiarch lib
   dirs, arch-tagged binary names) for the install_tree.tar
-  stub shape. Render gates:
+  stub shape. Render gates today:
   `scripts/meta-trace-round2-fold.sh` (pipelineHandler
   kinds) + `scripts/meta-autotools-round2-multiplatform.sh`
   (kind:autotools) +
@@ -188,21 +194,6 @@ transition cleanly.
   advantages forfeited); hermeticity weaker (relies on
   host-side cmake/ninja). Worth re-evaluating once fixtures
   reveal the storage-duplication cost in practice.
-- **kind:meson round-2 fallback.** Phase A (deep introspection-driven
-  render) shipped — see Done. The Phase B sibling for elements whose
-  configure refuses (subprojects, generated_sources from custom
-  targets the v1 lift can't recover, unresolved external deps) is the
-  same shape as kind:cmake's round-2 fallback: project B hosts an
-  install genrule wrapping `meson setup + ninja + meson install
-  --destdir + tar` under build-tracer + inline trace-publish; project
-  A's converter genrule reads `intro-install_plan.json` to emit per-
-  target stubs (`runtime` → `sh_binary` / `cc_binary`, `devel` +
-  `libdir_static` → `cc_import(static_library=…)`, `devel` +
-  `libdir_shared` → `cc_import(shared_library=…)`) referencing the
-  install_tree.tar. The install-plan's `tag` field
-  (`runtime`/`devel`/`man`) gives a richer signal than cmake's
-  destination-path inference; structural recipe parallels
-  `docs/design/cmake-execute-process-round2-fallback.md`.
 ## Later (research / open questions)
 
 - **Generator-expression evaluation in lifted genrules.** The
@@ -760,6 +751,48 @@ transition cleanly.
   only; trace-driven kinds and round-2 fallbacks have a
   separate per-platform fold story queued in Next.
 
+
+- **kind:meson round-2 fallback (Phase B).** Stacked on Phase A.
+  When write-a is given `--meson-round2-fallback` +
+  `--build-tracer-bin` + `--trace-publish-bin` +
+  `--trace-lookup-bin`, every kind:meson element renders with
+  the same A-converter + B-install + round-2-rendezvous split
+  kind:cmake's Phase B (`docs/design/cmake-execute-process-round2-fallback.md`)
+  already established. Project A's converter genrule threads
+  `--unsupported-target-fallback=true` into
+  `convert-element-meson`, so native-lowering refusals
+  (`unsupported-meson-subproject` /
+  `unsupported-meson-custom-target` /
+  `unsupported-meson-generated-sources` /
+  `unsupported-meson-cross-compile` /
+  `unresolved-meson-dependency` /
+  `unsupported-meson-target-type`) produce an install-plan-driven
+  placeholder shape (per-target `cc_import` / `sh_binary` stubs
+  referencing `install_tree.tar` + an extract genrule untarring
+  it) instead of Tier-1 exit. Project B emits a real install
+  genrule wrapping `meson setup --prefix=/ --libdir=lib + ninja +
+  meson install --destdir + tar` under `build-tracer` + inline
+  `trace-publish` (when `CAS_GRPC_ADDR` is set in the action
+  env). The placeholder enumerates per-target stubs from
+  `intro-install_plan.json`'s `tag` field (richer signal than
+  cmake's destination-path inference: `runtime`/`devel`/`man`/...
+  partition the install set unambiguously) and resolves the
+  install-path placeholders (`{libdir_static}`, `{bindir}`,
+  `{includedir}`, ...) against `intro-buildoptions.json`'s
+  `section: directory` rows. The `--prefix=/ --libdir=lib` pin
+  on both the converter's meson invocation AND project B's
+  install genrule keeps the placeholder paths the converter
+  computes aligned with the actual install_tree.tar layout
+  across multiarch hosts. The trace-driven convergence
+  follow-on (teaching convert-element-meson to consume
+  `@trace_<elem>//:trace` to refine refusals into fine cc
+  rules) is staged today — kind-agnostic with kind:cmake's
+  matching wiring — but the trace bytes aren't yet consumed.
+  Render gate: `scripts/meta-meson-round2-fallback.sh`
+  (`make e2e-meta-meson-round2-fallback`); also exercises the
+  standalone converter against a custom-target-refusal fixture
+  to confirm strict mode refuses while the fallback emits the
+  placeholder. Recipe: `docs/design/meson-round2-fallback.md`.
 
 - **kind:pyproject Phase B install-plan fallback (option A:
   per-element auto-detection).** Stacked on Phase A. New
