@@ -2104,16 +2104,3 @@ func stageAllSources(elem *element, dstRoot string) error {
 	}
 	return nil
 }
-
-// hasNonLocalSources reports whether any of elem.Sources is not
-// kind:local. Handlers that need actual source bytes at render
-// time (kind:cmake's narrowing) check this and either error out
-// or fall back to a no-narrowing path.
-func hasNonLocalSources(elem *element) bool {
-	for _, s := range elem.Sources {
-		if s.Kind != "local" {
-			return true
-		}
-	}
-	return false
-}

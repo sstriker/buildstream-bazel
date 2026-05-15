@@ -469,16 +469,6 @@ func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string,
 	return renderPipelineBuild(elem, dispatch, groups, fuseKey, h.extension), nil
 }
 
-// archSuffix shapes an arch identifier into a parenthetical for
-// error messages: empty arch returns empty string, non-empty
-// returns " (arch=<name>)".
-func archSuffix(arch string) string {
-	if arch == "" {
-		return ""
-	}
-	return " (arch=" + arch + ")"
-}
-
 // tupleSuffix formats the dispatch tuple for error messages. Empty
 // tuple → empty string; one entry → " (var=val)"; multiple entries
 // → " (var1=val1, var2=val2, ...)" sorted by name.

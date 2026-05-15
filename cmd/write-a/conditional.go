@@ -899,14 +899,14 @@ func dispatchable(varname string, options map[string]bstOption) bool {
 	return ok
 }
 
-// resolveVarsForTuple is the multi-dispatch-variable extension of
-// resolveVarsForArch: each (varname, value) entry in tuple finds a
-// matching (?): branch (Varname == varname && Arches contains
-// value) and folds the branch's overrides into the variable scope
-// before resolving. The tuple values themselves seed the variable
-// scope (one layer above projectConf, below kindVars) so a
-// reference like `%{target_arch}` resolves to the tuple's
-// target_arch value.
+// resolveVarsForTuple is the multi-dispatch-variable resolver:
+// each (varname, value) entry in tuple finds a matching (?):
+// branch (Varname == varname && Arches contains value) and folds
+// the branch's overrides into the variable scope before
+// resolving. The tuple values themselves seed the variable scope
+// (one layer above projectConf, below kindVars) so a reference
+// like `%{target_arch}` resolves to the tuple's target_arch
+// value.
 //
 // v1 only ever passes a one-entry tuple (per dispatchSpaceForElement's
 // single-variable constraint). The signature accepts arbitrary

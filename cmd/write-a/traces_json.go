@@ -18,9 +18,6 @@ package main
 //     (autotools special case, pipelineHandler-shaped kinds opted
 //     in via traceDrivenSrckeyPatterns, kind:cmake / kind:meson
 //     under their round-2 fallback flags).
-//   - traceWiringActive: the centralized gate that controls whether
-//     rules/traces.bzl + the trace-publish/lookup tool staging
-//     are emitted into the rendered projects.
 
 // traceDrivenSrckeyPatternsForKind returns the per-kind srckey
 // pattern set when the kind is opted into trace-driven round-2,
@@ -67,25 +64,4 @@ func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 		return nil
 	}
 	return ph.traceDrivenSrckeyPatterns
-}
-
-// traceWiringActive reports whether the rendered projects need
-// the trace-publish/lookup plumbing wired in: rules/traces.bzl
-// (containing the trace_load rule definition) and the
-// build-tracer + trace-publish + trace-lookup binaries staged
-// under tools/. Any of the three kinds that participate in the
-// trace-driven path on this run triggers it:
-//
-//   - autotools / pipeline-kind round-2 (traceConfig.round2Enabled),
-//   - kind:cmake Phase B fallback (cmakeConfig.round2FallbackEnabled),
-//   - kind:meson Phase B fallback (mesonConfig.round2FallbackEnabled).
-//
-// Centralized here rather than at each call site so adding a
-// fourth kind that joins the trace-driven set (whenever that
-// happens) only touches one place. Mirrors the
-// traceDrivenSrckeyPatternsForKind ownership above.
-func traceWiringActive() bool {
-	return traceConfig.round2Enabled ||
-		cmakeConfig.round2FallbackEnabled ||
-		mesonConfig.round2FallbackEnabled
 }

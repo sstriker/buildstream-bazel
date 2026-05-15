@@ -429,12 +429,15 @@ Shipped (Case 2 details):
 
 Not in v1 (queued):
 
-- `mesonDepBundleLabels` still filters to `kind == "meson"`.
-  Extending it follows the same pattern as `cmakeDepBundleLabels`
-  but exercises a different consumer shape (the meson element's
-  configure step needs `PKG_CONFIG_PATH`, not
-  `CMAKE_PREFIX_PATH`). Lands when an FDSDK fixture surfaces a
-  meson-element-with-trace-driven-dep case.
+- kind:meson consumers of trace-driven deps don't stage the
+  dep's bundle yet. The cmake-side helper (`cmakeDepBundleLabels`)
+  emits `:<dep>_trace_load` for trace-driven deps; the meson
+  side has no analogous helper today. Adding one follows the
+  same pattern as the cmake side but exercises a different
+  consumer shape (the meson element's configure step needs
+  `PKG_CONFIG_PATH`, not `CMAKE_PREFIX_PATH`). Lands when an
+  FDSDK fixture surfaces a meson-element-with-trace-driven-dep
+  case.
 
 - Fixpoint driver (PR-5). v1 ships the publish/consume wire
   contract; the convergence loop that bumps
