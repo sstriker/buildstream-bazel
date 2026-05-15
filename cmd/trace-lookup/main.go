@@ -71,14 +71,15 @@ func main() {
 	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace. Must match the publishing side's --platform.")
 	outTrace := flag.String("out-trace", "", "action-time materialize mode: destination path for the trace.log file (extracted from the AC-resolved Directory). When set, the tool runs in materialize mode instead of legacy stdout-print mode.")
 	outMakeDB := flag.String("out-make-db", "", "action-time materialize mode: destination path for the make-db.txt file. When set, the tool extracts make-db.txt from the resolved Directory; on AC miss OR Directory without make-db.txt entry, a zero-byte file is written so the declared Bazel output exists. Trace-driven kinds (autotools / make / makemaker / modulebuild / manual / script) set this; cmake round-2 fallback omits it (the cmake converter derives IR from the trace + cmake File API, no make-db).")
-	outMarker := flag.String("out-empty-marker", "", "action-time materialize mode: destination path for the hit/miss stamp file. The file always exists post-action; its contents are \"hit\\n\" on AC hit, \"miss\\n\" on AC miss. The driver loop reads markers to compute the frontier of elements still needing a trace_build.")
+	outConfigBundle := flag.String("out-config-bundle", "", "action-time materialize mode: destination path for the cmake-config-bundle.tar. Queries the second AC key (SyntheticConfigDigest, distinct argv0 from the trace key); on AC hit, copies the published bundle bytes to the destination; on AC miss, writes a zero-byte file. The trace-side and bundle-side lookups are independent — one can hit while the other misses, which is normal during round-2 boot (the first build publishes both atomically, but eviction or selective republish can leave one in CAS without the other).")
+	outMarker := flag.String("out-empty-marker", "", "action-time materialize mode: destination path for the hit/miss stamp file. The file always exists post-action; its contents are \"hit\\n\" on AC hit (trace), \"miss\\n\" on AC miss (trace). The driver loop reads markers to compute the frontier of elements still needing a trace_build. The config bundle's hit/miss isn't reported through this marker — the bundle is a secondary signal; consumers gate on the bundle bytes being non-empty rather than on a marker.")
 	flag.Parse()
 
 	if *srckey == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
-	materializeMode := *outTrace != "" || *outMakeDB != "" || *outMarker != ""
+	materializeMode := *outTrace != "" || *outMakeDB != "" || *outMarker != "" || *outConfigBundle != ""
 	if materializeMode && *outMarker == "" {
 		fmt.Fprintln(os.Stderr, "trace-lookup: materialize mode requires --out-empty-marker (the action needs a declared output that exists on both hit and miss)")
 		os.Exit(2)
@@ -142,6 +143,19 @@ func main() {
 				fmt.Fprintf(os.Stderr, "trace-lookup: %v\n", werr)
 				os.Exit(1)
 			}
+			// Trace missed; the config bundle is published under a
+			// separate AC key (SyntheticConfigDigest). Try it
+			// independently — one can hit while the other misses,
+			// e.g. when a publisher published the bundle but the
+			// trace's CAS blob got evicted, or vice versa. Miss
+			// behavior: an empty bundle (zero-byte) at the
+			// destination, matching the trace miss shape.
+			if *outConfigBundle != "" {
+				if err := materializeConfigBundle(ctx, store, *srckey, *platform, *outConfigBundle); err != nil {
+					fmt.Fprintf(os.Stderr, "trace-lookup: %v\n", err)
+					os.Exit(1)
+				}
+			}
 		}
 		return
 	}
@@ -158,6 +172,71 @@ func main() {
 		fmt.Fprintf(os.Stderr, "trace-lookup: %v\n", err)
 		os.Exit(1)
 	}
+	// Independent config-bundle lookup: same srckey + platform,
+	// different argv0-namespaced AC key. The two outputs are
+	// uncorrelated from Bazel's perspective — declaring them as
+	// distinct outputs of the same action keeps lookup parallelism
+	// implicit (they share the GRPC connection here, not separate
+	// actions). On a miss, the bundle output is zero-byte; on a
+	// hit, the published bundle.tar bytes get copied through.
+	if *outConfigBundle != "" {
+		if err := materializeConfigBundle(ctx, store, *srckey, *platform, *outConfigBundle); err != nil {
+			fmt.Fprintf(os.Stderr, "trace-lookup: %v\n", err)
+			os.Exit(1)
+		}
+	}
+}
+
+// materializeConfigBundle does the independent config-bundle
+// lookup + materialize. Hit: copies the published
+// cmake-config-bundle.tar bytes to outPath. Miss (no AC entry,
+// blob evicted, or no CAS endpoint): writes a zero-byte file at
+// outPath so Bazel's declared-outputs contract holds. Consumers
+// (downstream cmake-element converter genrules) treat an empty
+// bundle as "no config bundle published for this dep" and skip
+// staging it into $PREFIX.
+//
+// Errors only on hard failures (gRPC, blob-fetch). AC miss is
+// not an error — same shape as the trace-side miss.
+func materializeConfigBundle(ctx context.Context, store cas.Store, srckey, platform, outPath string) error {
+	key, err := tracenorm.SyntheticConfigDigest(srckey, platform)
+	if err != nil {
+		return fmt.Errorf("synth-config-key: %w", err)
+	}
+	ar, err := store.GetActionResult(ctx, key)
+	if err != nil {
+		if errors.Is(err, cas.ErrNotFound) {
+			return writeEmptyFile(outPath)
+		}
+		return fmt.Errorf("get-ac config bundle: %w", err)
+	}
+	if len(ar.OutputDirectories) == 0 || ar.OutputDirectories[0].RootDirectoryDigest == nil {
+		return writeEmptyFile(outPath)
+	}
+	rootDigest := ar.OutputDirectories[0].RootDirectoryDigest
+	missing, err := store.FindMissing(ctx, []*cas.Digest{rootDigest})
+	if err != nil {
+		return fmt.Errorf("findmissing config bundle: %w", err)
+	}
+	if len(missing) > 0 {
+		// Bundle's root Directory blob was evicted; treat as miss.
+		return writeEmptyFile(outPath)
+	}
+	scratch, err := os.MkdirTemp("", "config-bundle-*")
+	if err != nil {
+		return fmt.Errorf("config-bundle scratch: %w", err)
+	}
+	defer os.RemoveAll(scratch)
+	if err := cas.MaterializeDirectory(ctx, store, rootDigest, scratch); err != nil {
+		return fmt.Errorf("materialize config bundle: %w", err)
+	}
+	src := filepath.Join(scratch, "cmake-config-bundle.tar")
+	if _, statErr := os.Stat(src); statErr != nil {
+		// AC hit but the published Directory didn't carry the
+		// expected file. Conservative: zero-byte output.
+		return writeEmptyFile(outPath)
+	}
+	return copyEntry(src, outPath)
 }
 
 // writeMissOutputs writes the miss-side action outputs: an empty

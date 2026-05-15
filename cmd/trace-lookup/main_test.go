@@ -78,6 +78,74 @@ func TestLookup_MissReturnsNil(t *testing.T) {
 	}
 }
 
+// TestMaterializeConfigBundle_RoundtripThroughLocalStore covers
+// the config-bundle leg of the round-2 rendezvous: a bundle
+// staged + uploaded under SyntheticConfigDigest is materialized
+// back into the caller-supplied path by trace-lookup's
+// --out-config-bundle. The bundle's keyspace is distinct from
+// the trace's, so this test exercises the second AC key
+// independently.
+func TestMaterializeConfigBundle_RoundtripThroughLocalStore(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Hand-publish the bundle: stage a flat dir containing
+	// cmake-config-bundle.tar, upload, write the AC entry under
+	// the config-bundle synthetic digest.
+	stage := t.TempDir()
+	bundleBody := []byte("synthesized bundle bytes\n")
+	if err := os.WriteFile(filepath.Join(stage, "cmake-config-bundle.tar"), bundleBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootDigest, err := cas.UploadDir(ctx, store, stage)
+	if err != nil {
+		t.Fatalf("uploaddir: %v", err)
+	}
+	key, err := tracenorm.SyntheticConfigDigest("srckey-cfg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateActionResult(ctx, key, &repb.ActionResult{
+		OutputDirectories: []*repb.OutputDirectory{
+			{Path: "config-bundle", RootDirectoryDigest: rootDigest},
+		},
+	}); err != nil {
+		t.Fatalf("update-ar: %v", err)
+	}
+
+	outBundle := filepath.Join(t.TempDir(), "cmake-config-bundle.tar")
+	if err := materializeConfigBundle(ctx, store, "srckey-cfg", "", outBundle); err != nil {
+		t.Fatalf("materializeConfigBundle: %v", err)
+	}
+	got, _ := os.ReadFile(outBundle)
+	if string(got) != string(bundleBody) {
+		t.Errorf("bundle bytes = %q want %q", got, bundleBody)
+	}
+}
+
+// TestMaterializeConfigBundle_MissProducesEmptyFile asserts the
+// miss-side: AC entry absent at the config-bundle key (the trace
+// might still hit; they're independent). materializeConfigBundle
+// writes a zero-byte file at the destination so Bazel's
+// declared-outputs contract holds.
+func TestMaterializeConfigBundle_MissProducesEmptyFile(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	outBundle := filepath.Join(t.TempDir(), "cmake-config-bundle.tar")
+	if err := materializeConfigBundle(ctx, store, "never-published", "", outBundle); err != nil {
+		t.Fatalf("materializeConfigBundle: %v", err)
+	}
+	got, _ := os.ReadFile(outBundle)
+	if len(got) != 0 {
+		t.Errorf("bundle = %q want empty (miss)", got)
+	}
+}
+
 // TestMaterializeHit_CopiesEntriesAndWritesMarker covers the
 // action-time materialize mode's happy path: trace.log and
 // make-db.txt land at the requested output paths, the marker

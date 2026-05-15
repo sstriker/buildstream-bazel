@@ -139,7 +139,9 @@ for marker in \
     'ninja -C' \
     'meson install' \
     'CAS_GRPC_ADDR' \
-    '--srckey='; do
+    '--srckey=' \
+    '--config-bundle=' \
+    'CONFIG_BUNDLE_DIR'; do
     if ! grep -qF -- "$marker" "$b_build"; then
         echo "meta-meson-round2-fallback: B-side BUILD missing marker: $marker" >&2
         cat "$b_build" >&2

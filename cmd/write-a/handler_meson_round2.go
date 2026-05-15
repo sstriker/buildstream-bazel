@@ -224,30 +224,38 @@ genrule(
         # this genrule. trace-publish reads it from here.
         cp -L "$$MESON_TRACE" "$$EXEC_ROOT/$(location %[4]strace.log)"
 
+        # Synthesize a cmake-config bundle from the install tree
+        # (cross-element configure-step bootstrap rendezvous; see
+        # docs/design/cross-element-config-rendezvous.md). For
+        # kind:meson the bundle's primary content is pkg-config
+        # files under lib/pkgconfig/; an installed meson package's
+        # downstream consumers find it via PKG_CONFIG_PATH. The
+        # bundle publishes under SyntheticConfigDigest — a
+        # separate AC keyspace from the trace.
+        export CONFIG_BUNDLE_DIR="$$(mktemp -d)"
+        if [ -d "$$INSTALL_ROOT/lib/pkgconfig" ]; then
+            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
+            cp -r "$$INSTALL_ROOT/lib/pkgconfig"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
+        fi
+        if [ -d "$$INSTALL_ROOT/lib/cmake" ]; then
+            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/cmake"
+            cp -r "$$INSTALL_ROOT/lib/cmake"/. "$$CONFIG_BUNDLE_DIR/lib/cmake/" 2>/dev/null || true
+        fi
+        export CONFIG_BUNDLE_TAR="$$(mktemp)"
+        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+            -cf "$$CONFIG_BUNDLE_TAR" -C "$$CONFIG_BUNDLE_DIR" .
+
         # Publish to the AC iff a remote is configured. Same
         # short-circuit pattern kind:autotools / kind:cmake
-        # round-2 use: empty CAS_GRPC_ADDR ⇒ skip (e.g. local dev
-        # without buildbarn); the build succeeds, no AC entry is
-        # written, and the next render of project A sees a miss
-        # → re-runs this install genrule. trace-publish itself
-        # ALSO short-circuits on empty --cas; checking here keeps
-        # the genrule output readable when debugging.
+        # round-2 use.
         if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
             cd "$$EXEC_ROOT"
-            # --platform= partitions the synthetic AC keyspace per
-            # target platform. Multi-platform fan-out bakes the
-            # platform tag literally into this argv so each of N
-            # per-platform genrules publishes under its own tag.
-            # Single-platform legacy mode reads
-            # CMAKE_TO_BAZEL_PLATFORM from --action_env (env-var
-            # fallback can't differ across N parallel actions in
-            # one Bazel build, hence the explicit literal bake under
-            # multi-platform).
             $(location //tools:trace-publish) \\
                 --cas="$${CAS_GRPC_ADDR}" \\
                 --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \\
                 --platform="%[5]s" \\
-                --trace="$(location %[4]strace.log)" >/dev/null
+                --trace="$(location %[4]strace.log)" \\
+                --config-bundle="$$CONFIG_BUNDLE_TAR" >/dev/null
         fi
     """,
 )

@@ -96,3 +96,62 @@ func TestSyntheticActionDigest_EmptyPlatformPreservesLegacyKeyspace(t *testing.T
 		t.Errorf("empty-platform call collided with platform-tagged call: both → %s/%d", d1.Hash, d1.SizeBytes)
 	}
 }
+
+// TestSyntheticConfigDigest_DistinctFromTraceDigest pins the
+// keyspace-partitioning contract for the config bundle: a trace
+// and a config bundle for the same (srckey, platform) coexist
+// at distinct AC keys. The distinction comes from the argv0
+// marker — trace uses "cmake-to-bazel/trace-publish-marker/v1",
+// config bundle uses "cmake-to-bazel/config-publish-marker/v1".
+// Pre-fix this test would observe one digest for both shapes
+// and the second publish would overwrite the first.
+func TestSyntheticConfigDigest_DistinctFromTraceDigest(t *testing.T) {
+	traceKey, err := SyntheticActionDigest("srckey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgKey, err := SyntheticConfigDigest("srckey", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if traceKey.Hash == cfgKey.Hash {
+		t.Errorf("trace and config-bundle keys collided for same srckey:\n  trace=%s/%d\n  cfg=  %s/%d",
+			traceKey.Hash, traceKey.SizeBytes, cfgKey.Hash, cfgKey.SizeBytes)
+	}
+}
+
+// TestSyntheticConfigDigest_DeterministicForSameSrckey verifies
+// the config-bundle key is also deterministic across calls (same
+// load-bearing property as SyntheticActionDigest).
+func TestSyntheticConfigDigest_DeterministicForSameSrckey(t *testing.T) {
+	d1, err := SyntheticConfigDigest("abc", "linux_x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := SyntheticConfigDigest("abc", "linux_x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Hash != d2.Hash || d1.SizeBytes != d2.SizeBytes {
+		t.Errorf("non-deterministic config-bundle digest:\n  d1=%s/%d\n  d2=%s/%d",
+			d1.Hash, d1.SizeBytes, d2.Hash, d2.SizeBytes)
+	}
+}
+
+// TestSyntheticConfigDigest_PlatformPartitions: same shape as the
+// trace-side platform partitioning. Different platforms' bundles
+// for the same srckey land at distinct AC keys.
+func TestSyntheticConfigDigest_PlatformPartitions(t *testing.T) {
+	linux, err := SyntheticConfigDigest("src", "linux_x86_64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	darwin, err := SyntheticConfigDigest("src", "darwin_arm64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if linux.Hash == darwin.Hash {
+		t.Errorf("config-bundle keys for different platforms collided: %s/%d",
+			linux.Hash, linux.SizeBytes)
+	}
+}

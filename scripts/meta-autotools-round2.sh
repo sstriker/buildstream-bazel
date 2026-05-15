@@ -131,7 +131,9 @@ for marker in \
     '"make-db.txt"' \
     '"//tools:build-tracer"' \
     '"//tools:trace-publish"' \
-    'CAS_GRPC_ADDR'; do
+    'CAS_GRPC_ADDR' \
+    '--config-bundle=' \
+    'CONFIG_BUNDLE_DIR'; do
     if ! grep -qF -- "$marker" "$b_build"; then
         echo "meta-autotools-round2: B-side BUILD missing marker: $marker" >&2
         cat "$b_build" >&2
