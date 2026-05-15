@@ -111,4 +111,26 @@ func TestCmakeDepBundleLabels_TraceDrivenDep(t *testing.T) {
 			t.Errorf("dep BUILD missing trace_load marker %q\n%s", want, depBody)
 		}
 	}
+
+	// The consumer's dep-extract loop must filter by basename +
+	// non-empty before running tar -xf. The :<dep>_trace_load
+	// label expands to four files (trace.log, marker, make-db.txt,
+	// cmake-config-bundle.tar) and only the last is a tar; running
+	// tar -xf on the others would print errors and silently no-op
+	// the bundle staging (the cross-kind feature this PR exists to
+	// fix). The non-empty check also handles AC-miss zero-byte
+	// bundles cleanly.
+	for _, want := range []string{
+		`for tar in $(locations //elements/auto-dep:auto-dep_trace_load)`,
+		`if [ "$(basename "$tar")" = "cmake-config-bundle.tar" ] && [ -s "$tar" ]`,
+		`tar -xf "$tar" -C "$PREFIX"`,
+	} {
+		// Genrule cmd uses $$ to escape literal $; render-time
+		// output has $$, but we assert against the single-$ form
+		// after stripping for readability.
+		got := strings.ReplaceAll(string(consumerBody), "$$", "$")
+		if !strings.Contains(got, want) {
+			t.Errorf("consumer dep-extract loop missing %q (basename-and-nonempty filter must run before tar -xf)\n%s", want, got)
+		}
+	}
 }

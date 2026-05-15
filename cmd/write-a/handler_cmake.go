@@ -515,8 +515,20 @@ filegroup(
 		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
 `)
 		for _, dep := range cmakeDepLabels {
+			// Filter by basename + non-empty: the
+			// :<dep>_trace_load label expands to multiple
+			// outputs (trace.log, marker, make-db.txt,
+			// cmake-config-bundle.tar) and only the tar is a
+			// valid archive. The non-empty check also handles
+			// AC-miss zero-byte bundles cleanly (consumers
+			// "detect empty bundles and skip dep-stage" per the
+			// design doc). The kind:cmake :cmake_config_bundle
+			// filegroup is single-file so the basename filter
+			// is a no-op there.
 			fmt.Fprintf(&depExtract, `        for tar in $(locations %s); do
-            tar -xf "$$tar" -C "$$PREFIX"
+            if [ "$$(basename "$$tar")" = "cmake-config-bundle.tar" ] && [ -s "$$tar" ]; then
+                tar -xf "$$tar" -C "$$PREFIX"
+            fi
         done
 `, dep.Label)
 		}
