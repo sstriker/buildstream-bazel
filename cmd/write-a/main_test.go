@@ -1202,11 +1202,12 @@ func TestWriter_BazelElementMissingBuildPlaceholder(t *testing.T) {
 }
 
 // TestWriter_BuildFilesDirOverride covers --build-files-dir:
-// an operator-supplied <elem-name>.BUILD.bazel re-stamps the
-// element to kind:bazel, project A becomes a no-target marker,
-// and project B's elements/<name>/BUILD.bazel is the override
-// content (with the element's kind:local sources still staged
-// alongside so the override's srcs=[...] references resolve).
+// an operator-supplied <dir>/<name>/BUILD.bazel subtree
+// re-stamps the element to kind:bazel, project A becomes a
+// no-target marker, and project B's elements/<name>/ carries
+// the override's contents (with the element's kind:local
+// sources still staged underneath so the override's
+// srcs=[...] references resolve).
 func TestWriter_BuildFilesDirOverride(t *testing.T) {
 	tmp := t.TempDir()
 	// kind:cmake source tree — a hand-authored CMakeLists.txt that
@@ -1231,8 +1232,8 @@ func TestWriter_BuildFilesDirOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	overrideDir := filepath.Join(tmp, "overrides")
-	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+	elemOverride := filepath.Join(tmp, "overrides", "hello")
+	if err := os.MkdirAll(elemOverride, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	overrideBuild := `load("@rules_cc//cc:defs.bzl", "cc_binary")
@@ -1243,7 +1244,7 @@ cc_binary(
     visibility = ["//visibility:public"],
 )
 `
-	if err := os.WriteFile(filepath.Join(overrideDir, "hello.BUILD.bazel"),
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
 		[]byte(overrideBuild), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1257,14 +1258,14 @@ cc_binary(
 	if len(g.Elements[0].Sources) != 1 || g.Elements[0].Sources[0].AbsPath == "" {
 		t.Fatalf("kind:cmake source not resolved before override: %#v", g.Elements[0].Sources)
 	}
-	if err := applyBuildFileOverrides(g, overrideDir); err != nil {
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
 		t.Fatalf("applyBuildFileOverrides: %v", err)
 	}
 	if g.Elements[0].Bst.Kind != "bazel" {
 		t.Fatalf("after override Kind = %q, want bazel", g.Elements[0].Bst.Kind)
 	}
-	if g.Elements[0].OverrideBuildPath == "" {
-		t.Fatalf("after override OverrideBuildPath unset")
+	if g.Elements[0].OverrideBuildDir == "" {
+		t.Fatalf("after override OverrideBuildDir unset")
 	}
 
 	binPath := fakeConvertBin(t, tmp)
@@ -1300,19 +1301,91 @@ cc_binary(
 	}
 }
 
+// TestWriter_BuildFilesDirOverrideSubpackages covers the
+// multi-BUILD case: an override subtree with a top-level
+// BUILD.bazel plus a subpackage BUILD.bazel — both copy
+// across, so project B can host //elements/<name>:top AND
+// //elements/<name>/sub:nested in one element.
+func TestWriter_BuildFilesDirOverrideSubpackages(t *testing.T) {
+	tmp := t.TempDir()
+	bst := filepath.Join(tmp, "multipkg.bst")
+	if err := os.WriteFile(bst, []byte("kind: stack\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	elemOverride := filepath.Join(tmp, "overrides", "multipkg")
+	if err := os.MkdirAll(filepath.Join(elemOverride, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	topBuild := `filegroup(name = "top", visibility = ["//visibility:public"])
+`
+	subBuild := `filegroup(name = "nested", visibility = ["//visibility:public"])
+`
+	helperBzl := `def helper():
+    pass
+`
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
+		[]byte(topBuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elemOverride, "sub", "BUILD.bazel"),
+		[]byte(subBuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elemOverride, "helper.bzl"),
+		[]byte(helperBzl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
+		t.Fatalf("applyBuildFileOverrides: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	if err := writeProjectA(g, filepath.Join(tmp, "A"), binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	top, err := os.ReadFile(filepath.Join(outB, "elements/multipkg/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(top), `name = "top"`) {
+		t.Errorf("top-level override BUILD not in elements/multipkg/BUILD.bazel:\n%s", top)
+	}
+	sub, err := os.ReadFile(filepath.Join(outB, "elements/multipkg/sub/BUILD.bazel"))
+	if err != nil {
+		t.Fatalf("subpackage BUILD not copied: %v", err)
+	}
+	if !strings.Contains(string(sub), `name = "nested"`) {
+		t.Errorf("subpackage override BUILD wrong:\n%s", sub)
+	}
+	if _, err := os.Stat(filepath.Join(outB, "elements/multipkg/helper.bzl")); err != nil {
+		t.Errorf("helper.bzl not copied alongside BUILD: %v", err)
+	}
+}
+
 // TestWriter_BuildFilesDirOverrideShadowsSourceBuild covers
 // the case where the staged source tree already carried a
 // BUILD.bazel (a real kind:bazel-style passthrough tree): the
 // override wins and the source's BUILD doesn't linger next to
-// it.
+// it. Also covers the BUILD-vs-BUILD.bazel collision: when
+// the source ships `BUILD` and the override ships
+// `BUILD.bazel`, Bazel rejects packages declaring both, so
+// RenderB strips the stale name before the copyTree lands.
 func TestWriter_BuildFilesDirOverrideShadowsSourceBuild(t *testing.T) {
 	tmp := t.TempDir()
 	srcDir := filepath.Join(tmp, "src")
 	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(srcDir, "BUILD.bazel"),
-		[]byte("# stale source BUILD that should be shadowed\nfilegroup(name = \"stale\")\n"),
+	if err := os.WriteFile(filepath.Join(srcDir, "BUILD"),
+		[]byte("# stale source BUILD (no .bazel suffix) to verify the strip\n"+
+			"filegroup(name = \"stale\")\n"),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1325,8 +1398,8 @@ func TestWriter_BuildFilesDirOverrideShadowsSourceBuild(t *testing.T) {
 	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	overrideDir := filepath.Join(tmp, "overrides")
-	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+	elemOverride := filepath.Join(tmp, "overrides", "shadowed")
+	if err := os.MkdirAll(elemOverride, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	overrideBuild := `load("@rules_cc//cc:defs.bzl", "cc_binary")
@@ -1337,7 +1410,7 @@ cc_binary(
     visibility = ["//visibility:public"],
 )
 `
-	if err := os.WriteFile(filepath.Join(overrideDir, "shadowed.BUILD.bazel"),
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
 		[]byte(overrideBuild), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1345,7 +1418,7 @@ cc_binary(
 	if err != nil {
 		t.Fatalf("loadGraph: %v", err)
 	}
-	if err := applyBuildFileOverrides(g, overrideDir); err != nil {
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
 		t.Fatalf("applyBuildFileOverrides: %v", err)
 	}
 	binPath := fakeConvertBin(t, tmp)
@@ -1360,18 +1433,18 @@ cc_binary(
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(got), "stale") {
-		t.Errorf("source's stale BUILD.bazel leaked through the override:\n%s", got)
-	}
 	if !strings.Contains(string(got), `cc_binary(`) {
 		t.Errorf("override content not present:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(outB, "elements/shadowed/BUILD")); !os.IsNotExist(err) {
+		t.Errorf("stale source BUILD wasn't stripped; would collide with the override's BUILD.bazel: err=%v", err)
 	}
 }
 
 // TestWriter_BuildFilesDirOverrideMissingDoesNothing covers
 // the no-override path: --build-files-dir set but no matching
-// per-element file means the element renders under its declared
-// kind unchanged.
+// per-element subtree means the element renders under its
+// declared kind unchanged.
 func TestWriter_BuildFilesDirOverrideMissingDoesNothing(t *testing.T) {
 	tmp := t.TempDir()
 	srcDir := filepath.Join(tmp, "src")
@@ -1392,6 +1465,12 @@ func TestWriter_BuildFilesDirOverrideMissingDoesNothing(t *testing.T) {
 	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A subdirectory exists for a *different* name — make sure
+	// applyBuildFileOverrides doesn't accidentally treat any
+	// stray dir as a match.
+	if err := os.MkdirAll(filepath.Join(overrideDir, "someOther"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	g, err := loadGraph([]string{bst}, "")
 	if err != nil {
 		t.Fatalf("loadGraph: %v", err)
@@ -1399,9 +1478,9 @@ func TestWriter_BuildFilesDirOverrideMissingDoesNothing(t *testing.T) {
 	if err := applyBuildFileOverrides(g, overrideDir); err != nil {
 		t.Fatalf("applyBuildFileOverrides: %v", err)
 	}
-	if g.Elements[0].OverrideBuildPath != "" {
-		t.Errorf("OverrideBuildPath should be unset when no override exists, got %q",
-			g.Elements[0].OverrideBuildPath)
+	if g.Elements[0].OverrideBuildDir != "" {
+		t.Errorf("OverrideBuildDir should be unset when no override exists, got %q",
+			g.Elements[0].OverrideBuildDir)
 	}
 	if g.Elements[0].Bst.Kind != "bazel" {
 		t.Errorf("Kind should stay at declared value, got %q", g.Elements[0].Bst.Kind)

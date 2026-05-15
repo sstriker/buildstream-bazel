@@ -1,0 +1,20 @@
+# Operator-supplied BUILD for the `override` element. Looked up
+# by --build-files-dir at <dir>/<elem.Name>/BUILD.bazel; the
+# matching .bst declares kind:manual but the override flips it
+# to kind:bazel and write-a copies this subtree (including any
+# subpackage BUILDs and .bzl helpers under it) into project B's
+# elements/override/.
+load("@rules_cc//cc:defs.bzl", "cc_binary")
+load(":defs.bzl", "GREETING")
+
+# GREETING is a constant from the override's defs.bzl, exercised
+# so the render gate's grep for "kind:bazel override OK" finds it
+# inline rather than buried only in greet.c. The .bzl alongside
+# the BUILD is part of the override subtree; copyTree carries it.
+print("override package loaded: %s" % GREETING)
+
+cc_binary(
+    name = "override",
+    srcs = ["greet.c"],
+    visibility = ["//visibility:public"],
+)

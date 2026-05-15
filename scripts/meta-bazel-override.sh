@@ -2,20 +2,24 @@
 # meta-bazel-override.sh — acceptance gate for --build-files-dir.
 #
 # Tests the per-element BUILD override directory: a kind:manual
-# .bst paired with a sibling build-files/<name>.BUILD.bazel gets
-# re-stamped by write-a to kind:bazel, and the supplied BUILD
-# becomes project B's elements/<name>/BUILD.bazel. Sources stage
-# alongside so the override's srcs = [...] resolves.
+# .bst paired with a sibling build-files/<name>/ subtree (whose
+# top-level holds a BUILD.bazel) gets re-stamped by write-a to
+# kind:bazel, and the entire subtree copies into project B's
+# elements/<name>/. Sources stage first so the override's
+# srcs = [...] resolves; the override shadows on top. The
+# fixture's override carries a defs.bzl alongside the BUILD to
+# exercise the "operator can ship non-BUILD files too" part of
+# the contract.
 #
 # Asserts:
 #   1. Project A's elements/<name>/BUILD.bazel is a no-target
 #      marker (kind:bazel's project-A shape — no genrule fired).
 #   2. Project B's elements/<name>/BUILD.bazel carries the
-#      operator's cc_binary verbatim (modulo writeFile's
-#      buildifier canonicalization).
-#   3. The element's kind:local source tree staged alongside
+#      operator's cc_binary.
+#   3. The override's sibling defs.bzl copied across alongside.
+#   4. The element's kind:local source tree staged underneath
 #      (greet.c lands in project B).
-#   4. bazel build over project B's element succeeds (the
+#   5. bazel build over project B's element succeeds (the
 #      cc_binary compiles + runs + prints the expected output).
 #
 # Bazel-availability gating + META_BAZEL_*_ARGS overrides mirror
@@ -61,6 +65,11 @@ fi
 if ! grep -q '"greet.c"' "$B/elements/override/BUILD.bazel"; then
     echo "meta-bazel-override: project B BUILD didn't carry the override's srcs = [\"greet.c\"]" >&2
     cat "$B/elements/override/BUILD.bazel" >&2
+    exit 1
+fi
+if [ ! -f "$B/elements/override/defs.bzl" ]; then
+    echo "meta-bazel-override: override's sibling defs.bzl not copied across (the subtree-copy contract is broken)" >&2
+    ls -la "$B/elements/override/" >&2
     exit 1
 fi
 if [ ! -f "$B/elements/override/greet.c" ]; then
