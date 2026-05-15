@@ -525,6 +525,14 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// elided sources; downstream the cc_library renders with
 		// the remaining (real) sources, or hdrs-only if this was
 		// the only source.
+		//
+		// Scope: the elision is intentionally build-dir-specific.
+		// Absolute paths under cmakeSrc (or any other root) fall
+		// through to the append below; Bazel rejects absolute
+		// labels at load time with a clear error, which is the
+		// right surfacing for "consumer named a source outside
+		// its package" — a different bug shape that an audit-tag
+		// silent-drop would obscure.
 		if cmakeBuild != "" && filepath.IsAbs(src.Path) {
 			if _, inside := relativeIfInside(cmakeBuild, src.Path); inside {
 				elidedBuildDirSrc = true
