@@ -94,66 +94,6 @@ transition cleanly.
   → end-state B. Both deliverables queued behind the
   implementation so visuals reflect the real thing, not the
   design's intent.
-- **Cross-element configure-step bootstrap for non-cmake deps.**
-  A `kind:cmake` / `kind:meson` element converts in pass 2 by
-  running cmake/meson *configure*, which needs build-config
-  metadata (`<Pkg>Config.cmake` / `.pc` / real headers+libs) for
-  every `find_package` / `pkg_check_modules` dep. For a
-  `kind:cmake` dep that metadata is a pass-2 codemodel artifact
-  (`cmake_config_bundle`, shipped). For a trace-based dep
-  (autotools/make/manual/script/makemaker/modulebuild) it only
-  exists after the dep's pass-3 install build — a pass-ordering
-  inversion, and `cmakeDepBundleLabels` skips non-cmake deps
-  silently today. The plan resolved across the design discussion
-  to a unified mechanism that also reshapes the existing
-  autotools round-2 rendezvous:
-  - **Paired `trace_load` / `trace_build` rules per trace-based
-    element.** `trace_load` has narrow inputs (srckey-view),
-    does an action-time `GetActionResult` against the synthetic-
-    key AC, emits trace + `cmake-config-bundle.tar` (synthesized
-    from the real install tree) **or** a typed empty marker.
-    `trace_build` has full sources, runs configure+make+install
-    under build-tracer, publishes to the same synthetic-key AC.
-    The converter's `srcs` references `trace_load`, never
-    `trace_build`. Replaces the `_trace_repo` repo rule (the AC
-    lookup moves from load time to action time, ending the
-    analysis-cache churn between driver passes).
-  - **Converter rules package.** Today's rendered-into-each-
-    project `rules/*.bzl` becomes a versioned package in this
-    repo (`rules_buildstream_bazel` or similar), referenced by
-    project A's `MODULE.bazel` via `bazel_dep`. Single source of
-    truth for `trace_load` / `trace_build` / `zero_files` /
-    `sources` semantics; evolve the implementation without
-    touching every project's `rules/`.
-  - **Uniform driver loop.** `bazel build //...:trace_load`
-    populates the AC view; the driver queries for elements
-    whose `trace_load` returned the typed empty marker;
-    `bazel build //elements/X:trace_build` for each; bump an
-    action-env generation token; retry. Logic is uniform across
-    kinds (the per-kind dispatch lives in the rule macro, not
-    the driver). Termination is when the empty-marker set is
-    empty.
-  - **`cmd/finalize-b` as input→output materializer.** Takes a
-    converged project B at `--in <path>` and writes a stripped
-    standalone Bazel project at `--out <dest>`: removes dead
-    `trace_build` targets (those whose element has fine-grained
-    cc rules and no filegroup-shape consumer), prunes the
-    converter-rules-package `bazel_dep` once no surviving target
-    references it, drops conversion-era intermediate filegroups.
-    Idempotent and reversible (input untouched). The deliverable
-    handover step.
-  Load-bearing invariants: srckey narrowing stays; the
-  synthetic-key AC (now keyed for both the trace and the
-  bundle, partitioned by srckey + platform) stays — the Bazel
-  anti-pattern analysis (an action whose hermetic key is narrow
-  while its commands read full sources can't be made cheap
-  inside Bazel's AC) means the rendezvous is fundamental, not a
-  workaround for the two-project topology. The all-cmake case
-  is unchanged from today (`cmake_config_bundle` rides direct
-  Bazel `srcs` edges; no rendezvous involved). Design-trail
-  docs (`docs/design/cross-element-config-rendezvous.md`,
-  `staged-pipeline.md`) capture the evolution; they consolidate
-  into a single architecture doc per the docs-cleanup item.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
@@ -262,6 +202,51 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Cross-element configure-step bootstrap.** Six-PR
+  architectural shift from a load-time `_trace_repo` repository
+  rule + per-project rendered rules to an action-time
+  `trace_load` rule + `trace_build` genrule pair, with the rule
+  implementations extracted into an in-repo
+  `rules_buildstream_bazel/` Bazel module referenced via
+  `bazel_dep + local_path_override`. Pass-3 install genrules
+  synthesize a cmake-config bundle from the install tree and
+  publish it alongside the trace to a separate AC keyspace
+  partition (`SyntheticConfigDigest`, distinct argv0 from
+  `SyntheticActionDigest`); pass-2 converter genrules consume
+  both via the same trace_load action. `cmakeDepBundleLabels`
+  retires its `kind == "cmake"` filter, so a kind:cmake
+  element with `find_package(Dep CONFIG)` against a
+  kind:autotools dep now resolves at pass-2 configure time
+  instead of silently failing. `tools/converge.sh` implements
+  the fixpoint driver — each round builds project A's
+  trace_loads with a bumped `CONVERGE_GENERATION` (forces AC
+  re-query), stages outputs into B, identifies the
+  miss-marker frontier, builds the matching trace_build
+  targets, retries. Termination guaranteed by the `.bst` DAG
+  bound; offline mode (no `CAS_GRPC_ADDR`) terminates by
+  `--max-rounds`. `cmd/finalize-b` is the deliverable-handover
+  step: takes a converged project B and writes a stripped
+  standalone Bazel project — converged elements' trace_load /
+  trace_build / intermediate filegroups pruned, the
+  `rules_buildstream_bazel` `bazel_dep` removed when no
+  surviving target references it, idempotent and non-
+  destructive. Design docs:
+  `docs/design/cross-element-config-rendezvous.md`,
+  `docs/design/convergence-driver.md`,
+  `docs/design/finalize-b.md`. The `mesonDepBundleLabels`
+  filter retirement (kind:meson consumers of trace-driven
+  deps) is queued as a small follow-up that lands when an
+  FDSDK fixture forces it. Bazel-build-half end-to-end
+  (driver against a live REAPI endpoint with bb_clientd) is
+  covered by `tools/e2e-meta-autotools-round2-live.sh` once
+  it grows convergence-driver wiring; render-half gates
+  ship today (`meta-autotools-round2.sh`,
+  `meta-make-round2.sh`,
+  `meta-cmake-round2-fallback.sh`,
+  `meta-meson-round2-fallback.sh`,
+  `meta-trace-round2-fold.sh`,
+  `meta-converge.sh`, `meta-finalize-b.sh`).
 
 - **Folded `orchestrator/` into the write-a + Bazel path.** The
   repo had two multi-element drivers: the original
