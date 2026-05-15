@@ -170,6 +170,34 @@ build /build/x.h: CUSTOM_COMMAND
 	}
 }
 
+// TestToIR_CmakeScriptModeRefusal_RealFixture exercises the
+// refusal end-to-end against a real recorded fileapi reply for
+// a CMakeLists.txt that drives `${CMAKE_COMMAND} -DOUTPUT=... -P
+// scripts/gen.cmake` from add_custom_command. The synthetic
+// ninja test above pins the detection logic; this one pins the
+// integration with the bytes cmake actually emits — the exact
+// substring shape is sensitive to cmake's argv ordering and to
+// whether the recording machine's `cmake` is at `/usr/bin/cmake`
+// vs. somewhere else on PATH. Without an empirical fixture a
+// future cmake re-ordering could quietly slip past the detector
+// even with the substring/tokeniser unit tests passing.
+func TestToIR_CmakeScriptModeRefusal_RealFixture(t *testing.T) {
+	r := loadFixture(t, "cmake-script-mode-refusal")
+	g := loadNinja(t, "cmake-script-mode-refusal")
+
+	src, err := filepath.Abs("../../testdata/sample-projects/cmake-script-mode-refusal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = lower.ToIR(r, g, lower.Options{HostSourceRoot: src})
+	if err == nil {
+		t.Fatal("expected unsupported-custom-command-script against the real fixture, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported-custom-command-script") {
+		t.Errorf("err = %v, want unsupported-custom-command-script", err)
+	}
+}
+
 // ----- helpers ----------------------------------------------------------
 
 func loadFixture(t *testing.T, name string) *fileapi.Reply {
