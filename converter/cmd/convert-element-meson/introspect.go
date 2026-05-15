@@ -74,11 +74,67 @@ type Dependency struct {
 	LinkArgs    []string `json:"link_args"`
 }
 
+// InstallPlanEntry is one row in intro-install_plan.json's
+// `targets` / `headers` / `data` / ... sections. `Destination`
+// embeds meson's directory placeholders ({prefix}, {bindir},
+// {libdir_static}, {libdir_shared}, {includedir}, {datadir},
+// {mandir}, ...) which the Phase B fallback resolves against
+// the values from intro-buildoptions.json. `Tag` is meson's
+// richer signal vs cmake's destination-path inference —
+// canonical values include "runtime" (executables / shared
+// libs), "devel" (static libs + headers), "man", "i18n",
+// "doc". `Subproject` is non-nil + non-empty for entries
+// living inside a meson subproject (already a Phase A
+// refusal; the fallback inherits the same filter).
+type InstallPlanEntry struct {
+	Destination string  `json:"destination"`
+	Tag         string  `json:"tag"`
+	Subproject  *string `json:"subproject"`
+}
+
+// InstallPlan is the relevant subset of intro-install_plan.json.
+// Keys in each section are absolute source-or-build paths;
+// values describe where each artefact lands after
+// `meson install --destdir=...`. The Phase B fallback consumes
+// the `Targets` (compiled artefacts) and `Headers` (install_headers
+// declarations) sections to seed per-target placeholder stubs.
+// Other sections (`Data`, `InstallSubdirs`, `Man`, `Symlinks`,
+// `Emptydir`) are decoded but not yet wired into the placeholder
+// — they have no direct Bazel analog at the rule level.
+type InstallPlan struct {
+	Targets        map[string]InstallPlanEntry `json:"targets"`
+	Headers        map[string]InstallPlanEntry `json:"headers"`
+	Data           map[string]InstallPlanEntry `json:"data"`
+	InstallSubdirs map[string]InstallPlanEntry `json:"install_subdirs"`
+	Man            map[string]InstallPlanEntry `json:"man"`
+	Symlinks       map[string]InstallPlanEntry `json:"symlinks"`
+	Emptydir       map[string]InstallPlanEntry `json:"emptydir"`
+}
+
+// BuildOption is one entry in intro-buildoptions.json — the
+// flat list of every configurable option meson exposes (core,
+// directory, base, compiler, user). The Phase B fallback only
+// consumes the `section: directory` rows (prefix / bindir /
+// libdir / includedir / ...) to resolve install-plan placeholders.
+type BuildOption struct {
+	Name    string `json:"name"`
+	Value   any    `json:"value"`
+	Section string `json:"section"`
+	Type    string `json:"type"`
+}
+
 // Introspect bundles every JSON document the converter consumes.
 type Introspect struct {
 	Targets      []Target
 	ProjectInfo  ProjectInfo
 	Dependencies []Dependency
+	// InstallPlan + BuildOptions are populated by Load when the
+	// matching intro-*.json files exist (always in live mode;
+	// optionally in --info-dir mode so older recorded fixtures
+	// keep loading). Phase A doesn't touch them; the Phase B
+	// fallback path reads them via emitFallbackPlaceholder.
+	InstallPlan  InstallPlan
+	BuildOptions []BuildOption
 }
 
 // Load reads the meson-info directory and returns a parsed Introspect.
@@ -108,6 +164,27 @@ func Load(metaInfoDir string) (*Introspect, error) {
 		if err := readJSON(depsPath, &out.Dependencies); err != nil {
 			return nil, err
 		}
+	}
+	// intro-install_plan.json + intro-buildoptions.json — optional
+	// for backward compat with offline --info-dir fixtures
+	// recorded before Phase B landed. Missing files leave the
+	// fields zero-valued; the fallback emitter treats an empty
+	// InstallPlan as "nothing to place" and refuses cleanly.
+	planPath := filepath.Join(metaInfoDir, "intro-install_plan.json")
+	if _, err := os.Stat(planPath); err == nil {
+		if err := readJSON(planPath, &out.InstallPlan); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat %s: %w", planPath, err)
+	}
+	optsPath := filepath.Join(metaInfoDir, "intro-buildoptions.json")
+	if _, err := os.Stat(optsPath); err == nil {
+		if err := readJSON(optsPath, &out.BuildOptions); err != nil {
+			return nil, err
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat %s: %w", optsPath, err)
 	}
 	return out, nil
 }
