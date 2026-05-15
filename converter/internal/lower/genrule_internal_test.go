@@ -64,6 +64,16 @@ func TestUsesCmakeScriptMode(t *testing.T) {
 			want: false,
 		},
 		{
+			// Locks that iteration past the `-P` token doesn't matter once
+			// the script-mode signal is observed — additional flags after
+			// the script path (cmake honours `--debug-output` as a
+			// cache-affecting flag in script mode) must still trip the
+			// refusal.
+			name: "cmake -P with trailing flag",
+			cmd:  "/usr/bin/cmake -P /build/scripts/gen.cmake --debug-output",
+			want: true,
+		},
+		{
 			name: "empty",
 			cmd:  "",
 			want: false,
