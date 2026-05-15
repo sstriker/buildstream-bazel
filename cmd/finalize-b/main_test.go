@@ -221,6 +221,115 @@ filegroup(
 	}
 }
 
+// TestRun_PreservesFallbackShapeElement asserts the fallback-shape
+// regression doesn't recur: kind:cmake / kind:meson Phase B fallback
+// BUILDs emit cc_import + sh_binary with the
+// codegen-target-fallback tag. Those rules reference paths the
+// _install_tree_extract genrule produces from install_tree.tar — they
+// are NOT converged replacements. Stripping the trace_build / filegroup
+// out from under them leaves dangling references; the BUILD becomes
+// unloadable. finalize-b detects the fallback marker and preserves the
+// whole BUILD.
+func TestRun_PreservesFallbackShapeElement(t *testing.T) {
+	tmp := t.TempDir()
+	inDir := filepath.Join(tmp, "in")
+	outDir := filepath.Join(tmp, "out")
+	if err := os.MkdirAll(filepath.Join(inDir, "elements/demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(inDir, "MODULE.bazel"), []byte(`module(name = "p", version = "0.0.0")
+
+bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
+local_path_override(
+    module_name = "rules_buildstream_bazel",
+    path = "/abs/path/to/rules_buildstream_bazel",
+)
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inDir, "BUILD.bazel"),
+		[]byte("# project B root\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Fallback-shape: cc_import + sh_binary tagged
+	// cmake-codegen-target-fallback, referencing install_tree
+	// paths from the trace_build-driven _install_tree_extract.
+	// hasFineCC must NOT fire on these; the whole interlocked
+	// shape stays.
+	fallback := `load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
+load("@rules_cc//cc:defs.bzl", "cc_import")
+
+trace_load(
+    name = "demo_trace_load",
+    srckey = "abc",
+    trace_lookup = "//tools:trace-lookup",
+)
+
+genrule(
+    name = "demo_trace_build",
+    srcs = ["sources"],
+    outs = ["install_tree.tar", "trace.log"],
+    cmd = "echo hi",
+    tags = ["trace_build"],
+)
+
+filegroup(
+    name = "install_tree.tar",
+    srcs = ["install_tree.tar"],
+)
+
+genrule(
+    name = "_install_tree_extract",
+    srcs = ["install_tree.tar"],
+    outs = ["install_tree/lib/libdemo.a"],
+    cmd = "tar -xf $< -C $(@D)",
+    tags = ["cmake-codegen-target-fallback-extract"],
+)
+
+cc_import(
+    name = "demo_static",
+    static_library = "install_tree/lib/libdemo.a",
+    tags = ["cmake-codegen-target-fallback"],
+)
+`
+	if err := os.WriteFile(filepath.Join(inDir, "elements/demo/BUILD.bazel"),
+		[]byte(fallback), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run(inDir, outDir); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	outBuild, err := os.ReadFile(filepath.Join(outDir, "elements/demo/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every marker survives — the BUILD passed through verbatim.
+	for _, want := range []string{
+		`trace_load(`,
+		`name = "demo_trace_build"`,
+		`name = "install_tree.tar"`,
+		`name = "_install_tree_extract"`,
+		`name = "demo_static"`,
+		`"cmake-codegen-target-fallback"`,
+		`@rules_buildstream_bazel//rules:traces.bzl`,
+	} {
+		if !strings.Contains(string(outBuild), want) {
+			t.Errorf("fallback-shape element should be preserved verbatim; missing %q\n%s", want, outBuild)
+		}
+	}
+
+	// MODULE.bazel keeps rules_buildstream_bazel since the
+	// fallback element references it.
+	outModule, _ := os.ReadFile(filepath.Join(outDir, "MODULE.bazel"))
+	if !strings.Contains(string(outModule), `rules_buildstream_bazel`) {
+		t.Errorf("output MODULE.bazel should still contain rules_buildstream_bazel (fallback element references it):\n%s", outModule)
+	}
+}
+
 // TestRun_Idempotent asserts a finalize-b output is itself
 // finalize-able to the same shape: running it on an already-
 // finalized project produces byte-identical output.

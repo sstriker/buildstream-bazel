@@ -24,11 +24,15 @@
 //     trace_load(...), or similar). Pure-cmake projects where
 //     every element converted cleanly end up with no rules_buildstream_bazel
 //     reference; the bazel_dep gets removed.
-//   - Drops the `tools/build-tracer`, `tools/trace-publish`,
-//     `tools/trace-lookup` exports from `tools/BUILD.bazel`
-//     when no surviving target references them. These were
-//     conversion-era tooling; once the project no longer
-//     publishes traces, the binaries can be deleted from tools/.
+//
+// Out of scope for v1: pruning the `tools/build-tracer`,
+// `tools/trace-publish`, `tools/trace-lookup` exports from
+// `tools/BUILD.bazel`. The current strip path only fires when
+// the BUILD has fine cc rules, which `tools/BUILD.bazel`
+// typically doesn't — that pruning needs a separate, tag-based
+// or whitelist-based code path. Operators can hand-remove the
+// tools/ exports + binaries once they're confident no element
+// re-publishes a trace.
 //
 // The tool is **idempotent** — running it on an already-
 // finalized project is a no-op (no trace_build targets to
@@ -47,7 +51,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -225,6 +228,17 @@ func cleanupBuild(body []byte, relPath string) ([]byte, error) {
 		return body, nil
 	}
 
+	// hasFineCC = "has cc rules NOT tagged as fallback-shape
+	// stubs." kind:cmake / kind:meson Phase B fallback BUILDs
+	// emit cc_import + sh_binary referencing paths the
+	// _install_tree_extract genrule produces from
+	// install_tree.tar — those cc_import calls are interlocked
+	// with the trace_build scaffolding, not converged
+	// replacements. Stripping the scaffolding under them leaves
+	// dangling label refs. The codegen-target-fallback tag
+	// (cmake-codegen-target-fallback / meson-codegen-target-fallback)
+	// is the renderer's marker for "this is a fallback stub,
+	// not a converted rule."
 	hasFineCC := false
 	for _, stmt := range f.Stmt {
 		call, ok := stmt.(*build.CallExpr)
@@ -237,6 +251,10 @@ func cleanupBuild(body []byte, relPath string) ([]byte, error) {
 		}
 		switch name {
 		case "cc_library", "cc_binary", "cc_import", "cc_test":
+			if hasStringInListAttr(call, "tags", "cmake-codegen-target-fallback") ||
+				hasStringInListAttr(call, "tags", "meson-codegen-target-fallback") {
+				continue
+			}
 			hasFineCC = true
 		}
 	}
@@ -441,8 +459,3 @@ func hasStringInListAttr(call *build.CallExpr, attr, needle string) bool {
 	}
 	return false
 }
-
-// Used for the io import; the package is otherwise unreferenced
-// outside of filepath.Walk's io-style flow. Reserved for future
-// streaming-read extensions.
-var _ = io.Copy
