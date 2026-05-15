@@ -60,6 +60,67 @@ diff, not a build-time correctness issue.
 
 This delta stays open as documentation; no fix is planned.
 
+### cmake 4.x CMP0026 — legacy `get_target_property(... LOCATION)` fails at configure
+
+**Fixture**: not yet in tree. Surfaced by real-world packages
+that still use the pre-3.0 idiom for resolving an executable
+target to its on-disk path — `get_target_property(<var> <tgt>
+LOCATION)` — most visibly [yasm][yasm] (four occurrences across
+`YasmMacros.cmake` and `modules/preprocs/nasm/CMakeLists.txt`).
+
+[yasm]: https://github.com/yasm/yasm
+
+**Symptom**: cmake 4.x removed the OLD behaviour of CMP0026
+entirely; configure fatal-errors with
+
+```
+The LOCATION property may not be read from target "...". Use the
+target name directly with add_custom_command, or use the
+generator expression $<TARGET_FILE>, as appropriate.
+```
+
+Convert-element-cmake annotates the failure at that point —
+`cmakerun.annotateConfigureFailure` recognises the
+`LOCATION property may not be read` sentinel and appends a
+`[hint]` block to the surfaced error pointing operators at the
+workarounds below.
+
+**Why convert-element-cmake doesn't auto-fix**: rewriting
+`CMakeLists.txt` / `*.cmake` files is source-mutating; doing
+that inside the converter would either modify the operator's
+source tree (destructive) or duplicate the tree into a scratch
+copy (doubles the disk cost for large checkouts). The orchestrator's
+source-key model also keys on the original source bytes, so a
+silent rewrite would split the cache without a clear audit
+trail. We surface the diagnostic, document the workarounds, and
+let the operator choose.
+
+**Workarounds (in preference order)**:
+
+1. **Patch the unpacked source.** Replace each call with the
+   generator-expression equivalent:
+
+   ```sh
+   find . \( -name CMakeLists.txt -o -name '*.cmake' \) \
+     -exec sed -i -E \
+       's/get_target_property\(([^ ]+) +([^ ]+) +LOCATION\)/set(\1 $<TARGET_FILE:\2>)/g' \
+       {} +
+   ```
+
+   When pulling the package through Bazel's `http_archive`,
+   thread this through `patch_cmds` so the rewrite runs before
+   convert-element-cmake configures the tree.
+
+2. **Pin cmake to a 3.x release.** The orchestrator's
+   `Makefile` `CMAKE_VERSION` is `3.28.3` by default; cmake 3.x
+   emits a deprecation warning but still resolves LOCATION,
+   so it's a viable stopgap when patching upstream is
+   impractical. `-DCMAKE_POLICY_DEFAULT_CMP0026=OLD` works
+   inside cmake 3.x but only if `cmake_minimum_required(VERSION
+   3.0+)` hasn't already forced CMP0026 to NEW; in cmake 4.x
+   the policy is gone entirely and the override is rejected
+   with `policy CMP0026 was removed`.
+
 ## Resolved deltas
 
 ### multi-language — per-language compile-group split ✓
