@@ -134,6 +134,20 @@ jobs:
       - name: gazelle-roundtrip e2e (Phase 7c/7d/8b)
         run: make e2e-meta-gazelle-roundtrip 2>&1 | tee -a /tmp/cijob.log
 
+      - name: render-project-a e2e (Stage 4 toolchain plan)
+        # Renders the per-(variant, platform) probe-cell matrix
+        # BUILD.bazel from a CMakePresets.json fixture. Render-only;
+        # no cmake / bazel invoked here.
+        run: make e2e-meta-render-project-a 2>&1 | tee -a /tmp/cijob.log
+
+      - name: unify-toolchains e2e (Stage 5 toolchain layout + element-signal fold)
+        # Folds per-cell probe.json artifacts into the operator's
+        # platforms/ + toolchains/ + cc_toolchain_config.bzl + .bazelrc;
+        # also exercises --element-signal (per-element builtin
+        # include / link search roots folded into the platform).
+        # Render-only.
+        run: make e2e-meta-unify-toolchains 2>&1 | tee -a /tmp/cijob.log
+
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 
