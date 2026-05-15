@@ -126,6 +126,7 @@ Common failure modes and how to diagnose:
   `internal/tracenorm/reads.go`, the build-tracer
   `--source-root` flag.
 - **Project-level architecture story**:
+  `docs/design/conversion-architecture.md`,
   `docs/three-pass-flow.md`, `docs/overview.md`.
 
 ## Development install requirements

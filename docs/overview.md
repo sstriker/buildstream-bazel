@@ -168,6 +168,8 @@ REAPI ActionCache endpoint — no separate registry service.
   [docs/build-structure.md](build-structure.md). Read this if
   you're writing a sibling .bst → Bazel converter or a
   consumer of the generated workspaces.
+- **End-state architecture** (rendezvous, driver loop, BUILD
+  evolution): [docs/design/conversion-architecture.md](design/conversion-architecture.md).
 - **Project plan / roadmap**: [`ROADMAP.md`](../ROADMAP.md).
 - **Per-kind conversion details**:
   [docs/cmake-conversion-deltas.md](cmake-conversion-deltas.md),

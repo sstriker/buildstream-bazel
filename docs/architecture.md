@@ -4,7 +4,10 @@ A descriptive map of what's actually in this repo today: the binaries
 shipped, the data flowing between them, and the shared substrates each
 one leans on. For what's done vs queued see [`ROADMAP.md`](../ROADMAP.md).
 For a diagram-first tour of the same material see
-[`docs/visual-guide.md`](visual-guide.md).
+[`docs/visual-guide.md`](visual-guide.md). For the architectural
+framing (how the two-project shape, rendezvous channel, fixpoint driver,
+and `finalize-b` fit together) see
+[`docs/design/conversion-architecture.md`](design/conversion-architecture.md).
 
 ## Goal in one paragraph
 
@@ -55,7 +58,8 @@ cmd/                        the write-a + Bazel driver, its tooling, and
   run-manifest/             snapshots a built project A into the run-manifest shape regression diffs on
   build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
   trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
-  trace-lookup/             A-side load-time AC reader for round-2 _trace_repo
+  trace-lookup/             A-side AC reader the rules_buildstream_bazel trace_load rule shells to (action-time)
+  finalize-b/               post-convergence strip pass — converted project B → standalone Bazel project
   convert-element-trace/    trace + `make -np` → native cc rules (trace-driven kinds)
   audit-narrowing/          patterns × oracle → undercoverage report
   build-cc-index/ relax-keeps/  gazelle-roundtrip support (Phase 7/8b)
@@ -80,6 +84,12 @@ internal/                   shared substrates
   bsttranslate              .bst rewrites to kind:remote-asset
 
 tools/bst                   BuildStream-style CLI wrapper around write-a (`bst build` muscle memory)
+tools/converge.sh           fixpoint driver — orchestrates the round-2 AC rendezvous to convergence
+
+rules_buildstream_bazel/    in-repo Bazel module referenced by rendered project A + project B
+  rules/traces.bzl          trace_load rule (action-time AC consumer of the round-2 rendezvous)
+  rules/zero_files.bzl      zero-byte stub materializer (shadow-tree primitive)
+  rules/sources.bzl         sources module extension (CAS-FUSE-backed external repos)
 
 deploy/buildbarn/           local-dev REAPI cluster
   docker-compose.yml        bb-storage + bb-scheduler + bb-worker + bb-runner-bare

@@ -69,31 +69,6 @@ transition cleanly.
   (kind:autotools) +
   `scripts/meta-cmake-round2-fallback-multiplatform.sh`
   (kind:cmake Phase B fallback).
-- **Docs consolidation + architecture slide deck.** The
-  design-trail docs that accumulated during the conversion-
-  bootstrap design conversation (`cross-element-config-
-  rendezvous.md`, `staged-pipeline.md`, and overlapping
-  sections of `autotools-round2-rendezvous.md` /
-  `three-pass-flow.md`) are useful as in-progress artifacts but
-  become dead weight once the implementation lands. Once the
-  trace_load / trace_build rule pair, driver-loop refactor,
-  converter-rules-package extraction, and `finalize-b`
-  materializer ship, fold them into a single end-state
-  architecture doc — likely a refreshed `docs/architecture.md`
-  or a focused `docs/design/conversion-architecture.md` —
-  carrying three diagrams: the driver loop, the two-cache-
-  layers rendezvous channel (Bazel AC + synthetic-key AC,
-  what each catches), and the per-element BUILD evolution from
-  converted-with-debris through `finalize-b` to standalone.
-  `staged-pipeline.md` deletes outright (rejected after
-  analysis; commit history is the audit trail).
-  Companion: a short slide deck (~6–8 slides, marp / reveal.js
-  so it lives in-repo) covering problem statement → two-project
-  shape → the Bazel anti-pattern that forces the rendezvous →
-  trace_load / trace_build rule pair → driver loop → finalize-b
-  → end-state B. Both deliverables queued behind the
-  implementation so visuals reflect the real thing, not the
-  design's intent.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
@@ -202,6 +177,24 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Docs consolidation + architecture slide deck.** The
+  cross-element configure-step bootstrap stack landed; the
+  design-trail docs got folded.
+  `docs/design/conversion-architecture.md` is the new end-state
+  architecture doc — three diagrams (rendezvous channel, driver
+  loop, per-element BUILD evolution through `finalize-b`), one
+  section per rule pattern in `rules_buildstream_bazel/`, and
+  cross-links into the focused mechanism docs.
+  `docs/design/conversion-architecture-slides.md` is the 8-slide
+  Marp companion (problem → two projects → Bazel
+  anti-pattern → trace_load/trace_build pair → two cache layers →
+  driver loop → finalize-b). `docs/design/staged-pipeline.md`
+  deleted outright; `docs/three-pass-flow.md` trimmed to the
+  per-pass cost model + scenario walks; the architectural framing
+  in `docs/design/autotools-round2-rendezvous.md` trimmed to
+  mechanism details. README / CONTRIBUTING / overview /
+  visual-guide cross-links refreshed.
 
 - **Cross-element configure-step bootstrap.** Six-PR
   architectural shift from a load-time `_trace_repo` repository
