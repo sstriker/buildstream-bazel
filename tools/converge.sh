@@ -27,11 +27,24 @@
 # Usage:
 #
 #   tools/converge.sh --project-a <path> --project-b <path> \
-#       --cas-grpc-addr <host:port> [--max-rounds N]
+#       --stage-b <path-to-stage-b-bin> \
+#       [--cas-grpc-addr <host:port>] [--max-rounds N] [--bazel <bin>]
 #
-# Required env vars passed through to bazel:
-#   CAS_GRPC_ADDR — the REAPI gRPC endpoint trace-lookup queries.
-#                   Mirrored into --action_env on each invocation.
+# Required flags: --project-a, --project-b, --stage-b.
+#
+# Optional flags:
+#   --cas-grpc-addr — REAPI gRPC endpoint trace-lookup queries.
+#       Empty / omitted ⇒ offline mode: trace_load short-circuits
+#       to miss, trace_builds run inline trace-publish as no-ops,
+#       the loop terminates by --max-rounds (equivalent to the
+#       legacy one-pass "build A, stage, build B" shape).
+#   --max-rounds N — fixpoint iteration cap (default 10).
+#   --bazel <bin>  — bazel binary to invoke (default "bazel";
+#                    BAZEL env var also honored).
+#
+# Env vars (alternatives to flags):
+#   STAGE_B_BIN — fallback when --stage-b isn't passed.
+#   BAZEL       — fallback when --bazel isn't passed.
 
 set -eu
 
@@ -69,7 +82,10 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         -h|--help)
-            sed -n 's/^# \{0,1\}//p' "$0" | head -40
+            # Strip the leading "#" / "# " from the file's
+            # comment block. The script body starts at the
+            # first non-comment line, so awk reads until then.
+            awk '/^[^#]/{exit} {sub(/^# ?/, ""); print}' "$0"
             exit 0
             ;;
         *)
