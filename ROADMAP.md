@@ -63,6 +63,91 @@ transition cleanly.
   (kind:autotools) +
   `scripts/meta-cmake-round2-fallback-multiplatform.sh`
   (kind:cmake Phase B fallback).
+- **Docs consolidation + architecture slide deck.** The
+  design-trail docs that accumulated during the conversion-
+  bootstrap design conversation (`cross-element-config-
+  rendezvous.md`, `staged-pipeline.md`, and overlapping
+  sections of `autotools-round2-rendezvous.md` /
+  `three-pass-flow.md`) are useful as in-progress artifacts but
+  become dead weight once the implementation lands. Once the
+  trace_load / trace_build rule pair, driver-loop refactor,
+  converter-rules-package extraction, and `finalize-b`
+  materializer ship, fold them into a single end-state
+  architecture doc — likely a refreshed `docs/architecture.md`
+  or a focused `docs/design/conversion-architecture.md` —
+  carrying three diagrams: the driver loop, the two-cache-
+  layers rendezvous channel (Bazel AC + synthetic-key AC,
+  what each catches), and the per-element BUILD evolution from
+  converted-with-debris through `finalize-b` to standalone.
+  `staged-pipeline.md` deletes outright (rejected after
+  analysis; commit history is the audit trail).
+  Companion: a short slide deck (~6–8 slides, marp / reveal.js
+  so it lives in-repo) covering problem statement → two-project
+  shape → the Bazel anti-pattern that forces the rendezvous →
+  trace_load / trace_build rule pair → driver loop → finalize-b
+  → end-state B. Both deliverables queued behind the
+  implementation so visuals reflect the real thing, not the
+  design's intent.
+- **Cross-element configure-step bootstrap for non-cmake deps.**
+  A `kind:cmake` / `kind:meson` element converts in pass 2 by
+  running cmake/meson *configure*, which needs build-config
+  metadata (`<Pkg>Config.cmake` / `.pc` / real headers+libs) for
+  every `find_package` / `pkg_check_modules` dep. For a
+  `kind:cmake` dep that metadata is a pass-2 codemodel artifact
+  (`cmake_config_bundle`, shipped). For a trace-based dep
+  (autotools/make/manual/script/makemaker/modulebuild) it only
+  exists after the dep's pass-3 install build — a pass-ordering
+  inversion, and `cmakeDepBundleLabels` skips non-cmake deps
+  silently today. The plan resolved across the design discussion
+  to a unified mechanism that also reshapes the existing
+  autotools round-2 rendezvous:
+  - **Paired `trace_load` / `trace_build` rules per trace-based
+    element.** `trace_load` has narrow inputs (srckey-view),
+    does an action-time `GetActionResult` against the synthetic-
+    key AC, emits trace + `cmake-config-bundle.tar` (synthesized
+    from the real install tree) **or** a typed empty marker.
+    `trace_build` has full sources, runs configure+make+install
+    under build-tracer, publishes to the same synthetic-key AC.
+    The converter's `srcs` references `trace_load`, never
+    `trace_build`. Replaces the `_trace_repo` repo rule (the AC
+    lookup moves from load time to action time, ending the
+    analysis-cache churn between driver passes).
+  - **Converter rules package.** Today's rendered-into-each-
+    project `rules/*.bzl` becomes a versioned package in this
+    repo (`rules_buildstream_bazel` or similar), referenced by
+    project A's `MODULE.bazel` via `bazel_dep`. Single source of
+    truth for `trace_load` / `trace_build` / `zero_files` /
+    `sources` semantics; evolve the implementation without
+    touching every project's `rules/`.
+  - **Uniform driver loop.** `bazel build //...:trace_load`
+    populates the AC view; the driver queries for elements
+    whose `trace_load` returned the typed empty marker;
+    `bazel build //elements/X:trace_build` for each; bump an
+    action-env generation token; retry. Logic is uniform across
+    kinds (the per-kind dispatch lives in the rule macro, not
+    the driver). Termination is when the empty-marker set is
+    empty.
+  - **`cmd/finalize-b` as input→output materializer.** Takes a
+    converged project B at `--in <path>` and writes a stripped
+    standalone Bazel project at `--out <dest>`: removes dead
+    `trace_build` targets (those whose element has fine-grained
+    cc rules and no filegroup-shape consumer), prunes the
+    converter-rules-package `bazel_dep` once no surviving target
+    references it, drops conversion-era intermediate filegroups.
+    Idempotent and reversible (input untouched). The deliverable
+    handover step.
+  Load-bearing invariants: srckey narrowing stays; the
+  synthetic-key AC (now keyed for both the trace and the
+  bundle, partitioned by srckey + platform) stays — the Bazel
+  anti-pattern analysis (an action whose hermetic key is narrow
+  while its commands read full sources can't be made cheap
+  inside Bazel's AC) means the rendezvous is fundamental, not a
+  workaround for the two-project topology. The all-cmake case
+  is unchanged from today (`cmake_config_bundle` rides direct
+  Bazel `srcs` edges; no rendezvous involved). Design-trail
+  docs (`docs/design/cross-element-config-rendezvous.md`,
+  `staged-pipeline.md`) capture the evolution; they consolidate
+  into a single architecture doc per the docs-cleanup item.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
