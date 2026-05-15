@@ -206,14 +206,33 @@ func run(a args) error {
 		// Tier-1 in that case keeps the operator's signal honest —
 		// the round-2 fallback can't help an element with no
 		// installable outputs.
+		//
+		// The post-emit len(pkg.Targets) check covers a related
+		// degenerate: a non-empty install plan whose rows all
+		// filter out (every entry is a subproject, or every
+		// destination has an unresolved placeholder, or every
+		// (tag, basename) lands in artefactUnknown). The
+		// pre-emit length check passes but the placeholder
+		// produces zero stubs, so we'd land an empty BUILD on
+		// disk and silently hide the typed refusal. Propagating
+		// the original Tier-1 keeps the operator's diagnostic
+		// signal intact in that case.
 		if a.unsupportedTargetFallback {
 			var tier1 *failure.Error
 			if errors.As(err, &tier1) && len(intro.InstallPlan.Targets) > 0 {
-				pkg, err = emitFallbackPlaceholder(intro, LowerOptions{
+				placeholderPkg, placeholderErr := emitFallbackPlaceholder(intro, LowerOptions{
 					SourceRoot: a.sourceRoot,
 					BuildDir:   buildDir,
 					Imports:    imports,
 				})
+				if placeholderErr == nil && len(placeholderPkg.Targets) > 0 {
+					pkg = placeholderPkg
+					err = nil
+				}
+				// placeholderErr != nil OR zero targets: leave
+				// `err` holding the original Tier-1 so the
+				// caller falls through to the propagating
+				// return below.
 			}
 		}
 		if err != nil {

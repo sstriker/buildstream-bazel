@@ -49,17 +49,32 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
+// targetStub is one accumulated install-plan stub before it
+// reaches the package's target list. installPath / baseName feed
+// the extract genrule's outs and the SONAME-stripped target name;
+// isLibrary gates header-fold attribution; kind retains the
+// classifier verdict for the name-collision disambiguation pass
+// that runs after the classification loop.
+type targetStub struct {
+	stub        ir.Target
+	installPath string
+	baseName    string
+	isLibrary   bool
+	kind        artefactKind
+}
+
 // emitFallbackPlaceholder builds the placeholder ir.Package
 // returned by Lower (via main.go's handleError-style intercept)
 // when --unsupported-target-fallback is on and native lowering
 // would refuse. The shape is described in this file's header.
 //
-// Returns an empty Package (nil-Targets) when the install plan
-// is empty — the genrule's outs still need a contract-compliant
-// shape; main.go's caller skips the placeholder shape entirely
-// if the result has no targets and falls back to the legacy
-// Tier-1 exit (the operator is no worse off than without the
-// flag).
+// Returns a package with nil Targets when the install plan is
+// empty or every plan row filters out (all subprojects, all
+// destinations with unresolved placeholders, all tag/basename
+// combinations land in artefactUnknown). main.go's caller
+// inspects len(pkg.Targets) post-call and propagates the
+// original Tier-1 in that case — an empty BUILD on disk would
+// be more confusing operator-side than a typed refusal.
 func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package, error) {
 	pkg := &ir.Package{
 		Name:       intro.ProjectInfo.Name,
@@ -68,18 +83,22 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 
 	dirs := dirValuesFromOptions(intro.BuildOptions)
 
-	type targetStub struct {
-		stub        ir.Target
-		installPath string
-		baseName    string // basename of installPath, used to fold headers
-		isLibrary   bool
-	}
 	var stubs []targetStub
 	var headerOuts []string
 
 	// Walk install-plan targets in sorted source-path order so
 	// rendering is deterministic. The map iteration order would
 	// otherwise shuffle stubs across runs.
+	//
+	// Two passes through the same loop, by name-collision arbitration:
+	// first build the raw stubs, then disambiguate any (name, kind)
+	// collisions before they reach the package's target list. Meson's
+	// `both_libraries('foo', ...)` is the canonical collision source —
+	// it installs both libfoo.a (artefactStaticLib → name "foo") and
+	// libfoo.so (artefactSharedLib → name "foo"), and emitting both
+	// stubs as-is would yield two `cc_import(name = "foo", ...)`
+	// declarations in the same BUILD, which Bazel rejects at load
+	// time with "Target 'foo' already declared".
 	for _, srcPath := range sortedKeys(intro.InstallPlan.Targets) {
 		entry := intro.InstallPlan.Targets[srcPath]
 		if entry.Subproject != nil && *entry.Subproject != "" {
@@ -105,19 +124,20 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		if stub.Name == "" {
 			continue
 		}
-		switch classifyArtefact(entry.Tag, baseName) {
+		kind := classifyArtefact(entry.Tag, baseName)
+		switch kind {
 		case artefactStaticLib:
 			stub.Kind = ir.KindCCImport
 			stub.StaticLibrary = installPath
-			stubs = append(stubs, targetStub{stub: stub, installPath: installPath, baseName: baseName, isLibrary: true})
+			stubs = append(stubs, targetStub{stub: stub, installPath: installPath, baseName: baseName, isLibrary: true, kind: kind})
 		case artefactSharedLib:
 			stub.Kind = ir.KindCCImport
 			stub.SharedLibrary = installPath
-			stubs = append(stubs, targetStub{stub: stub, installPath: installPath, baseName: baseName, isLibrary: true})
+			stubs = append(stubs, targetStub{stub: stub, installPath: installPath, baseName: baseName, isLibrary: true, kind: kind})
 		case artefactExecutable:
 			stub.Kind = ir.KindShBinary
 			stub.Srcs = []string{installPath}
-			stubs = append(stubs, targetStub{stub: stub, installPath: installPath, baseName: baseName})
+			stubs = append(stubs, targetStub{stub: stub, installPath: installPath, baseName: baseName, kind: kind})
 		default:
 			// Unknown artefact shape (e.g. tag="man" or a custom
 			// tag a meson module emits) — fall back to a private
@@ -134,6 +154,17 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 			continue
 		}
 	}
+
+	// Disambiguate same-name stubs. `both_libraries('foo')` produces
+	// `foo` for libfoo.a and `foo` for libfoo.so; suffix the static
+	// one with `_static` and the shared one with `_shared` so each
+	// gets a unique Bazel label. Idempotent: stubs whose name only
+	// appears once are left untouched. Done after the classification
+	// loop (rather than during) so the suffix decision sees the full
+	// collision picture — emitting `_static` proactively when only
+	// the static lib exists would break the common single-library
+	// case.
+	disambiguateLibraryCollisions(stubs)
 
 	// Headers: derive install-tree paths and fold into the matching
 	// library's `hdrs` when basename-resolved against a library's
@@ -203,6 +234,55 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		pkg.Targets = append(pkg.Targets, s.stub)
 	}
 	return pkg, nil
+}
+
+// disambiguateLibraryCollisions renames stubs whose `stub.Name`
+// would collide post-classification — typically a meson
+// `both_libraries('foo', ...)` declaration that installs libfoo.a
+// (artefactStaticLib) and libfoo.so (artefactSharedLib) under the
+// same SONAME-stripped base name "foo". Without disambiguation,
+// the emitted package contains two `cc_import(name = "foo", ...)`
+// declarations, which Bazel rejects at load time.
+//
+// Strategy: on a (static, shared) collision, suffix the static
+// stub with "_static" and the shared stub with "_shared". Mirrors
+// the operator-paperwork advice ("use distinct target names in
+// meson.build") but applies it deterministically in the emitter
+// since the fallback exists for elements the operator can't
+// modify upstream. Single-library stubs are left untouched —
+// projects that ship just `libfoo.a` still get `:foo` rather
+// than `:foo_static`, preserving the common-case shape.
+//
+// Other collisions (two static libs with the same name, an
+// executable colliding with a library) are theoretically possible
+// but signal an upstream-meson bug or an esoteric configuration
+// that v1 doesn't model. The disambiguator leaves those alone;
+// the emit-time duplicate-name will surface as a clear Bazel
+// loading error pointing at the offending labels.
+//
+// Mutates the stubs slice in place via index iteration.
+func disambiguateLibraryCollisions(stubs []targetStub) {
+	// Map each name → indices of stubs claiming it. Pairs of
+	// (static, shared) at the same name are the disambiguation
+	// case; other multiplicities fall through.
+	indicesByName := map[string][]int{}
+	for i := range stubs {
+		indicesByName[stubs[i].stub.Name] = append(indicesByName[stubs[i].stub.Name], i)
+	}
+	for _, idxs := range indicesByName {
+		if len(idxs) != 2 {
+			continue
+		}
+		a, b := &stubs[idxs[0]], &stubs[idxs[1]]
+		switch {
+		case a.kind == artefactStaticLib && b.kind == artefactSharedLib:
+			a.stub.Name += "_static"
+			b.stub.Name += "_shared"
+		case a.kind == artefactSharedLib && b.kind == artefactStaticLib:
+			a.stub.Name += "_shared"
+			b.stub.Name += "_static"
+		}
+	}
 }
 
 type artefactKind int

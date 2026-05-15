@@ -229,14 +229,24 @@ whose introspection survives the v1 lowering.
   introspection grows per-header target attribution (or once a real
   fixture forces a more sophisticated lift).
 
-- **Multi-target SONAME variants.** A library declared as
-  `both_libraries()` emits both `libfoo.a` (devel) and `libfoo.so`
-  (runtime). Each gets its own cc_import stub (`foo` for the static,
-  `foo` for the shared — collision!). v1's emitter only sees one
-  install_plan entry per archive output, so this collision is rare
-  in practice; when it surfaces, the fix is to use distinct target
-  names in meson.build (`static_library('foo_static')` +
-  `shared_library('foo_shared')`).
+- **Multi-target SONAME variants — `both_libraries()`.** A library
+  declared as `both_libraries('foo', ...)` emits both `libfoo.a`
+  (tagged `devel`) and `libfoo.so` (tagged `runtime`). Each lands
+  in the install plan as a separate row, classifies as a distinct
+  artefact kind (static vs shared), and the SONAME-stripping name
+  derivation produces `foo` for both. The emitter detects this
+  same-name collision in a post-classification pass and suffixes
+  the static stub with `_static` and the shared stub with
+  `_shared`, so the emitted package contains two valid labels
+  (`:foo_static` + `:foo_shared`) instead of two
+  `cc_import(name = "foo", ...)` declarations Bazel would reject.
+  Single-library cases stay unchanged (`static_library('foo')`
+  alone still emits `:foo`, not `:foo_static`). Other multi-stub
+  collisions (two static libs with the same name; an executable
+  colliding with a library — both signal an upstream-meson bug or
+  a configuration v1 doesn't model) fall through; the duplicate
+  surfaces as a clear Bazel loading error rather than silent
+  miscompile.
 
 - **Fixture fragility.** Building the round-2 install genrule in
   tests requires real meson + ninja on the CI runner. The render-half

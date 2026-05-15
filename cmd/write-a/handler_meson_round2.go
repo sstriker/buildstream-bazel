@@ -32,8 +32,10 @@ import "fmt"
 //     capture `make -np` for the make-db. kind:meson's install
 //     genrule needs its own equivalent that uses
 //     wrapMesonPipelineCmds (defined below) and $$MESON_TRACE,
-//     and synthesises an empty make-db (meson uses ninja
-//     directly — no `make` database to dump).
+//     and omits --make-db on the inline trace-publish call
+//     (meson uses ninja directly — no `make` database to
+//     capture; trace-publish handles missing --make-db
+//     natively, publishing a trace.log-only Directory).
 
 // mesonSrckeyPatterns returns the file-glob set that gates
 // srckey content-inclusion for kind:meson round-2.

@@ -94,7 +94,14 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 	}
 
 	// Static lib should be cc_import; sh_binary for the exe.
+	// Header fold: both libraries (the static `greet` AND the
+	// shared `greetshared`) must carry the header — the design
+	// doc's "v1 attaches every header to every library" contract.
+	// The bazel.Emit assertion above only verifies that *some*
+	// `hdrs = [...]` line exists; verifying every library carries
+	// it needs per-pkg.Targets inspection.
 	var sawCCImport, sawShBinary, sawExtract bool
+	libsWithHeader := map[string]bool{}
 	for _, tgt := range pkg.Targets {
 		switch tgt.Name {
 		case "greet", "greetshared":
@@ -102,6 +109,11 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 				t.Errorf("target %q kind=%v want KindCCImport", tgt.Name, tgt.Kind)
 			}
 			sawCCImport = true
+			for _, h := range tgt.Hdrs {
+				if h == "install_tree/include/greet.h" {
+					libsWithHeader[tgt.Name] = true
+				}
+			}
 		case "greet-bin":
 			if tgt.Kind != ir.KindShBinary {
 				t.Errorf("target greet-bin kind=%v want KindShBinary", tgt.Kind)
@@ -122,6 +134,11 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 	}
 	if !sawExtract {
 		t.Errorf("no extract genrule emitted")
+	}
+	for _, lib := range []string{"greet", "greetshared"} {
+		if !libsWithHeader[lib] {
+			t.Errorf("library %q missing hdrs entry install_tree/include/greet.h (header should fold into every library; got hdrs map %v)", lib, libsWithHeader)
+		}
 	}
 }
 
@@ -231,6 +248,81 @@ func TestEmitFallbackPlaceholder_SharedSONameVariants(t *testing.T) {
 				t.Errorf("no stub for target %q", c.wantName)
 			}
 		})
+	}
+}
+
+// TestEmitFallbackPlaceholder_BothLibrariesDisambiguated covers the
+// `both_libraries('foo', ...)` shape: meson installs libfoo.a AND
+// libfoo.so under the same SONAME-stripped base name "foo". Without
+// disambiguation the placeholder emits two cc_import(name="foo")
+// declarations and Bazel rejects the BUILD at load time. The emitter
+// suffixes the static with "_static" and the shared with "_shared"
+// so each gets a unique label.
+func TestEmitFallbackPlaceholder_BothLibrariesDisambiguated(t *testing.T) {
+	intro := &Introspect{
+		ProjectInfo: ProjectInfo{Name: "p"},
+		BuildOptions: []BuildOption{
+			{Name: "libdir", Section: "directory", Value: "lib"},
+		},
+		InstallPlan: InstallPlan{
+			Targets: map[string]InstallPlanEntry{
+				"/bd/libfoo.a": {
+					Destination: "{libdir_static}/libfoo.a",
+					Tag:         "devel",
+				},
+				"/bd/libfoo.so": {
+					Destination: "{libdir_shared}/libfoo.so",
+					Tag:         "runtime",
+				},
+			},
+		},
+	}
+	pkg, err := emitFallbackPlaceholder(intro, LowerOptions{})
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	// Both stubs must coexist with distinct names. Pre-fix this test
+	// would observe two `foo` stubs and the Bazel load would later
+	// reject the BUILD with "Target 'foo' already declared".
+	got := map[string]ir.Target{}
+	for _, tgt := range pkg.Targets {
+		if tgt.Kind == ir.KindCCImport {
+			got[tgt.Name] = tgt
+		}
+	}
+	if len(got) != 2 {
+		var names []string
+		for n := range got {
+			names = append(names, n)
+		}
+		t.Fatalf("want 2 distinct cc_import stubs; got %d (names=%v)", len(got), names)
+	}
+	stat, ok := got["foo_static"]
+	if !ok {
+		t.Errorf("missing foo_static stub; have %v", got)
+	} else if stat.StaticLibrary != "install_tree/lib/libfoo.a" {
+		t.Errorf("foo_static.StaticLibrary=%q want install_tree/lib/libfoo.a", stat.StaticLibrary)
+	}
+	shr, ok := got["foo_shared"]
+	if !ok {
+		t.Errorf("missing foo_shared stub; have %v", got)
+	} else if shr.SharedLibrary != "install_tree/lib/libfoo.so" {
+		t.Errorf("foo_shared.SharedLibrary=%q want install_tree/lib/libfoo.so", shr.SharedLibrary)
+	}
+	// Single-library cases must NOT be renamed — the disambiguator
+	// only fires on actual collisions. Re-run with just the static
+	// to confirm.
+	intro.InstallPlan.Targets = map[string]InstallPlanEntry{
+		"/bd/libfoo.a": {Destination: "{libdir_static}/libfoo.a", Tag: "devel"},
+	}
+	pkg, err = emitFallbackPlaceholder(intro, LowerOptions{})
+	if err != nil {
+		t.Fatalf("emit (single-lib): %v", err)
+	}
+	for _, tgt := range pkg.Targets {
+		if tgt.Kind == ir.KindCCImport && tgt.Name != "foo" {
+			t.Errorf("single-lib stub renamed to %q; want untouched 'foo'", tgt.Name)
+		}
 	}
 }
 
