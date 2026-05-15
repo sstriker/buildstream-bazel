@@ -86,7 +86,16 @@ cleanup() {
 trap cleanup EXIT
 
 skip_reason() {
-    echo "== e2e-meta-autotools-round2-live: $1, skipping =="
+    msg="$1"
+    # BST_RE_GATE_REQUIRE flips skips into hard failures. CI sets
+    # it; local dev workstations leave it unset. Without this
+    # guard a green CI job can't be distinguished from a quiet
+    # opt-out.
+    if [ -n "${BST_RE_GATE_REQUIRE:-}" ]; then
+        echo "== e2e-meta-autotools-round2-live: $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+        exit 1
+    fi
+    echo "== e2e-meta-autotools-round2-live: $msg, skipping =="
     exit 0
 }
 
@@ -348,7 +357,18 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         case "$bazel_major" in [0-9]*) ;; *) bazel_major=0 ;; esac
     fi
     if [[ -z "$BAZEL" ]] || [[ "$bazel_major" -lt 9 ]]; then
-        echo "== bazel < 9 / not on PATH; skipping bazel-build half (mount-half PASS) =="
+        # Inner skip — the mount-half passed, but the bazel-build
+        # half (the real round-trip through trace_load + the
+        # converter genrule) is the load-bearing assertion. Under
+        # BST_RE_GATE_REQUIRE, falling out here is a hard failure
+        # so a green CI run means the bazel-build half actually
+        # exercised the wire.
+        msg="bazel < 9 / not on PATH; bazel-build half (round-2 fine path) didn't run"
+        if [[ -n "${BST_RE_GATE_REQUIRE:-}" ]]; then
+            echo "== $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+            exit 1
+        fi
+        echo "== $msg (mount-half PASS) =="
     else
         echo "== bazel-build half (round-2 fine path) =="
         # The round-2 fine path needs every binary the genrules
@@ -467,7 +487,15 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         echo "  trace_load materialised cmake-config-bundle.tar OK"
     fi
 else
-    echo "== bb_clientd not on PATH; skipping mount-half + bazel-build half (publish/lookup wire half PASS) =="
+    # Inner skip — wire half passed but mount + bazel-build halves
+    # didn't run. Under BST_RE_GATE_REQUIRE, hard-fail so CI green
+    # means the full path exercised.
+    msg="bb_clientd not on PATH; mount-half + bazel-build half didn't run"
+    if [[ -n "${BST_RE_GATE_REQUIRE:-}" ]]; then
+        echo "== $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+        exit 1
+    fi
+    echo "== $msg (publish/lookup wire half PASS) =="
 fi
 
 echo "== e2e-meta-autotools-round2-live: PASS =="

@@ -58,7 +58,16 @@ cleanup() {
 trap cleanup EXIT
 
 skip_reason() {
-    echo "== e2e-meta-cross-kind-live: $1, skipping =="
+    msg="$1"
+    # BST_RE_GATE_REQUIRE flips skips into hard failures. CI sets
+    # it; local dev workstations leave it unset. Without this
+    # guard a green CI job can't be distinguished from a quiet
+    # opt-out (every prereq check below is a skip path).
+    if [ -n "${BST_RE_GATE_REQUIRE:-}" ]; then
+        echo "== e2e-meta-cross-kind-live: $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+        exit 1
+    fi
+    echo "== e2e-meta-cross-kind-live: $msg, skipping =="
     exit 0
 }
 
