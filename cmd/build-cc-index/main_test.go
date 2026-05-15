@@ -138,6 +138,84 @@ func TestBuildCCIndex_SkipsUnparseableBuildFiles(t *testing.T) {
 	}
 }
 
+// TestBuildCCIndex_ImportsManifest covers --imports-manifest: an
+// external dep's exported_headers / import_modules get folded into
+// the resolver files, while a manifest entry that collides with an
+// in-project BUILD-walk header keeps the in-project claim (the
+// manifest only gap-fills the external-repo edge).
+func TestBuildCCIndex_ImportsManifest(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "MODULE.bazel", "")
+	// Sibling element — its header / module land via the BUILD walk.
+	writeFile(t, root, "elements/hello/BUILD.bazel", `
+cc_library(name = "hello", hdrs = ["hello.h"])
+py_library(name = "hellopy", srcs = ["hellopy/__init__.py"])
+`)
+	writeFile(t, root, "imports.json", `{
+  "version": 1,
+  "elements": [
+    {
+      "name": "openssl",
+      "exports": [
+        {
+          "cmake_target": "OpenSSL::SSL",
+          "bazel_label": "@openssl//:ssl",
+          "exported_headers": ["openssl/ssl.h", "openssl/crypto.h"]
+        }
+      ]
+    },
+    {
+      "name": "requests",
+      "exports": [
+        {
+          "cmake_target": "Requests::Requests",
+          "bazel_label": "@pip//requests",
+          "import_modules": ["requests"]
+        }
+      ]
+    },
+    {
+      "name": "collide",
+      "exports": [
+        {
+          "cmake_target": "Collide::Collide",
+          "bazel_label": "@collide//:collide",
+          "exported_headers": ["elements/hello/hello.h"]
+        }
+      ]
+    }
+  ]
+}`)
+	a := args{
+		root:            root,
+		outCCIndex:      "tools/cc_index.json",
+		outPyModules:    "tools/python_modules.json",
+		importsManifest: filepath.Join(root, "imports.json"),
+	}
+	if err := run(a); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	cc := readJSON(t, filepath.Join(root, "tools/cc_index.json"))
+	for path, want := range map[string]string{
+		"openssl/ssl.h":    "@openssl//:ssl",
+		"openssl/crypto.h": "@openssl//:ssl",
+		// In-project header survives; the manifest collision did
+		// NOT overwrite the BUILD-walk claim.
+		"elements/hello/hello.h": "//elements/hello",
+	} {
+		if got := cc[path]; got != want {
+			t.Errorf("cc_index.json[%q] = %q, want %q", path, got, want)
+		}
+	}
+	py := readJSON(t, filepath.Join(root, "tools/python_modules.json"))
+	if got := py["requests"]; got != "@pip//requests" {
+		t.Errorf("python_modules.json[requests] = %q, want @pip//requests", got)
+	}
+	if got := py["hellopy"]; got != "//elements/hello:hellopy" {
+		t.Errorf("python_modules.json[hellopy] = %q, want //elements/hello:hellopy", got)
+	}
+}
+
 func writeFile(t *testing.T, root, rel, content string) {
 	t.Helper()
 	p := filepath.Join(root, rel)

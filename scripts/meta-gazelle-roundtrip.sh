@@ -225,6 +225,63 @@ if ! grep -qE "\"$expected_header\":[[:space:]]*\"$expected_label\"" "$B/tools/c
 fi
 echo "meta-gazelle-roundtrip: cc_index.json populated; hello.h → $expected_label"
 
+# === build-cc-index --imports-manifest: external-repo edge ===
+# A genuinely-external dep's header / module universe lives outside
+# project B; only the imports manifest knows the resolving label.
+# Re-run build-cc-index with a hand-written manifest and assert the
+# external header / module fold in while the in-project hello.h
+# claim survives (the manifest only gap-fills).
+cat > "$work_dir/external-imports.json" <<'EOF'
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "openssl",
+      "exports": [
+        {
+          "cmake_target": "OpenSSL::SSL",
+          "bazel_label": "@openssl//:ssl",
+          "exported_headers": ["openssl/ssl.h"]
+        }
+      ]
+    },
+    {
+      "name": "requests",
+      "exports": [
+        {
+          "cmake_target": "Requests::Requests",
+          "bazel_label": "@pip//requests",
+          "import_modules": ["requests"]
+        }
+      ]
+    }
+  ]
+}
+EOF
+"$bin_dir/build-cc-index" \
+    --root "$B" \
+    --out-cc-index tools/cc_index.json \
+    --out-python-modules tools/python_modules.json \
+    --imports-manifest "$work_dir/external-imports.json"
+if ! grep -qE '"openssl/ssl\.h":[[:space:]]*"@openssl//:ssl"' "$B/tools/cc_index.json"; then
+    echo "meta-gazelle-roundtrip: cc_index.json missing folded external header openssl/ssl.h" >&2
+    cat "$B/tools/cc_index.json" >&2
+    exit 1
+fi
+if ! grep -qE '"requests":[[:space:]]*"@pip//requests"' "$B/tools/python_modules.json"; then
+    echo "meta-gazelle-roundtrip: python_modules.json missing folded external module requests" >&2
+    cat "$B/tools/python_modules.json" >&2
+    exit 1
+fi
+# In-project header must still resolve to its own label — the
+# manifest fold is additive, not a replacement.
+if ! grep -qE "\"$expected_header\":[[:space:]]*\"$expected_label\"" "$B/tools/cc_index.json"; then
+    echo "meta-gazelle-roundtrip: imports-manifest fold clobbered the in-project header mapping" >&2
+    cat "$B/tools/cc_index.json" >&2
+    exit 1
+fi
+echo "meta-gazelle-roundtrip: --imports-manifest folded external edge (openssl/ssl.h, requests)"
+
 # === Phase 8b: targeted relax-keeps over the changed elements ===
 # The Phase 8b gazelle tail runs relax-keeps + gazelle over only the
 # elements stage-b reported as changed (`$changed`), not the whole
