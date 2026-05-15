@@ -53,6 +53,7 @@ RUN set -eux; \
         gcc libc6-dev \
         ninja-build \
         bubblewrap \
+        make \
     ; \
     arch="$(uname -m)"; \
     curl -fsSL --retry 3 \
