@@ -63,17 +63,6 @@ transition cleanly.
   (kind:autotools) +
   `scripts/meta-cmake-round2-fallback-multiplatform.sh`
   (kind:cmake Phase B fallback).
-- **Per-platform `exec_properties` routing for write-a + Bazel.**
-  `write-a`'s `--platforms-json` carries a `reapi_properties`
-  field it currently ignores: when the rendered project's
-  per-element converter genrules run on a Buildbarn cluster via
-  `--remote_executor`, each platform's worker pool has to be
-  selected by the genrule's Bazel `exec_properties`. Define the
-  `reapi_properties → exec_properties` mapping and have write-a
-  emit a `platform()` per declared platform. This is the live
-  remainder of what the deleted orchestrator's hardcoded
-  `defaultPlatform` / `Action.Platform` fallback used to do; it's
-  the open question in `docs/design/orchestrator-absorption.md`.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
@@ -247,6 +236,28 @@ transition cleanly.
     just `reapi.Executor`, was orchestrator REAPI-submission
     machinery with no other consumer (`trace-publish` /
     `trace-lookup` use `internal/cas` + `internal/tracenorm`).
+- **Per-platform `exec_properties` routing for write-a + Bazel.**
+  `write-a`'s `--platforms-json` `reapi_properties` field is no
+  longer ignored. Each platform's `reapi_properties` — the REAPI
+  Platform.properties wire shape, a list of `{name, value}` pairs —
+  maps one-to-one onto a Bazel `exec_properties` dict, and write-a
+  emits a `platform()` per declared platform into project A's
+  `//platforms` package carrying `constraint_values` +
+  `exec_properties`. The per-element converter genrules already
+  carry `exec_compatible_with = <constraints>`; an operator who
+  registers these platforms via `--extra_execution_platforms` gets
+  each genrule routed to the matching Buildbarn worker pool, the
+  action inheriting that platform's `exec_properties`. A repeated
+  or empty `reapi_properties` name is rejected at load time (REAPI
+  tolerates repeated names; `exec_properties` is a map). This was
+  the live remainder of the deleted orchestrator's hardcoded
+  `defaultPlatform` / `Action.Platform` fallback — the last open
+  question in `docs/design/orchestrator-absorption.md`. Render
+  gates: the three multi-platform gates
+  (`scripts/meta-trace-round2-fold.sh`,
+  `scripts/meta-autotools-round2-multiplatform.sh`,
+  `scripts/meta-cmake-round2-fallback-multiplatform.sh`) assert
+  the emitted `//platforms/BUILD.bazel` shape.
 - **`bst` wrapper.** `tools/bst` is a POSIX-sh BuildStream-style
   CLI wrapper around write-a so `bst build <element.bst>` keeps
   working against a converted project. Supports

@@ -4,19 +4,24 @@ package main
 // round-2 trace-driven kinds (and, in follow-ups, kind:cmake
 // Phase B and kind:meson Phase B).
 //
-// The manifest format carries an optional reapi_properties field per
-// platform that write-a ignores: write-a runs at render time and
-// emits Bazel BUILD files, so per-platform executor routing is a
-// Bazel exec_properties concern, not write-a's. (reapi_properties was
-// consumed by the legacy orchestrator's per-platform REAPI Action
-// fan-out, removed in the orchestrator absorption —
-// docs/design/orchestrator-absorption.md.) write-a reads the fields
-// it cares about and ignores the rest.
+// The manifest carries an optional reapi_properties field per
+// platform — the REAPI Platform.properties wire shape, a list of
+// {name, value} pairs. write-a maps each pair onto a Bazel
+// exec_properties dict entry and emits a platform() rule per
+// declared platform into project A's //platforms package
+// (renderPlatformsBuild). The legacy orchestrator consumed
+// reapi_properties to fan out per-platform REAPI Actions directly;
+// the write-a + Bazel path instead lets Bazel route the per-element
+// converter genrules — each already carries exec_compatible_with =
+// <constraints> — to the matching execution platform, where the
+// action inherits exec_properties and so selects the right Buildbarn
+// worker pool. See docs/design/orchestrator-absorption.md.
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/elementfold"
@@ -72,20 +77,32 @@ type tracePlatform struct {
 	// element invocation time on the project A side, so both
 	// consumers pick matching labels for the same matrix.
 	SelectKey string
+
+	// ExecProperties is the platform's reapi_properties mapped onto
+	// a Bazel exec_properties dict — each {name, value} pair becomes
+	// one entry. write-a emits it on the //platforms:<Name>
+	// platform() rule in project A; when the per-element converter
+	// genrules run on a Buildbarn cluster via --remote_executor,
+	// Bazel routes each genrule (via its exec_compatible_with
+	// constraint set) to the matching execution platform and the
+	// action inherits these properties — selecting the worker pool.
+	// Nil/empty when the manifest entry declared no reapi_properties.
+	ExecProperties map[string]string
+}
+
+// reapiProperty is one entry of a platform's reapi_properties list —
+// the REAPI Platform.properties wire shape.
+type reapiProperty struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // platformsManifestEntry mirrors the on-disk JSON shape.
-// reapi_properties is read but discarded — orchestrator
-// consumes it, write-a doesn't. A field-mismatch would
-// fail unmarshalling; absent the field is fine.
 type platformsManifestEntry struct {
-	Name        string   `json:"name"`
-	Constraints []string `json:"constraints"`
-	SelectLabel string   `json:"select_label,omitempty"`
-	// REAPIProperties intentionally untyped: write-a doesn't
-	// route REAPI Actions, so json.RawMessage absorbs whatever
-	// shape the operator declared without us having to model it.
-	REAPIProperties json.RawMessage `json:"reapi_properties,omitempty"`
+	Name            string          `json:"name"`
+	Constraints     []string        `json:"constraints"`
+	SelectLabel     string          `json:"select_label,omitempty"`
+	REAPIProperties []reapiProperty `json:"reapi_properties,omitempty"`
 }
 
 // loadPlatformsManifest parses the JSON manifest into a slice
@@ -93,13 +110,11 @@ type platformsManifestEntry struct {
 // to use the single-platform legacy render path; multi-platform
 // mode requires opt-in).
 //
-// Validation mirrors the orchestrator's loader's checks (same
-// manifest serves both consumers, so misuses should fail with
-// the same diagnostics either way): platform names are URL-
-// safe and unique, each platform has at least one constraint,
-// constraints don't embed the ',' / '|' delimiters that fold-
-// element's --cell argv parser uses. We don't validate
-// REAPIProperties — that's the orchestrator's concern.
+// Validation: platform names are URL-safe and unique, each
+// platform has at least one constraint, constraints don't embed
+// the ',' / '|' delimiters that fold-element's --cell argv parser
+// uses, and each platform's reapi_properties map cleanly onto an
+// exec_properties dict (no empty or repeated property name).
 func loadPlatformsManifest(path string) ([]tracePlatform, error) {
 	if path == "" {
 		return nil, nil
@@ -148,10 +163,15 @@ func loadPlatformsManifest(path string) ([]tracePlatform, error) {
 		if selectLabel != "" && strings.ContainsAny(selectLabel, ",|") {
 			return nil, fmt.Errorf("write-a: platform %q in %s select_label %q contains delimiter (',' or '|') — these would break --cell argv parsing in fold-element", e.Name, path, selectLabel)
 		}
+		execProps, err := reapiToExecProperties(e.REAPIProperties)
+		if err != nil {
+			return nil, fmt.Errorf("write-a: platform %q in %s: %w", e.Name, path, err)
+		}
 		out[i] = tracePlatform{
-			Name:        e.Name,
-			Constraints: normalised,
-			SelectLabel: selectLabel,
+			Name:           e.Name,
+			Constraints:    normalised,
+			SelectLabel:    selectLabel,
+			ExecProperties: execProps,
 		}
 	}
 	// Pre-validate the matrix via the same select-key
@@ -201,6 +221,85 @@ func resolvePlatformSelectKeys(platforms []tracePlatform) error {
 		platforms[i].SelectKey = keys[platforms[i].Name]
 	}
 	return nil
+}
+
+// reapiToExecProperties maps a platform's reapi_properties list onto
+// a Bazel exec_properties dict. The REAPI Platform.properties wire
+// shape is a list of {name, value} pairs; Bazel exec_properties is a
+// string->string map, so each pair becomes one entry. REAPI tolerates
+// a repeated property name (multi-valued properties); exec_properties
+// can't, so a repeated — or empty — name is rejected here with a
+// clear diagnostic rather than silently last-write-winning. Empty
+// list → nil map (the platform() rule emits no exec_properties).
+func reapiToExecProperties(props []reapiProperty) (map[string]string, error) {
+	if len(props) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(props))
+	for i, p := range props {
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			return nil, fmt.Errorf("reapi_properties[%d] has an empty name", i)
+		}
+		if _, dup := out[name]; dup {
+			return nil, fmt.Errorf("reapi_properties lists name %q twice; Bazel exec_properties is a map and can't carry a repeated key", name)
+		}
+		out[name] = p.Value
+	}
+	return out, nil
+}
+
+// renderPlatformsBuild renders project A's //platforms/BUILD.bazel:
+// one platform() rule per declared platform, carrying the platform's
+// constraint_values and — when reapi_properties was declared — the
+// exec_properties dict that selects its Buildbarn worker pool.
+//
+// The per-element converter genrules already carry
+// exec_compatible_with = <constraints>; an operator who registers
+// these platforms as execution platforms
+// (--extra_execution_platforms) gets each genrule routed to the
+// matching pool, the action inheriting that platform's
+// exec_properties. Returns "" for an empty matrix — the
+// single-platform render emits no //platforms package.
+func renderPlatformsBuild(platforms []tracePlatform) string {
+	if len(platforms) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Generated by write-a. Execution platforms for the\n")
+	b.WriteString("# multi-platform converter-genrule fan-out. Register them\n")
+	b.WriteString("# with --extra_execution_platforms so Bazel routes each\n")
+	b.WriteString("# per-platform genrule (exec_compatible_with = <constraints>)\n")
+	b.WriteString("# to the matching worker pool via exec_properties.\n\n")
+	for i, p := range platforms {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("platform(\n")
+		fmt.Fprintf(&b, "    name = %q,\n", p.Name)
+		cs := append([]string(nil), p.Constraints...)
+		sort.Strings(cs)
+		b.WriteString("    constraint_values = [\n")
+		for _, c := range cs {
+			fmt.Fprintf(&b, "        %q,\n", c)
+		}
+		b.WriteString("    ],\n")
+		if len(p.ExecProperties) > 0 {
+			keys := make([]string, 0, len(p.ExecProperties))
+			for k := range p.ExecProperties {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			b.WriteString("    exec_properties = {\n")
+			for _, k := range keys {
+				fmt.Fprintf(&b, "        %q: %q,\n", k, p.ExecProperties[k])
+			}
+			b.WriteString("    },\n")
+		}
+		b.WriteString("    visibility = [\"//visibility:public\"],\n")
+		b.WriteString(")\n")
+	}
+	return b.String()
 }
 
 // safePlatformName rejects names with characters that would

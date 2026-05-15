@@ -171,8 +171,11 @@ for marker in \
     '"darwin_arm64/trace.log"' \
     '"linux_x86_64/make-db.txt"' \
     '"darwin_arm64/make-db.txt"' \
-    'exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]' \
-    'exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]' \
+    'exec_compatible_with = [' \
+    '"@platforms//cpu:x86_64",' \
+    '"@platforms//os:linux",' \
+    '"@platforms//cpu:arm64",' \
+    '"@platforms//os:darwin",' \
     '--platform="linux_x86_64"' \
     '--platform="darwin_arm64"' \
     '$(location linux_x86_64/generated-headers.txt)' \
@@ -195,6 +198,34 @@ if grep -qF -- 'name = "greet_install"' "$b_build"; then
     cat "$b_build" >&2
     exit 1
 fi
+
+# Project A's //platforms package: one platform() per declared
+# --platforms-json entry, carrying constraint_values + the
+# reapi_properties-derived exec_properties dict. The per-element
+# converter genrules already carry exec_compatible_with =
+# <constraints>; registering these as --extra_execution_platforms
+# routes each genrule to the matching Buildbarn worker pool.
+platforms_build="$A/platforms/BUILD.bazel"
+if [ ! -f "$platforms_build" ]; then
+    echo "meta-trace-round2-fold: missing $platforms_build" >&2
+    exit 1
+fi
+for marker in \
+    'platform(' \
+    'name = "linux_x86_64",' \
+    'name = "darwin_arm64",' \
+    'constraint_values = [' \
+    '"@platforms//os:linux",' \
+    '"@platforms//cpu:arm64",' \
+    'exec_properties = {' \
+    '"container-image": "docker://debian:bookworm",' \
+    'visibility = ["//visibility:public"],'; do
+    if ! grep -qF -- "$marker" "$platforms_build"; then
+        echo "meta-trace-round2-fold: platforms/BUILD.bazel missing marker: $marker" >&2
+        cat "$platforms_build" >&2
+        exit 1
+    fi
+done
 
 echo "meta-trace-round2-fold: render OK"
 echo "meta-trace-round2-fold: ok"

@@ -326,14 +326,18 @@ Two follow-ups were noted during the sequence and have since shipped:
 
 ## Open questions
 
-- **Per-platform executor routing.** Step 6's gate proves
-  Bazel-native RBE covers per-element conversion on Buildbarn,
-  but the orchestrator's `reapi_properties`-driven per-platform
-  routing is the one piece with no write-a equivalent yet — it
-  has to land on the Bazel-platform / `exec_properties` side.
-  The open question is the exact mapping from `--platforms-json`'s
-  `reapi_properties` onto `exec_properties` on the converter
-  genrules. Tracked as a `Next` bullet in `ROADMAP.md`.
+- **Per-platform executor routing. (resolved)** The orchestrator's
+  `reapi_properties`-driven per-platform routing now has a write-a
+  equivalent: `--platforms-json`'s `reapi_properties` (the REAPI
+  Platform.properties wire shape — a list of `{name, value}` pairs)
+  maps one-to-one onto a Bazel `exec_properties` dict, and write-a
+  emits a `platform()` per declared platform into project A's
+  `//platforms` package carrying `constraint_values` +
+  `exec_properties`. The per-element converter genrules already
+  carry `exec_compatible_with = <constraints>`; an operator who
+  registers these platforms via `--extra_execution_platforms` gets
+  each genrule routed to the matching Buildbarn worker pool, the
+  action inheriting that platform's `exec_properties`.
 - **`allowlistreg` vs `readpaths`.** Both track per-element
   cmake-read paths. Whether `allowlistreg` stays standalone or
   partly collapses into `internal/readpaths` is still open.
