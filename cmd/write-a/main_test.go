@@ -19,6 +19,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// TestMain populates rulesPackagePath before the test bodies run.
+// Production main() resolves the path from the --rules-package-path
+// flag; tests call writeProjectA / writeProjectB directly without
+// going through flag parsing, so the global stays empty unless we
+// seed it here. The path resolves relative to this package
+// (cmd/write-a/), which is Go's default test working directory, to
+// the in-repo rules_buildstream_bazel/ at the repo root.
+func TestMain(m *testing.M) {
+	abs, err := filepath.Abs("../../rules_buildstream_bazel")
+	if err != nil {
+		panic("test-setup: resolve rules_buildstream_bazel path: " + err.Error())
+	}
+	if _, statErr := os.Stat(filepath.Join(abs, "MODULE.bazel")); statErr != nil {
+		panic("test-setup: rules_buildstream_bazel/MODULE.bazel missing at " + abs)
+	}
+	rulesPackagePath = abs
+	os.Exit(m.Run())
+}
+
 const sampleCmakeBst = `kind: cmake
 
 sources:
@@ -94,17 +113,36 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	for _, want := range []string{
 		"MODULE.bazel",
 		"BUILD.bazel",
-		"rules/zero_files.bzl",
-		"rules/BUILD.bazel",
 		"tools/convert-element-cmake",
 		"tools/BUILD.bazel",
 		"elements/hello/BUILD.bazel",
 		"elements/hello/sources/CMakeLists.txt",
-		"rules/sources.bzl",
 		"tools/sources.json",
 	} {
 		if _, err := os.Stat(filepath.Join(outA, want)); err != nil {
 			t.Errorf("missing rendered file %q in project A: %v", want, err)
+		}
+	}
+	// rules/*.bzl is no longer rendered into project A — the
+	// rules live in the in-repo rules_buildstream_bazel package
+	// referenced via bazel_dep + local_path_override.
+	for _, unwanted := range []string{"rules/zero_files.bzl", "rules/sources.bzl", "rules/traces.bzl", "rules/BUILD.bazel"} {
+		if _, err := os.Stat(filepath.Join(outA, unwanted)); !os.IsNotExist(err) {
+			t.Errorf("project A unexpectedly rendered %s (rules now load from @rules_buildstream_bazel//rules)", unwanted)
+		}
+	}
+	// MODULE.bazel must declare the bazel_dep + local_path_override.
+	moduleBody, err := os.ReadFile(filepath.Join(outA, "MODULE.bazel"))
+	if err != nil {
+		t.Fatalf("read MODULE.bazel: %v", err)
+	}
+	for _, want := range []string{
+		`bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")`,
+		`local_path_override(`,
+		`module_name = "rules_buildstream_bazel"`,
+	} {
+		if !strings.Contains(string(moduleBody), want) {
+			t.Errorf("project A MODULE.bazel missing %q\n%s", want, moduleBody)
 		}
 	}
 
@@ -3273,10 +3311,11 @@ sources:
 		}
 	}
 
-	// rules/sources.bzl exists in both workspaces.
+	// rules/sources.bzl is NO LONGER rendered into either workspace
+	// — sources extension loads from @rules_buildstream_bazel//rules.
 	for _, dir := range []string{outA, outB} {
-		if _, err := os.Stat(filepath.Join(dir, "rules/sources.bzl")); err != nil {
-			t.Errorf("%s: rules/sources.bzl missing: %v", dir, err)
+		if _, err := os.Stat(filepath.Join(dir, "rules/sources.bzl")); !os.IsNotExist(err) {
+			t.Errorf("%s: rules/sources.bzl unexpectedly rendered", dir)
 		}
 	}
 
@@ -3327,8 +3366,12 @@ func TestWriter_LocalOnlyGraphSkipsUseRepoBlock(t *testing.T) {
 	if err := writeProjectA(g, outA, binPath); err != nil {
 		t.Fatalf("writeProjectA: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(outA, "rules/sources.bzl")); err != nil {
-		t.Errorf("rules/sources.bzl should still be emitted: %v", err)
+	// rules/sources.bzl lives in @rules_buildstream_bazel//rules,
+	// not in the rendered project. tools/sources.json is still
+	// emitted (write-a's per-project metadata, consumed by the
+	// rules-package's sources extension at load time).
+	if _, err := os.Stat(filepath.Join(outA, "rules/sources.bzl")); !os.IsNotExist(err) {
+		t.Errorf("rules/sources.bzl unexpectedly rendered (loads from @rules_buildstream_bazel//rules)")
 	}
 	if _, err := os.Stat(filepath.Join(outA, "tools/sources.json")); err != nil {
 		t.Errorf("tools/sources.json should still be emitted: %v", err)
@@ -3649,7 +3692,7 @@ exclude include/internal/*
 	}
 	got := string(build)
 	for _, want := range []string{
-		`load("//rules:zero_files.bzl", "zero_files")`,
+		`load("@rules_buildstream_bazel//rules:zero_files.bzl", "zero_files")`,
 		`"sources/main.c"`,
 		`"sources/include/internal/private.h"`,
 	} {
@@ -3923,7 +3966,7 @@ exclude include/internal/*
 		`@src_` + wantKey + `//:tree_dir/CMakeLists.txt`,
 		`@src_` + wantKey + `//:tree_dir/include/api.h`,
 		`":x_zero_stubs"`,
-		`load("//rules:zero_files.bzl", "zero_files")`,
+		`load("@rules_buildstream_bazel//rules:zero_files.bzl", "zero_files")`,
 		// zero_files entries are tree_dir/-prefixed so the cmd's
 		// strip pattern recovers the right relative path.
 		`"tree_dir/main.c"`,

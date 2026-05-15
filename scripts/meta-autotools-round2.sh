@@ -49,6 +49,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/autotools-greet"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/greet.bst" \
     --out "$A" \
     --out-b "$B" \
@@ -62,7 +63,7 @@ fixture="testdata/meta-project/autotools-greet"
 a_build="$A/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_build"' \
-    'load("//rules:traces.bzl", "trace_load")' \
+    'load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")' \
     'name = "greet_trace_load"' \
     '":greet_trace_load"' \
     '"//tools:convert-element-trace"' \
@@ -93,8 +94,8 @@ done
 for path in \
     "$A/rules/traces.bzl" \
     "$B/rules/traces.bzl"; do
-    if [ ! -f "$path" ]; then
-        echo "meta-autotools-round2: missing $path" >&2
+    if [ -f "$path" ]; then
+        echo "meta-autotools-round2: $path unexpectedly rendered (rules now load from @rules_buildstream_bazel//rules)" >&2
         exit 1
     fi
 done

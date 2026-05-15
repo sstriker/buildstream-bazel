@@ -127,6 +127,7 @@ cmd_build() {
     # render uses), so the wrapper doesn't reimplement .bst graph
     # walking in shell.
     "$root/build/bin/write-a" \
+        --rules-package-path "$root/rules_buildstream_bazel" \
         --bst-root "$leaf_abs" \
         --out "$project_a" \
         --out-b "$project_b" \

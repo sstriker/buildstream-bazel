@@ -88,6 +88,7 @@ while IFS='|' read -r path desc; do
     out_a="$elem_dir/A"
     out_b="$elem_dir/B"
     err=$("$bin_dir/write-a" \
+        --rules-package-path "$repo_root/rules_buildstream_bazel" \
         --bst "$elem_dir/$(basename "$path")" \
         --out "$out_a" \
         --out-b "$out_b" \
@@ -127,6 +128,7 @@ while IFS='|' read -r path desc; do
     out_a="$work_dir/inplace-A-$(basename "$path" .bst)"
     out_b="$work_dir/inplace-B-$(basename "$path" .bst)"
     err=$("$bin_dir/write-a" \
+        --rules-package-path "$repo_root/rules_buildstream_bazel" \
         --bst "$src" \
         --out "$out_a" \
         --out-b "$out_b" \
@@ -206,6 +208,7 @@ runtime-depends:
 - components/data.bst
 BST_EOF
 synth_err=$("$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$synth_dir/elements/components/foo.bst" \
     --bst "$synth_dir/elements/bootstrap/bar.bst" \
     --bst "$synth_dir/elements/components/data.bst" \
@@ -254,6 +257,7 @@ while IFS='|' read -r path desc; do
         out_b="$work_dir/sub-B-$(basename "$path" .bst)"
         rm -rf "$out_a" "$out_b"
         err=$("$bin_dir/write-a" "$@" \
+            --rules-package-path "$repo_root/rules_buildstream_bazel" \
             --out "$out_a" \
             --out-b "$out_b" \
             --convert-element-cmake "$bin_dir/convert-element-cmake" 2>&1 >/dev/null) || true

@@ -42,6 +42,7 @@ B="$work_dir/B"
 
 # Two-element invocation: one Phase-A-friendly + one refused.
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst testdata/meta-project/pyproject-greet.bst \
     --bst testdata/meta-project/pyproject-pdm-greet.bst \
     --out "$A" \

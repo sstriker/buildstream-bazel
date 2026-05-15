@@ -30,6 +30,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/compose-greet"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/greet-a.bst" \
     --bst "$fixture/greet-b.bst" \
     --bst "$fixture/bundle.bst" \
@@ -37,9 +38,10 @@ fixture="testdata/meta-project/compose-greet"
     --out-b "$B" \
     --convert-element-cmake "$bin_dir/convert-element-cmake"
 
-# Render-phase checks: project A.
+# Render-phase checks: project A. rules/ is no longer rendered
+# (loads from @rules_buildstream_bazel//rules).
 for f in MODULE.bazel BUILD.bazel \
-        rules/zero_files.bzl tools/convert-element-cmake \
+        tools/convert-element-cmake \
         elements/greet-a/BUILD.bazel \
         elements/greet-b/BUILD.bazel \
         elements/bundle/BUILD.bazel; do

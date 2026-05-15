@@ -37,6 +37,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/autotools-config-h"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/config-h.bst" \
     --out "$A" \
     --out-b "$B" \

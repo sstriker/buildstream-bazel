@@ -75,6 +75,7 @@ fixture="testdata/meta-project"
 # fallback shape. Both together exercise the cmake round-2
 # fallback + multi-platform install fan-out.
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/hello-world.bst" \
     --out "$A" \
     --out-b "$B" \

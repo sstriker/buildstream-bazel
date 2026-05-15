@@ -44,6 +44,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/two-libs"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/lib-a.bst" \
     --bst "$fixture/lib-b.bst" \
     --bst "$fixture/runtime.bst" \
@@ -52,8 +53,10 @@ fixture="testdata/meta-project/two-libs"
     --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase checks. Project A: per-element BUILD for each .bst.
+# rules/zero_files.bzl is no longer rendered (loads from
+# @rules_buildstream_bazel//rules), so it's not in this list.
 for f in MODULE.bazel BUILD.bazel \
-        rules/zero_files.bzl tools/convert-element-cmake \
+        tools/convert-element-cmake \
         elements/lib-a/BUILD.bazel \
         elements/lib-a/sources/CMakeLists.txt \
         elements/lib-b/BUILD.bazel \

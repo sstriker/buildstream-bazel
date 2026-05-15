@@ -40,6 +40,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/conditional-greet"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/greet.bst" \
     --out "$A" \
     --out-b "$B" \

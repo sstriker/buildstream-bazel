@@ -94,7 +94,7 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	}
 	for _, want := range []string{
 		"--unsupported-execute-process-fallback=true",
-		`load("//rules:traces.bzl", "trace_load")`,
+		`load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")`,
 		`name = "demo_trace_load"`,
 		`expect_make_db = False`,
 		`":demo_trace_load"`,
@@ -107,14 +107,14 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 		t.Errorf("project A BUILD unexpectedly contains legacy @trace_*//:trace label:\n%s", aBody)
 	}
 
-	// rules/traces.bzl renders in both projects. tools/traces.json
-	// is no longer emitted (the load-time extension was retired).
+	// rules/ is NO LONGER rendered into either project — rules load
+	// from @rules_buildstream_bazel//rules:traces.bzl. tools/traces.json
+	// is also gone (legacy load-time module extension retired).
 	for _, project := range []string{outA, outB} {
-		if _, err := os.Stat(filepath.Join(project, "rules/traces.bzl")); err != nil {
-			t.Errorf("%s missing rules/traces.bzl: %v", project, err)
-		}
-		if _, err := os.Stat(filepath.Join(project, "tools/traces.json")); !os.IsNotExist(err) {
-			t.Errorf("%s unexpectedly emitted tools/traces.json (legacy load-time wiring)", project)
+		for _, p := range []string{"rules/traces.bzl", "tools/traces.json"} {
+			if _, err := os.Stat(filepath.Join(project, p)); !os.IsNotExist(err) {
+				t.Errorf("%s unexpectedly emitted %s", project, p)
+			}
 		}
 	}
 

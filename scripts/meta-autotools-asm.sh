@@ -50,6 +50,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/autotools-asm"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/asm.bst" \
     --out "$A" \
     --out-b "$B" \

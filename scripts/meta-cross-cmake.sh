@@ -25,6 +25,8 @@
 
 set -eu
 
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
@@ -37,6 +39,7 @@ A="$work_dir/A"
 B="$work_dir/B"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst testdata/meta-project/cross-cmake/prod.bst \
     --bst testdata/meta-project/cross-cmake/cons.bst \
     --out "$A" \

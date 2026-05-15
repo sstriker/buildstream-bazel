@@ -130,7 +130,7 @@ config:
 			}
 			for _, want := range []string{
 				`name = "elem_build"`,
-				`load("//rules:traces.bzl", "trace_load")`,
+				`load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")`,
 				`name = "elem_trace_load"`,
 				`":elem_trace_load"`,
 				`"srckey.txt"`,

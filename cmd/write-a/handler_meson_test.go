@@ -144,7 +144,7 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 	}
 	for _, marker := range []string{
 		`--unsupported-target-fallback=true`,
-		`load("//rules:traces.bzl", "trace_load")`,
+		`load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")`,
 		`name = "elem_trace_load"`,
 		`expect_make_db = False`,
 		`":elem_trace_load"`,
@@ -158,7 +158,6 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 		t.Errorf("A-side BUILD unexpectedly contains legacy @trace_*//:trace label:\n%s", aBody)
 	}
 	for _, path := range []string{
-		"rules/traces.bzl",
 		"tools/build-tracer",
 		"tools/trace-publish",
 		"tools/trace-lookup",
@@ -166,6 +165,11 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(outA, path)); err != nil {
 			t.Errorf("project A missing %s: %v", path, err)
 		}
+	}
+	// rules/traces.bzl is no longer rendered — it lives in
+	// @rules_buildstream_bazel//rules.
+	if _, err := os.Stat(filepath.Join(outA, "rules/traces.bzl")); !os.IsNotExist(err) {
+		t.Errorf("project A unexpectedly emitted rules/traces.bzl (loads from @rules_buildstream_bazel//rules)")
 	}
 	if _, err := os.Stat(filepath.Join(outA, "tools/traces.json")); !os.IsNotExist(err) {
 		t.Errorf("project A unexpectedly emitted tools/traces.json (legacy load-time wiring)")

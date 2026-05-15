@@ -123,13 +123,14 @@ func renderTraceDrivenRound2ASinglePlatform(elem *element, elemPkg, kindName str
 # BUILD.bazel.out; project B's coarse install genrule remains
 # the buildable target until pass-3 publishes.
 
-load("//rules:traces.bzl", "trace_load")
+load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
 
 package(default_visibility = ["//visibility:public"])
 
 trace_load(
     name = "%[1]s_trace_load",
     srckey = "%[5]s",
+    trace_lookup = "//tools:trace-lookup",
 )
 
 genrule(
@@ -197,7 +198,7 @@ func renderTraceDrivenRound2AMultiPlatform(elem *element, elemPkg, kindName stri
 # supplied select_label for matrices the auto-detect can't
 # disambiguate).
 
-load("//rules:traces.bzl", "trace_load")
+load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -212,6 +213,7 @@ package(default_visibility = ["//visibility:public"])
     name = "%[1]s_trace_load_%[2]s",
     srckey = "%[3]s",
     platform = "%[2]s",
+    trace_lookup = "//tools:trace-lookup",
 )
 
 `, elem.Name, p.Name, srckeyHash)

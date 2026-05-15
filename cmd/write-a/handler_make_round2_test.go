@@ -113,23 +113,16 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Errorf("srckey.txt not staged in project A: %v", err)
 	}
 
-	// rules/traces.bzl renders in both projects (the trace_load rule
-	// is per-package, but rules/traces.bzl is shared). tools/traces.json
-	// is no longer emitted on either side.
-	for _, p := range []string{"rules/traces.bzl"} {
-		if _, err := os.Stat(filepath.Join(outA, p)); err != nil {
-			t.Errorf("project A missing %s: %v", p, err)
-		}
-		if _, err := os.Stat(filepath.Join(outB, p)); err != nil {
-			t.Errorf("project B missing %s: %v", p, err)
-		}
-	}
-	for _, p := range []string{"tools/traces.json"} {
+	// Neither rules/ nor tools/traces.json is rendered — the rules
+	// load from @rules_buildstream_bazel//rules:traces.bzl (asserted
+	// in the load() marker check above) and the legacy load-time
+	// traces module extension is gone.
+	for _, p := range []string{"rules/traces.bzl", "tools/traces.json"} {
 		if _, err := os.Stat(filepath.Join(outA, p)); !os.IsNotExist(err) {
-			t.Errorf("project A unexpectedly emitted %s (legacy load-time wiring)", p)
+			t.Errorf("project A unexpectedly emitted %s", p)
 		}
 		if _, err := os.Stat(filepath.Join(outB, p)); !os.IsNotExist(err) {
-			t.Errorf("project B unexpectedly emitted %s (legacy load-time wiring)", p)
+			t.Errorf("project B unexpectedly emitted %s", p)
 		}
 	}
 
