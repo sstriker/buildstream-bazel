@@ -211,6 +211,7 @@ trace_load(
     name = "%[1]s_trace_load",
     srckey = "%[2]s",
     expect_make_db = False,
+    expect_config_bundle = True,
     trace_lookup = "//tools:trace-lookup",
 )
 `, elem.Name, srckeyHash)

@@ -31,6 +31,11 @@ def _trace_load_impl(ctx):
         outputs.append(out_make_db)
         args.add("--out-make-db", out_make_db)
 
+    if ctx.attr.expect_config_bundle:
+        out_config_bundle = ctx.actions.declare_file(ctx.label.name + "/cmake-config-bundle.tar")
+        outputs.append(out_config_bundle)
+        args.add("--out-config-bundle", out_config_bundle)
+
     if ctx.attr.platform:
         args.add("--platform", ctx.attr.platform)
 
@@ -66,6 +71,10 @@ trace_load = rule(
         "expect_make_db": attr.bool(
             default = True,
             doc = "Declares whether the publishing kind emits make-db.txt alongside trace.log. Trace-driven kinds (autotools / make / makemaker / modulebuild / manual / script) set True; cmake / meson round-2 fallback set False.",
+        ),
+        "expect_config_bundle": attr.bool(
+            default = False,
+            doc = "Declares whether the publishing kind emits a cmake-config-bundle.tar alongside the trace. Set True for trace-driven kinds that publish a bundle synthesized from the install tree (cross-element configure-step bootstrap); the bundle materializes as <name>/cmake-config-bundle.tar — zero-byte on AC miss, real bytes on hit. The bundle is queried via SyntheticConfigDigest, a separate AC keyspace from the trace. Default False preserves the legacy trace-only shape.",
         ),
         "trace_lookup": attr.label(
             mandatory = True,

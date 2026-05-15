@@ -14,6 +14,70 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/tracenorm"
 )
 
+// TestPublishConfigBundle_RoundtripThroughLocalStore covers the
+// config-bundle leg of the round-2 publisher: a bundle tar
+// passed via --config-bundle (in CLI parlance; here the helper
+// directly) lands in CAS under SyntheticConfigDigest. The trace
+// (under SyntheticActionDigest) and the bundle (under
+// SyntheticConfigDigest) coexist at distinct AC keys for the
+// same (srckey, platform) — the argv0 namespacing in
+// tracenorm.synthkey makes this true; this test pins it
+// end-to-end.
+func TestPublishConfigBundle_RoundtripThroughLocalStore(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("local store: %v", err)
+	}
+
+	bundleBody := []byte("synthesized cmake-config-bundle bytes\n")
+	bundlePath := filepath.Join(t.TempDir(), "cmake-config-bundle.tar")
+	if err := os.WriteFile(bundlePath, bundleBody, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := publishConfigBundle(ctx, store, "srckey-cb", "", bundlePath); err != nil {
+		t.Fatalf("publishConfigBundle: %v", err)
+	}
+
+	// Re-derive the config-bundle key and assert the AC entry is
+	// reachable + the bundle blob is in CAS.
+	key, err := tracenorm.SyntheticConfigDigest("srckey-cb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ar, err := store.GetActionResult(ctx, key)
+	if err != nil {
+		t.Fatalf("get-ac config bundle: %v", err)
+	}
+	if len(ar.OutputDirectories) != 1 {
+		t.Fatalf("ar.OutputDirectories = %d want 1", len(ar.OutputDirectories))
+	}
+	rootDigest := ar.OutputDirectories[0].RootDirectoryDigest
+	if rootDigest == nil {
+		t.Fatal("ar root digest nil")
+	}
+	missing, err := store.FindMissing(ctx, []*cas.Digest{rootDigest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(missing) > 0 {
+		t.Errorf("bundle root blob missing from CAS: %v", missing)
+	}
+
+	// The trace key (SyntheticActionDigest with the same srckey)
+	// MUST be different from the bundle key — distinct argv0
+	// namespacing. Trying to read the bundle entry via the trace
+	// key should miss.
+	traceKey, _ := tracenorm.SyntheticActionDigest("srckey-cb", "")
+	if traceKey.Hash == key.Hash && traceKey.SizeBytes == key.SizeBytes {
+		t.Errorf("config-bundle key collides with trace key for same srckey — keyspace partitioning broken")
+	}
+	if _, err := store.GetActionResult(ctx, traceKey); !errors.Is(err, cas.ErrNotFound) {
+		t.Errorf("trace key unexpectedly resolves to an entry (should miss since only the bundle was published); got %v", err)
+	}
+}
+
 // TestPublish_RoundtripThroughLocalStore is the load-bearing
 // trace-publish test: write a synthetic trace + make-db, publish
 // against an in-memory store, then re-derive the synthetic key

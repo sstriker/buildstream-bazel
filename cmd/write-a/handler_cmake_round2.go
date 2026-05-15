@@ -287,6 +287,30 @@ genrule(
         # this genrule. trace-publish reads it from here.
         cp -L "$$CMAKE_TRACE" "$$EXEC_ROOT/$(location %[4]strace.log)"
 
+        # Synthesize a cmake-config bundle from the install tree
+        # (cross-element configure-step bootstrap rendezvous; see
+        # docs/design/cross-element-config-rendezvous.md). Bundle
+        # contents are pkg-config (.pc) files copied verbatim and
+        # cmake-config files (lib/cmake/<Pkg>/) copied verbatim
+        # when the element installs them. Elements that install
+        # neither produce an empty bundle — downstream consumers
+        # skip staging when the bundle's tar is empty. The bundle
+        # is published to a separate AC keyspace partition
+        # (SyntheticConfigDigest); a consumer's trace_load action
+        # materializes it via --out-config-bundle.
+        export CONFIG_BUNDLE_DIR="$$(mktemp -d)"
+        if [ -d "$$INSTALL_ROOT/lib/pkgconfig" ]; then
+            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
+            cp -r "$$INSTALL_ROOT/lib/pkgconfig"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
+        fi
+        if [ -d "$$INSTALL_ROOT/lib/cmake" ]; then
+            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/cmake"
+            cp -r "$$INSTALL_ROOT/lib/cmake"/. "$$CONFIG_BUNDLE_DIR/lib/cmake/" 2>/dev/null || true
+        fi
+        export CONFIG_BUNDLE_TAR="$$(mktemp)"
+        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+            -cf "$$CONFIG_BUNDLE_TAR" -C "$$CONFIG_BUNDLE_DIR" .
+
         # Publish to the AC iff a remote is configured. Same
         # short-circuit pattern kind:autotools round-2 uses:
         # empty CAS_GRPC_ADDR ⇒ skip (e.g. local dev without
@@ -302,15 +326,15 @@ genrule(
             # the platform tag literally into this argv so each
             # of N per-platform genrules publishes under its own
             # tag. Single-platform legacy mode reads
-            # CMAKE_TO_BAZEL_PLATFORM from --action_env (env-var
-            # fallback can't differ across N parallel actions in
-            # one Bazel build, hence the explicit literal bake
-            # under multi-platform).
+            # CMAKE_TO_BAZEL_PLATFORM from --action_env.
+            # --config-bundle publishes the synthesized bundle
+            # under SyntheticConfigDigest (distinct keyspace).
             $(location //tools:trace-publish) \\
                 --cas="$${CAS_GRPC_ADDR}" \\
                 --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \\
                 --platform="%[5]s" \\
-                --trace="$(location %[4]strace.log)" >/dev/null
+                --trace="$(location %[4]strace.log)" \\
+                --config-bundle="$$CONFIG_BUNDLE_TAR" >/dev/null
         fi
     """,
 )

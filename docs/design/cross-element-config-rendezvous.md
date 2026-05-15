@@ -375,8 +375,67 @@ the far side with no dependency on that scaffolding.
 
 ## Status
 
-This doc describes a proposed design; for what's wired in `main`
-today vs. queued, see [`ROADMAP.md`](../../ROADMAP.md). Case 1
-(the all-cmake bundle) is shipped. Case 2 (non-cmake deps), the
-config-bundle rendezvous, and the fixpoint driver are the
-proposed work.
+Case 1 (the all-cmake bundle) and Case 2 (the config-bundle
+rendezvous for non-cmake deps) are shipped — see the
+cross-element configure-step bootstrap PR stack in
+[`ROADMAP.md`](../../ROADMAP.md). The fixpoint driver is queued
+behind the stack's PR-5.
+
+Shipped (Case 2 details):
+
+- `tracenorm.SyntheticConfigDigest(srckey, platform)` partitions
+  the config-bundle keyspace from the trace keyspace via a
+  distinct argv0 marker (`cmake-to-bazel/config-publish-marker/v1`
+  vs the trace's `cmake-to-bazel/trace-publish-marker/v1`).
+  A trace and a bundle for the same `(srckey, platform)` coexist
+  at distinct AC keys.
+
+- `cmd/trace-publish --config-bundle=<path>` publishes the bundle
+  alongside the trace in a single invocation. Both blobs upload
+  to CAS; both AC keys land via `UpdateActionResult`. Single
+  network round trip from the producer's perspective.
+
+- `cmd/trace-lookup --out-config-bundle=<path>` materializes the
+  bundle alongside the trace at the consumer's action time.
+  Bundle hit/miss is independent of trace hit/miss; on bundle
+  miss, a zero-byte file lands at the destination.
+
+- `rules_buildstream_bazel//rules:traces.bzl`'s `trace_load`
+  rule gains `expect_config_bundle: bool` (default False).
+  When True, the rule declares an additional output
+  `<name>/cmake-config-bundle.tar`.
+
+- write-a's round-2 install-genrule templates (cmake / meson /
+  autotools / pipeline kinds) append a config-bundle synthesis
+  step: walk `$INSTALL_ROOT/lib/pkgconfig/` and
+  `$INSTALL_ROOT/lib/cmake/<Pkg>/`, tar them into
+  `cmake-config-bundle.tar`, pass to `trace-publish --config-bundle`.
+  No synthesis from include/lib directory walks (the design
+  doc's "fallback shape") in v1 — elements that install neither
+  pkg-config files nor cmake-config files produce an empty
+  bundle. Operators can extend the synthesis step in a future
+  pass; the wire shape supports it.
+
+- write-a's `cmakeDepBundleLabels` retires the
+  `kind == "cmake"` filter. Trace-driven deps (autotools / make /
+  makemaker / modulebuild / manual / script, plus cmake / meson
+  under their round-2 fallback shapes) get
+  `:<dep>_trace_load` staged into the consumer's srcs. The
+  consumer's existing dep-extract shell loop matches
+  `cmake-config-bundle.tar` by basename — same shape regardless
+  of whether the dep is kind:cmake (the bundle lives in a
+  `:cmake_config_bundle` filegroup) or trace-driven (the bundle
+  is one output among trace_load's output set).
+
+Not in v1 (queued):
+
+- `mesonDepBundleLabels` still filters to `kind == "meson"`.
+  Extending it follows the same pattern as `cmakeDepBundleLabels`
+  but exercises a different consumer shape (the meson element's
+  configure step needs `PKG_CONFIG_PATH`, not
+  `CMAKE_PREFIX_PATH`). Lands when an FDSDK fixture surfaces a
+  meson-element-with-trace-driven-dep case.
+
+- Fixpoint driver (PR-5). v1 ships the publish/consume wire
+  contract; the convergence loop that bumps
+  `--action_env=CONVERGE_GENERATION` between rounds is queued.

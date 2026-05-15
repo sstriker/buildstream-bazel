@@ -130,6 +130,7 @@ package(default_visibility = ["//visibility:public"])
 trace_load(
     name = "%[1]s_trace_load",
     srckey = "%[5]s",
+    expect_config_bundle = True,
     trace_lookup = "//tools:trace-lookup",
 )
 
@@ -213,6 +214,7 @@ package(default_visibility = ["//visibility:public"])
     name = "%[1]s_trace_load_%[2]s",
     srckey = "%[3]s",
     platform = "%[2]s",
+    expect_config_bundle = True,
     trace_lookup = "//tools:trace-lookup",
 )
 
@@ -495,6 +497,38 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
         # this genrule. trace-publish reads it from here.
         cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/$(location %[1]s)"
 
+        # Synthesize a cmake-config bundle from the install tree
+        # for the cross-element configure-step bootstrap rendezvous
+        # (see docs/design/cross-element-config-rendezvous.md).
+        # Pkg-config files (lib/pkgconfig/) and cmake-config files
+        # (lib/cmake/<Pkg>/) the element installed are copied
+        # verbatim. Elements that install neither produce an empty
+        # bundle — downstream consumers skip staging when the
+        # bundle's tar is empty.
+        export CONFIG_BUNDLE_DIR="$$(mktemp -d)"
+        if [ -d "$$INSTALL_ROOT/lib/pkgconfig" ]; then
+            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
+            cp -r "$$INSTALL_ROOT/lib/pkgconfig"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
+        fi
+        if [ -d "$$INSTALL_ROOT/lib/cmake" ]; then
+            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/cmake"
+            cp -r "$$INSTALL_ROOT/lib/cmake"/. "$$CONFIG_BUNDLE_DIR/lib/cmake/" 2>/dev/null || true
+        fi
+        # Some autotools installs land .pc files under usr/lib/pkgconfig
+        # (PREFIX defaults to /usr/local in some configure scripts).
+        # Capture that too. The DESTDIR layout under $$INSTALL_ROOT
+        # mirrors the prefix-relative install tree, so check the
+        # common alternative locations.
+        for alt in usr/lib/pkgconfig usr/local/lib/pkgconfig; do
+            if [ -d "$$INSTALL_ROOT/$$alt" ]; then
+                mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
+                cp -r "$$INSTALL_ROOT/$$alt"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
+            fi
+        done
+        export CONFIG_BUNDLE_TAR="$$(mktemp)"
+        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+            -cf "$$CONFIG_BUNDLE_TAR" -C "$$CONFIG_BUNDLE_DIR" .
+
         # Publish to the AC iff a remote is configured. Empty
         # CAS_GRPC_ADDR ⇒ skip (e.g. local dev without buildbarn);
         # the build succeeds, no AC entry is written, and the
@@ -505,18 +539,15 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
         cd "$$EXEC_ROOT"
         if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
             # --platform= partitions the synthetic AC keyspace
-            # per target platform. Multi-platform fan-out bakes
-            # the platform tag literally into this argv so each
-            # of N per-platform genrules publishes under its own
-            # tag. Single-platform legacy operators leave platform
-            # empty here; the env-var fallback
-            # (--action_env=CMAKE_TO_BAZEL_PLATFORM=...) keeps
-            # working.
+            # per target platform. --config-bundle publishes the
+            # synthesized bundle under SyntheticConfigDigest
+            # (distinct keyspace from the trace).
             $(location //tools:trace-publish) \
                 --cas="$${CAS_GRPC_ADDR}" \
                 --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \
                 --platform="%[3]s" \
                 --trace="$(location %[1]s)" \
-                --make-db="$(location %[2]s)" >/dev/null
+                --make-db="$(location %[2]s)" \
+                --config-bundle="$$CONFIG_BUNDLE_TAR" >/dev/null
         fi`, trace, makeDB, publishPlatform)
 }

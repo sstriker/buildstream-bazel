@@ -396,6 +396,7 @@ trace_load(
     name = "%[1]s_trace_load",
     srckey = "%[2]s",
     expect_make_db = False,
+    expect_config_bundle = True,
     trace_lookup = "//tools:trace-lookup",
 )
 `, elem.Name, srckeyHash)
@@ -514,8 +515,20 @@ filegroup(
 		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
 `)
 		for _, dep := range cmakeDepLabels {
+			// Filter by basename + non-empty: the
+			// :<dep>_trace_load label expands to multiple
+			// outputs (trace.log, marker, make-db.txt,
+			// cmake-config-bundle.tar) and only the tar is a
+			// valid archive. The non-empty check also handles
+			// AC-miss zero-byte bundles cleanly (consumers
+			// "detect empty bundles and skip dep-stage" per the
+			// design doc). The kind:cmake :cmake_config_bundle
+			// filegroup is single-file so the basename filter
+			// is a no-op there.
 			fmt.Fprintf(&depExtract, `        for tar in $(locations %s); do
-            tar -xf "$$tar" -C "$$PREFIX"
+            if [ "$$(basename "$$tar")" = "cmake-config-bundle.tar" ] && [ -s "$$tar" ]; then
+                tar -xf "$$tar" -C "$$PREFIX"
+            fi
         done
 `, dep.Label)
 		}
@@ -597,24 +610,57 @@ type cmakeDepBundleLabel struct {
 }
 
 // cmakeDepBundleLabels returns the cross-element bundle labels
-// the consumer's genrule should stage. Filters to kind:cmake
-// deps (the only kind that emits a cmake-config bundle today);
-// pipeline kinds and filegroup-composition kinds don't ship a
-// bundle and are skipped silently. Order is dep-walk order so
-// the rendered BUILD is deterministic.
+// the consumer's genrule should stage. Two paths:
+//
+//   - kind:cmake deps: reference the dep's `:cmake_config_bundle`
+//     filegroup, which packs a converter-synthesized bundle from
+//     cmake's File API codemodel (pass-2 artifact, available
+//     whether or not the dep has been built yet).
+//   - Trace-driven deps with the round-2 path active:
+//     reference the dep's `:<dep>_trace_load` rule, whose action-
+//     time AC lookup materializes a `cmake-config-bundle.tar`
+//     synthesized from the install tree at pass-3. The cross-
+//     element configure-step bootstrap rendezvous (see
+//     docs/design/cross-element-config-rendezvous.md): pass-3
+//     publishes, pass-2 consumes via the AC.
+//
+// Both paths land a cmake-config-bundle.tar file in the consumer's
+// $(SRCS); the consumer's existing dep-extract shell loop matches
+// by basename and untars uniformly. The trace-driven dep's
+// trace_load also drops trace.log + marker (+ optionally make-db)
+// into $(SRCS) but those files have different basenames, so the
+// extract loop ignores them.
+//
+// Deps with no bundle-producing path (filegroup kinds, stack,
+// compose, etc.) are skipped silently. Order is dep-walk order
+// so the rendered BUILD is deterministic.
+//
+// The trace-driven case keys off traceDrivenSrckeyPatternsForKind:
+// the same gate that drives whether the dep's RenderB emits the
+// trace_load target. A dep's round-2 path is operative iff
+// traceDrivenSrckeyPatternsForKind returns non-nil for its kind —
+// and that's exactly when the dep has published bundle bytes
+// available via :<dep>_trace_load.
 func cmakeDepBundleLabels(elem *element) []cmakeDepBundleLabel {
 	var out []cmakeDepBundleLabel
 	for _, dep := range elem.Deps {
 		if dep == nil || dep.Bst == nil {
 			continue
 		}
-		if dep.Bst.Kind != "cmake" {
+		if dep.Bst.Kind == "cmake" {
+			out = append(out, cmakeDepBundleLabel{
+				DepName: dep.Name,
+				Label:   fmt.Sprintf("//elements/%s:cmake_config_bundle", dep.Name),
+			})
 			continue
 		}
-		out = append(out, cmakeDepBundleLabel{
-			DepName: dep.Name,
-			Label:   fmt.Sprintf("//elements/%s:cmake_config_bundle", dep.Name),
-		})
+		if traceDrivenSrckeyPatternsForKind(dep.Bst.Kind) != nil {
+			out = append(out, cmakeDepBundleLabel{
+				DepName: dep.Name,
+				Label:   fmt.Sprintf("//elements/%s:%s_trace_load", dep.Name, dep.Name),
+			})
+			continue
+		}
 	}
 	return out
 }

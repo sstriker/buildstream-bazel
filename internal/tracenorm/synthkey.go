@@ -13,6 +13,17 @@ import (
 // keyspace if we ever need to invalidate published traces.
 const synthKeyArgv0 = "cmake-to-bazel/trace-publish-marker/v1"
 
+// configBundleKeyArgv0 namespaces the config-bundle keyspace
+// separately from the trace keyspace. Same mechanism as
+// synthKeyArgv0; the distinct argv0 means a published trace and
+// a published config bundle for the same (srckey, platform) land
+// at different AC keys. Required because the consumer side of
+// the round-2 rendezvous can need either (or both) and looks them
+// up independently — the trace_load action materializes the
+// trace, the same trace_load action ALSO materializes the bundle
+// via SyntheticConfigDigest.
+const configBundleKeyArgv0 = "cmake-to-bazel/config-publish-marker/v1"
+
 // synthKeyPlatformProperty is the REAPI Platform_Property name
 // the synthetic Action carries when the caller supplies a
 // non-empty platform tag. Distinct prefix so it can't collide
@@ -65,8 +76,28 @@ const synthKeyPlatformProperty = "cmake-to-bazel/target-platform/v1"
 // the action keyspace naturally via REAPI Action.Platform on
 // the per-platform convert-element-cmake Actions themselves.
 func SyntheticActionDigest(srckey, platform string) (*cas.Digest, error) {
+	return syntheticDigest(synthKeyArgv0, srckey, platform)
+}
+
+// SyntheticConfigDigest is the config-bundle keyspace sibling of
+// SyntheticActionDigest. Same shape (Command{argv0, srckey} +
+// Action with optional Platform property), different argv0 marker
+// (configBundleKeyArgv0). A trace and a config bundle for the
+// same (srckey, platform) coexist at distinct AC keys.
+//
+// Used by trace-publish (with --config-bundle) and trace-lookup
+// (with --out-config-bundle) to land / fetch the bundle alongside
+// the trace from the round-2 install genrule. The convergence
+// driver doesn't care which is which — both keys are populated by
+// the same install action and consumed by the same trace_load
+// action.
+func SyntheticConfigDigest(srckey, platform string) (*cas.Digest, error) {
+	return syntheticDigest(configBundleKeyArgv0, srckey, platform)
+}
+
+func syntheticDigest(argv0, srckey, platform string) (*cas.Digest, error) {
 	cmd := &repb.Command{
-		Arguments: []string{synthKeyArgv0, srckey},
+		Arguments: []string{argv0, srckey},
 	}
 	cmdDigest, _, err := cas.DigestProto(cmd)
 	if err != nil {

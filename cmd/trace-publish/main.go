@@ -71,6 +71,7 @@ func main() {
 	makeDBPath := flag.String("make-db", "", "optional path to the filtered make-db.txt produced by the genrule's `make -np` post-step. Pass it for trace-driven kinds whose converter expects make-db.txt in the published Directory (autotools / make / makemaker / modulebuild / manual / script — convert-element-trace reads it); omit it for cmake round-2 fallback (cmake's converter derives its IR from the trace + the cmake File API). Empty/omitted publishes a trace.log-only Directory; downstream converters that look for make-db.txt will see it absent and should handle that as their kind dictates.")
 	sourceRoot := flag.String("source-root", "", "absolute path to the element's source tree. Mirrors build-tracer's --source-root: when set, the defensive re-canonicalization filters openat lines to source-relative paths and strips the volatile fd return value (the trace doubles as a configure-time read oracle). When empty, openat lines drop entirely — preserves the legacy AC byte schema for elements not opted into the oracle.")
 	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace for round-2 trace-driven kinds whose install layout / build graph diverges across target platforms. Empty preserves the historical single-keyspace shape — single-platform operators upgrading past this flag keep their previously published AC entries valid. The matching trace-lookup invocation in rules/traces.bzl must pass the same tag for the publish/lookup rendezvous to hit.")
+	configBundlePath := flag.String("config-bundle", "", "optional path to a cmake-config-bundle.tar synthesized from the install tree (lib/pkgconfig/*.pc + lib/cmake/<Pkg>/ contents). When set, trace-publish ALSO publishes the bundle to the AC under SyntheticConfigDigest(srckey, platform) — a separate keyspace partition from the trace's SyntheticActionDigest, so a published trace and a published bundle for the same (srckey, platform) coexist at distinct keys. The matching trace-lookup invocation reads the bundle via --out-config-bundle. Empty/omitted publishes only the trace (legacy shape, preserves bytes for callers that don't synthesize a bundle).")
 	flag.Parse()
 
 	if *addr == "" || *srckey == "" || *tracePath == "" {
@@ -92,6 +93,65 @@ func main() {
 	if err := publish(ctx, store, *srckey, *platform, *tracePath, *makeDBPath, *sourceRoot); err != nil {
 		log.Fatalf("trace-publish: %v", err)
 	}
+	if *configBundlePath != "" {
+		if err := publishConfigBundle(ctx, store, *srckey, *platform, *configBundlePath); err != nil {
+			log.Fatalf("trace-publish: %v", err)
+		}
+	}
+}
+
+// publishConfigBundle uploads cmake-config-bundle.tar as a single-
+// file REAPI Directory and lands an ActionResult under
+// SyntheticConfigDigest(srckey, platform). Same upload shape as
+// the trace publish (PackDir + Tree proto upload + AC update), so
+// bb-storage's completeness checker is satisfied. The
+// distinct-argv0 SyntheticConfigDigest keeps this entry from
+// colliding with the trace entry.
+func publishConfigBundle(ctx context.Context, store cas.Store, srckey, platform, bundlePath string) error {
+	bundleBody, err := os.ReadFile(bundlePath)
+	if err != nil {
+		return fmt.Errorf("read config bundle: %w", err)
+	}
+	stage, err := os.MkdirTemp("", "config-publish-stage-*")
+	if err != nil {
+		return fmt.Errorf("config-publish stage: %w", err)
+	}
+	defer os.RemoveAll(stage)
+	if err := os.WriteFile(filepath.Join(stage, "cmake-config-bundle.tar"), bundleBody, 0o644); err != nil {
+		return fmt.Errorf("write staged config bundle: %w", err)
+	}
+	tree, err := cas.PackDir(stage)
+	if err != nil {
+		return fmt.Errorf("pack config-bundle dir: %w", err)
+	}
+	if err := uploadTree(ctx, store, tree); err != nil {
+		return fmt.Errorf("upload config-bundle dir: %w", err)
+	}
+	reapiTree := tree.AsReapiTree()
+	treeDigest, treeBlob, err := cas.DigestProto(reapiTree)
+	if err != nil {
+		return fmt.Errorf("digest config-bundle tree: %w", err)
+	}
+	if err := store.PutBlob(ctx, treeDigest, treeBlob); err != nil {
+		return fmt.Errorf("upload config-bundle tree proto: %w", err)
+	}
+	configDigest, err := tracenorm.SyntheticConfigDigest(srckey, platform)
+	if err != nil {
+		return fmt.Errorf("synth-config-key: %w", err)
+	}
+	ar := &repb.ActionResult{
+		OutputDirectories: []*repb.OutputDirectory{
+			{
+				Path:                "config-bundle",
+				TreeDigest:          treeDigest,
+				RootDirectoryDigest: tree.RootDigest,
+			},
+		},
+	}
+	if err := store.UpdateActionResult(ctx, configDigest, ar); err != nil {
+		return fmt.Errorf("update config-bundle ac: %w", err)
+	}
+	return nil
 }
 
 // publish does the work; factored out so the in-process roundtrip
