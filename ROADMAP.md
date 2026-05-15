@@ -63,6 +63,31 @@ transition cleanly.
   (kind:autotools) +
   `scripts/meta-cmake-round2-fallback-multiplatform.sh`
   (kind:cmake Phase B fallback).
+- **Docs consolidation + architecture slide deck.** The
+  design-trail docs that accumulated during the conversion-
+  bootstrap design conversation (`cross-element-config-
+  rendezvous.md`, `staged-pipeline.md`, and overlapping
+  sections of `autotools-round2-rendezvous.md` /
+  `three-pass-flow.md`) are useful as in-progress artifacts but
+  become dead weight once the implementation lands. Once the
+  trace_load / trace_build rule pair, driver-loop refactor,
+  converter-rules-package extraction, and `finalize-b`
+  materializer ship, fold them into a single end-state
+  architecture doc — likely a refreshed `docs/architecture.md`
+  or a focused `docs/design/conversion-architecture.md` —
+  carrying three diagrams: the driver loop, the two-cache-
+  layers rendezvous channel (Bazel AC + synthetic-key AC,
+  what each catches), and the per-element BUILD evolution from
+  converted-with-debris through `finalize-b` to standalone.
+  `staged-pipeline.md` deletes outright (rejected after
+  analysis; commit history is the audit trail).
+  Companion: a short slide deck (~6–8 slides, marp / reveal.js
+  so it lives in-repo) covering problem statement → two-project
+  shape → the Bazel anti-pattern that forces the rendezvous →
+  trace_load / trace_build rule pair → driver loop → finalize-b
+  → end-state B. Both deliverables queued behind the
+  implementation so visuals reflect the real thing, not the
+  design's intent.
 - **Cross-element configure-step bootstrap for non-cmake deps.**
   A `kind:cmake` / `kind:meson` element converts in pass 2 by
   running cmake/meson *configure*, which needs build-config
@@ -146,24 +171,6 @@ transition cleanly.
   `docs/design/cmake-execute-process-round2-fallback.md`.
 ## Later (research / open questions)
 
-- **Architecture reconsidered: staged A…D conversion pipeline.**
-  Today's two-project (A + B) shape with the AC-rendezvous + loop
-  between rounds was designed before bb_clientd + Bazel-9 CAS-FS
-  shipped. With BwotB + FUSE-backed `bazel-bin/` as the
-  operational target, cross-workspace artifact sharing can ride
-  standard Bazel `srcs` edges instead of bespoke synthetic-key
-  channels. The reconsidered shape: four staged Bazel projects
-  A → B → C → D, content-monotonic, each stage's inputs being
-  either source or outputs of a strictly earlier stage. **D is
-  the standalone Bazel project the conversion yields.** srckey
-  stays load-bearing for narrowing; `SyntheticActionDigest` +
-  `trace-publish` / `trace-lookup` + `_trace_repo` retire from
-  the primary path (could stay as a depth-≥3 loop-fallback). Not
-  committed; needs prototyping of cross-workspace
-  `local_repository` ergonomics under bb_clientd FUSE plus an
-  empirical look at alternation-depth distribution in real
-  meta-projects before deciding whether to migrate. Recipe + open
-  questions in `docs/design/staged-pipeline.md`.
 - **Generator-expression evaluation in lifted genrules.** The
   configure_file lift's verify-pass falls back to the legacy
   bytes-embedded shape when `Substitute(template, vars, opts)`
