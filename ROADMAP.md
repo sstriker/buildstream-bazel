@@ -98,22 +98,56 @@ transition cleanly.
   (autotools/make/manual/script/makemaker/modulebuild) it only
   exists after the dep's pass-3 install build — a pass-ordering
   inversion, and `cmakeDepBundleLabels` skips non-cmake deps
-  silently today. Plan: generalize the round-2 AC rendezvous —
-  the trace-based dep's pass-3 install genrule synthesizes a
-  config bundle from its real install tree and publishes it to
-  the REAPI AC (`cmd/config-publish` + a
-  `SyntheticConfigDigest` keyspace alongside the trace one);
-  the cmake consumer's pass-2 genrule consumes
-  `@cfgbundle_<dep>//:bundle` via a load-time AC lookup
-  mirroring `@trace_<elem>//:trace`. AC miss ⇒ deferred
-  placeholder (default) or a `.bst`-public-data stub bundle
-  (opt-in). The driver script becomes a fixpoint loop over the
-  DAG (build A as far as it can, stage, build B skipping
-  placeholders, repeat until nothing new publishes). Full
-  design — including the all-cmake case, the rejected
-  direct-Bazel-edge alternative, and why project B stays
-  self-contained at the fixpoint — in
-  `docs/design/cross-element-config-rendezvous.md`.
+  silently today. The plan resolved across the design discussion
+  to a unified mechanism that also reshapes the existing
+  autotools round-2 rendezvous:
+  - **Paired `trace_load` / `trace_build` rules per trace-based
+    element.** `trace_load` has narrow inputs (srckey-view),
+    does an action-time `GetActionResult` against the synthetic-
+    key AC, emits trace + `cmake-config-bundle.tar` (synthesized
+    from the real install tree) **or** a typed empty marker.
+    `trace_build` has full sources, runs configure+make+install
+    under build-tracer, publishes to the same synthetic-key AC.
+    The converter's `srcs` references `trace_load`, never
+    `trace_build`. Replaces the `_trace_repo` repo rule (the AC
+    lookup moves from load time to action time, ending the
+    analysis-cache churn between driver passes).
+  - **Converter rules package.** Today's rendered-into-each-
+    project `rules/*.bzl` becomes a versioned package in this
+    repo (`rules_buildstream_bazel` or similar), referenced by
+    project A's `MODULE.bazel` via `bazel_dep`. Single source of
+    truth for `trace_load` / `trace_build` / `zero_files` /
+    `sources` semantics; evolve the implementation without
+    touching every project's `rules/`.
+  - **Uniform driver loop.** `bazel build //...:trace_load`
+    populates the AC view; the driver queries for elements
+    whose `trace_load` returned the typed empty marker;
+    `bazel build //elements/X:trace_build` for each; bump an
+    action-env generation token; retry. Logic is uniform across
+    kinds (the per-kind dispatch lives in the rule macro, not
+    the driver). Termination is when the empty-marker set is
+    empty.
+  - **`cmd/finalize-b` as input→output materializer.** Takes a
+    converged project B at `--in <path>` and writes a stripped
+    standalone Bazel project at `--out <dest>`: removes dead
+    `trace_build` targets (those whose element has fine-grained
+    cc rules and no filegroup-shape consumer), prunes the
+    converter-rules-package `bazel_dep` once no surviving target
+    references it, drops conversion-era intermediate filegroups.
+    Idempotent and reversible (input untouched). The deliverable
+    handover step.
+  Load-bearing invariants: srckey narrowing stays; the
+  synthetic-key AC (now keyed for both the trace and the
+  bundle, partitioned by srckey + platform) stays — the Bazel
+  anti-pattern analysis (an action whose hermetic key is narrow
+  while its commands read full sources can't be made cheap
+  inside Bazel's AC) means the rendezvous is fundamental, not a
+  workaround for the two-project topology. The all-cmake case
+  is unchanged from today (`cmake_config_bundle` rides direct
+  Bazel `srcs` edges; no rendezvous involved). Design-trail
+  docs (`docs/design/cross-element-config-rendezvous.md`,
+  `staged-pipeline.md`) capture the evolution; they consolidate
+  into a single architecture doc per the docs-cleanup item.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
