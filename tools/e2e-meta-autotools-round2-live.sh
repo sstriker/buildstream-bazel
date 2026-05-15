@@ -312,19 +312,22 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         echo "  republished trace under fixture srckey"
 
         echo "  bazel build //elements/greet:greet_build"
-        # CAS_GRPC_ADDR / TRACE_LOOKUP_BIN — read by _trace_repo
-        # at load time; it shells out to trace-lookup to query
-        # the AC. CAS_FUSE_MOUNT / CAS_DIRECTORY_PREFIX — read
-        # by _trace_repo to compute the symlink target into the
-        # bb_clientd mount. --experimental_remote_output_service
-        # — Bazel 9's xattr-fast-path replacement; bb_clientd
-        # serves the input bytes through this socket so Bazel
-        # trusts the daemon's reported digests.
+        # CAS_GRPC_ADDR — read by the action-time trace_load rule
+        # (rules/traces.bzl), which shells to trace-lookup at
+        # action time to query the AC and materialize the trace's
+        # Directory into the action's declared outputs. The legacy
+        # load-time _trace_repo repository rule + CAS_FUSE_MOUNT /
+        # CAS_DIRECTORY_PREFIX / TRACE_LOOKUP_BIN --repo_env wiring
+        # is retired (the gRPC fetch via MaterializeDirectory
+        # replaces the FUSE-mount symlink path).
+        # --experimental_remote_output_service — Bazel 9's xattr-
+        # fast-path replacement; bb_clientd serves OUTPUT bytes
+        # through this socket so Bazel trusts the daemon's
+        # reported digests. Still useful as the output-side
+        # CAS-aware filesystem; only the trace-lookup input path
+        # changed from FUSE to gRPC.
         (cd "$PROJ_A" && "$BAZEL" build \
-            --repo_env=CAS_GRPC_ADDR="$CAS_ADDR" \
-            --repo_env=CAS_FUSE_MOUNT="$MOUNT" \
-            --repo_env=CAS_DIRECTORY_PREFIX="cas//blobs/sha256" \
-            --repo_env=TRACE_LOOKUP_BIN="$repo/build/bin/trace-lookup" \
+            --action_env=CAS_GRPC_ADDR="$CAS_ADDR" \
             --experimental_remote_output_service="unix://$GRPC_SOCK" \
             //elements/greet:greet_build)
 
@@ -334,7 +337,7 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
             exit 1
         fi
         if grep -qF "Round-2 boot phase" "$BUILD_OUT"; then
-            echo "round-2 BUILD.bazel.out is the placeholder — _trace_repo's AC lookup didn't hit"
+            echo "round-2 BUILD.bazel.out is the placeholder — trace_load's action-time AC lookup didn't hit"
             cat "$BUILD_OUT"
             exit 1
         fi

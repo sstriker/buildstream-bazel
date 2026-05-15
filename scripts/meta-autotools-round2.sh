@@ -8,9 +8,11 @@
 # passing --trace-publish-bin / --trace-lookup-bin and asserts:
 #
 #   1. Project A's per-element BUILD is a converter genrule
-#      consuming @trace_<elem>//:trace (the round-2 lookup repo
-#      declared by rules/traces.bzl).
-#   2. rules/traces.bzl + tools/traces.json render in both A and B.
+#      consuming :<elem>_trace_load (the action-time AC lookup
+#      target declared by rules/traces.bzl). The legacy load-time
+#      @trace_<elem>//:trace external-repo shape is gone.
+#   2. rules/traces.bzl renders in both A and B (declaring the
+#      trace_load rule). tools/traces.json is no longer emitted.
 #   3. Project B's coarse install genrule no longer references
 #      convert-element-trace (the converter moved to A);
 #      instead it references //tools:trace-publish (the round-2
@@ -56,11 +58,13 @@ fixture="testdata/meta-project/autotools-greet"
     --trace-publish-bin "$bin_dir/trace-publish" \
     --trace-lookup-bin "$bin_dir/trace-lookup"
 
-# A-side: the converter genrule consuming the trace fileset.
+# A-side: the converter genrule consuming :greet_trace_load.
 a_build="$A/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_build"' \
-    '"@trace_greet//:trace"' \
+    'load("//rules:traces.bzl", "trace_load")' \
+    'name = "greet_trace_load"' \
+    '":greet_trace_load"' \
     '"//tools:convert-element-trace"' \
     '--trace-dir' \
     '--out-build'; do
@@ -71,32 +75,45 @@ for marker in \
     fi
 done
 
-# A-side must NOT be the round-1 marker filegroup.
-if grep -qF "BUILD_IN_PROJECT_B" "$a_build"; then
-    echo "meta-autotools-round2: A-side still in round-1 marker shape" >&2
-    cat "$a_build" >&2
-    exit 1
-fi
+# A-side must NOT carry the legacy load-time external-repo shape
+# nor the round-1 marker filegroup.
+for banned in \
+    '"@trace_greet//:trace"' \
+    'BUILD_IN_PROJECT_B'; do
+    if grep -qF -- "$banned" "$a_build"; then
+        echo "meta-autotools-round2: A-side unexpectedly contains $banned" >&2
+        cat "$a_build" >&2
+        exit 1
+    fi
+done
 
-# rules/traces.bzl + tools/traces.json present in both projects.
+# rules/traces.bzl renders in both projects. tools/traces.json is
+# no longer emitted (the legacy load-time `traces` module
+# extension was retired when the AC lookup moved to action time).
 for path in \
     "$A/rules/traces.bzl" \
-    "$A/tools/traces.json" \
-    "$B/rules/traces.bzl" \
-    "$B/tools/traces.json"; do
+    "$B/rules/traces.bzl"; do
     if [ ! -f "$path" ]; then
         echo "meta-autotools-round2: missing $path" >&2
         exit 1
     fi
 done
+for path in \
+    "$A/tools/traces.json" \
+    "$B/tools/traces.json"; do
+    if [ -f "$path" ]; then
+        echo "meta-autotools-round2: $path unexpectedly emitted (legacy load-time wiring)" >&2
+        exit 1
+    fi
+done
 
-# A's MODULE.bazel pulls in the traces extension + the per-element repo.
+# A's MODULE.bazel must NOT declare the legacy `traces` extension.
 mod_a="$A/MODULE.bazel"
-for marker in \
+for unwanted in \
     'use_extension("//rules:traces.bzl", "traces")' \
     '"trace_greet"'; do
-    if ! grep -qF -- "$marker" "$mod_a"; then
-        echo "meta-autotools-round2: A MODULE.bazel missing marker: $marker" >&2
+    if grep -qF -- "$unwanted" "$mod_a"; then
+        echo "meta-autotools-round2: A MODULE.bazel unexpectedly contains legacy traces extension wiring: $unwanted" >&2
         cat "$mod_a" >&2
         exit 1
     fi

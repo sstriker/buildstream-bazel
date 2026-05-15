@@ -123,14 +123,16 @@ config:
 				t.Fatalf("writeProjectB: %v", err)
 			}
 
-			// A-side: converter genrule consuming @trace_elem//:trace.
+			// A-side: converter genrule consuming :elem_trace_load.
 			aBody, err := os.ReadFile(filepath.Join(outA, "elements/elem/BUILD.bazel"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, want := range []string{
 				`name = "elem_build"`,
-				`"@trace_elem//:trace"`,
+				`load("//rules:traces.bzl", "trace_load")`,
+				`name = "elem_trace_load"`,
+				`":elem_trace_load"`,
 				`"srckey.txt"`,
 				`"//tools:convert-element-trace"`,
 				`--trace-dir`,
@@ -140,9 +142,15 @@ config:
 					t.Errorf("[kind:%s] project A round-2 BUILD missing %q\n%s", tc.kind, want, aBody)
 				}
 			}
-			// A must NOT host the legacy install genrule under round-2.
-			if strings.Contains(string(aBody), `name = "elem_install"`) {
-				t.Errorf("[kind:%s] project A unexpectedly contains the install genrule under round-2", tc.kind)
+			// A must NOT host the legacy install genrule under round-2,
+			// and must NOT carry the legacy external-repo trace label.
+			for _, banned := range []string{
+				`name = "elem_install"`,
+				`"@trace_elem//:trace"`,
+			} {
+				if strings.Contains(string(aBody), banned) {
+					t.Errorf("[kind:%s] project A unexpectedly contains %q under round-2", tc.kind, banned)
+				}
 			}
 
 			// srckey.txt rendered in both projects.
@@ -152,17 +160,18 @@ config:
 				}
 			}
 
-			// MODULE.bazel declares the traces extension + the per-element repo.
+			// MODULE.bazel must NOT declare the legacy traces extension —
+			// the trace_load rule is a regular rule, not an extension repo.
 			modA, err := os.ReadFile(filepath.Join(outA, "MODULE.bazel"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{
+			for _, unwanted := range []string{
 				`use_extension("//rules:traces.bzl", "traces")`,
 				`"trace_elem"`,
 			} {
-				if !strings.Contains(string(modA), want) {
-					t.Errorf("[kind:%s] project A MODULE.bazel missing %q\n%s", tc.kind, want, modA)
+				if strings.Contains(string(modA), unwanted) {
+					t.Errorf("[kind:%s] project A MODULE.bazel unexpectedly contains legacy traces extension wiring %q\n%s", tc.kind, unwanted, modA)
 				}
 			}
 
@@ -256,12 +265,17 @@ func TestWriter_PipelineKindsRound2_MultiPlatform(t *testing.T) {
 	got := string(aBody)
 
 	// Two per-platform converter genrules, each reading its
-	// platform-tagged trace repo.
+	// platform-tagged trace_load target. The trace_load definitions
+	// land at the top of the BUILD, each pinned to its platform tag.
 	for _, want := range []string{
 		`name = "elem__linux_x86_64_ir"`,
 		`name = "elem__darwin_arm64_ir"`,
-		`"@trace_elem__linux_x86_64//:trace"`,
-		`"@trace_elem__darwin_arm64//:trace"`,
+		`name = "elem_trace_load_linux_x86_64"`,
+		`name = "elem_trace_load_darwin_arm64"`,
+		`platform = "linux_x86_64"`,
+		`platform = "darwin_arm64"`,
+		`":elem_trace_load_linux_x86_64"`,
+		`":elem_trace_load_darwin_arm64"`,
 		`"linux_x86_64/ir.json"`,
 		`"linux_x86_64/BUILD.bazel.out"`,
 		`"darwin_arm64/ir.json"`,
@@ -286,31 +300,23 @@ func TestWriter_PipelineKindsRound2_MultiPlatform(t *testing.T) {
 		}
 	}
 
-	// Legacy single @trace_elem//:trace label should NOT appear
-	// — every trace reference is platform-tagged in multi-platform
-	// mode.
-	if strings.Contains(got, `"@trace_elem//:trace"`) {
-		t.Errorf("multi-platform mode unexpectedly contains legacy single-platform @trace_elem//:trace label\n%s", got)
-	}
-
-	// traces.json declares one entry per (element, platform) cell.
-	tracesJSONBody, err := os.ReadFile(filepath.Join(outA, "tools/traces.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		`"key": "elem__linux_x86_64"`,
-		`"key": "elem__darwin_arm64"`,
-		`"platform": "linux_x86_64"`,
-		`"platform": "darwin_arm64"`,
+	// Legacy load-time external-repo labels must NOT appear —
+	// every trace reference is a same-package trace_load target.
+	for _, banned := range []string{
+		`"@trace_elem//:trace"`,
+		`"@trace_elem__linux_x86_64//:trace"`,
+		`"@trace_elem__darwin_arm64//:trace"`,
 	} {
-		if !strings.Contains(string(tracesJSONBody), want) {
-			t.Errorf("multi-platform traces.json missing %q\n%s", want, tracesJSONBody)
+		if strings.Contains(got, banned) {
+			t.Errorf("multi-platform mode unexpectedly contains legacy external-repo trace label %q\n%s", banned, got)
 		}
 	}
-	// Legacy unsuffixed entry should not appear.
-	if strings.Contains(string(tracesJSONBody), `"key": "elem"`) {
-		t.Errorf("multi-platform traces.json unexpectedly contains legacy unsuffixed elem entry\n%s", tracesJSONBody)
+
+	// tools/traces.json is no longer emitted; the trace_load rule
+	// carries srckey + platform as string attrs directly. Confirm
+	// the file is absent.
+	if _, err := os.Stat(filepath.Join(outA, "tools/traces.json")); !os.IsNotExist(err) {
+		t.Errorf("multi-platform project A unexpectedly emitted tools/traces.json (legacy load-time wiring)")
 	}
 }
 

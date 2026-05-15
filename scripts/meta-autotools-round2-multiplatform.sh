@@ -81,17 +81,31 @@ fixture="testdata/meta-project/autotools-greet"
     --platforms-json "$platforms_json"
 
 # Project A: two per-platform converter genrules + fold genrule
-# (kind-agnostic, shipped in PR #112).
+# (kind-agnostic, shipped in PR #112). Each per-platform converter
+# reads a same-package trace_load target pinned to the platform
+# tag; the legacy load-time @trace_*//:trace external-repo shape
+# is gone.
 a_build="$A/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet__linux_x86_64_ir"' \
     'name = "greet__darwin_arm64_ir"' \
     'name = "greet_build"' \
-    '"@trace_greet__linux_x86_64//:trace"' \
-    '"@trace_greet__darwin_arm64//:trace"' \
+    'name = "greet_trace_load_linux_x86_64"' \
+    'name = "greet_trace_load_darwin_arm64"' \
+    '":greet_trace_load_linux_x86_64"' \
+    '":greet_trace_load_darwin_arm64"' \
     '"//tools:fold-element"'; do
     if ! grep -qF -- "$marker" "$a_build"; then
         echo "meta-autotools-round2-multiplatform: A-side BUILD missing marker: $marker" >&2
+        cat "$a_build" >&2
+        exit 1
+    fi
+done
+for banned in \
+    '"@trace_greet__linux_x86_64//:trace"' \
+    '"@trace_greet__darwin_arm64//:trace"'; do
+    if grep -qF -- "$banned" "$a_build"; then
+        echo "meta-autotools-round2-multiplatform: A-side unexpectedly contains legacy external-repo label $banned" >&2
         cat "$a_build" >&2
         exit 1
     fi
@@ -136,19 +150,14 @@ if grep -qF -- 'name = "greet_install"' "$b_build"; then
     exit 1
 fi
 
-# tools/traces.json: per-(element, platform) entries.
-traces_json="$A/tools/traces.json"
-for marker in \
-    '"key": "greet__linux_x86_64"' \
-    '"key": "greet__darwin_arm64"' \
-    '"platform": "linux_x86_64"' \
-    '"platform": "darwin_arm64"'; do
-    if ! grep -qF -- "$marker" "$traces_json"; then
-        echo "meta-autotools-round2-multiplatform: traces.json missing marker: $marker" >&2
-        cat "$traces_json" >&2
-        exit 1
-    fi
-done
+# tools/traces.json is no longer emitted — the trace_load rule
+# carries srckey + platform as string attrs directly. The per-
+# platform partitioning is observable in the trace_load rule
+# declarations asserted above.
+if [ -f "$A/tools/traces.json" ]; then
+    echo "meta-autotools-round2-multiplatform: $A/tools/traces.json unexpectedly emitted (legacy load-time wiring)" >&2
+    exit 1
+fi
 
 # Project A's //platforms package: one platform() per declared
 # --platforms-json entry with constraint_values + the

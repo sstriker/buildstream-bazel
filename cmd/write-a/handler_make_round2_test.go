@@ -73,14 +73,15 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Fatalf("writeProjectB: %v", err)
 	}
 
-	// A-side: per-element converter genrule consuming @trace_mk//:trace.
+	// A-side: per-element converter genrule consuming :mk_trace_load.
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/mk/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		`name = "mk_build"`,
-		`"@trace_mk//:trace"`,
+		`name = "mk_trace_load"`,
+		`":mk_trace_load"`,
 		`"srckey.txt"`,
 		`"//tools:convert-element-trace"`,
 		`--trace-dir`,
@@ -97,16 +98,19 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 	if strings.Contains(string(aBody), `name = "mk_install"`) {
 		t.Errorf("project A round-2 BUILD unexpectedly contains the install genrule (mk_install); should have moved to B")
 	}
+	// Legacy load-time external-repo shape must NOT be present.
+	if strings.Contains(string(aBody), `"@trace_mk//:trace"`) {
+		t.Errorf("project A round-2 BUILD unexpectedly contains legacy @trace_*//:trace label:\n%s", aBody)
+	}
 
 	if _, err := os.Stat(filepath.Join(outA, "elements/mk/srckey.txt")); err != nil {
 		t.Errorf("srckey.txt not staged in project A: %v", err)
 	}
 
-	// rules/traces.bzl + tools/traces.json render in both projects.
-	for _, p := range []string{
-		"rules/traces.bzl",
-		"tools/traces.json",
-	} {
+	// rules/traces.bzl renders in both projects (the trace_load rule
+	// is per-package, but rules/traces.bzl is shared). tools/traces.json
+	// is no longer emitted on either side.
+	for _, p := range []string{"rules/traces.bzl"} {
 		if _, err := os.Stat(filepath.Join(outA, p)); err != nil {
 			t.Errorf("project A missing %s: %v", p, err)
 		}
@@ -114,18 +118,26 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 			t.Errorf("project B missing %s: %v", p, err)
 		}
 	}
+	for _, p := range []string{"tools/traces.json"} {
+		if _, err := os.Stat(filepath.Join(outA, p)); !os.IsNotExist(err) {
+			t.Errorf("project A unexpectedly emitted %s (legacy load-time wiring)", p)
+		}
+		if _, err := os.Stat(filepath.Join(outB, p)); !os.IsNotExist(err) {
+			t.Errorf("project B unexpectedly emitted %s (legacy load-time wiring)", p)
+		}
+	}
 
-	// MODULE.bazel declares the traces extension + the per-element repo.
+	// MODULE.bazel must NOT declare the legacy `traces` extension.
 	modA, err := os.ReadFile(filepath.Join(outA, "MODULE.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
+	for _, unwanted := range []string{
 		`use_extension("//rules:traces.bzl", "traces")`,
 		`"trace_mk"`,
 	} {
-		if !strings.Contains(string(modA), want) {
-			t.Errorf("project A MODULE.bazel missing %q\n%s", want, modA)
+		if strings.Contains(string(modA), unwanted) {
+			t.Errorf("project A MODULE.bazel unexpectedly contains legacy traces extension wiring %q\n%s", unwanted, modA)
 		}
 	}
 

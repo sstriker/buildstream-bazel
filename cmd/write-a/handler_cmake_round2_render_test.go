@@ -85,44 +85,50 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 	}
 
 	// A-side: converter genrule threads the fallback flag AND
-	// pulls @trace_<elem>//:trace into srcs (the load-time AC
-	// lookup; trace-driven convergence research follow-on
-	// teaches convert-element-cmake to consume the trace).
+	// pulls :demo_trace_load into srcs (the action-time AC lookup;
+	// trace-driven convergence research follow-on teaches
+	// convert-element-cmake to consume the trace bytes).
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/demo/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		"--unsupported-execute-process-fallback=true",
-		`"@trace_demo//:trace"`,
+		`load("//rules:traces.bzl", "trace_load")`,
+		`name = "demo_trace_load"`,
+		`expect_make_db = False`,
+		`":demo_trace_load"`,
 	} {
 		if !strings.Contains(string(aBody), want) {
 			t.Errorf("project A BUILD missing %q\n%s", want, aBody)
 		}
 	}
+	if strings.Contains(string(aBody), `"@trace_demo//:trace"`) {
+		t.Errorf("project A BUILD unexpectedly contains legacy @trace_*//:trace label:\n%s", aBody)
+	}
 
-	// rules/traces.bzl + tools/traces.json render in both
-	// projects (kind-agnostic round-2 plumbing).
+	// rules/traces.bzl renders in both projects. tools/traces.json
+	// is no longer emitted (the load-time extension was retired).
 	for _, project := range []string{outA, outB} {
-		for _, p := range []string{"rules/traces.bzl", "tools/traces.json"} {
-			if _, err := os.Stat(filepath.Join(project, p)); err != nil {
-				t.Errorf("%s missing %s: %v", project, p, err)
-			}
+		if _, err := os.Stat(filepath.Join(project, "rules/traces.bzl")); err != nil {
+			t.Errorf("%s missing rules/traces.bzl: %v", project, err)
+		}
+		if _, err := os.Stat(filepath.Join(project, "tools/traces.json")); !os.IsNotExist(err) {
+			t.Errorf("%s unexpectedly emitted tools/traces.json (legacy load-time wiring)", project)
 		}
 	}
 
-	// MODULE.bazel pulls in the traces extension + the
-	// per-element repo.
+	// MODULE.bazel must NOT declare the legacy traces extension.
 	modA, err := os.ReadFile(filepath.Join(outA, "MODULE.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
+	for _, unwanted := range []string{
 		`use_extension("//rules:traces.bzl", "traces")`,
 		`"trace_demo"`,
 	} {
-		if !strings.Contains(string(modA), want) {
-			t.Errorf("project A MODULE.bazel missing %q\n%s", want, modA)
+		if strings.Contains(string(modA), unwanted) {
+			t.Errorf("project A MODULE.bazel unexpectedly contains legacy traces extension wiring %q\n%s", unwanted, modA)
 		}
 	}
 

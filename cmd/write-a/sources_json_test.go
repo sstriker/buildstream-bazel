@@ -170,52 +170,48 @@ func TestRenderSourcesBzl_ParameterizesPathPrefix(t *testing.T) {
 	}
 }
 
-// TestRenderTracesBzl_ParameterizesPathPrefix is the round-2
-// counterpart: the _trace_repo rule must read the same
-// CAS_DIRECTORY_PREFIX env so a single --repo_env flag covers
-// both extensions.
-func TestRenderTracesBzl_ParameterizesPathPrefix(t *testing.T) {
+// TestRenderTracesBzl_DeclaresActionTimeTraceLoadRule asserts the
+// new shape: rules/traces.bzl defines a regular Bazel rule
+// (`trace_load`) whose action shells to trace-lookup, replacing
+// the legacy load-time `_trace_repo` repository rule.
+func TestRenderTracesBzl_DeclaresActionTimeTraceLoadRule(t *testing.T) {
 	got := renderTracesBzl()
 	for _, want := range []string{
-		`rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")`,
-		`mount + "/" + prefix + "/directory/" + hash`,
-		`"CAS_DIRECTORY_PREFIX"`,
+		`trace_load = rule(`,
+		`def _trace_load_impl(ctx):`,
+		`ctx.actions.run(`,
+		`executable = ctx.executable._trace_lookup`,
+		`use_default_shell_env = True`,
+		`"srckey": attr.string(`,
+		`"platform": attr.string(`,
+		`"expect_make_db": attr.bool(`,
+		`"_trace_lookup": attr.label(`,
+		`default = "//tools:trace-lookup"`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("rendered traces.bzl missing parameterized-prefix marker %q\n%s", want, got)
+			t.Errorf("rendered traces.bzl missing trace_load marker %q\n%s", want, got)
 		}
-	}
-	if strings.Contains(got, `mount + "/blobs/directory/" + hash`) {
-		t.Errorf("rendered traces.bzl still contains the hardcoded /blobs/directory/ shape")
 	}
 }
 
-// TestRenderTracesBzl_AttrPlatformOverridesEnv: under multi-
-// platform write-a renders distinct _trace_repo instances per
-// (element, platform) cell, each with a pinned `platform` attr.
-// The repo rule must prefer the attr over the env var so two
-// per-platform repos in one Bazel invocation don't collide on
-// CMAKE_TO_BAZEL_PLATFORM. Empty attr keeps the legacy env-var
-// fallback for single-platform operators.
-func TestRenderTracesBzl_AttrPlatformOverridesEnv(t *testing.T) {
+// TestRenderTracesBzl_NoLegacyRepoRuleShape guards against the
+// legacy load-time shape sneaking back: no `_trace_repo`
+// repository rule, no `traces` module extension, no FUSE-mount
+// symlink wiring. The new shape is an action, not a repo rule.
+func TestRenderTracesBzl_NoLegacyRepoRuleShape(t *testing.T) {
 	got := renderTracesBzl()
-	for _, want := range []string{
-		// The repository rule declares the platform attr with an
-		// empty-string default so legacy single-platform renders
-		// (which don't populate it) keep working.
-		`"platform": attr.string(default = "")`,
-		// The impl prefers the attr; only falls back to env when
-		// the attr is empty.
-		`platform_tag = rctx.attr.platform`,
-		`if platform_tag == "":`,
-		`platform_tag = rctx.os.environ.get("CMAKE_TO_BAZEL_PLATFORM", "")`,
-		// The module extension forwards the per-entry platform
-		// field from traces.json to the rule. Legacy entries
-		// without the field default to "" via .get().
-		`platform = entry.get("platform", ""),`,
+	for _, banned := range []string{
+		`_trace_repo = repository_rule(`,
+		`module_extension(`,
+		`def _traces_impl(module_ctx):`,
+		`rctx.symlink(`,
+		`CAS_FUSE_MOUNT`,
+		`CAS_DIRECTORY_PREFIX`,
+		`TRACE_LOOKUP_BIN`,
+		`TRACE_REPO_NONCE`,
 	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rendered traces.bzl missing per-platform marker %q\n%s", want, got)
+		if strings.Contains(got, banned) {
+			t.Errorf("rendered traces.bzl unexpectedly contains legacy load-time marker %q\n%s", banned, got)
 		}
 	}
 }

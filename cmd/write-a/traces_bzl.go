@@ -2,242 +2,156 @@ package main
 
 // rules/traces.bzl renderer.
 //
-// The traces module extension declares one external repo per
-// kind:autotools element in the graph (one per entry in
-// tools/traces.json). At Bazel load time each repo's _trace_repo
-// rule shells out to the trace-lookup CLI:
+// The traces rule is project A's consumer side of the round-2
+// AC rendezvous. Every kind that publishes a trace (autotools /
+// make / makemaker / modulebuild / manual / script — and
+// kind:cmake / kind:meson under their round-2 fallback shapes)
+// gets one trace_load target per element. The target runs the
+// trace-lookup tool as a Bazel action:
 //
-//   - AC hit  ⇒ rule symlinks
-//                 <CAS_FUSE_MOUNT>/blobs/directory/<digest>
-//               under "trace_dir/" and emits a filegroup over
-//               the published files (trace.log + make-db.txt
-//               for autotools / make / makemaker /
-//               modulebuild / manual / script; trace.log only
-//               for cmake round-2 fallback whose converter
-//               derives its IR from the trace + cmake File API
-//               and has no make-db equivalent). The converter
-//               genrule consumes them via
-//               srcs = [..., "@trace_<key>//:trace"].
-//   - AC miss ⇒ rule emits an empty :trace filegroup. The
-//               converter sees an empty trace fileset and falls
-//               back to emitting the coarse pass-3 genrule into
-//               project B (configure / make / make-install +
-//               build-tracer + the inline trace-publish step).
-//               Round-2 boots from this miss: pass-3 runs the
-//               coarse build, trace-publish lands the AC entry,
-//               and the next render of A on any node sees a hit.
+//   - AC hit  ⇒ trace.log (+ make-db.txt for trace-driven kinds)
+//               are materialized into the action's declared
+//               outputs; the marker carries "hit\n".
+//   - AC miss ⇒ trace.log (+ make-db.txt when declared) are
+//               zero-byte files; the marker carries "miss\n".
 //
-// Mirror of cmd/write-a/sources_bzl.go's structure: same
-// module-extension shape, same repo-name convention (`trace_<key>`
-// vs `src_<key>`), same env-driven mount path.
+// The converter genrule for the element consumes
+// :<elem>_trace_load via srcs (filegroup-style); seeing empty
+// bytes routes the converter through the same coarse-fallback
+// path the legacy `_trace_repo` empty-fileset triggered.
 //
-// Three env vars feed the rule (passed via --repo_env=… on
-// project-A bazel invocations):
+// Why an action, not a repository rule:
 //
-//   - CAS_GRPC_ADDR   — the REAPI gRPC endpoint trace-lookup
-//                       queries. Empty / unset ⇒ permanent miss
-//                       (no remote configured, e.g. an offline
-//                       dev render).
-//   - CAS_FUSE_MOUNT  — the cas-fuse / bb_clientd mount root, same
-//                       value the sources extension reads. The
-//                       symlink target is
-//                       `<CAS_FUSE_MOUNT>/<CAS_DIRECTORY_PREFIX>/directory/<digest>`.
-//   - CAS_DIRECTORY_PREFIX — path layout under the mount;
-//                       defaults to "blobs" (cmd/cas-fuse). For
-//                       bb_clientd, set to
-//                       `cas/<instance>/blobs/<digest_function>`.
-//                       Same env var rules/sources.bzl reads, so a
-//                       single --repo_env covers both extensions.
-//   - TRACE_LOOKUP_BIN — absolute path to the cmd/trace-lookup
-//                       binary. Required when CAS_GRPC_ADDR is
-//                       set; without it the rule can't actually
-//                       perform the lookup and falls back to miss.
+// The previous shape (`_trace_repo`) did its GetActionResult at
+// Bazel LOAD time via `rctx.execute`. That meant every `bazel
+// build` over project A re-ran the lookup before analysis could
+// start, and the analysis cache was invalidated whenever the AC
+// view shifted (between driver passes, between dev sessions,
+// between developer hosts). Moving the lookup into an action
+// fixes both: the action's inputs are hermetic (the srckey file
+// + the tool), so Bazel's ActionCache works normally; AC
+// re-querying happens only when the operator explicitly bumps
+// the convergence-generation environment (which the driver loop
+// does between rounds — see `docs/three-pass-flow.md`).
 //
-// Optional:
-//   - CMAKE_TO_BAZEL_PLATFORM — platform tag (e.g.
-//                       "linux_x86_64") that partitions the
-//                       synthetic AC keyspace, so the lookup
-//                       hits only the trace published by the
-//                       matching platform's build. Multi-
-//                       platform operators set this to match
-//                       their `bazel build --platforms=...`
-//                       choice (via `--repo_env`); single-
-//                       platform operators leave it unset and
-//                       fall back to the legacy single-
-//                       keyspace shape. The MATCHING
-//                       trace-publish invocation in project
-//                       B's install genrule must read the
-//                       same env var so its `--platform` flag
-//                       agrees with the lookup side.
-//   - TRACE_REPO_NONCE — opaque env var the rule declares in
-//                        `environ`. Bumping its value forces
-//                        Bazel to re-run the repo rule even when
-//                        the static inputs haven't changed; used
-//                        to defeat repo-rule caching when the
-//                        operator wants a fresh AC query.
+// Inputs:
+//   - srckey: a Label pointing at the element's srckey.txt
+//     (rendered by write-a alongside the per-element BUILD).
+//   - platform: optional platform tag pinning the AC keyspace
+//     partition; matches the publishing side's --platform.
+//   - expect_make_db: declares whether the trace producer for
+//     this kind emits make-db.txt alongside trace.log.
+//     Trace-driven kinds set True; cmake / meson round-2
+//     fallback (whose converters derive IR from trace + cmake
+//     File API / meson introspection, not from a make-db) set
+//     False.
+//
+// Action env (the operator passes via --action_env):
+//   - CAS_GRPC_ADDR — the REAPI gRPC endpoint trace-lookup
+//                     queries. Empty/unset ⇒ permanent miss.
+//   - CONVERGE_GENERATION — opaque token the driver bumps
+//                     between rounds to force action re-runs
+//                     when the AC view may have changed.
+//                     Without the bump, Bazel's ActionCache
+//                     would re-use the previous round's
+//                     (probably-miss) output even after the
+//                     trace lands. Declared in the rule's
+//                     env_attribute list so changes invalidate
+//                     the action.
+//
+// Outputs:
+//   - <name>/trace.log
+//   - <name>/make-db.txt  (when expect_make_db is True)
+//   - <name>/marker
+//
+// The action always succeeds (miss is not an error); the marker
+// is the hit/miss signal for downstream rules / the convergence
+// driver.
 
 func renderTracesBzl() string {
 	return `# Generated by cmd/write-a. Do not edit.
 
-"""Module extension that declares one external repo per
-trace-driven element's srckey. The repo's ":trace" filegroup
-resolves to the published fileset from the cas-fuse / bb_clientd
-mount when the AC has the trace published — trace.log +
-make-db.txt for autotools / make / makemaker / modulebuild /
-manual / script, or trace.log only for cmake round-2 fallback —
-or to an empty filegroup when the lookup misses (downstream
-converter falls back to coarse).
+"""trace_load — action-time consumer side of the round-2 AC
+rendezvous.
 
-Configuration (pass via --repo_env=KEY=VALUE on project-A bazel
-invocations):
+One trace_load target per round-2-using element. The action
+shells to trace-lookup; outputs are trace.log (+ make-db.txt
+for trace-driven kinds) and a hit/miss marker. AC miss produces
+zero-byte trace files, so converters route through their
+coarse-fallback path the same way the legacy load-time
+_trace_repo empty fileset did.
 
-  --repo_env=CAS_GRPC_ADDR=127.0.0.1:8980
-  --repo_env=CAS_FUSE_MOUNT=/var/cache/cmake-to-bazel/cas
-  --repo_env=CAS_DIRECTORY_PREFIX=blobs   # default; cmd/cas-fuse layout
-  --repo_env=TRACE_LOOKUP_BIN=/abs/path/to/trace-lookup
+The lookup needs CAS_GRPC_ADDR via --action_env. The driver
+loop bumps CONVERGE_GENERATION between rounds (also via
+--action_env) to force action re-runs when the AC view shifts.
 
-The symlink target is
-<CAS_FUSE_MOUNT>/<CAS_DIRECTORY_PREFIX>/directory/<digest>.
-Default prefix "blobs" matches the flat layout cmd/cas-fuse
-serves. bb_clientd users set the prefix to
-cas/<instance>/blobs/<digest_function> to land on the canonical
-bb_clientd layout (see docs/design/bazel9-cas-fs.md). The same
-env var rules/sources.bzl reads, so a single --repo_env covers
-both extensions.
-
-Optional:
-  --repo_env=TRACE_REPO_NONCE=<any>  # bump to force re-evaluation
+Replaces the legacy load-time _trace_repo + traces module
+extension; the AC lookup is now Bazel-action-cached, ending
+the analysis-cache churn between driver passes.
 """
 
-def _trace_repo_impl(rctx):
-    srckey = rctx.attr.srckey
-    addr = rctx.os.environ.get("CAS_GRPC_ADDR", "")
-    mount = rctx.os.environ.get("CAS_FUSE_MOUNT", "")
-    prefix = rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")
-    lookup_bin = rctx.os.environ.get("TRACE_LOOKUP_BIN", "")
-    # Platform tag: attr-driven when write-a's multi-platform
-    # mode populated it, env-driven otherwise. A single Bazel
-    # build resolves one _trace_repo per platform under multi-
-    # platform mode, each pinned to a specific tag via the attr
-    # so the per-platform AC lookups don't collide. Legacy
-    # single-platform shape falls back to the CMAKE_TO_BAZEL_PLATFORM
-    # env var (set via --repo_env), so operators upgrading past
-    # this revision keep their existing --repo_env wiring valid.
-    # The matching publish-side trace-publish in project B reads
-    # the same env var (via --action_env), so the legacy two
-    # sides stay aligned.
-    platform_tag = rctx.attr.platform
-    if platform_tag == "":
-        platform_tag = rctx.os.environ.get("CMAKE_TO_BAZEL_PLATFORM", "")
-    rctx.file("WORKSPACE", "")
+def _trace_load_impl(ctx):
+    out_trace = ctx.actions.declare_file(ctx.label.name + "/trace.log")
+    out_marker = ctx.actions.declare_file(ctx.label.name + "/marker")
+    outputs = [out_trace, out_marker]
 
-    # Empty fallback: any of the three env requirements absent
-    # ⇒ render an empty :trace filegroup. The kind:autotools
-    # converter treats that as the "no trace yet" signal and
-    # emits the coarse pass-3 genrule.
-    empty_build = '''filegroup(
-    name = "trace",
-    srcs = [],
-    visibility = ["//visibility:public"],
-)
-'''
-    if addr == "" or mount == "" or lookup_bin == "" or srckey == "":
-        rctx.file("BUILD.bazel", empty_build)
-        return
+    args = ctx.actions.args()
+    args.add("--srckey", ctx.attr.srckey)
+    args.add("--out-trace", out_trace)
+    args.add("--out-empty-marker", out_marker)
 
-    # Lookup the synthetic AC key for this srckey. trace-lookup
-    # exits 0 with empty stdout on miss, exits 0 with "<hash>/<size>"
-    # on hit, and exits non-zero on hard error (gRPC dial fail
-    # etc.). We treat any non-zero result as miss too — repo-rule
-    # eval shouldn't fail the build just because the cache is
-    # unreachable; the converter's coarse fallback is the
-    # available-mode path.
-    lookup_argv = [lookup_bin, "--cas=" + addr, "--srckey=" + srckey]
-    if platform_tag != "":
-        lookup_argv.append("--platform=" + platform_tag)
-    res = rctx.execute(lookup_argv)
-    if res.return_code != 0:
-        rctx.file("BUILD.bazel", empty_build)
-        return
-    line = res.stdout.strip()
-    if line == "":
-        rctx.file("BUILD.bazel", empty_build)
-        return
+    if ctx.attr.expect_make_db:
+        out_make_db = ctx.actions.declare_file(ctx.label.name + "/make-db.txt")
+        outputs.append(out_make_db)
+        args.add("--out-make-db", out_make_db)
 
-    # trace-lookup prints "<hash>/<size>". The FUSE mount serves
-    # any Directory blob in CAS at
-    # <mount>/<prefix>/directory/<hash>; default prefix "blobs"
-    # matches cmd/cas-fuse, bb_clientd users set it to
-    # cas/<instance>/blobs/<digest_function> for the daemon's
-    # canonical layout. Symlinking under trace_dir/ then globbing
-    # produces the filegroup the converter consumes (1 or 2
-    # files depending on the publishing kind — autotools-family
-    # publishes trace.log + make-db.txt, cmake round-2 publishes
-    # trace.log only).
-    parts = line.split("/")
-    if len(parts) != 2:
-        rctx.file("BUILD.bazel", empty_build)
-        return
-    hash = parts[0]
-    target = mount + "/" + prefix + "/directory/" + hash
-    rctx.symlink(target, "trace_dir")
-    rctx.file("BUILD.bazel", '''# Generated by rules/traces.bzl.
-exports_files(
-    glob(["trace_dir/**"], allow_empty = True),
-)
+    if ctx.attr.platform:
+        args.add("--platform", ctx.attr.platform)
 
-filegroup(
-    name = "trace",
-    srcs = glob(["trace_dir/**"], allow_empty = True),
-    visibility = ["//visibility:public"],
-)
-''')
+    # trace-lookup reads CAS_GRPC_ADDR from the action env when
+    # --cas is unset; the operator passes it via
+    # --action_env=CAS_GRPC_ADDR. CONVERGE_GENERATION is the lever
+    # the driver loop pulls between rounds — Bazel's ActionCache
+    # tracks --action_env values, so a bump forces a re-run.
+    # use_default_shell_env opts the action into seeing the build's
+    # --action_env values without us having to enumerate them
+    # explicitly (the alternative — env = {"CAS_GRPC_ADDR": ...}
+    # populated from ctx.var — doesn't work for --action_env, which
+    # is a Bazel-flag-level concern not a Starlark-visible one).
+    ctx.actions.run(
+        outputs = outputs,
+        executable = ctx.executable._trace_lookup,
+        arguments = [args],
+        use_default_shell_env = True,
+        mnemonic = "TraceLoad",
+        progress_message = "trace-load %{label}",
+    )
+    return [DefaultInfo(files = depset(outputs))]
 
-_trace_repo = repository_rule(
-    implementation = _trace_repo_impl,
+trace_load = rule(
+    implementation = _trace_load_impl,
     attrs = {
-        "srckey": attr.string(mandatory = True),
-        # Platform tag pinned at extension-time. Empty (the
-        # legacy default) makes the rule fall back to the
-        # CMAKE_TO_BAZEL_PLATFORM env var so single-platform
-        # operators upgrading past this revision don't need
-        # config changes. Non-empty pins the per-platform AC
-        # lookup so multi-platform builds resolve distinct
-        # @trace_<elem>__<platform>//:trace repos in one Bazel
-        # invocation without env-var conflict.
-        "platform": attr.string(default = ""),
+        "srckey": attr.string(
+            mandatory = True,
+            doc = "Hex-encoded srckey seed for the synthetic AC key. write-a renders this attr from the same value it writes to project B's srckey.txt; passing as a string avoids needing to render srckey.txt into project A and keeps the rule's input set minimal (the tool + the build's --action_env).",
+        ),
+        "platform": attr.string(
+            default = "",
+            doc = "Platform tag partitioning the synthetic AC keyspace. Matches the publishing side's --platform.",
+        ),
+        "expect_make_db": attr.bool(
+            default = True,
+            doc = "Declares whether the publishing kind emits make-db.txt alongside trace.log. Trace-driven kinds (autotools / make / makemaker / modulebuild / manual / script) set True; cmake / meson round-2 fallback set False.",
+        ),
+        "_trace_lookup": attr.label(
+            default = "//tools:trace-lookup",
+            executable = True,
+            cfg = "exec",
+            allow_single_file = True,
+            doc = "The trace-lookup binary. Staged into //tools by write-a.",
+        ),
     },
-    environ = [
-        "CAS_GRPC_ADDR",
-        "CAS_FUSE_MOUNT",
-        "CAS_DIRECTORY_PREFIX",
-        "TRACE_LOOKUP_BIN",
-        "CMAKE_TO_BAZEL_PLATFORM",
-        "TRACE_REPO_NONCE",
-    ],
-)
-
-def _traces_impl(module_ctx):
-    json_label = None
-    for mod in module_ctx.modules:
-        for tag in mod.tags.from_json:
-            json_label = tag.path
-    if json_label == None:
-        fail("traces extension: at least one .from_json(path = ...) tag required")
-    raw = module_ctx.read(json_label)
-    data = json.decode(raw)
-    for entry in data.get("traces", []):
-        _trace_repo(
-            name = "trace_" + entry["key"],
-            srckey = entry.get("srckey", ""),
-            platform = entry.get("platform", ""),
-        )
-
-traces = module_extension(
-    implementation = _traces_impl,
-    tag_classes = {
-        "from_json": tag_class(attrs = {"path": attr.label(mandatory = True)}),
-    },
+    doc = "Action-time consumer side of the round-2 rendezvous. Materializes the trace's Directory into the action's declared outputs on AC hit; writes zero-byte trace files plus a miss-marker on AC miss.",
 )
 `
 }

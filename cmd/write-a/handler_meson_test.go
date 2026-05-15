@@ -135,24 +135,30 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 	}
 
 	// A-side: converter genrule threads the fallback flag AND
-	// pulls the trace label into srcs. The trace module wiring
-	// (rules/traces.bzl, tools/traces.json) is rendered too.
+	// pulls the action-time trace_load target into srcs. The
+	// rules/traces.bzl renders (trace_load rule definition); the
+	// legacy tools/traces.json is no longer emitted.
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/elem/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, marker := range []string{
 		`--unsupported-target-fallback=true`,
-		`"@trace_elem//:trace"`,
+		`load("//rules:traces.bzl", "trace_load")`,
+		`name = "elem_trace_load"`,
+		`expect_make_db = False`,
+		`":elem_trace_load"`,
 		`//tools:convert-element-meson`,
 	} {
 		if !strings.Contains(string(aBody), marker) {
 			t.Errorf("A-side BUILD missing marker %q\n%s", marker, aBody)
 		}
 	}
+	if strings.Contains(string(aBody), `"@trace_elem//:trace"`) {
+		t.Errorf("A-side BUILD unexpectedly contains legacy @trace_*//:trace label:\n%s", aBody)
+	}
 	for _, path := range []string{
 		"rules/traces.bzl",
-		"tools/traces.json",
 		"tools/build-tracer",
 		"tools/trace-publish",
 		"tools/trace-lookup",
@@ -160,6 +166,9 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(outA, path)); err != nil {
 			t.Errorf("project A missing %s: %v", path, err)
 		}
+	}
+	if _, err := os.Stat(filepath.Join(outA, "tools/traces.json")); !os.IsNotExist(err) {
+		t.Errorf("project A unexpectedly emitted tools/traces.json (legacy load-time wiring)")
 	}
 
 	// B-side: real install genrule replaces the placeholder.
