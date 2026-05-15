@@ -146,6 +146,24 @@ transition cleanly.
   `docs/design/cmake-execute-process-round2-fallback.md`.
 ## Later (research / open questions)
 
+- **Architecture reconsidered: staged A…D conversion pipeline.**
+  Today's two-project (A + B) shape with the AC-rendezvous + loop
+  between rounds was designed before bb_clientd + Bazel-9 CAS-FS
+  shipped. With BwotB + FUSE-backed `bazel-bin/` as the
+  operational target, cross-workspace artifact sharing can ride
+  standard Bazel `srcs` edges instead of bespoke synthetic-key
+  channels. The reconsidered shape: four staged Bazel projects
+  A → B → C → D, content-monotonic, each stage's inputs being
+  either source or outputs of a strictly earlier stage. **D is
+  the standalone Bazel project the conversion yields.** srckey
+  stays load-bearing for narrowing; `SyntheticActionDigest` +
+  `trace-publish` / `trace-lookup` + `_trace_repo` retire from
+  the primary path (could stay as a depth-≥3 loop-fallback). Not
+  committed; needs prototyping of cross-workspace
+  `local_repository` ergonomics under bb_clientd FUSE plus an
+  empirical look at alternation-depth distribution in real
+  meta-projects before deciding whether to migrate. Recipe + open
+  questions in `docs/design/staged-pipeline.md`.
 - **Generator-expression evaluation in lifted genrules.** The
   configure_file lift's verify-pass falls back to the legacy
   bytes-embedded shape when `Substitute(template, vars, opts)`
