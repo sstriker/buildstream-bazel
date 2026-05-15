@@ -121,33 +121,6 @@ transition cleanly.
   trace-driven kinds) also needs a CI fixture:
   `--trace-source-root` is wired but no e2e job exercises
   it yet, so the gate today only covers the cmake oracle.
-- **kind:cmake round-2 fallback for unliftable
-  `execute_process`.** Phase B follow-on to the Now-bullet
-  native lift. When `convert-element-cmake` exits with
-  `unsupported-execute-process`, the round-2-style coarse
-  "cmake configure + ninja + install" genrule takes over for
-  that element — same destination as kind:autotools / make /
-  makemaker / modulebuild / manual / script, but reached
-  differently. kind:cmake
-  is **not** a `pipelineHandler` variant (no
-  `traceDrivenSrckeyPatterns` field to flip; no
-  `shouldUseRound2()` branch), and it doesn't have an
-  autotools-style `round2Enabled` build-wide flag either —
-  flipping either would force every kind:cmake element through
-  round-2, sacrificing the fine-grained native render. Instead
-  the dispatch is **per-element**: `cmakeHandler` keeps the
-  native render as the primary path, and the round-2 install
-  genrule + placeholder BUILD.bazel.out are extra wiring
-  emitted alongside, activated only when convert-element-cmake
-  refuses the call. Reuses `cmd/build-tracer`,
-  `@trace_<elem>//:trace`, and the inline `trace-publish`
-  rendezvous machinery — all of which are kind-agnostic
-  already. Render gate: `scripts/meta-cmake-round2-fallback.sh`. Live-AC gate:
-  the publish/lookup wire half of
-  `tools/e2e-meta-autotools-round2-live.sh` is kind-agnostic
-  but its bazel-build half is autotools-fixture-specific; a
-  cmake sibling gate is the v1 plan. Architectural recipe:
-  `docs/design/cmake-execute-process-round2-fallback.md`.
 - **Repo-rule install for kind:cmake round-2 fallback.**
   Phase B's round-2 fallback (per
   `docs/design/cmake-execute-process-round2-fallback.md`)
