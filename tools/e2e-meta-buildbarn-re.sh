@@ -94,6 +94,7 @@ A="$work_dir/A"
 # one TestE2E_Buildbarn_ExecuteRealConvertElement already proves runs
 # on this worker image.
 build/bin/write-a \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst testdata/meta-project/hello-world.bst \
     --out "$A" \
     --convert-element-cmake "$repo_root/build/bin/convert-element-cmake"

@@ -119,6 +119,7 @@ echo "== write-a (--use-fuse-sources) =="
 # both env vars are read by the _src_repo rule at bazel-build
 # time, set below as --repo_env flags.
 build/bin/write-a \
+    --rules-package-path "$repo/rules_buildstream_bazel" \
     --bst testdata/fuse-fixtures/hello.bst \
     --out "$PROJ_A" \
     --out-b "$PROJ_B" \

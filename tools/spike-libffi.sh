@@ -111,6 +111,7 @@ out_b="$work/B"
 rm -rf "$out_a" "$out_b"
 render_rc=0
 "$repo/build/bin/write-a" \
+    --rules-package-path "$repo/rules_buildstream_bazel" \
     --bst "$bst" \
     --out "$out_a" \
     --out-b "$out_b" \

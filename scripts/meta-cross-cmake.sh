@@ -25,6 +25,8 @@
 
 set -eu
 
+repo_root="$(cd "$(dirname "$0")/.." && pwd)"
+
 work_dir=$(mktemp -d)
 trap 'rm -rf "$work_dir"' EXIT
 
