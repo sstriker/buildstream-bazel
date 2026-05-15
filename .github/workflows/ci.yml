@@ -285,18 +285,29 @@ jobs:
         if: failure()
 
   e2e-latest-cmake:
-    # Same surface as the `e2e` job, but runs against whatever cmake
-    # the runner ships (currently 3.31.6 on ubuntu-24.04) instead of
-    # the pinned 3.28.3. Tripwire for File API schema bumps and
-    # build.ninja shape drift in newer cmakes; non-blocking
+    # Same surface as the `e2e` job, but runs against a recent
+    # major-release cmake instead of the pinned 3.28.3. Tripwire
+    # for File API schema bumps, build.ninja shape drift, and
+    # policy-removal regressions in newer cmakes; non-blocking
     # (continue-on-error) so a single upstream cmake change can't
-    # gate every PR. Reviewers should still investigate failures —
-    # they signal real compatibility gaps the pinned-cmake job
+    # gate every PR. Reviewers should still investigate failures
+    # — they signal real compatibility gaps the pinned-cmake job
     # can't see.
+    #
+    # CMAKE_LATEST_VERSION pins the cmake 4.x release this job
+    # downloads. Bump as new majors ship; the older job already
+    # covers the pinned 3.x line. Picking a specific release
+    # (rather than relying on the runner's stock cmake, which
+    # tracks the apt 3.x line) is what gates the
+    # TestConfigure_CMP0026_HintSurfaces e2e — CMP0026 only
+    # fatal-errors on cmake >= 4.x; under cmake 3.x the test
+    # skips.
     name: End-to-end (latest cmake — non-blocking)
     runs-on: ubuntu-24.04
     needs: unit
     continue-on-error: true
+    env:
+      CMAKE_LATEST_VERSION: 4.0.3
     steps:
       - uses: actions/checkout@v5
 
@@ -305,15 +316,17 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install bwrap (use runner's stock cmake)
+      - name: Install bwrap + cmake ${{ env.CMAKE_LATEST_VERSION }}
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends bubblewrap
           sudo chmod u+s "$(command -v bwrap)"
-          # Skip tools/install-pinned-cmake.sh — we *want* the
-          # runner's stock cmake here. Print the version so PR
-          # readers can correlate failures with the cmake they
-          # surface against.
+          # Override CMAKE_VERSION so install-pinned-cmake.sh
+          # fetches the 4.x tarball instead of the Makefile pin.
+          # Installs to /usr/local/bin, shadowing the runner's
+          # stock /usr/bin/cmake.
+          sudo env PREFIX=/usr/local CMAKE_VERSION="${CMAKE_LATEST_VERSION}" \
+            tools/install-pinned-cmake.sh
           cmake --version | head -1
           ninja --version
           bwrap --version 2>&1 | head -1
@@ -344,6 +357,18 @@ jobs:
             --allow-cmake-version-mismatch \
             --verify \
             2>&1 | tee -a /tmp/cijob.log
+
+      - name: CMP0026 hint e2e (cmake 4.x stderr-scrape)
+        # Drives Configure against a CMakeLists.txt that uses the
+        # pre-3.0 `get_target_property(... LOCATION)` idiom (the
+        # shape yasm and other vintage packages still ship).
+        # cmake 4.x fatal-errors at configure; the test asserts
+        # the [hint] block + CMP0026 marker + patch_cmds
+        # reference all surface in the wrapped error. On cmake
+        # 3.x the test self-skips.
+        run: |
+          go test ./converter/internal/cmakerun/... \
+            -run TestConfigure_CMP0026_HintSurfaces -v 2>&1 | tee -a /tmp/cijob.log
 
       - uses: ./.github/actions/post-failure-tail
         if: failure()

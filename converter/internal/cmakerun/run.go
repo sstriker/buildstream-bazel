@@ -180,12 +180,23 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, "cmake", argv...)
+	// Tee cmake's stderr into a tail buffer so a failed run can
+	// be annotated with hints for well-known incompat patterns
+	// (cmake 4.x CMP0026, etc.) without breaking the live
+	// op-stderr passthrough. The buffer is bounded to keep
+	// memory usage predictable on projects whose configure
+	// emits thousands of lines.
+	stderrTail := &boundedBuffer{limit: 16 * 1024}
 	cmd.Stdout = opts.Stdout
-	cmd.Stderr = opts.Stderr
+	if opts.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(opts.Stderr, stderrTail)
+	} else {
+		cmd.Stderr = stderrTail
+	}
 	cmd.Env = configureEnv(homeDir, opts.PrefixDir)
 
 	if err := cmd.Run(); err != nil {
-		return Reply{}, fmt.Errorf("cmakerun: cmake failed: %w", err)
+		return Reply{}, annotateConfigureFailure(err, stderrTail.Bytes())
 	}
 
 	// Best-effort read of the variable dump (only when we
