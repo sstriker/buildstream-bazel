@@ -10,9 +10,10 @@ import (
 // TestWriter_AutotoolsRound2_ProjectAConverterGenrule covers the
 // load-bearing pivot: with round-2 (the default when --convert-element-trace is set) enabled, project A
 // for a kind:autotools element renders a converter genrule whose
-// srcs reference @trace_<elem>//:trace. That's the round-2
-// rendezvous wiring — the converter consumes the trace fileset
-// the _trace_repo rule produces (or doesn't) at load time.
+// srcs reference :<elem>_trace_load. That's the round-2 rendezvous
+// wiring — the converter consumes the trace fileset the action-
+// time trace_load rule produces (or zero-bytes-with-miss-marker
+// when the AC misses).
 func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 	tmp := t.TempDir()
 	srcDir := filepath.Join(tmp, "src")
@@ -72,14 +73,17 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Fatalf("writeProjectB: %v", err)
 	}
 
-	// A-side: the converter genrule consuming @trace_<elem>//:trace.
+	// A-side: the converter genrule consuming :<elem>_trace_load,
+	// and the trace_load target itself emitted alongside.
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
 		`name = "auto_build"`,
-		`"@trace_auto//:trace"`,
+		`load("//rules:traces.bzl", "trace_load")`,
+		`name = "auto_trace_load"`,
+		`":auto_trace_load"`,
 		`"srckey.txt"`,
 		`"//tools:convert-element-trace"`,
 		`--trace-dir`,
@@ -89,8 +93,13 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 			t.Errorf("project A round-2 BUILD missing %q\n%s", want, aBody)
 		}
 	}
-	if strings.Contains(string(aBody), "BUILD_IN_PROJECT_B") {
-		t.Errorf("project A round-2 BUILD should NOT be the round-1 marker:\n%s", aBody)
+	for _, unwanted := range []string{
+		`"@trace_auto//:trace"`,
+		"BUILD_IN_PROJECT_B",
+	} {
+		if strings.Contains(string(aBody), unwanted) {
+			t.Errorf("project A round-2 BUILD unexpectedly contains %q\n%s", unwanted, aBody)
+		}
 	}
 
 	// srckey.txt must exist alongside the converter genrule —
@@ -118,41 +127,39 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		}
 	}
 
-	// rules/traces.bzl + tools/traces.json must both render.
+	// rules/traces.bzl renders the trace_load rule. tools/traces.json
+	// is no longer emitted (the load-time `traces` module extension
+	// was retired when the AC lookup moved to action time).
 	tracesBzl, err := os.ReadFile(filepath.Join(outA, "rules/traces.bzl"))
 	if err != nil {
 		t.Fatalf("rules/traces.bzl missing: %v", err)
 	}
 	for _, want := range []string{
-		"_trace_repo",
-		"TRACE_LOOKUP_BIN",
-		"CAS_GRPC_ADDR",
-		"CAS_FUSE_MOUNT",
-		"trace-lookup",
+		"trace_load = rule",
+		"_trace_load_impl",
+		"ctx.actions.run",
+		"--srckey",
 	} {
 		if !strings.Contains(string(tracesBzl), want) {
 			t.Errorf("rules/traces.bzl missing %q\n%s", want, tracesBzl)
 		}
 	}
-	tracesJSON, err := os.ReadFile(filepath.Join(outA, "tools/traces.json"))
-	if err != nil {
-		t.Fatalf("tools/traces.json missing: %v", err)
-	}
-	if !strings.Contains(string(tracesJSON), `"key": "auto"`) {
-		t.Errorf("tools/traces.json missing element entry:\n%s", tracesJSON)
+	if _, err := os.Stat(filepath.Join(outA, "tools/traces.json")); !os.IsNotExist(err) {
+		t.Errorf("tools/traces.json should not be emitted; got err=%v", err)
 	}
 
-	// MODULE.bazel must declare the traces extension + use_repo.
+	// MODULE.bazel no longer declares the traces extension — the
+	// trace_load rule is a regular rule, not an extension repo.
 	modA, err := os.ReadFile(filepath.Join(outA, "MODULE.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
+	for _, unwanted := range []string{
 		`use_extension("//rules:traces.bzl", "traces")`,
 		`"trace_auto"`,
 	} {
-		if !strings.Contains(string(modA), want) {
-			t.Errorf("project A MODULE.bazel missing %q\n%s", want, modA)
+		if strings.Contains(string(modA), unwanted) {
+			t.Errorf("project A MODULE.bazel unexpectedly contains legacy traces extension wiring %q\n%s", unwanted, modA)
 		}
 	}
 

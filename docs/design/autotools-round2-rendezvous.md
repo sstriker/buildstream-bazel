@@ -26,19 +26,23 @@ how pass-2 looks up, and why the recipe lives where it does.
 
 ```
 write-a --autotools-round2  →  project A: per-element converter genrule
+                                            + per-element trace_load target
                                 project B: coarse install genrule (no converter)
 
 bazel build A//<elem>:<elem>_build
-   pass-2 converter genrule:
-     load-time → _trace_repo (rules/traces.bzl)
-                  → cmd/trace-lookup
-                    → SyntheticActionDigest(srckey)
-                    → AC.GetActionResult(synthetic_key)
-                    → AC hit  ⇒ symlink <CAS_FUSE_MOUNT>/blobs/directory/<digest>
-                    → AC miss ⇒ empty fileset
-     action time → convert-element-trace --trace-dir=<staged>
-                    → trace.log present ⇒ emit cc_library / cc_binary
-                    → trace.log absent  ⇒ emit placeholder BUILD.bazel.out
+   pass-2:
+     :<elem>_trace_load action  (rules/traces.bzl trace_load rule)
+       → cmd/trace-lookup --srckey=<hex> --out-trace=... --out-make-db=...
+                          --out-empty-marker=...
+         → SyntheticActionDigest(srckey)
+         → AC.GetActionResult(synthetic_key)
+         → AC hit  ⇒ MaterializeDirectory writes trace.log (+ make-db.txt)
+                     into the declared outputs; marker = "hit\n"
+         → AC miss ⇒ zero-byte trace.log (+ make-db.txt) + marker = "miss\n"
+     converter genrule action (srcs include :<elem>_trace_load)
+       → convert-element-trace --trace-dir=<staged>
+         → trace.log non-empty ⇒ emit cc_library / cc_binary
+         → trace.log empty     ⇒ emit placeholder BUILD.bazel.out
 
 bazel build B//<elem>:<elem>_install
    pass-3 install genrule:
@@ -51,6 +55,24 @@ bazel build B//<elem>:<elem>_install
                              ActionResult{output_directories: [
                                  {root_directory_digest: <digest>}]})
 ```
+
+The action-time `trace_load` rule (added in the trace_load /
+trace_build refactor — see ROADMAP) replaced the legacy load-time
+`_trace_repo` repository rule. Operationally:
+
+- **Before:** every `bazel build A` re-ran the repo rule at load
+  time before analysis started; the lookup result symlinked into
+  bb_clientd / cas-fuse via `<mount>/blobs/directory/<digest>` and
+  appeared as an external `@trace_<elem>//:trace` fileset. The
+  analysis cache invalidated whenever the AC view shifted between
+  driver passes.
+- **After:** the lookup runs as a normal Bazel action against a
+  staged `//tools:trace-lookup` binary. The bytes are fetched via
+  gRPC `MaterializeDirectory`, not via a FUSE mount, so the
+  rendezvous no longer requires `bb_clientd` for the input side.
+  Bazel's `ActionCache` controls re-runs; the convergence-driver
+  forces re-querying between rounds by bumping
+  `--action_env=CONVERGE_GENERATION=<n>`.
 
 ## The synthetic key
 

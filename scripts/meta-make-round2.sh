@@ -59,11 +59,13 @@ fixture="testdata/meta-project/make-greet"
     --trace-publish-bin "$bin_dir/trace-publish" \
     --trace-lookup-bin "$bin_dir/trace-lookup"
 
-# A-side: converter genrule consuming the trace fileset.
+# A-side: converter genrule consuming :greet_trace_load.
 a_build="$A/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_build"' \
-    '"@trace_greet//:trace"' \
+    'load("//rules:traces.bzl", "trace_load")' \
+    'name = "greet_trace_load"' \
+    '":greet_trace_load"' \
     '"//tools:convert-element-trace"' \
     '--trace-dir' \
     '--out-build' \
@@ -75,33 +77,44 @@ for marker in \
     fi
 done
 
-# A-side must NOT contain the legacy install genrule that
-# pipelineHandler.RenderA emits when round-2 is off.
-if grep -qF 'name = "greet_install"' "$a_build"; then
-    echo "meta-make-round2: A-side still has the install genrule (greet_install); should have moved to B under round-2" >&2
-    cat "$a_build" >&2
-    exit 1
-fi
+# A-side must NOT contain the legacy install genrule or the
+# legacy load-time @trace_*//:trace external-repo label.
+for banned in \
+    'name = "greet_install"' \
+    '"@trace_greet//:trace"'; do
+    if grep -qF -- "$banned" "$a_build"; then
+        echo "meta-make-round2: A-side unexpectedly contains $banned" >&2
+        cat "$a_build" >&2
+        exit 1
+    fi
+done
 
-# rules/traces.bzl + tools/traces.json present in both projects.
+# rules/traces.bzl renders in both projects. tools/traces.json is
+# no longer emitted.
 for path in \
     "$A/rules/traces.bzl" \
-    "$A/tools/traces.json" \
-    "$B/rules/traces.bzl" \
-    "$B/tools/traces.json"; do
+    "$B/rules/traces.bzl"; do
     if [ ! -f "$path" ]; then
         echo "meta-make-round2: missing $path" >&2
         exit 1
     fi
 done
+for path in \
+    "$A/tools/traces.json" \
+    "$B/tools/traces.json"; do
+    if [ -f "$path" ]; then
+        echo "meta-make-round2: $path unexpectedly emitted (legacy load-time wiring)" >&2
+        exit 1
+    fi
+done
 
-# A's MODULE.bazel pulls in the traces extension + the per-element repo.
+# A's MODULE.bazel must NOT declare the legacy `traces` extension.
 mod_a="$A/MODULE.bazel"
-for marker in \
+for unwanted in \
     'use_extension("//rules:traces.bzl", "traces")' \
     '"trace_greet"'; do
-    if ! grep -qF -- "$marker" "$mod_a"; then
-        echo "meta-make-round2: A MODULE.bazel missing marker: $marker" >&2
+    if grep -qF -- "$unwanted" "$mod_a"; then
+        echo "meta-make-round2: A MODULE.bazel unexpectedly contains legacy traces extension wiring: $unwanted" >&2
         cat "$mod_a" >&2
         exit 1
     fi

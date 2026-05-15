@@ -1,119 +1,42 @@
 package main
 
-// tools/traces.json emission.
+// Trace-driven kind gating + helpers.
 //
-// Mirror of sources_json.go: one record per element whose kind
-// participates in the trace-driven round-2 path, naming the
-// element's content-narrowed srckey. The set is kind-agnostic —
-// kind:autotools (special-cased), any pipeline kind whose
-// handler sets traceDrivenSrckeyPatterns, and kind:cmake when
-// --cmake-round2-fallback is enabled. The pipeline-kind opt-ins
-// (as of this writing: kind:make / makemaker / modulebuild /
-// manual / script) grow whenever a new handler sets the field;
-// the source of truth lives on the per-kind handler rather than
-// in this comment, so don't take the list as canonical. The
-// traces module extension (rules/traces.bzl) reads this file
-// at load time to declare one @trace_<key>//:trace repo per
-// entry.
+// Historically this file emitted tools/traces.json: one record per
+// element whose kind participates in the trace-driven round-2 path.
+// The data file was consumed by a `traces` module extension
+// (rules/traces.bzl) whose `_trace_repo` repository rule queried
+// the REAPI ActionCache at Bazel LOAD time. That whole pipeline
+// retired when the AC lookup moved to action time via the new
+// trace_load rule — the per-element trace_load target carries its
+// srckey + platform as string attrs directly, so no separate JSON
+// manifest is needed.
 //
-// The "key" field is the element name; Bazel's external-repo
-// namespace requires a static identifier. The "srckey" field is
-// the hex hash from srckey.txt that trace-lookup feeds into
-// SyntheticActionDigest.
-
-import (
-	"encoding/json"
-	"fmt"
-	"sort"
-)
-
-type traceEntry struct {
-	Key    string `json:"key"`
-	Srckey string `json:"srckey"`
-	// Platform is the CMAKE_TO_BAZEL_PLATFORM tag this entry's
-	// trace-lookup uses. Empty (the default, legacy shape) means
-	// the rule falls back to the load-time env-var lookup —
-	// single-platform operators upgrading past this revision keep
-	// their existing --repo_env=CMAKE_TO_BAZEL_PLATFORM=... behavior.
-	// Non-empty means multi-platform mode: write-a emits one entry
-	// per (element, platform) cell with Key="<elem>__<platform>"
-	// and Platform="<platform-tag>", so a single Bazel build
-	// resolves N per-platform _trace_repo instances simultaneously
-	// without env-var conflict.
-	Platform string `json:"platform,omitempty"`
-}
-
-type tracesJSON struct {
-	Traces []traceEntry `json:"traces"`
-}
-
-// collectTraces walks the graph, computes per-element srckeys
-// for each element whose handler opts into the trace-driven
-// round-2 path, and returns one entry per element sorted by key
-// (deterministic rendering). Two opt-in shapes contribute:
+// What survives here:
 //
-//   - kind:autotools (handler_autotools_native.go, autotoolsHandler
-//     wrapping pipelineHandler). Patterns: autotoolsSrckeyPatterns.
-//   - Any pipelineHandler-shaped kind that sets
-//     traceDrivenSrckeyPatterns on its registered handler
-//     (handler_make.go's makeSrckeyPatterns, plus any future kind
-//     that joins the trace-driven path the same way).
-//
-// Computed-on-demand rather than stored on element so the
-// per-kind patterns stay scoped to the kind's handler.
-//
-// Multi-platform mode (--platforms-json): one entry per
-// (element, platform) cell, keyed "<elem>__<platform>" with
-// the platform tag set. Single-platform legacy mode (the
-// default, traceConfig.platforms empty) emits one entry per
-// element keyed by element name with the platform tag empty,
-// matching the byte-stable historical render exactly.
-func collectTraces(g *graph) (tracesJSON, error) {
-	var entries []traceEntry
-	for _, elem := range g.Elements {
-		patterns := traceDrivenSrckeyPatternsForKind(elem.Bst.Kind)
-		if patterns == nil {
-			continue
-		}
-		hash, _, err := computeSrckey(elem, patterns)
-		if err != nil {
-			return tracesJSON{}, fmt.Errorf("element %q: compute srckey: %w", elem.Name, err)
-		}
-		if len(traceConfig.platforms) == 0 {
-			entries = append(entries, traceEntry{Key: elem.Name, Srckey: hash})
-			continue
-		}
-		for _, p := range traceConfig.platforms {
-			entries = append(entries, traceEntry{
-				Key:      elem.Name + "__" + p.Name,
-				Srckey:   hash,
-				Platform: p.Name,
-			})
-		}
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Key < entries[j].Key })
-	return tracesJSON{Traces: entries}, nil
-}
+//   - traceDrivenSrckeyPatternsForKind: the per-kind classifier
+//     (autotools special case, pipelineHandler-shaped kinds opted
+//     in via traceDrivenSrckeyPatterns, kind:cmake / kind:meson
+//     under their round-2 fallback flags).
+//   - traceWiringActive: the centralized gate that controls whether
+//     rules/traces.bzl + the trace-publish/lookup tool staging
+//     are emitted into the rendered projects.
 
 // traceDrivenSrckeyPatternsForKind returns the per-kind srckey
 // pattern set when the kind is opted into trace-driven round-2,
 // or nil otherwise. Source of truth for "is this kind in the
-// trace-driven set" — used by collectTraces to populate
-// tools/traces.json for project A's _trace_repo extension.
+// trace-driven set."
 //
 // kind:autotools is special-cased here because its dispatch lives
 // in autotoolsHandler (handler_autotools_native.go) rather than
 // going through pipelineHandler's traceDrivenSrckeyPatterns
 // field. The autotools + pipeline arms only return non-nil when
 // traceConfig.round2Enabled is set (with convertBin staged):
-// without round-2 active, those kinds don't reference
-// @trace_<elem>//:trace in their rendered BUILDs, so adding
-// per-element trace_repo entries to tools/traces.json would
-// instantiate Bazel repo rules at load time that nothing
-// consumes. kind:cmake is special-cased too: it's not a pipeline
-// handler, but joins the trace-driven path via the round-2
-// fallback (Phase B) when cmakeConfig.round2FallbackEnabled is
-// set, independent of autotools round-2.
+// without round-2 active, those kinds don't reference the
+// trace_load target in their rendered BUILDs.
+// kind:cmake / kind:meson are special-cased too: not pipeline
+// handlers, but join the trace-driven path via their round-2
+// fallback shapes when *Config.round2FallbackEnabled is set.
 func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 	autotoolsRound2 := traceConfig.convertBin != "" && traceConfig.round2Enabled
 	if kind == "autotools" {
@@ -139,19 +62,18 @@ func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 	if !autotoolsRound2 {
 		// Pipeline-kind dispatch through pipelineHandler.
 		// shouldUseRound2() also requires this gate; without
-		// it, traces.json populates entries for elements
-		// whose rendered BUILD won't reference @trace_*.
+		// it, the trace_load rule renders for elements whose
+		// BUILD won't reference it.
 		return nil
 	}
 	return ph.traceDrivenSrckeyPatterns
 }
 
 // traceWiringActive reports whether the rendered projects need
-// the trace-publish/lookup plumbing wired in: the traces module
-// extension (rules/traces.bzl), tools/traces.json, the
+// the trace-publish/lookup plumbing wired in: rules/traces.bzl
+// (containing the trace_load rule definition) and the
 // build-tracer + trace-publish + trace-lookup binaries staged
-// under tools/, and the MODULE.bazel `use_extension("//rules:traces.bzl")`
-// block. Any of the three kinds that participate in the
+// under tools/. Any of the three kinds that participate in the
 // trace-driven path on this run triggers it:
 //
 //   - autotools / pipeline-kind round-2 (traceConfig.round2Enabled),
@@ -166,40 +88,4 @@ func traceWiringActive() bool {
 	return traceConfig.round2Enabled ||
 		cmakeConfig.round2FallbackEnabled ||
 		mesonConfig.round2FallbackEnabled
-}
-
-func marshalTracesJSON(s tracesJSON) ([]byte, error) {
-	b, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	return append(b, '\n'), nil
-}
-
-// renderTracesUseExtension emits the use_extension + use_repo
-// block for the traces module extension. Only emitted when the
-// graph contains at least one element opted into the trace-
-// driven path — that's any kind whose
-// traceDrivenSrckeyPatternsForKind returns non-nil (kind:autotools
-// when the trace-driven autotools converter is staged, pipeline
-// kinds with traceDrivenSrckeyPatterns set on their handler, or
-// kind:cmake when --cmake-round2-fallback is enabled). Otherwise
-// project A / B's MODULE.bazel doesn't reference the extension
-// at all.
-func renderTracesUseExtension(t tracesJSON) string {
-	if len(t.Traces) == 0 {
-		return ""
-	}
-	var out string
-	out += `
-traces = use_extension("//rules:traces.bzl", "traces")
-traces.from_json(path = "//tools:traces.json")
-use_repo(
-    traces,
-`
-	for _, e := range t.Traces {
-		out += fmt.Sprintf("    %q,\n", "trace_"+e.Key)
-	}
-	out += ")\n"
-	return out
 }

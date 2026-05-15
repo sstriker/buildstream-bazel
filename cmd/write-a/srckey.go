@@ -209,18 +209,32 @@ func matchesSrckeyPatterns(patterns *readPathsPatterns, path string) bool {
 //     nil/empty allowlist round-trips as an empty file. The
 //     audit consumes this via --allowlist=<path>.
 func renderSrckey(elem *element, elemPkg string, patterns *readPathsPatterns) error {
+	_, err := renderSrckeyReturnHash(elem, elemPkg, patterns)
+	return err
+}
+
+// renderSrckeyReturnHash is the variant callers use when they
+// also need the computed hash hex to substitute into a rendered
+// rule (e.g. project A's trace_load rule's srckey attr). Mirrors
+// renderSrckey's side effects exactly; only the return signature
+// differs so callers that don't need the hash can use the
+// no-frills helper above.
+func renderSrckeyReturnHash(elem *element, elemPkg string, patterns *readPathsPatterns) (string, error) {
 	hash, breakdown, err := computeSrckey(elem, patterns)
 	if err != nil {
-		return fmt.Errorf("element %q: compute srckey: %w", elem.Name, err)
+		return "", fmt.Errorf("element %q: compute srckey: %w", elem.Name, err)
 	}
 	if err := writeFile(filepath.Join(elemPkg, "srckey-breakdown.txt"), breakdown); err != nil {
-		return err
+		return "", err
 	}
 	if err := writeFile(filepath.Join(elemPkg, "srckey-patterns.txt"), patterns.Format()); err != nil {
-		return err
+		return "", err
 	}
 	if err := writeFile(filepath.Join(elemPkg, "srckey-expected-drift.txt"), string(elem.ExpectedDrift.Format())); err != nil {
-		return err
+		return "", err
 	}
-	return writeFile(filepath.Join(elemPkg, "srckey.txt"), hash+"\n")
+	if err := writeFile(filepath.Join(elemPkg, "srckey.txt"), hash+"\n"); err != nil {
+		return "", err
+	}
+	return hash, nil
 }

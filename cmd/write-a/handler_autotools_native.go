@@ -57,9 +57,9 @@ var traceConfig struct {
 	// renderPipelineRound2B's multi-platform branch, each
 	// baking --platform=<name> into the trace-publish step and
 	// carrying exec_compatible_with constraints + an
-	// install_tree.tar select() arm. tools/traces.json gains
-	// one entry per (element, platform) cell so the per-platform
-	// _trace_repo lookups don't collide. The fan-out covers
+	// install_tree.tar select() arm. The per-element BUILD also
+	// gets one trace_load target per platform so the per-platform
+	// AC lookups partition correctly. The fan-out covers
 	// every cc-emitting trace-driven kind today
 	// (pipelineHandler kinds, kind:autotools via the round-2
 	// RenderB dispatch, kind:cmake Phase B fallback via

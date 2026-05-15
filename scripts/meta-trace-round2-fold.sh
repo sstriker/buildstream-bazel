@@ -87,13 +87,19 @@ a_build="$A/elements/greet/BUILD.bazel"
 
 # Two per-platform converter genrules + one fold genrule retaining
 # the legacy "<elem>_build" name. Each per-platform converter reads
-# its platform-tagged trace repo and emits ir.json under <platform>/.
+# its platform-tagged :greet_trace_load_<platform> target and
+# emits ir.json under <platform>/.
 for marker in \
     'name = "greet__linux_x86_64_ir"' \
     'name = "greet__darwin_arm64_ir"' \
     'name = "greet_build"' \
-    '"@trace_greet__linux_x86_64//:trace"' \
-    '"@trace_greet__darwin_arm64//:trace"' \
+    'load("//rules:traces.bzl", "trace_load")' \
+    'name = "greet_trace_load_linux_x86_64"' \
+    'name = "greet_trace_load_darwin_arm64"' \
+    'platform = "linux_x86_64"' \
+    'platform = "darwin_arm64"' \
+    '":greet_trace_load_linux_x86_64"' \
+    '":greet_trace_load_darwin_arm64"' \
     '"linux_x86_64/ir.json"' \
     '"darwin_arm64/ir.json"' \
     '"linux_x86_64/BUILD.bazel.out"' \
@@ -109,42 +115,34 @@ for marker in \
     fi
 done
 
-# Legacy single-platform @trace_<elem>//:trace label must NOT appear
-# — every trace reference is platform-tagged in multi-platform mode.
-if grep -qF -- '"@trace_greet//:trace"' "$a_build"; then
-    echo "meta-trace-round2-fold: A-side unexpectedly contains legacy @trace_greet//:trace label" >&2
-    cat "$a_build" >&2
-    exit 1
-fi
-
-# traces.json declares one entry per (element, platform) cell.
-traces_json="$A/tools/traces.json"
-for marker in \
-    '"key": "greet__linux_x86_64"' \
-    '"key": "greet__darwin_arm64"' \
-    '"platform": "linux_x86_64"' \
-    '"platform": "darwin_arm64"'; do
-    if ! grep -qF -- "$marker" "$traces_json"; then
-        echo "meta-trace-round2-fold: traces.json missing marker: $marker" >&2
-        cat "$traces_json" >&2
+# Legacy load-time external-repo trace labels must NOT appear —
+# every trace reference is a same-package trace_load target.
+for banned in \
+    '"@trace_greet//:trace"' \
+    '"@trace_greet__linux_x86_64//:trace"' \
+    '"@trace_greet__darwin_arm64//:trace"'; do
+    if grep -qF -- "$banned" "$a_build"; then
+        echo "meta-trace-round2-fold: A-side unexpectedly contains legacy external-repo label $banned" >&2
+        cat "$a_build" >&2
         exit 1
     fi
 done
-# Legacy unsuffixed entry must not appear.
-if grep -qF -- '"key": "greet"' "$traces_json"; then
-    echo "meta-trace-round2-fold: traces.json unexpectedly contains legacy unsuffixed 'greet' entry" >&2
-    cat "$traces_json" >&2
+
+# tools/traces.json is no longer emitted — the trace_load rule
+# carries srckey + platform as string attrs directly.
+if [ -f "$A/tools/traces.json" ]; then
+    echo "meta-trace-round2-fold: $A/tools/traces.json unexpectedly emitted (legacy load-time wiring)" >&2
     exit 1
 fi
 
-# MODULE.bazel use_repo() block lists per-platform repos.
+# MODULE.bazel must NOT declare the legacy `traces` extension.
 mod_a="$A/MODULE.bazel"
-for marker in \
+for unwanted in \
     'use_extension("//rules:traces.bzl", "traces")' \
     '"trace_greet__linux_x86_64"' \
     '"trace_greet__darwin_arm64"'; do
-    if ! grep -qF -- "$marker" "$mod_a"; then
-        echo "meta-trace-round2-fold: A MODULE.bazel missing marker: $marker" >&2
+    if grep -qF -- "$unwanted" "$mod_a"; then
+        echo "meta-trace-round2-fold: A MODULE.bazel unexpectedly contains legacy traces extension wiring: $unwanted" >&2
         cat "$mod_a" >&2
         exit 1
     fi

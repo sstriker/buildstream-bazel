@@ -78,6 +78,144 @@ func TestLookup_MissReturnsNil(t *testing.T) {
 	}
 }
 
+// TestMaterializeHit_CopiesEntriesAndWritesMarker covers the
+// action-time materialize mode's happy path: trace.log and
+// make-db.txt land at the requested output paths, the marker
+// reports "hit", and bytes match what trace-publish wrote.
+func TestMaterializeHit_CopiesEntriesAndWritesMarker(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Publish a Directory with both trace.log and make-db.txt
+	// — the trace-driven kinds' wire shape.
+	stage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stage, "trace.log"), []byte("trace bytes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, "make-db.txt"), []byte("make db bytes\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootDigest, err := cas.UploadDir(ctx, store, stage)
+	if err != nil {
+		t.Fatalf("uploaddir: %v", err)
+	}
+
+	outDir := t.TempDir()
+	outTrace := filepath.Join(outDir, "trace.log")
+	outMakeDB := filepath.Join(outDir, "make-db.txt")
+	outMarker := filepath.Join(outDir, "marker")
+	if err := materializeHit(ctx, store, rootDigest, outTrace, outMakeDB, outMarker); err != nil {
+		t.Fatalf("materializeHit: %v", err)
+	}
+	if got, _ := os.ReadFile(outTrace); string(got) != "trace bytes\n" {
+		t.Errorf("trace.log = %q want %q", got, "trace bytes\n")
+	}
+	if got, _ := os.ReadFile(outMakeDB); string(got) != "make db bytes\n" {
+		t.Errorf("make-db.txt = %q want %q", got, "make db bytes\n")
+	}
+	if got, _ := os.ReadFile(outMarker); string(got) != "hit\n" {
+		t.Errorf("marker = %q want %q", got, "hit\n")
+	}
+}
+
+// TestMaterializeHit_AbsentMakeDBProducesEmptyFile covers the
+// cmake-round-2-fallback shape (kind:cmake publishes trace.log
+// only, no make-db.txt) when the consumer rule still declares
+// make-db.txt as an output. The action emits an empty file at
+// the destination so Bazel's declared-outputs contract holds;
+// consumers treat empty make-db equivalently to no make-db.
+func TestMaterializeHit_AbsentMakeDBProducesEmptyFile(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Publish a Directory with only trace.log.
+	stage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stage, "trace.log"), []byte("trace only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootDigest, err := cas.UploadDir(ctx, store, stage)
+	if err != nil {
+		t.Fatalf("uploaddir: %v", err)
+	}
+
+	outDir := t.TempDir()
+	outTrace := filepath.Join(outDir, "trace.log")
+	outMakeDB := filepath.Join(outDir, "make-db.txt")
+	outMarker := filepath.Join(outDir, "marker")
+	if err := materializeHit(ctx, store, rootDigest, outTrace, outMakeDB, outMarker); err != nil {
+		t.Fatalf("materializeHit: %v", err)
+	}
+	if got, _ := os.ReadFile(outMakeDB); len(got) != 0 {
+		t.Errorf("make-db.txt = %q want empty (publisher didn't emit it)", got)
+	}
+	if got, _ := os.ReadFile(outMarker); string(got) != "hit\n" {
+		t.Errorf("marker = %q want %q", got, "hit\n")
+	}
+}
+
+// TestWriteMissOutputs_ProducesEmptiesAndMarker covers the
+// miss-side path (no-CAS-configured / dial-failed / AC-miss
+// shapes all route here): every declared output exists post-
+// action, and the marker says "miss". The empty trace.log /
+// make-db.txt feed the converters' existing "no trace yet" path
+// — same shape today's load-time `_trace_repo` empty-fileset
+// produces.
+func TestWriteMissOutputs_ProducesEmptiesAndMarker(t *testing.T) {
+	outDir := t.TempDir()
+	outTrace := filepath.Join(outDir, "trace.log")
+	outMakeDB := filepath.Join(outDir, "make-db.txt")
+	outMarker := filepath.Join(outDir, "marker")
+	if err := writeMissOutputs(outTrace, outMakeDB, outMarker); err != nil {
+		t.Fatalf("writeMissOutputs: %v", err)
+	}
+	for _, p := range []string{outTrace, outMakeDB} {
+		body, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("read %s: %v", p, err)
+		}
+		if len(body) != 0 {
+			t.Errorf("%s = %q want empty", p, body)
+		}
+	}
+	if got, _ := os.ReadFile(outMarker); string(got) != "miss\n" {
+		t.Errorf("marker = %q want %q", got, "miss\n")
+	}
+}
+
+// TestWriteMissOutputs_OmitsMakeDBWhenNotRequested asserts the
+// cmake round-2 wire shape (no make-db consumer): when the
+// caller doesn't pass --out-make-db, we don't write a phantom
+// make-db.txt at the marker's directory. Mirrors how the
+// trace_load rule for kind:cmake declares only trace.log +
+// marker outputs.
+func TestWriteMissOutputs_OmitsMakeDBWhenNotRequested(t *testing.T) {
+	outDir := t.TempDir()
+	outTrace := filepath.Join(outDir, "trace.log")
+	outMarker := filepath.Join(outDir, "marker")
+	if err := writeMissOutputs(outTrace, "", outMarker); err != nil {
+		t.Fatalf("writeMissOutputs: %v", err)
+	}
+	// Only trace.log + marker should exist; no spurious make-db.txt.
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, e := range entries {
+		names[e.Name()] = true
+	}
+	if !names["trace.log"] || !names["marker"] {
+		t.Errorf("missing expected outputs; got %v", names)
+	}
+	if names["make-db.txt"] {
+		t.Errorf("unexpected make-db.txt written when caller didn't request it")
+	}
+}
+
 // TestLookup_BlobEvictedTreatedAsMiss covers the AC-eviction
 // resilience case: AC entry survived but the trace blob got
 // evicted from CAS. Lookup must report this as a clean miss

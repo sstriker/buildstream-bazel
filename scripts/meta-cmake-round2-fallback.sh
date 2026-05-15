@@ -62,41 +62,60 @@ fixture="testdata/meta-project"
     --trace-lookup-bin "$bin_dir/trace-lookup" \
     --cmake-round2-fallback
 
-# A-side: converter genrule threads the fallback flag AND
-# pulls @trace_hello-world//:trace into srcs (the load-time AC
-# lookup; trace-driven convergence research follow-on teaches
-# convert-element-cmake to consume the trace).
+# A-side: converter genrule threads the fallback flag AND pulls
+# :hello-world_trace_load into srcs (the action-time AC lookup;
+# trace-driven convergence research follow-on teaches
+# convert-element-cmake to consume the trace bytes).
 a_build="$A/elements/hello-world/BUILD.bazel"
 for marker in \
     '--unsupported-execute-process-fallback=true' \
     '"//tools:convert-element-cmake"' \
-    '"@trace_hello-world//:trace"'; do
+    'load("//rules:traces.bzl", "trace_load")' \
+    'name = "hello-world_trace_load"' \
+    'expect_make_db = False' \
+    '":hello-world_trace_load"'; do
     if ! grep -qF -- "$marker" "$a_build"; then
         echo "meta-cmake-round2-fallback: A-side BUILD missing marker: $marker" >&2
         cat "$a_build" >&2
         exit 1
     fi
 done
+# Legacy external-repo trace label must NOT appear — the
+# action-time trace_load is in the same package.
+if grep -qF -- '"@trace_hello-world//:trace"' "$a_build"; then
+    echo "meta-cmake-round2-fallback: A-side BUILD unexpectedly contains legacy @trace_*//:trace label" >&2
+    cat "$a_build" >&2
+    exit 1
+fi
 
-# rules/traces.bzl + tools/traces.json present in both projects.
+# rules/traces.bzl renders in both projects. tools/traces.json is
+# no longer emitted (the legacy load-time `traces` module extension
+# was retired when the AC lookup moved from load time to action
+# time).
 for path in \
     "$A/rules/traces.bzl" \
-    "$A/tools/traces.json" \
-    "$B/rules/traces.bzl" \
-    "$B/tools/traces.json"; do
+    "$B/rules/traces.bzl"; do
     if [ ! -f "$path" ]; then
         echo "meta-cmake-round2-fallback: missing $path" >&2
         exit 1
     fi
 done
+for path in \
+    "$A/tools/traces.json" \
+    "$B/tools/traces.json"; do
+    if [ -f "$path" ]; then
+        echo "meta-cmake-round2-fallback: $path unexpectedly emitted (legacy load-time wiring)" >&2
+        exit 1
+    fi
+done
 
-# A's MODULE.bazel pulls in the traces extension + the per-element repo.
+# A's MODULE.bazel must NOT declare the legacy `traces` extension.
 mod_a="$A/MODULE.bazel"
-for marker in \
+for unwanted in \
     'use_extension("//rules:traces.bzl", "traces")' \
     '"trace_hello-world"'; do
-    if ! grep -qF -- "$marker" "$mod_a"; then
-        echo "meta-cmake-round2-fallback: A MODULE.bazel missing marker: $marker" >&2
+    if grep -qF -- "$unwanted" "$mod_a"; then
+        echo "meta-cmake-round2-fallback: A MODULE.bazel unexpectedly contains legacy traces extension wiring: $unwanted" >&2
         cat "$mod_a" >&2
         exit 1
     fi
