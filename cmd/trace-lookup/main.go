@@ -29,17 +29,11 @@
 //
 // Usage (action-time materialize mode):
 //
-//	trace-lookup --cas=<grpc-addr> --srckey-file=<srckey.txt> \
+//	trace-lookup --cas=<grpc-addr> --srckey=<hex> \
 //	    --out-trace=<path/to/trace.log> \
 //	    [--out-make-db=<path/to/make-db.txt>] \
 //	    --out-empty-marker=<path/to/marker> \
 //	    [--platform=<tag>] [--instance=<name>]
-//
-// In materialize mode the srckey can be supplied either via
-// --srckey (the hex string directly) or --srckey-file (the path
-// to srckey.txt, whose contents are the hex). The file form is
-// what the `trace_load` Bazel rule wires — Bazel's action graph
-// gives the rule a file reference, not a string.
 //
 // --platform: optional, same shape as legacy mode.
 //
@@ -64,7 +58,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/cas"
 	"github.com/sstriker/buildstream-bazel/internal/tracenorm"
@@ -74,33 +67,16 @@ func main() {
 	log.SetFlags(0)
 	addr := flag.String("cas", "", "REAPI gRPC address (host:port). Empty/unset falls back to the CAS_GRPC_ADDR environment variable (the action-time `trace_load` Bazel rule reads it from --action_env=CAS_GRPC_ADDR rather than passing it as a flag — keeps the rule's argv free of operator-supplied values that would otherwise need shell interpolation). When both --cas and CAS_GRPC_ADDR are empty the lookup short-circuits to miss.")
 	instance := flag.String("instance", "", "REAPI instance name; matches the AC endpoint's multi-tenancy prefix.")
-	srckey := flag.String("srckey", "", "per-element srckey hex string (seeds the synthetic AC key). Mutually exclusive with --srckey-file.")
-	srckeyFile := flag.String("srckey-file", "", "path to a file containing the per-element srckey hex (the file written by write-a as srckey.txt). Mutually exclusive with --srckey. Used by the action-time `trace_load` Bazel rule, which has a file reference rather than a string.")
+	srckey := flag.String("srckey", "", "per-element srckey hex string (seeds the synthetic AC key). The `trace_load` Bazel rule passes this as a string attr directly — the rule's design choice to keep srckey out of the input file set is intentional and documented in rules/traces.bzl.")
 	platform := flag.String("platform", "", "optional platform tag (e.g. linux_x86_64) partitioning the synthetic AC keyspace. Must match the publishing side's --platform.")
 	outTrace := flag.String("out-trace", "", "action-time materialize mode: destination path for the trace.log file (extracted from the AC-resolved Directory). When set, the tool runs in materialize mode instead of legacy stdout-print mode.")
 	outMakeDB := flag.String("out-make-db", "", "action-time materialize mode: destination path for the make-db.txt file. When set, the tool extracts make-db.txt from the resolved Directory; on AC miss OR Directory without make-db.txt entry, a zero-byte file is written so the declared Bazel output exists. Trace-driven kinds (autotools / make / makemaker / modulebuild / manual / script) set this; cmake round-2 fallback omits it (the cmake converter derives IR from the trace + cmake File API, no make-db).")
 	outMarker := flag.String("out-empty-marker", "", "action-time materialize mode: destination path for the hit/miss stamp file. The file always exists post-action; its contents are \"hit\\n\" on AC hit, \"miss\\n\" on AC miss. The driver loop reads markers to compute the frontier of elements still needing a trace_build.")
 	flag.Parse()
 
-	if *srckey == "" && *srckeyFile == "" {
+	if *srckey == "" {
 		flag.Usage()
 		os.Exit(2)
-	}
-	if *srckey != "" && *srckeyFile != "" {
-		fmt.Fprintln(os.Stderr, "trace-lookup: --srckey and --srckey-file are mutually exclusive")
-		os.Exit(2)
-	}
-	if *srckeyFile != "" {
-		body, err := os.ReadFile(*srckeyFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "trace-lookup: read --srckey-file %q: %v\n", *srckeyFile, err)
-			os.Exit(1)
-		}
-		*srckey = strings.TrimSpace(string(body))
-		if *srckey == "" {
-			fmt.Fprintf(os.Stderr, "trace-lookup: --srckey-file %q is empty\n", *srckeyFile)
-			os.Exit(1)
-		}
 	}
 	materializeMode := *outTrace != "" || *outMakeDB != "" || *outMarker != ""
 	if materializeMode && *outMarker == "" {
