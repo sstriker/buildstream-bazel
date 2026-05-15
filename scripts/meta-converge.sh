@@ -266,4 +266,91 @@ for elem in depth0 depth1 depth2; do
 done
 rm -rf "$work_dir3"
 
+# Multi-platform case: a single element rendered with N
+# per-platform trace_load targets has marker paths like
+# "mp_trace_load_x86_64/marker" + "mp_trace_load_aarch64/marker".
+# The driver's name-substitution must derive the corresponding
+# "mp_trace_build_x86_64" / "mp_trace_build_aarch64" targets and
+# de-dupe them as distinct entries (NOT collapse to a single
+# "mp_trace_build" — that would skip the per-platform fan-out
+# and leave one of the platforms unbuilt).
+work_dir_mp="$(mktemp -d)"
+mkdir -p "$work_dir_mp/bin" "$work_dir_mp/A" "$work_dir_mp/B"
+cat > "$work_dir_mp/bin/bazel" <<'EOF'
+#!/bin/sh
+GEN=""
+for arg in "$@"; do
+    case "$arg" in
+        --action_env=CONVERGE_GENERATION=*)
+            GEN="${arg#--action_env=CONVERGE_GENERATION=}"
+            ;;
+    esac
+done
+case "$1" in
+    build)
+        if [ -n "$GEN" ]; then
+            for platform in x86_64 aarch64; do
+                mkdir -p "bazel-bin/elements/mp/mp_trace_load_$platform"
+                if [ "$GEN" = "1" ]; then
+                    printf 'miss\n' > "bazel-bin/elements/mp/mp_trace_load_$platform/marker"
+                else
+                    printf 'hit\n' > "bazel-bin/elements/mp/mp_trace_load_$platform/marker"
+                fi
+            done
+        fi
+        exit 0
+        ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x "$work_dir_mp/bin/bazel"
+cat > "$work_dir_mp/bin/stage-b" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$work_dir_mp/bin/stage-b"
+
+log_mp="$work_dir_mp/converge.log"
+"$repo_root/tools/converge.sh" \
+    --project-a "$work_dir_mp/A" \
+    --project-b "$work_dir_mp/B" \
+    --bazel "$work_dir_mp/bin/bazel" \
+    --stage-b "$work_dir_mp/bin/stage-b" \
+    --max-rounds 5 > "$log_mp" 2>&1
+
+# Round 1: both per-platform trace_loads miss → frontier of 2.
+# Round 2: both hit → fixpoint.
+n_rounds_mp=$(grep -c "=== converge: round" "$log_mp")
+if [ "$n_rounds_mp" -ne 2 ]; then
+    echo "meta-converge: multi-platform case expected 2 rounds; got $n_rounds_mp" >&2
+    cat "$log_mp" >&2
+    exit 1
+fi
+if ! grep -qE "2 trace_build target\(s\) on the frontier:" "$log_mp"; then
+    echo "meta-converge: multi-platform case round 1 frontier size != 2" >&2
+    grep "trace_build target" "$log_mp" >&2
+    exit 1
+fi
+for platform in x86_64 aarch64; do
+    if ! grep -qF "//elements/mp:mp_trace_build_$platform" "$log_mp"; then
+        echo "meta-converge: multi-platform case missing per-platform target mp_trace_build_$platform" >&2
+        cat "$log_mp" >&2
+        exit 1
+    fi
+done
+# Negative-assert: the driver must NOT collapse both platforms
+# into a single un-suffixed target (would skip one of the
+# per-platform builds).
+if grep -qE '//elements/mp:mp_trace_build( |$)' "$log_mp"; then
+    echo "meta-converge: multi-platform case unexpectedly emitted un-suffixed mp_trace_build target" >&2
+    cat "$log_mp" >&2
+    exit 1
+fi
+if ! grep -qF "fixpoint reached after 2 round(s)" "$log_mp"; then
+    echo "meta-converge: multi-platform case did not report fixpoint at round 2" >&2
+    cat "$log_mp" >&2
+    exit 1
+fi
+rm -rf "$work_dir_mp"
+
 echo "meta-converge: ok"

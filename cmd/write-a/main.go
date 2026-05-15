@@ -404,7 +404,16 @@ func main() {
 		os.Exit(2)
 	}
 	if *rulesPath == "" {
-		log.Fatalf("--rules-package-path is required (absolute path to this repo's rules_buildstream_bazel/ directory). Rendered MODULE.bazels reference it via bazel_dep + local_path_override.")
+		log.Fatalf(`--rules-package-path is required.
+
+  Pass the absolute path to this repo's rules_buildstream_bazel/ directory:
+
+      --rules-package-path=$BUILDSTREAM_BAZEL_REPO/rules_buildstream_bazel
+
+  The directory must contain MODULE.bazel; rendered project MODULE.bazels
+  reference it via bazel_dep + local_path_override. tools/bst auto-fills
+  this from $root/rules_buildstream_bazel; ad-hoc invocations of build/bin/write-a
+  must pass it explicitly.`)
 	}
 	rulesPackagePathAbs, err := filepath.Abs(*rulesPath)
 	if err != nil {

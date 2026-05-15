@@ -148,14 +148,21 @@ while true; do
     #   $PROJECT_A/bazel-bin/elements/<elem>/<name>/marker
     # where <name> is "<elem>_trace_load" (single-platform) or
     # "<elem>_trace_load_<platform>" (multi-platform).
-    # 2>/dev/null on both find AND grep so a missing bazel-bin
-    # (first round; bazel hasn't created it yet) or a marker
-    # with no matching content doesn't leak diagnostics into
-    # the captured stdout. POSIX `find ... -name marker` can
-    # also emit "permission denied" on subdirs; the redirection
-    # silences that too.
-    miss_markers=$(find "$PROJECT_A/bazel-bin/elements" -name marker 2>/dev/null \
-        | { xargs -r grep -l "^miss" 2>/dev/null || true; })
+    # 2>/dev/null on find so a missing bazel-bin (first round;
+    # bazel hasn't created it yet) doesn't leak diagnostics.
+    # Pipe through sort so iteration order is lexicographic —
+    # find's filesystem-walk order varies with inode allocation
+    # (different on a fresh checkout vs. an in-place rebuild),
+    # which makes the "N trace_build target(s) on the frontier"
+    # diagnostic non-deterministic across runs. Sort fixes that.
+    # The if-empty guard replaces `xargs -r` (a GNU extension);
+    # POSIX xargs always invokes grep, which without args would
+    # read stdin and hang.
+    marker_files=$(find "$PROJECT_A/bazel-bin/elements" -name marker 2>/dev/null | sort)
+    miss_markers=""
+    if [ -n "$marker_files" ]; then
+        miss_markers=$(printf '%s\n' "$marker_files" | xargs grep -l "^miss" 2>/dev/null || true)
+    fi
 
     if [ -z "$miss_markers" ]; then
         echo "  no trace_load misses; fixpoint reached after $ROUND round(s)"
