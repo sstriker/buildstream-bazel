@@ -464,6 +464,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	inCompileGroup := buildCompileGroupSet(t)
 
 	consumesCodegen := false
+	elidedBuildDirSrc := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -509,10 +510,34 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// walking below. Skip here.
 			continue
 		}
+		// Configure-time-created files living under the build dir
+		// (e.g. `file(WRITE ${CMAKE_BINARY_DIR}/dummy.cpp "")` +
+		// `add_library(foo ${CMAKE_BINARY_DIR}/dummy.cpp)` — a
+		// common header-only-library shim) get recorded with an
+		// absolute path under cmakeBuild but without the
+		// IsGenerated flag (cmake only sets that for sources
+		// produced by add_custom_command / configure_file etc.).
+		// Their absolute paths point at this run's tmp build dir,
+		// which is gone before Bazel ever executes the rule —
+		// emitting them produces a cc_library whose srcs label
+		// resolves to a nonexistent file. Drop them silently and
+		// tag the consuming target so audit queries can find the
+		// elided sources; downstream the cc_library renders with
+		// the remaining (real) sources, or hdrs-only if this was
+		// the only source.
+		if cmakeBuild != "" && filepath.IsAbs(src.Path) {
+			if _, inside := relativeIfInside(cmakeBuild, src.Path); inside {
+				elidedBuildDirSrc = true
+				continue
+			}
+		}
 		irt.Srcs = append(irt.Srcs, src.Path)
 	}
 	if consumesCodegen {
 		irt.Tags = append(irt.Tags, "has-cmake-codegen")
+	}
+	if elidedBuildDirSrc {
+		irt.Tags = append(irt.Tags, "cmake-elided-build-dir-source")
 	}
 
 	// Build-dir-rooted includes (relative to the cmake build
