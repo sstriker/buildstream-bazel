@@ -108,8 +108,11 @@ for marker in \
     '"darwin_arm64/trace.log"' \
     '"linux_x86_64/generated-headers.txt"' \
     '"darwin_arm64/generated-headers.txt"' \
-    'exec_compatible_with = ["@platforms//cpu:x86_64", "@platforms//os:linux"]' \
-    'exec_compatible_with = ["@platforms//cpu:arm64", "@platforms//os:darwin"]' \
+    'exec_compatible_with = [' \
+    '"@platforms//cpu:x86_64",' \
+    '"@platforms//os:linux",' \
+    '"@platforms//cpu:arm64",' \
+    '"@platforms//os:darwin",' \
     '--platform="linux_x86_64"' \
     '--platform="darwin_arm64"' \
     '$(location linux_x86_64/generated-headers.txt)' \
@@ -143,6 +146,23 @@ for marker in \
     if ! grep -qF -- "$marker" "$traces_json"; then
         echo "meta-autotools-round2-multiplatform: traces.json missing marker: $marker" >&2
         cat "$traces_json" >&2
+        exit 1
+    fi
+done
+
+# Project A's //platforms package: one platform() per declared
+# --platforms-json entry with constraint_values + the
+# reapi_properties-derived exec_properties dict.
+platforms_build="$A/platforms/BUILD.bazel"
+for marker in \
+    'name = "linux_x86_64",' \
+    'name = "darwin_arm64",' \
+    'constraint_values = [' \
+    'exec_properties = {' \
+    '"container-image": "docker://debian:bookworm",'; do
+    if ! grep -qF -- "$marker" "$platforms_build"; then
+        echo "meta-autotools-round2-multiplatform: platforms/BUILD.bazel missing marker: $marker" >&2
+        cat "$platforms_build" 2>&1 >&2
         exit 1
     fi
 done
