@@ -1,0 +1,32 @@
+#!/bin/sh
+# Synthetic configure script for cross-kind fixture. The real
+# autotools machinery is out of scope here; what matters is that
+# this file exists (write-a's srckey patterns include `configure`
+# under autotoolsSrckeyPatterns, so its content seeds the srckey).
+# When the trace_build genrule runs (under the convergence
+# driver's pass 3), this script's job is to produce a minimal
+# Makefile that "installs" a .pc file into $DESTDIR.
+cat > Makefile <<'MAKEFILE_EOF'
+PREFIX ?= /usr/local
+DESTDIR ?=
+
+all:
+	@true
+
+install:
+	mkdir -p "$(DESTDIR)/lib/pkgconfig"
+	echo 'prefix=/' > "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'libdir=$${prefix}/lib' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'includedir=$${prefix}/include' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo '' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'Name: auto-prod' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'Version: 0.1.0' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'Description: Cross-kind fixture pkg-config producer.' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'Libs: -L$${libdir} -lautoprod' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	echo 'Cflags: -I$${includedir}' >> "$(DESTDIR)/lib/pkgconfig/auto-prod.pc"
+	mkdir -p "$(DESTDIR)/lib/cmake/autoprod"
+	echo '# Synthesized autoprodConfig.cmake — cross-kind fixture' > "$(DESTDIR)/lib/cmake/autoprod/autoprodConfig.cmake"
+	echo 'if(NOT TARGET autoprod::autoprod)' >> "$(DESTDIR)/lib/cmake/autoprod/autoprodConfig.cmake"
+	echo '  add_library(autoprod::autoprod INTERFACE IMPORTED)' >> "$(DESTDIR)/lib/cmake/autoprod/autoprodConfig.cmake"
+	echo 'endif()' >> "$(DESTDIR)/lib/cmake/autoprod/autoprodConfig.cmake"
+MAKEFILE_EOF

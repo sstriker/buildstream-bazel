@@ -170,4 +170,100 @@ if ! grep -qF "FAILED to converge after 3 rounds" "$mr_log"; then
     exit 1
 fi
 
+# Depth-2 alternation case: simulates a cmake → trace → cmake →
+# trace chain where convergence takes 3 rounds. The bottom
+# element (depth0) converges round 1; the middle element
+# (depth1) round 2; the top element (depth2) round 3. Each
+# round's converged element's trace_load reports "hit" from
+# that round on; unconverged elements report "miss" until
+# their dep converges.
+work_dir3="$(mktemp -d)"
+mkdir -p "$work_dir3/bin" "$work_dir3/A" "$work_dir3/B"
+cat > "$work_dir3/bin/bazel" <<'EOF'
+#!/bin/sh
+GEN=""
+for arg in "$@"; do
+    case "$arg" in
+        --action_env=CONVERGE_GENERATION=*)
+            GEN="${arg#--action_env=CONVERGE_GENERATION=}"
+            ;;
+    esac
+done
+case "$1" in
+    build)
+        if [ -n "$GEN" ]; then
+            for depth in 0 1 2; do
+                mkdir -p "bazel-bin/elements/depth$depth/depth${depth}_trace_load"
+                # Element depthN converges when round > N.
+                if [ "$GEN" -gt "$depth" ]; then
+                    printf 'hit\n' > "bazel-bin/elements/depth$depth/depth${depth}_trace_load/marker"
+                else
+                    printf 'miss\n' > "bazel-bin/elements/depth$depth/depth${depth}_trace_load/marker"
+                fi
+            done
+        fi
+        exit 0
+        ;;
+    *) exit 0 ;;
+esac
+EOF
+chmod +x "$work_dir3/bin/bazel"
+cat > "$work_dir3/bin/stage-b" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$work_dir3/bin/stage-b"
+
+log3="$work_dir3/converge.log"
+"$repo_root/tools/converge.sh" \
+    --project-a "$work_dir3/A" \
+    --project-b "$work_dir3/B" \
+    --bazel "$work_dir3/bin/bazel" \
+    --stage-b "$work_dir3/bin/stage-b" \
+    --max-rounds 10 > "$log3" 2>&1
+
+# Round 1: depth0 hits; depth1, depth2 miss → frontier = {depth1, depth2}.
+# Wait actually: round=1, GEN=1, depth0 (depth=0) → GEN(1) > 0 ? yes → hit.
+#                                  depth1 (depth=1) → GEN(1) > 1 ? no → miss.
+#                                  depth2 (depth=2) → GEN(1) > 2 ? no → miss.
+# Round 2: GEN=2. depth0 hit; depth1 hit; depth2 miss. Frontier = {depth2}.
+# Round 3: GEN=3. all hit. Terminate.
+n_rounds=$(grep -c "=== converge: round" "$log3")
+if [ "$n_rounds" -ne 3 ]; then
+    echo "meta-converge: depth-2 case expected 3 rounds; got $n_rounds" >&2
+    cat "$log3" >&2
+    exit 1
+fi
+# Round 1 frontier: depth1 + depth2 (2 targets).
+if ! grep -qE "2 trace_build target\(s\) on the frontier:" "$log3"; then
+    echo "meta-converge: depth-2 case round 1 frontier size != 2" >&2
+    grep "trace_build target" "$log3" >&2
+    exit 1
+fi
+# Round 2 frontier: depth2 (1 target).
+# Round 3: fixpoint.
+if ! grep -qF "fixpoint reached after 3 round(s)" "$log3"; then
+    echo "meta-converge: depth-2 case did not report fixpoint at round 3" >&2
+    cat "$log3" >&2
+    exit 1
+fi
+# Every depth's trace_build appeared on the frontier in some round.
+for elem in depth0 depth1 depth2; do
+    # depth0 never lands on the frontier (it hits from round 1).
+    if [ "$elem" = "depth0" ]; then
+        if grep -qF "//elements/depth0:depth0_trace_build" "$log3"; then
+            echo "meta-converge: depth0 unexpectedly appeared on the frontier" >&2
+            cat "$log3" >&2
+            exit 1
+        fi
+        continue
+    fi
+    if ! grep -qF "//elements/$elem:${elem}_trace_build" "$log3"; then
+        echo "meta-converge: depth-2 case never listed $elem on a frontier" >&2
+        cat "$log3" >&2
+        exit 1
+    fi
+done
+rm -rf "$work_dir3"
+
 echo "meta-converge: ok"

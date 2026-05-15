@@ -146,6 +146,85 @@ func TestMaterializeConfigBundle_MissProducesEmptyFile(t *testing.T) {
 	}
 }
 
+// TestMaterializeConfigBundle_BlobEvictedTreatedAsMiss covers
+// the AC-survived-but-blob-evicted case for the config bundle:
+// the AC entry's RootDirectoryDigest points at a blob that's no
+// longer in CAS (Tree-level FindMissing returns it as missing).
+// trace-lookup must treat this as a miss (zero-byte output)
+// and let the next round's trace_build republish, rather than
+// failing the action. Matches the trace-side's
+// TestLookup_BlobEvictedTreatedAsMiss contract.
+func TestMaterializeConfigBundle_BlobEvictedTreatedAsMiss(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Publish an AR pointing at a digest that's never been
+	// uploaded to CAS (synthesize the digest from arbitrary
+	// bytes). Mirrors TestLookup_BlobEvictedTreatedAsMiss.
+	bogusBody := []byte("not in CAS")
+	bogusDigest := cas.DigestOf(bogusBody)
+	key, _ := tracenorm.SyntheticConfigDigest("srckey-cfg-evicted", "")
+	if err := store.UpdateActionResult(ctx, key, &repb.ActionResult{
+		OutputDirectories: []*repb.OutputDirectory{
+			{Path: "config-bundle", RootDirectoryDigest: bogusDigest},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outBundle := filepath.Join(t.TempDir(), "cmake-config-bundle.tar")
+	if err := materializeConfigBundle(ctx, store, "srckey-cfg-evicted", "", outBundle); err != nil {
+		t.Errorf("eviction case should be a clean miss; got %v", err)
+	}
+	got, _ := os.ReadFile(outBundle)
+	if len(got) != 0 {
+		t.Errorf("eviction case should produce zero-byte output; got %d bytes", len(got))
+	}
+}
+
+// TestMaterializeConfigBundle_HitWithoutBundleFileTreatedAsMiss
+// covers the "AC hit but the published Directory doesn't carry
+// the expected cmake-config-bundle.tar entry" case — defensive
+// against a publisher writing a different Directory layout than
+// the consumer expects. Falls back to a zero-byte output so
+// the action's declared output exists, the consumer treats the
+// empty bundle as "no bundle published," and downstream rules
+// don't see a half-broken bundle.
+func TestMaterializeConfigBundle_HitWithoutBundleFileTreatedAsMiss(t *testing.T) {
+	ctx := context.Background()
+	store, err := cas.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Publish a Directory whose contents are NOT
+	// cmake-config-bundle.tar (e.g. it carries something else).
+	stage := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stage, "something-else.txt"), []byte("not the bundle"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rootDigest, err := cas.UploadDir(ctx, store, stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _ := tracenorm.SyntheticConfigDigest("srckey-cfg-mismatched", "")
+	if err := store.UpdateActionResult(ctx, key, &repb.ActionResult{
+		OutputDirectories: []*repb.OutputDirectory{
+			{Path: "config-bundle", RootDirectoryDigest: rootDigest},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	outBundle := filepath.Join(t.TempDir(), "cmake-config-bundle.tar")
+	if err := materializeConfigBundle(ctx, store, "srckey-cfg-mismatched", "", outBundle); err != nil {
+		t.Errorf("mismatched-Directory case should be a clean miss; got %v", err)
+	}
+	got, _ := os.ReadFile(outBundle)
+	if len(got) != 0 {
+		t.Errorf("mismatched-Directory case should produce zero-byte output; got %d bytes", len(got))
+	}
+}
+
 // TestMaterializeHit_CopiesEntriesAndWritesMarker covers the
 // action-time materialize mode's happy path: trace.log and
 // make-db.txt land at the requested output paths, the marker
