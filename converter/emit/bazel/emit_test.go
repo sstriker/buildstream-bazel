@@ -937,6 +937,59 @@ func TestEmit_InterfaceLibrary_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_HeaderOnlyDummyShim_Golden exercises the
+// build-dir-rooted absolute-source elision from #143 against a
+// real recorded fileapi reply. The sample project's
+// CMakeLists.txt uses the yasm/libpng-style shim pattern —
+// `file(WRITE ${CMAKE_BINARY_DIR}/dummy.cpp "")` followed by
+// `add_library(foo STATIC ${CMAKE_BINARY_DIR}/dummy.cpp)` — so
+// cmake records one source with an absolute build-dir path
+// without IsGenerated set. Lower should drop that source from
+// the rendered cc_library.srcs and tag the target with
+// `cmake-elided-build-dir-source`.
+//
+// The golden BUILD.bazel pins the expected shape: a cc_library
+// with empty srcs (header-only), the FILE_SET headers in hdrs,
+// and the elision audit tag. A regression that re-emitted the
+// absolute /tmp path would change the rendered srcs and trip
+// the golden diff.
+func TestEmit_HeaderOnlyDummyShim_Golden(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/header-only-dummy-shim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileapi.Load("../../testdata/fileapi/header-only-dummy-shim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = scrubSourceLine(got, src)
+
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "header-only-dummy-shim", "BUILD.bazel.golden")
+	if *update {
+		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 // TestEmit_MacroFromImport_Golden exercises the
 // macro-from-import case: the consumer cmake project
 // includes a macro shipped by a producer element. The
