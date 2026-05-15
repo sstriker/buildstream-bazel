@@ -208,4 +208,74 @@ if grep -qF "ONE-TIME SETUP" "$stderr_log2"; then
     exit 1
 fi
 
-echo "meta-unify-toolchains: ok (4 files, 2 platforms, deterministic, banner gating works)"
+# 9. --element-signal: a per-element toolchain-signal reply dir
+# carrying an implicit include dir the probe matrix never saw gets
+# folded into the platform's cc_toolchain_config. Single-platform
+# run, so the association heuristic's "signal directory belongs to
+# that one platform" fast path applies.
+sig_cells="$work_dir/sig-cells"
+"$bin_dir/probe-cell-fixture" \
+    --fileapi-fixture "$repo_root/converter/testdata/fileapi/hello-world" \
+    --out-dir "$sig_cells" \
+    --cell "linux_x86_64:baseline"
+
+cat > "$work_dir/platforms-single.json" <<'EOF'
+[
+  {"name": "linux_x86_64", "constraints": ["@platforms//os:linux", "@platforms//cpu:x86_64"]}
+]
+EOF
+
+# Element-signal dir: a copy of the hello-world reply with one extra
+# implicit include dir injected into the toolchains object.
+extra_dir="/opt/vendored-sdk/include"
+mkdir -p "$work_dir/signals"
+cp -r "$repo_root/converter/testdata/fileapi/hello-world" "$work_dir/signals/libgreet"
+python3 - "$work_dir/signals/libgreet" "$extra_dir" <<'PY'
+import json, sys, glob, os
+sig_dir, extra = sys.argv[1], sys.argv[2]
+for path in glob.glob(os.path.join(sig_dir, "toolchains-v1-*.json")):
+    with open(path) as f:
+        doc = json.load(f)
+    for tc in doc.get("toolchains", []):
+        impl = tc.setdefault("compiler", {}).setdefault("implicit", {})
+        impl.setdefault("includeDirectories", []).append(extra)
+    with open(path, "w") as f:
+        json.dump(doc, f)
+PY
+
+sig_repo="$work_dir/sig-operator-repo"
+mkdir -p "$sig_repo"
+cat > "$sig_repo/MODULE.bazel" <<'EOF'
+module(name = "operator", version = "0.1.0")
+EOF
+"$bin_dir/unify-toolchains" \
+    --probe-cells "$sig_cells" \
+    --platforms-json "$work_dir/platforms-single.json" \
+    --repo-root "$sig_repo" \
+    --element-signal "$work_dir/signals" \
+    2> "$work_dir/unify.stderr.sig"
+
+if ! grep -qF -- "$extra_dir" "$sig_repo/toolchains/BUILD.bazel"; then
+    echo "--element-signal: folded include dir $extra_dir missing from toolchains/BUILD.bazel" >&2
+    cat "$sig_repo/toolchains/BUILD.bazel" >&2
+    exit 1
+fi
+
+# Control: the same run WITHOUT --element-signal must NOT carry the
+# dir, so the assertion above isn't vacuous.
+sig_repo_ctl="$work_dir/sig-operator-repo-ctl"
+mkdir -p "$sig_repo_ctl"
+cat > "$sig_repo_ctl/MODULE.bazel" <<'EOF'
+module(name = "operator", version = "0.1.0")
+EOF
+"$bin_dir/unify-toolchains" \
+    --probe-cells "$sig_cells" \
+    --platforms-json "$work_dir/platforms-single.json" \
+    --repo-root "$sig_repo_ctl" \
+    2> /dev/null
+if grep -qF -- "$extra_dir" "$sig_repo_ctl/toolchains/BUILD.bazel"; then
+    echo "--element-signal control: $extra_dir present without --element-signal (assertion is vacuous)" >&2
+    exit 1
+fi
+
+echo "meta-unify-toolchains: ok (4 files, 2 platforms, deterministic, banner gating works, element-signal fold works)"

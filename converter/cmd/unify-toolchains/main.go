@@ -23,6 +23,15 @@
 //	                        across the matrix and the unifier).
 //	--repo-root <dir>       Operator's repo root. Tool-owned files
 //	                        land at the four known paths above.
+//	--element-signal <dir>  Optional, repeatable. A directory of
+//	                        per-element toolchain-signal reply dirs
+//	                        (each a copy of a convert-element-cmake
+//	                        fileapi reply, captured via that tool's
+//	                        --out-toolchain-signal-dir). Builtin
+//	                        include / link search roots a real
+//	                        element exposed that the probe matrix
+//	                        missed are folded into the matching
+//	                        platform's toolchain.
 package main
 
 import (
@@ -36,9 +45,16 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/bazeltoolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/probejson"
 )
+
+// stringList is a repeatable string flag value.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -53,7 +69,9 @@ func run(args []string) error {
 		probeCells    = fs.String("probe-cells", "", "directory of <platform>.<variant>.probe.json artifacts")
 		platformsJSON = fs.String("platforms-json", "", "JSON manifest pairing platform names with constraint_value labels")
 		repoRoot      = fs.String("repo-root", "", "operator's repo root; tool writes platforms/, toolchains/, .bazelrc")
+		elementSignal stringList
 	)
+	fs.Var(&elementSignal, "element-signal", "optional, repeatable: directory of per-element toolchain-signal reply dirs (each a copy of a convert-element-cmake fileapi reply, produced by --out-toolchain-signal-dir). Builtin-include / link search roots a real element exposed that the probe matrix missed are folded into the matching platform's toolchain. May also point directly at a single reply dir.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -101,6 +119,14 @@ func run(args []string) error {
 	}
 	if len(ptcs) == 0 {
 		return fmt.Errorf("no platforms produced probe cells; aborting")
+	}
+
+	if len(elementSignal) > 0 {
+		signals, err := loadElementSignals(elementSignal)
+		if err != nil {
+			return fmt.Errorf("load element signals: %w", err)
+		}
+		applyElementSignals(ptcs, signals)
 	}
 
 	bundle, err := bazeltoolchain.EmitUnified(ptcs, bazeltoolchain.UnifiedConfig{})
@@ -255,6 +281,113 @@ func groupProbeCells(dir string, plats []platformSpec) (map[string][]toolchain.P
 		})
 	}
 	return out, nil
+}
+
+// elementSignal pairs a per-element toolchain Model recovered from a
+// signal reply dir with the path it came from, for diagnostics.
+type elementSignal struct {
+	dir   string
+	model *toolchain.Model
+}
+
+// loadElementSignals walks each --element-signal directory and
+// decodes every per-element toolchain-signal reply it finds. A
+// directory that is itself a cmake fileapi reply dir is treated as a
+// single signal; otherwise each immediate subdirectory is tried as a
+// reply dir. Entries that don't load (not a reply dir, or missing
+// toolchains-v1 data) are skipped with a stderr diagnostic rather
+// than failing the run — signal consumption is best-effort
+// enrichment, not a hard input.
+func loadElementSignals(dirs []string) ([]elementSignal, error) {
+	var out []elementSignal
+	for _, dir := range dirs {
+		// Try the directory itself as a reply dir first.
+		if sig, ok := loadOneSignal(dir); ok {
+			out = append(out, sig)
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", dir, err)
+		}
+		found := 0
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if sig, ok := loadOneSignal(filepath.Join(dir, e.Name())); ok {
+				out = append(out, sig)
+				found++
+			}
+		}
+		if found == 0 {
+			fmt.Fprintf(os.Stderr, "unify-toolchains: warning: --element-signal %q held no usable toolchain-signal reply dirs; skipping\n", dir)
+		}
+	}
+	return out, nil
+}
+
+// loadOneSignal attempts to load dir as a cmake fileapi reply and
+// extract a toolchain Model. Returns ok=false when dir isn't a usable
+// signal; the missing-toolchain-data case (a reply dir without
+// toolchains-v1) gets a diagnostic, the not-a-reply-dir case stays
+// quiet so the subdirectory scan in loadElementSignals can probe
+// freely.
+func loadOneSignal(dir string) (elementSignal, bool) {
+	r, err := fileapi.Load(dir)
+	if err != nil {
+		return elementSignal{}, false
+	}
+	m, err := toolchain.FromReply(r)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unify-toolchains: warning: element signal %q has no usable toolchain data: %v; skipping\n", dir, err)
+		return elementSignal{}, false
+	}
+	return elementSignal{dir: dir, model: m}, true
+}
+
+// applyElementSignals folds each element signal into the matching
+// platform's resolved toolchain. Association heuristic: the signal's
+// observed TargetPlatform (OS, CPU) is matched against each
+// platform's probe-derived Base.TargetPlatform. A single-platform run
+// folds every signal into the sole platform regardless — a write-a
+// render targets one platform per run, so the signal directory
+// belongs to that one platform even when the recorded reply carries
+// no CMAKE_SYSTEM_NAME. Signals that match zero platforms, or are
+// ambiguous across several, are skipped with a stderr diagnostic.
+func applyElementSignals(ptcs []bazeltoolchain.PlatformToolchain, signals []elementSignal) {
+	for _, sig := range signals {
+		var matches []int
+		if len(ptcs) == 1 {
+			matches = []int{0}
+		} else {
+			for i, p := range ptcs {
+				if p.Resolved != nil && p.Resolved.Base != nil &&
+					p.Resolved.Base.TargetPlatform == sig.model.TargetPlatform {
+					matches = append(matches, i)
+				}
+			}
+		}
+		switch len(matches) {
+		case 0:
+			fmt.Fprintf(os.Stderr, "unify-toolchains: warning: element signal %q (target %s/%s) matched no platform; skipping\n",
+				sig.dir, sig.model.TargetPlatform.OS, sig.model.TargetPlatform.CPU)
+		case 1:
+			p := ptcs[matches[0]]
+			inc, link := p.Resolved.FoldElementSignal(sig.model)
+			if len(inc) > 0 || len(link) > 0 {
+				fmt.Fprintf(os.Stderr, "unify-toolchains: folded element signal %q into platform %q (+%d include, +%d link dirs)\n",
+					sig.dir, p.Name, len(inc), len(link))
+			}
+		default:
+			names := make([]string, 0, len(matches))
+			for _, i := range matches {
+				names = append(names, ptcs[i].Name)
+			}
+			fmt.Fprintf(os.Stderr, "unify-toolchains: warning: element signal %q (target %s/%s) is ambiguous across platforms %v; skipping\n",
+				sig.dir, sig.model.TargetPlatform.OS, sig.model.TargetPlatform.CPU, names)
+		}
+	}
 }
 
 // maybePrintSetupBanner reads the operator's MODULE.bazel and, if
