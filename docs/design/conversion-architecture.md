@@ -295,8 +295,14 @@ explicitly. Trade-off: if the binary ever relocates (`tools/`
 → `_tools/`), every call site needs updating in lockstep —
 acceptable given the four-call surface.
 
-Mnemonic: `TraceLoad` (queryable in execution logs and
-`bazel cquery 'kind("TraceLoad", //...)'`).
+**Queryability.** The starlark rule kind is `trace_load`
+(lowercase) — `bazel cquery 'kind("trace_load", //...)'`
+enumerates the targets. The action mnemonic is `TraceLoad`
+(set by `ctx.actions.run(mnemonic = "TraceLoad", ...)`) — it
+appears as the `mnemonic` field in execution-log JSON (which
+the `e2e-meta-trace-driven-re.sh` gate greps for) and matches
+`bazel aquery 'mnemonic("TraceLoad", //...)'`. Two distinct
+namespaces; don't mix them.
 
 ### `trace_build` (tagged genrule) — convention, not a rule
 
