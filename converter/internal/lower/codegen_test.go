@@ -118,6 +118,86 @@ build /build/x.h: CUSTOM_COMMAND
 	}
 }
 
+// TestToIR_CodegenTarget_RefusesScriptWithLeadingCacheVars is the
+// follow-on to TestToIR_CodegenTarget_RefusesScript covering the
+// shape libpng (and similarly any package that pre-resolves the
+// output basename inside its cmake script) uses:
+//
+//	cd <build> && cmake -DOUTPUT=foo.h -P scripts/gen.cmake
+//
+// The pre-#142 detection looked for the literal `/usr/bin/cmake -P `
+// or `${CMAKE_COMMAND} -P ` substring, which slips when any
+// `-D<var>=<val>` cache argument precedes `-P`. The genrule then
+// landed in BUILD.bazel with a `cmd` referencing absolute build-dir
+// paths that don't survive past convert-element-cmake's tmp-dir
+// cleanup, breaking the rendered output at Bazel build time.
+func TestToIR_CodegenTarget_RefusesScriptWithLeadingCacheVars(t *testing.T) {
+	const ninjaSrc = `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build /build/x.h: CUSTOM_COMMAND
+  COMMAND = cd /build && /usr/bin/cmake -DOUTPUT=x.h -P /build/scripts/gen.cmake
+`
+	g, err := ninja.Parse(strings.NewReader(ninjaSrc), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Build: "/build", Source: "/src"},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "lib", Id: "lib::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"lib::@1": {
+				Name: "lib",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{{
+					Path:        "/build/x.h",
+					IsGenerated: true,
+				}},
+			},
+		},
+	}
+	_, err = lower.ToIR(r, g, lower.Options{HostSourceRoot: "/src"})
+	if err == nil {
+		t.Fatal("expected unsupported-custom-command-script, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported-custom-command-script") {
+		t.Errorf("err = %v, want unsupported-custom-command-script", err)
+	}
+}
+
+// TestToIR_CmakeScriptModeRefusal_RealFixture exercises the
+// refusal end-to-end against a real recorded fileapi reply for
+// a CMakeLists.txt that drives `${CMAKE_COMMAND} -DOUTPUT=... -P
+// scripts/gen.cmake` from add_custom_command. The synthetic
+// ninja test above pins the detection logic; this one pins the
+// integration with the bytes cmake actually emits — the exact
+// substring shape is sensitive to cmake's argv ordering and to
+// whether the recording machine's `cmake` is at `/usr/bin/cmake`
+// vs. somewhere else on PATH. Without an empirical fixture a
+// future cmake re-ordering could quietly slip past the detector
+// even with the substring/tokeniser unit tests passing.
+func TestToIR_CmakeScriptModeRefusal_RealFixture(t *testing.T) {
+	r := loadFixture(t, "cmake-script-mode-refusal")
+	g := loadNinja(t, "cmake-script-mode-refusal")
+
+	src, err := filepath.Abs("../../testdata/sample-projects/cmake-script-mode-refusal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = lower.ToIR(r, g, lower.Options{HostSourceRoot: src})
+	if err == nil {
+		t.Fatal("expected unsupported-custom-command-script against the real fixture, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported-custom-command-script") {
+		t.Errorf("err = %v, want unsupported-custom-command-script", err)
+	}
+}
+
 // ----- helpers ----------------------------------------------------------
 
 func loadFixture(t *testing.T, name string) *fileapi.Reply {

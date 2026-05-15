@@ -117,7 +117,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// the rule's command is just `$COMMAND`. CommandFor handles that
 	// transparently via scope chain. The literal "cd <dir> &&" prefix
 	// gets handled at command translation time.
-	if strings.Contains(cmd, "/usr/bin/cmake -P ") || strings.Contains(cmd, "${CMAKE_COMMAND} -P ") {
+	if usesCmakeScriptMode(cmd) {
 		return "", "", failure.New(failure.UnsupportedCustomCommandScript,
 			"custom command for %q runs `cmake -P script.cmake`; rewrite in a real language", relOut)
 	}
@@ -366,6 +366,85 @@ func splitShellTokens(s string) []string {
 		out = append(out, cur.String())
 	}
 	return out
+}
+
+// usesCmakeScriptMode reports whether the recovered custom-command runs
+// cmake in script mode (`cmake [args ...] -P <script>`). cmake's script
+// mode is the converter's hard refusal case: the script lives in the
+// project's build dir (which is gone after convert-element-cmake exits),
+// runs against cmake-specific variable state we can't reconstruct at
+// Bazel time, and re-invokes cmake (no equivalent Bazel idiom). The
+// audit recommendation is to rewrite the script in a real language so
+// the genrule has a portable, sandbox-safe command.
+//
+// Detection tokenises the command (honouring `cd <dir> &&` prefixes and
+// wrapper invocations like `env KEY=V cmake -DOUTPUT=... -P foo.cmake`)
+// and reports true when the resolved driver is `cmake` and any
+// subsequent argv token equals `-P`. The original substring match only
+// caught the `<absolute-cmake-path> -P ` and `${CMAKE_COMMAND} -P `
+// shapes; cmake invocations that pass `-D...` cache vars before `-P`
+// (a common pattern for packages that pre-resolve the output basename
+// inside the script — libpng's pnglibconf, etc.) slipped through and
+// landed in BUILD.bazel as a genrule whose `cmd` referenced the
+// build-dir's now-deleted absolute paths.
+func usesCmakeScriptMode(cmd string) bool {
+	tokens := splitShellTokens(cmd)
+	// Strip a leading `cd <dir> && ` (the conventional ninja prefix
+	// for cmake-emitted custom commands). splitShellTokens flattens
+	// `&&` into a separator-style token, so we look for it and reset
+	// the head if seen.
+	for i, tok := range tokens {
+		if tok == "&&" {
+			tokens = tokens[i+1:]
+			break
+		}
+	}
+	// Skip env-style wrappers (KEY=VAL ... cmake -P) the same way
+	// extractDriver does. Mirrors that helper's logic so the two
+	// detectors agree on what counts as the real driver.
+	wrappers := map[string]bool{
+		"env":     true,
+		"sh":      true,
+		"bash":    true,
+		"taskset": true,
+		"nice":    true,
+		"ionice":  true,
+	}
+	for len(tokens) > 0 {
+		first := tokens[0]
+		base := filepath.Base(first)
+		if wrappers[base] {
+			tokens = tokens[1:]
+			for len(tokens) > 0 {
+				t := tokens[0]
+				if strings.HasPrefix(t, "-") || strings.Contains(t, "=") {
+					tokens = tokens[1:]
+					continue
+				}
+				break
+			}
+			continue
+		}
+		break
+	}
+	if len(tokens) == 0 {
+		return false
+	}
+	driver := filepath.Base(tokens[0])
+	// ${CMAKE_COMMAND} survives tokenization as a literal token —
+	// CommandFor doesn't expand cmake's own variable references when
+	// COMMAND is a verbatim substitution. Accept both the resolved
+	// `cmake` driver and the unsubstituted form so neither variant
+	// slips through.
+	if driver != "cmake" && tokens[0] != "${CMAKE_COMMAND}" {
+		return false
+	}
+	for _, t := range tokens[1:] {
+		if t == "-P" {
+			return true
+		}
+	}
+	return false
 }
 
 // hasCmakeE returns true if the command invokes a cmake -E sub-tool that we
