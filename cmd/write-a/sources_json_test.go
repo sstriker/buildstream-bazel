@@ -131,87 +131,12 @@ func TestRenderSourcesUseExtension_EmptyGraphSkipsBlock(t *testing.T) {
 	}
 }
 
-func TestRenderSourcesBzl_StarlarkShape(t *testing.T) {
-	got := renderSourcesBzl()
-	for _, want := range []string{
-		"def _src_repo_impl(rctx):",
-		"_src_repo = repository_rule(",
-		"def _sources_impl(module_ctx):",
-		"json.decode(raw)",
-		`"from_json": tag_class(`,
-		"sources = module_extension(",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rendered .bzl missing %q", want)
-		}
-	}
-}
-
-// TestRenderSourcesBzl_ParameterizesPathPrefix verifies the
-// rule reads CAS_DIRECTORY_PREFIX (default "blobs") and uses
-// it to build the symlink target. The default keeps cmd/cas-fuse
-// users on the historical `<mount>/blobs/directory/<digest>`
-// layout; bb_clientd users override the env to land on
-// `<mount>/cas/<instance>/blobs/<digest_function>/directory/<digest>`.
-func TestRenderSourcesBzl_ParameterizesPathPrefix(t *testing.T) {
-	got := renderSourcesBzl()
-	for _, want := range []string{
-		`rctx.os.environ.get("CAS_DIRECTORY_PREFIX", "blobs")`,
-		`mount + "/" + prefix + "/directory/" + digest`,
-		`environ = ["CAS_FUSE_MOUNT", "CAS_DIRECTORY_PREFIX"]`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rendered .bzl missing parameterized-prefix marker %q\n%s", want, got)
-		}
-	}
-	// The pre-parameterization hardcoded shape must NOT survive.
-	if strings.Contains(got, `mount + "/blobs/directory/" + digest`) {
-		t.Errorf("rendered .bzl still contains the hardcoded /blobs/directory/ shape; should use the prefix var")
-	}
-}
-
-// TestRenderTracesBzl_DeclaresActionTimeTraceLoadRule asserts the
-// new shape: rules/traces.bzl defines a regular Bazel rule
-// (`trace_load`) whose action shells to trace-lookup, replacing
-// the legacy load-time `_trace_repo` repository rule.
-func TestRenderTracesBzl_DeclaresActionTimeTraceLoadRule(t *testing.T) {
-	got := renderTracesBzl()
-	for _, want := range []string{
-		`trace_load = rule(`,
-		`def _trace_load_impl(ctx):`,
-		`ctx.actions.run(`,
-		`executable = ctx.executable._trace_lookup`,
-		`use_default_shell_env = True`,
-		`"srckey": attr.string(`,
-		`"platform": attr.string(`,
-		`"expect_make_db": attr.bool(`,
-		`"_trace_lookup": attr.label(`,
-		`default = "//tools:trace-lookup"`,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("rendered traces.bzl missing trace_load marker %q\n%s", want, got)
-		}
-	}
-}
-
-// TestRenderTracesBzl_NoLegacyRepoRuleShape guards against the
-// legacy load-time shape sneaking back: no `_trace_repo`
-// repository rule, no `traces` module extension, no FUSE-mount
-// symlink wiring. The new shape is an action, not a repo rule.
-func TestRenderTracesBzl_NoLegacyRepoRuleShape(t *testing.T) {
-	got := renderTracesBzl()
-	for _, banned := range []string{
-		`_trace_repo = repository_rule(`,
-		`module_extension(`,
-		`def _traces_impl(module_ctx):`,
-		`rctx.symlink(`,
-		`CAS_FUSE_MOUNT`,
-		`CAS_DIRECTORY_PREFIX`,
-		`TRACE_LOOKUP_BIN`,
-		`TRACE_REPO_NONCE`,
-	} {
-		if strings.Contains(got, banned) {
-			t.Errorf("rendered traces.bzl unexpectedly contains legacy load-time marker %q\n%s", banned, got)
-		}
-	}
-}
+// The rendered .bzl shape was previously asserted via tests that
+// inspected the in-Go renderSourcesBzl / renderTracesBzl strings.
+// Those renderers retired when the rules moved to the in-repo
+// rules_buildstream_bazel package — checked-in starlark files are
+// the source of truth now, and the per-element BUILD templates
+// load them via `@rules_buildstream_bazel//rules:*.bzl` rather
+// than as a rendered project-A / project-B `rules/` directory.
+// The static .bzl files don't need go-test coverage; they ship
+// as version-controlled content alongside this code.

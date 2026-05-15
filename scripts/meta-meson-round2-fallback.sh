@@ -58,6 +58,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/meson-greet.bst" \
     --out "$A" \
     --out-b "$B" \
@@ -76,7 +77,7 @@ a_build="$A/elements/meson-greet/BUILD.bazel"
 for marker in \
     '--unsupported-target-fallback=true' \
     '"//tools:convert-element-meson"' \
-    'load("//rules:traces.bzl", "trace_load")' \
+    'load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")' \
     'name = "meson-greet_trace_load"' \
     'expect_make_db = False' \
     '":meson-greet_trace_load"'; do
@@ -97,8 +98,8 @@ fi
 for path in \
     "$A/rules/traces.bzl" \
     "$B/rules/traces.bzl"; do
-    if [ ! -f "$path" ]; then
-        echo "meta-meson-round2-fallback: missing $path" >&2
+    if [ -f "$path" ]; then
+        echo "meta-meson-round2-fallback: $path unexpectedly rendered (rules now load from @rules_buildstream_bazel//rules)" >&2
         exit 1
     fi
 done

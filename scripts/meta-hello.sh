@@ -43,6 +43,7 @@ A="$work_dir/A"
 B="$work_dir/B"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst testdata/meta-project/hello-world.bst \
     --out "$A" \
     --out-b "$B" \
@@ -50,12 +51,19 @@ B="$work_dir/B"
 
 # Render-phase checks. Always run; don't gate on bazel.
 for f in MODULE.bazel BUILD.bazel \
-        rules/zero_files.bzl rules/BUILD.bazel \
         tools/convert-element-cmake tools/BUILD.bazel \
         elements/hello-world/BUILD.bazel \
         elements/hello-world/sources/CMakeLists.txt; do
     if [ ! -f "$A/$f" ]; then
         echo "meta-hello: missing rendered project A file $f" >&2
+        exit 1
+    fi
+done
+# rules/ no longer renders into the project — loads from
+# @rules_buildstream_bazel//rules via bazel_dep + local_path_override.
+for f in rules/zero_files.bzl rules/sources.bzl rules/BUILD.bazel; do
+    if [ -f "$A/$f" ]; then
+        echo "meta-hello: project A unexpectedly rendered $f (loads from @rules_buildstream_bazel//rules)" >&2
         exit 1
     fi
 done
@@ -244,6 +252,7 @@ restage_b() {
 
 rerender_with_feedback() {
     "$bin_dir/write-a" \
+        --rules-package-path "$repo_root/rules_buildstream_bazel" \
         --bst "$edit_bst" \
         --out "$A" \
         --out-b "$B" \

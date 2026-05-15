@@ -38,6 +38,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project/filter-greet"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/greet.bst" \
     --bst "$fixture/greet-headers.bst" \
     --out "$A" \

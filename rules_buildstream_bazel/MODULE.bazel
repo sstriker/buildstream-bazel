@@ -1,0 +1,21 @@
+module(
+    name = "rules_buildstream_bazel",
+    version = "0.0.0",
+    compatibility_level = 0,
+)
+
+# rules_buildstream_bazel is the buildstream-bazel converter's
+# in-repo Bazel ruleset. It's referenced by every project that
+# write-a renders (project A + project B) via bazel_dep +
+# local_path_override (set up by write-a; see cmd/write-a/main.go's
+# --rules-package-path flag).
+#
+# The package is intentionally NOT published to BCR — it's
+# tightly coupled to write-a's emit shape and convert-element-*
+# binaries this repo also ships. Operators pin the version by
+# pointing local_path_override / git_override at this repo's
+# `rules_buildstream_bazel/` subdirectory; the converter pipeline
+# evolves the rules + write-a together, with the version-locking
+# behaviour you'd get from a published module replaced by "use the
+# same buildstream-bazel commit for write-a and the rules
+# package" — which the operator's workflow already implies.

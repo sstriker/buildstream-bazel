@@ -287,6 +287,7 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         rm -rf "$PROJ_A" "$PROJ_B"
         echo "  rendering projects A + B from $FIXTURE"
         "$repo/build/bin/write-a" \
+            --rules-package-path "$repo/rules_buildstream_bazel" \
             --bst "$FIXTURE/greet.bst" \
             --out "$PROJ_A" \
             --out-b "$PROJ_B" \

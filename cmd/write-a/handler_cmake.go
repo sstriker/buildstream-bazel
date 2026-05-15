@@ -390,12 +390,13 @@ package(default_visibility = ["//visibility:public"])
 	// IR from the trace + cmake File API — no make-db needed.
 	if cmakeConfig.round2FallbackEnabled && srckeyHash != "" {
 		fmt.Fprintf(&b, `
-load("//rules:traces.bzl", "trace_load")
+load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
 
 trace_load(
     name = "%[1]s_trace_load",
     srckey = "%[2]s",
     expect_make_db = False,
+    trace_lookup = "//tools:trace-lookup",
 )
 `, elem.Name, srckeyHash)
 	}
@@ -406,7 +407,7 @@ trace_load(
 	// minimal in that common case.
 	if len(elem.ZeroPaths) > 0 {
 		fmt.Fprintf(&b, `
-load("//rules:zero_files.bzl", "zero_files")
+load("@rules_buildstream_bazel//rules:zero_files.bzl", "zero_files")
 
 # Files cmake's directory walks see but don't read. Materialized
 # at action time as zero-length stubs whose merkle is the empty
@@ -644,7 +645,7 @@ package(default_visibility = ["//visibility:public"])
 	// stays content-stable across edits to non-real source files.
 	if len(elem.ZeroPaths) > 0 {
 		fmt.Fprintf(&b, `
-load("//rules:zero_files.bzl", "zero_files")
+load("@rules_buildstream_bazel//rules:zero_files.bzl", "zero_files")
 
 zero_files(
     name = "%[1]s_zero_stubs",

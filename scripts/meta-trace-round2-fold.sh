@@ -72,6 +72,7 @@ JSON
 fixture="testdata/meta-project/make-greet"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/greet.bst" \
     --out "$A" \
     --out-b "$B" \
@@ -93,7 +94,7 @@ for marker in \
     'name = "greet__linux_x86_64_ir"' \
     'name = "greet__darwin_arm64_ir"' \
     'name = "greet_build"' \
-    'load("//rules:traces.bzl", "trace_load")' \
+    'load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")' \
     'name = "greet_trace_load_linux_x86_64"' \
     'name = "greet_trace_load_darwin_arm64"' \
     'platform = "linux_x86_64"' \

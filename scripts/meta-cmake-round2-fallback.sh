@@ -53,6 +53,7 @@ B="$work_dir/B"
 fixture="testdata/meta-project"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/hello-world.bst" \
     --out "$A" \
     --out-b "$B" \
@@ -70,7 +71,7 @@ a_build="$A/elements/hello-world/BUILD.bazel"
 for marker in \
     '--unsupported-execute-process-fallback=true' \
     '"//tools:convert-element-cmake"' \
-    'load("//rules:traces.bzl", "trace_load")' \
+    'load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")' \
     'name = "hello-world_trace_load"' \
     'expect_make_db = False' \
     '":hello-world_trace_load"'; do
@@ -95,8 +96,8 @@ fi
 for path in \
     "$A/rules/traces.bzl" \
     "$B/rules/traces.bzl"; do
-    if [ ! -f "$path" ]; then
-        echo "meta-cmake-round2-fallback: missing $path" >&2
+    if [ -f "$path" ]; then
+        echo "meta-cmake-round2-fallback: $path unexpectedly rendered (rules now load from @rules_buildstream_bazel//rules)" >&2
         exit 1
     fi
 done

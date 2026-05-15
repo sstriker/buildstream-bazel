@@ -57,6 +57,7 @@ A="$work_dir/A"
 
 render() {
     "$bin_dir/write-a" \
+        --rules-package-path "$repo_root/rules_buildstream_bazel" \
         --bst "$fixture/prod.bst" \
         --bst "$fixture/cons.bst" \
         --out "$A" \

@@ -69,6 +69,7 @@ JSON
 fixture="testdata/meta-project/autotools-greet"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst "$fixture/greet.bst" \
     --out "$A" \
     --out-b "$B" \

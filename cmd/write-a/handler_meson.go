@@ -205,12 +205,13 @@ package(default_visibility = ["//visibility:public"])
 	// the trace (no make-db; meson uses ninja directly).
 	if mesonConfig.round2FallbackEnabled && srckeyHash != "" {
 		fmt.Fprintf(&b, `
-load("//rules:traces.bzl", "trace_load")
+load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
 
 trace_load(
     name = "%[1]s_trace_load",
     srckey = "%[2]s",
     expect_make_db = False,
+    trace_lookup = "//tools:trace-lookup",
 )
 `, elem.Name, srckeyHash)
 	}

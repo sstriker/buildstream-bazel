@@ -43,6 +43,7 @@ A="$work_dir/A"
 B="$work_dir/B"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst testdata/meta-project/pyproject-greet.bst \
     --out "$A" \
     --out-b "$B" \
@@ -50,8 +51,8 @@ B="$work_dir/B"
     --convert-element-pyproject "$bin_dir/convert-element-pyproject"
 
 # Render-phase checks. Always run; don't gate on bazel.
+# rules/ no longer renders (loads from @rules_buildstream_bazel//rules).
 for f in MODULE.bazel BUILD.bazel \
-        rules/zero_files.bzl rules/BUILD.bazel \
         tools/convert-element-cmake tools/convert-element-pyproject tools/BUILD.bazel \
         elements/pyproject-greet/BUILD.bazel \
         elements/pyproject-greet/sources/pyproject.toml \

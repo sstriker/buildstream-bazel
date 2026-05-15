@@ -81,7 +81,7 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 	}
 	for _, want := range []string{
 		`name = "auto_build"`,
-		`load("//rules:traces.bzl", "trace_load")`,
+		`load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")`,
 		`name = "auto_trace_load"`,
 		`":auto_trace_load"`,
 		`"srckey.txt"`,
@@ -127,25 +127,16 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		}
 	}
 
-	// rules/traces.bzl renders the trace_load rule. tools/traces.json
-	// is no longer emitted (the load-time `traces` module extension
-	// was retired when the AC lookup moved to action time).
-	tracesBzl, err := os.ReadFile(filepath.Join(outA, "rules/traces.bzl"))
-	if err != nil {
-		t.Fatalf("rules/traces.bzl missing: %v", err)
-	}
-	for _, want := range []string{
-		"trace_load = rule",
-		"_trace_load_impl",
-		"ctx.actions.run",
-		"--srckey",
-	} {
-		if !strings.Contains(string(tracesBzl), want) {
-			t.Errorf("rules/traces.bzl missing %q\n%s", want, tracesBzl)
+	// rules/traces.bzl is NO LONGER rendered into project A — the
+	// rules live in the in-repo rules_buildstream_bazel package,
+	// loaded via @rules_buildstream_bazel//rules:traces.bzl. The
+	// element BUILD's load() statement (asserted above) confirms
+	// the wiring. tools/traces.json was retired with the legacy
+	// load-time `traces` module extension.
+	for _, unwanted := range []string{"rules/traces.bzl", "tools/traces.json"} {
+		if _, err := os.Stat(filepath.Join(outA, unwanted)); !os.IsNotExist(err) {
+			t.Errorf("project A unexpectedly emitted %s", unwanted)
 		}
-	}
-	if _, err := os.Stat(filepath.Join(outA, "tools/traces.json")); !os.IsNotExist(err) {
-		t.Errorf("tools/traces.json should not be emitted; got err=%v", err)
 	}
 
 	// MODULE.bazel no longer declares the traces extension — the

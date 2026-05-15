@@ -42,6 +42,7 @@ A="$work_dir/A"
 B="$work_dir/B"
 
 "$bin_dir/write-a" \
+    --rules-package-path "$repo_root/rules_buildstream_bazel" \
     --bst testdata/meta-project/meson-greet.bst \
     --out "$A" \
     --out-b "$B" \
@@ -50,13 +51,20 @@ B="$work_dir/B"
 
 # Render-phase checks. Always run; don't gate on bazel.
 for f in MODULE.bazel BUILD.bazel \
-        rules/zero_files.bzl rules/BUILD.bazel \
         tools/convert-element-cmake tools/convert-element-meson tools/BUILD.bazel \
         elements/meson-greet/BUILD.bazel \
         elements/meson-greet/sources/meson.build \
         elements/meson-greet/sources/src/greet.c; do
     if [ ! -f "$A/$f" ]; then
         echo "meta-meson: missing rendered project A file $f" >&2
+        exit 1
+    fi
+done
+# rules/ no longer renders into the project — loads from
+# @rules_buildstream_bazel//rules via bazel_dep + local_path_override.
+for f in rules/zero_files.bzl rules/sources.bzl rules/BUILD.bazel; do
+    if [ -f "$A/$f" ]; then
+        echo "meta-meson: project A unexpectedly rendered $f (loads from @rules_buildstream_bazel//rules)" >&2
         exit 1
     fi
 done

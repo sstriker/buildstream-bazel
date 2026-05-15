@@ -37,7 +37,6 @@
 package main
 
 import (
-	_ "embed"
 	"flag"
 	"fmt"
 	"io"
@@ -58,8 +57,16 @@ import (
 // `bazel_dep` it directly; for now embedding keeps the deployment
 // shape one-binary-and-go.
 //
-//go:embed assets/zero_files.bzl
-var zeroFilesBzl string
+// rulesPackagePath holds the absolute path to the in-repo
+// rules_buildstream_bazel/ directory, populated from
+// --rules-package-path. Rendered MODULE.bazels reference the
+// package via bazel_dep + local_path_override(path = …). Empty
+// when the flag isn't set; main() validates that the flag is
+// passed when the rendered projects actually load rules from
+// the package (which is currently always — every kind:cmake /
+// kind:autotools / kind:make / … render loads zero_files /
+// sources / trace_load).
+var rulesPackagePath string
 
 // bstFile is the YAML shape we parse out of a .bst element file.
 // We only read the fields write-a's per-kind dispatch and source
@@ -374,6 +381,7 @@ func main() {
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
 	mesonRound2Fallback := flag.Bool("meson-round2-fallback", false, "optional: enable kind:meson round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-target-fallback=true into convert-element-meson so native-lowering refusals (subproject, custom_target, generated_sources, cross-compile, unresolved-dependency, unknown target type) produce the install-plan-driven placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (meson setup + ninja + meson install --destdir + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --convert-element-meson + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-meson doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/meson-round2-fallback.md.")
+	rulesPath := flag.String("rules-package-path", "", "required: absolute path to the in-repo rules_buildstream_bazel/ directory. Rendered MODULE.bazels reference the package via bazel_dep(name=\"rules_buildstream_bazel\") + local_path_override(path=<this>); the path must be absolute (Bazel's local_path_override doesn't accept relatives). The package itself isn't published to BCR — its rule definitions are tightly coupled to write-a's emit shape + the convert-element-* binaries this repo ships, so version-locking happens via \"same buildstream-bazel commit for write-a and the rules package\" rather than via a BCR-published version. Operators running the converter from this repo pass the absolute path to rules_buildstream_bazel/ at the commit they're using.")
 	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. One entry per platform: name, constraints, optional select_label, optional reapi_properties (a list of {name, value} pairs — write-a maps these onto an exec_properties dict and emits a platform() per entry into project A's //platforms package). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; the per-element BUILD also gets N trace_load targets (one per platform tag) so the per-platform AC lookups partition correctly. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
@@ -395,6 +403,17 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
+	if *rulesPath == "" {
+		log.Fatalf("--rules-package-path is required (absolute path to this repo's rules_buildstream_bazel/ directory). Rendered MODULE.bazels reference it via bazel_dep + local_path_override.")
+	}
+	rulesPackagePathAbs, err := filepath.Abs(*rulesPath)
+	if err != nil {
+		log.Fatalf("resolve --rules-package-path %q: %v", *rulesPath, err)
+	}
+	if _, statErr := os.Stat(filepath.Join(rulesPackagePathAbs, "MODULE.bazel")); statErr != nil {
+		log.Fatalf("--rules-package-path %q has no MODULE.bazel: %v", rulesPackagePathAbs, statErr)
+	}
+	rulesPackagePath = rulesPackagePathAbs
 
 	// Wire the trace-driven autotools converter's render-time
 	// config. Empty convertBin disables the trace+convert wrap
@@ -1150,24 +1169,13 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 
-	// Wire the zero_files rule by writing the embedded .bzl content
-	// into project A's rules/ dir. The rule has no deps, so a flat
-	// copy works; future iterations may expose it via a published
-	// bazel module instead.
-	if err := writeFile(filepath.Join(outDir, "rules", "zero_files.bzl"), zeroFilesBzl); err != nil {
-		return err
-	}
-	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
-		return err
-	}
-	if traceWiringActive() {
-		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
-			return err
-		}
-	}
-	if err := writeFile(filepath.Join(outDir, "rules", "BUILD.bazel"), "# rules/ holds the starlark utilities project A's per-element BUILDs use.\n"); err != nil {
-		return err
-	}
+	// The starlark utilities project A's per-element BUILDs load
+	// (zero_files / sources extension / trace_load) live in the
+	// in-repo rules_buildstream_bazel package; project A's
+	// MODULE.bazel references it via bazel_dep + local_path_override
+	// (see moduleBazelA). No rules/ directory is rendered into
+	// project A — the rules are loaded as
+	// @rules_buildstream_bazel//rules:*.bzl.
 
 	// Multi-platform mode: emit //platforms/BUILD.bazel — one
 	// platform() per declared --platforms-json entry, carrying the
@@ -1542,18 +1550,11 @@ func writeProjectB(g *graph, outDir string) error {
 
 	// Project B reads the same sources extension + JSON as project
 	// A so @src_<key>// repos resolve to the same CAS Directories
-	// in both workspaces.
-	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
-		return err
-	}
-	if traceWiringActive() {
-		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
-			return err
-		}
-	}
-	if err := writeFile(filepath.Join(outDir, "rules", "BUILD.bazel"), "# rules/ holds the starlark utilities project B's per-element BUILDs use.\n"); err != nil {
-		return err
-	}
+	// in both workspaces. Project B's MODULE.bazel references the
+	// same rules_buildstream_bazel package as project A (see
+	// moduleBazelB); the rules load via
+	// @rules_buildstream_bazel//rules:*.bzl. No rules/ directory
+	// rendered into project B.
 	rawSrcs := collectSources(g)
 	withDigests, err := populateDigests(g, rawSrcs.Sources)
 	if err != nil {
@@ -1673,12 +1674,19 @@ func moduleBazelA(g *graph) string {
 #     entry).
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 `)
-	} else {
-		b.WriteString(`# (No bazel_deps — only genrules; bazel's standard implicit
-# modules (platforms / rules_license / rules_java / etc.) cover
-# toolchain bookkeeping.)
-`)
 	}
+	// rules_buildstream_bazel is THIS converter's in-repo ruleset
+	// (zero_files, sources extension, trace_load). Not published
+	// to BCR — version-locking happens via "same buildstream-bazel
+	// commit for write-a and the rules package" (the operator
+	// running write-a from this repo already has the right
+	// version of both, since both ship together).
+	fmt.Fprintf(&b, `bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
+local_path_override(
+    module_name = "rules_buildstream_bazel",
+    path = %q,
+)
+`, rulesPackagePath)
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
 	// The legacy `traces` module extension is gone; per-element
 	// BUILDs now carry inline trace_load targets. MODULE.bazel no
@@ -1720,6 +1728,21 @@ func moduleBazelB(g *graph) string {
 # project B's bazel build runs.
 bazel_dep(name = "rules_cc", version = "0.0.17")
 `)
+	// rules_buildstream_bazel mirrors project A's wiring. Project
+	// B's converter-output BUILDs reference @rules_buildstream_bazel
+	// when the round-2 fallback shape's placeholder lands in B
+	// (post-stage-b copies project A's BUILD.bazel.out over the
+	// install-genrule's placeholder), and project B's pre-stage
+	// install-genrule itself references //tools:trace-publish
+	// not the rules package — but symmetric wiring keeps the
+	// staging step idempotent (the same MODULE.bazel works
+	// pre- and post-stage).
+	fmt.Fprintf(&b, `bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
+local_path_override(
+    module_name = "rules_buildstream_bazel",
+    path = %q,
+)
+`, rulesPackagePath)
 	if pyprojectConfig.convertBin != "" && hasKind(g, "pyproject") {
 		// kind:pyproject's native render emits py_library /
 		// py_binary rules that load() against
