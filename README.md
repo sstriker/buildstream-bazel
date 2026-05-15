@@ -76,8 +76,11 @@ your team builds against.
 
 The architectural deep-dive lives in
 [`docs/overview.md`](docs/overview.md) (5-minute read with
-flowcharts) and [`docs/three-pass-flow.md`](docs/three-pass-flow.md)
-(the build-time pass model).
+flowcharts),
+[`docs/design/conversion-architecture.md`](docs/design/conversion-architecture.md)
+(the end-state architecture with three diagrams), and
+[`docs/three-pass-flow.md`](docs/three-pass-flow.md) (per-pass
+cost model + scenario walks).
 
 ## Quick start
 
@@ -190,6 +193,7 @@ clean-room implementation.
   host-tool table and CLI reference.
 - **Want to understand the design?**
   [`docs/overview.md`](docs/overview.md) →
+  [`docs/design/conversion-architecture.md`](docs/design/conversion-architecture.md) →
   [`docs/three-pass-flow.md`](docs/three-pass-flow.md) →
   [`docs/build-structure.md`](docs/build-structure.md).
 - **Want to contribute?** [`CONTRIBUTING.md`](CONTRIBUTING.md)

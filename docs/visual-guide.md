@@ -432,7 +432,8 @@ always-run jobs triggered on push/PR. A fifth job, `fdsdk-probe`
 |---|---|
 | [`README.md`](../README.md) | Quick start + repository layout |
 | [`docs/overview.md`](overview.md) | Architecture in five minutes |
-| [`docs/three-pass-flow.md`](three-pass-flow.md) | Detailed pass model + scenario walkthroughs |
+| [`docs/design/conversion-architecture.md`](design/conversion-architecture.md) | End-state architecture: rendezvous, driver loop, BUILD evolution |
+| [`docs/three-pass-flow.md`](three-pass-flow.md) | Per-pass cost model + scenario walkthroughs |
 | [`docs/build-structure.md`](build-structure.md) | Generated workspace interop contract |
 | [`docs/architecture.md`](architecture.md) | Binary-level pipeline and package map |
 | [`docs/design/sources-design.md`](design/sources-design.md) | BwoB source architecture |
