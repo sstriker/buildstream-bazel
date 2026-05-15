@@ -178,6 +178,20 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`--build-files-dir` per-element BUILD overrides.** Operators
+  can drop a directory of `<elem-name>.BUILD.bazel` files next to
+  the meta-project and pass `--build-files-dir <dir>` to write-a;
+  for every element with a matching override file, write-a
+  re-stamps the element to kind:bazel and emits the operator's
+  BUILD verbatim into project B's `elements/<name>/BUILD.bazel`.
+  Source resolution still runs under the element's declared kind
+  so kind:local sources stage alongside the override and its
+  `srcs = [...]` references resolve. Escape hatch for elements
+  whose declared kind (kind:cmake / kind:autotools / kind:manual /
+  ...) doesn't yet convert cleanly — bypass the converter without
+  forking the .bst. Render gate:
+  `scripts/meta-bazel-override.sh`.
+
 - **Docs consolidation + architecture slide deck.** The
   cross-element configure-step bootstrap stack landed; the
   design-trail docs got folded.

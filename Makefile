@@ -2,6 +2,7 @@
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
+        e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
@@ -174,6 +175,15 @@ e2e-meta-stack: check-tools converter
 # resulting cc_binary builds + runs end-to-end.
 e2e-meta-bazel-passthrough: check-tools converter
 	scripts/meta-bazel-passthrough.sh
+
+# --build-files-dir override acceptance gate. A kind:manual .bst
+# paired with an out-of-band <name>.BUILD.bazel under the
+# directory passed to --build-files-dir gets re-stamped to
+# kind:bazel and emits the operator's BUILD verbatim into
+# project B; kind:local sources still stage alongside so the
+# override's srcs = [...] resolves at bazel-build time.
+e2e-meta-bazel-override: check-tools converter
+	scripts/meta-bazel-override.sh
 
 # Cross-element kind:cmake dep gate. Two kind:cmake elements where
 # the consumer (cons) depends on the producer (prod) via

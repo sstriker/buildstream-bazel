@@ -73,7 +73,7 @@ Mapping handler → gate:
 | `handler_import.go` | `scripts/meta-import.sh` |
 | `handler_collect_manifest.go` | `scripts/meta-collect-manifest.sh` (if present) |
 | `handler_script.go` | `scripts/meta-script.sh` |
-| `handler_bazel.go` (passthrough) | `scripts/meta-bazel-passthrough.sh` |
+| `handler_bazel.go` (passthrough) | `scripts/meta-bazel-passthrough.sh`, `scripts/meta-bazel-override.sh` |
 
 `make` knows these too — `make e2e-meta-autotools-native`
 for example. `make help` lists all targets.

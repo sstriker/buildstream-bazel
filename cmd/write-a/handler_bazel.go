@@ -36,6 +36,15 @@ func init() { registerHandler(bazelHandler{}) }
 // that the element exposes a target with the element's name
 // (so //elements/<name>:<name> resolves), but bazelHandler
 // doesn't enforce that.
+//
+// Operator override path (--build-files-dir): when
+// applyBuildFileOverrides has re-stamped a non-bazel element
+// to kind:bazel and recorded an elem.OverrideBuildPath,
+// RenderB stages sources as usual, then writes the override
+// file's contents as the package's BUILD.bazel — overriding
+// whichever (if any) BUILD the source tree carried. This is
+// the "I have a hand-authored BUILD for this element but
+// don't want to fork the .bst" knob.
 type bazelHandler struct{}
 
 func (bazelHandler) Kind() string                                 { return "bazel" }
@@ -56,6 +65,23 @@ func (bazelHandler) RenderA(elem *element, elemPkg string) error {
 func (bazelHandler) RenderB(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, elemPkg); err != nil {
 		return err
+	}
+	// Operator-supplied override (--build-files-dir): drop the
+	// staged tree's BUILD on the floor (kind:cmake / kind:autotools
+	// trees don't ship one anyway; a passthrough tree's authored
+	// BUILD is shadowed by intent here) and write the override
+	// instead. Both BUILD.bazel and BUILD candidates from the
+	// source get removed first so neither lingers next to the
+	// override.
+	if elem.OverrideBuildPath != "" {
+		body, err := os.ReadFile(elem.OverrideBuildPath)
+		if err != nil {
+			return fmt.Errorf("read --build-files-dir override for %q: %w", elem.Name, err)
+		}
+		for _, name := range []string{"BUILD.bazel", "BUILD"} {
+			_ = os.Remove(filepath.Join(elemPkg, name))
+		}
+		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), string(body))
 	}
 	// kind:bazel's contract: source tree contains its own
 	// BUILD.bazel (or BUILD). Detect; warn if missing — the
