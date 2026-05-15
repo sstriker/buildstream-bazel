@@ -111,6 +111,18 @@ let the operator choose.
    thread this through `patch_cmds` so the rewrite runs before
    convert-element-cmake configures the tree.
 
+   Caveats:
+
+   - `sed -i` without an argument is GNU-only; on BSD / macOS
+     pass `sed -i ''` (an explicit empty backup-suffix) or use
+     `gsed`.
+   - The regex matches the canonical three-space-separated
+     `get_target_property(var tgt LOCATION)` form on a single
+     line. Calls that wrap across multiple lines, embed
+     comments between args, or use tabs as separators need a
+     hand-tuned rewrite — treat the recipe as the starting
+     point for the common case.
+
 2. **Pin cmake to a 3.x release.** The orchestrator's
    `Makefile` `CMAKE_VERSION` is `3.28.3` by default; cmake 3.x
    emits a deprecation warning but still resolves LOCATION,

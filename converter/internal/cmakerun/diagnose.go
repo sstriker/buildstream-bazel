@@ -95,6 +95,15 @@ var configureHints = []configureHint{
 // "LOCATION property may not be read" sentinel is narrower
 // than just "CMP0026" (which can also surface from
 // cmake_policy() interrogations that aren't actually broken).
+//
+// The match is intentionally cmake-wording-tied: it keys on the
+// exact sentinel cmake 3.x / 4.x emit today. A future release
+// that rephrases the diagnostic silently stops firing the hint
+// — the converter's behaviour stays correct (the underlying
+// configure error still surfaces), only the [hint] annotation
+// is missed. Re-test against the latest cmake when bumping the
+// pinned version; refresh the sentinel here if the wording
+// changes.
 func matchCMP0026(stderr []byte) bool {
 	s := string(stderr)
 	if !strings.Contains(s, "LOCATION property may not be read") {
