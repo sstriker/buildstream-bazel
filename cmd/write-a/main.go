@@ -373,6 +373,7 @@ func main() {
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
+	mesonRound2Fallback := flag.Bool("meson-round2-fallback", false, "optional: enable kind:meson round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-target-fallback=true into convert-element-meson so native-lowering refusals (subproject, custom_target, generated_sources, cross-compile, unresolved-dependency, unknown target type) produce the install-plan-driven placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (meson setup + ninja + meson install --destdir + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --convert-element-meson + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (load-time @trace_<elem>//:trace via the kind-agnostic _trace_repo rule) is staged today; convert-element-meson doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/meson-round2-fallback.md.")
 	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. One entry per platform: name, constraints, optional select_label, optional reapi_properties (a list of {name, value} pairs — write-a maps these onto an exec_properties dict and emits a platform() per entry into project A's //platforms package). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; tools/traces.json gets N entries per element keyed `<elem>__<platform>` so the per-platform _trace_repo lookups don't collide. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
@@ -414,8 +415,8 @@ func main() {
 	if *traceBin != "" && *tracerBin == "" {
 		log.Fatalf("--convert-element-trace requires --build-tracer-bin")
 	}
-	if *tracerBin != "" && *traceBin == "" && !*cmakeRound2Fallback {
-		log.Fatalf("--build-tracer-bin requires either --convert-element-trace (the trace-driven round-{1,2} path for autotools / make / manual / script / makemaker / modulebuild kinds) or --cmake-round2-fallback (kind:cmake fallback)")
+	if *tracerBin != "" && *traceBin == "" && !*cmakeRound2Fallback && !*mesonRound2Fallback {
+		log.Fatalf("--build-tracer-bin requires either --convert-element-trace (the trace-driven round-{1,2} path for autotools / make / manual / script / makemaker / modulebuild kinds), --cmake-round2-fallback (kind:cmake fallback), or --meson-round2-fallback (kind:meson fallback)")
 	}
 	if *traceBin != "" {
 		abs, err := filepath.Abs(*traceBin)
@@ -529,6 +530,50 @@ func main() {
 			traceConfig.lookupBin = abs
 		}
 		cmakeConfig.round2FallbackEnabled = true
+	}
+	// kind:meson round-2 fallback. Same shape as kind:cmake's
+	// fallback: A's converter genrule threads
+	// --unsupported-target-fallback through to convert-element-meson;
+	// B emits a real install genrule wrapping `meson setup + ninja
+	// + meson install --destdir + tar` under build-tracer + inline
+	// trace-publish, plus the load-time @trace_<elem>//:trace
+	// lookup A's converter genrule references. All four binaries
+	// (the converter, the tracer, the publisher, the lookup tool)
+	// are kind-agnostic — same staging path as kind:cmake. See
+	// docs/design/meson-round2-fallback.md.
+	if *mesonRound2Fallback {
+		if *mesonBin == "" {
+			log.Fatalf("--meson-round2-fallback requires --convert-element-meson (the converter's native lowering must be available so refusals can flip into the placeholder shape; without the binary the legacy pipeline-shape coarse install genrule renders unconditionally)")
+		}
+		if *tracerBin == "" || *publishBin == "" || *lookupBin == "" {
+			log.Fatalf("--meson-round2-fallback requires --build-tracer-bin, --trace-publish-bin, and --trace-lookup-bin (Project B wraps the meson build via build-tracer and publishes the trace; Project A wires the load-time @trace_<elem>//:trace lookup via trace-lookup)")
+		}
+		// build-tracer / trace-publish / trace-lookup paths may
+		// already be resolved when --cmake-round2-fallback or the
+		// trace-driven autotools path is also set. Resolve here
+		// only when this is the sole consumer.
+		if traceConfig.tracerBin == "" {
+			abs, err := filepath.Abs(*tracerBin)
+			if err != nil {
+				log.Fatalf("resolve build-tracer path: %v", err)
+			}
+			traceConfig.tracerBin = abs
+		}
+		if traceConfig.publishBin == "" {
+			abs, err := filepath.Abs(*publishBin)
+			if err != nil {
+				log.Fatalf("resolve trace-publish path: %v", err)
+			}
+			traceConfig.publishBin = abs
+		}
+		if traceConfig.lookupBin == "" {
+			abs, err := filepath.Abs(*lookupBin)
+			if err != nil {
+				log.Fatalf("resolve trace-lookup path: %v", err)
+			}
+			traceConfig.lookupBin = abs
+		}
+		mesonConfig.round2FallbackEnabled = true
 	}
 	// Round-2 is the default trace-driven path. It activates
 	// when --convert-element-trace is set AND the user
@@ -1113,7 +1158,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
 		return err
 	}
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
 			return err
 		}
@@ -1159,7 +1204,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		traces, err := collectTraces(g)
 		if err != nil {
 			return fmt.Errorf("collect traces: %w", err)
@@ -1189,7 +1234,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports := []string{"convert-element-cmake", "sources.json"}
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		exports = append(exports, "traces.json")
 	}
 	// Also stage convert-element-trace + build-tracer when
@@ -1389,7 +1434,8 @@ func stagePyprojectConverter(outDir string) (string, error) {
 func stageAutotoolsTools(outDir string) ([]string, error) {
 	autotoolsActive := traceConfig.convertBin != "" && traceConfig.tracerBin != ""
 	cmakeFallbackActive := cmakeConfig.round2FallbackEnabled
-	if !autotoolsActive && !cmakeFallbackActive {
+	mesonFallbackActive := mesonConfig.round2FallbackEnabled
+	if !autotoolsActive && !cmakeFallbackActive && !mesonFallbackActive {
 		return nil, nil
 	}
 	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
@@ -1433,8 +1479,8 @@ func stageAutotoolsTools(outDir string) ([]string, error) {
 	// the trace-driven convergence research follow-on), but
 	// the wiring is staged today so the follow-on is purely a
 	// converter-side change.
-	publishNeeded := traceConfig.round2Enabled || cmakeFallbackActive
-	lookupNeeded := traceConfig.round2Enabled || cmakeFallbackActive
+	publishNeeded := traceConfig.round2Enabled || cmakeFallbackActive || mesonFallbackActive
+	lookupNeeded := traceConfig.round2Enabled || cmakeFallbackActive || mesonFallbackActive
 	if publishNeeded {
 		stagedPub := filepath.Join(outDir, "tools", "trace-publish")
 		if err := copyFile(traceConfig.publishBin, stagedPub); err != nil {
@@ -1509,7 +1555,7 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "rules", "sources.bzl"), renderSourcesBzl()); err != nil {
 		return err
 	}
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		if err := writeFile(filepath.Join(outDir, "rules", "traces.bzl"), renderTracesBzl()); err != nil {
 			return err
 		}
@@ -1559,7 +1605,7 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeRewritableStubIfAbsent(outDir); err != nil {
 		return fmt.Errorf("gazelle-rewritable stub: %w", err)
 	}
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		traces, err := collectTraces(g)
 		if err != nil {
 			return fmt.Errorf("collect traces: %w", err)
@@ -1579,7 +1625,7 @@ func writeProjectB(g *graph, outDir string) error {
 	// //tools:convert-element-trace labels resolve to
 	// nothing in the B-side BUILD.
 	exports := []string{"sources.json", "cc_index.json", "python_modules.json"}
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		exports = append(exports, "traces.json")
 	}
 	autotoolsExports, err := stageAutotoolsTools(outDir)
@@ -1656,7 +1702,7 @@ bazel_dep(name = "bazel_skylib", version = "1.7.1")
 `)
 	}
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
-	if traceConfig.round2Enabled || cmakeConfig.round2FallbackEnabled {
+	if traceWiringActive() {
 		traces, err := collectTraces(g)
 		if err == nil {
 			b.WriteString(renderTracesUseExtension(traces))

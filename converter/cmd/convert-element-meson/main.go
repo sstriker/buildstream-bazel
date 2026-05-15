@@ -43,13 +43,14 @@ const (
 )
 
 type args struct {
-	sourceRoot      string
-	infoDir         string // offline mode: pre-recorded meson-info dir
-	outBuild        string
-	outFailure      string
-	outBundleDir    string
-	importsManifest string
-	mesonExtraArgs  []string
+	sourceRoot                string
+	infoDir                   string // offline mode: pre-recorded meson-info dir
+	outBuild                  string
+	outFailure                string
+	outBundleDir              string
+	importsManifest           string
+	mesonExtraArgs            []string
+	unsupportedTargetFallback bool
 }
 
 func main() {
@@ -74,6 +75,7 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	fs.StringVar(&a.importsManifest, "imports-manifest", "", "path to JSON imports manifest mapping cross-element meson dependency names to Bazel labels (optional)")
 	var mesonArgs string
 	fs.StringVar(&mesonArgs, "meson-args", "", "additional arguments to pass to `meson setup` (FDSDK's meson-local slot). Whitespace-split.")
+	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs referencing install_tree.tar, plus an extract genrule that untars it. Project B's install genrule (write-a's --meson-round2-fallback shape) produces install_tree.tar from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/meson-round2-fallback.md.")
 	if err := fs.Parse(argv); err != nil {
 		return a, exitUsage
 	}
@@ -118,10 +120,32 @@ func run(a args) error {
 		buildDir = bd
 		defer os.RemoveAll(bd)
 		ctx := context.Background()
+		// Phase B fallback contract: the install genrule in
+		// project B pins `meson setup --prefix=/ --libdir=lib`,
+		// which makes intro-install_plan.json's `{libdir_static}`
+		// / `{libdir_shared}` / `{bindir}` / `{includedir}`
+		// placeholders resolve to clean install-tree-relative
+		// paths (lib/, bin/, include/). The converter side has to
+		// match — without the same pin, intro-buildoptions reports
+		// the host's defaults (multiarch libdir on debian,
+		// /usr/local prefix everywhere) and the placeholder shape
+		// in BUILD.bazel.out references paths that don't exist
+		// inside install_tree.tar.
+		//
+		// We thread the pin via ExtraArgs so operator-supplied
+		// --meson-args (the FDSDK meson-local slot) still wins on
+		// duplicate-key resolution (meson takes the last value
+		// for repeated -D flags). The pin only fires when the
+		// fallback is enabled; Phase A's byte-stable shape stays
+		// untouched.
+		extraArgs := a.mesonExtraArgs
+		if a.unsupportedTargetFallback {
+			extraArgs = append([]string{"--prefix=/", "--libdir=lib"}, extraArgs...)
+		}
 		got, err := runMesonSetup(ctx, mesonOptions{
 			SourceRoot: a.sourceRoot,
 			BuildDir:   bd,
-			ExtraArgs:  a.mesonExtraArgs,
+			ExtraArgs:  extraArgs,
 			Stdout:     os.Stderr,
 			Stderr:     os.Stderr,
 		})
@@ -168,7 +192,52 @@ func run(a args) error {
 		Imports:    imports,
 	})
 	if err != nil {
-		return err
+		// Phase B fallback: when --unsupported-target-fallback is
+		// on and the native lowering refused with a typed Tier-1
+		// failure, emit an install-plan-driven placeholder package
+		// instead of propagating the refusal. Untyped errors (parse
+		// failures, internal mismatches) still propagate — those
+		// aren't kind:meson refusals the placeholder shape covers.
+		//
+		// Tier-1 refusals fall back when at least one install_plan
+		// targets row exists. An empty install plan means there's
+		// nothing for the placeholder to anchor against (no per-
+		// target labels, no extract genrule outs); propagating the
+		// Tier-1 in that case keeps the operator's signal honest —
+		// the round-2 fallback can't help an element with no
+		// installable outputs.
+		//
+		// The post-emit len(pkg.Targets) check covers a related
+		// degenerate: a non-empty install plan whose rows all
+		// filter out (every entry is a subproject, or every
+		// destination has an unresolved placeholder, or every
+		// (tag, basename) lands in artefactUnknown). The
+		// pre-emit length check passes but the placeholder
+		// produces zero stubs, so we'd land an empty BUILD on
+		// disk and silently hide the typed refusal. Propagating
+		// the original Tier-1 keeps the operator's diagnostic
+		// signal intact in that case.
+		if a.unsupportedTargetFallback {
+			var tier1 *failure.Error
+			if errors.As(err, &tier1) && len(intro.InstallPlan.Targets) > 0 {
+				placeholderPkg, placeholderErr := emitFallbackPlaceholder(intro, LowerOptions{
+					SourceRoot: a.sourceRoot,
+					BuildDir:   buildDir,
+					Imports:    imports,
+				})
+				if placeholderErr == nil && len(placeholderPkg.Targets) > 0 {
+					pkg = placeholderPkg
+					err = nil
+				}
+				// placeholderErr != nil OR zero targets: leave
+				// `err` holding the original Tier-1 so the
+				// caller falls through to the propagating
+				// return below.
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
 
 	out, err := bazel.Emit(pkg)

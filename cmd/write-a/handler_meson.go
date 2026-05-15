@@ -30,6 +30,28 @@ var mesonConfig struct {
 	// (currently empty) pkg-config-bundle.tar.
 	// When empty: the historical pipelineHandler shape renders.
 	convertBin string
+
+	// round2FallbackEnabled toggles the kind:meson round-2 fallback
+	// shape (Phase B; see docs/design/meson-round2-fallback.md).
+	// When true:
+	//   - Project A's converter genrule threads
+	//     `--unsupported-target-fallback=true` into
+	//     convert-element-meson's cmd, so native-lowering refusals
+	//     (subproject, custom_target, generated_sources, cross-
+	//     compile, unresolved-dependency, unknown target type)
+	//     produce the install-plan-driven placeholder shape instead
+	//     of a Tier-1 exit.
+	//   - Project B emits a real install genrule (meson setup +
+	//     ninja + meson install --destdir + tar under build-tracer,
+	//     plus inline trace-publish) — replaces today's RenderB
+	//     placeholder.
+	// Off (default) preserves the existing kind:meson shape.
+	// Requires --convert-element-meson + --build-tracer-bin +
+	// --trace-publish-bin + --trace-lookup-bin so the install
+	// genrule can wrap the build and publish to the REAPI AC, and
+	// so A's converter genrule can wire the load-time
+	// @trace_<elem>//:trace lookup.
+	round2FallbackEnabled bool
 }
 
 // mesonHandler is the kind:meson dispatch. It picks between the
@@ -67,6 +89,26 @@ func (mesonHandler) RenderB(elem *element, elemPkg string) error {
 	}
 	if err := stageAllSources(elem, elemPkg); err != nil {
 		return err
+	}
+	// Round-2 fallback shape: write the install genrule as the
+	// package's BUILD.bazel directly — the placeholder is NOT
+	// emitted in this branch. Post-build the driver stages A's
+	// BUILD.bazel.out alongside this BUILD.bazel (same package), so
+	// labels declared in BUILD.bazel.out (cc_import / sh_binary
+	// stubs + the extract genrule referencing "install_tree.tar")
+	// resolve to this genrule's install_tree.tar output via
+	// same-package label resolution. Mirrors kind:cmake's
+	// renderCmakeRound2B; see
+	// docs/design/meson-round2-fallback.md.
+	if mesonConfig.round2FallbackEnabled {
+		// mesonSrckeyPatterns() already includes "meson.build" +
+		// "**/meson.build" rules, so withMesonBuildRule (if it
+		// existed) would duplicate them. Pass the pattern set
+		// straight through.
+		if err := renderSrckey(elem, elemPkg, mesonSrckeyPatterns()); err != nil {
+			return err
+		}
+		return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), renderMesonRound2B(elem))
 	}
 	// Same placeholder shape kind:cmake's RenderB writes when the
 	// converter genrule lives in project A. The driver script
@@ -165,6 +207,22 @@ filegroup(
 		importsFlag = ` \
             --imports-manifest="$(location imports.json)"`
 	}
+	fallbackFlag := ""
+	if mesonConfig.round2FallbackEnabled {
+		fallbackFlag = ` \
+            --unsupported-target-fallback=true`
+		// @trace_<elem>//:trace is a load-time _trace_repo lookup
+		// against the REAPI ActionCache; AC hit means a previous
+		// Project B run published the build's trace, AC miss means
+		// the trace fileset is empty. convert-element-meson doesn't
+		// consume the trace yet (the trace-driven convergence
+		// research follow-on teaches it to refine refusals into
+		// fine cc rules from the trace); wiring the lookup now
+		// means that follow-on is converter-side only — no further
+		// write-a changes. Mirrors kind:cmake's round-2 wiring in
+		// handler_cmake.go.
+		srcsList += fmt.Sprintf(`, "@trace_%s//:trace"`, elem.Name)
+	}
 
 	fmt.Fprintf(&b, `
 genrule(
@@ -193,7 +251,7 @@ genrule(
         $(location //tools:convert-element-meson) \\
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
-            --out-bundle-dir="$$BUNDLE_DIR"%[3]s
+            --out-bundle-dir="$$BUNDLE_DIR"%[3]s%[4]s
         # v1 emits an empty bundle dir. We deliberately do NOT use
         # "tar -C $$BUNDLE_DIR ." — that includes the "." directory
         # entry with the bundle dir's mtime/uid/gid, making the tar
@@ -219,7 +277,7 @@ filegroup(
     name = "pkg_config_bundle",
     srcs = ["pkg-config-bundle.tar"],
 )
-`, elem.Name, srcsList, importsFlag)
+`, elem.Name, srcsList, importsFlag, fallbackFlag)
 
 	return b.String()
 }
