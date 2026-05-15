@@ -234,10 +234,9 @@ transition cleanly.
   destructive. Design docs:
   `docs/design/cross-element-config-rendezvous.md`,
   `docs/design/convergence-driver.md`,
-  `docs/design/finalize-b.md`. The `mesonDepBundleLabels`
-  filter retirement (kind:meson consumers of trace-driven
-  deps) is queued as a small follow-up that lands when an
-  FDSDK fixture forces it. Bazel-build-half end-to-end
+  `docs/design/finalize-b.md`. The kind:meson-side bundle
+  staging for consumers of trace-driven deps is queued as a
+  small follow-up that lands when an FDSDK fixture forces it. Bazel-build-half end-to-end
   (driver against a live REAPI endpoint with bb_clientd) is
   covered by `tools/e2e-meta-autotools-round2-live.sh` once
   it grows convergence-driver wiring; render-half gates

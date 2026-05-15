@@ -314,35 +314,6 @@ filegroup(
 	return b.String()
 }
 
-// mesonDepBundleLabel pairs a cross-element kind:meson dep's name
-// with the Bazel label of its `pkg_config_bundle` filegroup. v1
-// preserves the field for symmetry with cmakeDepBundleLabel; the
-// bundle is empty until the synthesis follow-up.
-type mesonDepBundleLabel struct {
-	DepName string
-	Label   string
-}
-
-// mesonDepBundleLabels returns the cross-element bundle labels
-// the consumer's genrule should stage. Filters to kind:meson
-// deps; other kinds don't ship a meson-side bundle.
-func mesonDepBundleLabels(elem *element) []mesonDepBundleLabel {
-	var out []mesonDepBundleLabel
-	for _, dep := range elem.Deps {
-		if dep == nil || dep.Bst == nil {
-			continue
-		}
-		if dep.Bst.Kind != "meson" {
-			continue
-		}
-		out = append(out, mesonDepBundleLabel{
-			DepName: dep.Name,
-			Label:   fmt.Sprintf("//elements/%s:pkg_config_bundle", dep.Name),
-		})
-	}
-	return out
-}
-
 // writeMesonImportsManifest renders an imports.json next to the
 // element's BUILD.bazel when the element has any cross-element
 // deps. One Element entry per dep, with a single Export per dep
@@ -359,8 +330,6 @@ func mesonDepBundleLabels(elem *element) []mesonDepBundleLabel {
 // resolves through the shared manifest schema regardless of who
 // emitted the dep. Restricting the walk to kind:meson would
 // silently drop valid bindings (PR #106 review feedback).
-// The mesonDepBundleLabels filter stays kind:meson-only — only
-// meson elements ship a meson-shaped pkg-config bundle.
 //
 // Returns (true, nil) when imports.json was written;
 // (false, nil) when the element has no resolvable cross-element
