@@ -186,10 +186,14 @@ build --extra_execution_platforms=//platforms:buildbarn
 build --strategy=Genrule=remote
 # bwotb: outputs stay in remote CAS.
 build --remote_download_minimal
-# Action-time trace_load reads CAS_GRPC_ADDR from the action env
-# (Bazel's --action_env propagates it to remote actions just
-# like local ones).
-build --action_env=CAS_GRPC_ADDR=$CAS_ADDR
+# Action-side CAS endpoint. The worker container is on the
+# same docker network as bb-storage; the in-network DNS name
+# resolves there. From the host (where bazel runs) the same
+# endpoint is 127.0.0.1:8980 via the docker compose port
+# forward, but actions can't see the host's loopback — they
+# see the WORKER's loopback. The two endpoints MUST be
+# threaded distinctly.
+build --action_env=CAS_GRPC_ADDR=bb-storage:8980
 # Convergence-generation token (PR-5). Set to 1 for this gate.
 build --action_env=CONVERGE_GENERATION=1
 EOF
