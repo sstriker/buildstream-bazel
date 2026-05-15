@@ -86,7 +86,16 @@ cleanup() {
 trap cleanup EXIT
 
 skip_reason() {
-    echo "== e2e-meta-autotools-round2-live: $1, skipping =="
+    msg="$1"
+    # BST_RE_GATE_REQUIRE flips skips into hard failures. CI sets
+    # it; local dev workstations leave it unset. Without this
+    # guard a green CI job can't be distinguished from a quiet
+    # opt-out.
+    if [ -n "${BST_RE_GATE_REQUIRE:-}" ]; then
+        echo "== e2e-meta-autotools-round2-live: $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+        exit 1
+    fi
+    echo "== e2e-meta-autotools-round2-live: $msg, skipping =="
     exit 0
 }
 
@@ -168,6 +177,101 @@ if [[ "$PUB_OUT" != "$LK_OUT" ]]; then
     exit 1
 fi
 echo "  publish/lookup digests match — wire roundtrip OK"
+
+echo "== config-bundle publish + lookup roundtrip =="
+# The config-bundle leg of the round-2 rendezvous (PR-4):
+# trace-publish lands the bundle under SyntheticConfigDigest
+# (a distinct argv0-namespaced AC key from the trace's
+# SyntheticActionDigest). trace-lookup --out-config-bundle
+# materializes it. Independent of the trace publish/lookup —
+# either can succeed while the other fails, but the common case
+# is both land in one trace-publish call. This subsection proves
+# the gRPC wire works end-to-end through real buildbarn.
+BUNDLE_BODY="$STAGE/cmake-config-bundle.tar"
+( cd "$STAGE" && mkdir -p bundle/lib/pkgconfig && \
+    printf '%s\n' \
+        'prefix=/' \
+        'libdir=/lib' \
+        'includedir=/include' \
+        '' \
+        'Name: greet' \
+        'Version: 0.1.0' \
+        'Description: Round-2 live-AC gate synthetic pc file' \
+        'Libs: -L${libdir} -lgreet' \
+        'Cflags: -I${includedir}' \
+        > bundle/lib/pkgconfig/greet.pc && \
+    tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+        -cf "$BUNDLE_BODY" -C bundle . )
+
+BUNDLE_SRCKEY="round2-live-bundle-$(date +%s)-$$"
+echo "  bundle srckey = $BUNDLE_SRCKEY"
+BUNDLE_PUB_LOG="$TMP/bundle-publish.log"
+if ! "$repo/build/bin/trace-publish" \
+        --cas="$CAS_ADDR" \
+        --srckey="$BUNDLE_SRCKEY" \
+        --trace="$STAGE/trace.log" \
+        --config-bundle="$BUNDLE_BODY" >"$BUNDLE_PUB_LOG" 2>&1; then
+    echo "bundle publish failed:"
+    cat "$BUNDLE_PUB_LOG"
+    exit 1
+fi
+echo "  bundle publish OK"
+
+# Materialize-mode lookup with --out-config-bundle. The action-
+# time trace_load rule invokes this same shape: the bundle bytes
+# land at the caller-supplied path, the trace + marker land at
+# their own paths, and the action's declared outputs all exist.
+LK_OUT_DIR="$TMP/lookup-out"
+mkdir -p "$LK_OUT_DIR"
+LK_BUNDLE_LOG="$TMP/bundle-lookup.log"
+if ! "$repo/build/bin/trace-lookup" \
+        --cas="$CAS_ADDR" \
+        --srckey="$BUNDLE_SRCKEY" \
+        --out-trace="$LK_OUT_DIR/trace.log" \
+        --out-make-db="$LK_OUT_DIR/make-db.txt" \
+        --out-empty-marker="$LK_OUT_DIR/marker" \
+        --out-config-bundle="$LK_OUT_DIR/cmake-config-bundle.tar" \
+        >"$LK_BUNDLE_LOG" 2>&1; then
+    echo "bundle lookup failed:"
+    cat "$LK_BUNDLE_LOG"
+    exit 1
+fi
+
+# Marker reports hit, trace + bundle bytes round-trip.
+MARKER_BODY=$(cat "$LK_OUT_DIR/marker")
+if [[ "$MARKER_BODY" != "hit" ]]; then
+    echo "bundle lookup marker != hit; got: $MARKER_BODY"
+    exit 1
+fi
+if ! cmp -s "$BUNDLE_BODY" "$LK_OUT_DIR/cmake-config-bundle.tar"; then
+    echo "bundle byte roundtrip diverged:"
+    echo "  published bytes:"
+    xxd "$BUNDLE_BODY" | head -5
+    echo "  materialized bytes:"
+    xxd "$LK_OUT_DIR/cmake-config-bundle.tar" | head -5
+    exit 1
+fi
+echo "  bundle publish/lookup roundtrip OK (bytes identical, marker=hit)"
+
+# Independence check: the trace keyspace and the bundle keyspace
+# don't collide for the same srckey. Lookup for the BUNDLE_SRCKEY
+# in trace-only mode hits the trace (published above as part of
+# the same call); looking up an UNRELATED srckey's bundle misses
+# even though that srckey's trace might exist.
+LK_TRACE_LOG="$TMP/bundle-trace-only.log"
+if ! TRACE_ONLY_OUT=$("$repo/build/bin/trace-lookup" \
+        --cas="$CAS_ADDR" \
+        --srckey="$BUNDLE_SRCKEY" 2>"$LK_TRACE_LOG"); then
+    echo "trace-only lookup against BUNDLE_SRCKEY failed:"
+    cat "$LK_TRACE_LOG"
+    exit 1
+fi
+if [[ -z "$TRACE_ONLY_OUT" ]]; then
+    echo "bundle lookup's sibling trace publish should also be reachable; got empty stdout"
+    cat "$LK_TRACE_LOG"
+    exit 1
+fi
+echo "  trace + bundle keyspaces partition correctly (same srckey, distinct keys)"
 
 echo "== trace-lookup miss for an unrelated srckey =="
 MISS=$("$repo/build/bin/trace-lookup" \
@@ -253,7 +357,18 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
         case "$bazel_major" in [0-9]*) ;; *) bazel_major=0 ;; esac
     fi
     if [[ -z "$BAZEL" ]] || [[ "$bazel_major" -lt 9 ]]; then
-        echo "== bazel < 9 / not on PATH; skipping bazel-build half (mount-half PASS) =="
+        # Inner skip — the mount-half passed, but the bazel-build
+        # half (the real round-trip through trace_load + the
+        # converter genrule) is the load-bearing assertion. Under
+        # BST_RE_GATE_REQUIRE, falling out here is a hard failure
+        # so a green CI run means the bazel-build half actually
+        # exercised the wire.
+        msg="bazel < 9 / not on PATH; bazel-build half (round-2 fine path) didn't run"
+        if [[ -n "${BST_RE_GATE_REQUIRE:-}" ]]; then
+            echo "== $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+            exit 1
+        fi
+        echo "== $msg (mount-half PASS) =="
     else
         echo "== bazel-build half (round-2 fine path) =="
         # The round-2 fine path needs every binary the genrules
@@ -353,9 +468,34 @@ if command -v bb_clientd >/dev/null || [[ -n "${BB_CLIENTD_BIN:-}" ]]; then
             fi
         done
         echo "  round-2 fine BUILD.bazel.out OK — _trace_repo + parameterised CAS_DIRECTORY_PREFIX proven end-to-end"
+
+        # trace_load also declares cmake-config-bundle.tar as an
+        # output (PR-4: expect_config_bundle = True on every
+        # round-2 kind's trace_load). The action materialised it
+        # via --out-config-bundle. Verify the output landed in
+        # bazel-bin alongside the trace, and that its content is
+        # the bundle the publish step lands (empty for the
+        # synthetic fixture above — the install tree had no
+        # lib/pkgconfig or lib/cmake — but the file must exist).
+        BUNDLE_OUT="$PROJ_A/bazel-bin/elements/greet/greet_trace_load/cmake-config-bundle.tar"
+        if [[ ! -f "$BUNDLE_OUT" ]]; then
+            echo "round-2 trace_load did not declare cmake-config-bundle.tar at $BUNDLE_OUT"
+            echo "expected per trace_load's expect_config_bundle = True attr"
+            ls -la "$PROJ_A/bazel-bin/elements/greet/greet_trace_load/" || true
+            exit 1
+        fi
+        echo "  trace_load materialised cmake-config-bundle.tar OK"
     fi
 else
-    echo "== bb_clientd not on PATH; skipping mount-half + bazel-build half (publish/lookup wire half PASS) =="
+    # Inner skip — wire half passed but mount + bazel-build halves
+    # didn't run. Under BST_RE_GATE_REQUIRE, hard-fail so CI green
+    # means the full path exercised.
+    msg="bb_clientd not on PATH; mount-half + bazel-build half didn't run"
+    if [[ -n "${BST_RE_GATE_REQUIRE:-}" ]]; then
+        echo "== $msg — BST_RE_GATE_REQUIRE is set, so this is a hard failure ==" >&2
+        exit 1
+    fi
+    echo "== $msg (publish/lookup wire half PASS) =="
 fi
 
 echo "== e2e-meta-autotools-round2-live: PASS =="
