@@ -1,6 +1,6 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
@@ -269,6 +269,19 @@ e2e-meta-cmake-round2-fallback-multiplatform: check-tools converter
 # executor; bazel < 7 lacks bzlmod). See docs/design/meson-native-render.md.
 e2e-meta-meson: check-tools converter
 	scripts/meta-meson.sh
+
+# kind:meson Phase B fallback acceptance gate. Render-only: asserts
+# A's converter genrule threads --unsupported-target-fallback=true,
+# A's MODULE.bazel pulls in the traces module extension, B's per-
+# element BUILD is the real install genrule (meson setup + ninja +
+# meson install --destdir under build-tracer + inline trace-publish)
+# replacing the placeholder. When meson is on PATH, also runs the
+# standalone converter against a refusal-triggering fixture and
+# verifies strict mode refuses while the fallback emits the
+# install-plan-driven placeholder shape. See
+# docs/design/meson-round2-fallback.md.
+e2e-meta-meson-round2-fallback: check-tools converter
+	scripts/meta-meson-round2-fallback.sh
 
 # kind:pyproject native render acceptance gate. Single kind:pyproject
 # element (testdata/meta-project/pyproject-greet/) — a setuptools

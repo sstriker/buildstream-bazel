@@ -75,6 +75,127 @@ func TestMesonElement_PipelineFallback(t *testing.T) {
 	}
 }
 
+// TestMesonElement_Round2Fallback verifies the per-element BUILD
+// shape when --meson-round2-fallback is configured: A's converter
+// genrule threads --unsupported-target-fallback=true into
+// convert-element-meson AND pulls @trace_<elem>//:trace into srcs
+// (the load-time AC lookup; trace-driven convergence research
+// follow-on teaches convert-element-meson to consume the trace).
+// B's install genrule replaces the placeholder.
+func TestMesonElement_Round2Fallback(t *testing.T) {
+	tmp := t.TempDir()
+	prev := mesonConfig
+	mesonBin := filepath.Join(tmp, "convert-element-meson-fake")
+	if err := os.WriteFile(mesonBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mesonConfig.convertBin = mesonBin
+	mesonConfig.round2FallbackEnabled = true
+	// Trace plumbing needs to be populated for collectTraces /
+	// trace_repo wiring. Use mock paths; the test doesn't run
+	// Bazel.
+	prevTrace := traceConfig
+	tracerBin := filepath.Join(tmp, "build-tracer-fake")
+	publishBin := filepath.Join(tmp, "trace-publish-fake")
+	lookupBin := filepath.Join(tmp, "trace-lookup-fake")
+	for _, p := range []string{tracerBin, publishBin, lookupBin} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	traceConfig.tracerBin = tracerBin
+	traceConfig.publishBin = publishBin
+	traceConfig.lookupBin = lookupBin
+	defer func() {
+		mesonConfig = prev
+		traceConfig = prevTrace
+	}()
+
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "meson.build"),
+		[]byte("project('p', 'c')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bstPath := filepath.Join(tmp, "elem.bst")
+	if err := os.WriteFile(bstPath, []byte(sampleMesonBst), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+
+	g, err := loadGraph([]string{bstPath}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	outA := filepath.Join(tmp, "project-A")
+	if err := writeProjectA(g, outA, binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+
+	// A-side: converter genrule threads the fallback flag AND
+	// pulls the trace label into srcs. The trace module wiring
+	// (rules/traces.bzl, tools/traces.json) is rendered too.
+	aBody, err := os.ReadFile(filepath.Join(outA, "elements/elem/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`--unsupported-target-fallback=true`,
+		`"@trace_elem//:trace"`,
+		`//tools:convert-element-meson`,
+	} {
+		if !strings.Contains(string(aBody), marker) {
+			t.Errorf("A-side BUILD missing marker %q\n%s", marker, aBody)
+		}
+	}
+	for _, path := range []string{
+		"rules/traces.bzl",
+		"tools/traces.json",
+		"tools/build-tracer",
+		"tools/trace-publish",
+		"tools/trace-lookup",
+	} {
+		if _, err := os.Stat(filepath.Join(outA, path)); err != nil {
+			t.Errorf("project A missing %s: %v", path, err)
+		}
+	}
+
+	// B-side: real install genrule replaces the placeholder.
+	outB := filepath.Join(tmp, "project-B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	bBody, err := os.ReadFile(filepath.Join(outB, "elements/elem/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{
+		`name = "elem_install"`,
+		`"install_tree.tar"`,
+		`"trace.log"`,
+		`"//tools:build-tracer"`,
+		`"//tools:trace-publish"`,
+		`meson setup "$$BUILD_ROOT" "$$SRC_DIR" --prefix=/ --libdir=lib`,
+		`ninja -C "$$BUILD_ROOT"`,
+		`DESTDIR="$$INSTALL_ROOT" meson install -C "$$BUILD_ROOT"`,
+		`CAS_GRPC_ADDR`,
+		`--srckey=`,
+	} {
+		if !strings.Contains(string(bBody), marker) {
+			t.Errorf("B-side BUILD missing marker %q\n%s", marker, bBody)
+		}
+	}
+	if strings.Contains(string(bBody), "BUILD_NOT_YET_STAGED") {
+		t.Errorf("B-side still has placeholder; should have install genrule:\n%s", bBody)
+	}
+	// srckey.txt is staged in B (trace-publish reads it).
+	if _, err := os.Stat(filepath.Join(outB, "elements/elem/srckey.txt")); err != nil {
+		t.Errorf("project B missing srckey.txt: %v", err)
+	}
+}
+
 // TestMesonElement_NativeRender verifies the per-element BUILD.bazel
 // shape when --convert-element-meson is configured: a converter
 // genrule with the expected outputs + the //tools:convert-element-meson

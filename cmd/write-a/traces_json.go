@@ -125,6 +125,9 @@ func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 	if kind == "cmake" && cmakeConfig.round2FallbackEnabled {
 		return cmakeSrckeyPatterns()
 	}
+	if kind == "meson" && mesonConfig.round2FallbackEnabled {
+		return mesonSrckeyPatterns()
+	}
 	h, ok := handlers[kind]
 	if !ok {
 		return nil
@@ -141,6 +144,28 @@ func traceDrivenSrckeyPatternsForKind(kind string) *readPathsPatterns {
 		return nil
 	}
 	return ph.traceDrivenSrckeyPatterns
+}
+
+// traceWiringActive reports whether the rendered projects need
+// the trace-publish/lookup plumbing wired in: the traces module
+// extension (rules/traces.bzl), tools/traces.json, the
+// build-tracer + trace-publish + trace-lookup binaries staged
+// under tools/, and the MODULE.bazel `use_extension("//rules:traces.bzl")`
+// block. Any of the three kinds that participate in the
+// trace-driven path on this run triggers it:
+//
+//   - autotools / pipeline-kind round-2 (traceConfig.round2Enabled),
+//   - kind:cmake Phase B fallback (cmakeConfig.round2FallbackEnabled),
+//   - kind:meson Phase B fallback (mesonConfig.round2FallbackEnabled).
+//
+// Centralized here rather than at each call site so adding a
+// fourth kind that joins the trace-driven set (whenever that
+// happens) only touches one place. Mirrors the
+// traceDrivenSrckeyPatternsForKind ownership above.
+func traceWiringActive() bool {
+	return traceConfig.round2Enabled ||
+		cmakeConfig.round2FallbackEnabled ||
+		mesonConfig.round2FallbackEnabled
 }
 
 func marshalTracesJSON(s tracesJSON) ([]byte, error) {
