@@ -27,7 +27,9 @@ how pass-2 looks up, and why the recipe lives where it does.
 ```
 write-a --autotools-round2  →  project A: per-element converter genrule
                                             + per-element trace_load target
-                                project B: coarse install genrule (no converter)
+                                project B: per-element trace_build genrule
+                                            (configure + make + install
+                                             + build-tracer + inline publish)
 
 bazel build A//<elem>:<elem>_build
    pass-2:
@@ -44,8 +46,8 @@ bazel build A//<elem>:<elem>_build
          → trace.log non-empty ⇒ emit cc_library / cc_binary
          → trace.log empty     ⇒ emit placeholder BUILD.bazel.out
 
-bazel build B//<elem>:<elem>_install
-   pass-3 install genrule:
+bazel build B//<elem>:<elem>_trace_build
+   pass-3 trace_build genrule (tagged "trace_build"):
      configure / make / make-install under build-tracer
      post-process make-db (sed filter)
      trace-publish:
@@ -55,6 +57,16 @@ bazel build B//<elem>:<elem>_install
                              ActionResult{output_directories: [
                                  {root_directory_digest: <digest>}]})
 ```
+
+The pass-3 genrule is named `<elem>_trace_build` (renamed from
+the historical `<elem>_install`) and tagged with `trace_build` so
+the convergence driver can query the set:
+`bazel query 'attr(tags, trace_build, //elements/...:*)'`.
+Cross-element consumers still reference
+`//elements/<dep>:install_tree.tar` (a stable filegroup
+introduced by the multi-platform install-fan-out work) rather
+than the genrule name directly, so the rename is internal — no
+operator-visible BUILD label changes for consumers.
 
 The action-time `trace_load` rule (added in the trace_load /
 trace_build refactor — see ROADMAP) replaced the legacy load-time

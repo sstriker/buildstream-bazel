@@ -181,7 +181,8 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, marker := range []string{
-		`name = "elem_install"`,
+		`name = "elem_trace_build"`,
+		`tags = ["trace_build"]`,
 		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"//tools:build-tracer"`,

@@ -349,6 +349,12 @@ func foldCellArg(p tracePlatform, irPath string) string {
 // matches the pre-fan-out goldens byte-for-byte.
 func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tracePlatform) *pipelineExtension {
 	ext := &pipelineExtension{
+		// IsTraceBuild flips the install genrule's name +
+		// tagging into the trace_build shape (see
+		// handler_pipeline.go's renderInstallGenruleBody): name
+		// becomes "<elem>_trace_build" and tags includes
+		// "trace_build" for the convergence-driver query.
+		IsTraceBuild: true,
 		// Pass the per-platform output prefix into the
 		// wrapper so the generated-headers.txt diff lands at
 		// the genrule's actual declared output path

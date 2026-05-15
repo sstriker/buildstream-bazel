@@ -94,9 +94,15 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 	}
 	// kind:make's pipelineHandler.RenderA must NOT have emitted
 	// the install genrule into A under round-2 — that genrule
-	// moved to B. Sanity-check it isn't here.
-	if strings.Contains(string(aBody), `name = "mk_install"`) {
-		t.Errorf("project A round-2 BUILD unexpectedly contains the install genrule (mk_install); should have moved to B")
+	// moved to B. Sanity-check no install/trace_build target lives
+	// in A.
+	for _, banned := range []string{
+		`name = "mk_install"`,
+		`name = "mk_trace_build"`,
+	} {
+		if strings.Contains(string(aBody), banned) {
+			t.Errorf("project A round-2 BUILD unexpectedly contains the install/trace_build genrule (%s); should have moved to B", banned)
+		}
 	}
 	// Legacy load-time external-repo shape must NOT be present.
 	if strings.Contains(string(aBody), `"@trace_mk//:trace"`) {
@@ -148,7 +154,8 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`name = "mk_install"`,
+		`name = "mk_trace_build"`,
+		`tags = ["trace_build"]`,
 		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"make-db.txt"`,

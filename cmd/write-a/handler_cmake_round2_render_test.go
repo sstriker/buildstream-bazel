@@ -138,7 +138,8 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		`name = "demo_install"`,
+		`name = "demo_trace_build"`,
+		`tags = ["trace_build"]`,
 		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"//tools:build-tracer"`,
@@ -237,8 +238,13 @@ func TestWriter_CmakeRound2Fallback_OffByDefault(t *testing.T) {
 	if !strings.Contains(string(bBody), "BUILD_NOT_YET_STAGED") {
 		t.Errorf("project B should retain the placeholder when fallback is off; got:\n%s", bBody)
 	}
-	if strings.Contains(string(bBody), `name = "demo_install"`) {
-		t.Errorf("project B should NOT emit install genrule when fallback is off; got:\n%s", bBody)
+	for _, banned := range []string{
+		`name = "demo_install"`,
+		`name = "demo_trace_build"`,
+	} {
+		if strings.Contains(string(bBody), banned) {
+			t.Errorf("project B should NOT emit install genrule when fallback is off; got %q in:\n%s", banned, bBody)
+		}
 	}
 }
 
@@ -328,8 +334,9 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 	got := string(bBody)
 
 	for _, want := range []string{
-		`name = "demo_install_linux_x86_64"`,
-		`name = "demo_install_darwin_arm64"`,
+		`name = "demo_trace_build_linux_x86_64"`,
+		`name = "demo_trace_build_darwin_arm64"`,
+		`tags = ["trace_build"]`,
 		`"linux_x86_64/install_tree.tar"`,
 		`"darwin_arm64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
@@ -355,8 +362,19 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 		}
 	}
 
-	// Legacy single-platform genrule name must NOT appear.
-	if strings.Contains(got, `name = "demo_install"`) {
-		t.Errorf("cmake round-2 fallback multi-platform project B unexpectedly contains legacy 'demo_install' name (no platform suffix)\n%s", got)
+	// Legacy single-platform genrule name (either historical
+	// `demo_install` or the new unsuffixed `demo_trace_build`)
+	// must NOT appear under multi-platform mode.
+	for _, banned := range []string{
+		`name = "demo_install"`,
+		`name = "demo_trace_build"`,
+	} {
+		// `demo_trace_build` is a prefix of the per-platform
+		// `demo_trace_build_<plat>` names. Match the exact
+		// quoted target name only (the closing `"` after
+		// `_trace_build` is sufficient to distinguish).
+		if strings.Contains(got, banned+",") || strings.Contains(got, banned+"\n") {
+			t.Errorf("cmake round-2 fallback multi-platform project B unexpectedly contains legacy unsuffixed name %q\n%s", banned, got)
+		}
 	}
 }

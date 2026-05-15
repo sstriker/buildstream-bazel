@@ -156,7 +156,7 @@ func mesonRound2InstallBuild(elem *element, plat tracePlatform) string {
 package(default_visibility = ["//visibility:public"])
 
 genrule(
-    name = "%[1]s_install%[3]s",
+    name = "%[1]s_trace_build%[3]s",
     srcs = glob(["**"], exclude = ["BUILD.bazel", "BUILD.bazel.out", "srckey.txt", "srckey-breakdown.txt", "srckey-patterns.txt"]) + [
         "srckey.txt",
     ],
@@ -168,6 +168,7 @@ genrule(
         "//tools:build-tracer",
         "//tools:trace-publish",
     ],
+    tags = ["trace_build"],
 %[6]s    cmd = """
         export EXEC_ROOT="$$PWD"
 
