@@ -800,47 +800,14 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 	), nil
 }
 
-// marshalGenexContext mirrors cmake-configure-file's
-// genexContextJSON shape — flat snake_case keys so the wire
-// representation is the same on both sides. Empty fields are
-// omitted to keep the base64-encoded blob small (typical
-// Context is ~50-100 bytes after compaction).
-//
-// Targets, when present, ships as a nested map; only the
-// fields the v1 evaluator consults (Type / Sources / Imported)
-// land on the wire so future Context extensions don't bloat
-// the payload until the matching evaluator support lands.
+// marshalGenexContext emits ctx in the wire shape both sides
+// share — genexeval.Context's struct json tags carry the
+// snake_case keys and FileLocation is json:"-" so per-machine
+// paths never land in the lifted cmd. The function is a thin
+// wrapper to keep the call site readable; json.Marshal is the
+// load-bearing primitive.
 func marshalGenexContext(ctx genexeval.Context) ([]byte, error) {
-	type targetJSON struct {
-		Type     string `json:"type,omitempty"`
-		Sources  string `json:"sources,omitempty"`
-		Imported bool   `json:"imported,omitempty"`
-	}
-	type contextJSON struct {
-		Config           string                `json:"config,omitempty"`
-		CompilerID       map[string]string     `json:"compiler_id,omitempty"`
-		PlatformID       string                `json:"platform_id,omitempty"`
-		CompilerLanguage string                `json:"compiler_language,omitempty"`
-		Targets          map[string]targetJSON `json:"targets,omitempty"`
-	}
-	var targets map[string]targetJSON
-	if len(ctx.Targets) > 0 {
-		targets = make(map[string]targetJSON, len(ctx.Targets))
-		for name, t := range ctx.Targets {
-			targets[name] = targetJSON{
-				Type:     t.Type,
-				Sources:  t.Sources,
-				Imported: t.Imported,
-			}
-		}
-	}
-	return json.Marshal(contextJSON{
-		Config:           ctx.Config,
-		CompilerID:       ctx.CompilerID,
-		PlatformID:       ctx.PlatformID,
-		CompilerLanguage: ctx.CompilerLanguage,
-		Targets:          targets,
-	})
+	return json.Marshal(ctx)
 }
 
 // resolveGenexInPath parses path as a genex-bearing string and

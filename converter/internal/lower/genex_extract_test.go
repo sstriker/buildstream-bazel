@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 )
 
 func TestTopLevelGenexes(t *testing.T) {
@@ -76,10 +78,10 @@ func TestTopLevelGenexes(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			ranges := topLevelGenexes([]byte(c.in))
+			ranges := genexeval.TopLevelGenexes([]byte(c.in))
 			var got []string
 			for _, r := range ranges {
-				got = append(got, c.in[r.start:r.end])
+				got = append(got, c.in[r.Start:r.End])
 			}
 			if !reflect.DeepEqual(got, c.want) {
 				t.Errorf("topLevelGenexes(%q):\n  got:  %#v\n  want: %#v", c.in, got, c.want)
@@ -234,7 +236,7 @@ func TestApplyGenexValues_RoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("extract: %v", err)
 			}
-			roundtrip, err := applyGenexValues([]byte(c.template), values)
+			roundtrip, err := genexeval.ApplyValues([]byte(c.template), values)
 			if err != nil {
 				t.Fatalf("apply: %v", err)
 			}
@@ -251,7 +253,7 @@ func TestApplyGenexValues_RoundTrip(t *testing.T) {
 // template carries, the apply step must error instead of
 // emitting a literal `$<...>` in the rendered output.
 func TestApplyGenexValues_MissingKey(t *testing.T) {
-	_, err := applyGenexValues([]byte("Hello $<CONFIG>"), map[string]string{})
+	_, err := genexeval.ApplyValues([]byte("Hello $<CONFIG>"), map[string]string{})
 	if err == nil {
 		t.Fatal("expected error for missing genex value")
 	}
