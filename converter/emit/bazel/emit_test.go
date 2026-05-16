@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -312,11 +313,21 @@ func TestEmit_FileGenerate_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read trace: %v", err)
 	}
+	// Load the captured cmake variable namespace so the (a)
+	// genex evaluator can resolve $<CONFIG> / $<PLATFORM_ID:>
+	// against the fixture's recorded Release/Linux/GNU values.
+	// Mirrors the offline branch of convert-element-cmake/main
+	// which does the same opportunistic load.
+	cmakeVars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir)
+	if err != nil {
+		t.Fatalf("read vars dump: %v", err)
+	}
 	pkg, err := lower.ToIR(r, nil, lower.Options{
 		HostSourceRoot:    src,
 		BuildDir:          replyDir,
 		TraceRaw:          traceRaw,
 		LiftConfigureFile: true,
+		CMakeVars:         cmakeVars,
 	})
 	if err != nil {
 		t.Fatal(err)
