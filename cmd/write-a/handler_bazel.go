@@ -36,6 +36,16 @@ func init() { registerHandler(bazelHandler{}) }
 // that the element exposes a target with the element's name
 // (so //elements/<name>:<name> resolves), but bazelHandler
 // doesn't enforce that.
+//
+// Operator override path (--build-files-dir): when
+// applyBuildFileOverrides has re-stamped a non-bazel element
+// to kind:bazel and recorded an elem.OverrideBuildDir,
+// RenderB stages sources as usual, then copies the override
+// subtree on top — the operator's BUILD.bazel (and any
+// subpackage BUILDs, .bzl helpers, etc.) shadow whatever
+// the source tree carried. This is the "I have a hand-
+// authored BUILD for this element but don't want to fork the
+// .bst" knob.
 type bazelHandler struct{}
 
 func (bazelHandler) Kind() string                                 { return "bazel" }
@@ -56,6 +66,25 @@ func (bazelHandler) RenderA(elem *element, elemPkg string) error {
 func (bazelHandler) RenderB(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, elemPkg); err != nil {
 		return err
+	}
+	// Operator-supplied override subtree (--build-files-dir):
+	// copy on top of the staged sources. copyTree's per-file
+	// O_TRUNC means the override's BUILD.bazel / .bzl files
+	// naturally shadow any colliding source files (relevant
+	// when the source tree itself was a kind:bazel passthrough
+	// shipping its own BUILD). Bazel rejects packages
+	// declaring both BUILD and BUILD.bazel, so for every
+	// package the override tree touches, strip the OTHER name
+	// at the mirrored elemPkg location before the copy lands.
+	// This runs over the whole override subtree, not just the
+	// top level, because operator-authored subpackage BUILDs
+	// can collide with source-shipped sibling files at the
+	// same depth.
+	if elem.OverrideBuildDir != "" {
+		if err := stripCollidingBuildNames(elem.OverrideBuildDir, elemPkg); err != nil {
+			return fmt.Errorf("strip colliding BUILD names for %q: %w", elem.Name, err)
+		}
+		return copyTree(elem.OverrideBuildDir, elemPkg)
 	}
 	// kind:bazel's contract: source tree contains its own
 	// BUILD.bazel (or BUILD). Detect; warn if missing — the
@@ -79,4 +108,41 @@ func (bazelHandler) RenderB(elem *element, elemPkg string) error {
 package(default_visibility = ["//visibility:public"])
 `)
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
+}
+
+// stripCollidingBuildNames walks overrideDir for every
+// BUILD-family file and removes the OTHER name (BUILD ↔
+// BUILD.bazel) from the mirrored location in elemPkg. Bazel
+// rejects packages declaring both names; without this strip,
+// a source-shipped `sub/BUILD` next to an override-shipped
+// `sub/BUILD.bazel` would survive copyTree and fail at load
+// time.
+func stripCollidingBuildNames(overrideDir, elemPkg string) error {
+	return filepath.Walk(overrideDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		var other string
+		switch filepath.Base(path) {
+		case "BUILD.bazel":
+			other = "BUILD"
+		case "BUILD":
+			other = "BUILD.bazel"
+		default:
+			return nil
+		}
+		rel, err := filepath.Rel(overrideDir, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		// os.Remove returning IsNotExist is the expected
+		// no-collision case — discard.
+		if err := os.Remove(filepath.Join(elemPkg, rel, other)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 }

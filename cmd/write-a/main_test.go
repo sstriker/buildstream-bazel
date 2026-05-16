@@ -1201,6 +1201,385 @@ func TestWriter_BazelElementMissingBuildPlaceholder(t *testing.T) {
 	}
 }
 
+// TestWriter_BuildFilesDirOverride covers --build-files-dir:
+// an operator-supplied <dir>/<name>/BUILD.bazel subtree
+// re-stamps the element to kind:bazel, project A becomes a
+// no-target marker, and project B's elements/<name>/ carries
+// the override's contents (with the element's kind:local
+// sources still staged underneath so the override's
+// srcs=[...] references resolve).
+func TestWriter_BuildFilesDirOverride(t *testing.T) {
+	tmp := t.TempDir()
+	// kind:cmake source tree — a hand-authored CMakeLists.txt that
+	// won't actually be processed because the override flips the
+	// element to kind:bazel. The .c file alongside is what the
+	// override BUILD references.
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "CMakeLists.txt"),
+		[]byte("project(hello)\nadd_executable(hello hello.c)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "hello.c"),
+		[]byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "hello.bst")
+	bstBody := "kind: cmake\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	elemOverride := filepath.Join(tmp, "overrides", "hello")
+	if err := os.MkdirAll(elemOverride, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	overrideBuild := `load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "hello",
+    srcs = ["hello.c"],
+    visibility = ["//visibility:public"],
+)
+`
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
+		[]byte(overrideBuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	// Source resolution happened under kind:cmake — confirm sources
+	// were resolved so the override-then-stage path reaches them.
+	if len(g.Elements[0].Sources) != 1 || g.Elements[0].Sources[0].AbsPath == "" {
+		t.Fatalf("kind:cmake source not resolved before override: %#v", g.Elements[0].Sources)
+	}
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
+		t.Fatalf("applyBuildFileOverrides: %v", err)
+	}
+	if g.Elements[0].Bst.Kind != "bazel" {
+		t.Fatalf("after override Kind = %q, want bazel", g.Elements[0].Bst.Kind)
+	}
+	if g.Elements[0].OverrideBuildDir == "" {
+		t.Fatalf("after override OverrideBuildDir unset")
+	}
+
+	binPath := fakeConvertBin(t, tmp)
+	outA := filepath.Join(tmp, "A")
+	if err := writeProjectA(g, outA, binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	bzlA, err := os.ReadFile(filepath.Join(outA, "elements/hello/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, banned := range []string{"genrule(", "cc_library(", "cc_binary("} {
+		if strings.Contains(string(bzlA), banned) {
+			t.Errorf("project A override BUILD should be a no-target marker, got %q in:\n%s", banned, bzlA)
+		}
+	}
+
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outB, "elements/hello/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `cc_binary(`) || !strings.Contains(string(got), `"hello.c"`) {
+		t.Errorf("project B BUILD didn't carry the override's cc_binary:\n%s", got)
+	}
+	// kind:cmake sources still staged so the override's srcs = [...]
+	// references resolve.
+	if _, err := os.Stat(filepath.Join(outB, "elements/hello/hello.c")); err != nil {
+		t.Errorf("source file not staged alongside override: %v", err)
+	}
+}
+
+// TestWriter_BuildFilesDirOverrideSubpackages covers the
+// multi-BUILD case: an override subtree with a top-level
+// BUILD.bazel plus a subpackage BUILD.bazel — both copy
+// across, so project B can host //elements/<name>:top AND
+// //elements/<name>/sub:nested in one element.
+func TestWriter_BuildFilesDirOverrideSubpackages(t *testing.T) {
+	tmp := t.TempDir()
+	bst := filepath.Join(tmp, "multipkg.bst")
+	if err := os.WriteFile(bst, []byte("kind: stack\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	elemOverride := filepath.Join(tmp, "overrides", "multipkg")
+	if err := os.MkdirAll(filepath.Join(elemOverride, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	topBuild := `filegroup(name = "top", visibility = ["//visibility:public"])
+`
+	subBuild := `filegroup(name = "nested", visibility = ["//visibility:public"])
+`
+	helperBzl := `def helper():
+    pass
+`
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
+		[]byte(topBuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elemOverride, "sub", "BUILD.bazel"),
+		[]byte(subBuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elemOverride, "helper.bzl"),
+		[]byte(helperBzl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
+		t.Fatalf("applyBuildFileOverrides: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	if err := writeProjectA(g, filepath.Join(tmp, "A"), binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	top, err := os.ReadFile(filepath.Join(outB, "elements/multipkg/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(top), `name = "top"`) {
+		t.Errorf("top-level override BUILD not in elements/multipkg/BUILD.bazel:\n%s", top)
+	}
+	sub, err := os.ReadFile(filepath.Join(outB, "elements/multipkg/sub/BUILD.bazel"))
+	if err != nil {
+		t.Fatalf("subpackage BUILD not copied: %v", err)
+	}
+	if !strings.Contains(string(sub), `name = "nested"`) {
+		t.Errorf("subpackage override BUILD wrong:\n%s", sub)
+	}
+	if _, err := os.Stat(filepath.Join(outB, "elements/multipkg/helper.bzl")); err != nil {
+		t.Errorf("helper.bzl not copied alongside BUILD: %v", err)
+	}
+}
+
+// TestWriter_BuildFilesDirOverrideShadowsSourceBuild covers
+// the case where the staged source tree already carried a
+// BUILD.bazel (a real kind:bazel-style passthrough tree): the
+// override wins and the source's BUILD doesn't linger next to
+// it. Also covers the BUILD-vs-BUILD.bazel collision: when
+// the source ships `BUILD` and the override ships
+// `BUILD.bazel`, Bazel rejects packages declaring both, so
+// RenderB strips the stale name before the copyTree lands.
+func TestWriter_BuildFilesDirOverrideShadowsSourceBuild(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "BUILD"),
+		[]byte("# stale source BUILD (no .bazel suffix) to verify the strip\n"+
+			"filegroup(name = \"stale\")\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "x.c"),
+		[]byte("int main(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "shadowed.bst")
+	bstBody := "kind: bazel\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	elemOverride := filepath.Join(tmp, "overrides", "shadowed")
+	if err := os.MkdirAll(elemOverride, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	overrideBuild := `load("@rules_cc//cc:defs.bzl", "cc_binary")
+
+cc_binary(
+    name = "shadowed",
+    srcs = ["x.c"],
+    visibility = ["//visibility:public"],
+)
+`
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
+		[]byte(overrideBuild), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
+		t.Fatalf("applyBuildFileOverrides: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	if err := writeProjectA(g, filepath.Join(tmp, "A"), binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outB, "elements/shadowed/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `cc_binary(`) {
+		t.Errorf("override content not present:\n%s", got)
+	}
+	if _, err := os.Stat(filepath.Join(outB, "elements/shadowed/BUILD")); !os.IsNotExist(err) {
+		t.Errorf("stale source BUILD wasn't stripped; would collide with the override's BUILD.bazel: err=%v", err)
+	}
+}
+
+// TestWriter_BuildFilesDirOverrideSubpackageBuildCollision
+// covers the subpackage variant of the BUILD-vs-BUILD.bazel
+// collision strip. The element ships a source tree with a
+// sub/BUILD; the override ships a sub/BUILD.bazel.
+// stripCollidingBuildNames must remove the stale sub/BUILD
+// before the override's copyTree lands, otherwise Bazel
+// would see both names in the sub/ package and reject it at
+// load time. Mirrors the top-level collision case
+// (TestWriter_BuildFilesDirOverrideShadowsSourceBuild) but
+// at one level of nesting — exercising that the strip
+// walks the override tree rather than only checking the
+// package root.
+func TestWriter_BuildFilesDirOverrideSubpackageBuildCollision(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	subSrc := filepath.Join(srcDir, "sub")
+	if err := os.MkdirAll(subSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "BUILD.bazel"),
+		[]byte("# top-level source BUILD (will be shadowed at root by override)\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subSrc, "BUILD"),
+		[]byte("# stale sub-package source BUILD (no .bazel suffix)\n"+
+			"filegroup(name = \"stale_sub\")\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subSrc, "helper.c"),
+		[]byte("int helper(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "withsub.bst")
+	bstBody := "kind: bazel\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	elemOverride := filepath.Join(tmp, "overrides", "withsub")
+	if err := os.MkdirAll(filepath.Join(elemOverride, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(elemOverride, "BUILD.bazel"),
+		[]byte("filegroup(name = \"top\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	subOverride := `load("@rules_cc//cc:defs.bzl", "cc_library")
+
+cc_library(
+    name = "helper",
+    srcs = ["helper.c"],
+    visibility = ["//visibility:public"],
+)
+`
+	if err := os.WriteFile(filepath.Join(elemOverride, "sub", "BUILD.bazel"),
+		[]byte(subOverride), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	if err := applyBuildFileOverrides(g, filepath.Join(tmp, "overrides")); err != nil {
+		t.Fatalf("applyBuildFileOverrides: %v", err)
+	}
+	binPath := fakeConvertBin(t, tmp)
+	if err := writeProjectA(g, filepath.Join(tmp, "A"), binPath); err != nil {
+		t.Fatalf("writeProjectA: %v", err)
+	}
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
+	}
+	// Override's sub/BUILD.bazel landed.
+	subBzl, err := os.ReadFile(filepath.Join(outB, "elements/withsub/sub/BUILD.bazel"))
+	if err != nil {
+		t.Fatalf("override sub/BUILD.bazel not copied: %v", err)
+	}
+	if !strings.Contains(string(subBzl), `cc_library(`) {
+		t.Errorf("subpackage override content wrong:\n%s", subBzl)
+	}
+	// Stale source-shipped sub/BUILD was stripped.
+	if _, err := os.Stat(filepath.Join(outB, "elements/withsub/sub/BUILD")); !os.IsNotExist(err) {
+		t.Errorf("stale source sub/BUILD wasn't stripped; would collide with override's sub/BUILD.bazel: err=%v", err)
+	}
+	// Source-shipped helper.c still staged under sub/ (the override
+	// references it via srcs = ["helper.c"]).
+	if _, err := os.Stat(filepath.Join(outB, "elements/withsub/sub/helper.c")); err != nil {
+		t.Errorf("source sub/helper.c not staged: %v", err)
+	}
+}
+
+// TestWriter_BuildFilesDirOverrideMissingDoesNothing covers
+// the no-override path: --build-files-dir set but no matching
+// per-element subtree means the element renders under its
+// declared kind unchanged.
+func TestWriter_BuildFilesDirOverrideMissingDoesNothing(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "BUILD.bazel"),
+		[]byte("# original BUILD from the source tree\nfilegroup(name = \"keep\")\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	bst := filepath.Join(tmp, "untouched.bst")
+	bstBody := "kind: bazel\nsources:\n- kind: local\n  path: " + srcDir + "\n"
+	if err := os.WriteFile(bst, []byte(bstBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overrideDir := filepath.Join(tmp, "overrides")
+	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A subdirectory exists for a *different* name — make sure
+	// applyBuildFileOverrides doesn't accidentally treat any
+	// stray dir as a match.
+	if err := os.MkdirAll(filepath.Join(overrideDir, "someOther"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g, err := loadGraph([]string{bst}, "")
+	if err != nil {
+		t.Fatalf("loadGraph: %v", err)
+	}
+	if err := applyBuildFileOverrides(g, overrideDir); err != nil {
+		t.Fatalf("applyBuildFileOverrides: %v", err)
+	}
+	if g.Elements[0].OverrideBuildDir != "" {
+		t.Errorf("OverrideBuildDir should be unset when no override exists, got %q",
+			g.Elements[0].OverrideBuildDir)
+	}
+	if g.Elements[0].Bst.Kind != "bazel" {
+		t.Errorf("Kind should stay at declared value, got %q", g.Elements[0].Bst.Kind)
+	}
+}
+
 // TestWriter_ImportElementShape covers kind:import: project-A
 // no-target marker; project-B source tree staged verbatim plus a
 // filegroup over glob("**/*", exclude=["BUILD.bazel"]).

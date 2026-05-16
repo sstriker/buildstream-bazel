@@ -328,6 +328,21 @@ type element struct {
 	// handler can identify option-typed dispatch variables in
 	// (?): branches and look up their value spaces.
 	ProjectConfOptions map[string]bstOption
+
+	// OverrideBuildDir is the absolute path to an operator-
+	// supplied directory whose contents replace whatever the
+	// element's declared kind would otherwise render in project
+	// B. Set by main() after loadGraph when --build-files-dir
+	// is in play and the directory contains
+	// <elem.Name>/BUILD.bazel (or <elem.Name>/BUILD). Non-empty
+	// implies the element's Bst.Kind has been re-stamped to
+	// "bazel" — the override is the kind:bazel handler's
+	// contract, so all downstream dispatch sees a uniform kind
+	// regardless of the element's original declaration. The
+	// entire subtree under this directory copies on top of the
+	// element's staged sources, so operators can author
+	// subpackage BUILDs, drop in .bzl helpers, etc.
+	OverrideBuildDir string
 }
 
 // graph is the loaded set of elements with cross-references resolved.
@@ -386,6 +401,7 @@ func main() {
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
 	pyprojectFallback := flag.Bool("pyproject-fallback", false, "optional: per-element auto-detection. When set (alongside --convert-element-pyproject), write-a probes each element's pyproject.toml at render time (running the converter with --probe) and emits the pipeline-shape coarse install genrule for any element whose probe doesn't return exit 0. That covers typed Tier-1 refusals (the native render would refuse), CLI/usage errors (exit 64), untyped Tier-2 errors (exit 65 — filesystem issues, malformed imports manifest), spawn failures (binary missing / wrong arch), and timeouts (probe hung past the per-element deadline). Operators see per-element refusal reasons on stderr; refused elements are still install_tree.tar-shaped (no per-target Bazel labels, but the element builds).")
+	buildFilesDir := flag.String("build-files-dir", "", "optional: directory of operator-supplied per-element BUILD overrides. For each element <name>, if the directory contains <name>/BUILD.bazel (or <name>/BUILD), write-a re-stamps the element as kind:bazel and copies the entire <name>/ subtree on top of project B's elements/<name>/ — overriding whatever the element's declared kind would otherwise render. Sources still stage first so the operator's BUILD can reference them via srcs=[...]; the override tree shadows any colliding files. The directory layout (rather than a flat <name>.BUILD.bazel file) lets one element ship multiple BUILDs — top-level plus subpackages — and drop in .bzl helpers, defs files, etc. alongside. Lets operators hand-author BUILDs for elements whose declared kind (kind:cmake, kind:autotools, ...) doesn't yet convert cleanly without changing the .bst files. Caveat: the kind:bazel re-stamp also skips whatever project-A wiring the original kind would have set up — kind:cmake's converter genrule doesn't fire, so cross-element bundle channels like :<elem>_cmake_config_bundle aren't synthesized for this element. Operators overriding a kind that consumes dep bundles need to wire equivalent staging inside the override BUILD by hand.")
 	flag.Parse()
 
 	if *bstRoot != "" {
@@ -664,6 +680,15 @@ func main() {
 	g, err := loadGraph(bstPaths, *sourceCache)
 	if err != nil {
 		log.Fatalf("load graph: %v", err)
+	}
+	if *buildFilesDir != "" {
+		absDir, err := filepath.Abs(*buildFilesDir)
+		if err != nil {
+			log.Fatalf("resolve --build-files-dir: %v", err)
+		}
+		if err := applyBuildFileOverrides(g, absDir); err != nil {
+			log.Fatalf("apply --build-files-dir overrides: %v", err)
+		}
 	}
 	for _, elem := range g.Elements {
 		if _, ok := handlers[elem.Bst.Kind]; !ok {
@@ -982,6 +1007,67 @@ func loadGraph(bstPaths []string, sourceCache string) (*graph, error) {
 	}
 	g.Elements = sorted
 	return g, nil
+}
+
+// applyBuildFileOverrides scans dir for per-element BUILD-tree
+// overrides and, for every element with a matching entry,
+// re-stamps the element's kind to "bazel" and records the
+// override directory so bazelHandler.RenderB copies its
+// contents over the staged sources.
+//
+// Layout: dir mirrors the element-name space. An override for
+// element <name> is a subtree at <dir>/<name>/ whose top-level
+// declares a BUILD.bazel (preferred) or BUILD — that's the
+// trigger. The entire <dir>/<name>/ subtree gets copied on top
+// of the element's staged sources, so the operator can author
+// subpackage BUILDs (<dir>/<name>/sub/BUILD.bazel maps to
+// elements/<name>/sub/BUILD.bazel in project B) and drop in
+// .bzl helpers or data files alongside. Nested element names
+// (project-relative paths under a project.conf — e.g.
+// "components/foo") resolve to <dir>/components/foo/.
+//
+// The override is a kind:bazel re-stamp, not a side channel.
+// Source resolution already happened during loadGraph using
+// the declared kind's NeedsSources() answer — kind:cmake /
+// kind:autotools / etc. trees are resolved as kind:local, so
+// bazelHandler.RenderB's stageAllSources reaches them and the
+// operator's BUILD can reference them via srcs = [...].
+// NeedsSources()==false kinds (kind:stack / kind:filter /
+// kind:compose) have no Sources to stage; the override subtree
+// is the only output, which is what an operator hand-composing
+// a filegroup over deps would want anyway.
+//
+// Subtree-overlap caveat: if two element names overlap as
+// path prefixes (e.g. "foo" and "foo/bar"), <dir>/foo/'s
+// subtree includes <dir>/foo/bar/, and "foo"'s override would
+// copy bar/'s files into elements/foo/bar/. BuildStream
+// rarely has overlapping element names, but operators
+// authoring overrides for such graphs need to structure their
+// dir so subtrees don't leak. Not enforced.
+func applyBuildFileOverrides(g *graph, dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("--build-files-dir %q: %w", dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("--build-files-dir %q is not a directory", dir)
+	}
+	for _, elem := range g.Elements {
+		elemDir := filepath.Join(dir, elem.Name)
+		var hasTopBuild bool
+		for _, name := range []string{"BUILD.bazel", "BUILD"} {
+			if st, err := os.Stat(filepath.Join(elemDir, name)); err == nil && !st.IsDir() {
+				hasTopBuild = true
+				break
+			}
+		}
+		if !hasTopBuild {
+			continue
+		}
+		elem.OverrideBuildDir = elemDir
+		elem.Bst.Kind = "bazel"
+	}
+	return nil
 }
 
 func topoSort(elems []*element) ([]*element, error) {
@@ -2034,9 +2120,10 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// copyTree recursively copies src to dst. Symlinks resolve to their
-// targets (they're rare in kind:local trees and Phase 1 doesn't need
-// to preserve them).
+// copyTree recursively copies src to dst. Symlinks are preserved
+// as symlinks (kind:import elements shipping dangling-on-disk
+// bootstrap symlinks rely on this; see the per-entry comment
+// inside the walk).
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
