@@ -116,7 +116,7 @@ if ! "$bin_dir/convert-element-cmake" \
     --out-build="$throwaway_build" \
     --out-cmake-configure-reads="$elem_dir/cmake-reads.json" \
     >"$convert_log" 2>&1; then
-    # check-tools (the Makefile dep for e2e-audit-narrowing)
+    # check-cmake-toolchain (the Makefile dep for e2e-audit-narrowing)
     # already validates the cmake / ninja / bwrap prereqs
     # this convert-element-cmake invocation needs, so a non-zero
     # exit here is a real regression — propagate it rather
