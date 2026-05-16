@@ -73,25 +73,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install bwrap + pinned cmake (ninja is pre-installed)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
-          # Ubuntu 24.04 restricts unprivileged user namespaces by default
-          # (kernel + AppArmor profile). Rather than fight the layers,
-          # setuid bwrap so it creates the namespace as root. Acceptable for
-          # CI; production REAPI workers don't go through this code path.
-          sudo chmod u+s "$(command -v bwrap)"
-          # Install the cmake version this repo pins (Makefile's
-          # CMAKE_VERSION) to /usr/local — the runner ships 3.31.6 in
-          # /usr/bin, but the orchestrator's defaultPlatform asserts
-          # 3.28.3 and the worker image installs that same pin. Using
-          # the runner's cmake meant converter behavior on cmake 3.31+
-          # only fired in CI, never local dev.
-          sudo env PREFIX=/usr/local tools/install-pinned-cmake.sh
-          cmake --version | head -1
-          ninja --version
-          bwrap --version 2>&1 | head -1
+      - uses: ./.github/actions/install-cmake-toolchain
 
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
@@ -163,16 +145,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install bwrap + pinned cmake + bazelisk
+      - uses: ./.github/actions/install-cmake-toolchain
+
+      - name: Install bazelisk
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
-          sudo chmod u+s "$(command -v bwrap)"
-          # Same pinned-cmake reasoning as the cmake-e2e job: don't
-          # let the runner's stock cmake (3.31.6) shadow the version
-          # the orchestrator's defaultPlatform asserts.
-          sudo env PREFIX=/usr/local tools/install-pinned-cmake.sh
-          cmake --version | head -1
           curl -L --fail -o /tmp/bazelisk \
             https://github.com/bazelbuild/bazelisk/releases/download/v1.20.0/bazelisk-linux-amd64
           sudo install -m 0755 /tmp/bazelisk /usr/local/bin/bazelisk
@@ -316,20 +292,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Install bwrap + cmake ${{ env.CMAKE_LATEST_VERSION }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
-          sudo chmod u+s "$(command -v bwrap)"
-          # Override CMAKE_VERSION so install-pinned-cmake.sh
-          # fetches the 4.x tarball instead of the Makefile pin.
-          # Installs to /usr/local/bin, shadowing the runner's
-          # stock /usr/bin/cmake.
-          sudo env PREFIX=/usr/local CMAKE_VERSION="${CMAKE_LATEST_VERSION}" \
-            tools/install-pinned-cmake.sh
-          cmake --version | head -1
-          ninja --version
-          bwrap --version 2>&1 | head -1
+      - uses: ./.github/actions/install-cmake-toolchain
+        with:
+          cmake_version: ${{ env.CMAKE_LATEST_VERSION }}
 
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
