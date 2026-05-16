@@ -195,14 +195,24 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// the trace keeps the literal `$<...>` so
 		// resolveTemplatePath / os.ReadFile would just fail
 		// on the bogus path and we'd fall back to legacy
-		// without the audit signal. Catch the arg-level
-		// genex up front so the same cmake-codegen-file-
-		// generate-genex tag rides along on the legacy
-		// fallback, matching the body-level check below.
+		// without the audit signal. Try the (a) evaluator
+		// first — symmetric to the OUTPUT-side resolution
+		// path in recoverFileGenerate. The same Context the
+		// body lift consults drives INPUT-arg resolution; on
+		// a clean resolve, the literal becomes the on-disk
+		// template path and we continue down the normal lift
+		// pipeline. UnsupportedError / empty Context routes
+		// to the legacy fallback with the
+		// cmake-codegen-file-generate-genex audit tag (same
+		// exit as the pre-evaluator gate).
 		if hasGenex([]byte(call.Input)) {
-			genexLegacy := legacy
-			genexLegacy.Tags = fileGenerateTags(false, true, false, false)
-			return genexLegacy
+			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars))
+			if !ok {
+				genexLegacy := legacy
+				genexLegacy.Tags = fileGenerateTags(false, true, false, false)
+				return genexLegacy
+			}
+			call.Input = resolved
 		}
 		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 		if !ok {
@@ -253,14 +263,14 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	//      rendered output content-load-bearing in srckey, no
 	//      Bazel-time re-evaluation.
 	//
-	// INPUT-arg genex (line ~193 above) bypasses this path
-	// entirely — without a resolvable on-disk template there's
-	// nothing for either lift to anchor against. OUTPUT-side
-	// genex is dropped before this function runs
-	// (recoverFileGenerate's hasGenex(call.Output) gate); the
-	// (a)-shape will eventually cover it via convert-time
-	// OUTPUT resolution but that's a separate change tracked
-	// in ROADMAP.
+	// INPUT-arg genex and OUTPUT-side genex are resolved at
+	// convert time (above and in recoverFileGenerate
+	// respectively) via the same (a) evaluator and Context
+	// the body lift consults — by the time control reaches
+	// here, both `call.Input` and the upstream `call.Output`
+	// are already literal paths if their genexes could
+	// resolve. The body-side decision below is purely about
+	// the template's content.
 	if hasGenex(templateBody) {
 		ctx := buildGenexContext(cmakeVars)
 		if nodes, err := genexeval.Parse(templateBody); err == nil {

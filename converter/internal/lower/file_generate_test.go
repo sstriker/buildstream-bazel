@@ -639,6 +639,74 @@ func TestRecoverFileGenerate_OutputSideGenexEmptyContextDropped(t *testing.T) {
 	}
 }
 
+// TestRecoverFileGenerate_InputArgGenexResolved covers the
+// (a)-shape INPUT-arg resolution: a call recorded as
+// `INPUT $<CONFIG>/foo.in` is resolved at convert time
+// against the same Context the body lift consults, the
+// resolved literal becomes the on-disk template path, and
+// the genrule lifts normally with srcs pointing at the
+// resolved template.
+func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
+	template := "#define BANNER \"hi\"\n"
+	rendered := []byte("#define BANNER \"hi\"\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "Release/banner.h.in", template, "banner.h", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		// Trace records the literal `$<CONFIG>` in INPUT.
+		Input:    filepath.Join(hostSrc, "$<CONFIG>", "banner.h.in"),
+		Output:   filepath.Join(hostBuild, "banner.h"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if len(g.Srcs) != 1 || g.Srcs[0] != "Release/banner.h.in" {
+		t.Errorf("srcs: %v want [Release/banner.h.in]", g.Srcs)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("lifted tag missing: %v", g.Tags)
+	}
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+		t.Errorf("resolved INPUT-arg genex should NOT carry the legacy-fallback tag; got %v", g.Tags)
+	}
+}
+
+// TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy
+// covers the fallthrough: $<TARGET_FILE:foo> in INPUT can't be
+// resolved by the (a) evaluator, so the lifter retains the
+// pre-evaluator behaviour — legacy fallback with the
+// cmake-codegen-file-generate-genex audit tag.
+func TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy(t *testing.T) {
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", "x\n", "b.h", []byte("x\n"))
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Input:    filepath.Join(hostSrc, "$<TARGET_FILE:foo>"),
+		Output:   filepath.Join(hostBuild, "b.h"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("unresolved INPUT-arg genex should NOT lift; got %v", g.Tags)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+		t.Errorf("expected legacy-fallback tag; got %v", g.Tags)
+	}
+}
+
 // TestRecoverFileGenerate_LegacyWhenLiftDisabled covers the
 // pre-lift compatibility shape: --lift-configure-file=false
 // keeps every file(GENERATE) on the legacy bytes-embedded
