@@ -119,20 +119,6 @@ transition cleanly.
   TARGET_FILE since it's all convert-time (no Bazel-label
   resolution needed).
 
-- **Per-target genex evaluator (TARGET_PROPERTY,
-  TARGET_FILE).** The (a) v1 evaluator typed-refuses target-
-  evaluator-dependent ops — the lifter falls back to (b) /
-  legacy. Extending the evaluator to read already-captured
-  target properties from the fileapi codemodel would lift
-  templates using `$<TARGET_PROPERTY:t,p>` and similar. The
-  fileapi already exposes per-target compile-options /
-  include-directories / link-libraries; threading those into
-  `genexeval.Context` (e.g., as a `Targets map[string]TargetInfo`
-  field) is straightforward. `$<TARGET_FILE:t>` requires the
-  Bazel-time output path of the target's build, which is
-  build-system-dependent and harder — likely stays refused for
-  the foreseeable future.
-
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
   available to the action at exec time without it being in the AC
@@ -652,8 +638,9 @@ transition cleanly.
   srcs entry. Tags split lifted vs legacy via
   `cmake-codegen-lifted` and call out the genex fallback via
   `cmake-codegen-file-generate-genex` so the audit can find the
-  set the future "Generator-expression evaluation in lifted
-  genrules" Later bullet targets. Render gate:
+  templates the genex-evaluator follow-ups (since landed as
+  the (a)/(b) shapes; see Done bullets above) addressed.
+  Render gate:
   `scripts/meta-file-generate.sh`. Fixture:
   `converter/testdata/sample-projects/file-generate/`.
 
