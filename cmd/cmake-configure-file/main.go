@@ -135,6 +135,7 @@ func (o *optionalString) Set(s string) error {
 
 func main() {
 	valuesPath := flag.String("values", "", "path to JSON file containing the {VAR: value, ...} substitution map. Required.")
+	genexValuesPath := flag.String("genex-values", "", "optional: path to JSON file mapping each top-level `$<...>` literal in the template to its cmake-resolved bytes (the captured-at-convert-time \"structured base64\" lift's payload). Applied AFTER --values substitution; literal replacement, not recursive evaluation. Empty (default) skips the genex-replay step, matching the configure_file lift's behaviour where templates carry no genexes.")
 	var contentBase64 optionalString
 	flag.Var(&contentBase64, "content-base64", "base64-encoded inline template body (mutually exclusive with the positional <input> path). Used by file(GENERATE CONTENT ...) lifts where the template has no on-disk srcs anchor. An explicit `--content-base64=` (empty value) is treated as the literal empty template — distinct from omitting the flag.")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
@@ -187,7 +188,7 @@ func main() {
 	if hasInputPath {
 		inPath = args[0]
 	}
-	if err := run(*valuesPath, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
+	if err := run(*valuesPath, *genexValuesPath, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
@@ -222,7 +223,7 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 // suspiciously well-formed output that masks the bug) or
 // both set (which is ambiguous about which template source
 // wins).
-func run(valuesPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
+func run(valuesPath, genexValuesPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
 	switch {
 	case inPath == "" && !hasContent:
 		return fmt.Errorf("internal: neither inPath nor hasContent set; main's CLI gate should have rejected this argv")
@@ -246,6 +247,28 @@ func run(valuesPath, inPath string, hasContent bool, content, outPath string, op
 		}
 	}
 	rendered := configurefile.Substitute(tmpl, values, opts)
+	if genexValuesPath != "" {
+		// The genex-replay step runs AFTER Substitute. For the
+		// file(GENERATE) lifts that exercise this path, Substitute
+		// is a verbatim copy (CopyOnly + empty values), so the
+		// order doesn't matter byte-wise — applyGenexValues
+		// receives the template content untouched. Keeping the
+		// order explicit (Substitute first, then genex replay)
+		// matches cmake's own pipeline: cmake substitutes
+		// @VAR@/${VAR}/#cmakedefine first, then evaluates `$<...>`
+		// against the substituted text — so if a future lift
+		// activates both substitution AND a genex-values payload
+		// on the same call, the byte order matches what cmake
+		// would produce.
+		gv, err := loadGenexValues(genexValuesPath)
+		if err != nil {
+			return fmt.Errorf("load genex values %s: %w", genexValuesPath, err)
+		}
+		rendered, err = applyGenexValuesAtRuntime(rendered, gv)
+		if err != nil {
+			return fmt.Errorf("apply genex values: %w", err)
+		}
+	}
 	if err := os.WriteFile(outPath, rendered, 0o644); err != nil {
 		return fmt.Errorf("write output %s: %w", outPath, err)
 	}
@@ -268,4 +291,99 @@ func loadValues(path string) (map[string]string, error) {
 		values = map[string]string{}
 	}
 	return values, nil
+}
+
+// loadGenexValues reads a JSON map of `$<...>` literals to
+// their cmake-resolved bytes. Mirrors loadValues's shape — a
+// flat string→string map — except the keys carry the full
+// genex literal (including the `$<` and `>` bookends). Mapped
+// values are the raw bytes cmake emitted for that genex at
+// generate-time; the genex-replay step substitutes them literally
+// at Bazel time without re-evaluating any genex grammar.
+//
+// Empty JSON object (no entries) is valid: it just means the
+// caller staged an empty payload, which makes the replay a no-op.
+// `null` is normalized to empty for the same null-tolerance
+// reason loadValues applies.
+func loadGenexValues(path string) (map[string]string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var values map[string]string
+	if err := json.Unmarshal(body, &values); err != nil {
+		return nil, fmt.Errorf("parse JSON: %w", err)
+	}
+	if values == nil {
+		values = map[string]string{}
+	}
+	return values, nil
+}
+
+// applyGenexValuesAtRuntime is the Bazel-time complement of
+// converter/internal/lower's applyGenexValues. It walks
+// rendered's top-level `$<...>` blocks (using the same depth-
+// aware scanner the lifter uses at capture time) and replaces
+// each with its mapped value. The function is duplicated rather
+// than imported so cmake-configure-file stays a leaf binary
+// without a converter dependency.
+func applyGenexValuesAtRuntime(rendered []byte, values map[string]string) ([]byte, error) {
+	ranges := topLevelGenexes(rendered)
+	if len(ranges) == 0 {
+		// No genex to replace — template already final.
+		return rendered, nil
+	}
+	var out []byte
+	out = make([]byte, 0, len(rendered))
+	pos := 0
+	for _, r := range ranges {
+		out = append(out, rendered[pos:r.start]...)
+		literal := string(rendered[r.start:r.end])
+		val, ok := values[literal]
+		if !ok {
+			return nil, fmt.Errorf("no value for genex %q (the values JSON staged at lift time is missing a literal the template carries)", literal)
+		}
+		out = append(out, val...)
+		pos = r.end
+	}
+	out = append(out, rendered[pos:]...)
+	return out, nil
+}
+
+// topLevelGenexes mirrors converter/internal/lower's
+// topLevelGenexes (depth-aware scan of `$<...>` blocks).
+// Duplicated rather than imported so cmake-configure-file stays
+// a leaf binary; the algorithm is small, unit-tested on both
+// sides, and pure data.
+func topLevelGenexes(s []byte) []struct{ start, end int } {
+	var ranges []struct{ start, end int }
+	i := 0
+	for i < len(s) {
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '<' {
+			start := i
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				switch {
+				case j+1 < len(s) && s[j] == '$' && s[j+1] == '<':
+					depth++
+					j += 2
+				case s[j] == '>':
+					depth--
+					j++
+				default:
+					j++
+				}
+			}
+			if depth == 0 {
+				ranges = append(ranges, struct{ start, end int }{start, j})
+				i = j
+				continue
+			}
+			i++
+			continue
+		}
+		i++
+	}
+	return ranges
 }

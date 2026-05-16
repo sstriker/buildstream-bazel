@@ -2,6 +2,7 @@ package lower
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -189,6 +190,170 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 	}
 	if !strings.Contains(g.GenruleCmd, "base64 -d") {
 		t.Errorf("legacy cmd should base64-decode rendered bytes; got %q", g.GenruleCmd)
+	}
+}
+
+// TestRecoverFileGenerate_GenexLiftedViaStructuredBase64
+// exercises the (b) lift's success path: a template with a
+// configure-time-resolvable `$<...>` whose static surround
+// uniquely identifies the genex's rendered span. The lifter
+// extracts the genex literal → resolved bytes map and emits
+// the lifted shape; the cmd carries --genex-values=<sidecar>
+// alongside the existing --values=<sidecar>, and the audit
+// tag set carries BOTH cmake-codegen-lifted AND
+// cmake-codegen-file-generate-genex-lifted so the audit can
+// distinguish "lifted via the (b) capture" from "lifted via
+// plain non-genex emit". The rendered bytes do NOT appear in
+// the cmd (the (b) shape's whole point: rendered output is
+// no longer content-load-bearing in srckey).
+func TestRecoverFileGenerate_GenexLiftedViaStructuredBase64(t *testing.T) {
+	template := "// config: $<CONFIG:Release>\n#define IS_LINUX $<PLATFORM_ID:Linux>\n"
+	rendered := []byte("// config: 1\n#define IS_LINUX 1\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("expected one genrule; got %d", len(cc.Genrules))
+	}
+	g := cc.Genrules[0]
+	for _, want := range []string{
+		"cmake-codegen-lifted",
+		"cmake-codegen-file-generate-genex-lifted",
+	} {
+		if !hasTag(g.Tags, want) {
+			t.Errorf("missing tag %q in %v", want, g.Tags)
+		}
+	}
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+		t.Errorf("(b)-lifted shape should NOT carry the legacy-fallback genex tag; got %v", g.Tags)
+	}
+	if len(g.Srcs) != 1 || g.Srcs[0] != "src/g.in" {
+		t.Errorf("INPUT-form lift should stage the template as srcs; got %v", g.Srcs)
+	}
+	if !strings.Contains(g.GenruleCmd, "--genex-values=") {
+		t.Errorf("cmd should pass --genex-values=; got %q", g.GenruleCmd)
+	}
+	// Decode the staged values + genex-values blobs from the cmd
+	// to verify the lift's captured payload is the right shape.
+	for _, marker := range []string{
+		"GENEX_VALUES=",
+		"cmake-configure-file.genex.XXXXXX",
+		"//tools:cmake-configure-file",
+	} {
+		if !strings.Contains(g.GenruleCmd, marker) {
+			t.Errorf("cmd missing marker %q; got %q", marker, g.GenruleCmd)
+		}
+	}
+	// Soundness: rendered bytes must NOT appear in the cmd.
+	// The (b) lift's whole win is that rendered output is no
+	// longer carried byte-for-byte in BUILD.bazel.
+	rendEnc := base64.StdEncoding.EncodeToString(rendered)
+	if strings.Contains(g.GenruleCmd, rendEnc) {
+		t.Errorf("rendered bytes appear in cmd as base64 (%s); the (b) lift should NOT embed them", rendEnc)
+	}
+	// The captured genex-values payload must round-trip.
+	values, ok := extractGenexValuesFromCmd(t, g.GenruleCmd)
+	if !ok {
+		return // extractor already failed the test
+	}
+	want := map[string]string{
+		"$<CONFIG:Release>":    "1",
+		"$<PLATFORM_ID:Linux>": "1",
+	}
+	if len(values) != len(want) {
+		t.Errorf("captured genex values: got %d entries, want %d (%#v)", len(values), len(want), values)
+	}
+	for k, v := range want {
+		if got := values[k]; got != v {
+			t.Errorf("genex value for %q: got %q, want %q", k, got, v)
+		}
+	}
+}
+
+// extractGenexValuesFromCmd decodes the base64 blob the lifted
+// shell command stages into the GENEX_VALUES sidecar. The blob
+// sits between `echo ` and ` | base64 -d > "$$GENEX_VALUES"`
+// in the cmd — same pattern the lifter uses for the regular
+// VALUES sidecar. Returns the decoded map plus a sentinel for
+// extractor-level failures so the calling test can short-
+// circuit cleanly.
+func extractGenexValuesFromCmd(t *testing.T, cmd string) (map[string]string, bool) {
+	t.Helper()
+	const before = `echo `
+	const after = ` | base64 -d > "$$GENEX_VALUES"`
+	a := strings.Index(cmd, after)
+	if a < 0 {
+		t.Errorf("cmd missing GENEX_VALUES base64-decode pattern")
+		return nil, false
+	}
+	// Walk backward from `a` to find the matching `echo ` prefix.
+	// Multiple `echo ... | base64 -d` blocks coexist (VALUES +
+	// GENEX_VALUES); pair the GENEX_VALUES output redirect with
+	// the nearest preceding `echo `.
+	b := strings.LastIndex(cmd[:a], before)
+	if b < 0 {
+		t.Errorf("cmd's GENEX_VALUES decode pattern has no echo prefix")
+		return nil, false
+	}
+	enc := cmd[b+len(before) : a]
+	raw, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		t.Errorf("decode genex base64 blob %q: %v", enc, err)
+		return nil, false
+	}
+	var values map[string]string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Errorf("parse genex JSON %s: %v", raw, err)
+		return nil, false
+	}
+	return values, true
+}
+
+// TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy
+// pins the (b) lift's failure mode. The template's genex
+// value contains the next static anchor's bytes verbatim, so
+// the lockstep walker mis-aligns and extraction returns an
+// error. The lifter must fall back to the legacy bytes-
+// embedded shape with cmake-codegen-file-generate-genex
+// (NOT the -lifted variant), so the audit signal stays
+// honest.
+func TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy(t *testing.T) {
+	// Construct a template+rendered pair where the same genex
+	// literal resolves to two different rendered values. The
+	// (b) lift's literal-replace replay can't represent that
+	// (one key → one value); extractor's collision check
+	// rejects with "resolves to two different values", and the
+	// lifter falls back to legacy.
+	template := "first=$<CONFIG> second=$<CONFIG>\n"
+	rendered := []byte("first=Release second=Debug\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("extraction failure should fall back to legacy; got lifted tag in %v", g.Tags)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+		t.Errorf("legacy fallback after extraction failure must carry the genex audit tag; got %v", g.Tags)
+	}
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
+		t.Errorf("extraction-failure fallback must NOT carry the lifted-genex tag; got %v", g.Tags)
 	}
 }
 

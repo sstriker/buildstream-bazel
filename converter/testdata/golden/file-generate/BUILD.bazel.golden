@@ -51,12 +51,14 @@ genrule(
 genrule(
     name = "gen_config_tag_h",
     outs = ["config_tag.h"],
-    cmd = "mkdir -p $$(dirname $@) && echo I2RlZmluZSBCVUlMRF9UQUcgIlJlbGVhc2UiCg== | base64 -d > $@",
+    cmd = "mkdir -p \"$$(dirname \"$@\")\" && VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.values.XXXXXX\")\" && echo e30= | base64 -d > \"$$VALUES\" && GENEX_VALUES=\"$$(mktemp \"$$(dirname \"$@\")/cmake-configure-file.genex.XXXXXX\")\" && echo eyIkXHUwMDNjQ09ORklHXHUwMDNlIjoiUmVsZWFzZSJ9 | base64 -d > \"$$GENEX_VALUES\" && $(location //tools:cmake-configure-file) --copy-only --genex-values=\"$$GENEX_VALUES\" --values=\"$$VALUES\" --content-base64=I2RlZmluZSBCVUlMRF9UQUcgIiQ8Q09ORklHPiIK \"$@\" ; rc=$$?; [ -n \"$${VALUES:-}\" ] && rm -f \"$$VALUES\"; [ -n \"$${GENEX_VALUES:-}\" ] && rm -f \"$$GENEX_VALUES\"; exit $$rc",
     tags = [
         "cmake-codegen",
         "cmake-codegen-driver=file_generate",
         "cmake-codegen-file-generate",
-        "cmake-codegen-file-generate-genex",
+        "cmake-codegen-file-generate-genex-lifted",
+        "cmake-codegen-lifted",
     ],
+    tools = ["//tools:cmake-configure-file"],
     visibility = ["//visibility:private"],
 )  # keep

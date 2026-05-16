@@ -1,0 +1,216 @@
+package lower
+
+import (
+	"bytes"
+	"fmt"
+)
+
+// topLevelGenexes returns the byte ranges of each top-level
+// `$<...>` block in s, ordered by appearance. A "top-level"
+// genex is one whose `$<` opener doesn't sit inside another
+// `$<...>`; cmake's generator-expression grammar allows
+// arbitrary nesting (e.g. `$<IF:$<CONFIG:Release>,a,b>`), and
+// the structured-base64 extractor only needs the outermost
+// boundaries — the resolved bytes for a nested expression are
+// already collapsed into the parent's resolved value at
+// cmake-render time.
+//
+// Unbalanced `$<` (no matching `>`) is treated as literal text
+// and skipped. The function is byte-faithful: it doesn't decode
+// utf-8 or trim whitespace.
+func topLevelGenexes(s []byte) []genexRange {
+	var ranges []genexRange
+	i := 0
+	for i < len(s) {
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '<' {
+			start := i
+			depth := 1
+			j := i + 2
+			for j < len(s) && depth > 0 {
+				switch {
+				case j+1 < len(s) && s[j] == '$' && s[j+1] == '<':
+					depth++
+					j += 2
+				case s[j] == '>':
+					depth--
+					j++
+				default:
+					j++
+				}
+			}
+			if depth == 0 {
+				ranges = append(ranges, genexRange{start: start, end: j})
+				i = j
+				continue
+			}
+			// Unbalanced — treat as literal text from $ onward.
+			i++
+			continue
+		}
+		i++
+	}
+	return ranges
+}
+
+// genexRange is a half-open byte range [start, end) into a
+// template, covering one top-level $<...> block including the
+// `$<` and the matching `>`.
+type genexRange struct {
+	start, end int
+}
+
+// extractGenexValues aligns a template against its cmake-
+// rendered output to recover, per top-level genex, the bytes
+// the cmake genex evaluator produced. The result maps each
+// genex literal (e.g. `$<CONFIG:Release>`) to its rendered
+// value (e.g. `1`).
+//
+// Algorithm: split the template at top-level genex boundaries,
+// then walk template + rendered in lockstep:
+//
+//   - Static chunks (template text between/around genexes) must
+//     match the corresponding prefix of remaining rendered bytes
+//     verbatim.
+//   - Each genex's resolved value = the rendered span between
+//     the static chunk ending it and the static chunk starting
+//     the next genex.
+//
+// This is the (b) "structured base64" lift's recovery primitive
+// — sidesteps a genex evaluator entirely by trusting cmake's
+// actual output and stitching it back together at Bazel time
+// via literal substitution.
+//
+// Failure modes (all return a non-nil error and route the
+// caller to the legacy bytes-embedded fallback):
+//
+//   - Template has no genex (extractor's contract requires at
+//     least one).
+//   - Static chunks don't align in rendered output (suggests
+//     cmake applied a transform beyond genex evaluation —
+//     `configure_file`-style substitution, an unknown encoding,
+//     etc.).
+//   - Same genex literal resolves to two different values in
+//     the template (rare; would mean the genex is context-
+//     dependent across positions, which v1's literal-replace
+//     replay can't represent).
+//   - Adjacent genexes with no static separator (the algorithm
+//     needs the next static chunk as an anchor to know where
+//     each genex's value ends).
+//
+// On any failure, the caller falls back to the legacy bytes-
+// embedded shape — soundness is preserved at the cost of one
+// more rendered-bytes-in-srckey entry.
+func extractGenexValues(template, rendered []byte) (map[string]string, error) {
+	ranges := topLevelGenexes(template)
+	if len(ranges) == 0 {
+		return nil, fmt.Errorf("template has no top-level genex")
+	}
+	values := map[string]string{}
+	tplPos := 0
+	renPos := 0
+	for i, r := range ranges {
+		// Static prefix between tplPos and the genex's `$<`.
+		prefix := template[tplPos:r.start]
+		if !bytes.HasPrefix(rendered[renPos:], prefix) {
+			return nil, fmt.Errorf("static chunk at template[%d:%d] (%q) does not match rendered[%d:] (%q...)",
+				tplPos, r.start, truncForErr(prefix), renPos, truncForErr(rendered[renPos:]))
+		}
+		renPos += len(prefix)
+
+		literal := string(template[r.start:r.end])
+
+		// Determine the next anchor: the static text immediately
+		// after this genex, up to the next genex (or template
+		// end if this is the last).
+		nextAnchorStart := len(template)
+		if i+1 < len(ranges) {
+			nextAnchorStart = ranges[i+1].start
+		}
+		nextAnchor := template[r.end:nextAnchorStart]
+
+		var valBytes []byte
+		switch {
+		case len(nextAnchor) == 0 && i+1 < len(ranges):
+			// Adjacent genexes: can't disambiguate where the
+			// first ends and the second begins by literal anchor.
+			return nil, fmt.Errorf("genex %q is adjacent to the next genex with no static separator", literal)
+		case len(nextAnchor) == 0:
+			// Last genex, no trailing static: value extends to
+			// the end of rendered.
+			valBytes = rendered[renPos:]
+			renPos = len(rendered)
+		default:
+			idx := bytes.Index(rendered[renPos:], nextAnchor)
+			if idx < 0 {
+				return nil, fmt.Errorf("post-genex anchor %q for %q does not appear in rendered[%d:]",
+					truncForErr(nextAnchor), literal, renPos)
+			}
+			valBytes = rendered[renPos : renPos+idx]
+			renPos += idx
+		}
+
+		if existing, ok := values[literal]; ok && existing != string(valBytes) {
+			return nil, fmt.Errorf("genex %q resolves to two different values: %q and %q",
+				literal, existing, valBytes)
+		}
+		values[literal] = string(valBytes)
+		tplPos = r.end
+	}
+
+	// Tail: rendered bytes after the last genex's value must
+	// equal the static chunk after the last genex (already
+	// consumed as the last `nextAnchor` for non-trailing genexes,
+	// but the last-genex case above sets renPos = len(rendered)
+	// and leaves tplPos at the last genex's `>`; we still need
+	// to verify the trailing static).
+	tail := template[tplPos:]
+	if !bytes.Equal(rendered[renPos:], tail) {
+		return nil, fmt.Errorf("tail bytes after last genex don't match: rendered[%d:]=%q vs template[%d:]=%q",
+			renPos, truncForErr(rendered[renPos:]), tplPos, truncForErr(tail))
+	}
+
+	return values, nil
+}
+
+// applyGenexValues replaces each top-level genex literal in
+// template with its mapped rendered value. The replacement is
+// literal — no syntax parsing, no recursive evaluation. The
+// caller's invariant: values was produced by extractGenexValues
+// (or constructed to match its shape), so every top-level
+// genex in template has a matching key.
+//
+// Returns an error if template contains a top-level genex not
+// present in values (would land a literal `$<...>` in the
+// output — wrong bytes a Bazel consumer would notice). Genex
+// values containing further `$<...>` text are NOT recursively
+// re-substituted; cmake fully evaluates at generate-time so the
+// recovered values never carry literal genex syntax in practice.
+func applyGenexValues(template []byte, values map[string]string) ([]byte, error) {
+	ranges := topLevelGenexes(template)
+	var out bytes.Buffer
+	out.Grow(len(template))
+	pos := 0
+	for _, r := range ranges {
+		out.Write(template[pos:r.start])
+		literal := string(template[r.start:r.end])
+		val, ok := values[literal]
+		if !ok {
+			return nil, fmt.Errorf("no value for genex %q (template has a top-level genex the values dict doesn't cover)", literal)
+		}
+		out.WriteString(val)
+		pos = r.end
+	}
+	out.Write(template[pos:])
+	return out.Bytes(), nil
+}
+
+// truncForErr keeps error messages from dumping multi-KB
+// templates wholesale. 40 bytes is enough to identify the
+// offending span without overwhelming the diagnostic.
+func truncForErr(b []byte) []byte {
+	const cap = 40
+	if len(b) <= cap {
+		return b
+	}
+	return append(append([]byte{}, b[:cap]...), "..."...)
+}

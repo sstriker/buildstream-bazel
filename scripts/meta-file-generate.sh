@@ -10,9 +10,20 @@
 #     configure-file invocation, cmake-codegen-lifted tag.
 #   - CONTENT form, genex-free → lifted with --content-base64,
 #     cmake-codegen-lifted tag.
-#   - CONTENT form with $<...> → legacy bytes-embedded shape,
-#     cmake-codegen-file-generate-genex audit tag, no
-#     cmake-codegen-lifted tag.
+#   - CONTENT form with `$<CONFIG>` (a configure-time-resolvable
+#     genex whose static surround uniquely anchors the resolved
+#     value in cmake's rendered output) → lifted via the (b)
+#     "structured base64" path: cmake-configure-file gets a
+#     --genex-values=<sidecar> JSON dict mapping each top-level
+#     `$<...>` literal to the bytes cmake emitted at generate-
+#     time. Both cmake-codegen-lifted and
+#     cmake-codegen-file-generate-genex-lifted ride on the
+#     genrule's tags. Templates whose genex value can't be
+#     anchored (extractor failure modes — see
+#     converter/internal/lower/genex_extract.go) still fall
+#     back to the legacy bytes-embedded shape, audit-tagged
+#     `cmake-codegen-file-generate-genex` without the `-lifted`
+#     suffix; the unit tests cover that branch.
 #
 # The Go test (TestEmit_FileGenerate_Golden) covers the same
 # round-trip with full byte-stability; this gate exercises the
@@ -52,6 +63,20 @@ if [ ! -f "$out_build" ]; then
 fi
 
 # Required content per lift mode.
+#
+# gen_config_tag_h is the genex-bearing call. After the (b)
+# structured-base64 lift shipped (ROADMAP "Generator-expression
+# evaluation in lifted genrules"), the genex value gets
+# captured-at-convert-time and replayed at Bazel time via
+# --genex-values=<sidecar>; the genrule carries BOTH
+# cmake-codegen-lifted AND the new
+# cmake-codegen-file-generate-genex-lifted facet so audit
+# queries can distinguish "lifted via (b)" from the plain
+# non-genex lift. Templates whose static surround can't anchor
+# the genex value extraction (adjacent genexes, same literal
+# with different resolutions, etc.) still fall back to the
+# legacy cmake-codegen-file-generate-genex shape — covered by
+# the unit tests in converter/internal/lower/file_generate_test.go.
 required=$(cat <<'EOF'
 name = "gen_version_h"
 "src/version.h.in"
@@ -60,7 +85,8 @@ name = "gen_version_h"
 name = "gen_banner_h"
 --content-base64=
 name = "gen_config_tag_h"
-"cmake-codegen-file-generate-genex"
+"cmake-codegen-file-generate-genex-lifted"
+--genex-values=
 EOF
 )
 
@@ -76,15 +102,18 @@ done <<EOF
 $required
 EOF
 
-# Negative: the genex-fallback genrule must NOT carry the
-# lifted tag (otherwise the audit can't distinguish "lifted"
-# from "fell back because of genex").
+# Negative: the (b)-lifted genex genrule must NOT carry the
+# legacy-fallback `cmake-codegen-file-generate-genex` tag —
+# that one means "extraction failed, rendered bytes still in
+# srckey." A successful (b) lift gets the `-lifted` variant
+# only, so an audit query targeting unresolved genex spend
+# (the legacy tag) finds only the real fallbacks.
 if awk '
     /name = "gen_config_tag_h"/ { in_blk = 1 }
     in_blk { print }
     in_blk && /^\)/ { exit }
-' "$out_build" | grep -qF '"cmake-codegen-lifted"'; then
-    echo "gen_config_tag_h must NOT carry cmake-codegen-lifted (it's the genex fallback)" >&2
+' "$out_build" | grep -qE '"cmake-codegen-file-generate-genex"'; then
+    echo "gen_config_tag_h must NOT carry the legacy-fallback cmake-codegen-file-generate-genex tag — the (b) lift should have succeeded for this fixture" >&2
     exit 1
 fi
 
