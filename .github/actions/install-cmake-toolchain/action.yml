@@ -39,7 +39,7 @@ runs:
         # setuid bwrap so it creates the namespace as root. Acceptable
         # for CI; production REAPI workers don't go through this code
         # path.
-        sudo chmod u+s "$(command -v bwrap)"
+        sudo chmod u+s "$(command -v bwrap)"  # CI-only workaround; see block comment above
         # Pin the cmake the orchestrator's defaultPlatform asserts —
         # the runner's stock 3.31.6 in /usr/bin gets shadowed by the
         # /usr/local/bin install. Without the override, converter
