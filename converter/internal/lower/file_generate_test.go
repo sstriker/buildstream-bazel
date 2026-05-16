@@ -545,6 +545,100 @@ func TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty(t *testing.
 	}
 }
 
+// TestRecoverFileGenerate_OutputSideGenexResolved covers the
+// OUTPUT-side (a) resolution path: a call recorded as
+// `OUTPUT $<CONFIG>/foo.h` had its filename resolved at
+// generate-time to `Release/foo.h` (or whatever the active
+// config is); the trace carries the literal string and the
+// rendered output lives at the resolved path. The lifter must
+// resolve the OUTPUT genex via the same Context the body lift
+// uses, then continue down the normal lift path with the
+// resolved rel as `outs = [...]`.
+func TestRecoverFileGenerate_OutputSideGenexResolved(t *testing.T) {
+	template := "// banner\n"
+	rendered := []byte("// banner\n")
+	// The fixture writes the rendered output at the RESOLVED
+	// path on disk — that's what cmake does at generate-time.
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/banner.in", template, "Release/banner.h", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		// Trace records the literal `$<CONFIG>` in OUTPUT.
+		Output:   filepath.Join(hostBuild, "$<CONFIG>", "banner.h"),
+		Input:    filepath.Join(hostSrc, "src/banner.in"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	cc := newCodegenContext()
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 || out[0].RelOutput != "Release/banner.h" {
+		t.Fatalf("outs: %+v; want one entry with rel=Release/banner.h", out)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "Release/banner.h" {
+		t.Errorf("genrule outs: %v want [Release/banner.h]", g.GenruleOuts)
+	}
+}
+
+// TestRecoverFileGenerate_OutputSideGenexUnsupportedDropped
+// asserts the drop behaviour preserves the pre-evaluator
+// gate's contract: an OUTPUT genex the (a) evaluator can't
+// resolve (here $<TARGET_FILE:...>, which always
+// UnsupportedError's) still drops the call. No genrule emitted,
+// no error surfaced — the operator's audit query for the
+// missing file would surface this via the absence of a
+// recovered output rather than via a malformed genrule.
+func TestRecoverFileGenerate_OutputSideGenexUnsupportedDropped(t *testing.T) {
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", "x\n", "Release/b.h", []byte("x\n"))
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "$<TARGET_FILE:foo>"),
+		Input:    filepath.Join(hostSrc, "src/b.in"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	cc := newCodegenContext()
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 0 {
+		t.Errorf("expected no recovered outputs for unresolvable OUTPUT genex; got %+v", out)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("expected no genrules; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecoverFileGenerate_OutputSideGenexEmptyContextDropped
+// covers the no-Context refusal: $<CONFIG> in OUTPUT without
+// CMAKE_BUILD_TYPE in cmakeVars surfaces as UnsupportedError
+// from the evaluator (Context.Config is empty) and the call
+// is dropped, same as before the evaluator existed.
+func TestRecoverFileGenerate_OutputSideGenexEmptyContextDropped(t *testing.T) {
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", "x\n", "Release/b.h", []byte("x\n"))
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "$<CONFIG>", "b.h"),
+		Input:    filepath.Join(hostSrc, "src/b.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	// nil cmakeVars → empty Context → $<CONFIG> refuses → drop.
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 0 || len(cc.Genrules) != 0 {
+		t.Errorf("expected drop on empty Context; got outs=%+v genrules=%+v", out, cc.Genrules)
+	}
+}
+
 // TestRecoverFileGenerate_LegacyWhenLiftDisabled covers the
 // pre-lift compatibility shape: --lift-configure-file=false
 // keeps every file(GENERATE) on the legacy bytes-embedded

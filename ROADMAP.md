@@ -89,20 +89,15 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **OUTPUT-side genex resolution at convert time.** The (a)
-  Go-side evaluator (see Done) handles template-body and
-  CONTENT-form genexes whose ops fall in the configure-time-
-  resolvable subset. OUTPUT-side genex remains dropped by
-  `recoverFileGenerate`'s `hasGenex(call.Output)` gate —
-  resolving the OUTPUT filename via the same evaluator at
-  convert time (the `Context` is already available) and using
-  the resolved literal as the `outRel` would close the OUTPUT-
-  side gap. Same for INPUT-arg genex (`INPUT $<CONFIG>/foo.in`).
-  Small follow-up: ~50 lines in `recoverFileGenerate` to wire
-  the evaluator at the gate, plus a fixture/test pair. Queued
-  behind a real fixture project that exercises OUTPUT-side
-  genex (synthetic is fine; the existing file-generate fixture
-  doesn't carry one).
+- **INPUT-arg genex resolution at convert time.** The OUTPUT-
+  side path now resolves genex filenames via the (a) evaluator
+  (see Done); the symmetric INPUT-arg path
+  (`INPUT $<CONFIG>/foo.in`) still drops the call early — the
+  classify-time genex check on the resolved template path
+  bails before the evaluator gets a chance. Wiring is symmetric
+  to the OUTPUT side: try `resolveGenexInPath(inputArg, ctx)`
+  before the on-disk template read. ~10 LoC + a fixture/test
+  pair.
 
 - **Per-target genex evaluator (TARGET_PROPERTY,
   TARGET_FILE).** The (a) v1 evaluator typed-refuses target-
@@ -142,6 +137,20 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **OUTPUT-side genex resolution at convert time.** The (a)
+  evaluator (below) now also resolves `$<...>` in the
+  file(GENERATE) `OUTPUT` path at convert time. Pre-fix the
+  `recoverFileGenerate` early-gate dropped any call with a
+  genex in OUTPUT entirely (the trace records the literal
+  string and the lifter couldn't anchor against the resolved
+  filename); the evaluator picks up the same `Context` the
+  body lift consults, resolves the path, and the call
+  continues down the normal lift pipeline with the resolved
+  rel as the genrule's `outs`. Refusal modes
+  (`UnsupportedError` from target-dependent ops, empty
+  Context) drop the call the same way the pre-evaluator gate
+  did — soundness preserved.
 
 - **file(GENERATE) genex evaluator via genexeval — (a) shape.**
   New `internal/genexeval` package: Go-side parser + evaluator

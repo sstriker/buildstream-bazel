@@ -59,20 +59,28 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 	seenRel := map[string]bool{}
 	for _, call := range calls {
 		if hasGenex([]byte(call.Output)) {
-			// cmake allows generator expressions in OUTPUT
-			// (e.g. `$<CONFIG>` in the filename) and writes
-			// the resolved filename at generate-time, but the
-			// trace records the literal `$<...>` string —
-			// we have no way to map it back to the on-disk
-			// filename without a genex evaluator. v1 drops
-			// the call as an unsupported shape; the ROADMAP
-			// "Generator-expression evaluation in lifted
-			// genrules" Later bullet covers the path forward.
-			// Same exit shape as the CONTENT/INPUT genex
-			// fallback's audit tag, just at the OUTPUT level
-			// where we can't emit a placeholder either (no
-			// known rel to attach).
-			continue
+			// cmake allows generator expressions in the OUTPUT
+			// path (e.g. `OUTPUT $<CONFIG>/foo.h`) and writes
+			// the resolved filename at generate-time; the trace
+			// records the literal `$<...>` string. Try the (a)
+			// evaluator to resolve OUTPUT at convert time using
+			// the same Context the body lift consults — if
+			// every genex in the path resolves cleanly, replace
+			// call.Output with the resolved literal and continue
+			// down the normal lift path. The evaluator's
+			// UnsupportedError (or a parse error) drops the call
+			// the same way the pre-evaluator gate did. Resolving
+			// OUTPUT at CONVERT time (not Bazel time) is the
+			// right choice: the resolved path becomes the
+			// genrule's `outs = [...]`, which Bazel needs to
+			// know statically — re-evaluating at Bazel time
+			// would require dynamic outputs, which Bazel doesn't
+			// support for genrule.
+			resolved, ok := resolveGenexInPath(call.Output, buildGenexContext(cmakeVars))
+			if !ok {
+				continue
+			}
+			call.Output = resolved
 		}
 		if !filepath.IsAbs(call.Output) {
 			// Relative outputs can't be anchored without
@@ -651,4 +659,36 @@ func marshalGenexContext(ctx genexeval.Context) ([]byte, error) {
 		PlatformID:       ctx.PlatformID,
 		CompilerLanguage: ctx.CompilerLanguage,
 	})
+}
+
+// resolveGenexInPath parses path as a genex-bearing string and
+// evaluates each genex against ctx. Returns (resolved, true) if
+// every genex resolves cleanly (no UnsupportedError, no parse
+// error); (path, false) otherwise — caller drops the call.
+//
+// Used at the OUTPUT-side of file(GENERATE) and INPUT-arg
+// resolution paths where the genex appears in a filename
+// rather than in template body. The evaluator's typed refusal
+// for target-evaluator-dependent ops surfaces here as "false"
+// just like at the body site; the call is dropped (no Bazel
+// shape can carry a Bazel-time-dynamic output filename).
+func resolveGenexInPath(path string, ctx genexeval.Context) (string, bool) {
+	nodes, err := genexeval.Parse([]byte(path))
+	if err != nil {
+		return path, false
+	}
+	out, err := genexeval.Eval(nodes, ctx)
+	if err != nil {
+		return path, false
+	}
+	if hasGenex(out) {
+		// Defensive: a malformed Eval result that still carries
+		// `$<...>` markers can't be used as an output path.
+		// Shouldn't happen with the v1 evaluator (Parse+Eval
+		// either resolves cleanly or returns an error), but the
+		// belt-and-suspenders check avoids a downstream srckey
+		// surprise if a future evaluator extension is buggy.
+		return path, false
+	}
+	return string(out), true
 }
