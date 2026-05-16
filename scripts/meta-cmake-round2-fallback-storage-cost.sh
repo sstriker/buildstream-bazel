@@ -113,6 +113,20 @@ done
 # separate Directory entries the per-target stubs reference).
 # We extract the outs block via awk's range; matches what
 # buildifier renders (one path per line, indented).
+#
+# The awk pattern below parses the **post-buildifier** shape.
+# bazel.Emit routes its template-rendered output through
+# buildtools' Parse + Format pipeline (the same one
+# `buildifier --mode=fix` runs — see
+# converter/emit/bazel/emit.go::canonicalize), which
+# standardises the genrule's multi-line
+# `outs = [\n    "...",\n    ...\n]` layout. If a future
+# converter change reformats this — inlining short lists onto
+# one line, switching to a different indentation, etc. — this
+# awk range stops matching and the count silently drops to 0
+# (the `[ "$extract_outs" -lt 3 ]` floor check below catches it
+# loudly). Mirror any such reformat by adjusting the patterns
+# here too.
 extract_outs=$(awk '
     /name = "_install_tree_extract"/ { in_rule = 1 }
     in_rule && /outs = \[/ { in_outs = 1; next }
