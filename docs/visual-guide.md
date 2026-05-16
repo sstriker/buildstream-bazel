@@ -58,8 +58,7 @@ graph TD
         NINJA["ninja\nbuild.ninja parser\n(genrule recovery)"]
         EMIT["emit/bazel\nIR → BUILD.bazel"]
         IR["ir\nPackage / Target / Source\n/ Genrule / ImportedTarget"]
-        CMAKERUN["cmakerun\nRuns cmake --trace-expand\n+ drops File API stamps"]
-        HERMETIC["hermetic\nbwrap argv builder\n+ env scrubbing"]
+        CMAKERUN["cmakerun\nRuns cmake --trace-expand\n+ drops File API stamps\n+ scrubs env"]
     end
 
     WA --> CAS
@@ -71,7 +70,6 @@ graph TD
     CE --> NINJA
     CE --> EMIT
     CE --> CMAKERUN
-    CE --> HERMETIC
     CE --> SHADOW
     CE --> SYNTH
     LOWER --> IR
@@ -408,7 +406,7 @@ flowchart TB
 
     subgraph CI["GitHub Actions CI"]
         UNIT2["job: unit"]
-        E2E2["job: e2e\n(cmake + bwrap)"]
+        E2E2["job: e2e\n(cmake)"]
         BAZELE2E["job: bazel-e2e\n(bazel build downstream)"]
         BBE2E["job: buildbarn-e2e\n(docker compose cluster)"]
     end

@@ -142,15 +142,15 @@ platform(
     exec_properties = {
         "Arch": "x86_64",
         "OSFamily": "linux",
-        "bwrap-version": "0.8.0",
         "cmake-version": "3.28.3",
         "ninja-version": "1.11.1",
     },
     visibility = ["//visibility:public"],
 )
 EOF
-# Project A's .bazelrc: trace_load actions only.
-cat > "$A/.bazelrc" <<EOF
+# Project A's .bazelrc: trace_load actions only. Append to write-a's
+# rendered strict-sandbox prelude.
+cat >> "$A/.bazelrc" <<EOF
 build --remote_cache=grpc://localhost:8980
 build --remote_executor=grpc://localhost:8983
 build --extra_execution_platforms=//platforms:buildbarn

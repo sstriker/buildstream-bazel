@@ -2,8 +2,7 @@
 // converter/internal/cmakerun for the meson side.
 //
 // Hermeticity is the caller's responsibility (typically a Bazel
-// genrule sandbox or a bwrap envelope from the orchestrator);
-// this package does not sandbox by itself. It DOES, however,
+// genrule sandbox); this package does not sandbox by itself. It DOES, however,
 // hand the meson child a fully-controlled env: PATH is inherited
 // (so the host's meson/ninja are findable) and a fixed set of
 // determinism knobs (LC_ALL/LANG=C, SOURCE_DATE_EPOCH, HOME

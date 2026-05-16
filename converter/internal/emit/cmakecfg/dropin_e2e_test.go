@@ -7,7 +7,7 @@
 // bundle and what install(EXPORT) would have produced, neither can a Bazel
 // build sourcing it.
 //
-// No bwrap here: we exercise system cmake/ninja directly.
+// We exercise system cmake/ninja directly.
 package cmakecfg_test
 
 import (
@@ -36,7 +36,7 @@ func TestE2E_HelloWorld_BundleDropIn(t *testing.T) {
 	consumerSrc := filepath.Join(tmp, "consumer-src")
 	consumerBuild := filepath.Join(tmp, "consumer-build")
 
-	// 1. Build hello-world the normal way (no bwrap, no shadow); this gives
+	// 1. Build hello-world the normal way (no shadow); this gives
 	//    us a real libhello.a to drop into the synthesized prefix.
 	if err := os.MkdirAll(helloBuild, 0o755); err != nil {
 		t.Fatal(err)

@@ -54,15 +54,14 @@ services:
         condition: service_started
 
   bb-runner-bare:
-    # Custom image: upstream bb-runner-bare layered with cmake / ninja /
-    # bwrap at the versions the orchestrator's defaultPlatform asserts.
+    # Custom image: upstream bb-runner-bare layered with cmake / ninja
+    # at the versions the orchestrator's defaultPlatform asserts.
     # See deploy/buildbarn/runner/Dockerfile.
     build:
       context: ./runner
       args:
         CMAKE_VERSION: 3.28.3
         NINJA_VERSION: 1.11.1
-        BWRAP_VERSION: 0.8.0
     image: cmake-to-bazel/bb-runner:local
     container_name: bb-runner-bare
     restart: unless-stopped

@@ -50,7 +50,7 @@ B="$work_dir/B"
     --convert-element-cmake "$bin_dir/convert-element-cmake"
 
 # Render-phase checks. Always run; don't gate on bazel.
-for f in MODULE.bazel BUILD.bazel \
+for f in MODULE.bazel BUILD.bazel .bazelrc \
         tools/convert-element-cmake tools/BUILD.bazel \
         elements/hello-world/BUILD.bazel \
         elements/hello-world/sources/CMakeLists.txt; do
@@ -58,6 +58,25 @@ for f in MODULE.bazel BUILD.bazel \
         echo "meta-hello: missing rendered project A file $f" >&2
         exit 1
     fi
+done
+# .bazelrc carries the strict-sandbox prelude + a try-import escape
+# valve for operator additions. write-a renders these so the
+# hermeticity contract is explicit at the rendered-output layer
+# (not dependent on bazel's per-OS default). Both A and B get the
+# same prelude.
+for rcline in \
+        '--spawn_strategy=sandboxed' \
+        '--genrule_strategy=sandboxed' \
+        '--sandbox_default_allow_network=false' \
+        '--incompatible_strict_action_env' \
+        'try-import %workspace%/.bazelrc.operator'; do
+    for rc in "$A/.bazelrc" "$B/.bazelrc"; do
+        if ! grep -qF -- "$rcline" "$rc"; then
+            echo "meta-hello: $rc missing required line: $rcline" >&2
+            cat "$rc" >&2
+            exit 1
+        fi
+    done
 done
 # rules/ no longer renders into the project — loads from
 # @rules_buildstream_bazel//rules via bazel_dep + local_path_override.
@@ -67,7 +86,7 @@ for f in rules/zero_files.bzl rules/sources.bzl rules/BUILD.bazel; do
         exit 1
     fi
 done
-for f in MODULE.bazel BUILD.bazel \
+for f in MODULE.bazel BUILD.bazel .bazelrc \
         elements/hello-world/BUILD.bazel \
         elements/hello-world/CMakeLists.txt \
         elements/hello-world/hello.c \
@@ -100,9 +119,9 @@ if [ "$bazel_major" -lt 9 ]; then
 fi
 
 # Bazel-build half execs convert-element-cmake which shells to
-# cmake + ninja under bwrap. Skip cleanly if any are missing —
-# the render assertions above are still meaningful in isolation.
-for tool in cmake ninja bwrap; do
+# cmake + ninja. Skip cleanly if either is missing — the render
+# assertions above are still meaningful in isolation.
+for tool in cmake ninja; do
     if ! command -v "$tool" >/dev/null; then
         echo "meta-hello: render OK; $tool not on PATH, skipping build phase"
         exit 0

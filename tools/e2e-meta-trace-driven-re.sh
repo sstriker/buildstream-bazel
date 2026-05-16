@@ -98,7 +98,7 @@ trap 'make -s buildbarn-down >/dev/null 2>&1 || true; rm -rf "$work_dir"' EXIT
 
 # --- pre-publish trace + bundle ---------------------------------------
 # Without a worker-side trace_build (which would need autotools
-# + bwrap on the worker image), pre-stage a synthetic trace +
+# on the worker image), pre-stage a synthetic trace +
 # bundle and publish them under the fixture's srckey. The
 # trace_load action under RBE will fetch them via the AC.
 FIXTURE="$work_dir/fixture"
@@ -169,14 +169,15 @@ platform(
     exec_properties = {
         "Arch": "x86_64",
         "OSFamily": "linux",
-        "bwrap-version": "0.8.0",
         "cmake-version": "3.28.3",
         "ninja-version": "1.11.1",
     },
     visibility = ["//visibility:public"],
 )
 EOF
-cat > "$A/.bazelrc" <<EOF
+# Append to write-a's rendered strict-sandbox .bazelrc prelude (the
+# RBE flags add remote-execution on top of that baseline).
+cat >> "$A/.bazelrc" <<EOF
 build --remote_cache=grpc://localhost:8980
 build --remote_executor=grpc://localhost:8983
 build --extra_execution_platforms=//platforms:buildbarn

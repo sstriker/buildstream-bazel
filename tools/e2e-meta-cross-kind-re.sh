@@ -91,7 +91,7 @@ CGO_ENABLED=0 go build -o build/bin/trace-publish ./cmd/trace-publish
 CGO_ENABLED=0 go build -o build/bin/trace-lookup ./cmd/trace-lookup
 
 # --- buildbarn stack --------------------------------------------------
-# bb-runner-bare carries cmake + ninja + bwrap (see
+# bb-runner-bare carries cmake + ninja (see
 # deploy/buildbarn/Dockerfile.bb-runner-bare). The cmake configure
 # step inside the cons converter genrule's REAPI action runs on
 # this image.
@@ -170,14 +170,15 @@ platform(
     exec_properties = {
         "Arch": "x86_64",
         "OSFamily": "linux",
-        "bwrap-version": "0.8.0",
         "cmake-version": "3.28.3",
         "ninja-version": "1.11.1",
     },
     visibility = ["//visibility:public"],
 )
 EOF
-cat > "$A/.bazelrc" <<EOF
+# Append to write-a's rendered strict-sandbox .bazelrc prelude (the
+# RBE flags add remote-execution on top of that baseline).
+cat >> "$A/.bazelrc" <<EOF
 build --remote_cache=grpc://localhost:8980
 build --remote_executor=grpc://localhost:8983
 build --extra_execution_platforms=//platforms:buildbarn

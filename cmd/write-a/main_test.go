@@ -113,6 +113,7 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	for _, want := range []string{
 		"MODULE.bazel",
 		"BUILD.bazel",
+		".bazelrc",
 		"tools/convert-element-cmake",
 		"tools/BUILD.bazel",
 		"elements/hello/BUILD.bazel",
@@ -121,6 +122,23 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	} {
 		if _, err := os.Stat(filepath.Join(outA, want)); err != nil {
 			t.Errorf("missing rendered file %q in project A: %v", want, err)
+		}
+	}
+	bazelrcA, err := os.ReadFile(filepath.Join(outA, ".bazelrc"))
+	if err != nil {
+		t.Fatalf("read project A .bazelrc: %v", err)
+	}
+	for _, want := range []string{
+		"--spawn_strategy=sandboxed",
+		"--genrule_strategy=sandboxed",
+		"--sandbox_default_allow_network=false",
+		"--incompatible_strict_action_env",
+		// Operator escape valve. Must land AFTER the strict
+		// flags so operator overrides take precedence.
+		"try-import %workspace%/.bazelrc.operator",
+	} {
+		if !strings.Contains(string(bazelrcA), want) {
+			t.Errorf("project A .bazelrc missing line %q\n--- contents ---\n%s", want, bazelrcA)
 		}
 	}
 	// rules/*.bzl is no longer rendered into project A — the
@@ -153,6 +171,7 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	for _, want := range []string{
 		"MODULE.bazel",
 		"BUILD.bazel",
+		".bazelrc",
 		"elements/hello/BUILD.bazel",
 		"elements/hello/CMakeLists.txt",
 		// Phase 7b: gazelle metadata files.
@@ -161,6 +180,21 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 	} {
 		if _, err := os.Stat(filepath.Join(outB, want)); err != nil {
 			t.Errorf("missing rendered file %q in project B: %v", want, err)
+		}
+	}
+	bazelrcB, err := os.ReadFile(filepath.Join(outB, ".bazelrc"))
+	if err != nil {
+		t.Fatalf("read project B .bazelrc: %v", err)
+	}
+	for _, want := range []string{
+		"--spawn_strategy=sandboxed",
+		"--genrule_strategy=sandboxed",
+		"--sandbox_default_allow_network=false",
+		"--incompatible_strict_action_env",
+		"try-import %workspace%/.bazelrc.operator",
+	} {
+		if !strings.Contains(string(bazelrcB), want) {
+			t.Errorf("project B .bazelrc missing line %q\n--- contents ---\n%s", want, bazelrcB)
 		}
 	}
 	bModule, err := os.ReadFile(filepath.Join(outB, "MODULE.bazel"))

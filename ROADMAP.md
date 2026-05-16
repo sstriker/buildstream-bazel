@@ -168,33 +168,59 @@ transition cleanly.
   converter's in-process File API consumer reads the reply
   when the cmake-configure step runs on a remote node.
 
-- **Drop converter-side bwrap in favor of Bazel's strict sandbox.**
-  `cmakerun.Configure` wraps cmake in `bwrap` today for
-  hermeticity that Bazel's `linux-sandbox` already provides at
-  the action layer when the convert-element-cmake genrule runs
-  inside a sandboxed spawn. Plan: pin the strategy explicitly
-  in project A's rendered `.bazelrc`
-  (`--genrule_strategy=sandboxed --spawn_strategy=sandboxed
-  --sandbox_default_allow_network=false
-  --incompatible_strict_action_env`); audit what the converter's
-  inner-bwrap guarantees beyond what Bazel's sandbox provides
-  (clean `/tmp`, separate PID ns, fresh `/dev` — linux-sandbox
-  covers most of this); if nothing material is left, drop bwrap
-  from `cmakerun.Configure`, the runner image
-  (`deploy/buildbarn/runner/Dockerfile`), the CI `chmod u+s
-  "$(command -v bwrap)"` workaround
-  (`.github/actions/install-cmake-toolchain/action.yml`), and
-  the `check-cmake-toolchain` Makefile target. Cross-platform
-  win: today the converter has no bwrap fallback on macOS, so
-  the inner sandbox is silently disabled there; Bazel's
-  `darwin-sandbox` (sandbox-exec) gives equivalent guarantees
-  uniformly. Open question: cmake-configure writes to a build
-  directory — under Bazel's sandbox the writable area is part
-  of the genrule's tree, so the converter would have to switch
-  from its private bwrap-created tmp to a Bazel-supplied output
-  scratch dir. Bounded but non-trivial converter refactor.
-
 ## Done (high points)
+
+- **Strict-sandbox `.bazelrc` rendered into every project.**
+  `cmd/write-a` now renders a `.bazelrc` in both project A and
+  project B carrying
+  `--spawn_strategy=sandboxed --genrule_strategy=sandboxed
+  --sandbox_default_allow_network=false
+  --incompatible_strict_action_env`. The hermeticity contract is
+  now explicit at the rendered-output layer instead of relying
+  on bazel's per-OS default (which is `linux-sandbox` on Linux
+  but `local` on macOS — a silent loss of isolation otherwise).
+  Operator escape valve: the rendered `.bazelrc` ends with
+  `try-import %workspace%/.bazelrc.operator`, so operators who
+  need persistent additions put them in `.bazelrc.operator` (a
+  file write-a never touches); bazel loads it after the prelude
+  so operator entries override the strict defaults on conflicting
+  flags. The four buildbarn-RE gate scripts
+  (`tools/e2e-meta-*-re.sh`) switched their `.bazelrc` writes
+  from `cat >` to `cat >>` so the RBE flags append on top of the
+  write-a-rendered prelude; per-rule `--strategy=Genrule=remote`
+  continues to take precedence over `--genrule_strategy=sandboxed`
+  for the converter genrule when RBE is wired up. Render
+  assertions in `scripts/meta-hello.sh` + a unit test in
+  `cmd/write-a/main_test.go` guard the contract.
+
+- **Drop the bwrap dead-code branch.** Investigation triggered by
+  a side-note ask about strict Bazel sandboxes revealed that
+  bwrap has **never** been invoked from any Go code in this
+  repo's history (`git log --all -S 'exec.Command("bwrap"'`
+  returns empty). The dependency was an aspirational
+  placeholder: `mesonrun.go`'s package doc said hermeticity
+  comes from "a Bazel genrule sandbox or a bwrap envelope from
+  the orchestrator," and the orchestrator (now absorbed away
+  in step 7b) was the placeholder for the bwrap-using path that
+  never materialized. The current converter at
+  `cmakerun.Configure` invokes `cmake` directly via
+  `exec.CommandContext` with controlled env (empty `HOME`,
+  fixed locale, `SOURCE_DATE_EPOCH`) and relies on Bazel's
+  per-action sandbox at the genrule layer for hermeticity.
+  Drop the dead bwrap references: install from the runner
+  image (`deploy/buildbarn/runner/Dockerfile`) and the CI
+  install path; the `bwrap-version` constraint from the worker
+  advertisement (`deploy/buildbarn/config/worker.jsonnet`) and
+  every rendered platform that mirrored it (the four
+  `tools/e2e-meta-*-re.sh` REAPI gate scripts); the prereq
+  check from `check-cmake-toolchain` and the inline checks PR
+  #185 added to the kind:cmake meta-* scripts; the stale
+  comments claiming `cmakerun.Configure runs cmake under
+  bwrap`; the `BWRAP_VERSION` Makefile var. Net effect: one
+  fewer host-toolchain dep for every contributor + the runner
+  image; the CI `chmod u+s "$(command -v bwrap)"` workaround
+  for Ubuntu 24.04's restricted unprivileged-userns kernel
+  becomes unnecessary and goes away too.
 
 - **kind:cmake gates self-skip the bazel-build half on missing
   toolchain.** Following from the per-gate prereq honesty pass

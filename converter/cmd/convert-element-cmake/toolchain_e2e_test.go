@@ -199,8 +199,8 @@ func appendToFile(path, body string) error {
 // reply to emit toolchain.cmake. Returns the absolute path to
 // the file.
 //
-// Real cmake invocation (not bwrap-sandboxed) — derive-toolchain
-// is host-side tooling that runs once per host.
+// Real cmake invocation — derive-toolchain is host-side tooling
+// that runs once per host.
 func deriveToolchainCMake(t *testing.T, deriveBin string) string {
 	t.Helper()
 	hostSrc, err := filepath.Abs("../../testdata/sample-projects/hello-world")

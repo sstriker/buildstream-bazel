@@ -45,7 +45,7 @@ must hit AC for every element and produce byte-identical outputs.
 the worker actually exec's it and returns a populated ActionResult.
 The synthetic action is a `/bin/sh` script — it does NOT exercise
 the converter end-to-end, since the bb-runner-bare image doesn't
-have cmake/ninja/bwrap installed. For full conversion through real
+have cmake/ninja installed. For full conversion through real
 workers, build a custom worker image with the toolchain pre-baked.
 
 ## bb_clientd (Bazel-9 companion daemon)
@@ -139,12 +139,12 @@ real conversion flow (`bin/convert-element-cmake ...`) the worker
 container needs to provide:
 
 - The bare runner binary (or any runner — bare is just easiest)
-- `cmake`, `ninja`, `bwrap` at the versions encoded in the
-  orchestrator's `--platform` / `defaultPlatform` properties
+- `cmake`, `ninja` at the versions encoded in the orchestrator's
+  `--platform` / `defaultPlatform` properties
 - `/bin/sh` (already present in the official image)
 
 A simple custom Dockerfile FROM the runner image, layered with `apt
-install cmake ninja-build bubblewrap`, would close the loop for full
+install cmake ninja-build`, would close the loop for full
 end-to-end conversion. We don't ship that here because the platform
 properties + version pins cross too many deployment-specific
 concerns; the documented path is "build your own runner image,

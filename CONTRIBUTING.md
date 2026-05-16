@@ -16,7 +16,7 @@ Decide based on what you touched:
 | `cmd/build-tracer/` | `go test ./cmd/build-tracer/...` plus a render gate that exercises the autotools native path (`scripts/meta-autotools-native.sh`) |
 | `cmd/convert-element-trace/` | `go test ./cmd/convert-element-trace/...` plus the autotools render gates |
 | `cmd/audit-narrowing/`, `internal/readpaths/`, `internal/tracenorm/reads.go`, `converter/internal/ninja/configure_reads.go`, `cmd/write-a/expected_drift.go`, `scripts/audit-narrowing-walk.sh`, `scripts/meta-audit-narrowing.sh` | `go test ./cmd/audit-narrowing/... ./internal/readpaths/... ./internal/tracenorm/... ./converter/internal/ninja/...` plus `make e2e-audit-narrowing` (the soft-launch CI gate; recipe in [`docs/design/narrowing-audit.md`](docs/design/narrowing-audit.md)) |
-| `converter/...` (cmake-side) | `go test ./converter/...` (unit), `make e2e-orchestrate` (needs cmake + bwrap) |
+| `converter/...` (cmake-side) | `go test ./converter/...` (unit), `make e2e-orchestrate` (needs cmake) |
 | `Makefile` / `scripts/` | the script(s) you touched, plus run their `make e2e-meta-*` target if it exists |
 | Anything in `docs/` | nothing. CI's docs jobs render via GitHub markdown. |
 
@@ -165,7 +165,7 @@ build half locally.
   ```
   Tests + scripts auto-detect `/etc/ssl/certs/java/cacerts`
   and pass it via `--host_jvm_args`.
-- **`cmake` + `ninja` + `bwrap`** — needed only by:
+- **`cmake` + `ninja`** — needed only by:
   - The converter's own `-tags=e2e` Go tests
     (`e2e-{hello-world, fmt, cmake-consumer, toolchain-skip, fidelity, fidelity-fmt}`)
     — these call `cmakerun.Configure` directly from Go.
@@ -179,18 +179,18 @@ build half locally.
     replies into testdata.
 
   The Makefile's `check-cmake-toolchain` target enforces
-  cmake + ninja + bwrap on PATH and is declared as a
-  prerequisite for exactly these targets.
+  cmake + ninja on PATH and is declared as a prerequisite for
+  exactly these targets.
 
   **Every other render gate runs with just Go.** That includes
   the `kind:cmake` gates (`e2e-meta-hello`, `e2e-meta-stack`,
   `e2e-meta-cross-cmake`, `e2e-meta-cmake-round2-fallback-multiplatform`,
   `e2e-meta-compose`, `e2e-meta-filter`, `e2e-meta-cross-kind`,
   `e2e-meta-regression`) — they self-skip the bazel-build half
-  inside the script when bazel < 9, cmake, ninja, or bwrap is
-  missing, mirroring the existing bazel-availability pattern.
-  The render half (the contract `write-a` owes its consumers)
-  still runs and asserts in isolation.
+  inside the script when bazel < 9, cmake, or ninja is missing,
+  mirroring the existing bazel-availability pattern. The render
+  half (the contract `write-a` owes its consumers) still runs
+  and asserts in isolation.
 
   kind:meson / kind:pyproject / kind:autotools gates also self-
   check their own tool chain (`meson`, `python3`, autotools /
@@ -200,7 +200,7 @@ build half locally.
   build half locally, pin to the versions the orchestrator's
   default platform asserts:
   ```sh
-  sudo apt-get install ninja-build bubblewrap
+  sudo apt-get install ninja-build
   # cmake: install the version pinned in `Makefile`'s
   # CMAKE_VERSION (currently 3.28.3); apt's default is
   # often older.
