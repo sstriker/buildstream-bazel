@@ -49,6 +49,16 @@ package main
 // common-prefix and multiarch cases respectively. POSIX sh
 // leaves an unmatched glob literal; the [ -d ] guard makes
 // the unmatched case a no-op.
+//
+// Precedence when the same basename lives in multiple prefixes:
+// later writes overwrite earlier (cp truncates), so the
+// iteration order — lib → lib64 → usr/lib → usr/lib64 →
+// usr/local/lib → usr/local/lib64 → usr/share → multiarch
+// globs — means more-specific prefixes win over less-specific
+// ones for the same file basename. Pathological in practice
+// (well-formed installs don't ship duplicate .pc files at
+// multiple prefixes); documented so a future operator who
+// hits the case knows which copy ends up in the bundle.
 func bundleSynthShell() string {
 	return `        # Synthesize a cmake-config bundle from the install tree
         # for the cross-element configure-step bootstrap rendezvous
