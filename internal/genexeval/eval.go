@@ -3,6 +3,7 @@ package genexeval
 import (
 	"bytes"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -194,6 +195,31 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	case "TARGET_FILE":
 		return evalTargetFile(g, ctx)
 
+	// On-disk-path variants that derive from FileLocation.
+	// Unix v1: LINKER_FILE / SONAME_FILE are the same artifact
+	// as TARGET_FILE (no Windows import-library distinction,
+	// no Mach-O SONAME distinction). FILE_DIR / FILE_NAME are
+	// filepath.Dir / filepath.Base of FileLocation. All six
+	// reuse the lifter's existing --target-file flag wire —
+	// the evaluator computes the derivation at Bazel time
+	// against the same FileLocation override the
+	// cmake-configure-file tool plumbs in. The byte-equal
+	// check at convert time catches any cross-platform
+	// disagreement (e.g. cmake on Windows would render a
+	// `.lib` for LINKER_FILE; our Linux-alias would render
+	// the `.dll` and the verify-pass would fail, falling
+	// back to (b)/legacy).
+	case "TARGET_FILE_DIR":
+		return evalTargetFileDerived(g, ctx, "TARGET_FILE_DIR", filepathDir)
+	case "TARGET_FILE_NAME":
+		return evalTargetFileDerived(g, ctx, "TARGET_FILE_NAME", filepathBase)
+	case "TARGET_LINKER_FILE", "TARGET_SONAME_FILE":
+		return evalTargetFileDerived(g, ctx, g.Op, identityPath)
+	case "TARGET_LINKER_FILE_DIR":
+		return evalTargetFileDerived(g, ctx, g.Op, filepathDir)
+	case "TARGET_LINKER_FILE_NAME":
+		return evalTargetFileDerived(g, ctx, g.Op, filepathBase)
+
 	// Target-evaluator-dependent forms. Typed refusal so the
 	// lifter knows to fall back rather than treat as a bug.
 	//
@@ -208,9 +234,7 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	// (target-evaluator-time) and "COMPILER_*" is the
 	// compiler-identity context the configure-time evaluator
 	// already has from CMAKE_<LANG>_COMPILER_ID.
-	case "TARGET_FILE_DIR", "TARGET_FILE_NAME",
-		"TARGET_LINKER_FILE", "TARGET_LINKER_FILE_DIR", "TARGET_LINKER_FILE_NAME",
-		"TARGET_SONAME_FILE", "TARGET_OBJECTS",
+	case "TARGET_OBJECTS",
 		"TARGET_GENEX_EVAL", "GENEX_EVAL",
 		"INSTALL_INTERFACE", "BUILD_INTERFACE", "INSTALL_PREFIX",
 		"COMPILE_LANGUAGE", "LINK_LANGUAGE",
@@ -621,9 +645,28 @@ func evalTargetProperty(g genexNode, ctx Context) ([]byte, error) {
 // (b) / legacy when the target isn't in the captured set or
 // the Bazel-time --target-file override didn't fire.
 func evalTargetFile(g genexNode, ctx Context) ([]byte, error) {
+	return evalTargetFileDerived(g, ctx, "TARGET_FILE", identityPath)
+}
+
+// evalTargetFileDerived handles `$<TARGET_FILE:t>` AND its
+// six on-disk-path variants (FILE_DIR, FILE_NAME, LINKER_FILE,
+// LINKER_FILE_DIR, LINKER_FILE_NAME, SONAME_FILE). All derive
+// from ctx.Targets[t].FileLocation; derive picks the
+// transformation:
+//
+//   - identityPath: TARGET_FILE / TARGET_LINKER_FILE /
+//     TARGET_SONAME_FILE (Linux v1 aliases).
+//   - filepathDir: TARGET_FILE_DIR / TARGET_LINKER_FILE_DIR.
+//   - filepathBase: TARGET_FILE_NAME / TARGET_LINKER_FILE_NAME.
+//
+// opName is the user-facing op label for diagnostics — passed
+// in rather than read from g.Op so the TARGET_FILE wrapper
+// above can route through this same helper without losing the
+// "TARGET_FILE" surface in error messages.
+func evalTargetFileDerived(g genexNode, ctx Context, opName string, derive func(string) string) ([]byte, error) {
 	if len(g.Args) != 1 {
 		return nil, &UnsupportedError{
-			Op:     g.Op,
+			Op:     opName,
 			Reason: fmt.Sprintf("expected 1 arg (target); got %d", len(g.Args)),
 		}
 	}
@@ -635,15 +678,24 @@ func evalTargetFile(g genexNode, ctx Context) ([]byte, error) {
 	ti, ok := ctx.Targets[name]
 	if !ok {
 		return nil, &UnsupportedError{
-			Op:     g.Op,
+			Op:     opName,
 			Reason: fmt.Sprintf("no target %q in Context.Targets", name),
 		}
 	}
 	if ti.FileLocation == "" {
 		return nil, &UnsupportedError{
-			Op:     g.Op,
+			Op:     opName,
 			Reason: fmt.Sprintf("Context.Targets[%q].FileLocation is empty (lifter didn't capture, or Bazel-time --target-file flag missing)", name),
 		}
 	}
-	return []byte(ti.FileLocation), nil
+	return []byte(derive(ti.FileLocation)), nil
 }
+
+// identityPath / filepathDir / filepathBase are the three
+// derivations evalTargetFileDerived dispatches over. Module-
+// level vars so the dispatch table reads cleanly.
+var (
+	identityPath = func(p string) string { return p }
+	filepathDir  = filepath.Dir
+	filepathBase = filepath.Base
+)
