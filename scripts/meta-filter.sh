@@ -70,9 +70,11 @@ for f in MODULE.bazel BUILD.bazel \
     fi
 done
 # Filter's BUILD references the single dep + records the config:include
-# domains as a comment.
+# domains as a comment. write-a runs the rendered output through the
+# buildtools-canonical formatter, which shortens `//pkg:pkg` to
+# `//pkg` when the target name matches the package basename.
 for marker in 'name = "greet-headers"' \
-              '"//elements/greet:greet"' \
+              '"//elements/greet"' \
               'kind:filter' \
               '# include domains: [public-headers]'; do
     if ! grep -qF "$marker" "$B/elements/greet-headers/BUILD.bazel"; then

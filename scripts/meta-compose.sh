@@ -67,8 +67,11 @@ for f in MODULE.bazel BUILD.bazel \
         exit 1
     fi
 done
-# Compose's project-B BUILD references both deps.
-for ref in '"//elements/greet-a:greet-a"' '"//elements/greet-b:greet-b"'; do
+# Compose's project-B BUILD references both deps. write-a runs
+# the rendered output through the buildtools-canonical formatter,
+# which shortens `//pkg:pkg` to `//pkg` when the target name
+# matches the package basename (same shape as meta-stack).
+for ref in '"//elements/greet-a"' '"//elements/greet-b"'; do
     if ! grep -qF "$ref" "$B/elements/bundle/BUILD.bazel"; then
         echo "meta-compose: project B compose BUILD missing dep ref $ref" >&2
         cat "$B/elements/bundle/BUILD.bazel" >&2
