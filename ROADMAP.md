@@ -179,14 +179,19 @@ transition cleanly.
   now explicit at the rendered-output layer instead of relying
   on bazel's per-OS default (which is `linux-sandbox` on Linux
   but `local` on macOS — a silent loss of isolation otherwise).
-  The four buildbarn-RE gate scripts (`tools/e2e-meta-*-re.sh`)
-  switched their `.bazelrc` writes from `cat >` to `cat >>` so
-  the RBE flags append on top of the write-a-rendered prelude;
-  per-rule `--strategy=Genrule=remote` continues to take
-  precedence over `--genrule_strategy=sandboxed` for the
-  converter genrule when RBE is wired up. Render assertions in
-  `scripts/meta-hello.sh` + a unit test in `cmd/write-a/main_test.go`
-  guard the contract.
+  Operator escape valve: the rendered `.bazelrc` ends with
+  `try-import %workspace%/.bazelrc.operator`, so operators who
+  need persistent additions put them in `.bazelrc.operator` (a
+  file write-a never touches); bazel loads it after the prelude
+  so operator entries override the strict defaults on conflicting
+  flags. The four buildbarn-RE gate scripts
+  (`tools/e2e-meta-*-re.sh`) switched their `.bazelrc` writes
+  from `cat >` to `cat >>` so the RBE flags append on top of the
+  write-a-rendered prelude; per-rule `--strategy=Genrule=remote`
+  continues to take precedence over `--genrule_strategy=sandboxed`
+  for the converter genrule when RBE is wired up. Render
+  assertions in `scripts/meta-hello.sh` + a unit test in
+  `cmd/write-a/main_test.go` guard the contract.
 
 - **Drop the bwrap dead-code branch.** Investigation triggered by
   a side-note ask about strict Bazel sandboxes revealed that

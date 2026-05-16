@@ -59,18 +59,20 @@ for f in MODULE.bazel BUILD.bazel .bazelrc \
         exit 1
     fi
 done
-# .bazelrc carries the strict-sandbox prelude. write-a renders these
-# so the hermeticity contract is explicit at the rendered-output
-# layer (not dependent on bazel's per-OS default). Both A and B
-# get the same prelude.
+# .bazelrc carries the strict-sandbox prelude + a try-import escape
+# valve for operator additions. write-a renders these so the
+# hermeticity contract is explicit at the rendered-output layer
+# (not dependent on bazel's per-OS default). Both A and B get the
+# same prelude.
 for rcline in \
         '--spawn_strategy=sandboxed' \
         '--genrule_strategy=sandboxed' \
         '--sandbox_default_allow_network=false' \
-        '--incompatible_strict_action_env'; do
+        '--incompatible_strict_action_env' \
+        'try-import %workspace%/.bazelrc.operator'; do
     for rc in "$A/.bazelrc" "$B/.bazelrc"; do
         if ! grep -qF -- "$rcline" "$rc"; then
-            echo "meta-hello: $rc missing strict-sandbox flag $rcline" >&2
+            echo "meta-hello: $rc missing required line: $rcline" >&2
             cat "$rc" >&2
             exit 1
         fi

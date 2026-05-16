@@ -1780,6 +1780,16 @@ func writeProjectB(g *graph, outDir string) error {
 // --incompatible_strict_action_env freezes the action env to a
 // fixed allowlist instead of leaking the developer's shell env in.
 // Matches what the production REAPI executor would do anyway.
+//
+// Contract with operators: this file is the canonical project
+// .bazelrc and write-a re-renders it on every invocation —
+// operator edits to .bazelrc itself get clobbered. The escape
+// valve is the trailing `try-import %workspace%/.bazelrc.operator`:
+// operators who need persistent additions (extra --config=... lines,
+// alternative strategies for specific rules, --action_env entries
+// for site-specific tooling) put them in .bazelrc.operator, which
+// write-a never touches. Bazel loads it AFTER the prelude, so
+// operator flags override the strict defaults if they conflict.
 func bazelrcStrict() string {
 	return `# Strict per-action sandbox. write-a renders this in every project
 # so the hermeticity contract is explicit at the rendered-output layer
@@ -1789,6 +1799,13 @@ build --spawn_strategy=sandboxed
 build --genrule_strategy=sandboxed
 build --sandbox_default_allow_network=false
 build --incompatible_strict_action_env
+
+# Operator escape valve: write-a re-renders this .bazelrc on every
+# invocation, so direct edits here are lost. Put persistent
+# additions in .bazelrc.operator (write-a never touches it). Bazel
+# loads it AFTER this prelude, so operator entries override the
+# strict defaults on conflicting flags.
+try-import %workspace%/.bazelrc.operator
 `
 }
 
