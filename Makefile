@@ -1,6 +1,6 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt \
-        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
+        e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
@@ -292,6 +292,30 @@ e2e-meta-meson: check-tools converter
 # docs/design/meson-round2-fallback.md.
 e2e-meta-meson-round2-fallback: check-tools converter
 	scripts/meta-meson-round2-fallback.sh
+
+# kind:meson Phase B round-2 fallback per-platform install
+# fan-out. Sibling of e2e-meta-cmake-round2-fallback-multiplatform
+# and e2e-meta-autotools-round2-multiplatform — drives write-a with
+# --meson-round2-fallback + --platforms-json against the meson-greet
+# fixture and asserts the rendered project B carries N install
+# genrules (one per platform), per-platform outputs under
+# <platform>/, exec_compatible_with constraints, and the
+# top-level :install_tree.tar select()-filegroup that routes
+# downstream label refs to the matching per-platform tarball.
+e2e-meta-meson-round2-fallback-multiplatform: check-tools converter
+	scripts/meta-meson-round2-fallback-multiplatform.sh
+
+# kind:cmake round-2 fallback storage-cost signal. Renders the
+# `execute-process-unliftable-fallback` fixture under
+# --unsupported-execute-process-fallback=true and reports the
+# number of paths the _install_tree_extract genrule duplicates
+# out of install_tree.tar — the render-time signal for the
+# ROADMAP's "Repo-rule install for kind:cmake round-2 fallback"
+# entry. Doesn't fix anything; makes the cost measurable so a
+# maintainer can re-evaluate the repo-rule alternative against
+# real numbers instead of "roughly 2×" estimates.
+e2e-meta-cmake-round2-fallback-storage-cost: check-tools converter
+	scripts/meta-cmake-round2-fallback-storage-cost.sh
 
 # Convergence driver loop acceptance gate. Render-only: stubs
 # bazel + stage-b as shell scripts that simulate the

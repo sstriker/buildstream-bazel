@@ -30,29 +30,16 @@ transition cleanly.
 ## Next
 
 - **Per-platform fold for round-2 trace-driven kinds —
-  kind:meson Phase B sibling.** The four other kinds are
-  shipped (see Done — project A converter fan-out + fold for
-  pipelineHandler kinds, project B install fan-out for
-  pipelineHandler kinds, kind:autotools per-platform install
-  fan-out, kind:cmake Phase B fallback per-platform install
-  fan-out). kind:meson's Phase B (the install-plan-driven
-  fallback shape) shipped without a multi-platform install
-  fan-out — `mesonRound2InstallBuild` accepts a tracePlatform
-  param and the multi-platform unit test covers the per-
-  platform emission, but no end-to-end multi-platform render
-  gate exists yet. Promote the kind:meson sibling once an
-  FDSDK fixture surfaces the need (mirrors the
-  `meta-cmake-round2-fallback-multiplatform.sh` shape).
-
-  The cc_import scalar-select() rendering already handles the
-  diverging path-attr case (`.so` vs `.dylib`, multiarch lib
-  dirs, arch-tagged binary names) for the install_tree.tar
-  stub shape. Render gates today:
-  `scripts/meta-trace-round2-fold.sh` (pipelineHandler
-  kinds) + `scripts/meta-autotools-round2-multiplatform.sh`
-  (kind:autotools) +
-  `scripts/meta-cmake-round2-fallback-multiplatform.sh`
-  (kind:cmake Phase B fallback).
+  kind:meson Phase B promotion.** The render gate for the
+  install fan-out shipped
+  (`scripts/meta-meson-round2-fallback-multiplatform.sh`,
+  `make e2e-meta-meson-round2-fallback-multiplatform`); the
+  sibling-kind contract is now uniformly green across kind:make
+  / autotools / cmake-fallback / meson-fallback. Production
+  promotion is gated on an FDSDK fixture that actually exercises
+  multi-platform meson at scale (today the gate uses the
+  meson-greet smoke fixture). Promote once a real consumer
+  surfaces the need.
 - **Promote the narrowing-audit CI gate from soft to blocking.**
   Soft launch shipped (see Done — `make e2e-audit-narrowing`
   exits non-zero on drift; the CI step uses
@@ -77,22 +64,29 @@ transition cleanly.
   Phase B's round-2 fallback (per
   `docs/design/cmake-execute-process-round2-fallback.md`)
   transports the install tree as `install_tree.tar` between
-  project B and project A's `BUILD.bazel.out`, costing roughly
-  2× bytes in CAS (tar blob + extracted files via the
-  in-`BUILD.bazel.out` extract genrule) and one extra Bazel
-  action per consumer. Storage duplication adds up across a
-  fleet. Alternative: a Bazel repository rule whose
-  `repository_ctx.execute()` either runs cmake at loading
-  time directly OR untars `install_tree.tar` into a
-  per-element repo, exposing per-target labels without the
-  extract genrule + CAS duplication. Precedent:
-  `rules/traces.bzl`'s `_trace_repo` (loading-time AC
-  lookup) — but that one only does AC `GetActionResult`, not
-  a full build. Trade-offs: loading-time work blocks Bazel
-  startup; repo rules don't run on RBE (executor-pool
-  advantages forfeited); hermeticity weaker (relies on
-  host-side cmake/ninja). Worth re-evaluating once fixtures
-  reveal the storage-duplication cost in practice.
+  project B and project A's `BUILD.bazel.out` AND extracts a
+  subset of its contents via a per-element `_install_tree_extract`
+  genrule, costing CAS roughly tar_bytes + Σ(per-target
+  artifact bytes the cc_import / sh_binary stubs reference).
+  Storage duplication adds up across a fleet. Alternative: a
+  Bazel repository rule whose `repository_ctx.execute()` either
+  runs cmake at loading time directly OR untars
+  `install_tree.tar` into a per-element repo, exposing
+  per-target labels without the extract genrule + CAS
+  duplication. Precedent: `rules/traces.bzl`'s `_trace_repo`
+  (loading-time AC lookup) — but that one only does AC
+  `GetActionResult`, not a full build. Trade-offs: loading-time
+  work blocks Bazel startup; repo rules don't run on RBE
+  (executor-pool advantages forfeited); hermeticity weaker
+  (relies on host-side cmake/ninja). A render-time
+  measurement gate shipped
+  (`scripts/meta-cmake-round2-fallback-storage-cost.sh`,
+  `make e2e-meta-cmake-round2-fallback-storage-cost`) that
+  reports the extract-genrule outs count for a small fixture —
+  enough to confirm the duplication is per-stub-artifact (not a
+  flat 2× on the whole tar; legacy `install(FILES ...)`
+  entries stay in tar only). FDSDK-scale numbers from this
+  gate would drive the promotion decision.
 ## Later (research / open questions)
 
 - **Generator-expression evaluation in lifted genrules.** The

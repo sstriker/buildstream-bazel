@@ -1,0 +1,79 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-Release-ee99b413137e4ea00d65.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.23"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"name" : "Release",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "storage_cost",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "bar::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-bar-Release-0a9af47492f422377351.json",
+					"name" : "bar",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "baz::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-baz-Release-13580ecd48a92e5aa172.json",
+					"name" : "baz",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "foo::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-foo-Release-a75f7d3fa74ca4403bf9.json",
+					"name" : "foo",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/tmp/tmp.PHB1xsdMj8",
+		"source" : "/home/user/buildstream-bazel/converter/testdata/sample-projects/execute-process-unliftable-fallback"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 6
+	}
+}
