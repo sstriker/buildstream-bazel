@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -73,7 +74,7 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.2.3"}, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.2.3"}, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "9.9"}, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "9.9"}, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.0"}, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.0"}, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -217,7 +218,7 @@ func TestRecoverFileGenerate_GenexLiftedViaStructuredBase64(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -342,7 +343,7 @@ func TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy(t *testing.
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -385,7 +386,7 @@ func TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator(t *testing.T) {
 		"CMAKE_CXX_COMPILER_ID": "GNU",
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -500,7 +501,7 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -533,7 +534,7 @@ func TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty(t *testing.
 	}}
 	cc := newCodegenContext()
 	// nil cmakeVars → empty Context → (a) refuses.
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -569,7 +570,7 @@ func TestRecoverFileGenerate_OutputSideGenexResolved(t *testing.T) {
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -603,7 +604,7 @@ func TestRecoverFileGenerate_OutputSideGenexUnsupportedDropped(t *testing.T) {
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -630,7 +631,7 @@ func TestRecoverFileGenerate_OutputSideGenexEmptyContextDropped(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	// nil cmakeVars → empty Context → $<CONFIG> refuses → drop.
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -659,7 +660,7 @@ func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -692,7 +693,7 @@ func TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy(t *testin
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -705,6 +706,99 @@ func TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy(t *testin
 	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
 		t.Errorf("expected legacy-fallback tag; got %v", g.Tags)
 	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedWithTargetProperty
+// exercises the (a) lift's TARGET_PROPERTY path: a template
+// referencing `$<TARGET_PROPERTY:fglib,TYPE>` resolves at
+// convert time against a Context populated with target info,
+// and the marshaled Context payload includes the Targets dict.
+func TestRecoverFileGenerate_GenexEvaluatedWithTargetProperty(t *testing.T) {
+	template := "// fglib is a $<TARGET_PROPERTY:fglib,TYPE>\n"
+	rendered := []byte("// fglib is a STATIC_LIBRARY\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"fglib": {Type: "STATIC_LIBRARY"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	rendEnc := base64.StdEncoding.EncodeToString(rendered)
+	if strings.Contains(g.GenruleCmd, rendEnc) {
+		t.Errorf("(a) lift should NOT embed rendered bytes")
+	}
+	// Targets dict must be present in the marshaled payload
+	// since the template references TARGET_PROPERTY.
+	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	if !strings.Contains(blob, `"targets"`) || !strings.Contains(blob, `"fglib"`) || !strings.Contains(blob, `STATIC_LIBRARY`) {
+		t.Errorf("Targets dump missing from marshaled Context payload: %s", blob)
+	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedPrunesTargetsWhenUnused
+// asserts the payload-pruning optimization: a template that
+// references only CONFIG (no TARGET_PROPERTY) does NOT carry
+// the Targets dump in the marshaled Context, keeping the
+// lifted cmd small for the common case.
+func TestRecoverFileGenerate_GenexEvaluatedPrunesTargetsWhenUnused(t *testing.T) {
+	template := "// build: $<CONFIG>\n"
+	rendered := []byte("// build: Release\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY", Sources: "a.c;b.c"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	if strings.Contains(blob, `"targets"`) {
+		t.Errorf("unused Targets should be pruned; cmd carries the dict: %s", blob)
+	}
+}
+
+// mustDecodeGenexContextBlob extracts and base64-decodes the
+// GENEX_CONTEXT payload from the lifted cmd. Helper for the
+// payload-shape tests.
+func mustDecodeGenexContextBlob(t *testing.T, cmd string) []byte {
+	t.Helper()
+	const before = `echo `
+	const after = ` | base64 -d > "$$GENEX_CONTEXT"`
+	a := strings.Index(cmd, after)
+	if a < 0 {
+		t.Fatalf("cmd missing GENEX_CONTEXT decode pattern: %q", cmd)
+	}
+	b := strings.LastIndex(cmd[:a], before)
+	if b < 0 {
+		t.Fatalf("cmd's GENEX_CONTEXT pattern has no echo prefix: %q", cmd)
+	}
+	raw, err := base64.StdEncoding.DecodeString(cmd[b+len(before) : a])
+	if err != nil {
+		t.Fatalf("decode genex-context blob: %v", err)
+	}
+	return raw
 }
 
 // TestRecoverFileGenerate_LegacyWhenLiftDisabled covers the
@@ -722,7 +816,7 @@ func TestRecoverFileGenerate_LegacyWhenLiftDisabled(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, map[string]string{"VERSION": "1.0"}, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, map[string]string{"VERSION": "1.0"}, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -752,7 +846,7 @@ func TestRecoverFileGenerate_MissingRenderedOutputDropsCall(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -777,7 +871,7 @@ func TestRecoverFileGenerate_DedupesDuplicateOutputs(t *testing.T) {
 		HasContent: true,
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate([]shadow.FileGenerateCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+	if _, err := recoverFileGenerate([]shadow.FileGenerateCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -804,7 +898,7 @@ func TestRecoverFileGenerate_ContentEmpty_Lifted(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -843,7 +937,7 @@ func TestRecoverFileGenerate_SkipsCollisionWithOtherLifter(t *testing.T) {
 		Content:    "hi\n",
 		HasContent: true,
 	}}
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -879,7 +973,7 @@ func TestRecoverFileGenerate_InputArgGenexTagsLegacy(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -915,7 +1009,7 @@ func TestRecoverFileGenerate_OutputGenexDropped(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}

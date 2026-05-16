@@ -89,6 +89,37 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
+- **`$<TARGET_FILE:t>` and related on-disk-path genexes.**
+  TARGET_FILE / TARGET_FILE_DIR / TARGET_FILE_NAME /
+  TARGET_LINKER_FILE / TARGET_SONAME_FILE / TARGET_OBJECTS
+  remain typed-refused. Resolution requires the Bazel-time
+  output path of the target's build, which is build-system-
+  dependent — the lifter would need to thread the cmake target
+  name through a sidecar flag (e.g.
+  `--target-file=name=$(location //pkg:name)`) so Bazel
+  substitutes `$(location ...)` at action-time, then
+  cmake-configure-file plugs the resolved path into the
+  evaluator's Context. The Bazel-label lookup also requires
+  cross-package knowledge that the file(GENERATE) lifter
+  doesn't currently have. Scope: ~300 LoC including the
+  sidecar flag handling, the lifter's per-target Bazel-label
+  resolver, and the byte-equal invariant relaxation (since
+  TARGET_FILE bytes are Bazel-time-only and can't be verified
+  at convert time).
+
+- **TARGET_PROPERTY INTERFACE_* aggregation.** The v1
+  evaluator (below) supports `$<TARGET_PROPERTY:t,p>` for
+  properties cmake reports verbatim (NAME / TYPE / SOURCES /
+  IMPORTED). The INTERFACE_* properties cmake aggregates from
+  dependencies (INTERFACE_INCLUDE_DIRECTORIES,
+  INTERFACE_COMPILE_OPTIONS, INTERFACE_COMPILE_DEFINITIONS,
+  INTERFACE_LINK_LIBRARIES) need the lifter to mirror cmake's
+  transitive-property resolution against the fileapi
+  codemodel — accumulating across the target's dependency
+  graph in cmake's documented order. Distinct work item from
+  TARGET_FILE since it's all convert-time (no Bazel-label
+  resolution needed).
+
 - **Per-target genex evaluator (TARGET_PROPERTY,
   TARGET_FILE).** The (a) v1 evaluator typed-refuses target-
   evaluator-dependent ops — the lifter falls back to (b) /
@@ -127,6 +158,20 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **TARGET_PROPERTY for cmake-direct properties.** The (a)
+  evaluator now supports `$<TARGET_PROPERTY:t,p>` for the
+  subset of properties cmake reports verbatim from the fileapi
+  codemodel: NAME / TYPE / SOURCES / IMPORTED. Implementation:
+  new `genexeval.Context.Targets` field +
+  `genexeval.TargetInfo` struct; lifter-side
+  `buildGenexTargets(r)` projects fileapi targets into the
+  Context (cmake-internal helper targets are skipped). The
+  marshaled Context payload prunes the Targets dict for
+  templates that don't reference `$<TARGET_PROPERTY:` —
+  payload stays small for the common case. Aggregated
+  INTERFACE_* properties remain UnsupportedError until the
+  matching lifter pipeline lands (queued under Later).
 
 - **file-generate fixture exercises (a) end-to-end.** The
   existing file-generate sample-project's `gen_config_tag_h`
