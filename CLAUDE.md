@@ -68,6 +68,22 @@ description, a commit message, or your own design notes — show that you
 ran these and what they printed. A green `go test ./...` plus the
 relevant render gate's `ok` line is usually enough.
 
+## When to open a PR
+
+Open a PR proactively — no separate "should I open a PR?" check-in —
+when the work is:
+
+- A `ROADMAP.md` `Now` / `Next` item the user asked you to tackle.
+- A specific GitHub issue the user pointed at (by number or URL).
+- A direct fix-up follow-on to a PR already in flight (rebase, address
+  review feedback, land a stacked PR's bottom layer).
+
+For everything else — ad-hoc cleanups, refactors not on the roadmap,
+experimental spikes — keep the default: commit + push, then ask
+before opening a PR. The line is "is this work the user already
+sanctioned the *outcome* of?" If yes, the PR is the natural delivery
+vehicle. If no, surface the work first.
+
 ## PR review iteration
 
 When you create a PR (or are asked to land a stack of PRs), the default
@@ -85,8 +101,21 @@ loop is:
    responds.
 5. **When feedback lands**, fetch the full state with
    `mcp__github__pull_request_read` (`get_review_comments` +
-   `get_check_runs`) and
-   triage each thread:
+   `get_check_runs`) and triage each thread.
+
+   **Whose feedback to weight, and how:**
+   - **Copilot review comments** — the default automated reviewer.
+     Triage per the rules below.
+   - **Comments from other Claude sessions** (review or issue
+     comments authored under the Claude/Anthropic identity, from a
+     session other than the one driving this PR) — respect these as
+     genuine review feedback. They aren't first-party reviewers but
+     they've often seen the diff with a fresh perspective and catch
+     issues a Copilot pass misses. Apply the same triage rules.
+   - **Human reviewer comments** — the highest weight; address before
+     re-requesting any automated review.
+
+   Triage rules for each thread:
    - **Real bugs** (broken behavior, logic errors, unresolved merge
      conflict markers, CI failures): fix.
    - **Doc / comment accuracy** (claim doesn't match implementation):
@@ -104,8 +133,20 @@ loop is:
 
 For stacked PRs:
 
+- **All PRs target `main`.** Don't base one PR's branch on another
+  PR's branch on GitHub — GitHub's stack-via-base-branch UI mostly
+  fights the linear-history workflow this repo uses. Each PR is its
+  own branch off main, carries its own commits, and is independently
+  mergeable in principle. The "stack" lives in the operator's head
+  (and the PR descriptions cross-referencing each other), not in the
+  PR base setting.
+- **Land the bottom PR first**, then rebase the upper branches onto
+  `main` to drop the now-merged commits and pick up any review fixes.
+  GitHub will narrow the upper PRs' diffs automatically after the
+  rebase + force-push lands.
 - Address the bottom PR's feedback first, push, then rebase the rest
-  of the stack on top so each downstream PR picks up the fix.
+  of the stack on top so each downstream PR picks up the fix before
+  its own review pass.
 - If the same kind of bug surfaces at multiple levels of the stack
   (e.g. a docstring claim landed at PR #N is still wrong at PR #N+2
   because the rebase brought it forward), fix at the lowest level
