@@ -89,16 +89,6 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **INPUT-arg genex resolution at convert time.** The OUTPUT-
-  side path now resolves genex filenames via the (a) evaluator
-  (see Done); the symmetric INPUT-arg path
-  (`INPUT $<CONFIG>/foo.in`) still drops the call early — the
-  classify-time genex check on the resolved template path
-  bails before the evaluator gets a chance. Wiring is symmetric
-  to the OUTPUT side: try `resolveGenexInPath(inputArg, ctx)`
-  before the on-disk template read. ~10 LoC + a fixture/test
-  pair.
-
 - **Per-target genex evaluator (TARGET_PROPERTY,
   TARGET_FILE).** The (a) v1 evaluator typed-refuses target-
   evaluator-dependent ops — the lifter falls back to (b) /
@@ -138,19 +128,21 @@ transition cleanly.
 
 ## Done (high points)
 
-- **OUTPUT-side genex resolution at convert time.** The (a)
-  evaluator (below) now also resolves `$<...>` in the
-  file(GENERATE) `OUTPUT` path at convert time. Pre-fix the
-  `recoverFileGenerate` early-gate dropped any call with a
-  genex in OUTPUT entirely (the trace records the literal
-  string and the lifter couldn't anchor against the resolved
-  filename); the evaluator picks up the same `Context` the
-  body lift consults, resolves the path, and the call
-  continues down the normal lift pipeline with the resolved
-  rel as the genrule's `outs`. Refusal modes
+- **OUTPUT-side and INPUT-arg genex resolution at convert
+  time.** The (a) evaluator (below) now also resolves `$<...>`
+  in the file(GENERATE) `OUTPUT` and `INPUT` paths at convert
+  time. Pre-fix the early-gate on each side dropped any call
+  with a genex in the path entirely (the trace records the
+  literal string and the lifter couldn't anchor against the
+  resolved filename); the evaluator picks up the same
+  `Context` the body lift consults, resolves the path, and
+  the call continues down the normal lift pipeline — OUTPUT
+  becomes the genrule's `outs`, INPUT becomes the on-disk
+  template path (and the genrule's `srcs`). Refusal modes
   (`UnsupportedError` from target-dependent ops, empty
-  Context) drop the call the same way the pre-evaluator gate
-  did — soundness preserved.
+  Context) drop the call (OUTPUT) or fall back to legacy
+  (INPUT) the same way the pre-evaluator gates did —
+  soundness preserved.
 
 - **file(GENERATE) genex evaluator via genexeval — (a) shape.**
   New `internal/genexeval` package: Go-side parser + evaluator
