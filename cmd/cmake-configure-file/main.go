@@ -356,10 +356,19 @@ func loadGenexValues(path string) (map[string]string, error) {
 // captured cmake configure-time slice as this JSON; the tool
 // deserialises and feeds genexeval.Eval.
 type genexContextJSON struct {
-	Config           string            `json:"config,omitempty"`
-	CompilerID       map[string]string `json:"compiler_id,omitempty"`
-	PlatformID       string            `json:"platform_id,omitempty"`
-	CompilerLanguage string            `json:"compiler_language,omitempty"`
+	Config           string                    `json:"config,omitempty"`
+	CompilerID       map[string]string         `json:"compiler_id,omitempty"`
+	PlatformID       string                    `json:"platform_id,omitempty"`
+	CompilerLanguage string                    `json:"compiler_language,omitempty"`
+	Targets          map[string]targetInfoJSON `json:"targets,omitempty"`
+}
+
+// targetInfoJSON mirrors genexeval.TargetInfo on the wire. Same
+// snake_case-keys convention as genexContextJSON.
+type targetInfoJSON struct {
+	Type     string `json:"type,omitempty"`
+	Sources  string `json:"sources,omitempty"`
+	Imported bool   `json:"imported,omitempty"`
 }
 
 // loadGenexContext reads the (a)-shape Context sidecar. Empty
@@ -381,11 +390,23 @@ func loadGenexContext(path string) (genexeval.Context, error) {
 	if raw == nil {
 		return genexeval.Context{}, nil
 	}
+	var targets map[string]genexeval.TargetInfo
+	if len(raw.Targets) > 0 {
+		targets = make(map[string]genexeval.TargetInfo, len(raw.Targets))
+		for name, t := range raw.Targets {
+			targets[name] = genexeval.TargetInfo{
+				Type:     t.Type,
+				Sources:  t.Sources,
+				Imported: t.Imported,
+			}
+		}
+	}
 	return genexeval.Context{
 		Config:           raw.Config,
 		CompilerID:       raw.CompilerID,
 		PlatformID:       raw.PlatformID,
 		CompilerLanguage: raw.CompilerLanguage,
+		Targets:          targets,
 	}, nil
 }
 

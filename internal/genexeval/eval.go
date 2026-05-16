@@ -41,6 +41,44 @@ type Context struct {
 	CompilerID       map[string]string
 	PlatformID       string
 	CompilerLanguage string
+
+	// Targets is the per-target context the evaluator consults
+	// for `$<TARGET_PROPERTY:t,p>` and (future) related per-
+	// target ops. Keyed by cmake target name (the unqualified
+	// name, e.g. "foo", not the Bazel label). The lifter
+	// populates this from the fileapi codemodel at convert time
+	// — the evaluator's v1 supports a small set of properties
+	// cmake reports verbatim (NAME, TYPE, SOURCES, IMPORTED);
+	// transitive INTERFACE_* properties remain refused via
+	// UnsupportedError until the lifter grows the property-
+	// aggregation logic to match cmake's evaluation semantics.
+	Targets map[string]TargetInfo
+}
+
+// TargetInfo carries the per-target facts the evaluator
+// consults. v1 captures the cmake-direct properties only —
+// INTERFACE_* properties (which cmake aggregates from
+// dependencies' INTERFACE_INCLUDE_DIRECTORIES etc.) need a
+// more sophisticated capture pipeline to match cmake's
+// semantics and remain queued in ROADMAP Later.
+type TargetInfo struct {
+	// Type is cmake's target type (`EXECUTABLE`,
+	// `STATIC_LIBRARY`, `SHARED_LIBRARY`, `INTERFACE_LIBRARY`,
+	// ...). Maps to `$<TARGET_PROPERTY:t,TYPE>`.
+	Type string
+
+	// Sources is the target's source file list,
+	// semicolon-joined to match cmake's list serialization
+	// when stored as a property string. Maps to
+	// `$<TARGET_PROPERTY:t,SOURCES>`.
+	Sources string
+
+	// Imported is true for targets imported via
+	// `add_library(... IMPORTED)`. Maps to
+	// `$<TARGET_PROPERTY:t,IMPORTED>` returning `"TRUE"` /
+	// `"FALSE"` per cmake's documented serialization for the
+	// boolean property.
+	Imported bool
 }
 
 // UnsupportedError signals a genex shape the evaluator
@@ -124,6 +162,15 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	case "1":
 		return evalLiteralOne(g, ctx)
 
+	// Per-target ops that the v1 evaluator partially models.
+	// TARGET_PROPERTY is dispatched but only the subset of
+	// properties cmake reports verbatim (NAME / TYPE / SOURCES /
+	// IMPORTED) resolves cleanly — INTERFACE_* aggregation
+	// remains UnsupportedError until the lifter grows the
+	// matching capture pipeline.
+	case "TARGET_PROPERTY":
+		return evalTargetProperty(g, ctx)
+
 	// Target-evaluator-dependent forms. Typed refusal so the
 	// lifter knows to fall back rather than treat as a bug.
 	//
@@ -141,7 +188,6 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	case "TARGET_FILE", "TARGET_FILE_DIR", "TARGET_FILE_NAME",
 		"TARGET_LINKER_FILE", "TARGET_LINKER_FILE_DIR", "TARGET_LINKER_FILE_NAME",
 		"TARGET_SONAME_FILE", "TARGET_OBJECTS",
-		"TARGET_PROPERTY",
 		"TARGET_GENEX_EVAL", "GENEX_EVAL",
 		"INSTALL_INTERFACE", "BUILD_INTERFACE", "INSTALL_PREFIX",
 		"COMPILE_LANGUAGE", "LINK_LANGUAGE",
@@ -486,4 +532,61 @@ func bool01(b []byte, op string) (bool, error) {
 		return false, nil
 	}
 	return false, &UnsupportedError{Op: op, Reason: fmt.Sprintf("non-canonical boolean value %q (expected \"0\" or \"1\")", b)}
+}
+
+// evalTargetProperty handles `$<TARGET_PROPERTY:t,prop>`. The
+// v1 evaluator models the subset of properties cmake reports
+// verbatim from the fileapi codemodel — NAME, TYPE, SOURCES,
+// IMPORTED. Properties cmake aggregates from a target's
+// dependencies (INTERFACE_INCLUDE_DIRECTORIES,
+// INTERFACE_COMPILE_OPTIONS, INTERFACE_LINK_LIBRARIES, ...)
+// surface as UnsupportedError until the lifter grows the
+// matching aggregation pipeline; the lifter then falls back
+// to (b) capture or legacy.
+//
+// Two-arg form only — the legacy one-arg form
+// `$<TARGET_PROPERTY:prop>` (which reads from the "current
+// target" at target-evaluator time) has no convert-time
+// equivalent for file(GENERATE) templates (file(GENERATE) has
+// no current target) and remains UnsupportedError.
+func evalTargetProperty(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 2 {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("expected 2 args (target, property); got %d", len(g.Args)),
+		}
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := args[0]
+	prop := args[1]
+	ti, ok := ctx.Targets[name]
+	if !ok {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("no target %q in Context.Targets", name),
+		}
+	}
+	switch prop {
+	case "NAME":
+		return []byte(name), nil
+	case "TYPE":
+		if ti.Type == "" {
+			return nil, &UnsupportedError{Op: g.Op, Reason: fmt.Sprintf("Context.Targets[%q].Type is empty", name)}
+		}
+		return []byte(ti.Type), nil
+	case "SOURCES":
+		return []byte(ti.Sources), nil
+	case "IMPORTED":
+		if ti.Imported {
+			return []byte("TRUE"), nil
+		}
+		return []byte("FALSE"), nil
+	}
+	return nil, &UnsupportedError{
+		Op:     g.Op,
+		Reason: fmt.Sprintf("property %q not in the v1 evaluator's supported set (NAME, TYPE, SOURCES, IMPORTED); INTERFACE_* and other aggregated properties need a richer capture pipeline", prop),
+	}
 }

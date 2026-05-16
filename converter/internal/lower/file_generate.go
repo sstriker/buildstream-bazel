@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
@@ -50,7 +51,7 @@ type fileGenerateOut struct {
 // Returns an empty slice with no error when calls is empty or
 // hostBuildDir is unset — preserves the pre-trace behavior for
 // offline runs without a stashed fixture.
-func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]fileGenerateOut, error) {
+func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, cc *codegenContext) ([]fileGenerateOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -76,7 +77,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 			// know statically — re-evaluating at Bazel time
 			// would require dynamic outputs, which Bazel doesn't
 			// support for genrule.
-			resolved, ok := resolveGenexInPath(call.Output, buildGenexContext(cmakeVars))
+			resolved, ok := resolveGenexInPath(call.Output, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
 				continue
 			}
@@ -128,7 +129,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 		}
 
 		name := configureFileGenruleName(rel) // reuse the gen_<path> namer
-		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars)
+		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -159,7 +160,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // Falls back to legacy otherwise. The genex short-circuit
 // happens before pickValues so the audit tag tells the operator
 // which exit fired.
-func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string) ir.Target {
+func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
 	legacy := ir.Target{
 		Name:        name,
@@ -206,7 +207,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// cmake-codegen-file-generate-genex audit tag (same
 		// exit as the pre-evaluator gate).
 		if hasGenex([]byte(call.Input)) {
-			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars))
+			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
 				genexLegacy := legacy
 				genexLegacy.Tags = fileGenerateTags(false, true, false, false)
@@ -272,7 +273,21 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	// resolve. The body-side decision below is purely about
 	// the template's content.
 	if hasGenex(templateBody) {
-		ctx := buildGenexContext(cmakeVars)
+		// Payload pruning: only ship Targets in the marshaled
+		// Context when the template actually references a per-
+		// target op. Avoids dumping every per-target dict into
+		// the lifted cmd for templates that only reference
+		// CONFIG / PLATFORM_ID / etc. — the (a) lift's payload
+		// would otherwise grow linearly with target count for
+		// no benefit. The cheap substring check is sound: a
+		// template with `$<TARGET_PROPERTY:t,p>` always
+		// contains the literal `$<TARGET_PROPERTY:`; one
+		// without doesn't.
+		ctxTargets := genexTargets
+		if !bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:")) {
+			ctxTargets = nil
+		}
+		ctx := buildGenexContext(cmakeVars, ctxTargets)
 		if nodes, err := genexeval.Parse(templateBody); err == nil {
 			if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
 				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, opts, isContentForm)
@@ -549,6 +564,53 @@ func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated bool)
 	return tags
 }
 
+// buildGenexTargets projects the fileapi codemodel's per-target
+// data into the genexeval.TargetInfo map the evaluator
+// consults for `$<TARGET_PROPERTY:t,p>`. Keyed by the target's
+// cmake name (not its fileapi ID). Captures only the
+// properties the v1 evaluator supports verbatim (Type / Sources
+// / Imported); INTERFACE_* aggregation isn't modeled here so
+// queries against those properties surface as UnsupportedError
+// from the evaluator. cmake-internal helper targets
+// (ZERO_CHECK / INSTALL / PACKAGE / ...) are skipped — they
+// have no Bazel equivalent and the user-authored CMakeLists
+// shouldn't reference them via TARGET_PROPERTY.
+//
+// Returns nil when r is nil or has no usable targets — the
+// evaluator's UnsupportedError on missing-target surfaces
+// cleanly and routes the lift to (b) / legacy.
+func buildGenexTargets(r *fileapi.Reply) map[string]genexeval.TargetInfo {
+	if r == nil || len(r.Targets) == 0 {
+		return nil
+	}
+	out := make(map[string]genexeval.TargetInfo, len(r.Targets))
+	for _, t := range r.Targets {
+		if t.IsGeneratorProvided {
+			continue
+		}
+		// SOURCES property: semicolon-join the source paths in
+		// fileapi's documented order, matching cmake's list
+		// serialization for property strings.
+		var sources []string
+		for _, s := range t.Sources {
+			sources = append(sources, s.Path)
+		}
+		out[t.Name] = genexeval.TargetInfo{
+			Type:    t.Type,
+			Sources: strings.Join(sources, ";"),
+			// Imported targets carry no fileapi codemodel
+			// directly; the fileapi codemodel only lists targets
+			// added by the project's own CMakeLists. Imported
+			// targets surfaced via find_package etc. would need
+			// a separate capture path; for v1 we report Imported
+			// as false for all captured targets (matches reality
+			// — they're all locally-defined).
+			Imported: false,
+		}
+	}
+	return out
+}
+
 // buildGenexContext extracts the configure-time fields the (a)
 // evaluator consults from the cmake variable dump. The Context
 // is a thin projection over cmakeVars — the evaluator reads
@@ -570,13 +632,14 @@ func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated bool)
 // Returns a zero Context when cmakeVars is nil; the evaluator
 // will refuse most ops via UnsupportedError and the lifter
 // falls through to (b) / legacy.
-func buildGenexContext(cmakeVars map[string]string) genexeval.Context {
-	if cmakeVars == nil {
+func buildGenexContext(cmakeVars map[string]string, targets map[string]genexeval.TargetInfo) genexeval.Context {
+	if cmakeVars == nil && targets == nil {
 		return genexeval.Context{}
 	}
 	ctx := genexeval.Context{
 		Config:     cmakeVars["CMAKE_BUILD_TYPE"],
 		PlatformID: cmakeVars["CMAKE_SYSTEM_NAME"],
+		Targets:    targets,
 	}
 	for k, v := range cmakeVars {
 		if !strings.HasPrefix(k, "CMAKE_") || !strings.HasSuffix(k, "_COMPILER_ID") {
@@ -656,18 +719,41 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 // representation is the same on both sides. Empty fields are
 // omitted to keep the base64-encoded blob small (typical
 // Context is ~50-100 bytes after compaction).
+//
+// Targets, when present, ships as a nested map; only the
+// fields the v1 evaluator consults (Type / Sources / Imported)
+// land on the wire so future Context extensions don't bloat
+// the payload until the matching evaluator support lands.
 func marshalGenexContext(ctx genexeval.Context) ([]byte, error) {
+	type targetJSON struct {
+		Type     string `json:"type,omitempty"`
+		Sources  string `json:"sources,omitempty"`
+		Imported bool   `json:"imported,omitempty"`
+	}
 	type contextJSON struct {
-		Config           string            `json:"config,omitempty"`
-		CompilerID       map[string]string `json:"compiler_id,omitempty"`
-		PlatformID       string            `json:"platform_id,omitempty"`
-		CompilerLanguage string            `json:"compiler_language,omitempty"`
+		Config           string                `json:"config,omitempty"`
+		CompilerID       map[string]string     `json:"compiler_id,omitempty"`
+		PlatformID       string                `json:"platform_id,omitempty"`
+		CompilerLanguage string                `json:"compiler_language,omitempty"`
+		Targets          map[string]targetJSON `json:"targets,omitempty"`
+	}
+	var targets map[string]targetJSON
+	if len(ctx.Targets) > 0 {
+		targets = make(map[string]targetJSON, len(ctx.Targets))
+		for name, t := range ctx.Targets {
+			targets[name] = targetJSON{
+				Type:     t.Type,
+				Sources:  t.Sources,
+				Imported: t.Imported,
+			}
+		}
 	}
 	return json.Marshal(contextJSON{
 		Config:           ctx.Config,
 		CompilerID:       ctx.CompilerID,
 		PlatformID:       ctx.PlatformID,
 		CompilerLanguage: ctx.CompilerLanguage,
+		Targets:          targets,
 	})
 }
 

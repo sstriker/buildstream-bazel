@@ -311,6 +311,42 @@ func TestRun_GenexContext(t *testing.T) {
 	}
 }
 
+// TestRun_GenexContext_TargetProperty covers the (a) lift's
+// Bazel-time TARGET_PROPERTY path: the captured Targets dict
+// in the JSON sidecar populates genexeval.Context.Targets and
+// `$<TARGET_PROPERTY:t,p>` resolves at runtime.
+func TestRun_GenexContext_TargetProperty(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "tmpl.txt")
+	if err := os.WriteFile(tmplPath,
+		[]byte("// fglib is a $<TARGET_PROPERTY:fglib,TYPE>\n// imported? $<TARGET_PROPERTY:fglib,IMPORTED>\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	genexContextPath := filepath.Join(tmp, "ctx.json")
+	if err := os.WriteFile(genexContextPath,
+		[]byte(`{"targets":{"fglib":{"type":"STATIC_LIBRARY","imported":false}}}`),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+	if err := run(valuesPath, "", genexContextPath, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "// fglib is a STATIC_LIBRARY\n// imported? FALSE\n"
+	if string(body) != want {
+		t.Errorf("rendered mismatch\nwant: %q\ngot:  %q", want, body)
+	}
+}
+
 // TestRun_GenexContext_UnsupportedOpErrors: an evaluator op
 // that returns UnsupportedError (target-evaluator-dependent
 // `$<TARGET_FILE:...>`) bubbles up as "evaluate genex: ..."

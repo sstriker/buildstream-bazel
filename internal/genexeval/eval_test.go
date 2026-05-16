@@ -294,6 +294,73 @@ func TestEval_UnsupportedTargetGenex(t *testing.T) {
 	}
 }
 
+// TestEval_TargetProperty_SupportedSubset covers the v1
+// evaluator's TARGET_PROPERTY support: NAME / TYPE / SOURCES /
+// IMPORTED resolve from Context.Targets when the target is
+// captured, anything else surfaces as UnsupportedError so the
+// lifter falls through to (b) / legacy.
+func TestEval_TargetProperty_SupportedSubset(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {
+			Type:     "STATIC_LIBRARY",
+			Sources:  "src/a.c;src/b.c",
+			Imported: false,
+		},
+		"bar": {
+			Type:     "INTERFACE_LIBRARY",
+			Imported: true,
+		},
+	}}
+	cases := []struct{ in, want string }{
+		{"$<TARGET_PROPERTY:foo,NAME>", "foo"},
+		{"$<TARGET_PROPERTY:foo,TYPE>", "STATIC_LIBRARY"},
+		{"$<TARGET_PROPERTY:foo,SOURCES>", "src/a.c;src/b.c"},
+		{"$<TARGET_PROPERTY:foo,IMPORTED>", "FALSE"},
+		{"$<TARGET_PROPERTY:bar,IMPORTED>", "TRUE"},
+		{"$<TARGET_PROPERTY:bar,TYPE>", "INTERFACE_LIBRARY"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestEval_TargetProperty_Refusals asserts every refusal mode
+// surfaces as UnsupportedError with a clear Reason: missing
+// target, unsupported property, wrong-arity call, missing
+// Context field.
+func TestEval_TargetProperty_Refusals(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY"},
+	}}
+	cases := []struct{ name, in string }{
+		{"missing target", "$<TARGET_PROPERTY:nonexistent,NAME>"},
+		// INTERFACE_INCLUDE_DIRECTORIES needs the property-aggregation pipeline the v1 lifter doesn't implement.
+		{"unsupported property", "$<TARGET_PROPERTY:foo,INTERFACE_INCLUDE_DIRECTORIES>"},
+		// Single-arg form has no convert-time meaning for file(GENERATE).
+		{"one-arg form", "$<TARGET_PROPERTY:NAME>"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := evalString(t, c.in, ctx)
+			var ue *UnsupportedError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected UnsupportedError, got %v", err)
+			}
+			if ue.Reason == "" {
+				t.Errorf("UnsupportedError.Reason should not be empty")
+			}
+		})
+	}
+}
+
 func TestEval_UnknownGenex(t *testing.T) {
 	_, err := evalString(t, "$<TOTALLY_MADE_UP:foo>", Context{})
 	var ue *UnsupportedError
