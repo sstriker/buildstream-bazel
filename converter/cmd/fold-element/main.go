@@ -63,6 +63,7 @@ func main() {
 func run(argv []string) error {
 	fs := flag.NewFlagSet("fold-element", flag.ContinueOnError)
 	outBuild := fs.String("out-build", "", "destination path for the unified BUILD.bazel")
+	bazelPackagePath := fs.String("bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/foo\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths the per-platform IRs carry. Empty suppresses the directive.")
 	var cells stringSliceFlag
 	fs.Var(&cells, "cell", "<name>|<constraint1,constraint2,...>|<ir.json path>[|<select_label>]; repeat for each platform. Pipe is the outer separator because Bazel constraint labels embed colons. The optional 4th field is the operator-declared config_setting label that overrides PickSelectKeys' auto-detection (the escalation path for ambiguous multi-axis matrices like {linux_x86_64, linux_aarch64, darwin_arm64}).")
 	if err := fs.Parse(argv); err != nil {
@@ -137,7 +138,7 @@ func run(argv []string) error {
 	if err != nil {
 		return err
 	}
-	out, err := bazel.Emit(merged)
+	out, err := bazel.EmitWithOptions(merged, bazel.Options{BazelPackagePath: *bazelPackagePath})
 	if err != nil {
 		return fmt.Errorf("emit unified BUILD.bazel: %w", err)
 	}

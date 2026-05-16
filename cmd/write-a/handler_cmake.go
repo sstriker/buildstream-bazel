@@ -574,7 +574,8 @@ genrule(
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
-            --out-read-paths="$(location read_paths.json)"%[4]s%[5]s%[6]s%[7]s
+            --out-read-paths="$(location read_paths.json)" \\
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -785,7 +786,8 @@ genrule(
             --source-key="%[2]s" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
-            --out-read-paths="$(location read_paths.json)"
+            --out-read-paths="$(location read_paths.json)" \\
+            --bazel-package-path="elements/%[1]s"
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],

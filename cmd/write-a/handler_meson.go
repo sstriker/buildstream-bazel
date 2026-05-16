@@ -283,7 +283,8 @@ genrule(
         $(location //tools:convert-element-meson) \\
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
-            --out-bundle-dir="$$BUNDLE_DIR"%[3]s%[4]s
+            --out-bundle-dir="$$BUNDLE_DIR" \\
+            --bazel-package-path="elements/%[1]s"%[3]s%[4]s
         # v1 emits an empty bundle dir. We deliberately do NOT use
         # "tar -C $$BUNDLE_DIR ." — that includes the "." directory
         # entry with the bundle dir's mtime/uid/gid, making the tar

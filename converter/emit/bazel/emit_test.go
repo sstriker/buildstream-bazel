@@ -1270,11 +1270,13 @@ func TestEmit_NoImplementationDeps_OmitsAttribute(t *testing.T) {
 }
 
 // TestEmit_GazelleCcSearch_UnionDedupSort confirms the Phase 7d
-// `# gazelle:cc_search` file-head directives mirror the union of
-// every target's `includes`, deduped across targets and emitted
-// in sorted order. Two targets share "include"; one adds "src".
-// The directives must render once each, sorted, above the load()
-// line — the conventional gazelle-directive placement.
+// `# gazelle:cc_search "" <pkgpath>/<dir>` file-head directives
+// mirror the union of every target's `includes`, deduped across
+// targets and emitted in sorted order. Two targets share
+// "include"; one adds "src". The directives must render once
+// each, sorted, above the load() line — the conventional
+// gazelle-directive placement — with the package-rooted form
+// gazelle_cc's repo-root-relative resolver expects.
 func TestEmit_GazelleCcSearch_UnionDedupSort(t *testing.T) {
 	pkg := &ir.Package{
 		Targets: []ir.Target{
@@ -1292,13 +1294,15 @@ func TestEmit_GazelleCcSearch_UnionDedupSort(t *testing.T) {
 			},
 		},
 	}
-	got, err := bazel.Emit(pkg)
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{BazelPackagePath: "elements/multi"})
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	body := string(got)
-	incIdx := strings.Index(body, "# gazelle:cc_search include")
-	srcIdx := strings.Index(body, "# gazelle:cc_search src")
+	incLine := `# gazelle:cc_search "" elements/multi/include`
+	srcLine := `# gazelle:cc_search "" elements/multi/src`
+	incIdx := strings.Index(body, incLine)
+	srcIdx := strings.Index(body, srcLine)
 	loadIdx := strings.Index(body, "load(")
 	if incIdx < 0 || srcIdx < 0 {
 		t.Fatalf("missing cc_search directive(s):\n%s", body)
@@ -1313,14 +1317,15 @@ func TestEmit_GazelleCcSearch_UnionDedupSort(t *testing.T) {
 	}
 	// Deduped: "include" appears exactly once despite two targets
 	// declaring it.
-	if n := strings.Count(body, "# gazelle:cc_search include\n"); n != 1 {
+	if n := strings.Count(body, incLine+"\n"); n != 1 {
 		t.Errorf("cc_search include directive emitted %d times, want 1\n%s", n, body)
 	}
 }
 
 // TestEmit_NoGazelleCcSearch_OmitsDirective confirms a package
 // whose targets carry no `includes` emits no `# gazelle:cc_search`
-// line at all — keeps includes-free goldens byte-stable.
+// line at all — even with a BazelPackagePath set — keeping
+// includes-free goldens byte-stable.
 func TestEmit_NoGazelleCcSearch_OmitsDirective(t *testing.T) {
 	pkg := &ir.Package{
 		Targets: []ir.Target{
@@ -1331,11 +1336,38 @@ func TestEmit_NoGazelleCcSearch_OmitsDirective(t *testing.T) {
 			},
 		},
 	}
-	got, err := bazel.Emit(pkg)
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{BazelPackagePath: "elements/lib"})
 	if err != nil {
 		t.Fatalf("Emit: %v", err)
 	}
 	if strings.Contains(string(got), "# gazelle:cc_search") {
 		t.Errorf("expected no cc_search directive when no target has includes:\n%s", got)
+	}
+}
+
+// TestEmit_GazelleCcSearch_RequiresBazelPackagePath confirms that
+// omitting BazelPackagePath suppresses the cc_search directive
+// even when targets do carry `includes`. gazelle_cc interprets
+// the directive's path argument repo-root relative, so emitting
+// it without knowing the package frame would point gazelle_cc at
+// the wrong place. Zero-Options unit tests therefore emit
+// nothing rather than wrong bytes.
+func TestEmit_GazelleCcSearch_RequiresBazelPackagePath(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name:     "lib",
+				Kind:     ir.KindCCLibrary,
+				Srcs:     []string{"lib.cc"},
+				Includes: []string{"include"},
+			},
+		},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(string(got), "# gazelle:cc_search") {
+		t.Errorf("expected no cc_search directive without BazelPackagePath:\n%s", got)
 	}
 }
