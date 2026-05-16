@@ -76,7 +76,7 @@ mkdir -p build/bin
 CGO_ENABLED=0 go build -o build/bin/write-a ./cmd/write-a
 
 # --- buildbarn stack --------------------------------------------------
-# Build the custom worker image (cmake/ninja/bwrap layered on
+# Build the custom worker image (cmake/ninja layered on
 # bb-runner-bare) then bring the stack up. CI builds the image as an
 # explicit step too; building it here keeps the gate self-contained
 # for local runs.
@@ -113,7 +113,6 @@ platform(
     exec_properties = {
         "Arch": "x86_64",
         "OSFamily": "linux",
-        "bwrap-version": "0.8.0",
         "cmake-version": "3.28.3",
         "ninja-version": "1.11.1",
     },

@@ -149,9 +149,9 @@ for Bazel 7 / 8 (paired with the
 `--unix_digest_hash_attribute_name` xattr path the flag
 provided); both were retired once `bb_clientd` became the
 production direction.
-Cmake-side conversion needs `cmake` and `bwrap` on the host;
-autotools-side needs `cmake`, `make`, and either Linux/amd64
-(native ptrace) or `strace` on `$PATH`. See
+Cmake-side conversion needs `cmake` on the host; autotools-side
+needs `cmake`, `make`, and either Linux/amd64 (native ptrace) or
+`strace` on `$PATH`. See
 [`docs/architecture.md`](docs/architecture.md) for the full
 host-tool table.
 

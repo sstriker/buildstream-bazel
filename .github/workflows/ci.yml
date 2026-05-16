@@ -62,7 +62,7 @@ jobs:
         if: failure()
 
   e2e:
-    name: End-to-end (cmake + bwrap)
+    name: End-to-end (cmake)
     runs-on: ubuntu-24.04
     needs: unit
     steps:
@@ -207,7 +207,7 @@ jobs:
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
-      - name: Build custom bb-runner image (cmake/ninja/bwrap layered on bb-runner-bare)
+      - name: Build custom bb-runner image (cmake/ninja layered on bb-runner-bare)
         # Building the worker image as an explicit step surfaces
         # Dockerfile / apt-repo issues independently of the test run
         # below. docker compose up would build it implicitly anyway,

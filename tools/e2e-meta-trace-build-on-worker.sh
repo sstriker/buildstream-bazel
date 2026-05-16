@@ -142,7 +142,6 @@ platform(
     exec_properties = {
         "Arch": "x86_64",
         "OSFamily": "linux",
-        "bwrap-version": "0.8.0",
         "cmake-version": "3.28.3",
         "ninja-version": "1.11.1",
     },

@@ -73,7 +73,6 @@
         properties: [
           { name: 'Arch', value: 'x86_64' },
           { name: 'OSFamily', value: 'linux' },
-          { name: 'bwrap-version', value: '0.8.0' },
           { name: 'cmake-version', value: '3.28.3' },
           { name: 'ninja-version', value: '1.11.1' },
         ],

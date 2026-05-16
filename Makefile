@@ -12,7 +12,6 @@
 # enforced softly here for dev-loop visibility.
 CMAKE_VERSION  ?= 3.28.3
 NINJA_VERSION  ?= 1.11.1
-BWRAP_VERSION  ?= 0.8.0
 
 # M2 acceptance-package version. Bumping requires a re-run of
 # TestE2E_Fmt_Converts since the *_test count assertion has a floor.
@@ -110,7 +109,7 @@ $(RUN_MANIFEST): $(GO_SRC)
 test:
 	$(GO) test ./...
 
-# End-to-end tests: real cmake + bwrap. Gated behind build tag.
+# End-to-end tests: real cmake invocation. Gated behind build tag.
 test-e2e: check-cmake-toolchain converter
 	$(GO) test -tags=e2e ./converter/...
 
@@ -623,8 +622,8 @@ fdsdk-reality-check:
 
 # M5 CMake-side acceptance gate. Configures a downstream find_package
 # consumer against a convert-element-cmake-synthesized cmake-config
-# bundle. No bazel required; just real cmake + bwrap (already covered
-# by check-cmake-toolchain).
+# bundle. No bazel required; just real cmake (already covered by
+# check-cmake-toolchain).
 e2e-cmake-consumer: check-cmake-toolchain converter
 	$(GO) test -tags=e2e -run TestE2E_CMakeConsumer ./converter/cmd/convert-element-cmake/
 
@@ -847,19 +846,18 @@ fmt:
 # their respective tools (meson / python3 / autotools chain) inside
 # the script and skip the bazel-build half cleanly when missing.
 #
-# bwrap (bubblewrap) joins cmake + ninja in the check because the
-# converter's cmakerun.Configure runs cmake under bwrap for sandbox
-# hermeticity; a missing bwrap surfaces as a cryptic "no such file
-# or directory" deep inside the converter rather than a clean
-# prereq failure. Pinned versions in CMAKE_VERSION / NINJA_VERSION
-# / BWRAP_VERSION above.
+# Pinned versions live in CMAKE_VERSION / NINJA_VERSION above; the
+# orchestrator's defaultPlatform asserts these and the worker image
+# (deploy/buildbarn/runner/Dockerfile) installs them. bwrap used to
+# be in this check too on the assumption that cmakerun.Configure
+# wrapped cmake in bwrap for hermeticity — it doesn't. Configure
+# invokes cmake directly with controlled env (empty HOME etc.) and
+# relies on Bazel's own action sandbox at the genrule layer.
 check-cmake-toolchain:
 	@command -v cmake >/dev/null || (echo "cmake not on PATH"; exit 1)
 	@command -v ninja >/dev/null || (echo "ninja not on PATH"; exit 1)
-	@command -v bwrap >/dev/null || (echo "bwrap not on PATH (apt install bubblewrap)"; exit 1)
 	@cmake --version | head -1
 	@ninja --version
-	@bwrap --version 2>&1 | head -1
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -39,7 +39,6 @@ converter/                  single-element converter (the per-package brain)
   cmd/convert-element-meson/  CLI entry point (meson; introspection-driven, see docs/design/meson-native-render.md)
   cmd/derive-toolchain/     emits cc_toolchain + toolchain.cmake from a cmake probe
   internal/cli              flag parsing + exit codes
-  internal/hermetic         bwrap argv builder, env scrubbing
   internal/cmakerun         drives `cmake --trace-expand`, drops File API queries
   internal/fileapi          codemodel-v2 / toolchains-v1 / cmakeFiles-v1 parsers
   internal/ninja            build.ninja parser (custom, ~400 lines)
@@ -94,7 +93,7 @@ rules_buildstream_bazel/    in-repo Bazel module referenced by rendered project 
 deploy/buildbarn/           local-dev REAPI cluster
   docker-compose.yml        bb-storage + bb-scheduler + bb-worker + bb-runner-bare
   config/*.jsonnet          per-service configs
-  runner/Dockerfile         custom bb-runner image with cmake/ninja/bwrap
+  runner/Dockerfile         custom bb-runner image with cmake/ninja
 
 scripts/ tools/             render-gate scripts + maintenance helpers
 docs/                       milestone plans, schema docs, known-deltas
@@ -112,9 +111,11 @@ bundle, and a `manifest.json` describing the element and its outputs.
 
 Pipeline, in order:
 
-1. **CLI / hermetic setup** — `converter/internal/cli` parses flags,
-   `converter/internal/hermetic` builds a `bwrap` argv that scrubs the
-   environment to a known whitelist.
+1. **CLI / env setup** — `converter/internal/cli` parses flags;
+   `cmakerun.Configure` scrubs the environment to a known whitelist
+   (empty `HOME`, fixed locale, `SOURCE_DATE_EPOCH`) before exec'ing
+   cmake. Per-action sandboxing comes from Bazel's spawn strategy at
+   the genrule layer, not from a wrapper inside the converter.
 2. **`cmake --trace-expand` probe** —
    `converter/internal/cmakerun/run.go` drops File API query stamps
    into the build dir and runs cmake. The trace JSON is the
@@ -298,7 +299,7 @@ including a smoke binary is `scripts/meta-hello.sh`.
   remote-execution + build-without-the-bytes gate.
 
 `.github/workflows/ci.yml` is the CI surface. Four jobs: `unit`,
-`e2e` (cmake+bwrap), `bazel-e2e`, `buildbarn-e2e`. Each step pipes
+`e2e` (cmake), `bazel-e2e`, `buildbarn-e2e`. Each step pipes
 output into `/tmp/cijob.log`; the
 `.github/actions/post-failure-tail` composite action posts the
 last 150 lines to the PR on failure.
@@ -307,9 +308,9 @@ last 150 lines to the PR on failure.
 
 `deploy/buildbarn/docker-compose.yml` brings up bb-storage,
 bb-scheduler, bb-worker, and bb-runner-bare. The runner is a custom
-image (`deploy/buildbarn/runner/Dockerfile`) that layers cmake,
-ninja, and bubblewrap onto upstream's distroless `bb-runner-bare`
-at the pinned versions (currently 3.28.3 / 1.11.1 / 0.8.0, matching
+image (`deploy/buildbarn/runner/Dockerfile`) that layers cmake and
+ninja onto upstream's distroless `bb-runner-bare` at the pinned
+versions (currently 3.28.3 / 1.11.1, matching
 `deploy/buildbarn/config/worker.jsonnet`'s advertised platform
 properties). Per-service jsonnet configs live in
 `deploy/buildbarn/config/`.

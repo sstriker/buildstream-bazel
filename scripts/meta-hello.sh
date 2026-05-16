@@ -100,9 +100,9 @@ if [ "$bazel_major" -lt 9 ]; then
 fi
 
 # Bazel-build half execs convert-element-cmake which shells to
-# cmake + ninja under bwrap. Skip cleanly if any are missing —
-# the render assertions above are still meaningful in isolation.
-for tool in cmake ninja bwrap; do
+# cmake + ninja. Skip cleanly if either is missing — the render
+# assertions above are still meaningful in isolation.
+for tool in cmake ninja; do
     if ! command -v "$tool" >/dev/null; then
         echo "meta-hello: render OK; $tool not on PATH, skipping build phase"
         exit 0

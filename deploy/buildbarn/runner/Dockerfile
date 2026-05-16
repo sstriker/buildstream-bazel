@@ -1,5 +1,5 @@
-# Custom bb-runner-bare image with cmake / ninja / bwrap pre-installed at
-# the versions the orchestrator's defaultPlatform asserts. Without these
+# Custom bb-runner-bare image with cmake / ninja pre-installed at the
+# versions the orchestrator's defaultPlatform asserts. Without these
 # tools on the runner, REAPI Action submissions of convert-element fail
 # at exec time even though the protocol round-trip succeeds.
 #
@@ -9,8 +9,8 @@
 # CMake-toolchain dependencies via apt.
 #
 # Versions MUST match deploy/buildbarn/config/worker.jsonnet's platform
-# properties and the Makefile's CMAKE_VERSION / NINJA_VERSION /
-# BWRAP_VERSION pins. Bumping any pin requires updating all four.
+# properties and the Makefile's CMAKE_VERSION / NINJA_VERSION pins.
+# Bumping any pin requires updating all three.
 #
 # Build:
 #   docker build -t cmake-to-bazel/bb-runner:local deploy/buildbarn/runner
@@ -26,12 +26,10 @@ FROM debian:bookworm-slim AS runtime
 
 ARG CMAKE_VERSION=3.28.3
 ARG NINJA_VERSION=1.11.1
-ARG BWRAP_VERSION=0.8.0
 
 # bookworm ships:
 #   cmake          3.25.1   (need 3.28.3 — download from Kitware GitHub releases)
 #   ninja-build    1.11.1   (matches NINJA_VERSION pin exactly)
-#   bubblewrap     0.8.0    (matches BWRAP_VERSION pin exactly)
 #   gcc            12.2.0   (whatever bookworm ships; convert-element only
 #                            needs *a* C compiler reachable from cmake's
 #                            project() probe — exact version is the
@@ -52,7 +50,6 @@ RUN set -eux; \
         ca-certificates curl \
         gcc libc6-dev \
         ninja-build \
-        bubblewrap \
         make \
     ; \
     arch="$(uname -m)"; \
@@ -71,8 +68,7 @@ RUN set -eux; \
     # defaultPlatform pins, the build fails here instead of silently
     # making the worker incompatible with the orchestrator at exec time.
     cmake --version | head -n 1 | grep -F "${CMAKE_VERSION}" || (echo "cmake version mismatch (want ${CMAKE_VERSION})" >&2 ; exit 1); \
-    ninja --version | grep -F "${NINJA_VERSION}" || (echo "ninja version mismatch (want ${NINJA_VERSION})" >&2 ; exit 1); \
-    bwrap --version | grep -F "${BWRAP_VERSION}" || (echo "bwrap version mismatch (want ${BWRAP_VERSION})" >&2 ; exit 1)
+    ninja --version | grep -F "${NINJA_VERSION}" || (echo "ninja version mismatch (want ${NINJA_VERSION})" >&2 ; exit 1)
 
 # bb-runner-bare's binary from the upstream layer. Buildbarn images are
 # built via @com_github_buildbarn_bb_storage//tools:container.bzl's

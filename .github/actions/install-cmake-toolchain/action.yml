@@ -1,18 +1,15 @@
 name: Install cmake toolchain
 description: >
-  Installs the host-toolchain (cmake + ninja + bwrap) needed by
-  every CI job that runs a kind:cmake render gate or the
-  converter's -tags=e2e Go tests. Three sites used this same
-  recipe verbatim (the e2e, bazel-e2e, and e2e-latest-cmake
-  jobs); they now share this composite action so a change to
-  the install sequence — e.g. bumping the upstream cmake URL
-  fetch, or adjusting the bwrap setuid workaround — only has
-  to land once.
+  Installs the host-toolchain (cmake + ninja) needed by every CI
+  job that runs a kind:cmake render gate or the converter's
+  -tags=e2e Go tests. Three sites use this same recipe (the e2e,
+  bazel-e2e, and e2e-latest-cmake jobs); they share this composite
+  action so a change to the install sequence — e.g. bumping the
+  upstream cmake URL fetch — only has to land once.
 
   ninja is pre-installed on ubuntu-24.04 runners; this action
-  installs bubblewrap via apt and the pinned cmake from upstream
-  (the runner's stock 3.31.6 in /usr/bin is shadowed by
-  /usr/local/bin/<cmake-from-pin>).
+  installs the pinned cmake from upstream (the runner's stock
+  3.31.6 in /usr/bin is shadowed by /usr/local/bin/<cmake-from-pin>).
 
 inputs:
   cmake_version:
@@ -29,17 +26,9 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Install bubblewrap + pinned cmake
+    - name: Install pinned cmake
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends bubblewrap
-        # Ubuntu 24.04 restricts unprivileged user namespaces by default
-        # (kernel + AppArmor profile). Rather than fight the layers,
-        # setuid bwrap so it creates the namespace as root. Acceptable
-        # for CI; production REAPI workers don't go through this code
-        # path.
-        sudo chmod u+s "$(command -v bwrap)"  # CI-only workaround; see block comment above
         # Pin the cmake the orchestrator's defaultPlatform asserts —
         # the runner's stock 3.31.6 in /usr/bin gets shadowed by the
         # /usr/local/bin install. Without the override, converter
@@ -52,4 +41,3 @@ runs:
         fi
         cmake --version | head -1
         ninja --version
-        bwrap --version 2>&1 | head -1

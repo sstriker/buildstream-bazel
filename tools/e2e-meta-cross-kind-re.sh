@@ -91,7 +91,7 @@ CGO_ENABLED=0 go build -o build/bin/trace-publish ./cmd/trace-publish
 CGO_ENABLED=0 go build -o build/bin/trace-lookup ./cmd/trace-lookup
 
 # --- buildbarn stack --------------------------------------------------
-# bb-runner-bare carries cmake + ninja + bwrap (see
+# bb-runner-bare carries cmake + ninja (see
 # deploy/buildbarn/Dockerfile.bb-runner-bare). The cmake configure
 # step inside the cons converter genrule's REAPI action runs on
 # this image.
@@ -170,7 +170,6 @@ platform(
     exec_properties = {
         "Arch": "x86_64",
         "OSFamily": "linux",
-        "bwrap-version": "0.8.0",
         "cmake-version": "3.28.3",
         "ninja-version": "1.11.1",
     },
