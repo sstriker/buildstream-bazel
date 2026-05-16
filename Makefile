@@ -604,14 +604,16 @@ fdsdk-reality-check:
 e2e-cmake-consumer: check-tools converter
 	$(GO) test -tags=e2e -run TestE2E_CMakeConsumer ./converter/cmd/convert-element-cmake/
 
-# Toolchain configure-skip e2e: runs convert-element-cmake twice
-# against the hello-world fixture (without and with
-# --toolchain-cmake-file) and asserts the with-file run's
-# cmake_configure_seconds (from --out-timings) is shorter. Validates
+# Toolchain plumbing e2e: runs cmake configure with a derived
+# toolchain.cmake and asserts the file's CACHE INTERNAL vars
+# survive into CMakeCache.txt (proves cmake loaded the file).
+# Plus runs convert-element-cmake with --toolchain-cmake-file
+# end to end to catch converter-side integration bugs. Validates
 # the derive-toolchain -> toolchain.cmake -> cmakerun integration
-# end-to-end.
+# deterministically (the historical SkipReducesConfigureTime
+# wall-clock variant was noise-bound and routinely flaked).
 e2e-toolchain-skip: check-tools converter derive-toolchain
-	$(GO) test -tags=e2e -run TestE2E_Toolchain_SkipReducesConfigureTime ./converter/cmd/convert-element-cmake/
+	$(GO) test -tags=e2e -run 'TestE2E_Toolchain_(LoadedByCmake|ConverterAcceptsToolchainFile)' ./converter/cmd/convert-element-cmake/
 
 # Fidelity gate. Parameterized harness: hello-world is the smoke
 # fixture; fmt (when fetched via `fetch-fmt`) is the real-world
