@@ -148,8 +148,9 @@ platform(
     visibility = ["//visibility:public"],
 )
 EOF
-# Project A's .bazelrc: trace_load actions only.
-cat > "$A/.bazelrc" <<EOF
+# Project A's .bazelrc: trace_load actions only. Append to write-a's
+# rendered strict-sandbox prelude.
+cat >> "$A/.bazelrc" <<EOF
 build --remote_cache=grpc://localhost:8980
 build --remote_executor=grpc://localhost:8983
 build --extra_execution_platforms=//platforms:buildbarn

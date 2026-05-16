@@ -119,7 +119,11 @@ platform(
     visibility = ["//visibility:public"],
 )
 EOF
-cat > "$A/.bazelrc" <<'EOF'
+# Append to write-a's rendered strict-sandbox .bazelrc prelude; the
+# RBE flags below add the remote-execution wiring on top of that
+# baseline. Per-rule --strategy=Genrule=remote takes precedence over
+# the prelude's --genrule_strategy=sandboxed for the converter genrule.
+cat >> "$A/.bazelrc" <<'EOF'
 # bb-storage exposes CAS + AC on :8980; bb-scheduler exposes the
 # Execution service on :8983 (see deploy/buildbarn/docker-compose.yml).
 build --remote_cache=grpc://localhost:8980

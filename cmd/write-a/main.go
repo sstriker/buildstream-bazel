@@ -1263,6 +1263,9 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if err := writeFile(filepath.Join(outDir, "BUILD.bazel"), "# project A root; per-element packages live under elements/<name>/.\n"); err != nil {
 		return err
 	}
+	if err := writeFile(filepath.Join(outDir, ".bazelrc"), bazelrcStrict()); err != nil {
+		return err
+	}
 
 	// The starlark utilities project A's per-element BUILDs load
 	// (zero_files / sources extension / trace_load) live in the
@@ -1631,6 +1634,9 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "MODULE.bazel"), moduleBazelB(g)); err != nil {
 		return err
 	}
+	if err := writeFile(filepath.Join(outDir, ".bazelrc"), bazelrcStrict()); err != nil {
+		return err
+	}
 	// Phase 8: operator-owned overlay.MODULE.bazel stub. Skipped
 	// when the file already exists so operator edits survive
 	// re-renders. See docs/design/operator-gazelle-step.md.
@@ -1753,6 +1759,37 @@ func writeProjectB(g *graph, outDir string) error {
 		}
 	}
 	return nil
+}
+
+// bazelrcStrict returns the rendered .bazelrc shared by projects A
+// and B. The convert-element-cmake genrule + the downstream
+// cc_library/cc_binary actions all rely on Bazel's per-action sandbox
+// for hermeticity (cmake.Configure scrubs HOME / locale / SDE itself,
+// but it's the action sandbox that prevents reads from outside the
+// declared inputs). Pinning the strategy here makes that guarantee
+// explicit at the rendered output layer instead of leaving it
+// dependent on bazel's default — which is linux-sandbox on Linux but
+// `local` on macOS, a silent loss of isolation otherwise.
+//
+// --sandbox_default_allow_network=false closes the offline-build
+// loophole: cmake configure SHOULD be offline (the converter's
+// design assumes pre-staged sources, not FetchContent_Declare with
+// URL fetches), so a network attempt during a genrule action is a
+// fixture bug worth catching, not a feature to allow.
+//
+// --incompatible_strict_action_env freezes the action env to a
+// fixed allowlist instead of leaking the developer's shell env in.
+// Matches what the production REAPI executor would do anyway.
+func bazelrcStrict() string {
+	return `# Strict per-action sandbox. write-a renders this in every project
+# so the hermeticity contract is explicit at the rendered-output layer
+# instead of dependent on bazel's per-platform default. See
+# cmd/write-a/main.go's bazelrcStrict for the reasoning.
+build --spawn_strategy=sandboxed
+build --genrule_strategy=sandboxed
+build --sandbox_default_allow_network=false
+build --incompatible_strict_action_env
+`
 }
 
 func moduleBazelA(g *graph) string {

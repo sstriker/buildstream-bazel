@@ -176,7 +176,9 @@ platform(
     visibility = ["//visibility:public"],
 )
 EOF
-cat > "$A/.bazelrc" <<EOF
+# Append to write-a's rendered strict-sandbox .bazelrc prelude (the
+# RBE flags add remote-execution on top of that baseline).
+cat >> "$A/.bazelrc" <<EOF
 build --remote_cache=grpc://localhost:8980
 build --remote_executor=grpc://localhost:8983
 build --extra_execution_platforms=//platforms:buildbarn
