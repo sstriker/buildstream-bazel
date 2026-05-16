@@ -127,6 +127,21 @@ func run(a cli.Args) error {
 				ninjaPath = direct
 			}
 		}
+		// Offline path: opportunistically pick up the captured
+		// cmake variable namespace from cmake-to-bazel.vars.dump
+		// in the reply dir. The live path gets this via
+		// cmakerun.Configure's Reply.Vars; the offline path
+		// previously left cmakeVars nil, which silently disabled
+		// the (a) genex evaluator (Context derived from cmakeVars
+		// is empty → every genex.UnsupportedError → fall back to
+		// (b) / legacy). Missing dump file → nil map, same
+		// behaviour as before; recorded fixtures opt in by
+		// stashing the dump alongside the fileapi reply.
+		if vars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir); err != nil {
+			return failure.New(failure.FileAPIMissing, "read vars dump: %v", err)
+		} else if len(vars) > 0 {
+			cmakeVars = vars
+		}
 	}
 
 	r, err := fileapi.Load(replyDir)

@@ -64,19 +64,23 @@ fi
 
 # Required content per lift mode.
 #
-# gen_config_tag_h is the genex-bearing call. After the (b)
-# structured-base64 lift shipped (ROADMAP "Generator-expression
-# evaluation in lifted genrules"), the genex value gets
-# captured-at-convert-time and replayed at Bazel time via
-# --genex-values=<sidecar>; the genrule carries BOTH
-# cmake-codegen-lifted AND the new
-# cmake-codegen-file-generate-genex-lifted facet so audit
-# queries can distinguish "lifted via (b)" from the plain
-# non-genex lift. Templates whose static surround can't anchor
-# the genex value extraction (adjacent genexes, same literal
-# with different resolutions, etc.) still fall back to the
-# legacy cmake-codegen-file-generate-genex shape — covered by
-# the unit tests in converter/internal/lower/file_generate_test.go.
+# gen_config_tag_h is the genex-bearing call. Both the (a) Go-
+# side evaluator and the (b) structured-base64 capture lifts
+# have shipped (ROADMAP "Generator-expression evaluation in
+# lifted genrules"). With the fixture's cmake-to-bazel.vars.dump
+# now carrying CMAKE_BUILD_TYPE=Release, the (a) evaluator
+# fires first: the captured Context (config + compiler_id +
+# platform_id) ships as a --genex-context sidecar and
+# cmake-configure-file re-evaluates $<CONFIG> at Bazel time.
+# The genrule carries BOTH cmake-codegen-lifted AND
+# cmake-codegen-file-generate-genex-evaluated so audit queries
+# can distinguish "lifted via (a)" from "lifted via (b)" (the
+# -genex-lifted facet) and from the plain non-genex lift.
+# Templates whose ops (a) can't resolve fall through to (b);
+# templates whose static surround can't anchor (b) extraction
+# fall back to the legacy cmake-codegen-file-generate-genex
+# shape — covered by the unit tests in
+# converter/internal/lower/file_generate_test.go.
 required=$(cat <<'EOF'
 name = "gen_version_h"
 "src/version.h.in"
@@ -85,8 +89,8 @@ name = "gen_version_h"
 name = "gen_banner_h"
 --content-base64=
 name = "gen_config_tag_h"
-"cmake-codegen-file-generate-genex-lifted"
---genex-values=
+"cmake-codegen-file-generate-genex-evaluated"
+--genex-context=
 EOF
 )
 

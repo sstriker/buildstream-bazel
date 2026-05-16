@@ -128,6 +128,25 @@ transition cleanly.
 
 ## Done (high points)
 
+- **file-generate fixture exercises (a) end-to-end.** The
+  existing file-generate sample-project's `gen_config_tag_h`
+  previously fell back to (b) at render-gate time because the
+  fileapi reply didn't carry `cmake-to-bazel.vars.dump` — so
+  the offline path's `cmakeVars` stayed nil and the (a)
+  evaluator's Context was empty. Two-part fix: (1) new
+  `cmakerun.ReadVarsDumpFromReplyDir` exported helper, wired
+  into `convert-element-cmake`'s offline branch so any
+  fixture or pre-recorded reply with a vars-dump
+  opportunistically populates `cmakeVars`; (2) a minimal
+  vars-dump committed under `converter/testdata/fileapi/
+  file-generate/` carrying `CMAKE_BUILD_TYPE=Release`,
+  `CMAKE_SYSTEM_NAME=Linux`, `CMAKE_C_COMPILER_ID=GNU`,
+  `CMAKE_CXX_COMPILER_ID=GNU`. Result: `gen_config_tag_h` now
+  lifts via the (a) shape end-to-end through the render gate,
+  with the `cmake-codegen-file-generate-genex-evaluated` tag
+  asserted by `scripts/meta-file-generate.sh`. The
+  `TestEmit_FileGenerate_Golden` golden updates to match.
+
 - **OUTPUT-side and INPUT-arg genex resolution at convert
   time.** The (a) evaluator (below) now also resolves `$<...>`
   in the file(GENERATE) `OUTPUT` and `INPUT` paths at convert

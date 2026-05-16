@@ -288,6 +288,18 @@ func buildCmakeArgv(opts Options, dumpVarsPath string) ([]string, error) {
 	return argv, nil
 }
 
+// ReadVarsDumpFromReplyDir loads cmake-to-bazel.vars.dump from a
+// fileapi reply directory. Returns (nil, nil) when the file
+// isn't present — same convention as readVarsDump — so offline
+// callers can opportunistically pick up the captured cmake
+// namespace without requiring it. Used by tests + the offline
+// branch of convert-element-cmake where the operator passes a
+// pre-recorded reply dir; the live cmakerun.Configure path uses
+// the in-process Reply.Vars directly.
+func ReadVarsDumpFromReplyDir(replyDir string) (map[string]string, error) {
+	return readVarsDump(filepath.Join(replyDir, VarsDumpFilename))
+}
+
 // readVarsDump parses the file dump-vars.cmake wrote. Missing
 // file → (nil, nil): the caller treats absence as "no vars
 // captured" rather than a hard error. Malformed lines are a hard
