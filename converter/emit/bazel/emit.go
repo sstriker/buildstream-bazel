@@ -99,20 +99,37 @@ func nonDefaultVisibility(vis []string) []string {
 	return append([]string(nil), vis...)
 }
 
-// emitGazelleCcSearch writes `# gazelle:cc_search <dir>` file-head
-// directives mirroring the union of every target's `includes`
-// attribute values. Per docs/design/build-output-conventions.md
+// emitGazelleCcSearch writes `# gazelle:cc_search "" <pkgpath>/<dir>`
+// file-head directives mirroring the union of every target's
+// `includes` attribute values. Per docs/design/build-output-conventions.md
 // Phase 7d: gazelle_cc's header-scan resolver needs the same
 // include search paths the converter extracted from CMake so an
-// operator-added `#include` of an in-tree header resolves to the
-// right label on `gazelle fix`. The directive is package-scoped,
-// so the union across targets (deduped, sorted) is the right
-// granularity.
+// operator-added unqualified `#include "X"` of an in-tree header
+// resolves to the right label on `gazelle fix`.
 //
-// Inert when gazelle isn't installed — it's a plain `#` comment
-// to any tool that doesn't look for it. No-op when no target
-// carries `includes`, keeping includes-free goldens byte-stable.
-func emitGazelleCcSearch(buf *bytes.Buffer, pkg *ir.Package) {
+// Frame mismatch the two-arg shape fixes: `cc_library.includes`
+// is package-relative ("include" → `-I <pkgpath>/include` at
+// compile time), whereas gazelle_cc's `cc_search` directive
+// takes (<strip_include_prefix>, <include_prefix>) pairs
+// interpreted **repo-root relative**, where `gazelle_cc` prepends
+// `<include_prefix>` to the include text and looks the result up
+// in `cc_index.json`. The directive that gives gazelle_cc the
+// same name-resolution view the `-I <pkgpath>/include` flag
+// gives the compiler is `# gazelle:cc_search "" <pkgpath>/include`
+// — strip nothing, prepend the package-rooted include dir.
+// The single-arg form we previously emitted left the second arg
+// empty, which gazelle_cc treats as "strip leading <arg>/ from
+// the include and look at the repo root" — wrong semantics.
+//
+// Inert when opts.BazelPackagePath is empty (the directive can't
+// be correctly framed without the repo-relative package path) or
+// when no target carries `includes`. Tests that don't care about
+// gazelle_cc resolution pass the zero-value Options and get no
+// directive, keeping their goldens shape-pure.
+func emitGazelleCcSearch(buf *bytes.Buffer, pkg *ir.Package, opts Options) {
+	if opts.BazelPackagePath == "" {
+		return
+	}
 	seen := map[string]struct{}{}
 	var dirs []string
 	for _, t := range pkg.Targets {
@@ -128,8 +145,16 @@ func emitGazelleCcSearch(buf *bytes.Buffer, pkg *ir.Package) {
 		return
 	}
 	sort.Strings(dirs)
+	pkgPath := strings.Trim(opts.BazelPackagePath, "/")
 	for _, d := range dirs {
-		fmt.Fprintf(buf, "# gazelle:cc_search %s\n", d)
+		// Join package path + include dir using the same
+		// slash-rooted form gazelle_cc expects. Skip leading
+		// "./" or "/" on the include dir for cleanliness; CMake
+		// includes are normally simple package-relative names
+		// ("include", "src") but defend against the occasional
+		// "./include" the lower path might produce.
+		rel := strings.TrimPrefix(strings.TrimPrefix(d, "./"), "/")
+		fmt.Fprintf(buf, "# gazelle:cc_search \"\" %s/%s\n", pkgPath, rel)
 	}
 	buf.WriteString("\n")
 }
@@ -182,6 +207,20 @@ type Options struct {
 	// separating the header from the rest of the BUILD; this
 	// field is appended verbatim to the buffer.
 	Header string
+
+	// BazelPackagePath is the repo-root-relative path of the
+	// Bazel package the emitted BUILD.bazel lives in (e.g.
+	// "elements/hello-world"). Used to frame the
+	// `# gazelle:cc_search "" <pkgpath>/<include>` directives so
+	// gazelle_cc's header-scan resolver sees the same include
+	// search paths the converter extracted from CMake.
+	// gazelle_cc interprets `cc_search` arguments repo-root
+	// relative, whereas `cc_library.includes` is package-relative
+	// — without the package-path frame the directive points at
+	// the wrong place. Empty value (zero Options) suppresses the
+	// directive entirely, which is the right shape for unit
+	// tests that don't care about gazelle_cc resolution.
+	BazelPackagePath string
 }
 
 // Emit returns the contents of a BUILD.bazel file for pkg using
@@ -211,7 +250,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	} else {
 		buf.WriteString(header)
 	}
-	emitGazelleCcSearch(&buf, pkg)
+	emitGazelleCcSearch(&buf, pkg, opts)
 	emitLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 

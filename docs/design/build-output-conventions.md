@@ -362,17 +362,37 @@ Emitted on:
 
 ### `# gazelle:cc_search` directives (Phase 7d — emitted)
 
-`converter/emit/bazel` writes `# gazelle:cc_search <dir>`
-file-head directives mirroring the **union** of every target's
-`includes` attribute values — deduped across the package's
-targets, sorted, rendered above the `load()` line in the
-conventional gazelle-directive position. They give gazelle_cc's
-header-scan resolver the same include search paths the converter
-extracted from CMake, so an operator-added `#include` of an
-in-tree header resolves to the right label on `gazelle fix`.
+`converter/emit/bazel` writes `# gazelle:cc_search ""
+<pkgpath>/<dir>` file-head directives mirroring the **union** of
+every target's `includes` attribute values — deduped across the
+package's targets, sorted, rendered above the `load()` line in
+the conventional gazelle-directive position. They give
+gazelle_cc's header-scan resolver the same include search paths
+the converter extracted from CMake, so an operator-added
+unqualified `#include "X"` of an in-tree header resolves to the
+right label on `gazelle fix`.
+
+**Frame.** gazelle_cc's `cc_search` directive takes two
+arguments — `<strip_include_prefix>` and `<include_prefix>` —
+both interpreted **repo-root relative** (parser:
+`language/cc/config.go` in `EngFlow/gazelle_cc`).
+`cc_library.includes` is package-relative, so the same value
+can't be passed verbatim: gazelle_cc would resolve it against
+the workspace root and miss the package's actual `-I` directory.
+The two-arg form `# gazelle:cc_search "" <pkgpath>/<dir>`
+translates the package-relative include into the repo-rooted
+form gazelle_cc expects. `cmd/write-a` passes
+`--bazel-package-path=elements/<name>` to every converter
+genrule for this; convert-element-cmake / -meson / -trace
+and fold-element thread it through
+`bazel.Options.BazelPackagePath`.
+
 Inert when gazelle isn't installed (a plain `#` comment); no
-directive is emitted when no target carries `includes`, keeping
-includes-free goldens byte-stable.
+directive is emitted when no target carries `includes`, or when
+`BazelPackagePath` is empty — the unit-test path, since wrong
+bytes are worse than no bytes (gazelle_cc warns + skips
+malformed directives, and a single-arg form would be silently
+mis-interpreted as a strip-prefix-only rule).
 
 ### `# gazelle:resolve` directives (operator escape hatch — not emitted)
 

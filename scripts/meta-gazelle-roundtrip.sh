@@ -193,15 +193,21 @@ echo "meta-gazelle-roundtrip: stage-b re-stage is a no-op (content-diff signal w
 # The hello-world fixture's CMakeLists sets
 # target_include_directories(hello ... include), so the emitted
 # cc_library carries includes = ["include"] and the cc emitter
-# must mirror it as a file-head `# gazelle:cc_search include`
-# directive (deduped + sorted across the package's targets).
+# must mirror it as a file-head two-arg `# gazelle:cc_search ""
+# elements/hello-world/include` directive. gazelle_cc interprets
+# the second arg repo-root relative (parser: language/cc/config.go
+# in EngFlow/gazelle_cc), so the package path must be baked in.
+# write-a wires this by passing --bazel-package-path=elements/<name>
+# to the converter genrule, which threads it onto
+# bazel.Options.BazelPackagePath.
 staged_build="$B/elements/hello-world/BUILD.bazel"
-if ! grep -qx "# gazelle:cc_search include" "$staged_build"; then
-    echo "meta-gazelle-roundtrip: staged BUILD.bazel missing '# gazelle:cc_search include' directive (Phase 7d)" >&2
+expected_directive='# gazelle:cc_search "" elements/hello-world/include'
+if ! grep -qxF "$expected_directive" "$staged_build"; then
+    echo "meta-gazelle-roundtrip: staged BUILD.bazel missing '$expected_directive' directive (Phase 7d)" >&2
     cat "$staged_build" >&2
     exit 1
 fi
-echo "meta-gazelle-roundtrip: # gazelle:cc_search directive present (Phase 7d)"
+echo "meta-gazelle-roundtrip: # gazelle:cc_search directive present and repo-root framed (Phase 7d)"
 
 # === Populate cc_index.json + python_modules.json ===
 "$bin_dir/build-cc-index" \

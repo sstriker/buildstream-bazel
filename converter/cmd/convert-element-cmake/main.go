@@ -248,7 +248,10 @@ func run(a cli.Args) error {
 		}
 	}
 
-	out, err := bazel.EmitWithOptions(pkg, bazel.Options{SourceKey: a.SourceKey})
+	out, err := bazel.EmitWithOptions(pkg, bazel.Options{
+		SourceKey:        a.SourceKey,
+		BazelPackagePath: a.BazelPackagePath,
+	})
 	if err != nil {
 		return err
 	}
