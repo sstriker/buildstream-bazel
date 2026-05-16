@@ -55,14 +55,14 @@ install_tree.tar shape.
 | `compose` | 25 | 2.3 % | structural | filegroup composition |
 | `import` | 22 | 2.0 % | structural | filegroup-only |
 | `collect_manifest` | 18 | 1.6 % | placeholder | v1 stub |
-| `collect_initial_scripts` | 15 | 1.4 % | **missing** | FDSDK-specific glue |
+| `collect_initial_scripts` | 15 | 1.4 % | placeholder | v1 stub (FDSDK-local initial-scripts collector) |
 | `makemaker` | 14 | 1.3 % | **deep** | trace-driven via convert-element-trace (Perl ExtUtils::MakeMaker still goes through cc/ar) |
 | `junction` | 8 | 0.7 % | orchestration | cross-project link, project-level concern |
 | `snap_image` | 6 | 0.5 % | structural | install-tree manipulation |
 | `bazel` | n/a | n/a | **passthrough** | source ships its own BUILD; verbatim staging |
-| `collect_integration` | 2 | 0.2 % | **missing** | FDSDK glue |
-| `check_forbidden` | 2 | 0.2 % | **missing** | CI assertion |
-| `flatpak_repo` | 1 | 0.1 % | **missing** | FDSDK glue |
+| `collect_integration` | 2 | 0.2 % | placeholder | v1 stub (integration-script collector) |
+| `check_forbidden` | 2 | 0.2 % | placeholder | v1 stub — assertion does NOT run yet |
+| `flatpak_repo` | 1 | 0.1 % | placeholder | v1 stub (flatpak-repo packager) |
 | `modulebuild` | 1 | 0.1 % | **deep** | trace-driven via convert-element-trace (Perl Module::Build) |
 
 **Today: 25.1 % (autotools) + 12.3 % (meson) + 10.5 %
@@ -74,14 +74,43 @@ effective figure higher (`stack`/`filter`/`compose`/`import`/
 `flatpak_image`/`snap_image` together: ~19.8 %), but those
 don't have a build of their own to convert.
 
-## Lowest priority: FDSDK-specific glue
+## FDSDK-specific glue
 
 `collect_initial_scripts` (15), `collect_integration` (2),
 `check_forbidden` (2), `flatpak_repo` (1) — total ~20
 elements (1.8% of FDSDK). Each is small and FDSDK-specific.
-A v1 stub handler for each (similar to `collect_manifest`
-today) takes about an hour each. Plumb in after the
-high-impact items above.
+All four now have **v1 stub handlers** (same shape as the
+pre-existing `collect_manifest` stub) so render of FDSDK
+fixtures completes without these kinds breaking the graph.
+The stubs emit an empty `install_tree.tar`; **real plugin
+semantics are not yet ported** — see per-kind comments in
+`cmd/write-a/handler_*.go` for what the real plugin does and
+what would need to change for it to ride a bazel-build-time
+contract.
+
+Cost-to-port for the real semantics, per kind:
+
+- **`collect_initial_scripts`** — walk deps' install trees
+  for `%{install-root}/usr/lib/initial-scripts/*` and
+  assemble. Could be a single genrule that tars the union;
+  no introspection needed. ~1-2 hours.
+- **`collect_integration`** — walk deps' public-domain
+  `integration-commands` metadata into
+  `%{install-root}/usr/share/integration/integrate.sh`. The
+  public-domain metadata isn't currently captured by the
+  converter — would need a kindHandler extension. ~half a
+  day including the metadata-capture plumbing.
+- **`check_forbidden`** — config-block-driven dep-tree walk +
+  glob match, fail-with-diagnostic. Stub today succeeds
+  unconditionally; porting needs the operator-declared
+  forbidden-pattern parsing + a Bazel-time assertion shape
+  (probably a sh_test that exits non-zero on match). ~half a
+  day.
+- **`flatpak_repo`** — ostree repo init + per-image commit +
+  summary regen. Needs `ostree` available at bazel-build
+  time (a system tool the converter doesn't currently
+  assume). Bigger lift; deferred until an FDSDK release-
+  pipeline fixture forces it.
 
 ## Recommendation
 
@@ -102,8 +131,18 @@ Tackle in order of impact-per-work-unit:
    default; per-element write-a-time dispatch for refused
    elements is the queued Phase B install-plan fallback
    follow-up).
-4. **FDSDK glue** — last; small impact each.
+4. ~~**FDSDK glue** — last; small impact each.~~ All four
+   (`collect_initial_scripts`, `collect_integration`,
+   `check_forbidden`, `flatpak_repo`) now have v1 stub
+   handlers so render of FDSDK fixtures reaches completion.
+   Real plugin semantics deferred until an FDSDK fixture
+   forces it; see "FDSDK-specific glue" above for per-kind
+   port cost.
 
 Coverage today: **~76 % of FDSDK has deep conversion** (vs.
 ~65 % before pyproject; ~32 % before the trace-driven
-generalization).
+generalization). With the v1-stub FDSDK-glue kinds, **100 %
+of FDSDK's element-kind catalog now has a handler** — even
+if 1.8 % of FDSDK's elements (the glue kinds) get a
+render-only placeholder rather than full bazel-build-time
+correctness.

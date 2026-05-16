@@ -3277,6 +3277,70 @@ func TestWriter_CollectManifestHandler(t *testing.T) {
 	}
 }
 
+// TestWriter_FDSDKGlueHandlers covers the v1-placeholder
+// handlers for the four FDSDK-specific glue kinds — same shape
+// as collect_manifest (no-source element with build-depends,
+// project-A genrule emits an empty install_tree.tar, project-B
+// placeholder stays). One table entry per kind keeps the
+// per-kind assertion in lockstep; new placeholder kinds added
+// in this PR shape (or future ones following it) can extend
+// the table.
+func TestWriter_FDSDKGlueHandlers(t *testing.T) {
+	cases := []struct {
+		kind        string
+		elemName    string
+		bstSubpath  string
+		commentMust string // substring assertion on the project-A BUILD comment
+	}{
+		{"collect_initial_scripts", "initscripts", "initscripts.bst", "FDSDK-local initial-scripts"},
+		{"collect_integration", "integrate", "integrate.bst", "integration-script collector"},
+		{"check_forbidden", "forbidden", "forbidden.bst", "forbidden-path CI assertion"},
+		{"flatpak_repo", "fp_repo", "fp_repo.bst", "flatpak-repo packager"},
+	}
+	for _, c := range cases {
+		t.Run(c.kind, func(t *testing.T) {
+			tmp := t.TempDir()
+			parent := makeCmakeBst(t, tmp, "parent")
+			bst := filepath.Join(tmp, c.bstSubpath)
+			if err := os.WriteFile(bst,
+				[]byte("kind: "+c.kind+"\nbuild-depends:\n- parent\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			g, err := loadGraph([]string{parent, bst}, "")
+			if err != nil {
+				t.Fatalf("loadGraph: %v", err)
+			}
+			if g.ByName[c.elemName].Bst.Kind != c.kind {
+				t.Fatalf("Kind = %q, want %q", g.ByName[c.elemName].Bst.Kind, c.kind)
+			}
+			if len(g.ByName[c.elemName].Deps) != 1 {
+				t.Errorf("build-depends should produce one Dep edge; got Deps=%v", g.ByName[c.elemName].Deps)
+			}
+			binPath := fakeConvertBin(t, tmp)
+			outA := filepath.Join(tmp, "A")
+			if err := writeProjectA(g, outA, binPath); err != nil {
+				t.Fatalf("writeProjectA: %v", err)
+			}
+			body, err := os.ReadFile(filepath.Join(outA, "elements/"+c.elemName+"/BUILD.bazel"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := string(body)
+			for _, marker := range []string{
+				`name = "` + c.elemName + `_install"`,
+				`outs = ["install_tree.tar"]`,
+				`EMPTY="$$(mktemp -d)"`,
+				`srcs = []`,
+				c.commentMust, // per-kind comment distinguisher
+			} {
+				if !strings.Contains(got, marker) {
+					t.Errorf("kind:%s BUILD missing marker %q\n--body--\n%s", c.kind, marker, got)
+				}
+			}
+		})
+	}
+}
+
 // TestWriter_PathQualifiedDeps covers the FDSDK-shape: element
 // names key into the graph by their path relative to the project's
 // element-root, so a depends-list reference like
