@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -74,7 +75,7 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.2.3"}, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.2.3"}, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "9.9"}, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "9.9"}, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.0"}, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VERSION": "1.0"}, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -218,7 +219,7 @@ func TestRecoverFileGenerate_GenexLiftedViaStructuredBase64(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -343,7 +344,7 @@ func TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy(t *testing.
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -386,7 +387,7 @@ func TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator(t *testing.T) {
 		"CMAKE_CXX_COMPILER_ID": "GNU",
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -480,18 +481,22 @@ func extractGenexContextFromCmd(t *testing.T, cmd string) struct {
 
 // TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp
 // asserts the (a) → (b) → legacy fallthrough order: a template
-// with $<TARGET_FILE:...> (which the (a) evaluator refuses via
+// with a typed-refused op (which the (a) evaluator refuses via
 // UnsupportedError) routes to (b); (b) succeeds when the static
 // surround can anchor the value; tag set carries the (b) facet,
 // not (a)'s.
+//
+// Uses $<TARGET_OBJECTS:foo> — a typed-refused op that's NOT in
+// the targetFileFamilyPrefixes set the cross-package soundness
+// gate scans. Earlier this test used $<TARGET_FILE:foo>, but
+// that's now caught by the soundness gate (foo not in
+// codemodel + no imports manifest → refuse instead of fall
+// through to (b)). Switching ops preserves the original
+// "(a) refuses → (b) lifts" coverage without colliding with
+// the cross-package gate.
 func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t *testing.T) {
-	// $<TARGET_FILE:foo> is the unsupported op. cmake renders
-	// it to "/abs/path/libfoo.a" or similar at generate time;
-	// the trace records the resolved bytes in the output. For
-	// the test we just need a template+rendered pair where (a)
-	// refuses but (b) extracts cleanly.
-	template := "// link to $<TARGET_FILE:foo>\n"
-	rendered := []byte("// link to /opt/lib/libfoo.a\n")
+	template := "// objs: $<TARGET_OBJECTS:foo>\n"
+	rendered := []byte("// objs: /opt/build/foo.dir/a.c.o;/opt/build/foo.dir/b.c.o\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
 	calls := []shadow.FileGenerateCall{{
 		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
@@ -501,7 +506,7 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -534,7 +539,7 @@ func TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty(t *testing.
 	}}
 	cc := newCodegenContext()
 	// nil cmakeVars → empty Context → (a) refuses.
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -570,7 +575,7 @@ func TestRecoverFileGenerate_OutputSideGenexResolved(t *testing.T) {
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -604,7 +609,7 @@ func TestRecoverFileGenerate_OutputSideGenexUnsupportedDropped(t *testing.T) {
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -631,7 +636,7 @@ func TestRecoverFileGenerate_OutputSideGenexEmptyContextDropped(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	// nil cmakeVars → empty Context → $<CONFIG> refuses → drop.
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -660,7 +665,7 @@ func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -693,7 +698,7 @@ func TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy(t *testin
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -727,7 +732,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetProperty(t *testing.T) {
 		"fglib": {Type: "STATIC_LIBRARY"},
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -766,7 +771,7 @@ func TestRecoverFileGenerate_GenexEvaluatedPrunesTargetsWhenUnused(t *testing.T)
 		"foo": {Type: "STATIC_LIBRARY", Sources: "a.c;b.c"},
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -825,7 +830,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFile(t *testing.T) {
 		"foo": {Type: "STATIC_LIBRARY", FileLocation: "/recording/build/libfoo.a"},
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -877,7 +882,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFileVariants(t *testing.T) 
 		"foo": {Type: "STATIC_LIBRARY", FileLocation: "/recording/build/lib/libfoo.a"},
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -915,7 +920,7 @@ func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
 		"zeta":  {FileLocation: "/z"},
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	cmd := cc.Genrules[0].GenruleCmd
@@ -946,7 +951,7 @@ func TestRecoverFileGenerate_LegacyWhenLiftDisabled(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, map[string]string{"VERSION": "1.0"}, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, map[string]string{"VERSION": "1.0"}, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
@@ -976,7 +981,7 @@ func TestRecoverFileGenerate_MissingRenderedOutputDropsCall(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -1001,7 +1006,7 @@ func TestRecoverFileGenerate_DedupesDuplicateOutputs(t *testing.T) {
 		HasContent: true,
 	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate([]shadow.FileGenerateCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
+	if _, err := recoverFileGenerate([]shadow.FileGenerateCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -1028,7 +1033,7 @@ func TestRecoverFileGenerate_ContentEmpty_Lifted(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -1067,7 +1072,7 @@ func TestRecoverFileGenerate_SkipsCollisionWithOtherLifter(t *testing.T) {
 		Content:    "hi\n",
 		HasContent: true,
 	}}
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -1103,7 +1108,7 @@ func TestRecoverFileGenerate_InputArgGenexTagsLegacy(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -1139,7 +1144,7 @@ func TestRecoverFileGenerate_OutputGenexDropped(t *testing.T) {
 		HasContent: true,
 	}}
 	cc := newCodegenContext()
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -1170,5 +1175,159 @@ func TestHasGenex(t *testing.T) {
 		if got := hasGenex([]byte(c.in)); got != c.want {
 			t.Errorf("hasGenex(%q) = %v want %v", c.in, got, c.want)
 		}
+	}
+}
+
+// TestRecoverFileGenerate_CrossPackageTargetFile_Refused
+// covers the soundness gate from
+// docs/design/cross-package-target-file.md: a template
+// referencing `$<TARGET_FILE:Foo::bar>` for a target NOT in
+// the local codemodel AND NOT in the imports.json manifest
+// must refuse the lift entirely. The genrule still emits (so
+// the consumer-attribution pass finds the output) but its cmd
+// is a `false; echo <diagnostic>` exit-1 stub and the audit
+// tag set carries cmake-codegen-file-generate-genex-cross-package.
+//
+// This is the fix for a latent soundness bug: pre-gate, the
+// lift would refuse via (a) and fall through to (b), which
+// captures cmake's rendered bytes (the recording-machine
+// absolute path) and ships them into Bazel — those paths
+// don't exist on the executor.
+func TestRecoverFileGenerate_CrossPackageTargetFile_Refused(t *testing.T) {
+	template := "// tool=$<TARGET_FILE:Foo::bar>\n"
+	rendered := []byte("// tool=/recording/build/libbar.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	// Empty genexTargets + nil imports resolver: Foo::bar
+	// resolves to neither → soundness gate fires.
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"CMAKE_BUILD_TYPE": "Release"}, nil, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+		t.Errorf("cross-package refusal tag missing: %v", g.Tags)
+	}
+	// The lift-success facets must NOT appear — this isn't a
+	// successful lift, it's a refusal stub.
+	for _, banned := range []string{
+		"cmake-codegen-lifted",
+		"cmake-codegen-file-generate-genex-lifted",
+		"cmake-codegen-file-generate-genex-evaluated",
+	} {
+		if hasTag(g.Tags, banned) {
+			t.Errorf("refusal stub should NOT carry %q; got %v", banned, g.Tags)
+		}
+	}
+	// The cmd is a fail-with-diagnostic stub.
+	if !strings.Contains(g.GenruleCmd, "exit 1") {
+		t.Errorf("refusal stub cmd should exit 1; got %q", g.GenruleCmd)
+	}
+	if !strings.Contains(g.GenruleCmd, "Foo::bar") {
+		t.Errorf("refusal stub cmd should name the unresolved target Foo::bar; got %q", g.GenruleCmd)
+	}
+}
+
+// TestRecoverFileGenerate_CrossPackageTargetFile_VariantOps
+// confirms the soundness gate also fires for the six
+// FileLocation-derived variant ops (FILE_DIR, FILE_NAME,
+// LINKER_FILE, LINKER_FILE_DIR, LINKER_FILE_NAME,
+// SONAME_FILE), not just TARGET_FILE itself. All seven share
+// the same wire under the (a) shape and the same wrong-bytes
+// hazard under (b)/legacy fallback.
+func TestRecoverFileGenerate_CrossPackageTargetFile_VariantOps(t *testing.T) {
+	// Each variant in turn, against an unresolvable target.
+	variants := []string{
+		"TARGET_FILE_DIR",
+		"TARGET_FILE_NAME",
+		"TARGET_LINKER_FILE",
+		"TARGET_LINKER_FILE_DIR",
+		"TARGET_LINKER_FILE_NAME",
+		"TARGET_SONAME_FILE",
+	}
+	for _, op := range variants {
+		t.Run(op, func(t *testing.T) {
+			template := "// path=$<" + op + ":Foo::bar>\n"
+			rendered := []byte("// path=/recording/build/libbar.a\n")
+			hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, op+".out", rendered)
+			calls := []shadow.FileGenerateCall{{
+				File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+				Output:   filepath.Join(hostBuild, op+".out"),
+				Input:    filepath.Join(hostSrc, "src/g.in"),
+				HasInput: true,
+			}}
+			cc := newCodegenContext()
+			if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			g := cc.Genrules[0]
+			if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+				t.Errorf("%s: cross-package refusal tag missing: %v", op, g.Tags)
+			}
+		})
+	}
+}
+
+// TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable
+// confirms the gate does NOT fire when the target resolves
+// cleanly — either via the local codemodel (no change from
+// pre-gate behaviour) or via the imports.json manifest. The
+// latter case is the resolver-plumbing this PR sets up for PR
+// 2 to actually USE; for now, the only effect of a successful
+// imports lookup is that the soundness gate stays quiet. The
+// (a) lift itself still refuses (genexTargets doesn't know
+// Foo::bar's FileLocation), so the call routes to (b)/legacy
+// — same as pre-gate for the local-codemodel case.
+func TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable(t *testing.T) {
+	template := "// tool=$<TARGET_FILE:Foo::bar>\n"
+	rendered := []byte("// tool=/some/path/libbar.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	// Construct an imports.json resolver via Index — same path
+	// production uses (manifest.Load → manifest.Index).
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, imports, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+		t.Errorf("soundness gate should NOT fire when imports manifest resolves Foo::bar; got tags %v", g.Tags)
+	}
+	// Without PR 2's resolution wiring, the lift still falls
+	// through to (b) (genexTargets has no FileLocation for
+	// Foo::bar). That's expected and documented. The (b) bytes
+	// are wrong-but-already-broken — PR 2 fixes that. This test
+	// pins that the SOUNDNESS GATE quiets correctly when the
+	// resolver knows the target; the wrong-bytes-via-(b) leak
+	// for resolvable cases is what PR 2 closes.
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") &&
+		!hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+		t.Errorf("expected (b) or legacy genex tag in fallback; got %v", g.Tags)
 	}
 }

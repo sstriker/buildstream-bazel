@@ -14,6 +14,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -51,7 +52,7 @@ type fileGenerateOut struct {
 // Returns an empty slice with no error when calls is empty or
 // hostBuildDir is unset — preserves the pre-trace behavior for
 // offline runs without a stashed fixture.
-func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, cc *codegenContext) ([]fileGenerateOut, error) {
+func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ([]fileGenerateOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -129,7 +130,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 		}
 
 		name := configureFileGenruleName(rel) // reuse the gen_<path> namer
-		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets)
+		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets, imports)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -160,14 +161,14 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // Falls back to legacy otherwise. The genex short-circuit
 // happens before pickValues so the audit tag tells the operator
 // which exit fired.
-func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo) ir.Target {
+func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
 	legacy := ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
 		GenruleOuts: []string{outRel},
-		Tags:        fileGenerateTags(false, false, false, false),
+		Tags:        fileGenerateTags(false, false, false, false, false),
 		Visibility:  []string{"//visibility:private"},
 	}
 	if optErr != nil {
@@ -175,6 +176,44 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	}
 	if !liftEnabled {
 		return legacy
+	}
+
+	// Soundness gate: if any `$<TARGET_FILE*:t>` reference in
+	// the template (or in the CONTENT body) names a target that
+	// resolves to neither the local codemodel nor the imports
+	// manifest, refuse the lift entirely. The (a) shape would
+	// otherwise refuse with UnsupportedError → fall through to
+	// (b) / legacy, both of which embed cmake's rendered bytes
+	// → which for TARGET_FILE is the RECORDING MACHINE's
+	// absolute path. Shipping that path into Bazel produces a
+	// genrule that builds against a path that doesn't exist on
+	// the executor. We catch this here rather than let it land
+	// silently. Operators get an audit-tagged refusal stub that
+	// fails the bazel build with a clear diagnostic — see
+	// docs/design/cross-package-target-file.md.
+	//
+	// Resolution-check input: scan templateBody once for any of
+	// the seven TARGET_FILE-family ops + the call's CONTENT
+	// body if present (templateBody isn't sourced yet at this
+	// point in the flow, so we re-scan from call.Content for
+	// the CONTENT form). The genex parser would be overkill —
+	// targetFileFamilyRefs uses the same prefix-scan
+	// extractTargetFileRefs does.
+	if unresolved := unresolvedCrossPackageTargetFiles(call, hostSrcDir, recordedSrcDir, genexTargets, imports); len(unresolved) > 0 {
+		return ir.Target{
+			Name: name,
+			Kind: ir.KindGenrule,
+			GenruleCmd: fmt.Sprintf(
+				`echo 'file(GENERATE) lift refused for output %q: template references cmake target(s) %v via `+
+					`$<TARGET_FILE:...> (or a variant) that resolve to neither the local cmake codemodel `+
+					`nor the imports.json manifest. Shipping cmake'"'"'s rendered bytes for these would `+
+					`embed the recording-machine absolute path, which does not exist on the Bazel executor. `+
+					`See docs/design/cross-package-target-file.md for the resolution path.' >&2; exit 1`,
+				outRel, unresolved),
+			GenruleOuts: []string{outRel},
+			Tags:        fileGenerateTags(false, true, false, false, true),
+			Visibility:  []string{"//visibility:private"},
+		}
 	}
 
 	// Source the template body. Exactly one of HasInput /
@@ -210,7 +249,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
 				genexLegacy := legacy
-				genexLegacy.Tags = fileGenerateTags(false, true, false, false)
+				genexLegacy.Tags = fileGenerateTags(false, true, false, false, false)
 				return genexLegacy
 			}
 			call.Input = resolved
@@ -315,7 +354,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 						GenruleCmd:   cmd,
 						GenruleOuts:  []string{outRel},
 						GenruleTools: []string{"//tools:cmake-configure-file"},
-						Tags:         fileGenerateTags(true, false, false, true),
+						Tags:         fileGenerateTags(true, false, false, true, false),
 						Visibility:   []string{"//visibility:private"},
 					}
 					if !isContentForm {
@@ -342,7 +381,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					GenruleCmd:   cmd,
 					GenruleOuts:  []string{outRel},
 					GenruleTools: []string{"//tools:cmake-configure-file"},
-					Tags:         fileGenerateTags(true, false, true, false),
+					Tags:         fileGenerateTags(true, false, true, false, false),
 					Visibility:   []string{"//visibility:private"},
 				}
 				if !isContentForm {
@@ -352,7 +391,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			}
 		}
 		genexLegacy := legacy
-		genexLegacy.Tags = fileGenerateTags(false, true, false, false)
+		genexLegacy.Tags = fileGenerateTags(false, true, false, false, false)
 		return genexLegacy
 	}
 
@@ -386,7 +425,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		GenruleCmd:   cmd,
 		GenruleOuts:  []string{outRel},
 		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         fileGenerateTags(true, false, false, false),
+		Tags:         fileGenerateTags(true, false, false, false, false),
 		Visibility:   []string{"//visibility:private"},
 	}
 	if !isContentForm {
@@ -559,7 +598,7 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues ma
 // by definition isn't lifted). genexCaptured and genexEvaluated
 // are mutually exclusive (one lift shape per call site) but
 // both imply lifted.
-func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated bool) []string {
+func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated, genexCrossPackage bool) []string {
 	tags := []string{
 		"cmake-codegen",
 		"cmake-codegen-driver=file_generate",
@@ -576,6 +615,13 @@ func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated bool)
 	}
 	if genexEvaluated {
 		tags = append(tags, "cmake-codegen-file-generate-genex-evaluated")
+	}
+	if genexCrossPackage {
+		// Refusal stub for cross-package TARGET_FILE references —
+		// the build will fail at bazel build time with a
+		// diagnostic pointing at the resolution path. See
+		// docs/design/cross-package-target-file.md.
+		tags = append(tags, "cmake-codegen-file-generate-genex-cross-package")
 	}
 	sort.Strings(tags)
 	return tags
@@ -652,6 +698,13 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string) map[string]gen
 // referenced target names — the variant op chosen at the
 // template site doesn't change what we pass to Bazel.
 //
+// The same set drives the cross-package soundness gate in
+// unresolvedCrossPackageTargetFiles below: any of these ops
+// referenced against a target absent from both the local
+// codemodel and the imports manifest would otherwise embed
+// the recording-machine absolute path via (b) fallback, which
+// doesn't exist on Bazel's executor.
+//
 // Trailing `:` on each prefix disambiguates the shorter forms
 // from the longer ones during the scan (e.g. `$<TARGET_FILE:`
 // vs `$<TARGET_FILE_DIR:` — the latter's char-after-`E` is
@@ -665,6 +718,82 @@ var targetFileOpPrefixes = []string{
 	"$<TARGET_LINKER_FILE_DIR:",
 	"$<TARGET_LINKER_FILE_NAME:",
 	"$<TARGET_SONAME_FILE:",
+}
+
+// unresolvedCrossPackageTargetFiles is the soundness gate for
+// cross-package `$<TARGET_FILE*:t>` references. It scans both
+// the on-disk INPUT template (if HasInput) and the inline
+// CONTENT body (if HasContent) for any of the seven
+// target-file-family ops (targetFileOpPrefixes above), and
+// returns the sorted unique names that resolve to NEITHER the
+// local cmake codemodel (genexTargets) NOR the imports.json
+// manifest. The caller uses a non-empty result to refuse the
+// lift entirely — see the caller-site comment for the why.
+//
+// Sorted return order keeps the refusal-stub diagnostic
+// byte-stable across runs (Go's map iteration is otherwise
+// randomized).
+func unresolvedCrossPackageTargetFiles(call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver) []string {
+	// Source the template body the same way buildFileGenerateGenrule
+	// does shortly after this gate. Failure to source ⇒ no scan
+	// possible ⇒ assume safe (the downstream legacy path will
+	// surface the real error).
+	var body []byte
+	switch {
+	case call.HasContent:
+		body = []byte(call.Content)
+	case call.HasInput:
+		inAbs, _, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
+		if !ok {
+			return nil
+		}
+		b, err := os.ReadFile(inAbs)
+		if err != nil {
+			return nil
+		}
+		body = b
+	default:
+		return nil
+	}
+
+	seen := map[string]bool{}
+	unresolved := map[string]bool{}
+	for _, prefix := range targetFileOpPrefixes {
+		rest := body
+		for {
+			i := bytes.Index(rest, []byte(prefix))
+			if i < 0 {
+				break
+			}
+			argStart := i + len(prefix)
+			end := bytes.IndexByte(rest[argStart:], '>')
+			if end < 0 {
+				break
+			}
+			name := string(rest[argStart : argStart+end])
+			rest = rest[argStart+end+1:]
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			if _, inLocal := genexTargets[name]; inLocal {
+				continue
+			}
+			if imports != nil && imports.LookupCMakeTarget(name) != nil {
+				continue
+			}
+			unresolved[name] = true
+		}
+	}
+	if len(unresolved) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(unresolved))
+	for n := range unresolved {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // extractTargetFileRefs walks template body for each of the

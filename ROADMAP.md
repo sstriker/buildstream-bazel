@@ -89,18 +89,19 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **TARGET_FILE for cross-package targets.** The (a)
-  evaluator now supports `$<TARGET_FILE:t>` for same-package
-  targets (see Done). Cross-package targets — referenced via
-  cmake's `find_package` / namespaced `Foo::bar` form — need
-  the file(GENERATE) lifter to thread the existing
-  `manifest.Resolver` (imports.json) through and use it to
-  emit fully-qualified Bazel labels in the `--target-file`
-  flag. Today's gap is also a latent soundness bug: cross-
-  package references silently ship recording-machine paths via
-  the (b) fallback. Design: `docs/design/cross-package-target-file.md`
-  proposes a two-PR landing — first detect-and-refuse to fix
-  soundness, then resolve via the imports manifest.
+- **Cross-package TARGET_FILE resolution (PR 2).** The
+  soundness-fix piece shipped (see Done — refusal stub for
+  unresolved cross-package references); the resolved-lift
+  piece remains. The file(GENERATE) lifter now sees the
+  `*manifest.Resolver` but doesn't yet USE it to emit
+  fully-qualified Bazel labels in the `--target-file` flag
+  for resolvable cases. PR 2's wiring is sketched in
+  `docs/design/cross-package-target-file.md` — branch the
+  `--target-file=` flag emission per-target on resolution,
+  populate `FileLocation` for imported targets from the
+  codemodel's IMPORTED_LOCATION for the byte-equal check, add
+  a render-gate fixture exercising two BuildStream elements
+  end-to-end.
 
 - **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets.** The
   (a) evaluator now supports the other six on-disk-path
@@ -150,6 +151,25 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **Cross-package `$<TARGET_FILE*:t>` soundness gate (PR 1).**
+  The file(GENERATE) lifter previously refused unresolvable
+  `$<TARGET_FILE*:t>` references via the (a) shape and fell
+  through to (b)/legacy, both of which embed cmake's rendered
+  bytes — the RECORDING MACHINE's absolute path. Shipping
+  those paths into Bazel produced a genrule that builds
+  against a path that doesn't exist on the executor. Now the
+  lifter walks the template body for any of the seven
+  TARGET_FILE-family op prefixes (FILE, FILE_DIR, FILE_NAME,
+  LINKER_FILE, LINKER_FILE_DIR, LINKER_FILE_NAME, SONAME_FILE);
+  any name that resolves to neither the local cmake codemodel
+  NOR the threaded `*manifest.Resolver` (imports.json) emits
+  a refusal-stub genrule whose cmd fails the bazel build with
+  a clear diagnostic pointing at
+  `docs/design/cross-package-target-file.md`. Audit tag:
+  `cmake-codegen-file-generate-genex-cross-package`. The
+  `*manifest.Resolver` plumbing this set up is the foundation
+  PR 2 (resolved cross-package lifts; see Later) builds on.
 
 - **On-disk-path genex variants — TARGET_FILE_DIR /
   TARGET_FILE_NAME / TARGET_LINKER_FILE / TARGET_LINKER_FILE_DIR
