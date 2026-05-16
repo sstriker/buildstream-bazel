@@ -392,7 +392,7 @@ func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension 
 		// fan-out is the separate renderPipelineRound2B call
 		// site in RenderB above.
 		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, "") },
-		AppendCmd:        autotoolsConverterStep(hasImports),
+		AppendCmd:        autotoolsConverterStep(hasImports, elem.Name),
 		ExtraOuts: []string{
 			"BUILD.bazel.out",
 			"make-db.txt",
@@ -567,12 +567,14 @@ func wrapAutotoolsPipelineCmds(cmds, outputPrefix string) string {
 // When hasImports is true, --imports-manifest=$(location
 // imports.json) threads through so cross-element `-l<name>`
 // flags resolve to the right Bazel labels.
-func autotoolsConverterStep(hasImports bool) string {
+func autotoolsConverterStep(hasImports bool, elementName string) string {
 	importsFlag := ""
 	if hasImports {
 		importsFlag = ` \
             --imports-manifest="$(location imports.json)"`
 	}
+	bazelPkgFlag := fmt.Sprintf(` \
+            --bazel-package-path="elements/%s"`, elementName)
 	return fmt.Sprintf(`        # Capture the post-build make database. Run from
         # $$BUILD_ROOT (pipeline cmds left us there); `+"`make -np`"+`
         # dumps every rule, variable, and prereq edge after
@@ -617,5 +619,5 @@ func autotoolsConverterStep(hasImports bool) string {
             --make-db="$(location make-db.txt)" \
             --generated-headers="$(location generated-headers.txt)" \
             --out-install-mapping="$(location install-mapping.json)" \
-            --out-build="$(location BUILD.bazel.out)"%s`, importsFlag)
+            --out-build="$(location BUILD.bazel.out)"%s%s`, importsFlag, bazelPkgFlag)
 }

@@ -174,6 +174,17 @@ type Args struct {
 	// of) the stderr warnings. Implies Verify=true.
 	VerifyReport string
 
+	// BazelPackagePath, when non-empty, is the repo-root-relative
+	// path of the Bazel package the emitted BUILD.bazel will live
+	// in (e.g. "elements/hello-world"). Threaded into
+	// bazel.Options.BazelPackagePath so the `# gazelle:cc_search`
+	// directives are framed in the repo-root-relative form
+	// gazelle_cc's resolver expects. Empty (the test default)
+	// suppresses the directive entirely — wrong bytes are worse
+	// than no bytes, since gazelle_cc would interpret an
+	// unframed directive as pointing at the workspace root.
+	BazelPackagePath string
+
 	// SourceKey, when non-empty, names the @src_<key>// external
 	// repository the FUSE-sources path declared for this element's
 	// source tree. The Bazel emitter prefixes every relative source
@@ -216,6 +227,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
+	fs.StringVar(&a.BazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/hello-world\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths cmake recorded. Empty suppresses the directive; safer than emitting wrong bytes.")
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
 

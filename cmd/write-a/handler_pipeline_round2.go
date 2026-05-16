@@ -154,7 +154,8 @@ genrule(
         done
         $(location //tools:convert-element-trace) \
             --trace-dir="$$TRACE_DIR" \
-            --out-build="$(location BUILD.bazel.out)"%[3]s
+            --out-build="$(location BUILD.bazel.out)" \
+            --bazel-package-path="elements/%[1]s"%[3]s
     """,
 )
 `, elem.Name, strings.Join(srcLabels, ", "), importsFlag, kindName, srckeyHash)
@@ -259,7 +260,8 @@ package(default_visibility = ["//visibility:public"])
         $(location //tools:convert-element-trace) \
             --trace-dir="$$TRACE_DIR" \
             --out-build="$(location %[5]s)" \
-            --out-ir-json="$(location %[4]s)"%[6]s
+            --out-ir-json="$(location %[4]s)" \
+            --bazel-package-path="elements/%[1]s"%[6]s
     """,
 )
 
@@ -294,6 +296,7 @@ package(default_visibility = ["//visibility:public"])
     cmd = """
         $(location //tools:fold-element) \
             --out-build="$(location BUILD.bazel.out)" \
+            --bazel-package-path="elements/%[1]s" \
 %[3]s
     """,
 )
