@@ -140,6 +140,8 @@ func main() {
 	genexContextPath := flag.String("genex-context", "", "optional: path to JSON file carrying the cmake configure-time context the Go-side genex evaluator (genexeval package) consults to resolve `$<...>` at Bazel time. Schema: {\"config\": str, \"compiler_id\": {lang: str}, \"platform_id\": str, \"compiler_language\": str}. Applied AFTER --values substitution. Mutually exclusive with --genex-values (the two genex shapes are different replacement strategies — pick one per call site).")
 	var contentBase64 optionalString
 	flag.Var(&contentBase64, "content-base64", "base64-encoded inline template body (mutually exclusive with the positional <input> path). Used by file(GENERATE CONTENT ...) lifts where the template has no on-disk srcs anchor. An explicit `--content-base64=` (empty value) is treated as the literal empty template — distinct from omitting the flag.")
+	var targetFiles targetFileFlag
+	flag.Var(&targetFiles, "target-file", "repeatable: `<name>=<path>`. Overrides genexeval.Context.Targets[<name>].FileLocation for the (a)-shape `$<TARGET_FILE:<name>>` evaluation. The lifter typically passes the path as `$(location //pkg:<name>)`; Bazel substitutes at action time so cmake-configure-file receives the resolved Bazel-time path. Multiple flags accumulate. Requires --genex-context to also be set (no-op otherwise).")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
 	copyOnly := flag.Bool("copy-only", false, "skip ALL substitution (@VAR@, ${VAR}, #cmakedefine*) and emit the template verbatim. Mirrors configure_file's COPYONLY flag.")
 	escapeQuotes := flag.Bool("escape-quotes", false, "backslash-escape `\"` (and `\\\\`) in expanded values. Mirrors configure_file's ESCAPE_QUOTES flag.")
@@ -194,10 +196,47 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cmake-configure-file: --genex-values and --genex-context are mutually exclusive (pick one genex shape per call site)")
 		os.Exit(2)
 	}
-	if err := run(*valuesPath, *genexValuesPath, *genexContextPath, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
+	if err := run(*valuesPath, *genexValuesPath, *genexContextPath, targetFiles.byName, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// targetFileFlag accumulates --target-file=<name>=<path>
+// entries into a name→path map. Repeated flags accumulate;
+// duplicate names overwrite (last-wins, matching the typical
+// flag.Var semantic). Empty path is rejected at Set-time so
+// `--target-file=name=` doesn't silently produce an empty
+// resolution.
+type targetFileFlag struct {
+	byName map[string]string
+}
+
+func (f *targetFileFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d entries", len(f.byName))
+}
+
+func (f *targetFileFlag) Set(s string) error {
+	eq := strings.IndexByte(s, '=')
+	if eq < 0 {
+		return fmt.Errorf("expected <name>=<path>, got %q", s)
+	}
+	name := s[:eq]
+	path := s[eq+1:]
+	if name == "" {
+		return fmt.Errorf("--target-file: empty name in %q", s)
+	}
+	if path == "" {
+		return fmt.Errorf("--target-file: empty path for %q (use a real $(location ...) value)", name)
+	}
+	if f.byName == nil {
+		f.byName = map[string]string{}
+	}
+	f.byName[name] = path
+	return nil
 }
 
 // parseNewlineStyle accepts cmake's NEWLINE_STYLE token set
@@ -229,7 +268,7 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 // suspiciously well-formed output that masks the bug) or
 // both set (which is ambiguous about which template source
 // wins).
-func run(valuesPath, genexValuesPath, genexContextPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
+func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles map[string]string, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
 	switch {
 	case inPath == "" && !hasContent:
 		return fmt.Errorf("internal: neither inPath nor hasContent set; main's CLI gate should have rejected this argv")
@@ -286,6 +325,20 @@ func run(valuesPath, genexValuesPath, genexContextPath, inPath string, hasConten
 		ctx, err := loadGenexContext(genexContextPath)
 		if err != nil {
 			return fmt.Errorf("load genex context %s: %w", genexContextPath, err)
+		}
+		// --target-file overrides: each <name>=<path> entry
+		// populates Context.Targets[name].FileLocation,
+		// overwriting whatever the loaded sidecar carried (the
+		// lifter always omits FileLocation from the marshaled
+		// payload; --target-file is the load-bearing wire for
+		// $<TARGET_FILE:t>'s Bazel-time value).
+		for name, path := range targetFiles {
+			if ctx.Targets == nil {
+				ctx.Targets = map[string]genexeval.TargetInfo{}
+			}
+			ti := ctx.Targets[name]
+			ti.FileLocation = path
+			ctx.Targets[name] = ti
 		}
 		nodes, err := genexeval.Parse(rendered)
 		if err != nil {

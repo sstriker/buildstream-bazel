@@ -89,23 +89,22 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **`$<TARGET_FILE:t>` and related on-disk-path genexes.**
-  TARGET_FILE / TARGET_FILE_DIR / TARGET_FILE_NAME /
-  TARGET_LINKER_FILE / TARGET_SONAME_FILE / TARGET_OBJECTS
-  remain typed-refused. Resolution requires the Bazel-time
-  output path of the target's build, which is build-system-
-  dependent — the lifter would need to thread the cmake target
-  name through a sidecar flag (e.g.
-  `--target-file=name=$(location //pkg:name)`) so Bazel
-  substitutes `$(location ...)` at action-time, then
-  cmake-configure-file plugs the resolved path into the
-  evaluator's Context. The Bazel-label lookup also requires
-  cross-package knowledge that the file(GENERATE) lifter
-  doesn't currently have. Scope: ~300 LoC including the
-  sidecar flag handling, the lifter's per-target Bazel-label
-  resolver, and the byte-equal invariant relaxation (since
-  TARGET_FILE bytes are Bazel-time-only and can't be verified
-  at convert time).
+- **TARGET_FILE for cross-package targets.** The (a)
+  evaluator now supports `$<TARGET_FILE:t>` for same-package
+  targets (see Done). Cross-package targets (`$<TARGET_FILE:other_pkg::foo>`-style
+  references via cmake's namespace operator) need the lifter
+  to traverse the project graph at convert time and emit
+  fully-qualified Bazel labels (`//other_pkg:foo`). This
+  needs a cross-package label resolver the file(GENERATE)
+  lifter doesn't currently have.
+
+- **Related on-disk-path genexes — TARGET_FILE_DIR /
+  TARGET_FILE_NAME / TARGET_LINKER_FILE / TARGET_SONAME_FILE
+  / TARGET_OBJECTS.** Same wire mechanics as TARGET_FILE but
+  with different per-target outputs. Straightforward
+  extension of the existing `--target-file-dir`,
+  `--target-file-name`, etc. flags + matching evaluator
+  dispatch. ~100 LoC each, grouped into one PR.
 
 - **TARGET_PROPERTY INTERFACE_* aggregation.** The v1
   evaluator (below) supports `$<TARGET_PROPERTY:t,p>` for
@@ -158,6 +157,24 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **`$<TARGET_FILE:t>` for same-package targets.** The (a)
+  evaluator handles `$<TARGET_FILE:t>` for any target in the
+  current Bazel package's codemodel. Architecture: the lifter
+  populates `Context.Targets[t].FileLocation` with cmake's
+  recorded artifact path (build-dir-relative path joined with
+  recordedBuildDir) for the convert-time byte-equal check;
+  the marshaled wire struct OMITS FileLocation so the lifted
+  cmd stays srckey-stable across recording machines. At
+  Bazel time the new `cmake-configure-file` `--target-file=<name>=<path>`
+  repeatable flag carries the real value (`$(location :t)`
+  expanded by Bazel at action time) and overrides the
+  Context's FileLocation. Lifter scans the template for
+  `$<TARGET_FILE:name>` and emits one `--target-file` flag
+  per unique referenced name in sorted order. Cross-package
+  TARGET_FILE references and the related on-disk genexes
+  (TARGET_FILE_DIR / TARGET_LINKER_FILE / etc.) remain
+  UnsupportedError and are queued under Later.
 
 - **TARGET_PROPERTY for cmake-direct properties.** The (a)
   evaluator now supports `$<TARGET_PROPERTY:t,p>` for the

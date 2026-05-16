@@ -275,22 +275,32 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	if hasGenex(templateBody) {
 		// Payload pruning: only ship Targets in the marshaled
 		// Context when the template actually references a per-
-		// target op. Avoids dumping every per-target dict into
-		// the lifted cmd for templates that only reference
-		// CONFIG / PLATFORM_ID / etc. — the (a) lift's payload
-		// would otherwise grow linearly with target count for
-		// no benefit. The cheap substring check is sound: a
-		// template with `$<TARGET_PROPERTY:t,p>` always
-		// contains the literal `$<TARGET_PROPERTY:`; one
-		// without doesn't.
+		// target op (TARGET_PROPERTY or TARGET_FILE). Avoids
+		// dumping every per-target dict into the lifted cmd
+		// for templates that only reference CONFIG /
+		// PLATFORM_ID / etc. — the (a) lift's payload would
+		// otherwise grow linearly with target count for no
+		// benefit.
 		ctxTargets := genexTargets
-		if !bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:")) {
+		needsTargets := bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:")) ||
+			bytes.Contains(templateBody, []byte("$<TARGET_FILE:"))
+		if !needsTargets {
 			ctxTargets = nil
 		}
+		// Extract TARGET_FILE references for cmd emission. The
+		// byte-equal check uses ctx's FileLocation values (set
+		// by buildGenexTargets to the recording-machine artifact
+		// paths so the eval matches cmake's rendered output);
+		// the MARSHALED Context's wire struct omits FileLocation
+		// per the wire-struct definition in marshalGenexContext,
+		// so the lifted cmd stays byte-stable across recording
+		// machines; --target-file flags carry the Bazel-time
+		// values.
+		targetFileRefs := extractTargetFileRefs(templateBody)
 		ctx := buildGenexContext(cmakeVars, ctxTargets)
 		if nodes, err := genexeval.Parse(templateBody); err == nil {
 			if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
-				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, opts, isContentForm)
+				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, targetFileRefs, opts, isContentForm)
 				if cmdErr == nil {
 					target := ir.Target{
 						Name:         name,
@@ -579,7 +589,7 @@ func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated bool)
 // Returns nil when r is nil or has no usable targets — the
 // evaluator's UnsupportedError on missing-target surfaces
 // cleanly and routes the lift to (b) / legacy.
-func buildGenexTargets(r *fileapi.Reply) map[string]genexeval.TargetInfo {
+func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string) map[string]genexeval.TargetInfo {
 	if r == nil || len(r.Targets) == 0 {
 		return nil
 	}
@@ -595,6 +605,21 @@ func buildGenexTargets(r *fileapi.Reply) map[string]genexeval.TargetInfo {
 		for _, s := range t.Sources {
 			sources = append(sources, s.Path)
 		}
+		// FileLocation: the primary on-disk artifact path.
+		// Build by joining the recorded build dir (where cmake
+		// emitted the artifact) with the artifact's build-dir-
+		// relative path. This matches what cmake's
+		// `$<TARGET_FILE:t>` expands to at generate time and is
+		// what the convert-time byte-equal check needs to match
+		// cmake's rendered output. The marshaled wire struct
+		// (marshalGenexContext) omits FileLocation so this
+		// recording-machine path never lands in the lifted
+		// genrule's cmd — only the Bazel-time --target-file
+		// flag's value does, populated via $(location :t).
+		var fileLoc string
+		if len(t.Artifacts) > 0 && recordedBuildDir != "" {
+			fileLoc = filepath.Join(recordedBuildDir, t.Artifacts[0].Path)
+		}
 		out[t.Name] = genexeval.TargetInfo{
 			Type:    t.Type,
 			Sources: strings.Join(sources, ";"),
@@ -605,10 +630,55 @@ func buildGenexTargets(r *fileapi.Reply) map[string]genexeval.TargetInfo {
 			// a separate capture path; for v1 we report Imported
 			// as false for all captured targets (matches reality
 			// — they're all locally-defined).
-			Imported: false,
+			Imported:     false,
+			FileLocation: fileLoc,
 		}
 	}
 	return out
+}
+
+// extractTargetFileRefs walks template body for `$<TARGET_FILE:name>`
+// occurrences and returns the unique target names in sorted
+// order. Sorted iteration keeps the lifted cmd byte-stable.
+// Uses a simple prefix scan rather than the full parser since
+// only the literal `$<TARGET_FILE:` prefix matters — the
+// trailing `:` in the prefix disambiguates from longer ops
+// like `$<TARGET_FILE_NAME:` / `$<TARGET_FILE_DIR:` (whose
+// char-after-`E` is `_`, not `:`), so no separate suffix
+// check is needed.
+func extractTargetFileRefs(body []byte) []string {
+	const prefix = "$<TARGET_FILE:"
+	seen := map[string]bool{}
+	rest := body
+	for {
+		i := bytes.Index(rest, []byte(prefix))
+		if i < 0 {
+			break
+		}
+		// Scan forward for the closing `>` at depth 0 from the
+		// arg start. v1 targets don't contain nested `$<...>`
+		// in their name slot (cmake target names are literals);
+		// a plain rune scan to `>` suffices.
+		argStart := i + len(prefix)
+		end := bytes.IndexByte(rest[argStart:], '>')
+		if end < 0 {
+			break
+		}
+		name := string(rest[argStart : argStart+end])
+		if name != "" && !seen[name] {
+			seen[name] = true
+		}
+		rest = rest[argStart+end+1:]
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // buildGenexContext extracts the configure-time fields the (a)
@@ -666,9 +736,18 @@ func buildGenexContext(cmakeVars map[string]string, targets map[string]genexeval
 // genexeval evaluator does the substitution at Bazel time
 // against that Context.
 //
+// targetFileRefs is the sorted set of target names the template
+// references via `$<TARGET_FILE:name>`. The lifter resolves
+// each to a Bazel `$(location :name)` substitution at action-
+// time; the resulting flags accumulate as
+// `--target-file=name=$(location :name)` per reference and
+// override the marshaled Context's FileLocation (which is
+// always wire-omitted to keep the lifted cmd byte-stable
+// across recording machines).
+//
 // Like fileGenerateLiftedCmd, --values stays empty for
 // file(GENERATE) (no @VAR@/${VAR}/#cmakedefine surface).
-func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, opts configurefile.Options, isContentForm bool) (string, error) {
+func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, targetFileRefs []string, opts configurefile.Options, isContentForm bool) (string, error) {
 	emptyValues, err := json.Marshal(map[string]string{})
 	if err != nil {
 		return "", fmt.Errorf("marshal values: %w", err)
@@ -688,6 +767,13 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 		ctxEnc,
 	)
 	ctxFlag := `--genex-context="$$GENEX_CONTEXT" `
+	// --target-file flags for each $<TARGET_FILE:t> reference.
+	// v1 assumes same-package targets — the Bazel label is `:t`.
+	// Sorted iteration so the cmd is stable across runs.
+	var targetFileFlags strings.Builder
+	for _, name := range targetFileRefs {
+		fmt.Fprintf(&targetFileFlags, `--target-file=%s="$(location :%s)" `, name, name)
+	}
 	ctxCleanup := ` [ -n "$${GENEX_CONTEXT:-}" ] && rm -f "$$GENEX_CONTEXT";`
 
 	if isContentForm {
@@ -697,9 +783,9 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 				`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 				`echo %s | base64 -d > "$$VALUES" && `+
 				`%s`+
-				`$(location //tools:cmake-configure-file) %s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
+				`$(location //tools:cmake-configure-file) %s%s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
 				`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-			valuesEnc, ctxPrep, flags, ctxFlag, contentEnc, ctxCleanup,
+			valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), contentEnc, ctxCleanup,
 		), nil
 	}
 
@@ -708,9 +794,9 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 			`echo %s | base64 -d > "$$VALUES" && `+
 			`%s`+
-			`$(location //tools:cmake-configure-file) %s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
+			`$(location //tools:cmake-configure-file) %s%s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
 			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-		valuesEnc, ctxPrep, flags, ctxFlag, inRel, ctxCleanup,
+		valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), inRel, ctxCleanup,
 	), nil
 }
 
