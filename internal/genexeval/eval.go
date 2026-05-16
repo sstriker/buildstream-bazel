@@ -1,0 +1,489 @@
+package genexeval
+
+import (
+	"bytes"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+// Context carries the configure-time facts the evaluator
+// consults. All fields are optional — an evaluator without the
+// requested field surfaces a typed UnsupportedError, which the
+// lifter routes to the next fallback shape ((b) capture, then
+// legacy).
+//
+// Fields mirror cmake's per-build context that genexes read:
+//
+//   - Config: the build type cmake configured for (`Release`,
+//     `Debug`, ...). Drives `$<CONFIG>` and `$<CONFIG:...>`.
+//   - CompilerID: the per-language compiler id cmake detected
+//     (`GNU`, `Clang`, `MSVC`, ...). Drives `$<COMPILER_ID>`
+//     and `$<COMPILER_ID:...>`. Keyed by language ("C", "CXX",
+//     ...); the evaluator picks the language out of
+//     CompilerLanguage when it's set, otherwise falls back to
+//     the first entry.
+//   - PlatformID: cmake's CMAKE_SYSTEM_NAME (`Linux`, `Darwin`,
+//     `Windows`, ...). Drives `$<PLATFORM_ID>` and
+//     `$<PLATFORM_ID:...>`.
+//   - CompilerLanguage: the per-source language being
+//     translated (`C`, `CXX`). file(GENERATE) templates may
+//     reference this when used by add_custom_command on a
+//     language-specific output; for the v1 lifter it's usually
+//     unset (file(GENERATE) is language-agnostic).
+//
+// Future additions can extend Context without changing the
+// evaluator's signature (a typed-refusal genex stays typed-
+// refused until both Context and Eval gain the matching
+// field).
+type Context struct {
+	Config           string
+	CompilerID       map[string]string
+	PlatformID       string
+	CompilerLanguage string
+}
+
+// UnsupportedError signals a genex shape the evaluator
+// recognizes by op name but deliberately refuses — for cases
+// the (a) shape can't safely evaluate at convert-element-cmake
+// time. The lifter pattern-matches on this error to decide
+// whether to fall back to (b) / legacy (UnsupportedError → try
+// next shape) vs surface a real bug (any other error → bail).
+type UnsupportedError struct {
+	Op     string
+	Reason string
+}
+
+func (e *UnsupportedError) Error() string {
+	return fmt.Sprintf("genex `$<%s>`: %s", e.Op, e.Reason)
+}
+
+// Eval evaluates parsed nodes against ctx and returns the
+// concatenated bytes. Returns an UnsupportedError for genexes
+// the v1 evaluator deliberately doesn't model (target-
+// evaluator-dependent ops like `$<TARGET_FILE:...>`); any
+// other error is a genuine evaluation failure (e.g., missing
+// Context field for an op the evaluator does support).
+func Eval(nodes []Node, ctx Context) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, n := range nodes {
+		switch v := n.(type) {
+		case chunkNode:
+			buf.Write(v.Bytes)
+		case genexNode:
+			b, err := evalGenex(v, ctx)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(b)
+		default:
+			return nil, fmt.Errorf("internal: unknown node type %T", n)
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+// evalGenex dispatches a single genex by op name.
+func evalGenex(g genexNode, ctx Context) ([]byte, error) {
+	switch g.Op {
+	// Parameterless or single-arg config / compiler / platform
+	// queries.
+	case "CONFIG":
+		return evalConfig(g, ctx)
+	case "COMPILER_ID":
+		return evalCompilerID(g, ctx)
+	case "PLATFORM_ID":
+		return evalPlatformID(g, ctx)
+	case "COMPILER_LANGUAGE":
+		return evalCompilerLanguage(g, ctx)
+
+	// Boolean combinators.
+	case "AND":
+		return evalAnd(g, ctx)
+	case "OR":
+		return evalOr(g, ctx)
+	case "NOT":
+		return evalNot(g, ctx)
+	case "IF":
+		return evalIf(g, ctx)
+	case "BOOL":
+		return evalBool(g, ctx)
+
+	// String operations.
+	case "UPPER_CASE":
+		return evalUpperCase(g, ctx)
+	case "LOWER_CASE":
+		return evalLowerCase(g, ctx)
+	case "STREQUAL":
+		return evalStreq(g, ctx)
+
+	// The literal-boolean / digit-expression form: `$<0:str>`,
+	// `$<1:str>`. cmake treats these as conditional emit.
+	case "0":
+		return nil, nil // `$<0:str>` → empty
+	case "1":
+		return evalLiteralOne(g, ctx)
+
+	// Target-evaluator-dependent forms. Typed refusal so the
+	// lifter knows to fall back rather than treat as a bug.
+	//
+	// Note: COMPILE_LANGUAGE here is cmake's per-source dispatch
+	// genex (e.g. `$<COMPILE_LANGUAGE:CXX>` evaluates to 1/0
+	// based on the language being compiled when this property
+	// is read by cmake's target-evaluator) — distinct from the
+	// configure-time-evaluator's Context.CompilerLanguage field
+	// (which the supported `COMPILER_LANGUAGE` op above
+	// consults). Easy to confuse from the names; the rule of
+	// thumb is "COMPILE_*" is cmake's per-source-file dispatch
+	// (target-evaluator-time) and "COMPILER_*" is the
+	// compiler-identity context the configure-time evaluator
+	// already has from CMAKE_<LANG>_COMPILER_ID.
+	case "TARGET_FILE", "TARGET_FILE_DIR", "TARGET_FILE_NAME",
+		"TARGET_LINKER_FILE", "TARGET_LINKER_FILE_DIR", "TARGET_LINKER_FILE_NAME",
+		"TARGET_SONAME_FILE", "TARGET_OBJECTS",
+		"TARGET_PROPERTY",
+		"TARGET_GENEX_EVAL", "GENEX_EVAL",
+		"INSTALL_INTERFACE", "BUILD_INTERFACE", "INSTALL_PREFIX",
+		"COMPILE_LANGUAGE", "LINK_LANGUAGE",
+		"COMPILE_FEATURES":
+		return nil, &UnsupportedError{Op: g.Op, Reason: "target-evaluator-dependent; v1 evaluator does not model this"}
+	}
+	return nil, &UnsupportedError{Op: g.Op, Reason: "unknown genex op (v1 evaluator only models the configure-time-resolvable subset)"}
+}
+
+// evalConfig: $<CONFIG> -> ctx.Config; $<CONFIG:cfg,...> ->
+// "1" if ctx.Config matches any case-insensitively, else "0".
+// cmake matches case-insensitively per the docs:
+// https://cmake.org/cmake/help/latest/manual/cmake-generator-expressions.7.html#genex:CONFIG
+func evalConfig(g genexNode, ctx Context) ([]byte, error) {
+	if g.Args == nil {
+		if ctx.Config == "" {
+			return nil, &UnsupportedError{Op: g.Op, Reason: "Context.Config is empty"}
+		}
+		return []byte(ctx.Config), nil
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range args {
+		if strings.EqualFold(a, ctx.Config) {
+			return []byte("1"), nil
+		}
+	}
+	return []byte("0"), nil
+}
+
+// evalCompilerID consults ctx.CompilerID[ctx.CompilerLanguage]
+// when language is set; otherwise picks an arbitrary entry —
+// for file(GENERATE) the v1 path doesn't have a per-source
+// language, and most cmake projects' C / CXX compiler ids
+// match.
+func evalCompilerID(g genexNode, ctx Context) ([]byte, error) {
+	id, err := pickCompilerID(ctx)
+	if err != nil {
+		return nil, &UnsupportedError{Op: g.Op, Reason: err.Error()}
+	}
+	if g.Args == nil {
+		return []byte(id), nil
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range args {
+		if a == id {
+			return []byte("1"), nil
+		}
+	}
+	return []byte("0"), nil
+}
+
+func pickCompilerID(ctx Context) (string, error) {
+	if ctx.CompilerLanguage != "" {
+		if id, ok := ctx.CompilerID[ctx.CompilerLanguage]; ok && id != "" {
+			return id, nil
+		}
+		return "", fmt.Errorf("Context.CompilerID has no entry for language %q", ctx.CompilerLanguage)
+	}
+	// No language hint — pick any. For typical projects C and
+	// CXX agree; refusing because we can't pin a single one
+	// would be over-conservative.
+	for _, lang := range []string{"C", "CXX", "OBJC", "OBJCXX", "Fortran"} {
+		if id, ok := ctx.CompilerID[lang]; ok && id != "" {
+			return id, nil
+		}
+	}
+	// Last resort: any entry. Map iteration order is randomized
+	// in Go, so sort the keys first to keep this deterministic
+	// across runs — a non-deterministic CompilerID pick would
+	// flip lifted-output bytes between convert-element-cmake
+	// invocations and surface as a flaky srckey.
+	keys := make([]string, 0, len(ctx.CompilerID))
+	for k := range ctx.CompilerID {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if id := ctx.CompilerID[k]; id != "" {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("Context.CompilerID is empty")
+}
+
+// evalPlatformID: $<PLATFORM_ID> -> ctx.PlatformID;
+// $<PLATFORM_ID:id,...> -> "1"/"0" exact match.
+func evalPlatformID(g genexNode, ctx Context) ([]byte, error) {
+	if ctx.PlatformID == "" {
+		return nil, &UnsupportedError{Op: g.Op, Reason: "Context.PlatformID is empty"}
+	}
+	if g.Args == nil {
+		return []byte(ctx.PlatformID), nil
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range args {
+		if a == ctx.PlatformID {
+			return []byte("1"), nil
+		}
+	}
+	return []byte("0"), nil
+}
+
+// evalCompilerLanguage: $<COMPILER_LANGUAGE:lang,...> -> "1"
+// if ctx.CompilerLanguage matches any. v1 requires
+// CompilerLanguage to be set — file(GENERATE) callers without
+// it get UnsupportedError (rare in practice; file(GENERATE)
+// rarely references this).
+func evalCompilerLanguage(g genexNode, ctx Context) ([]byte, error) {
+	if ctx.CompilerLanguage == "" {
+		return nil, &UnsupportedError{Op: g.Op, Reason: "Context.CompilerLanguage is empty"}
+	}
+	if g.Args == nil {
+		return []byte(ctx.CompilerLanguage), nil
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range args {
+		if a == ctx.CompilerLanguage {
+			return []byte("1"), nil
+		}
+	}
+	return []byte("0"), nil
+}
+
+// evalAnd / evalOr: cmake's docs spec the truthy-string set
+// as exactly "1", "TRUE", "YES", "Y", "ON" (case-insensitive
+// for some, exact for others). v1 follows the strict cmake
+// interpretation: only "1" is truthy, anything else (incl.
+// "0", "TRUE", empty) is falsy. cmake's actual rules are
+// looser but lifting the looser set under (a) risks divergence
+// from cmake's evaluation when the operator uses a non-"1"
+// truthy form; the conservative interpretation surfaces those
+// as UnsupportedError, which falls back to (b) / legacy where
+// cmake's literal output bytes win.
+func evalAnd(g genexNode, ctx Context) ([]byte, error) {
+	for _, arg := range g.Args {
+		b, err := evalArg(arg, ctx)
+		if err != nil {
+			return nil, err
+		}
+		t, err := bool01(b, g.Op)
+		if err != nil {
+			return nil, err
+		}
+		if !t {
+			return []byte("0"), nil
+		}
+	}
+	return []byte("1"), nil
+}
+
+func evalOr(g genexNode, ctx Context) ([]byte, error) {
+	for _, arg := range g.Args {
+		b, err := evalArg(arg, ctx)
+		if err != nil {
+			return nil, err
+		}
+		t, err := bool01(b, g.Op)
+		if err != nil {
+			return nil, err
+		}
+		if t {
+			return []byte("1"), nil
+		}
+	}
+	return []byte("0"), nil
+}
+
+func evalNot(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 1 {
+		return nil, fmt.Errorf("$<NOT:...> requires exactly 1 arg, got %d", len(g.Args))
+	}
+	b, err := evalArg(g.Args[0], ctx)
+	if err != nil {
+		return nil, err
+	}
+	t, err := bool01(b, g.Op)
+	if err != nil {
+		return nil, err
+	}
+	if t {
+		return []byte("0"), nil
+	}
+	return []byte("1"), nil
+}
+
+func evalIf(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 3 {
+		return nil, fmt.Errorf("$<IF:cond,then,else> requires exactly 3 args, got %d", len(g.Args))
+	}
+	cond, err := evalArg(g.Args[0], ctx)
+	if err != nil {
+		return nil, err
+	}
+	t, err := bool01(cond, g.Op)
+	if err != nil {
+		return nil, err
+	}
+	if t {
+		return evalArg(g.Args[1], ctx)
+	}
+	return evalArg(g.Args[2], ctx)
+}
+
+// evalBool: $<BOOL:str> per cmake docs is "1" if str is a non-
+// empty string that doesn't represent zero, false, etc. v1
+// keeps the strict interpretation: empty string or "0" → "0",
+// everything else → "1". cmake's looser rules are
+// UnsupportedError when they'd matter (e.g., "FALSE" / "NO"
+// would evaluate to "1" here but "0" in cmake; v1 errs on the
+// side of refusal to avoid silent divergence).
+func evalBool(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 1 {
+		return nil, fmt.Errorf("$<BOOL:...> requires exactly 1 arg, got %d", len(g.Args))
+	}
+	b, err := evalArg(g.Args[0], ctx)
+	if err != nil {
+		return nil, err
+	}
+	s := string(b)
+	if s == "" || s == "0" {
+		return []byte("0"), nil
+	}
+	switch strings.ToUpper(s) {
+	case "FALSE", "NO", "N", "OFF":
+		// cmake-falsy forms beyond "0" — refuse rather than
+		// risk divergence with cmake's full ruleset.
+		return nil, &UnsupportedError{Op: g.Op, Reason: fmt.Sprintf("non-canonical boolean value %q; v1 only models \"\" / \"0\" → 0 and \"1\" → 1", s)}
+	}
+	return []byte("1"), nil
+}
+
+func evalUpperCase(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 1 {
+		return nil, fmt.Errorf("$<UPPER_CASE:...> requires exactly 1 arg, got %d", len(g.Args))
+	}
+	b, err := evalArg(g.Args[0], ctx)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.ToUpper(string(b))), nil
+}
+
+func evalLowerCase(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 1 {
+		return nil, fmt.Errorf("$<LOWER_CASE:...> requires exactly 1 arg, got %d", len(g.Args))
+	}
+	b, err := evalArg(g.Args[0], ctx)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.ToLower(string(b))), nil
+}
+
+func evalStreq(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 2 {
+		return nil, fmt.Errorf("$<STREQUAL:s1,s2> requires exactly 2 args, got %d", len(g.Args))
+	}
+	a, err := evalArg(g.Args[0], ctx)
+	if err != nil {
+		return nil, err
+	}
+	b, err := evalArg(g.Args[1], ctx)
+	if err != nil {
+		return nil, err
+	}
+	if bytes.Equal(a, b) {
+		return []byte("1"), nil
+	}
+	return []byte("0"), nil
+}
+
+// evalLiteralOne: $<1:str> emits str. The dispatcher routes
+// `1` as the op name because cmake's `$<<bool>:str>` form
+// makes the boolean digit appear in the op slot.
+func evalLiteralOne(g genexNode, ctx Context) ([]byte, error) {
+	if g.Args == nil {
+		// `$<1>` standalone — meaningless in cmake; refuse.
+		return nil, &UnsupportedError{Op: g.Op, Reason: "literal `$<1>` without a `:str` arm is not a meaningful genex"}
+	}
+	// Concatenate all args (joined by commas in cmake's literal
+	// semantic when there are multiple, but cmake usually has
+	// exactly one). We follow cmake: if multiple args, join with
+	// commas — same shape as serializing arg bytes through.
+	parts := make([][]byte, len(g.Args))
+	for i, a := range g.Args {
+		b, err := evalArg(a, ctx)
+		if err != nil {
+			return nil, err
+		}
+		parts[i] = b
+	}
+	return bytes.Join(parts, []byte(",")), nil
+}
+
+// evalArg evaluates an arg's node slice and returns the
+// concatenated bytes. An empty arg (`$<IF:1,,b>`'s middle
+// arg) yields an empty byte slice with no error.
+func evalArg(arg []Node, ctx Context) ([]byte, error) {
+	if len(arg) == 0 {
+		return nil, nil
+	}
+	return Eval(arg, ctx)
+}
+
+// evalArgsToStrings is a convenience for ops that want each
+// arg as a string for simple membership tests (CONFIG,
+// COMPILER_ID, PLATFORM_ID).
+func evalArgsToStrings(args [][]Node, ctx Context) ([]string, error) {
+	out := make([]string, len(args))
+	for i, a := range args {
+		b, err := evalArg(a, ctx)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = string(b)
+	}
+	return out, nil
+}
+
+// bool01 interprets b as the cmake-canonical "0" / "1" booleans
+// this evaluator produces. Anything else (typically because a
+// sub-genex evaluator emitted a non-boolean string for use in
+// AND/OR/NOT/IF) surfaces as UnsupportedError so the lifter
+// falls back rather than guess.
+func bool01(b []byte, op string) (bool, error) {
+	switch string(b) {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	}
+	return false, &UnsupportedError{Op: op, Reason: fmt.Sprintf("non-canonical boolean value %q (expected \"0\" or \"1\")", b)}
+}

@@ -1,0 +1,349 @@
+package genexeval
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func evalString(t *testing.T, template string, ctx Context) (string, error) {
+	t.Helper()
+	nodes, err := Parse([]byte(template))
+	if err != nil {
+		t.Fatalf("parse %q: %v", template, err)
+	}
+	b, err := Eval(nodes, ctx)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func TestEval_PlainText(t *testing.T) {
+	got, err := evalString(t, "no genex here", Context{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "no genex here" {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestEval_Config(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		ctx  Context
+		want string
+	}{
+		{"plain", "$<CONFIG>", Context{Config: "Release"}, "Release"},
+		{"match", "$<CONFIG:Release>", Context{Config: "Release"}, "1"},
+		{"mismatch", "$<CONFIG:Debug>", Context{Config: "Release"}, "0"},
+		{"case-insensitive", "$<CONFIG:RELEASE>", Context{Config: "Release"}, "1"},
+		{"multi-arg first matches", "$<CONFIG:Debug,Release>", Context{Config: "Release"}, "1"},
+		{"multi-arg none matches", "$<CONFIG:Debug,RelWithDebInfo>", Context{Config: "Release"}, "0"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := evalString(t, c.in, c.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_Config_UnsetIsUnsupported(t *testing.T) {
+	_, err := evalString(t, "$<CONFIG>", Context{})
+	var ue *UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedError, got %v", err)
+	}
+	if ue.Op != "CONFIG" {
+		t.Errorf("UnsupportedError.Op = %q", ue.Op)
+	}
+}
+
+func TestEval_CompilerID(t *testing.T) {
+	ctx := Context{CompilerID: map[string]string{"C": "GNU", "CXX": "GNU"}}
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "$<COMPILER_ID>", "GNU"},
+		{"match", "$<COMPILER_ID:GNU>", "1"},
+		{"mismatch", "$<COMPILER_ID:MSVC>", "0"},
+		{"multi-arg", "$<COMPILER_ID:Clang,GNU>", "1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_CompilerID_LanguageHint(t *testing.T) {
+	// When CompilerLanguage is set, the evaluator picks that
+	// language's id specifically rather than the first-seen.
+	ctx := Context{
+		CompilerID:       map[string]string{"C": "Clang", "CXX": "GNU"},
+		CompilerLanguage: "CXX",
+	}
+	got, err := evalString(t, "$<COMPILER_ID:GNU>", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "1" {
+		t.Errorf("CXX-keyed lookup should pick GNU; got %q", got)
+	}
+}
+
+// TestEval_CompilerID_DeterministicFallback asserts that when
+// the Context has no language hint AND none of the documented
+// preferred-languages (C / CXX / OBJC / OBJCXX / Fortran) are
+// present, the "last resort: any entry" fallback picks the
+// lexicographically-first language deterministically rather
+// than relying on map iteration order. Repeated lookups
+// against the same Context must return the same id.
+func TestEval_CompilerID_DeterministicFallback(t *testing.T) {
+	// Only an exotic language is set — none of the preferred
+	// list match. Two different ids so the "any entry" fallback
+	// has a real choice to make.
+	ctx := Context{CompilerID: map[string]string{
+		"Swift":  "AppleClang",
+		"CSharp": "MSBuild",
+		"Pascal": "FPC",
+	}}
+	const iterations = 50
+	first, err := evalString(t, "$<COMPILER_ID>", ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sorted order: CSharp < Pascal < Swift → MSBuild wins.
+	if first != "MSBuild" {
+		t.Errorf("expected lexicographically-first CSharp's MSBuild as fallback; got %q", first)
+	}
+	for i := 0; i < iterations; i++ {
+		got, err := evalString(t, "$<COMPILER_ID>", ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != first {
+			t.Fatalf("iteration %d: got %q, expected %q (non-deterministic fallback)", i, got, first)
+		}
+	}
+}
+
+func TestEval_PlatformID(t *testing.T) {
+	ctx := Context{PlatformID: "Linux"}
+	cases := []struct{ in, want string }{
+		{"$<PLATFORM_ID>", "Linux"},
+		{"$<PLATFORM_ID:Linux>", "1"},
+		{"$<PLATFORM_ID:Darwin>", "0"},
+		{"$<PLATFORM_ID:Darwin,Linux>", "1"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_Booleans(t *testing.T) {
+	ctx := Context{Config: "Release"}
+	cases := []struct{ in, want string }{
+		{"$<AND:1,1>", "1"},
+		{"$<AND:1,0>", "0"},
+		{"$<OR:0,1>", "1"},
+		{"$<OR:0,0>", "0"},
+		{"$<NOT:0>", "1"},
+		{"$<NOT:1>", "0"},
+		{"$<IF:1,yes,no>", "yes"},
+		{"$<IF:0,yes,no>", "no"},
+		{"$<IF:$<CONFIG:Release>,prod,dev>", "prod"},
+		{"$<IF:$<CONFIG:Debug>,prod,dev>", "dev"},
+		// nested boolean
+		{"$<AND:$<CONFIG:Release>,1>", "1"},
+		{"$<OR:$<CONFIG:Debug>,$<CONFIG:Release>>", "1"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_Booleans_NonCanonicalRefused(t *testing.T) {
+	// cmake accepts "TRUE" / "YES" / "ON" / etc. as truthy,
+	// but our v1 evaluator only models "0" / "1" to avoid
+	// silently diverging. Other forms surface as
+	// UnsupportedError → lifter falls back.
+	_, err := evalString(t, "$<AND:TRUE,1>", Context{})
+	var ue *UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedError, got %v", err)
+	}
+}
+
+func TestEval_BoolOp(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"$<BOOL:>", "0"},
+		{"$<BOOL:0>", "0"},
+		{"$<BOOL:1>", "1"},
+		{"$<BOOL:hello>", "1"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, Context{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_BoolOp_NonCanonicalRefused(t *testing.T) {
+	_, err := evalString(t, "$<BOOL:FALSE>", Context{})
+	var ue *UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedError, got %v", err)
+	}
+}
+
+func TestEval_StringOps(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"$<UPPER_CASE:hello>", "HELLO"},
+		{"$<LOWER_CASE:WORLD>", "world"},
+		{"$<STREQUAL:a,a>", "1"},
+		{"$<STREQUAL:a,b>", "0"},
+		{"$<UPPER_CASE:$<CONFIG>>", "RELEASE"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, Context{Config: "Release"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_LiteralOneAndZero(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"$<1:emit>", "emit"},
+		{"$<0:skip>", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, Context{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestEval_UnsupportedTargetGenex(t *testing.T) {
+	// Target-evaluator-dependent ops surface as
+	// UnsupportedError — the lifter routes to (b) / legacy.
+	cases := []string{
+		"$<TARGET_FILE:foo>",
+		"$<TARGET_OBJECTS:foo>",
+		"$<TARGET_PROPERTY:foo,prop>",
+		"$<INSTALL_INTERFACE:foo>",
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			_, err := evalString(t, in, Context{})
+			var ue *UnsupportedError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected UnsupportedError, got %v", err)
+			}
+		})
+	}
+}
+
+func TestEval_UnknownGenex(t *testing.T) {
+	_, err := evalString(t, "$<TOTALLY_MADE_UP:foo>", Context{})
+	var ue *UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedError, got %v", err)
+	}
+	if !strings.Contains(ue.Error(), "unknown") {
+		t.Errorf("error %q should mention unknown", ue.Error())
+	}
+}
+
+func TestEval_MixedTemplate(t *testing.T) {
+	// Real-world shape: a header with config + platform genexes
+	// interspersed with normal text.
+	template := `// build: $<CONFIG>
+#define BUILD_CONFIG_RELEASE $<CONFIG:Release>
+#define IS_LINUX $<PLATFORM_ID:Linux>
+#define COMPILER "$<COMPILER_ID>"
+$<IF:$<CONFIG:Debug>,#define DEBUG_ENABLED,#define NDEBUG>
+`
+	want := `// build: Release
+#define BUILD_CONFIG_RELEASE 1
+#define IS_LINUX 1
+#define COMPILER "GNU"
+#define NDEBUG
+`
+	ctx := Context{
+		Config:     "Release",
+		PlatformID: "Linux",
+		CompilerID: map[string]string{"C": "GNU", "CXX": "GNU"},
+	}
+	got, err := evalString(t, template, ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Errorf("mismatch\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestEval_PartialEvaluationPropagatesUnsupported(t *testing.T) {
+	// A template mixing supported + unsupported genexes: the
+	// whole evaluation must error, so the lifter falls back
+	// rather than emitting wrong bytes.
+	_, err := evalString(t, "// build: $<CONFIG>\n#define TARGET $<TARGET_FILE:foo>\n", Context{Config: "Release"})
+	var ue *UnsupportedError
+	if !errors.As(err, &ue) {
+		t.Fatalf("expected UnsupportedError, got %v", err)
+	}
+	if ue.Op != "TARGET_FILE" {
+		t.Errorf("UnsupportedError.Op = %q", ue.Op)
+	}
+}
