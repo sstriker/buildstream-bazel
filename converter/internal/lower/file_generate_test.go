@@ -357,6 +357,194 @@ func TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy(t *testing.
 	}
 }
 
+// TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator
+// exercises the (a) lift's success path: a template with a
+// `$<CONFIG>` genex, plus a cmakeVars dump carrying
+// CMAKE_BUILD_TYPE so the genexeval.Context can resolve at
+// convert time. The lifter parses the template, evaluates
+// against the Context, confirms the bytes match cmake's
+// rendered output, and emits the (a)-shape genrule with
+// --genex-context= alongside the existing --values=. Audit
+// tags: cmake-codegen-lifted + cmake-codegen-file-generate-
+// genex-evaluated. NOT the -lifted variant (that's (b)'s tag),
+// NOT the bare -genex variant (legacy fallback).
+func TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator(t *testing.T) {
+	template := "// build: $<CONFIG>\n#define IS_LINUX $<PLATFORM_ID:Linux>\n"
+	rendered := []byte("// build: Release\n#define IS_LINUX 1\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{
+		"CMAKE_BUILD_TYPE":      "Release",
+		"CMAKE_SYSTEM_NAME":     "Linux",
+		"CMAKE_C_COMPILER_ID":   "GNU",
+		"CMAKE_CXX_COMPILER_ID": "GNU",
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("expected one genrule; got %d", len(cc.Genrules))
+	}
+	g := cc.Genrules[0]
+	for _, want := range []string{
+		"cmake-codegen-lifted",
+		"cmake-codegen-file-generate-genex-evaluated",
+	} {
+		if !hasTag(g.Tags, want) {
+			t.Errorf("missing tag %q in %v", want, g.Tags)
+		}
+	}
+	for _, unwanted := range []string{
+		"cmake-codegen-file-generate-genex",        // legacy fallback
+		"cmake-codegen-file-generate-genex-lifted", // (b)-shape only
+	} {
+		if hasTag(g.Tags, unwanted) {
+			t.Errorf("unexpected tag %q in %v", unwanted, g.Tags)
+		}
+	}
+	if !strings.Contains(g.GenruleCmd, "--genex-context=") {
+		t.Errorf("cmd should pass --genex-context=; got %q", g.GenruleCmd)
+	}
+	if strings.Contains(g.GenruleCmd, "--genex-values=") {
+		t.Errorf("(a) lift should NOT pass --genex-values=; got %q", g.GenruleCmd)
+	}
+	// Soundness: rendered bytes must NOT appear in the cmd.
+	rendEnc := base64.StdEncoding.EncodeToString(rendered)
+	if strings.Contains(g.GenruleCmd, rendEnc) {
+		t.Errorf("rendered bytes appear in cmd as base64 (%s); (a) lift should NOT embed them", rendEnc)
+	}
+	// The Context payload should be small (typical: <100 bytes).
+	// Decode it and verify the captured fields.
+	ctx := extractGenexContextFromCmd(t, g.GenruleCmd)
+	if ctx.Config != "Release" {
+		t.Errorf("captured Context.Config = %q want Release", ctx.Config)
+	}
+	if ctx.PlatformID != "Linux" {
+		t.Errorf("captured Context.PlatformID = %q want Linux", ctx.PlatformID)
+	}
+	if ctx.CompilerID["C"] != "GNU" || ctx.CompilerID["CXX"] != "GNU" {
+		t.Errorf("captured Context.CompilerID = %v want C=GNU CXX=GNU", ctx.CompilerID)
+	}
+}
+
+// extractGenexContextFromCmd decodes the base64 blob the (a)
+// lifted shell command stages into the GENEX_CONTEXT sidecar.
+// Mirrors extractGenexValuesFromCmd's anchor walk but for the
+// genex-context blob.
+func extractGenexContextFromCmd(t *testing.T, cmd string) struct {
+	Config           string            `json:"config,omitempty"`
+	CompilerID       map[string]string `json:"compiler_id,omitempty"`
+	PlatformID       string            `json:"platform_id,omitempty"`
+	CompilerLanguage string            `json:"compiler_language,omitempty"`
+} {
+	t.Helper()
+	type ctxJSON struct {
+		Config           string            `json:"config,omitempty"`
+		CompilerID       map[string]string `json:"compiler_id,omitempty"`
+		PlatformID       string            `json:"platform_id,omitempty"`
+		CompilerLanguage string            `json:"compiler_language,omitempty"`
+	}
+	var empty ctxJSON
+	const before = `echo `
+	const after = ` | base64 -d > "$$GENEX_CONTEXT"`
+	a := strings.Index(cmd, after)
+	if a < 0 {
+		t.Errorf("cmd missing GENEX_CONTEXT base64-decode pattern")
+		return empty
+	}
+	b := strings.LastIndex(cmd[:a], before)
+	if b < 0 {
+		t.Errorf("cmd's GENEX_CONTEXT decode pattern has no echo prefix")
+		return empty
+	}
+	enc := cmd[b+len(before) : a]
+	raw, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		t.Errorf("decode genex-context base64 blob %q: %v", enc, err)
+		return empty
+	}
+	var ctx ctxJSON
+	if err := json.Unmarshal(raw, &ctx); err != nil {
+		t.Errorf("parse genex-context JSON %s: %v", raw, err)
+		return empty
+	}
+	return ctx
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp
+// asserts the (a) → (b) → legacy fallthrough order: a template
+// with $<TARGET_FILE:...> (which the (a) evaluator refuses via
+// UnsupportedError) routes to (b); (b) succeeds when the static
+// surround can anchor the value; tag set carries the (b) facet,
+// not (a)'s.
+func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t *testing.T) {
+	// $<TARGET_FILE:foo> is the unsupported op. cmake renders
+	// it to "/abs/path/libfoo.a" or similar at generate time;
+	// the trace records the resolved bytes in the output. For
+	// the test we just need a template+rendered pair where (a)
+	// refuses but (b) extracts cleanly.
+	template := "// link to $<TARGET_FILE:foo>\n"
+	rendered := []byte("// link to /opt/lib/libfoo.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("unsupported $<TARGET_FILE:> should NOT yield (a) tag; got %v", g.Tags)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
+		t.Errorf("expected (b) fallback tag in %v", g.Tags)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("(b) fallback should still carry cmake-codegen-lifted; got %v", g.Tags)
+	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty
+// asserts the (a) lift refuses when the Context is unavailable
+// (no CMAKE_BUILD_TYPE → genexeval.Context.Config is empty →
+// $<CONFIG> evaluation surfaces UnsupportedError). The lifter
+// falls through to (b) — same fixture genex shape gets the
+// captured-bytes lift when the evaluator can't fire.
+func TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty(t *testing.T) {
+	template := "// build: $<CONFIG>\n"
+	rendered := []byte("// build: Release\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	// nil cmakeVars → empty Context → (a) refuses.
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("empty cmakeVars should NOT yield (a) tag; got %v", g.Tags)
+	}
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
+		t.Errorf("expected (b) fallback tag in %v", g.Tags)
+	}
+}
+
 // TestRecoverFileGenerate_LegacyWhenLiftDisabled covers the
 // pre-lift compatibility shape: --lift-configure-file=false
 // keeps every file(GENERATE) on the legacy bytes-embedded
