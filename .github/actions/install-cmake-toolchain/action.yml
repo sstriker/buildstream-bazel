@@ -1,0 +1,55 @@
+name: Install cmake toolchain
+description: >
+  Installs the host-toolchain (cmake + ninja + bwrap) needed by
+  every CI job that runs a kind:cmake render gate or the
+  converter's -tags=e2e Go tests. Three sites used this same
+  recipe verbatim (the e2e, bazel-e2e, and e2e-latest-cmake
+  jobs); they now share this composite action so a change to
+  the install sequence — e.g. bumping the upstream cmake URL
+  fetch, or adjusting the bwrap setuid workaround — only has
+  to land once.
+
+  ninja is pre-installed on ubuntu-24.04 runners; this action
+  installs bubblewrap via apt and the pinned cmake from upstream
+  (the runner's stock 3.31.6 in /usr/bin is shadowed by
+  /usr/local/bin/<cmake-from-pin>).
+
+inputs:
+  cmake_version:
+    description: >
+      Optional cmake version override. When empty, install-pinned-cmake.sh
+      uses the Makefile's CMAKE_VERSION pin (the production target,
+      matching what deploy/buildbarn/runner/Dockerfile ships on the
+      RBE executor). Set this for the latest-cmake compatibility
+      tripwire job, which pins cmake 4.x deliberately to surface
+      File API / build.ninja drift before it hits production.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install bubblewrap + pinned cmake
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends bubblewrap
+        # Ubuntu 24.04 restricts unprivileged user namespaces by default
+        # (kernel + AppArmor profile). Rather than fight the layers,
+        # setuid bwrap so it creates the namespace as root. Acceptable
+        # for CI; production REAPI workers don't go through this code
+        # path.
+        sudo chmod u+s "$(command -v bwrap)"  # CI-only workaround; see block comment above
+        # Pin the cmake the orchestrator's defaultPlatform asserts —
+        # the runner's stock 3.31.6 in /usr/bin gets shadowed by the
+        # /usr/local/bin install. Without the override, converter
+        # behavior on cmake 3.31+ only fires in CI, never local dev.
+        if [ -n "${{ inputs.cmake_version }}" ]; then
+          sudo env PREFIX=/usr/local CMAKE_VERSION="${{ inputs.cmake_version }}" \
+            tools/install-pinned-cmake.sh
+        else
+          sudo env PREFIX=/usr/local tools/install-pinned-cmake.sh
+        fi
+        cmake --version | head -1
+        ninja --version
+        bwrap --version 2>&1 | head -1
