@@ -72,13 +72,17 @@ func (bazelHandler) RenderB(elem *element, elemPkg string) error {
 	// O_TRUNC means the override's BUILD.bazel / .bzl files
 	// naturally shadow any colliding source files (relevant
 	// when the source tree itself was a kind:bazel passthrough
-	// shipping its own BUILD). Also clear any pre-existing
-	// `BUILD` next to where the override will land its
-	// `BUILD.bazel` — Bazel rejects both files in one package,
-	// and copyTree doesn't remove the "other" name.
+	// shipping its own BUILD). Bazel rejects packages
+	// declaring both BUILD and BUILD.bazel, so for every
+	// package the override tree touches, strip the OTHER name
+	// at the mirrored elemPkg location before the copy lands.
+	// This runs over the whole override subtree, not just the
+	// top level, because operator-authored subpackage BUILDs
+	// can collide with source-shipped sibling files at the
+	// same depth.
 	if elem.OverrideBuildDir != "" {
-		for _, name := range []string{"BUILD", "BUILD.bazel"} {
-			_ = os.Remove(filepath.Join(elemPkg, name))
+		if err := stripCollidingBuildNames(elem.OverrideBuildDir, elemPkg); err != nil {
+			return fmt.Errorf("strip colliding BUILD names for %q: %w", elem.Name, err)
 		}
 		return copyTree(elem.OverrideBuildDir, elemPkg)
 	}
@@ -104,4 +108,41 @@ func (bazelHandler) RenderB(elem *element, elemPkg string) error {
 package(default_visibility = ["//visibility:public"])
 `)
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
+}
+
+// stripCollidingBuildNames walks overrideDir for every
+// BUILD-family file and removes the OTHER name (BUILD ↔
+// BUILD.bazel) from the mirrored location in elemPkg. Bazel
+// rejects packages declaring both names; without this strip,
+// a source-shipped `sub/BUILD` next to an override-shipped
+// `sub/BUILD.bazel` would survive copyTree and fail at load
+// time.
+func stripCollidingBuildNames(overrideDir, elemPkg string) error {
+	return filepath.Walk(overrideDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		var other string
+		switch filepath.Base(path) {
+		case "BUILD.bazel":
+			other = "BUILD"
+		case "BUILD":
+			other = "BUILD.bazel"
+		default:
+			return nil
+		}
+		rel, err := filepath.Rel(overrideDir, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		// os.Remove returning IsNotExist is the expected
+		// no-collision case — discard.
+		if err := os.Remove(filepath.Join(elemPkg, rel, other)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 }

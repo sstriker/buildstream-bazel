@@ -401,7 +401,7 @@ func main() {
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
 	pyprojectFallback := flag.Bool("pyproject-fallback", false, "optional: per-element auto-detection. When set (alongside --convert-element-pyproject), write-a probes each element's pyproject.toml at render time (running the converter with --probe) and emits the pipeline-shape coarse install genrule for any element whose probe doesn't return exit 0. That covers typed Tier-1 refusals (the native render would refuse), CLI/usage errors (exit 64), untyped Tier-2 errors (exit 65 — filesystem issues, malformed imports manifest), spawn failures (binary missing / wrong arch), and timeouts (probe hung past the per-element deadline). Operators see per-element refusal reasons on stderr; refused elements are still install_tree.tar-shaped (no per-target Bazel labels, but the element builds).")
-	buildFilesDir := flag.String("build-files-dir", "", "optional: directory of operator-supplied per-element BUILD overrides. For each element <name>, if the directory contains <name>/BUILD.bazel (or <name>/BUILD), write-a re-stamps the element as kind:bazel and copies the entire <name>/ subtree on top of project B's elements/<name>/ — overriding whatever the element's declared kind would otherwise render. Sources still stage first so the operator's BUILD can reference them via srcs=[...]; the override tree shadows any colliding files. The directory layout (rather than a flat <name>.BUILD.bazel file) lets one element ship multiple BUILDs — top-level plus subpackages — and drop in .bzl helpers, defs files, etc. alongside. Lets operators hand-author BUILDs for elements whose declared kind (kind:cmake, kind:autotools, ...) doesn't yet convert cleanly without changing the .bst files.")
+	buildFilesDir := flag.String("build-files-dir", "", "optional: directory of operator-supplied per-element BUILD overrides. For each element <name>, if the directory contains <name>/BUILD.bazel (or <name>/BUILD), write-a re-stamps the element as kind:bazel and copies the entire <name>/ subtree on top of project B's elements/<name>/ — overriding whatever the element's declared kind would otherwise render. Sources still stage first so the operator's BUILD can reference them via srcs=[...]; the override tree shadows any colliding files. The directory layout (rather than a flat <name>.BUILD.bazel file) lets one element ship multiple BUILDs — top-level plus subpackages — and drop in .bzl helpers, defs files, etc. alongside. Lets operators hand-author BUILDs for elements whose declared kind (kind:cmake, kind:autotools, ...) doesn't yet convert cleanly without changing the .bst files. Caveat: the kind:bazel re-stamp also skips whatever project-A wiring the original kind would have set up — kind:cmake's converter genrule doesn't fire, so cross-element bundle channels like :<elem>_cmake_config_bundle aren't synthesized for this element. Operators overriding a kind that consumes dep bundles need to wire equivalent staging inside the override BUILD by hand.")
 	flag.Parse()
 
 	if *bstRoot != "" {
@@ -2120,9 +2120,10 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-// copyTree recursively copies src to dst. Symlinks resolve to their
-// targets (they're rare in kind:local trees and Phase 1 doesn't need
-// to preserve them).
+// copyTree recursively copies src to dst. Symlinks are preserved
+// as symlinks (kind:import elements shipping dangling-on-disk
+// bootstrap symlinks rely on this; see the per-entry comment
+// inside the walk).
 func copyTree(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
