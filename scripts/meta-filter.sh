@@ -104,6 +104,15 @@ if [ "$bazel_major" -lt 9 ]; then
     exit 0
 fi
 
+# Bazel-build half execs convert-element-cmake which shells to
+# cmake + ninja under bwrap. Skip cleanly if any are missing.
+for tool in cmake ninja bwrap; do
+    if ! command -v "$tool" >/dev/null; then
+        echo "meta-filter: render OK; $tool not on PATH, skipping build phase"
+        exit 0
+    fi
+done
+
 META_BAZEL_STARTUP_ARGS=${META_BAZEL_STARTUP_ARGS:-}
 META_BAZEL_BUILD_ARGS=${META_BAZEL_BUILD_ARGS:-}
 

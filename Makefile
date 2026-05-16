@@ -128,7 +128,7 @@ e2e-fmt: check-cmake-toolchain converter fetch-fmt
 # binary linking against the converted cc_library. Skips the bazel
 # phases cleanly when bazel >= 7 isn't on PATH; the rendering checks
 # alone are still a useful regression gate.
-e2e-meta-hello: check-cmake-toolchain converter
+e2e-meta-hello: converter
 	scripts/meta-hello.sh
 
 # Render-half smoke test for tools/bst (the BuildStream-style CLI
@@ -165,7 +165,7 @@ e2e-audit-narrowing: check-cmake-toolchain converter
 # composition end-to-end through both projects, with a smoke binary
 # linking against both cmake elements. Same bazel-availability
 # gating as e2e-meta-hello.
-e2e-meta-stack: check-cmake-toolchain converter
+e2e-meta-stack: converter
 	scripts/meta-stack.sh
 
 # kind:bazel passthrough acceptance gate. Element's source tree
@@ -193,7 +193,7 @@ e2e-meta-bazel-override: converter
 # dep against the staged bundle; convert-element-cmake's STATIC IMPORTED
 # dep recovery emits deps = ["//elements/prod:prod"] in the
 # converted output.
-e2e-meta-cross-cmake: check-cmake-toolchain converter
+e2e-meta-cross-cmake: converter
 	scripts/meta-cross-cmake.sh
 
 # Run-vs-run regression gate. Renders + builds project A from the
@@ -203,7 +203,7 @@ e2e-meta-cross-cmake: check-cmake-toolchain converter
 # real CMakeLists change does (drift detection). The write-a + Bazel
 # path's replacement for the orchestrator's regression e2e; see
 # docs/design/orchestrator-absorption.md.
-e2e-meta-regression: check-cmake-toolchain converter
+e2e-meta-regression: converter
 	scripts/meta-regression.sh
 
 # Phase 3 first-cut acceptance gate. Single kind:manual element
@@ -265,7 +265,7 @@ e2e-meta-autotools-round2-multiplatform: converter
 # uses the orchestrator's existing multi-platform fan-out
 # (PR #112) at orchestrate time; the write-a-side output is
 # the same shape meta-cmake-round2-fallback already verifies.
-e2e-meta-cmake-round2-fallback-multiplatform: check-cmake-toolchain converter
+e2e-meta-cmake-round2-fallback-multiplatform: converter
 	scripts/meta-cmake-round2-fallback-multiplatform.sh
 
 # kind:meson native render acceptance gate. Single kind:meson element
@@ -337,7 +337,7 @@ e2e-meta-converge: converter
 # in the consumer's converter genrule srcs. The end-to-end live
 # proof (find_package(autoprod CONFIG) actually resolving) is in
 # tools/e2e-meta-cross-kind-live.sh.
-e2e-meta-cross-kind: check-cmake-toolchain converter
+e2e-meta-cross-kind: converter
 	scripts/meta-cross-kind.sh
 
 # finalize-b acceptance gate. Builds cmd/finalize-b, runs it on
@@ -426,7 +426,7 @@ e2e-meta-vars: converter
 # filegroup-over-deps shape as kind:stack; this gate proves the
 # rendering wiring works end-to-end and that compose's filegroup
 # resolves through bazel against the staged cmake outputs.
-e2e-meta-compose: check-cmake-toolchain converter
+e2e-meta-compose: converter
 	scripts/meta-compose.sh
 
 # kind:filter acceptance gate. Two elements (1 cmake parent + 1
@@ -435,7 +435,7 @@ e2e-meta-compose: check-cmake-toolchain converter
 # include-orphans` recorded as comments — domain-based slicing
 # itself lands when the typed-filegroup wrapper for pipeline-kind
 # outputs and the parent-public-data parser both arrive.
-e2e-meta-filter: check-cmake-toolchain converter
+e2e-meta-filter: converter
 	scripts/meta-filter.sh
 
 # kind:import acceptance gate. Single import element with a

@@ -140,27 +140,84 @@ transition cleanly.
   handlers today. Each kind is bounded work; what's not
   bounded is the question of which kinds are graph-recoverable
   vs need-to-stay-coarse.
-- **Push the converter's cmake invocation onto the RBE executor.**
-  First slice landed (see Done — per-gate cmake/ninja prereq
-  honesty via `check-cmake-toolchain`): ~32 of the ~50 e2e
-  gates no longer need cmake/ninja on PATH because their
-  fixtures don't exercise any `kind:cmake` element. The
-  remaining ~18 gates legitimately need cmake/ninja for the
-  convert-element-cmake binary's `cmakerun.Configure` shellout.
-  Closing the gap fully — "dev only needs Bazel + bb_clientd" —
-  means wrapping that shellout as a Bazel action whose toolchain
-  resolves to the executor's cmake (already in the buildbarn
-  worker image at `deploy/buildbarn/runner/Dockerfile`). Today
-  the converter runs locally, so the dev has to install cmake
-  even if their downstream Bazel build dispatches everything
-  else to RBE. Open questions: how does the converter consume
-  its File API reply when the cmake-configure step runs on a
-  remote node (does the reply tar fold into the genrule's outs,
-  read back in-process)? How does the orchestrator absorb this
-  without breaking the local-dev `make e2e-*` loop for someone
-  with cmake on PATH?
+- **Dev-loop guidance for routing local Bazel at the executor.**
+  Two slices landed (see Done): per-gate cmake prereq honesty +
+  inline cmake-availability check in the kind:cmake render
+  gates. Today only ~5 targets still pin cmake on the dev's
+  box: the converter's own `-tags=e2e` Go tests
+  (which call `cmakerun.Configure` directly), `e2e-audit-narrowing`
+  + `e2e-meta-cmake-round2-fallback-storage-cost` (scripts that
+  invoke `convert-element-cmake` directly before any bazel
+  involvement), and `record-fixtures`. Every other meta-* gate
+  runs render-only with just Go, including kind:cmake gates.
+
+  Closing the gap for the bazel-build half — "dev with bazel
+  installed but no cmake can still exercise the full e2e loop"
+  — means routing the dev's local `bazel build` invocations at
+  the buildbarn executor (the worker image already has cmake;
+  see `deploy/buildbarn/runner/Dockerfile`). The
+  `e2e-meta-buildbarn-re` gate already exercises exactly this
+  shape; the missing piece is a documented `--config=remote`
+  knob and CONTRIBUTING.md guidance so devs can opt in. Then
+  the only hard local dep for the kind:cmake gates' build half
+  becomes "bazel that can reach the executor", and cmake
+  drops to optional even for the build half. The harder
+  follow-on (wrapping `cmakerun.Configure` itself as a Bazel
+  action so the converter doesn't need cmake at any layer) is
+  a real architectural change; the open question is how the
+  converter's in-process File API consumer reads the reply
+  when the cmake-configure step runs on a remote node.
+
+- **Drop converter-side bwrap in favor of Bazel's strict sandbox.**
+  `cmakerun.Configure` wraps cmake in `bwrap` today for
+  hermeticity that Bazel's `linux-sandbox` already provides at
+  the action layer when the convert-element-cmake genrule runs
+  inside a sandboxed spawn. Plan: pin the strategy explicitly
+  in project A's rendered `.bazelrc`
+  (`--genrule_strategy=sandboxed --spawn_strategy=sandboxed
+  --sandbox_default_allow_network=false
+  --incompatible_strict_action_env`); audit what the converter's
+  inner-bwrap guarantees beyond what Bazel's sandbox provides
+  (clean `/tmp`, separate PID ns, fresh `/dev` — linux-sandbox
+  covers most of this); if nothing material is left, drop bwrap
+  from `cmakerun.Configure`, the runner image
+  (`deploy/buildbarn/runner/Dockerfile`), the CI `chmod u+s
+  "$(command -v bwrap)"` workaround
+  (`.github/actions/install-cmake-toolchain/action.yml`), and
+  the `check-cmake-toolchain` Makefile target. Cross-platform
+  win: today the converter has no bwrap fallback on macOS, so
+  the inner sandbox is silently disabled there; Bazel's
+  `darwin-sandbox` (sandbox-exec) gives equivalent guarantees
+  uniformly. Open question: cmake-configure writes to a build
+  directory — under Bazel's sandbox the writable area is part
+  of the genrule's tree, so the converter would have to switch
+  from its private bwrap-created tmp to a Bazel-supplied output
+  scratch dir. Bounded but non-trivial converter refactor.
 
 ## Done (high points)
+
+- **kind:cmake gates self-skip the bazel-build half on missing
+  toolchain.** Following from the per-gate prereq honesty pass
+  below, the remaining kind:cmake meta-* gates (`meta-hello`,
+  `meta-stack`, `meta-cross-cmake`, `meta-compose`, `meta-filter`,
+  `meta-regression`) now inline a cmake/ninja/bwrap availability
+  check right after their existing bazel-availability gate, and
+  drop the Makefile-level `check-cmake-toolchain` prereq. The
+  render half always runs (the contract write-a owes its
+  consumers); the bazel-build half self-skips cleanly with the
+  same `render OK; <tool> not on PATH, skipping build phase`
+  message the bazel-missing path uses, when any of cmake/ninja/
+  bwrap is missing. Two render-only kind:cmake gates
+  (`meta-cross-kind`, `meta-cmake-round2-fallback-multiplatform`)
+  never had a bazel-build half and drop the prereq outright
+  without a script edit. Net effect: a contributor with only
+  Go installed can run **every** render gate locally, including
+  kind:cmake gates' render half. Only the converter's own
+  `-tags=e2e` Go tests, `e2e-audit-narrowing`,
+  `e2e-meta-cmake-round2-fallback-storage-cost`, and
+  `record-fixtures` still pin cmake — the targets that exec
+  `cmakerun.Configure` or `convert-element-cmake` directly
+  before any bazel-availability check could gate them.
 
 - **Per-gate cmake/ninja prereq honesty.** The Makefile's
   monolithic `check-tools` target (cmake + ninja on PATH) was
