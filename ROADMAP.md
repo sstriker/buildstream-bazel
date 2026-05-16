@@ -91,12 +91,16 @@ transition cleanly.
 
 - **TARGET_FILE for cross-package targets.** The (a)
   evaluator now supports `$<TARGET_FILE:t>` for same-package
-  targets (see Done). Cross-package targets (`$<TARGET_FILE:other_pkg::foo>`-style
-  references via cmake's namespace operator) need the lifter
-  to traverse the project graph at convert time and emit
-  fully-qualified Bazel labels (`//other_pkg:foo`). This
-  needs a cross-package label resolver the file(GENERATE)
-  lifter doesn't currently have.
+  targets (see Done). Cross-package targets — referenced via
+  cmake's `find_package` / namespaced `Foo::bar` form — need
+  the file(GENERATE) lifter to thread the existing
+  `manifest.Resolver` (imports.json) through and use it to
+  emit fully-qualified Bazel labels in the `--target-file`
+  flag. Today's gap is also a latent soundness bug: cross-
+  package references silently ship recording-machine paths via
+  the (b) fallback. Design: `docs/design/cross-package-target-file.md`
+  proposes a two-PR landing — first detect-and-refuse to fix
+  soundness, then resolve via the imports manifest.
 
 - **Related on-disk-path genexes — TARGET_FILE_DIR /
   TARGET_FILE_NAME / TARGET_LINKER_FILE / TARGET_SONAME_FILE
