@@ -157,7 +157,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		Kind:        ir.KindGenrule,
 		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
 		GenruleOuts: []string{outRel},
-		Tags:        fileGenerateTags(false, false),
+		Tags:        fileGenerateTags(false, false, false),
 		Visibility:  []string{"//visibility:private"},
 	}
 	if optErr != nil {
@@ -192,7 +192,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// fallback, matching the body-level check below.
 		if hasGenex([]byte(call.Input)) {
 			genexLegacy := legacy
-			genexLegacy.Tags = fileGenerateTags(false, true)
+			genexLegacy.Tags = fileGenerateTags(false, true, false)
 			return genexLegacy
 		}
 		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
@@ -212,13 +212,56 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		return legacy
 	}
 
-	// Generator expression in the template body → skip lift,
-	// tag the legacy fallback so the audit can find it.
-	// (INPUT-arg genex is caught above before path resolution;
-	// CONTENT-arg genex hits the same check via templateBody.)
+	// Generator expression in the template body → attempt the
+	// "structured base64" (b) lift first: capture cmake's
+	// resolved bytes for each top-level `$<...>` in the
+	// template, ship the genex literal → resolved bytes map
+	// alongside the template, and let cmake-configure-file
+	// replay the substitution at Bazel time. The rendered
+	// output bytes are no longer content-load-bearing in
+	// srckey; the captured values dict is, but the dict
+	// changes only when cmake's genex evaluation produces
+	// different bytes (e.g., the operator switched
+	// CMAKE_BUILD_TYPE or the genex's underlying context shifted
+	// — both already invalidate srckey via CMakeLists / cache
+	// inputs).
+	//
+	// Failure modes (adjacent genexes with no static separator,
+	// same literal resolving to different values, or static
+	// chunks that don't align in rendered output — see
+	// extractGenexValues) route to the legacy bytes-embedded
+	// shape with the existing genex-fallback tag, so the
+	// audit signal stays honest about which calls couldn't
+	// lift. INPUT-arg genex (line ~193 above) bypasses this
+	// path entirely — without a resolvable on-disk template
+	// there's nothing for the (b) extractor to anchor against.
+	//
+	// OUTPUT-side genex is dropped before this function ever
+	// runs (recoverFileGenerate's hasGenex(call.Output) gate);
+	// covering it requires a real evaluator and is queued under
+	// the (a) shape of the same ROADMAP entry.
 	if hasGenex(templateBody) {
+		genexValues, err := extractGenexValues(templateBody, rendered)
+		if err == nil {
+			cmd, cmdErr := fileGenerateLiftedCmd(inRel, templateBody, map[string]string{}, genexValues, opts, isContentForm)
+			if cmdErr == nil {
+				target := ir.Target{
+					Name:         name,
+					Kind:         ir.KindGenrule,
+					GenruleCmd:   cmd,
+					GenruleOuts:  []string{outRel},
+					GenruleTools: []string{"//tools:cmake-configure-file"},
+					Tags:         fileGenerateTags(true, false, true),
+					Visibility:   []string{"//visibility:private"},
+				}
+				if !isContentForm {
+					target.Srcs = []string{inRel}
+				}
+				return target
+			}
+		}
 		genexLegacy := legacy
-		genexLegacy.Tags = fileGenerateTags(false, true)
+		genexLegacy.Tags = fileGenerateTags(false, true, false)
 		return genexLegacy
 	}
 
@@ -242,7 +285,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	}
 	values := map[string]string{}
 
-	cmd, err := fileGenerateLiftedCmd(inRel, templateBody, values, opts, isContentForm)
+	cmd, err := fileGenerateLiftedCmd(inRel, templateBody, values, nil, opts, isContentForm)
 	if err != nil {
 		return legacy
 	}
@@ -252,7 +295,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		GenruleCmd:   cmd,
 		GenruleOuts:  []string{outRel},
 		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         fileGenerateTags(true, false),
+		Tags:         fileGenerateTags(true, false, false),
 		Visibility:   []string{"//visibility:private"},
 	}
 	if !isContentForm {
@@ -328,10 +371,18 @@ func hasGenex(template []byte) bool {
 // so edits to values still re-render without a BUILD.bazel
 // edit.
 //
+// genexValues is the "structured base64" (b) lift's payload:
+// a map of each top-level `$<...>` literal in template to the
+// cmake-resolved bytes. Empty or nil means no genex replay
+// (the non-genex code path). Non-empty stages a second sidecar
+// JSON file alongside VALUES and threads `--genex-values=` at
+// the tool. Same mktemp + trap cleanup pattern keeps the
+// sidecar in the action's sandbox.
+//
 // VALUES staging mirrors configureFileLiftedCmd's portable
 // mktemp + trap-style cleanup; ensures the values JSON lives
 // in the action's sandbox, not /tmp.
-func fileGenerateLiftedCmd(inRel string, template []byte, values map[string]string, opts configurefile.Options, isContentForm bool) (string, error) {
+func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues map[string]string, opts configurefile.Options, isContentForm bool) (string, error) {
 	body, err := json.Marshal(values)
 	if err != nil {
 		return "", fmt.Errorf("marshal values: %w", err)
@@ -339,15 +390,35 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values map[string]stri
 	valuesEnc := base64.StdEncoding.EncodeToString(body)
 	flags := configureFileToolFlags(opts)
 
+	// Stage GENEX_VALUES only when there's a payload — keeps the
+	// non-genex cmd shape byte-stable with the pre-(b)-lift cmd
+	// so the existing file(GENERATE) goldens don't rewrite.
+	genexPrep, genexFlag, genexCleanup := "", "", ""
+	if len(genexValues) > 0 {
+		genexBody, err := json.Marshal(genexValues)
+		if err != nil {
+			return "", fmt.Errorf("marshal genex values: %w", err)
+		}
+		genexEnc := base64.StdEncoding.EncodeToString(genexBody)
+		genexPrep = fmt.Sprintf(
+			`GENEX_VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.genex.XXXXXX")" && `+
+				`echo %s | base64 -d > "$$GENEX_VALUES" && `,
+			genexEnc,
+		)
+		genexFlag = `--genex-values="$$GENEX_VALUES" `
+		genexCleanup = ` [ -n "$${GENEX_VALUES:-}" ] && rm -f "$$GENEX_VALUES";`
+	}
+
 	if isContentForm {
 		contentEnc := base64.StdEncoding.EncodeToString(template)
 		return fmt.Sprintf(
 			`mkdir -p "$$(dirname "$@")" && `+
 				`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 				`echo %s | base64 -d > "$$VALUES" && `+
-				`$(location //tools:cmake-configure-file) %s--values="$$VALUES" --content-base64=%s "$@" ; `+
-				`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES"; exit $$rc`,
-			valuesEnc, flags, contentEnc,
+				`%s`+
+				`$(location //tools:cmake-configure-file) %s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
+				`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
+			valuesEnc, genexPrep, flags, genexFlag, contentEnc, genexCleanup,
 		), nil
 	}
 
@@ -355,21 +426,44 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values map[string]stri
 		`mkdir -p "$$(dirname "$@")" && `+
 			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 			`echo %s | base64 -d > "$$VALUES" && `+
-			`$(location //tools:cmake-configure-file) %s--values="$$VALUES" "$(location %s)" "$@" ; `+
-			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES"; exit $$rc`,
-		valuesEnc, flags, inRel,
+			`%s`+
+			`$(location //tools:cmake-configure-file) %s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
+			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
+		valuesEnc, genexPrep, flags, genexFlag, inRel, genexCleanup,
 	), nil
 }
 
 // fileGenerateTags returns the cmake-codegen tag set for a
 // file(GENERATE) emission. Distinguishes from configure_file
 // via cmake-codegen-driver=file_generate so audit queries can
-// split the two cleanly. The lifted facet ("cmake-codegen-
-// lifted") and genex-fallback facet ("cmake-codegen-file-
-// generate-genex") are mutually exclusive in v1: a lifted
-// genrule by construction has no genex; a genex-bearing
-// template falls back to legacy.
-func fileGenerateTags(lifted, genexFallback bool) []string {
+// split the two cleanly.
+//
+// Three facets:
+//
+//   - lifted: the rendered output bytes are NOT content-load-
+//     bearing in srckey; the template (in srcs or as a
+//     base64 blob) is. Bazel re-renders via
+//     //tools:cmake-configure-file.
+//   - genexFallback: the template had at least one top-level
+//     `$<...>` AND the lifter couldn't produce a lifted shape.
+//     The legacy bytes-embedded shape is in play; rendered
+//     bytes are load-bearing.
+//   - genexLifted: the template had at least one top-level
+//     `$<...>` AND the lifter produced the (b) "structured
+//     base64" shape: the captured genex literal → resolved
+//     bytes map ships in the cmd alongside the template; at
+//     Bazel time //tools:cmake-configure-file replays the
+//     substitution. Implies lifted. The audit can find these
+//     via the lifted tag (rendered bytes not in srckey); the
+//     genex-lifted tag is a sub-classification for "lifted via
+//     the genex-capture path" vs the plain non-genex lift.
+//
+// lifted=false + genexFallback=false + genexLifted=false is
+// the plain "legacy bytes-embedded with no genex" shape.
+// genexLifted=true implies lifted=true; the caller passes
+// both. genexFallback=true and lifted=true are mutually
+// exclusive — a fallback by definition isn't lifted.
+func fileGenerateTags(lifted, genexFallback, genexLifted bool) []string {
 	tags := []string{
 		"cmake-codegen",
 		"cmake-codegen-driver=file_generate",
@@ -380,6 +474,9 @@ func fileGenerateTags(lifted, genexFallback bool) []string {
 	}
 	if genexFallback {
 		tags = append(tags, "cmake-codegen-file-generate-genex")
+	}
+	if genexLifted {
+		tags = append(tags, "cmake-codegen-file-generate-genex-lifted")
 	}
 	sort.Strings(tags)
 	return tags

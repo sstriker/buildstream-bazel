@@ -31,7 +31,7 @@ func TestRun_FixtureMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "config.h")
-	if err := run(valuesPath, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -60,7 +60,7 @@ func TestRun_AtOnlyFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
+	if err := run(valuesPath, "", tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -84,7 +84,7 @@ func TestRun_NullValuesIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, _ := os.ReadFile(outPath)
@@ -100,6 +100,7 @@ func TestRun_MissingValuesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := run(filepath.Join(tmp, "no-such-values.json"),
+		"",
 		filepath.Join(tmp, "in.txt"),
 		false,
 		"",
@@ -123,7 +124,7 @@ func TestRun_ContentBase64Mode(t *testing.T) {
 	tmpl := "#define BANNER \"@BANNER@\"\n"
 	blob := base64.StdEncoding.EncodeToString([]byte(tmpl))
 	outPath := filepath.Join(tmp, "out.h")
-	if err := run(valuesPath, "", true, blob, outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", "", true, blob, outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -152,7 +153,7 @@ func TestRun_ContentBase64Empty(t *testing.T) {
 	}
 	outPath := filepath.Join(tmp, "out.txt")
 	// Empty body: base64 of "" is the empty string.
-	if err := run(valuesPath, "", true, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", "", true, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -179,7 +180,7 @@ func TestRun_RejectsInvariantViolations(t *testing.T) {
 	outPath := filepath.Join(tmp, "out.txt")
 
 	// Neither set.
-	if err := run(valuesPath, "", false, "", outPath, configurefile.Options{}); err == nil {
+	if err := run(valuesPath, "", "", false, "", outPath, configurefile.Options{}); err == nil {
 		t.Errorf("neither inPath nor hasContent: expected error")
 	}
 	// Both set.
@@ -187,7 +188,7 @@ func TestRun_RejectsInvariantViolations(t *testing.T) {
 	if err := os.WriteFile(tmplPath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(valuesPath, tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
+	if err := run(valuesPath, "", tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
 		t.Errorf("both inPath and hasContent: expected error")
 	}
 }
@@ -201,8 +202,73 @@ func TestRun_ContentBase64Malformed(t *testing.T) {
 	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(valuesPath, "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
+	err := run(valuesPath, "", "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
 	if err == nil {
 		t.Fatal("expected error on malformed --content-base64")
+	}
+}
+
+// TestRun_GenexValues covers the structured-base64 lift's
+// Bazel-time path: a template carrying top-level `$<...>`
+// literals is replayed against a captured-at-convert-time
+// values dict mapping each literal to its cmake-resolved bytes.
+// Mirrors the file(GENERATE) CopyOnly + genex-replay shape the
+// lifter produces.
+func TestRun_GenexValues(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "tmpl.txt")
+	if err := os.WriteFile(tmplPath,
+		[]byte("// build: $<CONFIG>\n#define ARCH \"$<PLATFORM_ID:Linux>\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	genexValuesPath := filepath.Join(tmp, "genex.json")
+	if err := os.WriteFile(genexValuesPath,
+		[]byte(`{"$<CONFIG>":"Release","$<PLATFORM_ID:Linux>":"1"}`),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+	if err := run(valuesPath, genexValuesPath, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "// build: Release\n#define ARCH \"1\"\n"
+	if string(body) != want {
+		t.Errorf("rendered mismatch\nwant: %q\ngot:  %q", want, body)
+	}
+}
+
+// TestRun_GenexValues_MissingKey: if the template carries a
+// top-level genex with no matching entry in the values dict,
+// the tool errors out rather than silently emitting a literal
+// `$<...>` in the output (which a Bazel consumer reading the
+// generated header would see as a syntax error or worse, a
+// silently wrong value). Soundness gate the lifter relies on.
+func TestRun_GenexValues_MissingKey(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "tmpl.txt")
+	if err := os.WriteFile(tmplPath, []byte("$<CONFIG>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	genexValuesPath := filepath.Join(tmp, "genex.json")
+	if err := os.WriteFile(genexValuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+	err := run(valuesPath, genexValuesPath, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
+	if err == nil {
+		t.Fatal("expected error when genex values dict is missing a literal the template carries")
 	}
 }

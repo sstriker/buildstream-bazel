@@ -89,47 +89,29 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **Generator-expression evaluation in lifted genrules.** The
-  configure_file lift's verify-pass falls back to the legacy
-  bytes-embedded shape when `Substitute(template, vars, opts)`
-  doesn't reproduce cmake's rendered output. The main driver
-  of that fallback is `$<...>` generator expressions — cmake
-  resolves these at generate-time (after `--trace-expand`'s
-  variable expansion), so the trace records the call with the
-  genex still literal in the args. configure_file itself
-  doesn't accept genexes (per cmake's docs) so the fallback is
-  rare there, but `file(GENERATE)` accepts the full genex
-  surface in OUTPUT, CONTENT, INPUT, and CONDITION; lifted
-  rendering for that shape requires evaluating genexes at
-  Bazel time. Motivation for tackling this: every additional
-  call we lift shrinks the narrowing-undercoverage audit's
-  allowlist (the legacy shape leaves the template content-
-  load-bearing in srckey, so an audit on a project with many
-  unliftable `file(GENERATE)` calls accumulates noise). Two
-  realistic v1 shapes for the work: (a) classify the genex
-  surface, support the common configure-time-resolvable subset
-  in Go (`$<CONFIG:...>`, `$<COMPILER_ID:...>`,
-  `$<PLATFORM_ID:...>`, `$<TARGET_PROPERTY:...>` over already-
-  captured properties), and leave target-evaluator-dependent
-  forms (`$<TARGET_FILE:...>`, `$<TARGET_OBJECTS:...>`) on the
-  legacy shape; (b) capture the resolved bytes plus the
-  rendered-genex-input map at convert-element-cmake time and re-emit
-  bytes from the values dict at Bazel time without re-
-  evaluating, sidestepping the evaluator entirely (a
-  "structured base64" lift — values JSON carries the rendered
-  bytes broken into invariant chunks). The (b) shape doesn't
-  buy you safety against new-genex additions to a template,
-  but does decouple BUILD.bazel content from the rendered
-  bytes for the unchanged case. The choice between them is
-  open until a real fixture forces it. **OUTPUT-side genex
-  is a separate sub-problem**: cmake also allows `$<...>` in
-  the OUTPUT filename and CONDITION, and the trace records
-  the unresolved string. v1's file(GENERATE) lifter drops
-  these calls entirely (no rel to anchor against; no audit
-  tag rides along). A real evaluator covers both cases at
-  once; the (b) "structured base64" shape doesn't, because
-  it relies on having a known OUTPUT filename to read
-  rendered bytes from.
+- **Genex evaluator for OUTPUT-side and contextual genexes —
+  (a) shape.** The (b) "structured base64" lift shipped (see
+  Done) for template-body and CONTENT-form `$<...>` whose
+  resolved value can be anchored against cmake's rendered
+  output. (b)'s remaining gaps that need a real Go-side
+  evaluator: (1) OUTPUT-side genex — cmake allows `$<...>` in
+  the OUTPUT filename, and the trace records the unresolved
+  string; today's lifter drops these calls entirely (no rel
+  to anchor against). (2) Same-literal-different-value cases —
+  one `$<...>` literal resolving to two different rendered
+  values across positions (rare; v1 falls back to legacy). (3)
+  Template edits that add NEW genex literals — (b) only covers
+  the captured set; an operator adding `$<CONFIG:Debug>` to a
+  template that previously had only `$<CONFIG:Release>` falls
+  back to legacy until convert-element-cmake re-runs.
+  Concrete shape: classify the genex surface, support the
+  common configure-time-resolvable subset in Go
+  (`$<CONFIG:...>`, `$<COMPILER_ID:...>`, `$<PLATFORM_ID:...>`,
+  `$<TARGET_PROPERTY:...>` over already-captured properties,
+  boolean combinators), leave target-evaluator-dependent forms
+  (`$<TARGET_FILE:...>`, `$<TARGET_OBJECTS:...>`) on the legacy
+  shape with a typed refusal. This is the next genex work,
+  queued behind a real fixture that exercises (a)-only cases.
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
@@ -178,6 +160,37 @@ transition cleanly.
   Render gate `scripts/meta-gazelle-roundtrip.sh` updated to
   assert the new shape; `docs/design/build-output-conventions.md`
   documents the frame distinction.
+
+- **file(GENERATE) genex lift via structured base64 (the (b)
+  shape).** Phase 7d's file(GENERATE) lifter previously short-
+  circuited every `$<...>`-bearing template to the legacy
+  bytes-embedded shape — rendered output content-load-bearing
+  in srckey, audit-tagged `cmake-codegen-file-generate-genex`.
+  The (b) lift captures each top-level genex's resolved bytes
+  at convert-element-cmake time by aligning the template's
+  static chunks against cmake's rendered output, ships the
+  literal-to-value map as a base64 sidecar JSON in the genrule's
+  cmd, and replays the substitution at Bazel time via
+  cmake-configure-file's new `--genex-values=<path>` flag. The
+  audit signal splits cleanly: `cmake-codegen-file-generate-
+  genex-lifted` (with `cmake-codegen-lifted`) means "(b) lift
+  succeeded — rendered bytes no longer in srckey;"
+  `cmake-codegen-file-generate-genex` alone keeps its existing
+  meaning, "lift failed, legacy shape in play." Extractor
+  failure modes (static chunks don't align, adjacent genexes
+  with no separator, same literal resolving to different values)
+  all fall back to legacy with the original tag, preserving
+  soundness. Render gate: `scripts/meta-file-generate.sh`.
+  Unit tests: `converter/internal/lower/genex_extract_test.go`
+  + `file_generate_test.go`. Tool change:
+  `cmd/cmake-configure-file/main.go` gains `--genex-values=`
+  alongside the existing `--values=` (separate JSON files
+  — `--values` drives @VAR@/${VAR}/#cmakedefine substitution,
+  `--genex-values` drives literal `$<...>` → resolved-bytes
+  replacement). Out of scope: OUTPUT-side genex (no anchor),
+  same-literal-different-value cases, and template edits that
+  introduce new genex literals — the queued (a) Go-side
+  evaluator addresses those (Later).
 
 - **`--build-files-dir` per-element BUILD overrides.** Operators
   can drop a directory of per-element override subtrees next to
