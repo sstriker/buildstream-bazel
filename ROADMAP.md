@@ -168,6 +168,32 @@ transition cleanly.
   converter's in-process File API consumer reads the reply
   when the cmake-configure step runs on a remote node.
 
+- **Drop converter-side bwrap in favor of Bazel's strict sandbox.**
+  `cmakerun.Configure` wraps cmake in `bwrap` today for
+  hermeticity that Bazel's `linux-sandbox` already provides at
+  the action layer when the convert-element-cmake genrule runs
+  inside a sandboxed spawn. Plan: pin the strategy explicitly
+  in project A's rendered `.bazelrc`
+  (`--genrule_strategy=sandboxed --spawn_strategy=sandboxed
+  --sandbox_default_allow_network=false
+  --incompatible_strict_action_env`); audit what the converter's
+  inner-bwrap guarantees beyond what Bazel's sandbox provides
+  (clean `/tmp`, separate PID ns, fresh `/dev` — linux-sandbox
+  covers most of this); if nothing material is left, drop bwrap
+  from `cmakerun.Configure`, the runner image
+  (`deploy/buildbarn/runner/Dockerfile`), the CI `chmod u+s
+  "$(command -v bwrap)"` workaround
+  (`.github/actions/install-cmake-toolchain/action.yml`), and
+  the `check-cmake-toolchain` Makefile target. Cross-platform
+  win: today the converter has no bwrap fallback on macOS, so
+  the inner sandbox is silently disabled there; Bazel's
+  `darwin-sandbox` (sandbox-exec) gives equivalent guarantees
+  uniformly. Open question: cmake-configure writes to a build
+  directory — under Bazel's sandbox the writable area is part
+  of the genrule's tree, so the converter would have to switch
+  from its private bwrap-created tmp to a Bazel-supplied output
+  scratch dir. Bounded but non-trivial converter refactor.
+
 ## Done (high points)
 
 - **kind:cmake gates self-skip the bazel-build half on missing
