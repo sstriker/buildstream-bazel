@@ -89,29 +89,34 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **Genex evaluator for OUTPUT-side and contextual genexes —
-  (a) shape.** The (b) "structured base64" lift shipped (see
-  Done) for template-body and CONTENT-form `$<...>` whose
-  resolved value can be anchored against cmake's rendered
-  output. (b)'s remaining gaps that need a real Go-side
-  evaluator: (1) OUTPUT-side genex — cmake allows `$<...>` in
-  the OUTPUT filename, and the trace records the unresolved
-  string; today's lifter drops these calls entirely (no rel
-  to anchor against). (2) Same-literal-different-value cases —
-  one `$<...>` literal resolving to two different rendered
-  values across positions (rare; v1 falls back to legacy). (3)
-  Template edits that add NEW genex literals — (b) only covers
-  the captured set; an operator adding `$<CONFIG:Debug>` to a
-  template that previously had only `$<CONFIG:Release>` falls
-  back to legacy until convert-element-cmake re-runs.
-  Concrete shape: classify the genex surface, support the
-  common configure-time-resolvable subset in Go
-  (`$<CONFIG:...>`, `$<COMPILER_ID:...>`, `$<PLATFORM_ID:...>`,
-  `$<TARGET_PROPERTY:...>` over already-captured properties,
-  boolean combinators), leave target-evaluator-dependent forms
-  (`$<TARGET_FILE:...>`, `$<TARGET_OBJECTS:...>`) on the legacy
-  shape with a typed refusal. This is the next genex work,
-  queued behind a real fixture that exercises (a)-only cases.
+- **OUTPUT-side genex resolution at convert time.** The (a)
+  Go-side evaluator (see Done) handles template-body and
+  CONTENT-form genexes whose ops fall in the configure-time-
+  resolvable subset. OUTPUT-side genex remains dropped by
+  `recoverFileGenerate`'s `hasGenex(call.Output)` gate —
+  resolving the OUTPUT filename via the same evaluator at
+  convert time (the `Context` is already available) and using
+  the resolved literal as the `outRel` would close the OUTPUT-
+  side gap. Same for INPUT-arg genex (`INPUT $<CONFIG>/foo.in`).
+  Small follow-up: ~50 lines in `recoverFileGenerate` to wire
+  the evaluator at the gate, plus a fixture/test pair. Queued
+  behind a real fixture project that exercises OUTPUT-side
+  genex (synthetic is fine; the existing file-generate fixture
+  doesn't carry one).
+
+- **Per-target genex evaluator (TARGET_PROPERTY,
+  TARGET_FILE).** The (a) v1 evaluator typed-refuses target-
+  evaluator-dependent ops — the lifter falls back to (b) /
+  legacy. Extending the evaluator to read already-captured
+  target properties from the fileapi codemodel would lift
+  templates using `$<TARGET_PROPERTY:t,p>` and similar. The
+  fileapi already exposes per-target compile-options /
+  include-directories / link-libraries; threading those into
+  `genexeval.Context` (e.g., as a `Targets map[string]TargetInfo`
+  field) is straightforward. `$<TARGET_FILE:t>` requires the
+  Bazel-time output path of the target's build, which is
+  build-system-dependent and harder — likely stays refused for
+  the foreseeable future.
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
@@ -137,6 +142,37 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **file(GENERATE) genex evaluator via genexeval — (a) shape.**
+  New `internal/genexeval` package: Go-side parser + evaluator
+  for the configure-time-resolvable cmake `$<...>` subset
+  (`$<CONFIG[:cfg,...]>`, `$<COMPILER_ID[:id,...]>`,
+  `$<PLATFORM_ID[:id,...]>`, `$<COMPILER_LANGUAGE:lang,...>`,
+  boolean combinators `$<AND:...>` / `$<OR:...>` / `$<NOT:b>` /
+  `$<IF:cond,then,else>` / `$<BOOL:str>`, string ops
+  `$<UPPER_CASE:>` / `$<LOWER_CASE:>` / `$<STREQUAL:s1,s2>`,
+  conditional emit `$<0:str>` / `$<1:str>`). Target-evaluator-
+  dependent ops (`$<TARGET_FILE:>`, `$<TARGET_OBJECTS:>`,
+  `$<TARGET_PROPERTY:>`, `$<INSTALL_INTERFACE:>`, ...) surface
+  as `UnsupportedError` so the lifter can pattern-match and
+  fall back. Strict boolean interpretation (only `"0"` / `"1"`)
+  avoids silent divergence with cmake's looser truthy set.
+  The lifter now tries (a) first via
+  `buildGenexContext(cmakeVars)` projecting CMAKE_BUILD_TYPE /
+  CMAKE_SYSTEM_NAME / CMAKE_<LANG>_COMPILER_ID into
+  `genexeval.Context`; on success ships the Context as a
+  base64 sidecar in the genrule and tags the result
+  `cmake-codegen-file-generate-genex-evaluated`. On
+  `UnsupportedError` or byte-mismatch, falls through to (b)
+  capture, then legacy. cmake-configure-file gains a
+  `--genex-context=<path>` flag (mutex with `--genex-values`).
+  The (a) lift handles template edits that add NEW genex
+  literals against the same Context — they get evaluated at
+  Bazel time without re-running convert-element-cmake. Unit
+  tests in `converter/internal/lower/file_generate_test.go`
+  cover the (a) success path, the (a)→(b) fallthrough on
+  unsupported ops, and the (a) refusal when cmakeVars are
+  empty.
 
 - **gazelle_cc `# gazelle:cc_search` path-frame fix.** Phase 7d's
   cc_search emission was wrong on both axes the acceptance

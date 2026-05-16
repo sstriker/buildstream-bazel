@@ -107,6 +107,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/configurefile"
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 )
 
 // optionalString is a flag.Value that tracks whether a string
@@ -136,6 +137,7 @@ func (o *optionalString) Set(s string) error {
 func main() {
 	valuesPath := flag.String("values", "", "path to JSON file containing the {VAR: value, ...} substitution map. Required.")
 	genexValuesPath := flag.String("genex-values", "", "optional: path to JSON file mapping each top-level `$<...>` literal in the template to its cmake-resolved bytes (the captured-at-convert-time \"structured base64\" lift's payload). Applied AFTER --values substitution; literal replacement, not recursive evaluation. Empty (default) skips the genex-replay step, matching the configure_file lift's behaviour where templates carry no genexes.")
+	genexContextPath := flag.String("genex-context", "", "optional: path to JSON file carrying the cmake configure-time context the Go-side genex evaluator (genexeval package) consults to resolve `$<...>` at Bazel time. Schema: {\"config\": str, \"compiler_id\": {lang: str}, \"platform_id\": str, \"compiler_language\": str}. Applied AFTER --values substitution. Mutually exclusive with --genex-values (the two genex shapes are different replacement strategies — pick one per call site).")
 	var contentBase64 optionalString
 	flag.Var(&contentBase64, "content-base64", "base64-encoded inline template body (mutually exclusive with the positional <input> path). Used by file(GENERATE CONTENT ...) lifts where the template has no on-disk srcs anchor. An explicit `--content-base64=` (empty value) is treated as the literal empty template — distinct from omitting the flag.")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
@@ -188,7 +190,11 @@ func main() {
 	if hasInputPath {
 		inPath = args[0]
 	}
-	if err := run(*valuesPath, *genexValuesPath, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
+	if *genexValuesPath != "" && *genexContextPath != "" {
+		fmt.Fprintln(os.Stderr, "cmake-configure-file: --genex-values and --genex-context are mutually exclusive (pick one genex shape per call site)")
+		os.Exit(2)
+	}
+	if err := run(*valuesPath, *genexValuesPath, *genexContextPath, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
@@ -223,7 +229,7 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 // suspiciously well-formed output that masks the bug) or
 // both set (which is ambiguous about which template source
 // wins).
-func run(valuesPath, genexValuesPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
+func run(valuesPath, genexValuesPath, genexContextPath, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
 	switch {
 	case inPath == "" && !hasContent:
 		return fmt.Errorf("internal: neither inPath nor hasContent set; main's CLI gate should have rejected this argv")
@@ -268,6 +274,28 @@ func run(valuesPath, genexValuesPath, inPath string, hasContent bool, content, o
 		if err != nil {
 			return fmt.Errorf("apply genex values: %w", err)
 		}
+	}
+	if genexContextPath != "" {
+		// (a)-shape lift: parse the (post-Substitute) bytes via
+		// the Go-side genex evaluator and resolve `$<...>` against
+		// the captured Context. Same Substitute-first ordering as
+		// the (b) path so the @VAR@/${VAR}/#cmakedefine output is
+		// what the genex evaluator sees — matches cmake's pipeline.
+		// CLI gate above already rejects the --genex-values +
+		// --genex-context combination.
+		ctx, err := loadGenexContext(genexContextPath)
+		if err != nil {
+			return fmt.Errorf("load genex context %s: %w", genexContextPath, err)
+		}
+		nodes, err := genexeval.Parse(rendered)
+		if err != nil {
+			return fmt.Errorf("parse template for genex evaluation: %w", err)
+		}
+		evaled, err := genexeval.Eval(nodes, ctx)
+		if err != nil {
+			return fmt.Errorf("evaluate genex: %w", err)
+		}
+		rendered = evaled
 	}
 	if err := os.WriteFile(outPath, rendered, 0o644); err != nil {
 		return fmt.Errorf("write output %s: %w", outPath, err)
@@ -318,6 +346,47 @@ func loadGenexValues(path string) (map[string]string, error) {
 		values = map[string]string{}
 	}
 	return values, nil
+}
+
+// genexContextJSON is the JSON wire form for genexeval.Context.
+// Mirrors the Go struct field-for-field but uses snake_case
+// names to match the rest of the project's JSON convention
+// (see internal/shadow / values JSON shapes). The (a)-shape
+// lifter at convert-element-cmake time serialises the
+// captured cmake configure-time slice as this JSON; the tool
+// deserialises and feeds genexeval.Eval.
+type genexContextJSON struct {
+	Config           string            `json:"config,omitempty"`
+	CompilerID       map[string]string `json:"compiler_id,omitempty"`
+	PlatformID       string            `json:"platform_id,omitempty"`
+	CompilerLanguage string            `json:"compiler_language,omitempty"`
+}
+
+// loadGenexContext reads the (a)-shape Context sidecar. Empty
+// object {} is valid (every Context field is optional; an op
+// the loaded Context can't satisfy surfaces as
+// UnsupportedError at Eval time, propagating to the caller as
+// "evaluate genex: ..."). `null` is normalized to an empty
+// Context for the same null-tolerance reason loadValues
+// applies.
+func loadGenexContext(path string) (genexeval.Context, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return genexeval.Context{}, err
+	}
+	var raw *genexContextJSON
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return genexeval.Context{}, fmt.Errorf("parse JSON: %w", err)
+	}
+	if raw == nil {
+		return genexeval.Context{}, nil
+	}
+	return genexeval.Context{
+		Config:           raw.Config,
+		CompilerID:       raw.CompilerID,
+		PlatformID:       raw.PlatformID,
+		CompilerLanguage: raw.CompilerLanguage,
+	}, nil
 }
 
 // applyGenexValuesAtRuntime is the Bazel-time complement of
