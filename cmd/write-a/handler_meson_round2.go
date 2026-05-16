@@ -224,26 +224,7 @@ genrule(
         # this genrule. trace-publish reads it from here.
         cp -L "$$MESON_TRACE" "$$EXEC_ROOT/$(location %[4]strace.log)"
 
-        # Synthesize a cmake-config bundle from the install tree
-        # (cross-element configure-step bootstrap rendezvous; see
-        # docs/design/cross-element-config-rendezvous.md). For
-        # kind:meson the bundle's primary content is pkg-config
-        # files under lib/pkgconfig/; an installed meson package's
-        # downstream consumers find it via PKG_CONFIG_PATH. The
-        # bundle publishes under SyntheticConfigDigest — a
-        # separate AC keyspace from the trace.
-        export CONFIG_BUNDLE_DIR="$$(mktemp -d)"
-        if [ -d "$$INSTALL_ROOT/lib/pkgconfig" ]; then
-            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
-            cp -r "$$INSTALL_ROOT/lib/pkgconfig"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
-        fi
-        if [ -d "$$INSTALL_ROOT/lib/cmake" ]; then
-            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/cmake"
-            cp -r "$$INSTALL_ROOT/lib/cmake"/. "$$CONFIG_BUNDLE_DIR/lib/cmake/" 2>/dev/null || true
-        fi
-        export CONFIG_BUNDLE_TAR="$$(mktemp)"
-        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
-            -cf "$$CONFIG_BUNDLE_TAR" -C "$$CONFIG_BUNDLE_DIR" .
+%[7]s
 
         # Publish to the AC iff a remote is configured. Same
         # short-circuit pattern kind:autotools / kind:cmake
@@ -262,7 +243,7 @@ genrule(
 `, elem.Name, wrapMesonPipelineCmds(`        meson setup "$$BUILD_ROOT" "$$SRC_DIR" --prefix=/ --libdir=lib
         ninja -C "$$BUILD_ROOT"
         DESTDIR="$$INSTALL_ROOT" meson install -C "$$BUILD_ROOT"`),
-		nameSuffix, outputPrefix, publishPlatform, execAttr)
+		nameSuffix, outputPrefix, publishPlatform, execAttr, bundleSynthShell())
 }
 
 // renderMesonRound2B is project B's per-element render for the
