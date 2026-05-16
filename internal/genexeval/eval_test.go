@@ -429,6 +429,86 @@ func TestEval_TargetFile_Refusals(t *testing.T) {
 	}
 }
 
+// TestEval_TargetFile_Variants exercises the six on-disk-path
+// variants that derive from FileLocation:
+//
+//   - TARGET_FILE_DIR / TARGET_LINKER_FILE_DIR → filepath.Dir
+//   - TARGET_FILE_NAME / TARGET_LINKER_FILE_NAME → filepath.Base
+//   - TARGET_LINKER_FILE / TARGET_SONAME_FILE → Linux v1 alias
+//     to TARGET_FILE (identity)
+//
+// Each shares the lifter's existing --target-file=<name>=<path>
+// wire; the evaluator does the derivation at Bazel time.
+func TestEval_TargetFile_Variants(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {FileLocation: "/build/lib/libfoo.a"},
+	}}
+	cases := []struct{ in, want string }{
+		{"$<TARGET_FILE:foo>", "/build/lib/libfoo.a"},
+		{"$<TARGET_FILE_DIR:foo>", "/build/lib"},
+		{"$<TARGET_FILE_NAME:foo>", "libfoo.a"},
+		{"$<TARGET_LINKER_FILE:foo>", "/build/lib/libfoo.a"},
+		{"$<TARGET_LINKER_FILE_DIR:foo>", "/build/lib"},
+		{"$<TARGET_LINKER_FILE_NAME:foo>", "libfoo.a"},
+		{"$<TARGET_SONAME_FILE:foo>", "/build/lib/libfoo.a"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestEval_TargetFile_Variants_Refusals confirms the variants
+// share the same refusal modes as TARGET_FILE — missing target
+// and empty FileLocation both surface UnsupportedError with the
+// op label set to the originating op (TARGET_FILE_DIR etc.)
+// rather than the underlying TARGET_FILE — so the lifter's
+// fallback diagnostics name the template's actual op.
+func TestEval_TargetFile_Variants_Refusals(t *testing.T) {
+	cases := []struct {
+		name, in, wantOp string
+		ctx              Context
+	}{
+		{
+			"missing target / TARGET_FILE_DIR",
+			"$<TARGET_FILE_DIR:nope>",
+			"TARGET_FILE_DIR",
+			Context{},
+		},
+		{
+			"empty FileLocation / TARGET_LINKER_FILE_NAME",
+			"$<TARGET_LINKER_FILE_NAME:foo>",
+			"TARGET_LINKER_FILE_NAME",
+			Context{Targets: map[string]TargetInfo{"foo": {Type: "STATIC_LIBRARY"}}},
+		},
+		{
+			"missing target / TARGET_SONAME_FILE",
+			"$<TARGET_SONAME_FILE:nope>",
+			"TARGET_SONAME_FILE",
+			Context{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := evalString(t, c.in, c.ctx)
+			var ue *UnsupportedError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected UnsupportedError, got %v", err)
+			}
+			if ue.Op != c.wantOp {
+				t.Errorf("Op = %q want %q", ue.Op, c.wantOp)
+			}
+		})
+	}
+}
+
 func TestEval_UnknownGenex(t *testing.T) {
 	_, err := evalString(t, "$<TOTALLY_MADE_UP:foo>", Context{})
 	var ue *UnsupportedError

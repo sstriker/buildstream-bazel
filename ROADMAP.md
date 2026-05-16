@@ -98,13 +98,16 @@ transition cleanly.
   needs a cross-package label resolver the file(GENERATE)
   lifter doesn't currently have.
 
-- **Related on-disk-path genexes — TARGET_FILE_DIR /
-  TARGET_FILE_NAME / TARGET_LINKER_FILE / TARGET_SONAME_FILE
-  / TARGET_OBJECTS.** Same wire mechanics as TARGET_FILE but
-  with different per-target outputs. Straightforward
-  extension of the existing `--target-file-dir`,
-  `--target-file-name`, etc. flags + matching evaluator
-  dispatch. ~100 LoC each, grouped into one PR.
+- **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets.** The
+  (a) evaluator now supports the other six on-disk-path
+  variants (see Done). `TARGET_OBJECTS` is a distinct case —
+  it resolves to a semicolon-separated list of .o paths
+  per cmake's object-library convention, not a single path,
+  so it needs a separate `Context.Targets[t].Objects []string`
+  field and a list-valued wire (likely a repeatable
+  `--target-objects=<name>=<path>` flag the lifter calls once
+  per object). Convert-time byte-equal-check semantics work
+  the same way; just more wire than the FILE_* variants.
 
 - **TARGET_PROPERTY INTERFACE_* aggregation.** The v1
   evaluator (below) supports `$<TARGET_PROPERTY:t,p>` for
@@ -157,6 +160,23 @@ transition cleanly.
   former onto the executor toolchain.
 
 ## Done (high points)
+
+- **On-disk-path genex variants — TARGET_FILE_DIR /
+  TARGET_FILE_NAME / TARGET_LINKER_FILE / TARGET_LINKER_FILE_DIR
+  / TARGET_LINKER_FILE_NAME / TARGET_SONAME_FILE.** The (a)
+  evaluator now supports the six FileLocation-derived ops
+  alongside TARGET_FILE. All seven share the lifter's existing
+  `--target-file=<name>=$(location :name)` wire; the evaluator
+  computes the per-op derivation (Dir / Base / identity) at
+  Bazel time against the same FileLocation. Linux v1 aliases
+  LINKER_FILE / SONAME_FILE to TARGET_FILE (no Windows import-
+  library / Mach-O distinction); the convert-time byte-equal
+  check catches any cross-platform disagreement and routes to
+  (b)/legacy. Lifter's `extractTargetFileRefs` now scans for
+  all seven prefixes; a template referencing the same target
+  via multiple op forms collapses to one wire flag (deduped
+  by name, not by op). TARGET_OBJECTS remains UnsupportedError
+  pending a list-valued wire (queued under Later).
 
 - **`$<TARGET_FILE:t>` for same-package targets.** The (a)
   evaluator handles `$<TARGET_FILE:t>` for any target in the

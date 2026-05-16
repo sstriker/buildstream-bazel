@@ -282,8 +282,15 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// otherwise grow linearly with target count for no
 		// benefit.
 		ctxTargets := genexTargets
-		needsTargets := bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:")) ||
-			bytes.Contains(templateBody, []byte("$<TARGET_FILE:"))
+		needsTargets := bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:"))
+		if !needsTargets {
+			for _, prefix := range targetFileOpPrefixes {
+				if bytes.Contains(templateBody, []byte(prefix)) {
+					needsTargets = true
+					break
+				}
+			}
+		}
 		if !needsTargets {
 			ctxTargets = nil
 		}
@@ -637,38 +644,57 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string) map[string]gen
 	return out
 }
 
-// extractTargetFileRefs walks template body for `$<TARGET_FILE:name>`
-// occurrences and returns the unique target names in sorted
-// order. Sorted iteration keeps the lifted cmd byte-stable.
-// Uses a simple prefix scan rather than the full parser since
-// only the literal `$<TARGET_FILE:` prefix matters — the
-// trailing `:` in the prefix disambiguates from longer ops
-// like `$<TARGET_FILE_NAME:` / `$<TARGET_FILE_DIR:` (whose
-// char-after-`E` is `_`, not `:`), so no separate suffix
-// check is needed.
+// targetFileOpPrefixes is the set of `$<...:` prefixes that
+// trigger a `--target-file=<name>=$(location :name)` flag
+// emission. All seven variants resolve via the same wire (the
+// genexeval evaluator derives DIR / NAME / LINKER / SONAME
+// from FileLocation at runtime), so the lifter only needs the
+// referenced target names — the variant op chosen at the
+// template site doesn't change what we pass to Bazel.
+//
+// Trailing `:` on each prefix disambiguates the shorter forms
+// from the longer ones during the scan (e.g. `$<TARGET_FILE:`
+// vs `$<TARGET_FILE_DIR:` — the latter's char-after-`E` is
+// `_`, not `:`, so a search for the shorter prefix won't
+// false-positive on the longer).
+var targetFileOpPrefixes = []string{
+	"$<TARGET_FILE:",
+	"$<TARGET_FILE_DIR:",
+	"$<TARGET_FILE_NAME:",
+	"$<TARGET_LINKER_FILE:",
+	"$<TARGET_LINKER_FILE_DIR:",
+	"$<TARGET_LINKER_FILE_NAME:",
+	"$<TARGET_SONAME_FILE:",
+}
+
+// extractTargetFileRefs walks template body for each of the
+// `$<TARGET_FILE*:name>` / `$<TARGET_LINKER_FILE*:name>` /
+// `$<TARGET_SONAME_FILE:name>` op forms and returns the union
+// of unique target names in sorted order. Sorted iteration
+// keeps the lifted cmd byte-stable. Uses a simple prefix scan
+// per op rather than the full parser; v1 targets don't contain
+// nested `$<...>` in their name slot (cmake target names are
+// literals) so a plain rune scan to `>` suffices.
 func extractTargetFileRefs(body []byte) []string {
-	const prefix = "$<TARGET_FILE:"
 	seen := map[string]bool{}
-	rest := body
-	for {
-		i := bytes.Index(rest, []byte(prefix))
-		if i < 0 {
-			break
+	for _, prefix := range targetFileOpPrefixes {
+		rest := body
+		for {
+			i := bytes.Index(rest, []byte(prefix))
+			if i < 0 {
+				break
+			}
+			argStart := i + len(prefix)
+			end := bytes.IndexByte(rest[argStart:], '>')
+			if end < 0 {
+				break
+			}
+			name := string(rest[argStart : argStart+end])
+			if name != "" {
+				seen[name] = true
+			}
+			rest = rest[argStart+end+1:]
 		}
-		// Scan forward for the closing `>` at depth 0 from the
-		// arg start. v1 targets don't contain nested `$<...>`
-		// in their name slot (cmake target names are literals);
-		// a plain rune scan to `>` suffices.
-		argStart := i + len(prefix)
-		end := bytes.IndexByte(rest[argStart:], '>')
-		if end < 0 {
-			break
-		}
-		name := string(rest[argStart : argStart+end])
-		if name != "" && !seen[name] {
-			seen[name] = true
-		}
-		rest = rest[argStart+end+1:]
 	}
 	if len(seen) == 0 {
 		return nil

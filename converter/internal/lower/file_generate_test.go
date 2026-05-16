@@ -848,6 +848,53 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFile(t *testing.T) {
 	}
 }
 
+// TestRecoverFileGenerate_GenexEvaluatedWithTargetFileVariants
+// covers the on-disk-path variant ops (FILE_DIR, FILE_NAME,
+// LINKER_FILE*, SONAME_FILE): a template referencing any of
+// them must trigger the same `--target-file=foo=$(location :foo)`
+// flag emission as TARGET_FILE, since all six derive from
+// FileLocation at Bazel time via the genexeval evaluator.
+// One target referenced via three different op forms must emit
+// exactly ONE flag (the union is what the lifter needs to
+// stage, not one flag per op-form occurrence).
+func TestRecoverFileGenerate_GenexEvaluatedWithTargetFileVariants(t *testing.T) {
+	template := "" +
+		"// dir:    $<TARGET_FILE_DIR:foo>\n" +
+		"// name:   $<TARGET_FILE_NAME:foo>\n" +
+		"// linker: $<TARGET_LINKER_FILE:foo>\n"
+	rendered := []byte("" +
+		"// dir:    /recording/build/lib\n" +
+		"// name:   libfoo.a\n" +
+		"// linker: /recording/build/lib/libfoo.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY", FileLocation: "/recording/build/lib/libfoo.a"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	// Exactly one --target-file flag for foo (not one per op form).
+	count := strings.Count(g.GenruleCmd, "--target-file=foo=")
+	if count != 1 {
+		t.Errorf("expected exactly 1 --target-file=foo= flag (three op forms collapse to one wire), got %d in %q", count, g.GenruleCmd)
+	}
+	wantFlag := `--target-file=foo="$(location :foo)"`
+	if !strings.Contains(g.GenruleCmd, wantFlag) {
+		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	}
+}
+
 // TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted
 // asserts the --target-file flags emit in sorted order for
 // stable lifted-cmd bytes across runs (vs. Go's randomized map
