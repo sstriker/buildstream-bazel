@@ -238,6 +238,19 @@ CI jobs that covered them (`cas-fuse-e2e`, `bazel9-fuse-sources`,
   `~/.cache/cmake-to-bazel/bb_clientd/mount` by default;
   override with `BB_CLIENTD_ROOT=`.
 
+- **`fuse3` / `fusermount3`** — only needed by
+  `make bb-clientd-down` to unmount the daemon's host FUSE mount
+  on tear-down. Falls back to `fusermount` (fuse2) if fuse3 isn't
+  available, and silently no-ops if neither is. No CI job
+  currently installs fuse3 — the previously documented
+  `cas-fuse-e2e` / `hello-fuse-e2e` jobs that needed it were
+  retired alongside `cmd/cas-fuse`. Install on a developer host
+  only if you're standing up bb_clientd locally and want clean
+  teardown:
+  ```sh
+  sudo apt-get install fuse3
+  ```
+
 ### For the executor stack (`make e2e-buildbarn*` only)
 
 - **Docker**. The `make buildbarn-up` target brings up

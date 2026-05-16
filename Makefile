@@ -846,11 +846,20 @@ fmt:
 # kind:meson / kind:pyproject / kind:autotools gates self-check
 # their respective tools (meson / python3 / autotools chain) inside
 # the script and skip the bazel-build half cleanly when missing.
+#
+# bwrap (bubblewrap) joins cmake + ninja in the check because the
+# converter's cmakerun.Configure runs cmake under bwrap for sandbox
+# hermeticity; a missing bwrap surfaces as a cryptic "no such file
+# or directory" deep inside the converter rather than a clean
+# prereq failure. Pinned versions in CMAKE_VERSION / NINJA_VERSION
+# / BWRAP_VERSION above.
 check-cmake-toolchain:
 	@command -v cmake >/dev/null || (echo "cmake not on PATH"; exit 1)
 	@command -v ninja >/dev/null || (echo "ninja not on PATH"; exit 1)
+	@command -v bwrap >/dev/null || (echo "bwrap not on PATH (apt install bubblewrap)"; exit 1)
 	@cmake --version | head -1
 	@ninja --version
+	@bwrap --version 2>&1 | head -1
 
 clean:
 	rm -rf $(BUILD_DIR)
