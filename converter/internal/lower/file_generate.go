@@ -641,9 +641,11 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string) map[string]gen
 // occurrences and returns the unique target names in sorted
 // order. Sorted iteration keeps the lifted cmd byte-stable.
 // Uses a simple prefix scan rather than the full parser since
-// only the literal `$<TARGET_FILE:` prefix matters — false
-// positives (a `$<TARGET_FILE:` inside a longer op like
-// `$<TARGET_FILE_NAME:`) are caught by the next char check.
+// only the literal `$<TARGET_FILE:` prefix matters — the
+// trailing `:` in the prefix disambiguates from longer ops
+// like `$<TARGET_FILE_NAME:` / `$<TARGET_FILE_DIR:` (whose
+// char-after-`E` is `_`, not `:`), so no separate suffix
+// check is needed.
 func extractTargetFileRefs(body []byte) []string {
 	const prefix = "$<TARGET_FILE:"
 	seen := map[string]bool{}
