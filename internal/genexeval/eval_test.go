@@ -361,6 +361,74 @@ func TestEval_TargetProperty_Refusals(t *testing.T) {
 	}
 }
 
+// TestEval_TargetFile_Resolves asserts the single-arg
+// `$<TARGET_FILE:t>` path: when Context.Targets[t].FileLocation
+// is set, the eval returns those bytes verbatim. The lifter
+// populates this with cmake's recorded artifact path at
+// convert time (for the byte-equal check) and the
+// cmake-configure-file tool overrides it at Bazel time via
+// --target-file=<name>=<path>.
+func TestEval_TargetFile_Resolves(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {FileLocation: "/build/libfoo.a"},
+		"bar": {FileLocation: "bazel-bin/pkg/libbar.so"},
+	}}
+	cases := []struct{ in, want string }{
+		{"$<TARGET_FILE:foo>", "/build/libfoo.a"},
+		{"$<TARGET_FILE:bar>", "bazel-bin/pkg/libbar.so"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != c.want {
+				t.Errorf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestEval_TargetFile_Refusals covers the typed-refusal paths:
+// missing target, empty FileLocation, wrong arity. All surface
+// as UnsupportedError so the lifter falls back cleanly.
+func TestEval_TargetFile_Refusals(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		ctx  Context
+	}{
+		{
+			"missing target",
+			"$<TARGET_FILE:nonexistent>",
+			Context{Targets: map[string]TargetInfo{"foo": {FileLocation: "/p"}}},
+		},
+		{
+			"empty FileLocation",
+			"$<TARGET_FILE:foo>",
+			Context{Targets: map[string]TargetInfo{"foo": {Type: "STATIC_LIBRARY"}}},
+		},
+		{
+			"empty Context.Targets",
+			"$<TARGET_FILE:foo>",
+			Context{},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := evalString(t, c.in, c.ctx)
+			var ue *UnsupportedError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected UnsupportedError, got %v", err)
+			}
+			if ue.Op != "TARGET_FILE" {
+				t.Errorf("Op = %q want TARGET_FILE", ue.Op)
+			}
+		})
+	}
+}
+
 func TestEval_UnknownGenex(t *testing.T) {
 	_, err := evalString(t, "$<TOTALLY_MADE_UP:foo>", Context{})
 	var ue *UnsupportedError

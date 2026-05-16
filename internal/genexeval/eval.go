@@ -79,6 +79,20 @@ type TargetInfo struct {
 	// `"FALSE"` per cmake's documented serialization for the
 	// boolean property.
 	Imported bool
+
+	// FileLocation is the on-disk path of the target's primary
+	// build artifact. Maps to `$<TARGET_FILE:t>`. At convert
+	// time the lifter populates this with cmake's recorded
+	// build-dir-relative artifact path (for the byte-equal
+	// check against cmake's rendered output to pass). At Bazel
+	// time the cmake-configure-file tool overrides it via the
+	// repeatable `--target-file=<name>=<path>` flag, where the
+	// path is a `$(location //pkg:t)` Bazel substituted at
+	// action time. The marshaled Context payload OMITS
+	// FileLocation (empty string) so the lifted cmd stays
+	// byte-stable across recording machines — only the
+	// `--target-file` flag values shape the Bazel-time bytes.
+	FileLocation string
 }
 
 // UnsupportedError signals a genex shape the evaluator
@@ -171,6 +185,15 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	case "TARGET_PROPERTY":
 		return evalTargetProperty(g, ctx)
 
+	// $<TARGET_FILE:t> — resolves via Context.Targets[t].FileLocation.
+	// The lifter populates FileLocation at convert time with
+	// cmake's recorded artifact path (for the byte-equal check)
+	// and at Bazel time the cmake-configure-file tool overrides
+	// it via --target-file=<name>=$(location //pkg:t) so Bazel
+	// substitutes the action-time path.
+	case "TARGET_FILE":
+		return evalTargetFile(g, ctx)
+
 	// Target-evaluator-dependent forms. Typed refusal so the
 	// lifter knows to fall back rather than treat as a bug.
 	//
@@ -185,7 +208,7 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	// (target-evaluator-time) and "COMPILER_*" is the
 	// compiler-identity context the configure-time evaluator
 	// already has from CMAKE_<LANG>_COMPILER_ID.
-	case "TARGET_FILE", "TARGET_FILE_DIR", "TARGET_FILE_NAME",
+	case "TARGET_FILE_DIR", "TARGET_FILE_NAME",
 		"TARGET_LINKER_FILE", "TARGET_LINKER_FILE_DIR", "TARGET_LINKER_FILE_NAME",
 		"TARGET_SONAME_FILE", "TARGET_OBJECTS",
 		"TARGET_GENEX_EVAL", "GENEX_EVAL",
@@ -589,4 +612,38 @@ func evalTargetProperty(g genexNode, ctx Context) ([]byte, error) {
 		Op:     g.Op,
 		Reason: fmt.Sprintf("property %q not in the v1 evaluator's supported set (NAME, TYPE, SOURCES, IMPORTED); INTERFACE_* and other aggregated properties need a richer capture pipeline", prop),
 	}
+}
+
+// evalTargetFile handles `$<TARGET_FILE:t>` — single-arg form
+// only (cmake's multi-arg form isn't a thing for TARGET_FILE).
+// Resolves to ctx.Targets[t].FileLocation. Empty FileLocation
+// surfaces as UnsupportedError so the lifter can fall back to
+// (b) / legacy when the target isn't in the captured set or
+// the Bazel-time --target-file override didn't fire.
+func evalTargetFile(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 1 {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("expected 1 arg (target); got %d", len(g.Args)),
+		}
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := args[0]
+	ti, ok := ctx.Targets[name]
+	if !ok {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("no target %q in Context.Targets", name),
+		}
+	}
+	if ti.FileLocation == "" {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("Context.Targets[%q].FileLocation is empty (lifter didn't capture, or Bazel-time --target-file flag missing)", name),
+		}
+	}
+	return []byte(ti.FileLocation), nil
 }

@@ -801,6 +801,89 @@ func mustDecodeGenexContextBlob(t *testing.T, cmd string) []byte {
 	return raw
 }
 
+// TestRecoverFileGenerate_GenexEvaluatedWithTargetFile
+// exercises the (a) lift's TARGET_FILE path end-to-end at the
+// lifter: a template with $<TARGET_FILE:foo> + a captured
+// target carrying FileLocation produces a genrule whose cmd
+// passes --target-file=foo=$(location :foo) for Bazel-time
+// substitution. The marshaled Context payload must NOT carry
+// the FileLocation (wire-omitted for srckey stability).
+func TestRecoverFileGenerate_GenexEvaluatedWithTargetFile(t *testing.T) {
+	template := "// foo lives at $<TARGET_FILE:foo>\n"
+	rendered := []byte("// foo lives at /recording/build/libfoo.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	// FileLocation is set to the recording-machine path
+	// matching cmake's rendered output bytes — what
+	// buildGenexTargets computes in production.
+	genexTargets := map[string]genexeval.TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY", FileLocation: "/recording/build/libfoo.a"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	// cmd must carry the --target-file flag for foo.
+	wantFlag := `--target-file=foo="$(location :foo)"`
+	if !strings.Contains(g.GenruleCmd, wantFlag) {
+		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	}
+	// The marshaled Context payload must NOT contain the
+	// recording-machine path (wire struct omits FileLocation).
+	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	if strings.Contains(blob, "/recording/build/libfoo.a") {
+		t.Errorf("FileLocation leaked into marshaled Context: %s", blob)
+	}
+	if strings.Contains(blob, "file_location") {
+		t.Errorf("wire struct should not carry file_location key: %s", blob)
+	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted
+// asserts the --target-file flags emit in sorted order for
+// stable lifted-cmd bytes across runs (vs. Go's randomized map
+// iteration).
+func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
+	template := "$<TARGET_FILE:zeta> $<TARGET_FILE:alpha> $<TARGET_FILE:mu>\n"
+	rendered := []byte("/z /a /m\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"alpha": {FileLocation: "/a"},
+		"mu":    {FileLocation: "/m"},
+		"zeta":  {FileLocation: "/z"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	cmd := cc.Genrules[0].GenruleCmd
+	// The flags must appear in alphabetical order: alpha, mu, zeta.
+	aIdx := strings.Index(cmd, "--target-file=alpha")
+	mIdx := strings.Index(cmd, "--target-file=mu")
+	zIdx := strings.Index(cmd, "--target-file=zeta")
+	if aIdx < 0 || mIdx < 0 || zIdx < 0 {
+		t.Fatalf("missing --target-file flags in cmd %q", cmd)
+	}
+	if !(aIdx < mIdx && mIdx < zIdx) {
+		t.Errorf("--target-file flags not sorted: alpha=%d mu=%d zeta=%d", aIdx, mIdx, zIdx)
+	}
+}
+
 // TestRecoverFileGenerate_LegacyWhenLiftDisabled covers the
 // pre-lift compatibility shape: --lift-configure-file=false
 // keeps every file(GENERATE) on the legacy bytes-embedded
