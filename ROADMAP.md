@@ -140,17 +140,49 @@ transition cleanly.
   handlers today. Each kind is bounded work; what's not
   bounded is the question of which kinds are graph-recoverable
   vs need-to-stay-coarse.
-- **Drop the host-toolchain assumption from CI / e2e gates.**
-  Several gates expect cmake / ninja / bwrap / fuse3 installed on
-  the host machine (CI runner or developer workstation). In a
-  full remote-execution setup these belong on the executor, not
-  on the dev's box — the dev only needs Bazel + bb_clientd. Walk
-  the gate scripts and the `make check-tools` surface, identify
-  which host-tool dependencies are CI-runner artifacts (vs
-  hard build-tool needs we can't push remote), and migrate the
-  former onto the executor toolchain.
+- **Push the converter's cmake invocation onto the RBE executor.**
+  First slice landed (see Done — per-gate cmake/ninja prereq
+  honesty via `check-cmake-toolchain`): ~32 of the ~50 e2e
+  gates no longer need cmake/ninja on PATH because their
+  fixtures don't exercise any `kind:cmake` element. The
+  remaining ~18 gates legitimately need cmake/ninja for the
+  convert-element-cmake binary's `cmakerun.Configure` shellout.
+  Closing the gap fully — "dev only needs Bazel + bb_clientd" —
+  means wrapping that shellout as a Bazel action whose toolchain
+  resolves to the executor's cmake (already in the buildbarn
+  worker image at `deploy/buildbarn/runner/Dockerfile`). Today
+  the converter runs locally, so the dev has to install cmake
+  even if their downstream Bazel build dispatches everything
+  else to RBE. Open questions: how does the converter consume
+  its File API reply when the cmake-configure step runs on a
+  remote node (does the reply tar fold into the genrule's outs,
+  read back in-process)? How does the orchestrator absorb this
+  without breaking the local-dev `make e2e-*` loop for someone
+  with cmake on PATH?
 
 ## Done (high points)
+
+- **Per-gate cmake/ninja prereq honesty.** The Makefile's
+  monolithic `check-tools` target (cmake + ninja on PATH) was
+  declared as a prerequisite of every `e2e-meta-*` gate, even
+  ones whose fixtures don't exercise any `kind:cmake` element
+  and never shell to cmake/ninja from either the script or the
+  converter. Renamed to `check-cmake-toolchain` and re-routed:
+  the ~18 cmake-needing gates (`e2e-meta-hello`, `e2e-meta-stack`,
+  `e2e-meta-cross-cmake`, `e2e-meta-cmake-round2-fallback-*`,
+  `e2e-meta-compose`, `e2e-meta-filter`, `e2e-meta-cross-kind`,
+  `e2e-meta-regression`, `e2e-audit-narrowing`, the converter
+  e2e tests, `record-fixtures`) keep the dep; the ~32 non-cmake
+  gates (`e2e-meta-{bazel-passthrough, bazel-override, script,
+  vars, manual, conditional, import, finalize-b, unify-toolchains,
+  render-project-a, gazelle-roundtrip, pyproject*, meson*,
+  autotools*, make*, trace-round2-fold, converge}`) drop it
+  entirely. Net dev-loop win: a contributor with only Go
+  installed can now run ~60% of the render gates locally without
+  apt-installing cmake/ninja. Closing the rest of the gap
+  ("dev only needs Bazel + bb_clientd") is queued under
+  Later — see "Push the converter's cmake invocation onto the
+  RBE executor".
 
 - **Cross-package `$<TARGET_FILE*:t>` soundness gate (PR 1).**
   The file(GENERATE) lifter previously refused unresolvable

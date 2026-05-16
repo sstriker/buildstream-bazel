@@ -6,7 +6,7 @@
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt update-golden record-fixtures lint vet fmt check-tools clean
+        fetch-fmt update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -111,13 +111,13 @@ test:
 	$(GO) test ./...
 
 # End-to-end tests: real cmake + bwrap. Gated behind build tag.
-test-e2e: check-tools converter
+test-e2e: check-cmake-toolchain converter
 	$(GO) test -tags=e2e ./converter/...
 
-e2e-hello-world: check-tools converter
+e2e-hello-world: check-cmake-toolchain converter
 	$(GO) test -tags=e2e -run TestE2E_HelloWorld ./converter/...
 
-e2e-fmt: check-tools converter fetch-fmt
+e2e-fmt: check-cmake-toolchain converter fetch-fmt
 	$(GO) test -tags=e2e -run TestE2E_Fmt ./converter/...
 
 # Phase 1 acceptance gate for the meta-project (Bazel-as-orchestrator)
@@ -128,7 +128,7 @@ e2e-fmt: check-tools converter fetch-fmt
 # binary linking against the converted cc_library. Skips the bazel
 # phases cleanly when bazel >= 7 isn't on PATH; the rendering checks
 # alone are still a useful regression gate.
-e2e-meta-hello: check-tools converter
+e2e-meta-hello: check-cmake-toolchain converter
 	scripts/meta-hello.sh
 
 # Render-half smoke test for tools/bst (the BuildStream-style CLI
@@ -155,7 +155,7 @@ e2e-meta-bst-wrapper: all
 # the gate to blocking (a real one-line YAML change because
 # the script's exit code already discriminates). Recipe:
 # docs/design/narrowing-audit.md.
-e2e-audit-narrowing: check-tools converter
+e2e-audit-narrowing: check-cmake-toolchain converter
 	scripts/meta-audit-narrowing.sh
 
 # Phase 2 acceptance gate for the meta-project. Multi-element fixture
@@ -165,7 +165,7 @@ e2e-audit-narrowing: check-tools converter
 # composition end-to-end through both projects, with a smoke binary
 # linking against both cmake elements. Same bazel-availability
 # gating as e2e-meta-hello.
-e2e-meta-stack: check-tools converter
+e2e-meta-stack: check-cmake-toolchain converter
 	scripts/meta-stack.sh
 
 # kind:bazel passthrough acceptance gate. Element's source tree
@@ -173,7 +173,7 @@ e2e-meta-stack: check-tools converter
 # project B and runs no translator. The gate asserts the staged
 # BUILD is byte-identical to the source's authored one and the
 # resulting cc_binary builds + runs end-to-end.
-e2e-meta-bazel-passthrough: check-tools converter
+e2e-meta-bazel-passthrough: converter
 	scripts/meta-bazel-passthrough.sh
 
 # --build-files-dir override acceptance gate. A kind:manual .bst
@@ -182,7 +182,7 @@ e2e-meta-bazel-passthrough: check-tools converter
 # kind:bazel and emits the operator's BUILD verbatim into
 # project B; kind:local sources still stage alongside so the
 # override's srcs = [...] resolves at bazel-build time.
-e2e-meta-bazel-override: check-tools converter
+e2e-meta-bazel-override: converter
 	scripts/meta-bazel-override.sh
 
 # Cross-element kind:cmake dep gate. Two kind:cmake elements where
@@ -193,7 +193,7 @@ e2e-meta-bazel-override: check-tools converter
 # dep against the staged bundle; convert-element-cmake's STATIC IMPORTED
 # dep recovery emits deps = ["//elements/prod:prod"] in the
 # converted output.
-e2e-meta-cross-cmake: check-tools converter
+e2e-meta-cross-cmake: check-cmake-toolchain converter
 	scripts/meta-cross-cmake.sh
 
 # Run-vs-run regression gate. Renders + builds project A from the
@@ -203,7 +203,7 @@ e2e-meta-cross-cmake: check-tools converter
 # real CMakeLists change does (drift detection). The write-a + Bazel
 # path's replacement for the orchestrator's regression e2e; see
 # docs/design/orchestrator-absorption.md.
-e2e-meta-regression: check-tools converter
+e2e-meta-regression: check-cmake-toolchain converter
 	scripts/meta-regression.sh
 
 # Phase 3 first-cut acceptance gate. Single kind:manual element
@@ -213,7 +213,7 @@ e2e-meta-regression: check-tools converter
 # asserts content. Validates write-a's manual handler + variable
 # substitution end-to-end. Same bazel-availability gating as
 # e2e-meta-hello / e2e-meta-stack.
-e2e-meta-manual: check-tools converter
+e2e-meta-manual: converter
 	scripts/meta-manual.sh
 
 # Phase 3 sibling acceptance gate. Single kind:make element
@@ -223,7 +223,7 @@ e2e-meta-manual: check-tools converter
 # exists, runs, and prints the expected message. Validates that
 # kind:make's pipelineHandler defaults (`make` / `make install`)
 # resolve correctly without an explicit config: in the .bst.
-e2e-meta-make: check-tools converter
+e2e-meta-make: converter
 	scripts/meta-make.sh
 
 # kind:make joins the trace-driven round-2 architecture
@@ -238,7 +238,7 @@ e2e-meta-make: check-tools converter
 # AC hit on fresh render → fine cc rules) lives in
 # tools/e2e-meta-autotools-round2-live.sh and applies to any
 # trace-driven kind including kind:make.
-e2e-meta-make-round2: check-tools converter
+e2e-meta-make-round2: converter
 	scripts/meta-make-round2.sh
 
 # Per-platform fold acceptance gate for round-2 trace-driven kinds.
@@ -248,14 +248,14 @@ e2e-meta-make-round2: check-tools converter
 # tools/traces.json + MODULE.bazel use_repo() block reflect the
 # per-platform repo names. Render-half only; the live-AC contract
 # is exercised by tools/e2e-meta-autotools-round2-live.sh.
-e2e-meta-trace-round2-fold: check-tools converter
+e2e-meta-trace-round2-fold: converter
 	scripts/meta-trace-round2-fold.sh
 
 # Sibling of e2e-meta-trace-round2-fold for kind:autotools.
 # Same per-platform install-fan-out shape (project A converter +
 # project B install genrules + top-level select()-filegroup), at
 # the autotoolsHandler dispatch site. Render-half only.
-e2e-meta-autotools-round2-multiplatform: check-tools converter
+e2e-meta-autotools-round2-multiplatform: converter
 	scripts/meta-autotools-round2-multiplatform.sh
 
 # Sibling for kind:cmake Phase B execute_process round-2
@@ -265,7 +265,7 @@ e2e-meta-autotools-round2-multiplatform: check-tools converter
 # uses the orchestrator's existing multi-platform fan-out
 # (PR #112) at orchestrate time; the write-a-side output is
 # the same shape meta-cmake-round2-fallback already verifies.
-e2e-meta-cmake-round2-fallback-multiplatform: check-tools converter
+e2e-meta-cmake-round2-fallback-multiplatform: check-cmake-toolchain converter
 	scripts/meta-cmake-round2-fallback-multiplatform.sh
 
 # kind:meson native render acceptance gate. Single kind:meson element
@@ -277,7 +277,7 @@ e2e-meta-cmake-round2-fallback-multiplatform: check-tools converter
 # half always runs; the bazel-build half self-skips unless BOTH
 # bazel >= 7 AND meson are on PATH (the genrule needs meson on the
 # executor; bazel < 7 lacks bzlmod). See docs/design/meson-native-render.md.
-e2e-meta-meson: check-tools converter
+e2e-meta-meson: converter
 	scripts/meta-meson.sh
 
 # kind:meson Phase B fallback acceptance gate. Render-only: asserts
@@ -290,7 +290,7 @@ e2e-meta-meson: check-tools converter
 # verifies strict mode refuses while the fallback emits the
 # install-plan-driven placeholder shape. See
 # docs/design/meson-round2-fallback.md.
-e2e-meta-meson-round2-fallback: check-tools converter
+e2e-meta-meson-round2-fallback: converter
 	scripts/meta-meson-round2-fallback.sh
 
 # kind:meson Phase B round-2 fallback per-platform install
@@ -302,7 +302,7 @@ e2e-meta-meson-round2-fallback: check-tools converter
 # <platform>/, exec_compatible_with constraints, and the
 # top-level :install_tree.tar select()-filegroup that routes
 # downstream label refs to the matching per-platform tarball.
-e2e-meta-meson-round2-fallback-multiplatform: check-tools converter
+e2e-meta-meson-round2-fallback-multiplatform: converter
 	scripts/meta-meson-round2-fallback-multiplatform.sh
 
 # kind:cmake round-2 fallback storage-cost signal. Renders the
@@ -314,7 +314,7 @@ e2e-meta-meson-round2-fallback-multiplatform: check-tools converter
 # entry. Doesn't fix anything; makes the cost measurable so a
 # maintainer can re-evaluate the repo-rule alternative against
 # real numbers instead of "roughly 2×" estimates.
-e2e-meta-cmake-round2-fallback-storage-cost: check-tools converter
+e2e-meta-cmake-round2-fallback-storage-cost: check-cmake-toolchain converter
 	scripts/meta-cmake-round2-fallback-storage-cost.sh
 
 # Convergence driver loop acceptance gate. Render-only: stubs
@@ -327,7 +327,7 @@ e2e-meta-cmake-round2-fallback-storage-cost: check-tools converter
 # tools/e2e-meta-autotools-round2-live.sh once it grows
 # convergence-driver wiring; this gate covers the driver's
 # control flow + ordering contract.
-e2e-meta-converge: check-tools converter
+e2e-meta-converge: converter
 	scripts/meta-converge.sh
 
 # Cross-kind dependency render gate: kind:cmake consumer +
@@ -337,7 +337,7 @@ e2e-meta-converge: check-tools converter
 # in the consumer's converter genrule srcs. The end-to-end live
 # proof (find_package(autoprod CONFIG) actually resolving) is in
 # tools/e2e-meta-cross-kind-live.sh.
-e2e-meta-cross-kind: check-tools converter
+e2e-meta-cross-kind: check-cmake-toolchain converter
 	scripts/meta-cross-kind.sh
 
 # finalize-b acceptance gate. Builds cmd/finalize-b, runs it on
@@ -348,7 +348,7 @@ e2e-meta-cross-kind: check-tools converter
 # bazel_dep is pruned IFF no surviving BUILD references it,
 # idempotence holds (finalize-b(finalize-b(x)) == finalize-b(x)),
 # and the tool refuses to overwrite a non-empty --out.
-e2e-meta-finalize-b: check-tools converter
+e2e-meta-finalize-b: converter
 	scripts/meta-finalize-b.sh
 
 # kind:pyproject native render acceptance gate. Single kind:pyproject
@@ -361,7 +361,7 @@ e2e-meta-finalize-b: check-tools converter
 # half self-skips unless BOTH bazel >= 7 AND python3 are on PATH
 # (the rendered py_binary needs python3 at run time; bazel < 7
 # lacks bzlmod). See docs/design/pyproject-native-render.md.
-e2e-meta-pyproject: check-tools converter
+e2e-meta-pyproject: converter
 	scripts/meta-pyproject.sh
 
 # Phase 7c/7d/8b acceptance gate for the gazelle-roundtrip story.
@@ -374,7 +374,7 @@ e2e-meta-pyproject: check-tools converter
 # guarded on the //:gazelle target existing); and (when buildifier
 # is on PATH) asserts the Phase 3 no-op contract still holds.
 # Bazel + buildifier are both optional — render assertions always run.
-e2e-meta-gazelle-roundtrip: check-tools converter
+e2e-meta-gazelle-roundtrip: converter
 	scripts/meta-gazelle-roundtrip.sh
 
 # Stage 4 acceptance gate for the unified multi-platform Bazel
@@ -383,7 +383,7 @@ e2e-meta-gazelle-roundtrip: check-tools converter
 # the rendered BUILD.bazel's per-(variant, platform) genrule cells
 # + aggregating filegroup. Render-only (no cmake / bazel invoked);
 # the contract is the rendering shape downstream stages consume.
-e2e-meta-render-project-a: check-tools converter
+e2e-meta-render-project-a: converter
 	scripts/meta-render-project-a.sh
 
 # Stage 5 acceptance gate for unify-toolchains: drives the tool
@@ -394,7 +394,7 @@ e2e-meta-render-project-a: check-tools converter
 # across re-runs, the MODULE.bazel setup-banner gating, and the
 # --element-signal fold of per-element builtin include / link
 # search roots into the platform toolchain. Render-only.
-e2e-meta-unify-toolchains: check-tools converter
+e2e-meta-unify-toolchains: converter
 	scripts/meta-unify-toolchains.sh
 
 # kind:pyproject Phase B install-plan fallback (per-element
@@ -407,7 +407,7 @@ e2e-meta-unify-toolchains: check-tools converter
 # write-a's stderr. Render-half only — both rendered shapes are
 # already exercised by their respective gates (meta-pyproject.sh
 # for native, the pipeline-shape gates for coarse).
-e2e-meta-pyproject-fallback: check-tools converter
+e2e-meta-pyproject-fallback: converter
 	scripts/meta-pyproject-fallback.sh
 
 # Variable-resolver acceptance gate. Single kind:manual element
@@ -418,7 +418,7 @@ e2e-meta-pyproject-fallback: check-tools converter
 # the resolved path, no %{...} leaks through, and (when bazel >= 7
 # is present) the install tarball lands the file at the overridden
 # prefix.
-e2e-meta-vars: check-tools converter
+e2e-meta-vars: converter
 	scripts/meta-vars.sh
 
 # kind:compose acceptance gate. Three elements (2 cmake + 1 compose)
@@ -426,7 +426,7 @@ e2e-meta-vars: check-tools converter
 # filegroup-over-deps shape as kind:stack; this gate proves the
 # rendering wiring works end-to-end and that compose's filegroup
 # resolves through bazel against the staged cmake outputs.
-e2e-meta-compose: check-tools converter
+e2e-meta-compose: check-cmake-toolchain converter
 	scripts/meta-compose.sh
 
 # kind:filter acceptance gate. Two elements (1 cmake parent + 1
@@ -435,7 +435,7 @@ e2e-meta-compose: check-tools converter
 # include-orphans` recorded as comments — domain-based slicing
 # itself lands when the typed-filegroup wrapper for pipeline-kind
 # outputs and the parent-public-data parser both arrive.
-e2e-meta-filter: check-tools converter
+e2e-meta-filter: check-cmake-toolchain converter
 	scripts/meta-filter.sh
 
 # kind:import acceptance gate. Single import element with a
@@ -444,7 +444,7 @@ e2e-meta-filter: check-tools converter
 # filegroup over it. Validates the staged content is byte-identical
 # to the fixture source and (when bazel >= 7 is present) the
 # filegroup resolves through bazel.
-e2e-meta-import: check-tools converter
+e2e-meta-import: converter
 	scripts/meta-import.sh
 
 # kind:autotools acceptance gate. Single autotools element
@@ -455,7 +455,7 @@ e2e-meta-import: check-tools converter
 # plugin's canonical %{autogen} / %{configure} / %{make} /
 # %{make-install} chain expands correctly through the variable
 # resolver under the project.conf prefix override.
-e2e-meta-autotools: check-tools converter
+e2e-meta-autotools: converter
 	scripts/meta-autotools.sh
 
 # Trace-driven kind:autotools native acceptance gate. Drives
@@ -466,7 +466,7 @@ e2e-meta-autotools: check-tools converter
 # native cc_binary targets recovered from the trace.
 # Bazel's action cache (buildbarn in CI) handles cross-node
 # convergence transparently — same action key, same outputs.
-e2e-meta-autotools-native: check-tools converter
+e2e-meta-autotools-native: converter
 	scripts/meta-autotools-native.sh
 
 # Trace-driven kind:autotools round-2 acceptance gate. Drives
@@ -483,7 +483,7 @@ e2e-meta-autotools-native: check-tools converter
 # optionally bb_clientd). The publish/lookup wire contract is
 # also covered in-process by go-test TestPublish_* + TestLookup_*
 # in cmd/trace-{publish,lookup}.
-e2e-meta-autotools-round2: check-tools converter
+e2e-meta-autotools-round2: converter
 	scripts/meta-autotools-round2.sh
 
 # Live-AC variant of the round-2 gate. Stands up buildbarn (and
@@ -525,14 +525,14 @@ e2e-meta-buildbarn-re:
 # bazel build; asserts BUILD.bazel.out has the four expected
 # rules and install-mapping.json captures all install dests
 # with rule cross-references.
-e2e-meta-autotools-multitarget: check-tools converter
+e2e-meta-autotools-multitarget: converter
 	scripts/meta-autotools-multitarget.sh
 
 # Per-target CFLAGS preservation gate. Fixture's
 # `hotloop.o: CFLAGS += -O2` overrides global -O0 -g; the
 # converter cross-references trace + make-db to keep -O2 in
 # copts while stripping the global default flags.
-e2e-meta-autotools-tu-optflags: check-tools converter
+e2e-meta-autotools-tu-optflags: converter
 	scripts/meta-autotools-tu-optflags.sh
 
 # Libtool dual-compile gate. Fixture's Makefile compiles foo.c
@@ -542,7 +542,7 @@ e2e-meta-autotools-tu-optflags: check-tools converter
 # collide on basename. The converter's exact-path correlation
 # distinguishes them so the static lib's cc_library doesn't
 # inherit -DPIC from the PIC compile.
-e2e-meta-autotools-libtool-pic: check-tools converter
+e2e-meta-autotools-libtool-pic: converter
 	scripts/meta-autotools-libtool-pic.sh
 
 # Real-libtool emission gate. Same translation unit produces
@@ -554,7 +554,7 @@ e2e-meta-autotools-libtool-pic: check-tools converter
 # emitting it as a cc_binary would be a duplicate / name
 # collision) and the .la file participates in install-mapping
 # but doesn't drive a rule.
-e2e-meta-autotools-libtool-shared: check-tools converter
+e2e-meta-autotools-libtool-shared: converter
 	scripts/meta-autotools-libtool-shared.sh
 
 # Trace + make-db determinism gate. Drives the autotools-greet
@@ -563,7 +563,7 @@ e2e-meta-autotools-libtool-shared: check-tools converter
 # filtered make-db are byte-stable. Foundation for the 2-phase
 # srckey design — without byte-stable foundation outputs, a
 # registered trace can't be reused across builds.
-e2e-meta-autotools-determinism: check-tools converter
+e2e-meta-autotools-determinism: converter
 	scripts/meta-autotools-determinism.sh
 
 # Recursive-automake (SUBDIRS) collision gate. Two-subdir
@@ -572,7 +572,7 @@ e2e-meta-autotools-determinism: check-tools converter
 # cwd capture lets the converter disambiguate the two compile
 # events so each cc_library carries the right per-subdir
 # defines / sources.
-e2e-meta-autotools-subdirs: check-tools converter
+e2e-meta-autotools-subdirs: converter
 	scripts/meta-autotools-subdirs.sh
 
 # AC_CONFIG_HEADERS-style generated header gate. The fixture's
@@ -580,14 +580,14 @@ e2e-meta-autotools-subdirs: check-tools converter
 # pipeline's pre/post-configure header snapshot diff feeds
 # convert-element-trace's --generated-headers flag so the
 # emitted cc_library carries config.h in its hdrs.
-e2e-meta-autotools-config-h: check-tools converter
+e2e-meta-autotools-config-h: converter
 	scripts/meta-autotools-config-h.sh
 
 # Assembler-source (.S) recognition gate. libffi-style mixed
 # C + arch-specific assembly: the converter must include .S
 # files in cc_library srcs alongside .c. The fixture's sysv.S
 # is x86_64; the build phase requires an x86_64 host.
-e2e-meta-autotools-asm: check-tools converter
+e2e-meta-autotools-asm: converter
 	scripts/meta-autotools-asm.sh
 
 # Conditional-lowering acceptance gate. Single kind:manual element
@@ -595,14 +595,14 @@ e2e-meta-autotools-asm: check-tools converter
 # (?): per-arch variable overrides. write-a lowers them into a
 # project-B `cmd = select({...})` over @platforms//cpu:*; the
 # driver asserts the select() shape + per-arch resolved paths.
-e2e-meta-conditional: check-tools converter
+e2e-meta-conditional: converter
 	scripts/meta-conditional.sh
 
 # kind:script acceptance gate. Single kind:script element
 # (testdata/meta-project/script-greet/) with a flat config:commands
 # list. Drives bazel build A → extracts the install_tree.tar →
 # asserts usr/share/scripts/hello.txt has the expected content.
-e2e-meta-script: check-tools converter
+e2e-meta-script: converter
 	scripts/meta-script.sh
 
 # FDSDK reality check. Probes write-a against curated real
@@ -624,8 +624,8 @@ fdsdk-reality-check:
 # M5 CMake-side acceptance gate. Configures a downstream find_package
 # consumer against a convert-element-cmake-synthesized cmake-config
 # bundle. No bazel required; just real cmake + bwrap (already covered
-# by check-tools).
-e2e-cmake-consumer: check-tools converter
+# by check-cmake-toolchain).
+e2e-cmake-consumer: check-cmake-toolchain converter
 	$(GO) test -tags=e2e -run TestE2E_CMakeConsumer ./converter/cmd/convert-element-cmake/
 
 # Toolchain plumbing e2e: runs cmake configure with a derived
@@ -636,7 +636,7 @@ e2e-cmake-consumer: check-tools converter
 # the derive-toolchain -> toolchain.cmake -> cmakerun integration
 # deterministically (the historical SkipReducesConfigureTime
 # wall-clock variant was noise-bound and routinely flaked).
-e2e-toolchain-skip: check-tools converter derive-toolchain
+e2e-toolchain-skip: check-cmake-toolchain converter derive-toolchain
 	$(GO) test -tags=e2e -run 'TestE2E_Toolchain_(LoadedByCmake|ConverterAcceptsToolchainFile)' ./converter/cmd/convert-element-cmake/
 
 # Fidelity gate. Parameterized harness: hello-world is the smoke
@@ -645,12 +645,12 @@ e2e-toolchain-skip: check-tools converter derive-toolchain
 # vs convert-element-cmake + bazel) and asserts symbol equivalence on the
 # resulting library. Each new delta is recorded in
 # docs/fidelity-known-deltas.md.
-e2e-fidelity: check-tools converter
+e2e-fidelity: check-cmake-toolchain converter
 	$(GO) test -tags=e2e -run TestE2E_Fidelity ./converter/cmd/convert-element-cmake/
 
 # Same as e2e-fidelity but ensures the fmt fixture is fetched first
 # so TestE2E_Fidelity_Fmt_SymbolEquivalent doesn't self-skip.
-e2e-fidelity-fmt: check-tools converter fetch-fmt
+e2e-fidelity-fmt: check-cmake-toolchain converter fetch-fmt
 	$(GO) test -tags=e2e -run TestE2E_Fidelity_Fmt ./converter/cmd/convert-element-cmake/
 
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
@@ -825,7 +825,7 @@ update-golden:
 	$(GO) test ./... -update
 
 # Re-run cmake on each sample project, capture File API reply dirs into testdata.
-record-fixtures: check-tools
+record-fixtures: check-cmake-toolchain
 	./tools/fixtures/record-fileapi.sh
 
 lint: vet fmt
@@ -839,7 +839,14 @@ fmt:
 		echo "run 'gofmt -w .'"; exit 1; \
 	fi
 
-check-tools:
+# Per-toolchain check targets. Only the gates that actually exec
+# the corresponding tool gate on the matching check target; render-
+# only gates (kind:bazel, kind:script, kind:manual, finalize-b,
+# unify-toolchains, etc.) have no host-tool prereq beyond Go.
+# kind:meson / kind:pyproject / kind:autotools gates self-check
+# their respective tools (meson / python3 / autotools chain) inside
+# the script and skip the bazel-build half cleanly when missing.
+check-cmake-toolchain:
 	@command -v cmake >/dev/null || (echo "cmake not on PATH"; exit 1)
 	@command -v ninja >/dev/null || (echo "ninja not on PATH"; exit 1)
 	@cmake --version | head -1

@@ -165,9 +165,26 @@ build half locally.
   ```
   Tests + scripts auto-detect `/etc/ssl/certs/java/cacerts`
   and pass it via `--host_jvm_args`.
-- **`cmake` + `ninja` + `bwrap`** — needed by the
-  `kind:cmake` converter and a few autotools fixtures. For
-  reproducibility pin to the versions the orchestrator's
+- **`cmake` + `ninja` + `bwrap`** — needed only by the
+  `kind:cmake` render gates (`e2e-meta-hello`, `e2e-meta-stack`,
+  `e2e-meta-cross-cmake`, `e2e-meta-cmake-round2-fallback-*`,
+  `e2e-meta-compose`, `e2e-meta-filter`, `e2e-meta-cross-kind`,
+  `e2e-meta-regression`, `e2e-audit-narrowing`,
+  `e2e-{hello-world,fmt,cmake-consumer,toolchain-skip,fidelity*}`)
+  and the converter's own e2e tests. The Makefile's
+  `check-cmake-toolchain` target enforces both on PATH and is
+  declared as a prerequisite for exactly these gates.
+
+  Non-cmake gates — `kind:bazel`, `kind:script`, `kind:manual`,
+  `kind:make`, `kind:import`, `kind:autotools` (and all its
+  variants), `kind:meson`, `kind:pyproject`, `kind:compose`-only
+  metas like finalize-b / unify-toolchains / render-project-a,
+  and the gazelle-roundtrip gate — run with **just Go**. The
+  kind-specific gates self-check their own tool chain (`meson`,
+  `python3`, autotools / make / gcc) inside the script and
+  skip the bazel-build half cleanly when missing.
+
+  For reproducibility, pin to the versions the orchestrator's
   default platform asserts:
   ```sh
   sudo apt-get install ninja-build bubblewrap
