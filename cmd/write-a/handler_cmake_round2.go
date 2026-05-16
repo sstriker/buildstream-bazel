@@ -287,29 +287,7 @@ genrule(
         # this genrule. trace-publish reads it from here.
         cp -L "$$CMAKE_TRACE" "$$EXEC_ROOT/$(location %[4]strace.log)"
 
-        # Synthesize a cmake-config bundle from the install tree
-        # (cross-element configure-step bootstrap rendezvous; see
-        # docs/design/cross-element-config-rendezvous.md). Bundle
-        # contents are pkg-config (.pc) files copied verbatim and
-        # cmake-config files (lib/cmake/<Pkg>/) copied verbatim
-        # when the element installs them. Elements that install
-        # neither produce an empty bundle — downstream consumers
-        # skip staging when the bundle's tar is empty. The bundle
-        # is published to a separate AC keyspace partition
-        # (SyntheticConfigDigest); a consumer's trace_load action
-        # materializes it via --out-config-bundle.
-        export CONFIG_BUNDLE_DIR="$$(mktemp -d)"
-        if [ -d "$$INSTALL_ROOT/lib/pkgconfig" ]; then
-            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
-            cp -r "$$INSTALL_ROOT/lib/pkgconfig"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
-        fi
-        if [ -d "$$INSTALL_ROOT/lib/cmake" ]; then
-            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/cmake"
-            cp -r "$$INSTALL_ROOT/lib/cmake"/. "$$CONFIG_BUNDLE_DIR/lib/cmake/" 2>/dev/null || true
-        fi
-        export CONFIG_BUNDLE_TAR="$$(mktemp)"
-        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
-            -cf "$$CONFIG_BUNDLE_TAR" -C "$$CONFIG_BUNDLE_DIR" .
+%[7]s
 
         # Publish to the AC iff a remote is configured. Same
         # short-circuit pattern kind:autotools round-2 uses:
@@ -341,7 +319,7 @@ genrule(
 `, elem.Name, wrapCmakePipelineCmds(`        cmake -B "$$BUILD_ROOT" -G Ninja -S "$$SRC_DIR" -DCMAKE_INSTALL_PREFIX="$$INSTALL_ROOT"
         cmake --build "$$BUILD_ROOT" --parallel 1
         cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"`),
-		nameSuffix, outputPrefix, publishPlatform, execAttr)
+		nameSuffix, outputPrefix, publishPlatform, execAttr, bundleSynthShell())
 }
 
 // renderCmakeRound2B is project B's per-element render for the

@@ -497,37 +497,7 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
         # this genrule. trace-publish reads it from here.
         cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/$(location %[1]s)"
 
-        # Synthesize a cmake-config bundle from the install tree
-        # for the cross-element configure-step bootstrap rendezvous
-        # (see docs/design/cross-element-config-rendezvous.md).
-        # Pkg-config files (lib/pkgconfig/) and cmake-config files
-        # (lib/cmake/<Pkg>/) the element installed are copied
-        # verbatim. Elements that install neither produce an empty
-        # bundle — downstream consumers skip staging when the
-        # bundle's tar is empty.
-        export CONFIG_BUNDLE_DIR="$$(mktemp -d)"
-        if [ -d "$$INSTALL_ROOT/lib/pkgconfig" ]; then
-            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
-            cp -r "$$INSTALL_ROOT/lib/pkgconfig"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
-        fi
-        if [ -d "$$INSTALL_ROOT/lib/cmake" ]; then
-            mkdir -p "$$CONFIG_BUNDLE_DIR/lib/cmake"
-            cp -r "$$INSTALL_ROOT/lib/cmake"/. "$$CONFIG_BUNDLE_DIR/lib/cmake/" 2>/dev/null || true
-        fi
-        # Some autotools installs land .pc files under usr/lib/pkgconfig
-        # (PREFIX defaults to /usr/local in some configure scripts).
-        # Capture that too. The DESTDIR layout under $$INSTALL_ROOT
-        # mirrors the prefix-relative install tree, so check the
-        # common alternative locations.
-        for alt in usr/lib/pkgconfig usr/local/lib/pkgconfig; do
-            if [ -d "$$INSTALL_ROOT/$$alt" ]; then
-                mkdir -p "$$CONFIG_BUNDLE_DIR/lib/pkgconfig"
-                cp -r "$$INSTALL_ROOT/$$alt"/. "$$CONFIG_BUNDLE_DIR/lib/pkgconfig/" 2>/dev/null || true
-            fi
-        done
-        export CONFIG_BUNDLE_TAR="$$(mktemp)"
-        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
-            -cf "$$CONFIG_BUNDLE_TAR" -C "$$CONFIG_BUNDLE_DIR" .
+%[4]s
 
         # Publish to the AC iff a remote is configured. Empty
         # CAS_GRPC_ADDR ⇒ skip (e.g. local dev without buildbarn);
@@ -549,5 +519,5 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
                 --trace="$(location %[1]s)" \
                 --make-db="$(location %[2]s)" \
                 --config-bundle="$$CONFIG_BUNDLE_TAR" >/dev/null
-        fi`, trace, makeDB, publishPlatform)
+        fi`, trace, makeDB, publishPlatform, bundleSynthShell())
 }
