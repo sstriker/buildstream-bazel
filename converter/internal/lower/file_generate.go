@@ -168,7 +168,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		Kind:        ir.KindGenrule,
 		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
 		GenruleOuts: []string{outRel},
-		Tags:        fileGenerateTags(false, false, false, false, false),
+		Tags:        fileGenerateTags(fileGenerateTagSet{}),
 		Visibility:  []string{"//visibility:private"},
 	}
 	if optErr != nil {
@@ -211,7 +211,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					`See docs/design/cross-package-target-file.md for the resolution path.' >&2; exit 1`,
 				outRel, unresolved),
 			GenruleOuts: []string{outRel},
-			Tags:        fileGenerateTags(false, true, false, false, true),
+			Tags:        fileGenerateTags(fileGenerateTagSet{GenexFallback: true, GenexCrossPackage: true}),
 			Visibility:  []string{"//visibility:private"},
 		}
 	}
@@ -249,7 +249,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
 				genexLegacy := legacy
-				genexLegacy.Tags = fileGenerateTags(false, true, false, false, false)
+				genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 				return genexLegacy
 			}
 			call.Input = resolved
@@ -354,7 +354,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 						GenruleCmd:   cmd,
 						GenruleOuts:  []string{outRel},
 						GenruleTools: []string{"//tools:cmake-configure-file"},
-						Tags:         fileGenerateTags(true, false, false, true, false),
+						Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexEvaluated: true}),
 						Visibility:   []string{"//visibility:private"},
 					}
 					if !isContentForm {
@@ -381,7 +381,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					GenruleCmd:   cmd,
 					GenruleOuts:  []string{outRel},
 					GenruleTools: []string{"//tools:cmake-configure-file"},
-					Tags:         fileGenerateTags(true, false, true, false, false),
+					Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexCaptured: true}),
 					Visibility:   []string{"//visibility:private"},
 				}
 				if !isContentForm {
@@ -391,7 +391,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			}
 		}
 		genexLegacy := legacy
-		genexLegacy.Tags = fileGenerateTags(false, true, false, false, false)
+		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 		return genexLegacy
 	}
 
@@ -425,7 +425,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		GenruleCmd:   cmd,
 		GenruleOuts:  []string{outRel},
 		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         fileGenerateTags(true, false, false, false, false),
+		Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true}),
 		Visibility:   []string{"//visibility:private"},
 	}
 	if !isContentForm {
@@ -598,29 +598,62 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues ma
 // by definition isn't lifted). genexCaptured and genexEvaluated
 // are mutually exclusive (one lift shape per call site) but
 // both imply lifted.
-func fileGenerateTags(lifted, genexFallback, genexCaptured, genexEvaluated, genexCrossPackage bool) []string {
+// fileGenerateTagSet names each tag-emit facet so call sites
+// document the lift outcome directly: only the true-valued
+// facets appear, vs the 5-positional-bool form where readers
+// had to count positions. Zero value = the legacy bytes-
+// embedded shape with the base cmake-codegen tags only.
+//
+// Five facets, mutually-compatible at the call-site level
+// (some combos are nonsensical — e.g. Lifted + GenexCrossPackage
+// shouldn't co-occur — but the tag emission is independent per
+// facet so the type doesn't enforce exclusivity).
+type fileGenerateTagSet struct {
+	// Lifted: the genrule uses the cmake-configure-file tool
+	// (template body decoupled from BUILD.bazel content) vs.
+	// the legacy bytes-embedded shape.
+	Lifted bool
+	// GenexFallback: template carries genexes the lift couldn't
+	// resolve; the (b) or legacy fallback shape is in play.
+	GenexFallback bool
+	// GenexCaptured: the (b) structured-base64 lift succeeded
+	// — rendered bytes no longer in srckey.
+	GenexCaptured bool
+	// GenexEvaluated: the (a) Go-side evaluator lift succeeded
+	// — the most-faithful shape.
+	GenexEvaluated bool
+	// GenexCrossPackage: cross-package TARGET_FILE soundness
+	// gate fired — the genrule is a refusal stub that fails
+	// at bazel-build time. See
+	// docs/design/cross-package-target-file.md.
+	GenexCrossPackage bool
+}
+
+// fileGenerateTags returns the cmake-codegen tag set for a
+// recovered file(GENERATE) genrule. Always carries the three
+// base tags (cmake-codegen, cmake-codegen-driver=file_generate,
+// cmake-codegen-file-generate); the facet flags append one
+// tag each when true. Sorted on return for byte-stable
+// BUILD.bazel output.
+func fileGenerateTags(s fileGenerateTagSet) []string {
 	tags := []string{
 		"cmake-codegen",
 		"cmake-codegen-driver=file_generate",
 		"cmake-codegen-file-generate",
 	}
-	if lifted {
+	if s.Lifted {
 		tags = append(tags, "cmake-codegen-lifted")
 	}
-	if genexFallback {
+	if s.GenexFallback {
 		tags = append(tags, "cmake-codegen-file-generate-genex")
 	}
-	if genexCaptured {
+	if s.GenexCaptured {
 		tags = append(tags, "cmake-codegen-file-generate-genex-lifted")
 	}
-	if genexEvaluated {
+	if s.GenexEvaluated {
 		tags = append(tags, "cmake-codegen-file-generate-genex-evaluated")
 	}
-	if genexCrossPackage {
-		// Refusal stub for cross-package TARGET_FILE references —
-		// the build will fail at bazel build time with a
-		// diagnostic pointing at the resolution path. See
-		// docs/design/cross-package-target-file.md.
+	if s.GenexCrossPackage {
 		tags = append(tags, "cmake-codegen-file-generate-genex-cross-package")
 	}
 	sort.Strings(tags)
