@@ -309,7 +309,7 @@ func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles map[s
 		if err != nil {
 			return fmt.Errorf("load genex values %s: %w", genexValuesPath, err)
 		}
-		rendered, err = applyGenexValuesAtRuntime(rendered, gv)
+		rendered, err = genexeval.ApplyValues(rendered, gv)
 		if err != nil {
 			return fmt.Errorf("apply genex values: %w", err)
 		}
@@ -401,29 +401,6 @@ func loadGenexValues(path string) (map[string]string, error) {
 	return values, nil
 }
 
-// genexContextJSON is the JSON wire form for genexeval.Context.
-// Mirrors the Go struct field-for-field but uses snake_case
-// names to match the rest of the project's JSON convention
-// (see internal/shadow / values JSON shapes). The (a)-shape
-// lifter at convert-element-cmake time serialises the
-// captured cmake configure-time slice as this JSON; the tool
-// deserialises and feeds genexeval.Eval.
-type genexContextJSON struct {
-	Config           string                    `json:"config,omitempty"`
-	CompilerID       map[string]string         `json:"compiler_id,omitempty"`
-	PlatformID       string                    `json:"platform_id,omitempty"`
-	CompilerLanguage string                    `json:"compiler_language,omitempty"`
-	Targets          map[string]targetInfoJSON `json:"targets,omitempty"`
-}
-
-// targetInfoJSON mirrors genexeval.TargetInfo on the wire. Same
-// snake_case-keys convention as genexContextJSON.
-type targetInfoJSON struct {
-	Type     string `json:"type,omitempty"`
-	Sources  string `json:"sources,omitempty"`
-	Imported bool   `json:"imported,omitempty"`
-}
-
 // loadGenexContext reads the (a)-shape Context sidecar. Empty
 // object {} is valid (every Context field is optional; an op
 // the loaded Context can't satisfy surfaces as
@@ -431,102 +408,22 @@ type targetInfoJSON struct {
 // "evaluate genex: ..."). `null` is normalized to an empty
 // Context for the same null-tolerance reason loadValues
 // applies.
+//
+// Wire shape: the snake_case JSON keys come from struct tags
+// on genexeval.Context / genexeval.TargetInfo themselves —
+// single source of truth shared with the lifter's
+// marshalGenexContext.
 func loadGenexContext(path string) (genexeval.Context, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return genexeval.Context{}, err
 	}
-	var raw *genexContextJSON
+	var raw *genexeval.Context
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return genexeval.Context{}, fmt.Errorf("parse JSON: %w", err)
 	}
 	if raw == nil {
 		return genexeval.Context{}, nil
 	}
-	var targets map[string]genexeval.TargetInfo
-	if len(raw.Targets) > 0 {
-		targets = make(map[string]genexeval.TargetInfo, len(raw.Targets))
-		for name, t := range raw.Targets {
-			targets[name] = genexeval.TargetInfo{
-				Type:     t.Type,
-				Sources:  t.Sources,
-				Imported: t.Imported,
-			}
-		}
-	}
-	return genexeval.Context{
-		Config:           raw.Config,
-		CompilerID:       raw.CompilerID,
-		PlatformID:       raw.PlatformID,
-		CompilerLanguage: raw.CompilerLanguage,
-		Targets:          targets,
-	}, nil
-}
-
-// applyGenexValuesAtRuntime is the Bazel-time complement of
-// converter/internal/lower's applyGenexValues. It walks
-// rendered's top-level `$<...>` blocks (using the same depth-
-// aware scanner the lifter uses at capture time) and replaces
-// each with its mapped value. The function is duplicated rather
-// than imported so cmake-configure-file stays a leaf binary
-// without a converter dependency.
-func applyGenexValuesAtRuntime(rendered []byte, values map[string]string) ([]byte, error) {
-	ranges := topLevelGenexes(rendered)
-	if len(ranges) == 0 {
-		// No genex to replace — template already final.
-		return rendered, nil
-	}
-	var out []byte
-	out = make([]byte, 0, len(rendered))
-	pos := 0
-	for _, r := range ranges {
-		out = append(out, rendered[pos:r.start]...)
-		literal := string(rendered[r.start:r.end])
-		val, ok := values[literal]
-		if !ok {
-			return nil, fmt.Errorf("no value for genex %q (the values JSON staged at lift time is missing a literal the template carries)", literal)
-		}
-		out = append(out, val...)
-		pos = r.end
-	}
-	out = append(out, rendered[pos:]...)
-	return out, nil
-}
-
-// topLevelGenexes mirrors converter/internal/lower's
-// topLevelGenexes (depth-aware scan of `$<...>` blocks).
-// Duplicated rather than imported so cmake-configure-file stays
-// a leaf binary; the algorithm is small, unit-tested on both
-// sides, and pure data.
-func topLevelGenexes(s []byte) []struct{ start, end int } {
-	var ranges []struct{ start, end int }
-	i := 0
-	for i < len(s) {
-		if i+1 < len(s) && s[i] == '$' && s[i+1] == '<' {
-			start := i
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				switch {
-				case j+1 < len(s) && s[j] == '$' && s[j+1] == '<':
-					depth++
-					j += 2
-				case s[j] == '>':
-					depth--
-					j++
-				default:
-					j++
-				}
-			}
-			if depth == 0 {
-				ranges = append(ranges, struct{ start, end int }{start, j})
-				i = j
-				continue
-			}
-			i++
-			continue
-		}
-		i++
-	}
-	return ranges
+	return *raw, nil
 }

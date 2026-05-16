@@ -37,10 +37,10 @@ import (
 // refused until both Context and Eval gain the matching
 // field).
 type Context struct {
-	Config           string
-	CompilerID       map[string]string
-	PlatformID       string
-	CompilerLanguage string
+	Config           string            `json:"config,omitempty"`
+	CompilerID       map[string]string `json:"compiler_id,omitempty"`
+	PlatformID       string            `json:"platform_id,omitempty"`
+	CompilerLanguage string            `json:"compiler_language,omitempty"`
 
 	// Targets is the per-target context the evaluator consults
 	// for `$<TARGET_PROPERTY:t,p>` and (future) related per-
@@ -52,7 +52,7 @@ type Context struct {
 	// transitive INTERFACE_* properties remain refused via
 	// UnsupportedError until the lifter grows the property-
 	// aggregation logic to match cmake's evaluation semantics.
-	Targets map[string]TargetInfo
+	Targets map[string]TargetInfo `json:"targets,omitempty"`
 }
 
 // TargetInfo carries the per-target facts the evaluator
@@ -65,20 +65,20 @@ type TargetInfo struct {
 	// Type is cmake's target type (`EXECUTABLE`,
 	// `STATIC_LIBRARY`, `SHARED_LIBRARY`, `INTERFACE_LIBRARY`,
 	// ...). Maps to `$<TARGET_PROPERTY:t,TYPE>`.
-	Type string
+	Type string `json:"type,omitempty"`
 
 	// Sources is the target's source file list,
 	// semicolon-joined to match cmake's list serialization
 	// when stored as a property string. Maps to
 	// `$<TARGET_PROPERTY:t,SOURCES>`.
-	Sources string
+	Sources string `json:"sources,omitempty"`
 
 	// Imported is true for targets imported via
 	// `add_library(... IMPORTED)`. Maps to
 	// `$<TARGET_PROPERTY:t,IMPORTED>` returning `"TRUE"` /
 	// `"FALSE"` per cmake's documented serialization for the
 	// boolean property.
-	Imported bool
+	Imported bool `json:"imported,omitempty"`
 
 	// FileLocation is the on-disk path of the target's primary
 	// build artifact. Maps to `$<TARGET_FILE:t>`. At convert
@@ -89,10 +89,10 @@ type TargetInfo struct {
 	// repeatable `--target-file=<name>=<path>` flag, where the
 	// path is a `$(location //pkg:t)` Bazel substituted at
 	// action time. The marshaled Context payload OMITS
-	// FileLocation (empty string) so the lifted cmd stays
-	// byte-stable across recording machines — only the
+	// FileLocation (json:"-") so the lifted cmd stays byte-
+	// stable across recording machines — only the
 	// `--target-file` flag values shape the Bazel-time bytes.
-	FileLocation string
+	FileLocation string `json:"-"`
 }
 
 // UnsupportedError signals a genex shape the evaluator

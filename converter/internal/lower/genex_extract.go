@@ -3,61 +3,9 @@ package lower
 import (
 	"bytes"
 	"fmt"
+
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 )
-
-// topLevelGenexes returns the byte ranges of each top-level
-// `$<...>` block in s, ordered by appearance. A "top-level"
-// genex is one whose `$<` opener doesn't sit inside another
-// `$<...>`; cmake's generator-expression grammar allows
-// arbitrary nesting (e.g. `$<IF:$<CONFIG:Release>,a,b>`), and
-// the structured-base64 extractor only needs the outermost
-// boundaries — the resolved bytes for a nested expression are
-// already collapsed into the parent's resolved value at
-// cmake-render time.
-//
-// Unbalanced `$<` (no matching `>`) is treated as literal text
-// and skipped. The function is byte-faithful: it doesn't decode
-// utf-8 or trim whitespace.
-func topLevelGenexes(s []byte) []genexRange {
-	var ranges []genexRange
-	i := 0
-	for i < len(s) {
-		if i+1 < len(s) && s[i] == '$' && s[i+1] == '<' {
-			start := i
-			depth := 1
-			j := i + 2
-			for j < len(s) && depth > 0 {
-				switch {
-				case j+1 < len(s) && s[j] == '$' && s[j+1] == '<':
-					depth++
-					j += 2
-				case s[j] == '>':
-					depth--
-					j++
-				default:
-					j++
-				}
-			}
-			if depth == 0 {
-				ranges = append(ranges, genexRange{start: start, end: j})
-				i = j
-				continue
-			}
-			// Unbalanced — treat as literal text from $ onward.
-			i++
-			continue
-		}
-		i++
-	}
-	return ranges
-}
-
-// genexRange is a half-open byte range [start, end) into a
-// template, covering one top-level $<...> block including the
-// `$<` and the matching `>`.
-type genexRange struct {
-	start, end int
-}
 
 // extractGenexValues aligns a template against its cmake-
 // rendered output to recover, per top-level genex, the bytes
@@ -101,7 +49,7 @@ type genexRange struct {
 // embedded shape — soundness is preserved at the cost of one
 // more rendered-bytes-in-srckey entry.
 func extractGenexValues(template, rendered []byte) (map[string]string, error) {
-	ranges := topLevelGenexes(template)
+	ranges := genexeval.TopLevelGenexes(template)
 	if len(ranges) == 0 {
 		return nil, fmt.Errorf("template has no top-level genex")
 	}
@@ -110,23 +58,23 @@ func extractGenexValues(template, rendered []byte) (map[string]string, error) {
 	renPos := 0
 	for i, r := range ranges {
 		// Static prefix between tplPos and the genex's `$<`.
-		prefix := template[tplPos:r.start]
+		prefix := template[tplPos:r.Start]
 		if !bytes.HasPrefix(rendered[renPos:], prefix) {
 			return nil, fmt.Errorf("static chunk at template[%d:%d] (%q) does not match rendered[%d:] (%q...)",
-				tplPos, r.start, truncForErr(prefix), renPos, truncForErr(rendered[renPos:]))
+				tplPos, r.Start, truncForErr(prefix), renPos, truncForErr(rendered[renPos:]))
 		}
 		renPos += len(prefix)
 
-		literal := string(template[r.start:r.end])
+		literal := string(template[r.Start:r.End])
 
 		// Determine the next anchor: the static text immediately
 		// after this genex, up to the next genex (or template
 		// end if this is the last).
 		nextAnchorStart := len(template)
 		if i+1 < len(ranges) {
-			nextAnchorStart = ranges[i+1].start
+			nextAnchorStart = ranges[i+1].Start
 		}
-		nextAnchor := template[r.end:nextAnchorStart]
+		nextAnchor := template[r.End:nextAnchorStart]
 
 		var valBytes []byte
 		switch {
@@ -154,7 +102,7 @@ func extractGenexValues(template, rendered []byte) (map[string]string, error) {
 				literal, existing, valBytes)
 		}
 		values[literal] = string(valBytes)
-		tplPos = r.end
+		tplPos = r.End
 	}
 
 	// Tail: rendered bytes after the last genex's value must
@@ -170,38 +118,6 @@ func extractGenexValues(template, rendered []byte) (map[string]string, error) {
 	}
 
 	return values, nil
-}
-
-// applyGenexValues replaces each top-level genex literal in
-// template with its mapped rendered value. The replacement is
-// literal — no syntax parsing, no recursive evaluation. The
-// caller's invariant: values was produced by extractGenexValues
-// (or constructed to match its shape), so every top-level
-// genex in template has a matching key.
-//
-// Returns an error if template contains a top-level genex not
-// present in values (would land a literal `$<...>` in the
-// output — wrong bytes a Bazel consumer would notice). Genex
-// values containing further `$<...>` text are NOT recursively
-// re-substituted; cmake fully evaluates at generate-time so the
-// recovered values never carry literal genex syntax in practice.
-func applyGenexValues(template []byte, values map[string]string) ([]byte, error) {
-	ranges := topLevelGenexes(template)
-	var out bytes.Buffer
-	out.Grow(len(template))
-	pos := 0
-	for _, r := range ranges {
-		out.Write(template[pos:r.start])
-		literal := string(template[r.start:r.end])
-		val, ok := values[literal]
-		if !ok {
-			return nil, fmt.Errorf("no value for genex %q (template has a top-level genex the values dict doesn't cover)", literal)
-		}
-		out.WriteString(val)
-		pos = r.end
-	}
-	out.Write(template[pos:])
-	return out.Bytes(), nil
 }
 
 // truncForErr keeps error messages from dumping multi-KB
