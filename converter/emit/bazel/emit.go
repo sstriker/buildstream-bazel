@@ -17,6 +17,7 @@ import (
 
 	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/buildstream-bazel/converter/internal/bazelconstraints"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -305,21 +306,28 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 // off the path basename). The bytes never touch disk; the
 // name is purely a parse-mode hint.
 //
-// On a parse error we return the buildtools error along with
-// the offending body. This emitter's templates are the
-// supposed-to-be-only source of the body bytes, so a parse
-// failure means either the emitter regressed to producing
-// syntactically invalid Bazel OR an upstream lift smuggled
-// an unescaped cmake value through into a Starlark slot.
-// Both shapes warrant loud surfacing — the caller is
-// expected to fail (test code panics on the unexpected err;
-// convert-element-cmake wraps as a Tier-1 structured
-// failure so operators get an actionable failure.json
-// instead of an uncaught crash, per #210).
+// On a parse error we return a typed Tier-1 `*failure.Error`
+// with code `BazelCanonicalizeFailed` carrying both the
+// buildtools diagnostic and the offending body. The typed
+// failure means convert-element-cmake's handleError surfaces
+// the operator-friendly failure.json without per-caller
+// wrapping — keeping the typed-code contract LOCAL to the
+// failure site so a future emit-side error of a different
+// shape (e.g. a new constraint check) doesn't inherit the
+// `bazel-canonicalize-failed` label by mistake.
+//
+// Test code that drives canonicalize directly (see
+// `keep_markers_test`) sees the same typed error and can
+// match on `failure.BazelCanonicalizeFailed`. The pre-#210
+// shape — an uncaught panic — silently broke the
+// buildifier-no-op contract without a test-visible trigger;
+// the typed return surfaces it loudly in both unit tests
+// and production paths.
 func canonicalize(body []byte) ([]byte, error) {
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
-		return nil, fmt.Errorf("bazel.canonicalize: template emitted unparseable BUILD bytes: %w\n%s", err, body)
+		return nil, failure.New(failure.BazelCanonicalizeFailed,
+			"bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body)
 	}
 	addKeepMarkers(f)
 	return build.Format(f), nil

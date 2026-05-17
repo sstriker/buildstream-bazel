@@ -1371,11 +1371,21 @@ func isCompilerObjectArtifact(srcPath, buildDir string, g *ninja.Graph) bool {
 	if b == nil {
 		return false
 	}
-	// cmake's ninja generator names compile rules
+	// cmake's modern ninja generator names compile rules
 	// `<LANG>_COMPILER__<target>[<suffix>]_<config>` (e.g.
-	// `CXX_COMPILER__foo_unscanned_Release`). The `_COMPILER__`
-	// infix is the stable signal; the target/suffix/config tail
-	// varies across cmake versions and per-target overrides.
+	// `CXX_COMPILER__foo_unscanned_Release`); the `_COMPILER__`
+	// infix is the stable signal across every fixture in tree
+	// (see converter/testdata/fileapi/*/CMakeFiles/rules.ninja).
+	//
+	// The bare `<LANG>_COMPILER` suffix branch covers the
+	// non-per-target-decorated rule shape — appears in
+	// hand-rolled / older-cmake ninja graphs that don't fan out
+	// the `__<target>_<config>` tail (the form
+	// `converter/internal/ninja/parsefile_test.go` exercises).
+	// Kept as a defensive second match: ignoring it would let a
+	// non-decorated graph's compile artifact slip past the gate
+	// and back into recoverGenrule's CUSTOM_COMMAND refusal,
+	// re-introducing the #206 failure shape we just fixed.
 	return strings.Contains(b.Rule, "_COMPILER__") || strings.HasSuffix(b.Rule, "_COMPILER")
 }
 

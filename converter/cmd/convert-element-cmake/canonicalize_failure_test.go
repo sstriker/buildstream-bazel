@@ -14,65 +14,22 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
-// TestWrapEmitError_PreservesTypedTier1 asserts that wrapEmitError
-// passes through a typed Tier-1 error unchanged. The pre-emit
-// constraint pass in bazel.EmitWithOptions already produces
-// *failure.Error for the #193/#194 hazard family; the wrap must
-// not re-wrap those (or it would mask the constraint code under
-// `bazel-canonicalize-failed`, breaking the orchestrator's dedup
-// key contract).
-func TestWrapEmitError_PreservesTypedTier1(t *testing.T) {
-	original := failure.New(failure.UnsupportedTargetType, "synthetic upstream failure")
-	wrapped := wrapEmitError(original)
-
-	var got *failure.Error
-	if !errors.As(wrapped, &got) {
-		t.Fatalf("wrapped error is not *failure.Error: %T (%v)", wrapped, wrapped)
-	}
-	if got.Code != failure.UnsupportedTargetType {
-		t.Errorf("wrap clobbered the code: got %q, want %q (typed Tier-1 should pass through)",
-			got.Code, failure.UnsupportedTargetType)
-	}
-}
-
-// TestWrapEmitError_WrapsRawAsBazelCanonicalizeFailed asserts that
-// any non-Tier-1 error from EmitWithOptions becomes a typed
-// `bazel-canonicalize-failed` so the orchestrator gets a stable
-// dedup code and operators get a structured failure.json instead
-// of an exit-65 with no output (#210).
-func TestWrapEmitError_WrapsRawAsBazelCanonicalizeFailed(t *testing.T) {
-	original := errors.New("synthetic raw error from buildtools parse")
-	wrapped := wrapEmitError(original)
-
-	var got *failure.Error
-	if !errors.As(wrapped, &got) {
-		t.Fatalf("wrapped error is not *failure.Error: %T (%v)", wrapped, wrapped)
-	}
-	if got.Code != failure.BazelCanonicalizeFailed {
-		t.Errorf("wrap produced wrong code: got %q, want %q",
-			got.Code, failure.BazelCanonicalizeFailed)
-	}
-	if !strings.Contains(got.Message, "synthetic raw error from buildtools parse") {
-		t.Errorf("wrap dropped the underlying message: %q", got.Message)
-	}
-}
-
 // TestRun_CanonicalizeFailure_E2E covers the full #210 integration
 // path with no test hooks: drive bazel.EmitWithOptions against a
 // real IR but pass a malformed Header so canonicalize's buildtools
-// Parse rejects the assembled body, then mirror what run() does on
-// that error (wrapEmitError + handleError) and assert the
-// operator-visible surface — exit code AND failure.json — match
-// the documented bazel-canonicalize-failed contract.
+// Parse rejects the assembled body, then verify the emit error is
+// already a typed Tier-1 *failure.Error (canonicalize wraps at the
+// failure site, not in this binary's main.go — keeps the typed-code
+// contract local) and that handleError serialises it to a
+// failure.json carrying the documented bazel-canonicalize-failed
+// shape.
 //
 // Using Options.Header as the failure injector keeps the test
 // hook-free: Header is a public field on bazel.Options, and an
 // invalid value flows through the same canonicalize path the
-// #210 reproduction did. The default CLI doesn't set Header, but
-// the canonicalize step itself doesn't care about the source of
-// the bytes — exercising the failure via Header is functionally
-// equivalent to exercising it via the cmake-value smuggling
-// shape the issue described.
+// cmake-value-smuggling shape in #210's reproduction did. The
+// canonicalize step itself doesn't care about the bytes' source —
+// triggering via Header is functionally equivalent.
 func TestRun_CanonicalizeFailure_E2E(t *testing.T) {
 	pkg := &ir.Package{
 		Name: "x",
@@ -94,19 +51,23 @@ func TestRun_CanonicalizeFailure_E2E(t *testing.T) {
 	if emitErr == nil {
 		t.Fatal("EmitWithOptions accepted a malformed-Header IR; the test setup no longer triggers the failure path")
 	}
-	if !strings.Contains(emitErr.Error(), "canonicalize") {
-		t.Fatalf("emit error doesn't look like a canonicalize failure (test no longer covers #210): %v", emitErr)
-	}
 
-	// Mirror run()'s error wrap; assert the typed code lands.
-	wrapped := wrapEmitError(emitErr)
+	// Assert canonicalize wrapped at the failure site rather than
+	// expecting a downstream caller to recognise the shape. This
+	// is the load-bearing assertion against the review observation
+	// on PR #211 that an `errors.As != typed` fallback in main.go
+	// would mis-code constraint-pass errors as
+	// bazel-canonicalize-failed.
 	var tier1 *failure.Error
-	if !errors.As(wrapped, &tier1) {
-		t.Fatalf("wrapEmitError did not produce a typed failure: %T (%v)", wrapped, wrapped)
+	if !errors.As(emitErr, &tier1) {
+		t.Fatalf("EmitWithOptions returned untyped %T (%v); want pre-typed *failure.Error from canonicalize", emitErr, emitErr)
 	}
 	if tier1.Code != failure.BazelCanonicalizeFailed {
-		t.Fatalf("wrap produced wrong code: got %q, want %q",
+		t.Fatalf("EmitWithOptions returned code %q, want %q",
 			tier1.Code, failure.BazelCanonicalizeFailed)
+	}
+	if !strings.Contains(tier1.Message, "canonicalize") {
+		t.Errorf("error message dropped the canonicalize tag: %q", tier1.Message)
 	}
 
 	// Drive handleError so the failure.json file write + exit
@@ -114,7 +75,7 @@ func TestRun_CanonicalizeFailure_E2E(t *testing.T) {
 	// takes when run() returns).
 	failurePath := filepath.Join(t.TempDir(), "failure.json")
 	args := cli.Args{OutFailure: failurePath}
-	exit := handleError(args, wrapped)
+	exit := handleError(args, emitErr)
 	if exit != cli.ExitTier1 {
 		t.Errorf("handleError returned exit code %d, want %d (ExitTier1)", exit, cli.ExitTier1)
 	}
@@ -147,13 +108,10 @@ func TestRun_CanonicalizeFailure_E2E(t *testing.T) {
 // TestRun_CanonicalizeFailure_NoOutFailureFlag covers the binary's
 // behaviour when --out-failure isn't passed: handleError should
 // still exit Tier-1 (so the orchestrator's dedup-by-exit-code
-// path works) without trying to write the file. Guards against a
-// regression where the wrap path assumed OutFailure was always
-// set.
+// path works) without trying to write the file.
 func TestRun_CanonicalizeFailure_NoOutFailureFlag(t *testing.T) {
-	wrapped := wrapEmitError(errors.New("synthetic canonicalize miss"))
-
-	exit := handleError(cli.Args{}, wrapped) // empty OutFailure
+	tier1 := failure.New(failure.BazelCanonicalizeFailed, "synthetic")
+	exit := handleError(cli.Args{}, tier1) // empty OutFailure
 	if exit != cli.ExitTier1 {
 		t.Errorf("handleError returned exit code %d, want %d (ExitTier1)", exit, cli.ExitTier1)
 	}
