@@ -156,7 +156,7 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 		Kind:        ir.KindGenrule,
 		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
 		GenruleOuts: []string{outRel},
-		Tags:        configureFileTags(),
+		Tags:        configureFileTags(configureFileTagSet{}),
 		Visibility:  []string{"//visibility:private"},
 	}
 
@@ -190,7 +190,7 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 		GenruleCmd:   cmd,
 		GenruleOuts:  []string{outRel},
 		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         append(configureFileTags(), "cmake-codegen-lifted"),
+		Tags:         configureFileTags(configureFileTagSet{Lifted: true}),
 		Visibility:   []string{"//visibility:private"},
 	}
 }
@@ -444,14 +444,39 @@ func configureFileToolFlags(opts configurefile.Options) string {
 	return strings.Join(flags, " ") + " "
 }
 
+// configureFileTagSet names each tag-emit facet for a
+// configure_file emission. Zero value = the legacy bytes-
+// embedded shape (rendered output base64'd into the genrule cmd);
+// Lifted = the cmake-configure-file tool emits at Bazel time
+// from the .h.in template + captured values. Mirrors
+// fileGenerateTagSet so the two lifters share the same call-
+// site shape ("only the true-valued facets appear").
+type configureFileTagSet struct {
+	// Lifted: the genrule uses the cmake-configure-file tool
+	// (template decoupled from BUILD.bazel content) vs. the
+	// legacy bytes-embedded shape.
+	Lifted bool
+}
+
 // configureFileTags returns the cmake-codegen tag set for a
-// configure_file emission. Distinguishes from
-// CUSTOM_COMMAND-recovered genrules via cmake-codegen-driver=
-// =configure_file, so audit queries can split the two cleanly.
-func configureFileTags() []string {
-	return []string{
+// configure_file emission. Always carries the three base tags
+// (cmake-codegen, cmake-codegen-configure-file,
+// cmake-codegen-driver=configure_file); the facet flags
+// append one tag each when true. Sorted on return for byte-
+// stable BUILD.bazel output.
+//
+// The driver tag distinguishes configure_file emissions from
+// CUSTOM_COMMAND-recovered genrules so audit queries can split
+// the two cleanly.
+func configureFileTags(s configureFileTagSet) []string {
+	tags := []string{
 		"cmake-codegen",
 		"cmake-codegen-configure-file",
 		"cmake-codegen-driver=configure_file",
 	}
+	if s.Lifted {
+		tags = append(tags, "cmake-codegen-lifted")
+	}
+	sort.Strings(tags)
+	return tags
 }
