@@ -61,6 +61,39 @@ type configureHint struct {
 // first if a future hint risks overlapping with another.
 var configureHints = []configureHint{
 	{
+		// cmake's try_compile records the expected output
+		// location of the just-compiled test artifact and then
+		// reads it back to derive properties (CHECK_TYPE_SIZE,
+		// CHECK_C_SOURCE_COMPILES, CHECK_SYMBOL_EXISTS, etc.).
+		// When the recorded path doesn't exist, cmake emits
+		//
+		//   CMake Error: Recorded try_compile output location
+		//   doesn't exist: <build>/CMakeFiles/CMakeScratch/
+		//   TryCompile-XXXXXX/cmTC_YYYYY
+		//
+		// Common cause: an external toolchain file sets
+		// `set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)`
+		// to skip linker time on user-code try_compile probes,
+		// but the cmake target-type-vs-output-name mapping for
+		// the static-lib case drifts in some cmake releases —
+		// the recorded location is `cmTC_YYYYY` (no prefix /
+		// suffix) while the actual artifact lands at
+		// `libcmTC_YYYYY.a`. The convert-element-cmake
+		// derive-toolchain output deliberately doesn't set
+		// CMAKE_TRY_COMPILE_TARGET_TYPE for exactly this
+		// reason (see converter/internal/emit/cmaketoolchain/
+		// emit.go's comment block); operators threading in
+		// their own toolchain via --toolchain-cmake-file may
+		// hit this when the toolchain forces the static-lib
+		// shape. See #205.
+		hint: "cmake's try_compile recorded an output path that doesn't exist. Most common trigger: the active toolchain file sets `CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY`, which mismatches cmake's recorded-vs-actual output naming for the static-lib case in some releases.\n" +
+			"  Workarounds (in preference order):\n" +
+			"    1. Remove `set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)` from the toolchain file passed via --toolchain-cmake-file; let cmake try_compile produce an executable (the converter's own derive-toolchain output already does this).\n" +
+			"    2. Pre-seed the cmake cache with the feature-detection results the project's try_compile probes — set e.g. `CHECK_TYPE_SIZE_<X>`, `CHECK_C_SOURCE_COMPILES_<X>`, `HAVE_<X>` via -DCACHE entries so cmake skips the try_compile altogether.\n" +
+			"    3. Try a newer cmake release; the recorded-vs-actual mismatch has been fixed in some upstreams.",
+		match: matchTryCompileMissingOutput,
+	},
+	{
 		// cmake 4.x removed the OLD behaviour of CMP0026,
 		// so legacy packages that read
 		// `get_target_property(<var> <tgt> LOCATION)` (the
@@ -111,4 +144,19 @@ func matchCMP0026(stderr []byte) bool {
 		return false
 	}
 	return strings.Contains(s, "CMP0026") || strings.Contains(s, "add_custom_command") || strings.Contains(s, "get_target_property")
+}
+
+// matchTryCompileMissingOutput recognises the cmake try_compile
+// "Recorded try_compile output location doesn't exist" diagnostic
+// — most often surfaced by toolchain files that force
+// CMAKE_TRY_COMPILE_TARGET_TYPE to STATIC_LIBRARY in cmake
+// releases where the recorded vs actual output name disagrees.
+// See #205.
+//
+// The sentinel is cmake's exact wording; an upstream rephrase
+// would silently stop firing the hint without affecting the
+// underlying failure surface. Re-test when bumping the pinned
+// cmake.
+func matchTryCompileMissingOutput(stderr []byte) bool {
+	return strings.Contains(string(stderr), "Recorded try_compile output location doesn't exist")
 }

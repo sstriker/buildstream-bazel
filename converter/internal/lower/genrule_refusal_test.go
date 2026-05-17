@@ -203,8 +203,14 @@ func TestRecoverGenrule_CmakeScriptModeRefusal(t *testing.T) {
 	if fe.Code != failure.UnsupportedCustomCommandScript {
 		t.Errorf("err.Code = %q, want %q", fe.Code, failure.UnsupportedCustomCommandScript)
 	}
-	if !strings.Contains(fe.Message, "rewrite in a real language") {
+	if !strings.Contains(fe.Message, "rewrite the script in a real language") {
 		t.Errorf("err.Message %q is missing the rewrite-guidance substring", fe.Message)
+	}
+	// Improved message (#207) names the actual -P script so
+	// operators see which file to rewrite — not just the
+	// consuming target's output.
+	if !strings.Contains(fe.Message, "/src/scripts/gen.cmake") {
+		t.Errorf("err.Message %q is missing the cmake -P script path", fe.Message)
 	}
 	if len(cc.Genrules) != 0 {
 		t.Errorf("script-mode refusal synthesized %d Genrules; want 0", len(cc.Genrules))
