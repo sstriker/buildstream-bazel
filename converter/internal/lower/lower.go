@@ -805,6 +805,21 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// whose link interface is fixed at build time — so fold
 	// PRIVATE deps into `irt.Deps` for those kinds.
 	allowsImplementationDeps := irt.Kind == ir.KindCCLibrary
+	// Issue #194: cmake's codemodel can report the same
+	// dependency twice — e.g. a target referenced by
+	// target_link_libraries with both INTERFACE and PRIVATE
+	// visibility, or referenced by separate
+	// target_link_libraries invocations. Without a seen-set,
+	// both entries land in irt.Deps and the rendered BUILD.bazel
+	// carries a duplicate label that Bazel rejects ("Label '...'
+	// is duplicated in the 'deps' attribute"). The Link.CommandFragments
+	// loop below already has a seen-set spanning Deps +
+	// ImplementationDeps (to avoid cross-bucket dupes); this
+	// one covers within-loop duplicates that come straight from
+	// t.Dependencies. Both maps fold into the same routing-
+	// decision shape so a dep already in either bucket isn't
+	// re-appended.
+	seenDep := map[string]bool{}
 	for _, dep := range t.Dependencies {
 		// Resolve label; routing decision (Deps vs
 		// ImplementationDeps) folds in after.
@@ -823,6 +838,10 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					t.Name, cmakeName)
 			}
 		}
+		if seenDep[label] {
+			continue
+		}
+		seenDep[label] = true
 		if allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName) {
 			irt.ImplementationDeps = append(irt.ImplementationDeps, label)
 		} else {
