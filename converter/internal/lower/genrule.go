@@ -113,6 +113,23 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 			"could not resolve command for generated source %q", relOut)
 	}
 
+	// Issue #193: CommandFor can return (cmd, ok=true) with cmd being
+	// the empty string when the underlying rule's `command` binding
+	// expands to nothing — e.g. cmake emitting a no-op CUSTOM_COMMAND
+	// or an unrecognised pattern whose Expand resolves to "". Emitting
+	// such a genrule produces `cmd = ""` in BUILD.bazel, which Bazel
+	// rejects at build time with "declared output was not created by
+	// genrule". Refuse here with a typed Tier-1 error so the broken
+	// BUILD never lands. The issue's reproduction was a source-only
+	// case (isSourceOnly(b) true), but the Bazel-side rejection is
+	// general — any empty-cmd genrule fails — so the gate is on the
+	// cmd alone, not narrowed to source-only.
+	if strings.TrimSpace(cmd) == "" {
+		return "", "", failure.New(failure.UnsupportedCustomCommand,
+			"custom command for %q resolved to an empty string; cannot emit as a genrule (Bazel would reject `cmd = \"\"`)",
+			relOut)
+	}
+
 	// CMake stuffs the actual command in $COMMAND on the build statement;
 	// the rule's command is just `$COMMAND`. CommandFor handles that
 	// transparently via scope chain. The literal "cd <dir> &&" prefix

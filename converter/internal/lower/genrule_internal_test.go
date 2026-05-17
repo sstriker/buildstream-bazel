@@ -1,9 +1,11 @@
 package lower
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
@@ -179,5 +181,98 @@ func TestGenruleNameFor_DeterministicAcrossBuildDirs(t *testing.T) {
 
 	if n1 != n2 {
 		t.Fatalf("rule names diverge across buildDir runs (issue #192):\n  run-A: %q\n  run-B: %q", n1, n2)
+	}
+}
+
+// TestRecoverGenrule_RefusesEmptyCmd is the regression test for
+// issue #193: when ninja.CommandFor resolves a CUSTOM_COMMAND's
+// command binding to an empty string (rule's `command` is
+// literally empty, or expands to nothing), recoverGenrule must
+// refuse with a typed Tier-1 failure — NOT emit a genrule with
+// `cmd = ""`, which Bazel would reject at build time with
+// "declared output was not created by genrule".
+//
+// Both source-only outputs (the issue's reproduction) and
+// non-source-only outputs hit the same Bazel-side rejection;
+// the gate is on the empty cmd alone, not narrowed by
+// isSourceOnly. Two sub-tests pin both shapes.
+func TestRecoverGenrule_RefusesEmptyCmd(t *testing.T) {
+	cases := []struct {
+		name     string
+		ninjaSrc string
+	}{
+		{
+			name: "empty cmd with source-only output (issue #193 repro)",
+			ninjaSrc: `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build /build/pkg/gen/output.cpp: CUSTOM_COMMAND
+  COMMAND =
+`,
+		},
+		{
+			name: "empty cmd with non-source output (same Bazel rejection)",
+			ninjaSrc: `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build /build/version.h: CUSTOM_COMMAND
+  COMMAND =
+`,
+		},
+		{
+			name: "whitespace-only cmd (same effect as empty after TrimSpace)",
+			ninjaSrc: `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build /build/x.cpp: CUSTOM_COMMAND
+  COMMAND =
+`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			g, err := ninja.Parse(strings.NewReader(tc.ninjaSrc), "", nil)
+			if err != nil {
+				t.Fatalf("ninja.Parse: %v", err)
+			}
+			cc := newCodegenContext()
+			// recoverGenrule's first positional is the generated
+			// source path the consumer references; pull it from
+			// the parsed ninja so the test stays in lockstep
+			// with the fixture above.
+			var srcPath string
+			for _, b := range g.Builds {
+				if len(b.Outputs) > 0 {
+					srcPath = b.Outputs[0]
+					break
+				}
+			}
+			if srcPath == "" {
+				t.Fatal("no build statement parsed; fixture malformed")
+			}
+			_, _, err = cc.recoverGenrule(srcPath, "/src", "/build", g)
+			if err == nil {
+				t.Fatal("expected typed Tier-1 error on empty-cmd CUSTOM_COMMAND; got nil")
+			}
+			// Pin that it's the UnsupportedCustomCommand typed
+			// failure shape — not some other error class that
+			// would mean we're tripping on a different gate.
+			var f *failure.Error
+			if !errors.As(err, &f) {
+				t.Fatalf("expected *failure.Error, got %T: %v", err, err)
+			}
+			if f.Code != failure.UnsupportedCustomCommand {
+				t.Errorf("failure.Code = %v, want UnsupportedCustomCommand", f.Code)
+			}
+			// And — the user-facing-critical assertion — NO
+			// genrule was synthesized into cc.Genrules. The bug
+			// was that one WAS appended, with the empty-cmd
+			// body, and would then land in BUILD.bazel.
+			if len(cc.Genrules) != 0 {
+				for _, gen := range cc.Genrules {
+					t.Errorf("refusal should NOT synthesize a genrule; got %+v (issue #193)", gen)
+				}
+			}
+		})
 	}
 }
