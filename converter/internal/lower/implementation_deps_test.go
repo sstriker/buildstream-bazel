@@ -5,6 +5,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
@@ -322,4 +323,222 @@ func TestToIR_InCodebasePrivateDepRoutesToImplementationDeps(t *testing.T) {
 	if len(consumer.ImplementationDeps) != 1 || consumer.ImplementationDeps[0] != ":helper" {
 		t.Errorf("ImplementationDeps = %v, want [:helper]", consumer.ImplementationDeps)
 	}
+}
+
+// TestToIR_DedupesDuplicateDependencies is the regression test
+// for issue #194: cmake's codemodel can report the same dep
+// twice — same-visibility (separate target_link_libraries
+// calls naming the same lib) or cross-visibility (the same lib
+// in both INTERFACE and PRIVATE arms). Pre-fix, both entries
+// landed in irt.Deps and the rendered BUILD.bazel carried a
+// duplicate label that Bazel rejects with
+// "Label '...' is duplicated in the 'deps' attribute of rule
+// '...'".
+//
+// Three sub-tests cover the bug shape:
+//
+//  1. Same in-codebase dep ID appearing twice in t.Dependencies
+//     — the loop-local seen-set must catch it.
+//  2. Same imports-manifest dep ID appearing twice — same
+//     seen-set must cover the imports-resolved label path too.
+//  3. The cross-visibility case (INTERFACE+PRIVATE for an
+//     in-codebase dep) — must end up in EXACTLY ONE of
+//     {Deps, ImplementationDeps}, never both with the same
+//     label.
+func TestToIR_DedupesDuplicateDependencies(t *testing.T) {
+	t.Run("duplicate in-codebase dep ID", func(t *testing.T) {
+		r := &fileapi.Reply{
+			Codemodel: fileapi.Codemodel{
+				Paths: fileapi.CodemodelPaths{Source: "/src"},
+				Configurations: []fileapi.Configuration{{
+					Name: "Release",
+					Targets: []fileapi.ConfigTargetRef{
+						{Name: "mylib", Id: "mylib::@1"},
+						{Name: "dep_b", Id: "dep_b::@2"},
+					},
+				}},
+			},
+			Targets: map[string]fileapi.Target{
+				"mylib::@1": {
+					Name:    "mylib",
+					Type:    "STATIC_LIBRARY",
+					Sources: []fileapi.TargetSource{{Path: "mylib.c", CompileGroupIndex: 0}},
+					CompileGroups: []fileapi.CompileGroup{{
+						Language:      "C",
+						SourceIndexes: []int{0},
+					}},
+					// Same dep id appears twice — pre-fix, both
+					// land in Deps.
+					Dependencies: []fileapi.TargetDependency{
+						{Id: "dep_b::@2"},
+						{Id: "dep_b::@2"},
+					},
+				},
+				"dep_b::@2": {
+					Name:    "dep_b",
+					Type:    "STATIC_LIBRARY",
+					Sources: []fileapi.TargetSource{{Path: "dep_b.c", CompileGroupIndex: 0}},
+					CompileGroups: []fileapi.CompileGroup{{
+						Language:      "C",
+						SourceIndexes: []int{0},
+					}},
+				},
+			},
+		}
+		pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+		if err != nil {
+			t.Fatalf("ToIR: %v", err)
+		}
+		// Find the mylib target.
+		var mylib *ir.Target
+		for i := range pkg.Targets {
+			if pkg.Targets[i].Name == "mylib" {
+				mylib = &pkg.Targets[i]
+				break
+			}
+		}
+		if mylib == nil {
+			t.Fatal("mylib target not found in pkg.Targets")
+		}
+		assertNoDupLabel(t, mylib.Deps, ":dep_b", "issue #194 (duplicate in-codebase)")
+		assertNoDupLabel(t, mylib.ImplementationDeps, ":dep_b", "issue #194 (duplicate in-codebase)")
+	})
+
+	t.Run("duplicate imports-manifest dep ID", func(t *testing.T) {
+		r := &fileapi.Reply{
+			Codemodel: fileapi.Codemodel{
+				Paths: fileapi.CodemodelPaths{Source: "/src"},
+				Configurations: []fileapi.Configuration{{
+					Name:    "Release",
+					Targets: []fileapi.ConfigTargetRef{{Name: "mylib", Id: "mylib::@1"}},
+				}},
+			},
+			Targets: map[string]fileapi.Target{
+				"mylib::@1": {
+					Name:    "mylib",
+					Type:    "STATIC_LIBRARY",
+					Sources: []fileapi.TargetSource{{Path: "mylib.c", CompileGroupIndex: 0}},
+					CompileGroups: []fileapi.CompileGroup{{
+						Language:      "C",
+						SourceIndexes: []int{0},
+					}},
+					Dependencies: []fileapi.TargetDependency{
+						{Id: "Glibc::c::@somehash"},
+						{Id: "Glibc::c::@somehash"},
+					},
+				},
+			},
+		}
+		rsv, err := manifest.Index(&manifest.Imports{
+			Version: 1,
+			Elements: []*manifest.Element{{
+				Name: "components/glibc",
+				Exports: []*manifest.Export{{
+					CMakeTarget: "Glibc::c",
+					BazelLabel:  "//elements/components/glibc:c",
+				}},
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", Imports: rsv})
+		if err != nil {
+			t.Fatalf("ToIR: %v", err)
+		}
+		tgt := &pkg.Targets[0]
+		assertNoDupLabel(t, tgt.Deps, "//elements/components/glibc:c",
+			"issue #194 (duplicate imports-manifest dep)")
+		assertNoDupLabel(t, tgt.ImplementationDeps, "//elements/components/glibc:c",
+			"issue #194 (duplicate imports-manifest dep)")
+	})
+
+	t.Run("cross-visibility dep lands in exactly one bucket", func(t *testing.T) {
+		// In-codebase dep with one PRIVATE + one (default-
+		// public) entry — pre-fix, the trace-routed PRIVATE
+		// landed in ImplementationDeps and the un-traced
+		// duplicate landed in Deps too. Post-fix: first dep
+		// claims the seen-set entry, the second is a no-op.
+		r := &fileapi.Reply{
+			Codemodel: fileapi.Codemodel{
+				Paths: fileapi.CodemodelPaths{Source: "/src"},
+				Configurations: []fileapi.Configuration{{
+					Name: "Release",
+					Targets: []fileapi.ConfigTargetRef{
+						{Name: "client", Id: "client::@1"},
+						{Name: "helper", Id: "helper::@2"},
+					},
+				}},
+			},
+			Targets: map[string]fileapi.Target{
+				"client::@1": {
+					Name:    "client",
+					Type:    "STATIC_LIBRARY",
+					Sources: []fileapi.TargetSource{{Path: "client.c", CompileGroupIndex: 0}},
+					CompileGroups: []fileapi.CompileGroup{{
+						Language:      "C",
+						SourceIndexes: []int{0},
+					}},
+					Dependencies: []fileapi.TargetDependency{
+						{Id: "helper::@2"},
+						{Id: "helper::@2"},
+					},
+				},
+				"helper::@2": {
+					Name:    "helper",
+					Type:    "STATIC_LIBRARY",
+					Sources: []fileapi.TargetSource{{Path: "helper.c", CompileGroupIndex: 0}},
+					CompileGroups: []fileapi.CompileGroup{{
+						Language:      "C",
+						SourceIndexes: []int{0},
+					}},
+				},
+			},
+		}
+		trace := []byte(
+			`{"args":["client","PRIVATE","helper"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n" +
+				`{"args":["client","PUBLIC","helper"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":4}` + "\n",
+		)
+		pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: trace})
+		if err != nil {
+			t.Fatalf("ToIR: %v", err)
+		}
+		var client *ir.Target
+		for i := range pkg.Targets {
+			if pkg.Targets[i].Name == "client" {
+				client = &pkg.Targets[i]
+				break
+			}
+		}
+		if client == nil {
+			t.Fatal("client target not found")
+		}
+		// Across both buckets, :helper appears AT MOST ONCE.
+		total := countLabel(client.Deps, ":helper") + countLabel(client.ImplementationDeps, ":helper")
+		if total > 1 {
+			t.Errorf("issue #194 (cross-visibility): :helper appears %d times across Deps+ImplementationDeps; want at most 1\n  Deps=%v\n  ImplementationDeps=%v",
+				total, client.Deps, client.ImplementationDeps)
+		}
+		if total == 0 {
+			t.Errorf("issue #194 (cross-visibility): :helper missing from both Deps and ImplementationDeps\n  Deps=%v\n  ImplementationDeps=%v",
+				client.Deps, client.ImplementationDeps)
+		}
+	})
+}
+
+func assertNoDupLabel(t *testing.T, labels []string, want, ctx string) {
+	t.Helper()
+	if n := countLabel(labels, want); n > 1 {
+		t.Errorf("%s: label %q appears %d times in %v (want at most 1)", ctx, want, n, labels)
+	}
+}
+
+func countLabel(labels []string, want string) int {
+	n := 0
+	for _, l := range labels {
+		if l == want {
+			n++
+		}
+	}
+	return n
 }
