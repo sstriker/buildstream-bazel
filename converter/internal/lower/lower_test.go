@@ -419,6 +419,163 @@ func TestToIR_ElidesCompilerObjectArtifact(t *testing.T) {
 	}
 }
 
+// TestToIR_ElidesCompilerObjectArtifact_Subdirectory covers #212:
+// the same compiler-artifact elision as the previous test but for
+// the multi-directory cmake layout aws-lc and similar projects use.
+// When an OBJECT library is defined in a subdirectory's
+// CMakeLists.txt, cmake's ninja generator writes its outputs under
+// `<subdir>/CMakeFiles/<target>.dir/...`, not the build-root
+// CMakeFiles/. The pre-#212 isCompilerObjectArtifact gated on
+// `HasPrefix(rel, "CMakeFiles/")` which silently missed those
+// paths; isTargetObjectsRef had the same bug. Both now route
+// through findCMakeFilesDir which matches the segment-aligned
+// shape from any depth.
+func TestToIR_ElidesCompilerObjectArtifact_Subdirectory(t *testing.T) {
+	const buildDir = "/tmp/convert-element-build-abc123"
+
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["C_COMPILER__crypto_objects_unscanned_Release"] = &ninja.Rule{
+		Name: "C_COMPILER__crypto_objects_unscanned_Release",
+		Bindings: map[string]string{
+			"command": "/usr/bin/clang -c $in -o $out",
+		},
+		BindingOrder: []string{"command"},
+	}
+	// Matches the exact path shape from #212's aws-lc reproduction.
+	const subPath = "crypto/CMakeFiles/crypto_objects.dir/asn1/a_bitstr.c.o"
+	g.Builds = []*ninja.Build{{
+		Outputs: []string{subPath},
+		Rule:    "C_COMPILER__crypto_objects_unscanned_Release",
+	}}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  buildDir,
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "crypto", Id: "crypto::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"crypto::@1": {
+				Name: "crypto",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "real.c", CompileGroupIndex: 0},
+					{Path: buildDir + "/" + subPath, IsGenerated: true, CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+
+	pkg, err := lower.ToIR(r, g, lower.Options{})
+	if err != nil {
+		t.Fatalf("ToIR returned error (the #212 regression): %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	for _, s := range tgt.Srcs {
+		if strings.Contains(s, "a_bitstr.c.o") {
+			t.Errorf("Srcs = %v, subdirectory compiler artifact leaked through", tgt.Srcs)
+		}
+	}
+	if !contains(tgt.Tags, "cmake-elided-compiler-artifact") {
+		t.Errorf("Tags = %v, want to contain cmake-elided-compiler-artifact", tgt.Tags)
+	}
+}
+
+// TestToIR_TargetObjectsRef_Subdirectory covers the other #212
+// arm: isTargetObjectsRef must also recognise the subdirectory
+// `<sub>/CMakeFiles/<t>.dir/...*.o` shape so $<TARGET_OBJECTS:t>
+// references where t is defined in a subdir get silently skipped
+// (the consumer's deps already carry the OBJECT_LIBRARY edge with
+// alwayslink=True). Pre-#212 the HasPrefix("CMakeFiles/") guard
+// missed these and they fell through to isCompilerObjectArtifact —
+// which would have also missed without its parallel fix, then
+// recoverGenrule would refuse with unsupported-custom-command.
+func TestToIR_TargetObjectsRef_Subdirectory(t *testing.T) {
+	const buildDir = "/tmp/convert-element-build-abc123"
+
+	// No ninja graph needed: isTargetObjectsRef should match the
+	// path on the idToName lookup alone, BEFORE the function
+	// hands off to recoverGenrule / isCompilerObjectArtifact.
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  buildDir,
+			},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Name: "consumer", Id: "consumer::@1"},
+					{Name: "obj_lib", Id: "obj_lib::@2"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"consumer::@1": {
+				Name: "consumer",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "consumer.c", CompileGroupIndex: 0},
+					// $<TARGET_OBJECTS:obj_lib> in a subdirectory
+					// codebase shape.
+					{Path: buildDir + "/sub/CMakeFiles/obj_lib.dir/source.c.o", IsGenerated: true, CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+			"obj_lib::@2": {
+				Name: "obj_lib",
+				Type: "OBJECT_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "sub/source.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+
+	pkg, err := lower.ToIR(r, nil, lower.Options{})
+	if err != nil {
+		t.Fatalf("ToIR returned error (the #212 regression for TARGET_OBJECTS): %v", err)
+	}
+	var consumer *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "consumer" {
+			consumer = &pkg.Targets[i]
+			break
+		}
+	}
+	if consumer == nil {
+		t.Fatalf("Targets = %+v, missing consumer", pkg.Targets)
+	}
+	for _, s := range consumer.Srcs {
+		if strings.Contains(s, "source.c.o") {
+			t.Errorf("consumer.Srcs = %v, subdirectory TARGET_OBJECTS ref leaked through", consumer.Srcs)
+		}
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
