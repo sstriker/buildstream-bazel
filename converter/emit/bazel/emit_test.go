@@ -1382,3 +1382,68 @@ func TestEmit_GazelleCcSearch_RequiresBazelPackagePath(t *testing.T) {
 		t.Errorf("expected no cc_search directive without BazelPackagePath:\n%s", got)
 	}
 }
+
+// TestEmit_ConstraintViolation_PreEmitGuard wires that
+// bazelconstraints.ValidatePackage fires through Emit and
+// surfaces the typed-error prefix the wrap adds. Drives the
+// three hazard shapes the constraints package covers (#193
+// empty cmd, #194 duplicate deps, malformed name) at the
+// emit boundary so a future refactor that decouples emit
+// from validation fails loudly here.
+func TestEmit_ConstraintViolation_PreEmitGuard(t *testing.T) {
+	cases := []struct {
+		name string
+		pkg  *ir.Package
+		want string // substring expected in the wrapped error
+	}{
+		{
+			name: "empty genrule cmd (issue #193 shape)",
+			pkg: &ir.Package{
+				Targets: []ir.Target{{
+					Name:        "gen_empty",
+					Kind:        ir.KindGenrule,
+					GenruleCmd:  "",
+					GenruleOuts: []string{"out.h"},
+				}},
+			},
+			want: "empty or whitespace-only",
+		},
+		{
+			name: "duplicate deps (issue #194 shape)",
+			pkg: &ir.Package{
+				Targets: []ir.Target{{
+					Name: "lib",
+					Kind: ir.KindCCLibrary,
+					Srcs: []string{"lib.cc"},
+					Deps: []string{":foo", ":foo"},
+				}},
+			},
+			want: `"deps"`,
+		},
+		{
+			name: "malformed name (whitespace)",
+			pkg: &ir.Package{
+				Targets: []ir.Target{{
+					Name: "bad name",
+					Kind: ir.KindCCLibrary,
+				}},
+			},
+			want: "valid Bazel identifier",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := bazel.Emit(tc.pkg)
+			if err == nil {
+				t.Fatalf("Emit succeeded; want validator-wrapped error. body=%q", body)
+			}
+			msg := err.Error()
+			if !strings.HasPrefix(msg, "bazel constraint violation:") {
+				t.Errorf("err %q missing 'bazel constraint violation:' prefix", msg)
+			}
+			if !strings.Contains(msg, tc.want) {
+				t.Errorf("err %q does not contain %q", msg, tc.want)
+			}
+		})
+	}
+}
