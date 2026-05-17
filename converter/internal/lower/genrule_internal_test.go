@@ -1,6 +1,10 @@
 package lower
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+)
 
 func TestUsesCmakeScriptMode(t *testing.T) {
 	cases := []struct {
@@ -86,5 +90,17 @@ func TestUsesCmakeScriptMode(t *testing.T) {
 				t.Errorf("usesCmakeScriptMode(%q) = %v, want %v", tc.cmd, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestGenruleNameForRelativizesAbsoluteBuildOutput(t *testing.T) {
+	build := &ninja.Build{
+		Outputs: []string{"/tmp/convert-element-build-1806770363/pkg/gen/output.cpp"},
+	}
+
+	got := genruleNameFor(build, "/tmp/convert-element-build-1806770363")
+	want := "gen_pkg_gen_output_cpp"
+	if got != want {
+		t.Fatalf("genruleNameFor() = %q, want %q", got, want)
 	}
 }

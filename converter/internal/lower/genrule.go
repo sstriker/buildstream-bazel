@@ -123,7 +123,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	}
 
 	// Sanitize a name from the build statement's first output.
-	name = genruleNameFor(b)
+	name = genruleNameFor(b, buildDir)
 
 	outs := genruleOuts(b, buildDir)
 	srcs := genruleSrcs(b, cmakeSrc, buildDir)
@@ -148,10 +148,15 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 
 // genruleNameFor turns the first output path into a Bazel-rule-name-safe
 // identifier. `version.h` -> `gen_version_h`; `dir/foo.cc` -> `gen_dir_foo_cc`.
-func genruleNameFor(b *ninja.Build) string {
+// Absolute outputs under buildDir are first relativized so genrule names are
+// deterministic across temporary build directories.
+func genruleNameFor(b *ninja.Build, buildDir string) string {
 	first := "out"
 	if len(b.Outputs) > 0 {
 		first = b.Outputs[0]
+		if rel, ok := relativeIfInsideRelaxed(buildDir, first); ok {
+			first = rel
+		}
 	}
 	first = filepath.ToSlash(first)
 	first = strings.TrimPrefix(first, "./")
