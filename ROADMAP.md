@@ -135,11 +135,21 @@ transition cleanly.
   source cache via `--repo_env`, write-a-time registry) and rules
   out two; the third is the path forward but the value-vs-complexity
   trade-off is open.
-- **kind coverage breadth.** `kind:flatpak_image` /
-  `kind:snap_image` / `kind:collect_*` all have placeholder
-  handlers today. Each kind is bounded work; what's not
-  bounded is the question of which kinds are graph-recoverable
-  vs need-to-stay-coarse.
+- **kind coverage — real semantics for the FDSDK-glue
+  placeholders.** All four FDSDK-specific glue kinds
+  (`collect_initial_scripts`, `collect_integration`,
+  `check_forbidden`, `flatpak_repo`) now have v1 stub
+  handlers (alongside the pre-existing `collect_manifest`
+  stub) so FDSDK render reaches completion. Real plugin
+  semantics deferred until an FDSDK fixture forces a
+  bazel-build-time correctness need; per-kind cost-to-port
+  is documented in `docs/fdsdk-coverage-status.md` (small
+  for the install-tree-walk kinds; `flatpak_repo` is bigger
+  — needs ostree at build time). `kind:flatpak_image` /
+  `kind:snap_image` retain their structural treatment
+  (filegroup composition over deps' install trees) which is
+  the right shape regardless of upstream-plugin behaviour
+  changes.
 - **Dev-loop guidance for routing local Bazel at the executor.**
   Two slices landed (see Done): per-gate cmake prereq honesty +
   inline cmake-availability check in the kind:cmake render
@@ -169,6 +179,22 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **FDSDK-glue placeholder handlers — kind catalog now
+  fully covered.** Stub handlers for the four previously-
+  missing FDSDK-specific kinds (`collect_initial_scripts`,
+  `collect_integration`, `check_forbidden`, `flatpak_repo`),
+  matching the shape of the pre-existing `collect_manifest`
+  stub. Each emits an empty `install_tree.tar` so render of
+  FDSDK fixtures reaches completion without these kinds
+  breaking the graph; real plugin semantics deferred until
+  an FDSDK fixture forces a bazel-build-time correctness
+  need. Coverage table in `docs/fdsdk-coverage-status.md`
+  refreshed: 100 % of FDSDK's element-kind catalog now has
+  a handler (~76 % deep + ~22 % structural/placeholder).
+  Unit tests for the four new kinds + the pre-existing
+  `collect_manifest` shape locked into a table-driven
+  `TestWriter_FDSDKGlueHandlers`.
 
 - **Strict-sandbox `.bazelrc` rendered into every project.**
   `cmd/write-a` now renders a `.bazelrc` in both project A and
