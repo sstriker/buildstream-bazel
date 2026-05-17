@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bazelbuild/buildtools/build"
+	"github.com/sstriker/buildstream-bazel/converter/internal/bazelconstraints"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -244,6 +245,15 @@ func Emit(pkg *ir.Package) ([]byte, error) {
 // matches what an operator hand-formatting via buildifier
 // would see post-conversion.
 func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
+	// Pre-emit constraint pass. Catches the small set of
+	// Bazel-side semantic violations that have produced real
+	// operator bugs (empty genrule cmd #193, duplicate deps
+	// #194, malformed rule names) before they hit disk. See
+	// converter/internal/bazelconstraints for the constraint
+	// list and the rationale per check.
+	if err := bazelconstraints.ValidatePackage(pkg); err != nil {
+		return nil, fmt.Errorf("bazel constraint violation: %w", err)
+	}
 	var buf bytes.Buffer
 	if opts.Header != "" {
 		buf.WriteString(opts.Header)
