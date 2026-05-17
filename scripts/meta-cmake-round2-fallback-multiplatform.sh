@@ -19,12 +19,17 @@
 #     cell publishes under its own AC partition
 #
 # Project A's converter genrule is unchanged here — under
-# multi-platform mode, the orchestrator's existing kind:cmake
-# multi-platform fan-out (PR #112) runs convert-element-cmake N
-# times per element AT ORCHESTRATE TIME, then fold-element
-# composes the per-platform IRs. Write-a's project A output
-# for cmake round-2-fallback is the same shape the existing
-# meta-cmake-round2-fallback gate verifies.
+# multi-platform mode, write-a's --platforms-json fan-out
+# emits N convert-element-cmake genrules per element + 1
+# fold-element genrule into project A's BUILD.bazel; all run
+# as Bazel actions at bazel-build time (RE-capable in both
+# single- and multi-platform modes via Bazel's normal
+# exec_compatible_with routing). Write-a never runs cmake
+# itself — it only renders the BUILD describing the converter
+# genrules. So project A's cmake round-2-fallback shape is
+# the same as the existing meta-cmake-round2-fallback gate
+# verifies; only project B's install fan-out (this gate)
+# differs under --platforms-json.
 #
 # Bazel-build half out of scope; live-AC contract covered by
 # the kind-agnostic tools/e2e-meta-autotools-round2-live.sh.
