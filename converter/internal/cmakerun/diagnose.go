@@ -83,7 +83,8 @@ var configureHints = []configureHint{
 			"  Workarounds (in preference order):\n" +
 			"    1. Patch the unpacked source so each call becomes `set(<var> $<TARGET_FILE:<tgt>>)`. With Bazel's http_archive, pass this through patch_cmds:\n" +
 			"         find . \\( -name CMakeLists.txt -o -name '*.cmake' \\) -exec sed -i -E 's/get_target_property\\(([^ ]+) +([^ ]+) +LOCATION\\)/set(\\1 $<TARGET_FILE:\\2>)/g' {} +\n" +
-			"    2. Pin the orchestrator's cmake to a 3.x release (the Makefile's CMAKE_VERSION pin is 3.28.3); cmake 3.x emits a deprecation warning but still resolves LOCATION.\n" +
+			"    2. Re-run convert-element-cmake with --cmp0026-shim. The shim wraps get_target_property to translate LOCATION queries into $<TARGET_FILE:<tgt>> at configure time without touching the source tree. Caveat: the wrapper returns a generator expression rather than a configure-time-resolved path, so projects that string-compose LOCATION values at configure time (e.g. into a message() call) will see literal `$<TARGET_FILE:foo>` text. See #208.\n" +
+			"    3. Pin the orchestrator's cmake to a 3.x release (the Makefile's CMAKE_VERSION pin is 3.28.3); cmake 3.x emits a deprecation warning but still resolves LOCATION.\n" +
 			"  See docs/cmake-conversion-deltas.md for the catalogue entry.",
 		match: matchCMP0026,
 	},

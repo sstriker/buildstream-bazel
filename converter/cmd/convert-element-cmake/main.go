@@ -94,9 +94,10 @@ func run(a cli.Args) error {
 			// "manually-specified variable not used" warning on
 			// cmake < 3.24, so we don't pay that cost for
 			// elements that don't need the captured namespace.
-			DumpVars: a.LiftConfigureFile,
-			Stdout:   os.Stderr, // route cmake noise to our stderr
-			Stderr:   os.Stderr,
+			DumpVars:    a.LiftConfigureFile,
+			CMP0026Shim: a.CMP0026Shim,
+			Stdout:      os.Stderr, // route cmake noise to our stderr
+			Stderr:      os.Stderr,
 		}
 		if a.OutReadPaths != "" {
 			opts.TracePath = filepath.Join(buildDir, "trace.jsonl")

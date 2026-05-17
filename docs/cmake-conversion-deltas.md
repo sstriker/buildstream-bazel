@@ -85,15 +85,20 @@ Convert-element-cmake annotates the failure at that point —
 `[hint]` block to the surfaced error pointing operators at the
 workarounds below.
 
-**Why convert-element-cmake doesn't auto-fix**: rewriting
-`CMakeLists.txt` / `*.cmake` files is source-mutating; doing
-that inside the converter would either modify the operator's
-source tree (destructive) or duplicate the tree into a scratch
-copy (doubles the disk cost for large checkouts). The orchestrator's
-source-key model also keys on the original source bytes, so a
-silent rewrite would split the cache without a clear audit
-trail. We surface the diagnostic, document the workarounds, and
-let the operator choose.
+**Why convert-element-cmake doesn't auto-fix by default**:
+rewriting `CMakeLists.txt` / `*.cmake` files is source-mutating;
+doing that inside the converter would either modify the
+operator's source tree (destructive) or duplicate the tree into
+a scratch copy (doubles the disk cost for large checkouts). The
+orchestrator's source-key model also keys on the original
+source bytes, so a silent rewrite would split the cache
+without a clear audit trail. The default is to surface the
+diagnostic and let the operator choose.
+
+There's also an opt-in shim (`--cmp0026-shim`) that wraps
+`get_target_property` at configure time so LOCATION queries
+return `$<TARGET_FILE:<tgt>>` without touching the source —
+covered as workaround 2 below.
 
 **Workarounds (in preference order)**:
 
@@ -123,7 +128,35 @@ let the operator choose.
      hand-tuned rewrite — treat the recipe as the starting
      point for the common case.
 
-2. **Pin cmake to a 3.x release.** The orchestrator's
+2. **Run with `--cmp0026-shim`.** Convert-element-cmake stages
+   a small cmake script into the build dir that overrides
+   `get_target_property` and routes LOCATION /
+   LOCATION_<CONFIG> queries to `$<TARGET_FILE:<tgt>>`. The
+   shim layers onto `CMAKE_PROJECT_TOP_LEVEL_INCLUDES` (cmake
+   3.24+), so it installs at the end of every top-level
+   `project()` call before any user code runs. Source tree
+   stays untouched.
+
+   Caveats:
+
+   - The wrapper returns a *generator expression*, not a
+     configure-time-resolved path. Consumers that evaluate
+     generator expressions (`add_custom_command`, `install`,
+     `file(GENERATE)`, TARGET_<> properties) handle it fine.
+     Code that string-composes the LOCATION value at
+     configure time (e.g. `message(STATUS "${LOC}")`,
+     `set(BACKUP "${LOC}.bak")`, `if("${LOC}" MATCHES …)`)
+     sees literal `$<TARGET_FILE:foo>` text and likely
+     misbehaves — same surface as if the call site were
+     hand-rewritten to `TARGET_FILE`, which is the
+     cmake-team-recommended migration.
+   - Opt-in by design (`--cmp0026-shim` off by default). On
+     for elements that have demonstrably no
+     configure-time-string consumers; off otherwise so the
+     diagnostic surfaces and the operator picks the right
+     workaround.
+
+3. **Pin cmake to a 3.x release.** The orchestrator's
    `Makefile` `CMAKE_VERSION` is `3.28.3` by default; cmake 3.x
    emits a deprecation warning but still resolves LOCATION,
    so it's a viable stopgap when patching upstream is

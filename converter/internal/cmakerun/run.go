@@ -38,11 +38,25 @@ import (
 //go:embed dump-vars.cmake
 var dumpVarsCMake []byte
 
+// cmp0026ShimCMake wraps get_target_property so legacy
+// `get_target_property(<v> <tgt> LOCATION)` calls survive cmake
+// 4.x's CMP0026 removal by returning $<TARGET_FILE:<tgt>>
+// instead. Opt-in via Options.CMP0026Shim; the script header
+// documents the trade-offs.
+//
+//go:embed cmp0026-shim.cmake
+var cmp0026ShimCMake []byte
+
 // VarsDumpFilename is the basename of the variable dump
 // dump-vars.cmake writes inside the build dir. Exposed so callers
 // (offline test fixtures, the orchestrator's record path) can
 // stash a recording mirror under the same name.
 const VarsDumpFilename = "cmake-to-bazel.vars.dump"
+
+// CMP0026ShimFilename is the basename of the cmp0026 compatibility
+// shim Configure stages into the build dir when Options.CMP0026Shim
+// is true.
+const CMP0026ShimFilename = "cmake-to-bazel.cmp0026-shim.cmake"
 
 // SourceDateEpoch is the project-wide fixed timestamp for deterministic
 // configure-time outputs. 2020-01-01T00:00:00Z, picked arbitrarily to be
@@ -100,6 +114,21 @@ type Options struct {
 	// there). convert-element-cmake only flips this on when
 	// --lift-configure-file is set.
 	DumpVars bool
+
+	// CMP0026Shim enables the cmake-4.x compatibility shim that
+	// overrides get_target_property to translate LOCATION queries
+	// into $<TARGET_FILE:<tgt>> generator expressions. cmake 4.x
+	// removed the OLD behaviour of CMP0026, so legacy packages
+	// reading `get_target_property(<v> <tgt> LOCATION)` (the
+	// pre-3.0 idiom) fatal-error at configure time. The shim is
+	// staged into the build dir as cmake-to-bazel.cmp0026-shim.cmake
+	// and joined onto CMAKE_PROJECT_TOP_LEVEL_INCLUDES (alongside
+	// the dump-vars hook when both are enabled). Off by default;
+	// the shim changes get_target_property's return shape for ALL
+	// LOCATION reads (generator expression rather than configure-
+	// time path), which can break projects that string-compose
+	// the LOCATION value at configure time. See #208.
+	CMP0026Shim bool
 
 	// Stdout/Stderr capture cmake output. Nil discards.
 	Stdout, Stderr io.Writer
@@ -166,6 +195,19 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		}
 	}
 
+	// Stage the cmp0026 shim alongside dump-vars when the caller
+	// opted in. Both are layered onto CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+	// as a `;`-joined list; cmake includes them in order, so the
+	// shim's wrapper is installed before dump-vars enumerates the
+	// namespace and after any project-level project() setup.
+	var cmp0026ShimPath string
+	if opts.CMP0026Shim {
+		cmp0026ShimPath = filepath.Join(opts.BuildDir, CMP0026ShimFilename)
+		if err := os.WriteFile(cmp0026ShimPath, cmp0026ShimCMake, 0o644); err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: stage cmp0026 shim: %w", err)
+		}
+	}
+
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
 	// rewrites HOME. Best-effort cleanup; cmake only reads from here.
 	homeDir, err := os.MkdirTemp("", "cmakerun-home-*")
@@ -174,7 +216,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 	defer os.RemoveAll(homeDir)
 
-	argv, err := buildCmakeArgv(opts, dumpVarsPath)
+	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -234,7 +276,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 // lexicographic key order, then the optional --trace-* and
 // CMAKE_TOOLCHAIN_FILE / CMAKE_PROJECT_TOP_LEVEL_INCLUDES tail.
 // Stable across runs of the same Options.
-func buildCmakeArgv(opts Options, dumpVarsPath string) ([]string, error) {
+func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]string, error) {
 	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
 		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
 	}
@@ -258,18 +300,29 @@ func buildCmakeArgv(opts Options, dumpVarsPath string) ([]string, error) {
 		}
 	}
 
-	if opts.DumpVars {
-		// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) injects
-		// our dump-vars hook at the end of the top-level project()
-		// call. Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake
-		// reported it as a "manually-specified variable not used"
-		// in the configure-file fixture, suggesting the variable
-		// isn't honored when set only via -D (it expects the
-		// project to set it via set(CACHE) or for it to be already
-		// in the cache). _TOP_LEVEL_INCLUDES is a list-of-files
-		// variable explicitly designed for this CLI-injection
-		// pattern.
-		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+dumpVarsPath)
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) is a
+	// list-of-files variable cmake includes in order at the end
+	// of the top-level project() call. Both the dump-vars hook
+	// and the cmp0026 shim layer onto the same slot; emit a
+	// `;`-joined list. shim first so its wrapper is installed
+	// before dump-vars runs and any user code reaches LOCATION.
+	//
+	// Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake reported it
+	// as a "manually-specified variable not used" in the
+	// configure-file fixture, suggesting the variable isn't
+	// honored when set only via -D (it expects the project to
+	// set it via set(CACHE) or for it to be already in the
+	// cache). _TOP_LEVEL_INCLUDES is explicitly designed for
+	// this CLI-injection pattern.
+	var topLevelIncludes []string
+	if cmp0026ShimPath != "" {
+		topLevelIncludes = append(topLevelIncludes, cmp0026ShimPath)
+	}
+	if dumpVarsPath != "" {
+		topLevelIncludes = append(topLevelIncludes, dumpVarsPath)
+	}
+	if len(topLevelIncludes) > 0 {
+		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+strings.Join(topLevelIncludes, ";"))
 	}
 	if opts.TracePath != "" {
 		argv = append(argv,

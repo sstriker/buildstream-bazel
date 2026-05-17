@@ -62,6 +62,9 @@ func TestAnnotateConfigureFailure_CMP0026(t *testing.T) {
 	if !strings.Contains(msg, "patch_cmds") {
 		t.Errorf("hint should point at the Bazel patch_cmds workaround: %q", msg)
 	}
+	if !strings.Contains(msg, "--cmp0026-shim") {
+		t.Errorf("hint should mention the --cmp0026-shim opt-in flag (#208): %q", msg)
+	}
 	if !errors.Is(got, base) {
 		t.Errorf("annotated error should wrap the original; errors.Is(err, base) = false")
 	}

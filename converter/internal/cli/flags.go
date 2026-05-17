@@ -145,6 +145,24 @@ type Args struct {
 	// Local-dev only; M3 must never set this.
 	AllowCMakeVersionMismatch bool
 
+	// CMP0026Shim toggles the cmake-4.x compatibility shim that
+	// overrides get_target_property to translate LOCATION queries
+	// into $<TARGET_FILE:<tgt>> generator expressions. cmake 4.x
+	// removed CMP0026 OLD entirely; legacy packages that read
+	// `get_target_property(<v> <tgt> LOCATION)` (the pre-3.0
+	// idiom yasm and other vintage codebases still rely on) now
+	// fatal-error at configure time. With this flag on, the
+	// converter stages a small shim cmake script into the build
+	// dir and adds it to CMAKE_PROJECT_TOP_LEVEL_INCLUDES so
+	// every project() call picks up the override before user
+	// code runs. Opt-in because the override changes
+	// get_target_property's return shape (a generator
+	// expression rather than a resolved configure-time path)
+	// for ALL LOCATION queries — projects that string-compose
+	// the LOCATION value at configure time would see literal
+	// `$<TARGET_FILE:foo>` text instead of a path. See #208.
+	CMP0026Shim bool
+
 	// PrefixDir, when non-empty, is added to CMAKE_PREFIX_PATH. Holds the
 	// synthesized cmake-config bundles + zero-byte IMPORTED_LOCATION
 	// stubs that let find_package resolve out-of-tree deps. The
@@ -224,6 +242,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls (stamp / probe / unknown buckets), emit a placeholder BUILD.bazel listing every non-UTILITY codemodel target as an empty cc_library / cc_binary / cc_library-interface stub with public visibility — instead of exiting Tier-1 with unsupported-execute-process. Step 2 (this PR) only restores label resolution at analysis time; the per-target install_tree.tar wiring (cc_import / sh_binary referencing artifact paths derived from Target.Install.Destinations) lands in Step 2.5, after which downstream consumers' compile/link actions resolve as well. Off by default to preserve the strict-fail behaviour. See docs/design/cmake-execute-process-round2-fallback.md.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
+	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "inject a cmake function override that translates get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time. Only meaningful under cmake 4.x (which removed CMP0026 OLD); cmake 3.x still resolves LOCATION natively. Opt-in because the override changes LOCATION's return shape for the entire project (generator expression instead of resolved path). See #208.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
