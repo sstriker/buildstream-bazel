@@ -1305,34 +1305,67 @@ func stripIDHash(id string) string {
 
 // isTargetObjectsRef reports whether srcPath is a
 // $<TARGET_OBJECTS:t> reference — cmake records these in a
-// consumer's sources[] as "<buildDir>/CMakeFiles/<t>.dir/.../*.o".
-// We recognize that shape and check whether <t> is a known
+// consumer's sources[] as
+// "<buildDir>/[<subdir>/]CMakeFiles/<t>.dir/.../*.o". We
+// recognize that shape and check whether <t> is a known
 // in-codebase target. When it is, the consumer's deps already
 // carry an edge to <t>; lower's OBJECT_LIBRARY emit gives that
 // target alwayslink=True, so the objects flow into the consumer
 // archive transitively. The .o path itself shouldn't go through
 // recoverGenrule (cmake's compile rule isn't a CUSTOM_COMMAND).
+//
+// The optional `[<subdir>/]` prefix matters for multi-directory
+// cmake projects: when an OBJECT library is defined in a
+// subdirectory's CMakeLists.txt, cmake's ninja generator writes
+// its .o files under `<subdir>/CMakeFiles/<t>.dir/...` (not the
+// build-root `CMakeFiles/`). Per #212 (aws-lc surfaced this:
+// `crypto/CMakeFiles/crypto_objects.dir/asn1/a_bitstr.c.o`).
 func isTargetObjectsRef(srcPath, buildDir string, idToName map[string]string) bool {
 	rel, ok := relativeIfInsideRelaxed(buildDir, srcPath)
 	if !ok {
 		return false
 	}
-	const prefix = "CMakeFiles/"
-	if !strings.HasPrefix(rel, prefix) {
+	target, _, ok := findCMakeFilesDir(rel)
+	if !ok {
 		return false
 	}
-	tail := rel[len(prefix):]
-	dirEnd := strings.Index(tail, ".dir/")
-	if dirEnd < 0 {
-		return false
-	}
-	otherName := tail[:dirEnd]
 	for _, name := range idToName {
-		if name == otherName {
+		if name == target {
 			return true
 		}
 	}
 	return false
+}
+
+// findCMakeFilesDir locates the segment-aligned
+// `CMakeFiles/<target>.dir/` substring in rel (a build-dir-
+// relative path) and returns (<target>, <tail-after-".dir/">,
+// true) when found. Returns ("", "", false) otherwise.
+//
+// Both build-root (`CMakeFiles/<t>.dir/...`) and subdirectory
+// (`<subdir>/CMakeFiles/<t>.dir/...`) layouts match — cmake's
+// ninja generator writes the per-target CMakeFiles dir adjacent
+// to the CMakeLists.txt that declared the target, so any
+// CMakeLists nested under the source root surfaces nested
+// CMakeFiles paths here. The segment-alignment guard (the
+// CMakeFiles must follow a `/` or sit at the very start)
+// prevents accidental matches against unrelated paths whose
+// names happen to end in `CMakeFiles`.
+func findCMakeFilesDir(rel string) (target, tail string, ok bool) {
+	const marker = "CMakeFiles/"
+	idx := strings.Index(rel, marker)
+	if idx < 0 {
+		return "", "", false
+	}
+	if idx > 0 && rel[idx-1] != '/' {
+		return "", "", false
+	}
+	after := rel[idx+len(marker):]
+	dirEnd := strings.Index(after, ".dir/")
+	if dirEnd < 0 {
+		return "", "", false
+	}
+	return after[:dirEnd], after[dirEnd+len(".dir/"):], true
 }
 
 // isCompilerObjectArtifact reports whether srcPath is a cc-compile
@@ -1340,8 +1373,9 @@ func isTargetObjectsRef(srcPath, buildDir string, idToName map[string]string) bo
 // the .o as a "generated source"), as opposed to a real
 // CUSTOM_COMMAND-produced file. Two signals must both fire:
 //
-//  1. The path resolves under buildDir/CMakeFiles/<x>.dir/... and
-//     ends in a compile-output extension (.o, .obj, .lo).
+//  1. The path resolves under
+//     buildDir/[<subdir>/]CMakeFiles/<x>.dir/... and ends in a
+//     compile-output extension (.o, .obj, .lo).
 //  2. The producing ninja Build's rule has a known compiler-rule
 //     prefix (CXX_COMPILER__, C_COMPILER__, etc.; the cmake-side
 //     ninja generator decorates compile rules with this shape).
@@ -1349,12 +1383,15 @@ func isTargetObjectsRef(srcPath, buildDir string, idToName map[string]string) bo
 // Either signal alone is too permissive: a real CUSTOM_COMMAND could
 // happen to write a .o (signal 1 alone) and a compiler rule could
 // emit a header in a code-gen toolchain (signal 2 alone). #206.
+// The signal-1 check goes through findCMakeFilesDir so the
+// subdirectory CMakeFiles shape from #212 matches alongside the
+// build-root form.
 func isCompilerObjectArtifact(srcPath, buildDir string, g *ninja.Graph) bool {
 	rel, ok := relativeIfInsideRelaxed(buildDir, srcPath)
 	if !ok {
 		return false
 	}
-	if !strings.HasPrefix(rel, "CMakeFiles/") || !strings.Contains(rel, ".dir/") {
+	if _, _, ok := findCMakeFilesDir(rel); !ok {
 		return false
 	}
 	ext := strings.ToLower(filepath.Ext(rel))
