@@ -193,6 +193,29 @@ if it's a legitimate host header, surface it through the toolchain.
 **Emission point:** `lower.lowerTarget` (M2). Currently declared but
 not emitted; M1's broad pass-through accepts everything.
 
+### `bazel-canonicalize-failed`
+
+The emitter assembled BUILD.bazel bytes that buildtools' parser
+rejected (typically a syntax error at a specific line/column),
+either because the templates regressed or because an upstream
+lift smuggled an unescaped cmake value into a Starlark slot.
+The `message` field carries the buildtools diagnostic and the
+offending body so operators can isolate the offending line.
+
+Before #210 this surfaced as an uncaught Go panic (Tier-2 exit
+65 with no `failure.json`). The structured code lets the
+orchestrator dedupe and lets operators see the failure shape
+in the same shape as every other Tier-1 emission.
+
+**Operator action:** read the snippet in `message`; if it's a
+specific value the converter spliced in (cmake variable,
+generator-expression value, source path), open an issue with
+the value. Re-running with the issue's repro lets the
+maintainer add a targeted escape / quoting fix.
+
+**Emission point:** `cmd/convert-element-cmake/main.go` —
+wrapping `bazel.EmitWithOptions`'s canonicalize error.
+
 ### `unresolved-link-dep` _(M2)_
 
 A target's link library can't be resolved to either an in-element

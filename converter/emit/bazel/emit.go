@@ -290,7 +290,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return canonicalize(buf.Bytes()), nil
+	return canonicalize(buf.Bytes())
 }
 
 // canonicalize routes the template-assembled BUILD text
@@ -305,30 +305,24 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 // off the path basename). The bytes never touch disk; the
 // name is purely a parse-mode hint.
 //
-// On a parse error we panic — see the inline comment in
-// the function body for rationale. The templates in this
-// package are the only source of the body bytes, so a
-// parse failure means the emitter regressed to producing
-// syntactically invalid Bazel. Silent fallback would let
-// the buildifier-no-op contract break without a test-
-// visible trigger; the panic surfaces it loudly in the
-// test suite instead.
-func canonicalize(body []byte) []byte {
+// On a parse error we return the buildtools error along with
+// the offending body. This emitter's templates are the
+// supposed-to-be-only source of the body bytes, so a parse
+// failure means either the emitter regressed to producing
+// syntactically invalid Bazel OR an upstream lift smuggled
+// an unescaped cmake value through into a Starlark slot.
+// Both shapes warrant loud surfacing — the caller is
+// expected to fail (test code panics on the unexpected err;
+// convert-element-cmake wraps as a Tier-1 structured
+// failure so operators get an actionable failure.json
+// instead of an uncaught crash, per #210).
+func canonicalize(body []byte) ([]byte, error) {
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
-		// This emitter's templates are the only source of
-		// the body bytes; a buildtools-Parse failure here
-		// means the templates regressed to producing
-		// syntactically invalid Bazel. Surface loudly so
-		// the test suite sees the diagnostic, rather than
-		// silently swallowing and quietly writing
-		// non-canonical output (which would break the
-		// Phase 3 buildifier-no-op contract without a
-		// test-visible trigger).
-		panic(fmt.Sprintf("bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body))
+		return nil, fmt.Errorf("bazel.canonicalize: template emitted unparseable BUILD bytes: %w\n%s", err, body)
 	}
 	addKeepMarkers(f)
-	return build.Format(f)
+	return build.Format(f), nil
 }
 
 // addKeepMarkers walks every rule in f and tags load-bearing

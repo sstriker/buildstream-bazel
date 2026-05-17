@@ -29,6 +29,7 @@ const (
 	UnsupportedExecuteProcess      Code = "unsupported-execute-process"
 	UnresolvedInclude              Code = "unresolved-include"
 	UnresolvedLinkDep              Code = "unresolved-link-dep"
+	BazelCanonicalizeFailed        Code = "bazel-canonicalize-failed"
 )
 
 // Error is a typed Tier-1 failure. It satisfies the error interface, and the

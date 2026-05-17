@@ -268,6 +268,17 @@ func run(a cli.Args) error {
 		BazelPackagePath: a.BazelPackagePath,
 	})
 	if err != nil {
+		// EmitWithOptions surfaces two error shapes: typed
+		// Tier-1 failures from the pre-emit constraint pass
+		// (already structured) and bytes-unparseable errors
+		// from canonicalize. Wrap the latter as a Tier-1
+		// `bazel-canonicalize-failed` so operators get
+		// failure.json with a stable code instead of a
+		// raw process exit (#210).
+		var tier1 *failure.Error
+		if !errors.As(err, &tier1) {
+			err = failure.New(failure.BazelCanonicalizeFailed, "%v", err)
+		}
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(a.OutBuild), 0o755); err != nil {
