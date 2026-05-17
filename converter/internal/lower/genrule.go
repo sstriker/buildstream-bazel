@@ -123,7 +123,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	}
 
 	// Sanitize a name from the build statement's first output.
-	name = genruleNameFor(b)
+	name = genruleNameFor(b, buildDir)
 
 	outs := genruleOuts(b, buildDir)
 	srcs := genruleSrcs(b, cmakeSrc, buildDir)
@@ -148,10 +148,24 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 
 // genruleNameFor turns the first output path into a Bazel-rule-name-safe
 // identifier. `version.h` -> `gen_version_h`; `dir/foo.cc` -> `gen_dir_foo_cc`.
-func genruleNameFor(b *ninja.Build) string {
+//
+// buildDir is the recording-machine build directory (the same one
+// genruleOuts relativizes against). When cmake writes absolute paths into
+// build.ninja, b.Outputs[0] is `<buildDir>/pkg/gen/output.cpp`; the rule
+// name needs the SAME relativization the outs attribute gets, otherwise
+// the buildDir's per-run temp suffix (e.g. `/tmp/convert-element-build-XXXX`)
+// leaks into the rule name and makes BUILD.bazel non-deterministic across
+// runs of convert-element-cmake on the same package (issue #192). Paths
+// that don't relativize cleanly (genuinely outside the build dir) fall
+// through verbatim — they're already path-shaped names but at least
+// buildDir-independent.
+func genruleNameFor(b *ninja.Build, buildDir string) string {
 	first := "out"
 	if len(b.Outputs) > 0 {
 		first = b.Outputs[0]
+		if rel, ok := relativeIfInsideRelaxed(buildDir, first); ok {
+			first = rel
+		}
 	}
 	first = filepath.ToSlash(first)
 	first = strings.TrimPrefix(first, "./")
