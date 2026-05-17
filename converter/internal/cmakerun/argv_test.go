@@ -12,7 +12,7 @@ func TestBuildCmakeArgv_BaselineOrder(t *testing.T) {
 		SourceRoot: "/src",
 		BuildDir:   "/build",
 		BuildType:  "Release",
-	}, "")
+	}, "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -46,11 +46,11 @@ func TestBuildCmakeArgv_ExtraCacheVarsSortedDeterministically(t *testing.T) {
 		},
 	}
 	// Run twice; argv must match exactly.
-	first, err := buildCmakeArgv(opts, "")
+	first, err := buildCmakeArgv(opts, "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv #1: %v", err)
 	}
-	second, err := buildCmakeArgv(opts, "")
+	second, err := buildCmakeArgv(opts, "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv #2: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBuildCmakeArgv_RejectsBuildTypeInExtras(t *testing.T) {
 		ExtraCacheVars: map[string]string{
 			"CMAKE_BUILD_TYPE": "Release",
 		},
-	}, "")
+	}, "", "")
 	if err == nil {
 		t.Fatal("expected error; got nil")
 	}
@@ -111,7 +111,7 @@ func TestBuildCmakeArgv_TailOptionsCoexist(t *testing.T) {
 		DumpVars:           true,
 		TracePath:          "/tmp/trace.json",
 		ToolchainCMakeFile: tcFile,
-	}, "/build/dump-vars.cmake")
+	}, "/build/dump-vars.cmake", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -134,5 +134,60 @@ func TestBuildCmakeArgv_TailOptionsCoexist(t *testing.T) {
 		if !found {
 			t.Errorf("missing arg %q in %q", want, got)
 		}
+	}
+}
+
+// TestBuildCmakeArgv_CMP0026ShimAlone verifies the shim slot
+// renders as the sole CMAKE_PROJECT_TOP_LEVEL_INCLUDES entry when
+// the dump-vars hook isn't also requested. #208.
+func TestBuildCmakeArgv_CMP0026ShimAlone(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot:  "/src",
+		BuildDir:    "/build",
+		BuildType:   "Release",
+		CMP0026Shim: true,
+	}, "", "/build/cmake-to-bazel.cmp0026-shim.cmake")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	want := "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/build/cmake-to-bazel.cmp0026-shim.cmake"
+	found := false
+	for _, a := range got {
+		if a == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("missing arg %q in %q", want, got)
+	}
+}
+
+// TestBuildCmakeArgv_CMP0026ShimComposesWithDumpVars verifies the
+// two hooks layer onto the same CMAKE_PROJECT_TOP_LEVEL_INCLUDES
+// slot via the `;`-joined list cmake honors there, with the shim
+// first so its wrapper is installed before dump-vars enumerates
+// the namespace. #208.
+func TestBuildCmakeArgv_CMP0026ShimComposesWithDumpVars(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot:  "/src",
+		BuildDir:    "/build",
+		BuildType:   "Release",
+		DumpVars:    true,
+		CMP0026Shim: true,
+	}, "/build/dump-vars.cmake", "/build/cmp0026-shim.cmake")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	want := "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/build/cmp0026-shim.cmake;/build/dump-vars.cmake"
+	found := false
+	for _, a := range got {
+		if a == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("missing arg %q in %q", want, got)
 	}
 }

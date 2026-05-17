@@ -1,12 +1,14 @@
 package lower_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -182,6 +184,238 @@ func TestToIR_NoElidedTagWhenAllSourcesClean(t *testing.T) {
 	tgt := pkg.Targets[0]
 	if contains(tgt.Tags, "cmake-elided-build-dir-source") {
 		t.Errorf("Tags = %v, did not expect cmake-elided-build-dir-source", tgt.Tags)
+	}
+}
+
+// TestToIR_ElidesMissingOnDiskSource covers #209: cmake's
+// target model can list source files that aren't actually in
+// the source tree the converter sees (e.g. the producer's
+// tarball pruned the tests/playground subtree but kept the
+// add_executable(test_x tests/playground/x.cpp) entry). cmake
+// configure succeeds because add_executable doesn't validate
+// file existence; Bazel would then fail at build time with
+// "missing input file". The lowering should skip the missing
+// source and tag the surviving target so audit queries find
+// affected libraries.
+func TestToIR_ElidesMissingOnDiskSource(t *testing.T) {
+	hostSrc := t.TempDir()
+	// Only real.c exists on disk; the tests/playground/x.cpp
+	// path cmake's target model names is absent (mirrors a
+	// pruned-tarball scenario).
+	if err := os.WriteFile(filepath.Join(hostSrc, "real.c"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write real.c: %v", err)
+	}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: hostSrc,
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "real.c", CompileGroupIndex: 0},
+					{Path: "tests/playground/x.cpp", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: hostSrc})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	if contains(tgt.Srcs, "tests/playground/x.cpp") {
+		t.Errorf("Srcs = %v, missing-on-disk source leaked through", tgt.Srcs)
+	}
+	if !contains(tgt.Srcs, "real.c") {
+		t.Errorf("Srcs = %v, want to contain real.c (the on-disk source)", tgt.Srcs)
+	}
+	if !contains(tgt.Tags, "cmake-elided-missing-source") {
+		t.Errorf("Tags = %v, want to contain cmake-elided-missing-source", tgt.Tags)
+	}
+}
+
+// TestToIR_NoMissingTagWhenAllSourcesPresent ensures the new
+// elision tag only fires when at least one source was actually
+// missing — targets whose sources are all on disk keep their
+// existing tag set unchanged.
+func TestToIR_NoMissingTagWhenAllSourcesPresent(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "real.c"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write real.c: %v", err)
+	}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: hostSrc,
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "real.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: hostSrc})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if contains(tgt.Tags, "cmake-elided-missing-source") {
+		t.Errorf("Tags = %v, did not expect cmake-elided-missing-source", tgt.Tags)
+	}
+}
+
+// TestToIR_MissingSourceCheckSkippedWithoutHostRoot ensures the
+// validation is gated on HostSourceRoot being known: pure-offline
+// callers (replay-against-fixture) that don't pass a host root
+// should keep the pre-#209 behaviour of trusting the codemodel,
+// since they can't resolve the path to a checkable location.
+func TestToIR_MissingSourceCheckSkippedWithoutHostRoot(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "tests/playground/x.cpp", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{}) // no HostSourceRoot
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if !contains(tgt.Srcs, "tests/playground/x.cpp") {
+		t.Errorf("Srcs = %v, want pass-through when no HostSourceRoot is set", tgt.Srcs)
+	}
+	if contains(tgt.Tags, "cmake-elided-missing-source") {
+		t.Errorf("Tags = %v, did not expect cmake-elided-missing-source without HostSourceRoot", tgt.Tags)
+	}
+}
+
+// TestToIR_ElidesCompilerObjectArtifact covers #206: cmake's
+// target model can list a .o file as a generated source — e.g.
+// for unity builds where the compiler-produced ub_*.cpp.o is
+// surfaced as a source — and the producing ninja rule is a
+// compile rule (CXX_COMPILER__<target>_*), not CUSTOM_COMMAND.
+// Before #206 this surfaced as a Tier-1 unsupported-custom-command
+// refusal; the file is a compile artifact already captured by the
+// target's own compile group, so silently skipping with an audit
+// tag is the right disposition.
+func TestToIR_ElidesCompilerObjectArtifact(t *testing.T) {
+	const buildDir = "/tmp/convert-element-build-abc123"
+
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["CXX_COMPILER__foo_unscanned_Release"] = &ninja.Rule{
+		Name: "CXX_COMPILER__foo_unscanned_Release",
+		Bindings: map[string]string{
+			"command": "/usr/bin/clang++ -c $in -o $out",
+		},
+		BindingOrder: []string{"command"},
+	}
+	g.Builds = []*ninja.Build{{
+		Outputs: []string{"CMakeFiles/legacy_alias.dir/ub_file.cpp.o"},
+		Rule:    "CXX_COMPILER__foo_unscanned_Release",
+	}}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  buildDir,
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "real.c", CompileGroupIndex: 0},
+					// Generated .o under a .dir whose name doesn't
+					// match any known target — isTargetObjectsRef
+					// would miss, so without the #206 fix this would
+					// fall into recoverGenrule and refuse with
+					// unsupported-custom-command.
+					{Path: buildDir + "/CMakeFiles/legacy_alias.dir/ub_file.cpp.o", IsGenerated: true, CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+
+	pkg, err := lower.ToIR(r, g, lower.Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	for _, s := range tgt.Srcs {
+		if strings.HasSuffix(s, "ub_file.cpp.o") {
+			t.Errorf("Srcs = %v, compiler artifact leaked through", tgt.Srcs)
+		}
+	}
+	if !contains(tgt.Tags, "cmake-elided-compiler-artifact") {
+		t.Errorf("Tags = %v, want to contain cmake-elided-compiler-artifact", tgt.Tags)
 	}
 }
 

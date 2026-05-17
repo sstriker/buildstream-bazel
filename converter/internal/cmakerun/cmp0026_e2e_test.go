@@ -81,3 +81,50 @@ func TestConfigure_CMP0026_HintSurfaces(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigure_CMP0026Shim_RescuesFatalError is the live coverage
+// for the #208 opt-in shim. Same fixture as above; with
+// Options.CMP0026Shim true the get_target_property override turns
+// the LOCATION read into a $<TARGET_FILE:...> generator expression
+// and configure should succeed under cmake 4.x. Skips under cmake
+// 3.x for the same reason as the hint test (3.x still resolves
+// LOCATION natively; the shim's there's-no-fatal-error-to-rescue
+// guard makes the test vacuous).
+func TestConfigure_CMP0026Shim_RescuesFatalError(t *testing.T) {
+	ctx := context.Background()
+
+	if _, err := exec.LookPath("cmake"); err != nil {
+		t.Skip("cmake not on PATH; skipping live CMP0026 shim e2e")
+	}
+	major, minor, patch, err := AssertVersion(ctx)
+	if err != nil {
+		t.Skipf("cmake below codemodel-v2 floor: %v", err)
+	}
+	if major < 4 {
+		t.Skipf("cmake %d.%d.%d does not fatal-error on CMP0026 (need >= 4.x); shim has nothing to rescue",
+			major, minor, patch)
+	}
+
+	srcRoot, err := filepath.Abs("../../testdata/sample-projects/cmp0026-tripping")
+	if err != nil {
+		t.Fatalf("abs src: %v", err)
+	}
+	buildDir, err := os.MkdirTemp("", "cmp0026-shim-e2e-*")
+	if err != nil {
+		t.Fatalf("tmp build dir: %v", err)
+	}
+	defer os.RemoveAll(buildDir)
+
+	var stderrBuf bytes.Buffer
+	_, configureErr := Configure(ctx, Options{
+		SourceRoot:  srcRoot,
+		BuildDir:    buildDir,
+		CMP0026Shim: true,
+		Stdout:      &stderrBuf,
+		Stderr:      &stderrBuf,
+	})
+	if configureErr != nil {
+		t.Fatalf("Configure with --cmp0026-shim against cmp0026-tripping fixture under cmake %d.%d.%d unexpectedly failed: %v\nstderr:\n%s",
+			major, minor, patch, configureErr, stderrBuf.String())
+	}
+}

@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"fmt"
 	"path"
 	"path/filepath"
 	"sort"
@@ -135,8 +136,14 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// transparently via scope chain. The literal "cd <dir> &&" prefix
 	// gets handled at command translation time.
 	if usesCmakeScriptMode(cmd) {
-		return "", "", failure.New(failure.UnsupportedCustomCommandScript,
-			"custom command for %q runs `cmake -P script.cmake`; rewrite in a real language", relOut)
+		// Pull the actual `-P <script>` argument out of the
+		// recovered command so the failure points operators at
+		// the specific script to rewrite — not just at the
+		// consuming target's output. #207.
+		script := extractCmakeScriptPath(cmd)
+		msg := fmt.Sprintf("custom command for %q runs `cmake -P %s`; rewrite the script in a real language (shell / python), or route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/cmake-execute-process-round2-fallback.md)",
+			relOut, script)
+		return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
 	}
 
 	// Sanitize a name from the build statement's first output.
@@ -476,6 +483,24 @@ func usesCmakeScriptMode(cmd string) bool {
 		}
 	}
 	return false
+}
+
+// extractCmakeScriptPath returns the script-mode argument from a
+// `cmake [args ...] -P <script> [extra ...]` command — i.e. the
+// token immediately after `-P`. Returns "<unknown-script>" when no
+// `-P` is present (the caller is responsible for only invoking this
+// after usesCmakeScriptMode returned true; the fallback is a defensive
+// guard, not the expected path). Used by the
+// UnsupportedCustomCommandScript failure (#207) so operators see
+// which script to rewrite — not just the consuming target.
+func extractCmakeScriptPath(cmd string) string {
+	tokens := splitShellTokens(cmd)
+	for i, tok := range tokens {
+		if tok == "-P" && i+1 < len(tokens) {
+			return tokens[i+1]
+		}
+	}
+	return "<unknown-script>"
 }
 
 // hasCmakeE returns true if the command invokes a cmake -E sub-tool that we

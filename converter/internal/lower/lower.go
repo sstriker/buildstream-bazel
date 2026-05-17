@@ -9,7 +9,9 @@
 package lower
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -262,6 +264,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if hostSrc == "" {
 		hostSrc = cmakeSrc
 	}
+	// hostSrcOnDisk gates the per-source existence check used for
+	// the #209 missing-source elision. Reply-dir-only replay runs
+	// (golden tests, offline fixtures) point hostSrc at a path the
+	// recording machine had but this host doesn't, and the elision
+	// against an absent root would drop every source. Stat once
+	// here; the loop reads the bool.
+	hostSrcOnDisk := false
+	if info, statErr := os.Stat(hostSrc); statErr == nil && info.IsDir() {
+		hostSrcOnDisk = true
+	}
 
 	pkg := &ir.Package{
 		Name:       projectName(r),
@@ -383,7 +395,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses)
 		if err != nil {
 			return nil, err
 		}
@@ -414,7 +426,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -465,6 +477,8 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 
 	consumesCodegen := false
 	elidedBuildDirSrc := false
+	elidedMissingSrc := false
+	elidedCompilerArtifact := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -483,6 +497,20 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// fail because cmake's C compile rule isn't a
 			// CUSTOM_COMMAND.
 			if isTargetObjectsRef(src.Path, cmakeBuild, idToName) {
+				continue
+			}
+			// Unity builds and other compile-rule-produced .o
+			// files appear as generated sources but aren't
+			// CUSTOM_COMMAND outputs — they're cc-compile
+			// artifacts already captured by the same target's
+			// compile group. Skip silently with an audit tag so
+			// the recoverGenrule call below doesn't refuse them;
+			// #206. Conservative gate: must look like a compile
+			// artifact (.o/.obj under CMakeFiles/<x>.dir) AND
+			// the producing ninja rule must be a known compiler
+			// rule shape. Either signal alone is too permissive.
+			if isCompilerObjectArtifact(src.Path, cmakeBuild, g) {
+				elidedCompilerArtifact = true
 				continue
 			}
 			relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
@@ -539,6 +567,33 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				continue
 			}
 		}
+		// Confirm the source actually exists on disk at convert
+		// time. cmake's target model lists sources as add_executable
+		// / add_library / target_sources(...) receive them, without
+		// checking existence; a static path can legitimately enter
+		// the model and survive configure even when the file isn't
+		// in the source tree the converter sees (e.g. the producer's
+		// tarball pruned the tests/ subtree but kept the
+		// add_executable(test_x tests/...) entry). Letting them
+		// through emits a BUILD whose `srcs = ["tests/x.cpp"]`
+		// label Bazel rejects at build time with "missing input
+		// file". Drop the missing source here with an audit tag
+		// so the surviving cc_library still builds; #209.
+		//
+		// The check is gated on hostSrcOnDisk because reply-dir-only
+		// runs (golden tests, offline replay) point cmakeSrc at a
+		// path the recording machine had but this host doesn't, and
+		// elision against that absent root would drop every source.
+		if hostSrcOnDisk {
+			onDisk := src.Path
+			if !filepath.IsAbs(onDisk) {
+				onDisk = filepath.Join(hostSrc, src.Path)
+			}
+			if _, statErr := os.Stat(onDisk); statErr != nil && errors.Is(statErr, fs.ErrNotExist) {
+				elidedMissingSrc = true
+				continue
+			}
+		}
 		irt.Srcs = append(irt.Srcs, src.Path)
 	}
 	if consumesCodegen {
@@ -546,6 +601,12 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	}
 	if elidedBuildDirSrc {
 		irt.Tags = append(irt.Tags, "cmake-elided-build-dir-source")
+	}
+	if elidedMissingSrc {
+		irt.Tags = append(irt.Tags, "cmake-elided-missing-source")
+	}
+	if elidedCompilerArtifact {
+		irt.Tags = append(irt.Tags, "cmake-elided-compiler-artifact")
 	}
 
 	// Build-dir-rooted includes (relative to the cmake build
@@ -1272,6 +1333,60 @@ func isTargetObjectsRef(srcPath, buildDir string, idToName map[string]string) bo
 		}
 	}
 	return false
+}
+
+// isCompilerObjectArtifact reports whether srcPath is a cc-compile
+// output (typically from a unity build or other shape that surfaces
+// the .o as a "generated source"), as opposed to a real
+// CUSTOM_COMMAND-produced file. Two signals must both fire:
+//
+//  1. The path resolves under buildDir/CMakeFiles/<x>.dir/... and
+//     ends in a compile-output extension (.o, .obj, .lo).
+//  2. The producing ninja Build's rule has a known compiler-rule
+//     prefix (CXX_COMPILER__, C_COMPILER__, etc.; the cmake-side
+//     ninja generator decorates compile rules with this shape).
+//
+// Either signal alone is too permissive: a real CUSTOM_COMMAND could
+// happen to write a .o (signal 1 alone) and a compiler rule could
+// emit a header in a code-gen toolchain (signal 2 alone). #206.
+func isCompilerObjectArtifact(srcPath, buildDir string, g *ninja.Graph) bool {
+	rel, ok := relativeIfInsideRelaxed(buildDir, srcPath)
+	if !ok {
+		return false
+	}
+	if !strings.HasPrefix(rel, "CMakeFiles/") || !strings.Contains(rel, ".dir/") {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(rel))
+	if ext != ".o" && ext != ".obj" && ext != ".lo" {
+		return false
+	}
+	if g == nil {
+		return false
+	}
+	b := g.BuildFor(rel)
+	if b == nil {
+		b = g.BuildFor(srcPath)
+	}
+	if b == nil {
+		return false
+	}
+	// cmake's modern ninja generator names compile rules
+	// `<LANG>_COMPILER__<target>[<suffix>]_<config>` (e.g.
+	// `CXX_COMPILER__foo_unscanned_Release`); the `_COMPILER__`
+	// infix is the stable signal across every fixture in tree
+	// (see converter/testdata/fileapi/*/CMakeFiles/rules.ninja).
+	//
+	// The bare `<LANG>_COMPILER` suffix branch covers the
+	// non-per-target-decorated rule shape — appears in
+	// hand-rolled / older-cmake ninja graphs that don't fan out
+	// the `__<target>_<config>` tail (the form
+	// `converter/internal/ninja/parsefile_test.go` exercises).
+	// Kept as a defensive second match: ignoring it would let a
+	// non-decorated graph's compile artifact slip past the gate
+	// and back into recoverGenrule's CUSTOM_COMMAND refusal,
+	// re-introducing the #206 failure shape we just fixed.
+	return strings.Contains(b.Rule, "_COMPILER__") || strings.HasSuffix(b.Rule, "_COMPILER")
 }
 
 // isPathPrefix reports whether prefix is an ancestor of (or

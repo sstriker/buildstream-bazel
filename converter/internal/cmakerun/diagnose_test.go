@@ -62,6 +62,9 @@ func TestAnnotateConfigureFailure_CMP0026(t *testing.T) {
 	if !strings.Contains(msg, "patch_cmds") {
 		t.Errorf("hint should point at the Bazel patch_cmds workaround: %q", msg)
 	}
+	if !strings.Contains(msg, "--cmp0026-shim") {
+		t.Errorf("hint should mention the --cmp0026-shim opt-in flag (#208): %q", msg)
+	}
 	if !errors.Is(got, base) {
 		t.Errorf("annotated error should wrap the original; errors.Is(err, base) = false")
 	}
@@ -128,6 +131,63 @@ Use get_target_property with $<TARGET_FILE> instead.`,
 			got := matchCMP0026([]byte(tc.body))
 			if got != tc.want {
 				t.Errorf("matchCMP0026 = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnnotateConfigureFailure_TryCompileMissingOutput(t *testing.T) {
+	base := errors.New("exit status 1")
+	stderr := []byte(`CMake Error: Recorded try_compile output location doesn't exist:
+  /tmp/convert-element-build-716860021/CMakeFiles/CMakeScratch/TryCompile-suHdsh/cmTC_07544
+`)
+	got := annotateConfigureFailure(base, stderr)
+	if got == nil {
+		t.Fatal("annotateConfigureFailure returned nil")
+	}
+	msg := got.Error()
+	if !strings.Contains(msg, "[hint]") {
+		t.Errorf("error message missing the [hint] annotation: %q", msg)
+	}
+	if !strings.Contains(msg, "CMAKE_TRY_COMPILE_TARGET_TYPE") {
+		t.Errorf("hint should name CMAKE_TRY_COMPILE_TARGET_TYPE so operators can grep: %q", msg)
+	}
+	if !strings.Contains(msg, "STATIC_LIBRARY") {
+		t.Errorf("hint should mention the STATIC_LIBRARY trigger: %q", msg)
+	}
+	if !errors.Is(got, base) {
+		t.Errorf("annotated error should wrap the original; errors.Is(err, base) = false")
+	}
+}
+
+func TestMatchTryCompileMissingOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "canonical message from #205",
+			body: `CMake Error: Recorded try_compile output location doesn't exist:
+  /tmp/convert-element-build-716860021/CMakeFiles/CMakeScratch/TryCompile-suHdsh/cmTC_07544`,
+			want: true,
+		},
+		{
+			name: "unrelated try_compile success",
+			body: `Detecting C compiler ABI info - done`,
+			want: false,
+		},
+		{
+			name: "empty stderr",
+			body: "",
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matchTryCompileMissingOutput([]byte(tc.body))
+			if got != tc.want {
+				t.Errorf("matchTryCompileMissingOutput = %v, want %v", got, tc.want)
 			}
 		})
 	}

@@ -1,9 +1,11 @@
 package bazel
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -89,7 +91,10 @@ func TestEmit_KeepMarkers_Idempotent(t *testing.T) {
 	// Re-canonicalize the already-emitted body — simulates
 	// what write-a does when it re-canonicalizes BUILD.bazel-
 	// named files via its own buildtools pass.
-	out2 := canonicalize(out1)
+	out2, err := canonicalize(out1)
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
 	// Each marker should appear exactly once per attribute.
 	for _, attr := range []string{"copts", "defines"} {
 		count := strings.Count(string(out2), attr+` = `)
@@ -102,5 +107,39 @@ func TestEmit_KeepMarkers_Idempotent(t *testing.T) {
 		if marks+marks2 > 1 {
 			t.Errorf("attr %q has duplicate keep markers", attr)
 		}
+	}
+}
+
+// TestCanonicalize_ReturnsErrorOnUnparseable is the regression
+// guard for #210: canonicalize must surface buildtools parse
+// failures as a typed *failure.Error with code
+// BazelCanonicalizeFailed, not as an uncaught panic and not as
+// an untyped error (which would slip through handleError's
+// typed-error branch and surface as Tier-2 instead of Tier-1
+// with a stable code).
+func TestCanonicalize_ReturnsErrorOnUnparseable(t *testing.T) {
+	// Deliberately ill-formed Starlark: a stray `,` between a
+	// keyword arg's `=` and its value would crash buildifier's
+	// parser the same way an unescaped cmake value smuggled
+	// into a Starlark slot does in #210's reproduction.
+	body := []byte(`cc_library(
+    name = "broken",
+    copts = , "-O2"],
+)
+`)
+	got, err := canonicalize(body)
+	if err == nil {
+		t.Fatalf("canonicalize accepted unparseable body; got=%q", got)
+	}
+	if !strings.Contains(err.Error(), "canonicalize") {
+		t.Errorf("error message missing the canonicalize tag for grep: %v", err)
+	}
+	var tier1 *failure.Error
+	if !errors.As(err, &tier1) {
+		t.Fatalf("canonicalize returned an untyped error %T (%v); want *failure.Error so handleError routes it Tier-1", err, err)
+	}
+	if tier1.Code != failure.BazelCanonicalizeFailed {
+		t.Errorf("canonicalize returned code %q, want %q",
+			tier1.Code, failure.BazelCanonicalizeFailed)
 	}
 }

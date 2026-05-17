@@ -17,6 +17,7 @@ import (
 
 	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/buildstream-bazel/converter/internal/bazelconstraints"
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -290,7 +291,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			return nil, err
 		}
 	}
-	return canonicalize(buf.Bytes()), nil
+	return canonicalize(buf.Bytes())
 }
 
 // canonicalize routes the template-assembled BUILD text
@@ -305,30 +306,31 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 // off the path basename). The bytes never touch disk; the
 // name is purely a parse-mode hint.
 //
-// On a parse error we panic — see the inline comment in
-// the function body for rationale. The templates in this
-// package are the only source of the body bytes, so a
-// parse failure means the emitter regressed to producing
-// syntactically invalid Bazel. Silent fallback would let
-// the buildifier-no-op contract break without a test-
-// visible trigger; the panic surfaces it loudly in the
-// test suite instead.
-func canonicalize(body []byte) []byte {
+// On a parse error we return a typed Tier-1 `*failure.Error`
+// with code `BazelCanonicalizeFailed` carrying both the
+// buildtools diagnostic and the offending body. The typed
+// failure means convert-element-cmake's handleError surfaces
+// the operator-friendly failure.json without per-caller
+// wrapping — keeping the typed-code contract LOCAL to the
+// failure site so a future emit-side error of a different
+// shape (e.g. a new constraint check) doesn't inherit the
+// `bazel-canonicalize-failed` label by mistake.
+//
+// Test code that drives canonicalize directly (see
+// `keep_markers_test`) sees the same typed error and can
+// match on `failure.BazelCanonicalizeFailed`. The pre-#210
+// shape — an uncaught panic — silently broke the
+// buildifier-no-op contract without a test-visible trigger;
+// the typed return surfaces it loudly in both unit tests
+// and production paths.
+func canonicalize(body []byte) ([]byte, error) {
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
-		// This emitter's templates are the only source of
-		// the body bytes; a buildtools-Parse failure here
-		// means the templates regressed to producing
-		// syntactically invalid Bazel. Surface loudly so
-		// the test suite sees the diagnostic, rather than
-		// silently swallowing and quietly writing
-		// non-canonical output (which would break the
-		// Phase 3 buildifier-no-op contract without a
-		// test-visible trigger).
-		panic(fmt.Sprintf("bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body))
+		return nil, failure.New(failure.BazelCanonicalizeFailed,
+			"bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body)
 	}
 	addKeepMarkers(f)
-	return build.Format(f)
+	return build.Format(f), nil
 }
 
 // addKeepMarkers walks every rule in f and tags load-bearing

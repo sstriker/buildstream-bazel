@@ -94,9 +94,10 @@ func run(a cli.Args) error {
 			// "manually-specified variable not used" warning on
 			// cmake < 3.24, so we don't pay that cost for
 			// elements that don't need the captured namespace.
-			DumpVars: a.LiftConfigureFile,
-			Stdout:   os.Stderr, // route cmake noise to our stderr
-			Stderr:   os.Stderr,
+			DumpVars:    a.LiftConfigureFile,
+			CMP0026Shim: a.CMP0026Shim,
+			Stdout:      os.Stderr, // route cmake noise to our stderr
+			Stderr:      os.Stderr,
 		}
 		if a.OutReadPaths != "" {
 			opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
@@ -268,6 +269,13 @@ func run(a cli.Args) error {
 		BazelPackagePath: a.BazelPackagePath,
 	})
 	if err != nil {
+		// canonicalize failures arrive pre-typed as
+		// *failure.Error{Code: BazelCanonicalizeFailed}; #210.
+		// Constraint-pass violations stay untyped — they're
+		// converter-side data-integrity bugs, which the schema
+		// classes as Tier-2 (the orchestrator collects them by
+		// exit code, not by stable dedup key). handleError
+		// routes both correctly.
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(a.OutBuild), 0o755); err != nil {
