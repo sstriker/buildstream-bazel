@@ -276,3 +276,233 @@ build /build/x.cpp: CUSTOM_COMMAND
 		})
 	}
 }
+
+// TestSplitShellTokens covers the small shell-style tokenizer
+// used by extractDriver / usesCmakeScriptMode. Not POSIX-complete
+// by design — only the shapes CMake's CUSTOM_COMMAND emits. The
+// hazard is wrong splits silently corrupting the genrule cmd:
+// an unbalanced quote or unescaped space changes argv0 and
+// reroutes audit-tag classification (cmake-codegen-driver=...).
+func TestSplitShellTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{name: "empty", in: "", want: nil},
+		{name: "single bare token", in: "cmake", want: []string{"cmake"}},
+		{
+			name: "multiple bare tokens with mixed whitespace",
+			in:   "cmake  -E\ttouch /build/marker",
+			want: []string{"cmake", "-E", "touch", "/build/marker"},
+		},
+		{
+			name: "double-quoted argument with embedded space",
+			in:   `cmake -DMSG="hello world" foo`,
+			want: []string{"cmake", "-DMSG=hello world", "foo"},
+		},
+		{
+			name: "single-quoted argument with embedded space",
+			in:   `sh -c 'echo hi there'`,
+			want: []string{"sh", "-c", "echo hi there"},
+		},
+		{
+			name: "backslash-escape of space outside quotes",
+			in:   `cp /tmp/a\ b /dest`,
+			want: []string{"cp", "/tmp/a b", "/dest"},
+		},
+		{
+			name: "backslash-escape inside double quotes",
+			in:   `echo "a\"b"`,
+			want: []string{"echo", `a"b`},
+		},
+		{
+			name: "trailing backslash with no follower is dropped silently",
+			in:   `cmd \`,
+			want: []string{"cmd"},
+		},
+		{
+			name: "consecutive quoted segments concatenate (no separating space)",
+			in:   `"a""b"`,
+			want: []string{"ab"},
+		},
+		{
+			name: "leading and trailing whitespace",
+			in:   "  cmake   ",
+			want: []string{"cmake"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := splitShellTokens(tc.in)
+			if !equalStrings(got, tc.want) {
+				t.Errorf("splitShellTokens(%q) = %#v, want %#v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractDriver covers the cmake-codegen-driver=X audit-tag
+// derivation. Wrong classification means narrowing-audit allowlists
+// don't match — operator-facing hazard. Exercises:
+//   - bare argv0 with and without `cd <dir> &&` prefix,
+//   - env-wrapper stripping (env KEY=V -u FLAG ... real_cmd),
+//   - sh/bash wrappers retain their name (M2-audit hook),
+//   - fallback to "unknown" when nothing resolves.
+func TestExtractDriver(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{name: "empty falls back to unknown", cmd: "", want: "unknown"},
+		{name: "bare cmake", cmd: "cmake -E touch /build/x", want: "cmake"},
+		{
+			name: "absolute path argv0 uses basename",
+			cmd:  "/usr/bin/python3 /src/scripts/gen.py",
+			want: "python3",
+		},
+		{
+			name: "cd-prefixed cmake",
+			cmd:  "cd /build && /usr/bin/cmake -E touch /build/x",
+			want: "cmake",
+		},
+		{
+			name: "env wrapper with KEY=VAL is skipped",
+			cmd:  "env SOURCE_DATE_EPOCH=0 /usr/bin/cmake -E touch /build/x",
+			want: "cmake",
+		},
+		{
+			name: "env wrapper with multiple KEY=VAL pairs is skipped",
+			cmd:  "env LANG=C SOURCE_DATE_EPOCH=0 /usr/bin/python3 gen.py",
+			want: "python3",
+		},
+		{
+			// `-i` is a no-argument env flag (clear environment).
+			// The wrapper-skip heuristic strips it as a leading flag.
+			name: "env -i with no env pairs strips to driver",
+			cmd:  "env -i /usr/bin/python3 gen.py",
+			want: "python3",
+		},
+		{
+			// Chained wrappers (nice + env). nice gets stripped first,
+			// then env gets stripped via the same wrapper loop.
+			name: "chained nice + env wrappers",
+			cmd:  "nice env KEY=v /usr/bin/cmake -E touch /build/x",
+			want: "cmake",
+		},
+		{
+			name: "bash wrapper followed by absolute script path",
+			cmd:  "bash /usr/bin/script.sh arg1",
+			want: "script.sh",
+		},
+		{
+			name: "cd-prefix without && remains in driver position",
+			// `cd /build cmake` has no ` && ` so the prefix-strip
+			// doesn't fire; the literal `cd` becomes the driver.
+			cmd:  "cd /build cmake -E touch x",
+			want: "cd",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractDriver(tc.cmd)
+			if got != tc.want {
+				t.Errorf("extractDriver(%q) = %q, want %q", tc.cmd, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeInput covers the three-way path-normalization for
+// genrule srcs: cmakeSrc-relative wins over buildDir-relative
+// wins over basename fallback. Same family as #192's leak — if
+// a sibling helper has the same bug, it'd ship wrong bytes to
+// genrule srcs. Pins the priority order plus the rare-and-noisy
+// basename fallback that flags an under-qualified entry.
+func TestNormalizeInput(t *testing.T) {
+	const (
+		cmakeSrc = "/src/project"
+		buildDir = "/tmp/build-1234"
+	)
+	cases := []struct {
+		name     string
+		in       string
+		cmakeSrc string
+		buildDir string
+		want     string
+	}{
+		{
+			name:     "relative path passes through as slash form",
+			in:       "pkg/foo.h",
+			cmakeSrc: cmakeSrc,
+			buildDir: buildDir,
+			want:     "pkg/foo.h",
+		},
+		{
+			name:     "absolute path under cmakeSrc returns cmakeSrc-relative",
+			in:       "/src/project/pkg/foo.cpp",
+			cmakeSrc: cmakeSrc,
+			buildDir: buildDir,
+			want:     "pkg/foo.cpp",
+		},
+		{
+			name:     "absolute path under buildDir returns buildDir-relative",
+			in:       "/tmp/build-1234/gen/version.h",
+			cmakeSrc: cmakeSrc,
+			buildDir: buildDir,
+			want:     "gen/version.h",
+		},
+		{
+			name: "absolute path under neither falls back to basename",
+			// /etc/passwd-shaped host leak — basename is the
+			// documented refusal-flavored fallback.
+			in:       "/etc/passwd",
+			cmakeSrc: cmakeSrc,
+			buildDir: buildDir,
+			want:     "passwd",
+		},
+		{
+			name:     "cmakeSrc wins when path is under both",
+			in:       "/src/project/sub/foo.h",
+			cmakeSrc: "/src/project",
+			buildDir: "/src/project/sub", // pathologically nested
+			want:     "sub/foo.h",
+		},
+		{
+			name:     "empty cmakeSrc skips the cmakeSrc branch",
+			in:       "/tmp/build-1234/gen.h",
+			cmakeSrc: "",
+			buildDir: buildDir,
+			want:     "gen.h",
+		},
+		{
+			name:     "empty cmakeSrc and buildDir falls all the way through to basename",
+			in:       "/abs/path/foo.h",
+			cmakeSrc: "",
+			buildDir: "",
+			want:     "foo.h",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeInput(tc.in, tc.cmakeSrc, tc.buildDir)
+			if got != tc.want {
+				t.Errorf("normalizeInput(%q, %q, %q) = %q, want %q",
+					tc.in, tc.cmakeSrc, tc.buildDir, got, tc.want)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
