@@ -1,0 +1,115 @@
+name: Auto-PR on new issue
+
+# Triggers a Claude Code run on every newly-opened issue. Claude reads
+# the issue (via the GitHub MCP tools the action exposes), investigates
+# the repo, and — if the issue is tractable — opens a PR that closes
+# the issue via the standard "Fixes #N" footer.
+#
+# Operator setup (one-time):
+#   1. Install the Claude GitHub app on this repo:
+#        https://github.com/apps/claude
+#      The app grants the contents / issues / pull-requests
+#      read+write scopes the action needs.
+#   2. Add the repository secret ANTHROPIC_API_KEY with a valid
+#      console.anthropic.com key. Without it the workflow no-ops.
+#
+# Cost / blast-radius notes:
+#   - Every new issue fires this workflow. There is no author-association
+#     gate. Drive-by spam issues WILL burn API tokens; rate-limit your
+#     repo with GitHub's spam filtering if that becomes a problem.
+#   - The action runs to a hard --max-turns ceiling so a stuck session
+#     can't loop indefinitely.
+#   - `concurrency` groups by issue number so re-opening or rapidly
+#     re-filing an issue cancels the earlier run rather than racing.
+#
+# Per-issue behaviour:
+#   - Claude follows CLAUDE.md (the project conventions doc) — same as
+#     interactive sessions.
+#   - When the issue is straightforward (clear bug, well-scoped fix),
+#     Claude opens a PR with `Fixes #N` so merge closes the issue.
+#   - When the issue is ambiguous (design question, unclear repro,
+#     architecturally significant), Claude posts a clarifying comment
+#     on the issue and exits without opening a PR. The conservative
+#     default avoids spurious / low-quality PRs.
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+
+concurrency:
+  group: auto-pr-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  address-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Address the issue with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Cap iterations so a stuck session can't loop indefinitely.
+          # Opus 4.7 because the dev-loop sessions use it; matches the
+          # capability tier reviewers expect from PRs on this repo.
+          claude_args: |
+            --max-turns 25
+            --model claude-opus-4-7
+          prompt: |
+            A new GitHub issue was just opened on this repository:
+
+              Issue number: ${{ github.event.issue.number }}
+              Title:        ${{ github.event.issue.title }}
+              Author:       @${{ github.event.issue.user.login }}
+              URL:          ${{ github.event.issue.html_url }}
+
+            Your task:
+
+            1. Read the issue body via the GitHub MCP tools
+               (`mcp__github__issue_read`) so you see the full text the
+               UI rendered, not the truncated snippet here.
+
+            2. Read `CLAUDE.md` at the repo root and follow every
+               convention it documents (commit-message footer, PR-body
+               conventions, dev-loop verification, etc.).
+
+            3. Investigate whether the issue is tractable to address now:
+                 - Clear bug with a small fix → implement it.
+                 - Well-scoped feature request that fits the roadmap →
+                   implement it.
+                 - Ambiguous, architecturally significant, or needs
+                   clarification → DO NOT open a PR. Post a comment on
+                   the issue asking for the specific information you'd
+                   need, then exit.
+
+            4. If you implement a fix:
+                 - Work on a fresh branch named
+                   `claude/auto-pr-issue-${{ github.event.issue.number }}`.
+                 - Run the full dev loop CLAUDE.md prescribes
+                   (`go build`, `go vet`, `gofmt -l`, `go test ./...`,
+                   plus the relevant render gate from `scripts/` if a
+                   handler-family table entry applies).
+                 - Open a PR with `Fixes #${{ github.event.issue.number }}`
+                   on the FIRST LINE of the body so GitHub auto-closes
+                   the issue on merge. Use a concise (≤70 char) title.
+                 - Subscribe to PR activity and re-request Copilot review
+                   per CLAUDE.md's PR review iteration loop. End the
+                   turn — webhook events will wake the next session.
+
+            5. If you cannot make confident progress (the codebase
+               disagrees with the issue's premise, the fix is too large
+               for one session, the issue is a duplicate, etc.) — post
+               an issue comment explaining what you found and exit. Do
+               NOT open a low-confidence PR.
+
+            Default to caution: a thoughtful "needs clarification"
+            comment beats a wrong PR. The operator is watching webhook
+            activity and will course-correct if needed.
