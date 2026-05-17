@@ -478,6 +478,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	consumesCodegen := false
 	elidedBuildDirSrc := false
 	elidedMissingSrc := false
+	elidedCompilerArtifact := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -496,6 +497,20 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// fail because cmake's C compile rule isn't a
 			// CUSTOM_COMMAND.
 			if isTargetObjectsRef(src.Path, cmakeBuild, idToName) {
+				continue
+			}
+			// Unity builds and other compile-rule-produced .o
+			// files appear as generated sources but aren't
+			// CUSTOM_COMMAND outputs — they're cc-compile
+			// artifacts already captured by the same target's
+			// compile group. Skip silently with an audit tag so
+			// the recoverGenrule call below doesn't refuse them;
+			// #206. Conservative gate: must look like a compile
+			// artifact (.o/.obj under CMakeFiles/<x>.dir) AND
+			// the producing ninja rule must be a known compiler
+			// rule shape. Either signal alone is too permissive.
+			if isCompilerObjectArtifact(src.Path, cmakeBuild, g) {
+				elidedCompilerArtifact = true
 				continue
 			}
 			relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
@@ -589,6 +604,9 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	}
 	if elidedMissingSrc {
 		irt.Tags = append(irt.Tags, "cmake-elided-missing-source")
+	}
+	if elidedCompilerArtifact {
+		irt.Tags = append(irt.Tags, "cmake-elided-compiler-artifact")
 	}
 
 	// Build-dir-rooted includes (relative to the cmake build
@@ -1315,6 +1333,50 @@ func isTargetObjectsRef(srcPath, buildDir string, idToName map[string]string) bo
 		}
 	}
 	return false
+}
+
+// isCompilerObjectArtifact reports whether srcPath is a cc-compile
+// output (typically from a unity build or other shape that surfaces
+// the .o as a "generated source"), as opposed to a real
+// CUSTOM_COMMAND-produced file. Two signals must both fire:
+//
+//  1. The path resolves under buildDir/CMakeFiles/<x>.dir/... and
+//     ends in a compile-output extension (.o, .obj, .lo).
+//  2. The producing ninja Build's rule has a known compiler-rule
+//     prefix (CXX_COMPILER__, C_COMPILER__, etc.; the cmake-side
+//     ninja generator decorates compile rules with this shape).
+//
+// Either signal alone is too permissive: a real CUSTOM_COMMAND could
+// happen to write a .o (signal 1 alone) and a compiler rule could
+// emit a header in a code-gen toolchain (signal 2 alone). #206.
+func isCompilerObjectArtifact(srcPath, buildDir string, g *ninja.Graph) bool {
+	rel, ok := relativeIfInsideRelaxed(buildDir, srcPath)
+	if !ok {
+		return false
+	}
+	if !strings.HasPrefix(rel, "CMakeFiles/") || !strings.Contains(rel, ".dir/") {
+		return false
+	}
+	ext := strings.ToLower(filepath.Ext(rel))
+	if ext != ".o" && ext != ".obj" && ext != ".lo" {
+		return false
+	}
+	if g == nil {
+		return false
+	}
+	b := g.BuildFor(rel)
+	if b == nil {
+		b = g.BuildFor(srcPath)
+	}
+	if b == nil {
+		return false
+	}
+	// cmake's ninja generator names compile rules
+	// `<LANG>_COMPILER__<target>[<suffix>]_<config>` (e.g.
+	// `CXX_COMPILER__foo_unscanned_Release`). The `_COMPILER__`
+	// infix is the stable signal; the target/suffix/config tail
+	// varies across cmake versions and per-target overrides.
+	return strings.Contains(b.Rule, "_COMPILER__") || strings.HasSuffix(b.Rule, "_COMPILER")
 }
 
 // isPathPrefix reports whether prefix is an ancestor of (or

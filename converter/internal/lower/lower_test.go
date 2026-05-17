@@ -8,6 +8,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -336,6 +337,85 @@ func TestToIR_MissingSourceCheckSkippedWithoutHostRoot(t *testing.T) {
 	}
 	if contains(tgt.Tags, "cmake-elided-missing-source") {
 		t.Errorf("Tags = %v, did not expect cmake-elided-missing-source without HostSourceRoot", tgt.Tags)
+	}
+}
+
+// TestToIR_ElidesCompilerObjectArtifact covers #206: cmake's
+// target model can list a .o file as a generated source — e.g.
+// for unity builds where the compiler-produced ub_*.cpp.o is
+// surfaced as a source — and the producing ninja rule is a
+// compile rule (CXX_COMPILER__<target>_*), not CUSTOM_COMMAND.
+// Before #206 this surfaced as a Tier-1 unsupported-custom-command
+// refusal; the file is a compile artifact already captured by the
+// target's own compile group, so silently skipping with an audit
+// tag is the right disposition.
+func TestToIR_ElidesCompilerObjectArtifact(t *testing.T) {
+	const buildDir = "/tmp/convert-element-build-abc123"
+
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["CXX_COMPILER__foo_unscanned_Release"] = &ninja.Rule{
+		Name: "CXX_COMPILER__foo_unscanned_Release",
+		Bindings: map[string]string{
+			"command": "/usr/bin/clang++ -c $in -o $out",
+		},
+		BindingOrder: []string{"command"},
+	}
+	g.Builds = []*ninja.Build{{
+		Outputs: []string{"CMakeFiles/legacy_alias.dir/ub_file.cpp.o"},
+		Rule:    "CXX_COMPILER__foo_unscanned_Release",
+	}}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  buildDir,
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "real.c", CompileGroupIndex: 0},
+					// Generated .o under a .dir whose name doesn't
+					// match any known target — isTargetObjectsRef
+					// would miss, so without the #206 fix this would
+					// fall into recoverGenrule and refuse with
+					// unsupported-custom-command.
+					{Path: buildDir + "/CMakeFiles/legacy_alias.dir/ub_file.cpp.o", IsGenerated: true, CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+
+	pkg, err := lower.ToIR(r, g, lower.Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	for _, s := range tgt.Srcs {
+		if strings.HasSuffix(s, "ub_file.cpp.o") {
+			t.Errorf("Srcs = %v, compiler artifact leaked through", tgt.Srcs)
+		}
+	}
+	if !contains(tgt.Tags, "cmake-elided-compiler-artifact") {
+		t.Errorf("Tags = %v, want to contain cmake-elided-compiler-artifact", tgt.Tags)
 	}
 }
 
