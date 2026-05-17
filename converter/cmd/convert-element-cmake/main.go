@@ -269,18 +269,7 @@ func run(a cli.Args) error {
 		BazelPackagePath: a.BazelPackagePath,
 	})
 	if err != nil {
-		// EmitWithOptions surfaces two error shapes: typed
-		// Tier-1 failures from the pre-emit constraint pass
-		// (already structured) and bytes-unparseable errors
-		// from canonicalize. Wrap the latter as a Tier-1
-		// `bazel-canonicalize-failed` so operators get
-		// failure.json with a stable code instead of a
-		// raw process exit (#210).
-		var tier1 *failure.Error
-		if !errors.As(err, &tier1) {
-			err = failure.New(failure.BazelCanonicalizeFailed, "%v", err)
-		}
-		return err
+		return wrapEmitError(err)
 	}
 	if err := os.MkdirAll(filepath.Dir(a.OutBuild), 0o755); err != nil {
 		return err
@@ -737,6 +726,25 @@ func cmakeConfigDestination(dest, pkgName string) bool {
 		return true
 	}
 	return strings.HasPrefix(dest, want+"/")
+}
+
+// wrapEmitError normalises a bazel.EmitWithOptions failure into a
+// typed Tier-1 error. EmitWithOptions surfaces two shapes: typed
+// Tier-1 failures from the pre-emit constraint pass (already
+// structured) pass through unchanged; bytes-unparseable errors
+// from canonicalize get wrapped as `bazel-canonicalize-failed` so
+// operators see a stable code in failure.json instead of an
+// exit-65 crash (#210).
+//
+// Extracted into a helper so the integration test in
+// canonicalize_failure_test.go can exercise the same wrap path
+// run() takes without driving the full reply-dir pipeline.
+func wrapEmitError(err error) error {
+	var tier1 *failure.Error
+	if errors.As(err, &tier1) {
+		return err
+	}
+	return failure.New(failure.BazelCanonicalizeFailed, "%v", err)
 }
 
 func handleError(a cli.Args, err error) int {
