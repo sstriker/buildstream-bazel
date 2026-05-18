@@ -583,20 +583,79 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// elided sources; downstream the cc_library renders with
 		// the remaining (real) sources, or hdrs-only if this was
 		// the only source.
-		//
-		// Scope: the elision is intentionally build-dir-specific.
-		// Absolute paths under cmakeSrc (or any other root) fall
-		// through to the append below; Bazel rejects absolute
-		// labels at load time with a clear error, which is the
-		// right surfacing for "consumer named a source outside
-		// its package" — a different bug shape that an audit-tag
-		// silent-drop would obscure.
 		if cmakeBuild != "" && filepath.IsAbs(src.Path) {
 			if _, inside := relativeIfInside(cmakeBuild, src.Path); inside {
 				elidedBuildDirSrc = true
 				continue
 			}
 		}
+		// Path normalization + invalid-label refusal (#221).
+		// cmake's codemodel documents TargetSource.Path as
+		// "relative to the project source root" (codemodel.go),
+		// but a few shapes still slip through with absolute
+		// paths or syntactic noise that Bazel rejects as a
+		// label. Refusing at convert-time surfaces the
+		// underlying cmake issue (the project referenced a
+		// source outside its hermetic boundary, or a name that
+		// can't be a Bazel label) before any broken BUILD
+		// lands on disk — strictly better than letting Bazel
+		// surface "target names may not start with '/'" or
+		// "target names may not contain '.' as a path segment"
+		// downstream.
+		srcPath := src.Path
+		// In-tree absolute path: cmake recorded an absolute
+		// path that happens to live under cmakeSrc. Normalize
+		// to the documented project-relative form so the
+		// emitted label is valid. cmakeSrc is "" on
+		// reply-dir-only replay runs; skip in that case
+		// because the relativeIfInside check can't run.
+		if cmakeSrc != "" && filepath.IsAbs(srcPath) {
+			if rel, inside := relativeIfInside(cmakeSrc, srcPath); inside {
+				srcPath = rel
+			}
+		}
+		// Out-of-tree absolute path: at this point we've
+		// already filtered absolute-under-cmakeBuild (elided
+		// above) and absolute-under-cmakeSrc (normalized just
+		// above). What's left is absolute paths under neither
+		// root — e.g. `add_library(foo /vendored/elsewhere/bar.c)`.
+		// Refuse with a typed Tier-1 error so the operator
+		// sees the broken cmake call, not a downstream Bazel
+		// load error.
+		if filepath.IsAbs(srcPath) {
+			return nil, failure.New(failure.UnsupportedSourcePath,
+				"target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
+				t.Name, srcPath, cmakeSrc, cmakeBuild)
+		}
+		// Strip a leading "./". cmake's parser usually
+		// normalizes these away but pathological inputs can
+		// survive. "./foo.c" and "foo.c" name the same file;
+		// the prefix is a no-op we silently absorb so the
+		// label is valid.
+		for strings.HasPrefix(srcPath, "./") {
+			srcPath = srcPath[2:]
+		}
+		// Refuse paths with `..` segments: Bazel labels can't
+		// escape their package. Allowing one would either
+		// generate an out-of-package label (rejected by Bazel
+		// load) or silently shift the file to a different
+		// package (broken without warning). The clean refusal
+		// surfaces the cmake misuse explicitly.
+		if pathHasDotDotSegment(srcPath) {
+			return nil, failure.New(failure.UnsupportedSourcePath,
+				"target %q references source %q whose path escapes the project source tree via `..` segments; Bazel labels must stay within the package",
+				t.Name, src.Path)
+		}
+		// Empty after normalization (only possible from the
+		// "./" strip on a pathological input like "./" alone)
+		// or single ".": refuse — there's no useful label here.
+		if srcPath == "" || srcPath == "." {
+			return nil, failure.New(failure.UnsupportedSourcePath,
+				"target %q references source %q which normalizes to an empty Bazel label",
+				t.Name, src.Path)
+		}
+		// Now safe to append.
+		src.Path = srcPath
 		// Confirm the source actually exists on disk at convert
 		// time. cmake's target model lists sources as add_executable
 		// / add_library / target_sources(...) receive them, without
@@ -1615,6 +1674,23 @@ func relativeIfInside(root, abs string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+// pathHasDotDotSegment reports whether p contains a `..` path
+// segment that would escape its package. A pure `.` segment is
+// fine (no-op), a trailing or embedded `..` is not. Matches on
+// path-segment boundaries (slash-separated) so a filename
+// containing `..` literally (e.g. `foo..bar.c`) doesn't trip.
+//
+// Used by lower's source walk (#221) to refuse cmake source
+// entries whose relative path escapes the project source tree.
+func pathHasDotDotSegment(p string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // discoverHeaders walks each include dir under sourceRoot and returns a sorted
