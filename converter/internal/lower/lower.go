@@ -1099,59 +1099,79 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// flags. Single-language targets stay one cc_library; this
 	// branch only fires for ≥ 2 distinct compile-group
 	// languages.
+	subsBefore := len(cc.Subs)
 	if shouldSplitMultiLanguage(t) {
 		if err := splitMultiLanguage(t, irt, cc); err != nil {
 			return nil, err
 		}
 	}
 
-	// #217 Tier 1: partition flat irt.Srcs by trace-recovered
+	// #217 Tier 1: partition flat Srcs by trace-recovered
 	// platform conditionality. For each src whose trace
 	// attribution names a Bazel constraint label, move it from
-	// irt.Srcs to irt.PerPlatform["srcs"][selectKey] so the
-	// emitter renders a select() arm. Sources without an
-	// attribution stay in flat srcs, preserving byte-stable
-	// emission for projects without platform conditionals.
+	// .Srcs to .PerPlatform["srcs"][selectKey] so the emitter
+	// renders a select() arm. Sources without an attribution
+	// stay in flat srcs, preserving byte-stable emission for
+	// projects without platform conditionals.
 	//
-	// Multi-language split (above) may have produced sub-
-	// libraries; they each carry the same target name in
-	// platformConditionalSrcs lookup terms because the source
-	// paths the trace recorded don't carry sub-library scope.
-	// For the v1 wiring we only partition the top-level irt;
-	// sub-libraries from splitMultiLanguage retain their full
-	// flat srcs (the multi-language case + platform-conditional
-	// case is rare enough that a precise fix can land later).
-	if len(platformConditionalSrcs) > 0 && len(irt.Srcs) > 0 {
-		var kept []string
-		for _, src := range irt.Srcs {
-			if key, ok := platformConditionalSrcs[src]; ok {
-				if irt.PerPlatform == nil {
-					irt.PerPlatform = map[string]map[string][]string{}
-				}
-				if irt.PerPlatform["srcs"] == nil {
-					irt.PerPlatform["srcs"] = map[string][]string{}
-				}
-				irt.PerPlatform["srcs"][key] = append(irt.PerPlatform["srcs"][key], src)
-				continue
-			}
-			kept = append(kept, src)
-		}
-		irt.Srcs = kept
-		// Sort per-platform srcs arms for byte-stable BUILD
-		// output. The emit side renders `select({key: [...]})`
-		// arms verbatim — elementfold sorts order-insensitive
-		// attrs at fold time, but on the trace-only partition
-		// path here there's no fold to lean on. Without this
-		// sort, projects with multiple platform-conditional
-		// sources for the same OS would render arm contents in
-		// trace-insertion order, which isn't guaranteed stable
-		// across re-runs.
-		for _, arm := range irt.PerPlatform["srcs"] {
-			sort.Strings(arm)
+	// Apply to the wrapper AND to any sub-libraries that
+	// splitMultiLanguage just appended to cc.Subs. The wrapper
+	// case covers single-language targets (where irt.Srcs
+	// carries everything); the sub-library case covers
+	// multi-language targets (where splitMultiLanguage cleared
+	// irt.Srcs and distributed sources across per-language sub-
+	// libraries — those subs carry the conditional sources now
+	// and need partitioning too).
+	if len(platformConditionalSrcs) > 0 {
+		partitionPlatformConditionalSrcs(irt, platformConditionalSrcs)
+		for i := subsBefore; i < len(cc.Subs); i++ {
+			partitionPlatformConditionalSrcs(&cc.Subs[i], platformConditionalSrcs)
 		}
 	}
 
 	return irt, nil
+}
+
+// partitionPlatformConditionalSrcs moves any src in t.Srcs
+// whose path appears in srcToSelectKey into
+// t.PerPlatform["srcs"][selectKey], then sorts each affected
+// arm so emit's verbatim arm rendering is byte-stable.
+//
+// Used by lowerTarget to apply the #217 Tier 1 partition both
+// to the wrapper target and to splitMultiLanguage's per-
+// language sub-libraries (which inherit the wrapper's
+// trace-recovered conditionality map — the trace records
+// (target, src, selectKey) without sub-library scope).
+func partitionPlatformConditionalSrcs(t *ir.Target, srcToSelectKey map[string]string) {
+	if len(srcToSelectKey) == 0 || len(t.Srcs) == 0 {
+		return
+	}
+	touchedArms := map[string]bool{}
+	var kept []string
+	for _, src := range t.Srcs {
+		if key, ok := srcToSelectKey[src]; ok {
+			if t.PerPlatform == nil {
+				t.PerPlatform = map[string]map[string][]string{}
+			}
+			if t.PerPlatform["srcs"] == nil {
+				t.PerPlatform["srcs"] = map[string][]string{}
+			}
+			t.PerPlatform["srcs"][key] = append(t.PerPlatform["srcs"][key], src)
+			touchedArms[key] = true
+			continue
+		}
+		kept = append(kept, src)
+	}
+	t.Srcs = kept
+	// Sort each touched arm for byte-stable BUILD output. emit
+	// renders `select({key: [...]})` arms verbatim;
+	// elementfold sorts at fold time but on this trace-only
+	// partition path there's no fold. Sort once per arm we
+	// actually populated rather than walking every PerPlatform
+	// entry the target might already have from other passes.
+	for key := range touchedArms {
+		sort.Strings(t.PerPlatform["srcs"][key])
+	}
 }
 
 // shouldSplitMultiLanguage reports whether the target carries

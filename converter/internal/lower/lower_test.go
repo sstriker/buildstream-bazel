@@ -698,6 +698,84 @@ func TestToIR_PlatformConditionalSrcs_ArmSorted(t *testing.T) {
 	}
 }
 
+// TestToIR_PlatformConditionalSrcs_MultiLanguage pins that
+// when splitMultiLanguage moves srcs into per-language sub-
+// libraries, the platform-conditional partition still applies
+// to each sub-library. The wrapper's irt.Srcs is empty after
+// the split (so the wrapper has no partition to do), but the
+// per-language subs carry the actual sources and should
+// surface platform-conditional ones under PerPlatform["srcs"].
+func TestToIR_PlatformConditionalSrcs_MultiLanguage(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "shared.c", CompileGroupIndex: 0},
+					{Path: "linux.c", CompileGroupIndex: 0},
+					{Path: "shared.cpp", CompileGroupIndex: 1},
+					{Path: "linux.cpp", CompileGroupIndex: 1},
+				},
+				CompileGroups: []fileapi.CompileGroup{
+					{Language: "C", SourceIndexes: []int{0, 1}},
+					{Language: "CXX", SourceIndexes: []int{2, 3}},
+				},
+			},
+		},
+	}
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","linux.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":["foo","PRIVATE","linux.cpp"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":7}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":8}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	// Multi-language target produces a wrapper + per-language
+	// sub-libraries (foo, foo_c, foo_cxx). Locate each sub
+	// and check its PerPlatform["srcs"] arm.
+	var fooC, fooCXX *ir.Target
+	for i := range pkg.Targets {
+		switch pkg.Targets[i].Name {
+		case "foo_c":
+			fooC = &pkg.Targets[i]
+		case "foo_cxx":
+			fooCXX = &pkg.Targets[i]
+		}
+	}
+	if fooC == nil || fooCXX == nil {
+		t.Fatalf("missing per-language subs; got targets %+v", pkg.Targets)
+	}
+	if !equal(fooC.Srcs, []string{"shared.c"}) {
+		t.Errorf("foo_c.Srcs = %v, want [shared.c]", fooC.Srcs)
+	}
+	if arm := fooC.PerPlatform["srcs"]["@platforms//os:linux"]; !equal(arm, []string{"linux.c"}) {
+		t.Errorf("foo_c.PerPlatform[srcs][linux] = %v, want [linux.c]", arm)
+	}
+	if !equal(fooCXX.Srcs, []string{"shared.cpp"}) {
+		t.Errorf("foo_cxx.Srcs = %v, want [shared.cpp]", fooCXX.Srcs)
+	}
+	if arm := fooCXX.PerPlatform["srcs"]["@platforms//os:linux"]; !equal(arm, []string{"linux.cpp"}) {
+		t.Errorf("foo_cxx.PerPlatform[srcs][linux] = %v, want [linux.cpp]", arm)
+	}
+}
+
 // TestToIR_PlatformConditionalSrcs_NoTraceByteStable pins the
 // no-regression guard: a project without trace data leaves
 // PerPlatform empty and emits the same flat-srcs shape as

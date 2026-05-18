@@ -209,6 +209,45 @@ func TestExtractPlatformConditionalSources_SubdirSources(t *testing.T) {
 	}
 }
 
+// TestExtractPlatformConditionalSources_DotDotPrefixFilename
+// pins the resolver fix: a source path whose first segment
+// literally starts with `..` (e.g. `..foo/bar.c` — a legal if
+// unusual filename) must resolve to a legitimate package-
+// relative path, not be rejected as a parent-directory
+// escape. The earlier `strings.HasPrefix(rel, "..")` check
+// was too broad.
+func TestExtractPlatformConditionalSources_DotDotPrefixFilename(t *testing.T) {
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","..foo/bar.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":7}
+`
+	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
+	want := []PlatformConditionalSource{
+		{Target: "foo", Source: "..foo/bar.c", SelectKey: "@platforms//os:linux"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+// TestExtractPlatformConditionalSources_DotDotEscapeStillRejected
+// is the symmetric guard: a true parent-directory escape
+// (`../sibling/bar.c` resolving outside sourceRoot) still
+// drops with no record, matching pre-fix behaviour for that
+// shape.
+func TestExtractPlatformConditionalSources_DotDotEscapeStillRejected(t *testing.T) {
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/sub/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","../escape.c"],"cmd":"target_sources","file":"/src/sub/CMakeLists.txt","line":6}
+{"args":[],"cmd":"endif","file":"/src/sub/CMakeLists.txt","line":7}
+`
+	got := ExtractPlatformConditionalSources([]byte(trace), "/src/sub", map[string]bool{"foo": true})
+	if len(got) != 0 {
+		t.Errorf("expected no records for true parent-dir escape, got %#v", got)
+	}
+}
+
 // TestExtractPlatformConditionalSources_CrossFileInclude pins
 // the global-stack behaviour: an `if(CMAKE_SYSTEM_NAME ...)`
 // opened in caller/CMakeLists.txt is still in effect when an

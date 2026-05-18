@@ -379,8 +379,18 @@ func resolveSourceRelative(src, file, sourceRoot string) string {
 	if err != nil {
 		return ""
 	}
-	if rel == "." || strings.HasPrefix(rel, "..") {
+	rel = filepath.ToSlash(rel)
+	if rel == "." {
 		return ""
 	}
-	return filepath.ToSlash(rel)
+	// Reject parent-directory escapes only. The earlier
+	// `strings.HasPrefix(rel, "..")` check was too broad — it
+	// would also reject in-tree filenames whose first segment
+	// literally starts with `..` (e.g. `..foo/bar.c`, a legal
+	// if unusual filename). The narrow segment-aware check
+	// drops only true `..` path segments.
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return ""
+	}
+	return rel
 }
