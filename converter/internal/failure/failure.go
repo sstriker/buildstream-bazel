@@ -29,6 +29,7 @@ const (
 	UnsupportedExecuteProcess      Code = "unsupported-execute-process"
 	UnresolvedInclude              Code = "unresolved-include"
 	UnresolvedLinkDep              Code = "unresolved-link-dep"
+	MissingTraceData               Code = "missing-trace-data"
 	BazelCanonicalizeFailed        Code = "bazel-canonicalize-failed"
 )
 
