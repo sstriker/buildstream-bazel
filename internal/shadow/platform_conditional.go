@@ -57,29 +57,44 @@ func extractPlatformConditionalSources(events []TraceEvent, sourceRoot string, k
 	st := newPlatformIfStack()
 	var out []PlatformConditionalSource
 	for _, ev := range events {
-		st.observe(ev)
-		key := st.currentSelectKey(ev.File)
-		if key == "" {
+		out = maybeCollectPlatformConditionalSource(ev, st, sourceRoot, knownTargets, out)
+	}
+	return out
+}
+
+// maybeCollectPlatformConditionalSource is the per-event step
+// of the platform-conditional source attribution pass. Updates
+// the if-stack for the event (so it stays in sync across the
+// stream) and appends any PlatformConditionalSource records
+// the event yields. Returns the (possibly grown) out slice.
+//
+// Single source of truth shared between Decode (single-pass
+// multi-extractor) and extractPlatformConditionalSources
+// (standalone) so the two can't drift as Tier 2/3 extensions
+// land — addresses the duplication Copilot flagged on #223.
+func maybeCollectPlatformConditionalSource(ev TraceEvent, st *platformIfStack, sourceRoot string, knownTargets map[string]bool, out []PlatformConditionalSource) []PlatformConditionalSource {
+	st.observe(ev)
+	key := st.currentSelectKey(ev.File)
+	if key == "" {
+		return out
+	}
+	target, srcs, ok := sourcesFromAddOrTargetCall(ev)
+	if !ok {
+		return out
+	}
+	if !knownTargets[target] {
+		return out
+	}
+	for _, src := range srcs {
+		rel := resolveSourceRelative(src, ev.File, sourceRoot)
+		if rel == "" {
 			continue
 		}
-		target, srcs, ok := sourcesFromAddOrTargetCall(ev)
-		if !ok {
-			continue
-		}
-		if !knownTargets[target] {
-			continue
-		}
-		for _, src := range srcs {
-			rel := resolveSourceRelative(src, ev.File, sourceRoot)
-			if rel == "" {
-				continue
-			}
-			out = append(out, PlatformConditionalSource{
-				Target:    target,
-				Source:    rel,
-				SelectKey: key,
-			})
-		}
+		out = append(out, PlatformConditionalSource{
+			Target:    target,
+			Source:    rel,
+			SelectKey: key,
+		})
 	}
 	return out
 }
@@ -184,7 +199,7 @@ func cmakeSystemNameToConstraint(name string) string {
 	case "linux":
 		return "@platforms//os:linux"
 	case "darwin":
-		return "@platforms//os:macos"
+		return "@platforms//os:darwin"
 	case "windows":
 		return "@platforms//os:windows"
 	case "freebsd":

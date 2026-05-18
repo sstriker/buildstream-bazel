@@ -36,8 +36,8 @@ func TestExtractPlatformConditionalSources_AddLibraryInline(t *testing.T) {
 `
 	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
 	want := []PlatformConditionalSource{
-		{Target: "foo", Source: "mac.c", SelectKey: "@platforms//os:macos"},
-		{Target: "foo", Source: "shared.c", SelectKey: "@platforms//os:macos"},
+		{Target: "foo", Source: "mac.c", SelectKey: "@platforms//os:darwin"},
+		{Target: "foo", Source: "shared.c", SelectKey: "@platforms//os:darwin"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -146,7 +146,7 @@ func TestExtractPlatformConditionalSources_ElseifArmRecognized(t *testing.T) {
 	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
 	want := []PlatformConditionalSource{
 		{Target: "foo", Source: "linux.c", SelectKey: "@platforms//os:linux"},
-		{Target: "foo", Source: "mac.c", SelectKey: "@platforms//os:macos"},
+		{Target: "foo", Source: "mac.c", SelectKey: "@platforms//os:darwin"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
@@ -268,7 +268,7 @@ func TestCmakeSystemNameToConstraint(t *testing.T) {
 	cases := map[string]string{
 		"Linux":   "@platforms//os:linux",
 		"linux":   "@platforms//os:linux",
-		"Darwin":  "@platforms//os:macos",
+		"Darwin":  "@platforms//os:darwin",
 		"Windows": "@platforms//os:windows",
 		"FreeBSD": "@platforms//os:freebsd",
 		"OpenBSD": "@platforms//os:openbsd",

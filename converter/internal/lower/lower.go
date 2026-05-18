@@ -1137,6 +1137,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			kept = append(kept, src)
 		}
 		irt.Srcs = kept
+		// Sort per-platform srcs arms for byte-stable BUILD
+		// output. The emit side renders `select({key: [...]})`
+		// arms verbatim — elementfold sorts order-insensitive
+		// attrs at fold time, but on the trace-only partition
+		// path here there's no fold to lean on. Without this
+		// sort, projects with multiple platform-conditional
+		// sources for the same OS would render arm contents in
+		// trace-insertion order, which isn't guaranteed stable
+		// across re-runs.
+		for _, arm := range irt.PerPlatform["srcs"] {
+			sort.Strings(arm)
+		}
 	}
 
 	return irt, nil

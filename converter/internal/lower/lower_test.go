@@ -642,6 +642,62 @@ func TestToIR_PlatformConditionalSrcs_Partitioned(t *testing.T) {
 	}
 }
 
+// TestToIR_PlatformConditionalSrcs_ArmSorted pins the
+// byte-stability fix: multiple conditional sources for the same
+// OS surface in sorted order under PerPlatform["srcs"][key], not
+// trace-insertion order. emit's strList renders the arm contents
+// verbatim, so the sort must happen at IR-build time.
+func TestToIR_PlatformConditionalSrcs_ArmSorted(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "z.c", CompileGroupIndex: 0},
+					{Path: "a.c", CompileGroupIndex: 0},
+					{Path: "m.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1, 2},
+				}},
+			},
+		},
+	}
+	// All three sources added inside the same conditional,
+	// in non-sorted order. Result should be sorted.
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","z.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":["foo","PRIVATE","a.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":7}
+{"args":["foo","PRIVATE","m.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":8}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":9}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	arm := pkg.Targets[0].PerPlatform["srcs"]["@platforms//os:linux"]
+	want := []string{"a.c", "m.c", "z.c"}
+	if !equal(arm, want) {
+		t.Errorf("PerPlatform[srcs][linux] = %v, want %v (sorted)", arm, want)
+	}
+}
+
 // TestToIR_PlatformConditionalSrcs_NoTraceByteStable pins the
 // no-regression guard: a project without trace data leaves
 // PerPlatform empty and emits the same flat-srcs shape as
