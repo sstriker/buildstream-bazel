@@ -195,6 +195,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// commandFragments resolve to the same final link line
 	// regardless; the keyword recovery here is best-effort.
 	var traceLinkScope map[string]map[string]string
+	// platformConditionalSrcs maps target → source-path (project-
+	// relative, slash form, matching codemodel TargetSource.Path)
+	// → Bazel constraint label the source should be conditional
+	// on. Populated by shadow.Decode from
+	// `if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")` blocks in the
+	// trace (#217 Tier 1). When a source has an entry here, the
+	// lowerTarget source walk moves it from the flat
+	// `irt.Srcs` into `irt.PerPlatform["srcs"][selectKey]` so the
+	// emitter renders a select() arm. Sources without an entry
+	// stay in flat srcs — single-platform conversion of projects
+	// without platform conditionals stays byte-identical.
+	var platformConditionalSrcs map[string]map[string]string
 	// traceDecoded tracks whether shadow.Decode ran; when true,
 	// decodedConfigureFiles holds the configure_file extractions
 	// from that single pass and the configure_file recovery
@@ -256,6 +268,24 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
+		if len(decoded.PlatformConditionalSources) > 0 {
+			platformConditionalSrcs = map[string]map[string]string{}
+			for _, pcs := range decoded.PlatformConditionalSources {
+				if _, ok := platformConditionalSrcs[pcs.Target]; !ok {
+					platformConditionalSrcs[pcs.Target] = map[string]string{}
+				}
+				// First-write-wins: if the same (target, src)
+				// shows up under two different conditionals
+				// (rare — would mean nested elseif arms both
+				// adding the same source on different
+				// platforms), the first one's SelectKey
+				// governs. Cheap to refine later if real
+				// projects need a list-valued mapping.
+				if _, ok := platformConditionalSrcs[pcs.Target][pcs.Source]; !ok {
+					platformConditionalSrcs[pcs.Target][pcs.Source] = pcs.SelectKey
+				}
+			}
+		}
 	}
 
 	cmakeSrc := r.Codemodel.Paths.Source
@@ -395,7 +425,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name])
 		if err != nil {
 			return nil, err
 		}
@@ -426,7 +456,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -1073,6 +1103,40 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		if err := splitMultiLanguage(t, irt, cc); err != nil {
 			return nil, err
 		}
+	}
+
+	// #217 Tier 1: partition flat irt.Srcs by trace-recovered
+	// platform conditionality. For each src whose trace
+	// attribution names a Bazel constraint label, move it from
+	// irt.Srcs to irt.PerPlatform["srcs"][selectKey] so the
+	// emitter renders a select() arm. Sources without an
+	// attribution stay in flat srcs, preserving byte-stable
+	// emission for projects without platform conditionals.
+	//
+	// Multi-language split (above) may have produced sub-
+	// libraries; they each carry the same target name in
+	// platformConditionalSrcs lookup terms because the source
+	// paths the trace recorded don't carry sub-library scope.
+	// For the v1 wiring we only partition the top-level irt;
+	// sub-libraries from splitMultiLanguage retain their full
+	// flat srcs (the multi-language case + platform-conditional
+	// case is rare enough that a precise fix can land later).
+	if len(platformConditionalSrcs) > 0 && len(irt.Srcs) > 0 {
+		var kept []string
+		for _, src := range irt.Srcs {
+			if key, ok := platformConditionalSrcs[src]; ok {
+				if irt.PerPlatform == nil {
+					irt.PerPlatform = map[string]map[string][]string{}
+				}
+				if irt.PerPlatform["srcs"] == nil {
+					irt.PerPlatform["srcs"] = map[string][]string{}
+				}
+				irt.PerPlatform["srcs"][key] = append(irt.PerPlatform["srcs"][key], src)
+				continue
+			}
+			kept = append(kept, src)
+		}
+		irt.Srcs = kept
 	}
 
 	return irt, nil

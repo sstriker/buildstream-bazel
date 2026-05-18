@@ -576,6 +576,116 @@ func TestToIR_TargetObjectsRef_Subdirectory(t *testing.T) {
 	}
 }
 
+// TestToIR_PlatformConditionalSrcs_Partitioned covers #217 Tier 1.
+// When the trace shows a source was attached to a target inside a
+// recognized `if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")` block,
+// lower must move that source from the flat irt.Srcs to
+// irt.PerPlatform["srcs"][selectKey]. Sources outside the
+// conditional stay in flat srcs — projects without platform
+// conditionals are byte-stable.
+func TestToIR_PlatformConditionalSrcs_Partitioned(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "shared.c", CompileGroupIndex: 0},
+					{Path: "linux.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+	// Trace pinning: linux.c was added inside an
+	// `if(CMAKE_SYSTEM_NAME STREQUAL "Linux")` block. shared.c
+	// has no enclosing if; it stays flat.
+	trace := `
+{"args":["foo","PRIVATE","shared.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":3}
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","linux.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":7}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	if !equal(tgt.Srcs, []string{"shared.c"}) {
+		t.Errorf("flat Srcs = %v, want [shared.c] (linux.c should be partitioned out)", tgt.Srcs)
+	}
+	arm, ok := tgt.PerPlatform["srcs"]["@platforms//os:linux"]
+	if !ok {
+		t.Fatalf("PerPlatform[srcs][linux] missing; got %+v", tgt.PerPlatform)
+	}
+	if !equal(arm, []string{"linux.c"}) {
+		t.Errorf("PerPlatform[srcs][linux] = %v, want [linux.c]", arm)
+	}
+}
+
+// TestToIR_PlatformConditionalSrcs_NoTraceByteStable pins the
+// no-regression guard: a project without trace data leaves
+// PerPlatform empty and emits the same flat-srcs shape as
+// before #217. Byte-stable single-platform contract holds for
+// non-conditional projects.
+func TestToIR_PlatformConditionalSrcs_NoTraceByteStable(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "linux.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if !equal(tgt.Srcs, []string{"linux.c"}) {
+		t.Errorf("Srcs = %v, want [linux.c] (no trace → no partition)", tgt.Srcs)
+	}
+	if len(tgt.PerPlatform) != 0 {
+		t.Errorf("PerPlatform = %+v, want empty (no trace → no select arms)", tgt.PerPlatform)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

@@ -30,12 +30,13 @@ import (
 // called three Extract* functions back-to-back on the same trace)
 // uses this to pay the bytes.Split + json.Unmarshal cost once.
 type Decoded struct {
-	Reads            []string
-	Includes         []TargetIncludeCall
-	Links            []TargetLinkCall
-	ConfigFiles      []ConfigureFileCall
-	FileGenerates    []FileGenerateCall
-	ExecuteProcesses []ExecuteProcessCall
+	Reads                      []string
+	Includes                   []TargetIncludeCall
+	Links                      []TargetLinkCall
+	ConfigFiles                []ConfigureFileCall
+	FileGenerates              []FileGenerateCall
+	ExecuteProcesses           []ExecuteProcessCall
+	PlatformConditionalSources []PlatformConditionalSource
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -51,6 +52,7 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
 	var d Decoded
+	ifStack := newPlatformIfStack()
 	for _, ev := range events {
 		collectReadPath(ev, sourceRoot, reads)
 		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
@@ -67,6 +69,35 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		}
 		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
+		}
+		// Platform-conditional source attribution. Stateful
+		// (per-file if-stack); the observe call must run on
+		// every event to keep the stack in sync, and the
+		// currentSelectKey + classification must consult the
+		// stack as it was BEFORE the current event for source-
+		// attaching calls — sources added by the if() line
+		// itself don't exist, so updating before the lookup is
+		// fine for source-attaching calls but would mis-attribute
+		// if() lines to their own predicate. observe is called
+		// on if/elseif/else/endif lines (which never yield a
+		// matching source-attach call), so update order is
+		// inconsequential in practice — done here in the
+		// natural place.
+		ifStack.observe(ev)
+		if key := ifStack.currentSelectKey(ev.File); key != "" {
+			if target, srcs, ok := sourcesFromAddOrTargetCall(ev); ok && knownTargets[target] {
+				for _, src := range srcs {
+					rel := resolveSourceRelative(src, ev.File, sourceRoot)
+					if rel == "" {
+						continue
+					}
+					d.PlatformConditionalSources = append(d.PlatformConditionalSources, PlatformConditionalSource{
+						Target:    target,
+						Source:    rel,
+						SelectKey: key,
+					})
+				}
+			}
 		}
 	}
 	d.Reads = make([]string, 0, len(reads))

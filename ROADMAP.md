@@ -89,6 +89,25 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
+- **Platform-conditional source partitioning — Tier 2:
+  recover skipped-branch sources by parsing CMakeLists.txt
+  (#217 follow-on).** Tier 1 (shipped — see Done) handles
+  the platform's own conditional sources from the trace
+  alone. Tier 2 closes the cross-platform half: the other
+  arms of an `if(CMAKE_SYSTEM_NAME ...)` block (the body
+  cmake skipped on this configure) carry sources that
+  exist in CMakeLists.txt but never appear in the trace
+  (cmake only traces what runs). Recovering them needs an
+  actual cmake-syntax parser keyed off the `file`/`line`
+  the trace's `if()` event records. New capability —
+  scope is "small targeted parser for the `target_sources`
+  / `add_library` / `add_executable` shapes inside `if`
+  bodies", not a full cmake interpreter. Demand: open
+  until a real downstream surfaces a project where the
+  cross-platform else-arm sources matter for the BUILD's
+  correctness when bazel reconfigures for the other
+  platform.
+
 - **Cross-package TARGET_FILE resolution (PR 2).** The
   soundness-fix piece shipped (see Done — refusal stub for
   unresolved cross-package references); the resolved-lift
@@ -179,6 +198,27 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Platform-conditional source partitioning from a single-platform
+  cmake trace (#217 Tier 1).** A new shadow extractor
+  (`internal/shadow/platform_conditional.go`) walks the cmake
+  `--trace-expand` stream maintaining a per-file `if()` stack,
+  and reports each `target_sources` / `add_library` /
+  `add_executable` source attached inside a recognized
+  `if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")` block.
+  `converter/internal/lower/lower.go` consumes the records and
+  moves matching sources from the flat `irt.Srcs` to
+  `irt.PerPlatform["srcs"][@platforms//os:*]`, so the emitter
+  renders a `select()` arm even on single-platform runs. The
+  innermost-recognized-key policy means nested ifs collapse to
+  the most-specific OS constraint that was open when the
+  source was added; `else` arms (where the constraint would be
+  a NOT-of-something) stay unrecognized and fall through to
+  flat srcs unchanged. Byte-stability preserved for projects
+  without platform conditionals (TraceRaw nil → no partition;
+  matching srcs missing → no partition). Tier 2 — recovering
+  sources from skipped `if` branches by parsing CMakeLists.txt
+  at trace-recorded line numbers — remains open (see Later).
 
 - **FDSDK-glue placeholder handlers — kind catalog now
   fully covered.** Stub handlers for the four previously-
