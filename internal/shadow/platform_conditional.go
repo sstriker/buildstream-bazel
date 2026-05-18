@@ -99,62 +99,86 @@ func maybeCollectPlatformConditionalSource(ev TraceEvent, st *platformIfStack, s
 	return out
 }
 
-// platformIfStack tracks the open `if()` blocks per cmake file
-// in trace order. cmake guarantees if/elseif/else/endif balance
-// within a single file, so the per-file stack is well-defined.
-// include()-introduced files surface as distinct ev.File values
-// with their own independent stacks.
+// platformIfStack tracks the open `if()` blocks in cmake
+// execution order — a single global stack regardless of which
+// file each event came from. cmake guarantees if/elseif/else/
+// endif balance within each file AND that include() and
+// function/macro calls preserve the open-if context across
+// file boundaries (the body of an include()d file or a called
+// function executes in the caller's if-scope, so an `if()`
+// opened by the caller is still in effect for calls inside the
+// includee/callee).
+//
+// An earlier per-file design (one stack keyed on ev.File) was
+// reported to miss the common include()-wrapping-conditional
+// pattern:
+//
+//	# caller/CMakeLists.txt
+//	if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+//	    include("subdir/inner.cmake")
+//	endif()
+//
+//	# subdir/inner.cmake
+//	target_sources(foo PRIVATE linux.c)
+//
+// The trace's target_sources event records ev.File =
+// inner.cmake, so the per-file stack saw no open if and left
+// linux.c unconditional. The global stack sees the caller's
+// open if at the moment inner.cmake's target_sources runs and
+// correctly attributes the source.
 type platformIfStack struct {
-	perFile map[string][]string
+	stack []string
 }
 
 func newPlatformIfStack() *platformIfStack {
-	return &platformIfStack{perFile: map[string][]string{}}
+	return &platformIfStack{}
 }
 
 func (p *platformIfStack) observe(ev TraceEvent) {
 	switch strings.ToLower(ev.Cmd) {
 	case "if":
-		p.perFile[ev.File] = append(p.perFile[ev.File], selectKeyFromIfArgs(ev.Args))
+		p.stack = append(p.stack, selectKeyFromIfArgs(ev.Args))
 	case "elseif":
-		st := p.perFile[ev.File]
-		if len(st) > 0 {
-			st = st[:len(st)-1]
+		if len(p.stack) > 0 {
+			p.stack = p.stack[:len(p.stack)-1]
 		}
-		p.perFile[ev.File] = append(st, selectKeyFromIfArgs(ev.Args))
+		p.stack = append(p.stack, selectKeyFromIfArgs(ev.Args))
 	case "else":
-		st := p.perFile[ev.File]
-		if len(st) > 0 {
-			st = st[:len(st)-1]
+		if len(p.stack) > 0 {
+			p.stack = p.stack[:len(p.stack)-1]
 		}
 		// We can't express the inverted predicate as a single
 		// positive Bazel constraint label, so the else arm is
 		// always "unrecognized": sources here fall through to
 		// the flat srcs list, matching pre-#217 behaviour.
-		p.perFile[ev.File] = append(st, "")
+		p.stack = append(p.stack, "")
 	case "endif":
-		st := p.perFile[ev.File]
-		if len(st) > 0 {
-			p.perFile[ev.File] = st[:len(st)-1]
+		if len(p.stack) > 0 {
+			p.stack = p.stack[:len(p.stack)-1]
 		}
 	}
 }
 
 // currentSelectKey returns the innermost recognized select key
-// in the open if-stack for the given file. When the open stack
-// contains both recognized and unrecognized frames, the
-// innermost recognized one wins — sources are conditional on
-// every open if, but the innermost positive platform predicate
-// is the tightest single constraint we can express. The other
-// open frames are guaranteed satisfiable on this platform
-// (cmake only traces what runs), so the recognized constraint
-// fully characterizes the source's platform-applicability for
-// Tier 1's purposes.
+// in the open if-stack. When the open stack contains both
+// recognized and unrecognized frames, the innermost recognized
+// one wins — sources are conditional on every open if, but the
+// innermost positive platform predicate is the tightest single
+// constraint we can express. The other open frames are
+// guaranteed satisfiable on this platform (cmake only traces
+// what runs), so the recognized constraint fully characterizes
+// the source's platform-applicability for Tier 1's purposes.
+//
+// File-scoping isn't applied here (the stack is global — see
+// the platformIfStack docstring); the unused file parameter is
+// retained for caller symmetry and so a future per-file
+// refinement (e.g. for shapes where a global stack misattributes)
+// can drop in without touching callers.
 func (p *platformIfStack) currentSelectKey(file string) string {
-	st := p.perFile[file]
-	for i := len(st) - 1; i >= 0; i-- {
-		if st[i] != "" {
-			return st[i]
+	_ = file
+	for i := len(p.stack) - 1; i >= 0; i-- {
+		if p.stack[i] != "" {
+			return p.stack[i]
 		}
 	}
 	return ""

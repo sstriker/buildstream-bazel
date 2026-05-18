@@ -209,6 +209,58 @@ func TestExtractPlatformConditionalSources_SubdirSources(t *testing.T) {
 	}
 }
 
+// TestExtractPlatformConditionalSources_CrossFileInclude pins
+// the global-stack behaviour: an `if(CMAKE_SYSTEM_NAME ...)`
+// opened in caller/CMakeLists.txt is still in effect when an
+// included sub-file's target_sources runs. The trace records
+// the target_sources event with ev.File = the included file;
+// the global if-stack correctly attributes it to the caller's
+// open conditional.
+//
+// Absolute source paths are used to sidestep the
+// CMAKE_CURRENT_SOURCE_DIR-vs-includee-dir asymmetry in
+// relative-path resolution (cmake resolves include()d
+// target_sources args against the caller's source dir; this
+// extractor's resolver currently joins against the trace
+// event's own file dir — a separate gap for which only the
+// codemodel's resolved path is authoritative downstream).
+func TestExtractPlatformConditionalSources_CrossFileInclude(t *testing.T) {
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["subdir/inner.cmake"],"cmd":"include","file":"/src/CMakeLists.txt","line":6}
+{"args":["foo","PRIVATE","/src/inner.c"],"cmd":"target_sources","file":"/src/subdir/inner.cmake","line":1}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":7}
+`
+	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
+	want := []PlatformConditionalSource{
+		{Target: "foo", Source: "inner.c", SelectKey: "@platforms//os:linux"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+// TestExtractPlatformConditionalSources_CrossFileFunction pins
+// the same property for function/macro calls: an if() opened
+// in the caller is in scope when the function body's
+// target_sources runs from a different file. Function body
+// events appear with ev.File = the function-defining file,
+// which differs from the caller's CMakeLists.txt.
+func TestExtractPlatformConditionalSources_CrossFileFunction(t *testing.T) {
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","/src/linux_helper.c"],"cmd":"target_sources","file":"/src/modules/helpers.cmake","line":12}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":7}
+`
+	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
+	want := []PlatformConditionalSource{
+		{Target: "foo", Source: "linux_helper.c", SelectKey: "@platforms//os:linux"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
 // TestExtractPlatformConditionalSources_SkipsAlias pins that
 // add_library(foo ALIAS bar) and add_library(foo IMPORTED ...)
 // shapes don't surface as conditional sources (they have no
