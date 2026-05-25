@@ -32,11 +32,32 @@ output without leaving the codemodel-driven path.
 
 Three slices, all decoder-side. No new cmake hooks.
 
-- **`backtraceGraph` consumption** (queued; needs cmake-source
-  parser). Use the per-property backtrace index to recover
-  PUBLIC / PRIVATE / INTERFACE keywords without re-parsing
-  `--trace-expand`. The trace path stays as fallback for
-  cmake < 3.21 where backtraces are incomplete.
+- **`backtraceGraph` consumption** (✓ landed end-to-end).
+  Two complementary uses of the codemodel's per-target
+  BacktraceGraph:
+
+  - **Provenance annotation** — `ir.Target.Provenance{File, Line,
+    Command}` populated from `Target.Backtrace`; emit-side
+    `# Source: <file>:<line> (<command>)` comment gated by
+    `--emit-provenance`. Operator-facing "why does this rule
+    exist?" navigation aid; no source-side parsing needed.
+
+  - **Keyword recovery** — `backtraceRecoverLinkScope` walks
+    every `TargetDependency.Backtrace` to the outermost
+    user-source frame, reads the cmake call via the new
+    `converter/internal/cmakeargv` lexer, and recovers the
+    PUBLIC / PRIVATE / INTERFACE keyword. Merged with the
+    trace-based recovery (trace wins where present; backtrace
+    gap-fills). Robust over trace because (1) it's always
+    available (no `--trace-expand` requirement); (2) it walks
+    to the outermost user frame so macro-wrapped TLL calls
+    recover from the user's call site rather than the macro's;
+    (3) it unwraps `$<BUILD_INTERFACE:dep>` / `$<INSTALL_INTERFACE:dep>`
+    via `stripGenexWrapper` so genex-gated deps still match.
+
+  cmake's BacktraceGraph requires cmake 3.21+ for complete
+  per-property backtraces; older cmakes leave incomplete data
+  and the trace path remains the fallback.
 
 - **Directory installers → `filegroup()`** (✓ landed for both
   install(FILES) and install(DIRECTORY)).
