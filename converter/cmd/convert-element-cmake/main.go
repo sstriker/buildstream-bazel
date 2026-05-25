@@ -310,6 +310,7 @@ func run(a cli.Args) error {
 		CMakeVars:                         cmakeVars,
 		GenexProbes:                       genexProbes,
 		ConfigureLog:                      configureLogEvents,
+		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 		UnsupportedExecuteProcessFallback: a.UnsupportedExecuteProcessFallback,
 	})
 	if err != nil {

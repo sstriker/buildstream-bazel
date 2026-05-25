@@ -233,6 +233,17 @@ type Args struct {
 	// stderr warnings. Implies AuditBazelIdiom=true.
 	AuditBazelIdiomReport string
 
+	// EmitStandaloneCustomCommands enables Phase 4 of the
+	// generator-parity uplift's standalone-genrule emission: walk
+	// every CUSTOM_COMMAND edge in build.ninja and emit a genrule
+	// for each whose outputs aren't already covered by an existing
+	// recoverGenrule emission. Off by default; opting in adds
+	// targets for add_custom_target / add_custom_command edges
+	// nothing consumes (typically version-stamp or phony bookkeeping
+	// rules), which can change BUILD output shape for projects that
+	// rely on those edges firing implicitly through cmake's build.
+	EmitStandaloneCustomCommands bool
+
 	// InstallExportPreResolve enables Phase 6 of the generator-
 	// parity uplift: for each install(EXPORT) installer the
 	// exportshape classifier deems declarative, run
@@ -352,6 +363,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.ProbeGenex, "probe-genex", false, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). On opt-in cmake emits file(GENERATE) for each target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift can read post-walk resolved bytes via cmakerun.ReadGenexProbe instead of reimplementing the cmake-side evaluator. Requires cmake 3.24+ for the TOP_LEVEL_INCLUDES injection to fire.")
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
+	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", false, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. Off by default; opting in covers add_custom_target / add_custom_command edges nothing consumes.")
 	fs.BoolVar(&a.InstallExportPreResolve, "install-export-pre-resolve", false, "Phase 6 of the generator-parity uplift: for declarative install(EXPORT) installers (per exportshape.Classify), run cmake --build + cmake --install at convert time and emit cc_import + filegroup targets pointing at the staged install tree. Off by default; opting in adds a full cmake build to the convert action runtime.")
 	fs.StringVar(&a.InstallExportScratchDir, "install-export-scratch-dir", "", "scratch directory for cmake --install staging; required when --install-export-pre-resolve is on.")
 	fs.BoolVar(&a.AuditBazelIdiom, "audit-bazel-idiom", false, "after emission, run the bazelidiom audit pass and surface findings on stderr. Phase 7 of the generator-parity uplift; checks for empty-cc-library / empty-cc-import / empty-srcs patterns that signal upstream lowerer gaps.")

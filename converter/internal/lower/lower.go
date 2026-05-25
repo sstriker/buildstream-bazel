@@ -149,6 +149,14 @@ type Options struct {
 	// Phase 3 of the generator-parity uplift in ROADMAP.md.
 	GenexProbes []cmakerun.GenexProbe
 
+	// EmitStandaloneCustomCommands toggles Phase 4 of the
+	// generator-parity uplift: emit genrules for CUSTOM_COMMAND
+	// edges in build.ninja that aren't already covered by the
+	// recoverGenrule path. Off by default — opt-in is the safer
+	// default because the new emission can shift BUILD shape for
+	// projects relying on implicit add_custom_target bookkeeping.
+	EmitStandaloneCustomCommands bool
+
 	// ConfigureLog carries the parsed CMakeConfigureLog.yaml
 	// events from configureLog-v1 (cmake 3.26+). Empty for cmake
 	// < 3.26 or projects whose configure didn't fire any
@@ -485,6 +493,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// targets stay grouped by family: cc rules first, generated
 	// content next, then install-side filegroups.
 	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
+	// Phase 4 standalone custom-command emission. Opt-in via
+	// Options.EmitStandaloneCustomCommands; the dedup against
+	// existing genrules keeps the recoverGenrule path's output
+	// intact even when this fires.
+	if opts.EmitStandaloneCustomCommands {
+		pkg.Targets = append(pkg.Targets,
+			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir)...)
+	}
 	return pkg, nil
 }
 
