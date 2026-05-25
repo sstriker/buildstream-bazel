@@ -12,12 +12,20 @@ import (
 
 // lowerDirectoryInstallers walks every Directory.Installers entry in
 // the reply and emits KindFilegroup IR targets for the install(FILES)
-// shape — the simplest declarative install pattern with a known
-// path schema (plain strings in DirectoryInstaller.Paths).
+// and install(DIRECTORY) shapes:
 //
-// install(DIRECTORY) (Type == "directory") uses a different path
-// schema ({"from": ..., "to": ...} objects); handled in a follow-on
-// slice once a render-gate fixture exercises it.
+//   - Type == "file" uses plain-string paths in
+//     DirectoryInstaller.Paths.
+//   - Type == "directory" uses {"from": ..., "to": ...} path
+//     objects; install(DIRECTORY) effectively names a source
+//     directory (`from`) and a destination subdirectory (`to`,
+//     usually empty meaning "preserve hierarchy under DESTINATION").
+//     The lift expands the source directory's contents — recursive
+//     filesystem walk would extend the converter's I/O scope, so v1
+//     records ONLY the source-directory anchor as a filegroup src
+//     (Bazel can resolve via glob in a downstream wrapper, or the
+//     operator can opt into rules_pkg's pkg_files for richer
+//     handling).
 //
 // install(TARGETS) (Type == "target") is already covered by the
 // per-target Install slot in the codemodel.
@@ -27,12 +35,13 @@ import (
 //
 // Phase 1 task 2 of the generator-parity uplift (ROADMAP.md).
 //
-// Grouping rule: one filegroup per (destination) — files sharing a
-// destination consolidate into one target. The filegroup name is
-// `install_files__<sanitized destination>` where sanitization maps
-// `/`, `.`, and other path-unsafe characters to `_`. Empty / unsafe
-// destinations are skipped so the conversion doesn't produce names
-// that violate Bazel target-name rules.
+// Grouping rule: one filegroup per (destination) — files and
+// directories sharing a destination consolidate into one target.
+// The filegroup name is `install_files__<sanitized destination>`
+// for Type=="file" and `install_directory__<sanitized destination>`
+// for Type=="directory". Empty / unsafe destinations are skipped so
+// the conversion doesn't produce names that violate Bazel
+// target-name rules.
 //
 // Returns IR targets in deterministic order (sorted by filegroup
 // name) so downstream emit produces byte-stable BUILD output.
@@ -42,14 +51,16 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 	}
 	cmakeSrc := r.Codemodel.Paths.Source
 
-	// Per-destination accumulators. Files are stored in a map to
-	// dedupe (the same path can appear in multiple installer entries
-	// under the same destination); the map is then sorted on emit.
+	// Per-(type, destination) accumulators. Files / directories
+	// stored in a map to dedupe (the same path can appear in
+	// multiple installer entries under the same destination); the
+	// map is then sorted on emit.
 	type bucket struct {
+		kind  string // "file" or "directory"
 		dest  string
 		files map[string]bool
 	}
-	byDest := map[string]*bucket{}
+	byKey := map[string]*bucket{}
 
 	for _, dir := range r.Directories {
 		dirSrc := dir.Paths.Source
@@ -59,7 +70,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			dirSrc = filepath.Join(cmakeSrc, dirSrc)
 		}
 		for _, inst := range dir.Installers {
-			if inst.Type != "file" {
+			if inst.Type != "file" && inst.Type != "directory" {
 				continue
 			}
 			if inst.Destination == "" {
@@ -71,30 +82,14 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			if inst.IsExcludeFromAll || inst.IsOptional {
 				continue
 			}
-			b, ok := byDest[inst.Destination]
+			key := inst.Type + "\x00" + inst.Destination
+			b, ok := byKey[key]
 			if !ok {
-				b = &bucket{dest: inst.Destination, files: map[string]bool{}}
-				byDest[inst.Destination] = b
+				b = &bucket{kind: inst.Type, dest: inst.Destination, files: map[string]bool{}}
+				byKey[key] = b
 			}
 			for _, raw := range inst.Paths {
-				var p string
-				if err := json.Unmarshal(raw, &p); err != nil {
-					// Not a string — typically an
-					// {"from": ..., "to": ...} object from a
-					// type="directory" installer that somehow
-					// landed under "file". Skip silently.
-					continue
-				}
-				if p == "" {
-					continue
-				}
-				// Resolve to source-tree relative path so the
-				// emitted filegroup carries a path the
-				// downstream Bazel package can address. Absolute
-				// paths outside the source tree are skipped —
-				// they'd produce a Bazel label that doesn't
-				// resolve.
-				rel := projectToSourceRoot(p, dirSrc, cmakeSrc)
+				rel := decodeInstallerPath(raw, dirSrc, cmakeSrc, inst.Type)
 				if rel == "" {
 					continue
 				}
@@ -103,20 +98,21 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 		}
 	}
 
-	if len(byDest) == 0 {
+	if len(byKey) == 0 {
 		return nil
 	}
 
-	// Materialize: stable target order = sorted destination.
-	dests := make([]string, 0, len(byDest))
-	for d := range byDest {
-		dests = append(dests, d)
+	// Materialize: stable target order = sorted target name (which
+	// embeds both kind and destination).
+	keys := make([]string, 0, len(byKey))
+	for k := range byKey {
+		keys = append(keys, k)
 	}
-	sort.Strings(dests)
+	sort.Strings(keys)
 
-	out := make([]ir.Target, 0, len(dests))
-	for _, dest := range dests {
-		b := byDest[dest]
+	out := make([]ir.Target, 0, len(keys))
+	for _, key := range keys {
+		b := byKey[key]
 		if len(b.files) == 0 {
 			continue
 		}
@@ -125,14 +121,61 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			files = append(files, f)
 		}
 		sort.Strings(files)
+		prefix := "install_files__"
+		if b.kind == "directory" {
+			prefix = "install_directory__"
+		}
 		out = append(out, ir.Target{
-			Name:       "install_files__" + sanitizeDestination(dest),
+			Name:       prefix + sanitizeDestination(b.dest),
 			Kind:       ir.KindFilegroup,
 			Srcs:       files,
 			Visibility: []string{"//visibility:public"},
 		})
 	}
 	return out
+}
+
+// decodeInstallerPath decodes one DirectoryInstaller.Paths entry
+// according to the installer type's expected schema:
+//
+//   - Type=="file" — plain JSON string. Resolved against dirSrc /
+//     cmakeSrc the same way as before.
+//
+//   - Type=="directory" — JSON object {"from": "...", "to": "..."}.
+//     We record the "from" path as the filegroup src (the source
+//     directory whose contents install copies). cmake's
+//     install(DIRECTORY) also accepts the plain-string short form
+//     when "to" is empty / DESTINATION-implicit; the function
+//     handles both forms via json.RawMessage probing.
+//
+// Returns "" when the entry can't be decoded or resolves outside
+// the source tree.
+func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string) string {
+	// Try plain string first (file installer's only shape, and
+	// directory installer's short form).
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s == "" {
+			return ""
+		}
+		return projectToSourceRoot(s, dirSrc, cmakeSrc)
+	}
+	if instType != "directory" {
+		// File installer can't carry an object-shape path.
+		return ""
+	}
+	// Object form: {"from": "...", "to": "..."}.
+	var obj struct {
+		From string `json:"from"`
+		To   string `json:"to"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	if obj.From == "" {
+		return ""
+	}
+	return projectToSourceRoot(obj.From, dirSrc, cmakeSrc)
 }
 
 // projectToSourceRoot returns the source-tree-relative form of p.

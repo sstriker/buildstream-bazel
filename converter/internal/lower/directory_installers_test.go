@@ -88,11 +88,10 @@ func TestLowerDirectoryInstallers_GroupsByDestination(t *testing.T) {
 	}
 }
 
-// TestLowerDirectoryInstallers_SkipsNonFileTypes confirms only
-// Type=="file" installers participate; Type=="target" is covered by
-// per-target Install; Type=="directory" / "export" need their own
-// path/classifier handling and are skipped silently.
-func TestLowerDirectoryInstallers_SkipsNonFileTypes(t *testing.T) {
+// TestLowerDirectoryInstallers_SkipsNonFileNonDirectoryTypes
+// confirms install(TARGETS) and install(EXPORT) are skipped (covered
+// by per-target Install + Phase 6's classifier respectively).
+func TestLowerDirectoryInstallers_SkipsNonFileNonDirectoryTypes(t *testing.T) {
 	r := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
 		Directories: map[string]fileapi.Directory{
@@ -103,14 +102,73 @@ func TestLowerDirectoryInstallers_SkipsNonFileTypes(t *testing.T) {
 				}{Source: "/src"},
 				Installers: []fileapi.DirectoryInstaller{
 					{Type: "target", Destination: "lib", Paths: rawJSONStrings("libfoo.a")},
-					{Type: "directory", Destination: "share"},
 					{Type: "export", Destination: "lib/cmake/MyPkg", ExportName: "MyPkgTargets"},
 				},
 			},
 		},
 	}
 	if got := lowerDirectoryInstallers(r); got != nil {
-		t.Errorf("expected nil for non-file installer mix; got %v", got)
+		t.Errorf("expected nil for target/export only; got %v", got)
+	}
+}
+
+// TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath covers
+// install(DIRECTORY) with the {"from": ..., "to": ...} object path
+// schema. The "from" path projects into the filegroup src; the
+// emitted target is named install_directory__<dest>.
+func TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath(t *testing.T) {
+	pathObj := []byte(`{"from":"/src/share/data","to":""}`)
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{
+					{Type: "directory", Destination: "share/myapp", Paths: []json.RawMessage{pathObj}},
+				},
+			},
+		},
+	}
+	got := lowerDirectoryInstallers(r)
+	if len(got) != 1 {
+		t.Fatalf("want 1 filegroup; got %d", len(got))
+	}
+	if got[0].Name != "install_directory__share_myapp" {
+		t.Errorf("Name: %q", got[0].Name)
+	}
+	if len(got[0].Srcs) != 1 || got[0].Srcs[0] != "share/data" {
+		t.Errorf("Srcs: %v", got[0].Srcs)
+	}
+}
+
+// TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm
+// covers install(DIRECTORY) where cmake recorded the path as a
+// plain string (DESTINATION-implicit "to"). Same fallback path
+// the file installer uses.
+func TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{
+					{Type: "directory", Destination: "include", Paths: rawJSONStrings("/src/include/foo")},
+				},
+			},
+		},
+	}
+	got := lowerDirectoryInstallers(r)
+	if len(got) != 1 {
+		t.Fatalf("want 1 filegroup; got %d", len(got))
+	}
+	if got[0].Srcs[0] != "include/foo" {
+		t.Errorf("Srcs: %v", got[0].Srcs)
 	}
 }
 

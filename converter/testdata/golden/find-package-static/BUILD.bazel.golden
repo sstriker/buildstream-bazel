@@ -14,3 +14,8 @@ cc_library(
     linkstatic = True,  # keep
     deps = ["//elements/zlib"],
 )
+
+filegroup(
+    name = "install_directory__include",
+    srcs = ["include"],
+)  # keep

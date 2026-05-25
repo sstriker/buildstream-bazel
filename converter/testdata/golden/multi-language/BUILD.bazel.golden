@@ -42,3 +42,8 @@ cc_library(
     linkstatic = True,  # keep
     visibility = ["//visibility:private"],
 )
+
+filegroup(
+    name = "install_directory__include",
+    srcs = ["include"],
+)  # keep

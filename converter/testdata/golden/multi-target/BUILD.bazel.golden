@@ -40,3 +40,8 @@ cc_library(
     includes = ["include"],  # keep
     linkstatic = True,  # keep
 )
+
+filegroup(
+    name = "install_directory__include",
+    srcs = ["include"],
+)  # keep

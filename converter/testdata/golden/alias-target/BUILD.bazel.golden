@@ -25,3 +25,8 @@ cc_binary(
     includes = ["include"],  # keep
     deps = [":aliaslib"],
 )
+
+filegroup(
+    name = "install_directory__include",
+    srcs = ["include"],
+)  # keep
