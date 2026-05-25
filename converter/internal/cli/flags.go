@@ -220,6 +220,19 @@ type Args struct {
 	// when BuildTypes is non-empty, BuildType must be empty.
 	BuildType string
 
+	// AuditBazelIdiom enables the Phase 7 post-emission audit
+	// pass — bazelidiom.Audit checks emitted BUILD bytes for known
+	// anti-patterns (empty cc_library, empty cc_import, no-srcs
+	// cc_binary/cc_test) and surfaces findings as warnings on
+	// stderr. Off by default; an opt-in audit is useful in CI to
+	// catch upstream lowerer gaps without failing every conversion.
+	AuditBazelIdiom bool
+
+	// AuditBazelIdiomReport, when non-empty, writes the structured
+	// audit findings as JSON to this path in addition to the
+	// stderr warnings. Implies AuditBazelIdiom=true.
+	AuditBazelIdiomReport string
+
 	// BuildTypes selects the cmake "Ninja Multi-Config" generator
 	// path (Phase 5 of the generator-parity uplift). When non-empty,
 	// the configure pass runs once with CMAKE_CONFIGURATION_TYPES=
@@ -321,6 +334,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.ProbeGenex, "probe-genex", false, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). On opt-in cmake emits file(GENERATE) for each target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift can read post-walk resolved bytes via cmakerun.ReadGenexProbe instead of reimplementing the cmake-side evaluator. Requires cmake 3.24+ for the TOP_LEVEL_INCLUDES injection to fire.")
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
+	fs.BoolVar(&a.AuditBazelIdiom, "audit-bazel-idiom", false, "after emission, run the bazelidiom audit pass and surface findings on stderr. Phase 7 of the generator-parity uplift; checks for empty-cc-library / empty-cc-import / empty-srcs patterns that signal upstream lowerer gaps.")
+	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured audit findings (JSON) to this path in addition to (or instead of) stderr. Implies --audit-bazel-idiom.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")

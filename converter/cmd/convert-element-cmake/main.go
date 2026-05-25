@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/internal/bazelidiom"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
@@ -353,6 +354,27 @@ func run(a cli.Args) error {
 	}
 	if err := os.WriteFile(a.OutBuild, out, 0o644); err != nil {
 		return err
+	}
+
+	// Phase 7: post-emission Bazel-idiom audit. Off by default;
+	// opt-in via --audit-bazel-idiom or --audit-bazel-idiom-report.
+	if a.AuditBazelIdiom || a.AuditBazelIdiomReport != "" {
+		findings, ferr := bazelidiom.Audit(out)
+		if ferr != nil {
+			return failure.New(failure.BazelCanonicalizeFailed, "audit-bazel-idiom: %v", ferr)
+		}
+		if msg := bazelidiom.FormatFindings(findings); msg != "" {
+			fmt.Fprint(os.Stderr, msg)
+		}
+		if a.AuditBazelIdiomReport != "" {
+			body, _ := json.MarshalIndent(findings, "", "  ")
+			if err := os.MkdirAll(filepath.Dir(a.AuditBazelIdiomReport), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(a.AuditBazelIdiomReport, body, 0o644); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Stage 6 of the per-element multi-platform plan: ship the
