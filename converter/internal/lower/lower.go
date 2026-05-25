@@ -148,6 +148,24 @@ type Options struct {
 	//
 	// Phase 3 of the generator-parity uplift in ROADMAP.md.
 	GenexProbes []cmakerun.GenexProbe
+
+	// ConfigureLog carries the parsed CMakeConfigureLog.yaml
+	// events from configureLog-v1 (cmake 3.26+). Empty for cmake
+	// < 3.26 or projects whose configure didn't fire any
+	// configureLog-aware events. Phase 4 of the generator-parity
+	// uplift consumes try_compile-v1 / find_package-v1 results
+	// to retire probe-bucket execute_process refusals — when a
+	// refused probe (e.g. `git rev-parse` for a version stamp,
+	// or a `pkg-config` lookup) has a configureLog event with
+	// the same outcome, the lifter can emit the resolved value
+	// directly via select() / stamp / a literal embed instead
+	// of Tier-1-failing.
+	//
+	// Loaded by the caller via fileapi.LoadConfigureLogYAML to
+	// keep lower's I/O scope unchanged (lower itself stays
+	// pure-function over the reply data, no FS reads beyond
+	// configure_file's rendered output capture).
+	ConfigureLog []fileapi.Event
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports

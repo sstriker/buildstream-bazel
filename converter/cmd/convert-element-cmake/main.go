@@ -279,6 +279,21 @@ func run(a cli.Args) error {
 		return failure.New(failure.FileAPIMalformed, "read probe-genex output: %v", err)
 	}
 
+	// configureLog-v1 events (Phase 2 of the generator-parity
+	// uplift). When the reply carries a sidecar pointer to
+	// CMakeConfigureLog.yaml, load the YAML events for downstream
+	// consumers. Both the sidecar absence (cmake < 3.26) and the
+	// YAML file absence (configure fired no log-aware events) are
+	// silent — LoadConfigureLogYAML returns nil + nil for both
+	// shapes.
+	var configureLogEvents []fileapi.Event
+	if r.ConfigureLog != nil {
+		configureLogEvents, err = fileapi.LoadConfigureLogYAML(r.ConfigureLog.Path)
+		if err != nil {
+			return failure.New(failure.FileAPIMalformed, "read configure log: %v", err)
+		}
+	}
+
 	pkg, err := lower.ToIR(r, g, lower.Options{
 		HostSourceRoot:                    a.SourceRoot,
 		HostPrefixDir:                     prefixAbs,
@@ -289,6 +304,7 @@ func run(a cli.Args) error {
 		LiftConfigureFile:                 a.LiftConfigureFile,
 		CMakeVars:                         cmakeVars,
 		GenexProbes:                       genexProbes,
+		ConfigureLog:                      configureLogEvents,
 		UnsupportedExecuteProcessFallback: a.UnsupportedExecuteProcessFallback,
 	})
 	if err != nil {
