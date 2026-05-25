@@ -501,6 +501,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		pkg.Targets = append(pkg.Targets,
 			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir)...)
 	}
+	// Phase 5 multi-config delta fold. When the reply carries
+	// per-config target data (BuildTypes-driven multi-config),
+	// project the cross-config Partition into PerPlatform-shaped
+	// select() arms on the existing targets. Sanitizer-shaped
+	// configs are filtered out and route to --features in a
+	// future slice.
+	if len(r.TargetsByConfig) > 0 {
+		var configs []string
+		for _, cfg := range r.Codemodel.Configurations {
+			configs = append(configs, cfg.Name)
+		}
+		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs)
+	}
 	return pkg, nil
 }
 
