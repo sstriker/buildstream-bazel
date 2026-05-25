@@ -161,23 +161,66 @@ mechanism is the right home for "this flag applies to every cc
 target compiled under this toolchain"; per-rule selects don't
 compose that way.
 
-## Future converter slice: auto-routing
+## Converter-generated features.bzl
 
-A future Phase 5 slice could close part of the loop:
+When the operator passes `--out-sanitizer-features <path>`
+alongside `--build-types`, the converter extracts cmake's
+per-config `CMAKE_<LANG>_FLAGS_<CONFIG>` /
+`CMAKE_<TYPE>_LINKER_FLAGS_<CONFIG>` cache entries and renders
+a matching `features.bzl` at the requested path.
 
-- When `--build-types` includes a sanitizer-shaped config name
-  AND the cmake project's `CMAKE_<LANG>_FLAGS_<NAME>` differs
-  from the operator's known toolchain feature definition,
-  emit a `# WARNING: cmake's <name> flags differ from the
-  declared toolchain feature` comment.
+```sh
+convert-element-cmake \
+    --source-root my-project/src \
+    --build-types=Release,ASan,TSan,UBSan \
+    --out-build my-project/BUILD.bazel \
+    --out-sanitizer-features my-project/toolchain/sanitizer-features.bzl
+```
 
-- Optionally emit a `cc_features_check` rule (Bazel's
-  feature-introspection mechanism) that fails the build if the
-  declared toolchain doesn't have the expected feature.
+Output shape:
 
-These are auxiliary — the core pattern (operator-defined
-features, converter-recognized config names, audit catches
-hand-rolled selects) is what makes the convention work.
+- `feature(name = "asan", enabled = False, flag_sets = [...])`
+  per sanitizer-shaped config (recognized via
+  `configfold.SanitizerFeature`).
+- Per-language `flag_set` actions: C → `ACTION_NAMES.c_compile`;
+  CXX → `cpp_compile` + `cpp_module_compile`; ASM →
+  `assemble` + `preprocess_assemble`. Languages with no cmake
+  flag entries omit the corresponding flag_set.
+- Link `flag_set` actions: `cpp_link_executable` +
+  `cpp_link_dynamic_library` + `cpp_link_nodeps_dynamic_library`.
+  cmake's `CMAKE_EXE_LINKER_FLAGS_<CONFIG>` and
+  `CMAKE_SHARED_LINKER_FLAGS_<CONFIG>` merge with first-occurrence
+  dedup — most sanitizers' link flags are identical between
+  the two, and the union shape is safer than two separate
+  flag_sets that could drift.
+- Final `SANITIZER_FEATURES = [...]` list operators thread into
+  their `cc_common.create_cc_toolchain_config_info(features=…)`
+  call.
+- Byte-stable across runs; re-generates whenever the operator
+  re-runs convert-element-cmake. Manual edits get overwritten —
+  copy the list into a separate file if you need to customize
+  beyond what cmake records.
+
+The generated file pairs with the `toolchain/features.bzl` in
+[`examples/sanitizer-features/`](../../examples/sanitizer-features/);
+operators can compare their cmake-derived output against the
+hand-curated reference to spot drift between the project's
+sanitizer recipe and the convention.
+
+### Future extensions
+
+- Drift warning: when the operator's existing `features.bzl`
+  already declares a sanitizer feature whose flag set differs
+  from the cmake-recorded one, emit a `# WARNING: cmake's <name>
+  flags differ` comment in the generated file.
+- Mutual-exclusion sentinel generation: derive the
+  `_sanitizer_runtime` sentinel feature from the recognized
+  set so ASan/TSan/MSan combinations fail cleanly at toolchain
+  config time.
+
+Both auxiliary — the core pattern (operator-defined features,
+converter-recognized config names, audit catches hand-rolled
+selects) holds without them.
 
 ## See also
 

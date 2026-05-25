@@ -23,8 +23,10 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/bazelidiom"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/configfold"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
 	"github.com/sstriker/buildstream-bazel/converter/internal/exportshape"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -161,6 +163,24 @@ func run(a cli.Args) error {
 	r, err := fileapi.Load(replyDir)
 	if err != nil {
 		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
+	}
+
+	// Phase 5 sanitizer-as-feature emit: when the operator
+	// requested a .bzl sidecar AND --build-types includes one or
+	// more sanitizer-shaped configs, extract cmake's per-config
+	// CMAKE_<LANG>_FLAGS_<CONFIG> and render them as
+	// cc_toolchain feature definitions the operator drops into
+	// their toolchain. Pure read on r.Cache; no effect on
+	// pkg.Targets emission.
+	if a.OutSanitizerFeatures != "" && len(a.BuildTypes) > 0 {
+		sets := configfold.ExtractSanitizerFlags(r.Cache, a.BuildTypes)
+		body := sanitizerfeatures.Emit(sets)
+		if err := os.MkdirAll(filepath.Dir(a.OutSanitizerFeatures), 0o755); err != nil {
+			return fmt.Errorf("stage sanitizer-features dir: %w", err)
+		}
+		if err := os.WriteFile(a.OutSanitizerFeatures, body, 0o644); err != nil {
+			return fmt.Errorf("write sanitizer-features: %w", err)
+		}
 	}
 
 	// Stage 6: per-element toolchain signal capture. The unifier
