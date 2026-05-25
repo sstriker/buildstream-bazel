@@ -94,6 +94,33 @@ type TargetInfo struct {
 	// stable across recording machines — only the
 	// `--target-file` flag values shape the Bazel-time bytes.
 	FileLocation string `json:"-"`
+
+	// Objects is the semicolon-separated list of object-file
+	// paths a `$<TARGET_OBJECTS:t>` genex resolves to. Populated
+	// by lifters that have cmake's resolved object list — Phase
+	// 3 of the generator-parity uplift reads this from the
+	// probe-genex hook's per-target objects.txt file (only
+	// emitted for OBJECT_LIBRARY targets). Empty for non-
+	// OBJECT_LIBRARY targets; TARGET_OBJECTS resolution surfaces
+	// an UnsupportedError when the field is empty so the lifter
+	// can fall back to legacy bytes.
+	Objects string `json:"objects,omitempty"`
+
+	// InterfaceIncludeDirectories / InterfaceCompileDefinitions /
+	// InterfaceCompileOptions / InterfaceLinkLibraries /
+	// InterfaceLinkOptions carry the post-walk values of cmake's
+	// INTERFACE_* properties — the aggregates cmake assembles by
+	// walking the dependency graph. Populated from the
+	// probe-genex hook's per-target interface_<P>.txt files
+	// (which cmake's generator-phase evaluator wrote at
+	// generation time). Each value is the semicolon-separated
+	// list cmake produces; consumers split on `;` to recover
+	// the cmake list.
+	InterfaceIncludeDirectories string `json:"interface_include_directories,omitempty"`
+	InterfaceCompileDefinitions string `json:"interface_compile_definitions,omitempty"`
+	InterfaceCompileOptions     string `json:"interface_compile_options,omitempty"`
+	InterfaceLinkLibraries      string `json:"interface_link_libraries,omitempty"`
+	InterfaceLinkOptions        string `json:"interface_link_options,omitempty"`
 }
 
 // UnsupportedError signals a genex shape the evaluator
@@ -234,8 +261,17 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	// (target-evaluator-time) and "COMPILER_*" is the
 	// compiler-identity context the configure-time evaluator
 	// already has from CMAKE_<LANG>_COMPILER_ID.
-	case "TARGET_OBJECTS",
-		"TARGET_GENEX_EVAL", "GENEX_EVAL",
+	// $<TARGET_OBJECTS:t> — resolves via Context.Targets[t].Objects.
+	// Populated by lifters that have cmake's resolved object list;
+	// Phase 3 of the generator-parity uplift sources this from the
+	// probe-genex hook's per-target objects.txt file (which cmake
+	// emits only for OBJECT_LIBRARY targets at generation time).
+	// Empty Objects surfaces as UnsupportedError so the lifter
+	// falls back to (b) / legacy.
+	case "TARGET_OBJECTS":
+		return evalTargetObjects(g, ctx)
+
+	case "TARGET_GENEX_EVAL", "GENEX_EVAL",
 		"INSTALL_INTERFACE", "BUILD_INTERFACE", "INSTALL_PREFIX",
 		"COMPILE_LANGUAGE", "LINK_LANGUAGE",
 		"COMPILE_FEATURES":
@@ -631,11 +667,68 @@ func evalTargetProperty(g genexNode, ctx Context) ([]byte, error) {
 			return []byte("TRUE"), nil
 		}
 		return []byte("FALSE"), nil
+
+	// INTERFACE_* aggregates. cmake's generator-phase evaluator
+	// walks the dependency graph and emits the post-walk values;
+	// Phase 3's probe-genex hook captures those at generation
+	// time and the lifter loads them into TargetInfo here.
+	// Empty values are valid (the target has no
+	// INTERFACE_<P> set) — distinct from "field not populated"
+	// (no probe ran). The Reasons machinery in
+	// internal/exportshape (etc.) doesn't apply here; the
+	// evaluator can't tell the two cases apart from the struct
+	// alone, so empty values just resolve to the empty string
+	// (matching cmake's own behavior for an unset INTERFACE_*).
+	case "INTERFACE_INCLUDE_DIRECTORIES":
+		return []byte(ti.InterfaceIncludeDirectories), nil
+	case "INTERFACE_COMPILE_DEFINITIONS":
+		return []byte(ti.InterfaceCompileDefinitions), nil
+	case "INTERFACE_COMPILE_OPTIONS":
+		return []byte(ti.InterfaceCompileOptions), nil
+	case "INTERFACE_LINK_LIBRARIES":
+		return []byte(ti.InterfaceLinkLibraries), nil
+	case "INTERFACE_LINK_OPTIONS":
+		return []byte(ti.InterfaceLinkOptions), nil
 	}
 	return nil, &UnsupportedError{
 		Op:     g.Op,
-		Reason: fmt.Sprintf("property %q not in the v1 evaluator's supported set (NAME, TYPE, SOURCES, IMPORTED); INTERFACE_* and other aggregated properties need a richer capture pipeline", prop),
+		Reason: fmt.Sprintf("property %q not in the v1 evaluator's supported set (NAME, TYPE, SOURCES, IMPORTED, INTERFACE_INCLUDE_DIRECTORIES, INTERFACE_COMPILE_DEFINITIONS, INTERFACE_COMPILE_OPTIONS, INTERFACE_LINK_LIBRARIES, INTERFACE_LINK_OPTIONS)", prop),
 	}
+}
+
+// evalTargetObjects handles `$<TARGET_OBJECTS:t>`. Returns
+// Context.Targets[t].Objects when populated (single-arg form
+// only; the multi-arg form isn't a thing for TARGET_OBJECTS).
+// Empty Objects surfaces as UnsupportedError so the lifter falls
+// back to (b) / legacy — the typical reason for empty Objects is
+// the target isn't an OBJECT_LIBRARY (other target types have no
+// per-target object list).
+func evalTargetObjects(g genexNode, ctx Context) ([]byte, error) {
+	if len(g.Args) != 1 {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("expected 1 arg (target name); got %d", len(g.Args)),
+		}
+	}
+	args, err := evalArgsToStrings(g.Args, ctx)
+	if err != nil {
+		return nil, err
+	}
+	name := args[0]
+	ti, ok := ctx.Targets[name]
+	if !ok {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("no target %q in Context.Targets", name),
+		}
+	}
+	if ti.Objects == "" {
+		return nil, &UnsupportedError{
+			Op:     g.Op,
+			Reason: fmt.Sprintf("Context.Targets[%q].Objects is empty (target isn't OBJECT_LIBRARY, or probe-genex hook didn't run)", name),
+		}
+	}
+	return []byte(ti.Objects), nil
 }
 
 // evalTargetFile handles `$<TARGET_FILE:t>` — single-arg form

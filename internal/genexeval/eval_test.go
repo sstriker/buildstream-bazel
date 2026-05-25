@@ -342,8 +342,13 @@ func TestEval_TargetProperty_Refusals(t *testing.T) {
 	}}
 	cases := []struct{ name, in string }{
 		{"missing target", "$<TARGET_PROPERTY:nonexistent,NAME>"},
-		// INTERFACE_INCLUDE_DIRECTORIES needs the property-aggregation pipeline the v1 lifter doesn't implement.
-		{"unsupported property", "$<TARGET_PROPERTY:foo,INTERFACE_INCLUDE_DIRECTORIES>"},
+		// LINK_DIRECTORIES isn't in the supported set — Phase 3
+		// expanded coverage to the INTERFACE_* aggregates the
+		// probe-genex hook captures, but per-target build-only
+		// properties (LINK_DIRECTORIES, COMPILE_PDB_NAME,
+		// POSITION_INDEPENDENT_CODE, ...) still need either a
+		// codemodel-side projection or a probe extension.
+		{"unsupported property", "$<TARGET_PROPERTY:foo,LINK_DIRECTORIES>"},
 		// Single-arg form has no convert-time meaning for file(GENERATE).
 		{"one-arg form", "$<TARGET_PROPERTY:NAME>"},
 	}
@@ -560,5 +565,104 @@ func TestEval_PartialEvaluationPropagatesUnsupported(t *testing.T) {
 	}
 	if ue.Op != "TARGET_FILE" {
 		t.Errorf("UnsupportedError.Op = %q", ue.Op)
+	}
+}
+
+// TestEval_TargetProperty_InterfaceAggregates covers the
+// post-Phase-3 path: probe-genex provides cmake's resolved
+// INTERFACE_* aggregate, the lifter loads it into TargetInfo,
+// the evaluator returns the value verbatim.
+func TestEval_TargetProperty_InterfaceAggregates(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {
+			Type:                        "STATIC_LIBRARY",
+			InterfaceIncludeDirectories: "/src/include;/src/extra",
+			InterfaceCompileDefinitions: "FOO=1;BAR=2",
+			InterfaceLinkLibraries:      "bar;baz",
+			InterfaceCompileOptions:     "-Wall;-Werror",
+			InterfaceLinkOptions:        "-Wl,--as-needed",
+		},
+	}}
+	cases := []struct{ in, want string }{
+		{"$<TARGET_PROPERTY:foo,INTERFACE_INCLUDE_DIRECTORIES>", "/src/include;/src/extra"},
+		{"$<TARGET_PROPERTY:foo,INTERFACE_COMPILE_DEFINITIONS>", "FOO=1;BAR=2"},
+		{"$<TARGET_PROPERTY:foo,INTERFACE_LINK_LIBRARIES>", "bar;baz"},
+		{"$<TARGET_PROPERTY:foo,INTERFACE_COMPILE_OPTIONS>", "-Wall;-Werror"},
+		{"$<TARGET_PROPERTY:foo,INTERFACE_LINK_OPTIONS>", "-Wl,--as-needed"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got, err := evalString(t, c.in, ctx)
+			if err != nil {
+				t.Fatalf("eval: %v", err)
+			}
+			if got != c.want {
+				t.Errorf("got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestEval_TargetProperty_InterfaceEmpty: when the probe captured
+// an empty INTERFACE_* (target has no value set), the evaluator
+// resolves to the empty string — distinguishing "field unset" from
+// "field aggregates to empty" isn't possible from struct state
+// alone, and cmake itself emits the empty string for unset
+// INTERFACE_* anyway.
+func TestEval_TargetProperty_InterfaceEmpty(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY"},
+	}}
+	got, err := evalString(t, "$<TARGET_PROPERTY:foo,INTERFACE_LINK_LIBRARIES>", ctx)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+// TestEval_TargetObjects covers the post-Phase-3 path: probe-genex
+// captured an OBJECT_LIBRARY's resolved object list, the evaluator
+// returns it verbatim.
+func TestEval_TargetObjects(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"objlib": {
+			Type:    "OBJECT_LIBRARY",
+			Objects: "/build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o",
+		},
+	}}
+	got, err := evalString(t, "$<TARGET_OBJECTS:objlib>", ctx)
+	if err != nil {
+		t.Fatalf("eval: %v", err)
+	}
+	want := "/build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestEval_TargetObjects_Refusals covers the three rejection
+// paths: missing target, missing Objects field, wrong arity.
+func TestEval_TargetObjects_Refusals(t *testing.T) {
+	ctx := Context{Targets: map[string]TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY"}, // not OBJECT_LIBRARY; Objects unset
+	}}
+	cases := []struct{ name, in string }{
+		{"missing target", "$<TARGET_OBJECTS:ghost>"},
+		{"empty objects", "$<TARGET_OBJECTS:foo>"},
+		{"wrong arity", "$<TARGET_OBJECTS:foo,bar>"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := evalString(t, c.in, ctx)
+			var ue *UnsupportedError
+			if !errors.As(err, &ue) {
+				t.Fatalf("expected UnsupportedError, got %v", err)
+			}
+			if ue.Op != "TARGET_OBJECTS" {
+				t.Errorf("UnsupportedError.Op = %q", ue.Op)
+			}
+		})
 	}
 }
