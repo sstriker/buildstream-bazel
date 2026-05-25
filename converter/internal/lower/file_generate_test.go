@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -1329,5 +1331,89 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") &&
 		!hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
 		t.Errorf("expected (b) or legacy genex tag in fallback; got %v", g.Tags)
+	}
+}
+
+// TestBuildGenexTargets_FoldsProbeData covers Phase 3's probe-data
+// fold: when GenexProbes carries entries, buildGenexTargets merges
+// the INTERFACE_* aggregates and Objects list into the matching
+// codemodel-derived TargetInfo. Probes for unknown targets (no
+// codemodel entry) are dropped silently.
+func TestBuildGenexTargets_FoldsProbeData(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"foo": {
+				Name:      "foo",
+				Type:      "STATIC_LIBRARY",
+				Artifacts: []fileapi.TargetArtifact{{Path: "libfoo.a"}},
+			},
+			"objlib": {
+				Name:      "objlib",
+				Type:      "OBJECT_LIBRARY",
+				Artifacts: []fileapi.TargetArtifact{},
+			},
+		},
+	}
+	probes := []cmakerun.GenexProbe{
+		{
+			Name: "foo",
+			Type: "STATIC_LIBRARY",
+			Interface: map[string]string{
+				"INCLUDE_DIRECTORIES": "/src/include",
+				"LINK_LIBRARIES":      "bar;baz",
+				"COMPILE_DEFINITIONS": "FOO=1",
+			},
+		},
+		{
+			Name:    "objlib",
+			Type:    "OBJECT_LIBRARY",
+			Objects: "/build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o",
+		},
+		{
+			// No matching codemodel entry — dropped silently.
+			Name: "ghost",
+			Type: "EXECUTABLE",
+		},
+	}
+	got := buildGenexTargets(reply, "/build", probes)
+
+	if got["foo"].InterfaceIncludeDirectories != "/src/include" {
+		t.Errorf("foo InterfaceIncludeDirectories = %q", got["foo"].InterfaceIncludeDirectories)
+	}
+	if got["foo"].InterfaceLinkLibraries != "bar;baz" {
+		t.Errorf("foo InterfaceLinkLibraries = %q", got["foo"].InterfaceLinkLibraries)
+	}
+	if got["foo"].InterfaceCompileDefinitions != "FOO=1" {
+		t.Errorf("foo InterfaceCompileDefinitions = %q", got["foo"].InterfaceCompileDefinitions)
+	}
+	if got["objlib"].Objects != "/build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o" {
+		t.Errorf("objlib Objects = %q", got["objlib"].Objects)
+	}
+	if _, ok := got["ghost"]; ok {
+		t.Errorf("ghost target should have been dropped: %+v", got["ghost"])
+	}
+	// Codemodel-side fields survive the merge.
+	if got["foo"].Type != "STATIC_LIBRARY" {
+		t.Errorf("foo Type lost after merge: %q", got["foo"].Type)
+	}
+	if got["foo"].FileLocation != "/build/libfoo.a" {
+		t.Errorf("foo FileLocation lost after merge: %q", got["foo"].FileLocation)
+	}
+}
+
+// TestBuildGenexTargets_NoProbes confirms behavior is unchanged
+// when probes is empty — the probe-fold path is opt-in.
+func TestBuildGenexTargets_NoProbes(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"foo": {Name: "foo", Type: "STATIC_LIBRARY"},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil)
+	if got["foo"].InterfaceIncludeDirectories != "" {
+		t.Errorf("InterfaceIncludeDirectories should be empty without probe; got %q", got["foo"].InterfaceIncludeDirectories)
+	}
+	if got["foo"].Objects != "" {
+		t.Errorf("Objects should be empty without probe; got %q", got["foo"].Objects)
 	}
 }

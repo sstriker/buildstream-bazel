@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -132,6 +133,21 @@ type Options struct {
 	// Extract per-template; if Extract also fails the lift
 	// falls back to legacy.
 	CMakeVars map[string]string
+
+	// GenexProbes carries the per-target probe data captured by
+	// the probe-genex.cmake hook at cmake generation time
+	// (cmakerun.ReadGenexProbe). When non-empty, buildGenexTargets
+	// folds the probe-captured INTERFACE_* aggregates and
+	// TARGET_OBJECTS values into the genexeval.TargetInfo entries
+	// so the (a) evaluator can resolve those genex shapes
+	// directly — retiring the UnsupportedError fall-throughs the
+	// lifter previously had to route to (b) / legacy. Empty
+	// (probe didn't run, cmake < 3.24, or the operator didn't
+	// pass --probe-genex) leaves the new TargetInfo fields blank
+	// and the evaluator falls back as before.
+	//
+	// Phase 3 of the generator-parity uplift in ROADMAP.md.
+	GenexProbes []cmakerun.GenexProbe
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -396,7 +412,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
 		var err error
-		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild), opts.Imports, cc)
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild, opts.GenexProbes), opts.Imports, cc)
 		if err != nil {
 			return nil, err
 		}

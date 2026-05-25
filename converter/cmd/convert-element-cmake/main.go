@@ -270,6 +270,15 @@ func run(a cli.Args) error {
 		hostBuildOrReply = a.ReplyDir
 	}
 
+	// Probe-genex hook output (Phase 3 of the generator-parity
+	// uplift). ReadGenexProbe returns nil silently when the hook
+	// didn't run — single-call site for both opt-in and opt-out
+	// paths.
+	genexProbes, err := cmakerun.ReadGenexProbe(hostBuildOrReply)
+	if err != nil {
+		return failure.New(failure.FileAPIMalformed, "read probe-genex output: %v", err)
+	}
+
 	pkg, err := lower.ToIR(r, g, lower.Options{
 		HostSourceRoot:                    a.SourceRoot,
 		HostPrefixDir:                     prefixAbs,
@@ -279,6 +288,7 @@ func run(a cli.Args) error {
 		TraceRaw:                          traceRaw,
 		LiftConfigureFile:                 a.LiftConfigureFile,
 		CMakeVars:                         cmakeVars,
+		GenexProbes:                       genexProbes,
 		UnsupportedExecuteProcessFallback: a.UnsupportedExecuteProcessFallback,
 	})
 	if err != nil {
