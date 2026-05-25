@@ -330,6 +330,33 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 	}
 
+	// Phase 1 task 1: backtrace-based keyword recovery. Fills
+	// gaps in traceLinkScope by reading the cmake source at the
+	// codemodel's BacktraceGraph file:line via cmakeargv. The
+	// trace-based recovery (if any) takes precedence; backtrace
+	// gap-fills for (target, dep) pairs trace missed.
+	//
+	// The codemodel BacktraceGraph is always populated by cmake
+	// 3.21+, so this path covers the offline-replay case and the
+	// case where --trace-expand wasn't requested.
+	if btScope := backtraceRecoverLinkScope(r); len(btScope) > 0 {
+		if traceLinkScope == nil {
+			traceLinkScope = map[string]map[string]string{}
+		}
+		for tgt, libs := range btScope {
+			if traceLinkScope[tgt] == nil {
+				traceLinkScope[tgt] = map[string]string{}
+			}
+			for lib, kw := range libs {
+				// First-write-wins: trace data already there
+				// is authoritative.
+				if _, present := traceLinkScope[tgt][lib]; !present {
+					traceLinkScope[tgt][lib] = kw
+				}
+			}
+		}
+	}
+
 	cmakeSrc := r.Codemodel.Paths.Source
 	cmakeBuild := r.Codemodel.Paths.Build
 	hostSrc := opts.HostSourceRoot
