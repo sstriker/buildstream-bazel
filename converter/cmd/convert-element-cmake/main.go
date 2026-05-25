@@ -142,6 +142,13 @@ func run(a cli.Args) error {
 			return failure.New(failure.FileAPIMissing, "read vars dump: %v", err)
 		} else if len(vars) > 0 {
 			cmakeVars = vars
+		} else {
+			// Missing vars dump in offline mode silently
+			// disables the (a) genex evaluator (Context is
+			// empty → every genex.UnsupportedError → fall back
+			// to (b) / legacy). Surface this to operators so
+			// the degradation isn't invisible.
+			fmt.Fprintln(os.Stderr, "convert-element-cmake: warning: no cmake-to-bazel.vars.dump found in the reply dir; the (a) genex evaluator will fall back to legacy mode (file(GENERATE) shapes that depend on cmake variables may be less precisely lifted).")
 		}
 	}
 
@@ -210,12 +217,46 @@ func run(a cli.Args) error {
 	if hostBuildDir != "" {
 		tracePath = filepath.Join(hostBuildDir, "trace.jsonl")
 	} else if a.ReplyDir != "" {
-		tracePath = filepath.Join(a.ReplyDir, "trace.jsonl")
+		// Offline mode: trace.jsonl typically sits next to the
+		// reply dir (build/trace.jsonl). The reply dir is
+		// build/.cmake/api/v1/reply, so walk four parents up.
+		tracePath = filepath.Join(filepath.Dir(a.ReplyDir), "..", "..", "..", "trace.jsonl")
+		if abs, absErr := filepath.Abs(tracePath); absErr == nil {
+			tracePath = abs
+		}
+		if _, statErr := os.Stat(tracePath); statErr != nil {
+			// Test fixtures sometimes stash the trace directly
+			// inside the reply dir for convenience.
+			alt := filepath.Join(a.ReplyDir, "trace.jsonl")
+			if _, altErr := os.Stat(alt); altErr == nil {
+				tracePath = alt
+			}
+		}
 	}
 	if tracePath != "" {
 		if body, readErr := os.ReadFile(tracePath); readErr == nil {
 			traceRaw = body
 		}
+	}
+	// Loud degradation on missing trace. Without trace data,
+	// several lower passes silently skip — the rendered
+	// BUILD.bazel is still structurally valid but coverage
+	// is degraded (no PRIVATE/PUBLIC include partition, no
+	// configure_file lift, no IMPORTED-target dep recovery
+	// for static libs, no platform-conditional source partition,
+	// etc.). Surface the gap on stderr so operators see it at
+	// the converter rather than three layers downstream when
+	// something doesn't build; with --strict-trace, refuse
+	// instead.
+	if len(traceRaw) == 0 {
+		const msg = "no cmake trace data available; recovery paths that depend on trace events will be skipped (PUBLIC/PRIVATE include partition, configure_file lift, IMPORTED-target dep recovery, platform-conditional source partition, etc.).\n" +
+			"  To capture trace data, run cmake with:\n" +
+			"    --trace-expand --trace-format=json-v1 --trace-redirect=<build>/trace.jsonl\n" +
+			"  --source-root mode does this automatically; --reply-dir / --cmake-build-dir mode requires the trace file to exist on disk."
+		if a.StrictTrace {
+			return failure.New(failure.MissingTraceData, "%s", msg)
+		}
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: %s\n", msg)
 	}
 
 	// BuildDir is where lower's configure_file recovery reads

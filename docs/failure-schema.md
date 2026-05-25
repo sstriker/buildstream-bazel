@@ -227,6 +227,27 @@ manifest, or stub it like `non_cmake_stubs/glibc/`.
 
 **Emission point:** `lower.lowerTarget` link-deps walk (M2).
 
+### `missing-trace-data`
+
+The converter was invoked with `--strict-trace` but no cmake
+trace data was found (no `trace.jsonl` next to the build dir, or
+the file is empty). Without trace events the converter can't
+populate the PRIVATE/PUBLIC include partition, the
+configure_file lift, IMPORTED-target dep recovery for static
+libs, the platform-conditional source partition, and a few
+other recovery passes that depend on trace-event inspection.
+
+**Operator action:** re-run cmake with
+`--trace-expand --trace-format=json-v1 --trace-redirect=<build>/trace.jsonl`,
+or drop `--strict-trace` to accept the degraded recovery shape
+(the converter still produces a structurally valid BUILD, just
+with less precise lift). `--source-root` mode captures trace data
+automatically; `--reply-dir` / `--cmake-build-dir` mode requires
+the trace file to exist on disk.
+
+**Emission point:** `cmd/convert-element-cmake/main.go` —
+gated on `--strict-trace`.
+
 ### `dep-failed` _(M3a; refined in M3d)_
 
 A transitive cmake dep of this element failed Tier-1; the
