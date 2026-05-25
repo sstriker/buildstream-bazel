@@ -246,15 +246,23 @@ merge cleanly when both axes populate.
 
 Sanitizer-shaped configs are filtered out before the fold runs;
 the `--features` routing for them is operator-controlled cc_toolchain
-wiring rather than per-rule emit. The pattern + a runnable example
-live in [`sanitizer-as-feature.md`](sanitizer-as-feature.md) /
+wiring rather than per-rule emit. The convention + an
+auto-generation slice are documented in
+[`sanitizer-as-feature.md`](sanitizer-as-feature.md) with a
+runnable starting point in
 [`examples/sanitizer-features/`](../../examples/sanitizer-features/):
 
   - cmake-side `CMAKE_<LANG>_FLAGS_<NAME>` defines the per-config
     flag set (unchanged from the typical cmake idiom).
-  - Operator's cc_toolchain carries a `SANITIZER_FEATURES` list
-    (`asan`, `tsan`, `msan`, `ubsan`, `lsan`, `coverage`, `lto`)
-    with flags routed to the right compile + link actions.
+  - **Auto-generation**: `convert-element-cmake
+    --out-sanitizer-features <path>` extracts each
+    sanitizer-shaped config's cmake cache entries and renders
+    a matching cc_toolchain `features.bzl` (one `feature {}` per
+    recognized sanitizer, per-language compile + merged link
+    flag_sets, `enabled = False` opt-in default).
+  - Operator's cc_toolchain threads `SANITIZER_FEATURES` from
+    the generated file (or the hand-curated reference) into
+    `cc_common.create_cc_toolchain_config_info(features = …)`.
   - Operators opt in via `bazel build --features=asan` /
     per-package `package(features = ["asan"])` / per-rule
     `cc_library(features = ["asan"])`.
