@@ -32,9 +32,22 @@ type Reply struct {
 	Toolchains Toolchains
 	CMakeFiles CMakeFiles
 	Cache      Cache
-	// Targets maps target id to its parsed details. Populated lazily by
-	// Load, keyed by the id from Codemodel.Configurations[].Targets[].Id.
+	// Targets maps target id to its parsed details for the primary
+	// configuration (Codemodel.Configurations[0].Name — the first
+	// declared config, typically "Release"). Single-config callers
+	// (BuildType-driven) get the only config's data here; multi-config
+	// callers (BuildTypes-driven) get the primary config and consult
+	// TargetsByConfig for the rest. Populated by Load.
 	Targets map[string]Target
+	// TargetsByConfig maps target id → config name → parsed details.
+	// Carries one entry per (target id, configuration) pair declared
+	// in Codemodel.Configurations. Populated by Load whenever the
+	// reply has more than one Configuration entry (multi-config
+	// generators emit one per CMAKE_CONFIGURATION_TYPES entry); nil
+	// for single-config replies where Targets already carries
+	// everything. Phase 5 of the generator-parity uplift (ROADMAP.md)
+	// consumes this for the per-config compile/link fragment fold.
+	TargetsByConfig map[string]map[string]Target
 	// Directories carries the parsed directory-*.json content for every
 	// ConfigDirectory.JSONFile referenced from Codemodel. Indexed by
 	// JSONFile basename (the codemodel's per-config Directories[]
@@ -102,6 +115,18 @@ func Load(replyDir string) (*Reply, error) {
 		}
 	}
 
+	// Determine the primary configuration name (first declared in
+	// Codemodel.Configurations). For single-config replies there's
+	// exactly one. Empty when the codemodel carries no configurations
+	// (degenerate but theoretically possible — leave Targets empty).
+	primaryConfig := ""
+	if len(r.Codemodel.Configurations) > 0 {
+		primaryConfig = r.Codemodel.Configurations[0].Name
+	}
+	multiConfig := len(r.Codemodel.Configurations) > 1
+	if multiConfig {
+		r.TargetsByConfig = map[string]map[string]Target{}
+	}
 	for _, cfg := range r.Codemodel.Configurations {
 		for _, tref := range cfg.Targets {
 			path := filepath.Join(replyDir, tref.JSONFile)
@@ -109,7 +134,19 @@ func Load(replyDir string) (*Reply, error) {
 			if err := readJSON(path, &t); err != nil {
 				return nil, fmt.Errorf("fileapi: target %s: %w", tref.Name, err)
 			}
-			r.Targets[tref.Id] = t
+			// Targets[] mirrors the primary configuration. Without
+			// this gate, multi-config replies would overwrite the
+			// map with whichever config iterated last — non-
+			// deterministic from a caller's perspective.
+			if cfg.Name == primaryConfig {
+				r.Targets[tref.Id] = t
+			}
+			if multiConfig {
+				if _, ok := r.TargetsByConfig[tref.Id]; !ok {
+					r.TargetsByConfig[tref.Id] = map[string]Target{}
+				}
+				r.TargetsByConfig[tref.Id][cfg.Name] = t
+			}
 		}
 		for _, d := range cfg.Directories {
 			if d.JSONFile == "" {
