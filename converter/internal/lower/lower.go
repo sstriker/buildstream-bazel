@@ -835,6 +835,17 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// first compile group's flags/includes/defines.
 		cg := t.CompileGroups[0]
 		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		// LanguageStandard: cmake records the resolved
+		// CMAKE_<LANG>_STANDARD value (e.g. "17" for cxx_std_17)
+		// per CompileGroup. Most projects already see the standard
+		// materialize as a `-std=…` fragment in
+		// CompileCommandFragments (cmake's generator inlines it
+		// there), so the prepend only fires when the codemodel
+		// records the standard but the fragment didn't pick it
+		// up — covers projects using target_compile_features
+		// without an explicit -std fragment. Idempotent guard:
+		// skip when copts already names a -std=… flag.
+		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
@@ -1596,6 +1607,64 @@ func langSuffix(lang string) string {
 		return "asm"
 	}
 	return strings.ToLower(lang)
+}
+
+// prependLanguageStandardCopt augments copts with a `-std=…`
+// flag derived from cmake's CompileGroup.LanguageStandard when
+// the existing copts don't already name a -std flag. The
+// LanguageStandard.Standard value is the bare number cmake
+// records ("17" for c++17, "11" for c11, etc.); the formatter
+// emits gcc/clang-style `-std=cXX` / `-std=c++XX`.
+//
+// Idempotency: many cmake projects already see the standard
+// inlined into CompileCommandFragments by cmake's generator
+// (e.g. `-std=gnu++17` appears in copts directly). The
+// `-std=`-prefix check skips the prepend in that case so the
+// emitted copts stay byte-stable.
+//
+// Gated on a recognized language — Bazel cc rules don't apply
+// this to non-cc languages (Fortran, ASM) where the
+// `LanguageStandard` field has different semantics.
+//
+// Phase 1 task 3 successor (per
+// docs/design/generator-parity-gaps.md "Easy" section).
+func prependLanguageStandardCopt(lang string, std *fileapi.LanguageStandard, copts []string) []string {
+	if std == nil || std.Standard == "" {
+		return copts
+	}
+	// Skip when copts already names a -std flag.
+	for _, c := range copts {
+		if strings.HasPrefix(c, "-std=") {
+			return copts
+		}
+	}
+	flag := stdFlagFor(lang, std.Standard)
+	if flag == "" {
+		return copts
+	}
+	// Prepend so the standard wins over any later -std= an
+	// operator-defined override might inject through copts.
+	return append([]string{flag}, copts...)
+}
+
+// stdFlagFor formats the gcc/clang `-std=…` flag for one
+// (language, version) pair. Returns "" for unrecognized
+// languages or empty versions.
+func stdFlagFor(lang, version string) string {
+	if version == "" {
+		return ""
+	}
+	switch strings.ToUpper(lang) {
+	case "C":
+		return "-std=c" + version
+	case "CXX":
+		return "-std=c++" + version
+	case "OBJC":
+		return "-std=c" + version
+	case "OBJCXX":
+		return "-std=c++" + version
+	}
+	return ""
 }
 
 // relForSource returns the package-relative path the wrapper
