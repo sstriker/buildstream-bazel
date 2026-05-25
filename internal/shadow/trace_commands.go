@@ -30,27 +30,30 @@ import (
 // called three Extract* functions back-to-back on the same trace)
 // uses this to pay the bytes.Split + json.Unmarshal cost once.
 type Decoded struct {
-	Reads            []string
-	Includes         []TargetIncludeCall
-	Links            []TargetLinkCall
-	ConfigFiles      []ConfigureFileCall
-	FileGenerates    []FileGenerateCall
-	ExecuteProcesses []ExecuteProcessCall
+	Reads                      []string
+	Includes                   []TargetIncludeCall
+	Links                      []TargetLinkCall
+	ConfigFiles                []ConfigureFileCall
+	FileGenerates              []FileGenerateCall
+	ExecuteProcesses           []ExecuteProcessCall
+	PlatformConditionalSources []PlatformConditionalSource
 }
 
 // Decode walks the trace once and dispatches every event to all
 // extractors at the same time. Equivalent in result to calling
 // ExtractReadPaths + ExtractTargetIncludes + ExtractTargetLinks +
-// ExtractConfigureFiles + ExtractFileGenerate + ExtractExecuteProcess
-// on the same trace, but pays the parse cost once rather than per
+// ExtractConfigureFiles + ExtractFileGenerate +
+// ExtractExecuteProcess + ExtractPlatformConditionalSources on
+// the same trace, but pays the parse cost once rather than per
 // extractor. Reads is the deduped slash-style source-tree path
 // list; the call lists (Includes / Links / ConfigFiles /
-// FileGenerates / ExecuteProcesses) preserve insertion order from
-// the trace.
+// FileGenerates / ExecuteProcesses / PlatformConditionalSources)
+// preserve insertion order from the trace.
 func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
 	var d Decoded
+	ifStack := newPlatformIfStack()
 	for _, ev := range events {
 		collectReadPath(ev, sourceRoot, reads)
 		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
@@ -68,6 +71,13 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
 		}
+		// Platform-conditional source attribution. Helper
+		// updates the per-file if-stack and appends any
+		// matching records. Stateful — must run on every
+		// event to keep the stack in sync; see
+		// platform_conditional.go for the source-of-truth
+		// docs.
+		d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, ifStack, sourceRoot, knownTargets, d.PlatformConditionalSources)
 	}
 	d.Reads = make([]string, 0, len(reads))
 	for k := range reads {

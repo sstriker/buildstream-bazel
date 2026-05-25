@@ -576,6 +576,250 @@ func TestToIR_TargetObjectsRef_Subdirectory(t *testing.T) {
 	}
 }
 
+// TestToIR_PlatformConditionalSrcs_Partitioned covers #217 Tier 1.
+// When the trace shows a source was attached to a target inside a
+// recognized `if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")` block,
+// lower must move that source from the flat irt.Srcs to
+// irt.PerPlatform["srcs"][selectKey]. Sources outside the
+// conditional stay in flat srcs — projects without platform
+// conditionals are byte-stable.
+func TestToIR_PlatformConditionalSrcs_Partitioned(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "shared.c", CompileGroupIndex: 0},
+					{Path: "linux.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+	// Trace pinning: linux.c was added inside an
+	// `if(CMAKE_SYSTEM_NAME STREQUAL "Linux")` block. shared.c
+	// has no enclosing if; it stays flat.
+	trace := `
+{"args":["foo","PRIVATE","shared.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":3}
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","linux.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":7}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	if !equal(tgt.Srcs, []string{"shared.c"}) {
+		t.Errorf("flat Srcs = %v, want [shared.c] (linux.c should be partitioned out)", tgt.Srcs)
+	}
+	arm, ok := tgt.PerPlatform["srcs"]["@platforms//os:linux"]
+	if !ok {
+		t.Fatalf("PerPlatform[srcs][linux] missing; got %+v", tgt.PerPlatform)
+	}
+	if !equal(arm, []string{"linux.c"}) {
+		t.Errorf("PerPlatform[srcs][linux] = %v, want [linux.c]", arm)
+	}
+}
+
+// TestToIR_PlatformConditionalSrcs_ArmSorted pins the
+// byte-stability fix: multiple conditional sources for the same
+// OS surface in sorted order under PerPlatform["srcs"][key], not
+// trace-insertion order. emit's strList renders the arm contents
+// verbatim, so the sort must happen at IR-build time.
+func TestToIR_PlatformConditionalSrcs_ArmSorted(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "z.c", CompileGroupIndex: 0},
+					{Path: "a.c", CompileGroupIndex: 0},
+					{Path: "m.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1, 2},
+				}},
+			},
+		},
+	}
+	// All three sources added inside the same conditional,
+	// in non-sorted order. Result should be sorted.
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","z.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":["foo","PRIVATE","a.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":7}
+{"args":["foo","PRIVATE","m.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":8}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":9}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	arm := pkg.Targets[0].PerPlatform["srcs"]["@platforms//os:linux"]
+	want := []string{"a.c", "m.c", "z.c"}
+	if !equal(arm, want) {
+		t.Errorf("PerPlatform[srcs][linux] = %v, want %v (sorted)", arm, want)
+	}
+}
+
+// TestToIR_PlatformConditionalSrcs_MultiLanguage pins that
+// when splitMultiLanguage moves srcs into per-language sub-
+// libraries, the platform-conditional partition still applies
+// to each sub-library. The wrapper's irt.Srcs is empty after
+// the split (so the wrapper has no partition to do), but the
+// per-language subs carry the actual sources and should
+// surface platform-conditional ones under PerPlatform["srcs"].
+func TestToIR_PlatformConditionalSrcs_MultiLanguage(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "shared.c", CompileGroupIndex: 0},
+					{Path: "linux.c", CompileGroupIndex: 0},
+					{Path: "shared.cpp", CompileGroupIndex: 1},
+					{Path: "linux.cpp", CompileGroupIndex: 1},
+				},
+				CompileGroups: []fileapi.CompileGroup{
+					{Language: "C", SourceIndexes: []int{0, 1}},
+					{Language: "CXX", SourceIndexes: []int{2, 3}},
+				},
+			},
+		},
+	}
+	trace := `
+{"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","linux.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":["foo","PRIVATE","linux.cpp"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":7}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":8}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	// Multi-language target produces a wrapper + per-language
+	// sub-libraries (foo, foo_c, foo_cxx). Locate each sub
+	// and check its PerPlatform["srcs"] arm.
+	var fooC, fooCXX *ir.Target
+	for i := range pkg.Targets {
+		switch pkg.Targets[i].Name {
+		case "foo_c":
+			fooC = &pkg.Targets[i]
+		case "foo_cxx":
+			fooCXX = &pkg.Targets[i]
+		}
+	}
+	if fooC == nil || fooCXX == nil {
+		t.Fatalf("missing per-language subs; got targets %+v", pkg.Targets)
+	}
+	if !equal(fooC.Srcs, []string{"shared.c"}) {
+		t.Errorf("foo_c.Srcs = %v, want [shared.c]", fooC.Srcs)
+	}
+	if arm := fooC.PerPlatform["srcs"]["@platforms//os:linux"]; !equal(arm, []string{"linux.c"}) {
+		t.Errorf("foo_c.PerPlatform[srcs][linux] = %v, want [linux.c]", arm)
+	}
+	if !equal(fooCXX.Srcs, []string{"shared.cpp"}) {
+		t.Errorf("foo_cxx.Srcs = %v, want [shared.cpp]", fooCXX.Srcs)
+	}
+	if arm := fooCXX.PerPlatform["srcs"]["@platforms//os:linux"]; !equal(arm, []string{"linux.cpp"}) {
+		t.Errorf("foo_cxx.PerPlatform[srcs][linux] = %v, want [linux.cpp]", arm)
+	}
+}
+
+// TestToIR_PlatformConditionalSrcs_NoTraceByteStable pins the
+// no-regression guard: a project without trace data leaves
+// PerPlatform empty and emits the same flat-srcs shape as
+// before #217. Byte-stable single-platform contract holds for
+// non-conditional projects.
+func TestToIR_PlatformConditionalSrcs_NoTraceByteStable(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "linux.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if !equal(tgt.Srcs, []string{"linux.c"}) {
+		t.Errorf("Srcs = %v, want [linux.c] (no trace → no partition)", tgt.Srcs)
+	}
+	if len(tgt.PerPlatform) != 0 {
+		t.Errorf("PerPlatform = %+v, want empty (no trace → no select arms)", tgt.PerPlatform)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
