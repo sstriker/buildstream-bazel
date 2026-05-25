@@ -245,10 +245,23 @@ same select() shape it already produces for per-platform deltas
 merge cleanly when both axes populate.
 
 Sanitizer-shaped configs are filtered out before the fold runs;
-the `--features` routing for them is a follow-on slice gated on
-cc_toolchain wiring. The Phase 7 audit's
-`sanitizer-select-not-feature` finding surfaces any hand-rolled
-sanitizer select that bypassed the filter.
+the `--features` routing for them is operator-controlled cc_toolchain
+wiring rather than per-rule emit. The pattern + a runnable example
+live in [`sanitizer-as-feature.md`](sanitizer-as-feature.md) /
+[`examples/sanitizer-features/`](../../examples/sanitizer-features/):
+
+  - cmake-side `CMAKE_<LANG>_FLAGS_<NAME>` defines the per-config
+    flag set (unchanged from the typical cmake idiom).
+  - Operator's cc_toolchain carries a `SANITIZER_FEATURES` list
+    (`asan`, `tsan`, `msan`, `ubsan`, `lsan`, `coverage`, `lto`)
+    with flags routed to the right compile + link actions.
+  - Operators opt in via `bazel build --features=asan` /
+    per-package `package(features = ["asan"])` / per-rule
+    `cc_library(features = ["asan"])`.
+
+The Phase 7 audit's `sanitizer-select-not-feature` finding catches
+any hand-rolled per-rule sanitizer select that bypassed the
+convention.
 
 Fold semantics (mirrors the existing per-platform fold):
 
