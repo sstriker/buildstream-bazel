@@ -1,0 +1,179 @@
+// Package configfold projects fileapi.Reply.TargetsByConfig
+// into per-config flag deltas via empfold. It's the building block
+// Phase 5 of the generator-parity uplift (ROADMAP.md) uses to fold
+// multi-config codemodel data into select() arms keyed on
+// //config:<name>.
+//
+// The cross-cutting question the package answers: given N target
+// JSONs for the same cmake target (one per Configuration name),
+// which compile fragments / defines / includes / link fragments
+// are common to every config and which differ per-config?
+//
+// Output shape:
+//
+//   - Baseline: facts (defines / includes / fragments) every config
+//     agrees on. Lower can flatten these into the rule's primary
+//     attribute (e.g. cc_library.defines).
+//
+//   - Deltas: per-config facts. Lower lifts these into
+//     select({"//config:<name>": [...]}) arms wrapping the same
+//     attribute.
+//
+// The package is pure data — no IR, no Bazel, no policy. Callers
+// (lower/) decide how to translate the partition into IR.
+package configfold
+
+import (
+	"sort"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/internal/empfold"
+)
+
+// TargetFold is one cmake target's cross-config partition.
+type TargetFold struct {
+	// Name is the cmake target name.
+	Name string
+
+	// Defines, Includes, LinkFragments, CompileFragments
+	// carry the post-empfold-Partition split for each fact
+	// family. Each map's outer key is the cell (config) name;
+	// Baseline holds facts every cell agreed on.
+	Defines  Partition
+	Includes Partition
+	// LinkFragments is the role-tagged link line: each entry's
+	// key is the verbatim fragment (e.g. "-lz" or "-Wl,--as-needed"
+	// or "/abs/libz.a"), prefixed by role to disambiguate cmake's
+	// commandFragments[].role (libraries / flags / libraryPath /
+	// frameworkPath). Prefix lets a "-lz" library fragment and a
+	// "-lz" flag fragment partition independently.
+	LinkFragments Partition
+	// CompileFragments is the per-language compile flag set
+	// (CompileGroup.CompileCommandFragments[]). One entry per
+	// (language, fragment) pair, prefixed by language to
+	// disambiguate.
+	CompileFragments Partition
+}
+
+// Partition is one fact family's cross-cell split. Baseline keeps
+// facts every declared cell agrees on (value identical across all);
+// Deltas[cell] holds facts that cell observed differently or
+// uniquely.
+type Partition struct {
+	Baseline map[string]bool
+	Deltas   map[string]map[string]bool
+}
+
+// Project folds Reply.TargetsByConfig into per-target cross-config
+// partitions. configs lists every configuration name participating
+// in the fold (typically Reply's Codemodel.Configurations[].Name in
+// declared order). The returned slice is sorted by target name for
+// deterministic output.
+//
+// Targets without a matching entry in every config are still
+// returned — the missing-cell case shows up as "this fact is in
+// every cell that observed the target, but not every declared
+// cell", which empfold.Partition correctly routes to the
+// Deltas[cell] arm of the cells that did observe.
+//
+// Pass r.TargetsByConfig; for single-config replies, r.Targets
+// can be promoted by wrapping in a one-config map externally —
+// but Project on single-config returns no useful split (every
+// fact lands in baseline), so callers should gate on
+// len(configs) > 1.
+func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []TargetFold {
+	// Pre-compute per-target fact tables, keyed (factName → cell → true).
+	type tables struct {
+		defines  map[string]map[string]bool
+		includes map[string]map[string]bool
+		link     map[string]map[string]bool
+		compile  map[string]map[string]bool
+	}
+	perTarget := map[string]*tables{}
+	targetNames := map[string]string{} // id → display name
+
+	for id, byCell := range byConfig {
+		for cfgName, t := range byCell {
+			tbl, ok := perTarget[id]
+			if !ok {
+				tbl = &tables{
+					defines:  map[string]map[string]bool{},
+					includes: map[string]map[string]bool{},
+					link:     map[string]map[string]bool{},
+					compile:  map[string]map[string]bool{},
+				}
+				perTarget[id] = tbl
+			}
+			if t.Name != "" {
+				targetNames[id] = t.Name
+			}
+			for _, cg := range t.CompileGroups {
+				for _, def := range cg.Defines {
+					if tbl.defines[def.Define] == nil {
+						tbl.defines[def.Define] = map[string]bool{}
+					}
+					tbl.defines[def.Define][cfgName] = true
+				}
+				for _, inc := range cg.Includes {
+					if tbl.includes[inc.Path] == nil {
+						tbl.includes[inc.Path] = map[string]bool{}
+					}
+					tbl.includes[inc.Path][cfgName] = true
+				}
+				for _, frag := range cg.CompileCommandFragments {
+					// Disambiguate same-string fragments across
+					// languages — a `-O2` under C compiles
+					// differently from a `-O2` under CXX in
+					// practice (different driver, different
+					// downstream flag normalization), so partition
+					// per (language, fragment).
+					key := cg.Language + "|" + frag.Fragment
+					if tbl.compile[key] == nil {
+						tbl.compile[key] = map[string]bool{}
+					}
+					tbl.compile[key][cfgName] = true
+				}
+			}
+			if t.Link != nil {
+				for _, frag := range t.Link.CommandFragments {
+					key := frag.Role + "|" + frag.Fragment
+					if tbl.link[key] == nil {
+						tbl.link[key] = map[string]bool{}
+					}
+					tbl.link[key][cfgName] = true
+				}
+			}
+		}
+	}
+
+	// Partition each fact family per target.
+	ids := make([]string, 0, len(perTarget))
+	for id := range perTarget {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+
+	out := make([]TargetFold, 0, len(ids))
+	for _, id := range ids {
+		tbl := perTarget[id]
+		name := targetNames[id]
+		if name == "" {
+			name = id
+		}
+		out = append(out, TargetFold{
+			Name:             name,
+			Defines:          partitionToShape(empfold.Partition(configs, tbl.defines)),
+			Includes:         partitionToShape(empfold.Partition(configs, tbl.includes)),
+			LinkFragments:    partitionToShape(empfold.Partition(configs, tbl.link)),
+			CompileFragments: partitionToShape(empfold.Partition(configs, tbl.compile)),
+		})
+	}
+	return out
+}
+
+// partitionToShape lifts the (baseline, deltas) tuple empfold
+// returns into the Partition struct that's easier for callers
+// to handle as a single return value.
+func partitionToShape(baseline map[string]bool, deltas map[string]map[string]bool) Partition {
+	return Partition{Baseline: baseline, Deltas: deltas}
+}
