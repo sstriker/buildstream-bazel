@@ -7,6 +7,188 @@ transition cleanly.
 
 ## Now
 
+- **Generator-parity uplift for the cmake converter.** The
+  current cmake converter reads File API codemodel-v2 +
+  `--trace-expand` and emits BUILD files; that recovers
+  ~67% of FDSDK with fidelity gaps catalogued in
+  `docs/cmake-conversion-deltas.md` and the genex / install
+  bullets under `Later`. A hypothetical `cmake -G Bazel`
+  generator running inside cmake's generation pass would
+  resolve most of those gaps for free by virtue of being
+  cmake. We don't need to build the generator — the same
+  fidelity is reachable by extending hooks already in tree
+  (`CMAKE_PROJECT_TOP_LEVEL_INCLUDES`, the `build.ninja`
+  parser under `converter/internal/ninja/`, the
+  `elementfold` fan-out, the `shadow.Extract*` trace
+  decoders) so that cmake itself is the oracle for the
+  residue the File API doesn't expose. **Bazel-idiom
+  shaping is a first-class goal**, not a post-pass:
+  sanitizer build types become `--features` on the
+  cc_toolchain rather than raw per-config `select()`s;
+  install(EXPORT) bundles become `cc_import` + `pkg_files`
+  rather than tar-and-extract; custom commands become
+  `genrule`s with depfile-derived `srcs`. `buildifier
+  --mode=fix` + `gazelle fix` must remain no-ops over the
+  output (the existing Phase 8 gazelle-roundtrip contract
+  in `docs/design/build-output-conventions.md`).
+
+  Phasing (each phase is a self-contained PR stack with its
+  own render gate):
+
+  - **Phase 1 — read what we already loaded.** Consume the
+    `backtraceGraph` indices on `Target.Dependencies[]` to
+    recover PUBLIC/PRIVATE/INTERFACE keywords without
+    re-parsing `--trace-expand` (trace stays as fallback
+    for cmake < 3.21 where backtraces are incomplete).
+    Plumb `DirectoryInstaller.Type == "file"` /
+    `"directory"` from `directory-*.json` into `ir.Package`
+    so install(FILES) / install(DIRECTORY) lower to
+    `pkg_files` at convert time instead of falling into the
+    round-2 install-tree.tar path. Add a
+    `shadow.ExtractSourceFileProperties` decoder mirroring
+    `ExtractFileGenerate` to recover per-file
+    `COMPILE_DEFINITIONS` / `GENERATED` / `OBJECT_DEPENDS`
+    from the trace. No new cmake hooks; pure consumer-side
+    wins on data the converter already pulls in.
+
+  - **Phase 2 — request `configureLog-v1`.** Add a fourth
+    File API object kind alongside codemodel / cache /
+    cmakeFiles / toolchains in `fileapi.Index.requestQuery`
+    (cmake 3.26+; gracefully absent on older). Decode
+    `try_compile` / `find_package` / `check_*` outcomes into
+    `fileapi.ConfigureLog`. Retire the probe-bucket
+    `unsupported-execute-process` Tier-1 refusals where the
+    outcome is already a recorded try_compile result —
+    emit a `select()` over `@platforms` config_settings with
+    the resolved value baked in.
+
+  - **Phase 3 — genex-probe TOP_LEVEL_INCLUDES extension.**
+    Generalize `dump-vars.cmake` into a probe-staging pass.
+    The lifter walks trace + codemodel for any `$<…>`
+    literal in a non-File-API site (file(GENERATE) CONTENT,
+    add_custom_command argv, install destinations,
+    target-property aggregates), then emits a per-literal
+    `file(GENERATE OUTPUT cmake-to-bazel.genex.${hash}.txt
+    CONTENT "<literal>" [TARGET t])` deferred call and reads
+    the resolved bytes back into the lift Context. Retires
+    `internal/genexeval`'s `UnsupportedError` surface
+    (`TARGET_OBJECTS`, `INTERFACE_*` aggregation,
+    cross-package `TARGET_FILE` PR2, and the other
+    target-evaluator-dependent ops queued under `Later`)
+    by letting cmake's own evaluator answer. The existing
+    (a) Go-side evaluator becomes the offline-replay fast
+    path; the probe becomes the source of truth when a
+    fresh configure is available. The audit tag set
+    collapses from `cmake-codegen-file-generate-genex{,-
+    evaluated,-lifted,-cross-package}` to a single
+    `cmake-codegen-genex-resolved`.
+
+  - **Phase 4 — build.ninja custom-command walk.** Promote
+    `converter/internal/ninja/` from its current
+    `RERUN_CMAKE`-deps-only consumer into a full
+    `CUSTOM_COMMAND` edge walker. Every edge becomes a
+    `genrule`: `cmd` from the rule's resolved command
+    (post-genex, post-VERBATIM-escaping), `srcs` from
+    explicit inputs + depfile-derived implicit inputs,
+    `outs` from the edge outputs. Cross-reference with the
+    trace's `add_custom_command` / `add_custom_target` call
+    sites so source-level naming + visibility survive. For
+    the probe / stamp buckets of `execute_process`
+    (currently refused), add a sibling TOP_LEVEL_INCLUDES
+    hook that `file(GENERATE)`s each `OUTPUT_VARIABLE`'s
+    captured value — cmake already executed the probe, we
+    just persist the result. Stamp values lift to
+    `stamp = 1` genrule attrs (so they don't bake into
+    srckey); probe values lift to `select()` over the
+    `configureLog` keys Phase 2 surfaces. Retires the
+    `execute_process_classify.go` `unknown` / `probe` /
+    `stamp` refusal arms — only the
+    `unsupported-execute-process` failures that genuinely
+    can't be expressed as Bazel rules remain.
+
+  - **Phase 5 — Ninja Multi-Config + sanitizer-as-feature.**
+    `cmakerun.Options.BuildType` → `BuildTypes []string`;
+    when `len(BuildTypes) > 1`, the argv builder switches to
+    `-G "Ninja Multi-Config" -DCMAKE_CONFIGURATION_TYPES=…`.
+    `fileapi.Reply.Targets` re-keys to `map[targetId]map
+    [config]Target`; the existing `internal/empfold`
+    cross-config fold collapses per-config compile/link
+    fragments via `select()` over `//config:<name>`
+    `config_setting`s, reusing the phantom-target select
+    shape that handles per-platform absence today. **Bazel-
+    idiom shaping**: for config names matching a known
+    sanitizer set (`*San`, `MSan`, `TSan`, `UBSan`, `ASan`)
+    or LTO / debug-info variants, lower the per-config
+    fragments to `--features` on the cc_toolchain rather
+    than raw selects — emit `//features:tsan_enabled`
+    config_settings the operator wires to
+    `--features=tsan`, and let the toolchain's feature
+    definitions carry the `-fsanitize=thread` flags. Refuse
+    projects where the trace shows `if(CMAKE_BUILD_TYPE
+    STREQUAL "…")` branches affecting target-graph shape
+    (silently no-op under multi-config; would produce
+    wrong output).
+
+  - **Phase 6 — install(EXPORT) convert-time
+    pre-resolution.** Add a `DirectoryInstaller{Type:"export"}`
+    classifier (`internal/exportshape`) gating on
+    declarative bundles — `CMakePackageConfigHelpers::
+    configure_package_config_file`-generated, no
+    `find_dependency`, no `if()`/`include()` branches in
+    the bundle template. For the declarative subset, run
+    `cmake --install ${BUILD_DIR} --prefix ${SCRATCH}` at
+    convert time alongside the existing fileapi-query pass
+    and emit the resolved `<Pkg>Targets.cmake` as a
+    `pkg_files` group plus per-IMPORTED-target `cc_import`
+    targets + `pkg_files` for the public headers. The
+    non-declarative residue stays on the round-2
+    `_install_tree_extract` fallback. Closes the
+    cross-element `find_package` PR2 (`resolved-lift`
+    piece queued under `Later`) by giving the
+    `*manifest.Resolver` direct access to a synthesized
+    bundle at A-side load time.
+
+  - **Phase 7 — Bazel-idiom shaping audit.** A final-
+    emission pass that audits the converter's IR against a
+    Bazel-idiom checklist extending
+    `docs/design/build-output-conventions.md`: known-config
+    selects routed through `select_to_features`; install
+    bundles routed through `pkg_files` / `pkg_tar`;
+    IMPORTED targets emitted as `cc_import` rather than
+    `cc_library(srcs=[…lib…])` placeholders; headers from
+    `Target.FileSets HEADERS` routed through
+    `cc_library(hdrs = …, includes = …)` with the right
+    `strip_include_prefix` derived from
+    `BUILD_INTERFACE`/`INSTALL_INTERFACE`; gazelle-friendly
+    `# keep` placement on the residue that gazelle would
+    otherwise drop. The `gazelle-roundtrip` conformance
+    gate guards the contract; `cmd/relax-keeps` learns the
+    new shapes.
+
+  Design docs to add as the phases land:
+  `docs/design/generator-parity-uplift.md` (overview +
+  phase boundaries + acceptance criteria),
+  `docs/design/genex-probe-hook.md` (Phase 3 hook protocol
+  + offline-replay semantics), `docs/design/multi-config-
+  fold.md` (Phase 5 fold semantics + sanitizer-as-feature
+  shape + refusal rules), `docs/design/install-export-
+  classifier.md` (Phase 6 declarative-subset rules + the
+  resolver/lift-time wire).
+
+  Acceptance: FDSDK kind:cmake coverage delta drops to
+  near-zero (the structural residue is `try_compile`-keyed
+  target-graph shape per `docs/research/cmake_analysis.md`
+  §7, which the round-2 fallback covers by construction);
+  the `cmake-codegen-*-genex*` audit tag set collapses to
+  one `-resolved` tag; `internal/genexeval`'s
+  `UnsupportedError` surface goes away;
+  `cmake-conversion-deltas.md` "open deltas" closes the
+  configurable items; render-gate output for known
+  sanitizer configs uses `--features` rather than raw
+  per-config selects. The genex / TARGET_FILE / TARGET_OBJECTS
+  / INTERFACE_* aggregation items currently under `Later`
+  retire as Phase 3 lands.
+
 - **Multi-version cmake compatibility shakeout.** Per-object
   schema-major validation now lives in `fileapi/reply.go` and a
   non-blocking `e2e-latest-cmake` CI job runs the converter
