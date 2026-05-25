@@ -480,6 +480,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// install(FILES) → filegroup() lowering (Phase 1 task 2 of the
+	// generator-parity uplift). Appended last so the file-head
+	// targets stay grouped by family: cc rules first, generated
+	// content next, then install-side filegroups.
+	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
 	return pkg, nil
 }
 
