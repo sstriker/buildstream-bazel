@@ -47,6 +47,16 @@ var dumpVarsCMake []byte
 //go:embed cmp0026-shim.cmake
 var cmp0026ShimCMake []byte
 
+// probeGenexCMake is the per-target genex-probe hook. Opt-in via
+// Options.ProbeGenex; the script header documents the output layout
+// under <CMAKE_BINARY_DIR>/cmake-to-bazel.genex/<tgt>/<prop>.txt.
+// Phase 3 of the generator-parity uplift uses these to retire the
+// genexeval UnsupportedError surface by reading cmake's own
+// generation-time evaluator output back into the lift.
+//
+//go:embed probe-genex.cmake
+var probeGenexCMake []byte
+
 // VarsDumpFilename is the basename of the variable dump
 // dump-vars.cmake writes inside the build dir. Exposed so callers
 // (offline test fixtures, the orchestrator's record path) can
@@ -57,6 +67,15 @@ const VarsDumpFilename = "cmake-to-bazel.vars.dump"
 // shim Configure stages into the build dir when Options.CMP0026Shim
 // is true.
 const CMP0026ShimFilename = "cmake-to-bazel.cmp0026-shim.cmake"
+
+// ProbeGenexFilename is the basename of the genex-probe hook
+// Configure stages into the build dir when Options.ProbeGenex is
+// true. ProbeGenexDirname is the per-build subdirectory cmake's
+// file(GENERATE) calls populate at generation time.
+const (
+	ProbeGenexFilename = "cmake-to-bazel.probe-genex.cmake"
+	ProbeGenexDirname  = "cmake-to-bazel.genex"
+)
 
 // SourceDateEpoch is the project-wide fixed timestamp for deterministic
 // configure-time outputs. 2020-01-01T00:00:00Z, picked arbitrarily to be
@@ -143,6 +162,25 @@ type Options struct {
 	// there). convert-element-cmake only flips this on when
 	// --lift-configure-file is set.
 	DumpVars bool
+
+	// ProbeGenex enables the per-target genex-probe hook (Phase 3
+	// of the generator-parity uplift). When true, Configure stages
+	// probe-genex.cmake into the build dir and layers it onto
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES; the hook emits
+	// file(GENERATE) declarations for every cmake target in the
+	// project so cmake's generation phase resolves common genex
+	// shapes (TARGET_FILE / TARGET_FILE_DIR / TARGET_FILE_NAME /
+	// TARGET_OBJECTS / INTERFACE_* aggregates) into per-target
+	// .txt files under <CMAKE_BINARY_DIR>/cmake-to-bazel.genex/.
+	// Off by default; cmake < 3.24 doesn't honor TOP_LEVEL_INCLUDES
+	// via -D so the hook can't run there.
+	//
+	// Layers cleanly with DumpVars and CMP0026Shim — all three join
+	// the same TOP_LEVEL_INCLUDES list with the shim first (so its
+	// get_target_property wrapper installs before either of the
+	// other hooks queries target metadata), then dump-vars, then
+	// probe-genex (whose DEFER runs after both).
+	ProbeGenex bool
 
 	// CMP0026Shim enables the cmake-4.x compatibility shim that
 	// overrides get_target_property to translate LOCATION queries
@@ -243,6 +281,18 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		}
 	}
 
+	// Stage the genex-probe hook (Phase 3 of the generator-parity
+	// uplift) when the caller opted in. Layers onto the same
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES slot as the other hooks —
+	// the slot is a list, so cmake includes them in order.
+	var probeGenexPath string
+	if opts.ProbeGenex {
+		probeGenexPath = filepath.Join(opts.BuildDir, ProbeGenexFilename)
+		if err := os.WriteFile(probeGenexPath, probeGenexCMake, 0o644); err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: stage probe-genex hook: %w", err)
+		}
+	}
+
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
 	// rewrites HOME. Best-effort cleanup; cmake only reads from here.
 	homeDir, err := os.MkdirTemp("", "cmakerun-home-*")
@@ -251,7 +301,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 	defer os.RemoveAll(homeDir)
 
-	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath)
+	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, probeGenexPath)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -311,7 +361,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 // lexicographic key order, then the optional --trace-* and
 // CMAKE_TOOLCHAIN_FILE / CMAKE_PROJECT_TOP_LEVEL_INCLUDES tail.
 // Stable across runs of the same Options.
-func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]string, error) {
+func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath string) ([]string, error) {
 	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
 		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
 	}
@@ -366,10 +416,16 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]strin
 
 	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) is a
 	// list-of-files variable cmake includes in order at the end
-	// of the top-level project() call. Both the dump-vars hook
-	// and the cmp0026 shim layer onto the same slot; emit a
-	// `;`-joined list. shim first so its wrapper is installed
-	// before dump-vars runs and any user code reaches LOCATION.
+	// of the top-level project() call. The opt-in hooks layer
+	// onto the same slot; emit a `;`-joined list with the
+	// ordering rationale:
+	//
+	//   1. cmp0026 shim — wraps get_target_property before any
+	//      subsequent hook queries target metadata via LOCATION.
+	//   2. dump-vars hook — enumerates the variable namespace.
+	//   3. probe-genex hook — emits per-target file(GENERATE)
+	//      declarations after both other hooks have run; relies
+	//      on the same DEFER end-of-directory firing the others use.
 	//
 	// Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake reported it
 	// as a "manually-specified variable not used" in the
@@ -384,6 +440,9 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]strin
 	}
 	if dumpVarsPath != "" {
 		topLevelIncludes = append(topLevelIncludes, dumpVarsPath)
+	}
+	if probeGenexPath != "" {
+		topLevelIncludes = append(topLevelIncludes, probeGenexPath)
 	}
 	if len(topLevelIncludes) > 0 {
 		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+strings.Join(topLevelIncludes, ";"))
