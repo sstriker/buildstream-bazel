@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestShouldSplitCompileGroups_MultiLanguage covers the legacy
@@ -112,6 +113,56 @@ func TestIntSuffix(t *testing.T) {
 	for _, c := range cases {
 		if got := intSuffix(c.in); got != c.want {
 			t.Errorf("intSuffix(%d) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestReclassifyHeaderOnlySources_MovesToHdrs(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c", "decl_only.h", "bar.c"},
+			Hdrs: []string{"foo.h"},
+		}},
+	}
+	reclassifyHeaderOnlySources(pkg, map[string]bool{"decl_only.h": true})
+	wantSrcs := []string{"foo.c", "bar.c"}
+	if len(pkg.Targets[0].Srcs) != len(wantSrcs) {
+		t.Fatalf("Srcs: %v", pkg.Targets[0].Srcs)
+	}
+	if !stringSliceContains(pkg.Targets[0].Hdrs, "decl_only.h") {
+		t.Errorf("decl_only.h should be in hdrs; got %v", pkg.Targets[0].Hdrs)
+	}
+}
+
+func TestReclassifyHeaderOnlySources_DedupesExisting(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"decl_only.h"},
+			Hdrs: []string{"decl_only.h"}, // already there
+		}},
+	}
+	reclassifyHeaderOnlySources(pkg, map[string]bool{"decl_only.h": true})
+	if len(pkg.Targets[0].Hdrs) != 1 {
+		t.Errorf("Hdrs should not have dupe: %v", pkg.Targets[0].Hdrs)
+	}
+	if len(pkg.Targets[0].Srcs) != 0 {
+		t.Errorf("Srcs should be empty: %v", pkg.Targets[0].Srcs)
+	}
+}
+
+func TestCMakeTruthy(t *testing.T) {
+	for _, v := range []string{"TRUE", "true", "ON", "on", "YES", "yes", "1", "Y", "y"} {
+		if !cmakeTruthy(v) {
+			t.Errorf("cmakeTruthy(%q) = false; want true", v)
+		}
+	}
+	for _, v := range []string{"FALSE", "OFF", "NO", "0", "N", "", "anything"} {
+		if cmakeTruthy(v) {
+			t.Errorf("cmakeTruthy(%q) = true; want false", v)
 		}
 	}
 }

@@ -260,6 +260,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
+	// headerOnlySources holds slash-form source paths declared with
+	// set_source_files_properties(... HEADER_FILE_ONLY TRUE). The
+	// per-target source walk reclassifies these from srcs to hdrs.
+	// Populated by collectHeaderOnlySources when the trace decoded
+	// SourceFileProperties calls.
+	var headerOnlySources map[string]bool
 
 	// Phase 1 task 1 keyword recovery runs FIRST — backtrace is
 	// strictly more authoritative than trace in every case where
@@ -346,6 +352,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
+		// Phase 1 task 3 extension — HEADER_FILE_ONLY routing.
+		// Build the per-source path lookup once so the per-target
+		// source walk can reclassify .h-only sources from srcs
+		// into hdrs.
+		headerOnlySources = collectHeaderOnlySources(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
 			platformConditionalSrcs = map[string]map[string]string{}
 			for _, pcs := range decoded.PlatformConditionalSources {
@@ -524,6 +535,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// HEADER_FILE_ONLY reclassification — walk every target's
+	// srcs and move entries the trace's
+	// set_source_files_properties calls marked
+	// HEADER_FILE_ONLY=TRUE into hdrs. Phase 1 task 3 extension
+	// (per docs/design/generator-parity-gaps.md). Post-emit pass
+	// keeps lowerTarget's signature stable and applies uniformly
+	// to all the rule families.
+	reclassifyHeaderOnlySources(pkg, headerOnlySources)
 	// install(FILES) → filegroup() lowering (Phase 1 task 2 of the
 	// generator-parity uplift). Appended last so the file-head
 	// targets stay grouped by family: cc rules first, generated
@@ -1607,6 +1626,91 @@ func langSuffix(lang string) string {
 		return "asm"
 	}
 	return strings.ToLower(lang)
+}
+
+// reclassifyHeaderOnlySources walks every target in pkg.Targets
+// and moves srcs entries the headerOnlySources set marks into
+// hdrs. Iterates pkg.Targets by index so the mutation is in
+// place; preserves the rest of the slice byte-for-byte when no
+// reclassification happens. No-op when headerOnlySources is
+// empty.
+//
+// Idempotent on repeat calls: an entry already in hdrs (via the
+// codemodel's hdrs walk) gets deduped silently.
+func reclassifyHeaderOnlySources(pkg *ir.Package, headerOnlySources map[string]bool) {
+	if len(headerOnlySources) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		var keptSrcs []string
+		for _, src := range tgt.Srcs {
+			if headerOnlySources[src] {
+				// Skip duplicate add: matches the codemodel hdrs
+				// walk's first-write-wins.
+				if !stringSliceContains(tgt.Hdrs, src) {
+					tgt.Hdrs = append(tgt.Hdrs, src)
+				}
+				continue
+			}
+			keptSrcs = append(keptSrcs, src)
+		}
+		tgt.Srcs = keptSrcs
+	}
+}
+
+// collectHeaderOnlySources walks the decoded
+// set_source_files_properties calls and returns the slash-form
+// paths declared with HEADER_FILE_ONLY=TRUE. Truthy values per
+// cmake's boolean convention: TRUE / ON / YES / 1 (case-insensitive).
+//
+// The returned map's keys are source paths as the trace recorded
+// them — typically relative to the call's source dir. Source
+// walks compare against TargetSource.Path (also relative); when
+// the project uses absolute paths, the lookup falls through and
+// the source stays in srcs (best-effort gap fill, not a strict
+// guarantee).
+//
+// Returns nil when no HEADER_FILE_ONLY property surfaces; callers
+// treat nil as the empty set without a separate check.
+func collectHeaderOnlySources(calls []shadow.SourceFilePropertiesCall) map[string]bool {
+	var out map[string]bool
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "HEADER_FILE_ONLY") {
+				continue
+			}
+			if !cmakeTruthy(prop.Value) {
+				continue
+			}
+			if out == nil {
+				out = map[string]bool{}
+			}
+			for _, f := range call.Files {
+				out[f] = true
+			}
+		}
+	}
+	return out
+}
+
+// cmakeTruthy mirrors cmake's documented truthy interpretation
+// for boolean cache values: TRUE / ON / YES / 1 / Y are true
+// (case-insensitive); everything else is false.
+//
+// Stricter than cmake's full if() type-coerced evaluator —
+// HEADER_FILE_ONLY's documented contract is a plain boolean,
+// not a generic expression, so the narrow form is correct here.
+func cmakeTruthy(v string) bool {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "TRUE", "ON", "YES", "1", "Y":
+		return true
+	}
+	return false
 }
 
 // prependLanguageStandardCopt augments copts with a `-std=…`
