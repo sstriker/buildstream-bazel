@@ -260,6 +260,42 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
+
+	// Phase 1 task 1 keyword recovery runs FIRST — backtrace is
+	// strictly more authoritative than trace in every case where
+	// they disagree:
+	//
+	//   - Macro-wrapped target_link_libraries: trace records the
+	//     macro's inner call (the keyword the macro author chose);
+	//     backtrace walks to the user's outer call site and
+	//     recovers the keyword the user wrote. User intent wins.
+	//
+	//   - Both agree: order doesn't matter; backtrace's value is
+	//     identical to what trace would write.
+	//
+	// The trace block below has a first-write-wins guard on its
+	// per-(target, lib) population, so once backtrace pre-populates
+	// a pair the trace processing leaves it alone — backtrace's
+	// (outer-frame) keyword survives.
+	//
+	// The one case trace handles that backtrace can't: `target_link_libraries(foo
+	// PUBLIC ${SOME_DEP_VAR})` — the dep name in the source argv
+	// is `${SOME_DEP_VAR}`, not the expanded literal, so
+	// cmakeargv's literal match against the codemodel's dep name
+	// misses. The trace's post-expansion argv handles it; backtrace
+	// leaves the entry unpopulated, trace fills the gap. (The
+	// reverse case — trace missing a keyword backtrace recovers —
+	// is what the offline-replay-no-trace path always exercises.)
+	if btScope := backtraceRecoverLinkScope(r); len(btScope) > 0 {
+		traceLinkScope = map[string]map[string]string{}
+		for tgt, libs := range btScope {
+			traceLinkScope[tgt] = map[string]string{}
+			for lib, kw := range libs {
+				traceLinkScope[tgt][lib] = kw
+			}
+		}
+	}
+
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
 		decoded := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
@@ -325,33 +361,6 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				// projects need a list-valued mapping.
 				if _, ok := platformConditionalSrcs[pcs.Target][pcs.Source]; !ok {
 					platformConditionalSrcs[pcs.Target][pcs.Source] = pcs.SelectKey
-				}
-			}
-		}
-	}
-
-	// Phase 1 task 1: backtrace-based keyword recovery. Fills
-	// gaps in traceLinkScope by reading the cmake source at the
-	// codemodel's BacktraceGraph file:line via cmakeargv. The
-	// trace-based recovery (if any) takes precedence; backtrace
-	// gap-fills for (target, dep) pairs trace missed.
-	//
-	// The codemodel BacktraceGraph is always populated by cmake
-	// 3.21+, so this path covers the offline-replay case and the
-	// case where --trace-expand wasn't requested.
-	if btScope := backtraceRecoverLinkScope(r); len(btScope) > 0 {
-		if traceLinkScope == nil {
-			traceLinkScope = map[string]map[string]string{}
-		}
-		for tgt, libs := range btScope {
-			if traceLinkScope[tgt] == nil {
-				traceLinkScope[tgt] = map[string]string{}
-			}
-			for lib, kw := range libs {
-				// First-write-wins: trace data already there
-				// is authoritative.
-				if _, present := traceLinkScope[tgt][lib]; !present {
-					traceLinkScope[tgt][lib] = kw
 				}
 			}
 		}
