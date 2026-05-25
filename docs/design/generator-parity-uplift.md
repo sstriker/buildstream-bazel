@@ -38,12 +38,15 @@ Three slices, all decoder-side. No new cmake hooks.
   `--trace-expand`. The trace path stays as fallback for
   cmake < 3.21 where backtraces are incomplete.
 
-- **Directory installers → `pkg_files`** (queued; needs
-  `ir.KindPkgFiles` + emitter + `rules_pkg` in project B).
-  `DirectoryInstaller.Type == "file"` / `"directory"` from
-  `directory-*.json` already loaded; lower it to `pkg_files`
-  at convert time instead of letting it fall into the round-2
-  install-tree.tar.
+- **Directory installers → `filegroup()`** (✓ landed for
+  install(FILES); install(DIRECTORY) queued).
+  `lower/directory_installers.go` walks
+  `DirectoryInstaller.Type == "file"` entries and emits one
+  `filegroup()` per destination, grouped + deduped, with names
+  `install_files__<sanitized-dest>`. New `ir.KindFilegroup` +
+  emitter use Bazel-native `filegroup` (no `rules_pkg` dep);
+  the pkg_files variant for per-file destination renames slots
+  in alongside as a future kind.
 
 - **`shadow.ExtractSourceFileProperties`** (✓ landed). Decoder
   for `set_source_files_properties(<files> [DIRECTORY …]
@@ -131,58 +134,67 @@ and the evaluator falls back as before — back-compat preserved.
 
 Partial. Walker helpers landed
 (`ninja.CustomCommandEdges`, `ninja.DepfileFor`,
-`ninja.DescriptionFor`); consumer that emits genrules from the
-edge list, plus the probe-bucket execute_process rescue via the
-configureLog, is queued.
+`ninja.DescriptionFor`); probe / stamp execute_process rescue
+via dump-vars ✓ landed; standalone genrule emission from
+`CustomCommandEdges` remains queued.
 
 Two halves:
 
-- **Custom command edges → genrules.** Walk every `build` whose
-  `Rule` is `CUSTOM_COMMAND`; emit one `ir.KindGenrule` per
-  edge with `cmd` from the resolved command (post-genex,
-  post-VERBATIM-escaping via `ninja.CommandFor`), `srcs` from
-  explicit inputs + depfile-derived implicit inputs, `outs`
-  from the edge outputs. Cross-reference with the trace's
+- **Custom command edges → genrules** (queued). Walk every
+  `build` whose `Rule` is `CUSTOM_COMMAND`; emit one
+  `ir.KindGenrule` per edge with `cmd` from the resolved
+  command (post-genex, post-VERBATIM-escaping via
+  `ninja.CommandFor`), `srcs` from explicit inputs +
+  depfile-derived implicit inputs, `outs` from the edge
+  outputs. Cross-reference with the trace's
   `add_custom_command` / `add_custom_target` call sites to
-  preserve source-level naming and visibility.
+  preserve source-level naming and visibility. Dedup against
+  the existing `add_custom_command` codegen-recovery flow to
+  avoid double-emitting edges that already produced a genrule
+  via the generated-source recovery path.
 
-- **Probe / stamp execute_process rescue.** Today
-  `execute_process_classify.go` classifies into five buckets
-  and refuses three (`stamp` / `probe` / `unknown`). The
-  rescue paths:
+- **Probe / stamp execute_process rescue** (✓ landed).
+  `recoverExecuteProcess`'s default arm now skips refusal for
+  BucketProbe / BucketStamp calls whose `OUTPUT_VARIABLE` is
+  already in `cmakeVars` (captured by the dump-vars hook at
+  end-of-configure). Downstream `configure_file` and
+  `file(GENERATE)` lifts consume the value through `cmakeVars`,
+  so no Bazel-side emission for the probe call itself is needed
+  — the rescue collapses the probe's effect into the existing
+  variable-substitution path. Back-compat preserved: when
+  `--lift-configure-file` is off the dump hook doesn't fire,
+  `cmakeVars` is empty, and the refusal still surfaces.
 
-  - **Probe bucket** (e.g. `gcc --version`, `pkg-config --cflags`)
-    → cross-reference the OUTPUT_VARIABLE with `configureLog`
-    `try_compile-v1` / `find_package-v1` events: if the same
-    answer surfaces in a logged event, emit `select()` arms
-    keyed on `@platforms` config_settings rather than refusing.
-  - **Stamp bucket** (`git rev-parse HEAD`, etc.) → emit
-    `stamp = 1` genrule attributes so the value doesn't bake
-    into srckey but is still available at consumer build time.
-
-  A sibling TOP_LEVEL_INCLUDES hook (companion to probe-genex)
-  can extend the rescue: for every refused
-  `execute_process(... OUTPUT_VARIABLE X)`, emit a
-  `file(GENERATE OUTPUT cmake-to-bazel.probe-exec/X.txt
-  CONTENT "${X}")` so cmake's deferred evaluator captures the
-  resolved bytes after the OUTPUT_VARIABLE has been set.
-
-Both halves retire the matching arms of the
-`unsupported-execute-process` Tier-1 schema.
+  The configureLog-driven rescue (cross-referencing
+  `try_compile-v1` / `find_package-v1` events with refused
+  probes) is a strict extension: it covers probes whose
+  OUTPUT_VARIABLE landed in cmake's cache via a Check / probe
+  module rather than directly in the project's variables.
+  Lands once a fixture forces the distinction.
 
 ## Phase 5 — Ninja Multi-Config + sanitizer-as-feature
 
-Plumbing landed:
+Plumbing + cross-config Partition landed:
 - `cmakerun.Options.BuildTypes []string` switches the generator
   to `Ninja Multi-Config` with the entries joined into
-  `-DCMAKE_CONFIGURATION_TYPES=<a;b;c>`.
+  `-DCMAKE_CONFIGURATION_TYPES=<a;b;c>`. CLI surface via
+  `convert-element-cmake --build-types=A,B,C`.
 - `fileapi.Reply.TargetsByConfig map[id]map[config]Target`
   carries per-config target data; `Reply.Targets` retains the
   primary config (first declared in `Configurations`) so existing
   single-config consumers keep working.
+- `converter/internal/configfold` projects `TargetsByConfig` into
+  per-target `TargetFold` partitions over `empfold.Partition`:
+  Defines / Includes / LinkFragments / CompileFragments each
+  expose `{Baseline, Deltas[cell]}` for the downstream emit.
+- `configfold.SanitizerFeature(config)` maps cmake config names
+  matching known sanitizer / instrumentation patterns (ASan /
+  TSan / MSan / UBSan / LSan / Coverage / LTO + suffix variants)
+  onto the cc_toolchain feature name a Bazel build would use.
 
-Queued: the cross-config fold under `internal/empfold` and the
-Bazel-idiom shaping for sanitizer / LTO / debug-info config names.
+Queued: the lower-side consumer that translates `TargetFold` +
+`SanitizerFeature` into IR — `select()` arms for non-feature
+configs, `--features` routing for the sanitizer subset.
 
 Fold semantics (mirrors the existing per-platform fold):
 
@@ -211,10 +223,24 @@ sanitizer / instrumentation patterns:
 
 ## Phase 6 — install(EXPORT) convert-time pre-resolution
 
-Classifier landed (`converter/internal/exportshape`); the
-convert-time emission (running `cmake --install` to materialize
-the resolved bundle, then emitting `cc_import` + `pkg_files`)
-is queued.
+Classifier + emit shape landed:
+- `converter/internal/exportshape.Classify` decides declarative
+  vs imperative per install(EXPORT) installer; Verdict carries
+  Reasons[] for the audit gate.
+- `cmakerun.BuildAndInstall` + `cmakerun.WalkInstallPrefix`
+  drive the `cmake --build` + `cmake --install` step at convert
+  time (Phase 6 gates on the classifier verdict).
+- `exportshape.EmitDeclarative` projects the declarative bundle
+  + the materialized install tree into IR: one `cc_import` per
+  STATIC/SHARED/MODULE target, one `cc_library` (header-only) per
+  INTERFACE_LIBRARY, one filegroup per target's public headers,
+  one bundle-wide `cmake_config_bundle` filegroup for the
+  generated `<Pkg>{Config,ConfigVersion,Targets}.cmake` files.
+
+Queued: the convert-element-cmake wiring that runs
+BuildAndInstall when any declarative installer surfaces, walks
+the install prefix, calls EmitDeclarative, appends results to
+pkg.Targets.
 
 Verdict shape (`exportshape.Classify`):
 
@@ -252,23 +278,31 @@ A-side load time.
 
 ## Phase 7 — Bazel-idiom shaping audit
 
-Queued. A final-emission pass that audits the converter's IR
-against the Bazel-idiom checklist this doc establishes:
+✓ Audit framework + first checks landed.
+`converter/internal/bazelidiom.Audit` parses emitted BUILD bytes
+and surfaces findings for known anti-patterns:
 
-- Known-config selects routed through `select_to_features`.
-- Install bundles routed through `pkg_files` / `pkg_tar`.
-- IMPORTED targets emitted as `cc_import` rather than
-  `cc_library(srcs=[…lib…])` placeholders.
-- Headers from `Target.FileSets HEADERS` routed through
-  `cc_library(hdrs = …, includes = …)` with the right
-  `strip_include_prefix` derived from `BUILD_INTERFACE` /
-  `INSTALL_INTERFACE`.
-- Gazelle-friendly `# keep` placement on the residue that
-  gazelle would otherwise drop.
+- `empty-cc-library` — cc_library with no srcs AND no hdrs
+  (placeholder; typically signals upstream lowerer refused).
+- `empty-cc-import` — cc_import with neither static nor shared
+  library (unusable; consumers can't link).
+- `empty-srcs` — cc_binary / cc_test with no srcs (Bazel
+  rejects at build time).
+- `sanitizer-select-not-feature` — copts / linkopts / defines
+  is a select() on sanitizer-shaped config_setting labels
+  (//config:asan, //config:tsan_enabled, …); the Bazel-idiomatic
+  form is a cc_toolchain feature.
 
-The `gazelle-roundtrip` conformance gate
-([`build-output-conventions.md`](build-output-conventions.md))
-guards the contract; `cmd/relax-keeps` learns the new shapes.
+Wiring: `convert-element-cmake --audit-bazel-idiom` runs the pass
+after emission and prints findings to stderr;
+`--audit-bazel-idiom-report <path>` writes them as JSON.
+Observational, not prescriptive — findings inform upstream
+lowerer prioritization rather than rewriting emit.
+
+Queued for future audit extensions: header-fileset-derived
+strip_include_prefix checks, `# keep` placement on
+gazelle-vulnerable attrs, IMPORTED targets emitted as
+`cc_library(srcs=[…lib…])` instead of `cc_import`.
 
 ## Acceptance criteria
 
