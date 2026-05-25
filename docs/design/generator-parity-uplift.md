@@ -46,18 +46,37 @@ Three slices, all decoder-side. No new cmake hooks.
     every `TargetDependency.Backtrace` to the outermost
     user-source frame, reads the cmake call via the new
     `converter/internal/cmakeargv` lexer, and recovers the
-    PUBLIC / PRIVATE / INTERFACE keyword. Merged with the
-    trace-based recovery (trace wins where present; backtrace
-    gap-fills). Robust over trace because (1) it's always
-    available (no `--trace-expand` requirement); (2) it walks
-    to the outermost user frame so macro-wrapped TLL calls
-    recover from the user's call site rather than the macro's;
-    (3) it unwraps `$<BUILD_INTERFACE:dep>` / `$<INSTALL_INTERFACE:dep>`
-    via `stripGenexWrapper` so genex-gated deps still match.
+    PUBLIC / PRIVATE / INTERFACE keyword. **Backtrace runs
+    first** (it's strictly more authoritative); the trace-based
+    recovery fills only the gaps backtrace can't address.
 
-  cmake's BacktraceGraph requires cmake 3.21+ for complete
-  per-property backtraces; older cmakes leave incomplete data
-  and the trace path remains the fallback.
+    Backtrace is more authoritative because:
+
+    1. **Always available** — codemodel BacktraceGraph is part
+       of fileapi; no `--trace-expand` dependency.
+    2. **Recovers user intent through macros** — walks to the
+       outermost user-source frame. A `my_link_helper(foo PUBLIC
+       zlib)` macro that internally calls
+       `target_link_libraries(foo INTERFACE zlib)` recovers
+       PUBLIC (user's intent), not INTERFACE (macro author's
+       choice). Trace alone would record only the inner call.
+    3. **Genex-wrapped deps** unwrap via `stripGenexWrapper`
+       (`$<BUILD_INTERFACE:zlib>` → `zlib`) so genex-gated deps
+       still match.
+
+    The one case where trace is needed:
+    `target_link_libraries(foo PUBLIC ${SOME_DEP_VAR})` — the
+    source argv carries `${SOME_DEP_VAR}` literally, so
+    cmakeargv's literal match against the codemodel's dep name
+    misses. Trace's post-expansion argv has the resolved
+    literal; trace fills the gap (the trace block's existing
+    first-write-wins guard means backtrace data is preserved
+    elsewhere).
+
+    cmake's BacktraceGraph requires cmake 3.21+ for complete
+    per-property backtraces; older cmakes leave incomplete data
+    and trace stays the primary recovery there by virtue of
+    backtrace returning no entries.
 
 - **Directory installers → `filegroup()`** (✓ landed for both
   install(FILES) and install(DIRECTORY)).
