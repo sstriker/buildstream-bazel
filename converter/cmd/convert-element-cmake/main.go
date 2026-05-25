@@ -96,6 +96,7 @@ func run(a cli.Args) error {
 			// elements that don't need the captured namespace.
 			DumpVars:    a.LiftConfigureFile,
 			CMP0026Shim: a.CMP0026Shim,
+			ProbeGenex:  a.ProbeGenex,
 			Stdout:      os.Stderr, // route cmake noise to our stderr
 			Stderr:      os.Stderr,
 		}

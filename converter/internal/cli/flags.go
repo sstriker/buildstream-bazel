@@ -198,6 +198,21 @@ type Args struct {
 	// `$<TARGET_FILE:foo>` text instead of a path. See #208.
 	CMP0026Shim bool
 
+	// ProbeGenex toggles the per-target genex-probe hook (Phase 3
+	// of the generator-parity uplift in ROADMAP.md). When true,
+	// convert-element-cmake stages probe-genex.cmake into the build
+	// dir and layers it onto CMAKE_PROJECT_TOP_LEVEL_INCLUDES; the
+	// hook walks BUILDSYSTEM_TARGETS recursively from the source
+	// root and emits file(GENERATE) declarations capturing common
+	// genex shapes (TARGET_FILE / TARGET_OBJECTS / INTERFACE_*
+	// aggregates) into per-target probe files. The lift can then
+	// consult cmakerun.ReadGenexProbe to retire UnsupportedError
+	// sites in internal/genexeval where the resolution depends on
+	// cmake's transitive-property walk. Off by default; the hook
+	// requires cmake 3.24+ for CMAKE_PROJECT_TOP_LEVEL_INCLUDES to
+	// honor the -D injection.
+	ProbeGenex bool
+
 	// PrefixDir, when non-empty, is added to CMAKE_PREFIX_PATH. Holds the
 	// synthesized cmake-config bundles + zero-byte IMPORTED_LOCATION
 	// stubs that let find_package resolve out-of-tree deps. The
@@ -280,6 +295,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls (stamp / probe / unknown buckets), emit a placeholder BUILD.bazel listing every non-UTILITY codemodel target as an empty cc_library / cc_binary / cc_library-interface stub with public visibility — instead of exiting Tier-1 with unsupported-execute-process. Step 2 (this PR) only restores label resolution at analysis time; the per-target install_tree.tar wiring (cc_import / sh_binary referencing artifact paths derived from Target.Install.Destinations) lands in Step 2.5, after which downstream consumers' compile/link actions resolve as well. Off by default to preserve the strict-fail behaviour. See docs/design/cmake-execute-process-round2-fallback.md.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "inject a cmake function override that translates get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time. Only meaningful under cmake 4.x (which removed CMP0026 OLD); cmake 3.x still resolves LOCATION natively. Opt-in because the override changes LOCATION's return shape for the entire project (generator expression instead of resolved path). See #208.")
+	fs.BoolVar(&a.ProbeGenex, "probe-genex", false, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). On opt-in cmake emits file(GENERATE) for each target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift can read post-walk resolved bytes via cmakerun.ReadGenexProbe instead of reimplementing the cmake-side evaluator. Requires cmake 3.24+ for the TOP_LEVEL_INCLUDES injection to fire.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
