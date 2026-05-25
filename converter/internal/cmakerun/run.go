@@ -83,7 +83,36 @@ type Options struct {
 	ToolchainCMakeFile string
 
 	// BuildType is passed as -DCMAKE_BUILD_TYPE. Defaults to Release.
+	// Used by the single-config Ninja generator; mutually exclusive
+	// with BuildTypes below.
 	BuildType string
+
+	// BuildTypes, when non-empty, switches Configure to the
+	// "Ninja Multi-Config" generator and passes the entries as
+	// -DCMAKE_CONFIGURATION_TYPES=<joined ;>. The codemodel-v2 reply
+	// then carries one Configuration entry per name with per-config
+	// target-*.json files. Phase 5 of the generator-parity uplift
+	// (ROADMAP.md) uses this to capture per-config compile/link
+	// fragments in a single configure pass and fold them via
+	// select() at emit time — including Bazel-idiom shaping for
+	// sanitizer / LTO / debug-info variants whose flag deltas lower
+	// to --features on the cc_toolchain.
+	//
+	// BuildTypes and BuildType are mutually exclusive; Configure
+	// rejects callers that set both. Order in BuildTypes is
+	// preserved on the wire — cmake's Multi-Config generator uses
+	// the first entry as the default config for tools that don't
+	// pass --config, so callers that want "Release-first" should
+	// place "Release" at index 0.
+	//
+	// Custom config names (TSan, ASan, UBSan, …) work natively —
+	// cmake treats CMAKE_CONFIGURATION_TYPES as an opaque list. The
+	// project must define CMAKE_<LANG>_FLAGS_<NAME> /
+	// CMAKE_EXE_LINKER_FLAGS_<NAME> for every non-standard entry
+	// (typically via a cmake/Sanitizers.cmake module or a toolchain
+	// file); cmake reports the resolved per-config fragments in the
+	// codemodel either way.
+	BuildTypes []string
 
 	// ExtraCacheVars are additional cmake cache entries passed as
 	// -D<name>=<value>. Rendered in lexicographic key order so the
@@ -165,7 +194,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if opts.SourceRoot == "" || opts.BuildDir == "" {
 		return Reply{}, fmt.Errorf("cmakerun: SourceRoot and BuildDir required")
 	}
-	if opts.BuildType == "" {
+	if opts.BuildType == "" && len(opts.BuildTypes) == 0 {
 		opts.BuildType = "Release"
 	}
 
@@ -286,13 +315,42 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]strin
 	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
 		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
 	}
+	if _, ok := opts.ExtraCacheVars["CMAKE_CONFIGURATION_TYPES"]; ok {
+		return nil, fmt.Errorf("cmakerun: CMAKE_CONFIGURATION_TYPES in ExtraCacheVars; use Options.BuildTypes instead")
+	}
+	if opts.BuildType != "" && len(opts.BuildTypes) > 0 {
+		return nil, fmt.Errorf("cmakerun: BuildType (%q) and BuildTypes (%v) are mutually exclusive", opts.BuildType, opts.BuildTypes)
+	}
 
 	argv := []string{
 		"-S", opts.SourceRoot,
 		"-B", opts.BuildDir,
-		"-G", "Ninja",
-		"-DCMAKE_BUILD_TYPE=" + opts.BuildType,
-		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+	if len(opts.BuildTypes) > 0 {
+		// Multi-config: validate that entries are non-empty and
+		// reject duplicates so the codemodel-v2 reply doesn't end
+		// up with two same-named Configuration entries.
+		seen := map[string]bool{}
+		for i, bt := range opts.BuildTypes {
+			if bt == "" {
+				return nil, fmt.Errorf("cmakerun: BuildTypes[%d] is empty", i)
+			}
+			if seen[bt] {
+				return nil, fmt.Errorf("cmakerun: BuildTypes contains duplicate %q", bt)
+			}
+			seen[bt] = true
+		}
+		argv = append(argv,
+			"-G", "Ninja Multi-Config",
+			"-DCMAKE_CONFIGURATION_TYPES="+strings.Join(opts.BuildTypes, ";"),
+			"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+		)
+	} else {
+		argv = append(argv,
+			"-G", "Ninja",
+			"-DCMAKE_BUILD_TYPE="+opts.BuildType,
+			"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+		)
 	}
 
 	if len(opts.ExtraCacheVars) > 0 {

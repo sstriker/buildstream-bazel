@@ -191,3 +191,133 @@ func TestBuildCmakeArgv_CMP0026ShimComposesWithDumpVars(t *testing.T) {
 		t.Errorf("missing arg %q in %q", want, got)
 	}
 }
+
+// TestBuildCmakeArgv_MultiConfig verifies BuildTypes switches the
+// generator to "Ninja Multi-Config" with the entries joined into
+// -DCMAKE_CONFIGURATION_TYPES, in declared order.
+func TestBuildCmakeArgv_MultiConfig(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildTypes: []string{"Release", "Debug", "RelWithDebInfo"},
+	}, "", "")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	wantHead := []string{
+		"-S", "/src",
+		"-B", "/build",
+		"-G", "Ninja Multi-Config",
+		"-DCMAKE_CONFIGURATION_TYPES=Release;Debug;RelWithDebInfo",
+		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+	if !reflect.DeepEqual(got[:len(wantHead)], wantHead) {
+		t.Errorf("argv head mismatch\n got: %q\nwant: %q", got[:len(wantHead)], wantHead)
+	}
+	// BuildType isn't passed when BuildTypes is set.
+	for _, a := range got {
+		if strings.HasPrefix(a, "-DCMAKE_BUILD_TYPE=") {
+			t.Errorf("unexpected -DCMAKE_BUILD_TYPE in multi-config argv: %v", got)
+		}
+	}
+}
+
+// TestBuildCmakeArgv_MultiConfigCustomTypes covers the sanitizer-
+// variant naming pattern: cmake doesn't care that names aren't from
+// the standard four, and the codemodel-v2 reply carries one
+// Configuration entry per name.
+func TestBuildCmakeArgv_MultiConfigCustomTypes(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildTypes: []string{"Release", "ASan", "TSan", "UBSan"},
+	}, "", "")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	wantArg := "-DCMAKE_CONFIGURATION_TYPES=Release;ASan;TSan;UBSan"
+	found := false
+	for _, a := range got {
+		if a == wantArg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("missing %q in argv: %q", wantArg, got)
+	}
+}
+
+// TestBuildCmakeArgv_MultiConfigRejectsEmptyEntry catches a stray
+// empty-string config name (would emit CMAKE_CONFIGURATION_TYPES=";Release;…"
+// which cmake interprets as a default-config entry alongside the real
+// names — silent footgun).
+func TestBuildCmakeArgv_MultiConfigRejectsEmptyEntry(t *testing.T) {
+	_, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildTypes: []string{"Release", ""},
+	}, "", "")
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	if !strings.Contains(err.Error(), "BuildTypes[1] is empty") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildCmakeArgv_MultiConfigRejectsDuplicate prevents the codemodel
+// from ending up with two same-named Configuration entries — cmake
+// would deduplicate silently, but the duplication is a real bug in
+// the caller worth surfacing.
+func TestBuildCmakeArgv_MultiConfigRejectsDuplicate(t *testing.T) {
+	_, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildTypes: []string{"Release", "Debug", "Release"},
+	}, "", "")
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildCmakeArgv_RejectsConfigTypesInExtras catches the misuse
+// where CMAKE_CONFIGURATION_TYPES leaks into ExtraCacheVars. Same
+// rationale as the CMAKE_BUILD_TYPE-in-extras rejection: the
+// dedicated BuildTypes slot must win deterministically.
+func TestBuildCmakeArgv_RejectsConfigTypesInExtras(t *testing.T) {
+	_, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildTypes: []string{"Release"},
+		ExtraCacheVars: map[string]string{
+			"CMAKE_CONFIGURATION_TYPES": "Release;Debug",
+		},
+	}, "", "")
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	if !strings.Contains(err.Error(), "CMAKE_CONFIGURATION_TYPES in ExtraCacheVars") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestBuildCmakeArgv_RejectsBothBuildTypeAndBuildTypes guards the
+// mutex: callers must pick exactly one of the two options.
+func TestBuildCmakeArgv_RejectsBothBuildTypeAndBuildTypes(t *testing.T) {
+	_, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildType:  "Release",
+		BuildTypes: []string{"Debug"},
+	}, "", "")
+	if err == nil {
+		t.Fatal("expected error; got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
