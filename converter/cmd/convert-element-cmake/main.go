@@ -88,6 +88,8 @@ func run(a cli.Args) error {
 			BuildDir:           buildDir,
 			PrefixDir:          a.PrefixDir,
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
+			BuildType:          a.BuildType,
+			BuildTypes:         a.BuildTypes,
 			// DumpVars only when --lift-configure-file is on:
 			// the dump hook overrides project/operator-supplied
 			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES and triggers a

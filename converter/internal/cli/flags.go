@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Exit codes documented in the README. These map onto the failure-tier model:
@@ -213,6 +214,28 @@ type Args struct {
 	// honor the -D injection.
 	ProbeGenex bool
 
+	// BuildType selects the cmake configuration name passed via
+	// -DCMAKE_BUILD_TYPE. Empty defaults to "Release" inside
+	// cmakerun.Configure. Mutually exclusive with BuildTypes —
+	// when BuildTypes is non-empty, BuildType must be empty.
+	BuildType string
+
+	// BuildTypes selects the cmake "Ninja Multi-Config" generator
+	// path (Phase 5 of the generator-parity uplift). When non-empty,
+	// the configure pass runs once with CMAKE_CONFIGURATION_TYPES=
+	// <joined ;> and the codemodel reply carries one Configuration
+	// entry per name. Phase 5's downstream fold (queued) collapses
+	// per-config compile/link fragments via select() arms over
+	// //config:<name> config_settings; for sanitizer-shaped names
+	// (ASan / TSan / MSan / UBSan / LTO) the fragments lower to
+	// --features on the cc_toolchain instead of raw selects.
+	//
+	// Custom config names work natively — cmake treats the list
+	// opaquely. The project must define CMAKE_<LANG>_FLAGS_<NAME>
+	// for any non-standard entry (typically via a
+	// cmake/Sanitizers.cmake module or a toolchain file).
+	BuildTypes []string
+
 	// PrefixDir, when non-empty, is added to CMAKE_PREFIX_PATH. Holds the
 	// synthesized cmake-config bundles + zero-byte IMPORTED_LOCATION
 	// stubs that let find_package resolve out-of-tree deps. The
@@ -296,6 +319,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "inject a cmake function override that translates get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time. Only meaningful under cmake 4.x (which removed CMP0026 OLD); cmake 3.x still resolves LOCATION natively. Opt-in because the override changes LOCATION's return shape for the entire project (generator expression instead of resolved path). See #208.")
 	fs.BoolVar(&a.ProbeGenex, "probe-genex", false, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). On opt-in cmake emits file(GENERATE) for each target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift can read post-walk resolved bytes via cmakerun.ReadGenexProbe instead of reimplementing the cmake-side evaluator. Requires cmake 3.24+ for the TOP_LEVEL_INCLUDES injection to fire.")
+	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
+	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
@@ -336,3 +361,30 @@ type LookEnv func(string) (string, bool)
 
 // OSLookEnv is the production env reader.
 var OSLookEnv LookEnv = func(k string) (string, bool) { return os.LookupEnv(k) }
+
+// commaSlice adapts a *[]string to flag.Value so the CLI can take
+// `--foo=a,b,c` (single repeat) and surface as `[]string{"a","b","c"}`.
+// Empty strings between commas are dropped — `--foo=,a,,b,` → `[a, b]`.
+type commaSlice struct{ p *[]string }
+
+func (c commaSlice) String() string {
+	if c.p == nil {
+		return ""
+	}
+	return strings.Join(*c.p, ",")
+}
+
+func (c commaSlice) Set(v string) error {
+	if v == "" {
+		*c.p = nil
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	*c.p = out
+	return nil
+}
