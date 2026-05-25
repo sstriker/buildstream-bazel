@@ -1280,10 +1280,12 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// visible target name, deps-only) plus one private
 	// sub-library per language with that language's srcs +
 	// flags. Single-language targets stay one cc_library; this
-	// branch only fires for ≥ 2 distinct compile-group
-	// languages.
+	// branch fires for either multi-language CGs OR multi-CG-
+	// per-language with differing Defines / CompileCommandFragments
+	// (Phase 1 task 3: per-source-defines case where cmake's
+	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
-	if shouldSplitMultiLanguage(t) {
+	if shouldSplitCompileGroups(t) {
 		if err := splitMultiLanguage(t, irt, cc); err != nil {
 			return nil, err
 		}
@@ -1357,16 +1359,25 @@ func partitionPlatformConditionalSrcs(t *ir.Target, srcToSelectKey map[string]st
 	}
 }
 
-// shouldSplitMultiLanguage reports whether the target carries
-// sources from ≥ 2 distinct compile-group languages and is a
-// rule kind where the per-language flag delta could surface as
-// a build-time correctness issue. Header-only INTERFACE
-// libraries don't compile sources here; UTILITY targets we
-// already filtered out before reaching this point.
-func shouldSplitMultiLanguage(t *fileapi.Target) bool {
+// shouldSplitCompileGroups reports whether the target's sources
+// fall into ≥ 2 CompileGroups that need separate per-CG attribution
+// — either multi-language (the historical trigger) or
+// same-language with differing Defines / CompileCommandFragments
+// (the per-source-defines case Phase 1 task 3 covers: cmake's
+// codemodel partitions sources via CompileGroupIndex when
+// set_source_files_properties or target_sources(PRIVATE FILE_SET)
+// gives sources differing compile contexts).
+//
+// Same-language CGs with identical Defines + CompileCommandFragments
+// don't trigger the split — they're a degenerate codemodel shape
+// (cmake occasionally emits multiple identical CGs as a
+// generator-side artifact) and merging them into one set keeps the
+// output compact.
+func shouldSplitCompileGroups(t *fileapi.Target) bool {
 	if len(t.CompileGroups) < 2 {
 		return false
 	}
+	// Multi-language: existing case.
 	langs := map[string]bool{}
 	for _, cg := range t.CompileGroups {
 		if cg.Language == "" {
@@ -1374,7 +1385,73 @@ func shouldSplitMultiLanguage(t *fileapi.Target) bool {
 		}
 		langs[cg.Language] = true
 	}
-	return len(langs) >= 2
+	if len(langs) >= 2 {
+		return true
+	}
+	// Single-language, multi-CG. Split when any pair differs in
+	// the attribution-affecting attrs.
+	type sig struct{ defs, cmdFrags string }
+	seen := map[string]sig{}
+	for _, cg := range t.CompileGroups {
+		if cg.Language == "" {
+			continue
+		}
+		s := sig{
+			defs:     joinDefines(cg.Defines),
+			cmdFrags: joinFragments(cg.CompileCommandFragments),
+		}
+		if prev, ok := seen[cg.Language]; ok {
+			if prev != s {
+				return true
+			}
+		} else {
+			seen[cg.Language] = s
+		}
+	}
+	return false
+}
+
+// shouldSplitMultiLanguage is the legacy name for the gate;
+// preserved as a thin alias for any external test consumer that
+// still references it.
+func shouldSplitMultiLanguage(t *fileapi.Target) bool {
+	return shouldSplitCompileGroups(t)
+}
+
+// joinDefines / joinFragments produce a stable string signature
+// for a CompileGroup's Defines / CompileCommandFragments lists.
+// Used by the gate to compare two same-language CGs for
+// attribution-affecting differences.
+func joinDefines(defs []fileapi.CompileDefine) string {
+	parts := make([]string, len(defs))
+	for i, d := range defs {
+		parts[i] = d.Define
+	}
+	return strings.Join(parts, "\x00")
+}
+
+func joinFragments(frags []fileapi.CommandFragment) string {
+	parts := make([]string, len(frags))
+	for i, f := range frags {
+		parts[i] = f.Role + "\x01" + f.Fragment
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// intSuffix is itoa for the splitMultiLanguage sub-name
+// disambiguator. The expected range is small (handful of CGs
+// per language); avoiding strconv keeps the per-target loop's
+// allocation profile predictable.
+func intSuffix(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
 }
 
 // splitMultiLanguage rewrites irt as a deps-only wrapper and
@@ -1402,6 +1479,20 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 	// to reason about).
 	groups := append([]fileapi.CompileGroup(nil), t.CompileGroups...)
 	sort.Slice(groups, func(i, j int) bool { return groups[i].Language < groups[j].Language })
+
+	// Count CompileGroups per language so the naming loop knows
+	// whether to disambiguate (multiple CGs sharing a language
+	// — the per-source-defines case Phase 1 task 3 surfaces).
+	// Single-CG-per-language keeps the legacy `<target>_C` /
+	// `<target>_CXX` naming for byte-stable goldens; multi-CG-
+	// per-language adds a stable index suffix.
+	langCount := map[string]int{}
+	for _, cg := range groups {
+		if cg.Language != "" {
+			langCount[cg.Language]++
+		}
+	}
+	langSeen := map[string]int{} // per-language emit counter
 
 	sharedHdrs := append([]string(nil), irt.Hdrs...)
 	sharedIncludes := append([]string(nil), irt.Includes...)
@@ -1443,8 +1534,20 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 			defs = append(defs, d.Define)
 		}
 
+		subName := irt.Name + "_" + langSuffix(cg.Language)
+		if langCount[cg.Language] > 1 {
+			// Multi-CG-per-language: append a stable index
+			// suffix per emit. The codemodel's CompileGroup order
+			// is stable; sort by Language above keeps the
+			// per-language sub-order stable too. The index reflects
+			// emit order within the language, not the codemodel's
+			// raw index — easier for operators to grep.
+			subName = subName + "_" + intSuffix(langSeen[cg.Language])
+		}
+		langSeen[cg.Language]++
+
 		sub := ir.Target{
-			Name:       irt.Name + "_" + langSuffix(cg.Language),
+			Name:       subName,
 			Kind:       irt.Kind,
 			Srcs:       subSrcs,
 			Hdrs:       sharedHdrs,
