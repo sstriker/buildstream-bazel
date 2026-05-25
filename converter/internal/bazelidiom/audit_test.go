@@ -170,3 +170,116 @@ func TestAudit_EmptyBody(t *testing.T) {
 		t.Errorf("Audit(nil) = (%v, %v); want (nil, nil)", findings, err)
 	}
 }
+
+// TestAudit_SanitizerSelect_CoptsFiring covers Phase 7's
+// sanitizer-shaped-select detection: copts driven by a select()
+// keyed on //config:asan / :tsan etc. should be a feature.
+func TestAudit_SanitizerSelect_CoptsFiring(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = select({
+        "//config:asan": ["-fsanitize=address"],
+        "//config:tsan": ["-fsanitize=thread"],
+        "//conditions:default": [],
+    }),
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	var got *bazelidiom.Finding
+	for i, f := range findings {
+		if f.Code == "sanitizer-select-not-feature" {
+			got = &findings[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("expected sanitizer-select-not-feature finding; got %v", findings)
+	}
+	if !strings.Contains(got.Message, "copts") {
+		t.Errorf("message should name the attr (copts): %q", got.Message)
+	}
+	if !strings.Contains(got.Message, "asan") {
+		t.Errorf("message should name the matched key: %q", got.Message)
+	}
+}
+
+// TestAudit_SanitizerSelect_LinkoptsFiring covers the same shape on
+// linkopts (sanitizer flags often also need link-time -fsanitize=).
+func TestAudit_SanitizerSelect_LinkoptsFiring(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    linkopts = select({
+        "//config:asan_enabled": ["-fsanitize=address"],
+        "//conditions:default": [],
+    }),
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "sanitizer-select-not-feature" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected sanitizer-select-not-feature finding for linkopts; got %v", findings)
+	}
+}
+
+// TestAudit_NonSanitizerSelect_NoFinding confirms unrelated selects
+// (platform, cpu) don't trigger the sanitizer check.
+func TestAudit_NonSanitizerSelect_NoFinding(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = select({
+        "//cpu:x86_64": ["-msse4.2"],
+        "//cpu:arm64": ["-march=armv8-a"],
+    }),
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "sanitizer-select-not-feature" {
+			t.Errorf("non-sanitizer select shouldn't fire: %v", f)
+		}
+	}
+}
+
+// TestAudit_ConcatLiteralPlusSanitizerSelect catches the common
+// shape `copts = ["-O2"] + select({...sanitizer...})`.
+func TestAudit_ConcatLiteralPlusSanitizerSelect(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = ["-O2"] + select({
+        "//config:lto": ["-flto"],
+        "//conditions:default": [],
+    }),
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "sanitizer-select-not-feature" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected finding on [literal] + select() shape; got %v", findings)
+	}
+}

@@ -86,15 +86,113 @@ func Audit(body []byte) ([]Finding, error) {
 
 // auditRule dispatches per-rule-kind checks.
 func auditRule(rule, target string, call *build.CallExpr) []Finding {
+	var findings []Finding
 	switch rule {
 	case "cc_library":
-		return auditCCLibrary(rule, target, call)
+		findings = append(findings, auditCCLibrary(rule, target, call)...)
 	case "cc_import":
-		return auditCCImport(rule, target, call)
+		findings = append(findings, auditCCImport(rule, target, call)...)
 	case "cc_binary", "cc_test":
-		return auditCCBinaryOrTest(rule, target, call)
+		findings = append(findings, auditCCBinaryOrTest(rule, target, call)...)
+	}
+	// Cross-rule check: sanitizer-shaped selects on copts / linkopts
+	// should lower to --features instead. Fires on any rule that
+	// accepts those attributes.
+	findings = append(findings, auditSanitizerSelects(rule, target, call)...)
+	return findings
+}
+
+// auditSanitizerSelects fires when a rule's copts / linkopts / defines
+// is a select() whose arms mention sanitizer-shaped config_setting
+// names. The Bazel-idiomatic form is to define the sanitizer flags
+// in a cc_toolchain feature and route via --features=<name>, not
+// hand-roll the per-config select.
+func auditSanitizerSelects(rule, target string, call *build.CallExpr) []Finding {
+	var findings []Finding
+	for _, attr := range []string{"copts", "linkopts", "defines"} {
+		if names := selectKeysMatching(call, attr, looksLikeSanitizerConfig); len(names) > 0 {
+			findings = append(findings, Finding{
+				Rule:    rule,
+				Target:  target,
+				Code:    "sanitizer-select-not-feature",
+				Message: "select() on " + attr + " keys " + strings.Join(names, ", ") + " match sanitizer/instrumentation patterns; Bazel-idiomatic form is a cc_toolchain feature (--features=asan / =tsan / =lto / …) rather than a per-rule select. Phase 5 of the generator-parity uplift maps these names automatically when multi-config is on; this finding fires on hand-rolled selects that bypassed the mapping.",
+			})
+		}
+	}
+	return findings
+}
+
+// looksLikeSanitizerConfig matches config_setting labels whose path
+// component contains a known sanitizer / instrumentation marker.
+// Conservative on purpose — false positives surface as informational
+// findings rather than rewrites, so the cost of catching unrelated
+// labels is low.
+func looksLikeSanitizerConfig(label string) bool {
+	lc := strings.ToLower(label)
+	// Strip label syntax (`//config:asan` → `asan`).
+	if i := strings.LastIndex(lc, ":"); i >= 0 {
+		lc = lc[i+1:]
+	}
+	if i := strings.LastIndex(lc, "/"); i >= 0 {
+		lc = lc[i+1:]
+	}
+	if strings.HasSuffix(lc, "_enabled") {
+		lc = strings.TrimSuffix(lc, "_enabled")
+	}
+	switch lc {
+	case "asan", "tsan", "msan", "ubsan", "lsan", "coverage", "lto":
+		return true
+	}
+	return false
+}
+
+// selectKeysMatching returns the select() arm keys whose label
+// matches the predicate. Returns nil when the attribute isn't
+// present, isn't a select(), or no arm matches.
+func selectKeysMatching(call *build.CallExpr, attr string, match func(string) bool) []string {
+	for _, arg := range call.List {
+		bin, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		key, ok := bin.LHS.(*build.Ident)
+		if !ok || key.Name != attr {
+			continue
+		}
+		return collectSelectKeys(bin.RHS, match)
 	}
 	return nil
+}
+
+// collectSelectKeys walks an expression for select() arms and
+// returns the keys whose label matches the predicate. Recurses
+// through binary `+` concat (covers `[…] + select(…)` shapes).
+func collectSelectKeys(e build.Expr, match func(string) bool) []string {
+	var out []string
+	switch v := e.(type) {
+	case *build.BinaryExpr:
+		if v.Op == "+" {
+			out = append(out, collectSelectKeys(v.X, match)...)
+			out = append(out, collectSelectKeys(v.Y, match)...)
+		}
+	case *build.CallExpr:
+		if id, ok := v.X.(*build.Ident); ok && id.Name == "select" && len(v.List) > 0 {
+			dict, ok := v.List[0].(*build.DictExpr)
+			if !ok {
+				return nil
+			}
+			for _, entry := range dict.List {
+				str, ok := entry.Key.(*build.StringExpr)
+				if !ok {
+					continue
+				}
+				if match(str.Value) {
+					out = append(out, str.Value)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // auditCCLibrary fires on empty cc_library (no srcs, no hdrs) —
