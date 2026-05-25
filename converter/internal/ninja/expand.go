@@ -166,3 +166,82 @@ func builtins(b *Build) map[string]string {
 		"out": strings.Join(b.Outputs, " "),
 	}
 }
+
+// CustomCommandEdges returns every build statement using rule
+// "CUSTOM_COMMAND" in g, preserving build.ninja declaration order.
+// cmake's Ninja generator emits this rule for every
+// add_custom_command and add_custom_target — Phase 4 of the
+// generator-parity uplift (ROADMAP.md) walks the returned list to
+// lift each edge into a genrule with depfile-derived srcs.
+//
+// Returns nil when the graph has no CUSTOM_COMMAND builds (e.g., a
+// trivial CMakeLists with only add_executable / add_library targets).
+func CustomCommandEdges(g *Graph) []*Build {
+	var out []*Build
+	for _, b := range g.Builds {
+		if b.Rule == "CUSTOM_COMMAND" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// DepfileFor returns the resolved depfile path for a build statement.
+// Resolved means $-variables expand through the same scope chain
+// CommandFor uses (builtins → build bindings → rule bindings → graph
+// vars). Returns ("", false) when neither the build nor its rule
+// declares a depfile binding — most CUSTOM_COMMAND edges don't,
+// because cmake's add_custom_command(... DEPFILE ...) is the opt-in
+// shape (cmake 3.20+).
+//
+// Callers that want absolute paths join the result against the
+// build directory; ninja depfile paths are build-dir-relative by
+// convention.
+func DepfileFor(g *Graph, b *Build) (string, bool) {
+	rule, ok := g.Rules[b.Rule]
+	if !ok {
+		return "", false
+	}
+	df := b.Bindings["depfile"]
+	if df == "" {
+		df = rule.Bindings["depfile"]
+	}
+	if df == "" {
+		return "", false
+	}
+	scope := Scope{
+		builtins(b),
+		b.Bindings,
+		rule.Bindings,
+		g.Vars,
+	}
+	return Expand(df, scope), true
+}
+
+// DescriptionFor returns the resolved $description binding for a
+// build statement (the human-readable line ninja prints when the
+// rule fires). Same scope chain as CommandFor / DepfileFor.
+// Returns ("", false) when neither build nor rule declares one.
+//
+// cmake's add_custom_command(... COMMENT "...") lands here, so the
+// description doubles as source-level naming for the lifted genrule.
+func DescriptionFor(g *Graph, b *Build) (string, bool) {
+	rule, ok := g.Rules[b.Rule]
+	if !ok {
+		return "", false
+	}
+	desc := b.Bindings["description"]
+	if desc == "" {
+		desc = rule.Bindings["description"]
+	}
+	if desc == "" {
+		return "", false
+	}
+	scope := Scope{
+		builtins(b),
+		b.Bindings,
+		rule.Bindings,
+		g.Vars,
+	}
+	return Expand(desc, scope), true
+}
