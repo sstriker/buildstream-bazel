@@ -485,3 +485,122 @@ func TestExtractFileGenerate_DecodeIntegration(t *testing.T) {
 		t.Errorf("FileGenerate[0]: %+v", d.FileGenerates[0])
 	}
 }
+
+// TestExtractSourceFileProperties_Basic covers the common shape:
+// files followed by PROPERTIES then (name, value) pairs.
+func TestExtractSourceFileProperties_Basic(t *testing.T) {
+	trace := `{"args":["foo.c","bar.c","PROPERTIES","COMPILE_DEFINITIONS","FOO=1","COMPILE_OPTIONS","-Wall"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":4}
+`
+	got := ExtractSourceFileProperties([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call; got %d (%+v)", len(got), got)
+	}
+	call := got[0]
+	if call.File != "/src/CMakeLists.txt" || call.Line != 4 {
+		t.Errorf("call site: %s:%d", call.File, call.Line)
+	}
+	wantFiles := []string{"foo.c", "bar.c"}
+	if !sliceEq(call.Files, wantFiles) {
+		t.Errorf("Files: got %v want %v", call.Files, wantFiles)
+	}
+	if len(call.Properties) != 2 {
+		t.Fatalf("Properties len: %d", len(call.Properties))
+	}
+	if call.Properties[0].Name != "COMPILE_DEFINITIONS" || call.Properties[0].Value != "FOO=1" {
+		t.Errorf("Properties[0]: %+v", call.Properties[0])
+	}
+	if call.Properties[1].Name != "COMPILE_OPTIONS" || call.Properties[1].Value != "-Wall" {
+		t.Errorf("Properties[1]: %+v", call.Properties[1])
+	}
+}
+
+// TestExtractSourceFileProperties_DirectoryArm covers the
+// DIRECTORY <dir> arm before PROPERTIES.
+func TestExtractSourceFileProperties_DirectoryArm(t *testing.T) {
+	trace := `{"args":["lib.c","DIRECTORY","subdir","PROPERTIES","LANGUAGE","CXX"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":7}
+`
+	got := ExtractSourceFileProperties([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call; got %d", len(got))
+	}
+	call := got[0]
+	if !sliceEq(call.Files, []string{"lib.c"}) {
+		t.Errorf("Files: %v", call.Files)
+	}
+	if !sliceEq(call.Directories, []string{"subdir"}) {
+		t.Errorf("Directories: %v", call.Directories)
+	}
+	if len(call.Properties) != 1 || call.Properties[0].Name != "LANGUAGE" || call.Properties[0].Value != "CXX" {
+		t.Errorf("Properties: %+v", call.Properties)
+	}
+}
+
+// TestExtractSourceFileProperties_TargetDirectoryArm covers the
+// TARGET_DIRECTORY <tgt> arm.
+func TestExtractSourceFileProperties_TargetDirectoryArm(t *testing.T) {
+	trace := `{"args":["gen.c","TARGET_DIRECTORY","foo","PROPERTIES","GENERATED","TRUE"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":10}
+`
+	got := ExtractSourceFileProperties([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call; got %d", len(got))
+	}
+	if !sliceEq(got[0].TargetDirectories, []string{"foo"}) {
+		t.Errorf("TargetDirectories: %v", got[0].TargetDirectories)
+	}
+}
+
+// TestExtractSourceFileProperties_FiltersOutOfTree drops calls
+// whose trace event fires outside the source tree (cmake-internal
+// modules invoking set_source_files_properties).
+func TestExtractSourceFileProperties_FiltersOutOfTree(t *testing.T) {
+	trace := `{"args":["fake.c","PROPERTIES","LANGUAGE","C"],"cmd":"set_source_files_properties","file":"/usr/share/cmake-3.28/Modules/some.cmake","line":3}
+{"args":["user.c","PROPERTIES","LANGUAGE","C"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":5}
+`
+	got := ExtractSourceFileProperties([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 user call (cmake-internal filtered); got %d (%+v)", len(got), got)
+	}
+	if got[0].Files[0] != "user.c" {
+		t.Errorf("kept wrong call: %+v", got[0])
+	}
+}
+
+// TestExtractSourceFileProperties_MalformedDropped drops calls
+// with no files, no properties, or PROPERTIES with no pairs.
+func TestExtractSourceFileProperties_MalformedDropped(t *testing.T) {
+	trace := `{"args":["PROPERTIES","LANGUAGE","C"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":1}
+{"args":["foo.c"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":2}
+{"args":["foo.c","PROPERTIES"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":3}
+`
+	got := ExtractSourceFileProperties([]byte(trace), "/src")
+	if len(got) != 0 {
+		t.Errorf("want 0 calls (all malformed); got %d (%+v)", len(got), got)
+	}
+}
+
+// TestExtractSourceFileProperties_DecodeIntegration confirms the
+// combined-pass Decode dispatches set_source_files_properties events
+// into Decoded.SourceFileProperties.
+func TestExtractSourceFileProperties_DecodeIntegration(t *testing.T) {
+	trace := `{"args":["foo.c","PROPERTIES","COMPILE_DEFINITIONS","BAR=2"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":4}
+`
+	d := Decode([]byte(trace), "/src", map[string]bool{})
+	if len(d.SourceFileProperties) != 1 {
+		t.Fatalf("Decode: want 1 source-file-property call, got %d", len(d.SourceFileProperties))
+	}
+	if d.SourceFileProperties[0].Properties[0].Value != "BAR=2" {
+		t.Errorf("SourceFileProperties[0]: %+v", d.SourceFileProperties[0])
+	}
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
