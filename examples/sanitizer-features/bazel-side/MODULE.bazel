@@ -1,0 +1,23 @@
+# Operator-level MODULE.bazel for the converted output.
+#
+# The sanitizer features land via the project's cc_toolchain;
+# this MODULE only needs rules_cc as a dep — the cmake-side
+# converter's output uses standard cc_library / cc_binary rules.
+#
+# Operators with an existing project add `register_toolchains(...)`
+# pointing at their cc_toolchain that includes SANITIZER_FEATURES.
+
+module(
+    name = "sanitizer_example",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.0.17")
+
+# Operator's cc_toolchain registration:
+#
+#   register_toolchains("//toolchain:my_cc_toolchain")
+#
+# The toolchain's config rule threads SANITIZER_FEATURES through
+# cc_common.create_cc_toolchain_config_info — see
+# ../toolchain/BUILD.bazel for the pattern.

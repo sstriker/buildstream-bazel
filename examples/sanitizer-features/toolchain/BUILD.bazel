@@ -1,0 +1,25 @@
+# Toolchain BUILD shim.
+#
+# The actual cc_toolchain / cc_toolchain_config rules vary too
+# much by host platform / compiler / sysroot to bake into the
+# example — operators typically already have a working
+# cc_toolchain elsewhere in their project and just need to merge
+# the SANITIZER_FEATURES list into its features attribute.
+#
+# Pattern for operators with an existing toolchain config:
+#
+#   load("//examples/sanitizer-features/toolchain:features.bzl",
+#        "SANITIZER_FEATURES")
+#
+#   def _my_toolchain_config_impl(ctx):
+#       return cc_common.create_cc_toolchain_config_info(
+#           ctx = ctx,
+#           features = MY_EXISTING_FEATURES + SANITIZER_FEATURES,
+#           # ... other args ...
+#       )
+#
+# Pattern for operators starting from scratch: bazel ships a
+# starter config under @bazel_tools//tools/cpp; extend it the
+# same way.
+
+exports_files(["features.bzl"])

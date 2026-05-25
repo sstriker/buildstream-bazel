@@ -1,0 +1,52 @@
+# Example: what convert-element-cmake produces for the
+# cmake-side/CMakeLists.txt in this example directory.
+#
+# Note what's NOT here:
+#   - No `features = ["asan"]` per rule.
+#   - No select() over //config:asan etc.
+#   - No `config_setting(name = "asan")` declarations.
+#
+# The output is sanitizer-agnostic. The same BUILD compiles
+# under `bazel build` (no sanitizer), `bazel build --features=asan`
+# (with the toolchain's asan feature active), or any other
+# operator-driven feature combination.
+
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "mylib",
+    srcs = ["src/lib.c"],
+    hdrs = ["include/lib.h"],
+    includes = ["include"],
+    linkstatic = True,
+)
+
+cc_binary(
+    name = "myapp",
+    srcs = ["src/main.c"],
+    deps = [":mylib"],
+)
+
+# Usage:
+#
+#   # Default build — no sanitizer.
+#   bazel build //examples/sanitizer-features/bazel-side:myapp
+#
+#   # ASan build — same target, sanitizer feature active.
+#   bazel build --features=asan \
+#       //examples/sanitizer-features/bazel-side:myapp
+#
+#   # TSan build — same target, different sanitizer.
+#   bazel build --features=tsan \
+#       //examples/sanitizer-features/bazel-side:myapp
+#
+#   # Coverage build.
+#   bazel build --features=coverage \
+#       //examples/sanitizer-features/bazel-side:myapp
+#
+# The toolchain's feature definitions (../toolchain/features.bzl)
+# carry the actual -fsanitize=address / -fsanitize=thread flags.
+# Operators tune the flag set there, not by re-running
+# convert-element-cmake.
