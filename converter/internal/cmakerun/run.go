@@ -173,7 +173,13 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if err := os.MkdirAll(queryDir, 0o755); err != nil {
 		return Reply{}, fmt.Errorf("cmakerun: stage query dir: %w", err)
 	}
-	for _, kind := range []string{"codemodel-v2", "toolchains-v1", "cmakeFiles-v1", "cache-v2"} {
+	// configureLog-v1 is cmake 3.26+. cmake < 3.26 silently ignores
+	// the staged query (no reply object generated); newer cmakes
+	// produce a sidecar pointing at CMakeConfigureLog.yaml. Phase 2
+	// of the generator-parity uplift (ROADMAP.md) reads the YAML
+	// when probe-bucket execute_process refusals need a try_compile
+	// answer to lift.
+	for _, kind := range []string{"codemodel-v2", "toolchains-v1", "cmakeFiles-v1", "cache-v2", "configureLog-v1"} {
 		f, err := os.Create(filepath.Join(queryDir, kind))
 		if err != nil {
 			return Reply{}, fmt.Errorf("cmakerun: stage query %s: %w", kind, err)

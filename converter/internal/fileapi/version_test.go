@@ -15,7 +15,7 @@ import (
 // compatibility tripwire that supersedes a pure cmake-binary
 // version check.
 func TestLoad_RejectsUnsupportedSchemaMajor(t *testing.T) {
-	for _, kind := range []string{"codemodel", "cache", "toolchains", "cmakeFiles"} {
+	for _, kind := range []string{"codemodel", "cache", "toolchains", "cmakeFiles", "configureLog"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := t.TempDir()
 			writeFutureSchemaReply(t, dir, kind, fileapi.SupportedObjectMajors[kind]+1)
@@ -60,7 +60,13 @@ func TestLoad_AcceptsUnknownObjectKinds(t *testing.T) {
 // rejection path without recording a real cmake fixture.
 func writeFutureSchemaReply(t *testing.T, dir, futureKind string, futureMajor int) {
 	t.Helper()
-	writeMinimalReply(t, dir)
+	// configureLog is only staged by the with-configureLog variant; the
+	// rejection test needs an index entry for that kind to bump.
+	if futureKind == "configureLog" {
+		writeMinimalReplyWithConfigureLog(t, dir)
+	} else {
+		writeMinimalReply(t, dir)
+	}
 
 	idxPath := filepath.Join(dir, mustGlob(t, dir, "index-*.json"))
 	body, err := os.ReadFile(idxPath)

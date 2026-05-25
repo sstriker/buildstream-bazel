@@ -1,14 +1,19 @@
 // Package fileapi parses CMake's File API v1 reply directory.
 //
 // The reply directory is produced by cmake when run with files staged under
-// <build>/.cmake/api/v1/query/. We consume four object kinds:
+// <build>/.cmake/api/v1/query/. We consume five object kinds:
 //
 //   - codemodel-v2: project/target structure, sources, compile/link flags.
 //   - toolchains-v1: per-language compiler identification and implicit dirs.
 //   - cmakeFiles-v1: every CMakeLists / .cmake file consumed at configure.
 //   - cache-v2: post-configure cache entries.
+//   - configureLog-v1: pointer to CMakeConfigureLog.yaml (cmake 3.26+).
 //
-// All parsing is pure; no I/O outside the supplied directory.
+// All parsing is pure; no I/O outside the supplied directory — the
+// configureLog object decodes only its sidecar JSON, which records the
+// absolute path to the YAML log. Callers that want the log events read
+// the YAML separately via LoadConfigureLogYAML so this package keeps
+// its single-directory I/O scope.
 package fileapi
 
 import (
@@ -36,6 +41,12 @@ type Reply struct {
 	// entries reference them this way). Empty when no directories carry
 	// install rules.
 	Directories map[string]Directory
+	// ConfigureLog is the parsed configureLog-v1 sidecar (cmake 3.26+).
+	// Nil when cmake < 3.26 or the project didn't fire any
+	// configureLog-aware events during configure. Carries the path
+	// to CMakeConfigureLog.yaml; callers load the YAML separately
+	// via LoadConfigureLogYAML when they need event data.
+	ConfigureLog *ConfigureLog
 }
 
 // Load reads every consumed object from a reply directory. Returns an error if
@@ -82,6 +93,12 @@ func Load(replyDir string) (*Reply, error) {
 			if err := readJSON(path, &r.Cache); err != nil {
 				return nil, fmt.Errorf("fileapi: cache: %w", err)
 			}
+		case "configureLog":
+			var cl ConfigureLog
+			if err := readJSON(path, &cl); err != nil {
+				return nil, fmt.Errorf("fileapi: configureLog: %w", err)
+			}
+			r.ConfigureLog = &cl
 		}
 	}
 
