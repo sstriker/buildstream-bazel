@@ -38,15 +38,18 @@ Three slices, all decoder-side. No new cmake hooks.
   `--trace-expand`. The trace path stays as fallback for
   cmake < 3.21 where backtraces are incomplete.
 
-- **Directory installers → `filegroup()`** (✓ landed for
-  install(FILES); install(DIRECTORY) queued).
+- **Directory installers → `filegroup()`** (✓ landed for both
+  install(FILES) and install(DIRECTORY)).
   `lower/directory_installers.go` walks
-  `DirectoryInstaller.Type == "file"` entries and emits one
-  `filegroup()` per destination, grouped + deduped, with names
-  `install_files__<sanitized-dest>`. New `ir.KindFilegroup` +
-  emitter use Bazel-native `filegroup` (no `rules_pkg` dep);
-  the pkg_files variant for per-file destination renames slots
-  in alongside as a future kind.
+  `DirectoryInstaller.Type` in {`"file"`, `"directory"`} and
+  emits one `filegroup()` per (type, destination):
+  `install_files__<sanitized-dest>` for FILES,
+  `install_directory__<sanitized-dest>` for DIRECTORY.
+  `decodeInstallerPath` handles the type-specific path schemas
+  (plain string vs `{"from": ..., "to": ...}` object). Uses
+  Bazel-native `KindFilegroup`; the pkg_files variant for
+  per-file destination renames slots in alongside as a future
+  kind when richer attribute support surfaces.
 
 - **`shadow.ExtractSourceFileProperties`** (✓ landed). Decoder
   for `set_source_files_properties(<files> [DIRECTORY …]
@@ -140,18 +143,18 @@ via dump-vars ✓ landed; standalone genrule emission from
 
 Two halves:
 
-- **Custom command edges → genrules** (queued). Walk every
-  `build` whose `Rule` is `CUSTOM_COMMAND`; emit one
-  `ir.KindGenrule` per edge with `cmd` from the resolved
-  command (post-genex, post-VERBATIM-escaping via
-  `ninja.CommandFor`), `srcs` from explicit inputs +
-  depfile-derived implicit inputs, `outs` from the edge
-  outputs. Cross-reference with the trace's
-  `add_custom_command` / `add_custom_target` call sites to
-  preserve source-level naming and visibility. Dedup against
-  the existing `add_custom_command` codegen-recovery flow to
-  avoid double-emitting edges that already produced a genrule
-  via the generated-source recovery path.
+- **Custom command edges → genrules** (✓ landed, opt-in).
+  `lower/standalone_genrules.go` walks every `CUSTOM_COMMAND`
+  edge in build.ninja and emits a genrule for each whose outputs
+  aren't already covered by an existing recoverGenrule emission.
+  Dedup is via `existing[].GenruleOuts` lookup — any single-
+  output overlap skips the standalone emit. Naming:
+  `custom_command_<sanitized-first-output>` with `_N` suffix on
+  collision. Tag: `cmake-codegen-standalone-custom-command` so
+  the Phase 7 audit can inventory the new emissions. CLI surface:
+  `--emit-standalone-custom-commands` (off by default to keep
+  existing goldens byte-stable; opt-in covers add_custom_target
+  bookkeeping rules and version-stamp edges).
 
 - **Probe / stamp execute_process rescue** (✓ landed).
   `recoverExecuteProcess`'s default arm now skips refusal for
@@ -192,9 +195,20 @@ Plumbing + cross-config Partition landed:
   TSan / MSan / UBSan / LSan / Coverage / LTO + suffix variants)
   onto the cc_toolchain feature name a Bazel build would use.
 
-Queued: the lower-side consumer that translates `TargetFold` +
-`SanitizerFeature` into IR — `select()` arms for non-feature
-configs, `--features` routing for the sanitizer subset.
+Lower-side consumer landed: `lower/multiconfig.go` calls
+`configfold.Project` when `Reply.TargetsByConfig` is populated
+and routes per-config Defines / CompileFragments / LinkFragments /
+Includes deltas into the target's `PerPlatform` map keyed by
+`//config:<name>` config_setting labels. The emitter renders the
+same select() shape it already produces for per-platform deltas
+— no emit-side changes needed; per-platform and per-config arms
+merge cleanly when both axes populate.
+
+Sanitizer-shaped configs are filtered out before the fold runs;
+the `--features` routing for them is a follow-on slice gated on
+cc_toolchain wiring. The Phase 7 audit's
+`sanitizer-select-not-feature` finding surfaces any hand-rolled
+sanitizer select that bypassed the filter.
 
 Fold semantics (mirrors the existing per-platform fold):
 
@@ -237,10 +251,13 @@ Classifier + emit shape landed:
   one bundle-wide `cmake_config_bundle` filegroup for the
   generated `<Pkg>{Config,ConfigVersion,Targets}.cmake` files.
 
-Queued: the convert-element-cmake wiring that runs
-BuildAndInstall when any declarative installer surfaces, walks
-the install prefix, calls EmitDeclarative, appends results to
-pkg.Targets.
+Convert-element-cmake wiring landed: `preResolveDeclarativeExports`
+runs when `--install-export-pre-resolve` + `--install-export-scratch-dir`
+are set. It walks every declarative installer, runs
+`BuildAndInstall` once for the shared scratch dir, walks the
+install prefix, projects through `EmitDeclarative`, and appends
+the IR targets before the bazel.Emit pass. Offline replay
+(--reply-dir) silently skips — no real build dir to install from.
 
 Verdict shape (`exportshape.Classify`):
 
