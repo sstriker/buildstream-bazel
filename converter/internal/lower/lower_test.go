@@ -1,11 +1,13 @@
 package lower_test
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
@@ -817,6 +819,169 @@ func TestToIR_PlatformConditionalSrcs_NoTraceByteStable(t *testing.T) {
 	}
 	if len(tgt.PerPlatform) != 0 {
 		t.Errorf("PerPlatform = %+v, want empty (no trace → no select arms)", tgt.PerPlatform)
+	}
+}
+
+// TestToIR_RefusesOutOfTreeAbsoluteSource covers #221: a target
+// that names a source via an absolute path outside both the
+// project source tree and the build tree produces a Bazel label
+// Bazel rejects at load time. Refusing at convert-time with
+// failure.UnsupportedSourcePath surfaces the underlying cmake
+// misuse before any broken BUILD lands.
+func TestToIR_RefusesOutOfTreeAbsoluteSource(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "/external/vendor/bar.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	_, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err == nil {
+		t.Fatal("ToIR succeeded; expected failure.UnsupportedSourcePath")
+	}
+	var fe *failure.Error
+	if !errors.As(err, &fe) || fe.Code != failure.UnsupportedSourcePath {
+		t.Errorf("got err=%v; want failure code %q", err, failure.UnsupportedSourcePath)
+	}
+}
+
+// TestToIR_NormalizesInTreeAbsoluteSource pins that an
+// absolute path under cmakeSrc is silently rewritten to the
+// project-relative form (matching the documented contract on
+// TargetSource.Path) rather than landing as an absolute label.
+// Some cmake versions / call shapes record absolute paths
+// even for in-tree files; the converter should be tolerant.
+func TestToIR_NormalizesInTreeAbsoluteSource(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "/src/sub/foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if !equal(pkg.Targets[0].Srcs, []string{"sub/foo.c"}) {
+		t.Errorf("Srcs = %v, want [sub/foo.c] (in-tree absolute should normalize to package-relative)", pkg.Targets[0].Srcs)
+	}
+}
+
+// TestToIR_StripsDotSlashSourcePrefix pins that a `./`-prefixed
+// source path is silently normalized to the bare form so the
+// emitted label is valid. cmake usually normalizes these but
+// pathological inputs can survive; refusing would over-strict,
+// stripping is a no-op fix.
+func TestToIR_StripsDotSlashSourcePrefix(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "./foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if !equal(pkg.Targets[0].Srcs, []string{"foo.c"}) {
+		t.Errorf("Srcs = %v, want [foo.c] (./ prefix should be stripped)", pkg.Targets[0].Srcs)
+	}
+}
+
+// TestToIR_RefusesDotDotEscapingSource pins that a source path
+// containing `..` segments — which would either generate an
+// out-of-package Bazel label or silently shift the file to a
+// different package — is refused at convert-time.
+func TestToIR_RefusesDotDotEscapingSource(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "../sibling/foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	_, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err == nil {
+		t.Fatal("ToIR succeeded; expected failure.UnsupportedSourcePath")
+	}
+	var fe *failure.Error
+	if !errors.As(err, &fe) || fe.Code != failure.UnsupportedSourcePath {
+		t.Errorf("got err=%v; want failure code %q", err, failure.UnsupportedSourcePath)
 	}
 }
 

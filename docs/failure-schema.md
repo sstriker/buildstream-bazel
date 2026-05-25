@@ -227,6 +227,31 @@ manifest, or stub it like `non_cmake_stubs/glibc/`.
 
 **Emission point:** `lower.lowerTarget` link-deps walk (M2).
 
+### `unsupported-source-path`
+
+A target lists a source file whose path can't be expressed as a
+package-relative Bazel label. Two shapes surface here:
+
+1. An absolute path that's neither under the project source root
+   nor under the cmake build directory (out-of-tree source —
+   `add_library(foo /elsewhere/file.c)`).
+2. A relative path containing `..` segments that escape the
+   project source root.
+
+Both produce labels Bazel rejects at load time. Refusing at
+convert-time surfaces the underlying cmake issue (the project
+referenced a file outside its hermetic boundary) before any
+broken BUILD lands on disk.
+
+**Operator action:** restructure the cmake target so the source
+lives in (or is generated under) the project source tree.
+Vendored sources should be copied into the project; build-time
+artifacts should be produced by an `add_custom_command` under
+`${CMAKE_BINARY_DIR}` rather than referenced from an external
+path.
+
+**Emission point:** `lower.lowerTarget` source walk (#221).
+
 ### `missing-trace-data`
 
 The converter was invoked with `--strict-trace` but no cmake
