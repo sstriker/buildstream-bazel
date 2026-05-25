@@ -72,8 +72,26 @@ func extractPlatformConditionalSources(events []TraceEvent, sourceRoot string, k
 // multi-extractor) and extractPlatformConditionalSources
 // (standalone) so the two can't drift as Tier 2/3 extensions
 // land — addresses the duplication Copilot flagged on #223.
+//
+// In-tree filter: if/endif events are observed only when their
+// ev.File lives inside the project source tree. cmake's own
+// internal modules under /usr/share/cmake-* fire many
+// if(WIN32) / if(APPLE) / if(CMAKE_HOST_SYSTEM_NAME ...) events
+// during compiler detection / Find* / sysinfo probes — those
+// would otherwise push spurious select keys onto the global
+// stack and mis-attribute later in-tree target_sources calls.
+// Source-attaching calls (target_sources / add_library /
+// add_executable) stay observed regardless of file scope
+// because they're additionally gated by knownTargets[target] —
+// cmake-internal calls don't act on user-defined targets.
+//
+// cmake guarantees if/elseif/else/endif balance within a single
+// file, so the per-file filter preserves stack balance for
+// whichever subset of files we choose to observe.
 func maybeCollectPlatformConditionalSource(ev TraceEvent, st *platformIfStack, sourceRoot string, knownTargets map[string]bool, out []PlatformConditionalSource) []PlatformConditionalSource {
-	st.observe(ev)
+	if inSourceTree(ev.File, sourceRoot) {
+		st.observe(ev)
+	}
 	key := st.currentSelectKey(ev.File)
 	if key == "" {
 		return out
@@ -186,26 +204,88 @@ func (p *platformIfStack) currentSelectKey(file string) string {
 
 // selectKeyFromIfArgs maps a recognized cmake if() argument
 // vector to a Bazel @platforms//os:* constraint label, or ""
-// for unrecognized shapes.
+// for unrecognized shapes. See shorthandPlatformVarToConstraint
+// for the single-identifier mapping table.
 //
-// Tier 1 only recognizes the canonical direct form:
+// Recognized:
 //
-//	if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")
+//	if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")  — canonical three-arg form
+//	if(<NAME>)                               — single-arg shorthand:
+//	                                           WIN32 / LINUX / APPLE /
+//	                                           MSVC / MINGW / CYGWIN
 //
-// Three-argument shape. The quoting on the third arg is
-// optional in cmake source; --trace-expand strips quotes
-// before recording.
+// Deliberately NOT recognized (no clean single-constraint
+// mapping):
+//
+//	if(UNIX)                — true for Linux + macOS + BSDs; multi-OS aggregate
+//	if(BSD)                 — multi-OS aggregate
+//	if(NOT <X>)             — inverted predicate; would need a select default arm
+//	if(<A> AND <B>)         — multi-condition; would need a config_setting
+//	if(CMAKE_SYSTEM_NAME MATCHES <re>)  — regex form
+//
+// Sources inside any unrecognized shape fall through to flat
+// srcs, matching pre-#217 behaviour.
 func selectKeyFromIfArgs(args []string) string {
-	if len(args) != 3 {
-		return ""
+	switch len(args) {
+	case 1:
+		return shorthandPlatformVarToConstraint(args[0])
+	case 3:
+		if !strings.EqualFold(args[0], "CMAKE_SYSTEM_NAME") {
+			return ""
+		}
+		if !strings.EqualFold(args[1], "STREQUAL") {
+			return ""
+		}
+		return cmakeSystemNameToConstraint(args[2])
 	}
-	if !strings.EqualFold(args[0], "CMAKE_SYSTEM_NAME") {
-		return ""
+	return ""
+}
+
+// shorthandPlatformVarToConstraint maps cmake's
+// single-identifier platform-shorthand variables to the
+// corresponding @platforms//os:* constraint label. Returns ""
+// for anything without a clean single-positive mapping
+// (notably UNIX and BSD — true on multiple Bazel OSes — and
+// NOT-of-something predicates handled at the if-args level).
+//
+// Strictly-OS predicates:
+//
+//	WIN32   → @platforms//os:windows
+//	LINUX   → @platforms//os:linux   (cmake 3.25+)
+//	APPLE   → @platforms//os:darwin  (broader than :darwin in
+//	          cmake — true for iOS/tvOS/watchOS too — but :darwin
+//	          is the closest single positive constraint and matches
+//	          the codebase convention; projects needing the finer
+//	          distinction use CMAKE_SYSTEM_NAME STREQUAL "iOS" etc.)
+//
+// Compiler predicates that ALSO carry an implicit OS constraint:
+//
+//	MSVC    → @platforms//os:windows  (MSVC only runs on Windows)
+//	MINGW   → @platforms//os:windows  (MinGW targets Windows)
+//	CYGWIN  → @platforms//os:windows  (Cygwin runs on Windows)
+//
+// The compiler-predicate mappings are lossy in the
+// other-compiler-on-same-OS direction (e.g. `if(MSVC)` would
+// also gate-in code on a MinGW Windows build under the
+// :windows arm) but lossless in the OS-implication direction:
+// any compile that runs under MSVC/MinGW/Cygwin is by
+// definition a Windows build. Without these mappings the
+// sources would fall through to flat srcs and attempt to compile
+// on Linux — a strictly worse failure mode than the slight
+// imprecision.
+//
+// Case-insensitive: cmake's `if(Win32)` parses the same as
+// `if(WIN32)`.
+func shorthandPlatformVarToConstraint(name string) string {
+	switch strings.ToUpper(name) {
+	case "WIN32", "MSVC", "MINGW", "CYGWIN":
+		return "@platforms//os:windows"
+	case "LINUX":
+		return "@platforms//os:linux"
+	case "APPLE":
+		return "@platforms//os:darwin"
 	}
-	if !strings.EqualFold(args[1], "STREQUAL") {
-		return ""
-	}
-	return cmakeSystemNameToConstraint(args[2])
+	return ""
 }
 
 // cmakeSystemNameToConstraint maps cmake's CMAKE_SYSTEM_NAME

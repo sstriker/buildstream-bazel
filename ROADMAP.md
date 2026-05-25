@@ -202,23 +202,30 @@ transition cleanly.
 - **Platform-conditional source partitioning from a single-platform
   cmake trace (#217 Tier 1).** A new shadow extractor
   (`internal/shadow/platform_conditional.go`) walks the cmake
-  `--trace-expand` stream maintaining a per-file `if()` stack,
-  and reports each `target_sources` / `add_library` /
-  `add_executable` source attached inside a recognized
-  `if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")` block.
-  `converter/internal/lower/lower.go` consumes the records and
-  moves matching sources from the flat `irt.Srcs` to
+  `--trace-expand` stream maintaining a global if-stack scoped
+  to in-tree files (cmake-internal `if()`s under
+  `/usr/share/cmake-*` are filtered out so they don't pollute
+  user-target attribution), and reports each `target_sources` /
+  `add_library` / `add_executable` source attached inside a
+  recognized platform-conditional. Recognized predicates:
+  `if(CMAKE_SYSTEM_NAME STREQUAL "<Name>")` (canonical three-arg)
+  plus the single-identifier shorthands `WIN32` / `LINUX` /
+  `APPLE` / `MSVC` / `MINGW` / `CYGWIN`, mapping to the
+  matching `@platforms//os:*` constraint. `UNIX` / `BSD` /
+  `NOT <X>` / `MATCHES` shapes stay unrecognized (no clean
+  single-positive-constraint mapping). `converter/internal/
+  lower/lower.go` consumes the records and moves matching
+  sources from the flat `irt.Srcs` to
   `irt.PerPlatform["srcs"][@platforms//os:*]`, so the emitter
   renders a `select()` arm even on single-platform runs. The
   innermost-recognized-key policy means nested ifs collapse to
   the most-specific OS constraint that was open when the
-  source was added; `else` arms (where the constraint would be
-  a NOT-of-something) stay unrecognized and fall through to
-  flat srcs unchanged. Byte-stability preserved for projects
-  without platform conditionals (TraceRaw nil → no partition;
-  matching srcs missing → no partition). Tier 2 — recovering
-  sources from skipped `if` branches by parsing CMakeLists.txt
-  at trace-recorded line numbers — remains open (see Later).
+  source was added; `else` arms fall through to flat srcs
+  unchanged. Byte-stability preserved for projects without
+  platform conditionals (TraceRaw nil → no partition; matching
+  srcs missing → no partition). Tier 2 — recovering sources
+  from skipped `if` branches by parsing CMakeLists.txt at
+  trace-recorded line numbers — remains open (see Later).
 
 - **FDSDK-glue placeholder handlers — kind catalog now
   fully covered.** Stub handlers for the four previously-

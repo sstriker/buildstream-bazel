@@ -300,6 +300,101 @@ func TestExtractPlatformConditionalSources_CrossFileFunction(t *testing.T) {
 	}
 }
 
+// TestExtractPlatformConditionalSources_IgnoresCmakeInternalIfs
+// pins that if()/endif() events fired by cmake's own internal
+// modules (under /usr/share/cmake-*) don't pollute the global
+// if-stack. cmake's compiler-detection / Find* / sysinfo probes
+// fire many if(WIN32) / if(APPLE) / if(CMAKE_HOST_SYSTEM_NAME ...)
+// events at configure time; without the in-tree filter, the
+// first such event would push a select key onto the stack and
+// every subsequent in-tree target_sources call would surface
+// as platform-conditional even when the user's CMakeLists didn't
+// use any conditional.
+func TestExtractPlatformConditionalSources_IgnoresCmakeInternalIfs(t *testing.T) {
+	trace := `
+{"args":["WIN32"],"cmd":"if","file":"/usr/share/cmake-3.28/Modules/CMakeDetermineCompiler.cmake","line":20}
+{"args":["foo","PRIVATE","unconditional.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":3}
+{"args":[],"cmd":"endif","file":"/usr/share/cmake-3.28/Modules/CMakeDetermineCompiler.cmake","line":25}
+`
+	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
+	if len(got) != 0 {
+		t.Errorf("cmake-internal if() leaked into the stack; got %#v, want no records", got)
+	}
+}
+
+// TestExtractPlatformConditionalSources_ShorthandPlatformVar
+// pins that cmake's single-identifier platform-shorthand
+// variables (WIN32, LINUX, APPLE — the ones with a clean 1:1
+// @platforms//os:* mapping) surface conditional sources under
+// the corresponding constraint, same shape as the three-arg
+// CMAKE_SYSTEM_NAME STREQUAL form.
+func TestExtractPlatformConditionalSources_ShorthandPlatformVar(t *testing.T) {
+	cases := []struct {
+		name      string
+		ifArgs    string
+		selectKey string
+	}{
+		{"WIN32", `["WIN32"]`, "@platforms//os:windows"},
+		{"LINUX", `["LINUX"]`, "@platforms//os:linux"},
+		{"APPLE", `["APPLE"]`, "@platforms//os:darwin"},
+		// Case-insensitive: cmake's `if(Win32)` parses the
+		// same way `if(WIN32)` does.
+		{"Win32-mixed-case", `["Win32"]`, "@platforms//os:windows"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			trace := `
+{"args":` + tc.ifArgs + `,"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","platform.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":7}
+`
+			got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
+			want := []PlatformConditionalSource{
+				{Target: "foo", Source: "platform.c", SelectKey: tc.selectKey},
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("got %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+// TestShorthandPlatformVarToConstraint pins the mapping table
+// for the single-arg shorthand. Empty string is the
+// "unrecognized" sentinel — UNIX / BSD don't have a clean
+// single-constraint mapping (multi-OS aggregates).
+//
+// MSVC / MINGW / CYGWIN are compiler predicates that imply a
+// Windows OS at build time, so they map to :windows. The mapping
+// is lossy in the other-compiler-on-same-OS direction (e.g.
+// `if(MSVC)` will partition under :windows even though a
+// MinGW-on-Windows build wouldn't satisfy `if(MSVC)`); strict
+// single-constraint correctness would leave sources flat and
+// they'd attempt to compile on Linux, which is strictly worse.
+func TestShorthandPlatformVarToConstraint(t *testing.T) {
+	cases := map[string]string{
+		// Strictly-OS predicates.
+		"WIN32": "@platforms//os:windows",
+		"Win32": "@platforms//os:windows", // case-insensitive
+		"LINUX": "@platforms//os:linux",
+		"APPLE": "@platforms//os:darwin",
+		// Compiler predicates with implicit Windows OS.
+		"MSVC":   "@platforms//os:windows",
+		"MINGW":  "@platforms//os:windows",
+		"CYGWIN": "@platforms//os:windows",
+		// Multi-OS aggregates and unrecognized identifiers.
+		"UNIX":    "",
+		"BSD":     "",
+		"ANDROID": "",
+		"":        "",
+	}
+	for in, want := range cases {
+		if got := shorthandPlatformVarToConstraint(in); got != want {
+			t.Errorf("shorthandPlatformVarToConstraint(%q): got %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestExtractPlatformConditionalSources_SkipsAlias pins that
 // add_library(foo ALIAS bar) and add_library(foo IMPORTED ...)
 // shapes don't surface as conditional sources (they have no
