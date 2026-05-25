@@ -1447,3 +1447,51 @@ func TestEmit_ConstraintViolation_PreEmitGuard(t *testing.T) {
 		})
 	}
 }
+
+// TestEmit_Filegroup_Basic covers KindFilegroup emission — Phase 1
+// task 2's foundation for install(FILES) / install(DIRECTORY)
+// lowering at convert time.
+func TestEmit_Filegroup_Basic(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:       "headers",
+			Kind:       ir.KindFilegroup,
+			Srcs:       []string{"include/foo.h", "include/bar.h"},
+			Visibility: []string{"//visibility:public"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.Contains(gotStr, `filegroup(`) {
+		t.Errorf("expected filegroup rule; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `name = "headers"`) {
+		t.Errorf("expected name attribute; got:\n%s", gotStr)
+	}
+	// Bazel sorts srcs entries; both should appear.
+	if !strings.Contains(gotStr, `"include/bar.h"`) || !strings.Contains(gotStr, `"include/foo.h"`) {
+		t.Errorf("expected srcs entries; got:\n%s", gotStr)
+	}
+}
+
+// TestEmit_Filegroup_NoLoad confirms filegroup doesn't trigger a
+// load() statement — it's in Bazel's global namespace.
+func TestEmit_Filegroup_NoLoad(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "data",
+			Kind: ir.KindFilegroup,
+			Srcs: []string{"data/foo.dat"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `load("`) {
+		t.Errorf("filegroup should not require a load(); got:\n%s", got)
+	}
+}

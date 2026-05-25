@@ -22,6 +22,19 @@ const (
 	KindGenrule
 	KindCCTest
 	KindShBinary
+	// KindFilegroup carries a list of source files exposed via a
+	// Bazel-native `filegroup()` rule. The cmake converter uses
+	// it to lower install(FILES ...) / install(DIRECTORY ...)
+	// declarations at convert time (Phase 1 task 2 of the
+	// generator-parity uplift in ROADMAP.md) — exposing the
+	// named files as a labeled filegroup downstream consumers
+	// can depend on without pulling install_tree.tar through
+	// the round-2 fallback. filegroup is in the global Bazel
+	// namespace (no MODULE.bazel deps); for richer attribute
+	// support (per-file destination renames via pkg_files +
+	// rules_pkg) Phase 1 task 2's full pkg_files emission would
+	// slot in alongside.
+	KindFilegroup
 )
 
 func (k Kind) String() string {
@@ -40,6 +53,8 @@ func (k Kind) String() string {
 		return "cc_test"
 	case KindShBinary:
 		return "sh_binary"
+	case KindFilegroup:
+		return "filegroup"
 	}
 	return "unknown"
 }

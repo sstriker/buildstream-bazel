@@ -287,6 +287,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			}
 			continue
 		}
+		if t.Kind == ir.KindFilegroup {
+			if err := emitFilegroup(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
 			return nil, err
 		}
@@ -603,6 +609,26 @@ var shBinaryTmpl = template.Must(template.New("sh_binary").Funcs(template.FuncMa
 )
 `))
 
+// filegroupTmpl renders filegroup. Bazel-native rule (no load
+// needed) used by the cmake converter's install(FILES) /
+// install(DIRECTORY) lowering (Phase 1 task 2 of the
+// generator-parity uplift). SrcsExpr is pre-rendered as a
+// list expression or select() expression, same shape as
+// ccView srcs handling.
+var filegroupTmpl = template.Must(template.New("filegroup").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`filegroup(
+    name = "{{.Name}}",
+    srcs = {{.SrcsExpr}},
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
 var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 	"strList": strList,
 }).Parse(`genrule(
@@ -715,6 +741,23 @@ func emitCCImport(w *bytes.Buffer, t ir.Target) error {
 
 func emitShBinary(w *bytes.Buffer, t ir.Target) error {
 	return shBinaryTmpl.Execute(w, shBinaryView{
+		Name:       t.Name,
+		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
+}
+
+// filegroupView projects ir.Target into the filegroup template.
+type filegroupView struct {
+	Name       string
+	SrcsExpr   string
+	Tags       []string
+	Visibility []string
+}
+
+func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
+	return filegroupTmpl.Execute(w, filegroupView{
 		Name:       t.Name,
 		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
 		Tags:       sortedCopy(t.Tags),
