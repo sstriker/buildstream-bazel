@@ -73,6 +73,24 @@ type Package struct {
 	Targets []Target
 }
 
+// Provenance records the originating source location of a Target.
+// File is typically a cmake CMakeLists.txt path; Line is 1-based.
+// Command is the cmake command name (e.g. "add_library",
+// "add_executable") that declared the target. Empty File suppresses
+// the emit-side provenance comment.
+type Provenance struct {
+	File    string
+	Line    int
+	Command string
+}
+
+// IsZero reports whether the provenance is empty (no recorded
+// source location). Emit-side helpers use this to skip the
+// comment without checking each field.
+func (p Provenance) IsZero() bool {
+	return p.File == "" && p.Line == 0 && p.Command == ""
+}
+
 // Target is one rule in the emitted BUILD.bazel.
 //
 // All path fields are package-relative (rooted at Package.SourceRoot). All
@@ -82,6 +100,25 @@ type Package struct {
 type Target struct {
 	Name string
 	Kind Kind
+
+	// Provenance records where this target was declared in the
+	// originating build system's source. Populated by lowerers
+	// that have backtrace data — the cmake codemodel's
+	// BacktraceGraph gives file/line/command per target; trace-
+	// based lowerers populate it best-effort from their own
+	// per-call call-site data.
+	//
+	// Emit-side rendering is gated by emit.Options.EmitProvenance:
+	// when on, the emitter writes a leading
+	// `# Source: <file>:<line> (<command>)` comment above each
+	// rule whose Provenance is non-zero. Operators use the
+	// annotation to navigate "why does this Bazel target exist?"
+	// without re-running the converter.
+	//
+	// Zero-value Provenance (File == "") suppresses the comment;
+	// the IR stays back-compat for lowerers / fixtures that
+	// pre-date this field.
+	Provenance Provenance
 
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).
 	Srcs []string

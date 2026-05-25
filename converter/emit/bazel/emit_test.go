@@ -1477,6 +1477,102 @@ func TestEmit_Filegroup_Basic(t *testing.T) {
 	}
 }
 
+// TestEmit_Provenance_RendersWhenEnabled covers Phase 1 task 1:
+// when EmitProvenance is on, each rule with a non-zero Provenance
+// gets a leading `# Source: <file>:<line> (<command>)` comment.
+func TestEmit_Provenance_RendersWhenEnabled(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Provenance: ir.Provenance{
+				File:    "CMakeLists.txt",
+				Line:    42,
+				Command: "add_library",
+			},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "# Source: CMakeLists.txt:42 (add_library)") {
+		t.Errorf("expected provenance comment; got:\n%s", got)
+	}
+}
+
+// TestEmit_Provenance_OmittedWhenDisabled confirms the comment is
+// suppressed when the flag is off, keeping existing goldens
+// byte-stable.
+func TestEmit_Provenance_OmittedWhenDisabled(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Provenance: ir.Provenance{
+				File:    "CMakeLists.txt",
+				Line:    42,
+				Command: "add_library",
+			},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "# Source:") {
+		t.Errorf("provenance should be suppressed when flag is off; got:\n%s", got)
+	}
+}
+
+// TestEmit_Provenance_OmittedForZeroValue confirms the comment is
+// suppressed when Provenance.IsZero() — lowerers that don't have
+// backtrace data leave the field zero, and emit shouldn't render
+// "# Source: :0 ()" garbage.
+func TestEmit_Provenance_OmittedForZeroValue(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			// no Provenance
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "# Source:") {
+		t.Errorf("zero-value Provenance should suppress comment; got:\n%s", got)
+	}
+}
+
+// TestEmit_Provenance_OmitsLineAndCommandWhenEmpty handles the
+// partial-population case: a lowerer that has only the file path
+// shouldn't emit `:0 ()`.
+func TestEmit_Provenance_OmitsLineAndCommandWhenEmpty(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Provenance: ir.Provenance{
+				File: "CMakeLists.txt",
+				// Line = 0, Command = ""
+			},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "# Source: CMakeLists.txt\n") {
+		t.Errorf("expected bare-file comment without :0 ()  garbage; got:\n%s", got)
+	}
+}
+
 // TestEmit_Filegroup_NoLoad confirms filegroup doesn't trigger a
 // load() statement — it's in Bazel's global namespace.
 func TestEmit_Filegroup_NoLoad(t *testing.T) {

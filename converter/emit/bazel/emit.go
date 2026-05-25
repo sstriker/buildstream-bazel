@@ -62,6 +62,55 @@ func emitPackageDefaultVisibility(buf *bytes.Buffer) {
 	buf.WriteString(`package(default_visibility = ["//visibility:public"])` + "\n\n")
 }
 
+// emitProvenanceComment writes a leading `# Source: <file>:<line>
+// (<command>)` comment above the next emitted rule. Phase 1
+// task 1 of the generator-parity uplift — the backtrace-derived
+// annotation that tells the operator which cmake call site
+// declared the target.
+//
+// File / Line / Command are written verbatim. The buildtools
+// canonicalize pass preserves leading comments attached to rule
+// calls, so the comment survives the formatter round-trip.
+func emitProvenanceComment(buf *bytes.Buffer, p ir.Provenance) {
+	buf.WriteString("# Source: ")
+	buf.WriteString(p.File)
+	if p.Line > 0 {
+		buf.WriteString(":")
+		buf.WriteString(itoa(p.Line))
+	}
+	if p.Command != "" {
+		buf.WriteString(" (")
+		buf.WriteString(p.Command)
+		buf.WriteString(")")
+	}
+	buf.WriteString("\n")
+}
+
+// itoa is a tiny non-fmt int-to-string helper for the per-rule
+// provenance comment's hot path. Avoids pulling fmt into emit's
+// per-target loop.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
 // defaultPublicVisibility is the package-level default emitted
 // by emitPackageDefaultVisibility. Per-rule Visibility slices
 // matching this exact list are suppressed by
@@ -223,6 +272,18 @@ type Options struct {
 	// directive entirely, which is the right shape for unit
 	// tests that don't care about gazelle_cc resolution.
 	BazelPackagePath string
+
+	// EmitProvenance enables Phase 1 task 1's backtrace-derived
+	// per-rule annotation: when true, each rule whose Target has
+	// a non-zero Provenance gets a leading
+	// `# Source: <file>:<line> (<command>)` comment. Operators
+	// use the annotation to navigate "why does this Bazel target
+	// exist?" without re-running the converter.
+	//
+	// Off by default — comments change BUILD output bytes and
+	// would invalidate every existing golden if always-on. CLI
+	// surface via `convert-element-cmake --emit-provenance`.
+	EmitProvenance bool
 }
 
 // Emit returns the contents of a BUILD.bazel file for pkg using
@@ -268,6 +329,9 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	for i, t := range pkg.Targets {
 		if i > 0 {
 			buf.WriteString("\n")
+		}
+		if opts.EmitProvenance && !t.Provenance.IsZero() {
+			emitProvenanceComment(&buf, t.Provenance)
 		}
 		if t.Kind == ir.KindGenrule {
 			if err := emitGenrule(&buf, t); err != nil {

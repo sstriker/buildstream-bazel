@@ -356,6 +356,7 @@ func run(a cli.Args) error {
 	out, err := bazel.EmitWithOptions(pkg, bazel.Options{
 		SourceKey:        a.SourceKey,
 		BazelPackagePath: a.BazelPackagePath,
+		EmitProvenance:   a.EmitProvenance,
 	})
 	if err != nil {
 		// canonicalize failures arrive pre-typed as
