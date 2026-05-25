@@ -91,14 +91,25 @@ Three slices, all decoder-side. No new cmake hooks.
   per-file destination renames slots in alongside as a future
   kind when richer attribute support surfaces.
 
-- **`shadow.ExtractSourceFileProperties`** (✓ landed). Decoder
-  for `set_source_files_properties(<files> [DIRECTORY …]
-  [TARGET_DIRECTORY …] PROPERTIES <prop> <val> …)`. Mirrors
-  the existing `classifyConfigureFile` / `classifyFileGenerate`
-  pattern; participates in `Decode`'s single-pass dispatch.
-  Consumer wiring per-property (per-source `COMPILE_DEFINITIONS`
-  needs a cc_library split; `HEADER_FILE_ONLY` needs srcs/hdrs
-  reclassification) lands separately.
+- **Per-source `COMPILE_DEFINITIONS` via CompileGroup-split**
+  (✓ landed end-to-end). cmake's codemodel already partitions
+  sources by CompileGroupIndex when
+  `set_source_files_properties(... PROPERTIES COMPILE_DEFINITIONS
+  ...)` (or `target_sources(PRIVATE FILE_SET ...)`) gives them
+  differing compile contexts. The new `shouldSplitCompileGroups`
+  gate fires when two CGs differ in `Defines` /
+  `CompileCommandFragments` within the same language, not just
+  across languages. `splitMultiLanguage`'s emit loop
+  disambiguates names (`<target>_C_0`, `<target>_C_1` for
+  multi-CG-per-language; single-CG-per-language keeps the
+  legacy `<target>_C` shape for byte-stable goldens).
+
+  `shadow.ExtractSourceFileProperties` decodes the trace-level
+  `set_source_files_properties` calls and remains useful for
+  properties the codemodel doesn't surface (`HEADER_FILE_ONLY`,
+  `LANGUAGE` override) — consumer wiring for those properties
+  lands separately as each gets its own Bazel-side lowering
+  recipe.
 
 ## Phase 2 — Request `configureLog-v1`
 
