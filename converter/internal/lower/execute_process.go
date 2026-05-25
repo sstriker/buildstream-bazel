@@ -130,6 +130,30 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		default:
+			// Phase 4 rescue: when a BucketProbe call writes an
+			// OUTPUT_VARIABLE that's already in cmakeVars (captured
+			// by the dump-vars hook at end-of-configure), the probe's
+			// value flows through to downstream configure_file /
+			// file(GENERATE) lifts via Reply.Vars — no Bazel-side
+			// emission needed for the probe call itself. The probe
+			// IS rescued; nothing fails.
+			//
+			// Same logic for BucketStamp: a version-stamp probe
+			// (`git rev-parse HEAD`) sets OUTPUT_VARIABLE; if cmake
+			// captured the value, downstream consumers see it via
+			// cmakeVars. The downside is that the stamp value bakes
+			// into srckey (which is the round-2 fallback's
+			// per-build-tree trade-off); operators who need a
+			// non-baked stamp opt into the round-2 path.
+			if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
+				if call.OutputVariable != "" {
+					if _, ok := cmakeVars[call.OutputVariable]; ok {
+						// Captured via dump-vars; consumer reads
+						// through cmakeVars. Skip the refusal.
+						continue
+					}
+				}
+			}
 			unsupported = append(unsupported, executeProcessRefusal{
 				File:   call.File,
 				Line:   call.Line,

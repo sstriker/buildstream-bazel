@@ -503,3 +503,58 @@ func TestRecoverExecuteProcess_LiftPlusRefuse(t *testing.T) {
 		t.Errorf("refusal should mention [stamp]; got: %v", err)
 	}
 }
+
+// TestRecoverExecuteProcess_RescueProbeViaDumpVars covers Phase 4's
+// probe-bucket rescue: when a probe call's OUTPUT_VARIABLE is in
+// cmakeVars (captured by the dump-vars hook), the rescue arm
+// skips the refusal — downstream configure_file / file(GENERATE)
+// lifts consume the value through cmakeVars.
+func TestRecoverExecuteProcess_RescueProbeViaDumpVars(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"gcc", "-dumpversion"}},
+		OutputVariable: "GCC_VERSION",
+	}}
+	cc := newCodegenContext()
+	cmakeVars := map[string]string{"GCC_VERSION": "13.2.0"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected probe rescue; got refusals: %v", refusals)
+	}
+}
+
+// TestRecoverExecuteProcess_NoRescueWhenVarMissing confirms the
+// rescue is gated on the variable actually being in cmakeVars —
+// e.g. when dump-vars hook wasn't enabled, the refusal still
+// fires.
+func TestRecoverExecuteProcess_NoRescueWhenVarMissing(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"gcc", "-dumpversion"}},
+		OutputVariable: "GCC_VERSION",
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) == 0 {
+		t.Error("expected refusal when dump-vars data absent")
+	}
+}
+
+// TestRecoverExecuteProcess_RescueStamp covers the same rescue for
+// the stamp bucket (`git rev-parse HEAD`).
+func TestRecoverExecuteProcess_RescueStamp(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           5,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	}}
+	cc := newCodegenContext()
+	cmakeVars := map[string]string{"GIT_SHA": "abc123def456"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected stamp rescue via dump-vars; got refusals: %v", refusals)
+	}
+}
