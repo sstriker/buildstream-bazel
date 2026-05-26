@@ -278,3 +278,151 @@ func TestSanitizeDestination(t *testing.T) {
 		})
 	}
 }
+
+// TestLowerExportInstallers_DeclarativeWiresThroughEmitDeclarative
+// pins the Phase 6 wire-up: a declarative install(EXPORT) shape
+// produces the suffixed cc_import + cmake_config_bundle filegroup
+// + Phase 6 tag — all without running cmake --install.
+func TestLowerExportInstallers_DeclarativeWiresThroughEmitDeclarative(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Targets: map[string]fileapi.Target{
+			"foo::@": {
+				Name:       "foo",
+				Type:       "STATIC_LIBRARY",
+				NameOnDisk: "libfoo.a",
+				Install: &fileapi.TargetInstall{
+					Destinations: []fileapi.TargetInstallDest{{Path: "lib"}},
+				},
+			},
+		},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{{
+					Type:          "export",
+					Destination:   "lib/cmake/Foo",
+					ExportName:    "FooTargets",
+					ExportTargets: []fileapi.ExportTarget{{Id: "foo::@"}},
+				}},
+			},
+		},
+	}
+	got := lowerExportInstallers(r)
+	// Two targets: cmake_config_bundle filegroup + foo_import
+	// cc_import. Sorted by name: cmake_config_bundle, foo_import.
+	if len(got) != 2 {
+		t.Fatalf("want 2 IR targets; got %d (%v)", len(got), got)
+	}
+	if got[0].Name != "cmake_config_bundle" || got[0].Kind != ir.KindFilegroup {
+		t.Errorf("first target should be cmake_config_bundle filegroup; got %+v", got[0])
+	}
+	if got[1].Name != "foo_import" || got[1].Kind != ir.KindCCImport {
+		t.Errorf("second target should be foo_import cc_import; got %+v", got[1])
+	}
+	if got[1].StaticLibrary != "lib/libfoo.a" {
+		t.Errorf("static_library: %q", got[1].StaticLibrary)
+	}
+	// Phase 6 tag must be present so cmakecfg's bundle synthesizer
+	// can de-duplicate the IMPORTED entry.
+	want := "cmake-codegen-install-export-import"
+	found := false
+	for _, tag := range got[1].Tags {
+		if tag == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("foo_import missing %q tag; got tags = %v", want, got[1].Tags)
+	}
+}
+
+// TestLowerExportInstallers_ImperativeStaysOnFallback verifies the
+// non-declarative residue: an installer that doesn't match the
+// classifier's preconditions (here: EXCLUDE_FROM_ALL) yields no IR.
+// The lowering returns the bundle to the round-2 _install_tree_extract
+// fallback by not emitting anything here.
+func TestLowerExportInstallers_ImperativeStaysOnFallback(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Targets: map[string]fileapi.Target{
+			"foo::@": {
+				Name:       "foo",
+				Type:       "STATIC_LIBRARY",
+				NameOnDisk: "libfoo.a",
+				Install: &fileapi.TargetInstall{
+					Destinations: []fileapi.TargetInstallDest{{Path: "lib"}},
+				},
+			},
+		},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{{
+					Type:             "export",
+					Destination:      "lib/cmake/Foo",
+					ExportName:       "FooTargets",
+					ExportTargets:    []fileapi.ExportTarget{{Id: "foo::@"}},
+					IsExcludeFromAll: true,
+				}},
+			},
+		},
+	}
+	if got := lowerExportInstallers(r); len(got) != 0 {
+		t.Errorf("imperative bundle should emit nothing; got %+v", got)
+	}
+}
+
+// TestLowerExportInstallers_BundleFilegroupsMerge covers the dedup:
+// two declarative install(EXPORT) calls in the same package both
+// produce a "cmake_config_bundle" filegroup; the wire merges their
+// srcs into one to avoid a "target already declared" Bazel error.
+func TestLowerExportInstallers_BundleFilegroupsMerge(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Targets: map[string]fileapi.Target{
+			"a::@": {Name: "a", Type: "STATIC_LIBRARY", NameOnDisk: "liba.a", Install: &fileapi.TargetInstall{Destinations: []fileapi.TargetInstallDest{{Path: "lib"}}}},
+			"b::@": {Name: "b", Type: "STATIC_LIBRARY", NameOnDisk: "libb.a", Install: &fileapi.TargetInstall{Destinations: []fileapi.TargetInstallDest{{Path: "lib"}}}},
+		},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{
+					{Type: "export", Destination: "lib/cmake/A", ExportName: "ATargets", ExportTargets: []fileapi.ExportTarget{{Id: "a::@"}}},
+					{Type: "export", Destination: "lib/cmake/B", ExportName: "BTargets", ExportTargets: []fileapi.ExportTarget{{Id: "b::@"}}},
+				},
+			},
+		},
+	}
+	got := lowerExportInstallers(r)
+	var bundle *ir.Target
+	for i := range got {
+		if got[i].Name == "cmake_config_bundle" {
+			bundle = &got[i]
+		}
+	}
+	if bundle == nil {
+		t.Fatal("cmake_config_bundle filegroup missing")
+	}
+	// Both bundle scripts present in srcs.
+	wantSrcs := map[string]bool{
+		"lib/cmake/A/ATargets.cmake": true,
+		"lib/cmake/B/BTargets.cmake": true,
+	}
+	for _, s := range bundle.Srcs {
+		delete(wantSrcs, s)
+	}
+	if len(wantSrcs) != 0 {
+		t.Errorf("missing srcs from merged bundle: %v (got %v)", wantSrcs, bundle.Srcs)
+	}
+}

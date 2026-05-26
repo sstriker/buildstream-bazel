@@ -38,12 +38,18 @@ func TestToIR_HelloWorld(t *testing.T) {
 	if pkg.Name != "hello" {
 		t.Errorf("Package.Name = %q, want hello", pkg.Name)
 	}
-	// Two targets: the cc_library and the
-	// install_directory__include filegroup that mirrors the
-	// hello-world fixture's install(DIRECTORY include ...)
-	// declaration (Phase 1 task 2 of the generator-parity uplift).
-	if got := len(pkg.Targets); got != 2 {
-		t.Fatalf("Targets = %d, want 2 (cc_library + install_directory filegroup)", got)
+	// Four targets:
+	//   - the cc_library (the producer rule for `hello`),
+	//   - the install_directory__include filegroup mirroring
+	//     install(DIRECTORY include ...) (Phase 1 task 2),
+	//   - the cmake_config_bundle filegroup synthesizing the
+	//     install(EXPORT) bundle script (Phase 6 declarative
+	//     projection — codemodel-only EmitInputs slice),
+	//   - the hello_import cc_import the export's per-target
+	//     projection emits for cross-element find_package
+	//     consumers (Phase 6).
+	if got := len(pkg.Targets); got != 4 {
+		t.Fatalf("Targets = %d, want 4 (cc_library + install_directory + cmake_config_bundle + hello_import)", got)
 	}
 
 	tgt := pkg.Targets[0]

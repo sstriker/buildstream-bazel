@@ -104,10 +104,29 @@ func filterImportable(ts []ir.Target) []ir.Target {
 	for _, t := range ts {
 		switch t.Kind {
 		case ir.KindCCLibrary, ir.KindCCInterface, ir.KindCCImport:
+			// Phase 6 install(EXPORT) derived cc_import
+			// targets are a Bazel-side facade for the
+			// producer's own cc_library — the IMPORTED entry
+			// the bundle would emit for them is already
+			// covered by the underlying cc_library's entry.
+			// Skip to avoid duplicate "add_library(Pkg::foo
+			// SHARED IMPORTED)" lines.
+			if hasTag(t.Tags, "cmake-codegen-install-export-import") {
+				continue
+			}
 			out = append(out, t)
 		}
 	}
 	return out
+}
+
+func hasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 // importedKind picks the CMake STATIC|SHARED|INTERFACE keyword for a target.

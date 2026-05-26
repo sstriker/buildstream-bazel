@@ -188,3 +188,93 @@ func TestResolver_NilAndEmpty(t *testing.T) {
 		t.Errorf("zero-element manifest should report empty")
 	}
 }
+
+func TestLoad_Phase6CMakeBundleFields(t *testing.T) {
+	// Phase 6 of the generator-parity uplift extends the per-export
+	// entry with CMakeConfigBundleLabel + CMakeImportLabels so cross-
+	// element find_package consumers can resolve to the producer's
+	// synthesized bundle. The fields are append-only / omitempty so
+	// older manifests still load; this test pins the round-trip
+	// shape for the new fields.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "imports.json")
+	body := `{
+  "version": 1,
+  "elements": [
+    {
+      "name": "components/mypkg",
+      "exports": [
+        {
+          "cmake_target": "MyPkg::foo",
+          "bazel_label": "//elements/components/mypkg:foo",
+          "cmake_config_bundle_label": "//elements/components/mypkg:cmake_config_bundle",
+          "cmake_import_labels": [
+            "//elements/components/mypkg:foo_import",
+            "//elements/components/mypkg:bar_import"
+          ]
+        }
+      ]
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	e := r.LookupCMakeTarget("MyPkg::foo")
+	if e == nil {
+		t.Fatal("MyPkg::foo lookup failed")
+	}
+	if e.CMakeConfigBundleLabel != "//elements/components/mypkg:cmake_config_bundle" {
+		t.Errorf("CMakeConfigBundleLabel = %q", e.CMakeConfigBundleLabel)
+	}
+	wantImports := []string{
+		"//elements/components/mypkg:foo_import",
+		"//elements/components/mypkg:bar_import",
+	}
+	if !reflect.DeepEqual(e.CMakeImportLabels, wantImports) {
+		t.Errorf("CMakeImportLabels = %v want %v", e.CMakeImportLabels, wantImports)
+	}
+}
+
+func TestLoad_LegacyManifestWithoutPhase6Fields(t *testing.T) {
+	// Append-only schema contract: older manifests written before
+	// Phase 6 must still load without error and the new fields
+	// just stay at their zero values.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "imports.json")
+	body := `{
+  "version": 1,
+  "elements": [
+    {
+      "name": "old/zlib",
+      "exports": [
+        {
+          "cmake_target": "ZLIB::ZLIB",
+          "bazel_label": "//elements/zlib"
+        }
+      ]
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("legacy manifest should load: %v", err)
+	}
+	e := r.LookupCMakeTarget("ZLIB::ZLIB")
+	if e == nil {
+		t.Fatal("ZLIB::ZLIB not found")
+	}
+	if e.CMakeConfigBundleLabel != "" {
+		t.Errorf("legacy manifest should leave CMakeConfigBundleLabel empty: %q", e.CMakeConfigBundleLabel)
+	}
+	if e.CMakeImportLabels != nil {
+		t.Errorf("legacy manifest should leave CMakeImportLabels nil: %v", e.CMakeImportLabels)
+	}
+}

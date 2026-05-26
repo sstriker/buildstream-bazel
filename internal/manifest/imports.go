@@ -87,6 +87,35 @@ type Export struct {
 	// for the cc one: the resolver-shaped keys, distinct from
 	// LinkLibraries' flag-fragment / distribution-name values.
 	ImportModules []string `json:"import_modules,omitempty"`
+
+	// CMakeConfigBundleLabel, when non-empty, is the absolute Bazel
+	// label of the `cmake_config_bundle` filegroup the producer's
+	// converted BUILD emits for the install(EXPORT) bundle that
+	// surfaces this export. Phase 6 of the generator-parity uplift
+	// (ROADMAP.md) writes this when the orchestrator's manifest
+	// synthesizer can derive the bundle label from a declarative
+	// install(EXPORT) verdict. Downstream consumers that resolve
+	// the export via `find_package(<Pkg>)` against the producer
+	// element point cmake's CMAKE_PREFIX_PATH at the directory the
+	// label resolves to. Empty for imperative bundles (those stay
+	// on the round-2 _install_tree_extract fallback, which doesn't
+	// surface a stable bundle label) and for non-cmake exports
+	// (autotools / meson / pyproject).
+	CMakeConfigBundleLabel string `json:"cmake_config_bundle_label,omitempty"`
+
+	// CMakeImportLabels lists the absolute Bazel labels of the
+	// `<name>_import` cc_import targets the producer's converted
+	// BUILD emits for each declarative install(EXPORT) target.
+	// Sibling to CMakeConfigBundleLabel: where the bundle label
+	// points at the lib/cmake/<Pkg>/ filegroup the orchestrator's
+	// find_package wraps, these labels point at the per-artifact
+	// cc_import facades for consumers who want to link directly
+	// against the producer's pre-built without going through the
+	// cmake-config find_package machinery. Empty for imperative
+	// bundles. Order matches the declarative installer's
+	// ExportTargets order so consumers iterating both lists see
+	// stable pairings.
+	CMakeImportLabels []string `json:"cmake_import_labels,omitempty"`
 }
 
 // Load reads and parses an imports manifest from disk. Returns a Resolver
