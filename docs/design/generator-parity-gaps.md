@@ -145,23 +145,32 @@ the lift is wiring it into IR + emit.
 ## Medium: per-target properties cmake doesn't surface in codemodel
 
 The codemodel exposes a curated subset of target properties.
-Many useful ones don't surface:
+Many useful ones don't surface; probe-genex's
+`file(GENERATE)` hook (Phase 3) extracts them. Landed slices:
 
-- **`POSITION_INDEPENDENT_CODE`** (see above).
-- **`MSVC_RUNTIME_LIBRARY`** — Windows-only runtime selection.
-- **`JOB_POOL_COMPILE` / `JOB_POOL_LINK`** — ninja job-pool
-  routing. Bazel: `exec_properties = {"pool": "..."}` if
-  using Remote Execution.
-- **`<LANG>_VISIBILITY_PRESET`** — symbol visibility default.
-- **`LINK_FLAGS_<CONFIG>`** — per-config link flags
-  (the multi-config fold handles general flags; this is the
-  per-config override).
+- ✓ **`POSITION_INDEPENDENT_CODE`** → features=["pic"] / ["-pic"]
+- ✓ **`<LANG>_VISIBILITY_PRESET`** → -fvisibility=<value> copt
+- ✓ **`VISIBILITY_INLINES_HIDDEN`** → -fvisibility-inlines-hidden copt
+- ✓ **`BUILD_RPATH` / `INSTALL_RPATH`** → -Wl,-rpath,<path> linkopts
+- ✓ **`AUTOMOC` / `AUTOUIC` / `AUTORCC`** → cmake-codegen-qt-* tags
+- ✓ **`ENABLE_EXPORTS` / `SOVERSION` / `VERSION`** → tags
+- ✓ **`EXCLUDE_FROM_ALL`** → `manual` tag + cmake-codegen-exclude-from-all
+- ✓ **`MSVC_RUNTIME_LIBRARY`** → cmake-codegen-msvc-runtime=<lib> tag
+- ✓ **`JOB_POOL_COMPILE` / `JOB_POOL_LINK`** → cmake-codegen-job-pool-* tags
 
-The probe-genex hook from Phase 3 can extract these via
-`file(GENERATE)` against `$<TARGET_PROPERTY:t,<prop>>` — the
-existing infrastructure already handles unbounded property
-queries. Cost: per-target file count grows linearly with the
-property set we probe.
+Remaining:
+
+- **`LINK_FLAGS_<CONFIG>`** — per-config link flags. The
+  multi-config fold handles general flags; this is the
+  per-config override.
+- **`CXX_EXTENSIONS` / `C_EXTENSIONS`** — toggle between
+  `-std=c++NN` (strict) and `-std=gnu++NN` (extensions).
+  Cmake's default is `ON` (gnu); our prepend hardcodes
+  strict. Fix: probe-genex extension + rewrite the
+  prepended copt to match.
+
+Per-target file count grows linearly with the property set we
+probe, so additions are cheap.
 
 ## Hard: behaviors a generator embeds but we'd need to reimplement
 
@@ -254,6 +263,9 @@ Items landed in the gap-fill push, sorted by category:
 - ✓ VISIBILITY_INLINES_HIDDEN → -fvisibility-inlines-hidden copt
 - ✓ AUTOMOC / AUTOUIC / AUTORCC → cmake-codegen-qt-* tags
 - ✓ ENABLE_EXPORTS / SOVERSION / VERSION → informational tags
+- ✓ EXCLUDE_FROM_ALL → manual tag + cmake-codegen-exclude-from-all
+- ✓ MSVC_RUNTIME_LIBRARY → cmake-codegen-msvc-runtime=<lib> tag
+- ✓ JOB_POOL_COMPILE / JOB_POOL_LINK → cmake-codegen-job-pool-* tags
 
 **configureLog-driven lifts:**
 - ✓ try_compile / try_run variable rescue for execute_process

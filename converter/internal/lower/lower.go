@@ -2097,6 +2097,42 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 				}
 			}
 		}
+		// EXCLUDE_FROM_ALL — cmake skips this target when
+		// building the default ALL target. Bazel's closest
+		// match is `tags = ["manual"]`, which excludes the
+		// target from `bazel build //...` wildcard expansion.
+		if cmakeTruthy(p.Properties["EXCLUDE_FROM_ALL"]) {
+			if !stringSliceContains(tgt.Tags, "manual") {
+				tgt.Tags = append(tgt.Tags, "manual")
+			}
+			if !stringSliceContains(tgt.Tags, "cmake-codegen-exclude-from-all") {
+				tgt.Tags = append(tgt.Tags, "cmake-codegen-exclude-from-all")
+			}
+		}
+		// MSVC_RUNTIME_LIBRARY — Windows-only runtime selection
+		// (MultiThreaded vs MultiThreadedDLL, with/without
+		// Debug). Bazel cc_library has no direct attribute;
+		// the operator's cc_toolchain feature owns the actual
+		// /MT vs /MD flag. Surface as tag.
+		if v := strings.TrimSpace(p.Properties["MSVC_RUNTIME_LIBRARY"]); v != "" {
+			tag := "cmake-codegen-msvc-runtime=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		// JOB_POOL_COMPILE / JOB_POOL_LINK — ninja-specific
+		// job-pool routing for compile/link actions. Bazel's
+		// closest analog is `exec_properties = {"pool": "..."}`
+		// under remote execution. Surface as tag so operators
+		// see the cmake-side intent.
+		for _, jp := range []string{"JOB_POOL_COMPILE", "JOB_POOL_LINK"} {
+			if v := strings.TrimSpace(p.Properties[jp]); v != "" {
+				tag := "cmake-codegen-" + strings.ReplaceAll(strings.ToLower(jp), "_", "-") + "=" + v
+				if !stringSliceContains(tgt.Tags, tag) {
+					tgt.Tags = append(tgt.Tags, tag)
+				}
+			}
+		}
 	}
 }
 

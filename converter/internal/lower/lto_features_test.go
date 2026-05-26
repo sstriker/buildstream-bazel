@@ -352,6 +352,53 @@ func TestApplyProbeGenexProperties_QtToggles(t *testing.T) {
 	}
 }
 
+func TestApplyProbeGenexProperties_ExcludeFromAll(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "tool", Kind: ir.KindCCBinary}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "tool",
+		Properties: map[string]string{"EXCLUDE_FROM_ALL": "TRUE"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Tags, "manual") {
+		t.Errorf("Tags: %v want manual", pkg.Targets[0].Tags)
+	}
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-exclude-from-all") {
+		t.Errorf("Tags: %v want cmake-codegen-exclude-from-all", pkg.Targets[0].Tags)
+	}
+}
+
+func TestApplyProbeGenexProperties_MSVCRuntimeLibrary(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "lib", Kind: ir.KindCCLibrary}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "lib",
+		Properties: map[string]string{"MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-msvc-runtime=MultiThreadedDLL") {
+		t.Errorf("Tags: %v want msvc-runtime", pkg.Targets[0].Tags)
+	}
+}
+
+func TestApplyProbeGenexProperties_JobPools(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "lib", Kind: ir.KindCCLibrary}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name: "lib",
+		Properties: map[string]string{
+			"JOB_POOL_COMPILE": "compile-heavy",
+			"JOB_POOL_LINK":    "link-heavy",
+		},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	for _, want := range []string{
+		"cmake-codegen-job-pool-compile=compile-heavy",
+		"cmake-codegen-job-pool-link=link-heavy",
+	} {
+		if !stringSliceContains(pkg.Targets[0].Tags, want) {
+			t.Errorf("Tags: %v missing %q", pkg.Targets[0].Tags, want)
+		}
+	}
+}
+
 func TestLowerTarget_Sysroot_Tag(t *testing.T) {
 	target := &fileapi.Target{
 		Name: "cross",
