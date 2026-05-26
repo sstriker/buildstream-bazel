@@ -11,7 +11,7 @@ import (
 // drives the lifter's per-call decision: which calls translate
 // to a Bazel genrule (CMakeE, FileProducing) vs which fail
 // Tier-1 with unsupported-execute-process (Stamp, Probe,
-// Unknown). The string values match the Reason facet emitted
+// Refuse). The string values match the Reason facet emitted
 // in failure.json so orchestrator triage can dedupe by bucket.
 type Bucket string
 
@@ -51,14 +51,25 @@ const (
 	// them rather than guessing at the right platform mapping.
 	BucketProbe Bucket = "probe"
 
-	// BucketUnknown is the fall-through bucket for calls that
-	// don't match any recognized pattern: multi-COMMAND
-	// pipelines, opaque shell scripts, side-effect-rich
-	// invocations. v1 refuses them with a typed Tier-1
-	// failure carrying the captured argv so owners can decide
-	// per-call whether to rework the CMakeLists.txt or accept
-	// the round-2 fallback (Phase B).
-	BucketUnknown Bucket = "unknown"
+	// BucketRefuse is the typed-refusal bucket: calls whose
+	// shape is recognized as unliftable for a specific reason
+	// (multi-COMMAND pipeline, malformed argv, unsupported
+	// cmake -E op, opaque non-builtin driver without
+	// OUTPUT_FILE, etc.). Phase 4 collapsed the historical
+	// BucketUnknown fall-through into this typed bucket; every
+	// refusal now carries a specific Reason naming the
+	// structural feature that prevents lifting, not a catch-all
+	// "no recognized lift pattern". The bucket value retains
+	// the historical `unknown` string for failure.json triage
+	// continuity — orchestrator dedup keys built against the
+	// pre-Phase-4 schema continue to match unchanged.
+	BucketRefuse Bucket = "unknown"
+
+	// BucketUnknown is the pre-Phase-4 alias for BucketRefuse.
+	// Kept as an alias so external orchestrators referencing the
+	// constant by name keep building; new call sites prefer
+	// BucketRefuse for clarity.
+	BucketUnknown = BucketRefuse
 )
 
 // ClassifyResult is the typed verdict returned by Classify for
@@ -174,7 +185,9 @@ var dualUseProbeDrivers = map[string]bool{
 // argv-only heuristics — no subprocess execution, no
 // filesystem access. Order of checks:
 //
-//  1. No / multi-COMMAND clauses → Unknown.
+//  1. No / multi-COMMAND clauses → Refuse with a specific
+//     structural reason (no-COMMAND / multi-COMMAND pipeline /
+//     empty-argv).
 //  2. cmake -E builtin recognition wins over everything else,
 //     even when the call also sets OutputFile (e.g. `cmake -E
 //     touch <path>`).
@@ -188,17 +201,22 @@ var dualUseProbeDrivers = map[string]bool{
 //  4. OUTPUT_FILE alone → FileProducing (the call's purpose is
 //     "produce this file at configure time"; hoist to a
 //     build-time genrule).
-//  5. Otherwise → Unknown.
+//  5. Otherwise → Refuse with a reason that names exactly which
+//     lift signal is missing (no OUTPUT_FILE, opaque driver,
+//     no captured output channel). Phase 4 collapsed the
+//     historical catch-all "no recognized lift pattern" string
+//     into per-shape diagnoses so operators see the structural
+//     feature blocking the lift, not a black-box refusal.
 func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	if len(call.Commands) == 0 {
 		return ClassifyResult{
-			Bucket: BucketUnknown,
+			Bucket: BucketRefuse,
 			Reason: "no COMMAND clause",
 		}
 	}
 	if len(call.Commands) > 1 {
 		return ClassifyResult{
-			Bucket: BucketUnknown,
+			Bucket: BucketRefuse,
 			Reason: "multi-COMMAND pipeline (concurrent stages with stdout chaining)",
 		}
 	}
@@ -206,7 +224,7 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	argv := call.Commands[0]
 	if len(argv) == 0 {
 		return ClassifyResult{
-			Bucket: BucketUnknown,
+			Bucket: BucketRefuse,
 			Reason: "empty COMMAND argv",
 		}
 	}
@@ -219,7 +237,7 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	if isCMakeDriver(argv[0]) && len(argv) >= 2 && argv[1] == "-E" {
 		if len(argv) < 3 {
 			return ClassifyResult{
-				Bucket: BucketUnknown,
+				Bucket: BucketRefuse,
 				Reason: "cmake -E without an operation",
 			}
 		}
@@ -232,7 +250,7 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 			}
 		}
 		return ClassifyResult{
-			Bucket: BucketUnknown,
+			Bucket: BucketRefuse,
 			Reason: "cmake -E " + op + " is not in the v1 supported-op set (supported: " + supportedCMakeEOpsList() + ")",
 		}
 	}
@@ -292,9 +310,71 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		}
 	}
 
+	// Fall-through: no recognized driver, no cmake -E builtin,
+	// no OUTPUT_FILE. Phase 4 collapsed the historical
+	// "no recognized lift pattern" catch-all into per-shape
+	// diagnoses so the refusal reason names the structural
+	// feature missing from the call — what operators need to
+	// either change in the CMakeLists.txt to make the call
+	// liftable, or what tells them the call genuinely can't
+	// be expressed as a Bazel rule.
 	return ClassifyResult{
-		Bucket: BucketUnknown,
-		Reason: "no recognized lift pattern",
+		Bucket: BucketRefuse,
+		Reason: unliftableShapeReason(driver, call),
+	}
+}
+
+// unliftableShapeReason builds a structural diagnosis for a
+// call that fell through every classifier arm: argv[0] isn't a
+// cmake -E builtin, isn't in any stamp/probe driver set, and the
+// call doesn't carry an OUTPUT_FILE redirect. The reason names
+// exactly which lift signal is missing — operators see the
+// structural feature they'd need to add (an OUTPUT_FILE redirect
+// to hoist to a build-time genrule, an OUTPUT_VARIABLE to route
+// through dump-vars, etc.) rather than a black-box "no
+// recognized lift pattern" string.
+//
+// Driver is the canonical lower-case basename from
+// executeProcessDriverBasename; empty when argv[0] itself was
+// empty (defensive — Classify rejects len(argv)==0 above so this
+// shouldn't fire, but the helper stays defined for it).
+func unliftableShapeReason(driver string, call shadow.ExecuteProcessCall) string {
+	// Build up the diagnosis from the call shape. The variants
+	// distinguished:
+	//   - Driver was empty (argv[0] was ""). Already screened above
+	//     but threaded into the message defensively.
+	//   - OutputVariable / ResultVariable / ResultsVariable /
+	//     ErrorVariable: the call writes back to cmake-side state
+	//     but isn't a recognized probe/stamp shape. The dump-vars
+	//     path can sometimes rescue this (Phase 4); the refusal
+	//     reason names the variable for operator triage.
+	//   - InputFile: stdin redirect set but no output side — likely
+	//     a configure-time consumer with no liftable byproducts.
+	//   - Anything else: an opaque side-effect call (creates files
+	//     ninja doesn't track, prints to stdout that the call
+	//     discards, etc.). The most common shape under this arm.
+	if driver == "" {
+		return "argv[0] empty after normalisation; no driver to classify"
+	}
+	suffix := outputContext(call)
+	switch {
+	case call.OutputVariable != "":
+		return driver + " writes OUTPUT_VARIABLE " + call.OutputVariable +
+			" but isn't a recognized stamp/probe driver; lift requires either an OUTPUT_FILE redirect (for build-time hoist) or a dump-vars capture of the value"
+	case call.ResultsVariable != "":
+		return driver + " writes RESULTS_VARIABLE " + call.ResultsVariable +
+			" (per-COMMAND exit codes); pipeline status capture has no Bazel analog"
+	case call.ResultVariable != "":
+		return driver + " writes RESULT_VARIABLE " + call.ResultVariable +
+			" but isn't a recognized probe driver (exit-status-as-answer shape only covers known toolchain probes)"
+	case call.ErrorVariable != "":
+		return driver + " captures stderr into ERROR_VARIABLE " + call.ErrorVariable +
+			" with no output channel; configure-time-only diagnostic with no build-time analog"
+	case call.InputFile != "":
+		return driver + " reads INPUT_FILE " + call.InputFile +
+			" with no captured output channel; configure-time side-effect with no liftable signature"
+	default:
+		return driver + " has no captured output channel (no OUTPUT_FILE, no OUTPUT_VARIABLE, no RESULT_VARIABLE); opaque side-effect call cannot be lifted to a Bazel rule" + suffix
 	}
 }
 

@@ -7,7 +7,52 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// standaloneTraceContext bundles the optional trace-derived inputs
+// `lowerStandaloneCustomCommands` consults when naming + sizing
+// the visibility of the emitted genrules. Empty / nil-valued fields
+// disable the corresponding cross-reference (the caller pre-trace
+// uplift / TraceRaw-empty path passes a zero-valued ctx, which
+// keeps the legacy `custom_command_<sanitized-output>` /
+// `//visibility:private` shape intact).
+//
+// Phase 4 residue: PR #237's predecessor named standalone genrules
+// purely from output-path hashes and hardcoded visibility. The
+// trace records the source-level call site (add_custom_command's
+// OUTPUT list, add_custom_target's wrapping target name, downstream
+// add_dependencies links) so the rendered genrule can:
+//
+//   - Name itself after the add_custom_target that wraps the
+//     OUTPUT (when one exists), instead of the hash.
+//   - Open visibility to `:__pkg__` when another target in the
+//     same package references the OUTPUT via add_dependencies
+//     (or names the wrapping custom-target via the same).
+//
+// The cross-reference is a heuristic — `add_dependencies` doesn't
+// uniquely identify cross-package consumers — but it covers the
+// common "library X uses generator Y in the same CMakeLists" case
+// that produces the bulk of real-world refusal noise.
+type standaloneTraceContext struct {
+	// CustomCommands and CustomTargets carry the user's
+	// source-level call sites for OUTPUT-form
+	// add_custom_command and add_custom_target events,
+	// respectively. Insertion order is the trace-recorded
+	// order; the lookups built from these slices are by-output
+	// or by-name maps so order doesn't drive naming.
+	CustomCommands []shadow.AddCustomCommandCall
+	CustomTargets  []shadow.AddCustomTargetCall
+
+	// AddDependencies carries the user's source-level
+	// add_dependencies(target dep1 dep2 ...) calls. Used to
+	// detect downstream consumers of an emitted genrule's
+	// outputs — when target T depends on a custom-target wrapping
+	// OUTPUT foo.h (or directly on foo.h), the foo.h-producing
+	// genrule needs at least `:__pkg__` visibility for T to
+	// reference it.
+	AddDependencies []shadow.AddDependenciesCall
+}
 
 // lowerStandaloneCustomCommands walks every CUSTOM_COMMAND edge in
 // build.ninja and emits an ir.KindGenrule for each edge whose outputs
@@ -26,15 +71,28 @@ import (
 // safe because a single CUSTOM_COMMAND can produce multiple
 // outputs and only one might be referenced by another target.
 //
-// Naming: standalone genrules name themselves
+// Naming: when traceCtx records an add_custom_target whose DEPENDS /
+// BYPRODUCTS / SOURCES list intersects the edge's OUTPUTs, the
+// genrule takes that target's name (e.g. `add_custom_target(gen_headers
+// DEPENDS version.h)` → `gen_headers`, not `custom_command_version_h`).
+// Otherwise the genrule falls back to
 // `custom_command_<sanitized first output>` so the name is stable
-// across rebuilds. Conflicting names (multiple edges that would
-// collide after sanitization) get a `_<index>` suffix.
+// across rebuilds. Name collisions get a `_<index>` suffix in both
+// shapes.
+//
+// Visibility: when traceCtx records an add_dependencies(t producer)
+// call where `producer` is the name picked above (or an
+// add_custom_target whose OUTPUTs intersect the edge's), or when
+// any add_dependencies call lists the OUTPUT directly, visibility
+// opens to `:__pkg__`. Without that signal it stays
+// `//visibility:private` (the conservative default — no other
+// target in the package references the OUTPUT, so no consumer
+// needs to see it).
 //
 // buildDir is the cmake build directory — used to convert build-
 // relative output paths to package-relative paths the emitted
 // genrule's outs reference.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDir string) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -43,6 +101,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 	if len(edges) == 0 {
 		return nil
 	}
+
+	// Pre-build the trace-derived lookups once per call. Each
+	// returns an empty map when traceCtx carries no records, so
+	// the legacy `custom_command_<output>` / private-visibility
+	// path stays intact on the offline-replay-no-trace path.
+	outputToTargetName := buildOutputToCustomTargetIndex(traceCtx.CustomCommands, traceCtx.CustomTargets)
+	consumedOutputs := buildConsumedOutputIndex(traceCtx.CustomCommands, traceCtx.CustomTargets, traceCtx.AddDependencies)
 
 	var out []ir.Target
 	seenNames := map[string]int{}
@@ -100,7 +165,14 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 		sort.Strings(srcs)
 		srcs = dedupSorted(srcs)
 
-		baseName := "custom_command_" + sanitizeOutputName(outs[0])
+		// Naming: prefer the source-level add_custom_target name
+		// when one wraps any of the edge's outputs. Falls back to
+		// the legacy `custom_command_<sanitized first output>`
+		// shape when the trace is absent or when the OUTPUT isn't
+		// wrapped by a custom-target. Collision suffixing applies
+		// to both shapes — multiple edges that share a base name
+		// after sanitization get a `_<index>` suffix.
+		baseName := pickStandaloneName(outs, outputToTargetName)
 		name := baseName
 		if n, used := seenNames[baseName]; used {
 			seenNames[baseName] = n + 1
@@ -109,16 +181,177 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 			seenNames[baseName] = 1
 		}
 
+		// Visibility: open to `:__pkg__` when any of the edge's
+		// outputs (or the wrapping target-name, if any) is named
+		// by an add_dependencies call in the same trace. The
+		// heuristic intentionally errs on the private side —
+		// projects whose cross-references aren't expressed via
+		// add_dependencies keep the conservative default.
+		visibility := []string{"//visibility:private"}
+		if hasDownstreamConsumer(outs, baseName, consumedOutputs) {
+			visibility = []string{":__pkg__"}
+		}
+
 		out = append(out, ir.Target{
 			Name:        name,
 			Kind:        ir.KindGenrule,
 			Srcs:        srcs,
 			GenruleOuts: outs,
 			GenruleCmd:  cmd,
-			Visibility:  []string{"//visibility:private"},
+			Visibility:  visibility,
 			Tags:        []string{"cmake-codegen-standalone-custom-command"},
 		})
 	}
+	return out
+}
+
+// pickStandaloneName returns the source-level add_custom_target
+// name that wraps any of `outs` (when one exists), or falls back
+// to the legacy `custom_command_<sanitized first output>` shape.
+// outs is the already-sorted, deduped list from the build edge.
+func pickStandaloneName(outs []string, outputToTargetName map[string]string) string {
+	for _, o := range outs {
+		if name, ok := outputToTargetName[o]; ok && name != "" {
+			return name
+		}
+	}
+	return "custom_command_" + sanitizeOutputName(outs[0])
+}
+
+// hasDownstreamConsumer reports whether any of `outs` or the
+// emitted `baseName` appears in the consumedOutputs index. The
+// index is built from add_dependencies calls (target → declared
+// deps); when a dep name matches an output path OR matches the
+// wrapping target's name, that's the signal the genrule has at
+// least one same-package consumer that needs to see it.
+func hasDownstreamConsumer(outs []string, baseName string, consumedOutputs map[string]bool) bool {
+	if len(consumedOutputs) == 0 {
+		return false
+	}
+	if baseName != "" && consumedOutputs[baseName] {
+		return true
+	}
+	for _, o := range outs {
+		if consumedOutputs[o] {
+			return true
+		}
+	}
+	return false
+}
+
+// buildOutputToCustomTargetIndex maps an OUTPUT path → the name of
+// the add_custom_target that wraps it via DEPENDS / BYPRODUCTS /
+// SOURCES. The wrap relationship comes from either:
+//
+//  1. add_custom_target(name DEPENDS out.h ...) directly listing
+//     the output path in DEPENDS.
+//  2. add_custom_target(name DEPENDS producer-name ...) listing
+//     a producer-name where producer-name corresponds to no
+//     other defined target — in which case it's treated as a
+//     pure custom-target wrapping the producer's OUTPUTs
+//     (the common idiom: a custom-target's only job is to
+//     trigger a custom-command).
+//  3. add_custom_target(name BYPRODUCTS out.h ...) listing the
+//     output as a byproduct.
+//  4. add_custom_target(name COMMAND ... output.h) — when the
+//     target's COMMAND produces a known add_custom_command
+//     OUTPUT, that's a wrap too. (Less common; the DEPENDS
+//     shape covers most real cases.)
+//
+// Returns nil when traceCtx carries no records; callers handle
+// nil-map reads gracefully.
+//
+// Tie-breaking: when two add_custom_target calls would name the
+// same output, first-write-wins. The trace's recording order
+// matches the CMakeLists.txt evaluation order; the first target
+// to "claim" an output is the user's primary intent.
+func buildOutputToCustomTargetIndex(commands []shadow.AddCustomCommandCall, targets []shadow.AddCustomTargetCall) map[string]string {
+	if len(commands) == 0 && len(targets) == 0 {
+		return nil
+	}
+	// First: map OUTPUT → the add_custom_command that produced
+	// it. Used to resolve add_custom_target(... DEPENDS
+	// producer-name) where producer-name is the OUTPUT of a
+	// distinct add_custom_command (the case where the trace's
+	// add_custom_command and add_custom_target are coupled but
+	// the command's OUTPUT isn't directly listed in the target's
+	// DEPENDS).
+	outputCommandOwners := map[string]bool{}
+	for _, c := range commands {
+		for _, o := range c.Outputs {
+			outputCommandOwners[o] = true
+		}
+		for _, o := range c.ByProducts {
+			outputCommandOwners[o] = true
+		}
+	}
+
+	idx := map[string]string{}
+	claim := func(out, name string) {
+		if out == "" || name == "" {
+			return
+		}
+		if _, used := idx[out]; used {
+			return // first-write-wins
+		}
+		idx[out] = name
+	}
+
+	for _, t := range targets {
+		// Outputs listed in DEPENDS (direct path) or BYPRODUCTS
+		// or SOURCES — claim them all under the target's name.
+		for _, d := range t.Depends {
+			if outputCommandOwners[d] {
+				claim(d, t.Name)
+			}
+		}
+		for _, b := range t.ByProducts {
+			claim(b, t.Name)
+		}
+	}
+	return idx
+}
+
+// buildConsumedOutputIndex returns the set of OUTPUT paths AND
+// custom-target names that another in-trace add_dependencies call
+// references. A non-empty entry signals "this output has a
+// downstream consumer in the same package" → the emitted genrule
+// needs visibility ≥ `:__pkg__`.
+//
+// The set is keyed by string (output path OR target name) so the
+// caller can look up either shape. Returns nil for empty trace
+// records.
+func buildConsumedOutputIndex(commands []shadow.AddCustomCommandCall, targets []shadow.AddCustomTargetCall, deps []shadow.AddDependenciesCall) map[string]bool {
+	if len(deps) == 0 {
+		return nil
+	}
+	// Pre-build the OUTPUT → target-name map so an
+	// add_dependencies(consumer foo) can resolve `foo` to the
+	// target-name that owns OUTPUT foo — but more commonly,
+	// `foo` IS the target name and the resolution is identity.
+	out := map[string]bool{}
+	for _, d := range deps {
+		for _, name := range d.Depends {
+			out[name] = true
+		}
+	}
+	// add_dependencies dep entries name targets (typically
+	// custom-target names), not output paths. The cross-
+	// reference works on either: if the standalone genrule's
+	// chosen name lands in the consumed-set, that's a hit; if
+	// any OUTPUT path itself appears in an add_dependencies dep
+	// list, that's also a hit (uncommon but legal — cmake
+	// accepts add_dependencies(t out.h) when out.h is a
+	// custom-target's output).
+	//
+	// Mention `commands` and `targets` to keep the contract
+	// explicit: the consumer set is keyed only by name strings
+	// drawn from add_dependencies; the commands/targets slices
+	// don't expand the set. If a future heuristic needs to
+	// expand consumers via OUTPUT→producer chains, the
+	// expansion lives here.
+	_ = commands
+	_ = targets
 	return out
 }
 

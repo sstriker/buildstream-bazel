@@ -90,27 +90,33 @@ transition cleanly.
     `genrule`: `cmd` from the rule's resolved command
     (post-genex, post-VERBATIM-escaping), `srcs` from
     explicit inputs + depfile-derived implicit inputs,
-    `outs` from the edge outputs. The standalone-genrule
-    emission ✓ graduated to default-on at the CLI layer
-    after fixture + render-gate coverage landed
-    (`--emit-standalone-custom-commands` defaults to true;
-    operators with edge-case projects opt out via
-    `--emit-standalone-custom-commands=false`). Remaining
-    queued work: cross-reference with the trace's
-    `add_custom_command` / `add_custom_target` call sites
-    so source-level naming + visibility survive. For
-    the probe / stamp buckets of `execute_process`
-    (currently refused), add a sibling TOP_LEVEL_INCLUDES
-    hook that `file(GENERATE)`s each `OUTPUT_VARIABLE`'s
-    captured value — cmake already executed the probe, we
-    just persist the result. Stamp values lift to
-    `stamp = 1` genrule attrs (so they don't bake into
+    `outs` from the edge outputs. Standalone-edge emission
+    shipped (`lowerStandaloneCustomCommands` in
+    `converter/internal/lower/standalone_genrules.go`,
+    behind `Options.EmitStandaloneCustomCommands`);
+    trace cross-reference with
+    `add_custom_command` / `add_custom_target` /
+    `add_dependencies` call sites also shipped — emitted
+    genrules now name themselves after the wrapping
+    add_custom_target (when one exists) and open
+    visibility from `//visibility:private` to `:__pkg__`
+    when an in-trace consumer references the output.
+    `execute_process_classify.go`'s `unknown` arm retired
+    in the same slice: every refusal now carries a
+    per-shape diagnosis (multi-COMMAND pipeline, opaque
+    driver without OUTPUT_FILE, RESULTS_VARIABLE pipeline-
+    state capture, etc.) rather than the catch-all "no
+    recognized lift pattern" string. The bucket constant
+    keeps the historical `unknown` value for failure.json
+    triage continuity; the new `BucketRefuse` alias
+    documents the role. Still queued for Phase 4: a
+    sibling TOP_LEVEL_INCLUDES hook that
+    `file(GENERATE)`s each `OUTPUT_VARIABLE`'s captured
+    probe / stamp value — cmake already executed the
+    probe, we just persist the result. Stamp values lift
+    to `stamp = 1` genrule attrs (so they don't bake into
     srckey); probe values lift to `select()` over the
-    `configureLog` keys Phase 2 surfaces. Retires the
-    `execute_process_classify.go` `unknown` / `probe` /
-    `stamp` refusal arms — only the
-    `unsupported-execute-process` failures that genuinely
-    can't be expressed as Bazel rules remain.
+    `configureLog` keys Phase 2 surfaces.
 
   - **Phase 5 — Ninja Multi-Config + sanitizer-as-feature.**
     `cmakerun.Options.BuildType` → `BuildTypes []string`;
@@ -373,6 +379,32 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Phase 4 trace cross-reference + execute_process unknown-arm
+  retirement.** Closes the two residue items the standalone-
+  genrule graduation left behind. `internal/shadow/trace_commands.go`
+  gains `AddCustomCommandCall` / `AddCustomTargetCall` /
+  `AddDependenciesCall` decoders on the same single-pass walker
+  that PR #238's INTERFACE_* extractors travel; the decoded slices
+  thread through to `lowerStandaloneCustomCommands` via a new
+  `standaloneTraceContext`. When the trace records an
+  `add_custom_target` wrapping an OUTPUT, the emitted genrule
+  takes that target's name instead of the synthetic
+  `custom_command_<sanitized-output>` shape; when
+  `add_dependencies` references the wrapping target (or the
+  OUTPUT directly), visibility opens from `//visibility:private`
+  to `:__pkg__`. Offline-replay-no-trace path passes a
+  zero-valued ctx → legacy naming + private visibility
+  preserved (byte-stable for trace-less runs).
+  `converter/internal/lower/execute_process_classify.go` retires
+  the catch-all `Reason: "no recognized lift pattern"` string in
+  favour of `unliftableShapeReason`, threading the call shape
+  (OutputVariable / ResultsVariable / ErrorVariable / InputFile /
+  opaque side-effect) into a per-shape diagnosis. `BucketUnknown`
+  is renamed `BucketRefuse` (with `BucketUnknown` retained as an
+  alias and the on-disk `unknown` string preserved for
+  failure.json triage continuity). Phase 4's remaining queued
+  work is now just the probe / stamp TOP_LEVEL_INCLUDES hook.
+
 - **Phase 4 standalone-genrule emission graduated to default-on.**
   The opt-in `--emit-standalone-custom-commands` flag PR #227
   landed flipped to default-on after fixture + render-gate
@@ -396,11 +428,9 @@ transition cleanly.
   literals keep their existing emission shape — the two-tier
   default (CLI on, library off) graduates the operator-facing
   surface without rebaking the unit-level fixture matrix. The
-  remaining Phase 4 work — trace-side cross-referencing of
-  `add_custom_command` / `add_custom_target` call sites for
-  source-level naming + visibility, and the
-  `execute_process_classify.go` `unknown` arm retirement — stays
-  queued in `Now` under Phase 4.
+  trace-side cross-reference + `execute_process_classify.go`
+  unknown-arm retirement land as the follow-on residue bullet
+  above.
 
 - **TARGET_PROPERTY INTERFACE_* convert-time aggregation.**
   `$<TARGET_PROPERTY:t,INTERFACE_INCLUDE_DIRECTORIES>` /

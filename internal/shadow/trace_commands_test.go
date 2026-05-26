@@ -674,3 +674,163 @@ func sliceEq(a, b []string) bool {
 	}
 	return true
 }
+
+// TestExtractAddCustomCommand covers the OUTPUT-form
+// add_custom_command shape used by the standalone-genrule
+// cross-reference. Args are split into OUTPUT / COMMAND / DEPENDS /
+// BYPRODUCTS / WORKING_DIRECTORY sections; multi-COMMAND forms
+// produce multiple argv lists in Commands.
+func TestExtractAddCustomCommand_OutputForm(t *testing.T) {
+	trace := `{"args":["OUTPUT","gen/version.h","gen/build.h","COMMAND","python3","gen.py","--out","gen/version.h","COMMAND","touch","gen/build.h","DEPENDS","gen.py","BYPRODUCTS","gen.log","WORKING_DIRECTORY","/src","COMMENT","generating version+build headers","VERBATIM"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":12}
+`
+	got := ExtractAddCustomCommands([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.File != "/src/CMakeLists.txt" || c.Line != 12 {
+		t.Errorf("file/line: %s:%d", c.File, c.Line)
+	}
+	if !sliceEq(c.Outputs, []string{"gen/version.h", "gen/build.h"}) {
+		t.Errorf("Outputs: %v", c.Outputs)
+	}
+	if len(c.Commands) != 2 {
+		t.Fatalf("Commands: want 2, got %d (%+v)", len(c.Commands), c.Commands)
+	}
+	if !sliceEq(c.Commands[0], []string{"python3", "gen.py", "--out", "gen/version.h"}) {
+		t.Errorf("Commands[0]: %v", c.Commands[0])
+	}
+	if !sliceEq(c.Commands[1], []string{"touch", "gen/build.h"}) {
+		t.Errorf("Commands[1]: %v", c.Commands[1])
+	}
+	if !sliceEq(c.Depends, []string{"gen.py"}) {
+		t.Errorf("Depends: %v", c.Depends)
+	}
+	if !sliceEq(c.ByProducts, []string{"gen.log"}) {
+		t.Errorf("ByProducts: %v", c.ByProducts)
+	}
+	if c.WorkingDirectory != "/src" {
+		t.Errorf("WorkingDirectory: %q", c.WorkingDirectory)
+	}
+	if c.Comment != "generating version+build headers" {
+		t.Errorf("Comment: %q", c.Comment)
+	}
+}
+
+// TestExtractAddCustomCommand_TargetFormFiltered confirms the
+// add_custom_command(TARGET ... PRE_BUILD|POST_BUILD|PRE_LINK ...)
+// shape doesn't surface as an OUTPUT-form call (it attaches a hook
+// to an existing target, doesn't declare a standalone genrule).
+func TestExtractAddCustomCommand_TargetFormFiltered(t *testing.T) {
+	trace := `{"args":["TARGET","mylib","POST_BUILD","COMMAND","echo","done"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":3}
+`
+	got := ExtractAddCustomCommands([]byte(trace), "/src")
+	if len(got) != 0 {
+		t.Errorf("TARGET-form should be filtered; got %+v", got)
+	}
+}
+
+// TestExtractAddCustomTarget covers a typical
+// add_custom_target(name ALL COMMAND ... DEPENDS ... BYPRODUCTS
+// ... SOURCES ... COMMENT ...).
+func TestExtractAddCustomTarget(t *testing.T) {
+	trace := `{"args":["mygen","ALL","COMMAND","python3","gen.py","DEPENDS","gen/version.h","BYPRODUCTS","gen/out.txt","SOURCES","gen.py","COMMENT","run mygen","VERBATIM"],"cmd":"add_custom_target","file":"/src/CMakeLists.txt","line":17}
+`
+	got := ExtractAddCustomTargets([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Name != "mygen" {
+		t.Errorf("Name: %q", c.Name)
+	}
+	if !c.All {
+		t.Errorf("All: want true")
+	}
+	if len(c.Commands) != 1 || !sliceEq(c.Commands[0], []string{"python3", "gen.py"}) {
+		t.Errorf("Commands: %v", c.Commands)
+	}
+	if !sliceEq(c.Depends, []string{"gen/version.h"}) {
+		t.Errorf("Depends: %v", c.Depends)
+	}
+	if !sliceEq(c.ByProducts, []string{"gen/out.txt"}) {
+		t.Errorf("ByProducts: %v", c.ByProducts)
+	}
+	if !sliceEq(c.Sources, []string{"gen.py"}) {
+		t.Errorf("Sources: %v", c.Sources)
+	}
+	if c.Comment != "run mygen" {
+		t.Errorf("Comment: %q", c.Comment)
+	}
+}
+
+// TestExtractAddCustomTarget_NoArgsRejected makes sure a malformed
+// add_custom_target with no name is dropped.
+func TestExtractAddCustomTarget_NoArgsRejected(t *testing.T) {
+	trace := `{"args":[],"cmd":"add_custom_target","file":"/src/CMakeLists.txt","line":1}
+`
+	got := ExtractAddCustomTargets([]byte(trace), "/src")
+	if len(got) != 0 {
+		t.Errorf("empty add_custom_target args should be dropped; got %+v", got)
+	}
+}
+
+// TestExtractAddCustomCommand_FiltersCmakeInternal asserts the
+// source-tree gate drops add_custom_command events fired from
+// cmake-bundled scripts or scratch CMakeLists.
+func TestExtractAddCustomCommand_FiltersCmakeInternal(t *testing.T) {
+	trace := `{"args":["OUTPUT","internal.txt","COMMAND","cmake","-E","touch","internal.txt"],"cmd":"add_custom_command","file":"/usr/share/cmake-3.28/Modules/foo.cmake","line":1}
+{"args":["OUTPUT","user.txt","COMMAND","cmake","-E","touch","user.txt"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":1}
+`
+	got := ExtractAddCustomCommands([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 user call (cmake-internal filtered); got %d (%+v)", len(got), got)
+	}
+	if !sliceEq(got[0].Outputs, []string{"user.txt"}) {
+		t.Errorf("Outputs: %v", got[0].Outputs)
+	}
+}
+
+// TestExtractAddDependencies covers the
+// add_dependencies(<target> <dep> ...) shape used by the
+// cross-reference to detect downstream consumers of a custom-
+// command output.
+func TestExtractAddDependencies(t *testing.T) {
+	trace := `{"args":["mylib","mygen","other_gen"],"cmd":"add_dependencies","file":"/src/CMakeLists.txt","line":21}
+`
+	got := ExtractAddDependencies([]byte(trace), "/src")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Target != "mylib" {
+		t.Errorf("Target: %q", c.Target)
+	}
+	if !sliceEq(c.Depends, []string{"mygen", "other_gen"}) {
+		t.Errorf("Depends: %v", c.Depends)
+	}
+}
+
+// TestDecode_CustomCommandsAndTargets confirms the combined
+// Decode pass dispatches add_custom_command / add_custom_target /
+// add_dependencies events into their respective fields on the
+// Decoded result.
+func TestDecode_CustomCommandsAndTargets(t *testing.T) {
+	trace := `{"args":["OUTPUT","gen/version.h","COMMAND","python3","gen.py"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":4}
+{"args":["mygen","DEPENDS","gen/version.h"],"cmd":"add_custom_target","file":"/src/CMakeLists.txt","line":5}
+{"args":["mylib","mygen"],"cmd":"add_dependencies","file":"/src/CMakeLists.txt","line":6}
+`
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.AddCustomCommands) != 1 {
+		t.Errorf("AddCustomCommands: want 1, got %d", len(d.AddCustomCommands))
+	}
+	if len(d.AddCustomTargets) != 1 {
+		t.Errorf("AddCustomTargets: want 1, got %d", len(d.AddCustomTargets))
+	}
+	if len(d.AddDependencies) != 1 {
+		t.Errorf("AddDependencies: want 1, got %d", len(d.AddDependencies))
+	}
+	if d.AddCustomTargets[0].Name != "mygen" {
+		t.Errorf("AddCustomTargets[0].Name: %q", d.AddCustomTargets[0].Name)
+	}
+}
