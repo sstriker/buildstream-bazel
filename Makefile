@@ -1,7 +1,7 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
-        e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake \
+        e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
@@ -194,6 +194,19 @@ e2e-meta-bazel-override: converter
 # converted output.
 e2e-meta-cross-cmake: converter
 	scripts/meta-cross-cmake.sh
+
+# Cross-package $<TARGET_FILE:t> resolved-lift gate. Renders a
+# producer + consumer kind:cmake pair where the consumer's
+# CMakeLists.txt has `file(GENERATE)` referencing
+# $<TARGET_FILE:producer::producer>; asserts the lifted genrule
+# resolves producer::producer to //elements/producer:producer
+# via the imports.json manifest (PR 2 of cross-package
+# TARGET_FILE). The PR 1 refusal-stub gate (the
+# cmake-codegen-file-generate-genex-cross-package tag) is
+# asserted absent — the resolved-lift path supersedes it for
+# manifest-hit cases.
+e2e-meta-cmake-cross-package-target-file: converter
+	scripts/meta-cmake-cross-package-target-file.sh
 
 # Run-vs-run regression gate. Renders + builds project A from the
 # cross-cmake fixture twice, snapshots each build with cmd/run-manifest,

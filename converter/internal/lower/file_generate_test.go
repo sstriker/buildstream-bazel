@@ -1279,15 +1279,17 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_VariantOps(t *testing.T) {
 }
 
 // TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable
-// confirms the gate does NOT fire when the target resolves
-// cleanly — either via the local codemodel (no change from
-// pre-gate behaviour) or via the imports.json manifest. The
-// latter case is the resolver-plumbing this PR sets up for PR
-// 2 to actually USE; for now, the only effect of a successful
-// imports lookup is that the soundness gate stays quiet. The
-// (a) lift itself still refuses (genexTargets doesn't know
-// Foo::bar's FileLocation), so the call routes to (b)/legacy
-// — same as pre-gate for the local-codemodel case.
+// confirms the soundness gate does NOT fire when the target
+// resolves cleanly via the imports.json manifest. This test
+// passes genexTargets=nil to recoverFileGenerate explicitly —
+// PR 2's imports-fold (buildGenexTargets folding manifest
+// entries into the TargetInfo map) doesn't run here, so the
+// (a) lift's FileLocation lookup misses and the call routes
+// to (b)/legacy. The dedicated PR 2 end-to-end test below
+// (TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift)
+// covers the full resolved-lift path. This test pins the
+// narrower invariant: even without the fold, the soundness
+// gate must stay quiet when the resolver knows the target.
 func TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable(t *testing.T) {
 	template := "// tool=$<TARGET_FILE:Foo::bar>\n"
 	rendered := []byte("// tool=/some/path/libbar.a\n")
@@ -1375,7 +1377,7 @@ func TestBuildGenexTargets_FoldsProbeData(t *testing.T) {
 			Type: "EXECUTABLE",
 		},
 	}
-	got := buildGenexTargets(reply, "/build", probes)
+	got := buildGenexTargets(reply, "/build", probes, nil)
 
 	if got["foo"].InterfaceIncludeDirectories != "/src/include" {
 		t.Errorf("foo InterfaceIncludeDirectories = %q", got["foo"].InterfaceIncludeDirectories)
@@ -1409,11 +1411,359 @@ func TestBuildGenexTargets_NoProbes(t *testing.T) {
 			"foo": {Name: "foo", Type: "STATIC_LIBRARY"},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil)
+	got := buildGenexTargets(reply, "/build", nil, nil)
 	if got["foo"].InterfaceIncludeDirectories != "" {
 		t.Errorf("InterfaceIncludeDirectories should be empty without probe; got %q", got["foo"].InterfaceIncludeDirectories)
 	}
 	if got["foo"].Objects != "" {
 		t.Errorf("Objects should be empty without probe; got %q", got["foo"].Objects)
 	}
+}
+
+// TestBuildGenexTargets_FoldsImportedTargets covers PR 2's
+// imports-manifest fold: each Export surfaces as an Imported=true
+// TargetInfo keyed by the namespaced cmake name, with
+// FileLocation seeded from LinkPaths[0] so the byte-equal check
+// at convert time matches cmake's `$<TARGET_FILE:Foo::bar>`
+// expansion to the IMPORTED_LOCATION-recorded absolute path.
+func TestBuildGenexTargets_FoldsImportedTargets(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"local": {Name: "local", Type: "STATIC_LIBRARY"},
+		},
+	}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+				LinkPaths:   []string{"/prefix/lib/libbar.a"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	got := buildGenexTargets(reply, "/build", nil, imports)
+	// Local target survives untouched.
+	if got["local"].Type != "STATIC_LIBRARY" {
+		t.Errorf("local Type lost: %q", got["local"].Type)
+	}
+	if got["local"].Imported {
+		t.Errorf("local should NOT carry Imported=true")
+	}
+	// Imported target lands with the manifest's LinkPaths[0] as
+	// FileLocation. Imported=true marks it as PR 2-resolved.
+	imp, ok := got["Foo::bar"]
+	if !ok {
+		t.Fatalf("imported Foo::bar missing from genexTargets: %+v", got)
+	}
+	if !imp.Imported {
+		t.Errorf("imported target should carry Imported=true; got %+v", imp)
+	}
+	if imp.FileLocation != "/prefix/lib/libbar.a" {
+		t.Errorf("imported FileLocation = %q, want /prefix/lib/libbar.a", imp.FileLocation)
+	}
+}
+
+// TestBuildGenexTargets_ImportsFold_NoLinkPathsLeavesFileLocationEmpty
+// covers the manifest entry with no LinkPaths: the fold injects
+// the target (so the soundness gate sees it resolves) but
+// FileLocation stays empty. The (a) lift's byte-equal check
+// then fails for that target and the call falls through to (b)
+// — same fallback shape as a manifest entry that does carry
+// LinkPaths but whose value doesn't match cmake's rendered
+// bytes.
+func TestBuildGenexTargets_ImportsFold_NoLinkPathsLeavesFileLocationEmpty(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"local": {Name: "local", Type: "STATIC_LIBRARY"},
+		},
+	}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+				// LinkPaths intentionally empty.
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	got := buildGenexTargets(reply, "/build", nil, imports)
+	imp, ok := got["Foo::bar"]
+	if !ok {
+		t.Fatalf("imported Foo::bar missing from genexTargets: %+v", got)
+	}
+	if !imp.Imported {
+		t.Errorf("imported target should still carry Imported=true; got %+v", imp)
+	}
+	if imp.FileLocation != "" {
+		t.Errorf("FileLocation should be empty when LinkPaths empty; got %q", imp.FileLocation)
+	}
+}
+
+// TestBuildGenexTargets_LocalWinsOnNameCollision pins that
+// a codemodel-local target wins over a manifest entry sharing
+// the same cmake target name. The name collision is rare in
+// practice (cmake namespacing usually keeps imported / local
+// names apart), but the policy is "codemodel is ground truth"
+// — the fold preserves the local entry.
+func TestBuildGenexTargets_LocalWinsOnNameCollision(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"Foo::bar": {Name: "Foo::bar", Type: "STATIC_LIBRARY"},
+		},
+	}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+				LinkPaths:   []string{"/prefix/lib/libbar.a"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	got := buildGenexTargets(reply, "/build", nil, imports)
+	ti := got["Foo::bar"]
+	if ti.Imported {
+		t.Errorf("local codemodel entry should win — Imported=false expected; got %+v", ti)
+	}
+	if ti.Type != "STATIC_LIBRARY" {
+		t.Errorf("local Type lost: %q", ti.Type)
+	}
+}
+
+// TestBuildGenexTargets_ImportsOnly_NoLocalCodemodel covers the
+// imports-only edge case: the reply has no codemodel targets
+// (empty cmake project, or an element that only generates
+// configuration files from imported deps). The fold still
+// surfaces the imports so a template referencing
+// `$<TARGET_FILE:Foo::bar>` can lift via PR 2's resolved path.
+func TestBuildGenexTargets_ImportsOnly_NoLocalCodemodel(t *testing.T) {
+	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{}}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+				LinkPaths:   []string{"/prefix/lib/libbar.a"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	got := buildGenexTargets(reply, "/build", nil, imports)
+	imp, ok := got["Foo::bar"]
+	if !ok {
+		t.Fatalf("imports-only fold lost Foo::bar: %+v", got)
+	}
+	if imp.FileLocation != "/prefix/lib/libbar.a" {
+		t.Errorf("imports-only fold FileLocation = %q", imp.FileLocation)
+	}
+}
+
+// TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift
+// is PR 2's end-to-end test: a template referencing
+// `$<TARGET_FILE:Foo::bar>` for a target NOT in the local
+// codemodel BUT in the imports.json manifest with LinkPaths
+// matching cmake's rendered output lifts via (a). The lifted
+// cmd carries `--target-file=Foo::bar="$(location //elements/foo:bar)"`
+// (the manifest-resolved full Bazel label, NOT `:Foo::bar`)
+// and the genrule's srcs picks up the cross-package label so
+// Bazel resolves $(location) at action time.
+func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
+	template := "// tool=$<TARGET_FILE:Foo::bar>\n"
+	rendered := []byte("// tool=/prefix/lib/libbar.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	// Imports manifest carries Foo::bar with LinkPaths matching
+	// cmake's rendered bytes — what the orchestrator's
+	// IMPORTED_LOCATION extractor produces for a synth-prefix-
+	// hosted cross-element dep.
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+				LinkPaths:   []string{"/prefix/lib/libbar.a"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	// genexTargets is built as if from the codemodel via
+	// buildGenexTargets — which in PR 2's flow includes the
+	// imports fold.
+	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{}}
+	genexTargets := buildGenexTargets(reply, hostBuild, nil, imports)
+	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, imports, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	// PR 2: the (a) lift fires — the byte-equal check matches
+	// because FileLocation came from the manifest's LinkPaths.
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	// The refusal-stub tag must NOT appear — the resolved lift
+	// path explicitly handles this case.
+	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+		t.Errorf("refusal-stub tag should NOT fire for manifest-resolved: %v", g.Tags)
+	}
+	// cmd carries the manifest-resolved label, NOT `:Foo::bar`.
+	wantFlag := `--target-file=Foo::bar="$(location //elements/components/foo:bar)"`
+	if !strings.Contains(g.GenruleCmd, wantFlag) {
+		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	}
+	if strings.Contains(g.GenruleCmd, `--target-file=Foo::bar="$(location :Foo::bar)"`) {
+		t.Errorf("cmd should NOT carry same-package label for cross-package target; got %q", g.GenruleCmd)
+	}
+	// The cross-package label rides in srcs so Bazel's
+	// $(location //pkg:t) substitution resolves at action time.
+	if !containsString(g.Srcs, "//elements/components/foo:bar") {
+		t.Errorf("genrule.srcs should carry the cross-package label; got %v", g.Srcs)
+	}
+	// FileLocation must NOT leak into the marshaled Context
+	// payload (wire-omitted per the json:"-" tag).
+	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	if strings.Contains(blob, "/prefix/lib/libbar.a") {
+		t.Errorf("FileLocation leaked into marshaled Context: %s", blob)
+	}
+}
+
+// TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage
+// covers a template referencing BOTH a same-package target
+// AND a manifest-resolved target. The lifter emits two
+// `--target-file` flags — one with the `:name` shorthand, one
+// with the full cross-package label — and the cross-package
+// label rides in srcs while the same-package one does not.
+func TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage(t *testing.T) {
+	template := "// local=$<TARGET_FILE:foo> remote=$<TARGET_FILE:Foo::bar>\n"
+	rendered := []byte("// local=/recording/build/libfoo.a remote=/prefix/lib/libbar.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+				LinkPaths:   []string{"/prefix/lib/libbar.a"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	// Local target foo lives in genexTargets directly (not via
+	// manifest fold); the manifest fold also adds Foo::bar.
+	genexTargets := map[string]genexeval.TargetInfo{
+		"foo": {Type: "STATIC_LIBRARY", FileLocation: "/recording/build/libfoo.a"},
+	}
+	foldImportedTargets(genexTargets, imports)
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, imports, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	if !strings.Contains(g.GenruleCmd, `--target-file=foo="$(location :foo)"`) {
+		t.Errorf("missing same-package flag; cmd=%q", g.GenruleCmd)
+	}
+	if !strings.Contains(g.GenruleCmd, `--target-file=Foo::bar="$(location //elements/components/foo:bar)"`) {
+		t.Errorf("missing cross-package flag; cmd=%q", g.GenruleCmd)
+	}
+	// srcs carries the cross-package label but NOT the
+	// same-package one (Bazel finds `:foo` via package-internal
+	// lookup; cross-package needs the explicit srcs entry).
+	if !containsString(g.Srcs, "//elements/components/foo:bar") {
+		t.Errorf("srcs missing cross-package label; got %v", g.Srcs)
+	}
+	if containsString(g.Srcs, ":foo") {
+		t.Errorf("srcs should NOT carry same-package label `:foo`; got %v", g.Srcs)
+	}
+}
+
+// TestResolveTargetFileLabels covers the per-target label
+// resolution helper directly: same-package, manifest-resolved,
+// and dropped (neither) cases.
+func TestResolveTargetFileLabels(t *testing.T) {
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "components/foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/components/foo:bar",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"local":    {Type: "STATIC_LIBRARY"},
+		"Foo::bar": {Imported: true, FileLocation: "/p/libbar.a"},
+		// `unknown` not present — no entry.
+	}
+	labels, crossPackage := resolveTargetFileLabels([]string{"local", "Foo::bar", "unknown"}, genexTargets, imports)
+	if labels["local"] != ":local" {
+		t.Errorf("local label = %q, want :local", labels["local"])
+	}
+	if labels["Foo::bar"] != "//elements/components/foo:bar" {
+		t.Errorf("Foo::bar label = %q, want //elements/components/foo:bar", labels["Foo::bar"])
+	}
+	if _, ok := labels["unknown"]; ok {
+		t.Errorf("unknown should be dropped; got %q", labels["unknown"])
+	}
+	if len(crossPackage) != 1 || crossPackage[0] != "//elements/components/foo:bar" {
+		t.Errorf("crossPackage = %v, want [//elements/components/foo:bar]", crossPackage)
+	}
+}
+
+// containsString reports whether haystack contains needle. Used
+// in the cross-package srcs assertions above.
+func containsString(haystack []string, needle string) bool {
+	for _, h := range haystack {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

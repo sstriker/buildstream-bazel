@@ -314,20 +314,6 @@ transition cleanly.
   correctness when bazel reconfigures for the other
   platform.
 
-- **Cross-package TARGET_FILE resolution (PR 2).** The
-  soundness-fix piece shipped (see Done — refusal stub for
-  unresolved cross-package references); the resolved-lift
-  piece remains. The file(GENERATE) lifter now sees the
-  `*manifest.Resolver` but doesn't yet USE it to emit
-  fully-qualified Bazel labels in the `--target-file` flag
-  for resolvable cases. PR 2's wiring is sketched in
-  `docs/design/cross-package-target-file.md` — branch the
-  `--target-file=` flag emission per-target on resolution,
-  populate `FileLocation` for imported targets from the
-  codemodel's IMPORTED_LOCATION for the byte-equal check, add
-  a render-gate fixture exercising two BuildStream elements
-  end-to-end.
-
 - **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets.** The
   (a) evaluator now supports the other six on-disk-path
   variants (see Done). `TARGET_OBJECTS` is a distinct case —
@@ -588,6 +574,38 @@ transition cleanly.
   Later — see "Push the converter's cmake invocation onto the
   RBE executor".
 
+- **Cross-package `$<TARGET_FILE*:t>` resolved lift (PR 2).**
+  The PR 1 refusal stub catches the unresolvable case; PR 2
+  closes the resolvable half. The file(GENERATE) lifter now
+  uses the threaded `*manifest.Resolver` to translate
+  `$<TARGET_FILE:Foo::bar>` references whose target isn't in
+  the local cmake codemodel but IS in the imports.json
+  manifest. The lifted (a)-shape genrule's cmd branches per-
+  target on resolution: same-package targets emit
+  `--target-file=<name>="$(location :<name>)"` (PR 1
+  behaviour preserved); manifest-resolved targets emit the
+  full cross-package label
+  `--target-file=<name>="$(location //elements/foo:bar)"`
+  and the genrule's `srcs` picks up the cross-package label
+  so Bazel's `$(location)` substitution resolves at action
+  time. `buildGenexTargets` now folds the imports manifest's
+  exports into the evaluator's `Context.Targets` (keyed by
+  the namespaced cmake name like `Foo::bar`) with
+  `FileLocation` seeded from the export's first `LinkPaths`
+  entry — cmake's `$<TARGET_FILE>` at recording time
+  resolves to `IMPORTED_LOCATION_<CONFIG>`, which the
+  orchestrator-side `internal/exports` package captures into
+  LinkPaths. The byte-equal check at convert time now passes
+  for manifest-resolved imports; the marshaled wire still
+  omits `FileLocation` (json:"-") so the lifted cmd stays
+  byte-stable across recording machines. Render gate:
+  `scripts/meta-cmake-cross-package-target-file.sh` exercises
+  two BuildStream elements end-to-end (producer + consumer
+  with `file(GENERATE)` against `$<TARGET_FILE:producer::producer>`).
+  The refusal-stub from PR 1 still fires when the manifest
+  doesn't carry the target — the resolved-lift path
+  supersedes only the resolvable case.
+
 - **Cross-package `$<TARGET_FILE*:t>` soundness gate (PR 1).**
   The file(GENERATE) lifter previously refused unresolvable
   `$<TARGET_FILE*:t>` references via the (a) shape and fell
@@ -605,7 +623,7 @@ transition cleanly.
   `docs/design/cross-package-target-file.md`. Audit tag:
   `cmake-codegen-file-generate-genex-cross-package`. The
   `*manifest.Resolver` plumbing this set up is the foundation
-  PR 2 (resolved cross-package lifts; see Later) builds on.
+  PR 2 (resolved cross-package lifts) builds on.
 
 - **On-disk-path genex variants — TARGET_FILE_DIR /
   TARGET_FILE_NAME / TARGET_LINKER_FILE / TARGET_LINKER_FILE_DIR
