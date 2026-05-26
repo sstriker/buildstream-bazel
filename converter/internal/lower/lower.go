@@ -404,9 +404,10 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg := &ir.Package{
 		Name:       projectName(r),
 		SourceRoot: hostSrc,
-		HeaderComments: append(
+		HeaderComments: append(append(
 			findPackageHeaderComments(opts.ConfigureLog),
-			optionsHeaderComments(r.Cache)...,
+			optionsHeaderComments(r.Cache)...),
+			deprecationHeaderComments(opts.ConfigureLog)...,
 		),
 	}
 
@@ -1816,6 +1817,52 @@ func optionsHeaderComments(cache fileapi.Cache) []string {
 			line += " (" + e.doc + ")"
 		}
 		out = append(out, line)
+	}
+	return out
+}
+
+// deprecationHeaderComments projects cmake message(DEPRECATION ...)
+// events into a header-comment block. Operators see the cmake-side
+// deprecation surface at convert time without scrolling through
+// configure output.
+//
+// Limited to DEPRECATION mode (skips STATUS / WARNING / FATAL_ERROR
+// — those land in cmake's stderr). Deduplicated by message body so
+// the same deprecation called from N sites only surfaces once.
+func deprecationHeaderComments(events []fileapi.Event) []string {
+	if len(events) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var msgs []string
+	for _, e := range events {
+		if e.Kind != "message-v1" {
+			continue
+		}
+		if !strings.EqualFold(e.Mode, "DEPRECATION") {
+			continue
+		}
+		body := strings.TrimSpace(e.Message)
+		if body == "" || seen[body] {
+			continue
+		}
+		seen[body] = true
+		msgs = append(msgs, body)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	sort.Strings(msgs)
+	out := []string{"", "cmake deprecation warnings:"}
+	for _, m := range msgs {
+		// Wrap multi-line messages with explicit indent.
+		for i, line := range strings.Split(m, "\n") {
+			if i == 0 {
+				out = append(out, "  ! "+line)
+			} else {
+				out = append(out, "    "+line)
+			}
+		}
 	}
 	return out
 }

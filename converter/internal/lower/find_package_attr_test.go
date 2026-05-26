@@ -127,3 +127,35 @@ func TestOptionsHeaderComments_EmptyCache(t *testing.T) {
 		t.Errorf("empty cache should return nil; got %v", got)
 	}
 }
+
+func TestDeprecationHeaderComments_DedupsAndSorts(t *testing.T) {
+	events := []fileapi.Event{
+		{Kind: "message-v1", Mode: "DEPRECATION", Message: "FooBar is removed in 2.0; use FooQux."},
+		{Kind: "message-v1", Mode: "STATUS", Message: "Building everything"},
+		{Kind: "message-v1", Mode: "DEPRECATION", Message: "FooBar is removed in 2.0; use FooQux."},
+		{Kind: "message-v1", Mode: "DEPRECATION", Message: "Another deprecation"},
+	}
+	got := deprecationHeaderComments(events)
+	if got == nil {
+		t.Fatal("expected non-nil")
+	}
+	combined := strings.Join(got, "\n")
+	if strings.Count(combined, "FooBar") != 1 {
+		t.Errorf("expected dedup of FooBar; got %q", combined)
+	}
+	if !strings.Contains(combined, "Another deprecation") {
+		t.Errorf("missing second deprecation: %v", got)
+	}
+	if !strings.Contains(combined, "cmake deprecation warnings:") {
+		t.Errorf("missing header line: %v", got)
+	}
+}
+
+func TestDeprecationHeaderComments_NoDeprecations(t *testing.T) {
+	events := []fileapi.Event{
+		{Kind: "message-v1", Mode: "STATUS", Message: "ok"},
+	}
+	if got := deprecationHeaderComments(events); got != nil {
+		t.Errorf("STATUS message should produce nil; got %v", got)
+	}
+}
