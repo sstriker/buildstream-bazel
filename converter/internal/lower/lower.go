@@ -1879,6 +1879,40 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 				}
 			}
 		}
+		// VISIBILITY_INLINES_HIDDEN: common modern-cmake idiom
+		// (set in projects that follow the GenerateExportHeader
+		// recipe). Maps to -fvisibility-inlines-hidden copt.
+		if cmakeTruthy(p.Properties["VISIBILITY_INLINES_HIDDEN"]) {
+			flag := "-fvisibility-inlines-hidden"
+			if !stringSliceContains(tgt.Copts, flag) {
+				tgt.Copts = append(tgt.Copts, flag)
+			}
+		}
+		// ENABLE_EXPORTS (executables) tags so operators can
+		// route the export-symbols-from-executable shape via
+		// the operator's cc_toolchain feature. Bazel cc_binary
+		// has no native attribute for this.
+		if cmakeTruthy(p.Properties["ENABLE_EXPORTS"]) {
+			tag := "cmake-codegen-enable-exports"
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		// SOVERSION / VERSION (shared library naming). Bazel
+		// cc_library has no version-suffix attribute; surface
+		// as tags so operators see the cmake-side intent.
+		if v := strings.TrimSpace(p.Properties["SOVERSION"]); v != "" {
+			tag := "cmake-codegen-soversion=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		if v := strings.TrimSpace(p.Properties["VERSION"]); v != "" {
+			tag := "cmake-codegen-version=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
 	}
 }
 

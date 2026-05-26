@@ -285,3 +285,45 @@ func toProbeSlice(in []cmakerunGenexProbeStub) []cmakerun.GenexProbe {
 	}
 	return out
 }
+
+func TestApplyProbeGenexProperties_VisibilityInlinesHidden(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "lib", Kind: ir.KindCCLibrary}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "lib",
+		Properties: map[string]string{"VISIBILITY_INLINES_HIDDEN": "TRUE"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Copts, "-fvisibility-inlines-hidden") {
+		t.Errorf("Copts: %v should contain -fvisibility-inlines-hidden", pkg.Targets[0].Copts)
+	}
+}
+
+func TestApplyProbeGenexProperties_EnableExports(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "app", Kind: ir.KindCCBinary}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "app",
+		Properties: map[string]string{"ENABLE_EXPORTS": "1"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-enable-exports") {
+		t.Errorf("Tags: %v should include cmake-codegen-enable-exports", pkg.Targets[0].Tags)
+	}
+}
+
+func TestApplyProbeGenexProperties_VersionTags(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "lib", Kind: ir.KindCCLibrary}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name: "lib",
+		Properties: map[string]string{
+			"VERSION":   "1.2.3",
+			"SOVERSION": "1",
+		},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-version=1.2.3") {
+		t.Errorf("Tags: %v should include version", pkg.Targets[0].Tags)
+	}
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-soversion=1") {
+		t.Errorf("Tags: %v should include soversion", pkg.Targets[0].Tags)
+	}
+}
