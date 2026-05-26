@@ -99,7 +99,119 @@ func auditRule(rule, target string, call *build.CallExpr) []Finding {
 	// should lower to --features instead. Fires on any rule that
 	// accepts those attributes.
 	findings = append(findings, auditSanitizerSelects(rule, target, call)...)
+	// Cross-rule check: raw -fPIC / -flto / -fsanitize=... in
+	// copts / linkopts — cc_toolchain features are the canonical
+	// home for these flags.
+	findings = append(findings, auditRawCompileFlags(rule, target, call)...)
 	return findings
+}
+
+// auditRawCompileFlags fires when copts / linkopts carry raw flag
+// values that have first-class Bazel-toolchain features. cc_toolchain
+// features are the canonical home for -fsanitize=address / -fPIC /
+// -flto etc.; per-rule emission of those flags forks the toolchain's
+// shape per target rather than declaring once.
+//
+// Strict literal-match (not via select() — that's the
+// sanitizer-select-not-feature check). Catches the case where the
+// converter (or operator-edited BUILD) baked the flag in directly.
+func auditRawCompileFlags(rule, target string, call *build.CallExpr) []Finding {
+	var findings []Finding
+	for _, attr := range []string{"copts", "linkopts"} {
+		hits := flatListContains(call, attr, looksLikeFeatureFlag)
+		for _, flag := range hits {
+			feat := featureForRawFlag(flag)
+			if feat == "" {
+				continue
+			}
+			findings = append(findings, Finding{
+				Rule:    rule,
+				Target:  target,
+				Code:    "raw-toolchain-feature-flag",
+				Message: "raw " + flag + " in " + attr + " — prefer features = [\"" + feat + "\"] so the cc_toolchain owns the flag set; per-rule emission forks toolchain shape per target",
+			})
+		}
+	}
+	return findings
+}
+
+// looksLikeFeatureFlag identifies raw flag strings that have a
+// first-class cc_toolchain feature equivalent. Conservative —
+// matches the common cmake-derived patterns; unrelated flags
+// pass through silently.
+func looksLikeFeatureFlag(flag string) bool {
+	switch flag {
+	case "-fPIC", "-fpic", "-flto":
+		return true
+	}
+	if strings.HasPrefix(flag, "-fsanitize=") {
+		return true
+	}
+	return false
+}
+
+// featureForRawFlag maps a raw compile/link flag to the
+// cc_toolchain feature name that owns it (per the
+// SANITIZER_FEATURES convention in
+// examples/sanitizer-features/toolchain/features.bzl).
+func featureForRawFlag(flag string) string {
+	switch flag {
+	case "-fPIC", "-fpic":
+		return "pic"
+	case "-flto":
+		return "lto"
+	case "-fsanitize=address":
+		return "asan"
+	case "-fsanitize=thread":
+		return "tsan"
+	case "-fsanitize=memory":
+		return "msan"
+	case "-fsanitize=undefined":
+		return "ubsan"
+	case "-fsanitize=leak":
+		return "lsan"
+	}
+	return ""
+}
+
+// flatListContains returns flat-list literal entries in the named
+// attribute that match the predicate. Skips select() arms (covered
+// separately by auditSanitizerSelects); concat-with-select-arms
+// scans the literal halves.
+func flatListContains(call *build.CallExpr, attr string, match func(string) bool) []string {
+	for _, arg := range call.List {
+		bin, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		key, ok := bin.LHS.(*build.Ident)
+		if !ok || key.Name != attr {
+			continue
+		}
+		return collectLiteralStrings(bin.RHS, match)
+	}
+	return nil
+}
+
+// collectLiteralStrings walks list literals + concat halves,
+// returning the strings matching the predicate. Doesn't descend
+// into select() arms.
+func collectLiteralStrings(e build.Expr, match func(string) bool) []string {
+	var out []string
+	switch v := e.(type) {
+	case *build.ListExpr:
+		for _, item := range v.List {
+			if s, ok := item.(*build.StringExpr); ok && match(s.Value) {
+				out = append(out, s.Value)
+			}
+		}
+	case *build.BinaryExpr:
+		if v.Op == "+" {
+			out = append(out, collectLiteralStrings(v.X, match)...)
+			out = append(out, collectLiteralStrings(v.Y, match)...)
+		}
+	}
+	return out
 }
 
 // auditSanitizerSelects fires when a rule's copts / linkopts / defines

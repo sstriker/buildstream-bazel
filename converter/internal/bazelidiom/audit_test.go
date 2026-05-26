@@ -330,3 +330,72 @@ func TestAudit_CCTestWithDeps_NoEntryFinding(t *testing.T) {
 		}
 	}
 }
+
+func TestAudit_RawPICFlag(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = ["-fPIC", "-O2"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "raw-toolchain-feature-flag" && strings.Contains(f.Message, "-fPIC") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected raw-toolchain-feature-flag for -fPIC; got %v", findings)
+	}
+}
+
+func TestAudit_RawSanitizeFlag(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = ["-fsanitize=address"],
+    linkopts = ["-fsanitize=address"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	coptHit, linkHit := false, false
+	for _, f := range findings {
+		if f.Code == "raw-toolchain-feature-flag" {
+			if strings.Contains(f.Message, "copts") {
+				coptHit = true
+			}
+			if strings.Contains(f.Message, "linkopts") {
+				linkHit = true
+			}
+		}
+	}
+	if !coptHit || !linkHit {
+		t.Errorf("expected raw-toolchain-feature-flag for copts AND linkopts; got %v", findings)
+	}
+}
+
+func TestAudit_NonFeatureFlag_NoFinding(t *testing.T) {
+	// -O2 isn't a toolchain-feature equivalent; should pass silently.
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = ["-O2", "-Wall"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "raw-toolchain-feature-flag" {
+			t.Errorf("unexpected raw-toolchain-feature-flag for plain -O2: %v", f)
+		}
+	}
+}
