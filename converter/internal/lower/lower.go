@@ -1163,6 +1163,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			continue
 		}
 		seenDep[label] = true
+		// add_dependencies-derived edges route to data (build-
+		// order only, no headers / link) rather than deps.
+		// Detected via the codemodel's TargetDependency backtrace:
+		// when the recorded command is "add_dependencies", the
+		// edge has no compile/link impact. Conservative — only
+		// fires when the codemodel records the call directly;
+		// macro-wrapped add_dependencies stay on Deps until the
+		// outermost-user-frame walk surfaces them (future slice).
+		if isAddDependenciesEdge(dep, t.BacktraceGraph) {
+			irt.Data = append(irt.Data, label)
+			continue
+		}
 		if allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName) {
 			irt.ImplementationDeps = append(irt.ImplementationDeps, label)
 		} else {
@@ -1741,6 +1753,31 @@ func cmakeTruthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// isAddDependenciesEdge reports whether a TargetDependency came
+// from an `add_dependencies(target dep)` call rather than a
+// target_link_libraries (or similar) — the former carries no
+// compile/link facts; only build order matters. Bazel maps the
+// former to `data = [...]`.
+//
+// Detection: the dep's Backtrace points at a BacktraceGraph node;
+// if its command is "add_dependencies", route to data. Conservative
+// — macro-wrapped add_dependencies (where the leaf backtrace
+// points inside a macro definition) stay on the link path until
+// the outermost-user-frame walk surfaces them. The trade-off:
+// over-emit link edges for the macro case (safe but redundant)
+// vs miss build-order semantics for the direct case (currently
+// silent). The direct case is the common one.
+func isAddDependenciesEdge(dep fileapi.TargetDependency, g fileapi.BacktraceGraph) bool {
+	if dep.Backtrace <= 0 || dep.Backtrace >= len(g.Nodes) {
+		return false
+	}
+	node := g.Nodes[dep.Backtrace]
+	if node.Command < 0 || node.Command >= len(g.Commands) {
+		return false
+	}
+	return strings.EqualFold(g.Commands[node.Command], "add_dependencies")
 }
 
 // prependLanguageStandardCopt augments copts with a `-std=…`

@@ -248,6 +248,19 @@ type Target struct {
 	// sorts the list.
 	Features []string
 
+	// Data routes to Bazel's `data = [...]` attribute — build-
+	// order dependencies that don't propagate compile/link
+	// facts. Used for cmake's `add_dependencies(target dep)`
+	// call shape: dep needs to be built before target, but
+	// target doesn't link against dep's library or include its
+	// headers. Bazel's data attribute is the canonical home for
+	// build-order-only edges.
+	//
+	// Distinct from Deps (target_link_libraries-derived, carries
+	// headers + link) and ImplementationDeps (PRIVATE
+	// target_link_libraries). Empty / nil skips the attribute.
+	Data []string
+
 	// InstallDest is the relative path under the install prefix where the
 	// CMake install(TARGETS) rule places this target's artifact (e.g. "lib"
 	// for STATIC_LIBRARY). Used by emit/cmakecfg/ to populate

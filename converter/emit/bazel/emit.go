@@ -914,12 +914,21 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		Linkstatic:             t.Linkstatic,
 		Alwayslink:             t.Alwayslink,
 		Features:               sortedCopy(t.Features),
-		Tags:                   sortedCopy(t.Tags),
-		Visibility:             nonDefaultVisibility(t.Visibility),
+		// Data lifts cmake's add_dependencies-derived build-order
+		// edges (set via the per-target backtrace recovery in
+		// lower). cc_test additionally appends t.TestData below
+		// for set_tests_properties WORKING_DIRECTORY etc.
+		Data:       sortedCopy(t.Data),
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
 	}
 	if t.Kind == ir.KindCCTest {
 		v.Args = append([]string(nil), t.TestArgs...) // preserve order; arg order matters
-		v.Data = sortedCopy(t.TestData)
+		// cc_test: merge t.Data (add_dependencies-derived) with
+		// t.TestData (set_tests_properties), sorted + deduped.
+		merged := append([]string(nil), v.Data...)
+		merged = append(merged, t.TestData...)
+		v.Data = sortedDedup(merged)
 		if t.TestTimeout > 0 {
 			v.Timeout = formatBazelDuration(t.TestTimeout)
 		}
@@ -1095,6 +1104,24 @@ func sortedCopy(in []string) []string {
 	out := append([]string(nil), in...)
 	sort.Strings(out)
 	return out
+}
+
+// sortedDedup returns a sorted slice with consecutive duplicates
+// removed. Cheap for the small slices the emitter typically
+// composes (per-attribute fact lists).
+func sortedDedup(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	w := out[:1]
+	for _, x := range out[1:] {
+		if x != w[len(w)-1] {
+			w = append(w, x)
+		}
+	}
+	return w
 }
 
 // strDict renders a Go map[string]string as a Starlark dict literal,
