@@ -402,8 +402,9 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	pkg := &ir.Package{
-		Name:       projectName(r),
-		SourceRoot: hostSrc,
+		Name:           projectName(r),
+		SourceRoot:     hostSrc,
+		HeaderComments: findPackageHeaderComments(opts.ConfigureLog),
 	}
 
 	cc := newCodegenContext()
@@ -1747,6 +1748,75 @@ func langSuffix(lang string) string {
 		return "asm"
 	}
 	return strings.ToLower(lang)
+}
+
+// findPackageHeaderComments projects configureLog find_package-v1
+// events into a list of attribution lines the emitter renders as
+// `# ` comments at the file head. Operators see the external-dep
+// inventory at a glance without re-running the converter or
+// re-reading the cmake source.
+//
+// Output shape: one comment per resolved package with package +
+// version + config-file path. Unresolved find_package events
+// (Found.IsFound==false) get a less-detailed line — they're
+// usually projects building against a system-fallback path.
+// Stable order (alphabetical by package name).
+func findPackageHeaderComments(events []fileapi.Event) []string {
+	if len(events) == 0 {
+		return nil
+	}
+	type entry struct {
+		pkg     string
+		version string
+		cfg     string
+		found   bool
+	}
+	seen := map[string]bool{}
+	var entries []entry
+	for _, e := range events {
+		if e.Kind != "find_package-v1" {
+			continue
+		}
+		var pkg string
+		if e.Found != nil && e.Found.Package != "" {
+			pkg = e.Found.Package
+		}
+		if pkg == "" {
+			continue
+		}
+		if seen[pkg] {
+			continue
+		}
+		seen[pkg] = true
+		ent := entry{pkg: pkg}
+		if e.Found != nil {
+			ent.found = e.Found.IsFound
+			ent.version = e.Found.Version
+			ent.cfg = e.Found.ConfigFile
+		}
+		entries = append(entries, ent)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].pkg < entries[j].pkg })
+	var out []string
+	out = append(out, "find_package resolutions (from cmake's configureLog):")
+	for _, e := range entries {
+		if e.found {
+			line := "  - " + e.pkg
+			if e.version != "" {
+				line += " " + e.version
+			}
+			if e.cfg != "" {
+				line += " (via " + e.cfg + ")"
+			}
+			out = append(out, line)
+		} else {
+			out = append(out, "  - "+e.pkg+" (NOT FOUND)")
+		}
+	}
+	return out
 }
 
 // applyProbeGenexProperties walks pkg.Targets and applies

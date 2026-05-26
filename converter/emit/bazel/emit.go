@@ -322,6 +322,16 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	} else {
 		buf.WriteString(header)
 	}
+	// Package-level header comments — find_package resolutions
+	// and other attribution data the lifter wants to surface.
+	for _, line := range pkg.HeaderComments {
+		buf.WriteString("# ")
+		buf.WriteString(line)
+		buf.WriteString("\n")
+	}
+	if len(pkg.HeaderComments) > 0 {
+		buf.WriteString("\n")
+	}
 	emitGazelleCcSearch(&buf, pkg, opts)
 	emitLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
