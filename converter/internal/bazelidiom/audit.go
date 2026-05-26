@@ -163,6 +163,10 @@ func codegenTagToFinding(tag string) (code, msg string) {
 		lang := strings.TrimPrefix(tag, "cmake-codegen-language-override=")
 		return "language-override-needs-split",
 			"target has set_source_files_properties(... LANGUAGE " + lang + ") on at least one source — Bazel cc_library compiles each source by its file extension; the override is silently dropped. Fix: rename the source to a " + lang + "-conventional extension or split the affected sources into a separate cc_library"
+	case strings.HasPrefix(tag, "cmake-codegen-find-package-fallback="):
+		rest := strings.TrimPrefix(tag, "cmake-codegen-find-package-fallback=")
+		return "find-package-dep-unresolved",
+			"target links a library resolved by find_package(" + rest + ") that has no imports-manifest entry — the dep is missing from `deps` and the BUILD will link-fail. Fix: add the package's namespaced target (e.g. `Pkg::Pkg`) to the imports manifest mapping to a real cc_import/cc_library label"
 	}
 	return "", ""
 }

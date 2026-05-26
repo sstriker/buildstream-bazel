@@ -453,6 +453,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// []executeProcessOut return is parallel to
 	// configureFileOut and feeds the same per-target
 	// attribution loop in lowerTarget below.
+	// find_package(X) variable-form attribution. cmake's older
+	// idiom `target_link_libraries(foo ${ZLIB_LIBRARIES})` resolves
+	// to absolute paths the codemodel records verbatim; without
+	// attribution back to ZLIB the lower's manifest lookup misses
+	// and the dep drops silently. buildFindPackageAttrib correlates
+	// configureLog find_package-v1 events with cmakeVars's
+	// `<Pkg>_LIBRARIES` lists so the Link.CommandFragments loop
+	// can route the path → package → manifest label (when an
+	// imports manifest entry exists) or surface a
+	// cmake-codegen-find-package-fallback tag (when it doesn't).
+	findPkgAttrib := buildFindPackageAttrib(opts.ConfigureLog, opts.CMakeVars)
+
 	// Merge cmakeVars (dump-vars hook output) with configureLog-
 	// derived try_compile / try_run result variables. cmakeVars
 	// covers the user-defined namespace; configureLog covers
@@ -551,7 +563,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name])
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], findPkgAttrib)
 		if err != nil {
 			return nil, err
 		}
@@ -634,7 +646,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, findPkgAttrib *findPackageAttrib) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -1361,6 +1373,41 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					} else {
 						irt.Deps = append(irt.Deps, export.BazelLabel)
 					}
+				}
+				continue
+			}
+			// find_package variable-form attribution. The
+			// path didn't match a manifest entry directly;
+			// see whether configureLog + cmakeVars attribute
+			// it to a `find_package(X)` call. When attributed,
+			// try the manifest under the package's namespaced
+			// primary target (`<Pkg>::<Pkg>`) — that's the
+			// modern cmake export shape and is what the
+			// manifest typically registers. Falls back to a
+			// tag-only emission so operators see the missing
+			// dep even when the manifest has no matching
+			// entry.
+			if pkg := findPkgAttrib.Lookup(path); pkg != "" {
+				if export := imports.LookupCMakeTarget(pkg + "::" + pkg); export != nil {
+					if !seen[export.BazelLabel] {
+						seen[export.BazelLabel] = true
+						if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+							irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+						} else {
+							irt.Deps = append(irt.Deps, export.BazelLabel)
+						}
+					}
+					continue
+				}
+				// No manifest hit; emit a fallback tag so
+				// operators see which package's link is
+				// unresolved. One tag per (pkg, path)
+				// pair — same package can show up across
+				// multiple paths (release + debug, main +
+				// dep libs).
+				tag := "cmake-codegen-find-package-fallback=" + pkg + "=" + filepath.Base(path)
+				if !stringSliceContains(irt.Tags, tag) {
+					irt.Tags = append(irt.Tags, tag)
 				}
 			}
 		}

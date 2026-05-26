@@ -470,6 +470,31 @@ func TestAudit_CmakeCodegenLanguageOverrideTag(t *testing.T) {
 	}
 }
 
+func TestAudit_CmakeCodegenFindPackageFallback(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "iostreams",
+    srcs = ["zlib.cpp"],
+    tags = ["cmake-codegen-find-package-fallback=ZLIB=libz.so"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "find-package-dep-unresolved" {
+			found = true
+			if !strings.Contains(f.Message, "ZLIB") {
+				t.Errorf("message should name ZLIB: %q", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected find-package-dep-unresolved; got %v", findings)
+	}
+}
+
 func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
 	// cmake-codegen-version=… and cmake-codegen-soversion=… are
 	// informational; no audit finding.

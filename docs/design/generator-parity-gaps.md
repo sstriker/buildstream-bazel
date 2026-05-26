@@ -293,6 +293,8 @@ Items landed in the gap-fill push, sorted by category:
 **configureLog-driven lifts:**
 - ✓ try_compile / try_run variable rescue for execute_process
 - ✓ find_package events → BUILD header attribution
+- ✓ find_package variable-form attribution (boost ${ZLIB_LIBRARIES}
+  → ZLIB → manifest label or fallback tag)
 - ✓ message(DEPRECATION) → BUILD header warnings
 
 **Cache-driven lifts:**

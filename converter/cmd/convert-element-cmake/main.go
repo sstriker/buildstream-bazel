@@ -95,13 +95,18 @@ func run(a cli.Args) error {
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
 			BuildType:          a.BuildType,
 			BuildTypes:         a.BuildTypes,
-			// DumpVars only when --lift-configure-file is on:
-			// the dump hook overrides project/operator-supplied
-			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES and triggers a
-			// "manually-specified variable not used" warning on
-			// cmake < 3.24, so we don't pay that cost for
-			// elements that don't need the captured namespace.
-			DumpVars:    a.LiftConfigureFile,
+			// DumpVars: cmake 3.24+ injects the dump hook via
+			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES, which also triggers
+			// a "manually-specified variable not used" warning on
+			// older cmakes. Enable when either:
+			//   1. --lift-configure-file needs the var namespace for
+			//      Bazel-time @VAR@ / ${VAR} substitution; OR
+			//   2. --probe-genex is on (guarantees cmake 3.24+) and
+			//      we want find_package(X) variable-form attribution
+			//      to wire <Pkg>_LIBRARIES paths back to the package
+			//      name (driving the cmake-codegen-find-package-
+			//      fallback tag + manifest-driven dep emit).
+			DumpVars:    a.LiftConfigureFile || a.ProbeGenex,
 			CMP0026Shim: a.CMP0026Shim,
 			ProbeGenex:  a.ProbeGenex,
 			Stdout:      os.Stderr, // route cmake noise to our stderr
