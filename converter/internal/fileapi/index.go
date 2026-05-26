@@ -55,13 +55,19 @@ type ObjectVersion struct {
 }
 
 // SupportedObjectMajors records the codemodel-v2 / cache-v2 / toolchains-v1
-// / cmakeFiles-v1 schema majors this loader knows how to parse. Per the
-// File API contract a client must reject unknown majors; minor bumps are
-// additive and parsed best-effort (unknown new fields drop silently via
-// json.Unmarshal). Tested against CMake 3.20 through 4.x.
+// / cmakeFiles-v1 / configureLog-v1 schema majors this loader knows how to
+// parse. Per the File API contract a client must reject unknown majors;
+// minor bumps are additive and parsed best-effort (unknown new fields drop
+// silently via json.Unmarshal). Tested against CMake 3.20 through 4.x.
+//
+// configureLog-v1 was added in cmake 3.26 (see Phase 2 of the
+// generator-parity uplift in ROADMAP.md); cmake < 3.26 silently ignores
+// the staged query, so the entry below is benign on older versions —
+// the reply simply omits the object.
 var SupportedObjectMajors = map[string]int{
-	"codemodel":  2,
-	"cache":      2,
-	"toolchains": 1,
-	"cmakeFiles": 1,
+	"codemodel":    2,
+	"cache":        2,
+	"toolchains":   1,
+	"cmakeFiles":   1,
+	"configureLog": 1,
 }

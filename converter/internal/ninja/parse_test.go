@@ -255,6 +255,104 @@ build x.o: R x.c
 	}
 }
 
+func TestCustomCommandEdges(t *testing.T) {
+	g := mustParse(t, `rule CXX_COMPILER
+  command = c++ -c $in -o $out
+rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build foo.o: CXX_COMPILER foo.cc
+build generated.h: CUSTOM_COMMAND foo.in
+  COMMAND = python gen.py foo.in generated.h
+build other.o: CXX_COMPILER other.cc
+build version.txt: CUSTOM_COMMAND
+  COMMAND = git rev-parse HEAD
+`)
+	edges := ninja.CustomCommandEdges(g)
+	if len(edges) != 2 {
+		t.Fatalf("want 2 CUSTOM_COMMAND edges; got %d", len(edges))
+	}
+	if edges[0].Outputs[0] != "generated.h" || edges[1].Outputs[0] != "version.txt" {
+		t.Errorf("edge order: %v / %v", edges[0].Outputs, edges[1].Outputs)
+	}
+	cmd, ok := ninja.CommandFor(g, edges[0])
+	if !ok || cmd != "python gen.py foo.in generated.h" {
+		t.Errorf("CommandFor edge[0]: %q ok=%v", cmd, ok)
+	}
+}
+
+func TestCustomCommandEdges_None(t *testing.T) {
+	g := mustParse(t, `rule CXX_COMPILER
+  command = c++ -c $in -o $out
+
+build foo.o: CXX_COMPILER foo.cc
+`)
+	if got := ninja.CustomCommandEdges(g); got != nil {
+		t.Errorf("expected nil, got %+v", got)
+	}
+}
+
+func TestDepfileFor_RuleAndBuild(t *testing.T) {
+	g := mustParse(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+  depfile = $DEPFILE_DEFAULT
+
+build out.h: CUSTOM_COMMAND in
+  COMMAND = gen $in $out
+  DEPFILE_DEFAULT = $out.d
+
+build other.h: CUSTOM_COMMAND in2
+  COMMAND = gen2 $in $out
+  depfile = explicit.d
+`)
+	// First build: depfile binding comes from the rule, $DEPFILE_DEFAULT
+	// resolves via the build's bindings.
+	df, ok := ninja.DepfileFor(g, g.Builds[0])
+	if !ok {
+		t.Fatal("DepfileFor build[0] returned !ok")
+	}
+	if df != "out.h.d" {
+		t.Errorf("build[0] depfile: %q", df)
+	}
+	// Second build: explicit depfile on the build overrides the rule's.
+	df, ok = ninja.DepfileFor(g, g.Builds[1])
+	if !ok {
+		t.Fatal("DepfileFor build[1] returned !ok")
+	}
+	if df != "explicit.d" {
+		t.Errorf("build[1] depfile: %q", df)
+	}
+}
+
+func TestDepfileFor_None(t *testing.T) {
+	g := mustParse(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build out.h: CUSTOM_COMMAND in
+  COMMAND = gen $in $out
+`)
+	if _, ok := ninja.DepfileFor(g, g.Builds[0]); ok {
+		t.Errorf("DepfileFor: expected !ok for build with no depfile")
+	}
+}
+
+func TestDescriptionFor(t *testing.T) {
+	g := mustParse(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+  description = Generating $out
+
+build hdr.h: CUSTOM_COMMAND tmpl
+  COMMAND = gen $in $out
+`)
+	desc, ok := ninja.DescriptionFor(g, g.Builds[0])
+	if !ok {
+		t.Fatal("DescriptionFor returned !ok")
+	}
+	if desc != "Generating hdr.h" {
+		t.Errorf("description: %q", desc)
+	}
+}
+
 func TestParseFile_HelloWorld(t *testing.T) {
 	// The recorded build.ninja `include CMakeFiles/rules.ninja`. That file
 	// isn't checked in; rules are regenerated per build dir. Use a custom

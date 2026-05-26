@@ -129,3 +129,52 @@ func TestParse_StrictTraceParsesAsBool(t *testing.T) {
 		t.Errorf("StrictTrace = false after --strict-trace; want true")
 	}
 }
+
+// TestParse_BuildTypesCommaSlice covers the Phase 5 multi-config
+// CLI flag: --build-types takes a comma-separated list and pins
+// the entries (preserving order, dropping empties).
+func TestParse_BuildTypesCommaSlice(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--build-types=Debug,Release,RelWithDebInfo"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	want := []string{"Debug", "Release", "RelWithDebInfo"}
+	if len(args.BuildTypes) != len(want) {
+		t.Fatalf("BuildTypes len: got %d want %d (%v)", len(args.BuildTypes), len(want), args.BuildTypes)
+	}
+	for i := range want {
+		if args.BuildTypes[i] != want[i] {
+			t.Errorf("BuildTypes[%d] = %q; want %q", i, args.BuildTypes[i], want[i])
+		}
+	}
+}
+
+// TestParse_BuildTypesDropsEmpties pins the "stray comma" handling
+// (`--build-types=,Debug,,Release,` → [Debug, Release]).
+func TestParse_BuildTypesDropsEmpties(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--build-types=,Debug,,Release,"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	want := []string{"Debug", "Release"}
+	if len(args.BuildTypes) != len(want) {
+		t.Fatalf("BuildTypes: got %v want %v", args.BuildTypes, want)
+	}
+}
+
+// TestParse_BuildType covers the single-config --build-type path.
+func TestParse_BuildType(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--build-type=Debug"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.BuildType != "Debug" {
+		t.Errorf("BuildType = %q; want Debug", args.BuildType)
+	}
+	if len(args.BuildTypes) != 0 {
+		t.Errorf("BuildTypes should be empty when --build-type set; got %v", args.BuildTypes)
+	}
+}

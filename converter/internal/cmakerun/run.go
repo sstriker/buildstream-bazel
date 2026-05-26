@@ -47,6 +47,16 @@ var dumpVarsCMake []byte
 //go:embed cmp0026-shim.cmake
 var cmp0026ShimCMake []byte
 
+// probeGenexCMake is the per-target genex-probe hook. Opt-in via
+// Options.ProbeGenex; the script header documents the output layout
+// under <CMAKE_BINARY_DIR>/cmake-to-bazel.genex/<tgt>/<prop>.txt.
+// Phase 3 of the generator-parity uplift uses these to retire the
+// genexeval UnsupportedError surface by reading cmake's own
+// generation-time evaluator output back into the lift.
+//
+//go:embed probe-genex.cmake
+var probeGenexCMake []byte
+
 // VarsDumpFilename is the basename of the variable dump
 // dump-vars.cmake writes inside the build dir. Exposed so callers
 // (offline test fixtures, the orchestrator's record path) can
@@ -57,6 +67,15 @@ const VarsDumpFilename = "cmake-to-bazel.vars.dump"
 // shim Configure stages into the build dir when Options.CMP0026Shim
 // is true.
 const CMP0026ShimFilename = "cmake-to-bazel.cmp0026-shim.cmake"
+
+// ProbeGenexFilename is the basename of the genex-probe hook
+// Configure stages into the build dir when Options.ProbeGenex is
+// true. ProbeGenexDirname is the per-build subdirectory cmake's
+// file(GENERATE) calls populate at generation time.
+const (
+	ProbeGenexFilename = "cmake-to-bazel.probe-genex.cmake"
+	ProbeGenexDirname  = "cmake-to-bazel.genex"
+)
 
 // SourceDateEpoch is the project-wide fixed timestamp for deterministic
 // configure-time outputs. 2020-01-01T00:00:00Z, picked arbitrarily to be
@@ -83,7 +102,36 @@ type Options struct {
 	ToolchainCMakeFile string
 
 	// BuildType is passed as -DCMAKE_BUILD_TYPE. Defaults to Release.
+	// Used by the single-config Ninja generator; mutually exclusive
+	// with BuildTypes below.
 	BuildType string
+
+	// BuildTypes, when non-empty, switches Configure to the
+	// "Ninja Multi-Config" generator and passes the entries as
+	// -DCMAKE_CONFIGURATION_TYPES=<joined ;>. The codemodel-v2 reply
+	// then carries one Configuration entry per name with per-config
+	// target-*.json files. Phase 5 of the generator-parity uplift
+	// (ROADMAP.md) uses this to capture per-config compile/link
+	// fragments in a single configure pass and fold them via
+	// select() at emit time — including Bazel-idiom shaping for
+	// sanitizer / LTO / debug-info variants whose flag deltas lower
+	// to --features on the cc_toolchain.
+	//
+	// BuildTypes and BuildType are mutually exclusive; Configure
+	// rejects callers that set both. Order in BuildTypes is
+	// preserved on the wire — cmake's Multi-Config generator uses
+	// the first entry as the default config for tools that don't
+	// pass --config, so callers that want "Release-first" should
+	// place "Release" at index 0.
+	//
+	// Custom config names (TSan, ASan, UBSan, …) work natively —
+	// cmake treats CMAKE_CONFIGURATION_TYPES as an opaque list. The
+	// project must define CMAKE_<LANG>_FLAGS_<NAME> /
+	// CMAKE_EXE_LINKER_FLAGS_<NAME> for every non-standard entry
+	// (typically via a cmake/Sanitizers.cmake module or a toolchain
+	// file); cmake reports the resolved per-config fragments in the
+	// codemodel either way.
+	BuildTypes []string
 
 	// ExtraCacheVars are additional cmake cache entries passed as
 	// -D<name>=<value>. Rendered in lexicographic key order so the
@@ -114,6 +162,25 @@ type Options struct {
 	// there). convert-element-cmake only flips this on when
 	// --lift-configure-file is set.
 	DumpVars bool
+
+	// ProbeGenex enables the per-target genex-probe hook (Phase 3
+	// of the generator-parity uplift). When true, Configure stages
+	// probe-genex.cmake into the build dir and layers it onto
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES; the hook emits
+	// file(GENERATE) declarations for every cmake target in the
+	// project so cmake's generation phase resolves common genex
+	// shapes (TARGET_FILE / TARGET_FILE_DIR / TARGET_FILE_NAME /
+	// TARGET_OBJECTS / INTERFACE_* aggregates) into per-target
+	// .txt files under <CMAKE_BINARY_DIR>/cmake-to-bazel.genex/.
+	// Off by default; cmake < 3.24 doesn't honor TOP_LEVEL_INCLUDES
+	// via -D so the hook can't run there.
+	//
+	// Layers cleanly with DumpVars and CMP0026Shim — all three join
+	// the same TOP_LEVEL_INCLUDES list with the shim first (so its
+	// get_target_property wrapper installs before either of the
+	// other hooks queries target metadata), then dump-vars, then
+	// probe-genex (whose DEFER runs after both).
+	ProbeGenex bool
 
 	// CMP0026Shim enables the cmake-4.x compatibility shim that
 	// overrides get_target_property to translate LOCATION queries
@@ -165,7 +232,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if opts.SourceRoot == "" || opts.BuildDir == "" {
 		return Reply{}, fmt.Errorf("cmakerun: SourceRoot and BuildDir required")
 	}
-	if opts.BuildType == "" {
+	if opts.BuildType == "" && len(opts.BuildTypes) == 0 {
 		opts.BuildType = "Release"
 	}
 
@@ -173,7 +240,13 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if err := os.MkdirAll(queryDir, 0o755); err != nil {
 		return Reply{}, fmt.Errorf("cmakerun: stage query dir: %w", err)
 	}
-	for _, kind := range []string{"codemodel-v2", "toolchains-v1", "cmakeFiles-v1", "cache-v2"} {
+	// configureLog-v1 is cmake 3.26+. cmake < 3.26 silently ignores
+	// the staged query (no reply object generated); newer cmakes
+	// produce a sidecar pointing at CMakeConfigureLog.yaml. Phase 2
+	// of the generator-parity uplift (ROADMAP.md) reads the YAML
+	// when probe-bucket execute_process refusals need a try_compile
+	// answer to lift.
+	for _, kind := range []string{"codemodel-v2", "toolchains-v1", "cmakeFiles-v1", "cache-v2", "configureLog-v1"} {
 		f, err := os.Create(filepath.Join(queryDir, kind))
 		if err != nil {
 			return Reply{}, fmt.Errorf("cmakerun: stage query %s: %w", kind, err)
@@ -208,6 +281,18 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		}
 	}
 
+	// Stage the genex-probe hook (Phase 3 of the generator-parity
+	// uplift) when the caller opted in. Layers onto the same
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES slot as the other hooks —
+	// the slot is a list, so cmake includes them in order.
+	var probeGenexPath string
+	if opts.ProbeGenex {
+		probeGenexPath = filepath.Join(opts.BuildDir, ProbeGenexFilename)
+		if err := os.WriteFile(probeGenexPath, probeGenexCMake, 0o644); err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: stage probe-genex hook: %w", err)
+		}
+	}
+
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
 	// rewrites HOME. Best-effort cleanup; cmake only reads from here.
 	homeDir, err := os.MkdirTemp("", "cmakerun-home-*")
@@ -216,7 +301,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 	defer os.RemoveAll(homeDir)
 
-	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath)
+	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, probeGenexPath)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -276,17 +361,46 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 // lexicographic key order, then the optional --trace-* and
 // CMAKE_TOOLCHAIN_FILE / CMAKE_PROJECT_TOP_LEVEL_INCLUDES tail.
 // Stable across runs of the same Options.
-func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]string, error) {
+func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath string) ([]string, error) {
 	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
 		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
+	}
+	if _, ok := opts.ExtraCacheVars["CMAKE_CONFIGURATION_TYPES"]; ok {
+		return nil, fmt.Errorf("cmakerun: CMAKE_CONFIGURATION_TYPES in ExtraCacheVars; use Options.BuildTypes instead")
+	}
+	if opts.BuildType != "" && len(opts.BuildTypes) > 0 {
+		return nil, fmt.Errorf("cmakerun: BuildType (%q) and BuildTypes (%v) are mutually exclusive", opts.BuildType, opts.BuildTypes)
 	}
 
 	argv := []string{
 		"-S", opts.SourceRoot,
 		"-B", opts.BuildDir,
-		"-G", "Ninja",
-		"-DCMAKE_BUILD_TYPE=" + opts.BuildType,
-		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+	if len(opts.BuildTypes) > 0 {
+		// Multi-config: validate that entries are non-empty and
+		// reject duplicates so the codemodel-v2 reply doesn't end
+		// up with two same-named Configuration entries.
+		seen := map[string]bool{}
+		for i, bt := range opts.BuildTypes {
+			if bt == "" {
+				return nil, fmt.Errorf("cmakerun: BuildTypes[%d] is empty", i)
+			}
+			if seen[bt] {
+				return nil, fmt.Errorf("cmakerun: BuildTypes contains duplicate %q", bt)
+			}
+			seen[bt] = true
+		}
+		argv = append(argv,
+			"-G", "Ninja Multi-Config",
+			"-DCMAKE_CONFIGURATION_TYPES="+strings.Join(opts.BuildTypes, ";"),
+			"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+		)
+	} else {
+		argv = append(argv,
+			"-G", "Ninja",
+			"-DCMAKE_BUILD_TYPE="+opts.BuildType,
+			"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+		)
 	}
 
 	if len(opts.ExtraCacheVars) > 0 {
@@ -302,10 +416,16 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]strin
 
 	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (cmake 3.24+) is a
 	// list-of-files variable cmake includes in order at the end
-	// of the top-level project() call. Both the dump-vars hook
-	// and the cmp0026 shim layer onto the same slot; emit a
-	// `;`-joined list. shim first so its wrapper is installed
-	// before dump-vars runs and any user code reaches LOCATION.
+	// of the top-level project() call. The opt-in hooks layer
+	// onto the same slot; emit a `;`-joined list with the
+	// ordering rationale:
+	//
+	//   1. cmp0026 shim — wraps get_target_property before any
+	//      subsequent hook queries target metadata via LOCATION.
+	//   2. dump-vars hook — enumerates the variable namespace.
+	//   3. probe-genex hook — emits per-target file(GENERATE)
+	//      declarations after both other hooks have run; relies
+	//      on the same DEFER end-of-directory firing the others use.
 	//
 	// Tried CMAKE_PROJECT_INCLUDE_AFTER first; cmake reported it
 	// as a "manually-specified variable not used" in the
@@ -320,6 +440,9 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath string) ([]strin
 	}
 	if dumpVarsPath != "" {
 		topLevelIncludes = append(topLevelIncludes, dumpVarsPath)
+	}
+	if probeGenexPath != "" {
+		topLevelIncludes = append(topLevelIncludes, probeGenexPath)
 	}
 	if len(topLevelIncludes) > 0 {
 		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+strings.Join(topLevelIncludes, ";"))

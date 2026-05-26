@@ -79,6 +79,40 @@ type DirectoryInstaller struct {
 	Destination string            `json:"destination"`
 	Type        string            `json:"type"`
 	Paths       []json.RawMessage `json:"paths"`
+	// ExportName is set on Type=="export" installers — the
+	// `EXPORT <name>` arg of install(EXPORT). Empty for other
+	// installer kinds. Phase 6 of the generator-parity uplift
+	// (ROADMAP.md) uses this to identify the bundle the
+	// classifier-driven pre-resolution targets.
+	ExportName string `json:"exportName,omitempty"`
+	// ExportTargets is set on Type=="export" installers — the
+	// list of cmake targets included in the export, by id +
+	// name. Each id matches a Codemodel target's Id; the
+	// classifier walks these to check the artifact types being
+	// exported are all expressible as cc_import / cc_library.
+	ExportTargets []ExportTarget `json:"exportTargets,omitempty"`
+	// IsExcludeFromAll mirrors install(... EXCLUDE_FROM_ALL).
+	// When true the installer doesn't fire under `cmake --install`
+	// without an explicit component selection — Phase 6's
+	// classifier treats it as a non-declarative signal (the
+	// bundle isn't expected to be the canonical pkg-config-style
+	// shape).
+	IsExcludeFromAll bool `json:"isExcludeFromAll,omitempty"`
+	// IsOptional mirrors install(... OPTIONAL). When true cmake
+	// skips the installer if the source file doesn't exist;
+	// downstream consumers can't rely on the destination being
+	// populated.
+	IsOptional bool `json:"isOptional,omitempty"`
+}
+
+// ExportTarget is one entry in DirectoryInstaller.ExportTargets for
+// an install(EXPORT) invocation. Id matches a Codemodel target's
+// Id (lookup key for Reply.Targets); Name is the bare target name
+// (e.g. "foo") without the namespace prefix the exported file uses
+// at consumer time (`NS::foo`).
+type ExportTarget struct {
+	Id   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // ConfigProject is one entry in Configuration.Projects[]. It groups

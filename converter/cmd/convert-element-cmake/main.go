@@ -20,10 +20,13 @@ import (
 	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/internal/bazelidiom"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/configfold"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
@@ -62,8 +65,8 @@ func run(a cli.Args) error {
 	var ninjaPath string
 	var hostBuildDir string
 	var cmakeVars map[string]string
+	ctx := context.Background()
 	if replyDir == "" {
-		ctx := context.Background()
 
 		// Architectural floor: cmake >= 3.20 (codemodel-v2 minimum). The
 		// orchestrator (M3) must always run with a pinned cmake; the
@@ -88,20 +91,34 @@ func run(a cli.Args) error {
 			BuildDir:           buildDir,
 			PrefixDir:          a.PrefixDir,
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
-			// DumpVars only when --lift-configure-file is on:
-			// the dump hook overrides project/operator-supplied
-			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES and triggers a
-			// "manually-specified variable not used" warning on
-			// cmake < 3.24, so we don't pay that cost for
-			// elements that don't need the captured namespace.
-			DumpVars:    a.LiftConfigureFile,
+			BuildType:          a.BuildType,
+			BuildTypes:         a.BuildTypes,
+			// DumpVars: cmake 3.24+ injects the dump hook via
+			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES, which also triggers
+			// a "manually-specified variable not used" warning on
+			// older cmakes. Enable when either:
+			//   1. --lift-configure-file needs the var namespace for
+			//      Bazel-time @VAR@ / ${VAR} substitution; OR
+			//   2. --probe-genex is on (guarantees cmake 3.24+) and
+			//      we want find_package(X) variable-form attribution
+			//      to wire <Pkg>_LIBRARIES paths back to the package
+			//      name (driving the cmake-codegen-find-package-
+			//      fallback tag + manifest-driven dep emit).
+			DumpVars:    a.LiftConfigureFile || a.ProbeGenex,
 			CMP0026Shim: a.CMP0026Shim,
+			ProbeGenex:  a.ProbeGenex,
 			Stdout:      os.Stderr, // route cmake noise to our stderr
 			Stderr:      os.Stderr,
 		}
-		if a.OutReadPaths != "" {
-			opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
-		}
+		// Always capture trace under source-root mode — it feeds
+		// the lower's keyword-recovery (link-scope walks for
+		// target_link_libraries keywords) and execute_process
+		// rescue passes, independent of whether the operator
+		// also asked for an --out-read-paths file. Earlier this
+		// path was gated on OutReadPaths and silently produced
+		// the "no cmake trace data available" warning whenever
+		// an operator ran source-root mode without the flag.
+		opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
 		configureStart := time.Now()
 		reply, err := cmakerun.Configure(ctx, opts)
 		configureElapsed = time.Since(configureStart)
@@ -155,6 +172,24 @@ func run(a cli.Args) error {
 	r, err := fileapi.Load(replyDir)
 	if err != nil {
 		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
+	}
+
+	// Phase 5 sanitizer-as-feature emit: when the operator
+	// requested a .bzl sidecar AND --build-types includes one or
+	// more sanitizer-shaped configs, extract cmake's per-config
+	// CMAKE_<LANG>_FLAGS_<CONFIG> and render them as
+	// cc_toolchain feature definitions the operator drops into
+	// their toolchain. Pure read on r.Cache; no effect on
+	// pkg.Targets emission.
+	if a.OutSanitizerFeatures != "" && len(a.BuildTypes) > 0 {
+		sets := configfold.ExtractSanitizerFlags(r.Cache, a.BuildTypes)
+		body := sanitizerfeatures.Emit(sets)
+		if err := os.MkdirAll(filepath.Dir(a.OutSanitizerFeatures), 0o755); err != nil {
+			return fmt.Errorf("stage sanitizer-features dir: %w", err)
+		}
+		if err := os.WriteFile(a.OutSanitizerFeatures, body, 0o644); err != nil {
+			return fmt.Errorf("write sanitizer-features: %w", err)
+		}
 	}
 
 	// Stage 6: per-element toolchain signal capture. The unifier
@@ -269,6 +304,30 @@ func run(a cli.Args) error {
 		hostBuildOrReply = a.ReplyDir
 	}
 
+	// Probe-genex hook output (Phase 3 of the generator-parity
+	// uplift). ReadGenexProbe returns nil silently when the hook
+	// didn't run — single-call site for both opt-in and opt-out
+	// paths.
+	genexProbes, err := cmakerun.ReadGenexProbe(hostBuildOrReply)
+	if err != nil {
+		return failure.New(failure.FileAPIMalformed, "read probe-genex output: %v", err)
+	}
+
+	// configureLog-v1 events (Phase 2 of the generator-parity
+	// uplift). When the reply carries a sidecar pointer to
+	// CMakeConfigureLog.yaml, load the YAML events for downstream
+	// consumers. Both the sidecar absence (cmake < 3.26) and the
+	// YAML file absence (configure fired no log-aware events) are
+	// silent — LoadConfigureLogYAML returns nil + nil for both
+	// shapes.
+	var configureLogEvents []fileapi.Event
+	if r.ConfigureLog != nil {
+		configureLogEvents, err = fileapi.LoadConfigureLogYAML(r.ConfigureLog.Path)
+		if err != nil {
+			return failure.New(failure.FileAPIMalformed, "read configure log: %v", err)
+		}
+	}
+
 	pkg, err := lower.ToIR(r, g, lower.Options{
 		HostSourceRoot:                    a.SourceRoot,
 		HostPrefixDir:                     prefixAbs,
@@ -278,11 +337,15 @@ func run(a cli.Args) error {
 		TraceRaw:                          traceRaw,
 		LiftConfigureFile:                 a.LiftConfigureFile,
 		CMakeVars:                         cmakeVars,
+		GenexProbes:                       genexProbes,
+		ConfigureLog:                      configureLogEvents,
+		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 		UnsupportedExecuteProcessFallback: a.UnsupportedExecuteProcessFallback,
 	})
 	if err != nil {
 		return err
 	}
+
 	if a.Verify {
 		ccPath := compileCommandsPath(hostBuildDir, a.ReplyDir)
 		if ccPath != "" {
@@ -308,6 +371,7 @@ func run(a cli.Args) error {
 	out, err := bazel.EmitWithOptions(pkg, bazel.Options{
 		SourceKey:        a.SourceKey,
 		BazelPackagePath: a.BazelPackagePath,
+		EmitProvenance:   a.EmitProvenance,
 	})
 	if err != nil {
 		// canonicalize failures arrive pre-typed as
@@ -324,6 +388,37 @@ func run(a cli.Args) error {
 	}
 	if err := os.WriteFile(a.OutBuild, out, 0o644); err != nil {
 		return err
+	}
+
+	// Phase 7: post-emission Bazel-idiom audit. Runs
+	// unconditionally — the audit is read-only and FormatFindings
+	// returns "" when there are no findings, so silent on clean
+	// conversions. --audit-bazel-idiom-report writes the
+	// structured findings as JSON in addition.
+	{
+		findings, ferr := bazelidiom.Audit(out)
+		if ferr != nil {
+			return failure.New(failure.BazelCanonicalizeFailed, "audit-bazel-idiom: %v", ferr)
+		}
+		if msg := bazelidiom.FormatFindings(findings); msg != "" {
+			fmt.Fprint(os.Stderr, msg)
+		}
+		if a.AuditBazelIdiomReport != "" {
+			// Coerce a nil findings slice to an empty slice so
+			// json.MarshalIndent emits `[]` rather than `null` —
+			// JSON consumers iterating the report expect an
+			// array shape unconditionally.
+			if findings == nil {
+				findings = []bazelidiom.Finding{}
+			}
+			body, _ := json.MarshalIndent(findings, "", "  ")
+			if err := os.MkdirAll(filepath.Dir(a.AuditBazelIdiomReport), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(a.AuditBazelIdiomReport, body, 0o644); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Stage 6 of the per-element multi-platform plan: ship the

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -501,5 +502,129 @@ func TestRecoverExecuteProcess_LiftPlusRefuse(t *testing.T) {
 	err := formatExecuteProcessFailure(refusals)
 	if !strings.Contains(err.Error(), "[stamp]") {
 		t.Errorf("refusal should mention [stamp]; got: %v", err)
+	}
+}
+
+// TestRecoverExecuteProcess_RescueProbeViaDumpVars covers Phase 4's
+// probe-bucket rescue: when a probe call's OUTPUT_VARIABLE is in
+// cmakeVars (captured by the dump-vars hook), the rescue arm
+// skips the refusal — downstream configure_file / file(GENERATE)
+// lifts consume the value through cmakeVars.
+func TestRecoverExecuteProcess_RescueProbeViaDumpVars(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"gcc", "-dumpversion"}},
+		OutputVariable: "GCC_VERSION",
+	}}
+	cc := newCodegenContext()
+	cmakeVars := map[string]string{"GCC_VERSION": "13.2.0"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected probe rescue; got refusals: %v", refusals)
+	}
+}
+
+// TestRecoverExecuteProcess_NoRescueWhenVarMissing confirms the
+// rescue is gated on the variable actually being in cmakeVars —
+// e.g. when dump-vars hook wasn't enabled, the refusal still
+// fires.
+func TestRecoverExecuteProcess_NoRescueWhenVarMissing(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"gcc", "-dumpversion"}},
+		OutputVariable: "GCC_VERSION",
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) == 0 {
+		t.Error("expected refusal when dump-vars data absent")
+	}
+}
+
+// TestRecoverExecuteProcess_RescueStamp covers the same rescue for
+// the stamp bucket (`git rev-parse HEAD`).
+func TestRecoverExecuteProcess_RescueStamp(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           5,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	}}
+	cc := newCodegenContext()
+	cmakeVars := map[string]string{"GIT_SHA": "abc123def456"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected stamp rescue via dump-vars; got refusals: %v", refusals)
+	}
+}
+
+func TestConfigureLogVars_TryCompileSuccess(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:        "try_compile-v1",
+			BuildResult: &fileapi.EventBuildResult{Variable: "HAVE_FOO", ExitCode: 0},
+		},
+	}
+	got := configureLogVars(events)
+	if got["HAVE_FOO"] != "1" {
+		t.Errorf("HAVE_FOO: %q, want 1", got["HAVE_FOO"])
+	}
+}
+
+func TestConfigureLogVars_TryCompileFailure(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:        "try_compile-v1",
+			BuildResult: &fileapi.EventBuildResult{Variable: "HAVE_BAR", ExitCode: 1},
+		},
+	}
+	if configureLogVars(events)["HAVE_BAR"] != "0" {
+		t.Errorf("HAVE_BAR should be 0 on failure")
+	}
+}
+
+func TestConfigureLogVars_TryRunRecorded(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:      "try_run-v1",
+			RunResult: &fileapi.EventRunResult{Variable: "RUN_RESULT", ExitCode: 0},
+		},
+	}
+	if configureLogVars(events)["RUN_RESULT"] != "1" {
+		t.Errorf("RUN_RESULT should be 1")
+	}
+}
+
+func TestConfigureLogVars_EmptyEvents(t *testing.T) {
+	if got := configureLogVars(nil); got != nil {
+		t.Errorf("nil events should return nil; got %v", got)
+	}
+}
+
+// TestRecoverExecuteProcess_RescueViaConfigureLog covers the
+// configureLog-driven rescue: a probe whose OUTPUT_VARIABLE
+// isn't in cmakeVars but IS in the configureLog as a try_compile
+// result variable rescues without refusal.
+func TestRecoverExecuteProcess_RescueViaConfigureLog(t *testing.T) {
+	// Simulate the merge that lower.go does between cmakeVars and
+	// configureLogVars before passing to recoverExecuteProcess.
+	clVars := configureLogVars([]fileapi.Event{
+		{
+			Kind:        "try_compile-v1",
+			BuildResult: &fileapi.EventBuildResult{Variable: "GCC_VERSION", ExitCode: 0},
+		},
+	})
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           42,
+		Commands:       [][]string{{"gcc", "--version"}},
+		OutputVariable: "GCC_VERSION",
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected configureLog rescue; got refusals: %v", refusals)
 	}
 }

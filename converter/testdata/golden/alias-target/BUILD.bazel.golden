@@ -23,5 +23,11 @@ cc_binary(
     copts = ["-O3"],  # keep
     defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
+    linkopts = ["-O3 -DNDEBUG"],  # keep
     deps = [":aliaslib"],
 )
+
+filegroup(
+    name = "install_directory__include",
+    srcs = ["include"],
+)  # keep

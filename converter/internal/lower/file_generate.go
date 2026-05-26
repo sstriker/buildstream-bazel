@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/configurefile"
@@ -662,20 +663,27 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 
 // buildGenexTargets projects the fileapi codemodel's per-target
 // data into the genexeval.TargetInfo map the evaluator
-// consults for `$<TARGET_PROPERTY:t,p>`. Keyed by the target's
-// cmake name (not its fileapi ID). Captures only the
-// properties the v1 evaluator supports verbatim (Type / Sources
-// / Imported); INTERFACE_* aggregation isn't modeled here so
-// queries against those properties surface as UnsupportedError
-// from the evaluator. cmake-internal helper targets
-// (ZERO_CHECK / INSTALL / PACKAGE / ...) are skipped — they
-// have no Bazel equivalent and the user-authored CMakeLists
-// shouldn't reference them via TARGET_PROPERTY.
+// consults for `$<TARGET_PROPERTY:t,p>` and `$<TARGET_OBJECTS:t>`.
+// Keyed by the target's cmake name (not its fileapi ID).
+//
+// Captured from the codemodel: Type / Sources / Imported /
+// FileLocation. cmake-internal helper targets (ZERO_CHECK /
+// INSTALL / PACKAGE / ...) are skipped — they have no Bazel
+// equivalent and the user-authored CMakeLists shouldn't reference
+// them via TARGET_PROPERTY.
+//
+// Captured from probes (Phase 3 of the generator-parity uplift)
+// when probes is non-empty: INTERFACE_* aggregates that cmake
+// resolves at generation time by walking the dependency graph,
+// plus the per-OBJECT_LIBRARY Objects list. Probes for unknown
+// targets (probe data without a corresponding codemodel entry)
+// are dropped silently — the codemodel is the ground truth for
+// "what targets exist."
 //
 // Returns nil when r is nil or has no usable targets — the
 // evaluator's UnsupportedError on missing-target surfaces
 // cleanly and routes the lift to (b) / legacy.
-func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string) map[string]genexeval.TargetInfo {
+func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe) map[string]genexeval.TargetInfo {
 	if r == nil || len(r.Targets) == 0 {
 		return nil
 	}
@@ -719,6 +727,23 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string) map[string]gen
 			Imported:     false,
 			FileLocation: fileLoc,
 		}
+	}
+	// Fold probe-captured INTERFACE_* aggregates and OBJECT_LIBRARY
+	// Objects list into the matching codemodel entry. Probes for
+	// targets not in the codemodel are skipped — codemodel is
+	// ground truth for "what targets exist".
+	for _, p := range probes {
+		ti, ok := out[p.Name]
+		if !ok {
+			continue
+		}
+		ti.Objects = p.Objects
+		ti.InterfaceIncludeDirectories = p.Interface["INCLUDE_DIRECTORIES"]
+		ti.InterfaceCompileDefinitions = p.Interface["COMPILE_DEFINITIONS"]
+		ti.InterfaceCompileOptions = p.Interface["COMPILE_OPTIONS"]
+		ti.InterfaceLinkLibraries = p.Interface["LINK_LIBRARIES"]
+		ti.InterfaceLinkOptions = p.Interface["LINK_OPTIONS"]
+		out[p.Name] = ti
 	}
 	return out
 }

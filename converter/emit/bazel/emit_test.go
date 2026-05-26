@@ -1447,3 +1447,182 @@ func TestEmit_ConstraintViolation_PreEmitGuard(t *testing.T) {
 		})
 	}
 }
+
+// TestEmit_Filegroup_Basic covers KindFilegroup emission — Phase 1
+// task 2's foundation for install(FILES) / install(DIRECTORY)
+// lowering at convert time.
+func TestEmit_Filegroup_Basic(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:       "headers",
+			Kind:       ir.KindFilegroup,
+			Srcs:       []string{"include/foo.h", "include/bar.h"},
+			Visibility: []string{"//visibility:public"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.Contains(gotStr, `filegroup(`) {
+		t.Errorf("expected filegroup rule; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `name = "headers"`) {
+		t.Errorf("expected name attribute; got:\n%s", gotStr)
+	}
+	// Bazel sorts srcs entries; both should appear.
+	if !strings.Contains(gotStr, `"include/bar.h"`) || !strings.Contains(gotStr, `"include/foo.h"`) {
+		t.Errorf("expected srcs entries; got:\n%s", gotStr)
+	}
+}
+
+// TestEmit_Provenance_RendersWhenEnabled covers Phase 1 task 1:
+// when EmitProvenance is on, each rule with a non-zero Provenance
+// gets a leading `# Source: <file>:<line> (<command>)` comment.
+func TestEmit_Provenance_RendersWhenEnabled(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Provenance: ir.Provenance{
+				File:    "CMakeLists.txt",
+				Line:    42,
+				Command: "add_library",
+			},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "# Source: CMakeLists.txt:42 (add_library)") {
+		t.Errorf("expected provenance comment; got:\n%s", got)
+	}
+}
+
+// TestEmit_Provenance_OmittedWhenDisabled confirms the comment is
+// suppressed when the flag is off, keeping existing goldens
+// byte-stable.
+func TestEmit_Provenance_OmittedWhenDisabled(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Provenance: ir.Provenance{
+				File:    "CMakeLists.txt",
+				Line:    42,
+				Command: "add_library",
+			},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "# Source:") {
+		t.Errorf("provenance should be suppressed when flag is off; got:\n%s", got)
+	}
+}
+
+// TestEmit_Provenance_OmittedForZeroValue confirms the comment is
+// suppressed when Provenance.IsZero() — lowerers that don't have
+// backtrace data leave the field zero, and emit shouldn't render
+// "# Source: :0 ()" garbage.
+func TestEmit_Provenance_OmittedForZeroValue(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			// no Provenance
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "# Source:") {
+		t.Errorf("zero-value Provenance should suppress comment; got:\n%s", got)
+	}
+}
+
+// TestEmit_Provenance_OmitsLineAndCommandWhenEmpty handles the
+// partial-population case: a lowerer that has only the file path
+// shouldn't emit `:0 ()`.
+func TestEmit_Provenance_OmitsLineAndCommandWhenEmpty(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Provenance: ir.Provenance{
+				File: "CMakeLists.txt",
+				// Line = 0, Command = ""
+			},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "# Source: CMakeLists.txt\n") {
+		t.Errorf("expected bare-file comment without :0 ()  garbage; got:\n%s", got)
+	}
+}
+
+// TestEmit_Filegroup_NoLoad confirms filegroup doesn't trigger a
+// load() statement — it's in Bazel's global namespace.
+func TestEmit_Filegroup_NoLoad(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "data",
+			Kind: ir.KindFilegroup,
+			Srcs: []string{"data/foo.dat"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `load("`) {
+		t.Errorf("filegroup should not require a load(); got:\n%s", got)
+	}
+}
+
+func TestEmit_FeaturesAttribute(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:     "foo",
+			Kind:     ir.KindCCLibrary,
+			Srcs:     []string{"foo.c"},
+			Features: []string{"lto"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `features = ["lto"]`) {
+		t.Errorf("expected features attribute; got:\n%s", got)
+	}
+}
+
+func TestEmit_NoFeaturesAttributeWhenEmpty(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `features =`) {
+		t.Errorf("features attribute should be omitted when empty; got:\n%s", got)
+	}
+}

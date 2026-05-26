@@ -129,18 +129,22 @@ transition cleanly.
     (silently no-op under multi-config; would produce
     wrong output).
 
-  - **Phase 6 — install(EXPORT) convert-time
-    pre-resolution.** Add a `DirectoryInstaller{Type:"export"}`
-    classifier (`internal/exportshape`) gating on
-    declarative bundles — `CMakePackageConfigHelpers::
-    configure_package_config_file`-generated, no
-    `find_dependency`, no `if()`/`include()` branches in
-    the bundle template. For the declarative subset, run
-    `cmake --install ${BUILD_DIR} --prefix ${SCRATCH}` at
-    convert time alongside the existing fileapi-query pass
-    and emit the resolved `<Pkg>Targets.cmake` as a
-    `pkg_files` group plus per-IMPORTED-target `cc_import`
-    targets + `pkg_files` for the public headers. The
+  - **Phase 6 — install(EXPORT) declarative IR
+    projection.** Classifier (`internal/exportshape.Classify`)
+    + IR projection (`exportshape.EmitDeclarative`) landed:
+    declarative bundles produce `cc_import` per exported
+    library + per-target header filegroups + a bundle-wide
+    `cmake_config_bundle` filegroup. **Hard constraint:
+    convert is metadata-only — no `cmake --build` /
+    `cmake --install` runs at convert time.** Earlier WIP
+    that wired convert-time build was backed out (it would
+    have changed the project's runtime model from
+    sandboxable-and-cheap to "build farms"). Next slice
+    wires `EmitInputs` from codemodel-only sources
+    (`Target.Artifacts`, `Target.Install.Destinations`,
+    `Target.FileSets` HEADERS); cc_import paths point at
+    where Bazel will land the artifact under its own build,
+    not at a pre-materialized install tree. The
     non-declarative residue stays on the round-2
     `_install_tree_extract` fallback. Closes the
     cross-element `find_package` PR2 (`resolved-lift`

@@ -13,6 +13,7 @@ cc_binary(
     copts = ["-O3"],  # keep
     defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
+    linkopts = ["-O3 -DNDEBUG"],  # keep
     deps = [":multistatic"],
 )
 
@@ -40,3 +41,8 @@ cc_library(
     includes = ["include"],  # keep
     linkstatic = True,  # keep
 )
+
+filegroup(
+    name = "install_directory__include",
+    srcs = ["include"],
+)  # keep

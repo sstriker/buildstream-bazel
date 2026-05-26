@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Exit codes documented in the README. These map onto the failure-tier model:
@@ -198,6 +199,85 @@ type Args struct {
 	// `$<TARGET_FILE:foo>` text instead of a path. See #208.
 	CMP0026Shim bool
 
+	// ProbeGenex toggles the per-target genex-probe hook (Phase 3
+	// of the generator-parity uplift in ROADMAP.md). When true,
+	// convert-element-cmake stages probe-genex.cmake into the build
+	// dir and layers it onto CMAKE_PROJECT_TOP_LEVEL_INCLUDES; the
+	// hook walks BUILDSYSTEM_TARGETS recursively from the source
+	// root and emits file(GENERATE) declarations capturing common
+	// genex shapes (TARGET_FILE / TARGET_OBJECTS / INTERFACE_*
+	// aggregates) into per-target probe files. The lift can then
+	// consult cmakerun.ReadGenexProbe to retire UnsupportedError
+	// sites in internal/genexeval where the resolution depends on
+	// cmake's transitive-property walk. Default ON — the hook is
+	// a net improvement for every conversion; the affirmative
+	// type gate keeps it safe on UTILITY / ALIAS / INTERFACE
+	// targets. Requires cmake 3.24+; pass --probe-genex=false to
+	// disable when targeting older toolchains.
+	ProbeGenex bool
+
+	// BuildType selects the cmake configuration name passed via
+	// -DCMAKE_BUILD_TYPE. Empty defaults to "Release" inside
+	// cmakerun.Configure. Mutually exclusive with BuildTypes —
+	// when BuildTypes is non-empty, BuildType must be empty.
+	BuildType string
+
+	// AuditBazelIdiomReport, when non-empty, writes the structured
+	// audit findings as JSON to this path. The audit itself runs
+	// unconditionally — bazelidiom.Audit is read-only and emits
+	// to stderr only when findings exist, so there's no cost to
+	// always-on; the bool toggle was retired (see PR #227 review).
+	AuditBazelIdiomReport string
+
+	// EmitProvenance enables Phase 1 task 1's backtrace-derived
+	// per-rule annotation: emit a leading `# Source: <file>:<line>
+	// (<command>)` comment above each rule whose cmake declaration
+	// is recorded in the codemodel's BacktraceGraph. Default ON —
+	// the comment is high-signal navigation help; pass
+	// --emit-provenance=false for byte-clean output (e.g. golden
+	// regression tests pre-dating the provenance comments).
+	EmitProvenance bool
+
+	// EmitStandaloneCustomCommands enables Phase 4 of the
+	// generator-parity uplift's standalone-genrule emission: walk
+	// every CUSTOM_COMMAND edge in build.ninja and emit a genrule
+	// for each whose outputs aren't already covered by an existing
+	// recoverGenrule emission. Off by default; opting in adds
+	// targets for add_custom_target / add_custom_command edges
+	// nothing consumes (typically version-stamp or phony bookkeeping
+	// rules), which can change BUILD output shape for projects that
+	// rely on those edges firing implicitly through cmake's build.
+	EmitStandaloneCustomCommands bool
+
+	// OutSanitizerFeatures, when non-empty, writes a .bzl file
+	// at this path carrying cc_toolchain feature definitions
+	// extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> /
+	// CMAKE_<TYPE>_LINKER_FLAGS_<CONFIG> cache entries for every
+	// sanitizer-shaped configuration the operator passed via
+	// --build-types. Phase 5 of the generator-parity uplift
+	// (ROADMAP.md). Operators thread SANITIZER_FEATURES from the
+	// generated file into their cc_toolchain config.
+	//
+	// Empty (zero) suppresses the emit — back-compat for callers
+	// that don't want the sidecar.
+	OutSanitizerFeatures string
+
+	// BuildTypes selects the cmake "Ninja Multi-Config" generator
+	// path (Phase 5 of the generator-parity uplift). When non-empty,
+	// the configure pass runs once with CMAKE_CONFIGURATION_TYPES=
+	// <joined ;> and the codemodel reply carries one Configuration
+	// entry per name. Phase 5's downstream fold (queued) collapses
+	// per-config compile/link fragments via select() arms over
+	// //config:<name> config_settings; for sanitizer-shaped names
+	// (ASan / TSan / MSan / UBSan / LTO) the fragments lower to
+	// --features on the cc_toolchain instead of raw selects.
+	//
+	// Custom config names work natively — cmake treats the list
+	// opaquely. The project must define CMAKE_<LANG>_FLAGS_<NAME>
+	// for any non-standard entry (typically via a
+	// cmake/Sanitizers.cmake module or a toolchain file).
+	BuildTypes []string
+
 	// PrefixDir, when non-empty, is added to CMAKE_PREFIX_PATH. Holds the
 	// synthesized cmake-config bundles + zero-byte IMPORTED_LOCATION
 	// stubs that let find_package resolve out-of-tree deps. The
@@ -277,9 +357,16 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutToolchainSignalDir, "out-toolchain-signal-dir", "", "directory; on success, copy the cmake File API reply contents here so the unifier can fold per-element toolchain signal into the platform's ResolvedToolchain.Base")
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
-	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls (stamp / probe / unknown buckets), emit a placeholder BUILD.bazel listing every non-UTILITY codemodel target as an empty cc_library / cc_binary / cc_library-interface stub with public visibility — instead of exiting Tier-1 with unsupported-execute-process. Step 2 (this PR) only restores label resolution at analysis time; the per-target install_tree.tar wiring (cc_import / sh_binary referencing artifact paths derived from Target.Install.Destinations) lands in Step 2.5, after which downstream consumers' compile/link actions resolve as well. Off by default to preserve the strict-fail behaviour. See docs/design/cmake-execute-process-round2-fallback.md.")
+	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/cmake-execute-process-round2-fallback.md.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
-	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "inject a cmake function override that translates get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time. Only meaningful under cmake 4.x (which removed CMP0026 OLD); cmake 3.x still resolves LOCATION natively. Opt-in because the override changes LOCATION's return shape for the entire project (generator expression instead of resolved path). See #208.")
+	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "translate get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time (cmake 4.x escape hatch for removed CMP0026 OLD). Changes LOCATION's return shape project-wide; see #208.")
+	fs.BoolVar(&a.ProbeGenex, "probe-genex", true, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). cmake emits file(GENERATE) for each artifact-producing target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift reads post-walk resolved bytes instead of reimplementing the cmake-side evaluator. Default ON; requires cmake 3.24+.")
+	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
+	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
+	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
+	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", false, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. Off by default; opting in covers add_custom_target / add_custom_command edges nothing consumes.")
+	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
+	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
@@ -320,3 +407,30 @@ type LookEnv func(string) (string, bool)
 
 // OSLookEnv is the production env reader.
 var OSLookEnv LookEnv = func(k string) (string, bool) { return os.LookupEnv(k) }
+
+// commaSlice adapts a *[]string to flag.Value so the CLI can take
+// `--foo=a,b,c` (single repeat) and surface as `[]string{"a","b","c"}`.
+// Empty strings between commas are dropped — `--foo=,a,,b,` → `[a, b]`.
+type commaSlice struct{ p *[]string }
+
+func (c commaSlice) String() string {
+	if c.p == nil {
+		return ""
+	}
+	return strings.Join(*c.p, ",")
+}
+
+func (c commaSlice) Set(v string) error {
+	if v == "" {
+		*c.p = nil
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	*c.p = out
+	return nil
+}

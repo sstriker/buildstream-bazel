@@ -1,0 +1,158 @@
+package lower
+
+import (
+	"sort"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/configfold"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+)
+
+// lowerMultiConfigDeltas projects Reply.TargetsByConfig into
+// PerPlatform-shaped attribute deltas on pkg.Targets. Phase 5 of
+// the generator-parity uplift (ROADMAP.md).
+//
+// Wires the configfold.Partition cross-config split into the
+// existing per-platform fold infrastructure: PerPlatform's
+// documented contract is "constraint_value OR config_setting
+// labels", and per-config selects are exactly the config_setting
+// case. The emitter renders the same select() shape it would for
+// per-platform deltas — no emit changes needed.
+//
+// Sanitizer-shaped config names (per configfold.SanitizerFeature)
+// are deliberately NOT routed through PerPlatform. The
+// Bazel-idiomatic shape for sanitizer flag deltas is a
+// cc_toolchain feature plus --features=<name>; emitting a select()
+// over //config:asan would be the anti-pattern the Phase 7 audit
+// catches. v1 skips sanitizer configs silently; downstream
+// audit/info passes can surface the skipped set so operators see
+// what's expected to flow through features instead.
+//
+// Returns when byConfig is empty (single-config reply) or when no
+// target has cross-config deltas (every fact agreed across cells).
+// Pure function on pkg.Targets except for PerPlatform mutation.
+func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string) {
+	if len(byConfig) == 0 || len(configNames) < 2 {
+		return
+	}
+	// Filter out sanitizer-shaped configs; they're routed through
+	// --features by a future slice. Including them here would
+	// produce the select() the audit treats as anti-pattern.
+	nonFeatureConfigs := nonFeatureConfigNames(configNames)
+	if len(nonFeatureConfigs) < 2 {
+		// Every non-primary config is a feature variant; no
+		// cross-config Partition useful at the IR level.
+		return
+	}
+
+	folds := configfold.Project(byConfig, nonFeatureConfigs)
+	if len(folds) == 0 {
+		return
+	}
+
+	// Index pkg.Targets by name for fast match.
+	byName := map[string]*ir.Target{}
+	for i := range pkg.Targets {
+		byName[pkg.Targets[i].Name] = &pkg.Targets[i]
+	}
+
+	for _, fold := range folds {
+		tgt, ok := byName[fold.Name]
+		if !ok {
+			continue
+		}
+		applyPartition(tgt, "defines", fold.Defines)
+		applyPartition(tgt, "copts", fold.CompileFragments)
+		applyPartition(tgt, "linkopts", fold.LinkFragments)
+		// Includes are routed to the "includes" Bazel attribute
+		// rather than copts -I, matching the rest of the lift's
+		// includes handling.
+		applyPartition(tgt, "includes", fold.Includes)
+	}
+}
+
+// applyPartition writes the per-cell deltas of one fact family
+// into tgt.PerPlatform[attr]. The fact-family key (e.g. "C|-O2"
+// for CompileFragments) is decomposed: for compile / link
+// fragments we strip the role/language prefix before emit so the
+// select() arm carries the flag itself, not the disambiguator key.
+func applyPartition(tgt *ir.Target, attr string, p configfold.Partition) {
+	if len(p.Deltas) == 0 {
+		return
+	}
+	if tgt.PerPlatform == nil {
+		tgt.PerPlatform = map[string]map[string][]string{}
+	}
+	if tgt.PerPlatform[attr] == nil {
+		tgt.PerPlatform[attr] = map[string][]string{}
+	}
+	for cell, facts := range p.Deltas {
+		if len(facts) == 0 {
+			continue
+		}
+		label := configLabel(cell)
+		values := make([]string, 0, len(facts))
+		for fact := range facts {
+			values = append(values, stripFactPrefix(fact))
+		}
+		sort.Strings(values)
+		// Merge: a target already populated with per-platform
+		// deltas keeps those; per-config deltas append. The
+		// emitter handles the combined map as a single select()
+		// with arms from both axes.
+		tgt.PerPlatform[attr][label] = append(tgt.PerPlatform[attr][label], values...)
+	}
+}
+
+// configLabel maps a cmake config name into the Bazel
+// config_setting label the convention surfaces. The actual
+// config_setting must be declared by the operator (or a future
+// converter slice that emits them automatically); the label is
+// the agreed-upon contract: `//config:<name-lowercased>`.
+func configLabel(cellName string) string {
+	// Lowercased so the same config (Release, RELEASE, release) maps
+	// to a single label regardless of cmake's surface case.
+	return "//config:" + toLower(cellName)
+}
+
+// toLower is a fast lowercase for ASCII config names.
+// Avoids strings.ToLower's table lookups for the typical short
+// names cmake configs use (Debug, Release, RelWithDebInfo, etc.).
+func toLower(s string) string {
+	out := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		out[i] = c
+	}
+	return string(out)
+}
+
+// nonFeatureConfigNames filters out config names recognized by
+// configfold.SanitizerFeature — those route through --features
+// rather than per-config selects.
+func nonFeatureConfigNames(configs []string) []string {
+	var out []string
+	for _, c := range configs {
+		if _, ok := configfold.SanitizerFeature(c); ok {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// stripFactPrefix removes the role/language disambiguator
+// configfold prepends to compile-fragment ("C|-O2") and link-
+// fragment ("libraries|-lz") keys, returning just the flag/path
+// payload.
+func stripFactPrefix(fact string) string {
+	for i := 0; i < len(fact); i++ {
+		if fact[i] == '|' {
+			return fact[i+1:]
+		}
+	}
+	return fact
+}

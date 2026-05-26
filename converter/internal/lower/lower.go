@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -132,6 +133,47 @@ type Options struct {
 	// Extract per-template; if Extract also fails the lift
 	// falls back to legacy.
 	CMakeVars map[string]string
+
+	// GenexProbes carries the per-target probe data captured by
+	// the probe-genex.cmake hook at cmake generation time
+	// (cmakerun.ReadGenexProbe). When non-empty, buildGenexTargets
+	// folds the probe-captured INTERFACE_* aggregates and
+	// TARGET_OBJECTS values into the genexeval.TargetInfo entries
+	// so the (a) evaluator can resolve those genex shapes
+	// directly — retiring the UnsupportedError fall-throughs the
+	// lifter previously had to route to (b) / legacy. Empty
+	// (probe didn't run, cmake < 3.24, or the operator didn't
+	// pass --probe-genex) leaves the new TargetInfo fields blank
+	// and the evaluator falls back as before.
+	//
+	// Phase 3 of the generator-parity uplift in ROADMAP.md.
+	GenexProbes []cmakerun.GenexProbe
+
+	// EmitStandaloneCustomCommands toggles Phase 4 of the
+	// generator-parity uplift: emit genrules for CUSTOM_COMMAND
+	// edges in build.ninja that aren't already covered by the
+	// recoverGenrule path. Off by default — opt-in is the safer
+	// default because the new emission can shift BUILD shape for
+	// projects relying on implicit add_custom_target bookkeeping.
+	EmitStandaloneCustomCommands bool
+
+	// ConfigureLog carries the parsed CMakeConfigureLog.yaml
+	// events from configureLog-v1 (cmake 3.26+). Empty for cmake
+	// < 3.26 or projects whose configure didn't fire any
+	// configureLog-aware events. Phase 4 of the generator-parity
+	// uplift consumes try_compile-v1 / find_package-v1 results
+	// to retire probe-bucket execute_process refusals — when a
+	// refused probe (e.g. `git rev-parse` for a version stamp,
+	// or a `pkg-config` lookup) has a configureLog event with
+	// the same outcome, the lifter can emit the resolved value
+	// directly via select() / stamp / a literal embed instead
+	// of Tier-1-failing.
+	//
+	// Loaded by the caller via fileapi.LoadConfigureLogYAML to
+	// keep lower's I/O scope unchanged (lower itself stays
+	// pure-function over the reply data, no FS reads beyond
+	// configure_file's rendered output capture).
+	ConfigureLog []fileapi.Event
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -218,6 +260,61 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
+	// headerOnlySources holds slash-form source paths declared with
+	// set_source_files_properties(... HEADER_FILE_ONLY TRUE). The
+	// per-target source walk reclassifies these from srcs to hdrs.
+	// Populated by collectHeaderOnlySources when the trace decoded
+	// SourceFileProperties calls.
+	var headerOnlySources map[string]bool
+	// objectDependsBySrc maps source paths to the list of header
+	// paths declared via set_source_files_properties(... PROPERTIES
+	// OBJECT_DEPENDS "h1;h2"). The per-target post-pass adds those
+	// headers to the target's hdrs so Bazel's incremental rebuild
+	// trips on changes.
+	var objectDependsBySrc map[string][]string
+	// languageOverrideBySrc maps source paths to the cmake LANGUAGE
+	// property value (e.g. "CXX" when forcing a .c file to compile
+	// as C++). Used by the post-pass to tag affected targets so
+	// operators see the gap — Bazel cc_library can't directly
+	// override per-source language; the gap needs source rename
+	// or per-source library splits.
+	var languageOverrideBySrc map[string]string
+
+	// Phase 1 task 1 keyword recovery runs FIRST — backtrace is
+	// strictly more authoritative than trace in every case where
+	// they disagree:
+	//
+	//   - Macro-wrapped target_link_libraries: trace records the
+	//     macro's inner call (the keyword the macro author chose);
+	//     backtrace walks to the user's outer call site and
+	//     recovers the keyword the user wrote. User intent wins.
+	//
+	//   - Both agree: order doesn't matter; backtrace's value is
+	//     identical to what trace would write.
+	//
+	// The trace block below has a first-write-wins guard on its
+	// per-(target, lib) population, so once backtrace pre-populates
+	// a pair the trace processing leaves it alone — backtrace's
+	// (outer-frame) keyword survives.
+	//
+	// The one case trace handles that backtrace can't: `target_link_libraries(foo
+	// PUBLIC ${SOME_DEP_VAR})` — the dep name in the source argv
+	// is `${SOME_DEP_VAR}`, not the expanded literal, so
+	// cmakeargv's literal match against the codemodel's dep name
+	// misses. The trace's post-expansion argv handles it; backtrace
+	// leaves the entry unpopulated, trace fills the gap. (The
+	// reverse case — trace missing a keyword backtrace recovers —
+	// is what the offline-replay-no-trace path always exercises.)
+	if btScope := backtraceRecoverLinkScope(r); len(btScope) > 0 {
+		traceLinkScope = map[string]map[string]string{}
+		for tgt, libs := range btScope {
+			traceLinkScope[tgt] = map[string]string{}
+			for lib, kw := range libs {
+				traceLinkScope[tgt][lib] = kw
+			}
+		}
+	}
+
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
 		decoded := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
@@ -268,6 +365,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
+		// Phase 1 task 3 extension — HEADER_FILE_ONLY routing.
+		// Build the per-source path lookup once so the per-target
+		// source walk can reclassify .h-only sources from srcs
+		// into hdrs.
+		headerOnlySources = collectHeaderOnlySources(decoded.SourceFileProperties)
+		objectDependsBySrc = collectObjectDepends(decoded.SourceFileProperties)
+		languageOverrideBySrc = collectLanguageOverrides(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
 			platformConditionalSrcs = map[string]map[string]string{}
 			for _, pcs := range decoded.PlatformConditionalSources {
@@ -290,9 +394,38 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	cmakeSrc := r.Codemodel.Paths.Source
 	cmakeBuild := r.Codemodel.Paths.Build
+	// Workspace-root auto-detection. Projects whose CMakeLists.txt
+	// sits below the repo root (zstd's `build/cmake/CMakeLists.txt`
+	// is the canonical example) reference sources via paths that
+	// resolve to absolute locations outside cmakeSrc — e.g.
+	// `/repo/lib/common/debug.c` referenced from a CMakeLists at
+	// `/repo/build/cmake/`. Without detection, the per-source
+	// normalizer below refuses those paths as outside both
+	// cmakeSrc and cmakeBuild. With detection (.git, MODULE.bazel,
+	// WORKSPACE markers walked up from cmakeSrc), we use the
+	// workspace root as the label-relativization base so the
+	// emitted BUILD.bazel can sit at the workspace root and
+	// reference workspace-relative source paths cleanly.
+	//
+	// Common shadow-staged orchestrator paths don't include the
+	// markers, so workspaceRoot stays "" there and the existing
+	// cmakeSrc-relative behavior holds.
+	workspaceRoot := detectWorkspaceRoot(cmakeSrc)
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
-		hostSrc = cmakeSrc
+		// hostSrc anchors the per-source existence check
+		// (filepath.Join(hostSrc, src.Path)). When workspaceRoot
+		// fires, label-relative source paths are workspace-relative
+		// (lib/common/debug.c, not just debug.c), so hostSrc has
+		// to point at the workspace too — otherwise the join lands
+		// at cmakeSrc/lib/common/debug.c which won't exist.
+		// Operator-set HostSourceRoot wins (the orchestrator's
+		// shadow-stage path explicitly pins it).
+		if workspaceRoot != "" {
+			hostSrc = workspaceRoot
+		} else {
+			hostSrc = cmakeSrc
+		}
 	}
 	// hostSrcOnDisk gates the per-source existence check used for
 	// the #209 missing-source elision. Reply-dir-only replay runs
@@ -308,6 +441,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg := &ir.Package{
 		Name:       projectName(r),
 		SourceRoot: hostSrc,
+		HeaderComments: append(append(
+			findPackageHeaderComments(opts.ConfigureLog),
+			optionsHeaderComments(r.Cache)...),
+			deprecationHeaderComments(opts.ConfigureLog)...,
+		),
 	}
 
 	cc := newCodegenContext()
@@ -344,7 +482,36 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// []executeProcessOut return is parallel to
 	// configureFileOut and feeds the same per-target
 	// attribution loop in lowerTarget below.
-	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
+	// find_package(X) variable-form attribution. cmake's older
+	// idiom `target_link_libraries(foo ${ZLIB_LIBRARIES})` resolves
+	// to absolute paths the codemodel records verbatim; without
+	// attribution back to ZLIB the lower's manifest lookup misses
+	// and the dep drops silently. buildFindPackageAttrib correlates
+	// configureLog find_package-v1 events with cmakeVars's
+	// `<Pkg>_LIBRARIES` lists so the Link.CommandFragments loop
+	// can route the path → package → manifest label (when an
+	// imports manifest entry exists) or surface a
+	// cmake-codegen-find-package-fallback tag (when it doesn't).
+	findPkgAttrib := buildFindPackageAttrib(opts.ConfigureLog, opts.CMakeVars)
+
+	// Merge cmakeVars (dump-vars hook output) with configureLog-
+	// derived try_compile / try_run result variables. cmakeVars
+	// covers the user-defined namespace; configureLog covers
+	// probe-set variables that landed in cmake's cache via
+	// Check_* modules. cmakeVars wins on overlap — it's the
+	// canonical end-of-configure namespace.
+	rescueVars := opts.CMakeVars
+	if clVars := configureLogVars(opts.ConfigureLog); len(clVars) > 0 {
+		merged := make(map[string]string, len(rescueVars)+len(clVars))
+		for k, v := range clVars {
+			merged[k] = v
+		}
+		for k, v := range rescueVars {
+			merged[k] = v
+		}
+		rescueVars = merged
+	}
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
 	if len(executeProcessRefusals) > 0 {
 		if !opts.UnsupportedExecuteProcessFallback {
 			return nil, formatExecuteProcessFailure(executeProcessRefusals)
@@ -396,7 +563,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
 		var err error
-		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild), opts.Imports, cc)
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild, opts.GenexProbes), opts.Imports, cc)
 		if err != nil {
 			return nil, err
 		}
@@ -425,7 +592,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name])
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], findPkgAttrib, workspaceRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -446,6 +613,58 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// HEADER_FILE_ONLY reclassification — walk every target's
+	// srcs and move entries the trace's
+	// set_source_files_properties calls marked
+	// HEADER_FILE_ONLY=TRUE into hdrs. Phase 1 task 3 extension
+	// (per docs/design/generator-parity-gaps.md). Post-emit pass
+	// keeps lowerTarget's signature stable and applies uniformly
+	// to all the rule families.
+	reclassifyHeaderOnlySources(pkg, headerOnlySources)
+	// Probe-genex per-target Properties → Bazel attributes:
+	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
+	// POSITION_INDEPENDENT_CODE to features=["pic"] /
+	// features=["-pic"], visibility presets to copts. Off when no
+	// probe ran (opts.GenexProbes empty) so back-compat preserved
+	// for callers that don't pass --probe-genex.
+	applyProbeGenexProperties(pkg, opts.GenexProbes)
+	// OBJECT_DEPENDS post-pass adds declared header dependencies
+	// to the target's hdrs so incremental rebuilds trip on
+	// changes. Uses the same per-pkg walk shape as the
+	// HEADER_FILE_ONLY pass.
+	addObjectDependsHeaders(pkg, objectDependsBySrc)
+	// LANGUAGE override post-pass tags targets whose sources
+	// were forced to a non-default compile language via
+	// set_source_files_properties(... LANGUAGE ...). Bazel
+	// cc_library can't directly override per-source language;
+	// tag signals the gap.
+	tagLanguageOverrides(pkg, languageOverrideBySrc)
+	// install(FILES) → filegroup() lowering (Phase 1 task 2 of the
+	// generator-parity uplift). Appended last so the file-head
+	// targets stay grouped by family: cc rules first, generated
+	// content next, then install-side filegroups.
+	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
+	// Phase 4 standalone custom-command emission. Opt-in via
+	// Options.EmitStandaloneCustomCommands; the dedup against
+	// existing genrules keeps the recoverGenrule path's output
+	// intact even when this fires.
+	if opts.EmitStandaloneCustomCommands {
+		pkg.Targets = append(pkg.Targets,
+			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir)...)
+	}
+	// Phase 5 multi-config delta fold. When the reply carries
+	// per-config target data (BuildTypes-driven multi-config),
+	// project the cross-config Partition into PerPlatform-shaped
+	// select() arms on the existing targets. Sanitizer-shaped
+	// configs are filtered out and route to --features in a
+	// future slice.
+	if len(r.TargetsByConfig) > 0 {
+		var configs []string
+		for _, cfg := range r.Codemodel.Configurations {
+			configs = append(configs, cfg.Name)
+		}
+		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs)
+	}
 	return pkg, nil
 }
 
@@ -456,7 +675,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, findPkgAttrib *findPackageAttrib, workspaceRoot string) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -465,6 +684,26 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	}
 
 	irt := &ir.Target{Name: t.Name}
+
+	// Provenance: project the per-target Backtrace index into a
+	// {File, Line, Command} triple from the BacktraceGraph the
+	// target's JSON file carries. Phase 1 task 1 of the
+	// generator-parity uplift (ROADMAP.md). Emit-side gating
+	// renders this as a leading comment when EmitProvenance is
+	// on.
+	if t.Backtrace > 0 && t.Backtrace < len(t.BacktraceGraph.Nodes) {
+		node := t.BacktraceGraph.Nodes[t.Backtrace]
+		var file, cmd string
+		if node.File >= 0 && node.File < len(t.BacktraceGraph.Files) {
+			file = t.BacktraceGraph.Files[node.File]
+		}
+		if node.Command >= 0 && node.Command < len(t.BacktraceGraph.Commands) {
+			cmd = t.BacktraceGraph.Commands[node.Command]
+		}
+		if file != "" {
+			irt.Provenance = ir.Provenance{File: file, Line: node.Line, Command: cmd}
+		}
+	}
 
 	switch t.Type {
 	case "STATIC_LIBRARY":
@@ -603,20 +842,34 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// "target names may not contain '.' as a path segment"
 		// downstream.
 		srcPath := src.Path
+		// Pick the label-relativization base. workspaceRoot is
+		// auto-detected from cmakeSrc walking up for .git /
+		// MODULE.bazel / WORKSPACE markers (see
+		// detectWorkspaceRoot); when found and a strict ancestor
+		// of cmakeSrc, it anchors labels to the wider workspace
+		// so projects with a `build/cmake/CMakeLists.txt` layout
+		// (zstd, lz4, brotli) can reference sources scattered
+		// across sibling subtrees like `lib/common/debug.c`. When
+		// no marker fires (the shadow-stage path), labelRoot
+		// falls back to cmakeSrc and the existing behavior holds.
+		labelRoot := cmakeSrc
+		if workspaceRoot != "" {
+			labelRoot = workspaceRoot
+		}
 		// In-tree absolute path: cmake recorded an absolute
-		// path that happens to live under cmakeSrc. Normalize
-		// to the documented project-relative form so the
-		// emitted label is valid. cmakeSrc is "" on
+		// path that happens to live under labelRoot. Normalize
+		// to the documented label-relative form so the
+		// emitted label is valid. labelRoot is "" on
 		// reply-dir-only replay runs; skip in that case
 		// because the relativeIfInside check can't run.
-		if cmakeSrc != "" && filepath.IsAbs(srcPath) {
-			if rel, inside := relativeIfInside(cmakeSrc, srcPath); inside {
+		if labelRoot != "" && filepath.IsAbs(srcPath) {
+			if rel, inside := relativeIfInside(labelRoot, srcPath); inside {
 				srcPath = rel
 			}
 		}
 		// Out-of-tree absolute path: at this point we've
 		// already filtered absolute-under-cmakeBuild (elided
-		// above) and absolute-under-cmakeSrc (normalized just
+		// above) and absolute-under-labelRoot (normalized just
 		// above). What's left is absolute paths under neither
 		// root — e.g. `add_library(foo /vendored/elsewhere/bar.c)`.
 		// Refuse with a typed Tier-1 error so the operator
@@ -625,7 +878,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		if filepath.IsAbs(srcPath) {
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
-				t.Name, srcPath, cmakeSrc, cmakeBuild)
+				t.Name, srcPath, labelRoot, cmakeBuild)
 		}
 		// Strip a leading "./". cmake's parser usually
 		// normalizes these away but pathological inputs can
@@ -711,12 +964,65 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// first compile group's flags/includes/defines.
 		cg := t.CompileGroups[0]
 		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		// LanguageStandard: cmake records the resolved
+		// CMAKE_<LANG>_STANDARD value (e.g. "17" for cxx_std_17)
+		// per CompileGroup. Most projects already see the standard
+		// materialize as a `-std=…` fragment in
+		// CompileCommandFragments (cmake's generator inlines it
+		// there), so the prepend only fires when the codemodel
+		// records the standard but the fragment didn't pick it
+		// up — covers projects using target_compile_features
+		// without an explicit -std fragment. Idempotent guard:
+		// skip when copts already names a -std=… flag.
+		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		// Apple framework search paths: CompileGroup.Frameworks
+		// records -F directives cmake emits for `#include
+		// <Foo/Bar.h>` framework header lookup. Empty on
+		// non-Apple targets. Append as -F<path> copts; gcc /
+		// clang accept this form for compile-time framework
+		// search.
+		for _, fw := range cg.Frameworks {
+			if fw.Path == "" {
+				continue
+			}
+			copts = append(copts, "-F"+fw.Path)
+		}
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
 			defs = append(defs, d.Define)
 		}
 		irt.Defines = defs
+
+		// Sysroot: tag the target with the cmake-recorded sysroot
+		// path. Operators see cross-compile context via grep;
+		// per-target sysroot lift to copts/linkopts would conflict
+		// with the operator's cc_toolchain (sysroot canonically
+		// lives there).
+		if cg.Sysroot != nil && cg.Sysroot.Path != "" {
+			tag := "cmake-codegen-sysroot=" + cg.Sysroot.Path
+			if !stringSliceContains(irt.Tags, tag) {
+				irt.Tags = append(irt.Tags, tag)
+			}
+		}
+
+		// Phase 1 task 3 extension: tag targets that declare
+		// target_precompile_headers. The codemodel records the
+		// PCH set in CompileGroup.PrecompileHeaders; the PCH
+		// headers themselves are typically already in t.Sources
+		// (and route through the standard srcs/hdrs walk). The
+		// tag surfaces the cmake-side PCH intent so operators
+		// can grep `cmake-codegen-pch` and route via a
+		// cc_toolchain pch feature (Bazel cc_library has no
+		// native PCH attribute).
+		for _, cgPCH := range t.CompileGroups {
+			if len(cgPCH.PrecompileHeaders) > 0 {
+				if !stringSliceContains(irt.Tags, "cmake-codegen-pch") {
+					irt.Tags = append(irt.Tags, "cmake-codegen-pch")
+				}
+				break
+			}
+		}
 
 		// Dedup includes: cmake's codemodel emits one entry per
 		// PUBLIC include propagation, so a target whose own
@@ -982,6 +1288,17 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			cmakeName := stripIDHash(dep.Id)
 			if export := imports.LookupCMakeTarget(cmakeName); export != nil {
 				label = export.BazelLabel
+				// find_package attribution: when the cmake
+				// target name is in the `<Package>::<Component>`
+				// shape, tag the consuming target with the
+				// package name so operators can grep for
+				// cmake-find-package=Boost etc.
+				if pkg := packagePrefix(cmakeName); pkg != "" {
+					tag := "cmake-find-package=" + pkg
+					if !stringSliceContains(irt.Tags, tag) {
+						irt.Tags = append(irt.Tags, tag)
+					}
+				}
 			} else {
 				return nil, failure.New(failure.UnresolvedLinkDep,
 					"target %q depends on %q which is neither in-codebase nor in the imports manifest",
@@ -992,6 +1309,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			continue
 		}
 		seenDep[label] = true
+		// add_dependencies-derived edges route to data (build-
+		// order only, no headers / link) rather than deps.
+		// Detected via the codemodel's TargetDependency backtrace:
+		// when the recorded command is "add_dependencies", the
+		// edge has no compile/link impact. Conservative — only
+		// fires when the codemodel records the call directly;
+		// macro-wrapped add_dependencies stay on Deps until the
+		// outermost-user-frame walk surfaces them (future slice).
+		if isAddDependenciesEdge(dep, t.BacktraceGraph) {
+			irt.Data = append(irt.Data, label)
+			continue
+		}
 		if allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName) {
 			irt.ImplementationDeps = append(irt.ImplementationDeps, label)
 		} else {
@@ -1009,6 +1338,19 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// routed to either bucket by the t.Dependencies loop above
 	// doesn't get re-appended to Deps here (which would duplicate
 	// it across both buckets and produce an invalid BUILD).
+	// INTERPROCEDURAL_OPTIMIZATION (cmake's per-target LTO toggle)
+	// surfaces in the codemodel as TargetArchive.LTO (STATIC_LIBRARY)
+	// or TargetLink.LTO (EXECUTABLE / SHARED_LIBRARY / MODULE_LIBRARY).
+	// Map to Bazel's features=["lto"] — the operator's cc_toolchain
+	// owns the actual -flto flag set; see Phase 5's
+	// docs/design/sanitizer-as-feature.md for the feature-definition
+	// convention (lto is in SANITIZER_FEATURES alongside the
+	// sanitizers).
+	if (t.Archive != nil && t.Archive.LTO) || (t.Link != nil && t.Link.LTO) {
+		if !stringSliceContains(irt.Features, "lto") {
+			irt.Features = append(irt.Features, "lto")
+		}
+	}
 	if t.Link != nil {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {
@@ -1018,6 +1360,36 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			seen[d] = true
 		}
 		for _, frag := range t.Link.CommandFragments {
+			// Non-library fragments (flags / libraryPath /
+			// frameworkPath / frameworks) route directly to
+			// linkopts. cmake's codemodel exposes the per-fragment
+			// role so we can attribute correctly; the existing
+			// "libraries"-only path below handles deps wiring.
+			switch frag.Role {
+			case "flags":
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, v)
+				}
+				continue
+			case "libraryPath":
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, "-L"+v)
+				}
+				continue
+			case "frameworkPath":
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, "-F"+v)
+				}
+				continue
+			case "frameworks":
+				// cmake records the framework NAME; gcc/clang
+				// expect `-framework Foo`. Emit as two separate
+				// args via the canonical two-token form.
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, "-framework", v)
+				}
+				continue
+			}
 			if frag.Role != "libraries" {
 				continue
 			}
@@ -1044,6 +1416,41 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					} else {
 						irt.Deps = append(irt.Deps, export.BazelLabel)
 					}
+				}
+				continue
+			}
+			// find_package variable-form attribution. The
+			// path didn't match a manifest entry directly;
+			// see whether configureLog + cmakeVars attribute
+			// it to a `find_package(X)` call. When attributed,
+			// try the manifest under the package's namespaced
+			// primary target (`<Pkg>::<Pkg>`) — that's the
+			// modern cmake export shape and is what the
+			// manifest typically registers. Falls back to a
+			// tag-only emission so operators see the missing
+			// dep even when the manifest has no matching
+			// entry.
+			if pkg := findPkgAttrib.Lookup(path); pkg != "" {
+				if export := imports.LookupCMakeTarget(pkg + "::" + pkg); export != nil {
+					if !seen[export.BazelLabel] {
+						seen[export.BazelLabel] = true
+						if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+							irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+						} else {
+							irt.Deps = append(irt.Deps, export.BazelLabel)
+						}
+					}
+					continue
+				}
+				// No manifest hit; emit a fallback tag so
+				// operators see which package's link is
+				// unresolved. One tag per (pkg, path)
+				// pair — same package can show up across
+				// multiple paths (release + debug, main +
+				// dep libs).
+				tag := "cmake-codegen-find-package-fallback=" + pkg + "=" + filepath.Base(path)
+				if !stringSliceContains(irt.Tags, tag) {
+					irt.Tags = append(irt.Tags, tag)
 				}
 			}
 		}
@@ -1156,10 +1563,12 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// visible target name, deps-only) plus one private
 	// sub-library per language with that language's srcs +
 	// flags. Single-language targets stay one cc_library; this
-	// branch only fires for ≥ 2 distinct compile-group
-	// languages.
+	// branch fires for either multi-language CGs OR multi-CG-
+	// per-language with differing Defines / CompileCommandFragments
+	// (Phase 1 task 3: per-source-defines case where cmake's
+	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
-	if shouldSplitMultiLanguage(t) {
+	if shouldSplitCompileGroups(t) {
 		if err := splitMultiLanguage(t, irt, cc); err != nil {
 			return nil, err
 		}
@@ -1233,16 +1642,25 @@ func partitionPlatformConditionalSrcs(t *ir.Target, srcToSelectKey map[string]st
 	}
 }
 
-// shouldSplitMultiLanguage reports whether the target carries
-// sources from ≥ 2 distinct compile-group languages and is a
-// rule kind where the per-language flag delta could surface as
-// a build-time correctness issue. Header-only INTERFACE
-// libraries don't compile sources here; UTILITY targets we
-// already filtered out before reaching this point.
-func shouldSplitMultiLanguage(t *fileapi.Target) bool {
+// shouldSplitCompileGroups reports whether the target's sources
+// fall into ≥ 2 CompileGroups that need separate per-CG attribution
+// — either multi-language (the historical trigger) or
+// same-language with differing Defines / CompileCommandFragments
+// (the per-source-defines case Phase 1 task 3 covers: cmake's
+// codemodel partitions sources via CompileGroupIndex when
+// set_source_files_properties or target_sources(PRIVATE FILE_SET)
+// gives sources differing compile contexts).
+//
+// Same-language CGs with identical Defines + CompileCommandFragments
+// don't trigger the split — they're a degenerate codemodel shape
+// (cmake occasionally emits multiple identical CGs as a
+// generator-side artifact) and merging them into one set keeps the
+// output compact.
+func shouldSplitCompileGroups(t *fileapi.Target) bool {
 	if len(t.CompileGroups) < 2 {
 		return false
 	}
+	// Multi-language: existing case.
 	langs := map[string]bool{}
 	for _, cg := range t.CompileGroups {
 		if cg.Language == "" {
@@ -1250,7 +1668,73 @@ func shouldSplitMultiLanguage(t *fileapi.Target) bool {
 		}
 		langs[cg.Language] = true
 	}
-	return len(langs) >= 2
+	if len(langs) >= 2 {
+		return true
+	}
+	// Single-language, multi-CG. Split when any pair differs in
+	// the attribution-affecting attrs.
+	type sig struct{ defs, cmdFrags string }
+	seen := map[string]sig{}
+	for _, cg := range t.CompileGroups {
+		if cg.Language == "" {
+			continue
+		}
+		s := sig{
+			defs:     joinDefines(cg.Defines),
+			cmdFrags: joinFragments(cg.CompileCommandFragments),
+		}
+		if prev, ok := seen[cg.Language]; ok {
+			if prev != s {
+				return true
+			}
+		} else {
+			seen[cg.Language] = s
+		}
+	}
+	return false
+}
+
+// shouldSplitMultiLanguage is the legacy name for the gate;
+// preserved as a thin alias for any external test consumer that
+// still references it.
+func shouldSplitMultiLanguage(t *fileapi.Target) bool {
+	return shouldSplitCompileGroups(t)
+}
+
+// joinDefines / joinFragments produce a stable string signature
+// for a CompileGroup's Defines / CompileCommandFragments lists.
+// Used by the gate to compare two same-language CGs for
+// attribution-affecting differences.
+func joinDefines(defs []fileapi.CompileDefine) string {
+	parts := make([]string, len(defs))
+	for i, d := range defs {
+		parts[i] = d.Define
+	}
+	return strings.Join(parts, "\x00")
+}
+
+func joinFragments(frags []fileapi.CommandFragment) string {
+	parts := make([]string, len(frags))
+	for i, f := range frags {
+		parts[i] = f.Role + "\x01" + f.Fragment
+	}
+	return strings.Join(parts, "\x00")
+}
+
+// intSuffix is itoa for the splitMultiLanguage sub-name
+// disambiguator. The expected range is small (handful of CGs
+// per language); avoiding strconv keeps the per-target loop's
+// allocation profile predictable.
+func intSuffix(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
 }
 
 // splitMultiLanguage rewrites irt as a deps-only wrapper and
@@ -1278,6 +1762,20 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 	// to reason about).
 	groups := append([]fileapi.CompileGroup(nil), t.CompileGroups...)
 	sort.Slice(groups, func(i, j int) bool { return groups[i].Language < groups[j].Language })
+
+	// Count CompileGroups per language so the naming loop knows
+	// whether to disambiguate (multiple CGs sharing a language
+	// — the per-source-defines case Phase 1 task 3 surfaces).
+	// Single-CG-per-language keeps the legacy `<target>_C` /
+	// `<target>_CXX` naming for byte-stable goldens; multi-CG-
+	// per-language adds a stable index suffix.
+	langCount := map[string]int{}
+	for _, cg := range groups {
+		if cg.Language != "" {
+			langCount[cg.Language]++
+		}
+	}
+	langSeen := map[string]int{} // per-language emit counter
 
 	sharedHdrs := append([]string(nil), irt.Hdrs...)
 	sharedIncludes := append([]string(nil), irt.Includes...)
@@ -1315,12 +1813,29 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 			continue
 		}
 		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		// Pick up per-CG LanguageStandard so sub-libraries
+		// inherit the cmake-recorded -std=c++17 / -std=c11
+		// (idempotent if the CG's CompileCommandFragments
+		// already inlined a -std flag).
+		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
 		for _, d := range cg.Defines {
 			defs = append(defs, d.Define)
 		}
 
+		subName := irt.Name + "_" + langSuffix(cg.Language)
+		if langCount[cg.Language] > 1 {
+			// Multi-CG-per-language: append a stable index
+			// suffix per emit. The codemodel's CompileGroup order
+			// is stable; sort by Language above keeps the
+			// per-language sub-order stable too. The index reflects
+			// emit order within the language, not the codemodel's
+			// raw index — easier for operators to grep.
+			subName = subName + "_" + intSuffix(langSeen[cg.Language])
+		}
+		langSeen[cg.Language]++
+
 		sub := ir.Target{
-			Name:       irt.Name + "_" + langSuffix(cg.Language),
+			Name:       subName,
 			Kind:       irt.Kind,
 			Srcs:       subSrcs,
 			Hdrs:       sharedHdrs,
@@ -1369,6 +1884,712 @@ func langSuffix(lang string) string {
 		return "asm"
 	}
 	return strings.ToLower(lang)
+}
+
+// optionsHeaderComments projects cmake option()-style cache entries
+// into a documentation block at the BUILD head. Detection: cache
+// entry Type=="BOOL" with the property HELPSTRING that came from
+// an option() declaration (cmake records the helpstring as the
+// option's description).
+//
+// Output shape:
+//
+//	# cmake options resolved at convert time (values baked in;
+//	# re-convert to change):
+//	#   - FOO_ENABLE_TESTS = ON (Enable tests)
+//	#   - FOO_USE_GPU = OFF (Build with GPU acceleration)
+//
+// Operators see the toggle inventory and remember to re-convert
+// (or rewrite the BUILD) if they want a different value. cmake's
+// option() is configure-time-resolved; the Bazel equivalent
+// (bool_flag / config_setting select()s) requires re-emitting,
+// which is out of scope for the converter's one-shot lift.
+//
+// Deterministic ordering: alphabetical by option name.
+func optionsHeaderComments(cache fileapi.Cache) []string {
+	type entry struct{ name, value, doc string }
+	var entries []entry
+	for _, e := range cache.Entries {
+		if e.Type != "BOOL" {
+			continue
+		}
+		// Filter out cmake-internal BOOL entries; operator-defined
+		// option() declarations carry HELPSTRING. cmake builtins
+		// (CMAKE_VERBOSE_MAKEFILE etc.) also have HELPSTRING but
+		// start with `CMAKE_` — skip those to keep the list to
+		// project options.
+		if strings.HasPrefix(e.Name, "CMAKE_") {
+			continue
+		}
+		var doc string
+		for _, p := range e.Properties {
+			if p.Name == "HELPSTRING" {
+				doc = p.Value
+				break
+			}
+		}
+		entries = append(entries, entry{name: e.Name, value: e.Value, doc: doc})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	out := []string{
+		"",
+		"cmake options resolved at convert time (values baked in; re-convert to change):",
+	}
+	for _, e := range entries {
+		line := "  - " + e.name + " = " + e.value
+		if e.doc != "" {
+			line += " (" + e.doc + ")"
+		}
+		out = append(out, line)
+	}
+	return out
+}
+
+// packagePrefix returns the cmake package name when cmakeName is
+// in the `<Package>::<Component>` find_package convention shape
+// (e.g. "Boost::system" → "Boost"). Returns "" for plain target
+// names that don't follow the namespaced shape — those are
+// either in-codebase targets or unscoped IMPORTED libraries
+// where we can't reliably attribute the package.
+func packagePrefix(cmakeName string) string {
+	if i := strings.Index(cmakeName, "::"); i > 0 {
+		return cmakeName[:i]
+	}
+	return ""
+}
+
+// deprecationHeaderComments projects cmake message(DEPRECATION ...)
+// events into a header-comment block. Operators see the cmake-side
+// deprecation surface at convert time without scrolling through
+// configure output.
+//
+// Limited to DEPRECATION mode (skips STATUS / WARNING / FATAL_ERROR
+// — those land in cmake's stderr). Deduplicated by message body so
+// the same deprecation called from N sites only surfaces once.
+func deprecationHeaderComments(events []fileapi.Event) []string {
+	if len(events) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var msgs []string
+	for _, e := range events {
+		if e.Kind != "message-v1" {
+			continue
+		}
+		if !strings.EqualFold(e.Mode, "DEPRECATION") {
+			continue
+		}
+		body := strings.TrimSpace(e.Message)
+		if body == "" || seen[body] {
+			continue
+		}
+		seen[body] = true
+		msgs = append(msgs, body)
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	sort.Strings(msgs)
+	out := []string{"", "cmake deprecation warnings:"}
+	for _, m := range msgs {
+		// Wrap multi-line messages with explicit indent.
+		for i, line := range strings.Split(m, "\n") {
+			if i == 0 {
+				out = append(out, "  ! "+line)
+			} else {
+				out = append(out, "    "+line)
+			}
+		}
+	}
+	return out
+}
+
+// findPackageHeaderComments projects configureLog find_package-v1
+// events into a list of attribution lines the emitter renders as
+// `# ` comments at the file head. Operators see the external-dep
+// inventory at a glance without re-running the converter or
+// re-reading the cmake source.
+//
+// Output shape: one comment per resolved package with package +
+// version + config-file path. Unresolved find_package events
+// (Found.IsFound==false) get a less-detailed line — they're
+// usually projects building against a system-fallback path.
+// Stable order (alphabetical by package name).
+func findPackageHeaderComments(events []fileapi.Event) []string {
+	if len(events) == 0 {
+		return nil
+	}
+	type entry struct {
+		pkg     string
+		version string
+		cfg     string
+		found   bool
+	}
+	seen := map[string]bool{}
+	var entries []entry
+	for _, e := range events {
+		if e.Kind != "find_package-v1" {
+			continue
+		}
+		var pkg string
+		if e.Found != nil && e.Found.Package != "" {
+			pkg = e.Found.Package
+		}
+		if pkg == "" {
+			continue
+		}
+		if seen[pkg] {
+			continue
+		}
+		seen[pkg] = true
+		ent := entry{pkg: pkg}
+		if e.Found != nil {
+			ent.found = e.Found.IsFound
+			ent.version = e.Found.Version
+			ent.cfg = e.Found.ConfigFile
+		}
+		entries = append(entries, ent)
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].pkg < entries[j].pkg })
+	var out []string
+	out = append(out, "find_package resolutions (from cmake's configureLog):")
+	for _, e := range entries {
+		if e.found {
+			line := "  - " + e.pkg
+			if e.version != "" {
+				line += " " + e.version
+			}
+			if e.cfg != "" {
+				line += " (via " + e.cfg + ")"
+			}
+			out = append(out, line)
+		} else {
+			out = append(out, "  - "+e.pkg+" (NOT FOUND)")
+		}
+	}
+	return out
+}
+
+// applyProbeGenexProperties walks pkg.Targets and applies
+// per-target properties the probe-genex hook captured beyond the
+// INTERFACE_* aggregates: BUILD_RPATH / INSTALL_RPATH → linkopts,
+// POSITION_INDEPENDENT_CODE → features=["pic"] / ["-pic"],
+// {CXX,C}_VISIBILITY_PRESET → copts -fvisibility=…
+//
+// No-op when probes is empty (probe-genex hook didn't run).
+// Matching is by target name; targets not in the probe set are
+// left unchanged.
+//
+// Phase 3 / generator-parity-gaps follow-up.
+func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
+	if len(probes) == 0 || pkg == nil {
+		return
+	}
+	byName := map[string]cmakerun.GenexProbe{}
+	for _, p := range probes {
+		byName[p.Name] = p
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		p, ok := byName[tgt.Name]
+		if !ok {
+			continue
+		}
+		// RPATH lifts to linkopts. BUILD_RPATH covers the
+		// build/test-time consumer (relevant under Bazel);
+		// INSTALL_RPATH covers cmake-install consumers (only
+		// affects downstream cmake users). Bazel build typically
+		// wants the BUILD_RPATH semantics.
+		if r := strings.TrimSpace(p.Properties["BUILD_RPATH"]); r != "" {
+			for _, entry := range strings.Split(r, ";") {
+				if entry == "" {
+					continue
+				}
+				tgt.LinkOpts = append(tgt.LinkOpts, "-Wl,-rpath,"+entry)
+			}
+		}
+		// POSITION_INDEPENDENT_CODE = TRUE → features=["pic"]
+		// (or "-pic" when explicitly OFF).
+		if v := strings.TrimSpace(p.Properties["POSITION_INDEPENDENT_CODE"]); v != "" {
+			if cmakeTruthy(v) {
+				if !stringSliceContains(tgt.Features, "pic") {
+					tgt.Features = append(tgt.Features, "pic")
+				}
+			} else if !stringSliceContains(tgt.Features, "-pic") {
+				tgt.Features = append(tgt.Features, "-pic")
+			}
+		}
+		// Visibility presets — gcc/clang -fvisibility=<value>.
+		// CXX and C variants typically agree; emit each
+		// separately if cmake records different values.
+		for _, key := range []string{"CXX_VISIBILITY_PRESET", "C_VISIBILITY_PRESET"} {
+			if v := strings.TrimSpace(p.Properties[key]); v != "" {
+				flag := "-fvisibility=" + v
+				if !stringSliceContains(tgt.Copts, flag) {
+					tgt.Copts = append(tgt.Copts, flag)
+				}
+			}
+		}
+		// VISIBILITY_INLINES_HIDDEN: common modern-cmake idiom
+		// (set in projects that follow the GenerateExportHeader
+		// recipe). Maps to -fvisibility-inlines-hidden copt.
+		if cmakeTruthy(p.Properties["VISIBILITY_INLINES_HIDDEN"]) {
+			flag := "-fvisibility-inlines-hidden"
+			if !stringSliceContains(tgt.Copts, flag) {
+				tgt.Copts = append(tgt.Copts, flag)
+			}
+		}
+		// ENABLE_EXPORTS (executables) tags so operators can
+		// route the export-symbols-from-executable shape via
+		// the operator's cc_toolchain feature. Bazel cc_binary
+		// has no native attribute for this.
+		if cmakeTruthy(p.Properties["ENABLE_EXPORTS"]) {
+			tag := "cmake-codegen-enable-exports"
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		// SOVERSION / VERSION (shared library naming). Bazel
+		// cc_library has no version-suffix attribute; surface
+		// as tags so operators see the cmake-side intent.
+		if v := strings.TrimSpace(p.Properties["SOVERSION"]); v != "" {
+			tag := "cmake-codegen-soversion=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		if v := strings.TrimSpace(p.Properties["VERSION"]); v != "" {
+			tag := "cmake-codegen-version=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		// Qt's auto-source-generation toggles (AUTOMOC / AUTOUIC /
+		// AUTORCC). cmake's generator runs moc / uic / rcc as
+		// part of `cmake --build`; outside cmake (i.e. under
+		// Bazel) those don't fire, so any target with these
+		// enabled MISSES the Qt-generated sources at compile
+		// time. Surface as tags so operators see the gap and
+		// route via a kind:bazel override that wraps moc / uic /
+		// rcc as host-tool genrules. Bazel cc_library has no
+		// native AUTOMOC equivalent.
+		for _, qt := range []string{"AUTOMOC", "AUTOUIC", "AUTORCC"} {
+			if cmakeTruthy(p.Properties[qt]) {
+				tag := "cmake-codegen-qt-" + strings.ToLower(qt)
+				if !stringSliceContains(tgt.Tags, tag) {
+					tgt.Tags = append(tgt.Tags, tag)
+				}
+			}
+		}
+		// EXCLUDE_FROM_ALL — cmake skips this target when
+		// building the default ALL target. Bazel's closest
+		// match is `tags = ["manual"]`, which excludes the
+		// target from `bazel build //...` wildcard expansion.
+		if cmakeTruthy(p.Properties["EXCLUDE_FROM_ALL"]) {
+			if !stringSliceContains(tgt.Tags, "manual") {
+				tgt.Tags = append(tgt.Tags, "manual")
+			}
+			if !stringSliceContains(tgt.Tags, "cmake-codegen-exclude-from-all") {
+				tgt.Tags = append(tgt.Tags, "cmake-codegen-exclude-from-all")
+			}
+		}
+		// MSVC_RUNTIME_LIBRARY — Windows-only runtime selection
+		// (MultiThreaded vs MultiThreadedDLL, with/without
+		// Debug). Bazel cc_library has no direct attribute;
+		// the operator's cc_toolchain feature owns the actual
+		// /MT vs /MD flag. Surface as tag.
+		if v := strings.TrimSpace(p.Properties["MSVC_RUNTIME_LIBRARY"]); v != "" {
+			tag := "cmake-codegen-msvc-runtime=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+		// JOB_POOL_COMPILE / JOB_POOL_LINK — ninja-specific
+		// job-pool routing for compile/link actions. Bazel's
+		// closest analog is `exec_properties = {"pool": "..."}`
+		// under remote execution. Surface as tag so operators
+		// see the cmake-side intent.
+		for _, jp := range []string{"JOB_POOL_COMPILE", "JOB_POOL_LINK"} {
+			if v := strings.TrimSpace(p.Properties[jp]); v != "" {
+				tag := "cmake-codegen-" + strings.ReplaceAll(strings.ToLower(jp), "_", "-") + "=" + v
+				if !stringSliceContains(tgt.Tags, tag) {
+					tgt.Tags = append(tgt.Tags, tag)
+				}
+			}
+		}
+		// CXX_EXTENSIONS / C_EXTENSIONS — toggle gnu extensions on
+		// the language standard flag. cmake's default is ON
+		// (gnu++NN / gnuNN); our prepend hardcodes the strict
+		// form (c++NN / cNN). Rewrite the prepended copts to
+		// match the cmake-recorded extension state.
+		//
+		// CXX_EXTENSIONS empty (unset) means cmake defaults to
+		// ON — but since we can't tell from the probe alone
+		// whether the property was unset vs explicitly empty,
+		// only rewrite when the property is explicitly truthy.
+		// Operators relying on the gnu default can either
+		// `set(CMAKE_CXX_EXTENSIONS ON)` (no-op but makes intent
+		// explicit) or hand-edit the resulting BUILD copts.
+		rewriteStdForExtensions(tgt, "CXX_EXTENSIONS", p.Properties["CXX_EXTENSIONS"], "c++", "gnu++")
+		rewriteStdForExtensions(tgt, "C_EXTENSIONS", p.Properties["C_EXTENSIONS"], "c", "gnu")
+	}
+}
+
+// rewriteStdForExtensions walks tgt.Copts looking for our
+// prepended language-standard flag (e.g. -std=c++17 or -std=c11)
+// and rewrites it to the gnu-extension form (-std=gnu++17 /
+// -std=gnu11) when the cmake-recorded LANGUAGE_EXTENSIONS
+// property is truthy. When the property is explicitly OFF /
+// FALSE / 0, no rewrite — strict form already matches cmake.
+//
+// strictPrefix is the bare-standard prefix (e.g. "c++", "c");
+// gnuPrefix is the extensions form (e.g. "gnu++", "gnu"). The
+// rewrite preserves the version suffix verbatim.
+//
+// Safety: only rewrites the exact `-std=<strictPrefix>NN` shape;
+// leaves unrelated copts alone. Idempotent (rewriting -std=gnu++17
+// to gnu++17 is a no-op).
+func rewriteStdForExtensions(tgt *ir.Target, propName, propVal, strictPrefix, gnuPrefix string) {
+	if !cmakeTruthy(propVal) {
+		return
+	}
+	prefix := "-std=" + strictPrefix
+	for i, c := range tgt.Copts {
+		if !strings.HasPrefix(c, prefix) {
+			continue
+		}
+		version := strings.TrimPrefix(c, prefix)
+		if version == "" {
+			continue
+		}
+		// Guard against `c` prefix matching `c++` flags: the
+		// trimmed remainder must start with a digit (the
+		// standard version number), not another letter.
+		if version[0] < '0' || version[0] > '9' {
+			continue
+		}
+		tgt.Copts[i] = "-std=" + gnuPrefix + version
+	}
+}
+
+// reclassifyHeaderOnlySources walks every target in pkg.Targets
+// and moves srcs entries the headerOnlySources set marks into
+// hdrs. Iterates pkg.Targets by index so the mutation is in
+// place; preserves the rest of the slice byte-for-byte when no
+// reclassification happens. No-op when headerOnlySources is
+// empty.
+//
+// Idempotent on repeat calls: an entry already in hdrs (via the
+// codemodel's hdrs walk) gets deduped silently.
+func reclassifyHeaderOnlySources(pkg *ir.Package, headerOnlySources map[string]bool) {
+	if len(headerOnlySources) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		var keptSrcs []string
+		for _, src := range tgt.Srcs {
+			if headerOnlySources[src] {
+				// Skip duplicate add: matches the codemodel hdrs
+				// walk's first-write-wins.
+				if !stringSliceContains(tgt.Hdrs, src) {
+					tgt.Hdrs = append(tgt.Hdrs, src)
+				}
+				continue
+			}
+			keptSrcs = append(keptSrcs, src)
+		}
+		tgt.Srcs = keptSrcs
+	}
+}
+
+// collectObjectDepends walks the decoded
+// set_source_files_properties calls and returns a map from
+// source path → list of header dependency paths declared via
+// the OBJECT_DEPENDS property. cmake's documented contract for
+// OBJECT_DEPENDS is "additional inputs that should trigger a
+// rebuild" — the Bazel-idiomatic mapping is adding the entries
+// to the consuming target's hdrs.
+//
+// Multiple OBJECT_DEPENDS declarations for the same source merge
+// (additive); duplicate header entries get deduped at the
+// reclassify-pass.
+//
+// Returns nil when no OBJECT_DEPENDS surfaces.
+func collectObjectDepends(calls []shadow.SourceFilePropertiesCall) map[string][]string {
+	var out map[string][]string
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "OBJECT_DEPENDS") {
+				continue
+			}
+			if prop.Value == "" {
+				continue
+			}
+			// cmake list semantics: semicolon separator.
+			headers := strings.Split(prop.Value, ";")
+			for _, f := range call.Files {
+				if out == nil {
+					out = map[string][]string{}
+				}
+				for _, h := range headers {
+					if h == "" {
+						continue
+					}
+					out[f] = append(out[f], h)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// addObjectDependsHeaders walks every target in pkg.Targets and
+// appends each source's OBJECT_DEPENDS-declared headers to the
+// target's hdrs. Idempotent on repeat headers (skips entries
+// already present in hdrs); preserves the rest of the target
+// unchanged.
+//
+// Runs after the HEADER_FILE_ONLY reclassify so any source that
+// was both HEADER_FILE_ONLY AND had OBJECT_DEPENDS-style header
+// deps still surfaces its declared deps in hdrs.
+func addObjectDependsHeaders(pkg *ir.Package, byPath map[string][]string) {
+	if len(byPath) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		// Walk both srcs and hdrs to find sources that declare
+		// OBJECT_DEPENDS — the headers might be on a HEADER_FILE_ONLY
+		// entry that the reclassify pass moved to hdrs already.
+		seen := map[string]bool{}
+		for _, h := range tgt.Hdrs {
+			seen[h] = true
+		}
+		for _, src := range append(append([]string(nil), tgt.Srcs...), tgt.Hdrs...) {
+			for _, h := range byPath[src] {
+				if seen[h] {
+					continue
+				}
+				seen[h] = true
+				tgt.Hdrs = append(tgt.Hdrs, h)
+			}
+		}
+	}
+}
+
+// collectLanguageOverrides walks the decoded
+// set_source_files_properties calls and returns a map from source
+// path → LANGUAGE property value. cmake records the override
+// verbatim ("C", "CXX", etc.); we preserve case so the tag
+// surfaces what the project actually declared.
+//
+// Multiple LANGUAGE declarations for the same source — last-write-
+// wins on conflict (cmake's documented behavior).
+//
+// Returns nil when no LANGUAGE property surfaces.
+func collectLanguageOverrides(calls []shadow.SourceFilePropertiesCall) map[string]string {
+	var out map[string]string
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "LANGUAGE") {
+				continue
+			}
+			if prop.Value == "" {
+				continue
+			}
+			for _, f := range call.Files {
+				if out == nil {
+					out = map[string]string{}
+				}
+				out[f] = prop.Value
+			}
+		}
+	}
+	return out
+}
+
+// tagLanguageOverrides walks every target in pkg.Targets and tags
+// each one whose Srcs include a path with a LANGUAGE override.
+// Tag shape: cmake-codegen-language-override=<lang> so operators
+// can grep by target language ('CXX' = forced C++, 'C' = forced
+// C, etc.).
+//
+// One tag per distinct override-language a target uses — a
+// library with multiple .c files all forced to CXX gets one tag,
+// not N.
+//
+// No-op when byPath is empty.
+func tagLanguageOverrides(pkg *ir.Package, byPath map[string]string) {
+	if len(byPath) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, src := range tgt.Srcs {
+			lang, ok := byPath[src]
+			if !ok || seen[lang] {
+				continue
+			}
+			seen[lang] = true
+			tag := "cmake-codegen-language-override=" + lang
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+	}
+}
+
+// collectHeaderOnlySources walks the decoded
+// set_source_files_properties calls and returns the slash-form
+// paths declared with HEADER_FILE_ONLY=TRUE. Truthy values per
+// cmake's boolean convention: TRUE / ON / YES / 1 (case-insensitive).
+//
+// The returned map's keys are source paths as the trace recorded
+// them — typically relative to the call's source dir. Source
+// walks compare against TargetSource.Path (also relative); when
+// the project uses absolute paths, the lookup falls through and
+// the source stays in srcs (best-effort gap fill, not a strict
+// guarantee).
+//
+// Returns nil when no HEADER_FILE_ONLY property surfaces; callers
+// treat nil as the empty set without a separate check.
+func collectHeaderOnlySources(calls []shadow.SourceFilePropertiesCall) map[string]bool {
+	var out map[string]bool
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "HEADER_FILE_ONLY") {
+				continue
+			}
+			if !cmakeTruthy(prop.Value) {
+				continue
+			}
+			if out == nil {
+				out = map[string]bool{}
+			}
+			for _, f := range call.Files {
+				out[f] = true
+			}
+		}
+	}
+	return out
+}
+
+// cmakeTruthy mirrors cmake's documented truthy interpretation
+// for boolean cache values: TRUE / ON / YES / 1 / Y are true
+// (case-insensitive); everything else is false.
+//
+// Stricter than cmake's full if() type-coerced evaluator —
+// HEADER_FILE_ONLY's documented contract is a plain boolean,
+// not a generic expression, so the narrow form is correct here.
+func cmakeTruthy(v string) bool {
+	switch strings.ToUpper(strings.TrimSpace(v)) {
+	case "TRUE", "ON", "YES", "1", "Y":
+		return true
+	}
+	return false
+}
+
+// isAddDependenciesEdge reports whether a TargetDependency came
+// from an `add_dependencies(target dep)` call rather than a
+// target_link_libraries (or similar) — the former carries no
+// compile/link facts; only build order matters. Bazel maps the
+// former to `data = [...]`.
+//
+// Detection: the dep's Backtrace points at a BacktraceGraph node;
+// if its command is "add_dependencies", route to data. Conservative
+// — macro-wrapped add_dependencies (where the leaf backtrace
+// points inside a macro definition) stay on the link path until
+// the outermost-user-frame walk surfaces them. The trade-off:
+// over-emit link edges for the macro case (safe but redundant)
+// vs miss build-order semantics for the direct case (currently
+// silent). The direct case is the common one.
+func isAddDependenciesEdge(dep fileapi.TargetDependency, g fileapi.BacktraceGraph) bool {
+	if dep.Backtrace <= 0 || dep.Backtrace >= len(g.Nodes) {
+		return false
+	}
+	node := g.Nodes[dep.Backtrace]
+	if node.Command < 0 || node.Command >= len(g.Commands) {
+		return false
+	}
+	return strings.EqualFold(g.Commands[node.Command], "add_dependencies")
+}
+
+// prependLanguageStandardCopt augments copts with a `-std=…`
+// flag derived from cmake's CompileGroup.LanguageStandard when
+// the existing copts don't already name a -std flag. The
+// LanguageStandard.Standard value is the bare number cmake
+// records ("17" for c++17, "11" for c11, etc.); the formatter
+// emits gcc/clang-style `-std=cXX` / `-std=c++XX`.
+//
+// Idempotency: many cmake projects already see the standard
+// inlined into CompileCommandFragments by cmake's generator
+// (e.g. `-std=gnu++17` appears in copts directly). The
+// `-std=`-prefix check skips the prepend in that case so the
+// emitted copts stay byte-stable.
+//
+// Gated on a recognized language — Bazel cc rules don't apply
+// this to non-cc languages (Fortran, ASM) where the
+// `LanguageStandard` field has different semantics.
+//
+// Phase 1 task 3 successor (per
+// docs/design/generator-parity-gaps.md "Easy" section).
+func prependLanguageStandardCopt(lang string, std *fileapi.LanguageStandard, copts []string) []string {
+	if std == nil || std.Standard == "" {
+		return copts
+	}
+	// Skip when copts already names a -std flag.
+	for _, c := range copts {
+		if strings.HasPrefix(c, "-std=") {
+			return copts
+		}
+	}
+	flag := stdFlagFor(lang, std.Standard)
+	if flag == "" {
+		return copts
+	}
+	// Prepend so the standard wins over any later -std= an
+	// operator-defined override might inject through copts.
+	return append([]string{flag}, copts...)
+}
+
+// stdFlagFor formats the gcc/clang `-std=…` flag for one
+// (language, version) pair. Returns "" for unrecognized
+// languages or empty versions.
+func stdFlagFor(lang, version string) string {
+	if version == "" {
+		return ""
+	}
+	switch strings.ToUpper(lang) {
+	case "C":
+		return "-std=c" + version
+	case "CXX":
+		return "-std=c++" + version
+	case "OBJC":
+		return "-std=c" + version
+	case "OBJCXX":
+		return "-std=c++" + version
+	}
+	return ""
 }
 
 // relForSource returns the package-relative path the wrapper

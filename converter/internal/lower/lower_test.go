@@ -38,8 +38,12 @@ func TestToIR_HelloWorld(t *testing.T) {
 	if pkg.Name != "hello" {
 		t.Errorf("Package.Name = %q, want hello", pkg.Name)
 	}
-	if got := len(pkg.Targets); got != 1 {
-		t.Fatalf("Targets = %d, want 1", got)
+	// Two targets: the cc_library and the
+	// install_directory__include filegroup that mirrors the
+	// hello-world fixture's install(DIRECTORY include ...)
+	// declaration (Phase 1 task 2 of the generator-parity uplift).
+	if got := len(pkg.Targets); got != 2 {
+		t.Fatalf("Targets = %d, want 2 (cc_library + install_directory filegroup)", got)
 	}
 
 	tgt := pkg.Targets[0]

@@ -174,3 +174,77 @@ func TestLoad_MissingDir(t *testing.T) {
 		t.Errorf("expected error for missing reply dir")
 	}
 }
+
+// TestLoad_SingleConfig_NoTargetsByConfig confirms single-config
+// replies leave TargetsByConfig nil — the single Configurations
+// entry's data lives in Targets and there's no per-config split
+// to surface.
+func TestLoad_SingleConfig_NoTargetsByConfig(t *testing.T) {
+	r, err := fileapi.Load(helloWorldFixture)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.TargetsByConfig != nil {
+		t.Errorf("TargetsByConfig should be nil for single-config reply; got %d entries", len(r.TargetsByConfig))
+	}
+}
+
+// TestLoad_MultiConfig_TargetsByConfigPopulated stages a synthetic
+// two-config reply (Release + Debug) for one target and checks
+// that:
+//   - TargetsByConfig carries entries for both configs
+//   - Targets carries the primary (first-declared) config's data,
+//     not the iteration-last one
+func TestLoad_MultiConfig_TargetsByConfigPopulated(t *testing.T) {
+	dir := t.TempDir()
+	// Two configurations declared in the codemodel, with one target
+	// per config. The target JSON content differs by config so the
+	// test can tell which slot ended up where.
+	writeFile(t, dir, "target-foo-Release.json", `{"name":"foo","id":"foo::@","type":"STATIC_LIBRARY","nameOnDisk":"libfoo-release.a","paths":{"source":"/src","build":"/b"},"backtraceGraph":{"commands":[],"files":[],"nodes":[]}}`)
+	writeFile(t, dir, "target-foo-Debug.json", `{"name":"foo","id":"foo::@","type":"STATIC_LIBRARY","nameOnDisk":"libfoo-debug.a","paths":{"source":"/src","build":"/b"},"backtraceGraph":{"commands":[],"files":[],"nodes":[]}}`)
+	writeFile(t, dir, "codemodel-v2.json", `{
+		"kind":"codemodel","version":{"major":2,"minor":0},
+		"paths":{"source":"/src","build":"/b"},
+		"configurations":[
+			{"name":"Release","targets":[{"name":"foo","id":"foo::@","jsonFile":"target-foo-Release.json"}],"directories":[],"projects":[]},
+			{"name":"Debug","targets":[{"name":"foo","id":"foo::@","jsonFile":"target-foo-Debug.json"}],"directories":[],"projects":[]}
+		]
+	}`)
+	writeFile(t, dir, "cache-v2.json", `{"kind":"cache","version":{"major":2,"minor":0},"entries":[]}`)
+	writeFile(t, dir, "toolchains-v1.json", `{"kind":"toolchains","version":{"major":1,"minor":0},"toolchains":[]}`)
+	writeFile(t, dir, "cmakeFiles-v1.json", `{"kind":"cmakeFiles","version":{"major":1,"minor":0},"paths":{"source":"/src","build":"/b"},"inputs":[]}`)
+	writeFile(t, dir, "index-2026.json", `{
+		"cmake":{"generator":{"name":"Ninja Multi-Config","multiConfig":true},"paths":{"cmake":"/usr/bin/cmake","ctest":"/usr/bin/ctest","cpack":"/usr/bin/cpack","root":"/usr"},"version":{"major":3,"minor":28,"patch":3,"string":"3.28.3","suffix":"","isDirty":false}},
+		"objects":[
+			{"kind":"codemodel","version":{"major":2,"minor":0},"jsonFile":"codemodel-v2.json"},
+			{"kind":"cache","version":{"major":2,"minor":0},"jsonFile":"cache-v2.json"},
+			{"kind":"toolchains","version":{"major":1,"minor":0},"jsonFile":"toolchains-v1.json"},
+			{"kind":"cmakeFiles","version":{"major":1,"minor":0},"jsonFile":"cmakeFiles-v1.json"}
+		]
+	}`)
+
+	r, err := fileapi.Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// Targets carries the primary config (Release, first-declared).
+	if got := r.Targets["foo::@"].NameOnDisk; got != "libfoo-release.a" {
+		t.Errorf("Targets[foo].NameOnDisk = %q, want libfoo-release.a (primary)", got)
+	}
+
+	// TargetsByConfig carries both.
+	if r.TargetsByConfig == nil {
+		t.Fatalf("TargetsByConfig nil under multi-config")
+	}
+	byCfg, ok := r.TargetsByConfig["foo::@"]
+	if !ok {
+		t.Fatalf("TargetsByConfig missing entry for foo")
+	}
+	if got := byCfg["Release"].NameOnDisk; got != "libfoo-release.a" {
+		t.Errorf("TargetsByConfig[foo][Release].NameOnDisk = %q", got)
+	}
+	if got := byCfg["Debug"].NameOnDisk; got != "libfoo-debug.a" {
+		t.Errorf("TargetsByConfig[foo][Debug].NameOnDisk = %q", got)
+	}
+}

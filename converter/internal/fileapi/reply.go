@@ -1,14 +1,19 @@
 // Package fileapi parses CMake's File API v1 reply directory.
 //
 // The reply directory is produced by cmake when run with files staged under
-// <build>/.cmake/api/v1/query/. We consume four object kinds:
+// <build>/.cmake/api/v1/query/. We consume five object kinds:
 //
 //   - codemodel-v2: project/target structure, sources, compile/link flags.
 //   - toolchains-v1: per-language compiler identification and implicit dirs.
 //   - cmakeFiles-v1: every CMakeLists / .cmake file consumed at configure.
 //   - cache-v2: post-configure cache entries.
+//   - configureLog-v1: pointer to CMakeConfigureLog.yaml (cmake 3.26+).
 //
-// All parsing is pure; no I/O outside the supplied directory.
+// All parsing is pure; no I/O outside the supplied directory — the
+// configureLog object decodes only its sidecar JSON, which records the
+// absolute path to the YAML log. Callers that want the log events read
+// the YAML separately via LoadConfigureLogYAML so this package keeps
+// its single-directory I/O scope.
 package fileapi
 
 import (
@@ -27,15 +32,34 @@ type Reply struct {
 	Toolchains Toolchains
 	CMakeFiles CMakeFiles
 	Cache      Cache
-	// Targets maps target id to its parsed details. Populated lazily by
-	// Load, keyed by the id from Codemodel.Configurations[].Targets[].Id.
+	// Targets maps target id to its parsed details for the primary
+	// configuration (Codemodel.Configurations[0].Name — the first
+	// declared config, typically "Release"). Single-config callers
+	// (BuildType-driven) get the only config's data here; multi-config
+	// callers (BuildTypes-driven) get the primary config and consult
+	// TargetsByConfig for the rest. Populated by Load.
 	Targets map[string]Target
+	// TargetsByConfig maps target id → config name → parsed details.
+	// Carries one entry per (target id, configuration) pair declared
+	// in Codemodel.Configurations. Populated by Load whenever the
+	// reply has more than one Configuration entry (multi-config
+	// generators emit one per CMAKE_CONFIGURATION_TYPES entry); nil
+	// for single-config replies where Targets already carries
+	// everything. Phase 5 of the generator-parity uplift (ROADMAP.md)
+	// consumes this for the per-config compile/link fragment fold.
+	TargetsByConfig map[string]map[string]Target
 	// Directories carries the parsed directory-*.json content for every
 	// ConfigDirectory.JSONFile referenced from Codemodel. Indexed by
 	// JSONFile basename (the codemodel's per-config Directories[]
 	// entries reference them this way). Empty when no directories carry
 	// install rules.
 	Directories map[string]Directory
+	// ConfigureLog is the parsed configureLog-v1 sidecar (cmake 3.26+).
+	// Nil when cmake < 3.26 or the project didn't fire any
+	// configureLog-aware events during configure. Carries the path
+	// to CMakeConfigureLog.yaml; callers load the YAML separately
+	// via LoadConfigureLogYAML when they need event data.
+	ConfigureLog *ConfigureLog
 }
 
 // Load reads every consumed object from a reply directory. Returns an error if
@@ -82,9 +106,27 @@ func Load(replyDir string) (*Reply, error) {
 			if err := readJSON(path, &r.Cache); err != nil {
 				return nil, fmt.Errorf("fileapi: cache: %w", err)
 			}
+		case "configureLog":
+			var cl ConfigureLog
+			if err := readJSON(path, &cl); err != nil {
+				return nil, fmt.Errorf("fileapi: configureLog: %w", err)
+			}
+			r.ConfigureLog = &cl
 		}
 	}
 
+	// Determine the primary configuration name (first declared in
+	// Codemodel.Configurations). For single-config replies there's
+	// exactly one. Empty when the codemodel carries no configurations
+	// (degenerate but theoretically possible — leave Targets empty).
+	primaryConfig := ""
+	if len(r.Codemodel.Configurations) > 0 {
+		primaryConfig = r.Codemodel.Configurations[0].Name
+	}
+	multiConfig := len(r.Codemodel.Configurations) > 1
+	if multiConfig {
+		r.TargetsByConfig = map[string]map[string]Target{}
+	}
 	for _, cfg := range r.Codemodel.Configurations {
 		for _, tref := range cfg.Targets {
 			path := filepath.Join(replyDir, tref.JSONFile)
@@ -92,7 +134,19 @@ func Load(replyDir string) (*Reply, error) {
 			if err := readJSON(path, &t); err != nil {
 				return nil, fmt.Errorf("fileapi: target %s: %w", tref.Name, err)
 			}
-			r.Targets[tref.Id] = t
+			// Targets[] mirrors the primary configuration. Without
+			// this gate, multi-config replies would overwrite the
+			// map with whichever config iterated last — non-
+			// deterministic from a caller's perspective.
+			if cfg.Name == primaryConfig {
+				r.Targets[tref.Id] = t
+			}
+			if multiConfig {
+				if _, ok := r.TargetsByConfig[tref.Id]; !ok {
+					r.TargetsByConfig[tref.Id] = map[string]Target{}
+				}
+				r.TargetsByConfig[tref.Id][cfg.Name] = t
+			}
 		}
 		for _, d := range cfg.Directories {
 			if d.JSONFile == "" {

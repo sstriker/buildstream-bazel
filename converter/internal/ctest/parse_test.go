@@ -249,3 +249,37 @@ func equalSlice(a, b []string) bool {
 	}
 	return true
 }
+
+func TestParse_AdditionalProperties(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`add_test([=[wf]=] "exe")`+"\n"+
+			`set_tests_properties([=[wf]=] PROPERTIES WILL_FAIL "TRUE")`+"\n"+
+			`add_test([=[cwd]=] "exe")`+"\n"+
+			`set_tests_properties([=[cwd]=] PROPERTIES WORKING_DIRECTORY "/tmp")`+"\n"+
+			`add_test([=[skipre]=] "exe")`+"\n"+
+			`set_tests_properties([=[skipre]=] PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP:.*")`+"\n",
+	)
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	wantTags := []string{
+		"cmake-test-will-fail",
+		"cmake-test-cwd=/tmp",
+		"cmake-test-skip-regex=SKIP:.*",
+	}
+	for _, w := range wantTags {
+		found := false
+		for _, te := range r.All() {
+			for _, tag := range te.Tags {
+				if tag == w {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("missing tag %q in any test", w)
+		}
+	}
+}

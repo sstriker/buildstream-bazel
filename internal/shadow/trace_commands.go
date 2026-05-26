@@ -37,6 +37,7 @@ type Decoded struct {
 	FileGenerates              []FileGenerateCall
 	ExecuteProcesses           []ExecuteProcessCall
 	PlatformConditionalSources []PlatformConditionalSource
+	SourceFileProperties       []SourceFilePropertiesCall
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -70,6 +71,9 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		}
 		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
+		}
+		if call, ok := classifySourceFileProperties(ev, sourceRoot); ok {
+			d.SourceFileProperties = append(d.SourceFileProperties, call)
 		}
 		// Platform-conditional source attribution. Helper
 		// updates the per-file if-stack and appends any
@@ -909,4 +913,138 @@ func unwrapBuildInterface(arg string) (string, bool) {
 		return "", false
 	}
 	return arg, true
+}
+
+// SourceFilePropertiesCall records one user-written
+// set_source_files_properties(<files...>
+//
+//	[DIRECTORY <dirs...>]
+//	[TARGET_DIRECTORY <targets...>]
+//	PROPERTIES <prop1> <val1> [<prop2> <val2> ...]) call.
+//
+// The codemodel surfaces per-source IsGenerated and FileSetIndex but
+// has no slot for arbitrary source-file properties (COMPILE_DEFINITIONS,
+// COMPILE_OPTIONS, LANGUAGE, HEADER_FILE_ONLY, etc.). The trace
+// preserves the full call shape so the lift can route per-file
+// COMPILE_DEFINITIONS into a per-file cc_library split (Bazel has no
+// per-source-file local_defines), HEADER_FILE_ONLY into hdrs vs srcs
+// classification, etc.
+//
+// Phase 1 of the generator-parity uplift (ROADMAP.md) introduces the
+// decoder; consumers in lower/ land separately as each property gets
+// a Bazel-side lowering recipe.
+type SourceFilePropertiesCall struct {
+	// File and Line are the trace-recorded call site (the
+	// CMakeLists.txt / .cmake file invoking
+	// set_source_files_properties).
+	File string
+	Line int
+
+	// Files lists the source-file arguments preceding the
+	// DIRECTORY / TARGET_DIRECTORY / PROPERTIES keyword. Paths are
+	// stored as the trace recorded them — typically project-source-
+	// relative for the common idiom but absolute when the caller
+	// passed an absolute path. Resolution against the source root
+	// is the consumer's responsibility.
+	Files []string
+
+	// Directories carries the optional DIRECTORY <dirs...> arm
+	// (cmake 3.18+). When non-empty the properties apply to the
+	// source files as seen from those directories' scope, not the
+	// current call site's directory.
+	Directories []string
+
+	// TargetDirectories carries the optional TARGET_DIRECTORY
+	// <targets...> arm (cmake 3.18+). The properties apply to the
+	// source files in each named target's directory scope.
+	TargetDirectories []string
+
+	// Properties is the ordered list of (name, value) pairs from
+	// the PROPERTIES section. cmake itself stores each one in the
+	// source file's directory-scoped property bag; consumers
+	// decide which properties they care about.
+	Properties []SourceFileProperty
+}
+
+// SourceFileProperty is one (name, value) pair on a
+// set_source_files_properties call's PROPERTIES section.
+type SourceFileProperty struct {
+	Name  string
+	Value string
+}
+
+// ExtractSourceFileProperties returns one entry per
+// set_source_files_properties call whose trace event fires inside
+// sourceRoot. Calls with no source files or no properties (malformed
+// or interface-only) are skipped.
+func ExtractSourceFileProperties(traceRaw []byte, sourceRoot string) []SourceFilePropertiesCall {
+	var out []SourceFilePropertiesCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifySourceFileProperties(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func classifySourceFileProperties(ev TraceEvent, sourceRoot string) (SourceFilePropertiesCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "set_source_files_properties") {
+		return SourceFilePropertiesCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return SourceFilePropertiesCall{}, false
+	}
+
+	call := SourceFilePropertiesCall{
+		File: ev.File,
+		Line: ev.Line,
+	}
+
+	// Walk argv: <files...> [DIRECTORY <d...>] [TARGET_DIRECTORY <t...>] PROPERTIES <n> <v> ...
+	// The keyword ordering is loose in cmake — DIRECTORY and
+	// TARGET_DIRECTORY can appear in either order before
+	// PROPERTIES — but each appears at most once.
+	section := "files"
+	for i := 0; i < len(ev.Args); i++ {
+		a := ev.Args[i]
+		switch strings.ToUpper(a) {
+		case "DIRECTORY":
+			section = "directories"
+			continue
+		case "TARGET_DIRECTORY":
+			section = "target_directories"
+			continue
+		case "PROPERTIES":
+			section = "properties"
+			continue
+		}
+		switch section {
+		case "files":
+			call.Files = append(call.Files, a)
+		case "directories":
+			call.Directories = append(call.Directories, a)
+		case "target_directories":
+			call.TargetDirectories = append(call.TargetDirectories, a)
+		case "properties":
+			// Pair up (name, value). Drop a dangling name with no
+			// value rather than recording an empty-string value
+			// that could be confused with an explicit "".
+			if i+1 < len(ev.Args) {
+				call.Properties = append(call.Properties, SourceFileProperty{
+					Name:  a,
+					Value: ev.Args[i+1],
+				})
+				i++
+			}
+		}
+	}
+
+	if len(call.Files) == 0 || len(call.Properties) == 0 {
+		// Malformed call (PROPERTIES with no pairs) or
+		// directive-only (DIRECTORY/TARGET_DIRECTORY with no
+		// source files) — both are unusable.
+		return SourceFilePropertiesCall{}, false
+	}
+
+	return call, true
 }
