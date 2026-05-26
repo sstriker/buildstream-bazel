@@ -2,6 +2,7 @@ package lower
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -148,6 +149,59 @@ func TestLowerTarget_Frameworks_AppendsFFlag(t *testing.T) {
 		}
 		if !hasLib || !hasSys {
 			t.Errorf("expected -F flags for both framework paths; got %v", tgt.Copts)
+		}
+		return
+	}
+	t.Fatal("app not in pkg.Targets")
+}
+
+// TestLowerTarget_LinkOpts_FlagsRouted covers the wider linkopts
+// fix: Link.CommandFragments with role=flags / libraryPath /
+// frameworkPath / frameworks now route into irt.LinkOpts rather
+// than being silently dropped.
+func TestLowerTarget_LinkOpts_FlagsRouted(t *testing.T) {
+	target := &fileapi.Target{
+		Name: "app",
+		Type: "EXECUTABLE",
+		Link: &fileapi.TargetLink{
+			Language: "C",
+			CommandFragments: []fileapi.CommandFragment{
+				{Fragment: "-Wl,--as-needed", Role: "flags"},
+				{Fragment: "/opt/lib", Role: "libraryPath"},
+				{Fragment: "/Library/Frameworks", Role: "frameworkPath"},
+				{Fragment: "Cocoa", Role: "frameworks"},
+			},
+		},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}},
+			}},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	for _, tgt := range pkg.Targets {
+		if tgt.Name != "app" {
+			continue
+		}
+		wantContains := []string{
+			"-Wl,--as-needed",
+			"-L/opt/lib",
+			"-F/Library/Frameworks",
+			"-framework",
+			"Cocoa",
+		}
+		joined := strings.Join(tgt.LinkOpts, " ")
+		for _, w := range wantContains {
+			if !strings.Contains(joined, w) {
+				t.Errorf("LinkOpts missing %q; got %v", w, tgt.LinkOpts)
+			}
 		}
 		return
 	}

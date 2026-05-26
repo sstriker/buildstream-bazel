@@ -5,6 +5,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // TestShouldSplitCompileGroups_MultiLanguage covers the legacy
@@ -165,4 +166,76 @@ func TestCMakeTruthy(t *testing.T) {
 			t.Errorf("cmakeTruthy(%q) = true; want false", v)
 		}
 	}
+}
+
+func TestCollectObjectDepends_SingleProperty(t *testing.T) {
+	calls := []shadowSourceFilePropertiesCallStub{
+		{
+			Files: []string{"foo.c"},
+			Properties: []shadowSourceFilePropertyStub{
+				{Name: "OBJECT_DEPENDS", Value: "extra.h;more.h"},
+			},
+		},
+	}
+	got := collectObjectDepends(toShadowCalls(calls))
+	if len(got["foo.c"]) != 2 || got["foo.c"][0] != "extra.h" || got["foo.c"][1] != "more.h" {
+		t.Errorf("OBJECT_DEPENDS for foo.c: %v", got["foo.c"])
+	}
+}
+
+func TestAddObjectDependsHeaders_AppendsToHdrs(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Hdrs: []string{"foo.h"},
+		}},
+	}
+	byPath := map[string][]string{"foo.c": {"extra.h", "more.h"}}
+	addObjectDependsHeaders(pkg, byPath)
+	if len(pkg.Targets[0].Hdrs) != 3 {
+		t.Errorf("Hdrs: %v want 3 entries", pkg.Targets[0].Hdrs)
+	}
+}
+
+func TestAddObjectDependsHeaders_DedupesExisting(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+			Hdrs: []string{"foo.h", "extra.h"},
+		}},
+	}
+	byPath := map[string][]string{"foo.c": {"extra.h", "more.h"}}
+	addObjectDependsHeaders(pkg, byPath)
+	if len(pkg.Targets[0].Hdrs) != 3 {
+		t.Errorf("Hdrs len: %d, want 3 (dedup)", len(pkg.Targets[0].Hdrs))
+	}
+}
+
+// Lightweight shims so we can build SourceFilePropertiesCall
+// values in test code without importing the shadow package
+// here (the lower package already imports it for production
+// code — these reduce test boilerplate).
+type shadowSourceFilePropertiesCallStub struct {
+	Files      []string
+	Properties []shadowSourceFilePropertyStub
+}
+
+type shadowSourceFilePropertyStub struct {
+	Name, Value string
+}
+
+func toShadowCalls(in []shadowSourceFilePropertiesCallStub) []shadow.SourceFilePropertiesCall {
+	out := make([]shadow.SourceFilePropertiesCall, len(in))
+	for i, c := range in {
+		out[i].Files = c.Files
+		out[i].Properties = make([]shadow.SourceFileProperty, len(c.Properties))
+		for j, p := range c.Properties {
+			out[i].Properties[j] = shadow.SourceFileProperty{Name: p.Name, Value: p.Value}
+		}
+	}
+	return out
 }

@@ -266,6 +266,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// Populated by collectHeaderOnlySources when the trace decoded
 	// SourceFileProperties calls.
 	var headerOnlySources map[string]bool
+	// objectDependsBySrc maps source paths to the list of header
+	// paths declared via set_source_files_properties(... PROPERTIES
+	// OBJECT_DEPENDS "h1;h2"). The per-target post-pass adds those
+	// headers to the target's hdrs so Bazel's incremental rebuild
+	// trips on changes.
+	var objectDependsBySrc map[string][]string
 
 	// Phase 1 task 1 keyword recovery runs FIRST — backtrace is
 	// strictly more authoritative than trace in every case where
@@ -357,6 +363,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// source walk can reclassify .h-only sources from srcs
 		// into hdrs.
 		headerOnlySources = collectHeaderOnlySources(decoded.SourceFileProperties)
+		objectDependsBySrc = collectObjectDepends(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
 			platformConditionalSrcs = map[string]map[string]string{}
 			for _, pcs := range decoded.PlatformConditionalSources {
@@ -560,6 +567,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// keeps lowerTarget's signature stable and applies uniformly
 	// to all the rule families.
 	reclassifyHeaderOnlySources(pkg, headerOnlySources)
+	// OBJECT_DEPENDS post-pass adds declared header dependencies
+	// to the target's hdrs so incremental rebuilds trip on
+	// changes. Uses the same per-pkg walk shape as the
+	// HEADER_FILE_ONLY pass.
+	addObjectDependsHeaders(pkg, objectDependsBySrc)
 	// install(FILES) → filegroup() lowering (Phase 1 task 2 of the
 	// generator-parity uplift). Appended last so the file-head
 	// targets stay grouped by family: cc rules first, generated
@@ -1244,6 +1256,36 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			seen[d] = true
 		}
 		for _, frag := range t.Link.CommandFragments {
+			// Non-library fragments (flags / libraryPath /
+			// frameworkPath / frameworks) route directly to
+			// linkopts. cmake's codemodel exposes the per-fragment
+			// role so we can attribute correctly; the existing
+			// "libraries"-only path below handles deps wiring.
+			switch frag.Role {
+			case "flags":
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, v)
+				}
+				continue
+			case "libraryPath":
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, "-L"+v)
+				}
+				continue
+			case "frameworkPath":
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, "-F"+v)
+				}
+				continue
+			case "frameworks":
+				// cmake records the framework NAME; gcc/clang
+				// expect `-framework Foo`. Emit as two separate
+				// args via the canonical two-token form.
+				if v := strings.TrimSpace(frag.Fragment); v != "" {
+					irt.LinkOpts = append(irt.LinkOpts, "-framework", v)
+				}
+				continue
+			}
 			if frag.Role != "libraries" {
 				continue
 			}
@@ -1732,6 +1774,85 @@ func reclassifyHeaderOnlySources(pkg *ir.Package, headerOnlySources map[string]b
 			keptSrcs = append(keptSrcs, src)
 		}
 		tgt.Srcs = keptSrcs
+	}
+}
+
+// collectObjectDepends walks the decoded
+// set_source_files_properties calls and returns a map from
+// source path → list of header dependency paths declared via
+// the OBJECT_DEPENDS property. cmake's documented contract for
+// OBJECT_DEPENDS is "additional inputs that should trigger a
+// rebuild" — the Bazel-idiomatic mapping is adding the entries
+// to the consuming target's hdrs.
+//
+// Multiple OBJECT_DEPENDS declarations for the same source merge
+// (additive); duplicate header entries get deduped at the
+// reclassify-pass.
+//
+// Returns nil when no OBJECT_DEPENDS surfaces.
+func collectObjectDepends(calls []shadow.SourceFilePropertiesCall) map[string][]string {
+	var out map[string][]string
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "OBJECT_DEPENDS") {
+				continue
+			}
+			if prop.Value == "" {
+				continue
+			}
+			// cmake list semantics: semicolon separator.
+			headers := strings.Split(prop.Value, ";")
+			for _, f := range call.Files {
+				if out == nil {
+					out = map[string][]string{}
+				}
+				for _, h := range headers {
+					if h == "" {
+						continue
+					}
+					out[f] = append(out[f], h)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// addObjectDependsHeaders walks every target in pkg.Targets and
+// appends each source's OBJECT_DEPENDS-declared headers to the
+// target's hdrs. Idempotent on repeat headers (skips entries
+// already present in hdrs); preserves the rest of the target
+// unchanged.
+//
+// Runs after the HEADER_FILE_ONLY reclassify so any source that
+// was both HEADER_FILE_ONLY AND had OBJECT_DEPENDS-style header
+// deps still surfaces its declared deps in hdrs.
+func addObjectDependsHeaders(pkg *ir.Package, byPath map[string][]string) {
+	if len(byPath) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		// Walk both srcs and hdrs to find sources that declare
+		// OBJECT_DEPENDS — the headers might be on a HEADER_FILE_ONLY
+		// entry that the reclassify pass moved to hdrs already.
+		seen := map[string]bool{}
+		for _, h := range tgt.Hdrs {
+			seen[h] = true
+		}
+		for _, src := range append(append([]string(nil), tgt.Srcs...), tgt.Hdrs...) {
+			for _, h := range byPath[src] {
+				if seen[h] {
+					continue
+				}
+				seen[h] = true
+				tgt.Hdrs = append(tgt.Hdrs, h)
+			}
+		}
 	}
 }
 
