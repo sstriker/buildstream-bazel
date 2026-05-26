@@ -133,3 +133,85 @@ func TestLowerTarget_FindPackageAttrib_NoManifest(t *testing.T) {
 		t.Errorf("Tags should include find-package fallback; got %v", found.Tags)
 	}
 }
+
+// TestLowerTarget_FindPackageAttrib_ManifestProvided_AttributionMissed
+// covers the dual to TestLowerTarget_FindPackageAttrib_NoManifest:
+// the imports manifest IS provided (operator opted into
+// find_package attribution) BUT neither attribution source can
+// recover the package name — configureLog has no find_package-v1
+// event AND cmakeVars carries no `<Pkg>_FOUND`. findPackageAttrib
+// returns nil, .Lookup() returns "", and the link fragment would
+// otherwise fall through to the generic cmake-elided-link-fragment
+// tag without any find_package-specific signal. The new
+// cmake-codegen-find-package-attribution-missed tag fires here so
+// the audit framework can surface the gap with the right operator
+// remediation (re-run with --dump-vars=true OR add the lib's
+// link-path to the manifest entry).
+func TestLowerTarget_FindPackageAttrib_ManifestProvided_AttributionMissed(t *testing.T) {
+	target := &fileapi.Target{
+		Name: "iostreams",
+		Type: "STATIC_LIBRARY",
+		Link: &fileapi.TargetLink{
+			Language: "CXX",
+			CommandFragments: []fileapi.CommandFragment{
+				{Fragment: "/usr/lib/x86_64-linux-gnu/libz.so", Role: "libraries"},
+			},
+		},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"iostreams::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "iostreams::@", Name: "iostreams"}},
+			}},
+		},
+	}
+	// Manifest carries a ZLIB::ZLIB entry — but with no
+	// link_libraries / link_paths binding, so the manifest's
+	// per-path index won't find /usr/lib/.../libz.so. The
+	// per-cmake-target index will still resolve ZLIB::ZLIB if
+	// the lower could attribute the path back to ZLIB. With
+	// neither configureLog nor cmakeVars feeding
+	// findPackageAttrib, that attribution can't happen — so
+	// the path falls through to the elided + attribution-
+	// missed tag pair.
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "zlib",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "ZLIB::ZLIB",
+				BazelLabel:  "@zlib//:zlib",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{
+		Imports: imports,
+		// Deliberately empty — the dual case.
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	var found *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "iostreams" {
+			found = &pkg.Targets[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("iostreams not in pkg.Targets")
+	}
+	if !stringSliceContains(found.Tags, "cmake-codegen-find-package-attribution-missed=libz.so") {
+		t.Errorf("Tags should include attribution-missed; got %v", found.Tags)
+	}
+	// The cmake-elided-link-fragment tag also fires (full-path
+	// anchor for the generic silent-drop case) — both tags are
+	// expected together here.
+	if !stringSliceContains(found.Tags, "cmake-elided-link-fragment=/usr/lib/x86_64-linux-gnu/libz.so") {
+		t.Errorf("Tags should also include elided-link-fragment; got %v", found.Tags)
+	}
+}

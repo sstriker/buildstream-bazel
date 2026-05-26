@@ -1537,6 +1537,35 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			if !stringSliceContains(irt.Tags, tag) {
 				irt.Tags = append(irt.Tags, tag)
 			}
+			// Dual to the cmake-codegen-find-package-fallback
+			// tag above: that one fires when find_package
+			// attribution SUCCEEDED but the imports manifest
+			// has no `<Pkg>::<Pkg>` entry. This sibling tag
+			// fires when find_package attribution itself
+			// MISSED — either the configureLog carried no
+			// find_package-v1 event (cmake < 3.32 OR cmake >=
+			// 3.32 with the event suppressed) AND cmakeVars
+			// didn't surface a `<Pkg>_FOUND` either (the
+			// --dump-vars=false path, or an out-of-fileapi
+			// cmake namespace). Gated on imports != Empty()
+			// so the tag only fires when the operator
+			// explicitly opted into find_package attribution
+			// (a manifest was provided). Without that gate
+			// the tag would fire on every cmake project that
+			// hard-codes an absolute link path with no
+			// manifest, drowning the audit signal.
+			//
+			// Parameterized on basename only (not full path)
+			// so operators can grep against the package's
+			// library-shape (libz.so) regardless of multi-
+			// arch host paths. The full-path anchor lives on
+			// the cmake-elided-link-fragment tag above.
+			if !imports.Empty() {
+				baseTag := "cmake-codegen-find-package-attribution-missed=" + filepath.Base(path)
+				if !stringSliceContains(irt.Tags, baseTag) {
+					irt.Tags = append(irt.Tags, baseTag)
+				}
+			}
 		}
 	}
 

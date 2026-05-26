@@ -495,6 +495,38 @@ func TestAudit_CmakeCodegenFindPackageFallback(t *testing.T) {
 	}
 }
 
+// TestAudit_CmakeCodegenFindPackageAttributionMissed pins the
+// audit finding for the dual case of the fallback tag above:
+// the operator opted into find_package attribution (manifest
+// provided) but neither cmake 3.32 find_package-v1 event nor
+// cmakeVars `<Pkg>_FOUND` surfaced — attribution couldn't fire.
+// The tag's basename anchor (libz.so) must appear in the
+// message so operators have a grep target.
+func TestAudit_CmakeCodegenFindPackageAttributionMissed(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "iostreams",
+    srcs = ["zlib.cpp"],
+    tags = ["cmake-codegen-find-package-attribution-missed=libz.so"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "find-package-attribution-missed" {
+			found = true
+			if !strings.Contains(f.Message, "libz.so") {
+				t.Errorf("message should name libz.so: %q", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected find-package-attribution-missed; got %v", findings)
+	}
+}
+
 func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
 	// cmake-codegen-version=… and cmake-codegen-soversion=… are
 	// informational; no audit finding.

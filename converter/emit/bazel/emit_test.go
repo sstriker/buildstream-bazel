@@ -843,6 +843,80 @@ func TestEmit_FindPackageVariableForm_NoManifest_FallbackTag(t *testing.T) {
 	}
 }
 
+// TestEmit_FindPackageVariableForm_ManifestProvided_AttributionMissedTag
+// covers the dual to the no-manifest fallback test above:
+//   - imports manifest IS provided (the operator opted into
+//     find_package attribution)
+//   - configureLog is empty (no find_package-v1 events — the
+//     cmake-3.32 hook didn't fire)
+//   - cmakeVars is empty (--dump-vars=false path — no
+//     `<Pkg>_FOUND` to recover the package name)
+//
+// In this configuration findPackageAttrib returns nil and
+// .Lookup() returns "" for every path. Pre-fix the link
+// fragment surfaced only the broad cmake-elided-link-fragment
+// tag, leaving no distinct signal that the operator's
+// find_package attribution opt-in went unfulfilled. Post-fix
+// the lower also emits a
+// `cmake-codegen-find-package-attribution-missed=<basename>`
+// tag so the audit framework can surface the gap with the
+// right diagnostic (re-run with --dump-vars=true OR add the
+// library link-path to the manifest entry).
+func TestEmit_FindPackageVariableForm_ManifestProvided_AttributionMissedTag(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/find-package-variable-form")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir := "../../testdata/fileapi/find-package-variable-form"
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imports, err := manifest.Load(filepath.Join(src, "imports.json"))
+	if err != nil {
+		t.Fatalf("load imports manifest: %v", err)
+	}
+	// Deliberately empty CMakeVars + ConfigureLog — the dual
+	// case where neither attribution source fires. The imports
+	// manifest IS loaded so the new attribution-missed tag's
+	// gating condition (manifest opted-in) is satisfied.
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: src,
+		Imports:        imports,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "usepkg_var" {
+			found = &pkg.Targets[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("usepkg_var not in pkg.Targets")
+	}
+	wantTag := "cmake-codegen-find-package-attribution-missed=libz.so"
+	hasTag := false
+	for _, tag := range found.Tags {
+		if tag == wantTag {
+			hasTag = true
+			break
+		}
+	}
+	if !hasTag {
+		t.Errorf("Tags should include %q (attribution-missed dual); got %v", wantTag, found.Tags)
+	}
+	// The find_package-fallback tag (attribution succeeded but
+	// manifest missed) must NOT also fire here — these two tags
+	// are mutually exclusive on a given (target, path).
+	for _, tag := range found.Tags {
+		if strings.HasPrefix(tag, "cmake-codegen-find-package-fallback=") {
+			t.Errorf("attribution-missed path should not also emit fallback tag: %v", found.Tags)
+		}
+	}
+}
+
 // TestEmit_WorkspaceRootLayout_Golden exercises the zstd-shape
 // `build/cmake/CMakeLists.txt` layout: cmake's source dir is one
 // level below the workspace root, sources live at
