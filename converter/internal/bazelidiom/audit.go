@@ -173,6 +173,10 @@ func codegenTagToFinding(tag string) (code, msg string) {
 		rest := strings.TrimPrefix(tag, "cmake-codegen-find-package-fallback=")
 		return "find-package-dep-unresolved",
 			"target links a library resolved by find_package(" + rest + ") that has no imports-manifest entry — the dep is missing from `deps` and the BUILD will link-fail. Fix: add the package's namespaced target (e.g. `Pkg::Pkg`) to the imports manifest mapping to a real cc_import/cc_library label"
+	case strings.HasPrefix(tag, "cmake-codegen-find-package-attribution-missed="):
+		base := strings.TrimPrefix(tag, "cmake-codegen-find-package-attribution-missed=")
+		return "find-package-attribution-missed",
+			"target links an absolute-path library (" + base + ") and an imports manifest is loaded, but find_package attribution couldn't fire — no configureLog find_package-v1 event (cmake < 3.32 or event suppressed) AND no `<Pkg>_FOUND` in cmakeVars (--dump-vars=false). Fix: re-run with --dump-vars=true so the cmakeVars `<Pkg>_FOUND` fallback can attribute the path, OR add the library's link-path directly to the imports manifest entry"
 	}
 	return "", ""
 }
