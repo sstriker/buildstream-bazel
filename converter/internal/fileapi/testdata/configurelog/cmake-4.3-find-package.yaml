@@ -1,0 +1,106 @@
+
+---
+# Trimmed-but-representative CMakeConfigureLog.yaml from cmake 4.3.3,
+# captured by running cmake on a CMakeLists.txt that exercises both
+# successful and unsuccessful find_package / find_program calls.
+#
+# Covers the polymorphic `found:` shapes that cmake 4.3 introduced:
+#   - scalar string  (find-v1 success)
+#   - scalar bool    (find-v1 failure: `false`)
+#   - scalar null    (find_package-v1 failure: `null`)
+#
+# Companion to converter/internal/fileapi/configurelog.go's
+# EventFindPackageFound.UnmarshalYAML — every `found:` shape this
+# fixture carries must decode without error.
+events:
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/cmake-4.3.3-linux-x86_64/share/cmake-4.3/Modules/CMakeDetermineSystem.cmake:12 (find_program)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_UNAME"
+    description: "Path to a program."
+    names:
+      - "uname"
+    candidate_directories:
+      - "/usr/bin/"
+    searched_directories:
+      - "/usr/bin/uname"
+    found: "/usr/bin/uname"
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/cmake-4.3.3-linux-x86_64/share/cmake-4.3/Modules/CMakeFindBinUtils.cmake:243 (find_program)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_DLLTOOL"
+    description: "Path to a program."
+    names:
+      - "dlltool"
+    candidate_directories:
+      - "/usr/bin/"
+    searched_directories:
+      - "/usr/bin/dlltool"
+    found: false
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/cmake-4.3.3-linux-x86_64/share/cmake-4.3/Modules/CMakeDetermineCCompiler.cmake:200 (find_program)"
+      - "CMakeLists.txt:2 (project)"
+    mode: "program"
+    variable: "CMAKE_C_COMPILER"
+    description: "C compiler"
+    names:
+      - "cc"
+      - "gcc"
+    candidate_directories:
+      - "/usr/bin/"
+    searched_directories:
+      - "/usr/bin/cc"
+    found: "/usr/bin/cc"
+  -
+    kind: "message-v1"
+    backtrace:
+      - "/opt/cmake-4.3.3-linux-x86_64/share/cmake-4.3/Modules/CMakeDetermineSystem.cmake:212 (message)"
+      - "CMakeLists.txt:2 (project)"
+    message: |
+      The system is: Linux - 6.18.5 - x86_64
+  -
+    kind: "find_package-v1"
+    backtrace:
+      - "CMakeLists.txt:4 (find_package)"
+    name: "NonExistentPackage"
+    configs:
+      -
+        filename: "NonExistentPackage.cps"
+        kind: "cps"
+      -
+        filename: "NonExistentPackageConfig.cmake"
+        kind: "cmake"
+    version_request:
+      exact: false
+    settings:
+      required: "optional"
+      quiet: true
+    candidates:
+      -
+        path: "/usr/share/cps/NonExistentPackage.cps"
+        mode: "cps"
+        reason: "no_exist"
+    found: null
+  -
+    kind: "find-v1"
+    backtrace:
+      - "/opt/cmake-4.3.3-linux-x86_64/share/cmake-4.3/Modules/FindPkgConfig.cmake:517 (find_program)"
+      - "CMakeLists.txt:5 (find_package)"
+    mode: "program"
+    variable: "PKG_CONFIG_EXECUTABLE"
+    description: "pkg-config executable"
+    names:
+      - "pkg-config"
+    candidate_directories:
+      - "/usr/bin/"
+    searched_directories:
+      - "/usr/bin/pkg-config"
+    found: "/usr/bin/pkg-config"
