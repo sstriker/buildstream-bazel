@@ -314,17 +314,6 @@ transition cleanly.
   correctness when bazel reconfigures for the other
   platform.
 
-- **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets.** The
-  (a) evaluator now supports the other six on-disk-path
-  variants (see Done). `TARGET_OBJECTS` is a distinct case —
-  it resolves to a semicolon-separated list of .o paths
-  per cmake's object-library convention, not a single path,
-  so it needs a separate `Context.Targets[t].Objects []string`
-  field and a list-valued wire (likely a repeatable
-  `--target-objects=<name>=<path>` flag the lifter calls once
-  per object). Convert-time byte-equal-check semantics work
-  the same way; just more wire than the FILE_* variants.
-
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
   available to the action at exec time without it being in the AC
@@ -410,6 +399,34 @@ transition cleanly.
   manifest-side INTERFACE export surface; queued as
   separate work) and INTERFACE_LINK_OPTIONS (no clean
   trace-side decoder; rides via the probe-genex hook only).
+- **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets.** The (a)
+  Go-side evaluator now resolves `$<TARGET_OBJECTS:t>` against
+  `Context.Targets[t].Objects` — populated at convert time from
+  the probe-genex hook's per-target `objects.txt` emission
+  (gated on `_CMTB_TYPE STREQUAL "OBJECT_LIBRARY"`, since
+  OBJECT_LIBRARY targets are the only type cmake's
+  `$<TARGET_OBJECTS:>` resolves non-trivially for). The lifter's
+  `file_generate.go` extracts TARGET_OBJECTS references and
+  emits one `--target-objects=<name>="$(echo $(locations :<name>) | tr ' ' ':')"`
+  flag per referenced target alongside the existing
+  `--target-file=` flags — the colon-delimited wire shape
+  sidesteps shell quoting hazards around cmake's native `;`
+  separator. `cmake-configure-file` parses the flag, rewrites
+  colons back to semicolons (cmake's native list shape), and
+  populates `Context.Targets[name].Objects` so the genex
+  evaluator at Bazel time sees the executor's actual on-disk
+  paths. The cross-package soundness gate
+  (`unresolvedCrossPackageTargetFiles`) extends to TARGET_OBJECTS
+  for the same reason it covers TARGET_FILE — an unresolved
+  cross-package reference would otherwise embed the recording-
+  machine absolute path. Probe-genex.cmake fixed in the same
+  change: OBJECT_LIBRARY was previously in the TARGET_FILE
+  emission gate, which cmake rejects ("Target … is not an
+  executable or library"); it now only emits `objects.txt`,
+  not `file.txt` / `file_dir.txt` / `file_name.txt`. New
+  render gate `scripts/meta-cmake-probe-genex-object-library.sh`
+  exercises the end-to-end flow against the existing
+  `object-library` sample project.
 
 - **Multi-version cmake compatibility shakeout.** The single
   `e2e-latest-cmake` job (cmake `4.0.3` only) expanded into a

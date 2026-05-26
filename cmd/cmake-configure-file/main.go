@@ -142,6 +142,8 @@ func main() {
 	flag.Var(&contentBase64, "content-base64", "base64-encoded inline template body (mutually exclusive with the positional <input> path). Used by file(GENERATE CONTENT ...) lifts where the template has no on-disk srcs anchor. An explicit `--content-base64=` (empty value) is treated as the literal empty template — distinct from omitting the flag.")
 	var targetFiles targetFileFlag
 	flag.Var(&targetFiles, "target-file", "repeatable: `<name>=<path>`. Overrides genexeval.Context.Targets[<name>].FileLocation for the (a)-shape `$<TARGET_FILE:<name>>` evaluation. The lifter typically passes the path as `$(location //pkg:<name>)`; Bazel substitutes at action time so cmake-configure-file receives the resolved Bazel-time path. Multiple flags accumulate. Requires --genex-context to also be set (no-op otherwise).")
+	var targetObjects targetObjectsFlag
+	flag.Var(&targetObjects, "target-objects", "repeatable: `<name>=<path1>:<path2>:...`. Overrides genexeval.Context.Targets[<name>].Objects for the (a)-shape `$<TARGET_OBJECTS:<name>>` evaluation. The lifter typically passes the paths as `$(locations //pkg:<name>)` piped through `tr ' ' ':'`; Bazel substitutes the space-separated list at action time and the inline shell rewrite converts to the colon-delimited wire shape. Colon-delimited (not the cmake-native semicolon) because cmake uses `;` as its list separator AND its statement terminator — a single shell-safe character keeps the flag round-trip clean. The colon is rewritten to a semicolon internally before populating Context.Targets[name].Objects so the evaluator sees cmake's native list shape. Multiple flags accumulate (one per OBJECT_LIBRARY referenced); duplicate names overwrite (last-wins). Requires --genex-context to also be set (no-op otherwise).")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
 	copyOnly := flag.Bool("copy-only", false, "skip ALL substitution (@VAR@, ${VAR}, #cmakedefine*) and emit the template verbatim. Mirrors configure_file's COPYONLY flag.")
 	escapeQuotes := flag.Bool("escape-quotes", false, "backslash-escape `\"` (and `\\\\`) in expanded values. Mirrors configure_file's ESCAPE_QUOTES flag.")
@@ -196,7 +198,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cmake-configure-file: --genex-values and --genex-context are mutually exclusive (pick one genex shape per call site)")
 		os.Exit(2)
 	}
-	if err := run(*valuesPath, *genexValuesPath, *genexContextPath, targetFiles.byName, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
+	if err := run(*valuesPath, *genexValuesPath, *genexContextPath, targetFiles.byName, targetObjects.byName, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
@@ -239,6 +241,53 @@ func (f *targetFileFlag) Set(s string) error {
 	return nil
 }
 
+// targetObjectsFlag accumulates --target-objects=<name>=<paths>
+// entries into a name→paths map. paths is a colon-delimited list
+// (rewritten from $(locations :name)'s space-separated expansion
+// by an inline `tr ' ' ':'` in the lifter's genrule cmd). The
+// colon is the wire delimiter because cmake's native `;` is both
+// list-separator AND statement-terminator — picking a different
+// shell-safe character keeps the round-trip clean. The wire form
+// is translated to cmake's native semicolon-joined shape inside
+// run() (where it lands in Context.Targets[name].Objects) so the
+// genexeval evaluator sees cmake's documented serialization for
+// `$<TARGET_OBJECTS:t>`.
+//
+// Repeated flags accumulate; duplicate names overwrite
+// (last-wins, matching targetFileFlag). Empty paths value is
+// rejected at Set-time — an empty objects list for an
+// OBJECT_LIBRARY would be a lifter bug, not a legitimate input.
+type targetObjectsFlag struct {
+	byName map[string]string
+}
+
+func (f *targetObjectsFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d entries", len(f.byName))
+}
+
+func (f *targetObjectsFlag) Set(s string) error {
+	eq := strings.IndexByte(s, '=')
+	if eq < 0 {
+		return fmt.Errorf("expected <name>=<paths>, got %q", s)
+	}
+	name := s[:eq]
+	paths := s[eq+1:]
+	if name == "" {
+		return fmt.Errorf("--target-objects: empty name in %q", s)
+	}
+	if paths == "" {
+		return fmt.Errorf("--target-objects: empty paths for %q (use a real $(locations ...) value piped through tr ' ' ':')", name)
+	}
+	if f.byName == nil {
+		f.byName = map[string]string{}
+	}
+	f.byName[name] = paths
+	return nil
+}
+
 // parseNewlineStyle accepts cmake's NEWLINE_STYLE token set
 // (case-insensitive). Empty string maps to NewlineDefault
 // (preserve the template's original line terminator).
@@ -268,7 +317,7 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 // suspiciously well-formed output that masks the bug) or
 // both set (which is ambiguous about which template source
 // wins).
-func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles map[string]string, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
+func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles, targetObjects map[string]string, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
 	switch {
 	case inPath == "" && !hasContent:
 		return fmt.Errorf("internal: neither inPath nor hasContent set; main's CLI gate should have rejected this argv")
@@ -338,6 +387,25 @@ func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles map[s
 			}
 			ti := ctx.Targets[name]
 			ti.FileLocation = path
+			ctx.Targets[name] = ti
+		}
+		// --target-objects overrides: each <name>=<paths> entry
+		// populates Context.Targets[name].Objects with cmake's
+		// native semicolon-joined list shape. The wire format is
+		// colon-delimited (see targetObjectsFlag's docstring for
+		// the rationale); rewrite to semicolons here so the
+		// evaluator sees the cmake-canonical form. The marshaled
+		// Context payload carries Objects (json tag matches), but
+		// the lifter typically populates it via the probe-genex
+		// hook's authoritative recording — --target-objects is the
+		// Bazel-time override so multi-machine builds resolve to
+		// the executor's actual on-disk paths.
+		for name, paths := range targetObjects {
+			if ctx.Targets == nil {
+				ctx.Targets = map[string]genexeval.TargetInfo{}
+			}
+			ti := ctx.Targets[name]
+			ti.Objects = strings.ReplaceAll(paths, ":", ";")
 			ctx.Targets[name] = ti
 		}
 		nodes, err := genexeval.Parse(rendered)
