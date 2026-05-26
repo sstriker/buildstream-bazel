@@ -309,7 +309,7 @@ sanitizer / instrumentation patterns:
 
 ## Phase 6 — install(EXPORT) declarative IR projection
 
-Classifier + IR projection landed:
+Classifier + IR projection + codemodel-only EmitInputs landed:
 - `converter/internal/exportshape.Classify` decides declarative
   vs imperative per install(EXPORT) installer; Verdict carries
   Reasons[] for the audit gate.
@@ -319,6 +319,31 @@ Classifier + IR projection landed:
   filegroup per target's public headers, one bundle-wide
   `cmake_config_bundle` filegroup for the generated
   `<Pkg>{Config,ConfigVersion,Targets}.cmake` files.
+- `exportshape.BuildInputs` synthesizes `EmitInputs` from
+  codemodel-only sources — `Target.NameOnDisk`,
+  `Target.Install.Destinations`, `Target.FileSets` HEADERS,
+  plus the installer's own `Destination` for the bundle
+  script path. No `cmake --install` runs at convert time;
+  the artifact paths come from what cmake records cmake
+  WILL produce when the producer's converted BUILD rule
+  builds under Bazel.
+- `lower/directory_installers.go::lowerExportInstallers` wires
+  the verdict + inputs + emit into the per-package IR.
+  Declarative export-derived cc_import targets carry an
+  `_import` name suffix to avoid colliding with the
+  producer's own cc_library (`install(TARGETS foo EXPORT ...)`
+  declares the same `foo` target that the project authored;
+  both shapes coexist in the producer's BUILD package).
+  They also carry the `cmake-codegen-install-export-import`
+  tag so `internal/emit/cmakecfg`'s bundle-synth pass can
+  de-duplicate when emitting `add_library(<Pkg>::foo IMPORTED)`.
+
+`internal/manifest.Export` gained two `omitempty` fields —
+`cmake_config_bundle_label` + `cmake_import_labels` — so the
+orchestrator's manifest synth (queued under `resolved-lift`)
+can point cross-element `find_package(<Pkg>)` consumers at the
+producer's synthesized bundle filegroup + per-target cc_import
+facades without re-deriving them from the codemodel.
 
 **Architectural constraint: the convert action does not build.**
 Earlier work-in-progress on this phase wired
@@ -333,15 +358,6 @@ Bazel's action graph under its own caching and sandboxing —
 running them inside the convert action would change the
 project's whole runtime model (sandboxable, cheap to re-run,
 parallelizable across the orchestrator's fleet).
-
-`Classify` + `EmitDeclarative` remain as the read-only IR
-projection that the follow-on slice needs. The next iteration
-of this phase wires `EmitInputs` from codemodel-only sources —
-`Target.Artifacts`, `Target.Install.Destinations`, `Target.FileSets`
-HEADERS — so the same IR shape lands without a convert-time
-build. cc_import paths point at the destination the install
-would land at; Bazel materializes the artifacts via its own
-build rather than the convert action.
 
 Verdict shape (`exportshape.Classify`):
 

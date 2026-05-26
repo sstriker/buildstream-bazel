@@ -85,27 +85,42 @@ func EmitDeclarative(in EmitInputs) []ir.Target {
 
 	var out []ir.Target
 	// One cc_import / cc_library per exported target.
+	//
+	// Name source: ExportTarget.Name is the bare target name (as
+	// recorded in the schema docs), but the codemodel as of cmake
+	// 3.20+ leaves the field empty and emits {"id": ..., "index":
+	// ...} entries instead — the canonical name lives on
+	// Target.Name (looked up by id). Treat the ExportTarget.Name
+	// as a hint and fall back to Target.Name when empty.
 	for _, et := range in.Installer.ExportTargets {
 		t, ok := in.Targets[et.Id]
 		if !ok {
 			continue
 		}
+		name := et.Name
+		if name == "" {
+			name = t.Name
+		}
+		if name == "" {
+			// Unrecoverable — skip.
+			continue
+		}
 		switch t.Type {
 		case "STATIC_LIBRARY", "SHARED_LIBRARY", "MODULE_LIBRARY":
-			tgt := emitCCImport(et.Name, t, in.InstallFiles)
+			tgt := emitCCImport(name, t, in.InstallFiles)
 			if tgt.Name != "" {
 				out = append(out, tgt)
 			}
 		case "INTERFACE_LIBRARY":
-			tgt := emitCCInterface(et.Name)
+			tgt := emitCCInterface(name)
 			out = append(out, tgt)
 		}
 		// Headers per target, when populated.
-		if hdrs := in.PublicHeaders[et.Name]; len(hdrs) > 0 {
+		if hdrs := in.PublicHeaders[name]; len(hdrs) > 0 {
 			sortedHdrs := append([]string(nil), hdrs...)
 			sort.Strings(sortedHdrs)
 			out = append(out, ir.Target{
-				Name:       et.Name + "_hdrs",
+				Name:       name + "_hdrs",
 				Kind:       ir.KindFilegroup,
 				Srcs:       sortedHdrs,
 				Visibility: []string{"//visibility:public"},

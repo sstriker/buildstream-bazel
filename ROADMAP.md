@@ -131,26 +131,30 @@ transition cleanly.
 
   - **Phase 6 — install(EXPORT) declarative IR
     projection.** Classifier (`internal/exportshape.Classify`)
-    + IR projection (`exportshape.EmitDeclarative`) landed:
-    declarative bundles produce `cc_import` per exported
+    + IR projection (`exportshape.EmitDeclarative`) +
+    codemodel-only `EmitInputs` wiring
+    (`exportshape.BuildInputs`) landed: declarative bundles
+    produce a `<name>_import` `cc_import` per exported
     library + per-target header filegroups + a bundle-wide
-    `cmake_config_bundle` filegroup. **Hard constraint:
-    convert is metadata-only — no `cmake --build` /
-    `cmake --install` runs at convert time.** Earlier WIP
-    that wired convert-time build was backed out (it would
-    have changed the project's runtime model from
-    sandboxable-and-cheap to "build farms"). Next slice
-    wires `EmitInputs` from codemodel-only sources
-    (`Target.Artifacts`, `Target.Install.Destinations`,
-    `Target.FileSets` HEADERS); cc_import paths point at
-    where Bazel will land the artifact under its own build,
-    not at a pre-materialized install tree. The
-    non-declarative residue stays on the round-2
-    `_install_tree_extract` fallback. Closes the
-    cross-element `find_package` PR2 (`resolved-lift`
-    piece queued under `Later`) by giving the
-    `*manifest.Resolver` direct access to a synthesized
-    bundle at A-side load time.
+    `cmake_config_bundle` filegroup, all from
+    `Target.NameOnDisk`/`Target.Install.Destinations`/
+    `Target.FileSets` HEADERS without running
+    `cmake --install` at convert time. The manifest's
+    `*manifest.Export` carries new `omitempty`
+    `cmake_config_bundle_label` + `cmake_import_labels`
+    fields so cross-element `find_package` consumers can
+    resolve directly to the synthesized bundle.
+    **Hard constraint preserved: convert is metadata-only
+    — no `cmake --build` / `cmake --install` runs at
+    convert time.** Earlier WIP that wired convert-time
+    build was backed out (it would have changed the
+    project's runtime model from sandboxable-and-cheap to
+    "build farms"). The non-declarative residue stays on
+    the round-2 `_install_tree_extract` fallback. The
+    `resolved-lift` manifest-synth piece queued under
+    `Later` is the remaining slice (the orchestrator's
+    M3 step that populates the new manifest fields from
+    Phase 6 codemodel verdicts).
 
   - **Phase 7 — Bazel-idiom shaping audit.** A final-
     emission pass that audits the converter's IR against a
