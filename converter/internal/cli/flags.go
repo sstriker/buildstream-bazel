@@ -268,11 +268,14 @@ type Args struct {
 	// generator-parity uplift's standalone-genrule emission: walk
 	// every CUSTOM_COMMAND edge in build.ninja and emit a genrule
 	// for each whose outputs aren't already covered by an existing
-	// recoverGenrule emission. Off by default; opting in adds
-	// targets for add_custom_target / add_custom_command edges
-	// nothing consumes (typically version-stamp or phony bookkeeping
-	// rules), which can change BUILD output shape for projects that
-	// rely on those edges firing implicitly through cmake's build.
+	// recoverGenrule emission. On by default — Phase 4 graduated
+	// after fixture coverage + render gate (see
+	// scripts/meta-cmake-standalone-custom-command.sh). Pass
+	// --emit-standalone-custom-commands=false to opt out for
+	// operators who hit edge cases (e.g. projects with very large
+	// custom-command graphs where the new genrules slow analysis
+	// or surface phony bookkeeping rules the operator doesn't want
+	// rendered).
 	EmitStandaloneCustomCommands bool
 
 	// OutSanitizerFeatures, when non-empty, writes a .bzl file
@@ -391,7 +394,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
 	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
-	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", false, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. Off by default; opting in covers add_custom_target / add_custom_command edges nothing consumes.")
+	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")

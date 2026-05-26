@@ -62,10 +62,37 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 		// build-dir-relative in cmake's Ninja generator.
 		outs := append([]string(nil), b.Outputs...)
 		outs = append(outs, b.ImplicitOuts...)
+		// Drop outputs that contain unexpanded ninja variable
+		// references (e.g. `${cmake_ninja_workdir}foo.txt`).
+		// cmake's Ninja generator pairs every real custom-command
+		// output with a `${cmake_ninja_workdir}<basename>`
+		// implicit-output shadow so the restat=1 semantics see
+		// both relative and absolute paths; a Bazel genrule can't
+		// declare an outs entry whose path is a ninja-time
+		// variable reference. The real (variable-free) output
+		// stays in the list and drives the genrule's outs / name.
+		outs = filterOutVarRefs(outs)
 		// Sort for byte-stability and dedup.
 		sort.Strings(outs)
 		outs = dedupSorted(outs)
 		if len(outs) == 0 {
+			continue
+		}
+		// Skip cmake-internal bookkeeping edges. cmake's Ninja
+		// generator adds standalone CUSTOM_COMMAND edges for its
+		// own IDE / regen workflows: `CMakeFiles/edit_cache.util`,
+		// `CMakeFiles/rebuild_cache.util`, and a handful more
+		// (install / package / package_source / test / list_install
+		// _components) under multi-target generators. These run
+		// cmake itself or echo a message; lifting them to genrules
+		// in the rendered BUILD.bazel adds noise without
+		// operator-visible value (the cmake re-invoke shape
+		// doesn't work outside cmake's own build dir, and the IDE
+		// hooks are no-ops under bazel anyway). Filter every edge
+		// whose first output is `CMakeFiles/<name>.util` —
+		// cmake's bookkeeping outputs uniformly land under that
+		// path with the .util suffix.
+		if isCMakeBookkeepingOutput(outs[0]) {
 			continue
 		}
 		srcs := append([]string(nil), b.Inputs...)
@@ -128,6 +155,44 @@ func edgeCovered(b *ninja.Build, covered map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// filterOutVarRefs returns xs with any entry containing an
+// unexpanded ninja variable reference (substring `${`) removed.
+// cmake's Ninja generator pairs every real CUSTOM_COMMAND output
+// with a `${cmake_ninja_workdir}<basename>` implicit-output
+// shadow used for restat tracking — those shadow paths are
+// ninja-internal and can't be emitted as Bazel genrule outs.
+//
+// Note: also drops outputs that use any other unresolved
+// ninja-var reference — none of those have a defined meaning at
+// Bazel emission time either.
+func filterOutVarRefs(xs []string) []string {
+	out := xs[:0]
+	for _, x := range xs {
+		if strings.Contains(x, "${") {
+			continue
+		}
+		out = append(out, x)
+	}
+	return out
+}
+
+// isCMakeBookkeepingOutput reports whether a build-edge output
+// path is one of cmake's internal IDE / regen utility outputs.
+// cmake's Ninja generator emits a standalone CUSTOM_COMMAND for
+// each of edit_cache / rebuild_cache (always present), plus a
+// handful more under multi-target generators (install / package /
+// package_source / test / list_install_components). The
+// canonical shape is `CMakeFiles/<name>.util` — checking that
+// prefix + suffix pair is both necessary and sufficient: no
+// user-declared add_custom_command lands an output under
+// `CMakeFiles/<n>.util` (cmake reserves the `.util` extension
+// for these bookkeeping edges).
+func isCMakeBookkeepingOutput(p string) bool {
+	const prefix = "CMakeFiles/"
+	const suffix = ".util"
+	return strings.HasPrefix(p, prefix) && strings.HasSuffix(p, suffix)
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a

@@ -90,9 +90,15 @@ transition cleanly.
     `genrule`: `cmd` from the rule's resolved command
     (post-genex, post-VERBATIM-escaping), `srcs` from
     explicit inputs + depfile-derived implicit inputs,
-    `outs` from the edge outputs. Cross-reference with the
-    trace's `add_custom_command` / `add_custom_target` call
-    sites so source-level naming + visibility survive. For
+    `outs` from the edge outputs. The standalone-genrule
+    emission ✓ graduated to default-on at the CLI layer
+    after fixture + render-gate coverage landed
+    (`--emit-standalone-custom-commands` defaults to true;
+    operators with edge-case projects opt out via
+    `--emit-standalone-custom-commands=false`). Remaining
+    queued work: cross-reference with the trace's
+    `add_custom_command` / `add_custom_target` call sites
+    so source-level naming + visibility survive. For
     the probe / stamp buckets of `execute_process`
     (currently refused), add a sibling TOP_LEVEL_INCLUDES
     hook that `file(GENERATE)`s each `OUTPUT_VARIABLE`'s
@@ -366,6 +372,35 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Phase 4 standalone-genrule emission graduated to default-on.**
+  The opt-in `--emit-standalone-custom-commands` flag PR #227
+  landed flipped to default-on after fixture + render-gate
+  coverage landed. New fixture
+  (`converter/testdata/sample-projects/standalone-custom-command`)
+  exercises a `add_custom_command` whose output is consumed only
+  by an `add_custom_target` — the recoverGenrule path skips
+  because no cmake target lists the output in its sources, so the
+  Phase 4 walker is the only path that emits a genrule for it.
+  Render gate
+  (`scripts/meta-cmake-standalone-custom-command.sh`) drives
+  convert-element-cmake against the fixture with default flags
+  and asserts (1) the standalone genrule surfaces with the
+  expected `cmake-codegen-standalone-custom-command` tag, (2) the
+  companion `cc_library` survives unchanged, (3)
+  `--emit-standalone-custom-commands=false` still honours the
+  opt-out path for operators with edge-case projects. The
+  library-side default (`lower.Options.EmitStandaloneCustom
+  Commands`) stays at the Go zero value (`false`) so in-process
+  goldens / unit-level callers that construct `lower.Options{...}`
+  literals keep their existing emission shape — the two-tier
+  default (CLI on, library off) graduates the operator-facing
+  surface without rebaking the unit-level fixture matrix. The
+  remaining Phase 4 work — trace-side cross-referencing of
+  `add_custom_command` / `add_custom_target` call sites for
+  source-level naming + visibility, and the
+  `execute_process_classify.go` `unknown` arm retirement — stays
+  queued in `Now` under Phase 4.
 
 - **TARGET_PROPERTY INTERFACE_* convert-time aggregation.**
   `$<TARGET_PROPERTY:t,INTERFACE_INCLUDE_DIRECTORIES>` /

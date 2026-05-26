@@ -152,9 +152,20 @@ type Options struct {
 	// EmitStandaloneCustomCommands toggles Phase 4 of the
 	// generator-parity uplift: emit genrules for CUSTOM_COMMAND
 	// edges in build.ninja that aren't already covered by the
-	// recoverGenrule path. Off by default — opt-in is the safer
-	// default because the new emission can shift BUILD shape for
-	// projects relying on implicit add_custom_target bookkeeping.
+	// recoverGenrule path. On by default at the CLI layer after
+	// the Phase 4 graduation (see
+	// scripts/meta-cmake-standalone-custom-command.sh and the
+	// fixture under converter/testdata/sample-projects/standalone-
+	// custom-command). Operators with edge-case projects opt out
+	// via --emit-standalone-custom-commands=false. lower.Options
+	// itself still defaults to the Go zero value (false) so
+	// in-process callers (golden tests, the legacy embedders that
+	// pass an explicit lower.Options literal) keep their existing
+	// shape — flipping the lower-side default would silently
+	// re-shape every unit test golden that doesn't set the field
+	// explicitly. The two-tier default (CLI on, library off)
+	// keeps the operator-facing surface graduated without
+	// regressing in-process consumers.
 	EmitStandaloneCustomCommands bool
 
 	// ConfigureLog carries the parsed CMakeConfigureLog.yaml
