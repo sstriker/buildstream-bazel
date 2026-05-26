@@ -11,7 +11,7 @@ import (
 
 // TestProtocFlow_RegressionGuard exercises the documented
 // protobuf example from
-// `docs/design/operator-gazelle-step.md` end-to-end:
+// `ROADMAP.md` end-to-end:
 //
 //  1. A `protoc`-style add_custom_command in CMake lowers to
 //     an `ir.Target` with `Kind = KindGenrule`, a `cmd`

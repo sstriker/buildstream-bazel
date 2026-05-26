@@ -161,10 +161,10 @@ jobs:
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
       - name: downstream bazel build e2e (cross-element kind:cmake)
-        # Re-homed from the orchestrator's TestE2E_BazelBuild onto the
-        # write-a + Bazel path: render a cross-element kind:cmake
-        # graph, build project A, stage-b into B, bazel-build the
-        # consumer there. See docs/design/orchestrator-absorption.md.
+        # Re-homed from the (now-deleted) orchestrator's
+        # TestE2E_BazelBuild onto the write-a + Bazel path: render a
+        # cross-element kind:cmake graph, build project A, stage-b
+        # into B, bazel-build the consumer there.
         run: make e2e-meta-cross-cmake 2>&1 | tee -a /tmp/cijob.log
 
       - name: run-vs-run regression e2e
@@ -182,7 +182,7 @@ jobs:
 
       - name: fidelity e2e — fmt (real-world fixture)
         # fmt fidelity is iterative: each delta surfaced lands in
-        # docs/fidelity-known-deltas.md before this gate goes green.
+        # docs/known-deltas.md before this gate goes green.
         # Until then, allow the step to fail without aborting the
         # job (continue-on-error) so reviewers see the diff output
         # in the log without losing the rest of the pipeline.
@@ -246,8 +246,8 @@ jobs:
         # against the real Buildbarn stack via Bazel-native
         # --remote_executor, asserting it executes on a worker and the
         # output stays build-without-the-bytes. The production-path
-        # replacement for the orchestrator's Go-harness e2e-buildbarn*
-        # coverage — see docs/design/orchestrator-absorption.md.
+        # replacement for the (now-deleted) orchestrator's Go-harness
+        # e2e-buildbarn* coverage.
         #
         # BST_RE_GATE_REQUIRE=1 turns the gate's bazel-availability
         # skip into a hard failure: this step IS the bazel build, so a

@@ -1,7 +1,9 @@
 # sanitizer-features — bridging cmake sanitizer configs and Bazel features
 
-End-to-end example for the convention documented in
-[`docs/design/sanitizer-as-feature.md`](../../docs/design/sanitizer-as-feature.md):
+End-to-end example for the converter convention: cmake sanitizer
+configs (`-DCMAKE_BUILD_TYPE=ASAN` with `CMAKE_C_FLAGS_ASAN`, etc.)
+lower to a Bazel cc_toolchain `--features=asan` opt-in rather than
+to per-rule `select()` arms.
 
 - `cmake-side/` — a CMakeLists.txt that defines per-config
   sanitizer flag sets the cmake way (`CMAKE_C_FLAGS_ASAN`, etc.).
@@ -14,11 +16,6 @@ End-to-end example for the convention documented in
   Bazel targets pick up the feature (per-build via flag,
   per-package via `package(features=…)`, or per-target via
   `cc_library(features=…)`).
-
-Together these show the operator-side wiring for the residual
-sanitizer-as-feature work item under
-[`generator-parity-uplift.md`](../../docs/design/generator-parity-uplift.md)
-Phase 5.
 
 ## Running the example
 
@@ -87,9 +84,12 @@ INTO the toolchain feature definitions, not into per-rule
 attributes. Operators tune the sanitizer flags by editing
 `toolchain/features.bzl`, not by re-converting.
 
-## Why the split — see the design doc
+## Why the split
 
-[`docs/design/sanitizer-as-feature.md`](../../docs/design/sanitizer-as-feature.md)
-covers the rationale (one feature definition per sanitizer
-shared across all converted projects, vs. N per-project flag
-sets duplicating the same `-fsanitize=address`).
+One cc_toolchain feature definition per sanitizer, shared across
+all converted projects, vs. N per-project flag sets each
+duplicating the same `-fsanitize=address`. The converter's output
+stays sanitizer-agnostic; the operator's toolchain carries the
+flag sets. Per-project sanitizer toggles become `--features=asan` /
+`--features=tsan` opt-ins at `bazel build` time, with the same flag
+shape across every converted project.

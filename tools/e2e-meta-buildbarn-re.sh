@@ -2,9 +2,9 @@
 # e2e-meta-buildbarn-re: remote-execution + build-without-the-bytes
 # gate for the write-a + Bazel path against a real Buildbarn cluster.
 #
-# This gate proves the claim the orchestrator-absorption plan rests
-# on (docs/design/orchestrator-absorption.md): with Bazel as the
-# scheduler, the per-element converter genrule executes on a real
+# This gate proves the claim the orchestrator absorption rested on:
+# with Bazel as the scheduler, the per-element converter genrule
+# executes on a real
 # Buildbarn worker via Bazel-native --remote_executor — no bespoke
 # REAPI submission code — and the build stays
 # build-without-the-bytes: the genrule's output is never materialised

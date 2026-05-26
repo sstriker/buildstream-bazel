@@ -15,7 +15,7 @@
 #
 # The first points the rule at the daemon's mount; the second
 # parameterises the path layout under the mount (cas-fuse vs
-# bb_clientd, see docs/design/bazel9-cas-fs.md). The third + fourth
+# bb_clientd, see docs/design/sources.md). The third + fourth
 # are Bazel-7/8 only — they let Bazel trust the daemon's
 # pre-computed digests so input files don't have to be read once
 # just to be hashed. On Bazel 9 the equivalent is

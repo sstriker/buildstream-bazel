@@ -2,9 +2,9 @@
 # meta-regression.sh — run-vs-run regression gate for the write-a +
 # Bazel path.
 #
-# Re-homed from the orchestrator's regression e2e
-# (docs/design/orchestrator-absorption.md). The orchestrator produced
-# a <out>/manifest/{converted,failures,determinism}.json per run and
+# Re-homed from the (now-deleted) orchestrator's regression e2e.
+# The orchestrator produced a
+# <out>/manifest/{converted,failures,determinism}.json per run and
 # orchestrate-diff compared two of them; the write-a + Bazel path
 # produces the same run-manifest shape via `cmd/run-manifest` walking
 # a built project A.
@@ -28,7 +28,7 @@
 # run completed, failures.json recorded casualties). The write-a +
 # Bazel path is *hard*-fail — a Tier-1 makes `bazel build` in project
 # A fail outright, so a run that exists has no failed elements. See
-# cmd/run-manifest's doc comment and docs/design/orchestrator-absorption.md.
+# cmd/run-manifest's doc comment for the contrast.
 #
 # Bazel-availability gating + META_BAZEL_*_ARGS mirror
 # scripts/meta-cross-cmake.sh.

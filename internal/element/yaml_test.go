@@ -9,8 +9,7 @@ import (
 )
 
 // fdsdk-subset relocated to the repo-root testdata/ when orchestrator/
-// was deleted in the absorption (docs/design/orchestrator-absorption.md);
-// this test is now its only consumer.
+// was deleted; this test is now its only consumer.
 const fixtureRoot = "../../testdata/fdsdk-subset"
 
 func TestParseElement_ManualWithBareDeps(t *testing.T) {

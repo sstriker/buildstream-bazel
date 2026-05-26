@@ -15,7 +15,8 @@ package main
 // converter genrules — each already carries exec_compatible_with =
 // <constraints> — to the matching execution platform, where the
 // action inherits exec_properties and so selects the right Buildbarn
-// worker pool. See docs/design/orchestrator-absorption.md.
+// worker pool — the routing the (now-deleted) orchestrator's
+// reapi_properties handled in-process.
 
 import (
 	"encoding/json"

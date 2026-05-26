@@ -3,7 +3,7 @@ package main
 // Per-element srckey: the content-narrowed identity of an
 // element's source tree, used downstream as the cache key for
 // the trace-driven build-graph registry (see
-// docs/trace-driven-autotools.md "Roadmap"). Same srckey =>
+// docs/architecture.md "Roadmap"). Same srckey =>
 // same expected build-graph (configure output / Makefile rules
 // / compile + link commands), so the registry can hit and the
 // expensive autotools build can be skipped.

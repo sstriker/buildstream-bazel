@@ -14,7 +14,7 @@ project(storage_cost C)
 # Why a stamp-shaped call: matches a real-world pattern (cmake
 # projects that bake a build-time version stamp) and is the
 # canonical example called out in
-# docs/design/cmake-execute-process-round2-fallback.md.
+# docs/design/rendezvous.md.
 # `git rev-parse HEAD` can't be safely re-executed at Bazel
 # action time (the action would need read access to the .git
 # directory; the version stamp would invalidate on every commit;

@@ -1,8 +1,8 @@
 #!/bin/sh
 # meta-cmake-round2-fallback.sh — render-half acceptance gate
 # for kind:cmake's Phase B execute_process round-2 fallback
-# shape. See docs/design/cmake-execute-process-round2-fallback.md
-# for the full architecture.
+# shape. The fallback uses the same AC rendezvous trace-driven
+# kinds use; see docs/design/rendezvous.md.
 #
 # When the operator passes --cmake-round2-fallback +
 # --build-tracer-bin + --trace-publish-bin to write-a, every

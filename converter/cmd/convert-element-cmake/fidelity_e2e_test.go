@@ -79,7 +79,7 @@ func TestE2E_Fidelity_HelloWorld_SymbolEquivalent(t *testing.T) {
 // TestE2E_Fidelity_Fmt_SymbolEquivalent: same harness, fmt as the
 // fixture. Exercises the converter on a real-world cmake project with
 // many translation units. Likely to surface converter bugs the way
-// hello-world doesn't; see docs/fidelity-known-deltas.md for the
+// hello-world doesn't; see docs/known-deltas.md for the
 // observed deltas and how each was triaged.
 func TestE2E_Fidelity_Fmt_SymbolEquivalent(t *testing.T) {
 	runSymbolFidelityCase(t, fidelityCase{
@@ -201,7 +201,7 @@ func runSymbolFidelityCase(t *testing.T, c fidelityCase) {
 
 	diff := fidelity.DiffSymbols(cmakeSyms, bazelSyms)
 	if !diff.Empty() {
-		t.Errorf("%s: fidelity symbol mismatch in lib%s.a\n%s\n  see docs/fidelity-known-deltas.md",
+		t.Errorf("%s: fidelity symbol mismatch in lib%s.a\n%s\n  see docs/known-deltas.md",
 			c.Name, c.LibName, diff.Format())
 	}
 }

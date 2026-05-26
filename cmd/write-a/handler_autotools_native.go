@@ -110,7 +110,7 @@ func (autotoolsHandler) DefaultReadPathsPatterns() *readPathsPatterns { return n
 //     materialized as Bazel cc_library / install_tree.tar
 //     targets. Project A only carries a marker BUILD plus the
 //     srckey debug artifacts the registry-driven round-2 lookup
-//     consults. See docs/three-pass-flow.md for the
+//     consults. See docs/architecture.md for the
 //     1 → 2 → 3 → 2′ → 3′ loop.
 //   - Coarse (no --convert-element-trace): existing
 //     pipeline-shape rendering — install genrule in A, B is a
@@ -377,7 +377,7 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 // reverted: trace + make-db are not byte-stable across builds
 // (pid prefix, cc1 temp paths, make-db's `# Last modified`
 // timestamps), so the narrow cache key never hit anyway. See
-// docs/trace-driven-autotools.md for the determinism work
+// docs/architecture.md for the determinism work
 // that would let us re-introduce the split.
 func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension {
 	ext := &pipelineExtension{

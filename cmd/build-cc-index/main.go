@@ -34,7 +34,7 @@
 // (walk-derived) entries win on collision; the manifest only
 // gap-fills.
 //
-// Per Phase 7c of docs/design/build-output-conventions.md. The
+// Per Phase 7c of ROADMAP.md. The
 // stub `{}` files Phase 7b wrote get rewritten in place — the
 // stable file paths the MODULE.bazel `# gazelle:cc_indexfile` /
 // `# gazelle:python_module_mapping` directives reference don't

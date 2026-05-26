@@ -1,342 +1,293 @@
 # Architecture
 
-A descriptive map of what's actually in this repo today: the binaries
-shipped, the data flowing between them, and the shared substrates each
-one leans on. For what's done vs queued see [`ROADMAP.md`](../ROADMAP.md).
-For a diagram-first tour of the same material see
-[`docs/visual-guide.md`](visual-guide.md). For the architectural
-framing (how the two-project shape, rendezvous channel, fixpoint driver,
-and `finalize-b` fit together) see
-[`docs/design/conversion-architecture.md`](design/conversion-architecture.md).
+For what's shipped vs queued, see [`ROADMAP.md`](../ROADMAP.md). For
+deep-dive design specs of individual mechanisms, see [`docs/design/`](design/).
+For a developer-facing tour of the repo packages, see
+[`codebase-map.md`](codebase-map.md).
 
-## Goal in one paragraph
+## The problem in one paragraph
 
-Take a BuildStream project (the FreeDesktop SDK is the working target)
-and produce a Bazel build that builds the same artifacts. The
-single-element converter runs cmake against a `kind: cmake` element in
-a sandbox, reads cmake's File API + ninja graph, lowers the result to
-an internal representation, and emits both a `BUILD.bazel` (so Bazel
-can drive the build) and a synthesized cmake-config bundle (so
-downstream cmake consumers still resolve `find_package()`). The
-multi-element driver is **`cmd/write-a` + Bazel**: write-a renders a
-two-pass meta-project (project A runs the per-element converters as
-Bazel genrules; project B is the consumer workspace built against
-project A's outputs), and **Bazel** schedules the cross-element work —
-including, against a Buildbarn cluster, fanning per-element conversions
-out across a remote executor pool via Bazel-native `--remote_executor`.
-The same two-pass model extends to non-cmake kinds — `kind:autotools`
-(round-1 coarse + round-2 trace-driven), `kind:make`, `kind:makemaker`,
-`kind:modulebuild`, `kind:manual`, `kind:script`, and `kind:meson`
-(introspection-driven Phase A) are all shipped via the per-kind
-handlers under `cmd/write-a/`. See [`ROADMAP.md`](../ROADMAP.md) for
-current vs. queued state.
+[BuildStream](https://www.buildstream.build/) drives the FreeDesktop
+SDK (and projects of its shape) by running each element's build in a
+sandbox via the `bst` runtime, with dependencies flowing through
+opaque install-tree archives and the graph encoded as YAML (one
+`.bst` per element). The goal here is the same artifacts under
+[Bazel](https://bazel.build/), with native `cc_library` / `cc_binary`
+rules — so Bazel's incremental build, remote execution, and remote
+cache see the project at fine grain. This tool is a one-way
+transition: convert once, commit the generated workspace, and the
+downstream team owns plain Bazel from then on.
 
-## Repo layout
+## Two workspaces, three passes
 
-```
-converter/                  single-element converter (the per-package brain)
-  cmd/convert-element-cmake/      CLI entry point (cmake)
-  cmd/convert-element-meson/  CLI entry point (meson; introspection-driven, see docs/design/meson-native-render.md)
-  cmd/derive-toolchain/     emits cc_toolchain + toolchain.cmake from a cmake probe
-  internal/cli              flag parsing + exit codes
-  internal/cmakerun         drives `cmake --trace-expand`, drops File API queries
-  internal/fileapi          codemodel-v2 / toolchains-v1 / cmakeFiles-v1 parsers
-  internal/ninja            build.ninja parser (custom, ~400 lines)
-  internal/lower            File API + ninja → IR (the brain)
-  internal/ir               IR types: Package, Target, Source, Genrule, ImportedTarget
-  internal/emit/bazel       IR → BUILD.bazel
-  internal/emit/cmaketoolchain  Model → toolchain.cmake (probe-skip cache)
-  internal/emit/bazeltoolchain  Model → cc_toolchain_config.bzl + toolchains
-  internal/toolchain        cmake probe + variant fold (Observe)
-  internal/failure          failure.json schema + Tier 1 classifiers
-
-cmd/                        the write-a + Bazel driver, its tooling, and
-                            the re-homed analysis tools
-  write-a/                  meta-project renderer (per-kind handlers) — the multi-element driver
-  stage-b/                  stages project A's BUILD.bazel.out into project B; reports the changed-element set
-  run-manifest/             snapshots a built project A into the run-manifest shape regression diffs on
-  build-tracer/             native ptrace + strace fallback; --source-root opts in to openat capture
-  trace-publish/            publishes canonicalized trace+make-db AC entry under SyntheticActionDigest(srckey)
-  trace-lookup/             A-side AC reader the rules_buildstream_bazel trace_load rule shells to (action-time)
-  finalize-b/               post-convergence strip pass — converted project B → standalone Bazel project
-  convert-element-trace/    trace + `make -np` → native cc rules (trace-driven kinds)
-  audit-narrowing/          patterns × oracle → undercoverage report
-  build-cc-index/ relax-keeps/  gazelle-roundtrip support (Phase 7/8b)
-  source-push/              packs a source tree into CAS via the REAPI wire format
-  bst-translate/            rewrites .bst sources to kind:remote-asset
-  orchestrate-diff/         compares two runs; exit 2 on regression
-  orchestrate-history/      queries fingerprint history for churn / drift
-
-internal/                   shared substrates
-  cas                       local content-addressable store, CAS interface (incl. REAPI AC surface)
-  fidelity                  symbol-set + behavioral diffs (used by tests)
-  manifest                  per-package + per-run JSON schemas
-  shadow                    path-only-stat shadow-tree creator + read-path tracer
-  readpaths                 shared pattern matcher for write-a + audit-narrowing
-  tracenorm                 canonicalize / openat filtering / SyntheticActionDigest
-  element                   .bst project loader, dep graph, kind filtering
-  synthprefix               per-element CMAKE_PREFIX_PATH stub trees
-  sourcecheckout            resolves source spec → local tree (local/git/remote-asset)
-  exports                   parse <Pkg>Targets.cmake → imports manifest
-  regression                run-vs-run diff, fingerprint registry
-  allowlistreg              per-package shadow-tree allowlist registry
-  bsttranslate              .bst rewrites to kind:remote-asset
-
-tools/bst                   BuildStream-style CLI wrapper around write-a (`bst build` muscle memory)
-tools/converge.sh           fixpoint driver — orchestrates the round-2 AC rendezvous to convergence
-
-rules_buildstream_bazel/    in-repo Bazel module referenced by rendered project A + project B
-  rules/traces.bzl          trace_load rule (action-time AC consumer of the round-2 rendezvous)
-  rules/zero_files.bzl      zero-byte stub materializer (shadow-tree primitive)
-  rules/sources.bzl         sources module extension (CAS-FUSE-backed external repos)
-
-deploy/buildbarn/           local-dev REAPI cluster
-  docker-compose.yml        bb-storage + bb-scheduler + bb-worker + bb-runner-bare
-  config/*.jsonnet          per-service configs
-  runner/Dockerfile         custom bb-runner image with cmake/ninja
-
-scripts/ tools/             render-gate scripts + maintenance helpers
-docs/                       milestone plans, schema docs, known-deltas
-.github/                    CI workflow + post-failure-tail composite action
+```mermaid
+flowchart LR
+  bst[".bst graph"] --> wa[Pass 1: write-a<br/>renders A + B]
+  wa --> pa["Project A<br/>(meta workspace)"]
+  wa --> pb["Project B<br/>(deliverable)"]
+  pa --> ba[Pass 2: bazel build A<br/>per-element converters]
+  ba --> bao["BUILD.bazel.out<br/>(fine-grained cc rules<br/>or placeholder)"]
+  bao -- "stage-b" --> pb
+  pb --> bb[Pass 3: bazel build B<br/>install + cc rules]
+  bb -. "trace_build genrules<br/>publish to AC" .-> ac[("REAPI<br/>ActionCache")]
+  ac -. "trace_load actions<br/>fetch next round" .-> ba
 ```
 
-## The two binaries
+`cmd/write-a` (pass 1) parses the `.bst` graph and emits both
+workspaces' `MODULE.bazel` + per-element `BUILD.bazel` files. It
+never invokes Bazel or runs any builds itself.
 
-### `convert-element-cmake`
+**Project A** is the meta workspace. One `BUILD.bazel` per element,
+each a `genrule` that invokes the per-kind translator
+(`convert-element-cmake`, `convert-element-trace`,
+`convert-element-meson`, `convert-element-pyproject`) on the
+element's source tree. The genrule's output is a `BUILD.bazel.out`
+holding the native cc rules, plus kind-specific side channels (cmake
+config bundles, install-tree tarballs). Project A is scaffolding —
+discarded after conversion converges.
 
-Single-package converter. Given an extracted source root + cmake build
-options, produces a directory containing `BUILD.bazel`, a
-`<Pkg>Config.cmake` + `<Pkg>Targets.cmake` + `<Pkg>Targets-Release.cmake`
-bundle, and a `manifest.json` describing the element and its outputs.
+**Project B** is the deliverable. Each element's `BUILD.bazel` is
+staged from project A's `BUILD.bazel.out` via `cmd/stage-b`. Once
+staged, `bazel build //...` over project B compiles the project with
+native cc rules — no BuildStream / `bst` at runtime. After
+convergence, `cmd/finalize-b` strips the conversion-time scaffolding
+(see [`design/finalize-b.md`](design/finalize-b.md)) and the result
+is a standalone Bazel project.
 
-Pipeline, in order:
+The three passes:
 
-1. **CLI / env setup** — `converter/internal/cli` parses flags;
-   `cmakerun.Configure` scrubs the environment to a known whitelist
-   (empty `HOME`, fixed locale, `SOURCE_DATE_EPOCH`) before exec'ing
-   cmake. Per-action sandboxing comes from Bazel's spawn strategy at
-   the genrule layer, not from a wrapper inside the converter.
-2. **`cmake --trace-expand` probe** —
-   `converter/internal/cmakerun/run.go` drops File API query stamps
-   into the build dir and runs cmake. The trace JSON is the
-   read-path source of truth for the shadow-tree allowlist.
-3. **File API replay** —
-   `converter/internal/fileapi` walks the reply directory and parses
-   `codemodel-v2` (targets, sources, link/compile fragments),
-   `toolchains-v1` (compiler ID, flags, builtin paths), and
-   `cmakeFiles-v1` (read-paths cmake itself relied on).
-4. **Ninja graph** — `converter/internal/ninja/parse.go` parses
-   `build.ninja` for the custom-command subset that the codemodel
-   undermarks. Mostly used to fish out genrules.
-5. **Lower** — `converter/internal/lower/lower.go` is the brain.
-   It turns the typed File API + ninja outputs into
-   `converter/ir/types.go` (`Package`, `Target`, `Source`,
-   `Genrule`, `ImportedTarget`). Most converter bugs land here.
-6. **Emit** — `converter/emit/bazel/emit.go` renders the
-   IR as a `BUILD.bazel` (with `load("@rules_cc//cc:defs.bzl", …)`),
-   and `converter/internal/emit/cmaketoolchain` /
-   `converter/internal/emit/bazeltoolchain` emit the cmake bundle and
-   the cc_toolchain rules respectively.
-7. **Manifest** — `internal/manifest` writes `manifest.json` (sha256
-   of every output, the toolchain fingerprint, the failure tier if
-   any). `--out-timings` optionally records per-phase wall-clock
-   (cmake configure / translation / total).
+| Pass | What runs | Cost |
+|---|---|---|
+| 1: `write-a` | `.bst` graph → A + B BUILD files | seconds; always re-runs |
+| 2: `bazel build A` | per-element converter genrules | cheap for introspection-based kinds (cmake, meson); placeholder on AC miss for trace-driven kinds |
+| 3: `bazel build B` | cc compile/link + `trace_build` genrules for trace-driven kinds | cheap for cc rules; expensive for first-round `trace_build` (configure + make + install + trace) |
 
-Tiered failures land in `converter/internal/failure/failure.go`.
-Tier-1 (`unsupported-target-type`, `configure-failed`,
-`unresolved-include`, …) means "this element can't convert" without
-aborting; Tier-2/3 are hard errors.
+For kinds that introspect their build graph from sources alone
+(`kind:cmake`, `kind:meson`), pass 2 produces fine-grained cc rules
+in one shot. For kinds where the build graph is only knowable by
+running the build (`kind:autotools`, `kind:make`, `kind:makemaker`,
+`kind:modulebuild`, `kind:manual`, `kind:script`), pass 2 needs a
+*trace* from a previous pass 3 — see "The rendezvous" below.
 
-`derive-toolchain` is a sister binary that runs cmake against a tiny
-probe project and emits a `cc_toolchain_config.bzl` + `BUILD.bazel`
-for downstream Bazel consumers, plus a `toolchain.cmake` that
-pre-populates cmake's compiler-probe cache so per-element conversions
-skip the expensive probe.
+## Per-kind conversion paths
 
-### `write-a`
+### `kind:cmake` — File API driven (single pass)
 
-Multi-element driver. Given a `.bst` graph, renders a **two-pass
-meta-project** and lets **Bazel** schedule the cross-element work.
+```mermaid
+flowchart LR
+  SRC["cmake source"] --> CCFG["cmake configure<br/>(File API + --trace-expand)"]
+  CCFG --> LOWER["lower<br/>(codemodel + trace → IR)"]
+  LOWER --> EMIT["emit<br/>BUILD.bazel.out"]
+  LOWER --> BUNDLE["cmake-config-bundle.tar<br/>(for cross-element find_package)"]
+```
 
-- **Project A** (the meta workspace): one per-element genrule that
-  invokes the per-kind converter (`convert-element-cmake` for
-  `kind:cmake`, `convert-element-trace` + `build-tracer` for the
-  trace-driven kinds, `convert-element-meson` for `kind:meson`, …).
-  `bazel build` in project A runs those genrules; each emits a
-  `BUILD.bazel.out` (the converted rules) plus, for `kind:cmake`,
-  a `cmake-config-bundle.tar`. Cross-element `kind:cmake` deps are
-  staged on `CMAKE_PREFIX_PATH` inside the consumer's genrule so
-  `find_package()` resolves.
-- **Staging** — `cmd/stage-b` copies each element's `BUILD.bazel.out`
-  from project A's `bazel-bin` over project B's
-  `elements/<name>/BUILD.bazel`, and reports the set of elements whose
-  staged content actually changed (a content diff — the "what just
-  re-converted" signal).
-- **Project B** (the consumer workspace): the staged per-element
-  `BUILD.bazel`s plus the element source trees. `bazel build` in
-  project B compiles the converted `cc_*` rules; cross-element labels
-  are `//elements/<name>:<target>` and resolve within the module.
+cmake's File API gives us codemodel-v2 (targets, sources, link
+fragments), toolchains-v1 (compiler ID, flags), and cmakeFiles-v1
+(read paths). `--trace-expand` adds PUBLIC/PRIVATE keyword arms,
+`target_link_libraries`, `configure_file` calls. The converter folds
+both into an IR (`converter/internal/ir`) and emits native `cc_library`
+/ `cc_binary`. Known gaps: [`known-deltas.md`](known-deltas.md).
 
-The per-kind dispatch lives in `cmd/write-a/` (one handler file per
-kind). `tools/bst` is a BuildStream-style CLI wrapper so `bst build`
-muscle memory keeps working through the conversion. The
-re-homed analysis tools — `orchestrate-diff` (compares two runs,
-exit 2 on regression) and `orchestrate-history` (queries
-`internal/regression`'s fingerprint registry for churn / drift) — and
-`bst-translate` (rewrites `.bst` sources to `kind:remote-asset`) sit
-beside write-a under `cmd/`; they came out of the now-deleted
-orchestrator in the absorption (see
-[`docs/design/orchestrator-absorption.md`](design/orchestrator-absorption.md)).
+### Trace-driven kinds — coarse-then-fine via REAPI ActionCache
 
-## Shared substrates
+`kind:autotools` / `kind:make` / `kind:makemaker` / `kind:modulebuild`
+/ `kind:manual` / `kind:script` have no introspection equivalent.
+The only way to recover the build graph is to run `make` and trace
+`execve` calls. Round-2 splits the work between project A and project
+B; the AC bridges them.
 
-### `internal/cas`
+```mermaid
+flowchart TB
+  subgraph PA2["Project A — pass 2"]
+    TL["trace_load<br/>(action-time AC lookup)"]
+    CEA["convert-element-trace<br/>(parse + correlate)"]
+    OUT["BUILD.bazel.out<br/>(cc rules or placeholder on miss)"]
+    TL --> CEA --> OUT
+  end
+  subgraph PB2["Project B — pass 3"]
+    BT["build-tracer<br/>(ptrace / strace)"]
+    CFG["./configure<br/>make<br/>make install"]
+    PUB["trace-publish<br/>→ REAPI ActionCache"]
+    BT --> CFG --> PUB
+  end
+  PUB -. "next round" .-> TL
+```
 
-Local content-addressable store with an interface that matches the
-REAPI CAS shape (`FindMissing`, `BatchUpdate`, `BatchRead`,
-`Read`/`Write` for streaming). `cmd/source-push` uses it to pack
-source trees into a real Buildbarn CAS over the REAPI wire format;
-`cmd/trace-publish` / `cmd/trace-lookup` use its Action-cache surface
-(`UpdateActionResult` / `GetActionResult`) for the round-2
-trace-rendezvous wire contract. (REAPI *execution* — submitting
-per-element conversions as Actions — was the orchestrator's job,
-implemented in a since-deleted `internal/reapi` package; the write-a +
-Bazel driver drives remote execution through Bazel's own native REAPI
-client instead. See
-[`docs/design/orchestrator-absorption.md`](design/orchestrator-absorption.md).)
+- **Pass 2** runs a `trace_load(...)` action (in-tree rule, source in
+  `rules_buildstream_bazel/rules/traces.bzl`) that queries the REAPI
+  ActionCache via `cmd/trace-lookup`. On hit, the converter genrule
+  consumes the trace and emits fine-grained cc rules. On miss, it
+  emits a placeholder.
+- **Pass 3** runs a `<elem>_trace_build` genrule (tagged
+  `trace_build`) that wraps `./configure && make && make install`
+  under `cmd/build-tracer`, then calls `cmd/trace-publish` to write
+  the trace under `SyntheticActionDigest(srckey, platform)` in the
+  ActionCache. Next round's pass 2 hits.
 
-### `internal/manifest`
+The fixpoint loop is `tools/converge.sh` (see
+[`design/convergence-driver.md`](design/convergence-driver.md)); the
+mechanism details are in
+[`design/rendezvous.md`](design/rendezvous.md). For a `--trace-round1`
+legacy shape where the converter runs inline in project B, see the
+write-a flag; round-2 is the default.
 
-The imports-manifest schema + resolver: `<Pkg>Targets.cmake`-derived
-`Element` / `Export` records mapping out-of-tree cmake targets to
-`//elements/<name>:<target>` Bazel labels, which the converter
-consumes when a `find_package()` resolves to another converted
-element. write-a renders `MODULE.bazel` for projects A and B, making
-each a self-contained bzlmod project; cross-element `BazelLabel`s in
-the
-per-element imports manifests are `//elements/<name>:<target>`-shaped.
+### Pipeline kinds without trace opt-in
 
-### `internal/shadow`
+`kind:make` / `kind:manual` / `kind:script` / `kind:makemaker` /
+`kind:modulebuild` without the trace-driven config render as a single
+install genrule producing `install_tree.tar`. Consumers reference
+the tar via filegroup composition.
 
-Path-only-stat shadow-tree creator. Mirrors the source root with
-zero-byte stubs except for files matching the per-package allowlist
-(default: `CMakeLists.txt`, `*.cmake`, `*.in`, `*.txt`, augmented per
-package). cmake's `--trace-expand` JSON output identifies the
-read-paths the converter actually saw, so a run's
-`read_paths.json` records every file the conversion was sensitive
-to. The `internal/shadow/trace.go` parser handles that; the per-
-package allowlist registry lives in
-`internal/allowlistreg`.
+### Composition kinds (`stack` / `filter` / `compose` / `import`)
 
-### `internal/readpaths`
+No genrule. `BUILD.bazel` is pure starlark filegroup composition over
+deps' install trees.
 
-Shared pattern matcher for read-paths and srckey narrowing
-(`Rule`, `Patterns`, `Parse`, `Format`, `Match`). One
-authoritative implementation used by both `cmd/write-a` (which
-emits `srckey-patterns.txt` per element) and `cmd/audit-narrowing`
-(which reads it back to flag undercoverage drift). cmd/write-a's
-local `patternRule` and `readPathsPatterns` are aliases to
-this package's `Rule` and `Patterns`. See
-[`docs/design/narrowing-audit.md`](design/narrowing-audit.md).
+### `kind:bazel` — passthrough
 
-### `cmd/audit-narrowing`
+Source ships its own BUILD files; write-a stages the tree verbatim
+into project B. No genrule, no introspection. Used for upstream
+Bazel-native sources or hand-edited forks of converter output.
 
-Diffs an element's narrowing patterns against an action-time
-read oracle and reports paths the oracle says were read but the
-patterns leave name-only. Two oracle inputs accepted (either
-or both): a JSON array from `convert-element-cmake`'s
-`--out-cmake-configure-reads` (cmake-side, sourced from
-build.ninja's `RERUN_CMAKE` deps), and a canonicalized
-`trace.log` from `build-tracer --source-root=...` (trace-driven
-side, sourced from openat capture). Recipe + scope:
-[`docs/design/narrowing-audit.md`](design/narrowing-audit.md).
+## Cross-element data flow
 
-### `internal/fidelity`
+`kind:cmake` consumers need build-config metadata for their deps at
+pass-2 time. Two mechanisms handle that.
 
-Symbol-tier and behavioral-tier diff library. `DiffSymbols` compares
-`SymbolSet`s extracted via `nm`/`objdump`; `DiffBehavior` runs a
-test binary under both build paths and compares stdout/stderr/exit.
-Used by `converter/cmd/convert-element-cmake/fidelity_e2e_test.go`,
-the fidelity gate (parameterized over fixtures — hello-world for
-smoke, fmt for real-world). Not a runtime gate on conversion — only
-a test.
+**cmake → cmake**: the producer's `convert-element-cmake` synthesizes
+a cmake-config bundle (`PkgConfig.cmake` + `PkgTargets.cmake` plus
+zero-byte stubs at every `IMPORTED_LOCATION` path) from the
+codemodel alone — no build of the producer is required, only its
+graph introspection. The consumer's genrule extracts the bundle into
+a shared `$PREFIX`; `find_package(Pkg CONFIG)` resolves against the
+staged tree. The actual Bazel dep edge in the consumer's
+`BUILD.bazel.out` comes from `imports.json`, the per-element imports
+manifest (`internal/manifest`).
 
-## Downstream Bazel envelope
+**cmake → non-cmake**: the metadata only exists after the dep's
+pass-3 install build. The driver loop bridges this via the same AC
+rendezvous as trace-driven kinds, with a second keyspace
+(`SyntheticConfigDigest`) for the config bundle. See
+[`design/rendezvous.md`](design/rendezvous.md).
 
-write-a's project B is a self-contained bzlmod project: a rendered
-`MODULE.bazel` declaring `bazel_dep` on `rules_cc`, each converted
-element at `elements/<name>/BUILD.bazel`, with the element's source
-tree alongside so the converter's relative-path `srcs`/`hdrs`
-resolve. Cross-element labels are `//elements/<name>:<target>` and
-resolve directly within the module.
+**autotools → anything**: cross-element resolution uses `imports.json`
+to map `-l<name>` link flags to `//elements/<name>:<name>` Bazel
+labels via `manifest.LookupLinkLibrary`.
 
-`scripts/meta-cross-cmake.sh` is the downstream-build gate: it renders
-a cross-element `kind:cmake` graph, builds project A, `stage-b`'s into
-project B, and `bazel build`s the consumer there — the cross-element
-converted `cc` deps link end to end. The full two-pass round-trip
-including a smoke binary is `scripts/meta-hello.sh`.
+## Edit scenarios
 
-## Build / test targets
+| Edit | Cost |
+|---|---|
+| `.c` / `.cpp` content edit (any kind) | recompile just the changed TU |
+| `CMakeLists.txt` edit | pass-2 cache miss → re-convert → recompile affected cc rules |
+| `configure.ac` / `Makefile.in` / `*.am` / `*.h` (trace-driven) | srckey changes → full trace_build re-runs (full autotools build, one-time per srckey) |
+| Dep content change | downstream's pass-3 actions re-run incrementally |
 
-`Makefile` is the dev surface. The shapes that matter:
+Per-kind narrowing patterns
+(`cmd/write-a/<kind>SrckeyPatterns()`) exclude content of files that
+don't change the graph (e.g. `.c` / `.cpp` for trace-driven kinds)
+from the srckey. So a comment-only `.c` edit in an autotools element
+stays on the cheap path: trace_load hits the AC, the converter emits
+the same cc rules, and pass 3 incrementally rebuilds just the
+changed translation unit.
 
-- `make` — builds the Go binaries into `build/bin/`.
-- `make test` — unit tests (no cmake required; pre-recorded fixtures).
-- `make e2e-hello-world` / `make e2e-fmt` — converter e2e against
-  checked-in / fetched cmake projects (build tag `e2e`).
-- `make e2e-fidelity` / `make e2e-fidelity-fmt` — symbol-equivalence
-  fidelity gate (cmake reference vs convert-element-cmake + bazel).
-- `make e2e-cmake-consumer` — downstream `find_package()` resolves a
-  converted element's synthesized cmake-config bundle.
-- `make e2e-toolchain-skip` — derive-toolchain configure-skip gate.
-- `make e2e-meta-*` — the write-a render + two-pass-build gates, one
-  per kind / shape (`meta-hello`, `meta-cross-cmake`, `meta-stack`,
-  the autotools / meson / pyproject families, …).
-- `make e2e-meta-regression` — run-vs-run regression gate
-  (`run-manifest` snapshots a built project A; `orchestrate-diff`
-  diffs two runs for output drift).
-- `make e2e-meta-buildbarn-re` — write-a + Bazel + real Buildbarn
-  remote-execution + build-without-the-bytes gate.
+The full autotools build is a one-time cost per srckey. After that,
+graph-irrelevant edits stay on the cheap path until a graph-affecting
+edit invalidates the srckey.
 
-`.github/workflows/ci.yml` is the CI surface. Four jobs: `unit`,
-`e2e` (cmake), `bazel-e2e`, `buildbarn-e2e`. Each step pipes
-output into `/tmp/cijob.log`; the
-`.github/actions/post-failure-tail` composite action posts the
-last 150 lines to the PR on failure.
+## Generated workspace shape (interop contract)
 
-## Deployment substrate (local dev)
+A sibling tool (or any consumer of the generated workspace) sees a
+stable label namespace:
 
-`deploy/buildbarn/docker-compose.yml` brings up bb-storage,
-bb-scheduler, bb-worker, and bb-runner-bare. The runner is a custom
-image (`deploy/buildbarn/runner/Dockerfile`) that layers cmake and
-ninja onto upstream's distroless `bb-runner-bare` at the pinned
-versions (currently 3.28.3 / 1.11.1, matching
-`deploy/buildbarn/config/worker.jsonnet`'s advertised platform
-properties). Per-service jsonnet configs live in
-`deploy/buildbarn/config/`.
+| Label | Meaning |
+|---|---|
+| `//elements/<name>:<name>` | Primary cc rule for `kind:cmake` / native `kind:autotools` |
+| `//elements/<name>:<name>_install` | Install genrule (project B); outputs `install_tree.tar`, plus `trace.log` / `make-db.txt` for trace-driven kinds |
+| `//elements/<name>:<name>_build` | Round-2 converter genrule (project A, trace-driven kinds) |
+| `//elements/<name>:<name>_converted` | cmake converter genrule (project A); outputs `BUILD.bazel.out` + `cmake-config-bundle.tar` |
+| `//elements/<name>:cmake_config_bundle` | Synthesized cmake-config bundle tar for cross-element `find_package` |
+| `//elements/<name>:build_bazel` | Filegroup over `BUILD.bazel.out` |
 
-This stack is the local-dev REAPI substrate. `make e2e-meta-buildbarn-re`
-points a rendered project A's converter genrule at it via Bazel-native
-`--remote_executor` and asserts the genrule executes on a real worker
-build-without-the-bytes; `make e2e-source-push` and
-`make e2e-meta-autotools-round2-live` exercise the CAS / AC wire
-contracts against it. A production deployment is the same shape at
-scale: point `bazel build`'s `--remote_executor` / `--remote_cache` at
-the real cluster.
+Project A layout:
 
-## Where to start reading
+```
+project-A/
+├── MODULE.bazel
+├── BUILD.bazel
+├── rules/                       # in-repo rules (zero_files, sources, traces)
+├── tools/                       # convert-element-* / build-tracer / trace-lookup / trace-publish
+└── elements/<name>/
+    ├── BUILD.bazel              # genrule invoking the per-kind converter
+    ├── sources/ or @src_<key>// # source tree (staged or CAS-served)
+    └── imports.json             # cross-element label map (when deps present)
+```
 
-If you're new and want a single thread through the codebase:
+Project B layout:
 
-1. `converter/cmd/convert-element-cmake/main.go` — the converter pipeline
-   in 80 readable lines.
-2. `converter/internal/lower/lower.go` — where most converter logic
-   actually lives.
-3. `cmd/write-a/main.go` — the multi-element driver: `.bst` graph in,
-   two-pass meta-project out.
-4. `scripts/meta-hello.sh` — the full two-pass round-trip (write-a →
-   `bazel build` A → `stage-b` → `bazel build` B → smoke binary) as a
-   readable shell script.
-5. `converter/cmd/convert-element-cmake/fidelity_e2e_test.go` — the
-   e2e test that proves the stack produces the same artifacts cmake
-   would.
+```
+project-B/
+├── MODULE.bazel
+├── BUILD.bazel
+└── elements/<name>/
+    ├── BUILD.bazel              # initially a placeholder; stage-b overwrites with project A's BUILD.bazel.out
+    └── ...source files
+```
+
+Per-element BUILD shape evolves through three stages during
+conversion (pre-build → converged-with-debris → standalone after
+`finalize-b`). The three shapes and the strip pass are documented in
+[`design/conversion-architecture.md`](design/conversion-architecture.md)
+and [`design/finalize-b.md`](design/finalize-b.md).
+
+## Caching and convergence
+
+```mermaid
+flowchart LR
+  SRC["Source bytes<br/>(CAS digest)"] --> KEY["Bazel ActionCache key"]
+  TOOL["Translator binary"] --> KEY
+  KEY -- "lookup" --> CACHE[("Remote cache<br/>(buildbarn in CI;<br/>Bazel local cache for dev)")]
+  CACHE -- "hit" --> RESULT[("ActionResult")]
+  KEY -- "miss: run" --> RESULT
+  RESULT --> CACHE
+```
+
+For `kind:cmake` / `kind:meson` there is no separate srckey registry
+— Bazel's ActionCache **is** the convergence point. Same source +
+same toolchain + same converter version → same action key → same
+outputs, shared across all builders.
+
+For trace-driven kinds, the REAPI ActionCache doubles as a srckey →
+trace registry. `cmd/trace-publish` writes `(srckey → trace)` under
+`SyntheticActionDigest(srckey, platform)`; `cmd/trace-lookup` reads
+it back at action time. No separate registry service — one endpoint,
+two uses.
+
+## Build-without-the-bytes (`bb_clientd`)
+
+With Bazel 9 + `bb_clientd` + `--experimental_remote_output_service=`,
+source bytes never land on the developer's disk: actions stream them
+through a FUSE mount, Bazel trusts daemon-reported digests, and
+build outputs are also materialised lazily. See
+[`design/sources.md`](design/sources.md).
+
+Without it, sources are staged into `elements/<name>/sources/` on
+disk (the default dev path).
+
+## Where to read deeper
+
+| Topic | Doc |
+|---|---|
+| End-state architecture (BUILD evolution, rules patterns) | [`design/conversion-architecture.md`](design/conversion-architecture.md) |
+| 8-slide presentation | [`design/conversion-architecture-slides.md`](design/conversion-architecture-slides.md) |
+| AC rendezvous wire format | [`design/rendezvous.md`](design/rendezvous.md) |
+| Fixpoint driver loop | [`design/convergence-driver.md`](design/convergence-driver.md) |
+| Deliverable strip pass | [`design/finalize-b.md`](design/finalize-b.md) |
+| Narrowing-audit recipe | [`design/narrowing-audit.md`](design/narrowing-audit.md) |
+| BwoB / source mount | [`design/sources.md`](design/sources.md) |
+| FDSDK kind coverage | [`fdsdk-coverage.md`](fdsdk-coverage.md) |
+| Known fidelity / conversion gaps | [`known-deltas.md`](known-deltas.md) |
+| Failure-code taxonomy | [`failure-schema.md`](failure-schema.md) |
+| Codegen tag taxonomy | [`codegen-tags.md`](codegen-tags.md) |
+| Repo package tour | [`codebase-map.md`](codebase-map.md) |
+| Dev-loop commands + test map | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |

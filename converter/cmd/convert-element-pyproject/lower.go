@@ -1,7 +1,7 @@
 // Lowering pass: takes a parsed Pyproject + the discovered
 // Package list and produces typed Target structs the emit
 // pass renders to BUILD.bazel.out. This is the place where
-// the validation rules in docs/design/pyproject-native-render.md
+// the validation rules in docs/architecture.md
 // are enforced (refusal codes for c-extension / dynamic
 // metadata / unresolved deps).
 package main
@@ -26,7 +26,7 @@ type Target struct {
 	// py_library / py_test fields. (Package data — e.g.
 	// `tool.setuptools.package-data` — is parsed but not
 	// folded into a `data` attribute yet; see
-	// docs/design/pyproject-native-render.md's "What's NOT
+	// docs/architecture.md's "What's NOT
 	// covered" section for the rationale.)
 	Srcs       []string
 	Imports    []string
@@ -66,7 +66,7 @@ type Target struct {
 	//     back-compat shim path via --always-emit-entry-shim.
 	//   - A package directory containing __main__.py — emitted
 	//     unconditionally as `<pkg>_bin` per
-	//     `docs/design/build-output-conventions.md`'s py_binary
+	//     `ROADMAP.md`'s py_binary
 	//     section (matches `python -m <pkg>`).
 	//
 	// Empty Main leaves emit.go on the shim path, byte-stable
@@ -267,7 +267,7 @@ func Lower(p *Pyproject, pkgs []Package, opts LowerOptions) ([]Target, error) {
 	out = append(out, scripts...)
 
 	// `__main__.py` package-bin emission. Per
-	// `docs/design/build-output-conventions.md`'s py_binary
+	// `ROADMAP.md`'s py_binary
 	// section: a package directory containing `__main__.py`
 	// is `python -m <pkg>`-runnable; matching rules_python's
 	// gazelle convention, we emit an unconditional

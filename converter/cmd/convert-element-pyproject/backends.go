@@ -91,7 +91,7 @@ type Package struct {
 	// main = "<pkg>/__main__.py", deps = [":<pkg>"]) target
 	// matching `python -m <pkg>` behavior. Independent of
 	// [project.scripts] entries; per
-	// `docs/design/build-output-conventions.md`'s py_binary
+	// `ROADMAP.md`'s py_binary
 	// section.
 	HasMain bool
 }

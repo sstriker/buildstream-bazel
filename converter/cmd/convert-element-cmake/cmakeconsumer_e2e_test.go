@@ -11,8 +11,7 @@
 // only resolve the imported target and touch its
 // IMPORTED_LOCATION_RELEASE.
 //
-// Re-homed from orchestrator/internal/orchestrator/ as part of the
-// orchestrator absorption (docs/design/orchestrator-absorption.md).
+// Re-homed from the (now-deleted) orchestrator/internal/orchestrator/.
 // The orchestrator version produced the bundle as a side effect of
 // orchestrator.Run()'s synth-prefix tree; convert-element-cmake's
 // --out-bundle-dir produces exactly the same lib/cmake/<Pkg>/ layout

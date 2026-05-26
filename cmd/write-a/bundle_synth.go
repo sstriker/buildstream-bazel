@@ -62,7 +62,7 @@ package main
 func bundleSynthShell() string {
 	return `        # Synthesize a cmake-config bundle from the install tree
         # for the cross-element configure-step bootstrap rendezvous
-        # (see docs/design/cross-element-config-rendezvous.md).
+        # (see docs/design/rendezvous.md).
         # Pkg-config files (*.pc) and cmake-config files (lib/cmake/
         # <Pkg>/) the element installed are copied verbatim.
         # Elements that install neither produce an empty bundle —

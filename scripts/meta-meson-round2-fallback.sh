@@ -1,8 +1,8 @@
 #!/bin/sh
 # meta-meson-round2-fallback.sh — render-half acceptance gate for
 # kind:meson's Phase B fallback shape. Sister of
-# scripts/meta-cmake-round2-fallback.sh; see
-# docs/design/meson-round2-fallback.md for the architecture.
+# scripts/meta-cmake-round2-fallback.sh; same AC rendezvous shape
+# (docs/design/rendezvous.md).
 #
 # When the operator passes --meson-round2-fallback +
 # --convert-element-meson + --build-tracer-bin + --trace-publish-bin

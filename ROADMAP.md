@@ -11,7 +11,7 @@ transition cleanly.
   current cmake converter reads File API codemodel-v2 +
   `--trace-expand` and emits BUILD files; that recovers
   ~67% of FDSDK with fidelity gaps catalogued in
-  `docs/cmake-conversion-deltas.md` and the genex / install
+  `docs/known-deltas.md` and the genex / install
   bullets under `Later`. A hypothetical `cmake -G Bazel`
   generator running inside cmake's generation pass would
   resolve most of those gaps for free by virtue of being
@@ -30,7 +30,7 @@ transition cleanly.
   `genrule`s with depfile-derived `srcs`. `buildifier
   --mode=fix` + `gazelle fix` must remain no-ops over the
   output (the existing Phase 8 gazelle-roundtrip contract
-  in `docs/design/build-output-conventions.md`).
+  in `ROADMAP.md`).
 
   Phasing (each phase is a self-contained PR stack with its
   own render gate):
@@ -171,7 +171,7 @@ transition cleanly.
   - **Phase 7 — Bazel-idiom shaping audit.** A final-
     emission pass that audits the converter's IR against a
     Bazel-idiom checklist extending
-    `docs/design/build-output-conventions.md`: known-config
+    `ROADMAP.md`: known-config
     selects routed through `select_to_features`; install
     bundles routed through `pkg_files` / `pkg_tar`;
     IMPORTED targets emitted as `cc_import` rather than
@@ -185,15 +185,10 @@ transition cleanly.
     gate guards the contract; `cmd/relax-keeps` learns the
     new shapes.
 
-  Design docs to add as the phases land:
-  `docs/design/generator-parity-uplift.md` (overview +
-  phase boundaries + acceptance criteria),
-  `docs/design/genex-probe-hook.md` (Phase 3 hook protocol
-  + offline-replay semantics), `docs/design/multi-config-
-  fold.md` (Phase 5 fold semantics + sanitizer-as-feature
-  shape + refusal rules), `docs/design/install-export-
-  classifier.md` (Phase 6 declarative-subset rules + the
-  resolver/lift-time wire).
+  Phase shape: overview / phase boundaries / acceptance criteria
+  are tracked here. The hook protocols + fold semantics + classifier
+  rules land as code comments on the implementation PRs rather than
+  separate design docs.
 
   Acceptance: FDSDK kind:cmake coverage delta drops to
   near-zero (the structural residue is `try_compile`-keyed
@@ -280,7 +275,7 @@ transition cleanly.
   it yet, so the gate today only covers the cmake oracle.
 - **Repo-rule install for kind:cmake round-2 fallback.**
   Phase B's round-2 fallback (per
-  `docs/design/cmake-execute-process-round2-fallback.md`)
+  `docs/design/rendezvous.md`)
   transports the install tree as `install_tree.tar` between
   project B and project A's `BUILD.bazel.out` AND extracts a
   subset of its contents via a per-element `_install_tree_extract`
@@ -307,11 +302,12 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
+
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
   available to the action at exec time without it being in the AC
   key. So narrowing autotools is unavoidably a side-channel story.
-  `docs/three-pass-flow.md` lays out three options (FUSE, host-fs
+  `docs/architecture.md` lays out three options (FUSE, host-fs
   source cache via `--repo_env`, write-a-time registry) and rules
   out two; the third is the path forward but the value-vs-complexity
   trade-off is open.
@@ -323,7 +319,7 @@ transition cleanly.
   stub) so FDSDK render reaches completion. Real plugin
   semantics deferred until an FDSDK fixture forces a
   bazel-build-time correctness need; per-kind cost-to-port
-  is documented in `docs/fdsdk-coverage-status.md` (small
+  is documented in `docs/fdsdk-coverage.md` (small
   for the install-tree-walk kinds; `flatpak_repo` is bigger
   — needs ostree at build time). `kind:flatpak_image` /
   `kind:snap_image` retain their structural treatment
@@ -584,7 +580,7 @@ transition cleanly.
   FDSDK fixtures reaches completion without these kinds
   breaking the graph; real plugin semantics deferred until
   an FDSDK fixture forces a bazel-build-time correctness
-  need. Coverage table in `docs/fdsdk-coverage-status.md`
+  need. Coverage table in `docs/fdsdk-coverage.md`
   refreshed: 100 % of FDSDK's element-kind catalog now has
   a handler (~76 % deep + ~22 % structural/placeholder).
   Unit tests for the four new kinds + the pre-existing
@@ -734,7 +730,7 @@ transition cleanly.
   NOR the threaded `*manifest.Resolver` (imports.json) emits
   a refusal-stub genrule whose cmd fails the bazel build with
   a clear diagnostic pointing at
-  `docs/design/cross-package-target-file.md`. Audit tag:
+  `ROADMAP.md`. Audit tag:
   `cmake-codegen-file-generate-genex-cross-package`. The
   `*manifest.Resolver` plumbing this set up is the foundation
   PR 2 (resolved cross-package lifts) builds on.
@@ -875,7 +871,7 @@ transition cleanly.
   bytes that would silently mis-route gazelle_cc's resolver);
   the 16 affected goldens dropped their stale single-arg lines.
   Render gate `scripts/meta-gazelle-roundtrip.sh` updated to
-  assert the new shape; `docs/design/build-output-conventions.md`
+  assert the new shape; `ROADMAP.md`
   documents the frame distinction.
 
 - **file(GENERATE) genex lift via structured base64 (the (b)
@@ -927,23 +923,25 @@ transition cleanly.
   — bypass the converter without forking the .bst. Render gate:
   `scripts/meta-bazel-override.sh`.
 
-- **Docs consolidation + architecture slide deck.** The
-  cross-element configure-step bootstrap stack landed; the
-  design-trail docs got folded.
-  `docs/design/conversion-architecture.md` is the new end-state
-  architecture doc — three diagrams (rendezvous channel, driver
-  loop, per-element BUILD evolution through `finalize-b`), one
-  section per rule pattern in `rules_buildstream_bazel/`, and
-  cross-links into the focused mechanism docs.
-  `docs/design/conversion-architecture-slides.md` is the 8-slide
-  Marp companion (problem → two projects → Bazel
-  anti-pattern → trace_load/trace_build pair → two cache layers →
-  driver loop → finalize-b). `docs/design/staged-pipeline.md`
-  deleted outright; `docs/three-pass-flow.md` trimmed to the
-  per-pass cost model + scenario walks; the architectural framing
-  in `docs/design/autotools-round2-rendezvous.md` trimmed to
-  mechanism details. README / CONTRIBUTING / overview /
-  visual-guide cross-links refreshed.
+- **Docs consolidation (33 → 14 files).** Top-level
+  `docs/architecture.md` is the single architecture story (prose +
+  diagrams, absorbs the old overview / visual-guide / three-pass-
+  flow / build-structure / trace-driven-autotools). `docs/codebase-
+  map.md` gives the developer-facing repo tour. `docs/fdsdk-
+  coverage.md` consolidates per-kind coverage. `docs/known-
+  deltas.md` merges the conversion + fidelity delta catalogs.
+  `docs/design/` slimmed to the load-bearing mechanism specs:
+  `conversion-architecture.md` (end-state + rule patterns) +
+  `conversion-architecture-slides.md` (Marp companion) +
+  `rendezvous.md` (merged autotools-round2 + cross-element-config
+  keyspaces) + `convergence-driver.md` + `finalize-b.md` +
+  `narrowing-audit.md` + `sources.md` (merged sources-design +
+  bazel9-cas-fs). Implementation-plan docs (generator-parity
+  uplift/gaps, meson/pyproject native-render, sanitizer-as-feature,
+  cmake/meson Phase B fallbacks, operator-gazelle-step, build-
+  output-conventions, cross-package-target-file, orchestrator-
+  absorption, fdsdk-element-survey) deleted — concepts live in
+  comments + ROADMAP entries, status lives here.
 
 - **Cross-element configure-step bootstrap.** Six-PR
   architectural shift from a load-time `_trace_repo` repository
@@ -974,7 +972,7 @@ transition cleanly.
   `rules_buildstream_bazel` `bazel_dep` removed when no
   surviving target references it, idempotent and non-
   destructive. Design docs:
-  `docs/design/cross-element-config-rendezvous.md`,
+  `docs/design/rendezvous.md`,
   `docs/design/convergence-driver.md`,
   `docs/design/finalize-b.md`. The kind:meson-side bundle
   staging for consumers of trace-driven deps is queued as a
@@ -997,8 +995,7 @@ transition cleanly.
   (write-a renders, Bazel schedules). Only the write-a path can
   express the trace-driven 3 → 2′ loop non-cmake kinds need, so
   the orchestrator was absorbed into it and deleted. Shipped as a
-  PR sequence (`docs/design/orchestrator-absorption.md` has the
-  full capability map):
+  PR sequence:
   - **`tools/bst` → `--bst-root`** — write-a does leaf-rooted
     `.bst` discovery through the render's own parser; the shell
     awk graph-walker is gone.
@@ -1053,8 +1050,7 @@ transition cleanly.
   or empty `reapi_properties` name is rejected at load time (REAPI
   tolerates repeated names; `exec_properties` is a map). This was
   the live remainder of the deleted orchestrator's hardcoded
-  `defaultPlatform` / `Action.Platform` fallback — the last open
-  question in `docs/design/orchestrator-absorption.md`. Render
+  `defaultPlatform` / `Action.Platform` fallback. Render
   gates: the three multi-platform gates
   (`scripts/meta-trace-round2-fold.sh`,
   `scripts/meta-autotools-round2-multiplatform.sh`,
@@ -1135,7 +1131,7 @@ transition cleanly.
   a human using `EngFlow/gazelle_cc` + `rules_python/gazelle`
   would have written: `buildifier --mode=fix` is a no-op and
   `gazelle fix` preserves our emit. Architectural recipe:
-  `docs/design/build-output-conventions.md`. Shipped across the
+  `ROADMAP.md`. Shipped across the
   PR #119–#130 stack:
   - **Phase 1** — internal renderer consistency: unified
     visibility under `package(default_visibility = ...)`, folded
@@ -1170,7 +1166,7 @@ transition cleanly.
     cross-element index population is the one remaining sliver
     — see `Next`.)
   - **Phase 8** — operator-owned `overlay.MODULE.bazel` seam +
-    `docs/design/operator-gazelle-step.md` workflow; `cmd/relax-keeps`
+    `ROADMAP.md` workflow; `cmd/relax-keeps`
     + `tools/gazelle-rewritable.json` for continuous-conversion
     auto-rewrite; `cmd/build-cc-index`.
   - **Phase 8b** — the write-a + Bazel driver's opt-in gazelle
@@ -1484,7 +1480,7 @@ transition cleanly.
   `--build-tracer-bin` + `--trace-publish-bin` +
   `--trace-lookup-bin`, every kind:meson element renders with
   the same A-converter + B-install + round-2-rendezvous split
-  kind:cmake's Phase B (`docs/design/cmake-execute-process-round2-fallback.md`)
+  kind:cmake's Phase B (`docs/design/rendezvous.md`)
   already established. Project A's converter genrule threads
   `--unsupported-target-fallback=true` into
   `convert-element-meson`, so native-lowering refusals
@@ -1519,7 +1515,7 @@ transition cleanly.
   (`make e2e-meta-meson-round2-fallback`); also exercises the
   standalone converter against a custom-target-refusal fixture
   to confirm strict mode refuses while the fallback emits the
-  placeholder. Recipe: `docs/design/meson-round2-fallback.md`.
+  placeholder. Recipe: `docs/design/rendezvous.md`.
 
 - **kind:pyproject Phase B install-plan fallback (option A:
   per-element auto-detection).** Stacked on Phase A. New
@@ -1536,7 +1532,7 @@ transition cleanly.
   Render gate: `scripts/meta-pyproject-fallback.sh` against a
   two-element fixture (one Phase-A-friendly setuptools
   element + one pdm-backend element refused by Phase A).
-  Recipe: `docs/design/pyproject-native-render.md` "Phase B"
+  Recipe: `docs/architecture.md` "Phase B"
   section. Coverage status: every kind:pyproject element in
   FDSDK now renders without operator intervention, taking
   pyproject's effective coverage to 100 %.
@@ -1562,9 +1558,8 @@ transition cleanly.
   kind:pyproject element is present and the native path is on.
   Render gate: `scripts/meta-pyproject.sh` against
   `testdata/meta-project/pyproject-greet/` (representative
-  setuptools fixture). Recipe: `docs/design/pyproject-native-
-  render.md`. Coverage status:
-  `docs/fdsdk-coverage-status.md`.
+  setuptools fixture). Coverage status:
+  `docs/fdsdk-coverage.md`.
 - **`convert-element-autotools` → `convert-element-trace` rename.**
   The trace-driven converter has served kind:make / kind:manual /
   kind:script / kind:makemaker / kind:modulebuild as well as
@@ -1580,7 +1575,7 @@ transition cleanly.
   `autotoolsConfig` global in write-a → `traceConfig`; and the
   `//tools:convert-element-autotools` Bazel label →
   `//tools:convert-element-trace`. Clean break — no aliases. Doc
-  taxonomy follow-up: `docs/fdsdk-coverage-status.md` now
+  taxonomy follow-up: `docs/fdsdk-coverage.md` now
   reclassifies the five formerly-coarse trace-driven kinds as
   deep, lifting the FDSDK deep-conversion figure from 44 % to
   ~65 %.
@@ -1606,8 +1601,8 @@ transition cleanly.
   meson handler is opt-in via `--convert-element-meson <path>` —
   unset preserves the historical pipeline-shape coarse install
   genrule. Render gate: `scripts/meta-meson.sh`. Recipe:
-  `docs/design/meson-native-render.md`. Coverage status:
-  `docs/fdsdk-coverage-status.md`.
+  `docs/architecture.md`. Coverage status:
+  `docs/fdsdk-coverage.md`.
 - **`execute_process` recovery for kind:cmake.** Phase A
   (native lift): the deterministic buckets — `cmake -E touch
   / copy / copy_if_different` and file-producing tools with
@@ -1643,7 +1638,7 @@ transition cleanly.
   (`tools/e2e-meta-autotools-round2-live.sh`) covers
   kind:cmake's wire contract through its publish/lookup
   round-trip half. Recipe:
-  `docs/design/cmake-execute-process-round2-fallback.md`.
+  `docs/design/rendezvous.md`.
   Failure schema: `docs/failure-schema.md`
   `unsupported-execute-process`.
 - **Element-signal consumption in the unifier.** `unify-toolchains`
@@ -1769,7 +1764,7 @@ transition cleanly.
   genrule shape. Render-half gate: `meta-autotools-round2.sh`.
   Live-AC gate (buildbarn + optionally bb_clientd):
   `tools/e2e-meta-autotools-round2-live.sh`. Recipe:
-  `docs/design/autotools-round2-rendezvous.md`.
+  `docs/design/rendezvous.md`.
 - **kind:make joins the round-2 trace-driven path.** Same
   architecture as kind:autotools — opt-in via the
   `traceDrivenSrckeyPatterns` field on the kind's
@@ -1816,7 +1811,7 @@ transition cleanly.
   users pass `cas/<instance>/blobs/<digest_function>`).
   `cmd/cas-fuse` and `internal/casfuse` were retired in a
   follow-up after bb_clientd proved itself the production
-  path. Recipe: `docs/design/bazel9-cas-fs.md`.
+  path. Recipe: `docs/design/sources.md`.
 - Trace + make-db canonicalization (pids stripped, gcc temp paths
   placeholdered, action-time mktemp paths normalized). Foundation
   for round-2 cache reuse.
@@ -1824,6 +1819,7 @@ transition cleanly.
   counts as graph-affecting vs name-only for the autotools build.
 
 The "Done" list is in the rear-view; the doc that captures the
-current state of the codebase is `docs/architecture.md` (top-down)
-plus `docs/build-structure.md` (interop contract) plus
-`docs/three-pass-flow.md` (build-time flow).
+current state of the codebase is `docs/architecture.md`
+(architecture + interop contract + build-time flow, all in one
+place), plus `docs/codebase-map.md` for the developer-facing repo
+tour.

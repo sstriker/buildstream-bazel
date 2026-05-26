@@ -120,7 +120,7 @@ e2e-fmt: check-cmake-toolchain converter fetch-fmt
 	$(GO) test -tags=e2e -run TestE2E_Fmt ./converter/...
 
 # Phase 1 acceptance gate for the meta-project (Bazel-as-orchestrator)
-# shape (docs/whole-project-plan.md). Renders project A and project B
+# shape. Renders project A and project B
 # from the hello-world fixture via cmd/write-a, then drives the full
 # two-pass pipeline: bazel build A (runs convert-element-cmake via genrule)
 # -> stage A's BUILD.bazel.out into B -> bazel build + run B's smoke
@@ -213,8 +213,8 @@ e2e-meta-cmake-cross-package-target-file: converter
 # and diffs the two with orchestrate-diff: asserts a content edit cmake
 # never reads doesn't shift BUILD.bazel.out (no-drift invariant) and a
 # real CMakeLists change does (drift detection). The write-a + Bazel
-# path's replacement for the orchestrator's regression e2e; see
-# docs/design/orchestrator-absorption.md.
+# path's replacement for the (now-deleted) orchestrator's regression
+# e2e.
 e2e-meta-regression: converter
 	scripts/meta-regression.sh
 
@@ -288,7 +288,7 @@ e2e-meta-cmake-round2-fallback-multiplatform: converter
 # cc_library / cc_binary rules from `meson introspect`. The render
 # half always runs; the bazel-build half self-skips unless BOTH
 # bazel >= 7 AND meson are on PATH (the genrule needs meson on the
-# executor; bazel < 7 lacks bzlmod). See docs/design/meson-native-render.md.
+# executor; bazel < 7 lacks bzlmod).
 e2e-meta-meson: converter
 	scripts/meta-meson.sh
 
@@ -300,8 +300,7 @@ e2e-meta-meson: converter
 # replacing the placeholder. When meson is on PATH, also runs the
 # standalone converter against a refusal-triggering fixture and
 # verifies strict mode refuses while the fallback emits the
-# install-plan-driven placeholder shape. See
-# docs/design/meson-round2-fallback.md.
+# install-plan-driven placeholder shape.
 e2e-meta-meson-round2-fallback: converter
 	scripts/meta-meson-round2-fallback.sh
 
@@ -372,7 +371,7 @@ e2e-meta-finalize-b: converter
 # py_binary rules. The render half always runs; the bazel-build
 # half self-skips unless BOTH bazel >= 7 AND python3 are on PATH
 # (the rendered py_binary needs python3 at run time; bazel < 7
-# lacks bzlmod). See docs/design/pyproject-native-render.md.
+# lacks bzlmod).
 e2e-meta-pyproject: converter
 	scripts/meta-pyproject.sh
 
@@ -524,10 +523,10 @@ e2e-meta-autotools-round2-live:
 # operator-style .bazelrc + platform(), and asserts the per-element
 # convert-element-cmake genrule executes on a Buildbarn worker with
 # the genrule output never materialised locally. This is the
-# production-path replacement for the orchestrator's Go-harness
-# e2e-buildbarn / e2e-buildbarn-execute coverage; see
-# docs/design/orchestrator-absorption.md. Self-skips when bazel >= 9
-# isn't on PATH; the script brings the stack up + down itself.
+# production-path replacement for the (now-deleted) orchestrator's
+# Go-harness e2e-buildbarn / e2e-buildbarn-execute coverage. Self-
+# skips when bazel >= 9 isn't on PATH; the script brings the stack
+# up + down itself.
 e2e-meta-buildbarn-re:
 	./tools/e2e-meta-buildbarn-re.sh
 
@@ -619,19 +618,18 @@ e2e-meta-script: converter
 
 # FDSDK reality check. Probes write-a against curated real
 # freedesktop-sdk elements and reports which loader / handler gap
-# each one hits first. Research / triage, not a gate — see
-# docs/fdsdk-reality-check.md for the prioritized punch list.
+# each one hits first. Research / triage, not a gate. Per-kind
+# coverage status: docs/fdsdk-coverage.md.
 # Set FDSDK_DIR=/path/to/clone (or use the default /tmp/fdsdk).
 fdsdk-reality-check:
 	scripts/fdsdk-reality-check.sh
 
 # M5 downstream-build acceptance gate — re-homed from the
-# orchestrator's TestE2E_BazelBuild onto the write-a + Bazel path:
-# e2e-meta-cross-cmake renders a cross-element kind:cmake graph with
-# write-a, builds project A, stage-b's into project B, and bazel-
-# builds the consumer there (cross-element converted cc deps link
-# end-to-end). See e2e-meta-cross-cmake above and
-# docs/design/orchestrator-absorption.md.
+# (now-deleted) orchestrator's TestE2E_BazelBuild onto the write-a +
+# Bazel path: e2e-meta-cross-cmake renders a cross-element kind:cmake
+# graph with write-a, builds project A, stage-b's into project B,
+# and bazel-builds the consumer there (cross-element converted cc
+# deps link end-to-end). See e2e-meta-cross-cmake above.
 
 # M5 CMake-side acceptance gate. Configures a downstream find_package
 # consumer against a convert-element-cmake-synthesized cmake-config
@@ -656,7 +654,7 @@ e2e-toolchain-skip: check-cmake-toolchain converter derive-toolchain
 # fixture. Each fixture builds the project two ways (cmake reference
 # vs convert-element-cmake + bazel) and asserts symbol equivalence on the
 # resulting library. Each new delta is recorded in
-# docs/fidelity-known-deltas.md.
+# docs/known-deltas.md.
 e2e-fidelity: check-cmake-toolchain converter
 	$(GO) test -tags=e2e -run TestE2E_Fidelity ./converter/cmd/convert-element-cmake/
 
@@ -713,7 +711,7 @@ buildbarn-down:
 
 # bb_clientd lifecycle. bb_clientd is the Bazel-9 companion daemon
 # that replaces the dropped --unix_digest_hash_attribute_name
-# fast-path; see docs/design/bazel9-cas-fs.md. Unlike the buildbarn
+# fast-path; see docs/design/sources.md. Unlike the buildbarn
 # executor stack, bb_clientd runs on the dev's host (not in
 # docker) because it serves a host FUSE mount Bazel reads through.
 #

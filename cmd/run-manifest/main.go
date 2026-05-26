@@ -32,8 +32,7 @@
 // missing failures.json, so regression-diff still does its
 // fingerprint-drift job across two successful runs. Re-homing
 // newly-failed detection would need write-a to grow a soft-failure
-// render mode — a separate decision, noted in
-// docs/design/orchestrator-absorption.md.
+// render mode — a separate decision, not currently planned.
 //
 // This is the write-a + Bazel path's replacement for the
 // orchestrator's run-level <out>/manifest/ emission, re-homed in the

@@ -16,7 +16,7 @@ import "fmt"
 // srckey pattern set + the build-tracer wrapping helper) as
 // pure functions with no call sites yet. Subsequent steps wire
 // them into write-a's render path. See
-// docs/design/cmake-execute-process-round2-fallback.md for the
+// docs/design/rendezvous.md for the
 // architectural shape and staged plan.
 //
 // What kind:cmake reuses from the existing round-2 plumbing:

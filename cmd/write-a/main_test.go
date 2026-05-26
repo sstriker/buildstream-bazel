@@ -776,7 +776,7 @@ func TestWriter_AutotoolsElementShape(t *testing.T) {
 // build-tracer + convert-element-trace land in BOTH
 // project A's and project B's tools/ directories when the
 // trace-driven path is enabled. Foundation for the
-// architectural move (docs/three-pass-flow.md) where the
+// architectural move (docs/architecture.md) where the
 // autotools install genrule lives in project B's BUILD —
 // the //tools:build-tracer + //tools:convert-element-trace
 // labels need to resolve in B too.
@@ -962,7 +962,7 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	}
 
 	// A-side BUILD is now a marker pointing at B (post-architectural
-	// move; see docs/three-pass-flow.md and PR #67 follow-up).
+	// move; see docs/architecture.md and PR #67 follow-up).
 	aBody, err := os.ReadFile(filepath.Join(outA, "elements/auto/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)

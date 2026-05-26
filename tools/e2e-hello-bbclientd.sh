@@ -24,8 +24,8 @@
 #     whose hello/BUILD.bazel references @src_<key>//:tree.
 #     The _src_repo rule reads CAS_FUSE_MOUNT + CAS_DIRECTORY_PREFIX
 #     and ctx.symlinks into the daemon's mount; the prefix env var
-#     parameterises bb_clientd vs cmd/cas-fuse layout (see
-#     docs/design/bazel9-cas-fs.md and rules/sources.bzl).
+#     parameterises bb_clientd vs the legacy flat layout (see
+#     docs/design/sources.md and rules/sources.bzl).
 #  6. bazel build //elements/hello:hello_converted with
 #     --experimental_remote_output_service pointing at the
 #     daemon's grpc.sock. Bazel trusts the daemon's reported

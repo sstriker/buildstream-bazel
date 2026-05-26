@@ -126,8 +126,8 @@ Common failure modes and how to diagnose:
   `internal/tracenorm/reads.go`, the build-tracer
   `--source-root` flag.
 - **Project-level architecture story**:
-  `docs/design/conversion-architecture.md`,
-  `docs/three-pass-flow.md`, `docs/overview.md`.
+  `docs/architecture.md`,
+  `docs/design/conversion-architecture.md`.
 
 ## Development install requirements
 
@@ -216,11 +216,11 @@ bb_clientd became the production CAS-aware mount path; the
 CI jobs that covered them (`cas-fuse-e2e`, `bazel9-fuse-sources`,
 `hello-fuse-e2e`) are gone too.)
 
-- **`bb_clientd`** — the Bazel-9 companion daemon
-  (replaces the dropped `--unix_digest_hash_attribute_name`
-  fast-path; see `docs/design/bazel9-cas-fs.md`). bb_clientd
-  builds with **Bazel** (it's a buildbarn project), but the
-  dev loop doesn't need a source build:
+- **`bb_clientd`** — the Bazel-9 companion daemon (replaces the
+  dropped `--unix_digest_hash_attribute_name` fast-path; see
+  `docs/design/sources.md`). bb_clientd builds with **Bazel** (it's
+  a buildbarn project), but the dev loop doesn't need a source
+  build:
 
   ```sh
   # Recommended: pre-built binary from the bb-clientd repo

@@ -1345,7 +1345,7 @@ func TestHasGenex(t *testing.T) {
 
 // TestRecoverFileGenerate_CrossPackageTargetFile_Refused
 // covers the soundness gate from
-// docs/design/cross-package-target-file.md: a template
+// ROADMAP.md: a template
 // referencing `$<TARGET_FILE:Foo::bar>` for a target NOT in
 // the local codemodel AND NOT in the imports.json manifest
 // must refuse the lift entirely. The genrule still emits (so

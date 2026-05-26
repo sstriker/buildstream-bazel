@@ -148,9 +148,8 @@ echo "meta-cross-cmake: producer-shipped Helpers.cmake captured in bundle"
 # build the consumer there. This is the end-to-end check that the
 # converted multi-element graph compiles as real Bazel cc rules with
 # the cross-element dep wired and linking — the coverage re-homed from
-# the orchestrator's e2e-bazel-build gate
-# (docs/design/orchestrator-absorption.md). stage-b is the write-a +
-# Bazel path's canonical A→B staging tool.
+# the (now-deleted) orchestrator's e2e-bazel-build gate. stage-b is
+# the write-a + Bazel path's canonical A→B staging tool.
 CGO_ENABLED=0 go build -o "$bin_dir/stage-b" ./cmd/stage-b
 "$bin_dir/stage-b" --project-a "$A" --project-b "$B" >/dev/null
 for want in elements/prod/BUILD.bazel elements/cons/BUILD.bazel; do

@@ -13,7 +13,7 @@
 // to be the CAS we exercise it against in CI / dev.
 //
 // See:
-//   - docs/design/bazel9-cas-fs.md — design doc for the chosen direction
+//   - docs/design/sources.md — design doc for the chosen direction
 //   - CONTRIBUTING.md — bb_clientd install instructions for dev
 //   - https://github.com/buildbarn/bb-clientd/releases — public
 //     pre-built binaries (linux_amd64 + darwin / freebsd / windows)
@@ -84,7 +84,7 @@ local mountPath = bbClientdRoot + '/mount';
   // rules/sources.bzl needs to learn this layout (currently
   // it expects `<mount>/blobs/directory/<digest>/`). Fixing
   // that is a follow-up; for round 1 the path adjustments are
-  // documented in docs/design/bazel9-cas-fs.md.
+  // documented in docs/design/sources.md.
   mount: {
     mountPath: mountPath,
     fuse: {

@@ -9,8 +9,8 @@ The naming maps 1:1 onto configfold.SanitizerFeature so a future
 converter slice that auto-emits features = [...] knows the
 expected string.
 
-See ../../docs/design/sanitizer-as-feature.md for the rationale
-and the operator wiring guide.
+See examples/sanitizer-features/README.md for the operator wiring
+guide.
 """
 
 load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")

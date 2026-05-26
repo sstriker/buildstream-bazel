@@ -19,7 +19,7 @@ import "fmt"
 // build-tracer with inline trace-publish.
 //
 // Architectural shape mirrors kind:cmake's Phase B fallback
-// (`docs/design/cmake-execute-process-round2-fallback.md`). The
+// (`docs/design/rendezvous.md`). The
 // kind-agnostic plumbing (`renderTraceDrivenRound2A`, the
 // build-tracer / trace-publish / trace-lookup wire contract,
 // `SyntheticActionDigest(srckey)` AC keying) is reused as-is.

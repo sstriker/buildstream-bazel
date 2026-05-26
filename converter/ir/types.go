@@ -147,7 +147,7 @@ type Target struct {
 	// `hdrs = ["api.h"]` so a downstream `#include
 	// "myelem/api.h"` resolves. Matches gazelle_cc's
 	// directive-driven attribute; see
-	// docs/design/build-output-conventions.md.
+	// ROADMAP.md.
 	//
 	// NOT emitted on cc_import — stock rules_cc's cc_import
 	// doesn't accept these attributes; the canonical fix for
@@ -205,7 +205,7 @@ type Target struct {
 	// matches pre-Phase-4 behaviour byte-for-byte. Meson
 	// introspection and pyproject paths likewise have no scope
 	// signal and leave the field unset. Documented in
-	// docs/design/build-output-conventions.md.
+	// ROADMAP.md.
 	ImplementationDeps []string
 
 	// Visibility carries the per-target Bazel visibility list
@@ -233,7 +233,7 @@ type Target struct {
 	// `cmd/write-a/handler_*.go`'s direct BUILD writers) make
 	// their own visibility-rendering choices and should
 	// document them next to their emit code. See
-	// docs/design/build-output-conventions.md for the cc
+	// ROADMAP.md for the cc
 	// emitter's convention and its gazelle_cc lineage.
 	Visibility []string
 

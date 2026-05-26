@@ -36,7 +36,7 @@ type fallbackStub struct {
 // classifier produced refusals.
 //
 // Shape (per
-// docs/design/cmake-execute-process-round2-fallback.md):
+// docs/design/rendezvous.md):
 //   - one extract genrule that untars install_tree.tar into
 //     per-file outs derived from the codemodel
 //   - per-target stubs dispatched on Target.Type:
