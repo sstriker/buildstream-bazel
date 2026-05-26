@@ -51,7 +51,7 @@ they just mean we haven't observed drift on that entry yet.
 | 3.22.6 | green | First run (PR #243 commit `aaff068`) clean across the e2e surface. |
 | 3.28.6 | green | First run clean. |
 | 4.0.7  | green | First run clean; matches the pre-matrix `e2e-latest-cmake` history at `CMAKE_LATEST_VERSION=4.0.3`. |
-| 4.3.3  | **red** | First run surfaced `fileapi.EventFindPackageFound` polymorphic-decode drift. Cmake 4.3 reshaped the configureLog `find_package-v1` event so the `found` field can now be a string path (when found) or a `false` bool (when not), instead of the legacy struct shape. Our Go type only accepts the struct, so every `find_package` call trips a YAML unmarshal error and the configure-log parse aborts. Fix queued under ROADMAP.md `Now` ("`EventFindPackageFound` polymorphic-decode for cmake 4.3+"). Until that lands, the 4.3.3 entry stays red (non-blocking). |
+| 4.3.3  | green | First-run red caught a real cmake 4.3 drift: `fileapi.EventFindPackageFound`'s YAML decoder only accepted the legacy struct shape, but cmake 4.3 introduced a sibling `find-v1` event (firing on every `find_program` / `find_file` / `find_library`, including from cmake's own internal modules during compiler discovery) and made `found` polymorphic — string path / `false` bool / `null` / legacy struct. Fixed in PR #244 via a custom `UnmarshalYAML` accepting all four shapes; a trimmed cmake-4.3.3 configureLog under `converter/internal/fileapi/testdata/configurelog/` pins the parser against future drift. |
 
 Per the matrix's `ROADMAP.md` rationale, the **default** response
 to a surfaced bug is to file a follow-up `ROADMAP.md` bullet and

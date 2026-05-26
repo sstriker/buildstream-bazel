@@ -208,19 +208,16 @@ transition cleanly.
 - **`EventFindPackageFound` polymorphic-decode for cmake
   4.3+** (surfaced by the matrix's 4.3.3 entry on PR #243's
   first CI run — see `docs/cmake-version-matrix.md`'s
-  "Known per-version notes" row). Cmake 4.3 reshaped the
-  configureLog `find_package-v1` event so the `found` field
-  can now be a string path (when found), a `false` bool
-  (when not), or the legacy struct shape. The Go type in
-  `converter/internal/fileapi` only accepts the struct, so
-  every `find_package` call trips a YAML unmarshal error
-  and the configure-log parse aborts. Fix shape: a custom
-  `UnmarshalYAML` on `EventFindPackageFound` that accepts
-  all three shapes and normalizes to the existing struct.
-  Add a 4.3-generated configureLog fixture under
-  `converter/internal/fileapi/testdata/`. Until this lands,
-  the matrix's 4.3.3 entry stays red (non-blocking) and
-  blocks one of the three promotion criteria.
+  "Known per-version notes" row). **Shipped in PR #244.**
+  Cmake 4.3 reshaped the configureLog: a sibling `find-v1`
+  event records every `find_program` / `find_file` /
+  `find_library` call, and the `found` field is polymorphic
+  across both event kinds — string path / `false` bool /
+  `null` / legacy struct. Custom `UnmarshalYAML` on
+  `EventFindPackageFound` accepts all four shapes; a
+  captured cmake-4.3.3 configureLog fixture pins the
+  parser. With this landed, the matrix's 4.3.3 entry goes
+  green and one of the three promotion criteria clears.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for
   environment reasons (cmake-config bundle staging on the CI
