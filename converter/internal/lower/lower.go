@@ -925,6 +925,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 		irt.Defines = defs
 
+		// Sysroot: tag the target with the cmake-recorded sysroot
+		// path. Operators see cross-compile context via grep;
+		// per-target sysroot lift to copts/linkopts would conflict
+		// with the operator's cc_toolchain (sysroot canonically
+		// lives there).
+		if cg.Sysroot != nil && cg.Sysroot.Path != "" {
+			tag := "cmake-codegen-sysroot=" + cg.Sysroot.Path
+			if !stringSliceContains(irt.Tags, tag) {
+				irt.Tags = append(irt.Tags, tag)
+			}
+		}
+
 		// Phase 1 task 3 extension: tag targets that declare
 		// target_precompile_headers. The codemodel records the
 		// PCH set in CompileGroup.PrecompileHeaders; the PCH

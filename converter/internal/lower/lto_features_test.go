@@ -351,3 +351,38 @@ func TestApplyProbeGenexProperties_QtToggles(t *testing.T) {
 		}
 	}
 }
+
+func TestLowerTarget_Sysroot_Tag(t *testing.T) {
+	target := &fileapi.Target{
+		Name: "cross",
+		Type: "STATIC_LIBRARY",
+		CompileGroups: []fileapi.CompileGroup{{
+			Language: "C",
+			Sysroot: &struct {
+				Path string `json:"path"`
+			}{Path: "/opt/cross/sysroot-aarch64"},
+		}},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"cross::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "cross::@", Name: "cross"}},
+			}},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	for _, tgt := range pkg.Targets {
+		if tgt.Name == "cross" {
+			if !stringSliceContains(tgt.Tags, "cmake-codegen-sysroot=/opt/cross/sysroot-aarch64") {
+				t.Errorf("missing sysroot tag; got %v", tgt.Tags)
+			}
+			return
+		}
+	}
+	t.Fatal("cross not found")
+}
