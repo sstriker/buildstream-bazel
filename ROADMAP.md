@@ -193,15 +193,34 @@ transition cleanly.
   / INTERFACE_* aggregation items currently under `Later`
   retire as Phase 3 lands.
 
-- **Multi-version cmake compatibility shakeout.** Per-object
-  schema-major validation now lives in `fileapi/reply.go` and a
-  non-blocking `e2e-latest-cmake` CI job runs the converter
-  against the runner's stock cmake (3.31+) alongside the pinned
-  3.28.3 path. The first surface this catches in practice is
-  build.ninja drift in newer cmakes (C++20 module dyndep, custom
-  command emission); fixes for whatever the matrix surfaces land
-  here as they come up. Once the matrix has been green for a
-  release cycle we can promote it to a blocking gate.
+- **Promote the cmake-version matrix from soft to blocking.**
+  The four-version `e2e-cmake-matrix` shakeout (3.22 / 3.28 /
+  4.0 / 4.3) shipped — see Done. Promotion criteria + tracker
+  live in `docs/cmake-version-matrix.md`: three consecutive
+  green merges across all four entries, any "Known
+  per-version notes" rows resolved or explicitly deferred,
+  then flip `continue-on-error: true` → `false` on the
+  `e2e-cmake-matrix` job header (one-line YAML change; the
+  `strategy.fail-fast: false` flag stays — it controls
+  intra-matrix isolation, not block / non-block). Whatever
+  real converter bugs the matrix surfaces in the meantime
+  get filed here (or as follow-up bullets) as they show up.
+- **`EventFindPackageFound` polymorphic-decode for cmake
+  4.3+** (surfaced by the matrix's 4.3.3 entry on PR #243's
+  first CI run — see `docs/cmake-version-matrix.md`'s
+  "Known per-version notes" row). Cmake 4.3 reshaped the
+  configureLog `find_package-v1` event so the `found` field
+  can now be a string path (when found), a `false` bool
+  (when not), or the legacy struct shape. The Go type in
+  `converter/internal/fileapi` only accepts the struct, so
+  every `find_package` call trips a YAML unmarshal error
+  and the configure-log parse aborts. Fix shape: a custom
+  `UnmarshalYAML` on `EventFindPackageFound` that accepts
+  all three shapes and normalizes to the existing struct.
+  Add a 4.3-generated configureLog fixture under
+  `converter/internal/fileapi/testdata/`. Until this lands,
+  the matrix's 4.3.3 entry stays red (non-blocking) and
+  blocks one of the three promotion criteria.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for
   environment reasons (cmake-config bundle staging on the CI
@@ -384,6 +403,34 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Multi-version cmake compatibility shakeout.** The single
+  `e2e-latest-cmake` job (cmake `4.0.3` only) expanded into a
+  four-version matrix: `3.22.6` (Ubuntu 22.04 LTS default;
+  the operator floor), `3.28.6` (Ubuntu 24.04 LTS default;
+  LLVM 23's floor), `4.0.7` (the major-bump that dropped
+  pre-3.5 compat), `4.3.3` (latest stable as of May 2026).
+  Runs in parallel via `strategy.matrix.cmake_version`;
+  `strategy.fail-fast: false` isolates entries so one red
+  version doesn't cancel the others. Job-level
+  `continue-on-error: true` keeps the matrix non-blocking
+  per the shakeout's design goal — surface drift, don't gate
+  PRs on it. The composite `install-cmake-toolchain` action
+  takes `cmake_version` as input and pulls the matching
+  Kitware-released tarball, so the matrix entry list is the
+  only knob to bump for a new cmake. cmake 4.x entries set
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` defensively (every
+  in-tree fixture floor is already ≥ 3.20, but try_compile
+  sub-projects + future fixtures might not be). The matrix's
+  promotion-to-blocking criteria + per-version known-notes
+  table live in `docs/cmake-version-matrix.md`; promotion
+  itself is a one-line YAML flip on the job header
+  (`continue-on-error: true` → `false`) once the criteria
+  are met. The previously-listed Now bullet ("Per-object
+  schema-major validation now lives in `fileapi/reply.go`
+  and a non-blocking `e2e-latest-cmake` CI job...") retires
+  in favour of this Done entry; the schema-major validation
+  it referenced already shipped pre-matrix and stays as is.
 
 - **Platform-conditional source partitioning from a single-platform
   cmake trace (#217 Tier 1).** A new shadow extractor
