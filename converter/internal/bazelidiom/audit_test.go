@@ -399,3 +399,68 @@ func TestAudit_NonFeatureFlag_NoFinding(t *testing.T) {
 		}
 	}
 }
+
+func TestAudit_CmakeCodegenPCHTag(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    tags = ["cmake-codegen-pch"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "pch-toolchain-feature-needed" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pch-toolchain-feature-needed; got %v", findings)
+	}
+}
+
+func TestAudit_CmakeCodegenQtTags(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "qtwidget",
+    srcs = ["w.cc"],
+    tags = ["cmake-codegen-qt-automoc", "cmake-codegen-qt-autouic"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	codes := map[string]bool{}
+	for _, f := range findings {
+		codes[f.Code] = true
+	}
+	if !codes["qt-automoc-host-tool-needed"] {
+		t.Errorf("missing automoc finding: %v", findings)
+	}
+	if !codes["qt-autouic-host-tool-needed"] {
+		t.Errorf("missing autouic finding: %v", findings)
+	}
+}
+
+func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
+	// cmake-codegen-version=… and cmake-codegen-soversion=… are
+	// informational; no audit finding.
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    tags = ["cmake-codegen-version=1.2.3", "cmake-codegen-soversion=1"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if strings.Contains(f.Code, "version") || strings.Contains(f.Code, "soversion") {
+			t.Errorf("informational tag should not produce finding: %v", f)
+		}
+	}
+}

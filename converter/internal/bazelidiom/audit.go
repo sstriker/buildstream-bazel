@@ -103,7 +103,64 @@ func auditRule(rule, target string, call *build.CallExpr) []Finding {
 	// copts / linkopts — cc_toolchain features are the canonical
 	// home for these flags.
 	findings = append(findings, auditRawCompileFlags(rule, target, call)...)
+	// Cross-rule check: surface known cmake-codegen-* tags that
+	// signal operator action (PCH wiring, Qt host-tool genrules,
+	// etc.) so the audit pass shows the same gaps as the gaps
+	// doc's queued list.
+	findings = append(findings, auditCmakeCodegenTags(rule, target, call)...)
 	return findings
+}
+
+// auditCmakeCodegenTags surfaces cmake-codegen-* tags that signal
+// operator action gaps. Each known tag maps to a finding kind and
+// a recommendation; unknown cmake-codegen-* tags pass through
+// silently (forward-compat with future tag additions).
+func auditCmakeCodegenTags(rule, target string, call *build.CallExpr) []Finding {
+	tags := flatListContains(call, "tags", func(s string) bool {
+		return strings.HasPrefix(s, "cmake-codegen-")
+	})
+	if len(tags) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, tag := range tags {
+		code, msg := codegenTagToFinding(tag)
+		if code == "" {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:    rule,
+			Target:  target,
+			Code:    code,
+			Message: msg,
+		})
+	}
+	return findings
+}
+
+// codegenTagToFinding maps a cmake-codegen-* tag to an audit
+// finding (code, message). Returns ("", "") for tags that don't
+// signal operator action (informational-only tags like
+// cmake-codegen-version=…).
+func codegenTagToFinding(tag string) (code, msg string) {
+	switch {
+	case tag == "cmake-codegen-pch":
+		return "pch-toolchain-feature-needed",
+			"target declares target_precompile_headers — Bazel cc_library has no native PCH attribute; wire via cc_toolchain pch feature for the actual PCH effect"
+	case tag == "cmake-codegen-qt-automoc":
+		return "qt-automoc-host-tool-needed",
+			"target has AUTOMOC=TRUE — cmake's generator runs moc as part of `cmake --build`; Bazel doesn't, so moc-generated sources are missing. Wrap moc as a host-tool genrule in a kind:bazel override or use a rules_qt module"
+	case tag == "cmake-codegen-qt-autouic":
+		return "qt-autouic-host-tool-needed",
+			"target has AUTOUIC=TRUE — same as automoc but for the uic-generated header source"
+	case tag == "cmake-codegen-qt-autorcc":
+		return "qt-autorcc-host-tool-needed",
+			"target has AUTORCC=TRUE — same as automoc but for the rcc-generated resource source"
+	case tag == "cmake-codegen-enable-exports":
+		return "enable-exports-toolchain-feature-needed",
+			"target has ENABLE_EXPORTS=TRUE (executables exporting symbols) — Bazel cc_binary has no native attribute; wire via cc_toolchain feature"
+	}
+	return "", ""
 }
 
 // auditRawCompileFlags fires when copts / linkopts carry raw flag
