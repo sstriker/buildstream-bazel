@@ -222,6 +222,24 @@ probe, so additions are cheap.
   in the target graph" can't be reproduced under Bazel's
   hermetic-action model.
 
+- **Cross-target hdrs ownership de-dup** —
+  *codemodel-v2 + cross-target walk*. The codemodel reports
+  per-target absolute paths to every reachable include
+  directory and header. The lower currently expands each
+  target's reachable headers into its own `hdrs` attribute,
+  including headers owned by other emitted `cc_library`
+  targets in the same package. Real-world impact: boost
+  1.86.0's `boost_atomic_cxx_0` shows 1 src and 981 hdrs
+  (980 owned by `boost_align`, `boost_assert`,
+  `boost_config`, etc. — all already in `deps`).
+  Lift: post-pass that strips a target's `hdrs` of any
+  entry already declared in any other in-package target's
+  `hdrs`, trusting Bazel's `deps`-driven header propagation.
+  Risk: a consumer that compiled against a transitively-
+  owned header without declaring the owning dep would break;
+  needs a fixture confirming the strip preserves
+  compilability. Queued for a focused follow-on PR.
+
 ## Architectural: cmake-side state we deliberately don't model
 
 - **`set(CACHE)` / `option()`** — operator-tuned per-build
