@@ -2133,6 +2133,58 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 				}
 			}
 		}
+		// CXX_EXTENSIONS / C_EXTENSIONS — toggle gnu extensions on
+		// the language standard flag. cmake's default is ON
+		// (gnu++NN / gnuNN); our prepend hardcodes the strict
+		// form (c++NN / cNN). Rewrite the prepended copts to
+		// match the cmake-recorded extension state.
+		//
+		// CXX_EXTENSIONS empty (unset) means cmake defaults to
+		// ON — but since we can't tell from the probe alone
+		// whether the property was unset vs explicitly empty,
+		// only rewrite when the property is explicitly truthy.
+		// Operators relying on the gnu default can either
+		// `set(CMAKE_CXX_EXTENSIONS ON)` (no-op but makes intent
+		// explicit) or hand-edit the resulting BUILD copts.
+		rewriteStdForExtensions(tgt, "CXX_EXTENSIONS", p.Properties["CXX_EXTENSIONS"], "c++", "gnu++")
+		rewriteStdForExtensions(tgt, "C_EXTENSIONS", p.Properties["C_EXTENSIONS"], "c", "gnu")
+	}
+}
+
+// rewriteStdForExtensions walks tgt.Copts looking for our
+// prepended language-standard flag (e.g. -std=c++17 or -std=c11)
+// and rewrites it to the gnu-extension form (-std=gnu++17 /
+// -std=gnu11) when the cmake-recorded LANGUAGE_EXTENSIONS
+// property is truthy. When the property is explicitly OFF /
+// FALSE / 0, no rewrite — strict form already matches cmake.
+//
+// strictPrefix is the bare-standard prefix (e.g. "c++", "c");
+// gnuPrefix is the extensions form (e.g. "gnu++", "gnu"). The
+// rewrite preserves the version suffix verbatim.
+//
+// Safety: only rewrites the exact `-std=<strictPrefix>NN` shape;
+// leaves unrelated copts alone. Idempotent (rewriting -std=gnu++17
+// to gnu++17 is a no-op).
+func rewriteStdForExtensions(tgt *ir.Target, propName, propVal, strictPrefix, gnuPrefix string) {
+	if !cmakeTruthy(propVal) {
+		return
+	}
+	prefix := "-std=" + strictPrefix
+	for i, c := range tgt.Copts {
+		if !strings.HasPrefix(c, prefix) {
+			continue
+		}
+		version := strings.TrimPrefix(c, prefix)
+		if version == "" {
+			continue
+		}
+		// Guard against `c` prefix matching `c++` flags: the
+		// trimmed remainder must start with a digit (the
+		// standard version number), not another letter.
+		if version[0] < '0' || version[0] > '9' {
+			continue
+		}
+		tgt.Copts[i] = "-std=" + gnuPrefix + version
 	}
 }
 

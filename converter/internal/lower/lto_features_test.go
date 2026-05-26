@@ -399,6 +399,75 @@ func TestApplyProbeGenexProperties_JobPools(t *testing.T) {
 	}
 }
 
+func TestApplyProbeGenexProperties_CXXExtensions_RewritesStdFlag(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:  "lib",
+		Kind:  ir.KindCCLibrary,
+		Copts: []string{"-std=c++17", "-O2"},
+	}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "lib",
+		Properties: map[string]string{"CXX_EXTENSIONS": "ON"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Copts, "-std=gnu++17") {
+		t.Errorf("Copts: %v should contain -std=gnu++17", pkg.Targets[0].Copts)
+	}
+	if stringSliceContains(pkg.Targets[0].Copts, "-std=c++17") {
+		t.Errorf("Copts: %v should NOT still contain -std=c++17", pkg.Targets[0].Copts)
+	}
+}
+
+func TestApplyProbeGenexProperties_CExtensions_RewritesCStd(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:  "lib",
+		Kind:  ir.KindCCLibrary,
+		Copts: []string{"-std=c11"},
+	}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "lib",
+		Properties: map[string]string{"C_EXTENSIONS": "TRUE"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Copts, "-std=gnu11") {
+		t.Errorf("Copts: %v should contain -std=gnu11", pkg.Targets[0].Copts)
+	}
+}
+
+func TestApplyProbeGenexProperties_CExtensions_DoesNotMatchCxx(t *testing.T) {
+	// C_EXTENSIONS=ON must NOT rewrite -std=c++17 to -std=gnu++17.
+	// The C/CXX rewrites are driven by distinct properties.
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:  "lib",
+		Kind:  ir.KindCCLibrary,
+		Copts: []string{"-std=c++17"},
+	}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "lib",
+		Properties: map[string]string{"C_EXTENSIONS": "TRUE"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Copts, "-std=c++17") {
+		t.Errorf("Copts: %v should preserve -std=c++17 (C_EXTENSIONS doesn't apply)", pkg.Targets[0].Copts)
+	}
+}
+
+func TestApplyProbeGenexProperties_ExtensionsOff_NoRewrite(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:  "lib",
+		Kind:  ir.KindCCLibrary,
+		Copts: []string{"-std=c++17"},
+	}}}
+	probes := []cmakerunGenexProbeStub{{
+		Name:       "lib",
+		Properties: map[string]string{"CXX_EXTENSIONS": "OFF"},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Copts, "-std=c++17") {
+		t.Errorf("Copts: %v should preserve strict -std=c++17 (CXX_EXTENSIONS=OFF)", pkg.Targets[0].Copts)
+	}
+}
+
 func TestLowerTarget_Sysroot_Tag(t *testing.T) {
 	target := &fileapi.Target{
 		Name: "cross",

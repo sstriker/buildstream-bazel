@@ -163,11 +163,15 @@ Remaining:
 - **`LINK_FLAGS_<CONFIG>`** — per-config link flags. The
   multi-config fold handles general flags; this is the
   per-config override.
-- **`CXX_EXTENSIONS` / `C_EXTENSIONS`** — toggle between
-  `-std=c++NN` (strict) and `-std=gnu++NN` (extensions).
-  Cmake's default is `ON` (gnu); our prepend hardcodes
-  strict. Fix: probe-genex extension + rewrite the
-  prepended copt to match.
+
+Landed since the last doc revision:
+
+- ✓ **`CXX_EXTENSIONS` / `C_EXTENSIONS`** — when truthy,
+  rewrite `-std=c++NN` → `-std=gnu++NN` (and `-std=cNN` →
+  `-std=gnuNN`). Conservative: only rewrites the exact
+  language-standard shape, leaves operator-hand-edited
+  copts alone. CXX/C properties drive the matching prefix
+  independently, so C_EXTENSIONS=ON doesn't affect c++ flags.
 
 Per-target file count grows linearly with the property set we
 probe, so additions are cheap.
@@ -266,6 +270,7 @@ Items landed in the gap-fill push, sorted by category:
 - ✓ EXCLUDE_FROM_ALL → manual tag + cmake-codegen-exclude-from-all
 - ✓ MSVC_RUNTIME_LIBRARY → cmake-codegen-msvc-runtime=<lib> tag
 - ✓ JOB_POOL_COMPILE / JOB_POOL_LINK → cmake-codegen-job-pool-* tags
+- ✓ CXX_EXTENSIONS / C_EXTENSIONS → -std=c++NN → -std=gnu++NN rewrite
 
 **configureLog-driven lifts:**
 - ✓ try_compile / try_run variable rescue for execute_process
