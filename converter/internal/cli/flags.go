@@ -156,6 +156,32 @@ type Args struct {
 	// package doc for the cache-key analysis.
 	LiftConfigureFile bool
 
+	// DumpVars toggles the post-configure variable-namespace
+	// capture (cmakerun stages dump-vars.cmake into
+	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES; on success cmake writes
+	// `<build>/cmake-to-bazel.vars.dump`). The lower's
+	// configure_file recovery AND the find_package variable-form
+	// attribution path both read it — the former for @VAR@ /
+	// ${VAR} substitution, the latter for <Pkg>_LIBRARIES →
+	// package name correlation when the configureLog
+	// find_package-v1 event isn't available (cmake < 3.32).
+	//
+	// On by default. The hook is cmake 3.24+; on older cmakes
+	// the `CMAKE_PROJECT_TOP_LEVEL_INCLUDES` injection silently
+	// fails to install and the dump file never lands — the
+	// downstream paths fall back to their non-dump shapes
+	// (configure_file lift uses build-time-only @VAR@, attribution
+	// uses configureLog events only). Pass --dump-vars=false to
+	// opt out explicitly (the per-conversion cost is small but
+	// non-zero on large CMakeLists trees).
+	//
+	// Pre-#229 this was implicitly coupled to LiftConfigureFile ||
+	// ProbeGenex inside cmd/convert-element-cmake/main.go.
+	// Decoupling it lets operators who run without probe-genex
+	// (--probe-genex=false) still get the variable-form
+	// attribution path.
+	DumpVars bool
+
 	// UnsupportedExecuteProcessFallback toggles the
 	// recoverExecuteProcess refusal path's behaviour. Off
 	// (default): refusals exit Tier-1 with the typed
@@ -357,6 +383,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutToolchainSignalDir, "out-toolchain-signal-dir", "", "directory; on success, copy the cmake File API reply contents here so the unifier can fold per-element toolchain signal into the platform's ResolvedToolchain.Base")
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
+	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/cmake-execute-process-round2-fallback.md.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "translate get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time (cmake 4.x escape hatch for removed CMP0026 OLD). Changes LOCATION's return shape project-wide; see #208.")
