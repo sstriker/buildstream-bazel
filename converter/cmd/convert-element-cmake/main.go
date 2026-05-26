@@ -401,9 +401,12 @@ func run(a cli.Args) error {
 		return err
 	}
 
-	// Phase 7: post-emission Bazel-idiom audit. Off by default;
-	// opt-in via --audit-bazel-idiom or --audit-bazel-idiom-report.
-	if a.AuditBazelIdiom || a.AuditBazelIdiomReport != "" {
+	// Phase 7: post-emission Bazel-idiom audit. Runs
+	// unconditionally — the audit is read-only and FormatFindings
+	// returns "" when there are no findings, so silent on clean
+	// conversions. --audit-bazel-idiom-report writes the
+	// structured findings as JSON in addition.
+	{
 		findings, ferr := bazelidiom.Audit(out)
 		if ferr != nil {
 			return failure.New(failure.BazelCanonicalizeFailed, "audit-bazel-idiom: %v", ferr)
