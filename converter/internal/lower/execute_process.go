@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -89,6 +90,43 @@ type executeProcessOut struct {
 // Phase B callers (--unsupported-execute-process-fallback set)
 // route the refusal slice into the placeholder ir.Package
 // emitter instead.
+// configureLogVars projects a configureLog event slice into the
+// var → value map the rescue arm consults alongside cmakeVars.
+// Each try_compile-v1 / try_run-v1 / find_package-v1 event whose
+// payload binds a result variable shows up; the value is the
+// exitCode-derived "1"/"0" for try_compile / try_run, or the
+// resolved found-package metadata for find_package.
+//
+// Phase 4 of the generator-parity uplift: extends the dump-vars
+// rescue to also cover probes whose results land in cmake's cache
+// via Check_* modules rather than directly in user variables.
+func configureLogVars(events []fileapi.Event) map[string]string {
+	if len(events) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, e := range events {
+		switch e.Kind {
+		case "try_compile-v1", "try_run-v1":
+			if e.BuildResult != nil && e.BuildResult.Variable != "" {
+				if e.BuildResult.ExitCode == 0 {
+					out[e.BuildResult.Variable] = "1"
+				} else {
+					out[e.BuildResult.Variable] = "0"
+				}
+			}
+			if e.RunResult != nil && e.RunResult.Variable != "" {
+				if e.RunResult.ExitCode == 0 {
+					out[e.RunResult.Variable] = "1"
+				} else {
+					out[e.RunResult.Variable] = "0"
+				}
+			}
+		}
+	}
+	return out
+}
+
 func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil

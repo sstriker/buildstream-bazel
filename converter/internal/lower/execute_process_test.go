@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -556,5 +557,74 @@ func TestRecoverExecuteProcess_RescueStamp(t *testing.T) {
 	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected stamp rescue via dump-vars; got refusals: %v", refusals)
+	}
+}
+
+func TestConfigureLogVars_TryCompileSuccess(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:        "try_compile-v1",
+			BuildResult: &fileapi.EventBuildResult{Variable: "HAVE_FOO", ExitCode: 0},
+		},
+	}
+	got := configureLogVars(events)
+	if got["HAVE_FOO"] != "1" {
+		t.Errorf("HAVE_FOO: %q, want 1", got["HAVE_FOO"])
+	}
+}
+
+func TestConfigureLogVars_TryCompileFailure(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:        "try_compile-v1",
+			BuildResult: &fileapi.EventBuildResult{Variable: "HAVE_BAR", ExitCode: 1},
+		},
+	}
+	if configureLogVars(events)["HAVE_BAR"] != "0" {
+		t.Errorf("HAVE_BAR should be 0 on failure")
+	}
+}
+
+func TestConfigureLogVars_TryRunRecorded(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:      "try_run-v1",
+			RunResult: &fileapi.EventRunResult{Variable: "RUN_RESULT", ExitCode: 0},
+		},
+	}
+	if configureLogVars(events)["RUN_RESULT"] != "1" {
+		t.Errorf("RUN_RESULT should be 1")
+	}
+}
+
+func TestConfigureLogVars_EmptyEvents(t *testing.T) {
+	if got := configureLogVars(nil); got != nil {
+		t.Errorf("nil events should return nil; got %v", got)
+	}
+}
+
+// TestRecoverExecuteProcess_RescueViaConfigureLog covers the
+// configureLog-driven rescue: a probe whose OUTPUT_VARIABLE
+// isn't in cmakeVars but IS in the configureLog as a try_compile
+// result variable rescues without refusal.
+func TestRecoverExecuteProcess_RescueViaConfigureLog(t *testing.T) {
+	// Simulate the merge that lower.go does between cmakeVars and
+	// configureLogVars before passing to recoverExecuteProcess.
+	clVars := configureLogVars([]fileapi.Event{
+		{
+			Kind:        "try_compile-v1",
+			BuildResult: &fileapi.EventBuildResult{Variable: "GCC_VERSION", ExitCode: 0},
+		},
+	})
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           42,
+		Commands:       [][]string{{"gcc", "--version"}},
+		OutputVariable: "GCC_VERSION",
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected configureLog rescue; got refusals: %v", refusals)
 	}
 }

@@ -433,7 +433,24 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// []executeProcessOut return is parallel to
 	// configureFileOut and feeds the same per-target
 	// attribution loop in lowerTarget below.
-	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
+	// Merge cmakeVars (dump-vars hook output) with configureLog-
+	// derived try_compile / try_run result variables. cmakeVars
+	// covers the user-defined namespace; configureLog covers
+	// probe-set variables that landed in cmake's cache via
+	// Check_* modules. cmakeVars wins on overlap — it's the
+	// canonical end-of-configure namespace.
+	rescueVars := opts.CMakeVars
+	if clVars := configureLogVars(opts.ConfigureLog); len(clVars) > 0 {
+		merged := make(map[string]string, len(rescueVars)+len(clVars))
+		for k, v := range clVars {
+			merged[k] = v
+		}
+		for k, v := range rescueVars {
+			merged[k] = v
+		}
+		rescueVars = merged
+	}
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
 	if len(executeProcessRefusals) > 0 {
 		if !opts.UnsupportedExecuteProcessFallback {
 			return nil, formatExecuteProcessFailure(executeProcessRefusals)
