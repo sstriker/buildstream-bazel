@@ -432,6 +432,20 @@ transition cleanly.
   in favour of this Done entry; the schema-major validation
   it referenced already shipped pre-matrix and stays as is.
 
+- **probe-genex composes with Ninja Multi-Config.**
+  `probe-genex.cmake` now emits per-config OUTPUT paths
+  (`file.$<CONFIG>.txt`) so cmake's generation step stops
+  erroring on "Evaluation file to be written multiple times with
+  different content" when `BuildTypes` carries more than one
+  config. The reader (`cmakerun.ReadGenexProbe`) collapses
+  config-invariant values back to single fields and silently
+  drops fields that diverge across configs (the routine case
+  for `TARGET_FILE` / `TARGET_FILE_DIR` under multi-config,
+  where each config lives in a per-config subdir of
+  `CMAKE_BINARY_DIR`). The `--probe-genex=false` workaround
+  PR #229's sanitizer-features render gate was carrying is
+  dropped.
+
 - **Platform-conditional source partitioning from a single-platform
   cmake trace (#217 Tier 1).** A new shadow extractor
   (`internal/shadow/platform_conditional.go`) walks the cmake

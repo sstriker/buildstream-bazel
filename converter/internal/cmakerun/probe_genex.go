@@ -25,6 +25,26 @@ import (
 // Probe values are project-source-root relative or absolute as cmake
 // recorded them; the consumer is responsible for projecting them
 // onto the converter's output layout.
+//
+// Multi-config note: probe-genex.cmake encodes `$<CONFIG>` in the
+// OUTPUT filenames (e.g. file.Release.txt, file.ASan.txt) so the
+// hook composes with the Ninja Multi-Config generator — without
+// per-config OUTPUT, cmake would refuse the file(GENERATE) with
+// "Evaluation file to be written multiple times with different
+// content." ReadGenexProbe collapses the per-config files back to
+// the single-string fields below when every config resolved to the
+// same value (the common case for TARGET_FILE_NAME and most
+// INTERFACE_* aggregates); when values diverge across configs
+// (the common case for TARGET_FILE / TARGET_FILE_DIR under Ninja
+// Multi-Config, which puts each config's artifacts in a per-config
+// subdir like `/build/Release/...` vs `/build/ASan/...`) the
+// reader drops the field silently — equivalent to "probe didn't
+// run for this field" — so downstream genexeval surfaces its
+// existing UnsupportedError on missing data and the lifter falls
+// back to (b) / legacy. Bazel has no select() shape for per-
+// artifact path that lifter consumers honor today, so dropping is
+// the v1 safe choice; the PerConfigMismatchError type below is
+// retained for callers that want to inspect the divergence.
 type GenexProbe struct {
 	// Name is the cmake target name the probe corresponds to.
 	Name string
@@ -62,6 +82,46 @@ type GenexProbe struct {
 	Properties map[string]string
 }
 
+// PerConfigMismatchError signals that probe-genex captured
+// per-config values for one probe basename that disagreed across
+// the project's configurations. In single-config builds (one
+// `$<CONFIG>` value) divergence is impossible, so this error is a
+// pure multi-config concern.
+//
+// The typical cause is a TARGET_FILE / TARGET_FILE_DIR expansion
+// that genuinely differs per configuration. Under Ninja Multi-
+// Config, the cmake generator places per-config artifacts in
+// per-config subdirs of CMAKE_BINARY_DIR, so file/file_dir for any
+// target naturally diverges. Other divergence sources include
+// per-config OUTPUT_NAME, CMAKE_<CONFIG>_POSTFIX, or per-config
+// $<CONFIG>-bearing genexes in INTERFACE_* aggregates.
+//
+// ReadGenexProbe does NOT bubble this out as a fatal error — it
+// drops the diverging field on the per-target probe (equivalent
+// to "probe didn't run for this field"). The PerConfigMismatchError
+// type remains exported so future callers / diagnostic surfaces
+// can re-inspect the divergence shape if they need to (e.g. a
+// `--probe-genex-strict` mode or a debug log) without
+// re-implementing the collapse logic.
+type PerConfigMismatchError struct {
+	Target   string
+	Basename string
+	// Values is keyed by config name (e.g. "Release", "ASan") with
+	// the per-config string the probe captured. Stable iteration
+	// for the error message is the caller's job.
+	Values map[string]string
+}
+
+func (e *PerConfigMismatchError) Error() string {
+	configs := make([]string, 0, len(e.Values))
+	for c := range e.Values {
+		configs = append(configs, c)
+	}
+	sort.Strings(configs)
+	return fmt.Sprintf("cmakerun: probe-genex target %q file %q diverged across configs %v",
+		e.Target, e.Basename, configs)
+}
+
 // ReadGenexProbe walks <buildDir>/cmake-to-bazel.genex/ — the
 // per-target probe-genex output directory cmake's file(GENERATE)
 // declarations populate at generation time — and returns one
@@ -71,6 +131,18 @@ type GenexProbe struct {
 //
 // Target enumeration is deterministic (sorted by directory name) so
 // consumers can use the slice index as a stable key in goldens.
+//
+// Multi-config layout: per-config files (file.Release.txt,
+// file.ASan.txt, …) collapse to a single GenexProbe field when the
+// per-config values match. When values diverge across configs
+// (the common case for TARGET_FILE / TARGET_FILE_DIR under Ninja
+// Multi-Config) the diverging field is dropped from the per-target
+// probe — equivalent to "probe didn't capture this field" — so
+// downstream genexeval surfaces its existing UnsupportedError on
+// missing data and the lifter falls back to (b) / legacy. type.txt
+// is captured config-invariantly (single emit; cmake's
+// TARGET_PROPERTY:TYPE doesn't honor $<CONFIG>) and uses the
+// historical no-config-suffix layout.
 func ReadGenexProbe(buildDir string) ([]GenexProbe, error) {
 	root := filepath.Join(buildDir, ProbeGenexDirname)
 	entries, err := os.ReadDir(root)
@@ -94,58 +166,166 @@ func ReadGenexProbe(buildDir string) ([]GenexProbe, error) {
 
 	out := make([]GenexProbe, 0, len(names))
 	for _, name := range names {
-		probe := GenexProbe{
-			Name:       name,
-			Interface:  map[string]string{},
-			Properties: map[string]string{},
-		}
-		tgtDir := filepath.Join(root, name)
-		propEntries, err := os.ReadDir(tgtDir)
+		probe, err := readOneGenexProbe(filepath.Join(root, name), name)
 		if err != nil {
-			return nil, fmt.Errorf("cmakerun: read genex probe %s: %w", name, err)
-		}
-		for _, pe := range propEntries {
-			if pe.IsDir() {
-				// Unexpected — flat per-target schema only — but
-				// don't fail the whole probe read for one stray
-				// entry. Skip.
-				continue
-			}
-			val, err := os.ReadFile(filepath.Join(tgtDir, pe.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("cmakerun: read genex probe %s/%s: %w", name, pe.Name(), err)
-			}
-			s := string(val)
-			switch pe.Name() {
-			case "type.txt":
-				probe.Type = s
-			case "file.txt":
-				probe.File = s
-			case "file_dir.txt":
-				probe.FileDir = s
-			case "file_name.txt":
-				probe.FileName = s
-			case "objects.txt":
-				probe.Objects = s
-			default:
-				const ifacePrefix = "interface_"
-				const propPrefix = "property_"
-				const suffix = ".txt"
-				name := pe.Name()
-				switch {
-				case strings.HasPrefix(name, ifacePrefix) && strings.HasSuffix(name, suffix):
-					key := name[len(ifacePrefix) : len(name)-len(suffix)]
-					probe.Interface[key] = s
-				case strings.HasPrefix(name, propPrefix) && strings.HasSuffix(name, suffix):
-					key := name[len(propPrefix) : len(name)-len(suffix)]
-					probe.Properties[key] = s
-				}
-				// Unknown filename: silently ignored. Forward-compat
-				// with future probe additions that older readers
-				// haven't been taught about.
-			}
+			return nil, err
 		}
 		out = append(out, probe)
 	}
 	return out, nil
+}
+
+// readOneGenexProbe handles a single <target>/ subdir under
+// cmake-to-bazel.genex. Split out from ReadGenexProbe so the
+// per-config collapse logic stays at one indentation level.
+func readOneGenexProbe(tgtDir, name string) (GenexProbe, error) {
+	probe := GenexProbe{
+		Name:       name,
+		Interface:  map[string]string{},
+		Properties: map[string]string{},
+	}
+	propEntries, err := os.ReadDir(tgtDir)
+	if err != nil {
+		return probe, fmt.Errorf("cmakerun: read genex probe %s: %w", name, err)
+	}
+	// Aggregate per-basename per-config values. The on-disk layout
+	// is <basename>.<config>.txt for everything but type.txt; map
+	// basename → (config → value) and collapse at the end.
+	perBasename := map[string]map[string]string{}
+	for _, pe := range propEntries {
+		if pe.IsDir() {
+			// Unexpected — flat per-target schema only — but
+			// don't fail the whole probe read for one stray
+			// entry. Skip.
+			continue
+		}
+		fname := pe.Name()
+		val, err := os.ReadFile(filepath.Join(tgtDir, fname))
+		if err != nil {
+			return probe, fmt.Errorf("cmakerun: read genex probe %s/%s: %w", name, fname, err)
+		}
+		s := string(val)
+		if fname == "type.txt" {
+			// TYPE is the one probe that doesn't carry $<CONFIG>
+			// in OUTPUT — keep the historical single-file layout
+			// so older readers + the affirmative-type gate stay
+			// unchanged.
+			probe.Type = s
+			continue
+		}
+		basename, config, ok := splitProbeConfigFilename(fname)
+		if !ok {
+			// Unknown filename shape: silently ignored. Forward-
+			// compat with future probe additions that older
+			// readers haven't been taught about.
+			continue
+		}
+		bucket, ok := perBasename[basename]
+		if !ok {
+			bucket = map[string]string{}
+			perBasename[basename] = bucket
+		}
+		bucket[config] = s
+	}
+	// Collapse per-config values per basename. Same string across
+	// every config → single value (the common case for
+	// TARGET_FILE_NAME and most INTERFACE_* aggregates). Divergence
+	// → drop the basename from the probe entirely (leave the
+	// matching GenexProbe field empty), letting downstream
+	// genexeval surface its existing UnsupportedError on missing
+	// data so the lift falls back cleanly. TARGET_FILE /
+	// TARGET_FILE_DIR routinely diverge under Ninja Multi-Config
+	// (each config has its own subdir of CMAKE_BINARY_DIR), so
+	// hard-erroring on this would defeat the whole point of
+	// per-config OUTPUT.
+	for basename, perConfig := range perBasename {
+		unified, ok := collapseConfigValues(perConfig)
+		if !ok {
+			continue
+		}
+		assignProbeField(&probe, basename, unified)
+	}
+	return probe, nil
+}
+
+// splitProbeConfigFilename parses a probe filename like
+// "file.Release.txt" into ("file", "Release", true). Returns
+// (_, _, false) for filenames that don't match the per-config
+// pattern (no recognized suffix). The grammar splits on the first
+// `.` after the leading basename: basenames are
+// underscore-joined cmake property identifiers (no `.`), so the
+// first `.` reliably marks the basename/config boundary even if
+// the config name itself contains a `.` (e.g. "Release.1").
+func splitProbeConfigFilename(fname string) (basename, config string, ok bool) {
+	const suffix = ".txt"
+	if !strings.HasSuffix(fname, suffix) {
+		return "", "", false
+	}
+	stem := fname[:len(fname)-len(suffix)]
+	// Split into <basename>.<config>. The basename can't contain
+	// "." (cmake property names are [A-Z_]+ with optional digits),
+	// so the first "." is the separator.
+	dot := strings.Index(stem, ".")
+	if dot <= 0 || dot == len(stem)-1 {
+		return "", "", false
+	}
+	return stem[:dot], stem[dot+1:], true
+}
+
+// collapseConfigValues returns (value, true) when all per-config
+// values for one basename agree, or ("", false) when they diverge.
+// Single-config builds have one entry so divergence is impossible;
+// multi-config builds where every config resolved to the same
+// string also collapse cleanly. Divergence is reported as a
+// "not ok" return rather than a typed error because the reader's
+// policy is to drop the diverging field silently — bubbling an
+// error here would fail the whole probe read, which kills
+// multi-config compose. Callers that want to introspect the
+// divergence values can construct PerConfigMismatchError from
+// the same input map.
+func collapseConfigValues(perConfig map[string]string) (string, bool) {
+	if len(perConfig) == 0 {
+		return "", true
+	}
+	var first string
+	have := false
+	for _, v := range perConfig {
+		if !have {
+			first = v
+			have = true
+			continue
+		}
+		if v != first {
+			return "", false
+		}
+	}
+	return first, true
+}
+
+// assignProbeField routes a unified per-target value into the
+// GenexProbe field matching its basename. Mirrors the original
+// switch table in ReadGenexProbe, kept local so the per-config
+// collapse loop reads linearly. Unknown basenames are dropped
+// (forward-compat with future hook additions older readers
+// haven't been taught about).
+func assignProbeField(p *GenexProbe, basename, value string) {
+	switch basename {
+	case "file":
+		p.File = value
+	case "file_dir":
+		p.FileDir = value
+	case "file_name":
+		p.FileName = value
+	case "objects":
+		p.Objects = value
+	default:
+		const ifacePrefix = "interface_"
+		const propPrefix = "property_"
+		switch {
+		case strings.HasPrefix(basename, ifacePrefix):
+			p.Interface[basename[len(ifacePrefix):]] = value
+		case strings.HasPrefix(basename, propPrefix):
+			p.Properties[basename[len(propPrefix):]] = value
+		}
+	}
 }

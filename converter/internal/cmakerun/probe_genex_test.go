@@ -1,6 +1,7 @@
 package cmakerun
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,12 @@ func TestReadGenexProbe_Empty(t *testing.T) {
 	}
 }
 
+// TestReadGenexProbe_OneTarget pins the single-config collapse
+// path: every probe-genex file lands with one `$<CONFIG>` value
+// (here "Release") and the reader exposes a flat GenexProbe with
+// the captured strings on the matching fields. This is the steady-
+// state shape for single-config Ninja builds where cmake's
+// generation phase resolves `$<CONFIG>` to CMAKE_BUILD_TYPE.
 func TestReadGenexProbe_OneTarget(t *testing.T) {
 	buildDir := t.TempDir()
 	tgtDir := filepath.Join(buildDir, "cmake-to-bazel.genex", "foo")
@@ -24,15 +31,15 @@ func TestReadGenexProbe_OneTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := map[string]string{
-		"type.txt":                          "STATIC_LIBRARY",
-		"file.txt":                          "/build/libfoo.a",
-		"file_dir.txt":                      "/build",
-		"file_name.txt":                     "libfoo.a",
-		"interface_INCLUDE_DIRECTORIES.txt": "/src/include;/src/extra",
-		"interface_COMPILE_DEFINITIONS.txt": "FOO=1;BAR=2",
-		"interface_LINK_LIBRARIES.txt":      "bar;baz",
-		"interface_COMPILE_OPTIONS.txt":     "",
-		"interface_LINK_OPTIONS.txt":        "",
+		"type.txt":                                  "STATIC_LIBRARY",
+		"file.Release.txt":                          "/build/libfoo.a",
+		"file_dir.Release.txt":                      "/build",
+		"file_name.Release.txt":                     "libfoo.a",
+		"interface_INCLUDE_DIRECTORIES.Release.txt": "/src/include;/src/extra",
+		"interface_COMPILE_DEFINITIONS.Release.txt": "FOO=1;BAR=2",
+		"interface_LINK_LIBRARIES.Release.txt":      "bar;baz",
+		"interface_COMPILE_OPTIONS.Release.txt":     "",
+		"interface_LINK_OPTIONS.Release.txt":        "",
 	}
 	for name, body := range files {
 		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
@@ -102,9 +109,9 @@ func TestReadGenexProbe_InterfaceOnlyTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
-		"type.txt":                          "INTERFACE_LIBRARY",
-		"interface_INCLUDE_DIRECTORIES.txt": "/src/include",
-		"interface_LINK_LIBRARIES.txt":      "depA",
+		"type.txt": "INTERFACE_LIBRARY",
+		"interface_INCLUDE_DIRECTORIES.Release.txt": "/src/include",
+		"interface_LINK_LIBRARIES.Release.txt":      "depA",
 	} {
 		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -136,8 +143,8 @@ func TestReadGenexProbe_ObjectLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, body := range map[string]string{
-		"type.txt":    "OBJECT_LIBRARY",
-		"objects.txt": "/build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o",
+		"type.txt":            "OBJECT_LIBRARY",
+		"objects.Release.txt": "/build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o",
 	} {
 		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
 			t.Fatal(err)
@@ -152,5 +159,190 @@ func TestReadGenexProbe_ObjectLibrary(t *testing.T) {
 	}
 	if got[0].Objects == "" {
 		t.Errorf("Objects empty for OBJECT_LIBRARY: %+v", got[0])
+	}
+}
+
+// TestReadGenexProbe_MultiConfigCollapse pins the multi-config
+// "every config agrees → single value" path: probe-genex.cmake
+// emits one OUTPUT per CMAKE_CONFIGURATION_TYPES entry under the
+// Ninja Multi-Config generator (e.g. file.Release.txt + file.ASan.txt);
+// when both resolve to the same string the reader exposes one
+// unified value on GenexProbe.File. This is the common case
+// because $<TARGET_FILE:t> for a target without per-config postfix
+// resolves to the same path under each config.
+func TestReadGenexProbe_MultiConfigCollapse(t *testing.T) {
+	buildDir := t.TempDir()
+	tgtDir := filepath.Join(buildDir, "cmake-to-bazel.genex", "foo")
+	if err := os.MkdirAll(tgtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"type.txt":                                  "STATIC_LIBRARY",
+		"file.Release.txt":                          "/build/libfoo.a",
+		"file.ASan.txt":                             "/build/libfoo.a",
+		"file_dir.Release.txt":                      "/build",
+		"file_dir.ASan.txt":                         "/build",
+		"file_name.Release.txt":                     "libfoo.a",
+		"file_name.ASan.txt":                        "libfoo.a",
+		"interface_INCLUDE_DIRECTORIES.Release.txt": "/src/include",
+		"interface_INCLUDE_DIRECTORIES.ASan.txt":    "/src/include",
+		"interface_LINK_LIBRARIES.Release.txt":      "bar",
+		"interface_LINK_LIBRARIES.ASan.txt":         "bar",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := ReadGenexProbe(buildDir)
+	if err != nil {
+		t.Fatalf("ReadGenexProbe: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 probe; got %d", len(got))
+	}
+	p := got[0]
+	if p.File != "/build/libfoo.a" {
+		t.Errorf("File should collapse to single value across configs: %q", p.File)
+	}
+	if p.FileDir != "/build" {
+		t.Errorf("FileDir should collapse: %q", p.FileDir)
+	}
+	if p.FileName != "libfoo.a" {
+		t.Errorf("FileName should collapse: %q", p.FileName)
+	}
+	if p.Interface["INCLUDE_DIRECTORIES"] != "/src/include" {
+		t.Errorf("INTERFACE_INCLUDE_DIRECTORIES should collapse: %q", p.Interface["INCLUDE_DIRECTORIES"])
+	}
+}
+
+// TestReadGenexProbe_MultiConfigDivergenceDropped pins the
+// divergence path: probe-genex captured different per-config
+// values (e.g. a target with CMAKE_DEBUG_POSTFIX="d" produces
+// libfoo.a under Release but libfood.a under Debug; or — much
+// more commonly — Ninja Multi-Config puts each config's
+// artifacts in `/build/Release/...` vs `/build/Debug/...`). The
+// reader drops the diverging fields silently and returns the rest
+// of the probe; the consumer treats the missing fields the same
+// as "probe didn't run for this target" and the lift falls back
+// via genexeval's UnsupportedError surface.
+//
+// Treating divergence as fatal would defeat the whole point of
+// per-config OUTPUT, since file_dir always diverges under multi-
+// config. The non-fatal shape lets the rest of the probe data
+// (Type, INTERFACE_*, Properties) still feed the lift even when
+// the on-disk paths can't be unified.
+func TestReadGenexProbe_MultiConfigDivergenceDropped(t *testing.T) {
+	buildDir := t.TempDir()
+	tgtDir := filepath.Join(buildDir, "cmake-to-bazel.genex", "foo")
+	if err := os.MkdirAll(tgtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"type.txt":              "STATIC_LIBRARY",
+		"file.Release.txt":      "/build/Release/libfoo.a",
+		"file.Debug.txt":        "/build/Debug/libfood.a",
+		"file_name.Release.txt": "libfoo.a",
+		"file_name.Debug.txt":   "libfood.a",
+		"file_dir.Release.txt":  "/build/Release",
+		"file_dir.Debug.txt":    "/build/Debug",
+		// INTERFACE_* still match across configs — should survive
+		// the collapse even though File / FileDir don't.
+		"interface_LINK_LIBRARIES.Release.txt": "bar",
+		"interface_LINK_LIBRARIES.Debug.txt":   "bar",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := ReadGenexProbe(buildDir)
+	if err != nil {
+		t.Fatalf("ReadGenexProbe: divergence should not be fatal; got %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 probe; got %d", len(got))
+	}
+	p := got[0]
+	if p.Type != "STATIC_LIBRARY" {
+		t.Errorf("Type lost across collapse: %q", p.Type)
+	}
+	// Diverging fields: dropped to empty so consumers fall back.
+	if p.File != "" {
+		t.Errorf("File should drop on divergence; got %q", p.File)
+	}
+	if p.FileDir != "" {
+		t.Errorf("FileDir should drop on divergence; got %q", p.FileDir)
+	}
+	// FileName matched in this fixture's Release vs… wait, the
+	// fixture sets file_name.Release.txt=libfoo.a vs
+	// file_name.Debug.txt=libfood.a — both DIVERGE in this case,
+	// so FileName should also drop.
+	if p.FileName != "" {
+		t.Errorf("FileName should drop on divergence; got %q", p.FileName)
+	}
+	// Non-diverging field (interface_LINK_LIBRARIES matched): kept.
+	if p.Interface["LINK_LIBRARIES"] != "bar" {
+		t.Errorf("LINK_LIBRARIES should survive the collapse; got %q", p.Interface["LINK_LIBRARIES"])
+	}
+}
+
+// TestPerConfigMismatchError_FormatStable pins the Error()
+// string shape so the type stays useful as a diagnostic surface
+// even though ReadGenexProbe doesn't bubble it out today. Future
+// callers (strict-mode flag, debug logging) can rely on the
+// substring "diverged across configs" + target + basename.
+func TestPerConfigMismatchError_FormatStable(t *testing.T) {
+	e := &PerConfigMismatchError{
+		Target:   "foo",
+		Basename: "file",
+		Values: map[string]string{
+			"Release": "/build/Release/libfoo.a",
+			"Debug":   "/build/Debug/libfood.a",
+		},
+	}
+	msg := e.Error()
+	// Errors.As round-trips so callers can still introspect via
+	// the type even when ReadGenexProbe doesn't return one.
+	var got *PerConfigMismatchError
+	if !errors.As(e, &got) {
+		t.Fatalf("errors.As should match the type; got %v", got)
+	}
+	if got.Target != "foo" || got.Basename != "file" {
+		t.Errorf("As-roundtrip lost fields: %+v", got)
+	}
+	if len(msg) == 0 {
+		t.Errorf("Error() should produce a non-empty string")
+	}
+}
+
+// TestReadGenexProbe_UnknownConfigSuffixIgnored pins the
+// forward-compat surface: a probe filename that doesn't match the
+// expected basename.config.txt pattern (e.g. a flat "extra.txt"
+// from a future hook addition older readers haven't been taught
+// about) is silently dropped, not surfaced as a failure. type.txt
+// stays the one legal flat-name entry.
+func TestReadGenexProbe_UnknownConfigSuffixIgnored(t *testing.T) {
+	buildDir := t.TempDir()
+	tgtDir := filepath.Join(buildDir, "cmake-to-bazel.genex", "foo")
+	if err := os.MkdirAll(tgtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"type.txt":  "STATIC_LIBRARY",
+		"extra.txt": "ignored",
+	} {
+		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ReadGenexProbe(buildDir)
+	if err != nil {
+		t.Fatalf("ReadGenexProbe: %v", err)
+	}
+	if len(got) != 1 || got[0].Type != "STATIC_LIBRARY" {
+		t.Errorf("expected single STATIC_LIBRARY probe with no extra fields; got %+v", got)
 	}
 }
