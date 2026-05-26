@@ -260,6 +260,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// stay in flat srcs — single-platform conversion of projects
 	// without platform conditionals stays byte-identical.
 	var platformConditionalSrcs map[string]map[string]string
+	// platformConditionalSrcsToAdd carries the Tier 2 (#217
+	// follow-on) recovery: sources cmake never executed (the
+	// other arms of an `if(CMAKE_SYSTEM_NAME ...)` block) that
+	// the parser pulled out of the CMakeLists.txt. Unlike Tier
+	// 1's platformConditionalSrcs (which moves srcs already in
+	// the codemodel's flat list), Tier 2 sources are by
+	// construction NOT in the codemodel — they need to be
+	// injected directly into the target's
+	// PerPlatform["srcs"][selectKey]. Shape:
+	// target → selectKey → []src.
+	var platformConditionalSrcsToAdd map[string]map[string][]string
 	// traceDecoded tracks whether shadow.Decode ran; when true,
 	// decodedConfigureFiles holds the configure_file extractions
 	// from that single pass and the configure_file recovery
@@ -417,6 +428,47 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				if _, ok := platformConditionalSrcs[pcs.Target][pcs.Source]; !ok {
 					platformConditionalSrcs[pcs.Target][pcs.Source] = pcs.SelectKey
 				}
+			}
+		}
+		// Tier 2 (#217 follow-on): recover sources from the
+		// SKIPPED arms of platform-conditional if-blocks. cmake
+		// only traces what it actually executed, so the other
+		// arms of an `if(CMAKE_SYSTEM_NAME ...) elseif(...)`
+		// block never surface in the trace — but their sources
+		// still need to land under the right `@platforms//os:*`
+		// constraint so a bazel reconfigure for the other
+		// platform finds them. Tier 2 re-reads CMakeLists.txt at
+		// every recognized-predicate `if()` event the trace
+		// recorded and parses the skipped arms' source-attaching
+		// calls.
+		//
+		// Tier 2 sources are by construction NOT in the trace's
+		// Sources list (cmake never executed the calls), so the
+		// flat-srcs partition pass below leaves them un-moved.
+		// We collect them in platformConditionalSrcsToAdd —
+		// the partition pass injects them directly into
+		// PerPlatform["srcs"][selectKey] after handling Tier 1.
+		//
+		// Pass HostSourceRoot so offline-replay fixtures (where
+		// the trace's `file` paths are recording-host absolute
+		// but the actual on-disk CMakeLists.txt lives elsewhere)
+		// still find their files.
+		if tier2 := shadow.ExtractPlatformConditionalSourcesTier2(
+			opts.TraceRaw,
+			cmakeSrcForTrace,
+			opts.HostSourceRoot,
+			knownTargets,
+			decoded.PlatformConditionalSources,
+		); len(tier2) > 0 {
+			platformConditionalSrcsToAdd = map[string]map[string][]string{}
+			for _, pcs := range tier2 {
+				if _, ok := platformConditionalSrcsToAdd[pcs.Target]; !ok {
+					platformConditionalSrcsToAdd[pcs.Target] = map[string][]string{}
+				}
+				platformConditionalSrcsToAdd[pcs.Target][pcs.SelectKey] = append(
+					platformConditionalSrcsToAdd[pcs.Target][pcs.SelectKey],
+					pcs.Source,
+				)
 			}
 		}
 	}
@@ -633,7 +685,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], findPkgAttrib, workspaceRoot)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -721,7 +773,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, findPkgAttrib *findPackageAttrib, workspaceRoot string) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -1743,8 +1795,65 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			partitionPlatformConditionalSrcs(&cc.Subs[i], platformConditionalSrcs)
 		}
 	}
+	// Tier 2 injection: append sources Tier 2 recovered from
+	// the skipped arms of platform-conditional if-blocks. These
+	// don't live in irt.Srcs (cmake never traced them), so the
+	// partition pass above leaves them un-handled — addPlatform
+	// ConditionalSrcsToAdd writes them straight into
+	// PerPlatform["srcs"][selectKey] for each affected target.
+	//
+	// We add only to the wrapper target — multi-language splits
+	// distribute Tier-1 sources across per-language sub-libs by
+	// CompileGroupIndex (which cmake's codemodel populates from
+	// the executed configure). Tier 2 sources have no compile-
+	// group attribution by definition, so the wrapper is the
+	// only consistent home for them. If a downstream needs
+	// per-language Tier 2 attribution, a Tier 3 pass would have
+	// to re-derive the language from source extension.
+	if len(platformConditionalSrcsToAdd) > 0 {
+		addPlatformConditionalSrcs(irt, platformConditionalSrcsToAdd)
+	}
 
 	return irt, nil
+}
+
+// addPlatformConditionalSrcs appends sources Tier 2 recovered
+// (from skipped if-arms cmake never executed) directly into
+// the target's PerPlatform["srcs"][selectKey] map. Sources are
+// deduplicated against the existing PerPlatform arms — a
+// Tier-2 recovery should never overlap a Tier-1 attribution
+// (the trace-entered arm vs. the skipped arm), but the dedup
+// keeps the invariant honest if a future shape (e.g. an
+// elseif arm that the inner Tier-2 walker re-emits) tries to
+// double-add.
+//
+// Each touched arm gets sorted post-add to keep emit's
+// verbatim arm rendering byte-stable, matching what
+// partitionPlatformConditionalSrcs does for Tier 1.
+func addPlatformConditionalSrcs(t *ir.Target, srcsByKey map[string][]string) {
+	if len(srcsByKey) == 0 {
+		return
+	}
+	if t.PerPlatform == nil {
+		t.PerPlatform = map[string]map[string][]string{}
+	}
+	if t.PerPlatform["srcs"] == nil {
+		t.PerPlatform["srcs"] = map[string][]string{}
+	}
+	for key, srcs := range srcsByKey {
+		existing := map[string]bool{}
+		for _, s := range t.PerPlatform["srcs"][key] {
+			existing[s] = true
+		}
+		for _, s := range srcs {
+			if existing[s] {
+				continue
+			}
+			existing[s] = true
+			t.PerPlatform["srcs"][key] = append(t.PerPlatform["srcs"][key], s)
+		}
+		sort.Strings(t.PerPlatform["srcs"][key])
+	}
 }
 
 // partitionPlatformConditionalSrcs moves any src in t.Srcs
