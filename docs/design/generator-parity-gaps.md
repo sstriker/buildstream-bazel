@@ -227,46 +227,46 @@ property set we probe.
 
 Items still queued after the gap-fill pass:
 
-1. ✓ **`Link.CommandFragments` role attribution**. **Landed.**
-   The lower-side switch now routes role=flags / libraryPath /
-   frameworkPath / frameworks each to the right linkopts form
-   (previously every non-libraries fragment was silently
-   dropped). Three goldens regenerated with the new flag entries.
+- ✓ Link.CommandFragments role attribution — **landed**
+- ✓ OBJECT_DEPENDS source property — **landed**
+- ✓ Per-target BUILD_RPATH / PIC / visibility presets via probe-genex — **landed**
+- ✓ find_package-v1 attribution as BUILD header comments — **landed**
+- ✓ Phase 7 cc_test-with-no-entry audit finding — **landed**
 
-2. ✓ **`OBJECT_DEPENDS` source property**. **Landed.**
-   Headers declared via set_source_files_properties(...
-   OBJECT_DEPENDS ...) now append to the consuming target's
-   hdrs for incremental-rebuild correctness.
+Genuinely queued:
 
-3. ✓ **Per-target `BUILD_RPATH` / `INSTALL_RPATH`** via
-   probe-genex. **Landed.** probe-genex.cmake now also captures
-   BUILD_RPATH / INSTALL_RPATH / POSITION_INDEPENDENT_CODE /
-   {CXX,C}_VISIBILITY_PRESET as `property_<NAME>.txt` files.
-   Lower routes BUILD_RPATH to `-Wl,-rpath,<path>` linkopts,
-   PIC to `features=["pic"]` / `["-pic"]`, visibility presets
-   to `-fvisibility=<value>` copts.
-
-4. **`find_package-v1` event attribution** as Provenance
-   tagging on emitted cc_import targets. Consumes Phase 2's
-   configureLog YAML data threaded through lower.Options.
-   Matching event → target needs the imports.Resolver walk.
-
-5. **`SOURCE_FILE_PROPERTIES` LANGUAGE override**. Force a
+1. **`SOURCE_FILE_PROPERTIES LANGUAGE` override**. Force a
    `.c` file to compile as C++. Bazel cc_library can't do this
    without per-source library splits (source extension drives
    language; renaming the file is intrusive). The
    shouldSplitCompileGroups gate covers cases where cmake
    already produced distinct CompileGroups for the override.
 
-6. **`add_test` with TARGET_FILE genex**
+2. **`add_test` with TARGET_FILE genex**
    (`add_test(NAME foo COMMAND $<TARGET_FILE:my_test>)`).
    Should resolve via probe-genex's TARGET_FILE capture but
-   lacks an end-to-end fixture exercising it.
+   lacks an end-to-end fixture exercising it. Verification
+   work, not new code.
 
-7. **`option()` declarations** as Bazel
+3. **`option()` declarations** as Bazel
    `bool_flag` / `config_setting` so operators can tune at
    build time via `--//foo:opt=true`. Requires
-   `@bazel_skylib` dep + the gen of the constants block.
+   `@bazel_skylib` dep in the rendered project + the gen of
+   the constants block. Substantial — affects MODULE.bazel
+   shape too.
+
+4. **AUTOMOC / AUTOUIC / AUTORCC (Qt)** — generator-side
+   codegen we can't easily reproduce. Refuse cleanly via the
+   Tier-1 failure shape, or run moc / uic / rcc at Bazel build
+   time as wrapped genrules (operator stages the Qt tools as
+   host-tools).
+
+5. **FetchContent / ExternalProject_Add** — configure-time
+   network I/O Bazel forbids in actions. Lift to
+   `http_archive` repository rules in MODULE.bazel
+   extensions only when URLs + hashes are literal. The cmake
+   "fetch as part of configure, then participate in the target
+   graph" semantic can't be reproduced.
 
 Each is independently shippable; the doc updates as each
 lands.
