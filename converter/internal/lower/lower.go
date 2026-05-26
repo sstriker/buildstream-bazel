@@ -889,6 +889,24 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 		irt.Defines = defs
 
+		// Phase 1 task 3 extension: tag targets that declare
+		// target_precompile_headers. The codemodel records the
+		// PCH set in CompileGroup.PrecompileHeaders; the PCH
+		// headers themselves are typically already in t.Sources
+		// (and route through the standard srcs/hdrs walk). The
+		// tag surfaces the cmake-side PCH intent so operators
+		// can grep `cmake-codegen-pch` and route via a
+		// cc_toolchain pch feature (Bazel cc_library has no
+		// native PCH attribute).
+		for _, cgPCH := range t.CompileGroups {
+			if len(cgPCH.PrecompileHeaders) > 0 {
+				if !stringSliceContains(irt.Tags, "cmake-codegen-pch") {
+					irt.Tags = append(irt.Tags, "cmake-codegen-pch")
+				}
+				break
+			}
+		}
+
 		// Dedup includes: cmake's codemodel emits one entry per
 		// PUBLIC include propagation, so a target whose own
 		// target_include_directories names "include" plus a PUBLIC
