@@ -514,3 +514,85 @@ func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
 		}
 	}
 }
+
+// TestAudit_CmakeElidedLinkFragment pins the #220 audit
+// finding: the cmake-elided-link-fragment=<path> tag surfaces
+// as `unresolved-link-fragment` with the path in the message
+// so operators see which library needs imports-manifest
+// coverage.
+func TestAudit_CmakeElidedLinkFragment(t *testing.T) {
+	body := []byte(`cc_binary(
+    name = "tool",
+    srcs = ["main.c"],
+    tags = ["cmake-elided-link-fragment=/opt/vendor/lib/libmystery.so"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "unresolved-link-fragment" {
+			found = true
+			if !strings.Contains(f.Message, "/opt/vendor/lib/libmystery.so") {
+				t.Errorf("message should name the path: %q", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected unresolved-link-fragment; got %v", findings)
+	}
+}
+
+// TestAudit_CmakeElidedPrefixInclude pins the #219 audit
+// finding: the cmake-elided-prefix-include=<path> tag surfaces
+// as `unresolved-prefix-include` with the path in the message.
+func TestAudit_CmakeElidedPrefixInclude(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "consumer",
+    srcs = ["consumer.c"],
+    tags = ["cmake-elided-prefix-include=usr/include/external_dep"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "unresolved-prefix-include" {
+			found = true
+			if !strings.Contains(f.Message, "usr/include/external_dep") {
+				t.Errorf("message should name the path: %q", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected unresolved-prefix-include; got %v", findings)
+	}
+}
+
+// TestAudit_PreExistingElidedTags_NoFinding pins that the
+// existing cmake-elided-build-dir-source / -missing-source /
+// -compiler-artifact tags (file-existence filtering signals,
+// not operator-action gaps) intentionally produce no audit
+// findings. Keeps the audit-eligible elision-tag taxonomy
+// scoped to the new #219/#220 cases.
+func TestAudit_PreExistingElidedTags_NoFinding(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    tags = ["cmake-elided-build-dir-source", "cmake-elided-missing-source", "cmake-elided-compiler-artifact"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if strings.HasPrefix(f.Code, "unresolved-") || strings.Contains(f.Code, "elided") {
+			t.Errorf("pre-existing elided tag should not produce audit finding: %v", f)
+		}
+	}
+}

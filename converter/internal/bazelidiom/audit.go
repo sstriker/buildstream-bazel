@@ -108,6 +108,12 @@ func auditRule(rule, target string, call *build.CallExpr) []Finding {
 	// etc.) so the audit pass shows the same gaps as the gaps
 	// doc's queued list.
 	findings = append(findings, auditCmakeCodegenTags(rule, target, call)...)
+	// Cross-rule check: surface cmake-elided-* tags that signal
+	// operator action (currently the #219 prefix-include and #220
+	// link-fragment silent-drops). Sibling to the codegen scan
+	// above; kept as a separate function so the elision-vs-
+	// codegen distinction stays clear in the tag taxonomy.
+	findings = append(findings, auditCmakeElidedTags(rule, target, call)...)
 	return findings
 }
 
@@ -167,6 +173,60 @@ func codegenTagToFinding(tag string) (code, msg string) {
 		rest := strings.TrimPrefix(tag, "cmake-codegen-find-package-fallback=")
 		return "find-package-dep-unresolved",
 			"target links a library resolved by find_package(" + rest + ") that has no imports-manifest entry — the dep is missing from `deps` and the BUILD will link-fail. Fix: add the package's namespaced target (e.g. `Pkg::Pkg`) to the imports manifest mapping to a real cc_import/cc_library label"
+	}
+	return "", ""
+}
+
+// auditCmakeElidedTags surfaces cmake-elided-* tags that signal
+// operator action gaps. Sibling to auditCmakeCodegenTags;
+// scoped to the new audit-eligible elision tags (the #219
+// prefix-include and #220 link-fragment silent-drops).
+//
+// The pre-existing cmake-elided-* tags (build-dir-source,
+// missing-source, compiler-artifact) are intentionally not
+// scanned here — those are file-existence-level filtering
+// signals, not operator-action gaps. A future PR can fold
+// them in if/when the audit-framework taxonomy grows to
+// cover that family.
+func auditCmakeElidedTags(rule, target string, call *build.CallExpr) []Finding {
+	tags := flatListContains(call, "tags", func(s string) bool {
+		return strings.HasPrefix(s, "cmake-elided-link-fragment=") ||
+			strings.HasPrefix(s, "cmake-elided-prefix-include=")
+	})
+	if len(tags) == 0 {
+		return nil
+	}
+	var findings []Finding
+	for _, tag := range tags {
+		code, msg := elidedTagToFinding(tag)
+		if code == "" {
+			continue
+		}
+		findings = append(findings, Finding{
+			Rule:    rule,
+			Target:  target,
+			Code:    code,
+			Message: msg,
+		})
+	}
+	return findings
+}
+
+// elidedTagToFinding maps a cmake-elided-* tag (in the audit-
+// eligible subset — see auditCmakeElidedTags) to an audit
+// finding (code, message). Returns ("", "") for tags that don't
+// match the audit-eligible subset, matching codegenTagToFinding's
+// shape.
+func elidedTagToFinding(tag string) (code, msg string) {
+	switch {
+	case strings.HasPrefix(tag, "cmake-elided-link-fragment="):
+		path := strings.TrimPrefix(tag, "cmake-elided-link-fragment=")
+		return "unresolved-link-fragment",
+			"target links an absolute-path library (" + path + ") that's neither in the imports manifest nor attributable to a find_package call — the dep is missing from `deps` and the BUILD will link-fail. Fix: add the library to the imports manifest, or declare the producing element as a kind:bazel / kind:cmake dep"
+	case strings.HasPrefix(tag, "cmake-elided-prefix-include="):
+		path := strings.TrimPrefix(tag, "cmake-elided-prefix-include=")
+		return "unresolved-prefix-include",
+			"target's compile-group lists an include path under the synth-prefix tree (" + path + ") that the producing element should be providing through a cc_library dep, not as a raw include. Fix: ensure the consuming target has the producing element on its `deps` (typically via find_package's namespaced target in the imports manifest); the cross-element headers flow through hdrs propagation, not includes"
 	}
 	return "", ""
 }
