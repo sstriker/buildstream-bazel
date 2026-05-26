@@ -12,9 +12,9 @@
 #
 # Output layout: <CMAKE_BINARY_DIR>/cmake-to-bazel.genex/
 #   <tgt>/type.txt          — $<TARGET_PROPERTY:tgt,TYPE>
-#   <tgt>/file.txt          — $<TARGET_FILE:tgt>          (skipped for INTERFACE_LIBRARY)
-#   <tgt>/file_dir.txt      — $<TARGET_FILE_DIR:tgt>      (skipped for INTERFACE_LIBRARY)
-#   <tgt>/file_name.txt     — $<TARGET_FILE_NAME:tgt>     (skipped for INTERFACE_LIBRARY)
+#   <tgt>/file.txt          — $<TARGET_FILE:tgt>          (artifact-producing targets only — see gate)
+#   <tgt>/file_dir.txt      — $<TARGET_FILE_DIR:tgt>      (artifact-producing targets only)
+#   <tgt>/file_name.txt     — $<TARGET_FILE_NAME:tgt>     (artifact-producing targets only)
 #   <tgt>/objects.txt       — $<TARGET_OBJECTS:tgt>       (only OBJECT_LIBRARY)
 #   <tgt>/interface_<P>.txt — $<TARGET_PROPERTY:tgt,INTERFACE_<P>>
 #                              for P in INCLUDE_DIRECTORIES /
@@ -43,6 +43,16 @@ if(NOT _CMTB_GENEX_PROBE_REGISTERED)
     set(_CMTB_GENEX_PROBE_REGISTERED TRUE)
     cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL _cmtb_probe_genex)
 endif()
+
+# CMP0112 NEW: reading $<TARGET_FILE:...> does NOT add an implicit
+# target-dependency edge. The probe only wants to observe the
+# resolved path, never to widen the build graph, so NEW is the
+# correct stance. Without this, cmake spams one
+#   "Policy CMP0112 is not set: Target file component generator
+#    expressions do not add target dependencies."
+# dev-warning per emitted file(GENERATE) — one per target × per
+# variant — which can run into the hundreds on real-world projects.
+cmake_policy(SET CMP0112 NEW)
 
 # Recursively collect every BUILDSYSTEM_TARGETS entry from
 # CMAKE_SOURCE_DIR's directory tree. Uses a global property as the
@@ -76,10 +86,21 @@ function(_cmtb_probe_genex)
             OUTPUT "${_CMTB_OUT_DIR}/type.txt"
             CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},TYPE>")
 
-        # $<TARGET_FILE:t> and its FILE_DIR / FILE_NAME variants are
-        # undefined on INTERFACE_LIBRARY targets (no on-disk
-        # artifact). Skip cleanly for those.
-        if(NOT _CMTB_TYPE STREQUAL "INTERFACE_LIBRARY")
+        # $<TARGET_FILE:t> and its FILE_DIR / FILE_NAME variants
+        # only resolve for targets that produce an on-disk artifact
+        # (EXECUTABLE / SHARED_LIBRARY / STATIC_LIBRARY /
+        # MODULE_LIBRARY / OBJECT_LIBRARY). INTERFACE_LIBRARY has
+        # no artifact; UTILITY (add_custom_target) and ALIAS also
+        # don't produce one — emitting TARGET_FILE for them fires
+        # a generation-phase fatal "Target … is not an executable
+        # or library" that aborts conversion. Gate on the affirmative
+        # set instead of an exclusion list so unknown future types
+        # default to safe.
+        if(_CMTB_TYPE STREQUAL "EXECUTABLE" OR
+           _CMTB_TYPE STREQUAL "SHARED_LIBRARY" OR
+           _CMTB_TYPE STREQUAL "STATIC_LIBRARY" OR
+           _CMTB_TYPE STREQUAL "MODULE_LIBRARY" OR
+           _CMTB_TYPE STREQUAL "OBJECT_LIBRARY")
             file(GENERATE
                 OUTPUT "${_CMTB_OUT_DIR}/file.txt"
                 CONTENT "$<TARGET_FILE:${_CMTB_TGT}>")

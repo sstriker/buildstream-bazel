@@ -107,9 +107,15 @@ func run(a cli.Args) error {
 			Stdout:      os.Stderr, // route cmake noise to our stderr
 			Stderr:      os.Stderr,
 		}
-		if a.OutReadPaths != "" {
-			opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
-		}
+		// Always capture trace under source-root mode — it feeds
+		// the lower's keyword-recovery (link-scope walks for
+		// target_link_libraries keywords) and execute_process
+		// rescue passes, independent of whether the operator
+		// also asked for an --out-read-paths file. Earlier this
+		// path was gated on OutReadPaths and silently produced
+		// the "no cmake trace data available" warning whenever
+		// an operator ran source-root mode without the flag.
+		opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
 		configureStart := time.Now()
 		reply, err := cmakerun.Configure(ctx, opts)
 		configureElapsed = time.Since(configureStart)
@@ -406,6 +412,13 @@ func run(a cli.Args) error {
 			fmt.Fprint(os.Stderr, msg)
 		}
 		if a.AuditBazelIdiomReport != "" {
+			// Coerce a nil findings slice to an empty slice so
+			// json.MarshalIndent emits `[]` rather than `null` —
+			// JSON consumers iterating the report expect an
+			// array shape unconditionally.
+			if findings == nil {
+				findings = []bazelidiom.Finding{}
+			}
 			body, _ := json.MarshalIndent(findings, "", "  ")
 			if err := os.MkdirAll(filepath.Dir(a.AuditBazelIdiomReport), 0o755); err != nil {
 				return err
