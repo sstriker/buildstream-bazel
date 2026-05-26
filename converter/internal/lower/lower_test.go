@@ -989,6 +989,166 @@ func TestToIR_RefusesDotDotEscapingSource(t *testing.T) {
 	}
 }
 
+// TestToIR_ElidedPrefixInclude covers #219: when an include
+// path resolves outside both cmakeSrc and cmakeBuild but lies
+// under the synth-prefix tree (hostPrefix — a cross-element
+// import via find_package), the current code silently drops it
+// because the producing element provides headers through a
+// cc_library dep, not an include path. Surfacing this as an
+// audit tag lets operators see when cross-element include
+// propagation is happening so they can verify the consuming
+// target actually has a dep on the producer.
+func TestToIR_ElidedPrefixInclude(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+					Includes: []fileapi.CompileInclude{
+						{Path: "/synth/usr/include/external_dep"},
+					},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		HostPrefixDir:  "/synth",
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	want := "cmake-elided-prefix-include=external_dep"
+	if !contains(tgt.Tags, want) {
+		t.Errorf("Tags = %v, want to contain %q", tgt.Tags, want)
+	}
+	// The dropped path should not surface in Includes.
+	for _, inc := range tgt.Includes {
+		if strings.Contains(inc, "external_dep") {
+			t.Errorf("Includes = %v, prefix-tree include leaked through", tgt.Includes)
+		}
+	}
+}
+
+// TestToIR_NoElidedPrefixIncludeForSystemPath pins the inverse
+// guard: drops of include paths under known system prefixes
+// (/usr/include, /usr/local/include, etc.) — which the
+// compiler's default search path already covers — should NOT
+// fire the audit tag. Tagging every find_package-using project
+// would create noise.
+func TestToIR_NoElidedPrefixIncludeForSystemPath(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+					Includes: []fileapi.CompileInclude{
+						{Path: "/usr/include"},
+					},
+				}},
+			},
+		},
+	}
+	// No HostPrefixDir set; the /usr/include drop should be
+	// silent (no audit tag).
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	for _, tag := range tgt.Tags {
+		if strings.HasPrefix(tag, "cmake-elided-prefix-include=") {
+			t.Errorf("Tags = %v, expected no cmake-elided-prefix-include tag for system path", tgt.Tags)
+		}
+	}
+}
+
+// TestToIR_ElidedLinkFragment covers #220: when an abs-path
+// `libraries`-role link fragment escapes both the imports
+// manifest (LookupLinkPath) AND the find_package attribution
+// path, the current code silently dropped it. The new audit
+// tag names the dropped library so operators can either add
+// it to the imports manifest or recognize the unresolved dep.
+func TestToIR_ElidedLinkFragment(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				// EXECUTABLE so the codemodel's Link block
+				// is exercised (STATIC_LIBRARY targets don't
+				// carry Link.CommandFragments in cmake's
+				// codemodel — static archives don't link).
+				Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{
+					{Path: "main.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+				Link: &fileapi.TargetLink{
+					Language: "C",
+					CommandFragments: []fileapi.CommandFragment{
+						{Fragment: "/opt/vendor/lib/libmystery.so", Role: "libraries"},
+					},
+				},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	want := "cmake-elided-link-fragment=libmystery.so"
+	if !contains(tgt.Tags, want) {
+		t.Errorf("Tags = %v, want to contain %q", tgt.Tags, want)
+	}
+}
+
 func equal(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

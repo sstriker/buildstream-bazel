@@ -1057,6 +1057,45 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			}
 			rel, ok := relativeIfInside(cmakeSrc, inc.Path)
 			if !ok {
+				// #219: include dir resolved outside both
+				// cmakeSrc and cmakeBuild. The path is one of
+				// three shapes:
+				//   - A producer-element's export tree under
+				//     hostPrefix (cross-element find_package
+				//     include). We can't directly translate to
+				//     a Bazel `includes` entry — the producing
+				//     element provides headers through a
+				//     cc_library dep rather than an include
+				//     path — but operators auditing for
+				//     unresolved cross-element imports want to
+				//     see this. Emit a payload-bearing audit
+				//     tag identifying the dropped basename.
+				//   - A system include path
+				//     (/usr/include, etc.). Filtering these
+				//     silently is correct — the toolchain
+				//     supplies the same headers via its
+				//     default search path, and emitting them
+				//     as Bazel `includes` would leak host
+				//     state into the BUILD.
+				//   - A user-specified absolute path
+				//     outside the project. Same Bazel-label
+				//     invalidity as #221 covered for srcs;
+				//     refusing here would break every
+				//     find_package project that propagates
+				//     non-tree includes, so we tag-and-drop
+				//     rather than refuse. The cross-element
+				//     audit tag fires for both the prefix-tree
+				//     case and the generic out-of-tree case
+				//     (operators can distinguish by the
+				//     basename in the tag payload).
+				if hostPrefix != "" {
+					if _, inside := relativeIfInside(hostPrefix, inc.Path); inside {
+						tag := "cmake-elided-prefix-include=" + filepath.Base(inc.Path)
+						if !stringSliceContains(irt.Tags, tag) {
+							irt.Tags = append(irt.Tags, tag)
+						}
+					}
+				}
 				continue
 			}
 			if seenInc[rel] {
@@ -1395,6 +1434,16 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			}
 			path := strings.TrimSpace(frag.Fragment)
 			if path == "" || !filepath.IsAbs(path) {
+				// Non-abs `libraries`-role fragments are
+				// typically in-codebase target output names
+				// (e.g. `libfoo.a` for a sibling cc_library)
+				// that the t.Dependencies walk above has
+				// already routed to irt.Deps; tagging them
+				// here would create false-positive audit
+				// noise. Pure link flags
+				// (`-lpthread` / `-pthread`) usually surface
+				// as `flags`-role fragments routed to
+				// LinkOpts above, not here.
 				continue
 			}
 			if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
@@ -1452,6 +1501,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				if !stringSliceContains(irt.Tags, tag) {
 					irt.Tags = append(irt.Tags, tag)
 				}
+				continue
+			}
+			// #220: abs-path link fragment that escapes both
+			// the imports manifest AND the find_package
+			// attribution. Either cmake hardcoded an absolute
+			// path that didn't flow through find_package
+			// (rare), or the imports manifest hasn't learned
+			// about this dep yet. Tag-only emission so
+			// operators see the unresolved link.
+			tag := "cmake-elided-link-fragment=" + filepath.Base(path)
+			if !stringSliceContains(irt.Tags, tag) {
+				irt.Tags = append(irt.Tags, tag)
 			}
 		}
 	}
