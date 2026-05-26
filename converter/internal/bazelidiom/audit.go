@@ -233,15 +233,30 @@ func auditCCImport(rule, target string, call *build.CallExpr) []Finding {
 // Bazel rejects these at build time, so it's worth catching at
 // emit-audit time with a clearer message.
 func auditCCBinaryOrTest(rule, target string, call *build.CallExpr) []Finding {
+	var findings []Finding
 	if listAttrLen(call, "srcs") == 0 {
-		return []Finding{{
+		findings = append(findings, Finding{
 			Rule:    rule,
 			Target:  target,
 			Code:    "empty-srcs",
 			Message: rule + " has no srcs — Bazel will reject at build time; check whether the converter recovered every source for this target's compileGroups[].sourceIndexes",
-		}}
+		})
 	}
-	return nil
+	// cc_test with no srcs AND no deps that could provide a
+	// test entry — likely a misconfigured test target. Bazel
+	// will error at build time, but the audit catches it earlier
+	// with attribution to the upstream cmake declaration.
+	if rule == "cc_test" {
+		if listAttrLen(call, "srcs") == 0 && listAttrLen(call, "deps") == 0 {
+			findings = append(findings, Finding{
+				Rule:    rule,
+				Target:  target,
+				Code:    "test-with-no-entry",
+				Message: "cc_test has no srcs and no deps — the test rule has no entry point; verify the upstream cmake add_test() recorded a real binary, or that the test was meant to be filtered out",
+			})
+		}
+	}
+	return findings
 }
 
 // callName returns the function-call identifier name (the rule

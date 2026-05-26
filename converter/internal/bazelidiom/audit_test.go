@@ -283,3 +283,50 @@ func TestAudit_ConcatLiteralPlusSanitizerSelect(t *testing.T) {
 		t.Errorf("expected finding on [literal] + select() shape; got %v", findings)
 	}
 }
+
+func TestAudit_CCTestWithNoEntry(t *testing.T) {
+	body := []byte(`cc_test(
+    name = "empty_test",
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	foundEntry := false
+	foundSrcs := false
+	for _, f := range findings {
+		if f.Code == "test-with-no-entry" {
+			foundEntry = true
+		}
+		if f.Code == "empty-srcs" {
+			foundSrcs = true
+		}
+	}
+	if !foundEntry {
+		t.Errorf("expected test-with-no-entry finding")
+	}
+	if !foundSrcs {
+		t.Errorf("expected empty-srcs finding alongside")
+	}
+}
+
+func TestAudit_CCTestWithDeps_NoEntryFinding(t *testing.T) {
+	// cc_test with no srcs but with deps (the entry point comes
+	// from a dep's cc_library main symbol) shouldn't trigger
+	// test-with-no-entry.
+	body := []byte(`cc_test(
+    name = "via_deps",
+    deps = [":lib_with_main"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "test-with-no-entry" {
+			t.Errorf("unexpected test-with-no-entry: %v", f)
+		}
+	}
+}
