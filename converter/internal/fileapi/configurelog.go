@@ -129,13 +129,107 @@ type EventRunResult struct {
 }
 
 // EventFindPackageFound is the resolved-package payload on a
-// find_package-v1 event. Absent when the package wasn't located.
+// find_package-v1 (or find-v1) event. Absent when the field wasn't
+// emitted.
+//
+// The `found` key in cmake's CMakeConfigureLog.yaml is polymorphic
+// across cmake versions. cmake 3.26–4.2 emitted a mapping for
+// `find_package-v1` (IsFound + Package + Version + ConfigFile +
+// VersionFile). cmake 4.3 added a new `find-v1` event kind (sibling
+// to `find_package-v1`) that records every find_program / find_file /
+// find_library call, sharing the same `found` key but with a scalar
+// payload:
+//
+//   - string — absolute path of the located item (`found: "/usr/bin/cc"`).
+//   - bool false — looked up but not found (`found: false`).
+//   - null — looked up, no candidate considered (`found: null`).
+//   - bool true — defensive forward-compat; no cmake emits this today
+//     but the unmarshaler treats it as "found, path unknown".
+//
+// The custom UnmarshalYAML normalises all four shapes onto this one
+// struct so downstream consumers (lower's find_package attribution,
+// find-package header comments) don't have to branch on event kind.
+// Existing callers that read IsFound / Package / Version / ConfigFile
+// continue to work unchanged; the new Path field surfaces the scalar
+// payload when present.
 type EventFindPackageFound struct {
 	IsFound     bool   `yaml:"isFound"`
 	Package     string `yaml:"package,omitempty"`
 	Version     string `yaml:"version,omitempty"`
 	ConfigFile  string `yaml:"configFile,omitempty"`
 	VersionFile string `yaml:"versionFile,omitempty"`
+
+	// Path carries the located absolute path on the cmake 4.3+
+	// scalar-string shape (find-v1 events: `found: "/usr/bin/cc"`).
+	// Empty on the mapping shape, on the bool/null shapes, and on
+	// find_package-v1 events that record a mapping.
+	Path string `yaml:"-"`
+}
+
+// UnmarshalYAML decodes the polymorphic `found` value into
+// EventFindPackageFound. See the type's docstring for the full
+// shape matrix.
+func (e *EventFindPackageFound) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		switch value.Tag {
+		case "!!str":
+			// `found: "/usr/bin/cc"` (cmake 4.3 find-v1 shape).
+			// A non-empty string is a successful resolution.
+			e.Path = value.Value
+			e.IsFound = value.Value != ""
+			return nil
+		case "!!bool":
+			// `found: false` (or, defensively, `true`) on a
+			// find-v1 event that ran the search but is recording
+			// the outcome as a plain bool.
+			var b bool
+			if err := value.Decode(&b); err != nil {
+				return err
+			}
+			e.IsFound = b
+			return nil
+		case "!!null":
+			// `found: null` — searched, no candidate considered.
+			// Same semantic effect as `found: false` for callers:
+			// IsFound stays its zero value (false).
+			return nil
+		default:
+			// Unknown scalar tag — fall through to a permissive
+			// decode so a future cmake reshaping doesn't fail
+			// the whole configureLog parse over one record.
+			var s string
+			if err := value.Decode(&s); err == nil && s != "" {
+				e.Path = s
+				e.IsFound = true
+				return nil
+			}
+			return nil
+		}
+	case yaml.MappingNode:
+		// `found: { isFound: ..., package: ..., ... }` — the
+		// cmake 3.26–4.2 find_package-v1 mapping shape. Decode
+		// via a typedef alias to bypass the custom UnmarshalYAML
+		// (otherwise we'd recurse forever).
+		type plain EventFindPackageFound
+		var p plain
+		if err := value.Decode(&p); err != nil {
+			return err
+		}
+		*e = EventFindPackageFound(p)
+		return nil
+	case yaml.AliasNode:
+		// Aliases resolve transparently — defer to the
+		// referenced node.
+		if value.Alias == nil {
+			return nil
+		}
+		return e.UnmarshalYAML(value.Alias)
+	default:
+		// SequenceNode / DocumentNode — no cmake version emits
+		// these for `found`, but be permissive rather than fail.
+		return nil
+	}
 }
 
 // configureLogYAML is the top-level YAML shape of CMakeConfigureLog.yaml.
