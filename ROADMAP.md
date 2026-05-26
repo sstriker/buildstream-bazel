@@ -307,25 +307,6 @@ transition cleanly.
   gate would drive the promotion decision.
 ## Later (research / open questions)
 
-- **Platform-conditional source partitioning — Tier 2:
-  recover skipped-branch sources by parsing CMakeLists.txt
-  (#217 follow-on).** Tier 1 (shipped — see Done) handles
-  the platform's own conditional sources from the trace
-  alone. Tier 2 closes the cross-platform half: the other
-  arms of an `if(CMAKE_SYSTEM_NAME ...)` block (the body
-  cmake skipped on this configure) carry sources that
-  exist in CMakeLists.txt but never appear in the trace
-  (cmake only traces what runs). Recovering them needs an
-  actual cmake-syntax parser keyed off the `file`/`line`
-  the trace's `if()` event records. New capability —
-  scope is "small targeted parser for the `target_sources`
-  / `add_library` / `add_executable` shapes inside `if`
-  bodies", not a full cmake interpreter. Demand: open
-  until a real downstream surfaces a project where the
-  cross-platform else-arm sources matter for the BUILD's
-  correctness when bazel reconfigures for the other
-  platform.
-
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
   available to the action at exec time without it being in the AC
@@ -404,6 +385,39 @@ transition cleanly.
   alias and the on-disk `unknown` string preserved for
   failure.json triage continuity). Phase 4's remaining queued
   work is now just the probe / stamp TOP_LEVEL_INCLUDES hook.
+
+- **Platform-conditional source partitioning — Tier 2:
+  recover skipped-branch sources by parsing CMakeLists.txt
+  (#217 follow-on).** Closes the cross-platform half Tier 1
+  left open: the other arms of an `if(CMAKE_SYSTEM_NAME ...)`
+  block carry sources cmake skipped on this configure and
+  therefore never recorded in the trace. A new
+  `internal/cmakeparse` package — a deliberately tiny cmake-
+  syntax parser scoped to command-invocation shape +
+  `if`/`elseif`/`else`/`endif` structural delimiters — re-reads
+  CMakeLists.txt at every recognized-predicate `if()` event
+  the trace records, parses the skipped arm's body, and
+  attributes `target_sources` / `add_library` /
+  `add_executable` sources to the OTHER platform's
+  `@platforms//os:*` constraint. `internal/shadow/
+  platform_conditional_tier2.go` drives the integration:
+  Tier 1's existing if-stack walker still owns the entered
+  arm, Tier 2 owns the unentered arms, and `converter/
+  internal/lower/lower.go`'s `addPlatformConditionalSrcs`
+  injects Tier-2 records directly into
+  `irt.PerPlatform["srcs"][selectKey]` (they're not in the
+  codemodel's flat list by construction). Conservative shape:
+  `${...}` and `$<...>` in source paths refuse cleanly with
+  an `UnsupportedTier2Reason`; cross-file `include()` from
+  inside a skipped arm isn't followed; function/macro bodies
+  in skipped arms aren't expanded. Render gate:
+  `scripts/meta-cmake-platform-partition-tier2.sh` drives the
+  `platform-partition-tier2` sample project (a Linux configure
+  of an `if(LINUX) ... elseif(WIN32) ...` fixture) and
+  asserts both arms surface in the emitted BUILD.bazel —
+  `linux.c` under `@platforms//os:linux` (Tier 1) AND `win.c`
+  under `@platforms//os:windows` (Tier 2, never seen by
+  cmake).
 
 - **Phase 4 standalone-genrule emission graduated to default-on.**
   The opt-in `--emit-standalone-custom-commands` flag PR #227
@@ -559,9 +573,7 @@ transition cleanly.
   source was added; `else` arms fall through to flat srcs
   unchanged. Byte-stability preserved for projects without
   platform conditionals (TraceRaw nil → no partition; matching
-  srcs missing → no partition). Tier 2 — recovering sources
-  from skipped `if` branches by parsing CMakeLists.txt at
-  trace-recorded line numbers — remains open (see Later).
+  srcs missing → no partition).
 
 - **FDSDK-glue placeholder handlers — kind catalog now
   fully covered.** Stub handlers for the four previously-

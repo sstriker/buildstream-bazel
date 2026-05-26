@@ -788,6 +788,97 @@ func TestToIR_PlatformConditionalSrcs_MultiLanguage(t *testing.T) {
 	}
 }
 
+// TestToIR_PlatformConditionalSrcs_Tier2Recovery covers #217
+// Tier 2 (this PR): cmake configured for Linux, the trace
+// records the entered LINUX arm of an if(LINUX)/elseif(WIN32)
+// block, and Tier 2 recovers win.c from the skipped WIN32 arm
+// by parsing the on-disk CMakeLists.txt. The combined Tier-1
+// + Tier-2 partition must place linux.c under
+// @platforms//os:linux AND win.c under @platforms//os:windows
+// — both arms partitioned, so a bazel reconfigure for either
+// platform finds its sources.
+func TestToIR_PlatformConditionalSrcs_Tier2Recovery(t *testing.T) {
+	// Stage a real on-disk CMakeLists.txt the Tier-2 driver
+	// can read. The reply's Codemodel.Paths.Source points at
+	// the same dir so the trace's `file` paths resolve
+	// directly (no host-vs-trace remap needed).
+	dir := t.TempDir()
+	cmakeText := `add_library(app STATIC)
+if(LINUX)
+  target_sources(app PRIVATE linux.c)
+elseif(WIN32)
+  target_sources(app PRIVATE win.c)
+endif()
+`
+	if err := os.WriteFile(filepath.Join(dir, "CMakeLists.txt"), []byte(cmakeText), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Stage linux.c on disk so lower's missing-source elide
+	// doesn't drop it. win.c stays absent — Tier 2 places it
+	// into PerPlatform unconditionally because it never went
+	// through the elide check (Tier 2 sources don't live in
+	// the codemodel's flat list).
+	if err := os.WriteFile(filepath.Join(dir, "linux.c"), []byte("int main(){return 0;}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile linux.c: %v", err)
+	}
+
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: dir,
+				Build:  filepath.Join(dir, "build"),
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "app", Id: "app::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"app::@1": {
+				Name: "app",
+				Type: "STATIC_LIBRARY",
+				// Only linux.c is in the codemodel — cmake on a
+				// Linux configure didn't see win.c.
+				Sources: []fileapi.TargetSource{
+					{Path: "linux.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	trace := []byte(`
+{"args":["LINUX"],"cmd":"if","file":"` + dir + `/CMakeLists.txt","line":2}
+{"args":["app","PRIVATE","linux.c"],"cmd":"target_sources","file":"` + dir + `/CMakeLists.txt","line":3}
+{"args":["WIN32"],"cmd":"elseif","file":"` + dir + `/CMakeLists.txt","line":4}
+{"args":[],"cmd":"endif","file":"` + dir + `/CMakeLists.txt","line":6}
+`)
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: dir,
+		TraceRaw:       trace,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("Targets = %d, want 1", len(pkg.Targets))
+	}
+	tgt := pkg.Targets[0]
+	// Tier 1 moves linux.c into PerPlatform[srcs][linux];
+	// Tier 2 injects win.c into PerPlatform[srcs][windows].
+	if arm := tgt.PerPlatform["srcs"]["@platforms//os:linux"]; !equal(arm, []string{"linux.c"}) {
+		t.Errorf("PerPlatform[srcs][linux] = %v, want [linux.c]", arm)
+	}
+	if arm := tgt.PerPlatform["srcs"]["@platforms//os:windows"]; !equal(arm, []string{"win.c"}) {
+		t.Errorf("PerPlatform[srcs][windows] = %v, want [win.c] (Tier 2 recovery)", arm)
+	}
+	if len(tgt.Srcs) != 0 {
+		t.Errorf("Srcs = %v, want [] (linux.c partitioned out, win.c never in flat)", tgt.Srcs)
+	}
+}
+
 // TestToIR_PlatformConditionalSrcs_NoTraceByteStable pins the
 // no-regression guard: a project without trace data leaves
 // PerPlatform empty and emits the same flat-srcs shape as
