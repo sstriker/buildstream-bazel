@@ -1062,14 +1062,17 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				// three shapes:
 				//   - A producer-element's export tree under
 				//     hostPrefix (cross-element find_package
-				//     include). We can't directly translate to
-				//     a Bazel `includes` entry — the producing
-				//     element provides headers through a
-				//     cc_library dep rather than an include
-				//     path — but operators auditing for
-				//     unresolved cross-element imports want to
-				//     see this. Emit a payload-bearing audit
-				//     tag identifying the dropped basename.
+				//     include). We can't directly translate
+				//     to a Bazel `includes` entry — the
+				//     producing element provides headers
+				//     through a cc_library dep rather than an
+				//     include path — but operators auditing
+				//     for unresolved cross-element imports
+				//     want to see this. Emit a payload-bearing
+				//     audit tag identifying the dropped path
+				//     (hostPrefix-relative so two synth-prefix
+				//     subdirs with the same trailing basename
+				//     don't collide on the dedup).
 				//   - A system include path
 				//     (/usr/include, etc.). Filtering these
 				//     silently is correct — the toolchain
@@ -1077,20 +1080,22 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				//     default search path, and emitting them
 				//     as Bazel `includes` would leak host
 				//     state into the BUILD.
-				//   - A user-specified absolute path
-				//     outside the project. Same Bazel-label
-				//     invalidity as #221 covered for srcs;
-				//     refusing here would break every
-				//     find_package project that propagates
-				//     non-tree includes, so we tag-and-drop
-				//     rather than refuse. The cross-element
-				//     audit tag fires for both the prefix-tree
-				//     case and the generic out-of-tree case
-				//     (operators can distinguish by the
-				//     basename in the tag payload).
+				//   - A user-specified out-of-tree absolute
+				//     path with no hostPrefix relationship
+				//     (e.g. `/opt/vendor/include` hardcoded in
+				//     a CMakeLists). These currently fall
+				//     through silently — the audit tag is
+				//     scoped to the hostPrefix case where the
+				//     producer-element framing is well-defined.
+				//     Tagging the bare-hardcode case would
+				//     create noise on every project that
+				//     references /usr/include via find_package
+				//     propagation. A separate audit tag for
+				//     the hardcode case can land if a real
+				//     downstream surfaces the need.
 				if hostPrefix != "" {
-					if _, inside := relativeIfInside(hostPrefix, inc.Path); inside {
-						tag := "cmake-elided-prefix-include=" + filepath.Base(inc.Path)
+					if relUnder, inside := relativeIfInside(hostPrefix, inc.Path); inside {
+						tag := "cmake-elided-prefix-include=" + relUnder
 						if !stringSliceContains(irt.Tags, tag) {
 							irt.Tags = append(irt.Tags, tag)
 						}
@@ -1509,8 +1514,14 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// path that didn't flow through find_package
 			// (rare), or the imports manifest hasn't learned
 			// about this dep yet. Tag-only emission so
-			// operators see the unresolved link.
-			tag := "cmake-elided-link-fragment=" + filepath.Base(path)
+			// operators see the unresolved link. Emit the full
+			// path (post-manifestPrefixAnchor rewrite when the
+			// fragment was under hostPrefix) rather than the
+			// basename so multi-arch layouts
+			// (/usr/lib/x86_64-linux-gnu/libz.so vs
+			// /usr/lib/i386-linux-gnu/libz.so → both libz.so)
+			// don't collide on the dedup.
+			tag := "cmake-elided-link-fragment=" + path
 			if !stringSliceContains(irt.Tags, tag) {
 				irt.Tags = append(irt.Tags, tag)
 			}

@@ -1035,7 +1035,7 @@ func TestToIR_ElidedPrefixInclude(t *testing.T) {
 		t.Fatalf("ToIR: %v", err)
 	}
 	tgt := pkg.Targets[0]
-	want := "cmake-elided-prefix-include=external_dep"
+	want := "cmake-elided-prefix-include=usr/include/external_dep"
 	if !contains(tgt.Tags, want) {
 		t.Errorf("Tags = %v, want to contain %q", tgt.Tags, want)
 	}
@@ -1043,6 +1043,61 @@ func TestToIR_ElidedPrefixInclude(t *testing.T) {
 	for _, inc := range tgt.Includes {
 		if strings.Contains(inc, "external_dep") {
 			t.Errorf("Includes = %v, prefix-tree include leaked through", tgt.Includes)
+		}
+	}
+}
+
+// TestToIR_ElidedPrefixIncludeNoBasenameCollision pins the
+// payload de-collision fix: two different paths under
+// hostPrefix that share a trailing basename emit distinct tags
+// (operators querying for one shouldn't silently match the
+// other). The payload is the hostPrefix-relative form so each
+// drop is uniquely identifiable.
+func TestToIR_ElidedPrefixIncludeNoBasenameCollision(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+					Includes: []fileapi.CompileInclude{
+						{Path: "/synth/usr/include/foo"},
+						{Path: "/synth/local/include/foo"},
+					},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		HostPrefixDir:  "/synth",
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	want := []string{
+		"cmake-elided-prefix-include=usr/include/foo",
+		"cmake-elided-prefix-include=local/include/foo",
+	}
+	for _, w := range want {
+		if !contains(tgt.Tags, w) {
+			t.Errorf("Tags = %v, want to contain %q (no basename-collision dedup)", tgt.Tags, w)
 		}
 	}
 }
@@ -1143,9 +1198,64 @@ func TestToIR_ElidedLinkFragment(t *testing.T) {
 		t.Fatalf("ToIR: %v", err)
 	}
 	tgt := pkg.Targets[0]
-	want := "cmake-elided-link-fragment=libmystery.so"
+	want := "cmake-elided-link-fragment=/opt/vendor/lib/libmystery.so"
 	if !contains(tgt.Tags, want) {
 		t.Errorf("Tags = %v, want to contain %q", tgt.Tags, want)
+	}
+}
+
+// TestToIR_ElidedLinkFragmentNoBasenameCollision pins the
+// payload de-collision fix for link fragments: two distinct
+// abs paths sharing a trailing basename (the typical Linux
+// multi-arch shape /usr/lib/x86_64-linux-gnu/libz.so vs
+// /usr/lib/i386-linux-gnu/libz.so) emit distinct tags rather
+// than merging on the dedup.
+func TestToIR_ElidedLinkFragmentNoBasenameCollision(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{
+					{Path: "main.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+				Link: &fileapi.TargetLink{
+					Language: "C",
+					CommandFragments: []fileapi.CommandFragment{
+						{Fragment: "/usr/lib/x86_64-linux-gnu/libz.so", Role: "libraries"},
+						{Fragment: "/usr/lib/i386-linux-gnu/libz.so", Role: "libraries"},
+					},
+				},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	want := []string{
+		"cmake-elided-link-fragment=/usr/lib/x86_64-linux-gnu/libz.so",
+		"cmake-elided-link-fragment=/usr/lib/i386-linux-gnu/libz.so",
+	}
+	for _, w := range want {
+		if !contains(tgt.Tags, w) {
+			t.Errorf("Tags = %v, want to contain %q (no basename-collision dedup)", tgt.Tags, w)
+		}
 	}
 }
 
