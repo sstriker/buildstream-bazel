@@ -286,6 +286,7 @@ disk (the default dev path).
 | Narrowing-audit recipe | [`design/narrowing-audit.md`](design/narrowing-audit.md) |
 | BwoB / source mount | [`design/sources.md`](design/sources.md) |
 | FDSDK kind coverage | [`fdsdk-coverage.md`](fdsdk-coverage.md) |
+| Multi-version cmake compatibility matrix | [`cmake-version-matrix.md`](cmake-version-matrix.md) |
 | Known fidelity / conversion gaps | [`known-deltas.md`](known-deltas.md) |
 | Failure-code taxonomy | [`failure-schema.md`](failure-schema.md) |
 | Codegen tag taxonomy | [`codegen-tags.md`](codegen-tags.md) |

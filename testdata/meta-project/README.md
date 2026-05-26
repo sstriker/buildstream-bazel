@@ -1,7 +1,7 @@
 # Meta-project test fixtures
 
 End-to-end fixtures for the Bazel-as-orchestrator shape described
-in `docs/whole-project-plan.md`. Eleven fixtures so far:
+in `docs/architecture.md`. Eleven fixtures so far:
 
 - **`hello-world.bst`** + **`sources/hello-world/`** — single cmake
   element. Phase 1 acceptance gate (`make e2e-meta-hello`).

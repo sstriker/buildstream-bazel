@@ -1,5 +1,5 @@
 // Command write-a is the production writer-of-A for the meta-project
-// (Bazel-as-orchestrator) shape described in docs/whole-project-plan.md.
+// (Bazel-as-orchestrator) shape described in docs/architecture.md.
 // It parses .bst element files, resolves their sources and dependencies,
 // and renders project A (the meta workspace whose genrules invoke
 // per-kind translator binaries) and project B (the consumer workspace
