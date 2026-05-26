@@ -445,6 +445,31 @@ func TestAudit_CmakeCodegenQtTags(t *testing.T) {
 	}
 }
 
+func TestAudit_CmakeCodegenLanguageOverrideTag(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "mixed",
+    srcs = ["a.c"],
+    tags = ["cmake-codegen-language-override=CXX"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "language-override-needs-split" {
+			found = true
+			if !strings.Contains(f.Message, "CXX") {
+				t.Errorf("message should include lang token: %q", f.Message)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected language-override-needs-split; got %v", findings)
+	}
+}
+
 func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
 	// cmake-codegen-version=… and cmake-codegen-soversion=… are
 	// informational; no audit finding.

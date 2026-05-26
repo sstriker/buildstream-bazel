@@ -159,6 +159,10 @@ func codegenTagToFinding(tag string) (code, msg string) {
 	case tag == "cmake-codegen-enable-exports":
 		return "enable-exports-toolchain-feature-needed",
 			"target has ENABLE_EXPORTS=TRUE (executables exporting symbols) — Bazel cc_binary has no native attribute; wire via cc_toolchain feature"
+	case strings.HasPrefix(tag, "cmake-codegen-language-override="):
+		lang := strings.TrimPrefix(tag, "cmake-codegen-language-override=")
+		return "language-override-needs-split",
+			"target has set_source_files_properties(... LANGUAGE " + lang + ") on at least one source — Bazel cc_library compiles each source by its file extension; the override is silently dropped. Fix: rename the source to a " + lang + "-conventional extension or split the affected sources into a separate cc_library"
 	}
 	return "", ""
 }

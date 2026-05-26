@@ -63,9 +63,12 @@ the lift is wiring it into IR + emit.
   - ✓ `HEADER_FILE_ONLY` → reclassify source from `srcs` to
     `hdrs` (file declared but not compiled). **Landed via
     `reclassifyHeaderOnlySources` post-pass.**
-  - `LANGUAGE` override → bypass compile-group's reported
-    language (rare; usually `set_source_files_properties(...
-    PROPERTIES LANGUAGE CXX)` on a `.c` file).
+  - ✓ `LANGUAGE` override → **Landed (tag).** Tagged with
+    `cmake-codegen-language-override=<lang>` via the
+    `tagLanguageOverrides` post-pass so operators see the gap.
+    Bazel cc_library can't directly override per-source language;
+    the actual Bazel fix is a source rename or per-source library
+    split. The tag surfaces in `bazelidiom` audit output.
   - `COMPILE_FLAGS` (old form) → augment per-source copts via
     the CompileGroup-split mechanism (the
     `shouldSplitCompileGroups` gate covers this when the
@@ -241,6 +244,7 @@ Items landed in the gap-fill push, sorted by category:
 - ✓ HEADER_FILE_ONLY → hdrs reclassification
 - ✓ OBJECT_DEPENDS → hdrs append
 - ✓ add_dependencies via backtrace → data attribute
+- ✓ LANGUAGE override → cmake-codegen-language-override=<lang> tag
 
 **probe-genex lifts (cmake 3.24+):**
 - ✓ INTERFACE_* aggregates → genexeval evaluator
@@ -272,28 +276,22 @@ Items landed in the gap-fill push, sorted by category:
 Genuinely queued (each needs new infrastructure beyond the
 converter's current scope):
 
-1. **`SOURCE_FILE_PROPERTIES LANGUAGE` override**. Force a
-   `.c` file to compile as C++. Bazel cc_library can't do
-   this without per-source library splits + source rename.
-   shouldSplitCompileGroups covers cases where cmake produced
-   distinct CompileGroups for the override.
-
-2. **`add_test` with TARGET_FILE genex** verification. Should
+1. **`add_test` with TARGET_FILE genex** verification. Should
    work via probe-genex's TARGET_FILE capture; lacks an
    end-to-end fixture confirming.
 
-3. **`option()` → `bool_flag` / `config_setting`** for
+2. **`option()` → `bool_flag` / `config_setting`** for
    runtime tunability. Currently surfaced as header
    inventory; the active toggle would require
    `@bazel_skylib` dep + emit shape changes affecting
    MODULE.bazel.
 
-4. **AUTOMOC / AUTOUIC / AUTORCC** as actual Bazel rules.
+3. **AUTOMOC / AUTOUIC / AUTORCC** as actual Bazel rules.
    Today surfaced as tags + audit findings; the actual fix is
    either operator-side kind:bazel override or a community
    rules_qt module integration.
 
-5. **FetchContent / ExternalProject_Add** → http_archive when
+4. **FetchContent / ExternalProject_Add** → http_archive when
    URL+hash literal. The cmake "fetch + participate in target
    graph" semantic doesn't map under Bazel's hermetic-action
    model regardless of converter effort.
