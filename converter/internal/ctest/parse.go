@@ -209,6 +209,39 @@ func applyProperty(t *Test, key, value string) {
 		if isCMakeTruthy(value) {
 			t.Tags = appendUniq(t.Tags, "exclusive")
 		}
+	case "WILL_FAIL":
+		// Bazel cc_test has no native "expected to fail" semantic.
+		// The standard equivalent is to wrap with sh_test that
+		// inverts the exit code. Surface as a tag so operators
+		// can find affected tests via grep.
+		if isCMakeTruthy(value) {
+			t.Tags = appendUniq(t.Tags, "cmake-test-will-fail")
+		}
+	case "WORKING_DIRECTORY":
+		// Bazel cc_test has no native working_directory attribute.
+		// The standard pattern uses a sh wrapper that cd's. Tag
+		// surfaces the cmake-side WORKING_DIRECTORY so operators
+		// know to wrap or set it via TEST_CWD env var.
+		if v := strings.TrimSpace(value); v != "" {
+			t.Tags = appendUniq(t.Tags, "cmake-test-cwd="+v)
+		}
+	case "SKIP_REGULAR_EXPRESSION":
+		// Stdout/stderr pattern that, when matched, marks the
+		// test as skipped. Bazel test frameworks handle skip via
+		// language-specific protocols. Surface as tag.
+		if v := strings.TrimSpace(value); v != "" {
+			t.Tags = appendUniq(t.Tags, "cmake-test-skip-regex="+v)
+		}
+	case "FAIL_REGULAR_EXPRESSION":
+		// Inverse of PASS_REGULAR_EXPRESSION — pattern that, if
+		// seen in stdout/stderr, fails the test even on a 0 exit.
+		if v := strings.TrimSpace(value); v != "" {
+			t.Tags = appendUniq(t.Tags, "cmake-test-fail-regex="+v)
+		}
+	case "PASS_REGULAR_EXPRESSION":
+		if v := strings.TrimSpace(value); v != "" {
+			t.Tags = appendUniq(t.Tags, "cmake-test-pass-regex="+v)
+		}
 	}
 }
 
