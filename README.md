@@ -93,19 +93,24 @@ make e2e-meta-hello
 make e2e-meta-autotools-native
 
 # 4. Convert your own BuildStream project.
-#    --trace-round1 picks the local-dev round-1 shape (project B
+#    --deployment=local picks the local-dev round-1 shape (project B
 #    hosts an install genrule with build-tracer + convert-element-
-#    trace inline). For the production round-2 shape, drop
-#    --trace-round1 and add --trace-publish-bin / --trace-lookup-bin
-#    (and ensure bb_clientd is up).
+#    trace inline). For production, set --deployment=production and
+#    add --trace-publish-bin / --trace-lookup-bin (and ensure
+#    bb_clientd is up). --fidelity={strict|best-effort} controls
+#    refusal behaviour: strict (default) exits non-zero on per-element
+#    refusals; best-effort lowers them to install_tree.tar
+#    placeholders so downstream Bazel still resolves labels. The older
+#    per-kind flags (--trace-round1, --cmake-round2-fallback, …) still
+#    work and override the mode dial.
 build/bin/write-a \
     --bst path/to/yours.bst \
     --out /tmp/project-a \
     --out-b /tmp/project-b \
-    --convert-element-cmake           build/bin/convert-element-cmake \
+    --convert-element-cmake     build/bin/convert-element-cmake \
     --convert-element-trace     build/bin/convert-element-trace \
     --build-tracer-bin          build/bin/build-tracer \
-    --trace-round1
+    --deployment=local
 ```
 
 Then `cd /tmp/project-b && bazel build //...`. That's it.
