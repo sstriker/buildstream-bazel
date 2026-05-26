@@ -6,6 +6,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 func mustParseNinja(t *testing.T, src string) *ninja.Graph {
@@ -27,7 +28,7 @@ build version.txt: CUSTOM_COMMAND
   COMMAND = git rev-parse HEAD
 build foo.o: CXX_COMPILER foo.cc
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d (%v)", len(got), got)
 	}
@@ -60,7 +61,7 @@ build foo.o: CXX_COMPILER foo.cc
 		Kind:        ir.KindGenrule,
 		GenruleOuts: []string{"generated.h"},
 	}}
-	got := lowerStandaloneCustomCommands(g, existing, "/build")
+	got := lowerStandaloneCustomCommands(g, existing, "/build", standaloneTraceContext{})
 	if len(got) != 0 {
 		t.Errorf("expected dedup; got %v", got)
 	}
@@ -75,7 +76,7 @@ build alpha.stamp: CUSTOM_COMMAND
 build beta.stamp: CUSTOM_COMMAND
   COMMAND = touch beta.stamp
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 2 {
 		t.Fatalf("want 2 standalone; got %d", len(got))
 	}
@@ -100,7 +101,7 @@ build foo: CUSTOM_COMMAND
 build foo_: CUSTOM_COMMAND
   COMMAND = touch foo_
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 2 {
 		t.Fatalf("want 2; got %d", len(got))
 	}
@@ -115,7 +116,7 @@ func TestLowerStandaloneCustomCommands_SkipsRuleWithoutCommand(t *testing.T) {
 
 build phony: CUSTOM_COMMAND
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 0 {
 		t.Errorf("expected skip when rule has no command; got %v", got)
 	}
@@ -128,7 +129,7 @@ func TestLowerStandaloneCustomCommands_PreservesImplicitOuts(t *testing.T) {
 build main.txt | side.txt: CUSTOM_COMMAND in
   COMMAND = gen $in
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 1 {
 		t.Fatalf("want 1; got %d", len(got))
 	}
@@ -139,7 +140,7 @@ build main.txt | side.txt: CUSTOM_COMMAND in
 }
 
 func TestLowerStandaloneCustomCommands_NilGraph(t *testing.T) {
-	if got := lowerStandaloneCustomCommands(nil, nil, "/build"); got != nil {
+	if got := lowerStandaloneCustomCommands(nil, nil, "/build", standaloneTraceContext{}); got != nil {
 		t.Errorf("nil graph should return nil; got %v", got)
 	}
 }
@@ -160,7 +161,7 @@ build CMakeFiles/rebuild_cache.util: CUSTOM_COMMAND
 build version.txt: CUSTOM_COMMAND
   COMMAND = git rev-parse HEAD
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone (bookkeeping edges filtered); got %d (%v)", len(got), got)
 	}
@@ -182,7 +183,7 @@ func TestLowerStandaloneCustomCommands_FiltersNinjaVarOutputs(t *testing.T) {
 build version.txt | ${cmake_ninja_workdir}version.txt: CUSTOM_COMMAND
   COMMAND = touch version.txt
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d (%v)", len(got), got)
 	}
@@ -263,6 +264,146 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 				t.Errorf("isCMakeBookkeepingOutput(%q) = %v; want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLowerStandaloneCustomCommands_TraceNamesFromAddCustomTarget
+// covers the trace cross-reference: when an in-trace
+// add_custom_target wraps the OUTPUT (via DEPENDS), the emitted
+// genrule takes the target's name instead of the
+// `custom_command_<sanitized-output>` fallback. Matches the
+// CMakeLists.txt shape:
+//
+//	add_custom_command(OUTPUT version.h COMMAND gen)
+//	add_custom_target(gen_headers DEPENDS version.h)
+//
+// → genrule name `gen_headers`, not `custom_command_version_h`.
+func TestLowerStandaloneCustomCommands_TraceNamesFromAddCustomTarget(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build version.h: CUSTOM_COMMAND
+  COMMAND = gen
+`)
+	ctx := standaloneTraceContext{
+		CustomCommands: []shadow.AddCustomCommandCall{
+			{Outputs: []string{"version.h"}, Commands: [][]string{{"gen"}}},
+		},
+		CustomTargets: []shadow.AddCustomTargetCall{
+			{Name: "gen_headers", Depends: []string{"version.h"}},
+		},
+	}
+	got := lowerStandaloneCustomCommands(g, nil, "/build", ctx)
+	if len(got) != 1 {
+		t.Fatalf("want 1 standalone; got %d", len(got))
+	}
+	if got[0].Name != "gen_headers" {
+		t.Errorf("Name: %q want gen_headers (taken from add_custom_target)", got[0].Name)
+	}
+}
+
+// TestLowerStandaloneCustomCommands_TraceVisibilityFromAddDependencies
+// covers the visibility leg of the cross-reference: when an
+// in-trace add_dependencies call references the wrapping target
+// (or the output directly), the genrule's visibility opens from
+// `//visibility:private` to `:__pkg__` so the downstream consumer
+// can reference it.
+//
+//	add_custom_command(OUTPUT generated.h COMMAND gen)
+//	add_custom_target(gen_target DEPENDS generated.h)
+//	add_dependencies(mylib gen_target)  # ← consumer
+//
+// → genrule named `gen_target` with `:__pkg__` visibility.
+func TestLowerStandaloneCustomCommands_TraceVisibilityFromAddDependencies(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build generated.h: CUSTOM_COMMAND
+  COMMAND = gen
+`)
+	ctx := standaloneTraceContext{
+		CustomCommands: []shadow.AddCustomCommandCall{
+			{Outputs: []string{"generated.h"}, Commands: [][]string{{"gen"}}},
+		},
+		CustomTargets: []shadow.AddCustomTargetCall{
+			{Name: "gen_target", Depends: []string{"generated.h"}},
+		},
+		AddDependencies: []shadow.AddDependenciesCall{
+			{Target: "mylib", Depends: []string{"gen_target"}},
+		},
+	}
+	got := lowerStandaloneCustomCommands(g, nil, "/build", ctx)
+	if len(got) != 1 {
+		t.Fatalf("want 1 standalone; got %d", len(got))
+	}
+	if got[0].Name != "gen_target" {
+		t.Errorf("Name: %q want gen_target", got[0].Name)
+	}
+	if len(got[0].Visibility) != 1 || got[0].Visibility[0] != ":__pkg__" {
+		t.Errorf("Visibility: %v want [:__pkg__] (downstream consumer signals package visibility)", got[0].Visibility)
+	}
+}
+
+// TestLowerStandaloneCustomCommands_TraceVisibilityFromDirectOutputConsumer
+// covers the edge case where add_dependencies references the
+// OUTPUT path directly (legal in cmake; uncommon but rendered):
+//
+//	add_custom_command(OUTPUT foo.txt COMMAND ...)
+//	add_dependencies(consumer foo.txt)
+//
+// → emitted genrule's visibility opens to `:__pkg__` even though
+// no add_custom_target wraps the output.
+func TestLowerStandaloneCustomCommands_TraceVisibilityFromDirectOutputConsumer(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build foo.txt: CUSTOM_COMMAND
+  COMMAND = touch foo.txt
+`)
+	ctx := standaloneTraceContext{
+		CustomCommands: []shadow.AddCustomCommandCall{
+			{Outputs: []string{"foo.txt"}, Commands: [][]string{{"touch", "foo.txt"}}},
+		},
+		AddDependencies: []shadow.AddDependenciesCall{
+			{Target: "consumer", Depends: []string{"foo.txt"}},
+		},
+	}
+	got := lowerStandaloneCustomCommands(g, nil, "/build", ctx)
+	if len(got) != 1 {
+		t.Fatalf("want 1 standalone; got %d", len(got))
+	}
+	// No add_custom_target → falls back to the output-derived
+	// name (cross-reference doesn't have a target name to use).
+	if got[0].Name != "custom_command_foo_txt" {
+		t.Errorf("Name: %q want custom_command_foo_txt", got[0].Name)
+	}
+	// But the add_dependencies(consumer foo.txt) opens visibility.
+	if len(got[0].Visibility) != 1 || got[0].Visibility[0] != ":__pkg__" {
+		t.Errorf("Visibility: %v want [:__pkg__]", got[0].Visibility)
+	}
+}
+
+// TestLowerStandaloneCustomCommands_TraceEmptyKeepsLegacyBehavior
+// confirms the offline-replay-no-trace path (zero-valued
+// standaloneTraceContext) keeps the legacy naming + private
+// visibility — important for byte-stability of projects converted
+// without trace capture.
+func TestLowerStandaloneCustomCommands_TraceEmptyKeepsLegacyBehavior(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build version.txt: CUSTOM_COMMAND
+  COMMAND = touch version.txt
+`)
+	got := lowerStandaloneCustomCommands(g, nil, "/build", standaloneTraceContext{})
+	if len(got) != 1 {
+		t.Fatalf("want 1 standalone; got %d", len(got))
+	}
+	if got[0].Name != "custom_command_version_txt" {
+		t.Errorf("Name: %q (legacy shape)", got[0].Name)
+	}
+	if len(got[0].Visibility) != 1 || got[0].Visibility[0] != "//visibility:private" {
+		t.Errorf("Visibility: %v want [//visibility:private]", got[0].Visibility)
 	}
 }
 

@@ -40,6 +40,9 @@ type Decoded struct {
 	ExecuteProcesses           []ExecuteProcessCall
 	PlatformConditionalSources []PlatformConditionalSource
 	SourceFileProperties       []SourceFilePropertiesCall
+	AddCustomCommands          []AddCustomCommandCall
+	AddCustomTargets           []AddCustomTargetCall
+	AddDependencies            []AddDependenciesCall
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -82,6 +85,15 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		}
 		if call, ok := classifySourceFileProperties(ev, sourceRoot); ok {
 			d.SourceFileProperties = append(d.SourceFileProperties, call)
+		}
+		if call, ok := classifyAddCustomCommand(ev, sourceRoot); ok {
+			d.AddCustomCommands = append(d.AddCustomCommands, call)
+		}
+		if call, ok := classifyAddCustomTarget(ev, sourceRoot); ok {
+			d.AddCustomTargets = append(d.AddCustomTargets, call)
+		}
+		if call, ok := classifyAddDependencies(ev, sourceRoot); ok {
+			d.AddDependencies = append(d.AddDependencies, call)
 		}
 		// Platform-conditional source attribution. Helper
 		// updates the per-file if-stack and appends any
@@ -1165,4 +1177,421 @@ func classifySourceFileProperties(ev TraceEvent, sourceRoot string) (SourceFileP
 	}
 
 	return call, true
+}
+
+// AddCustomCommandCall records one user-written
+// add_custom_command(OUTPUT <outs...> COMMAND <cmd1...>
+//
+//	[COMMAND <cmd2...> ...] [DEPENDS <deps...>] [BYPRODUCTS <bps...>]
+//	[MAIN_DEPENDENCY <dep>] [WORKING_DIRECTORY <dir>]
+//	[COMMENT <comment>] [VERBATIM] [USES_TERMINAL] ...) call.
+//
+// Bazel-side consumers (the Phase 4 standalone-genrule emitter)
+// use the OUTPUT list to cross-reference build.ninja CUSTOM_COMMAND
+// edges back to the user's source-level call site — that lets the
+// emitted genrule pick up a name derived from the matching
+// add_custom_target (when one wraps the OUTPUT) and a visibility
+// derived from downstream consumers in the same trace, instead of
+// the synthetic `custom_command_<output>` name and the hardcoded
+// private visibility the output-only path produces.
+//
+// v1 captures the fields the cross-reference consumes:
+//   - File, Line: source-level call site for error/audit context.
+//   - Outputs / ByProducts: identify which build.ninja edge the
+//     event corresponds to.
+//   - Commands: per-COMMAND argv lists, in declaration order
+//     (mirrors execute_process's pipeline shape).
+//   - Depends / MainDependency: source-side dependency declarations
+//     for completeness.
+//   - WorkingDirectory: per cmake semantics, relative paths in
+//     Outputs/Commands resolve against this.
+//   - RawArgs: original token list for audit context.
+//
+// Out-of-v1 keyword payloads (VERBATIM, USES_TERMINAL,
+// COMMAND_EXPAND_LISTS, JOB_POOL, IMPLICIT_DEPENDS, APPEND, ...)
+// don't affect cross-reference matching and aren't modeled. Their
+// keyword tokens are still consumed by the parser so subsequent
+// keyword scanning stays correct.
+type AddCustomCommandCall struct {
+	File             string
+	Line             int
+	Outputs          []string
+	ByProducts       []string
+	Depends          []string
+	MainDependency   string
+	Commands         [][]string
+	WorkingDirectory string
+	Comment          string
+	RawArgs          []string
+}
+
+// AddCustomTargetCall records one user-written
+// add_custom_target(<name> [ALL] [COMMAND <cmd1...>]
+//
+//	[COMMAND <cmd2...> ...] [DEPENDS <deps...>]
+//	[BYPRODUCTS <bps...>] [WORKING_DIRECTORY <dir>]
+//	[COMMENT <comment>] [SOURCES <srcs...>] [VERBATIM]
+//	[USES_TERMINAL] ...) call.
+//
+// The Bazel-side consumer pairs this against
+// AddCustomCommandCall records via the BYPRODUCTS / DEPENDS
+// chain: when an add_custom_command(OUTPUT out) is followed by
+// add_custom_target(name DEPENDS out), the target name becomes
+// the standalone-genrule name (replacing the synthetic
+// `custom_command_<output>` shape).
+//
+// All marks ALL-targets (built by default); ignored by the
+// standalone-genrule cross-reference but recorded for symmetry.
+type AddCustomTargetCall struct {
+	File             string
+	Line             int
+	Name             string
+	All              bool
+	Commands         [][]string
+	Depends          []string
+	ByProducts       []string
+	Sources          []string
+	WorkingDirectory string
+	Comment          string
+	RawArgs          []string
+}
+
+// AddDependenciesCall records one user-written
+// add_dependencies(<target> <dep1> [<dep2> ...]) call. The
+// Bazel-side cross-reference uses this to discover downstream
+// consumers of a custom-command output: when target T calls
+// add_dependencies(T producer-name) and producer-name names an
+// add_custom_target whose OUTPUTs include foo.txt, foo.txt has
+// a downstream consumer in the same package and the emitted
+// standalone genrule's visibility opens from
+// `//visibility:private` to `:__pkg__`.
+type AddDependenciesCall struct {
+	File    string
+	Line    int
+	Target  string
+	Depends []string
+	RawArgs []string
+}
+
+// ExtractAddCustomCommands returns one entry per user-written
+// add_custom_command call whose trace event fires inside
+// sourceRoot. cmake-internal scratch-CMakeLists from try_compile
+// etc. are filtered out by the source-tree gate.
+func ExtractAddCustomCommands(traceRaw []byte, sourceRoot string) []AddCustomCommandCall {
+	var out []AddCustomCommandCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyAddCustomCommand(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyAddCustomCommand parses one trace event into an
+// AddCustomCommandCall, or returns (_, false) when the event
+// isn't an in-source-tree add_custom_command with an OUTPUT
+// arm. The TARGET-form (add_custom_command(TARGET ...
+// PRE_BUILD|POST_BUILD|PRE_LINK ...)) is a distinct shape —
+// it attaches a command to an existing target rather than
+// declaring a new file-producing rule — and is filtered out
+// here; the standalone-genrule cross-reference only consumes
+// the OUTPUT form.
+func classifyAddCustomCommand(ev TraceEvent, sourceRoot string) (AddCustomCommandCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_custom_command") {
+		return AddCustomCommandCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return AddCustomCommandCall{}, false
+	}
+	if len(ev.Args) == 0 {
+		return AddCustomCommandCall{}, false
+	}
+	// TARGET-form starts with the literal "TARGET" keyword; the
+	// OUTPUT-form starts with "OUTPUT" (or another section
+	// keyword). The cross-reference only cares about the
+	// OUTPUT-form — TARGET-form attaches a hook to an existing
+	// target and doesn't declare a standalone genrule.
+	if strings.EqualFold(ev.Args[0], "TARGET") {
+		return AddCustomCommandCall{}, false
+	}
+
+	call := AddCustomCommandCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		RawArgs: append([]string(nil), ev.Args...),
+	}
+
+	const (
+		secNone = iota
+		secOutput
+		secCommand
+		secDepends
+		secByProducts
+		secImplicitDeps // IMPLICIT_DEPENDS — variadic <lang> <file> pairs; we just sink tokens
+	)
+	sec := secNone
+	var currentCmd []string
+	flushCommand := func() {
+		if len(currentCmd) > 0 {
+			call.Commands = append(call.Commands, currentCmd)
+		}
+		currentCmd = nil
+	}
+
+	for i := 0; i < len(ev.Args); i++ {
+		a := ev.Args[i]
+		switch strings.ToUpper(a) {
+		case "OUTPUT":
+			flushCommand()
+			sec = secOutput
+			continue
+		case "COMMAND":
+			flushCommand()
+			sec = secCommand
+			continue
+		case "DEPENDS":
+			flushCommand()
+			sec = secDepends
+			continue
+		case "BYPRODUCTS":
+			flushCommand()
+			sec = secByProducts
+			continue
+		case "IMPLICIT_DEPENDS":
+			flushCommand()
+			sec = secImplicitDeps
+			continue
+		case "MAIN_DEPENDENCY":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.MainDependency = ev.Args[i]
+			}
+			continue
+		case "WORKING_DIRECTORY":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.WorkingDirectory = ev.Args[i]
+			}
+			continue
+		case "COMMENT":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.Comment = ev.Args[i]
+			}
+			continue
+		case "DEPFILE",
+			"JOB_POOL",
+			"JOB_SERVER_AWARE":
+			// Single-value keywords we don't model; consume the value.
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+			}
+			continue
+		case "VERBATIM",
+			"APPEND",
+			"USES_TERMINAL",
+			"COMMAND_EXPAND_LISTS":
+			// Flag-only keywords; no value to consume.
+			flushCommand()
+			sec = secNone
+			continue
+		}
+		// Bare value: append to the open section.
+		switch sec {
+		case secOutput:
+			call.Outputs = append(call.Outputs, a)
+		case secCommand:
+			currentCmd = append(currentCmd, a)
+		case secDepends:
+			call.Depends = append(call.Depends, a)
+		case secByProducts:
+			call.ByProducts = append(call.ByProducts, a)
+		case secImplicitDeps:
+			// IMPLICIT_DEPENDS shape: <LANG> <file> [<LANG> <file> ...].
+			// Out of v1 — drop tokens silently.
+		default:
+			// Top-level bare value with no open section — cmake
+			// itself would reject; drop silently here.
+		}
+	}
+	flushCommand()
+
+	if len(call.Outputs) == 0 {
+		// add_custom_command(OUTPUT ...) requires at least one
+		// OUTPUT; defensive guard against malformed events.
+		return AddCustomCommandCall{}, false
+	}
+	return call, true
+}
+
+// ExtractAddCustomTargets returns one entry per user-written
+// add_custom_target call whose trace event fires inside
+// sourceRoot. cmake-internal scratch-CMakeLists are filtered out
+// by the source-tree gate.
+func ExtractAddCustomTargets(traceRaw []byte, sourceRoot string) []AddCustomTargetCall {
+	var out []AddCustomTargetCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyAddCustomTarget(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyAddCustomTarget parses one trace event into an
+// AddCustomTargetCall, or returns (_, false) when the event isn't
+// an in-source-tree add_custom_target. Requires a non-empty Name
+// (the first positional arg).
+func classifyAddCustomTarget(ev TraceEvent, sourceRoot string) (AddCustomTargetCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_custom_target") {
+		return AddCustomTargetCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return AddCustomTargetCall{}, false
+	}
+	if len(ev.Args) == 0 {
+		return AddCustomTargetCall{}, false
+	}
+
+	call := AddCustomTargetCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		Name:    ev.Args[0],
+		RawArgs: append([]string(nil), ev.Args...),
+	}
+
+	const (
+		secNone = iota
+		secCommand
+		secDepends
+		secByProducts
+		secSources
+	)
+	sec := secNone
+	var currentCmd []string
+	flushCommand := func() {
+		if len(currentCmd) > 0 {
+			call.Commands = append(call.Commands, currentCmd)
+		}
+		currentCmd = nil
+	}
+
+	// Skip arg[0] (the target name); walk keywords starting at
+	// arg[1].
+	for i := 1; i < len(ev.Args); i++ {
+		a := ev.Args[i]
+		switch strings.ToUpper(a) {
+		case "ALL":
+			flushCommand()
+			sec = secNone
+			call.All = true
+			continue
+		case "COMMAND":
+			flushCommand()
+			sec = secCommand
+			continue
+		case "DEPENDS":
+			flushCommand()
+			sec = secDepends
+			continue
+		case "BYPRODUCTS":
+			flushCommand()
+			sec = secByProducts
+			continue
+		case "SOURCES":
+			flushCommand()
+			sec = secSources
+			continue
+		case "WORKING_DIRECTORY":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.WorkingDirectory = ev.Args[i]
+			}
+			continue
+		case "COMMENT":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.Comment = ev.Args[i]
+			}
+			continue
+		case "JOB_POOL",
+			"JOB_SERVER_AWARE":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+			}
+			continue
+		case "VERBATIM",
+			"USES_TERMINAL",
+			"COMMAND_EXPAND_LISTS":
+			flushCommand()
+			sec = secNone
+			continue
+		}
+		switch sec {
+		case secCommand:
+			currentCmd = append(currentCmd, a)
+		case secDepends:
+			call.Depends = append(call.Depends, a)
+		case secByProducts:
+			call.ByProducts = append(call.ByProducts, a)
+		case secSources:
+			call.Sources = append(call.Sources, a)
+		default:
+			// Bare top-level value with no open section: cmake
+			// itself would reject; drop silently here.
+		}
+	}
+	flushCommand()
+
+	if call.Name == "" {
+		return AddCustomTargetCall{}, false
+	}
+	return call, true
+}
+
+// ExtractAddDependencies returns one entry per user-written
+// add_dependencies call whose trace event fires inside sourceRoot.
+// The cross-reference uses these to discover downstream consumers
+// of a custom-command's outputs.
+func ExtractAddDependencies(traceRaw []byte, sourceRoot string) []AddDependenciesCall {
+	var out []AddDependenciesCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyAddDependencies(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func classifyAddDependencies(ev TraceEvent, sourceRoot string) (AddDependenciesCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_dependencies") {
+		return AddDependenciesCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return AddDependenciesCall{}, false
+	}
+	if len(ev.Args) < 2 {
+		return AddDependenciesCall{}, false
+	}
+	return AddDependenciesCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		Target:  ev.Args[0],
+		Depends: append([]string(nil), ev.Args[1:]...),
+		RawArgs: append([]string(nil), ev.Args...),
+	}, true
 }

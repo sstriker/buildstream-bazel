@@ -272,6 +272,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
+	// decoded{AddCustomCommands,AddCustomTargets,AddDependencies}
+	// carry the source-level add_custom_command / add_custom_target /
+	// add_dependencies events the standalone-genrule cross-reference
+	// uses to (a) name the emitted genrule after the wrapping
+	// custom-target instead of the output-path hash and (b) pick
+	// `:__pkg__` visibility over the default `//visibility:private`
+	// when an in-trace consumer references the output. Empty on the
+	// no-trace path → cross-reference disabled → legacy naming +
+	// private visibility preserved.
+	var decodedAddCustomCommands []shadow.AddCustomCommandCall
+	var decodedAddCustomTargets []shadow.AddCustomTargetCall
+	var decodedAddDependencies []shadow.AddDependenciesCall
 	// headerOnlySources holds slash-form source paths declared with
 	// set_source_files_properties(... HEADER_FILE_ONLY TRUE). The
 	// per-target source walk reclassifies these from srcs to hdrs.
@@ -379,6 +391,9 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
+		decodedAddCustomCommands = decoded.AddCustomCommands
+		decodedAddCustomTargets = decoded.AddCustomTargets
+		decodedAddDependencies = decoded.AddDependencies
 		// Phase 1 task 3 extension — HEADER_FILE_ONLY routing.
 		// Build the per-source path lookup once so the per-target
 		// source walk can reclassify .h-only sources from srcs
@@ -675,8 +690,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// existing genrules keeps the recoverGenrule path's output
 	// intact even when this fires.
 	if opts.EmitStandaloneCustomCommands {
+		traceCtx := standaloneTraceContext{
+			CustomCommands:  decodedAddCustomCommands,
+			CustomTargets:   decodedAddCustomTargets,
+			AddDependencies: decodedAddDependencies,
+		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),

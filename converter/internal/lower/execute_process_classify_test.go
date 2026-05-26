@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -293,6 +294,93 @@ func TestClassify_DriverBasenameNormalisation(t *testing.T) {
 			got := Classify(call)
 			if got.Bucket != c.bucket {
 				t.Errorf("bucket: got %q want %q (reason: %q)", got.Bucket, c.bucket, got.Reason)
+			}
+		})
+	}
+}
+
+// TestClassify_RefuseReasonsAreSpecific asserts that the Phase
+// 4 fall-through cases (calls that don't match any positive
+// classifier arm) carry a per-shape refusal reason rather than
+// the legacy catch-all "no recognized lift pattern" string.
+// Operators reading failure.json should see the structural
+// feature blocking the lift, not a black-box refusal — that's
+// what tells them whether to rework the CMakeLists.txt or accept
+// the round-2 fallback for the call.
+func TestClassify_RefuseReasonsAreSpecific(t *testing.T) {
+	cases := []struct {
+		name            string
+		call            shadow.ExecuteProcessCall
+		reasonSubstring string
+	}{
+		{
+			// Opaque driver, no OutputFile, no captured channel —
+			// the most common fall-through. The reason names the
+			// driver and lists the channels that ARE missing so
+			// operators know which knob to add.
+			name: "opaque driver with no captured output",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"random_tool", "--mode=opaque"}},
+			},
+			reasonSubstring: "no captured output channel",
+		},
+		{
+			// OUTPUT_VARIABLE present but driver unknown — the
+			// reason names the variable so operators can trace
+			// it through the CMakeLists.txt downstream consumers.
+			name: "opaque driver writing OUTPUT_VARIABLE",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"random_tool", "--mode=opaque"}},
+				OutputVariable: "RESULT",
+			},
+			reasonSubstring: "writes OUTPUT_VARIABLE RESULT",
+		},
+		{
+			// RESULTS_VARIABLE (per-COMMAND status capture) is
+			// pipeline-shaped state with no Bazel analog; the
+			// refusal says so explicitly.
+			name: "opaque driver writing RESULTS_VARIABLE",
+			call: shadow.ExecuteProcessCall{
+				Commands:        [][]string{{"random_tool"}},
+				ResultsVariable: "STATUSES",
+			},
+			reasonSubstring: "RESULTS_VARIABLE STATUSES",
+		},
+		{
+			// ERROR_VARIABLE-only shape: configure-time diagnostic
+			// with no build-time analog.
+			name: "opaque driver writing ERROR_VARIABLE",
+			call: shadow.ExecuteProcessCall{
+				Commands:      [][]string{{"random_tool"}},
+				ErrorVariable: "STDERR",
+			},
+			reasonSubstring: "ERROR_VARIABLE STDERR",
+		},
+		{
+			// INPUT_FILE with no output side: configure-time
+			// consumer with no liftable signature.
+			name: "opaque driver reading INPUT_FILE",
+			call: shadow.ExecuteProcessCall{
+				Commands:  [][]string{{"random_tool"}},
+				InputFile: "input.txt",
+			},
+			reasonSubstring: "INPUT_FILE input.txt",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Classify(c.call)
+			if got.Bucket != BucketRefuse {
+				t.Errorf("bucket: got %q want %q", got.Bucket, BucketRefuse)
+			}
+			if got.Reason == "" {
+				t.Errorf("reason: empty (every refusal should carry one)")
+			}
+			if !strings.Contains(got.Reason, c.reasonSubstring) {
+				t.Errorf("reason %q does not contain %q", got.Reason, c.reasonSubstring)
+			}
+			if strings.Contains(got.Reason, "no recognized lift pattern") {
+				t.Errorf("Phase 4 retired the catch-all 'no recognized lift pattern' string; got %q", got.Reason)
 			}
 		})
 	}
