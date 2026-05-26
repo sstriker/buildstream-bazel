@@ -488,14 +488,15 @@ func extractGenexContextFromCmd(t *testing.T, cmd string) struct {
 // surround can anchor the value; tag set carries the (b) facet,
 // not (a)'s.
 //
-// Uses $<TARGET_OBJECTS:foo> — a typed-refused op that's NOT in
-// the targetFileFamilyPrefixes set the cross-package soundness
-// gate scans. Earlier this test used $<TARGET_FILE:foo>, but
-// that's now caught by the soundness gate (foo not in
-// codemodel + no imports manifest → refuse instead of fall
-// through to (b)). Switching ops preserves the original
-// "(a) refuses → (b) lifts" coverage without colliding with
-// the cross-package gate.
+// Uses $<TARGET_OBJECTS:foo> with `foo` IN the local codemodel
+// (passes the cross-package gate) but Objects EMPTY in the
+// captured TargetInfo (so the (a) evaluator's evalTargetObjects
+// returns UnsupportedError — typical pre-probe-genex offline
+// state). The lifter falls through to (b) capture. Earlier this
+// test used $<TARGET_FILE:foo> without genexTargets; the
+// cross-package soundness gate now catches that shape, so the
+// canonical "(a) refuses → (b) lifts" path is best demonstrated
+// with TARGET_OBJECTS on a known-but-objects-empty target.
 func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t *testing.T) {
 	template := "// objs: $<TARGET_OBJECTS:foo>\n"
 	rendered := []byte("// objs: /opt/build/foo.dir/a.c.o;/opt/build/foo.dir/b.c.o\n")
@@ -507,13 +508,21 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 		HasInput: true,
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
+	// `foo` is locally known but its Objects field is empty —
+	// matches the no-probe-genex offline state where the
+	// codemodel surfaces the target but the OBJECT_LIBRARY's
+	// .o list is unavailable. evalTargetObjects returns
+	// UnsupportedError on empty Objects.
+	genexTargets := map[string]genexeval.TargetInfo{
+		"foo": {Type: "OBJECT_LIBRARY"},
+	}
 	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, nil, nil, cc); err != nil {
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
 	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
-		t.Errorf("unsupported $<TARGET_FILE:> should NOT yield (a) tag; got %v", g.Tags)
+		t.Errorf("unsupported $<TARGET_OBJECTS:> should NOT yield (a) tag; got %v", g.Tags)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
 		t.Errorf("expected (b) fallback tag in %v", g.Tags)
@@ -936,6 +945,160 @@ func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
 	if !(aIdx < mIdx && mIdx < zIdx) {
 		t.Errorf("--target-file flags not sorted: alpha=%d mu=%d zeta=%d", aIdx, mIdx, zIdx)
 	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects
+// exercises the (a) lift's TARGET_OBJECTS path end-to-end at the
+// lifter: a template with $<TARGET_OBJECTS:objlib> + a captured
+// OBJECT_LIBRARY carrying Objects (the probe-genex hook's
+// recorded .o list) produces a genrule whose cmd passes
+// --target-objects=objlib="$(echo $(locations :objlib) | tr ' ' ':')"
+// for Bazel-time substitution. The marshaled Context payload
+// carries Objects (no wire-omit, unlike FileLocation) because the
+// authoritative value comes from the probe at convert time; the
+// Bazel-time --target-objects flag is what the cross-machine
+// executor actually consumes.
+func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
+	template := "// objs: $<TARGET_OBJECTS:objlib>\n"
+	objectsList := "/recording/build/CMakeFiles/objlib.dir/a.c.o;/recording/build/CMakeFiles/objlib.dir/b.c.o"
+	rendered := []byte("// objs: " + objectsList + "\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	// Objects is populated (matches what buildGenexTargets does
+	// when probes carry a TARGET_OBJECTS:objlib entry). The (a)
+	// evaluator consults this for the convert-time byte-equal
+	// check; the lifted cmd's --target-objects flag is what
+	// overrides at Bazel time.
+	genexTargets := map[string]genexeval.TargetInfo{
+		"objlib": {Type: "OBJECT_LIBRARY", Objects: objectsList},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("expected (a) tag in %v", g.Tags)
+	}
+	// cmd must carry the --target-objects flag for objlib with the
+	// $(locations :t) | tr ' ' ':' shell rewrite. The exact shape
+	// is load-bearing — operators reading the lifted BUILD file
+	// shouldn't need to dig to figure out which paths get expanded.
+	wantFlag := `--target-objects=objlib="$$(echo $(locations :objlib) | tr ' ' ':')"`
+	if !strings.Contains(g.GenruleCmd, wantFlag) {
+		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Sorted
+// asserts the --target-objects flags emit in sorted order for
+// stable lifted-cmd bytes across runs (vs. Go's randomized map
+// iteration).
+func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Sorted(t *testing.T) {
+	template := "$<TARGET_OBJECTS:zeta> $<TARGET_OBJECTS:alpha> $<TARGET_OBJECTS:mu>\n"
+	rendered := []byte("/z.o /a.o /m.o\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"alpha": {Type: "OBJECT_LIBRARY", Objects: "/a.o"},
+		"mu":    {Type: "OBJECT_LIBRARY", Objects: "/m.o"},
+		"zeta":  {Type: "OBJECT_LIBRARY", Objects: "/z.o"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	cmd := cc.Genrules[0].GenruleCmd
+	// The flags must appear in alphabetical order: alpha, mu, zeta.
+	aIdx := strings.Index(cmd, "--target-objects=alpha")
+	mIdx := strings.Index(cmd, "--target-objects=mu")
+	zIdx := strings.Index(cmd, "--target-objects=zeta")
+	if aIdx < 0 || mIdx < 0 || zIdx < 0 {
+		t.Fatalf("missing --target-objects flags in cmd %q", cmd)
+	}
+	if !(aIdx < mIdx && mIdx < zIdx) {
+		t.Errorf("--target-objects flags not sorted: alpha=%d mu=%d zeta=%d", aIdx, mIdx, zIdx)
+	}
+}
+
+// TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped
+// asserts that one target referenced via N TARGET_OBJECTS
+// occurrences collapses to ONE --target-objects flag (vs N flags).
+// The Bazel-time expansion is the same path list regardless of
+// how many references the template carries, so emitting one flag
+// per occurrence would waste bytes and break the "stable cmd"
+// contract on edits that change reference count without changing
+// the target set.
+func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped(t *testing.T) {
+	template := "// a: $<TARGET_OBJECTS:objlib>\n// b: $<TARGET_OBJECTS:objlib>\n"
+	rendered := []byte("// a: /o.o\n// b: /o.o\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"objlib": {Type: "OBJECT_LIBRARY", Objects: "/o.o"},
+	}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	count := strings.Count(cc.Genrules[0].GenruleCmd, "--target-objects=objlib=")
+	if count != 1 {
+		t.Errorf("expected exactly 1 --target-objects=objlib= flag (N occurrences collapse to one wire), got %d in %q", count, cc.Genrules[0].GenruleCmd)
+	}
+}
+
+// TestExtractTargetObjectsRefs covers the prefix scanner: dedupe,
+// sorted order, multiple targets, no false-positive on
+// $<TARGET_FILE:foo> (the lifter's two-axis extraction keeps the
+// flag emissions distinct).
+func TestExtractTargetObjectsRefs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"none", "no genex here", nil},
+		{"single", "$<TARGET_OBJECTS:foo>", []string{"foo"}},
+		{"dedupes", "$<TARGET_OBJECTS:foo>+$<TARGET_OBJECTS:foo>", []string{"foo"}},
+		{"sorted", "$<TARGET_OBJECTS:zeta> $<TARGET_OBJECTS:alpha>", []string{"alpha", "zeta"}},
+		{"no false positive on TARGET_FILE", "$<TARGET_FILE:foo>+$<TARGET_OBJECTS:bar>", []string{"bar"}},
+		{"empty name skipped", "$<TARGET_OBJECTS:>", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := extractTargetObjectsRefs([]byte(c.in))
+			if !sliceEq(got, c.want) {
+				t.Errorf("extractTargetObjectsRefs(%q) = %v; want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func sliceEq(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // TestRecoverFileGenerate_LegacyWhenLiftDisabled covers the

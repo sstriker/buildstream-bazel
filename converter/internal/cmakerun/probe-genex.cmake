@@ -100,20 +100,23 @@ function(_cmtb_probe_genex)
             CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},TYPE>")
 
         # $<TARGET_FILE:t> and its FILE_DIR / FILE_NAME variants
-        # only resolve for targets that produce an on-disk artifact
-        # (EXECUTABLE / SHARED_LIBRARY / STATIC_LIBRARY /
-        # MODULE_LIBRARY / OBJECT_LIBRARY). INTERFACE_LIBRARY has
-        # no artifact; UTILITY (add_custom_target) and ALIAS also
-        # don't produce one — emitting TARGET_FILE for them fires
-        # a generation-phase fatal "Target … is not an executable
-        # or library" that aborts conversion. Gate on the affirmative
-        # set instead of an exclusion list so unknown future types
-        # default to safe.
+        # only resolve for targets that produce a single on-disk
+        # artifact (EXECUTABLE / SHARED_LIBRARY / STATIC_LIBRARY /
+        # MODULE_LIBRARY). INTERFACE_LIBRARY has no artifact;
+        # UTILITY (add_custom_target) and ALIAS also don't produce
+        # one. OBJECT_LIBRARY is also rejected: its "artifact" is
+        # the list of .o files cmake emits per source, not a
+        # linker-produced single file, so cmake fatal-errors with
+        # "Target … is not an executable or library" when
+        # $<TARGET_FILE:t> is asked for an OBJECT_LIBRARY (the .o
+        # list lives under $<TARGET_OBJECTS:t> instead — see the
+        # OBJECT_LIBRARY-specific branch below). Gate on the
+        # affirmative set instead of an exclusion list so unknown
+        # future types default to safe.
         if(_CMTB_TYPE STREQUAL "EXECUTABLE" OR
            _CMTB_TYPE STREQUAL "SHARED_LIBRARY" OR
            _CMTB_TYPE STREQUAL "STATIC_LIBRARY" OR
-           _CMTB_TYPE STREQUAL "MODULE_LIBRARY" OR
-           _CMTB_TYPE STREQUAL "OBJECT_LIBRARY")
+           _CMTB_TYPE STREQUAL "MODULE_LIBRARY")
             file(GENERATE
                 OUTPUT "${_CMTB_OUT_DIR}/file.$<CONFIG>.txt"
                 CONTENT "$<TARGET_FILE:${_CMTB_TGT}>")

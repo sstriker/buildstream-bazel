@@ -31,7 +31,7 @@ func TestRun_FixtureMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "config.h")
-	if err := run(valuesPath, "", "", nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -60,7 +60,7 @@ func TestRun_AtOnlyFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", "", nil, tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
+	if err := run(valuesPath, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -84,7 +84,7 @@ func TestRun_NullValuesIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", "", nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, _ := os.ReadFile(outPath)
@@ -102,6 +102,7 @@ func TestRun_MissingValuesFile(t *testing.T) {
 	err := run(filepath.Join(tmp, "no-such-values.json"),
 		"",
 		"",
+		nil,
 		nil,
 		filepath.Join(tmp, "in.txt"),
 		false,
@@ -126,7 +127,7 @@ func TestRun_ContentBase64Mode(t *testing.T) {
 	tmpl := "#define BANNER \"@BANNER@\"\n"
 	blob := base64.StdEncoding.EncodeToString([]byte(tmpl))
 	outPath := filepath.Join(tmp, "out.h")
-	if err := run(valuesPath, "", "", nil, "", true, blob, outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", "", nil, nil, "", true, blob, outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -155,7 +156,7 @@ func TestRun_ContentBase64Empty(t *testing.T) {
 	}
 	outPath := filepath.Join(tmp, "out.txt")
 	// Empty body: base64 of "" is the empty string.
-	if err := run(valuesPath, "", "", nil, "", true, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, "", "", nil, nil, "", true, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -182,7 +183,7 @@ func TestRun_RejectsInvariantViolations(t *testing.T) {
 	outPath := filepath.Join(tmp, "out.txt")
 
 	// Neither set.
-	if err := run(valuesPath, "", "", nil, "", false, "", outPath, configurefile.Options{}); err == nil {
+	if err := run(valuesPath, "", "", nil, nil, "", false, "", outPath, configurefile.Options{}); err == nil {
 		t.Errorf("neither inPath nor hasContent: expected error")
 	}
 	// Both set.
@@ -190,7 +191,7 @@ func TestRun_RejectsInvariantViolations(t *testing.T) {
 	if err := os.WriteFile(tmplPath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(valuesPath, "", "", nil, tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
+	if err := run(valuesPath, "", "", nil, nil, tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
 		t.Errorf("both inPath and hasContent: expected error")
 	}
 }
@@ -204,7 +205,7 @@ func TestRun_ContentBase64Malformed(t *testing.T) {
 	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(valuesPath, "", "", nil, "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
+	err := run(valuesPath, "", "", nil, nil, "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
 	if err == nil {
 		t.Fatal("expected error on malformed --content-base64")
 	}
@@ -235,7 +236,7 @@ func TestRun_GenexValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, genexValuesPath, "", nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, genexValuesPath, "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -269,7 +270,7 @@ func TestRun_GenexValues_MissingKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	err := run(valuesPath, genexValuesPath, "", nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
+	err := run(valuesPath, genexValuesPath, "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
 	if err == nil {
 		t.Fatal("expected error when genex values dict is missing a literal the template carries")
 	}
@@ -299,7 +300,7 @@ func TestRun_GenexContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", genexContextPath, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -335,7 +336,7 @@ func TestRun_GenexContext_TargetProperty(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", genexContextPath, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -381,7 +382,7 @@ func TestRun_GenexContext_TargetFile(t *testing.T) {
 		"foo": "/build/libfoo.a",
 		"bar": "bazel-bin/pkg/libbar.so",
 	}
-	if err := run(valuesPath, "", genexContextPath, targetFiles, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, "", genexContextPath, targetFiles, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -416,8 +417,141 @@ func TestRun_GenexContext_TargetFile_MissingFlagErrors(t *testing.T) {
 	}
 	outPath := filepath.Join(tmp, "out.txt")
 	// Pass nil targetFiles → no override happens → eval refuses.
-	if err := run(valuesPath, "", genexContextPath, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
+	if err := run(valuesPath, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
 		t.Fatal("expected error when --target-file flag missing")
+	}
+}
+
+// TestRun_GenexContext_TargetObjects covers the (a) lift's
+// Bazel-time TARGET_OBJECTS path: --target-objects=<name>=<paths>
+// flags populate Context.Targets[name].Objects, and
+// `$<TARGET_OBJECTS:t>` resolves to those bytes joined by `;`
+// (cmake's native list shape). The wire delimiter is `:` (colon)
+// because cmake's native `;` is both list-separator AND statement-
+// terminator — picking a different shell-safe character keeps the
+// `$(locations :t) | tr ' ' ':'` lifter pipeline clean.
+//
+// Test fixture: three .o paths joined by `:` get rewritten to
+// `;`-joined when the evaluator emits them.
+func TestRun_GenexContext_TargetObjects(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "tmpl.txt")
+	if err := os.WriteFile(tmplPath,
+		[]byte("// objs: $<TARGET_OBJECTS:objlib>\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Context carries the target with Type but no Objects (the
+	// lifter's marshal-shape — Objects can be populated from the
+	// recorded probe but typically the Bazel-time --target-objects
+	// is what's load-bearing).
+	genexContextPath := filepath.Join(tmp, "ctx.json")
+	if err := os.WriteFile(genexContextPath,
+		[]byte(`{"targets":{"objlib":{"type":"OBJECT_LIBRARY"}}}`),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+	// Wire shape: colon-delimited paths.
+	targetObjects := map[string]string{
+		"objlib": "/build/CMakeFiles/objlib.dir/a.c.o:/build/CMakeFiles/objlib.dir/b.c.o:/build/CMakeFiles/objlib.dir/c.c.o",
+	}
+	if err := run(valuesPath, "", genexContextPath, nil, targetObjects, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	body, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Output: cmake's native semicolon-joined list shape.
+	want := "// objs: /build/CMakeFiles/objlib.dir/a.c.o;/build/CMakeFiles/objlib.dir/b.c.o;/build/CMakeFiles/objlib.dir/c.c.o\n"
+	if string(body) != want {
+		t.Errorf("rendered mismatch\nwant: %q\ngot:  %q", want, body)
+	}
+}
+
+// TestRun_GenexContext_TargetObjects_MissingFlagErrors: a template
+// with $<TARGET_OBJECTS:foo> but no --target-objects=foo=... flag
+// AND no Objects in the loaded Context surfaces the evaluator's
+// UnsupportedError via the run-level "evaluate genex" wrapping.
+// The lifter's contract is to always pass --target-objects for
+// each TARGET_OBJECTS reference; this test pins the failure mode
+// when that contract is violated.
+func TestRun_GenexContext_TargetObjects_MissingFlagErrors(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "tmpl.txt")
+	if err := os.WriteFile(tmplPath, []byte("$<TARGET_OBJECTS:foo>\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	genexContextPath := filepath.Join(tmp, "ctx.json")
+	if err := os.WriteFile(genexContextPath,
+		[]byte(`{"targets":{"foo":{"type":"OBJECT_LIBRARY"}}}`),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	outPath := filepath.Join(tmp, "out.txt")
+	// Pass nil targetObjects → no override happens → eval refuses
+	// because Objects field is empty.
+	if err := run(valuesPath, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
+		t.Fatal("expected error when --target-objects flag missing")
+	}
+}
+
+// TestTargetObjectsFlag_Parsing covers the flag's Set() rejections:
+// missing `=`, empty name, empty paths. The lifter never emits any
+// of these shapes, but the rejection messages surface lifter bugs
+// at the CLI rather than silently passing through.
+func TestTargetObjectsFlag_Parsing(t *testing.T) {
+	cases := []struct {
+		in      string
+		wantErr bool
+	}{
+		{"objlib=/a:/b:/c", false},
+		{"objlib=/single", false}, // single path (no colon) is valid.
+		{"missingEq", true},
+		{"=missingName", true},
+		{"emptyPaths=", true},
+	}
+	for _, c := range cases {
+		f := &targetObjectsFlag{}
+		err := f.Set(c.in)
+		if c.wantErr && err == nil {
+			t.Errorf("Set(%q): expected error", c.in)
+		}
+		if !c.wantErr && err != nil {
+			t.Errorf("Set(%q): unexpected error %v", c.in, err)
+		}
+	}
+}
+
+// TestTargetObjectsFlag_Accumulates covers the repeated-flag
+// semantics: multiple --target-objects entries land in the map,
+// duplicate names overwrite (last-wins, matching targetFileFlag's
+// shape). The CLI's flag.Var ABI calls Set() once per occurrence.
+func TestTargetObjectsFlag_Accumulates(t *testing.T) {
+	f := &targetObjectsFlag{}
+	if err := f.Set("a=/x:/y"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set("b=/p"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set("a=/z"); err != nil { // overwrites
+		t.Fatal(err)
+	}
+	if got := f.byName["a"]; got != "/z" {
+		t.Errorf("byName[a] = %q; want /z (last-wins)", got)
+	}
+	if got := f.byName["b"]; got != "/p" {
+		t.Errorf("byName[b] = %q; want /p", got)
 	}
 }
 
@@ -441,7 +575,7 @@ func TestRun_GenexContext_UnsupportedOpErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	err := run(valuesPath, "", genexContextPath, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
+	err := run(valuesPath, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
 	if err == nil {
 		t.Fatal("expected error on $<TARGET_FILE:...>")
 	}

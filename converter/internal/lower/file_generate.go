@@ -315,12 +315,12 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	if hasGenex(templateBody) {
 		// Payload pruning: only ship Targets in the marshaled
 		// Context when the template actually references a per-
-		// target op (TARGET_PROPERTY or TARGET_FILE). Avoids
-		// dumping every per-target dict into the lifted cmd
-		// for templates that only reference CONFIG /
-		// PLATFORM_ID / etc. — the (a) lift's payload would
-		// otherwise grow linearly with target count for no
-		// benefit.
+		// target op (TARGET_PROPERTY / TARGET_FILE family /
+		// TARGET_OBJECTS). Avoids dumping every per-target dict
+		// into the lifted cmd for templates that only reference
+		// CONFIG / PLATFORM_ID / etc. — the (a) lift's payload
+		// would otherwise grow linearly with target count for
+		// no benefit.
 		ctxTargets := genexTargets
 		needsTargets := bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:"))
 		if !needsTargets {
@@ -330,6 +330,9 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					break
 				}
 			}
+		}
+		if !needsTargets && bytes.Contains(templateBody, []byte(targetObjectsOpPrefix)) {
+			needsTargets = true
 		}
 		if !needsTargets {
 			ctxTargets = nil
@@ -343,7 +346,15 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// so the lifted cmd stays byte-stable across recording
 		// machines; --target-file flags carry the Bazel-time
 		// values.
+		//
+		// TARGET_OBJECTS references are sibling-extracted via
+		// extractTargetObjectsRefs — same convert-time machinery
+		// (the byte-equal check consults ctx.Targets[t].Objects
+		// populated from the probe-genex hook) but with a separate
+		// Bazel-time wire (`--target-objects=` flags using
+		// `$(locations :t)` plural-substitution).
 		targetFileRefs := extractTargetFileRefs(templateBody)
+		targetObjectsRefs := extractTargetObjectsRefs(templateBody)
 		// PR 2: resolve each TARGET_FILE reference to a Bazel
 		// label, branching per-target on resolution:
 		//
@@ -371,7 +382,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		ctx := buildGenexContext(cmakeVars, ctxTargets)
 		if nodes, err := genexeval.Parse(templateBody); err == nil {
 			if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
-				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, targetFileLabels, opts, isContentForm)
+				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, targetFileLabels, targetObjectsRefs, opts, isContentForm)
 				if cmdErr == nil {
 					target := ir.Target{
 						Name:         name,
@@ -1253,6 +1264,21 @@ var targetFileOpPrefixes = []string{
 	"$<TARGET_SONAME_FILE:",
 }
 
+// targetObjectsOpPrefix is the `$<...:` prefix that triggers a
+// `--target-objects=<name>=<paths>` flag emission. Distinct from
+// the TARGET_FILE family above because (i) the wire shape is
+// list-valued (cmake's `$<TARGET_OBJECTS:t>` resolves to a
+// semicolon-separated list of .o paths for OBJECT_LIBRARY targets)
+// and (ii) Bazel's `$(locations :t)` (plural) is what enumerates
+// the .o paths, vs. `$(location :t)` (singular) for TARGET_FILE.
+//
+// Same cross-package soundness gate concerns apply: a TARGET_OBJECTS
+// reference against a target absent from both the local codemodel
+// AND the imports manifest can't lift safely. The
+// unresolvedCrossPackageTargetFiles scan below includes this prefix
+// so the refusal-stub treatment matches the TARGET_FILE family.
+var targetObjectsOpPrefix = "$<TARGET_OBJECTS:"
+
 // unresolvedCrossPackageTargetFiles is the soundness gate for
 // cross-package `$<TARGET_FILE*:t>` references. It scans both
 // the on-disk INPUT template (if HasInput) and the inline
@@ -1291,7 +1317,13 @@ func unresolvedCrossPackageTargetFiles(call shadow.FileGenerateCall, hostSrcDir,
 
 	seen := map[string]bool{}
 	unresolved := map[string]bool{}
-	for _, prefix := range targetFileOpPrefixes {
+	// Scan the TARGET_FILE family AND TARGET_OBJECTS — same soundness
+	// concern: an unresolved cross-package reference would embed the
+	// recording-machine absolute path via the (b) fallback, which
+	// doesn't exist on Bazel's executor.
+	allPrefixes := append([]string{}, targetFileOpPrefixes...)
+	allPrefixes = append(allPrefixes, targetObjectsOpPrefix)
+	for _, prefix := range allPrefixes {
 		rest := body
 		for {
 			i := bytes.Index(rest, []byte(prefix))
@@ -1437,6 +1469,45 @@ func resolveTargetFileLabels(names []string, genexTargets map[string]genexeval.T
 	return labels, crossPackage
 }
 
+// extractTargetObjectsRefs walks template body for `$<TARGET_OBJECTS:name>`
+// references and returns the union of unique target names in
+// sorted order. Sibling to extractTargetFileRefs but kept distinct
+// because the lifted flag shape differs: --target-objects emits
+// `$(locations :t)` (plural, list-valued) with a `tr ' ' ':'` shell
+// rewrite, while --target-file emits the singular `$(location :t)`.
+// One target referenced via N TARGET_OBJECTS occurrences collapses
+// to one flag — the Bazel-time expansion is the same path list
+// regardless of how many references the template carries.
+func extractTargetObjectsRefs(body []byte) []string {
+	seen := map[string]bool{}
+	rest := body
+	for {
+		i := bytes.Index(rest, []byte(targetObjectsOpPrefix))
+		if i < 0 {
+			break
+		}
+		argStart := i + len(targetObjectsOpPrefix)
+		end := bytes.IndexByte(rest[argStart:], '>')
+		if end < 0 {
+			break
+		}
+		name := string(rest[argStart : argStart+end])
+		if name != "" {
+			seen[name] = true
+		}
+		rest = rest[argStart+end+1:]
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // buildGenexContext extracts the configure-time fields the (a)
 // evaluator consults from the cmake variable dump. The Context
 // is a thin projection over cmakeVars — the evaluator reads
@@ -1512,9 +1583,21 @@ func buildGenexContext(cmakeVars map[string]string, targets map[string]genexeval
 // Flags emit in sorted target-name order for byte-stable cmd
 // output across runs.
 //
+// targetObjectsRefs is the sorted set of target names the
+// template references via `$<TARGET_OBJECTS:name>`. The wire
+// shape is list-valued: cmake's TARGET_OBJECTS resolves to a
+// semicolon-separated list of .o paths (one per source in an
+// OBJECT_LIBRARY). The lifter emits each as
+// `--target-objects=name="$(echo $(locations :name) | tr ' ' ':')"`
+// — Bazel expands `$(locations :name)` to a space-separated list
+// at action time, then the inline `tr` rewrite produces the
+// colon-delimited wire form cmake-configure-file expects. The
+// colon delimiter (not cmake's native semicolon) sidesteps shell
+// quoting hazards around `;`.
+//
 // Like fileGenerateLiftedCmd, --values stays empty for
 // file(GENERATE) (no @VAR@/${VAR}/#cmakedefine surface).
-func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, targetFileLabels map[string]string, opts configurefile.Options, isContentForm bool) (string, error) {
+func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, targetFileLabels map[string]string, targetObjectsRefs []string, opts configurefile.Options, isContentForm bool) (string, error) {
 	emptyValues, err := json.Marshal(map[string]string{})
 	if err != nil {
 		return "", fmt.Errorf("marshal values: %w", err)
@@ -1550,6 +1633,19 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 	for _, n := range names {
 		fmt.Fprintf(&targetFileFlags, `--target-file=%s="$(location %s)" `, n, targetFileLabels[n])
 	}
+	// --target-objects flags for each $<TARGET_OBJECTS:t> reference.
+	// Bazel's `$(locations :t)` (plural) expands to a space-separated
+	// path list; the inline `tr ' ' ':'` rewrite converts to the
+	// colon-delimited wire shape cmake-configure-file expects (cmake's
+	// native `;` is both list separator AND statement terminator,
+	// so a different shell-safe character keeps round-trip clean).
+	// The `$$(...)` double-dollar escapes the shell command-
+	// substitution from Bazel's own `$(...)` variable substitution.
+	// Sorted iteration so the cmd is stable across runs.
+	var targetObjectsFlags strings.Builder
+	for _, name := range targetObjectsRefs {
+		fmt.Fprintf(&targetObjectsFlags, `--target-objects=%s="$$(echo $(locations :%s) | tr ' ' ':')" `, name, name)
+	}
 	ctxCleanup := ` [ -n "$${GENEX_CONTEXT:-}" ] && rm -f "$$GENEX_CONTEXT";`
 
 	if isContentForm {
@@ -1559,9 +1655,9 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 				`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 				`echo %s | base64 -d > "$$VALUES" && `+
 				`%s`+
-				`$(location //tools:cmake-configure-file) %s%s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
+				`$(location //tools:cmake-configure-file) %s%s%s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
 				`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-			valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), contentEnc, ctxCleanup,
+			valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), targetObjectsFlags.String(), contentEnc, ctxCleanup,
 		), nil
 	}
 
@@ -1570,9 +1666,9 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
 			`echo %s | base64 -d > "$$VALUES" && `+
 			`%s`+
-			`$(location //tools:cmake-configure-file) %s%s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
+			`$(location //tools:cmake-configure-file) %s%s%s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
 			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-		valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), inRel, ctxCleanup,
+		valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), targetObjectsFlags.String(), inRel, ctxCleanup,
 	), nil
 }
 
