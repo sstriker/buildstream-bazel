@@ -8,6 +8,28 @@
 #
 # Usage: tools/fixtures/record-fileapi.sh [project-name ...]
 #        With no args, regenerates every sample project.
+#
+# Per-fixture recorder options: a sample project may carry a
+# `.record-options.json` file in its root to toggle recorder
+# behavior knobs. Schema (all keys optional, conservative defaults):
+#
+#   {
+#     "dump_vars": false   // when true, inject dump-vars.cmake via
+#                          // -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES so
+#                          // cmake-to-bazel.vars.dump lands in the
+#                          // reply dir. Fixtures exercising the
+#                          // find_package variable-form attribution
+#                          // (boost ${ZLIB_LIBRARIES} idiom) need
+#                          // this so findPackageAttrib has the
+#                          // <PKG>_LIBRARIES values during offline
+#                          // replay.
+#   }
+#
+# Absent file or absent key => default (false). Add new knobs as
+# their own keys when subsequent fixtures need them (e.g. probe-
+# genex toggling, multi-config, extra cache vars). Source-layout
+# discovery (consumer/+producer/, build/cmake/) stays path-based;
+# this JSON is for recorder *behavior* knobs only.
 
 set -euo pipefail
 
@@ -72,15 +94,26 @@ record_one() {
         cmake_src="$src/build/cmake"
     fi
 
-    # Opt-in dump-vars hook: when a sample project declares
-    # `.record-with-dump-vars` in its root, inject dump-vars.cmake
-    # via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES so the resulting
+    # Per-fixture recorder options live in `.record-options.json`
+    # at the sample project root. See the header comment at the top
+    # of this script for the schema. Absent file => all defaults.
+    local options_file="$src/.record-options.json"
+    local dump_vars="false"
+    if [[ -f "$options_file" ]]; then
+        # `// false` makes jq emit "false" when the key is missing
+        # or explicitly null, matching the documented default.
+        dump_vars="$(jq -r '.dump_vars // false' "$options_file")"
+    fi
+
+    # Opt-in dump-vars hook: when `.record-options.json` sets
+    # `dump_vars: true`, inject dump-vars.cmake via
+    # -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES so the resulting
     # cmake-to-bazel.vars.dump lands in the reply dir. Fixtures
     # exercising the find_package variable-form attribution
-    # (boost ${ZLIB_LIBRARIES} idiom) need the dump so the lower's
+    # (boost ${ZLIB_LIBRARIES} idiom) need the dump so lower's
     # findPackageAttrib has the <PKG>_LIBRARIES values available
     # during offline replay.
-    if [[ -f "$src/.record-with-dump-vars" ]]; then
+    if [[ "$dump_vars" == "true" ]]; then
         local dumpvars_cmake="$REPO_ROOT/converter/internal/cmakerun/dump-vars.cmake"
         if [[ ! -f "$dumpvars_cmake" ]]; then
             echo "missing dump-vars hook at $dumpvars_cmake" >&2
