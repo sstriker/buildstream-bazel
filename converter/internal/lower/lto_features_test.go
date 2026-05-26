@@ -327,3 +327,27 @@ func TestApplyProbeGenexProperties_VersionTags(t *testing.T) {
 		t.Errorf("Tags: %v should include soversion", pkg.Targets[0].Tags)
 	}
 }
+
+func TestApplyProbeGenexProperties_QtToggles(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "qtwidget", Kind: ir.KindCCLibrary},
+	}}
+	probes := []cmakerunGenexProbeStub{{
+		Name: "qtwidget",
+		Properties: map[string]string{
+			"AUTOMOC": "TRUE",
+			"AUTOUIC": "TRUE",
+			"AUTORCC": "TRUE",
+		},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	for _, want := range []string{
+		"cmake-codegen-qt-automoc",
+		"cmake-codegen-qt-autouic",
+		"cmake-codegen-qt-autorcc",
+	} {
+		if !stringSliceContains(pkg.Targets[0].Tags, want) {
+			t.Errorf("Tags %v missing %q", pkg.Targets[0].Tags, want)
+		}
+	}
+}

@@ -118,7 +118,7 @@ function(_cmtb_probe_genex)
         # GenexProbe.Properties so consumers can route each into
         # the matching Bazel attribute (linkopts for rpath,
         # features = ["pic"] for PIC, etc.).
-        foreach(_CMTB_PROP BUILD_RPATH INSTALL_RPATH POSITION_INDEPENDENT_CODE CXX_VISIBILITY_PRESET C_VISIBILITY_PRESET VISIBILITY_INLINES_HIDDEN ENABLE_EXPORTS SOVERSION VERSION)
+        foreach(_CMTB_PROP BUILD_RPATH INSTALL_RPATH POSITION_INDEPENDENT_CODE CXX_VISIBILITY_PRESET C_VISIBILITY_PRESET VISIBILITY_INLINES_HIDDEN ENABLE_EXPORTS SOVERSION VERSION AUTOMOC AUTOUIC AUTORCC)
             file(GENERATE
                 OUTPUT "${_CMTB_OUT_DIR}/property_${_CMTB_PROP}.txt"
                 CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},${_CMTB_PROP}>")

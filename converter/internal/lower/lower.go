@@ -1983,6 +1983,23 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 				tgt.Tags = append(tgt.Tags, tag)
 			}
 		}
+		// Qt's auto-source-generation toggles (AUTOMOC / AUTOUIC /
+		// AUTORCC). cmake's generator runs moc / uic / rcc as
+		// part of `cmake --build`; outside cmake (i.e. under
+		// Bazel) those don't fire, so any target with these
+		// enabled MISSES the Qt-generated sources at compile
+		// time. Surface as tags so operators see the gap and
+		// route via a kind:bazel override that wraps moc / uic /
+		// rcc as host-tool genrules. Bazel cc_library has no
+		// native AUTOMOC equivalent.
+		for _, qt := range []string{"AUTOMOC", "AUTOUIC", "AUTORCC"} {
+			if cmakeTruthy(p.Properties[qt]) {
+				tag := "cmake-codegen-qt-" + strings.ToLower(qt)
+				if !stringSliceContains(tgt.Tags, tag) {
+					tgt.Tags = append(tgt.Tags, tag)
+				}
+			}
+		}
 	}
 }
 
