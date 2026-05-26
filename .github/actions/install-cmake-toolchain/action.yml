@@ -3,7 +3,7 @@ description: >
   Installs the host-toolchain (cmake + ninja) needed by every CI
   job that runs a kind:cmake render gate or the converter's
   -tags=e2e Go tests. Three sites use this same recipe (the e2e,
-  bazel-e2e, and e2e-latest-cmake jobs); they share this composite
+  bazel-e2e, and e2e-cmake-matrix jobs); they share this composite
   action so a change to the install sequence — e.g. bumping the
   upstream cmake URL fetch — only has to land once.
 
@@ -17,9 +17,10 @@ inputs:
       Optional cmake version override. When empty, install-pinned-cmake.sh
       uses the Makefile's CMAKE_VERSION pin (the production target,
       matching what deploy/buildbarn/runner/Dockerfile ships on the
-      RBE executor). Set this for the latest-cmake compatibility
-      tripwire job, which pins cmake 4.x deliberately to surface
-      File API / build.ninja drift before it hits production.
+      RBE executor). Set this for the cmake-matrix compatibility
+      shakeout job, which iterates over multiple cmake releases
+      (3.22 / 3.28 / 4.0 / 4.3) to surface File API / build.ninja
+      drift before it hits production. See docs/cmake-version-matrix.md.
     required: false
     default: ""
 

@@ -260,30 +260,59 @@ jobs:
       - uses: ./.github/actions/post-failure-tail
         if: failure()
 
-  e2e-latest-cmake:
-    # Same surface as the `e2e` job, but runs against a recent
-    # major-release cmake instead of the pinned 3.28.3. Tripwire
-    # for File API schema bumps, build.ninja shape drift, and
-    # policy-removal regressions in newer cmakes; non-blocking
-    # (continue-on-error) so a single upstream cmake change can't
-    # gate every PR. Reviewers should still investigate failures
-    # — they signal real compatibility gaps the pinned-cmake job
-    # can't see.
+  e2e-cmake-matrix:
+    # Multi-version cmake compatibility shakeout. Same surface as the
+    # `e2e` job, but runs in parallel against four cmake versions
+    # chosen to span the operator floor → cutting-edge spread:
     #
-    # CMAKE_LATEST_VERSION pins the cmake 4.x release this job
-    # downloads. Bump as new majors ship; the older job already
-    # covers the pinned 3.x line. Picking a specific release
-    # (rather than relying on the runner's stock cmake, which
-    # tracks the apt 3.x line) is what gates the
+    #   3.22.6 — Ubuntu 22.04 LTS default; the operator floor we
+    #            expect downstream BuildStream projects to still
+    #            ship against.
+    #   3.28.6 — Ubuntu 24.04 LTS default; LLVM 23's floor; the
+    #            modern stable reference.
+    #   4.0.7  — the major-bump that dropped pre-3.5 compat; most
+    #            likely to surface drift in fixtures + File API +
+    #            build.ninja consumers.
+    #   4.3.3  — latest stable cmake release; catches new-release
+    #            bugs (CMP policy removals, build.ninja shape
+    #            changes, fileapi schema additions) before they
+    #            propagate down to distro defaults.
+    #
+    # Tripwire for File API schema bumps, build.ninja shape drift,
+    # and policy-removal regressions in newer cmakes; non-blocking
+    # — `continue-on-error: true` at the job level applies to each
+    # matrix instantiation, and `strategy.fail-fast: false` keeps
+    # one entry's failure from cancelling the others. A single
+    # upstream cmake change can't gate every PR.  Reviewers should
+    # still investigate failures — they signal real compatibility
+    # gaps the pinned-cmake job can't see. Once the matrix has
+    # been green for a release cycle it promotes to a blocking
+    # gate; see docs/cmake-version-matrix.md for promotion
+    # criteria + per-version known notes.
+    #
+    # Picking specific releases (rather than relying on the runner's
+    # stock cmake, which tracks the apt 3.x line) is what gates the
     # TestConfigure_CMP0026_HintSurfaces e2e — CMP0026 only
     # fatal-errors on cmake >= 4.x; under cmake 3.x the test
     # skips.
-    name: End-to-end (latest cmake — non-blocking)
+    name: End-to-end (cmake ${{ matrix.cmake_version }} — non-blocking)
     runs-on: ubuntu-24.04
     needs: unit
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        cmake_version: ["3.22.6", "3.28.6", "4.0.7", "4.3.3"]
     env:
-      CMAKE_LATEST_VERSION: 4.0.3
+      # CMAKE_POLICY_VERSION_MINIMUM gives projects with old
+      # `cmake_minimum_required(VERSION X)` floors (X < 3.5) a
+      # one-version policy bump so cmake 4.x configures them
+      # instead of fatal-erroring. All in-tree fixtures already
+      # declare ≥ 3.20, but try_compile sub-projects cmake
+      # generates internally + future fixtures might not, so set
+      # it defensively. Empty on 3.x entries (the variable is
+      # only consulted by cmake 3.24+ and only acts on 4.x).
+      CMAKE_POLICY_VERSION_MINIMUM: ${{ startsWith(matrix.cmake_version, '4.') && '3.5' || '' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -294,19 +323,19 @@ jobs:
 
       - uses: ./.github/actions/install-cmake-toolchain
         with:
-          cmake_version: ${{ env.CMAKE_LATEST_VERSION }}
+          cmake_version: ${{ matrix.cmake_version }}
 
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
-      - name: hello-world e2e (against latest cmake)
+      - name: hello-world e2e (against cmake ${{ matrix.cmake_version }})
         # The Go-level e2e test calls cmakerun.Configure directly and
         # doesn't go through main.go's AssertVersion gate, so it
         # exercises the loader against whatever cmake the runner has
         # without needing --allow-cmake-version-mismatch.
         run: make e2e-hello-world 2>&1 | tee -a /tmp/cijob.log
 
-      - name: convert-element-cmake binary against latest cmake
+      - name: convert-element-cmake binary against cmake ${{ matrix.cmake_version }}
         # Drives the convert-element-cmake CLI explicitly with the
         # version-mismatch escape hatch so the fileapi schema-major
         # check is the actual tripwire on the binary path. If a
