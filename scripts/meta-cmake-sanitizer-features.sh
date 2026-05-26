@@ -13,14 +13,11 @@
 # convert-element-cmake with --out-sanitizer-features=..." but
 # no automated test verified the end-to-end shape worked.
 #
-# Note on the fixture's set(... CACHE STRING ...) blocks:
-# cmake's standard initialization pre-populates the cache with
-# empty entries for every CMAKE_<LANG>_FLAGS_<CONFIG> in
-# CMAKE_CONFIGURATION_TYPES BEFORE any set() in CMakeLists.txt
-# runs, so the example's defaults can't override on the first
-# configure. Real-world operator flow is to pass -D on the cmake
-# command line OR to set CMAKE_<LANG>_FLAGS_<CONFIG>_INIT in a
-# toolchain file. This gate mirrors the -D path.
+# The example fixture uses the CMAKE_<LANG>_FLAGS_<CONFIG>_INIT
+# pattern (seeded before project()) so cmake's standard cache-init
+# path picks up the defaults — no -D or toolchain-file workaround
+# needed here. The gate runs convert-element-cmake straight against
+# the fixture and asserts on the emitted features.bzl shape.
 
 set -eu
 
@@ -52,23 +49,6 @@ echo 'int main(void){return 0;}' >"$stage/src/main.c"
 out_features="$stage/features.bzl"
 out_build="$stage/BUILD.bazel.out"
 
-# Toolchain file to push the sanitizer flag defaults into
-# CMAKE_<LANG>_FLAGS_<CONFIG>_INIT BEFORE cmake's standard cache
-# initialization runs — the only way to land the values without a
-# direct -D from the cmake command line. The fixture's
-# CMakeLists.txt set(... CACHE STRING ...) blocks are no-ops on
-# the first configure because cmake has already created empty
-# cache entries by the time the set() runs.
-toolchain="$stage/sanitizer.toolchain.cmake"
-cat >"$toolchain" <<'EOF'
-set(CMAKE_C_FLAGS_ASAN_INIT     "-fsanitize=address -fno-omit-frame-pointer -g -O1")
-set(CMAKE_CXX_FLAGS_ASAN_INIT   "-fsanitize=address -fno-omit-frame-pointer -g -O1")
-set(CMAKE_C_FLAGS_TSAN_INIT     "-fsanitize=thread -g -O1")
-set(CMAKE_CXX_FLAGS_TSAN_INIT   "-fsanitize=thread -g -O1")
-set(CMAKE_C_FLAGS_UBSAN_INIT    "-fsanitize=undefined -fno-omit-frame-pointer -g -O1")
-set(CMAKE_CXX_FLAGS_UBSAN_INIT  "-fsanitize=undefined -fno-omit-frame-pointer -g -O1")
-EOF
-
 # --probe-genex=false: probe-genex emits per-target file(GENERATE)
 # outputs that multi-config cmake errors on ("Evaluation file to be
 # written multiple times with different content"). Disabling
@@ -85,7 +65,6 @@ EOF
 "$bin_dir/convert-element-cmake" \
     --source-root "$stage" \
     --build-types Release,ASan,TSan,UBSan \
-    --toolchain-cmake-file "$toolchain" \
     --probe-genex=false \
     --out-build "$out_build" \
     --out-sanitizer-features "$out_features" \
