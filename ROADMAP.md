@@ -205,6 +205,22 @@ transition cleanly.
   intra-matrix isolation, not block / non-block). Whatever
   real converter bugs the matrix surfaces in the meantime
   get filed here (or as follow-up bullets) as they show up.
+- **`EventFindPackageFound` polymorphic-decode for cmake
+  4.3+** (surfaced by the matrix's 4.3.3 entry on PR #243's
+  first CI run — see `docs/cmake-version-matrix.md`'s
+  "Known per-version notes" row). Cmake 4.3 reshaped the
+  configureLog `find_package-v1` event so the `found` field
+  can now be a string path (when found), a `false` bool
+  (when not), or the legacy struct shape. The Go type in
+  `converter/internal/fileapi` only accepts the struct, so
+  every `find_package` call trips a YAML unmarshal error
+  and the configure-log parse aborts. Fix shape: a custom
+  `UnmarshalYAML` on `EventFindPackageFound` that accepts
+  all three shapes and normalizes to the existing struct.
+  Add a 4.3-generated configureLog fixture under
+  `converter/internal/fileapi/testdata/`. Until this lands,
+  the matrix's 4.3.3 entry stays red (non-blocking) and
+  blocks one of the three promotion criteria.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for
   environment reasons (cmake-config bundle staging on the CI

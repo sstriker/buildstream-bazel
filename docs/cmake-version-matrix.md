@@ -48,10 +48,10 @@ they just mean we haven't observed drift on that entry yet.
 
 | Version | Status | Notes |
 |---------|--------|-------|
-| 3.22.6 | _pending first run_ | — |
-| 3.28.6 | _pending first run_ | — |
-| 4.0.7  | _pending first run_ | Previously covered by the pre-matrix `e2e-latest-cmake` job at `CMAKE_LATEST_VERSION=4.0.3` — that path was green at landing. |
-| 4.3.3  | _pending first run_ | — |
+| 3.22.6 | green | First run (PR #243 commit `aaff068`) clean across the e2e surface. |
+| 3.28.6 | green | First run clean. |
+| 4.0.7  | green | First run clean; matches the pre-matrix `e2e-latest-cmake` history at `CMAKE_LATEST_VERSION=4.0.3`. |
+| 4.3.3  | **red** | First run surfaced `fileapi.EventFindPackageFound` polymorphic-decode drift. Cmake 4.3 reshaped the configureLog `find_package-v1` event so the `found` field can now be a string path (when found) or a `false` bool (when not), instead of the legacy struct shape. Our Go type only accepts the struct, so every `find_package` call trips a YAML unmarshal error and the configure-log parse aborts. Fix queued under ROADMAP.md `Now` ("`EventFindPackageFound` polymorphic-decode for cmake 4.3+"). Until that lands, the 4.3.3 entry stays red (non-blocking). |
 
 Per the matrix's `ROADMAP.md` rationale, the **default** response
 to a surfaced bug is to file a follow-up `ROADMAP.md` bullet and
