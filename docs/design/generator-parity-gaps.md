@@ -227,36 +227,46 @@ property set we probe.
 
 Items still queued after the gap-fill pass:
 
-1. **`find_package-v1` event attribution** as
-   `# from find_package(<Pkg>) → <ConfigFile>` Provenance
-   comment on emitted cc_import targets. Operators see WHERE
-   the dep came from without re-running the converter.
-   Consumes Phase 2's configureLog YAML data; the events are
-   already threaded through lower.Options but the per-cc_import
-   attribution lift hasn't landed.
+1. ✓ **`Link.CommandFragments` role attribution**. **Landed.**
+   The lower-side switch now routes role=flags / libraryPath /
+   frameworkPath / frameworks each to the right linkopts form
+   (previously every non-libraries fragment was silently
+   dropped). Three goldens regenerated with the new flag entries.
 
-2. **`SOURCE_FILE_PROPERTIES`** residue: `LANGUAGE`
-   override (force a `.c` file to compile as C++) and
-   `OBJECT_DEPENDS` (manual header deps that augment incremental
-   build). Per-property recipes; consumer pattern follows
-   `HEADER_FILE_ONLY`.
+2. ✓ **`OBJECT_DEPENDS` source property**. **Landed.**
+   Headers declared via set_source_files_properties(...
+   OBJECT_DEPENDS ...) now append to the consuming target's
+   hdrs for incremental-rebuild correctness.
 
-3. **`Link.CommandFragments role="frameworkPath"`** distinction.
-   When cmake records framework paths split between
-   linkopts and the dedicated frameworkPath role, route to
-   `linkopts = ["-F", path]` (the link-time form). The current
-   linkopts pipeline picks up the merged form for the typical
-   case.
+3. ✓ **Per-target `BUILD_RPATH` / `INSTALL_RPATH`** via
+   probe-genex. **Landed.** probe-genex.cmake now also captures
+   BUILD_RPATH / INSTALL_RPATH / POSITION_INDEPENDENT_CODE /
+   {CXX,C}_VISIBILITY_PRESET as `property_<NAME>.txt` files.
+   Lower routes BUILD_RPATH to `-Wl,-rpath,<path>` linkopts,
+   PIC to `features=["pic"]` / `["-pic"]`, visibility presets
+   to `-fvisibility=<value>` copts.
 
-4. **Per-target `BUILD_RPATH` / `INSTALL_RPATH`** target
-   properties (cache-derived). Codemodel doesn't surface them
-   directly; the probe-genex hook from Phase 3 can extract them
-   via `$<TARGET_PROPERTY:t,BUILD_RPATH>` if needed.
+4. **`find_package-v1` event attribution** as Provenance
+   tagging on emitted cc_import targets. Consumes Phase 2's
+   configureLog YAML data threaded through lower.Options.
+   Matching event → target needs the imports.Resolver walk.
 
-5. **`add_test` GENERATED-binary tests with genexes**
-   (`add_test(NAME foo COMMAND $<TARGET_FILE:my_test>)`). Should
-   work via probe-genex's TARGET_FILE resolution but lacks a
-   fixture to confirm.
+5. **`SOURCE_FILE_PROPERTIES` LANGUAGE override**. Force a
+   `.c` file to compile as C++. Bazel cc_library can't do this
+   without per-source library splits (source extension drives
+   language; renaming the file is intrusive). The
+   shouldSplitCompileGroups gate covers cases where cmake
+   already produced distinct CompileGroups for the override.
+
+6. **`add_test` with TARGET_FILE genex**
+   (`add_test(NAME foo COMMAND $<TARGET_FILE:my_test>)`).
+   Should resolve via probe-genex's TARGET_FILE capture but
+   lacks an end-to-end fixture exercising it.
+
+7. **`option()` declarations** as Bazel
+   `bool_flag` / `config_setting` so operators can tune at
+   build time via `--//foo:opt=true`. Requires
+   `@bazel_skylib` dep + the gen of the constants block.
 
 Each is independently shippable; the doc updates as each
 lands.
