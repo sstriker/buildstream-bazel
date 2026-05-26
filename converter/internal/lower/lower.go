@@ -1219,6 +1219,17 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			cmakeName := stripIDHash(dep.Id)
 			if export := imports.LookupCMakeTarget(cmakeName); export != nil {
 				label = export.BazelLabel
+				// find_package attribution: when the cmake
+				// target name is in the `<Package>::<Component>`
+				// shape, tag the consuming target with the
+				// package name so operators can grep for
+				// cmake-find-package=Boost etc.
+				if pkg := packagePrefix(cmakeName); pkg != "" {
+					tag := "cmake-find-package=" + pkg
+					if !stringSliceContains(irt.Tags, tag) {
+						irt.Tags = append(irt.Tags, tag)
+					}
+				}
 			} else {
 				return nil, failure.New(failure.UnresolvedLinkDep,
 					"target %q depends on %q which is neither in-codebase nor in the imports manifest",
@@ -1831,6 +1842,19 @@ func optionsHeaderComments(cache fileapi.Cache) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// packagePrefix returns the cmake package name when cmakeName is
+// in the `<Package>::<Component>` find_package convention shape
+// (e.g. "Boost::system" → "Boost"). Returns "" for plain target
+// names that don't follow the namespaced shape — those are
+// either in-codebase targets or unscoped IMPORTED libraries
+// where we can't reliably attribute the package.
+func packagePrefix(cmakeName string) string {
+	if i := strings.Index(cmakeName, "::"); i > 0 {
+		return cmakeName[:i]
+	}
+	return ""
 }
 
 // deprecationHeaderComments projects cmake message(DEPRECATION ...)

@@ -159,3 +159,18 @@ func TestDeprecationHeaderComments_NoDeprecations(t *testing.T) {
 		t.Errorf("STATUS message should produce nil; got %v", got)
 	}
 }
+
+func TestPackagePrefix(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Boost::system", "Boost"},
+		{"OpenSSL::Crypto", "OpenSSL"},
+		{"zlib", ""}, // unscoped
+		{"", ""},
+		{"::dangling", ""}, // empty package
+	}
+	for _, c := range cases {
+		if got := packagePrefix(c.in); got != c.want {
+			t.Errorf("packagePrefix(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
