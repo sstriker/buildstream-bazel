@@ -481,6 +481,33 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Operator-facing mode dials for write-a (`--fidelity` /
+  `--deployment`).** Today's CLI exposes ~24 flags on `write-a`
+  alone, with the "what should happen on per-element refusal"
+  question spread across `--cmake-round2-fallback`,
+  `--meson-round2-fallback`, `--pyproject-fallback`, and the
+  converter-internal `--unsupported-*-fallback` switches, and the
+  "where does conversion run" question spread across
+  `--trace-round1` + implicit publish/lookup presence checks.
+  The two questions collapse into two enums:
+  `--fidelity={strict|best-effort}` (refusal exits non-zero vs.
+  lowers to install_tree.tar placeholders; default strict to
+  preserve current behaviour) and
+  `--deployment={auto|local|production}` (round-1 monolithic vs.
+  round-2 REAPI-AC split; default auto picks production when
+  publish + lookup binaries are wired, else local). Explicit
+  lower-level flags still work and override the derived defaults,
+  so existing scripts keep their semantics. The startup banner
+  prints the resolved mode, the wired/missing tools, the kind
+  summary, and any "best-effort downgraded for kind:X because
+  tools aren't wired" notes — operators can tell at a glance what
+  mode this run is in without grepping the rendered BUILDs.
+  Implementation in `cmd/write-a/modes.go` keeps the derivation
+  testable apart from `flag.Parse()`. README quick-start and
+  `tools/bst` updated to the new dial; per-kind flags remain as
+  escape hatches and are exercised verbatim by the round-2
+  fallback render gates.
+
 - **Convert-time output bake for the cmake -P lift
   (`--cmake-script-bake`).** Opt-in convert-time execution
   that runs `cmake -P <script>` in a fresh tmp dir,
