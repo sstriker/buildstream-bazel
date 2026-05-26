@@ -1,6 +1,0 @@
-# Marker for tools/fixtures/record-fileapi.sh: inject the
-# dump-vars.cmake hook via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES so
-# the resulting cmake-to-bazel.vars.dump lands in the reply dir.
-# The find-package-variable-form fixture needs the captured
-# ${ZLIB_LIBRARIES} value for findPackageAttrib's per-path
-# attribution.
