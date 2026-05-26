@@ -144,6 +144,128 @@ func TestLowerStandaloneCustomCommands_NilGraph(t *testing.T) {
 	}
 }
 
+func TestLowerStandaloneCustomCommands_FiltersCMakeBookkeepingEdges(t *testing.T) {
+	// Mirrors the bookkeeping edges cmake's Ninja generator always
+	// emits: edit_cache / rebuild_cache utility outputs under
+	// CMakeFiles/<name>.util. Plus a real user-declared standalone
+	// edge so the test can confirm the filter only skips the
+	// bookkeeping shape, not anything else.
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build CMakeFiles/edit_cache.util: CUSTOM_COMMAND
+  COMMAND = /usr/bin/cmake -E echo No interactive CMake dialog available.
+build CMakeFiles/rebuild_cache.util: CUSTOM_COMMAND
+  COMMAND = /usr/bin/cmake --regenerate-during-build -S/src -B/build
+build version.txt: CUSTOM_COMMAND
+  COMMAND = git rev-parse HEAD
+`)
+	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	if len(got) != 1 {
+		t.Fatalf("want 1 standalone (bookkeeping edges filtered); got %d (%v)", len(got), got)
+	}
+	if got[0].Name != "custom_command_version_txt" {
+		t.Errorf("got[0].Name = %q; want custom_command_version_txt (the non-bookkeeping edge)", got[0].Name)
+	}
+}
+
+func TestLowerStandaloneCustomCommands_FiltersNinjaVarOutputs(t *testing.T) {
+	// cmake's Ninja generator pairs every real custom-command
+	// output with a `${cmake_ninja_workdir}<basename>` implicit
+	// output for restat tracking. The walker must drop those
+	// from the genrule's outs (Bazel can't declare an outs entry
+	// whose path is a ninja-time variable) but keep the real
+	// output so the genrule lands with usable outs + name.
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build version.txt | ${cmake_ninja_workdir}version.txt: CUSTOM_COMMAND
+  COMMAND = touch version.txt
+`)
+	got := lowerStandaloneCustomCommands(g, nil, "/build")
+	if len(got) != 1 {
+		t.Fatalf("want 1 standalone; got %d (%v)", len(got), got)
+	}
+	if want := []string{"version.txt"}; !equalStringSlices(got[0].GenruleOuts, want) {
+		t.Errorf("outs = %v, want %v (${cmake_ninja_workdir}-shadow stripped)", got[0].GenruleOuts, want)
+	}
+	if got[0].Name != "custom_command_version_txt" {
+		t.Errorf("name = %q, want custom_command_version_txt (first non-var output)", got[0].Name)
+	}
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestFilterOutVarRefs(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want []string
+	}{
+		{
+			in:   []string{"version.txt", "${cmake_ninja_workdir}version.txt"},
+			want: []string{"version.txt"},
+		},
+		{
+			in:   []string{"${cmake_ninja_workdir}foo", "${cmake_ninja_workdir}bar"},
+			want: []string{},
+		},
+		{
+			in:   []string{"a", "b"},
+			want: []string{"a", "b"},
+		},
+		{
+			in:   nil,
+			want: nil,
+		},
+	}
+	for i, tc := range cases {
+		got := filterOutVarRefs(append([]string(nil), tc.in...))
+		if len(got) == 0 && len(tc.want) == 0 {
+			continue
+		}
+		if !equalStringSlices(got, tc.want) {
+			t.Errorf("case %d: filterOutVarRefs(%v) = %v, want %v", i, tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestIsCMakeBookkeepingOutput(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"CMakeFiles/edit_cache.util", true},
+		{"CMakeFiles/rebuild_cache.util", true},
+		{"CMakeFiles/install.util", true},
+		{"CMakeFiles/package_source.util", true},
+		{"CMakeFiles/list_install_components.util", true},
+		// User-declared add_custom_command outputs never land
+		// under CMakeFiles/ with the .util suffix.
+		{"version.txt", false},
+		{"gen/version.h", false},
+		{"CMakeFiles/stub.dir/src/stub.c.o", false}, // compile artefact, not bookkeeping
+		{"some/CMakeFiles/foo.util", false},         // not at the build-dir root
+		{"CMakeFiles/foo.txt", false},               // wrong suffix
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := isCMakeBookkeepingOutput(tc.in); got != tc.want {
+				t.Errorf("isCMakeBookkeepingOutput(%q) = %v; want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSanitizeOutputName(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"version.txt", "version_txt"},

@@ -186,15 +186,20 @@ and the evaluator falls back as before — back-compat preserved.
 
 ## Phase 4 — build.ninja custom-command walk
 
-Partial. Walker helpers landed
+Mostly landed. Walker helpers landed
 (`ninja.CustomCommandEdges`, `ninja.DepfileFor`,
 `ninja.DescriptionFor`); probe / stamp execute_process rescue
-via dump-vars ✓ landed; standalone genrule emission from
-`CustomCommandEdges` remains queued.
+via dump-vars ✓ landed; standalone genrule emission ✓ graduated
+to default-on at the CLI layer. The remaining queued work
+(trace-side cross-referencing of `add_custom_command` /
+`add_custom_target` call sites for source-level naming +
+visibility, retirement of the `execute_process_classify.go`
+`unknown` arm via further classifier extensions) is its own
+follow-up.
 
 Two halves:
 
-- **Custom command edges → genrules** (✓ landed, opt-in).
+- **Custom command edges → genrules** (✓ graduated).
   `lower/standalone_genrules.go` walks every `CUSTOM_COMMAND`
   edge in build.ninja and emits a genrule for each whose outputs
   aren't already covered by an existing recoverGenrule emission.
@@ -203,9 +208,28 @@ Two halves:
   `custom_command_<sanitized-first-output>` with `_N` suffix on
   collision. Tag: `cmake-codegen-standalone-custom-command` so
   the Phase 7 audit can inventory the new emissions. CLI surface:
-  `--emit-standalone-custom-commands` (off by default to keep
-  existing goldens byte-stable; opt-in covers add_custom_target
-  bookkeeping rules and version-stamp edges).
+  `--emit-standalone-custom-commands` (on by default after the
+  Phase 4 graduation; covers add_custom_target bookkeeping rules
+  and version-stamp edges that no cmake target consumes).
+  Operators with edge-case projects opt out via
+  `--emit-standalone-custom-commands=false`.
+
+  The library-side default (`lower.Options.EmitStandaloneCustom
+  Commands`) stays at the Go zero value (`false`) so in-process
+  callers — golden tests, embedders that construct
+  `lower.Options{...}` directly — keep their existing emission
+  shape. Flipping the library default would silently re-shape
+  every unit test golden that doesn't set the field explicitly,
+  for no operator-visible win. The two-tier default (CLI on,
+  library off) is deliberate: graduate the operator-facing
+  surface, keep the unit-level fixture matrix stable.
+
+  Render gate:
+  `scripts/meta-cmake-standalone-custom-command.sh` (fixture
+  `converter/testdata/sample-projects/standalone-custom-command`).
+  Exercises both the default-on path and the explicit
+  `--emit-standalone-custom-commands=false` opt-out path against
+  a real cmake configure.
 
 - **Probe / stamp execute_process rescue** (✓ landed).
   `recoverExecuteProcess`'s default arm now skips refusal for

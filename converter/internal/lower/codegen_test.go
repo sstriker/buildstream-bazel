@@ -198,6 +198,94 @@ func TestToIR_CmakeScriptModeRefusal_RealFixture(t *testing.T) {
 	}
 }
 
+// TestToIR_StandaloneCustomCommand exercises the Phase 4
+// standalone-genrule emission against the
+// standalone-custom-command sample (add_custom_command whose
+// output is consumed only by an add_custom_target — no
+// cc_library sources reference it). Validates:
+//
+//   - With Options.EmitStandaloneCustomCommands = true, the
+//     standalone walker fires and emits a genrule whose outs
+//     contain the standalone_stamp.txt output.
+//   - The emitted genrule carries the
+//     cmake-codegen-standalone-custom-command tag so Phase 7
+//     audit pipelines can inventory it.
+//   - The companion cc_library (`stub`) is emitted unchanged
+//     alongside the standalone genrule.
+//   - With EmitStandaloneCustomCommands = false (the
+//     lower.Options zero value), the standalone walker stays
+//     quiet — no genrule for the standalone edge. Pins the
+//     two-tier default contract: the library-side zero value
+//     stays opt-in so in-process callers keep their existing
+//     emission shape; the CLI graduated to default-on.
+func TestToIR_StandaloneCustomCommand(t *testing.T) {
+	r := loadFixture(t, "standalone-custom-command")
+	g := loadNinja(t, "standalone-custom-command")
+
+	src, err := filepath.Abs("../../testdata/sample-projects/standalone-custom-command")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Opt-in path (mirrors what the CLI's default-on shape
+	// delivers): the walker fires and the standalone edge
+	// surfaces as a genrule.
+	pkg, err := lower.ToIR(r, g, lower.Options{
+		HostSourceRoot:               src,
+		EmitStandaloneCustomCommands: true,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+
+	// The companion cc_library should be there regardless.
+	stub := findTarget(t, pkg, "stub")
+	if stub.Kind != ir.KindCCLibrary {
+		t.Errorf("stub.Kind = %v, want KindCCLibrary", stub.Kind)
+	}
+
+	// Walk the targets to find the standalone genrule. Naming
+	// uses the sanitized first-output stem, prefixed with
+	// `custom_command_`.
+	var standalone *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Kind != ir.KindGenrule {
+			continue
+		}
+		if !slicesContain(pkg.Targets[i].Tags, "cmake-codegen-standalone-custom-command") {
+			continue
+		}
+		standalone = &pkg.Targets[i]
+		break
+	}
+	if standalone == nil {
+		t.Fatal("no standalone genrule emitted (cmake-codegen-standalone-custom-command tag missing)")
+	}
+	if !slicesContain(standalone.GenruleOuts, "standalone_stamp.txt") {
+		t.Errorf("standalone.GenruleOuts = %v, want standalone_stamp.txt", standalone.GenruleOuts)
+	}
+	if !strings.Contains(standalone.Name, "standalone_stamp") {
+		t.Errorf("standalone.Name = %q, want it to reference standalone_stamp", standalone.Name)
+	}
+
+	// Opt-out path: with EmitStandaloneCustomCommands left at
+	// the Go zero value (false), no standalone genrule should
+	// emit. Pins the library-side default: in-process callers
+	// constructing lower.Options{...} literals keep their
+	// existing emission shape.
+	pkgOff, err := lower.ToIR(r, g, lower.Options{HostSourceRoot: src})
+	if err != nil {
+		t.Fatalf("ToIR (opt-out): %v", err)
+	}
+	for _, tgt := range pkgOff.Targets {
+		for _, tag := range tgt.Tags {
+			if tag == "cmake-codegen-standalone-custom-command" {
+				t.Errorf("opt-out shape unexpectedly emitted standalone genrule: target %q", tgt.Name)
+			}
+		}
+	}
+}
+
 // ----- helpers ----------------------------------------------------------
 
 func loadFixture(t *testing.T, name string) *fileapi.Reply {
