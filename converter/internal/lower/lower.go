@@ -257,6 +257,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// configure_file events leaves the slice nil, which would
 	// otherwise look identical to "decode never ran".
 	var traceDecoded bool
+	var decodedTrace *shadow.Decoded
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
@@ -317,7 +318,9 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
-		decoded := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
+		decodedVal := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
+		decoded := &decodedVal
+		decodedTrace = decoded
 		traceDecoded = true
 		privateIncludeDirs = map[string]map[string]bool{}
 		for _, call := range decoded.Includes {
@@ -575,7 +578,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
 		var err error
-		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild, opts.GenexProbes, opts.Imports), opts.Imports, cc)
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild, opts.GenexProbes, decodedTrace, opts.Imports), opts.Imports, cc)
 		if err != nil {
 			return nil, err
 		}

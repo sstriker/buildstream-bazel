@@ -1247,6 +1247,85 @@ func TestEmit_InterfaceLibrary_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_InterfacePropertyAggregation_Resolves exercises the
+// TARGET_PROPERTY INTERFACE_* convert-time aggregation pipeline
+// (ROADMAP `Later`: TARGET_PROPERTY INTERFACE_* aggregation).
+// The fixture chains three libraries — base (INTERFACE) → mid
+// (INTERFACE) → leaf (STATIC) — and asks file(GENERATE) to
+// emit leaf's transitively-aggregated INTERFACE_INCLUDE_DIRECTORIES.
+//
+// With the aggregation wired, the (a) Go-side genex evaluator
+// resolves $<TARGET_PROPERTY:leaf,INTERFACE_INCLUDE_DIRECTORIES>
+// at convert time to base's include path (walked through mid),
+// and the resulting genrule carries the `-genex-evaluated`
+// audit tag. Without aggregation, the evaluator would surface an
+// UnsupportedError → the lift would fall back to legacy
+// bytes-embedded shape with `cmake-codegen-file-generate-genex`
+// (no -evaluated suffix).
+func TestEmit_InterfacePropertyAggregation_Resolves(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/interface-property-aggregation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir, err := filepath.Abs("../../testdata/fileapi/interface-property-aggregation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot:    src,
+		BuildDir:          replyDir,
+		TraceRaw:          traceRaw,
+		LiftConfigureFile: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Find the gen_leaf_includes_txt genrule and assert its
+	// tags carry the -evaluated suffix and NOT the legacy
+	// -genex (fallback) tag. We don't pin the full rendered
+	// bytes via golden because the include path is absolute
+	// (depends on the recording machine); the tag set + the
+	// presence of an evaluated literal is the stable signal.
+	out := string(got)
+	if !strings.Contains(out, `name = "gen_leaf_includes_txt"`) {
+		t.Fatalf("BUILD.bazel missing gen_leaf_includes_txt genrule:\n%s", out)
+	}
+	// Slice out the gen_leaf_includes_txt block so the tag
+	// assertion is scoped to that rule (other rules in the
+	// emit may carry their own tag sets).
+	idx := strings.Index(out, `name = "gen_leaf_includes_txt"`)
+	tail := out[idx:]
+	if endIdx := strings.Index(tail, "\n)\n"); endIdx > 0 {
+		tail = tail[:endIdx]
+	}
+	if !strings.Contains(tail, "cmake-codegen-file-generate-genex-evaluated") {
+		t.Errorf("gen_leaf_includes_txt missing -evaluated tag:\n%s", tail)
+	}
+	// The legacy fallback tag carries the bare
+	// `cmake-codegen-file-generate-genex` text without
+	// `-evaluated` / `-lifted` suffix; assert it's absent
+	// (a regression on the aggregation would re-introduce it).
+	for _, line := range strings.Split(tail, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == `"cmake-codegen-file-generate-genex",` || trimmed == `"cmake-codegen-file-generate-genex"` {
+			t.Errorf("gen_leaf_includes_txt unexpectedly carries the legacy -genex tag (aggregation pipeline didn't fire):\n%s", tail)
+		}
+	}
+}
+
 // TestEmit_HeaderOnlyDummyShim_Golden exercises the
 // build-dir-rooted absolute-source elision from #143 against a
 // real recorded fileapi reply. The sample project's

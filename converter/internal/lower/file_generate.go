@@ -709,6 +709,19 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 // are dropped silently — the codemodel is the ground truth for
 // "what targets exist."
 //
+// Captured from the decoded trace (ROADMAP `Later` "TARGET_PROPERTY
+// INTERFACE_* aggregation") when probes did not populate the
+// INTERFACE_* fields: walks each target's PUBLIC / INTERFACE
+// target_include_directories / target_compile_definitions /
+// target_compile_options / target_link_libraries calls to
+// recover the per-target DIRECT contribution, then walks
+// codemodel Dependencies[] transitively (depth-first, first-
+// occurrence preserved, dedup'd, cycles broken) to assemble
+// the post-aggregation value cmake's generator-phase evaluator
+// would produce. Probe-populated values take precedence over
+// the convert-time aggregate — when both run (cmake 3.24+ with
+// the probe hook staged), the probe is the source of truth.
+//
 // Captured from the imports manifest (PR 2 cross-package
 // TARGET_FILE) when imports is non-nil: each export's
 // CMakeTarget surfaces as an Imported=true TargetInfo entry
@@ -724,12 +737,13 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 // `--target-file` flag carries the cross-package label
 // resolved at action time. A codemodel-local target with the
 // same name (rare; cmake namespaces avoid this) wins over the
-// manifest entry.
+// manifest entry. The imports fold runs LAST so a manifest
+// entry never shadows a local codemodel target.
 //
 // Returns nil when r is nil or has no usable targets — the
 // evaluator's UnsupportedError on missing-target surfaces
 // cleanly and routes the lift to (b) / legacy.
-func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe, imports *manifest.Resolver) map[string]genexeval.TargetInfo {
+func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe, decoded *shadow.Decoded, imports *manifest.Resolver) map[string]genexeval.TargetInfo {
 	if r == nil || len(r.Targets) == 0 {
 		// Imports-only case: even with no local codemodel,
 		// imported targets could still drive an (a)-shape lift
@@ -747,6 +761,10 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 		return out
 	}
 	out := make(map[string]genexeval.TargetInfo, len(r.Targets))
+	// Build a name → fileapi target map for the dep walk. The
+	// codemodel keys r.Targets by name already, but the slice
+	// shape from Reply (a flat map) makes the lookup cheap
+	// without re-walking — we reuse r.Targets directly below.
 	for _, t := range r.Targets {
 		if t.IsGeneratorProvided {
 			continue
@@ -787,21 +805,51 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 			FileLocation: fileLoc,
 		}
 	}
+	// Convert-time INTERFACE_* aggregation. Runs unconditionally
+	// (when decoded != nil); probe data below takes precedence
+	// per-property. The two-step layering — aggregate-first,
+	// then overlay probe — keeps the fallback path consistent
+	// with "probe missed this target / this property" without
+	// the caller having to coordinate.
+	if decoded != nil {
+		agg := aggregateInterfaceProperties(r, decoded)
+		for name, ti := range out {
+			if a, ok := agg[name]; ok {
+				ti.InterfaceIncludeDirectories = a.includeDirectories
+				ti.InterfaceCompileDefinitions = a.compileDefinitions
+				ti.InterfaceCompileOptions = a.compileOptions
+				ti.InterfaceLinkLibraries = a.linkLibraries
+				out[name] = ti
+			}
+		}
+	}
 	// Fold probe-captured INTERFACE_* aggregates and OBJECT_LIBRARY
 	// Objects list into the matching codemodel entry. Probes for
 	// targets not in the codemodel are skipped — codemodel is
-	// ground truth for "what targets exist".
+	// ground truth for "what targets exist". Non-empty probe
+	// values override the convert-time aggregate above (cmake's
+	// own evaluator is the source of truth when it ran).
 	for _, p := range probes {
 		ti, ok := out[p.Name]
 		if !ok {
 			continue
 		}
 		ti.Objects = p.Objects
-		ti.InterfaceIncludeDirectories = p.Interface["INCLUDE_DIRECTORIES"]
-		ti.InterfaceCompileDefinitions = p.Interface["COMPILE_DEFINITIONS"]
-		ti.InterfaceCompileOptions = p.Interface["COMPILE_OPTIONS"]
-		ti.InterfaceLinkLibraries = p.Interface["LINK_LIBRARIES"]
-		ti.InterfaceLinkOptions = p.Interface["LINK_OPTIONS"]
+		if v, ok := p.Interface["INCLUDE_DIRECTORIES"]; ok {
+			ti.InterfaceIncludeDirectories = v
+		}
+		if v, ok := p.Interface["COMPILE_DEFINITIONS"]; ok {
+			ti.InterfaceCompileDefinitions = v
+		}
+		if v, ok := p.Interface["COMPILE_OPTIONS"]; ok {
+			ti.InterfaceCompileOptions = v
+		}
+		if v, ok := p.Interface["LINK_LIBRARIES"]; ok {
+			ti.InterfaceLinkLibraries = v
+		}
+		if v, ok := p.Interface["LINK_OPTIONS"]; ok {
+			ti.InterfaceLinkOptions = v
+		}
 		out[p.Name] = ti
 	}
 	// PR 2: fold imports manifest entries — each export's
@@ -847,6 +895,332 @@ func foldImportedTargets(out map[string]genexeval.TargetInfo, imports *manifest.
 			FileLocation: fileLoc,
 		}
 	}
+}
+
+// aggregatedInterface holds the post-walk values for one
+// target's four convert-time-aggregated INTERFACE_* properties.
+// Values are semicolon-joined to match cmake's list-property
+// serialization shape.
+type aggregatedInterface struct {
+	includeDirectories string
+	compileDefinitions string
+	compileOptions     string
+	linkLibraries      string
+}
+
+// aggregateInterfaceProperties walks the codemodel's per-target
+// Dependencies[] graph and accumulates each target's effective
+// INTERFACE_* property values. The aggregation mirrors cmake's
+// own generator-phase walk:
+//
+//   - For each target T, start with T's DIRECT INTERFACE_*
+//     contribution (PUBLIC + INTERFACE arms of the corresponding
+//     target_* call recorded in the trace).
+//   - Walk T's Dependencies[] in fileapi's recorded order
+//     (which mirrors target_link_libraries' arg order).
+//   - For each dep D in scope, accumulate D's own aggregated
+//     INTERFACE_* (recurse). Cycles (rare; cmake errors on
+//     them but we don't want to spin) break on first re-entry
+//     via the visited set.
+//   - Deduplicate values across the walk while preserving
+//     first-occurrence order — matches cmake's documented
+//     "first wins" property accumulation behavior.
+//
+// Returns a per-target map keyed by target name. Targets not in
+// the codemodel get no entry; targets present but with no direct
+// nor transitive contribution get an entry with empty strings
+// (distinguishing "we walked, found nothing" from "we couldn't
+// walk").
+func aggregateInterfaceProperties(r *fileapi.Reply, decoded *shadow.Decoded) map[string]aggregatedInterface {
+	// Build a name → Target index up front; the dep walk looks
+	// up dep names many times. Values are stored by copy
+	// (r.Targets is map[string]Target keyed by fileapi target id;
+	// taking &r.Targets[id] isn't allowed).
+	byName := make(map[string]fileapi.Target, len(r.Targets))
+	// id → name resolver for TargetDependency.Id (which uses
+	// the cmake-internal `<name>::@<hash>` form for in-tree
+	// targets — share the depLibNameFromId helper).
+	idToName := make(map[string]string, len(r.Targets))
+	for _, t := range r.Targets {
+		if t.IsGeneratorProvided {
+			continue
+		}
+		byName[t.Name] = t
+		idToName[t.Id] = t.Name
+	}
+
+	// Per-target DIRECT contributions, from the trace. These
+	// are the PUBLIC + INTERFACE arms of target_* calls (the
+	// PRIVATE arm is consumed-only and doesn't propagate).
+	directIncludes := directInterfaceFromIncludes(decoded.Includes)
+	directDefines := directInterfaceFromCompile(decoded.CompileDefinitions)
+	directOptions := directInterfaceFromCompile(decoded.CompileOptions)
+	directLinks := directInterfaceFromLinks(decoded.Links)
+
+	// Per-target dep-chain — the names to recurse on. cmake's
+	// File API drops pure-INTERFACE_LIBRARY targets from
+	// configurations[].targets[] entirely (verified against
+	// cmake 3.28: an INTERFACE lib with no buildable artifact
+	// is invisible to fileapi), so the codemodel's
+	// Dependencies[] alone is insufficient for chains like
+	// `base (INTERFACE) → mid (INTERFACE) → leaf (STATIC)`.
+	// Trace-recorded target_link_libraries entries (in their
+	// PUBLIC / INTERFACE arms, plus the legacy positional shape
+	// cmake treats as PUBLIC) recover the full graph. Falls back
+	// to the codemodel Dependencies[] order when the trace
+	// recorded nothing for a target (offline replay; older cmake
+	// builds without --trace-expand).
+	depChain := buildDepChain(byName, idToName, decoded.Links)
+
+	out := make(map[string]aggregatedInterface, len(byName))
+	// Memoize per-target aggregates so a target referenced as
+	// a dep by multiple consumers is walked once.
+	memo := make(map[string]aggregatedInterface, len(byName))
+	// Walk every target we know about — both codemodel entries
+	// (byName) and any extra names the trace mentioned (e.g.
+	// invisible INTERFACE_LIBRARY targets). Walking the union
+	// keeps base / mid populated in `out` so the leaf's
+	// recursion finds them via memo.
+	walkNames := make(map[string]bool, len(byName)+len(depChain))
+	for name := range byName {
+		walkNames[name] = true
+	}
+	for name := range depChain {
+		walkNames[name] = true
+	}
+	for name := range directIncludes {
+		walkNames[name] = true
+	}
+	for name := range directDefines {
+		walkNames[name] = true
+	}
+	for name := range directOptions {
+		walkNames[name] = true
+	}
+	for name := range directLinks {
+		walkNames[name] = true
+	}
+	for name := range walkNames {
+		visiting := map[string]bool{}
+		agg := walkAggregate(name, depChain, directIncludes, directDefines, directOptions, directLinks, memo, visiting)
+		out[name] = agg
+	}
+	return out
+}
+
+// buildDepChain assembles the per-target dep-name list the
+// aggregation walker recurses on. Priority:
+//
+//  1. Trace's target_link_libraries calls (PUBLIC + INTERFACE
+//     arms + the legacy positional shape cmake treats as PUBLIC).
+//     Covers INTERFACE_LIBRARY chains the codemodel hides.
+//  2. Codemodel's Dependencies[] in order (preserved as the
+//     fallback for targets without trace data).
+//
+// Returns names in cmake's documented first-listed-first
+// order, deduped.
+func buildDepChain(byName map[string]fileapi.Target, idToName map[string]string, links []shadow.TargetLinkCall) map[string][]string {
+	out := map[string][]string{}
+	// Seed from trace first.
+	for _, call := range links {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PUBLIC" && grp.Visibility != "INTERFACE" && grp.Visibility != "" {
+				continue
+			}
+			out[call.Target] = appendDedup(out[call.Target], grp.Libs)
+		}
+	}
+	// Fall back to codemodel for targets the trace didn't
+	// surface. Skip targets the trace already covered — the
+	// trace's order is authoritative for chain semantics.
+	for name, t := range byName {
+		if _, present := out[name]; present {
+			continue
+		}
+		var deps []string
+		for _, d := range t.Dependencies {
+			depName := idToName[d.Id]
+			if depName == "" {
+				depName = depLibNameFromId(d.Id)
+			}
+			if depName == "" || depName == name {
+				continue
+			}
+			deps = append(deps, depName)
+		}
+		if len(deps) > 0 {
+			out[name] = deps
+		}
+	}
+	return out
+}
+
+// walkAggregate is the recursive worker for
+// aggregateInterfaceProperties. Memoizes by target name. visiting
+// tracks the in-flight call chain so a cycle (cmake itself
+// rejects these but the codemodel may surface one in pathological
+// fixtures) breaks rather than loops.
+func walkAggregate(
+	name string,
+	depChain map[string][]string,
+	directIncludes, directDefines, directOptions, directLinks map[string][]string,
+	memo map[string]aggregatedInterface,
+	visiting map[string]bool,
+) aggregatedInterface {
+	if cached, ok := memo[name]; ok {
+		return cached
+	}
+	if visiting[name] {
+		// Cycle: return empty for this branch; the upstream
+		// frame keeps the partial contribution it already
+		// accumulated. cmake errors on cycles; we just
+		// terminate.
+		return aggregatedInterface{}
+	}
+	visiting[name] = true
+	defer delete(visiting, name)
+
+	// Start with this target's DIRECT contribution.
+	includes := dedupCopy(directIncludes[name])
+	defines := dedupCopy(directDefines[name])
+	options := dedupCopy(directOptions[name])
+	links := dedupCopy(directLinks[name])
+
+	// Walk the dep chain (trace-derived, falling back to
+	// codemodel Dependencies[] order — see buildDepChain).
+	// cmake's documented first-listed-first aggregation order.
+	for _, depName := range depChain[name] {
+		if depName == "" || depName == name {
+			continue
+		}
+		depAgg := walkAggregate(depName, depChain, directIncludes, directDefines, directOptions, directLinks, memo, visiting)
+		includes = appendDedup(includes, splitNonEmpty(depAgg.includeDirectories))
+		defines = appendDedup(defines, splitNonEmpty(depAgg.compileDefinitions))
+		options = appendDedup(options, splitNonEmpty(depAgg.compileOptions))
+		links = appendDedup(links, splitNonEmpty(depAgg.linkLibraries))
+	}
+
+	agg := aggregatedInterface{
+		includeDirectories: strings.Join(includes, ";"),
+		compileDefinitions: strings.Join(defines, ";"),
+		compileOptions:     strings.Join(options, ";"),
+		linkLibraries:      strings.Join(links, ";"),
+	}
+	memo[name] = agg
+	return agg
+}
+
+// directInterfaceFromIncludes extracts each target's DIRECT
+// INTERFACE_INCLUDE_DIRECTORIES contribution from the decoded
+// target_include_directories calls: the union of all PUBLIC +
+// INTERFACE arms, preserving first-occurrence order (a dir
+// listed under PUBLIC in one call then again under INTERFACE
+// in another stays at its first position).
+func directInterfaceFromIncludes(calls []shadow.TargetIncludeCall) map[string][]string {
+	out := map[string][]string{}
+	for _, call := range calls {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PUBLIC" && grp.Visibility != "INTERFACE" {
+				continue
+			}
+			out[call.Target] = appendDedup(out[call.Target], grp.Dirs)
+		}
+	}
+	return out
+}
+
+// directInterfaceFromCompile mirrors directInterfaceFromIncludes
+// for target_compile_definitions / target_compile_options. The
+// caller passes the relevant decoded slice (CompileDefinitions
+// or CompileOptions).
+func directInterfaceFromCompile(calls []shadow.TargetCompileCall) map[string][]string {
+	out := map[string][]string{}
+	for _, call := range calls {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PUBLIC" && grp.Visibility != "INTERFACE" {
+				continue
+			}
+			out[call.Target] = appendDedup(out[call.Target], grp.Items)
+		}
+	}
+	return out
+}
+
+// directInterfaceFromLinks extracts each target's DIRECT
+// INTERFACE_LINK_LIBRARIES contribution from the decoded
+// target_link_libraries calls: the union of PUBLIC + INTERFACE
+// arms. The legacy positional shape (no keyword) is treated
+// as PUBLIC per cmake's documented default semantics, so its
+// libs also count as interface-propagating.
+func directInterfaceFromLinks(calls []shadow.TargetLinkCall) map[string][]string {
+	out := map[string][]string{}
+	for _, call := range calls {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PUBLIC" && grp.Visibility != "INTERFACE" && grp.Visibility != "" {
+				continue
+			}
+			out[call.Target] = appendDedup(out[call.Target], grp.Libs)
+		}
+	}
+	return out
+}
+
+// appendDedup appends items not already in dst, preserving
+// dst's order. Used by the aggregation walk to match cmake's
+// "first-occurrence wins" property accumulation semantics.
+func appendDedup(dst, items []string) []string {
+	seen := make(map[string]bool, len(dst))
+	for _, d := range dst {
+		seen[d] = true
+	}
+	for _, it := range items {
+		if it == "" {
+			continue
+		}
+		if seen[it] {
+			continue
+		}
+		seen[it] = true
+		dst = append(dst, it)
+	}
+	return dst
+}
+
+// dedupCopy returns a deduped copy of src, preserving order
+// (first occurrence wins). Empty strings are dropped.
+func dedupCopy(src []string) []string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(src))
+	seen := map[string]bool{}
+	for _, s := range src {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// splitNonEmpty splits a semicolon-joined cmake list into its
+// component entries, dropping empty pieces (cmake's list
+// serialization can introduce empty strings at the edges when
+// the input had a trailing `;`).
+func splitNonEmpty(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ";")
+	out := parts[:0]
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // targetFileOpPrefixes is the set of `$<...:` prefixes that
