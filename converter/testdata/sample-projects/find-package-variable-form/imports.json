@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "zlib",
+      "exports": [
+        {
+          "cmake_target": "ZLIB::ZLIB",
+          "bazel_label": "//elements/zlib",
+          "link_libraries": ["z"]
+        }
+      ]
+    }
+  ]
+}

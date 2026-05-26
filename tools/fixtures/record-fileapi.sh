@@ -35,6 +35,13 @@ record_one() {
     : >"$build/.cmake/api/v1/query/toolchains-v1"
     : >"$build/.cmake/api/v1/query/cmakeFiles-v1"
     : >"$build/.cmake/api/v1/query/cache-v2"
+    # configureLog-v1 (cmake 3.26+) records find_package /
+    # try_compile / try_run / message events. Lower's
+    # findPackageHeaderComments + findPackageAttrib both consume
+    # it. The query file is harmless on older cmakes — the
+    # server-side noop is documented as "the kind is unknown" and
+    # the reply just omits the corresponding entry.
+    : >"$build/.cmake/api/v1/query/configureLog-v1"
 
     # consumer/+producer/ convention: a fixture testing
     # cross-element behavior (e.g. macro-from-import) puts the
@@ -54,6 +61,34 @@ record_one() {
         fi
     fi
 
+    # build/cmake/CMakeLists.txt layout (zstd, lz4, brotli pattern):
+    # the actual workspace root holds the sources at lib/, src/, etc.
+    # while the cmake source dir is one or two levels deeper. The
+    # fixture stages the sample-project root as the workspace
+    # (carrying a .git marker so detectWorkspaceRoot fires) and the
+    # CMakeLists.txt at build/cmake/. We point cmake at the deeper
+    # CMakeLists.txt and let detectWorkspaceRoot walk back up.
+    if [[ -d "$src/build/cmake" && -f "$src/build/cmake/CMakeLists.txt" ]]; then
+        cmake_src="$src/build/cmake"
+    fi
+
+    # Opt-in dump-vars hook: when a sample project declares
+    # `.record-with-dump-vars` in its root, inject dump-vars.cmake
+    # via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES so the resulting
+    # cmake-to-bazel.vars.dump lands in the reply dir. Fixtures
+    # exercising the find_package variable-form attribution
+    # (boost ${ZLIB_LIBRARIES} idiom) need the dump so the lower's
+    # findPackageAttrib has the <PKG>_LIBRARIES values available
+    # during offline replay.
+    if [[ -f "$src/.record-with-dump-vars" ]]; then
+        local dumpvars_cmake="$REPO_ROOT/converter/internal/cmakerun/dump-vars.cmake"
+        if [[ ! -f "$dumpvars_cmake" ]]; then
+            echo "missing dump-vars hook at $dumpvars_cmake" >&2
+            return 1
+        fi
+        extra_args+=("-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=$dumpvars_cmake")
+    fi
+
     cmake -S "$cmake_src" -B "$build" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -65,6 +100,24 @@ record_one() {
     rm -rf "$out"
     mkdir -p "$out"
     cp -R "$build/.cmake/api/v1/reply/." "$out/"
+
+    # When the dump-vars hook ran, capture the resulting variable
+    # dump so offline tests can construct cmakeVars without a
+    # live cmake. cmakerun.ReadVarsDumpFromReplyDir picks it up
+    # by basename (constants.VarsDumpFilename).
+    if [[ -f "$build/cmake-to-bazel.vars.dump" ]]; then
+        cp "$build/cmake-to-bazel.vars.dump" "$out/cmake-to-bazel.vars.dump"
+    fi
+
+    # configureLog-v1's reply JSON points at CMakeConfigureLog.yaml
+    # in the build dir; the YAML itself isn't part of the reply
+    # but lower's findPackageHeaderComments + findPackageAttrib
+    # consume it via fileapi.LoadConfigureLogYAML. Stash it next
+    # to the JSON so offline replay finds the same path layout.
+    if [[ -f "$build/CMakeFiles/CMakeConfigureLog.yaml" ]]; then
+        mkdir -p "$out/CMakeFiles"
+        cp "$build/CMakeFiles/CMakeConfigureLog.yaml" "$out/CMakeFiles/CMakeConfigureLog.yaml"
+    fi
 
     # Also stash build.ninja and CMakeFiles/rules.ninja for genrule recovery
     # tests; the included rules file lives next door and is opaque to ninja

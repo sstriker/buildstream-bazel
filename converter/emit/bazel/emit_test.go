@@ -683,6 +683,231 @@ func TestEmit_FindPackage_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_FindPackageVariableForm_Golden exercises the variable-
+// form find_package idiom: target_link_libraries consumes
+// ${ZLIB_LIBRARIES} (the FindZLIB.cmake-bound list) instead of the
+// modern namespaced ZLIB::ZLIB target. The cmake codemodel records
+// the resolved absolute path (/usr/lib/x86_64-linux-gnu/libz.so)
+// verbatim — the imports manifest's per-path lookup misses because
+// the manifest carries the namespaced ZLIB::ZLIB entry, not the
+// host-specific abs path.
+//
+// Before round-3's fix (PR #227, commit 5fccb3d), the dep dropped
+// silently → BUILD link-failed at Bazel build time. Post-fix, the
+// lower's findPackageAttrib correlates the configureLog
+// find_package-v1 event for ZLIB with the ZLIB_LIBRARIES value
+// from cmakeVars and routes the path through the manifest's
+// ZLIB::ZLIB entry, emitting //elements/zlib as a real dep.
+//
+// configureLog event synthesis: cmake 3.32+ emits find_package-v1
+// events natively. Recording hosts at 3.28-3.31 (the current
+// orchestrator pin includes 3.28) don't, so we synthesize the
+// event the lower would otherwise read from the live YAML. When
+// the host cmake advances past 3.32 and a re-record lands the
+// event naturally, the synthesis becomes a no-op (we check for
+// an existing ZLIB find_package-v1 event before appending).
+func TestEmit_FindPackageVariableForm_Golden(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/find-package-variable-form")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir := "../../testdata/fileapi/find-package-variable-form"
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imports, err := manifest.Load(filepath.Join(src, "imports.json"))
+	if err != nil {
+		t.Fatalf("load imports manifest: %v", err)
+	}
+	cmakeVars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir)
+	if err != nil {
+		t.Fatalf("read vars dump: %v", err)
+	}
+
+	yamlPath := filepath.Join(replyDir, "CMakeFiles", "CMakeConfigureLog.yaml")
+	configureLogEvents, err := fileapi.LoadConfigureLogYAML(yamlPath)
+	if err != nil {
+		t.Fatalf("load configureLog yaml: %v", err)
+	}
+	zlibPresent := false
+	for _, e := range configureLogEvents {
+		if e.Kind == "find_package-v1" && e.Found != nil && e.Found.Package == "ZLIB" {
+			zlibPresent = true
+			break
+		}
+	}
+	if !zlibPresent {
+		configureLogEvents = append(configureLogEvents, fileapi.Event{
+			Kind: "find_package-v1",
+			Found: &fileapi.EventFindPackageFound{
+				IsFound: true,
+				Package: "ZLIB",
+				Version: "1.3",
+			},
+		})
+	}
+
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: src,
+		Imports:        imports,
+		CMakeVars:      cmakeVars,
+		ConfigureLog:   configureLogEvents,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = scrubSourceLine(got, src)
+
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "find-package-variable-form", "BUILD.bazel.golden")
+	if *update {
+		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestEmit_FindPackageVariableForm_NoManifest_FallbackTag confirms
+// the operator-visible failure mode when the imports manifest has
+// no entry for the find_package-attributed library: the lower
+// emits a `cmake-codegen-find-package-fallback=<Pkg>=<basename>`
+// tag instead of silently dropping the dep. The bazelidiom audit
+// surfaces this as a `find-package-dep-unresolved` finding.
+//
+// Same configureLog-synthesis caveat as the parent test.
+func TestEmit_FindPackageVariableForm_NoManifest_FallbackTag(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/find-package-variable-form")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replyDir := "../../testdata/fileapi/find-package-variable-form"
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmakeVars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir)
+	if err != nil {
+		t.Fatalf("read vars dump: %v", err)
+	}
+	configureLogEvents := []fileapi.Event{{
+		Kind: "find_package-v1",
+		Found: &fileapi.EventFindPackageFound{
+			IsFound: true,
+			Package: "ZLIB",
+		},
+	}}
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: src,
+		// No imports manifest — the fallback tag is exactly what
+		// surfaces the gap to operators when there's no manifest
+		// entry covering the find_package call.
+		CMakeVars:    cmakeVars,
+		ConfigureLog: configureLogEvents,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "usepkg_var" {
+			found = &pkg.Targets[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("usepkg_var not in pkg.Targets")
+	}
+	wantTag := "cmake-codegen-find-package-fallback=ZLIB=libz.so"
+	hasTag := false
+	for _, tag := range found.Tags {
+		if tag == wantTag {
+			hasTag = true
+			break
+		}
+	}
+	if !hasTag {
+		t.Errorf("Tags should include %q (no-manifest fallback); got %v", wantTag, found.Tags)
+	}
+}
+
+// TestEmit_WorkspaceRootLayout_Golden exercises the zstd-shape
+// `build/cmake/CMakeLists.txt` layout: cmake's source dir is one
+// level below the workspace root, sources live at
+// <workspace>/lib/*, and the codemodel records absolute paths
+// outside cmakeSrc. The fixture carries a `.git/HEAD` marker at
+// the workspace root so detectWorkspaceRoot fires and the lower
+// relativizes labels against the workspace (emitting `lib/demo.c`
+// instead of refusing with unsupported-source-path).
+//
+// Round-5's fix (PR #227, commit 69786a7).
+//
+// Portability note: the recorded codemodel embeds the recording-
+// machine's absolute paths. The Go test relies on
+// recording-machine path == test-machine path (the
+// /home/user/buildstream-bazel checkout layout this repo uses).
+// On a CI runner with a different checkout root, re-record the
+// fixture via tools/fixtures/record-fileapi.sh before running.
+// The companion render gate (meta-cmake-workspace-root.sh) is
+// cross-machine portable because it runs cmake live.
+func TestEmit_WorkspaceRootLayout_Golden(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/workspace-root-layout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := fileapi.Load("../../testdata/fileapi/workspace-root-layout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Skip if the recorded codemodel paths don't match this host's
+	// checkout — see the portability note above. The recorded
+	// cmakeSrc is the recording-machine path; when it diverges
+	// from `src`, the workspace-root detection misses and the
+	// label-relativization fails. Re-record to fix.
+	if !strings.HasPrefix(r.Codemodel.Paths.Source, src) {
+		t.Skipf("fixture recorded against %q but test running from %q; re-record via tools/fixtures/record-fileapi.sh workspace-root-layout",
+			r.Codemodel.Paths.Source, src)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = scrubSourceLine(got, src)
+
+	goldenPath := filepath.Join("..", "..", "testdata", "golden", "workspace-root-layout", "BUILD.bazel.golden")
+	if *update {
+		_ = os.MkdirAll(filepath.Dir(goldenPath), 0o755)
+		if err := os.WriteFile(goldenPath, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("updated %s", goldenPath)
+		return
+	}
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("BUILD.bazel mismatch\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
 // TestEmit_FindPackageStatic_Golden exercises the STATIC
 // IMPORTED-dep recovery path. For STATIC archives cmake's
 // codemodel records no `dependencies` and no Link

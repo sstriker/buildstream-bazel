@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 )
 
-// detectWorkspaceRoot walks up from dir looking for a directory
-// that carries a "this is the workspace root" marker (.git,
-// MODULE.bazel, WORKSPACE, WORKSPACE.bazel). Returns the
-// marker-bearing directory when found, or "" when no marker
-// appears before the filesystem root.
+// detectWorkspaceRoot walks up at most workspaceMarkerMaxDepth
+// levels from dir looking for a directory that carries a "this
+// is the workspace root" marker (.git, MODULE.bazel, WORKSPACE,
+// WORKSPACE.bazel). Returns the marker-bearing directory when
+// found, or "" when no marker appears within the depth cap.
 //
 // Used to anchor source-path label relativization for projects
 // whose cmake source dir (CMAKE_SOURCE_DIR) sits below the repo
@@ -21,6 +21,16 @@ import (
 // with unsupported-source-path because they sit outside cmakeSrc
 // AND outside cmakeBuild — even though they're inside the actual
 // workspace.
+//
+// Why the depth cap: an unbounded walk-up catches any .git
+// arbitrarily far above the cmake source dir — which is wrong
+// for the common "this is a subdir of a git repo, not a
+// separate workspace" case (it would promote every existing
+// in-repo test fixture's workspace to the *repo* root and break
+// per-target include-dir resolution). Real-world build/<X>/
+// layouts (zstd, lz4, brotli, snappy) put the marker 1 or 2
+// levels above cmakeSrc; 3 leaves a small headroom for slightly
+// deeper variants (build/cmake/native/) without false-positives.
 //
 // Markers chosen as a superset of "this is a workspace root":
 //   - .git/ — any git checkout (works without bzlmod)
@@ -44,7 +54,7 @@ func detectWorkspaceRoot(dir string) string {
 		return ""
 	}
 	dir = filepath.Clean(dir)
-	for {
+	for steps := 0; steps <= workspaceMarkerMaxDepth; steps++ {
 		for _, marker := range workspaceMarkers {
 			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
 				return dir
@@ -57,7 +67,14 @@ func detectWorkspaceRoot(dir string) string {
 		}
 		dir = parent
 	}
+	return ""
 }
+
+// workspaceMarkerMaxDepth caps detectWorkspaceRoot's walk-up.
+// The starting dir itself is depth 0; each parent step adds one.
+// 3 covers zstd/lz4/brotli's `build/cmake/CMakeLists.txt` (depth
+// 2) plus one level of headroom for slightly deeper variants.
+const workspaceMarkerMaxDepth = 3
 
 // workspaceMarkers is the ordered set of files / dirs whose
 // presence in a directory marks it as the workspace root.
