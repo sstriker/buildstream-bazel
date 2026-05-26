@@ -344,10 +344,34 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// machines; --target-file flags carry the Bazel-time
 		// values.
 		targetFileRefs := extractTargetFileRefs(templateBody)
+		// PR 2: resolve each TARGET_FILE reference to a Bazel
+		// label, branching per-target on resolution:
+		//
+		//   - same-package (genexTargets[t] exists) → `:t`
+		//     (existing PR 1 behaviour).
+		//   - manifest-resolved (imports.LookupCMakeTarget(t)
+		//     returns an export) → that export's full Bazel
+		//     label (`//elements/foo:bar`).
+		//   - else → drop from the cmd flag set; the (a) eval
+		//     refuses on missing FileLocation; the upstream
+		//     unresolvedCrossPackageTargetFiles gate has already
+		//     intercepted the truly-unresolvable case via the
+		//     refusal stub. (Belt-and-suspenders: even if a
+		//     downstream extension added a name we don't
+		//     resolve, dropping it surfaces as an (a) refusal
+		//     and falls to (b)/legacy rather than emitting a
+		//     bogus label.)
+		//
+		// Cross-package labels also need to ride in the
+		// genrule's srcs so Bazel resolves `$(location //pkg:t)`
+		// at action time. Same-package `:t` labels resolve
+		// without an explicit srcs entry (Bazel's per-package
+		// lookup picks them up); cross-package labels do not.
+		targetFileLabels, crossPackageSrcs := resolveTargetFileLabels(targetFileRefs, ctxTargets, imports)
 		ctx := buildGenexContext(cmakeVars, ctxTargets)
 		if nodes, err := genexeval.Parse(templateBody); err == nil {
 			if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
-				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, targetFileRefs, opts, isContentForm)
+				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, targetFileLabels, opts, isContentForm)
 				if cmdErr == nil {
 					target := ir.Target{
 						Name:         name,
@@ -361,6 +385,11 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					if !isContentForm {
 						target.Srcs = []string{inRel}
 					}
+					// Append cross-package labels (sorted) so
+					// `$(location //pkg:t)` resolves at Bazel
+					// time. Same-package `:t` labels are
+					// resolved by Bazel without explicit srcs.
+					target.Srcs = append(target.Srcs, crossPackageSrcs...)
 					return target
 				}
 			}
@@ -680,12 +709,42 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 // are dropped silently — the codemodel is the ground truth for
 // "what targets exist."
 //
+// Captured from the imports manifest (PR 2 cross-package
+// TARGET_FILE) when imports is non-nil: each export's
+// CMakeTarget surfaces as an Imported=true TargetInfo entry
+// keyed by the namespaced cmake name (e.g. `Foo::bar`). Its
+// FileLocation comes from the export's LinkPaths[0] — cmake's
+// `$<TARGET_FILE:Foo::bar>` at recording time resolves to the
+// IMPORTED_LOCATION_<CONFIG> value, which the orchestrator side
+// captured into LinkPaths. Populating FileLocation lets the (a)
+// evaluator's byte-equal check pass at convert time for
+// templates referencing imported targets. The marshaled wire
+// struct OMITS FileLocation (json:"-"), so the recording-machine
+// path never lands in the lifted cmd — the Bazel-time
+// `--target-file` flag carries the cross-package label
+// resolved at action time. A codemodel-local target with the
+// same name (rare; cmake namespaces avoid this) wins over the
+// manifest entry.
+//
 // Returns nil when r is nil or has no usable targets — the
 // evaluator's UnsupportedError on missing-target surfaces
 // cleanly and routes the lift to (b) / legacy.
-func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe) map[string]genexeval.TargetInfo {
+func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe, imports *manifest.Resolver) map[string]genexeval.TargetInfo {
 	if r == nil || len(r.Targets) == 0 {
-		return nil
+		// Imports-only case: even with no local codemodel,
+		// imported targets could still drive an (a)-shape lift
+		// (template that only references `$<TARGET_FILE:Foo::bar>`
+		// with no project-local targets). Build the imports
+		// dict in that case too.
+		if imports == nil || imports.Empty() {
+			return nil
+		}
+		out := map[string]genexeval.TargetInfo{}
+		foldImportedTargets(out, imports)
+		if len(out) == 0 {
+			return nil
+		}
+		return out
 	}
 	out := make(map[string]genexeval.TargetInfo, len(r.Targets))
 	for _, t := range r.Targets {
@@ -745,7 +804,49 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 		ti.InterfaceLinkOptions = p.Interface["LINK_OPTIONS"]
 		out[p.Name] = ti
 	}
+	// PR 2: fold imports manifest entries — each export's
+	// namespaced cmake target name surfaces as an Imported=true
+	// TargetInfo with FileLocation derived from the
+	// IMPORTED_LOCATION-captured LinkPaths. Local-codemodel
+	// entries win on name collision (the manifest is a fallback
+	// for cmake names not in the codemodel).
+	foldImportedTargets(out, imports)
 	return out
+}
+
+// foldImportedTargets adds an Imported=true TargetInfo per
+// imports.Resolver export, keyed by the namespaced cmake
+// target name (e.g. `Foo::bar`). Skips names already present
+// in `out` — the local codemodel wins. FileLocation is
+// populated from the export's first LinkPath when present:
+// cmake's `$<TARGET_FILE:Foo::bar>` at recording time resolves
+// to IMPORTED_LOCATION_<CONFIG>, which the orchestrator side
+// captured in LinkPaths. An empty LinkPaths leaves FileLocation
+// empty; the byte-equal check fails for those, the (a) lift
+// refuses, and the call falls through to (b)/legacy via the
+// existing fallthrough rules. (The upstream
+// unresolvedCrossPackageTargetFiles gate doesn't fire because
+// the manifest does carry the name — just not its location.)
+func foldImportedTargets(out map[string]genexeval.TargetInfo, imports *manifest.Resolver) {
+	if imports == nil {
+		return
+	}
+	for _, ex := range imports.AllExports() {
+		if ex == nil || ex.CMakeTarget == "" {
+			continue
+		}
+		if _, present := out[ex.CMakeTarget]; present {
+			continue
+		}
+		var fileLoc string
+		if len(ex.LinkPaths) > 0 {
+			fileLoc = ex.LinkPaths[0]
+		}
+		out[ex.CMakeTarget] = genexeval.TargetInfo{
+			Imported:     true,
+			FileLocation: fileLoc,
+		}
+	}
 }
 
 // targetFileOpPrefixes is the set of `$<...:` prefixes that
@@ -894,6 +995,74 @@ func extractTargetFileRefs(body []byte) []string {
 	return names
 }
 
+// resolveTargetFileLabels turns the sorted list of cmake target
+// names referenced via `$<TARGET_FILE:t>` (and the six on-disk-
+// path variants) into the per-target Bazel label the lifter
+// will substitute for cmake's `$<TARGET_FILE>` at Bazel time
+// via the cmake-configure-file --target-file flag. PR 2's
+// resolved-lift wire.
+//
+// For each name:
+//
+//   - if genexTargets[name] exists → label is `:name`
+//     (same-package; PR 1 behaviour unchanged).
+//   - else if imports.LookupCMakeTarget(name) returns an
+//     export → label is that export's full Bazel label
+//     (`//elements/foo:bar`; PR 2's resolved-lift path).
+//   - else → name is dropped from both the returned label
+//     map and the returned src-list. The upstream
+//     unresolvedCrossPackageTargetFiles gate would have already
+//     turned the call into a refusal stub before reaching here;
+//     this is the belt-and-suspenders default for the "never
+//     should fire" case.
+//
+// Returns the label map plus the sorted set of cross-package
+// labels the caller must add to genrule.srcs so
+// `$(location //pkg:t)` resolves at Bazel time. Same-package
+// `:name` labels resolve without an explicit srcs entry —
+// Bazel finds them via package-internal lookup, so they're
+// omitted from the srcs list.
+func resolveTargetFileLabels(names []string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver) (map[string]string, []string) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	labels := make(map[string]string, len(names))
+	var crossPackage []string
+	for _, name := range names {
+		ti, inLocal := genexTargets[name]
+		// The local-codemodel arm: present in genexTargets AND
+		// not Imported (Imported=true entries come from the
+		// imports manifest fold in buildGenexTargets — they
+		// resolve to cross-package labels, not `:name`).
+		if inLocal && !ti.Imported {
+			labels[name] = ":" + name
+			continue
+		}
+		// The manifest-resolved arm: PR 2's resolved-lift path.
+		// Either the entry surfaced via imports.LookupCMakeTarget
+		// directly, or it landed in genexTargets via the imports
+		// fold (Imported=true). Both routes lead to the same
+		// full Bazel label.
+		if imports != nil {
+			if ex := imports.LookupCMakeTarget(name); ex != nil {
+				labels[name] = ex.BazelLabel
+				crossPackage = append(crossPackage, ex.BazelLabel)
+				continue
+			}
+		}
+		// Neither local nor manifest-resolved: drop. The
+		// refusal-stub gate above this point handles the
+		// genuinely-unresolvable case; if we reach here for a
+		// dropped name, the (a) eval will fail FileLocation
+		// lookup → fall to (b)/legacy, which the latent-bug
+		// gate already protects against.
+	}
+	if len(crossPackage) > 0 {
+		sort.Strings(crossPackage)
+	}
+	return labels, crossPackage
+}
+
 // buildGenexContext extracts the configure-time fields the (a)
 // evaluator consults from the cmake variable dump. The Context
 // is a thin projection over cmakeVars — the evaluator reads
@@ -949,18 +1118,29 @@ func buildGenexContext(cmakeVars map[string]string, targets map[string]genexeval
 // genexeval evaluator does the substitution at Bazel time
 // against that Context.
 //
-// targetFileRefs is the sorted set of target names the template
-// references via `$<TARGET_FILE:name>`. The lifter resolves
-// each to a Bazel `$(location :name)` substitution at action-
-// time; the resulting flags accumulate as
-// `--target-file=name=$(location :name)` per reference and
-// override the marshaled Context's FileLocation (which is
-// always wire-omitted to keep the lifted cmd byte-stable
-// across recording machines).
+// targetFileLabels is a map of cmake target name → Bazel label
+// the lifter resolved for `$<TARGET_FILE:name>` (and the six
+// on-disk-path variants) references in the template. Each
+// entry becomes a `--target-file=<name>="$(location <label>)" `
+// flag at action time, overriding the marshaled Context's
+// FileLocation (which is always wire-omitted to keep the
+// lifted cmd byte-stable across recording machines). Labels
+// take two shapes:
+//
+//   - same-package: `:<name>` — Bazel resolves via package-
+//     internal lookup; no explicit genrule.srcs entry needed.
+//   - cross-package: `//elements/foo:bar` — comes from the
+//     imports.json manifest's resolver; the lifter MUST also
+//     add this label to genrule.srcs so `$(location)` resolves
+//     at action time. The caller (buildFileGenerateGenrule)
+//     handles the srcs wiring.
+//
+// Flags emit in sorted target-name order for byte-stable cmd
+// output across runs.
 //
 // Like fileGenerateLiftedCmd, --values stays empty for
 // file(GENERATE) (no @VAR@/${VAR}/#cmakedefine surface).
-func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, targetFileRefs []string, opts configurefile.Options, isContentForm bool) (string, error) {
+func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, targetFileLabels map[string]string, opts configurefile.Options, isContentForm bool) (string, error) {
 	emptyValues, err := json.Marshal(map[string]string{})
 	if err != nil {
 		return "", fmt.Errorf("marshal values: %w", err)
@@ -981,11 +1161,20 @@ func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Conte
 	)
 	ctxFlag := `--genex-context="$$GENEX_CONTEXT" `
 	// --target-file flags for each $<TARGET_FILE:t> reference.
-	// v1 assumes same-package targets — the Bazel label is `:t`.
+	// PR 2 branches per-target on resolution: same-package
+	// targets render as `:name`, cross-package targets render
+	// as the imports.json-resolved full Bazel label. Names that
+	// resolve to neither were intercepted upstream by the
+	// cross-package refusal stub gate — they don't reach here.
 	// Sorted iteration so the cmd is stable across runs.
+	names := make([]string, 0, len(targetFileLabels))
+	for n := range targetFileLabels {
+		names = append(names, n)
+	}
+	sort.Strings(names)
 	var targetFileFlags strings.Builder
-	for _, name := range targetFileRefs {
-		fmt.Fprintf(&targetFileFlags, `--target-file=%s="$(location :%s)" `, name, name)
+	for _, n := range names {
+		fmt.Fprintf(&targetFileFlags, `--target-file=%s="$(location %s)" `, n, targetFileLabels[n])
 	}
 	ctxCleanup := ` [ -n "$${GENEX_CONTEXT:-}" ] && rm -f "$$GENEX_CONTEXT";`
 

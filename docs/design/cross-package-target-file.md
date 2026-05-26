@@ -6,8 +6,11 @@ on-disk-path variants — `TARGET_FILE_DIR`, `TARGET_FILE_NAME`,
 `TARGET_LINKER_FILE*`, `TARGET_SONAME_FILE`) when `t` lives in
 a different Bazel package from the lift site.
 
-Status: **design only** — no code in this PR. Follow-up
-implementation PR lands separately once the shape is agreed.
+Status: **shipped** — both PR 1 (the refusal-stub soundness
+gate) and PR 2 (the resolved-lift via the imports manifest)
+landed. See `ROADMAP.md`'s Done section for the per-PR
+summaries. This doc remains the architectural reference for
+the two-shape behaviour.
 
 ## Today's behaviour
 
