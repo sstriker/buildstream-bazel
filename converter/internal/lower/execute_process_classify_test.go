@@ -171,6 +171,50 @@ func TestClassify_Buckets(t *testing.T) {
 			},
 			bucket: BucketUnknown,
 		},
+		{
+			name: "python3 -c with RESULT_VARIABLE only → probe (import-check pattern)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"python3", "-c", "import pygments"}},
+				ResultVariable: "_R",
+			},
+			// Canonical "is this module available?" probe: exit
+			// status is the answer, no captured stdout. Without
+			// the RESULT_VARIABLE branch in the dual-use gate,
+			// this falls through to Unknown.
+			bucket: BucketProbe,
+		},
+		{
+			name: "ninja --version with OUTPUT_VARIABLE → probe",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"ninja", "--version"}},
+				OutputVariable: "NINJA_VER",
+			},
+			bucket: BucketProbe,
+		},
+		{
+			name: "cc -Wl,--version with OUTPUT_VARIABLE → probe (linker capability)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"cc", "-Wl,--version", "-o", "/dev/null"}},
+				OutputVariable: "LD_VER",
+			},
+			bucket: BucketProbe,
+		},
+		{
+			name: "ar -D probe → probe (deterministic-mode capability check)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"ar", "rD", "t.a"}},
+				ResultVariable: "_AR_D",
+			},
+			bucket: BucketProbe,
+		},
+		{
+			name: "ranlib -D probe → probe (deterministic-mode capability check)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"ranlib", "-D", "t.a"}},
+				ResultVariable: "_RL_D",
+			},
+			bucket: BucketProbe,
+		},
 	}
 
 	for _, c := range cases {

@@ -156,7 +156,12 @@ var dualUseProbeDrivers = map[string]bool{
 	"g++":        true,
 	"clang":      true,
 	"clang++":    true,
+	"cc":         true,
+	"c++":        true,
 	"ld":         true,
+	"ar":         true,
+	"ranlib":     true,
+	"ninja":      true,
 	"pkg-config": true,
 	"python":     true,
 	"python3":    true,
@@ -254,15 +259,26 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	}
 	// Dual-use probe drivers: classify as Probe only when the
 	// call shape unambiguously matches the probe pattern
-	// (OUTPUT_VARIABLE without OUTPUT_FILE). Calls with
-	// OUTPUT_FILE fall through to the FileProducing case
-	// below — `python3 gen.py spec.txt OUTPUT_FILE generated.h`
-	// is code generation, not a probe, and should hoist to a
-	// build-time genrule.
-	if dualUseProbeDrivers[driver] && call.OutputVariable != "" && call.OutputFile == "" {
+	// (OUTPUT_VARIABLE or RESULT_VARIABLE writeback, without
+	// OUTPUT_FILE). Calls with OUTPUT_FILE fall through to the
+	// FileProducing case below — `python3 gen.py spec.txt
+	// OUTPUT_FILE generated.h` is code generation, not a probe.
+	//
+	// RESULT_VARIABLE-only shape is the canonical "does this
+	// thing exist?" probe (e.g. `execute_process(COMMAND python3
+	// -c "import pygments" RESULT_VARIABLE _r OUTPUT_QUIET
+	// ERROR_QUIET)` — exit status is the answer). Without
+	// RESULT_VARIABLE in the gate, those fall through to Unknown
+	// and refuse Tier-1 unnecessarily.
+	if dualUseProbeDrivers[driver] && call.OutputFile == "" &&
+		(call.OutputVariable != "" || call.ResultVariable != "") {
+		channel := "OUTPUT_VARIABLE"
+		if call.OutputVariable == "" {
+			channel = "RESULT_VARIABLE"
+		}
 		return ClassifyResult{
 			Bucket: BucketProbe,
-			Reason: driver + " writing OUTPUT_VARIABLE looks like a host/toolchain probe",
+			Reason: driver + " writing " + channel + " looks like a host/toolchain probe",
 		}
 	}
 
