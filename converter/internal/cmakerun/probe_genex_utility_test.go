@@ -80,18 +80,25 @@ func TestProbeGenex_UtilityTargets_LiveCMake(t *testing.T) {
 
 	// Verify the probe outputs are present for the artifact-
 	// producing target AND absent for the non-artifact targets —
-	// that's the affirmative-gate semantics.
-	realFile := filepath.Join(buildDir, "cmake-to-bazel.genex", "realtarget", "file.txt")
+	// that's the affirmative-gate semantics. Filenames are
+	// per-config (file.Release.txt under the single-config Ninja
+	// build with -DCMAKE_BUILD_TYPE=Release); the per-config OUTPUT
+	// shape is what lets the hook compose with multi-config and is
+	// the source of truth even when only one config is in play.
+	realFile := filepath.Join(buildDir, "cmake-to-bazel.genex", "realtarget", "file.Release.txt")
 	if _, err := os.Stat(realFile); err != nil {
 		t.Errorf("expected realtarget probe file at %q: %v", realFile, err)
 	}
-	utilFile := filepath.Join(buildDir, "cmake-to-bazel.genex", "noisy_utility", "file.txt")
+	utilFile := filepath.Join(buildDir, "cmake-to-bazel.genex", "noisy_utility", "file.Release.txt")
 	if _, err := os.Stat(utilFile); err == nil {
-		t.Errorf("noisy_utility probe file.txt should NOT exist (gate skipped UTILITY); found %q", utilFile)
+		t.Errorf("noisy_utility probe file.Release.txt should NOT exist (gate skipped UTILITY); found %q", utilFile)
 	}
 	// type.txt is emitted for ALL targets the gate sees (it's the
-	// outer probe used as the gating signal). UTILITY targets'
-	// type.txt SHOULD be present.
+	// outer probe used as the gating signal) AND it's the one
+	// probe that stays config-invariant — cmake's
+	// TARGET_PROPERTY:TYPE doesn't honor $<CONFIG>. UTILITY
+	// targets' type.txt SHOULD be present at the flat (no-config)
+	// path.
 	utilType := filepath.Join(buildDir, "cmake-to-bazel.genex", "noisy_utility", "type.txt")
 	if _, err := os.Stat(utilType); err != nil {
 		t.Errorf("expected noisy_utility type.txt at %q: %v", utilType, err)

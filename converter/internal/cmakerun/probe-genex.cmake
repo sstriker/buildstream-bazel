@@ -11,15 +11,28 @@
 # cmakerun.ReadGenexProbe.
 #
 # Output layout: <CMAKE_BINARY_DIR>/cmake-to-bazel.genex/
-#   <tgt>/type.txt          — $<TARGET_PROPERTY:tgt,TYPE>
-#   <tgt>/file.txt          — $<TARGET_FILE:tgt>          (artifact-producing targets only — see gate)
-#   <tgt>/file_dir.txt      — $<TARGET_FILE_DIR:tgt>      (artifact-producing targets only)
-#   <tgt>/file_name.txt     — $<TARGET_FILE_NAME:tgt>     (artifact-producing targets only)
-#   <tgt>/objects.txt       — $<TARGET_OBJECTS:tgt>       (only OBJECT_LIBRARY)
-#   <tgt>/interface_<P>.txt — $<TARGET_PROPERTY:tgt,INTERFACE_<P>>
-#                              for P in INCLUDE_DIRECTORIES /
-#                              COMPILE_DEFINITIONS / COMPILE_OPTIONS /
-#                              LINK_LIBRARIES / LINK_OPTIONS
+#   <tgt>/type.txt                  — $<TARGET_PROPERTY:tgt,TYPE>
+#   <tgt>/file.<config>.txt         — $<TARGET_FILE:tgt>          (artifact-producing targets only — see gate)
+#   <tgt>/file_dir.<config>.txt     — $<TARGET_FILE_DIR:tgt>      (artifact-producing targets only)
+#   <tgt>/file_name.<config>.txt    — $<TARGET_FILE_NAME:tgt>     (artifact-producing targets only)
+#   <tgt>/objects.<config>.txt      — $<TARGET_OBJECTS:tgt>       (only OBJECT_LIBRARY)
+#   <tgt>/interface_<P>.<config>.txt
+#                                   — $<TARGET_PROPERTY:tgt,INTERFACE_<P>>
+#                                     for P in INCLUDE_DIRECTORIES /
+#                                     COMPILE_DEFINITIONS / COMPILE_OPTIONS /
+#                                     LINK_LIBRARIES / LINK_OPTIONS
+#   <tgt>/property_<P>.<config>.txt — $<TARGET_PROPERTY:tgt,<P>> for non-INTERFACE_*
+#
+# The `.<config>.` infix is cmake's `$<CONFIG>` resolved at
+# generation time: the build type ("Release") in single-config
+# generators, the configuration name (one of CMAKE_CONFIGURATION_TYPES)
+# in Ninja Multi-Config. Per-config OUTPUT paths are what makes the
+# hook compose with multi-config; without it cmake errors with
+# "Evaluation file to be written multiple times with different
+# content" because the same OUTPUT would be generated once per
+# config with potentially different CONTENT. type.txt stays
+# config-invariant — TARGET_PROPERTY:TYPE doesn't honor
+# `$<CONFIG>` so a single emit is correct.
 #
 # DEFER target: cmake_language(DEFER DIRECTORY) schedules the emit
 # pass for end-of-top-level-directory processing, after every
@@ -102,13 +115,13 @@ function(_cmtb_probe_genex)
            _CMTB_TYPE STREQUAL "MODULE_LIBRARY" OR
            _CMTB_TYPE STREQUAL "OBJECT_LIBRARY")
             file(GENERATE
-                OUTPUT "${_CMTB_OUT_DIR}/file.txt"
+                OUTPUT "${_CMTB_OUT_DIR}/file.$<CONFIG>.txt"
                 CONTENT "$<TARGET_FILE:${_CMTB_TGT}>")
             file(GENERATE
-                OUTPUT "${_CMTB_OUT_DIR}/file_name.txt"
+                OUTPUT "${_CMTB_OUT_DIR}/file_name.$<CONFIG>.txt"
                 CONTENT "$<TARGET_FILE_NAME:${_CMTB_TGT}>")
             file(GENERATE
-                OUTPUT "${_CMTB_OUT_DIR}/file_dir.txt"
+                OUTPUT "${_CMTB_OUT_DIR}/file_dir.$<CONFIG>.txt"
                 CONTENT "$<TARGET_FILE_DIR:${_CMTB_TGT}>")
         endif()
 
@@ -118,7 +131,7 @@ function(_cmtb_probe_genex)
         # archive / link).
         if(_CMTB_TYPE STREQUAL "OBJECT_LIBRARY")
             file(GENERATE
-                OUTPUT "${_CMTB_OUT_DIR}/objects.txt"
+                OUTPUT "${_CMTB_OUT_DIR}/objects.$<CONFIG>.txt"
                 CONTENT "$<TARGET_OBJECTS:${_CMTB_TGT}>")
         endif()
 
@@ -126,10 +139,13 @@ function(_cmtb_probe_genex)
         # at generation time and emits the post-walk values. This is
         # what internal/genexeval would otherwise need to reimplement
         # for INTERFACE_LINK_LIBRARIES / INTERFACE_INCLUDE_DIRECTORIES
-        # and friends.
+        # and friends. Per-config OUTPUT because INTERFACE_*
+        # properties can transitively pull in `$<CONFIG>`-bearing
+        # generator expressions; emitting once per config is the
+        # only safe shape under multi-config.
         foreach(_CMTB_PROP INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
             file(GENERATE
-                OUTPUT "${_CMTB_OUT_DIR}/interface_${_CMTB_PROP}.txt"
+                OUTPUT "${_CMTB_OUT_DIR}/interface_${_CMTB_PROP}.$<CONFIG>.txt"
                 CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},INTERFACE_${_CMTB_PROP}>")
         endforeach()
 
@@ -138,10 +154,11 @@ function(_cmtb_probe_genex)
         # visibility presets). The reader exposes these under
         # GenexProbe.Properties so consumers can route each into
         # the matching Bazel attribute (linkopts for rpath,
-        # features = ["pic"] for PIC, etc.).
+        # features = ["pic"] for PIC, etc.). Same per-config OUTPUT
+        # rationale as the INTERFACE_* loop above.
         foreach(_CMTB_PROP BUILD_RPATH INSTALL_RPATH POSITION_INDEPENDENT_CODE CXX_VISIBILITY_PRESET C_VISIBILITY_PRESET VISIBILITY_INLINES_HIDDEN ENABLE_EXPORTS SOVERSION VERSION AUTOMOC AUTOUIC AUTORCC EXCLUDE_FROM_ALL MSVC_RUNTIME_LIBRARY JOB_POOL_COMPILE JOB_POOL_LINK CXX_EXTENSIONS C_EXTENSIONS)
             file(GENERATE
-                OUTPUT "${_CMTB_OUT_DIR}/property_${_CMTB_PROP}.txt"
+                OUTPUT "${_CMTB_OUT_DIR}/property_${_CMTB_PROP}.$<CONFIG>.txt"
                 CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},${_CMTB_PROP}>")
         endforeach()
     endforeach()

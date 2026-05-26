@@ -49,12 +49,13 @@ echo 'int main(void){return 0;}' >"$stage/src/main.c"
 out_features="$stage/features.bzl"
 out_build="$stage/BUILD.bazel.out"
 
-# --probe-genex=false: probe-genex emits per-target file(GENERATE)
-# outputs that multi-config cmake errors on ("Evaluation file to be
-# written multiple times with different content"). Disabling
-# probe-genex here is the narrow workaround; the genex-probe +
-# multi-config interaction is a separate known issue tracked
-# outside this gate.
+# probe-genex now composes with multi-config (per-config OUTPUT in
+# probe-genex.cmake + reader-side collapse / silent-drop on
+# divergence). The narrow `--probe-genex=false` workaround from
+# PR #229 — needed when the hook emitted one file.txt OUTPUT total
+# and cmake's Multi-Config generator complained "Evaluation file
+# to be written multiple times with different content" — is no
+# longer required for this gate.
 #
 # The convert may exit non-zero on downstream stages (ninja-parse
 # of multi-config layouts, ToIR's per-config splits) — those are
@@ -65,7 +66,6 @@ out_build="$stage/BUILD.bazel.out"
 "$bin_dir/convert-element-cmake" \
     --source-root "$stage" \
     --build-types Release,ASan,TSan,UBSan \
-    --probe-genex=false \
     --out-build "$out_build" \
     --out-sanitizer-features "$out_features" \
     >"$stage/convert.stdout" 2>"$stage/convert.stderr" || true
