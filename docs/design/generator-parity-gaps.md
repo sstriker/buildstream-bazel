@@ -21,13 +21,18 @@ can pick off the cheap wins without scanning everything.
 These are gaps where the codemodel already carries the data —
 the lift is wiring it into IR + emit.
 
-- **`CompileGroup.LanguageStandard`** — *codemodel-v2*. *Small slice*.
+- ✓ **`CompileGroup.LanguageStandard`** — *codemodel-v2*. **Landed.**
   cmake records the resolved `CMAKE_<LANG>_STANDARD` value per
-  CompileGroup (e.g. `"17"` for `cxx_std_17`). The converter
-  loads the struct but doesn't lower it. Bazel-idiomatic emit:
-  `copts = ["-std=c++17"]` on cc_library/cc_binary, or surface
-  via a cc_toolchain feature when the project standardizes across
-  targets.
+  CompileGroup (e.g. `"17"` for `cxx_std_17`). Lifted to
+  `copts = ["-std=c++17"]` with an idempotency guard for
+  projects where cmake's generator already inlined the flag.
+
+- ✓ **`TargetArchive.LTO` / `TargetLink.LTO`** — *codemodel-v2*.
+  **Landed.** Per-target `INTERPROCEDURAL_OPTIMIZATION` flag
+  surfaces as `features = ["lto"]` via the new
+  `ir.Target.Features` slot. Operator's cc_toolchain owns the
+  actual `-flto` flag set (see `examples/sanitizer-features/`
+  where lto is already in SANITIZER_FEATURES).
 
 - **`CompileGroup.PrecompileHeaders`** — *codemodel-v2*. *Small slice*.
   Per-target `target_precompile_headers(...)` declarations.
@@ -44,31 +49,29 @@ the lift is wiring it into IR + emit.
   the platform.
 
 - **`CompileGroup.Sysroot` / `Link.Sysroot`** — *codemodel-v2*.
-  *Small slice*. Per-target cross-compile sysroot. The converter
-  loads but doesn't lower. Bazel handles sysroot via cc_toolchain;
-  surfacing the per-target override is informational at best
-  (the operator's cc_toolchain is the canonical home for
-  cross-compile config).
-
-- **`TargetArchive.LTO` / `TargetLink.LTO`** — *codemodel-v2*.
-  *Tiny slice*. Per-target `INTERPROCEDURAL_OPTIMIZATION` flag.
-  Lift: `--features=lto` per-target via the existing
-  Phase 5 sanitizer-as-feature plumbing.
+  *Small slice (informational)*. Per-target cross-compile sysroot.
+  The operator's cc_toolchain is the canonical home for sysroot;
+  per-target overrides risk conflict. Lift as a Provenance
+  comment rather than a copt to avoid the conflict; surface
+  via `--emit-provenance`.
 
 ## Easy: trace data we already decode
 
 - **`shadow.ExtractSourceFileProperties` properties** — *trace*.
   *Per-property slice each*. The decoder is wired; consumers
-  for specific properties haven't all landed:
+  for specific properties:
 
-  - `HEADER_FILE_ONLY` → reclassify source from `srcs` to `hdrs`
-    (file declared but not compiled).
+  - ✓ `HEADER_FILE_ONLY` → reclassify source from `srcs` to
+    `hdrs` (file declared but not compiled). **Landed via
+    `reclassifyHeaderOnlySources` post-pass.**
   - `LANGUAGE` override → bypass compile-group's reported
     language (rare; usually `set_source_files_properties(...
     PROPERTIES LANGUAGE CXX)` on a `.c` file).
   - `COMPILE_FLAGS` (old form) → augment per-source copts via
-    the CompileGroup-split mechanism (Phase 1 task 3
-    extension).
+    the CompileGroup-split mechanism (the
+    `shouldSplitCompileGroups` gate covers this when the
+    different copts produce distinct CompileGroups in cmake's
+    own partitioning).
   - `GENERATED` → already handled via `TargetSource.IsGenerated`
     in the codemodel; trace adds no new signal.
   - `OBJECT_DEPENDS` → declares manual header deps; could
@@ -77,19 +80,16 @@ the lift is wiring it into IR + emit.
 
 ## Medium: data the File API exposes that we don't query
 
-- **`configureLog-v1` event consumption** — *configureLog YAML*.
-  *Medium slice*. The reader is wired (`fileapi.LoadConfigureLogYAML`)
-  but no lifter consumes `try_compile-v1` /
-  `find_package-v1` events. Use cases:
+- ✓ **`configureLog-v1` event consumption** — *configureLog YAML*.
+  **Probe-rescue half landed.** `configureLogVars` projects
+  try_compile-v1 / try_run-v1 events into the rescue's
+  var → value map alongside dump-vars' cmakeVars. Covers
+  probes whose results landed in cmake's cache via Check_*
+  modules rather than directly in user variables.
 
-  - Cross-reference `try_compile` outcomes with refused
-    `execute_process` probes — when the probe's
-    `OUTPUT_VARIABLE` matches a `try_compile` result variable
-    that the YAML records, lift the probe to a constant
-    instead of the BucketProbe refusal.
-  - Surface `find_package` resolutions as comments on the
-    cc_import emission so operators see WHERE the dep came
-    from (system / vendored / custom-CMAKE_PREFIX_PATH).
+  Queued: `find_package-v1` event attribution as Provenance
+  comments on cc_import targets so operators see WHERE the
+  dep came from (system / vendored / custom-CMAKE_PREFIX_PATH).
 
 - **`cache-v2` entries beyond sanitizer flags** — *cache-v2*.
   *Per-pattern slice*. We extract `CMAKE_<LANG>_FLAGS_<CONFIG>`
@@ -222,26 +222,35 @@ property set we probe.
   (already in tree for per-platform; the per-config case
   inherits).
 
-## Where to start
+## Where to start (remaining wins)
 
-Lowest-friction wins for a contributor wanting to extend coverage:
+Items still queued after the initial uplift's gap-fill pass:
 
-1. **`CompileGroup.LanguageStandard`** consumer (`-std=c++17`
-   copts emission). Single field, direct lift, ~50 lines + test.
-   *See [the LanguageStandard slice in this PR series](https://github.com/sstriker/buildstream-bazel/pull/N).*
+1. **`Link.Frameworks` / `-framework Foo`** consumer (macOS).
+   Tiny lift; needs a real macOS fixture to verify the
+   CompileGroup.Frameworks vs Link.CommandFragments distinction
+   plays out correctly.
 
-2. **`HEADER_FILE_ONLY` source-file property** consumer.
-   Reclassifies sources from srcs to hdrs. Small change to
-   the source walk; benefits projects with header-only files
-   declared via `set_source_files_properties`.
+2. **`add_dependencies` → `data = [":dep"]`** wire. Distinguish
+   from target_link_libraries by checking
+   `outermostUserFrame(TargetDependency.Backtrace).Command ==
+   "add_dependencies"`. Add `ir.Target.Data []string` +
+   emit support; backtraceRecoverLinkScope's existing
+   command-filter gate already has the wiring.
 
-3. **`Link.Frameworks`** consumer (macOS `-framework Foo`).
-   Tiny — emit linkopts entries directly from the codemodel
-   slice we already load.
+3. **`PrecompileHeaders`** consumer. CompileGroup.PrecompileHeaders
+   already loaded; lift to `hdrs` + a `cmake-codegen-pch` tag
+   so operators can opt into a `--features=pch` toolchain
+   shape.
 
-4. **`add_dependencies` → `data = [":dep"]`** wire from the
-   trace decoder. Pure build-order edge that's currently
-   dropped.
+4. **`find_package-v1` event attribution** as
+   `# from find_package(<Pkg>) → <ConfigFile>` Provenance
+   comment on emitted cc_import targets. Operators see WHERE
+   the dep came from without re-running the converter.
+
+5. **`SOURCE_FILE_PROPERTIES`** remaining properties: `LANGUAGE`
+   override, `OBJECT_DEPENDS`. Per-property recipes; consumer
+   pattern follows `HEADER_FILE_ONLY`.
 
 Each is independently shippable; the doc updates as each
 lands.
