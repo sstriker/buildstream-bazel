@@ -79,3 +79,51 @@ func TestFindPackageHeaderComments_SkipsNonFindPackageEvents(t *testing.T) {
 		t.Errorf("non-find_package events should produce nil; got %v", got)
 	}
 }
+
+func TestOptionsHeaderComments_BasicShape(t *testing.T) {
+	cache := fileapi.Cache{Entries: []fileapi.CacheEntry{
+		{
+			Name:  "FOO_ENABLE_TESTS",
+			Type:  "BOOL",
+			Value: "ON",
+			Properties: []fileapi.CacheEntryProp{
+				{Name: "HELPSTRING", Value: "Enable tests"},
+			},
+		},
+		{
+			Name:  "FOO_USE_GPU",
+			Type:  "BOOL",
+			Value: "OFF",
+			Properties: []fileapi.CacheEntryProp{
+				{Name: "HELPSTRING", Value: "Build with GPU acceleration"},
+			},
+		},
+		// Should be filtered out — CMAKE_ prefix.
+		{Name: "CMAKE_VERBOSE_MAKEFILE", Type: "BOOL", Value: "OFF"},
+		// Not BOOL — skip.
+		{Name: "FOO_PATH", Type: "PATH", Value: "/tmp"},
+	}}
+	got := optionsHeaderComments(cache)
+	if len(got) == 0 {
+		t.Fatal("expected header comments")
+	}
+	combined := strings.Join(got, "\n")
+	if !strings.Contains(combined, "FOO_ENABLE_TESTS = ON") {
+		t.Errorf("missing FOO_ENABLE_TESTS: %v", got)
+	}
+	if !strings.Contains(combined, "FOO_USE_GPU = OFF") {
+		t.Errorf("missing FOO_USE_GPU: %v", got)
+	}
+	if strings.Contains(combined, "CMAKE_VERBOSE_MAKEFILE") {
+		t.Errorf("CMAKE_ entry should be filtered: %v", got)
+	}
+	if strings.Contains(combined, "FOO_PATH") {
+		t.Errorf("non-BOOL entry should be filtered: %v", got)
+	}
+}
+
+func TestOptionsHeaderComments_EmptyCache(t *testing.T) {
+	if got := optionsHeaderComments(fileapi.Cache{}); got != nil {
+		t.Errorf("empty cache should return nil; got %v", got)
+	}
+}

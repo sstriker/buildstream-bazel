@@ -402,9 +402,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	pkg := &ir.Package{
-		Name:           projectName(r),
-		SourceRoot:     hostSrc,
-		HeaderComments: findPackageHeaderComments(opts.ConfigureLog),
+		Name:       projectName(r),
+		SourceRoot: hostSrc,
+		HeaderComments: append(
+			findPackageHeaderComments(opts.ConfigureLog),
+			optionsHeaderComments(r.Cache)...,
+		),
 	}
 
 	cc := newCodegenContext()
@@ -1753,6 +1756,68 @@ func langSuffix(lang string) string {
 		return "asm"
 	}
 	return strings.ToLower(lang)
+}
+
+// optionsHeaderComments projects cmake option()-style cache entries
+// into a documentation block at the BUILD head. Detection: cache
+// entry Type=="BOOL" with the property HELPSTRING that came from
+// an option() declaration (cmake records the helpstring as the
+// option's description).
+//
+// Output shape:
+//
+//	# cmake options resolved at convert time (values baked in;
+//	# re-convert to change):
+//	#   - FOO_ENABLE_TESTS = ON (Enable tests)
+//	#   - FOO_USE_GPU = OFF (Build with GPU acceleration)
+//
+// Operators see the toggle inventory and remember to re-convert
+// (or rewrite the BUILD) if they want a different value. cmake's
+// option() is configure-time-resolved; the Bazel equivalent
+// (bool_flag / config_setting select()s) requires re-emitting,
+// which is out of scope for the converter's one-shot lift.
+//
+// Deterministic ordering: alphabetical by option name.
+func optionsHeaderComments(cache fileapi.Cache) []string {
+	type entry struct{ name, value, doc string }
+	var entries []entry
+	for _, e := range cache.Entries {
+		if e.Type != "BOOL" {
+			continue
+		}
+		// Filter out cmake-internal BOOL entries; operator-defined
+		// option() declarations carry HELPSTRING. cmake builtins
+		// (CMAKE_VERBOSE_MAKEFILE etc.) also have HELPSTRING but
+		// start with `CMAKE_` — skip those to keep the list to
+		// project options.
+		if strings.HasPrefix(e.Name, "CMAKE_") {
+			continue
+		}
+		var doc string
+		for _, p := range e.Properties {
+			if p.Name == "HELPSTRING" {
+				doc = p.Value
+				break
+			}
+		}
+		entries = append(entries, entry{name: e.Name, value: e.Value, doc: doc})
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	out := []string{
+		"",
+		"cmake options resolved at convert time (values baked in; re-convert to change):",
+	}
+	for _, e := range entries {
+		line := "  - " + e.name + " = " + e.value
+		if e.doc != "" {
+			line += " (" + e.doc + ")"
+		}
+		out = append(out, line)
+	}
+	return out
 }
 
 // findPackageHeaderComments projects configureLog find_package-v1
