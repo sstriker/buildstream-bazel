@@ -27,13 +27,11 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
-	"github.com/sstriker/buildstream-bazel/converter/internal/exportshape"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
-	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
@@ -346,20 +344,6 @@ func run(a cli.Args) error {
 	})
 	if err != nil {
 		return err
-	}
-
-	// Phase 6 of the generator-parity uplift: convert-time
-	// pre-resolution of declarative install(EXPORT) bundles. Off
-	// by default; opting in via --install-export-pre-resolve runs
-	// cmake --build + cmake --install for the declarative subset
-	// and appends cc_import + filegroup IR for the materialized
-	// artifacts.
-	if a.InstallExportPreResolve {
-		extraTargets, err := preResolveDeclarativeExports(ctx, a, r, hostBuildDir)
-		if err != nil {
-			return err
-		}
-		pkg.Targets = append(pkg.Targets, extraTargets...)
 	}
 
 	if a.Verify {
@@ -885,126 +869,6 @@ func cmakeConfigDestination(dest, pkgName string) bool {
 		return true
 	}
 	return strings.HasPrefix(dest, want+"/")
-}
-
-// preResolveDeclarativeExports runs cmake --build + cmake --install
-// for the declarative install(EXPORT) subset (per exportshape.Classify)
-// and returns the IR targets that mirror the materialized bundle.
-// Phase 6 of the generator-parity uplift (ROADMAP.md). Empty result
-// (no declarative installers) is normal — callers append the
-// returned slice unconditionally.
-//
-// Errors fall into two buckets:
-//   - Operator misconfiguration (missing --install-export-scratch-dir
-//     when --install-export-pre-resolve is on) → returned as a typed
-//     Tier-1 failure so the orchestrator surfaces a clear message.
-//   - cmake --build / --install failure → returned as a wrapped error
-//     pointing at the failing step.
-//
-// Skips silently when no installer is declarative (the round-2
-// fallback covers the residue regardless).
-func preResolveDeclarativeExports(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuildDir string) ([]ir.Target, error) {
-	if hostBuildDir == "" {
-		// Offline replay (--reply-dir without --source-root) can't
-		// run cmake --install because there's no real build dir to
-		// install from. Skip silently — the operator-visible mode
-		// is "convert-element-cmake invoked against a pre-recorded
-		// reply", not a live build.
-		return nil, nil
-	}
-	if a.InstallExportScratchDir == "" {
-		return nil, failure.New(failure.ConfigureFailed, "--install-export-pre-resolve requires --install-export-scratch-dir")
-	}
-
-	// Collect every declarative install(EXPORT) installer across
-	// all Directory entries. The scratch dir is shared (a single
-	// cmake --install populates everything declarative installers
-	// would land), so we only need to run BuildAndInstall once
-	// even when N declarative bundles surface.
-	var declarative []fileapi.DirectoryInstaller
-	for _, dir := range r.Directories {
-		for _, inst := range dir.Installers {
-			if exportshape.Classify(inst, r.Targets).Declarative {
-				declarative = append(declarative, inst)
-			}
-		}
-	}
-	if len(declarative) == 0 {
-		return nil, nil
-	}
-
-	// One cmake --build + --install populates the scratch dir for
-	// every declarative installer.
-	buildType := a.BuildType
-	if buildType == "" && len(a.BuildTypes) > 0 {
-		buildType = a.BuildTypes[0]
-	}
-	if err := cmakerun.BuildAndInstall(ctx, cmakerun.InstallOptions{
-		BuildDir:      hostBuildDir,
-		InstallPrefix: a.InstallExportScratchDir,
-		BuildType:     buildType,
-		Stdout:        os.Stderr, // surface cmake noise alongside other tool output
-		Stderr:        os.Stderr,
-	}); err != nil {
-		return nil, fmt.Errorf("install-export-pre-resolve: %w", err)
-	}
-
-	installFiles, err := cmakerun.WalkInstallPrefix(a.InstallExportScratchDir)
-	if err != nil {
-		return nil, fmt.Errorf("install-export-pre-resolve: walk: %w", err)
-	}
-
-	// Partition install files into bundle (lib/cmake/...) vs the
-	// rest. The bundle subset becomes a separate filegroup;
-	// per-target filegroups for headers are populated from the
-	// codemodel's FileSets HEADERS slot.
-	var bundle []string
-	for _, f := range installFiles {
-		// The destination prefix is in the installer; for v1 we
-		// detect by canonical lib/cmake or share/cmake substring.
-		if strings.Contains(f, "lib/cmake/") || strings.Contains(f, "share/cmake/") {
-			bundle = append(bundle, f)
-		}
-	}
-
-	var out []ir.Target
-	for _, inst := range declarative {
-		// Per-target public headers — pulled from each exported
-		// target's FileSets HEADERS BaseDirectories. Optional;
-		// targets without a HEADERS file set surface as empty.
-		hdrs := map[string][]string{}
-		for _, et := range inst.ExportTargets {
-			t, ok := r.Targets[et.Id]
-			if !ok {
-				continue
-			}
-			for _, fs := range t.FileSets {
-				if fs.Type != "HEADERS" {
-					continue
-				}
-				// Headers in the install tree typically land
-				// under include/<base>/ — collect everything
-				// under each FileSet's BaseDirectories that
-				// appears in installFiles.
-				for _, base := range fs.BaseDirectories {
-					prefix := strings.TrimPrefix(base, "include/")
-					for _, f := range installFiles {
-						if strings.Contains(f, "include/"+prefix) {
-							hdrs[et.Name] = append(hdrs[et.Name], f)
-						}
-					}
-				}
-			}
-		}
-		out = append(out, exportshape.EmitDeclarative(exportshape.EmitInputs{
-			Installer:              inst,
-			Targets:                r.Targets,
-			InstallFiles:           installFiles,
-			CMakeConfigBundleFiles: bundle,
-			PublicHeaders:          hdrs,
-		})...)
-	}
-	return out, nil
 }
 
 func handleError(a cli.Args, err error) int {

@@ -307,29 +307,41 @@ sanitizer / instrumentation patterns:
   in the converter; unknown names stay on raw per-config
   selects.
 
-## Phase 6 — install(EXPORT) convert-time pre-resolution
+## Phase 6 — install(EXPORT) declarative IR projection
 
-Classifier + emit shape landed:
+Classifier + IR projection landed:
 - `converter/internal/exportshape.Classify` decides declarative
   vs imperative per install(EXPORT) installer; Verdict carries
   Reasons[] for the audit gate.
-- `cmakerun.BuildAndInstall` + `cmakerun.WalkInstallPrefix`
-  drive the `cmake --build` + `cmake --install` step at convert
-  time (Phase 6 gates on the classifier verdict).
 - `exportshape.EmitDeclarative` projects the declarative bundle
-  + the materialized install tree into IR: one `cc_import` per
-  STATIC/SHARED/MODULE target, one `cc_library` (header-only) per
-  INTERFACE_LIBRARY, one filegroup per target's public headers,
-  one bundle-wide `cmake_config_bundle` filegroup for the
-  generated `<Pkg>{Config,ConfigVersion,Targets}.cmake` files.
+  into IR: one `cc_import` per STATIC/SHARED/MODULE target, one
+  `cc_library` (header-only) per INTERFACE_LIBRARY, one
+  filegroup per target's public headers, one bundle-wide
+  `cmake_config_bundle` filegroup for the generated
+  `<Pkg>{Config,ConfigVersion,Targets}.cmake` files.
 
-Convert-element-cmake wiring landed: `preResolveDeclarativeExports`
-runs when `--install-export-pre-resolve` + `--install-export-scratch-dir`
-are set. It walks every declarative installer, runs
-`BuildAndInstall` once for the shared scratch dir, walks the
-install prefix, projects through `EmitDeclarative`, and appends
-the IR targets before the bazel.Emit pass. Offline replay
-(--reply-dir) silently skips — no real build dir to install from.
+**Architectural constraint: the convert action does not build.**
+Earlier work-in-progress on this phase wired
+`cmakerun.BuildAndInstall` + `cmakerun.WalkInstallPrefix` to run
+`cmake --build` + `cmake --install` at convert time, then walked
+the materialized install prefix to populate `EmitInputs.InstallFiles`
++ `CMakeConfigBundleFiles` + `PublicHeaders`. That wiring was
+backed out: convert is a metadata extraction step (configure +
+codemodel + trace + dump-vars + configureLog read; emit a BUILD).
+Compiling, linking, and install-tree materialization stay in
+Bazel's action graph under its own caching and sandboxing —
+running them inside the convert action would change the
+project's whole runtime model (sandboxable, cheap to re-run,
+parallelizable across the orchestrator's fleet).
+
+`Classify` + `EmitDeclarative` remain as the read-only IR
+projection that the follow-on slice needs. The next iteration
+of this phase wires `EmitInputs` from codemodel-only sources —
+`Target.Artifacts`, `Target.Install.Destinations`, `Target.FileSets`
+HEADERS — so the same IR shape lands without a convert-time
+build. cc_import paths point at the destination the install
+would land at; Bazel materializes the artifacts via its own
+build rather than the convert action.
 
 Verdict shape (`exportshape.Classify`):
 
@@ -347,23 +359,6 @@ Verdict shape (`exportshape.Classify`):
 - **Imperative** — anything else, with `Verdict.Reasons` listing
   the failed preconditions. Stays on the existing round-2
   `_install_tree_extract` fallback.
-
-The follow-on slice runs `cmake --install ${BUILD_DIR} --prefix
-${SCRATCH}` at convert time for the declarative subset (extending
-`convert-element-cmake`'s action shape from configure-only to
-configure+build+install), reads the resulting
-`<Pkg>Targets.cmake` + headers, and emits:
-
-- `cc_import` per exported target with `static_library` /
-  `shared_library` pointing at the staged artifact.
-- `pkg_files` for the public headers (per-target).
-- `pkg_tar` for the cmake-config bundle so downstream cmake
-  consumers (mixed Bazel+cmake builds) can still resolve.
-
-This closes the cross-element `find_package` PR2 (resolved-lift
-piece queued under `Later` in ROADMAP) by giving the
-`*manifest.Resolver` direct access to a synthesized bundle at
-A-side load time.
 
 ## Phase 7 — Bazel-idiom shaping audit
 

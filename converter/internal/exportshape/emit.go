@@ -21,10 +21,15 @@ type EmitInputs struct {
 	// Install destinations.
 	Targets map[string]fileapi.Target
 
-	// InstallFiles is the slash-form sorted list of files under
-	// the materialized install prefix (cmakerun.WalkInstallPrefix
-	// output). EmitDeclarative resolves each exported target's
-	// NameOnDisk against this list to find the artifact path.
+	// InstallFiles is the slash-form sorted list of paths the
+	// install(EXPORT) bundle would land at. EmitDeclarative
+	// resolves each exported target's NameOnDisk against this
+	// list to find the artifact path. The caller derives the list
+	// from codemodel-only sources (Target.Install.Destinations +
+	// Target.Artifacts) — the convert action does NOT run
+	// cmake --install to materialize the tree; that's Bazel's job
+	// under its own action graph. See generator-parity-uplift.md
+	// Phase 6 for the "convert is metadata-only" constraint.
 	InstallFiles []string
 
 	// CMakeConfigBundleFiles is the subset of InstallFiles that

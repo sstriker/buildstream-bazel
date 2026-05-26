@@ -262,24 +262,6 @@ type Args struct {
 	// that don't want the sidecar.
 	OutSanitizerFeatures string
 
-	// InstallExportPreResolve enables Phase 6 of the generator-
-	// parity uplift: for each install(EXPORT) installer the
-	// exportshape classifier deems declarative, run
-	// cmake --build + cmake --install at convert time and emit
-	// cc_import + filegroup IR targets pointing at the staged
-	// install tree. Off by default; opting in adds a full cmake
-	// build to the convert action's runtime (potentially minutes
-	// for large projects). The round-2 fallback covers the
-	// non-declarative residue regardless of this flag.
-	InstallExportPreResolve bool
-
-	// InstallExportScratchDir is the directory cmake --install
-	// stages the materialized bundle into. Required when
-	// InstallExportPreResolve is on. Caller owns lifecycle —
-	// typically a per-element scratch under the orchestrator's
-	// work tree.
-	InstallExportScratchDir string
-
 	// BuildTypes selects the cmake "Ninja Multi-Config" generator
 	// path (Phase 5 of the generator-parity uplift). When non-empty,
 	// the configure pass runs once with CMAKE_CONFIGURATION_TYPES=
@@ -384,8 +366,6 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", false, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. Off by default; opting in covers add_custom_target / add_custom_command edges nothing consumes.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
-	fs.BoolVar(&a.InstallExportPreResolve, "install-export-pre-resolve", false, "Phase 6 of the generator-parity uplift: for declarative install(EXPORT) installers (per exportshape.Classify), run cmake --build + cmake --install at convert time and emit cc_import + filegroup targets pointing at the staged install tree. Off by default; opting in adds a full cmake build to the convert action runtime.")
-	fs.StringVar(&a.InstallExportScratchDir, "install-export-scratch-dir", "", "scratch directory for cmake --install staging; required when --install-export-pre-resolve is on.")
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
