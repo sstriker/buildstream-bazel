@@ -34,19 +34,18 @@ the lift is wiring it into IR + emit.
   actual `-flto` flag set (see `examples/sanitizer-features/`
   where lto is already in SANITIZER_FEATURES).
 
-- **`CompileGroup.PrecompileHeaders`** — *codemodel-v2*. *Small slice*.
-  Per-target `target_precompile_headers(...)` declarations.
-  Bazel cc_library doesn't natively support PCH at the rule
-  level; cc_toolchain has a `pch` feature shape. Lift: emit
-  the PCH headers as `hdrs` and add a comment noting the
-  cmake-side PCH intent (operators wire the toolchain feature
-  for the actual PCH effect).
+- ✓ **`CompileGroup.PrecompileHeaders`** — *codemodel-v2*.
+  **Landed (tag).** Targets using `target_precompile_headers`
+  get the `cmake-codegen-pch` tag so operators can grep for the
+  gap and route via a cc_toolchain pch feature. Bazel cc_library
+  has no native PCH attribute; the PCH headers themselves are
+  already in the srcs/hdrs walk.
 
-- **`CompileGroup.Frameworks` / `Link.Frameworks`** — *codemodel-v2*.
-  *Small slice (macOS-only)*. Apple `-framework Foo` link
-  directives. Bazel cc_library has `linkopts = ["-framework",
-  "Foo"]`. Only meaningful on macOS targets; gate emission on
-  the platform.
+- ✓ **`CompileGroup.Frameworks`** — *codemodel-v2*. **Landed
+  (macOS).** Per-framework search paths surface as `-F<path>`
+  copts entries. Empty / no-op on non-Apple targets. Link-time
+  `-framework Foo` directives already flow via
+  Link.CommandFragments → linkopts.
 
 - **`CompileGroup.Sysroot` / `Link.Sysroot`** — *codemodel-v2*.
   *Small slice (informational)*. Per-target cross-compile sysroot.
@@ -112,12 +111,14 @@ the lift is wiring it into IR + emit.
 
 ## Medium: trace patterns we could pattern-match
 
-- **`add_dependencies(target dep)`** — *trace*. *Small slice*.
-  Pure build-order edge (the dep doesn't propagate
-  compile/link facts). Bazel-idiomatic shape:
-  `data = [":dep"]` on the target (forces build but not link).
-  Currently lost — only `Target.Dependencies` (the
-  target_link_libraries-derived edges) survives.
+- ✓ **`add_dependencies(target dep)`** — *codemodel-v2 backtrace*.
+  **Landed.** Detected via `TargetDependency.Backtrace`'s
+  command-name (`isAddDependenciesEdge`); routes to the new
+  `ir.Target.Data` slot rather than `Deps` /
+  `ImplementationDeps`. Bazel `data = [":dep"]` for the
+  build-order semantics. Conservative — fires when the
+  backtrace records the call directly; macro-wrapped
+  add_dependencies fall back to the link path.
 
 - **`add_custom_target(name ALL DEPENDS file)`** — *trace +
   ninja*. *Medium slice*. cmake's "phony target with
@@ -224,33 +225,38 @@ property set we probe.
 
 ## Where to start (remaining wins)
 
-Items still queued after the initial uplift's gap-fill pass:
+Items still queued after the gap-fill pass:
 
-1. **`Link.Frameworks` / `-framework Foo`** consumer (macOS).
-   Tiny lift; needs a real macOS fixture to verify the
-   CompileGroup.Frameworks vs Link.CommandFragments distinction
-   plays out correctly.
-
-2. **`add_dependencies` → `data = [":dep"]`** wire. Distinguish
-   from target_link_libraries by checking
-   `outermostUserFrame(TargetDependency.Backtrace).Command ==
-   "add_dependencies"`. Add `ir.Target.Data []string` +
-   emit support; backtraceRecoverLinkScope's existing
-   command-filter gate already has the wiring.
-
-3. **`PrecompileHeaders`** consumer. CompileGroup.PrecompileHeaders
-   already loaded; lift to `hdrs` + a `cmake-codegen-pch` tag
-   so operators can opt into a `--features=pch` toolchain
-   shape.
-
-4. **`find_package-v1` event attribution** as
+1. **`find_package-v1` event attribution** as
    `# from find_package(<Pkg>) → <ConfigFile>` Provenance
    comment on emitted cc_import targets. Operators see WHERE
    the dep came from without re-running the converter.
+   Consumes Phase 2's configureLog YAML data; the events are
+   already threaded through lower.Options but the per-cc_import
+   attribution lift hasn't landed.
 
-5. **`SOURCE_FILE_PROPERTIES`** remaining properties: `LANGUAGE`
-   override, `OBJECT_DEPENDS`. Per-property recipes; consumer
-   pattern follows `HEADER_FILE_ONLY`.
+2. **`SOURCE_FILE_PROPERTIES`** residue: `LANGUAGE`
+   override (force a `.c` file to compile as C++) and
+   `OBJECT_DEPENDS` (manual header deps that augment incremental
+   build). Per-property recipes; consumer pattern follows
+   `HEADER_FILE_ONLY`.
+
+3. **`Link.CommandFragments role="frameworkPath"`** distinction.
+   When cmake records framework paths split between
+   linkopts and the dedicated frameworkPath role, route to
+   `linkopts = ["-F", path]` (the link-time form). The current
+   linkopts pipeline picks up the merged form for the typical
+   case.
+
+4. **Per-target `BUILD_RPATH` / `INSTALL_RPATH`** target
+   properties (cache-derived). Codemodel doesn't surface them
+   directly; the probe-genex hook from Phase 3 can extract them
+   via `$<TARGET_PROPERTY:t,BUILD_RPATH>` if needed.
+
+5. **`add_test` GENERATED-binary tests with genexes**
+   (`add_test(NAME foo COMMAND $<TARGET_FILE:my_test>)`). Should
+   work via probe-genex's TARGET_FILE resolution but lacks a
+   fixture to confirm.
 
 Each is independently shippable; the doc updates as each
 lands.
