@@ -1591,3 +1591,38 @@ func TestEmit_Filegroup_NoLoad(t *testing.T) {
 		t.Errorf("filegroup should not require a load(); got:\n%s", got)
 	}
 }
+
+func TestEmit_FeaturesAttribute(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:     "foo",
+			Kind:     ir.KindCCLibrary,
+			Srcs:     []string{"foo.c"},
+			Features: []string{"lto"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `features = ["lto"]`) {
+		t.Errorf("expected features attribute; got:\n%s", got)
+	}
+}
+
+func TestEmit_NoFeaturesAttributeWhenEmpty(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `features =`) {
+		t.Errorf("features attribute should be omitted when empty; got:\n%s", got)
+	}
+}

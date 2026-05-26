@@ -1163,6 +1163,19 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// routed to either bucket by the t.Dependencies loop above
 	// doesn't get re-appended to Deps here (which would duplicate
 	// it across both buckets and produce an invalid BUILD).
+	// INTERPROCEDURAL_OPTIMIZATION (cmake's per-target LTO toggle)
+	// surfaces in the codemodel as TargetArchive.LTO (STATIC_LIBRARY)
+	// or TargetLink.LTO (EXECUTABLE / SHARED_LIBRARY / MODULE_LIBRARY).
+	// Map to Bazel's features=["lto"] — the operator's cc_toolchain
+	// owns the actual -flto flag set; see Phase 5's
+	// docs/design/sanitizer-as-feature.md for the feature-definition
+	// convention (lto is in SANITIZER_FEATURES alongside the
+	// sanitizers).
+	if (t.Archive != nil && t.Archive.LTO) || (t.Link != nil && t.Link.LTO) {
+		if !stringSliceContains(irt.Features, "lto") {
+			irt.Features = append(irt.Features, "lto")
+		}
+	}
 	if t.Link != nil {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {

@@ -607,6 +607,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .Alwayslink}}
     alwayslink = True,
 {{- end}}
+{{- if .Features}}
+    features = {{strList .Features}},
+{{- end}}
 {{- if .Tags}}
     tags = {{strList .Tags}},
 {{- end}}
@@ -742,6 +745,7 @@ type ccView struct {
 	ImplementationDepsExpr string
 	Linkstatic             bool
 	Alwayslink             bool
+	Features               []string
 	Tags                   []string
 	Visibility             []string
 
@@ -909,6 +913,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		ImplementationDepsExpr: attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:             t.Linkstatic,
 		Alwayslink:             t.Alwayslink,
+		Features:               sortedCopy(t.Features),
 		Tags:                   sortedCopy(t.Tags),
 		Visibility:             nonDefaultVisibility(t.Visibility),
 	}

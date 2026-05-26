@@ -233,6 +233,21 @@ type Target struct {
 	Linkstatic bool
 	Alwayslink bool
 
+	// Features routes to Bazel's `features = [...]` attribute on
+	// cc_library / cc_binary / cc_test. Each entry is a feature
+	// name a cc_toolchain feature() declares (e.g. "lto",
+	// "asan"). Empty / nil skips the attribute. Prefix a feature
+	// name with "-" to negate the toolchain default (e.g. "-pic"
+	// to force off).
+	//
+	// Used by cmake `INTERPROCEDURAL_OPTIMIZATION` lifting
+	// (TargetArchive.LTO / TargetLink.LTO → ["lto"]) and the
+	// per-rule sanitizer-as-feature shape when operators wire
+	// the sanitizer features through Phase 5's
+	// --out-sanitizer-features. Deterministic emit: the emitter
+	// sorts the list.
+	Features []string
+
 	// InstallDest is the relative path under the install prefix where the
 	// CMake install(TARGETS) rule places this target's artifact (e.g. "lib"
 	// for STATIC_LIBRARY). Used by emit/cmakecfg/ to populate
