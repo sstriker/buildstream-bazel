@@ -225,48 +225,78 @@ property set we probe.
 
 ## Where to start (remaining wins)
 
-Items still queued after the gap-fill pass:
+Items landed in the gap-fill push, sorted by category:
 
-- ✓ Link.CommandFragments role attribution — **landed**
-- ✓ OBJECT_DEPENDS source property — **landed**
-- ✓ Per-target BUILD_RPATH / PIC / visibility presets via probe-genex — **landed**
-- ✓ find_package-v1 attribution as BUILD header comments — **landed**
-- ✓ Phase 7 cc_test-with-no-entry audit finding — **landed**
+**Codemodel-driven lifts:**
+- ✓ LanguageStandard → -std=cXX (primary + sub-libs)
+- ✓ LTO → features=["lto"]
+- ✓ Link.CommandFragments role attribution (flags / libraryPath / frameworkPath / frameworks)
+- ✓ CompileGroup.Frameworks → -F<path>
+- ✓ CompileGroup.Sysroot → cmake-codegen-sysroot=<path> tag
+- ✓ PrecompileHeaders → cmake-codegen-pch tag
+- ✓ install(FILES) + install(DIRECTORY) → filegroup
+- ✓ Per-source COMPILE_DEFINITIONS via CompileGroup split
 
-Genuinely queued:
+**Trace-driven lifts:**
+- ✓ HEADER_FILE_ONLY → hdrs reclassification
+- ✓ OBJECT_DEPENDS → hdrs append
+- ✓ add_dependencies via backtrace → data attribute
+
+**probe-genex lifts (cmake 3.24+):**
+- ✓ INTERFACE_* aggregates → genexeval evaluator
+- ✓ BUILD_RPATH → linkopts -Wl,-rpath,
+- ✓ POSITION_INDEPENDENT_CODE → features=["pic"] / ["-pic"]
+- ✓ CXX/C_VISIBILITY_PRESET → -fvisibility=<v> copts
+- ✓ VISIBILITY_INLINES_HIDDEN → -fvisibility-inlines-hidden copt
+- ✓ AUTOMOC / AUTOUIC / AUTORCC → cmake-codegen-qt-* tags
+- ✓ ENABLE_EXPORTS / SOVERSION / VERSION → informational tags
+
+**configureLog-driven lifts:**
+- ✓ try_compile / try_run variable rescue for execute_process
+- ✓ find_package events → BUILD header attribution
+- ✓ message(DEPRECATION) → BUILD header warnings
+
+**Cache-driven lifts:**
+- ✓ option() declarations → BUILD header inventory
+- ✓ Sanitizer CMAKE_<LANG>_FLAGS_<config> → --out-sanitizer-features auto-gen
+
+**Phase 7 audit findings:**
+- ✓ empty-cc-library / empty-cc-import / empty-srcs / test-with-no-entry
+- ✓ sanitizer-select-not-feature
+- ✓ raw-toolchain-feature-flag (raw -fPIC / -flto / -fsanitize=)
+- ✓ cmake-codegen-* tag surfacing (PCH / Qt / enable-exports)
+
+**ctest extension:**
+- ✓ WILL_FAIL / WORKING_DIRECTORY / *REGULAR_EXPRESSION as tags
+
+Genuinely queued (each needs new infrastructure beyond the
+converter's current scope):
 
 1. **`SOURCE_FILE_PROPERTIES LANGUAGE` override**. Force a
-   `.c` file to compile as C++. Bazel cc_library can't do this
-   without per-source library splits (source extension drives
-   language; renaming the file is intrusive). The
-   shouldSplitCompileGroups gate covers cases where cmake
-   already produced distinct CompileGroups for the override.
+   `.c` file to compile as C++. Bazel cc_library can't do
+   this without per-source library splits + source rename.
+   shouldSplitCompileGroups covers cases where cmake produced
+   distinct CompileGroups for the override.
 
-2. **`add_test` with TARGET_FILE genex**
-   (`add_test(NAME foo COMMAND $<TARGET_FILE:my_test>)`).
-   Should resolve via probe-genex's TARGET_FILE capture but
-   lacks an end-to-end fixture exercising it. Verification
-   work, not new code.
+2. **`add_test` with TARGET_FILE genex** verification. Should
+   work via probe-genex's TARGET_FILE capture; lacks an
+   end-to-end fixture confirming.
 
-3. **`option()` declarations** as Bazel
-   `bool_flag` / `config_setting` so operators can tune at
-   build time via `--//foo:opt=true`. Requires
-   `@bazel_skylib` dep in the rendered project + the gen of
-   the constants block. Substantial — affects MODULE.bazel
-   shape too.
+3. **`option()` → `bool_flag` / `config_setting`** for
+   runtime tunability. Currently surfaced as header
+   inventory; the active toggle would require
+   `@bazel_skylib` dep + emit shape changes affecting
+   MODULE.bazel.
 
-4. **AUTOMOC / AUTOUIC / AUTORCC (Qt)** — generator-side
-   codegen we can't easily reproduce. Refuse cleanly via the
-   Tier-1 failure shape, or run moc / uic / rcc at Bazel build
-   time as wrapped genrules (operator stages the Qt tools as
-   host-tools).
+4. **AUTOMOC / AUTOUIC / AUTORCC** as actual Bazel rules.
+   Today surfaced as tags + audit findings; the actual fix is
+   either operator-side kind:bazel override or a community
+   rules_qt module integration.
 
-5. **FetchContent / ExternalProject_Add** — configure-time
-   network I/O Bazel forbids in actions. Lift to
-   `http_archive` repository rules in MODULE.bazel
-   extensions only when URLs + hashes are literal. The cmake
-   "fetch as part of configure, then participate in the target
-   graph" semantic can't be reproduced.
+5. **FetchContent / ExternalProject_Add** → http_archive when
+   URL+hash literal. The cmake "fetch + participate in target
+   graph" semantic doesn't map under Bazel's hermetic-action
+   model regardless of converter effort.
 
 Each is independently shippable; the doc updates as each
 lands.
