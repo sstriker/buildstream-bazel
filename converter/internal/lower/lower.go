@@ -1682,6 +1682,11 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 			continue
 		}
 		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		// Pick up per-CG LanguageStandard so sub-libraries
+		// inherit the cmake-recorded -std=c++17 / -std=c11
+		// (idempotent if the CG's CompileCommandFragments
+		// already inlined a -std flag).
+		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
 		for _, d := range cg.Defines {
 			defs = append(defs, d.Define)
 		}
