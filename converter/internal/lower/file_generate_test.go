@@ -1377,7 +1377,7 @@ func TestBuildGenexTargets_FoldsProbeData(t *testing.T) {
 			Type: "EXECUTABLE",
 		},
 	}
-	got := buildGenexTargets(reply, "/build", probes, nil)
+	got := buildGenexTargets(reply, "/build", probes, nil, nil)
 
 	if got["foo"].InterfaceIncludeDirectories != "/src/include" {
 		t.Errorf("foo InterfaceIncludeDirectories = %q", got["foo"].InterfaceIncludeDirectories)
@@ -1411,7 +1411,7 @@ func TestBuildGenexTargets_NoProbes(t *testing.T) {
 			"foo": {Name: "foo", Type: "STATIC_LIBRARY"},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, nil)
+	got := buildGenexTargets(reply, "/build", nil, nil, nil)
 	if got["foo"].InterfaceIncludeDirectories != "" {
 		t.Errorf("InterfaceIncludeDirectories should be empty without probe; got %q", got["foo"].InterfaceIncludeDirectories)
 	}
@@ -1446,7 +1446,7 @@ func TestBuildGenexTargets_FoldsImportedTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports)
 	// Local target survives untouched.
 	if got["local"].Type != "STATIC_LIBRARY" {
 		t.Errorf("local Type lost: %q", got["local"].Type)
@@ -1496,7 +1496,7 @@ func TestBuildGenexTargets_ImportsFold_NoLinkPathsLeavesFileLocationEmpty(t *tes
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports)
 	imp, ok := got["Foo::bar"]
 	if !ok {
 		t.Fatalf("imported Foo::bar missing from genexTargets: %+v", got)
@@ -1535,7 +1535,7 @@ func TestBuildGenexTargets_LocalWinsOnNameCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports)
 	ti := got["Foo::bar"]
 	if ti.Imported {
 		t.Errorf("local codemodel entry should win — Imported=false expected; got %+v", ti)
@@ -1567,7 +1567,7 @@ func TestBuildGenexTargets_ImportsOnly_NoLocalCodemodel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports)
 	imp, ok := got["Foo::bar"]
 	if !ok {
 		t.Fatalf("imports-only fold lost Foo::bar: %+v", got)
@@ -1618,7 +1618,7 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 	// buildGenexTargets — which in PR 2's flow includes the
 	// imports fold.
 	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{}}
-	genexTargets := buildGenexTargets(reply, hostBuild, nil, imports)
+	genexTargets := buildGenexTargets(reply, hostBuild, nil, nil, imports)
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, imports, cc); err != nil {
@@ -1766,4 +1766,321 @@ func containsString(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// TestAggregateInterface_SingleDep is the simplest case: a
+// consumer target with one INTERFACE_LIBRARY dep — the dep's
+// PUBLIC/INTERFACE target_include_directories must surface on
+// the consumer's INTERFACE_INCLUDE_DIRECTORIES at the aggregate.
+func TestAggregateInterface_SingleDep(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"base": {
+				Name: "base",
+				Id:   "base::@x",
+				Type: "INTERFACE_LIBRARY",
+			},
+			"leaf": {
+				Name: "leaf",
+				Id:   "leaf::@x",
+				Type: "STATIC_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{
+					{Id: "base::@x"},
+				},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{{
+			Target: "base",
+			Groups: []shadow.TargetIncludeGroup{{
+				Visibility: "INTERFACE",
+				Dirs:       []string{"/src/include"},
+			}},
+		}},
+	}
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	if got["leaf"].InterfaceIncludeDirectories != "/src/include" {
+		t.Errorf("leaf InterfaceIncludeDirectories = %q, want %q", got["leaf"].InterfaceIncludeDirectories, "/src/include")
+	}
+	// base's own aggregate exposes its own contribution.
+	if got["base"].InterfaceIncludeDirectories != "/src/include" {
+		t.Errorf("base InterfaceIncludeDirectories = %q, want %q", got["base"].InterfaceIncludeDirectories, "/src/include")
+	}
+}
+
+// TestAggregateInterface_MultiDepOrdering pins the documented
+// cmake first-listed-first ordering across two direct
+// dependencies. The codemodel records Dependencies[] in
+// target_link_libraries' arg order; the aggregation must walk in
+// that order.
+func TestAggregateInterface_MultiDepOrdering(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"a": {Name: "a", Id: "a::@x", Type: "INTERFACE_LIBRARY"},
+			"b": {Name: "b", Id: "b::@x", Type: "INTERFACE_LIBRARY"},
+			"consumer": {
+				Name: "consumer",
+				Id:   "consumer::@x",
+				Type: "STATIC_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{
+					{Id: "a::@x"},
+					{Id: "b::@x"},
+				},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{
+				Target: "a",
+				Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/a"}}},
+			},
+			{
+				Target: "b",
+				Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/b"}}},
+			},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	want := "/a;/b"
+	if got["consumer"].InterfaceIncludeDirectories != want {
+		t.Errorf("consumer InterfaceIncludeDirectories = %q, want %q", got["consumer"].InterfaceIncludeDirectories, want)
+	}
+}
+
+// TestAggregateInterface_TransitiveChain pins the recursive
+// walk: A → B → C, prop on C surfaces on A. The roadmap
+// fixture is exactly this shape.
+func TestAggregateInterface_TransitiveChain(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"c": {Name: "c", Id: "c::@x", Type: "INTERFACE_LIBRARY"},
+			"b": {
+				Name: "b", Id: "b::@x", Type: "INTERFACE_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "c::@x"}},
+			},
+			"a": {
+				Name: "a", Id: "a::@x", Type: "STATIC_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "b::@x"}},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "c", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/c"}}}},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	if got["a"].InterfaceIncludeDirectories != "/c" {
+		t.Errorf("a InterfaceIncludeDirectories = %q, want %q", got["a"].InterfaceIncludeDirectories, "/c")
+	}
+	if got["b"].InterfaceIncludeDirectories != "/c" {
+		t.Errorf("b InterfaceIncludeDirectories = %q, want %q", got["b"].InterfaceIncludeDirectories, "/c")
+	}
+	if got["c"].InterfaceIncludeDirectories != "/c" {
+		t.Errorf("c InterfaceIncludeDirectories = %q, want %q", got["c"].InterfaceIncludeDirectories, "/c")
+	}
+}
+
+// TestAggregateInterface_Dedup confirms the same value reached
+// via two paths surfaces once at the consumer. Diamond shape:
+// consumer depends on left and right, both of which depend on
+// base; base's INTERFACE value must appear once in consumer's
+// aggregate.
+func TestAggregateInterface_Dedup(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"base": {Name: "base", Id: "base::@x", Type: "INTERFACE_LIBRARY"},
+			"left": {
+				Name: "left", Id: "left::@x", Type: "INTERFACE_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "base::@x"}},
+			},
+			"right": {
+				Name: "right", Id: "right::@x", Type: "INTERFACE_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "base::@x"}},
+			},
+			"consumer": {
+				Name: "consumer", Id: "consumer::@x", Type: "STATIC_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{
+					{Id: "left::@x"},
+					{Id: "right::@x"},
+				},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "base", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/base"}}}},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	if got["consumer"].InterfaceIncludeDirectories != "/base" {
+		t.Errorf("consumer InterfaceIncludeDirectories = %q, want %q (single occurrence)", got["consumer"].InterfaceIncludeDirectories, "/base")
+	}
+}
+
+// TestAggregateInterface_Cycle confirms the walk terminates on
+// a cyclic graph (A → B → A). cmake itself rejects cycles; the
+// aggregation just needs not to infinite-loop. Each target sees
+// its own direct contribution; the cycle break drops the
+// re-entered branch.
+func TestAggregateInterface_Cycle(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"a": {
+				Name: "a", Id: "a::@x", Type: "INTERFACE_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "b::@x"}},
+			},
+			"b": {
+				Name: "b", Id: "b::@x", Type: "INTERFACE_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "a::@x"}},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "a", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/a"}}}},
+			{Target: "b", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/b"}}}},
+		},
+	}
+	// The primary contract is termination — cmake itself errors
+	// on cycles, so as long as we don't infinite-loop, the
+	// result we hand back can be a partial aggregate. We do
+	// require each target's own direct contribution to land
+	// (the cycle break only drops the re-entered branch, not
+	// the start frame's own bytes).
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	for _, name := range []string{"a", "b"} {
+		want := "/" + name
+		parts := strings.Split(got[name].InterfaceIncludeDirectories, ";")
+		seen := map[string]bool{}
+		for _, p := range parts {
+			seen[p] = true
+		}
+		if !seen[want] {
+			t.Errorf("%s InterfaceIncludeDirectories = %q (missing %q)", name, got[name].InterfaceIncludeDirectories, want)
+		}
+	}
+}
+
+// TestAggregateInterface_AllFourProperties covers
+// INTERFACE_INCLUDE_DIRECTORIES + INTERFACE_COMPILE_DEFINITIONS
+// + INTERFACE_COMPILE_OPTIONS + INTERFACE_LINK_LIBRARIES in one
+// pass, against the same dep graph: base → mid → leaf with a
+// distinct kind of contribution on each property at base.
+func TestAggregateInterface_AllFourProperties(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"base": {Name: "base", Id: "base::@x", Type: "INTERFACE_LIBRARY"},
+			"mid": {
+				Name: "mid", Id: "mid::@x", Type: "INTERFACE_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "base::@x"}},
+			},
+			"leaf": {
+				Name: "leaf", Id: "leaf::@x", Type: "STATIC_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "mid::@x"}},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "base", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/include"}}}},
+		},
+		CompileDefinitions: []shadow.TargetCompileCall{
+			{Target: "base", Cmd: "target_compile_definitions", Groups: []shadow.TargetCompileGroup{{Visibility: "INTERFACE", Items: []string{"FOO=1"}}}},
+		},
+		CompileOptions: []shadow.TargetCompileCall{
+			{Target: "base", Cmd: "target_compile_options", Groups: []shadow.TargetCompileGroup{{Visibility: "INTERFACE", Items: []string{"-Wall"}}}},
+		},
+		Links: []shadow.TargetLinkCall{
+			{Target: "mid", Groups: []shadow.TargetLinkGroup{{Visibility: "INTERFACE", Libs: []string{"base"}}}},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	if got["leaf"].InterfaceIncludeDirectories != "/include" {
+		t.Errorf("leaf InterfaceIncludeDirectories = %q", got["leaf"].InterfaceIncludeDirectories)
+	}
+	if got["leaf"].InterfaceCompileDefinitions != "FOO=1" {
+		t.Errorf("leaf InterfaceCompileDefinitions = %q", got["leaf"].InterfaceCompileDefinitions)
+	}
+	if got["leaf"].InterfaceCompileOptions != "-Wall" {
+		t.Errorf("leaf InterfaceCompileOptions = %q", got["leaf"].InterfaceCompileOptions)
+	}
+	if got["leaf"].InterfaceLinkLibraries != "base" {
+		t.Errorf("leaf InterfaceLinkLibraries = %q", got["leaf"].InterfaceLinkLibraries)
+	}
+}
+
+// TestAggregateInterface_PrivateExcluded confirms PRIVATE
+// contributions don't propagate. base has PRIVATE include /
+// define / option / link arms; leaf must not see them.
+func TestAggregateInterface_PrivateExcluded(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"base": {Name: "base", Id: "base::@x", Type: "STATIC_LIBRARY"},
+			"leaf": {
+				Name: "leaf", Id: "leaf::@x", Type: "STATIC_LIBRARY",
+				Dependencies: []fileapi.TargetDependency{{Id: "base::@x"}},
+			},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "base", Groups: []shadow.TargetIncludeGroup{
+				{Visibility: "PRIVATE", Dirs: []string{"/private/include"}},
+				{Visibility: "PUBLIC", Dirs: []string{"/public/include"}},
+			}},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	want := "/public/include"
+	if got["leaf"].InterfaceIncludeDirectories != want {
+		t.Errorf("leaf InterfaceIncludeDirectories = %q, want %q", got["leaf"].InterfaceIncludeDirectories, want)
+	}
+	if strings.Contains(got["leaf"].InterfaceIncludeDirectories, "/private/include") {
+		t.Errorf("PRIVATE include should not propagate; got %q", got["leaf"].InterfaceIncludeDirectories)
+	}
+}
+
+// TestAggregateInterface_MissingTargetSurfacesUnsupported pins
+// the existing evaluator behavior — a TARGET_PROPERTY lookup
+// against a target absent from the codemodel surfaces an
+// UnsupportedError. Cross-package INTERFACE_* is out of scope
+// for this PR; the gate is the same as TARGET_FILE's.
+func TestAggregateInterface_MissingTargetSurfacesUnsupported(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"foo": {Name: "foo", Id: "foo::@x", Type: "STATIC_LIBRARY"},
+		},
+	}
+	got := buildGenexTargets(reply, "/build", nil, &shadow.Decoded{}, nil)
+	if _, ok := got["ghost"]; ok {
+		t.Errorf("unknown target 'ghost' should not have an entry; got %+v", got["ghost"])
+	}
+}
+
+// TestAggregateInterface_ProbeOverridesAggregate locks the
+// layering: when probes carry a value AND the convert-time
+// aggregate produces a different value, the probe wins (it's
+// cmake's own evaluator's output).
+func TestAggregateInterface_ProbeOverridesAggregate(t *testing.T) {
+	reply := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{
+			"foo": {Name: "foo", Id: "foo::@x", Type: "STATIC_LIBRARY"},
+		},
+	}
+	decoded := &shadow.Decoded{
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "foo", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/from-trace"}}}},
+		},
+	}
+	probes := []cmakerun.GenexProbe{{
+		Name:      "foo",
+		Interface: map[string]string{"INCLUDE_DIRECTORIES": "/from-probe"},
+	}}
+	got := buildGenexTargets(reply, "/build", probes, decoded, nil)
+	if got["foo"].InterfaceIncludeDirectories != "/from-probe" {
+		t.Errorf("probe must override aggregate; got %q want %q", got["foo"].InterfaceIncludeDirectories, "/from-probe")
+	}
 }

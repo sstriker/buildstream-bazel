@@ -325,19 +325,6 @@ transition cleanly.
   per object). Convert-time byte-equal-check semantics work
   the same way; just more wire than the FILE_* variants.
 
-- **TARGET_PROPERTY INTERFACE_* aggregation.** The v1
-  evaluator (below) supports `$<TARGET_PROPERTY:t,p>` for
-  properties cmake reports verbatim (NAME / TYPE / SOURCES /
-  IMPORTED). The INTERFACE_* properties cmake aggregates from
-  dependencies (INTERFACE_INCLUDE_DIRECTORIES,
-  INTERFACE_COMPILE_OPTIONS, INTERFACE_COMPILE_DEFINITIONS,
-  INTERFACE_LINK_LIBRARIES) need the lifter to mirror cmake's
-  transitive-property resolution against the fileapi
-  codemodel — accumulating across the target's dependency
-  graph in cmake's documented order. Distinct work item from
-  TARGET_FILE since it's all convert-time (no Bazel-label
-  resolution needed).
-
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
   available to the action at exec time without it being in the AC
@@ -390,6 +377,39 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **TARGET_PROPERTY INTERFACE_* convert-time aggregation.**
+  `$<TARGET_PROPERTY:t,INTERFACE_INCLUDE_DIRECTORIES>` /
+  `INTERFACE_COMPILE_DEFINITIONS` /
+  `INTERFACE_COMPILE_OPTIONS` / `INTERFACE_LINK_LIBRARIES`
+  now resolve at convert time without relying on the
+  probe-genex hook running. `lower/buildGenexTargets`
+  consumes the cmake trace's per-target
+  `target_include_directories` / `target_compile_definitions` /
+  `target_compile_options` / `target_link_libraries` calls
+  (PUBLIC + INTERFACE arms — the propagating visibility set),
+  then walks the dep chain transitively (trace
+  target_link_libraries shapes first, codemodel
+  Dependencies[] as fallback) to assemble each target's
+  effective INTERFACE_* value with cmake's documented
+  first-listed-first ordering and first-occurrence-wins
+  dedup. Probe-genex hook values still override the
+  convert-time aggregate when both are populated — cmake's
+  own evaluator output remains the source of truth when
+  available. Pinned by `TestEmit_InterfacePropertyAggregation_Resolves`
+  against a base (INTERFACE) → mid (INTERFACE) → leaf
+  (STATIC) chain fixture: leaf's transitively-aggregated
+  INTERFACE_INCLUDE_DIRECTORIES resolves to base's include
+  path through mid, and the file(GENERATE) genrule carries
+  `cmake-codegen-file-generate-genex-evaluated` (not the
+  legacy fallback tag). Two new shadow extractors —
+  `ExtractTargetCompile` for `target_compile_definitions` /
+  `target_compile_options` — round out the per-visibility
+  trace decoders the aggregation pipeline consults.
+  Out of scope: cross-package INTERFACE_* (needs a
+  manifest-side INTERFACE export surface; queued as
+  separate work) and INTERFACE_LINK_OPTIONS (no clean
+  trace-side decoder; rides via the probe-genex hook only).
 
 - **Multi-version cmake compatibility shakeout.** The single
   `e2e-latest-cmake` job (cmake `4.0.3` only) expanded into a
@@ -670,9 +690,10 @@ transition cleanly.
   Context (cmake-internal helper targets are skipped). The
   marshaled Context payload prunes the Targets dict for
   templates that don't reference `$<TARGET_PROPERTY:` —
-  payload stays small for the common case. Aggregated
-  INTERFACE_* properties remain UnsupportedError until the
-  matching lifter pipeline lands (queued under Later).
+  payload stays small for the common case. INTERFACE_*
+  aggregation now lives in its own Done entry above (initially
+  refused as UnsupportedError until the lifter's convert-time
+  walker shipped).
 
 - **file-generate fixture exercises (a) end-to-end.** The
   existing file-generate sample-project's `gen_config_tag_h`

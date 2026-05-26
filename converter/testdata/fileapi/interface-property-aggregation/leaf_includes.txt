@@ -1,0 +1,1 @@
+/home/user/buildstream-bazel/.claude/worktrees/agent-a5e91ea9a4ebc95b1/converter/testdata/sample-projects/interface-property-aggregation/include

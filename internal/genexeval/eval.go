@@ -48,20 +48,26 @@ type Context struct {
 	// target ops. Keyed by cmake target name (the unqualified
 	// name, e.g. "foo", not the Bazel label). The lifter
 	// populates this from the fileapi codemodel at convert time
-	// — the evaluator's v1 supports a small set of properties
-	// cmake reports verbatim (NAME, TYPE, SOURCES, IMPORTED);
-	// transitive INTERFACE_* properties remain refused via
-	// UnsupportedError until the lifter grows the property-
-	// aggregation logic to match cmake's evaluation semantics.
+	// — the evaluator supports the cmake-direct properties
+	// (NAME, TYPE, SOURCES, IMPORTED) plus the four INTERFACE_*
+	// aggregates (INCLUDE_DIRECTORIES, COMPILE_DEFINITIONS,
+	// COMPILE_OPTIONS, LINK_LIBRARIES) whose convert-time
+	// values the lifter assembles by walking the codemodel +
+	// trace dep chain. INTERFACE_LINK_OPTIONS isn't in the
+	// convert-time set (cmake doesn't surface it on the trace
+	// side in a shape we can dedup against the link line) but
+	// surfaces via the probe-genex hook when present.
 	Targets map[string]TargetInfo `json:"targets,omitempty"`
 }
 
 // TargetInfo carries the per-target facts the evaluator
-// consults. v1 captures the cmake-direct properties only —
-// INTERFACE_* properties (which cmake aggregates from
-// dependencies' INTERFACE_INCLUDE_DIRECTORIES etc.) need a
-// more sophisticated capture pipeline to match cmake's
-// semantics and remain queued in ROADMAP Later.
+// consults. Captures the cmake-direct properties (TYPE /
+// SOURCES / IMPORTED) plus the four INTERFACE_* aggregates
+// (INCLUDE_DIRECTORIES, COMPILE_DEFINITIONS, COMPILE_OPTIONS,
+// LINK_LIBRARIES) the lifter assembles at convert time by
+// walking the codemodel + trace dep chain. Probe-genex hook
+// values (cmake's own evaluator output) override the
+// convert-time aggregate when both are present.
 type TargetInfo struct {
 	// Type is cmake's target type (`EXECUTABLE`,
 	// `STATIC_LIBRARY`, `SHARED_LIBRARY`, `INTERFACE_LIBRARY`,
@@ -110,12 +116,34 @@ type TargetInfo struct {
 	// InterfaceCompileOptions / InterfaceLinkLibraries /
 	// InterfaceLinkOptions carry the post-walk values of cmake's
 	// INTERFACE_* properties — the aggregates cmake assembles by
-	// walking the dependency graph. Populated from the
-	// probe-genex hook's per-target interface_<P>.txt files
-	// (which cmake's generator-phase evaluator wrote at
-	// generation time). Each value is the semicolon-separated
-	// list cmake produces; consumers split on `;` to recover
-	// the cmake list.
+	// walking the dependency graph.
+	//
+	// Two population paths, layered:
+	//
+	//   1. Convert-time aggregation (lower/buildGenexTargets):
+	//      walks the codemodel Dependencies[] graph + the
+	//      trace's target_link_libraries arms transitively,
+	//      accumulating PUBLIC/INTERFACE contributions from
+	//      target_include_directories /
+	//      target_compile_definitions /
+	//      target_compile_options /
+	//      target_link_libraries calls. Fills
+	//      InterfaceIncludeDirectories /
+	//      InterfaceCompileDefinitions /
+	//      InterfaceCompileOptions / InterfaceLinkLibraries.
+	//      Best-effort: depends on the trace being available,
+	//      which is the usual case for live cmake runs.
+	//
+	//   2. Probe-genex hook (cmake's own generator-phase
+	//      evaluator output): when the hook ran at configure
+	//      time, the resulting per-target interface_<P>.txt
+	//      file overrides the convert-time aggregate. Cmake
+	//      itself is the source of truth when its evaluator's
+	//      output is available; this is also the only path
+	//      that populates InterfaceLinkOptions.
+	//
+	// Each value is the semicolon-separated list cmake produces;
+	// consumers split on `;` to recover the cmake list.
 	InterfaceIncludeDirectories string `json:"interface_include_directories,omitempty"`
 	InterfaceCompileDefinitions string `json:"interface_compile_definitions,omitempty"`
 	InterfaceCompileOptions     string `json:"interface_compile_options,omitempty"`
@@ -204,12 +232,12 @@ func evalGenex(g genexNode, ctx Context) ([]byte, error) {
 	case "1":
 		return evalLiteralOne(g, ctx)
 
-	// Per-target ops that the v1 evaluator partially models.
-	// TARGET_PROPERTY is dispatched but only the subset of
-	// properties cmake reports verbatim (NAME / TYPE / SOURCES /
-	// IMPORTED) resolves cleanly — INTERFACE_* aggregation
-	// remains UnsupportedError until the lifter grows the
-	// matching capture pipeline.
+	// Per-target ops the evaluator models. TARGET_PROPERTY
+	// resolves both the cmake-direct properties (NAME / TYPE /
+	// SOURCES / IMPORTED) and the four INTERFACE_* aggregates
+	// (INCLUDE_DIRECTORIES, COMPILE_DEFINITIONS, COMPILE_OPTIONS,
+	// LINK_LIBRARIES); INTERFACE_LINK_OPTIONS rides via the
+	// probe-genex hook path only.
 	case "TARGET_PROPERTY":
 		return evalTargetProperty(g, ctx)
 

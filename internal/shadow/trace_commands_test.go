@@ -74,6 +74,76 @@ func TestExtractTargetLinks_PublicPrivate(t *testing.T) {
 	}
 }
 
+// TestExtractTargetCompile_Definitions and _Options pin the
+// new TARGET_PROPERTY INTERFACE_* aggregation extractor — same
+// keyword shape as target_link_libraries, but for
+// target_compile_definitions / target_compile_options.
+func TestExtractTargetCompile_Definitions(t *testing.T) {
+	trace := `{"args":["t","PUBLIC","FOO=1","INTERFACE","BAR","PRIVATE","BAZ=quoted"],"cmd":"target_compile_definitions","file":"/src/CMakeLists.txt","line":2}
+{"args":["other","UNUSED"],"cmd":"target_compile_options","file":"/src/CMakeLists.txt","line":3}
+`
+	got := ExtractTargetCompile([]byte(trace), "/src", nil, "target_compile_definitions")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call; got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Cmd != "target_compile_definitions" {
+		t.Errorf("Cmd: %q", c.Cmd)
+	}
+	if c.Target != "t" {
+		t.Errorf("Target: %q", c.Target)
+	}
+	if len(c.Groups) != 3 {
+		t.Fatalf("Groups: %+v", c.Groups)
+	}
+	if c.Groups[0].Visibility != "PUBLIC" || c.Groups[0].Items[0] != "FOO=1" {
+		t.Errorf("PUBLIC group: %+v", c.Groups[0])
+	}
+	if c.Groups[1].Visibility != "INTERFACE" || c.Groups[1].Items[0] != "BAR" {
+		t.Errorf("INTERFACE group: %+v", c.Groups[1])
+	}
+	if c.Groups[2].Visibility != "PRIVATE" || c.Groups[2].Items[0] != "BAZ=quoted" {
+		t.Errorf("PRIVATE group: %+v", c.Groups[2])
+	}
+}
+
+func TestExtractTargetCompile_Options(t *testing.T) {
+	trace := `{"args":["t","INTERFACE","-Wall","-Wextra"],"cmd":"target_compile_options","file":"/src/CMakeLists.txt","line":5}
+`
+	got := ExtractTargetCompile([]byte(trace), "/src", nil, "target_compile_options")
+	if len(got) != 1 || got[0].Target != "t" || len(got[0].Groups) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	g := got[0].Groups[0]
+	if g.Visibility != "INTERFACE" {
+		t.Errorf("Visibility: %q", g.Visibility)
+	}
+	if len(g.Items) != 2 || g.Items[0] != "-Wall" || g.Items[1] != "-Wextra" {
+		t.Errorf("Items: %+v", g.Items)
+	}
+}
+
+// TestExtractTargetCompile_LegacyPositional pins the empty-
+// keyword fallback for the legacy positional shape
+// `target_compile_definitions(t FOO=1)`. cmake treats those as
+// PRIVATE-equivalent (no propagation to consumers); we record
+// them under Visibility="" so callers can distinguish.
+func TestExtractTargetCompile_LegacyPositional(t *testing.T) {
+	trace := `{"args":["t","FOO=1","BAR=2"],"cmd":"target_compile_definitions","file":"/src/CMakeLists.txt","line":7}
+`
+	got := ExtractTargetCompile([]byte(trace), "/src", nil, "target_compile_definitions")
+	if len(got) != 1 || len(got[0].Groups) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	g := got[0].Groups[0]
+	if g.Visibility != "" {
+		t.Errorf("Visibility for legacy positional: %q want \"\"", g.Visibility)
+	}
+	if len(g.Items) != 2 {
+		t.Errorf("Items: %+v", g.Items)
+	}
+}
+
 func TestExtractConfigureFiles_FiltersCmakeInternal(t *testing.T) {
 	got := ExtractConfigureFiles([]byte(traceMixed), "/src")
 	if len(got) != 1 {

@@ -33,6 +33,8 @@ type Decoded struct {
 	Reads                      []string
 	Includes                   []TargetIncludeCall
 	Links                      []TargetLinkCall
+	CompileDefinitions         []TargetCompileCall
+	CompileOptions             []TargetCompileCall
 	ConfigFiles                []ConfigureFileCall
 	FileGenerates              []FileGenerateCall
 	ExecuteProcesses           []ExecuteProcessCall
@@ -62,6 +64,12 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		}
 		if call, ok := classifyTargetLinks(ev, sourceRoot, knownTargets); ok {
 			d.Links = append(d.Links, call)
+		}
+		if call, ok := classifyTargetCompile(ev, sourceRoot, knownTargets, "target_compile_definitions"); ok {
+			d.CompileDefinitions = append(d.CompileDefinitions, call)
+		}
+		if call, ok := classifyTargetCompile(ev, sourceRoot, knownTargets, "target_compile_options"); ok {
+			d.CompileOptions = append(d.CompileOptions, call)
 		}
 		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
 			d.ConfigFiles = append(d.ConfigFiles, call)
@@ -140,6 +148,42 @@ type TargetLinkCall struct {
 type TargetLinkGroup struct {
 	Visibility string // "PUBLIC", "PRIVATE", "INTERFACE", or "" for the legacy positional shape
 	Libs       []string
+}
+
+// TargetCompileCall records one user-written
+// target_compile_definitions / target_compile_options call:
+//
+//	<cmd>(target
+//	  <PUBLIC|PRIVATE|INTERFACE> item1 item2 ...
+//	  <PUBLIC|PRIVATE|INTERFACE> item3 ...)
+//
+// Shape mirrors TargetLinkCall — each visibility-keyword group
+// is one entry in Groups. Used by the INTERFACE_* aggregation
+// pipeline in lower/buildGenexTargets to recover the
+// per-target direct INTERFACE_COMPILE_DEFINITIONS /
+// INTERFACE_COMPILE_OPTIONS contribution (PUBLIC + INTERFACE
+// arms), then walk codemodel Dependencies[] transitively.
+//
+// The codemodel's CompileGroups[].Defines /
+// CompileCommandFragments record the POST-aggregation set
+// (i.e. what's actually fed to the compiler for this target's
+// own sources), with no per-visibility distinction; the trace
+// preserves the keyword arms so we can pick out just the
+// contributions that propagate to consumers.
+type TargetCompileCall struct {
+	Cmd    string // lowercase command name ("target_compile_definitions" / "target_compile_options")
+	Target string
+	Groups []TargetCompileGroup
+}
+
+// TargetCompileGroup is one PUBLIC / PRIVATE / INTERFACE arm
+// of a target_compile_definitions / target_compile_options
+// call. Visibility "" indicates the legacy positional form
+// (no keyword); cmake treats those as PRIVATE-equivalent for
+// the compile-time effect — they don't propagate to consumers.
+type TargetCompileGroup struct {
+	Visibility string   // "PUBLIC", "PRIVATE", "INTERFACE", or "" for the legacy positional shape
+	Items      []string // raw trace-recorded items (defines: "FOO=1" or "FOO"; options: "-Wall" etc.)
 }
 
 // ConfigureFileCall records one user-written
@@ -315,6 +359,80 @@ func classifyTargetLinks(ev TraceEvent, sourceRoot string, knownTargets map[stri
 	}
 	if len(call.Groups) == 0 {
 		return TargetLinkCall{}, false
+	}
+	return call, true
+}
+
+// ExtractTargetCompile returns one entry per user-written
+// target_compile_definitions / target_compile_options trace
+// event whose `file` is inside sourceRoot OR whose target
+// name is in knownTargets (the same scoping rule as
+// ExtractTargetIncludes / ExtractTargetLinks). cmd selects
+// which command family to extract — "target_compile_definitions"
+// or "target_compile_options". Other commands return empty.
+//
+// Used by lower/buildGenexTargets to recover the per-target
+// direct INTERFACE_COMPILE_DEFINITIONS / INTERFACE_COMPILE_OPTIONS
+// contribution (PUBLIC + INTERFACE arms) before walking
+// codemodel Dependencies[] for the transitive aggregate.
+func ExtractTargetCompile(traceRaw []byte, sourceRoot string, knownTargets map[string]bool, cmd string) []TargetCompileCall {
+	var out []TargetCompileCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyTargetCompile(ev, sourceRoot, knownTargets, cmd); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyTargetCompile is the per-event arm of
+// ExtractTargetCompile + Decode. The cmd argument selects the
+// command name to match — "target_compile_definitions" or
+// "target_compile_options". The two commands share the exact
+// shape `<cmd>(target [keyword] item item ...)` and differ
+// only in which property they set, so one classifier covers
+// both with a name filter.
+//
+// Same scoping rule as classifyTargetLinks: the event must
+// either originate in the source tree OR the target name
+// must be in knownTargets (catches calls from producer-element
+// macros acting on consumer targets).
+func classifyTargetCompile(ev TraceEvent, sourceRoot string, knownTargets map[string]bool, cmd string) (TargetCompileCall, bool) {
+	if !strings.EqualFold(ev.Cmd, cmd) {
+		return TargetCompileCall{}, false
+	}
+	if len(ev.Args) < 2 {
+		return TargetCompileCall{}, false
+	}
+	if !inScopeForTarget(ev.File, sourceRoot, ev.Args[0], knownTargets) {
+		return TargetCompileCall{}, false
+	}
+	call := TargetCompileCall{Cmd: strings.ToLower(cmd), Target: ev.Args[0]}
+	var current *TargetCompileGroup
+	for _, a := range ev.Args[1:] {
+		switch strings.ToUpper(a) {
+		case "PUBLIC", "PRIVATE", "INTERFACE":
+			if current != nil {
+				call.Groups = append(call.Groups, *current)
+			}
+			current = &TargetCompileGroup{Visibility: strings.ToUpper(a)}
+			continue
+		}
+		if current == nil {
+			// Legacy positional shape — cmake treats these as
+			// PRIVATE-equivalent (no propagation to consumers).
+			// Emit them under Visibility="" so callers can
+			// distinguish from an explicit PRIVATE if they need
+			// to.
+			current = &TargetCompileGroup{Visibility: ""}
+		}
+		current.Items = append(current.Items, a)
+	}
+	if current != nil {
+		call.Groups = append(call.Groups, *current)
+	}
+	if len(call.Groups) == 0 {
+		return TargetCompileCall{}, false
 	}
 	return call, true
 }
