@@ -272,6 +272,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// headers to the target's hdrs so Bazel's incremental rebuild
 	// trips on changes.
 	var objectDependsBySrc map[string][]string
+	// languageOverrideBySrc maps source paths to the cmake LANGUAGE
+	// property value (e.g. "CXX" when forcing a .c file to compile
+	// as C++). Used by the post-pass to tag affected targets so
+	// operators see the gap — Bazel cc_library can't directly
+	// override per-source language; the gap needs source rename
+	// or per-source library splits.
+	var languageOverrideBySrc map[string]string
 
 	// Phase 1 task 1 keyword recovery runs FIRST — backtrace is
 	// strictly more authoritative than trace in every case where
@@ -364,6 +371,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// into hdrs.
 		headerOnlySources = collectHeaderOnlySources(decoded.SourceFileProperties)
 		objectDependsBySrc = collectObjectDepends(decoded.SourceFileProperties)
+		languageOverrideBySrc = collectLanguageOverrides(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
 			platformConditionalSrcs = map[string]map[string]string{}
 			for _, pcs := range decoded.PlatformConditionalSources {
@@ -584,6 +592,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// changes. Uses the same per-pkg walk shape as the
 	// HEADER_FILE_ONLY pass.
 	addObjectDependsHeaders(pkg, objectDependsBySrc)
+	// LANGUAGE override post-pass tags targets whose sources
+	// were forced to a non-default compile language via
+	// set_source_files_properties(... LANGUAGE ...). Bazel
+	// cc_library can't directly override per-source language;
+	// tag signals the gap.
+	tagLanguageOverrides(pkg, languageOverrideBySrc)
 	// install(FILES) → filegroup() lowering (Phase 1 task 2 of the
 	// generator-parity uplift). Appended last so the file-head
 	// targets stay grouped by family: cc rules first, generated
@@ -2195,6 +2209,73 @@ func addObjectDependsHeaders(pkg *ir.Package, byPath map[string][]string) {
 				}
 				seen[h] = true
 				tgt.Hdrs = append(tgt.Hdrs, h)
+			}
+		}
+	}
+}
+
+// collectLanguageOverrides walks the decoded
+// set_source_files_properties calls and returns a map from source
+// path → LANGUAGE property value. cmake records the override
+// verbatim ("C", "CXX", etc.); we preserve case so the tag
+// surfaces what the project actually declared.
+//
+// Multiple LANGUAGE declarations for the same source — last-write-
+// wins on conflict (cmake's documented behavior).
+//
+// Returns nil when no LANGUAGE property surfaces.
+func collectLanguageOverrides(calls []shadow.SourceFilePropertiesCall) map[string]string {
+	var out map[string]string
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "LANGUAGE") {
+				continue
+			}
+			if prop.Value == "" {
+				continue
+			}
+			for _, f := range call.Files {
+				if out == nil {
+					out = map[string]string{}
+				}
+				out[f] = prop.Value
+			}
+		}
+	}
+	return out
+}
+
+// tagLanguageOverrides walks every target in pkg.Targets and tags
+// each one whose Srcs include a path with a LANGUAGE override.
+// Tag shape: cmake-codegen-language-override=<lang> so operators
+// can grep by target language ('CXX' = forced C++, 'C' = forced
+// C, etc.).
+//
+// One tag per distinct override-language a target uses — a
+// library with multiple .c files all forced to CXX gets one tag,
+// not N.
+//
+// No-op when byPath is empty.
+func tagLanguageOverrides(pkg *ir.Package, byPath map[string]string) {
+	if len(byPath) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		seen := map[string]bool{}
+		for _, src := range tgt.Srcs {
+			lang, ok := byPath[src]
+			if !ok || seen[lang] {
+				continue
+			}
+			seen[lang] = true
+			tag := "cmake-codegen-language-override=" + lang
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
 			}
 		}
 	}

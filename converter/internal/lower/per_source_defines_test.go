@@ -239,3 +239,55 @@ func toShadowCalls(in []shadowSourceFilePropertiesCallStub) []shadow.SourceFileP
 	}
 	return out
 }
+
+func TestCollectLanguageOverrides_PerSourceForce(t *testing.T) {
+	calls := []shadowSourceFilePropertiesCallStub{
+		{
+			Files: []string{"foo.c"},
+			Properties: []shadowSourceFilePropertyStub{
+				{Name: "LANGUAGE", Value: "CXX"},
+			},
+		},
+	}
+	got := collectLanguageOverrides(toShadowCalls(calls))
+	if got["foo.c"] != "CXX" {
+		t.Errorf("foo.c LANGUAGE: %q want CXX", got["foo.c"])
+	}
+}
+
+func TestTagLanguageOverrides_TagsAffectedTargets(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"foo.c", "bar.c"},
+		}},
+	}
+	byPath := map[string]string{"foo.c": "CXX"}
+	tagLanguageOverrides(pkg, byPath)
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-language-override=CXX") {
+		t.Errorf("Tags: %v should include language-override", pkg.Targets[0].Tags)
+	}
+}
+
+func TestTagLanguageOverrides_OneTagPerLanguage(t *testing.T) {
+	// Multiple sources forced to same language → single tag.
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"a.c", "b.c"},
+		}},
+	}
+	byPath := map[string]string{"a.c": "CXX", "b.c": "CXX"}
+	tagLanguageOverrides(pkg, byPath)
+	count := 0
+	for _, tag := range pkg.Targets[0].Tags {
+		if tag == "cmake-codegen-language-override=CXX" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 tag; got %d (Tags: %v)", count, pkg.Targets[0].Tags)
+	}
+}
