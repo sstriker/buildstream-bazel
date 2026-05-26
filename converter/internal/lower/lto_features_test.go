@@ -103,3 +103,53 @@ func TestLowerTarget_NoLTO_NoFeatures(t *testing.T) {
 		}
 	}
 }
+
+// TestLowerTarget_Frameworks_AppendsFFlag covers the macOS
+// `-F <path>` lift: CompileGroup.Frameworks entries become
+// -F<path> copts.
+func TestLowerTarget_Frameworks_AppendsFFlag(t *testing.T) {
+	target := &fileapi.Target{
+		Name: "app",
+		Type: "EXECUTABLE",
+		CompileGroups: []fileapi.CompileGroup{{
+			Language: "CXX",
+			Frameworks: []fileapi.CompileFramework{
+				{Path: "/Library/Frameworks"},
+				{Path: "/System/Library/Frameworks", IsSystem: true},
+			},
+		}},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}},
+			}},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	for _, tgt := range pkg.Targets {
+		if tgt.Name != "app" {
+			continue
+		}
+		hasLib := false
+		hasSys := false
+		for _, c := range tgt.Copts {
+			if c == "-F/Library/Frameworks" {
+				hasLib = true
+			}
+			if c == "-F/System/Library/Frameworks" {
+				hasSys = true
+			}
+		}
+		if !hasLib || !hasSys {
+			t.Errorf("expected -F flags for both framework paths; got %v", tgt.Copts)
+		}
+		return
+	}
+	t.Fatal("app not in pkg.Targets")
+}

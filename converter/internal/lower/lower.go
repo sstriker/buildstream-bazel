@@ -882,6 +882,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// without an explicit -std fragment. Idempotent guard:
 		// skip when copts already names a -std=… flag.
 		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		// Apple framework search paths: CompileGroup.Frameworks
+		// records -F directives cmake emits for `#include
+		// <Foo/Bar.h>` framework header lookup. Empty on
+		// non-Apple targets. Append as -F<path> copts; gcc /
+		// clang accept this form for compile-time framework
+		// search.
+		for _, fw := range cg.Frameworks {
+			if fw.Path == "" {
+				continue
+			}
+			copts = append(copts, "-F"+fw.Path)
+		}
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
