@@ -59,17 +59,43 @@ type findPackageAttrib struct {
 	foundPackages []string
 }
 
-// buildFindPackageAttrib walks the configureLog events for
-// find_package-v1 with IsFound=true, then for each one:
-//   - records the package name into foundPackages
-//   - inspects cmakeVars for `<Pkg>_LIBRARIES` / `<Pkg>_LIBRARY`
-//     and the all-uppercase variants, splitting on `;` into
-//     individual abs paths; populates byPath.
+// buildFindPackageAttrib discovers found cmake packages and
+// correlates their library paths back to the package name.
 //
-// Returns nil when no find_package was found, so callers can
-// short-circuit downstream walks.
+// Two discovery sources, both folded into the same byPath +
+// foundPackages state:
+//
+//  1. configureLog find_package-v1 events. Authoritative when
+//     cmake (>= 3.32) records them. Each event with
+//     Found.IsFound = true contributes its Package name.
+//
+//  2. cmakeVars `<Pkg>_FOUND` convention. cmake's find modules
+//     bind `<Pkg>_FOUND` to TRUE/1 on success — has been the
+//     convention since cmake 1.x and is independent of the
+//     find_package-v1 file-api event (which is cmake 3.32+).
+//     On cmakes below 3.32 (including the architectural floor
+//     of 3.20 and the orchestrator's 3.28 pin), this is the
+//     only way to discover found packages without a live
+//     re-parse of CMakeLists.txt.
+//
+// For each discovered package, we then look up <Pkg>_LIBRARIES
+// / <Pkg>_LIBRARY (and the all-uppercase variants) in cmakeVars,
+// splitting on `;` into individual abs paths.
+//
+// Returns nil when no find_package was discovered, so callers
+// can short-circuit downstream walks.
 func buildFindPackageAttrib(events []fileapi.Event, cmakeVars map[string]string) *findPackageAttrib {
 	fa := &findPackageAttrib{byPath: map[string]string{}}
+	seenPkg := map[string]bool{}
+	addPkg := func(pkg string) {
+		if pkg == "" || seenPkg[pkg] {
+			return
+		}
+		seenPkg[pkg] = true
+		fa.foundPackages = append(fa.foundPackages, pkg)
+	}
+
+	// (1) Source events from configureLog (cmake 3.32+).
 	for _, e := range events {
 		if e.Kind != "find_package-v1" {
 			continue
@@ -77,35 +103,83 @@ func buildFindPackageAttrib(events []fileapi.Event, cmakeVars map[string]string)
 		if e.Found == nil || !e.Found.IsFound {
 			continue
 		}
-		pkg := e.Found.Package
-		if pkg == "" {
-			continue
-		}
-		fa.foundPackages = append(fa.foundPackages, pkg)
-		if len(cmakeVars) == 0 {
-			continue
-		}
-		for _, key := range packageVarKeys(pkg) {
-			value, ok := cmakeVars[key]
-			if !ok || value == "" {
+		addPkg(e.Found.Package)
+	}
+
+	// (2) Source packages from cmakeVars `<Pkg>_FOUND` (cmake 3.20+).
+	// Each `<X>_FOUND=truthy` entry implies cmake's find module
+	// for X resolved successfully; the convention predates the
+	// file-api event by ~15 years and is the fallback on older
+	// cmakes. Sort the discovered names for determinism (map
+	// iteration is unordered).
+	if len(cmakeVars) > 0 {
+		var foundFromVars []string
+		for key, value := range cmakeVars {
+			if !strings.HasSuffix(key, "_FOUND") {
 				continue
 			}
-			for _, raw := range strings.Split(value, ";") {
-				path := strings.TrimSpace(raw)
-				if path == "" || !filepath.IsAbs(path) {
+			if !isTruthyCMakeBool(value) {
+				continue
+			}
+			pkg := strings.TrimSuffix(key, "_FOUND")
+			if pkg == "" {
+				continue
+			}
+			foundFromVars = append(foundFromVars, pkg)
+		}
+		sort.Strings(foundFromVars)
+		for _, pkg := range foundFromVars {
+			addPkg(pkg)
+		}
+	}
+
+	// Bind each discovered package's library paths.
+	if len(cmakeVars) > 0 {
+		for _, pkg := range fa.foundPackages {
+			for _, key := range packageVarKeys(pkg) {
+				value, ok := cmakeVars[key]
+				if !ok || value == "" {
 					continue
 				}
-				if _, dup := fa.byPath[path]; dup {
-					continue
+				for _, raw := range strings.Split(value, ";") {
+					path := strings.TrimSpace(raw)
+					if path == "" || !filepath.IsAbs(path) {
+						continue
+					}
+					if _, dup := fa.byPath[path]; dup {
+						continue
+					}
+					fa.byPath[path] = pkg
 				}
-				fa.byPath[path] = pkg
 			}
 		}
 	}
+
 	if len(fa.foundPackages) == 0 && len(fa.byPath) == 0 {
 		return nil
 	}
 	return fa
+}
+
+// isTruthyCMakeBool returns true when value matches one of
+// cmake's documented truthy constants. cmake's boolean-coercion
+// rules (cmake-language(7) "Variables" §"True if ...") accept
+// 1, ON, YES, TRUE, Y, and any non-zero number; anything else
+// (including OFF, NO, FALSE, N, IGNORE, NOTFOUND, "", and
+// strings ending in -NOTFOUND) is falsy.
+//
+// We match the documented truthy set case-insensitively. The
+// "non-zero number" rule is implicit via the leading digit
+// check; we don't need to recognize e.g. "0.0" because cmake's
+// find modules bind <Pkg>_FOUND to one of the canonical
+// constants, not numeric strings.
+func isTruthyCMakeBool(value string) bool {
+	v := strings.ToUpper(strings.TrimSpace(value))
+	switch v {
+	case "1", "ON", "YES", "TRUE", "Y":
+		return true
+	}
+	return false
 }
 
 // packageVarKeys returns the cmake variable names the find

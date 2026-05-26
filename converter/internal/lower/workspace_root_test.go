@@ -80,3 +80,44 @@ func TestDetectWorkspaceRoot_EmptyInput(t *testing.T) {
 		t.Errorf("got %q; want \"\"", got)
 	}
 }
+
+// TestDetectWorkspaceRoot_DepthCap pins the bounded walk-up
+// behavior. An unbounded walk would catch any .git arbitrarily
+// far above cmakeSrc, which is wrong for the common "this is a
+// subdir of a git repo, not a separate workspace" case
+// (it would promote in-repo test fixtures' workspace to the
+// repo root and break per-target include resolution). The cap
+// lets real-world build/<X>/CMakeLists.txt layouts (depth 1-2
+// above the marker) work while keeping deeper unrelated repos
+// from triggering the heuristic.
+func TestDetectWorkspaceRoot_DepthCap(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Build a chain deeper than workspaceMarkerMaxDepth. The
+	// detection should return "" because the .git is beyond the
+	// cap, even though it exists.
+	deep := root
+	for i := 0; i < workspaceMarkerMaxDepth+2; i++ {
+		deep = filepath.Join(deep, "deeper")
+	}
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectWorkspaceRoot(deep); got != "" {
+		t.Errorf("detectWorkspaceRoot(%q) = %q; want \"\" (beyond depth cap)", deep, got)
+	}
+
+	// One step shallower than the cap should still find the marker.
+	withinCap := root
+	for i := 0; i < workspaceMarkerMaxDepth; i++ {
+		withinCap = filepath.Join(withinCap, "deeper")
+	}
+	if err := os.MkdirAll(withinCap, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectWorkspaceRoot(withinCap); got != root {
+		t.Errorf("detectWorkspaceRoot(%q) = %q; want %q (within cap)", withinCap, got, root)
+	}
+}

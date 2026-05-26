@@ -402,29 +402,41 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// `/repo/build/cmake/`. Without detection, the per-source
 	// normalizer below refuses those paths as outside both
 	// cmakeSrc and cmakeBuild. With detection (.git, MODULE.bazel,
-	// WORKSPACE markers walked up from cmakeSrc), we use the
-	// workspace root as the label-relativization base so the
-	// emitted BUILD.bazel can sit at the workspace root and
+	// WORKSPACE markers walked up from the on-disk source tree),
+	// we use the workspace root as the label-relativization base
+	// so the emitted BUILD.bazel can sit at the workspace root and
 	// reference workspace-relative source paths cleanly.
 	//
-	// Common shadow-staged orchestrator paths don't include the
-	// markers, so workspaceRoot stays "" there and the existing
-	// cmakeSrc-relative behavior holds.
-	workspaceRoot := detectWorkspaceRoot(cmakeSrc)
+	// Detection anchor: prefer opts.HostSourceRoot when set
+	// (offline replay points at the current-machine fixture path;
+	// the recorded cmakeSrc is the recording-machine path and may
+	// not exist locally). Fall back to cmakeSrc for the live
+	// production path where the two coincide. Common shadow-staged
+	// orchestrator paths don't include the workspace markers, so
+	// detection returns "" there and the existing cmakeSrc-relative
+	// behavior holds.
+	detectAnchor := opts.HostSourceRoot
+	if detectAnchor == "" {
+		detectAnchor = cmakeSrc
+	}
+	workspaceRoot := detectWorkspaceRoot(detectAnchor)
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
-		// hostSrc anchors the per-source existence check
-		// (filepath.Join(hostSrc, src.Path)). When workspaceRoot
-		// fires, label-relative source paths are workspace-relative
-		// (lib/common/debug.c, not just debug.c), so hostSrc has
-		// to point at the workspace too — otherwise the join lands
-		// at cmakeSrc/lib/common/debug.c which won't exist.
-		// Operator-set HostSourceRoot wins (the orchestrator's
-		// shadow-stage path explicitly pins it).
-		if workspaceRoot != "" {
+		hostSrc = cmakeSrc
+	}
+	// When workspaceRoot fires AND it sits above hostSrc (the
+	// zstd-shape case: HostSourceRoot is the cmake source dir
+	// `<repo>/build/cmake`, workspace is `<repo>`), bump hostSrc
+	// to workspaceRoot. Otherwise the per-source existence check
+	// (filepath.Join(hostSrc, src.Path)) lands at
+	// `<repo>/build/cmake/lib/common/debug.c` and elides the
+	// source as missing — exactly defeating the workspace-root
+	// fix. The check stays a strict-ancestor relation so
+	// shadow-stage paths (where workspaceRoot equals hostSrc or
+	// is unrelated) don't move under our feet.
+	if workspaceRoot != "" && workspaceRoot != hostSrc {
+		if _, inside := relativeIfInside(workspaceRoot, hostSrc); inside {
 			hostSrc = workspaceRoot
-		} else {
-			hostSrc = cmakeSrc
 		}
 	}
 	// hostSrcOnDisk gates the per-source existence check used for
