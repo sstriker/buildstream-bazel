@@ -14,65 +14,97 @@
 # flag definitions are already in place. The converter
 # recognizes the config names automatically via
 # configfold.SanitizerFeature.
+#
+# Note on the _INIT pattern: cmake's standard initialization
+# pre-populates the cache with empty entries for every
+# CMAKE_<LANG>_FLAGS_<CONFIG> in CMAKE_CONFIGURATION_TYPES
+# BEFORE any set() in CMakeLists.txt runs. A plain
+# `set(CMAKE_C_FLAGS_ASAN "..." CACHE STRING "...")` after
+# project() is a no-op on first configure because the empty
+# cache entry already exists. The fix is to seed
+# CMAKE_<LANG>_FLAGS_<CONFIG>_INIT before project() runs —
+# cmake's standard cache-init path consults the _INIT vars
+# when creating the cache entries. The `if(NOT DEFINED ...)`
+# guards let operators override on the cmake command line
+# (e.g. -DCMAKE_C_FLAGS_ASAN_INIT="...").
 
 cmake_minimum_required(VERSION 3.20)
-project(sanitizer_example C CXX)
 
 # Address Sanitizer.
-set(CMAKE_C_FLAGS_ASAN
-    "-fsanitize=address -fno-omit-frame-pointer -g -O1"
-    CACHE STRING "Flags used by the C compiler during ASan builds.")
-set(CMAKE_CXX_FLAGS_ASAN
-    "-fsanitize=address -fno-omit-frame-pointer -g -O1"
-    CACHE STRING "Flags used by the C++ compiler during ASan builds.")
-set(CMAKE_EXE_LINKER_FLAGS_ASAN
-    "-fsanitize=address"
-    CACHE STRING "Linker flags for ASan builds.")
-set(CMAKE_SHARED_LINKER_FLAGS_ASAN
-    "-fsanitize=address"
-    CACHE STRING "Shared-linker flags for ASan builds.")
+if(NOT DEFINED CMAKE_C_FLAGS_ASAN_INIT)
+    set(CMAKE_C_FLAGS_ASAN_INIT
+        "-fsanitize=address -fno-omit-frame-pointer -g -O1")
+endif()
+if(NOT DEFINED CMAKE_CXX_FLAGS_ASAN_INIT)
+    set(CMAKE_CXX_FLAGS_ASAN_INIT
+        "-fsanitize=address -fno-omit-frame-pointer -g -O1")
+endif()
+if(NOT DEFINED CMAKE_EXE_LINKER_FLAGS_ASAN_INIT)
+    set(CMAKE_EXE_LINKER_FLAGS_ASAN_INIT
+        "-fsanitize=address")
+endif()
+if(NOT DEFINED CMAKE_SHARED_LINKER_FLAGS_ASAN_INIT)
+    set(CMAKE_SHARED_LINKER_FLAGS_ASAN_INIT
+        "-fsanitize=address")
+endif()
 
 # Thread Sanitizer.
-set(CMAKE_C_FLAGS_TSAN
-    "-fsanitize=thread -g -O1"
-    CACHE STRING "Flags used by the C compiler during TSan builds.")
-set(CMAKE_CXX_FLAGS_TSAN
-    "-fsanitize=thread -g -O1"
-    CACHE STRING "Flags used by the C++ compiler during TSan builds.")
-set(CMAKE_EXE_LINKER_FLAGS_TSAN
-    "-fsanitize=thread"
-    CACHE STRING "Linker flags for TSan builds.")
-set(CMAKE_SHARED_LINKER_FLAGS_TSAN
-    "-fsanitize=thread"
-    CACHE STRING "Shared-linker flags for TSan builds.")
+if(NOT DEFINED CMAKE_C_FLAGS_TSAN_INIT)
+    set(CMAKE_C_FLAGS_TSAN_INIT
+        "-fsanitize=thread -g -O1")
+endif()
+if(NOT DEFINED CMAKE_CXX_FLAGS_TSAN_INIT)
+    set(CMAKE_CXX_FLAGS_TSAN_INIT
+        "-fsanitize=thread -g -O1")
+endif()
+if(NOT DEFINED CMAKE_EXE_LINKER_FLAGS_TSAN_INIT)
+    set(CMAKE_EXE_LINKER_FLAGS_TSAN_INIT
+        "-fsanitize=thread")
+endif()
+if(NOT DEFINED CMAKE_SHARED_LINKER_FLAGS_TSAN_INIT)
+    set(CMAKE_SHARED_LINKER_FLAGS_TSAN_INIT
+        "-fsanitize=thread")
+endif()
 
 # Undefined Behavior Sanitizer.
-set(CMAKE_C_FLAGS_UBSAN
-    "-fsanitize=undefined -fno-omit-frame-pointer -g -O1"
-    CACHE STRING "Flags used by the C compiler during UBSan builds.")
-set(CMAKE_CXX_FLAGS_UBSAN
-    "-fsanitize=undefined -fno-omit-frame-pointer -g -O1"
-    CACHE STRING "Flags used by the C++ compiler during UBSan builds.")
-set(CMAKE_EXE_LINKER_FLAGS_UBSAN
-    "-fsanitize=undefined"
-    CACHE STRING "Linker flags for UBSan builds.")
-set(CMAKE_SHARED_LINKER_FLAGS_UBSAN
-    "-fsanitize=undefined"
-    CACHE STRING "Shared-linker flags for UBSan builds.")
+if(NOT DEFINED CMAKE_C_FLAGS_UBSAN_INIT)
+    set(CMAKE_C_FLAGS_UBSAN_INIT
+        "-fsanitize=undefined -fno-omit-frame-pointer -g -O1")
+endif()
+if(NOT DEFINED CMAKE_CXX_FLAGS_UBSAN_INIT)
+    set(CMAKE_CXX_FLAGS_UBSAN_INIT
+        "-fsanitize=undefined -fno-omit-frame-pointer -g -O1")
+endif()
+if(NOT DEFINED CMAKE_EXE_LINKER_FLAGS_UBSAN_INIT)
+    set(CMAKE_EXE_LINKER_FLAGS_UBSAN_INIT
+        "-fsanitize=undefined")
+endif()
+if(NOT DEFINED CMAKE_SHARED_LINKER_FLAGS_UBSAN_INIT)
+    set(CMAKE_SHARED_LINKER_FLAGS_UBSAN_INIT
+        "-fsanitize=undefined")
+endif()
 
 # Coverage.
-set(CMAKE_C_FLAGS_COVERAGE
-    "--coverage -g -O0"
-    CACHE STRING "Flags used by the C compiler during Coverage builds.")
-set(CMAKE_CXX_FLAGS_COVERAGE
-    "--coverage -g -O0"
-    CACHE STRING "Flags used by the C++ compiler during Coverage builds.")
-set(CMAKE_EXE_LINKER_FLAGS_COVERAGE
-    "--coverage"
-    CACHE STRING "Linker flags for Coverage builds.")
+if(NOT DEFINED CMAKE_C_FLAGS_COVERAGE_INIT)
+    set(CMAKE_C_FLAGS_COVERAGE_INIT
+        "--coverage -g -O0")
+endif()
+if(NOT DEFINED CMAKE_CXX_FLAGS_COVERAGE_INIT)
+    set(CMAKE_CXX_FLAGS_COVERAGE_INIT
+        "--coverage -g -O0")
+endif()
+if(NOT DEFINED CMAKE_EXE_LINKER_FLAGS_COVERAGE_INIT)
+    set(CMAKE_EXE_LINKER_FLAGS_COVERAGE_INIT
+        "--coverage")
+endif()
 
-# Mark the per-config flag vars advanced so cmake-gui doesn't
-# clutter its top-level view with them.
+project(sanitizer_example C CXX)
+
+# Mark the per-config flag cache vars advanced so cmake-gui
+# doesn't clutter its top-level view with them. The cache
+# entries are created by cmake's standard initialization from
+# the _INIT vars above; this just hides them from the default
+# gui view.
 mark_as_advanced(
     CMAKE_C_FLAGS_ASAN CMAKE_CXX_FLAGS_ASAN
     CMAKE_EXE_LINKER_FLAGS_ASAN CMAKE_SHARED_LINKER_FLAGS_ASAN
