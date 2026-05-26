@@ -16,6 +16,10 @@ coverage.html
 *.swp
 .DS_Store
 
+# Claude Code worktree dir — per-agent isolated working trees
+# spawned by the harness, never committed to history.
+.claude/
+
 # Local convert-element outputs
 out/
 tmp/
