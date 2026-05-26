@@ -567,6 +567,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// keeps lowerTarget's signature stable and applies uniformly
 	// to all the rule families.
 	reclassifyHeaderOnlySources(pkg, headerOnlySources)
+	// Probe-genex per-target Properties → Bazel attributes:
+	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
+	// POSITION_INDEPENDENT_CODE to features=["pic"] /
+	// features=["-pic"], visibility presets to copts. Off when no
+	// probe ran (opts.GenexProbes empty) so back-compat preserved
+	// for callers that don't pass --probe-genex.
+	applyProbeGenexProperties(pkg, opts.GenexProbes)
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the
@@ -1740,6 +1747,69 @@ func langSuffix(lang string) string {
 		return "asm"
 	}
 	return strings.ToLower(lang)
+}
+
+// applyProbeGenexProperties walks pkg.Targets and applies
+// per-target properties the probe-genex hook captured beyond the
+// INTERFACE_* aggregates: BUILD_RPATH / INSTALL_RPATH → linkopts,
+// POSITION_INDEPENDENT_CODE → features=["pic"] / ["-pic"],
+// {CXX,C}_VISIBILITY_PRESET → copts -fvisibility=…
+//
+// No-op when probes is empty (probe-genex hook didn't run).
+// Matching is by target name; targets not in the probe set are
+// left unchanged.
+//
+// Phase 3 / generator-parity-gaps follow-up.
+func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
+	if len(probes) == 0 || pkg == nil {
+		return
+	}
+	byName := map[string]cmakerun.GenexProbe{}
+	for _, p := range probes {
+		byName[p.Name] = p
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		p, ok := byName[tgt.Name]
+		if !ok {
+			continue
+		}
+		// RPATH lifts to linkopts. BUILD_RPATH covers the
+		// build/test-time consumer (relevant under Bazel);
+		// INSTALL_RPATH covers cmake-install consumers (only
+		// affects downstream cmake users). Bazel build typically
+		// wants the BUILD_RPATH semantics.
+		if r := strings.TrimSpace(p.Properties["BUILD_RPATH"]); r != "" {
+			for _, entry := range strings.Split(r, ";") {
+				if entry == "" {
+					continue
+				}
+				tgt.LinkOpts = append(tgt.LinkOpts, "-Wl,-rpath,"+entry)
+			}
+		}
+		// POSITION_INDEPENDENT_CODE = TRUE → features=["pic"]
+		// (or "-pic" when explicitly OFF).
+		if v := strings.TrimSpace(p.Properties["POSITION_INDEPENDENT_CODE"]); v != "" {
+			if cmakeTruthy(v) {
+				if !stringSliceContains(tgt.Features, "pic") {
+					tgt.Features = append(tgt.Features, "pic")
+				}
+			} else if !stringSliceContains(tgt.Features, "-pic") {
+				tgt.Features = append(tgt.Features, "-pic")
+			}
+		}
+		// Visibility presets — gcc/clang -fvisibility=<value>.
+		// CXX and C variants typically agree; emit each
+		// separately if cmake records different values.
+		for _, key := range []string{"CXX_VISIBILITY_PRESET", "C_VISIBILITY_PRESET"} {
+			if v := strings.TrimSpace(p.Properties[key]); v != "" {
+				flag := "-fvisibility=" + v
+				if !stringSliceContains(tgt.Copts, flag) {
+					tgt.Copts = append(tgt.Copts, flag)
+				}
+			}
+		}
+	}
 }
 
 // reclassifyHeaderOnlySources walks every target in pkg.Targets

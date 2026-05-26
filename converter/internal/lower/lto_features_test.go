@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -206,4 +207,81 @@ func TestLowerTarget_LinkOpts_FlagsRouted(t *testing.T) {
 		return
 	}
 	t.Fatal("app not in pkg.Targets")
+}
+
+// TestApplyProbeGenexProperties_BuildRpathToLinkopts covers the
+// BUILD_RPATH lift: each semicolon-separated entry becomes a
+// `-Wl,-rpath,<path>` linkopt.
+func TestApplyProbeGenexProperties_BuildRpathToLinkopts(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "app",
+			Kind: ir.KindCCBinary,
+		}},
+	}
+	probes := []cmakerunGenexProbeStub{{
+		Name: "app",
+		Properties: map[string]string{
+			"BUILD_RPATH": "$ORIGIN/../lib;/opt/foo/lib",
+		},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	wantLinks := []string{"-Wl,-rpath,$ORIGIN/../lib", "-Wl,-rpath,/opt/foo/lib"}
+	if !reflect.DeepEqual(pkg.Targets[0].LinkOpts, wantLinks) {
+		t.Errorf("LinkOpts: %v want %v", pkg.Targets[0].LinkOpts, wantLinks)
+	}
+}
+
+// TestApplyProbeGenexProperties_PIC covers POSITION_INDEPENDENT_CODE
+// → features=["pic"] / ["-pic"] routing.
+func TestApplyProbeGenexProperties_PIC(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "on", Kind: ir.KindCCLibrary},
+		{Name: "off", Kind: ir.KindCCLibrary},
+	}}
+	probes := []cmakerunGenexProbeStub{
+		{Name: "on", Properties: map[string]string{"POSITION_INDEPENDENT_CODE": "TRUE"}},
+		{Name: "off", Properties: map[string]string{"POSITION_INDEPENDENT_CODE": "FALSE"}},
+	}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Features, "pic") {
+		t.Errorf("on.Features: %v want [pic]", pkg.Targets[0].Features)
+	}
+	if !stringSliceContains(pkg.Targets[1].Features, "-pic") {
+		t.Errorf("off.Features: %v want [-pic]", pkg.Targets[1].Features)
+	}
+}
+
+// TestApplyProbeGenexProperties_VisibilityPreset covers
+// {CXX,C}_VISIBILITY_PRESET → -fvisibility=<v> copt.
+func TestApplyProbeGenexProperties_VisibilityPreset(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "hide", Kind: ir.KindCCLibrary},
+	}}
+	probes := []cmakerunGenexProbeStub{{
+		Name: "hide",
+		Properties: map[string]string{
+			"CXX_VISIBILITY_PRESET": "hidden",
+		},
+	}}
+	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	if !stringSliceContains(pkg.Targets[0].Copts, "-fvisibility=hidden") {
+		t.Errorf("Copts: %v should contain -fvisibility=hidden", pkg.Targets[0].Copts)
+	}
+}
+
+// Test stubs to build GenexProbe values without re-importing
+// cmakerun in this test file (keeps the test deps minimal).
+type cmakerunGenexProbeStub struct {
+	Name       string
+	Properties map[string]string
+}
+
+func toProbeSlice(in []cmakerunGenexProbeStub) []cmakerun.GenexProbe {
+	out := make([]cmakerun.GenexProbe, len(in))
+	for i, p := range in {
+		out[i].Name = p.Name
+		out[i].Properties = p.Properties
+	}
+	return out
 }

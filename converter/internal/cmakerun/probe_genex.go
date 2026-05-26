@@ -50,6 +50,16 @@ type GenexProbe struct {
 	// COMPILE_DEFINITIONS, COMPILE_OPTIONS, LINK_LIBRARIES,
 	// LINK_OPTIONS). Values are semicolon-separated lists.
 	Interface map[string]string
+
+	// Properties holds the post-genex-eval value of cmake target
+	// properties beyond the INTERFACE_* set — non-aggregating
+	// properties Bazel cc rules can honor: BUILD_RPATH /
+	// INSTALL_RPATH (linkopts -Wl,-rpath,…), POSITION_INDEPENDENT_CODE
+	// (features=["pic"]), CXX_VISIBILITY_PRESET / C_VISIBILITY_PRESET
+	// (copts -fvisibility=…). Keys match the cmake property name
+	// verbatim; values are the cmake-recorded string (may be
+	// empty when the property is unset).
+	Properties map[string]string
 }
 
 // ReadGenexProbe walks <buildDir>/cmake-to-bazel.genex/ — the
@@ -84,7 +94,11 @@ func ReadGenexProbe(buildDir string) ([]GenexProbe, error) {
 
 	out := make([]GenexProbe, 0, len(names))
 	for _, name := range names {
-		probe := GenexProbe{Name: name, Interface: map[string]string{}}
+		probe := GenexProbe{
+			Name:       name,
+			Interface:  map[string]string{},
+			Properties: map[string]string{},
+		}
 		tgtDir := filepath.Join(root, name)
 		propEntries, err := os.ReadDir(tgtDir)
 		if err != nil {
@@ -114,11 +128,17 @@ func ReadGenexProbe(buildDir string) ([]GenexProbe, error) {
 			case "objects.txt":
 				probe.Objects = s
 			default:
-				const prefix = "interface_"
+				const ifacePrefix = "interface_"
+				const propPrefix = "property_"
 				const suffix = ".txt"
-				if strings.HasPrefix(pe.Name(), prefix) && strings.HasSuffix(pe.Name(), suffix) {
-					key := pe.Name()[len(prefix) : len(pe.Name())-len(suffix)]
+				name := pe.Name()
+				switch {
+				case strings.HasPrefix(name, ifacePrefix) && strings.HasSuffix(name, suffix):
+					key := name[len(ifacePrefix) : len(name)-len(suffix)]
 					probe.Interface[key] = s
+				case strings.HasPrefix(name, propPrefix) && strings.HasSuffix(name, suffix):
+					key := name[len(propPrefix) : len(name)-len(suffix)]
+					probe.Properties[key] = s
 				}
 				// Unknown filename: silently ignored. Forward-compat
 				// with future probe additions that older readers
