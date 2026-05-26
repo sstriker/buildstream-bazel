@@ -394,9 +394,38 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	cmakeSrc := r.Codemodel.Paths.Source
 	cmakeBuild := r.Codemodel.Paths.Build
+	// Workspace-root auto-detection. Projects whose CMakeLists.txt
+	// sits below the repo root (zstd's `build/cmake/CMakeLists.txt`
+	// is the canonical example) reference sources via paths that
+	// resolve to absolute locations outside cmakeSrc — e.g.
+	// `/repo/lib/common/debug.c` referenced from a CMakeLists at
+	// `/repo/build/cmake/`. Without detection, the per-source
+	// normalizer below refuses those paths as outside both
+	// cmakeSrc and cmakeBuild. With detection (.git, MODULE.bazel,
+	// WORKSPACE markers walked up from cmakeSrc), we use the
+	// workspace root as the label-relativization base so the
+	// emitted BUILD.bazel can sit at the workspace root and
+	// reference workspace-relative source paths cleanly.
+	//
+	// Common shadow-staged orchestrator paths don't include the
+	// markers, so workspaceRoot stays "" there and the existing
+	// cmakeSrc-relative behavior holds.
+	workspaceRoot := detectWorkspaceRoot(cmakeSrc)
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
-		hostSrc = cmakeSrc
+		// hostSrc anchors the per-source existence check
+		// (filepath.Join(hostSrc, src.Path)). When workspaceRoot
+		// fires, label-relative source paths are workspace-relative
+		// (lib/common/debug.c, not just debug.c), so hostSrc has
+		// to point at the workspace too — otherwise the join lands
+		// at cmakeSrc/lib/common/debug.c which won't exist.
+		// Operator-set HostSourceRoot wins (the orchestrator's
+		// shadow-stage path explicitly pins it).
+		if workspaceRoot != "" {
+			hostSrc = workspaceRoot
+		} else {
+			hostSrc = cmakeSrc
+		}
 	}
 	// hostSrcOnDisk gates the per-source existence check used for
 	// the #209 missing-source elision. Reply-dir-only replay runs
@@ -563,7 +592,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], findPkgAttrib)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], findPkgAttrib, workspaceRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -646,7 +675,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, findPkgAttrib *findPackageAttrib) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, findPkgAttrib *findPackageAttrib, workspaceRoot string) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -813,20 +842,34 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// "target names may not contain '.' as a path segment"
 		// downstream.
 		srcPath := src.Path
+		// Pick the label-relativization base. workspaceRoot is
+		// auto-detected from cmakeSrc walking up for .git /
+		// MODULE.bazel / WORKSPACE markers (see
+		// detectWorkspaceRoot); when found and a strict ancestor
+		// of cmakeSrc, it anchors labels to the wider workspace
+		// so projects with a `build/cmake/CMakeLists.txt` layout
+		// (zstd, lz4, brotli) can reference sources scattered
+		// across sibling subtrees like `lib/common/debug.c`. When
+		// no marker fires (the shadow-stage path), labelRoot
+		// falls back to cmakeSrc and the existing behavior holds.
+		labelRoot := cmakeSrc
+		if workspaceRoot != "" {
+			labelRoot = workspaceRoot
+		}
 		// In-tree absolute path: cmake recorded an absolute
-		// path that happens to live under cmakeSrc. Normalize
-		// to the documented project-relative form so the
-		// emitted label is valid. cmakeSrc is "" on
+		// path that happens to live under labelRoot. Normalize
+		// to the documented label-relative form so the
+		// emitted label is valid. labelRoot is "" on
 		// reply-dir-only replay runs; skip in that case
 		// because the relativeIfInside check can't run.
-		if cmakeSrc != "" && filepath.IsAbs(srcPath) {
-			if rel, inside := relativeIfInside(cmakeSrc, srcPath); inside {
+		if labelRoot != "" && filepath.IsAbs(srcPath) {
+			if rel, inside := relativeIfInside(labelRoot, srcPath); inside {
 				srcPath = rel
 			}
 		}
 		// Out-of-tree absolute path: at this point we've
 		// already filtered absolute-under-cmakeBuild (elided
-		// above) and absolute-under-cmakeSrc (normalized just
+		// above) and absolute-under-labelRoot (normalized just
 		// above). What's left is absolute paths under neither
 		// root — e.g. `add_library(foo /vendored/elsewhere/bar.c)`.
 		// Refuse with a typed Tier-1 error so the operator
@@ -835,7 +878,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		if filepath.IsAbs(srcPath) {
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
-				t.Name, srcPath, cmakeSrc, cmakeBuild)
+				t.Name, srcPath, labelRoot, cmakeBuild)
 		}
 		// Strip a leading "./". cmake's parser usually
 		// normalizes these away but pathological inputs can

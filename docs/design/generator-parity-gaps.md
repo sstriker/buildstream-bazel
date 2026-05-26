@@ -297,6 +297,15 @@ Items landed in the gap-fill push, sorted by category:
   → ZLIB → manifest label or fallback tag)
 - ✓ message(DEPRECATION) → BUILD header warnings
 
+**Project layout heuristics:**
+- ✓ Workspace-root auto-detection for `build/cmake/CMakeLists.txt`
+  layouts (zstd, lz4, brotli). Walks up from cmakeSrc looking for
+  `.git/`, `MODULE.bazel`, `WORKSPACE`, `WORKSPACE.bazel` markers;
+  when found, anchors source-path labels at the wider workspace
+  so sources at `<repo>/lib/...` referenced from a CMakeLists at
+  `<repo>/build/cmake/` resolve cleanly instead of refusing with
+  unsupported-source-path.
+
 **Cache-driven lifts:**
 - ✓ option() declarations → BUILD header inventory
 - ✓ Sanitizer CMAKE_<LANG>_FLAGS_<config> → --out-sanitizer-features auto-gen
