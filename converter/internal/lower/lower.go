@@ -245,8 +245,23 @@ var headerExts = map[string]bool{
 // unsupported-custom-command).
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
-		return nil, failure.New(failure.UnsupportedTargetType,
-			"M1 supports exactly one configuration; got %d", got)
+		// Diagnostic mode: continue against the first
+		// configuration so the survey reaches every
+		// per-target refusal site. The Phase 5 multi-config
+		// codemodel fold (lowerMultiConfigDeltas at the end
+		// of this function) still runs when r.TargetsByConfig
+		// is populated, so the per-config select() arms still
+		// land on top of cfg[0]'s walk. Strict mode keeps
+		// rejecting — production callers want the loud Tier-1
+		// until Phase 5 ships full multi-config support.
+		if opts.Rejections != nil {
+			opts.Rejections.Add(failure.UnsupportedTargetType,
+				fmt.Sprintf("multi-config codemodel (%d configurations) — surveying against the first one only; Phase 5 multi-config fold is the canonical path",
+					got))
+		} else {
+			return nil, failure.New(failure.UnsupportedTargetType,
+				"M1 supports exactly one configuration; got %d", got)
+		}
 	}
 	cfg := r.Codemodel.Configurations[0]
 
