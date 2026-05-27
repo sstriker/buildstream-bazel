@@ -1,5 +1,5 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
@@ -698,6 +698,34 @@ e2e-fidelity-compare-fmt: check-cmake-toolchain converter fetch-fmt
 		--target fmt \
 		--artifact-pattern libfmt.a \
 		--allowlist testdata/fidelity/fmt.allowlist.txt
+
+# Consumer-side fidelity gates. Compile a small consumer .c/.cpp
+# twice — once against cmake's installed headers, once via Bazel as
+# a cc_library depending on the converted target — and diff the
+# resulting .o files. Catches converter regressions in
+# INTERFACE_INCLUDE_DIRECTORIES exposure / strip_include_prefix /
+# INTERFACE_COMPILE_DEFINITIONS propagation that the library-side
+# nm-diff can't see (the library's own symbols are unaffected if a
+# consumer can't reach a public header at all).
+e2e-fidelity-compare-zlib-consumer: check-cmake-toolchain converter fetch-zlib
+	scripts/run-fidelity.sh \
+		--project-name zlib-consumer \
+		--source-root $(ZLIB_DIR) \
+		--target zlibstatic \
+		--cmake-artifact-pattern libz.a \
+		--bazel-artifact-pattern libzlibstatic.a \
+		--consumer-file $(CURDIR)/testdata/fidelity/consumers/zlib_consumer.c \
+		--consumer-bazel-dep :zlibstatic
+
+e2e-fidelity-compare-fmt-consumer: check-cmake-toolchain converter fetch-fmt
+	scripts/run-fidelity.sh \
+		--project-name fmt-consumer \
+		--source-root $(FMT_DIR) \
+		--target fmt \
+		--artifact-pattern libfmt.a \
+		--consumer-file $(CURDIR)/testdata/fidelity/consumers/fmt_consumer.cpp \
+		--consumer-bazel-dep :fmt \
+		--allowlist testdata/fidelity/fmt-consumer.allowlist.txt
 
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,
