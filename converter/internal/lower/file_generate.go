@@ -191,7 +191,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	// the executor. We catch this here rather than let it land
 	// silently. Operators get an audit-tagged refusal stub that
 	// fails the bazel build with a clear diagnostic — see
-	// docs/design/cross-package-target-file.md.
+	// ROADMAP.md.
 	//
 	// Resolution-check input: scan templateBody once for any of
 	// the seven TARGET_FILE-family ops + the call's CONTENT
@@ -209,7 +209,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					`$<TARGET_FILE:...> (or a variant) that resolve to neither the local cmake codemodel `+
 					`nor the imports.json manifest. Shipping cmake'"'"'s rendered bytes for these would `+
 					`embed the recording-machine absolute path, which does not exist on the Bazel executor. `+
-					`See docs/design/cross-package-target-file.md for the resolution path.' >&2; exit 1`,
+					`Add the missing target to the imports manifest or hand-edit the rendered output.' >&2; exit 1`,
 				outRel, unresolved),
 			GenruleOuts: []string{outRel},
 			Tags:        fileGenerateTags(fileGenerateTagSet{GenexFallback: true, GenexCrossPackage: true}),
@@ -666,7 +666,7 @@ type fileGenerateTagSet struct {
 	// GenexCrossPackage: cross-package TARGET_FILE soundness
 	// gate fired — the genrule is a refusal stub that fails
 	// at bazel-build time. See
-	// docs/design/cross-package-target-file.md.
+	// ROADMAP.md.
 	GenexCrossPackage bool
 }
 

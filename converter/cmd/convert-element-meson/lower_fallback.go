@@ -11,7 +11,7 @@ package main
 // install-plan-driven placeholder ir.Package instead of exiting
 // Tier-1.
 //
-// Shape (parallels docs/design/cmake-execute-process-round2-fallback.md
+// Shape (parallels docs/design/rendezvous.md
 // — the kind:cmake Phase B sibling):
 //
 //   - one extract genrule that untars install_tree.tar into

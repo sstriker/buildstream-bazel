@@ -1,9 +1,8 @@
 # Codegen tag taxonomy
 
-> Status: **stub for M2.** The taxonomy below is the contract M2 step 3
-> emits against; this file is the user-facing reference. M2 fills in
-> precise emission rules and adds the audit script. Once published, tag
-> names are append-only — same stability rule as `failure-schema.md`.
+> Stability: **append-only.** Tag names below are stable; new facets
+> become new tags, existing tags don't change meaning. Same
+> stability rule as [`failure-schema.md`](failure-schema.md).
 
 Every Bazel rule produced by recovering an `add_custom_command` from a
 `build.ninja` carries a stable `cmake-codegen` tag (and zero or more

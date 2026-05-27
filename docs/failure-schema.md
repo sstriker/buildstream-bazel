@@ -1,9 +1,9 @@
 # Tier-1 failure schema
 
-> Stability: **append-only after this document is published.** Codes
-> here are the orchestrator's dedup key; renames or removals
-> retroactively invalidate the regression registry. Add new codes; don't
-> reshape old ones.
+> Stability: **append-only.** Codes here are a stable surface
+> downstream regression tooling deduplicates against; renames or
+> removals retroactively invalidate the registry. Add new codes;
+> don't reshape old ones.
 
 The converter exits with one of three tiers:
 
@@ -16,8 +16,7 @@ The converter exits with one of three tiers:
 | 64 | usage | bad CLI args |
 
 Only Tier 1 carries a stable code surface. Tiers 2 and 3 are
-operational signals; the orchestrator collects them by exit code, not
-by message text.
+operational signals collected by exit code, not by message text.
 
 ## `failure.json` schema
 
@@ -98,8 +97,8 @@ nodes) are silently skipped, not error-emitted: the underlying
 utility node.
 
 **Operator action:** if the target is essential, file an issue with
-the target name and type; otherwise the orchestrator marks the
-package excluded.
+the target name and type; otherwise the element converts with the
+unsupported target dropped.
 
 **Emission point:** `lower.lowerTarget` — the type switch's default
 case.
@@ -203,9 +202,9 @@ The `message` field carries the buildtools diagnostic and the
 offending body so operators can isolate the offending line.
 
 Before #210 this surfaced as an uncaught Go panic (Tier-2 exit
-65 with no `failure.json`). The structured code lets the
-orchestrator dedupe and lets operators see the failure shape
-in the same shape as every other Tier-1 emission.
+65 with no `failure.json`). The structured code lets downstream
+tooling dedupe and lets operators see the failure in the same
+shape as every other Tier-1 emission.
 
 **Operator action:** read the snippet in `message`; if it's a
 specific value the converter spliced in (cmake variable,
@@ -276,10 +275,10 @@ gated on `--strict-trace`.
 ### `dep-failed` _(M3a; refined in M3d)_
 
 A transitive cmake dep of this element failed Tier-1; the
-orchestrator short-circuited the dependent's conversion to surface
-the root cause. The `message` field names the failing dep so
-operators can jump straight to it. The dependent's converter is not
-invoked; no shadow tree, no AC lookup happens.
+dependent's conversion short-circuits to surface the root cause.
+The `message` field names the failing dep so operators can jump
+straight to it. The dependent's converter is not invoked; no shadow
+tree, no AC lookup happens.
 
 Without this short-circuit, dependents would proceed against an
 empty synth-prefix and produce a less helpful `configure-failed`
@@ -303,10 +302,10 @@ output from the converter's stderr stream (or the orchestrator's
 per-element log).
 
 **Operator action:** investigate the meson failure as you would
-in a normal meson invocation, reading the streamed stderr. If
-the cause is a missing dependency (`dependency('foo', required:
-true)`), expose it via the imports manifest or pre-stage it on
-the executor.
+in a normal meson invocation, reading the streamed stderr (or the
+per-element converter log). If the cause is a missing dependency
+(`dependency('foo', required: true)`), expose it via the imports
+manifest or pre-stage it on the executor.
 
 **Emission point:** `cmd/convert-element-meson` `runMesonSetup`
 return path + introspection load.

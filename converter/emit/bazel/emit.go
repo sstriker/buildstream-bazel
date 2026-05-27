@@ -152,7 +152,7 @@ func nonDefaultVisibility(vis []string) []string {
 
 // emitGazelleCcSearch writes `# gazelle:cc_search "" <pkgpath>/<dir>`
 // file-head directives mirroring the union of every target's
-// `includes` attribute values. Per docs/design/build-output-conventions.md
+// `includes` attribute values. Per ROADMAP.md
 // Phase 7d: gazelle_cc's header-scan resolver needs the same
 // include search paths the converter extracted from CMake so an
 // operator-added unqualified `#include "X"` of an in-tree header
@@ -299,7 +299,7 @@ func Emit(pkg *ir.Package) ([]byte, error) {
 // `bazel.build/buildtools/build`'s Parse + Format pipeline —
 // the same pipeline `buildifier --mode=fix` uses. That gives
 // project B the Phase 3 contract from
-// docs/design/build-output-conventions.md: `buildifier
+// ROADMAP.md: `buildifier
 // --mode=fix` against our generated BUILDs is a no-op (we
 // emit what buildifier would produce). Side effect: attribute
 // order pulls from buildtools' `tables.NamePriority` rather

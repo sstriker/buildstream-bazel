@@ -31,7 +31,7 @@ func init() {
 	// project A hosts a per-element converter genrule consuming
 	// @trace_<elem>//:trace; project B hosts the coarse install
 	// genrule wrapped in build-tracer with an inline trace-publish
-	// step. See docs/design/autotools-round2-rendezvous.md for
+	// step. See docs/design/rendezvous.md for
 	// the recipe (kind-agnostic; the doc title is autotools-named
 	// for historical reasons).
 	registerHandler(pipelineHandler{

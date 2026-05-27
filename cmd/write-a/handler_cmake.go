@@ -32,7 +32,7 @@ var cmakeConfig struct {
 
 	// round2FallbackEnabled toggles the kind:cmake round-2
 	// fallback shape (Phase B; see
-	// docs/design/cmake-execute-process-round2-fallback.md).
+	// docs/design/rendezvous.md).
 	// When true:
 	//   - Project A's converter genrule threads
 	//     `--unsupported-execute-process-fallback=true` into
@@ -276,7 +276,7 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 	// referencing "install_tree.tar") resolve to this
 	// genrule's install_tree.tar output via same-package
 	// label resolution. See
-	// docs/design/cmake-execute-process-round2-fallback.md.
+	// docs/design/rendezvous.md.
 	if cmakeConfig.round2FallbackEnabled {
 		// cmakeSrckeyPatterns() already includes "CMakeLists.txt"
 		// + "**/CMakeLists.txt" rules, so withCMakeListsRule
@@ -622,7 +622,7 @@ type cmakeDepBundleLabel struct {
 //     time AC lookup materializes a `cmake-config-bundle.tar`
 //     synthesized from the install tree at pass-3. The cross-
 //     element configure-step bootstrap rendezvous (see
-//     docs/design/cross-element-config-rendezvous.md): pass-3
+//     docs/design/rendezvous.md): pass-3
 //     publishes, pass-2 consumes via the AC.
 //
 // Both paths land a cmake-config-bundle.tar file in the consumer's

@@ -32,7 +32,7 @@ var mesonConfig struct {
 	convertBin string
 
 	// round2FallbackEnabled toggles the kind:meson round-2 fallback
-	// shape (Phase B; see docs/design/meson-round2-fallback.md).
+	// shape (Phase B; see docs/design/rendezvous.md).
 	// When true:
 	//   - Project A's converter genrule threads
 	//     `--unsupported-target-fallback=true` into
@@ -113,7 +113,7 @@ func (mesonHandler) RenderB(elem *element, elemPkg string) error {
 	// resolve to this genrule's install_tree.tar output via
 	// same-package label resolution. Mirrors kind:cmake's
 	// renderCmakeRound2B; see
-	// docs/design/meson-round2-fallback.md.
+	// docs/design/rendezvous.md.
 	if mesonConfig.round2FallbackEnabled {
 		// mesonSrckeyPatterns() already includes "meson.build" +
 		// "**/meson.build" rules, so withMesonBuildRule (if it

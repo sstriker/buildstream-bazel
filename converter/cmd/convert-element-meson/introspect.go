@@ -2,7 +2,7 @@
 // and exposes a minimal set of typed structs the converter consumes.
 //
 // The schema mirrors what `meson introspect --targets` (and siblings)
-// produce — see docs/design/meson-native-render.md and
+// produce — see docs/architecture.md and
 // https://mesonbuild.com/IDE-integration.html. We intentionally model
 // only the fields the converter cares about; unknown fields are
 // silently ignored so meson schema additions don't break the parser.

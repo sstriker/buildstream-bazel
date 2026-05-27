@@ -99,7 +99,7 @@ func Emit(targets []Target) []byte {
 // addKeepMarkers tags load-bearing attribute lines with
 // `# keep` comments so a downstream `gazelle fix` run won't
 // rewrite values the converter extracted from pyproject.toml.
-// Per Phase 7a of docs/design/build-output-conventions.md.
+// Per Phase 7a of ROADMAP.md.
 //
 // Scope follows the conventions doc:
 //   - py_library / py_test: imports, pyi_srcs, testonly.

@@ -17,16 +17,15 @@
 // `bazel run //:gazelle -- <packages>` so the post-conversion
 // gazelle step touches only the elements that re-converted —
 // O(changed) instead of O(workspace). It is the write-a + Bazel
-// path's replacement for the orchestrator's res.Converted, which is
-// removed with orchestrator/ in the absorption
-// (docs/design/orchestrator-absorption.md).
+// path's replacement for the (now-deleted) orchestrator's
+// res.Converted signal.
 //
 // Elements with no project-A converted output are skipped: kind:stack
 // / filter / import and other non-action-graph kinds contribute only
 // project-B starlark, which write-a renders directly — there is
 // nothing to stage and nothing converted to re-run gazelle against.
 //
-// See docs/design/operator-gazelle-step.md for the full
+// See ROADMAP.md for the full
 // post-conversion + gazelle workflow.
 package main
 

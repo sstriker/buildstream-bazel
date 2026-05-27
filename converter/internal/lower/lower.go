@@ -103,7 +103,7 @@ type Options struct {
 	// + NameOnDisk) lands in Step 2.5 — until then,
 	// downstream consumers' compile/link actions against the
 	// stubs fail. See
-	// docs/design/cmake-execute-process-round2-fallback.md
+	// docs/design/rendezvous.md
 	// for the architectural shape.
 	UnsupportedExecuteProcessFallback bool
 
@@ -710,7 +710,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked
 	// HEADER_FILE_ONLY=TRUE into hdrs. Phase 1 task 3 extension
-	// (per docs/design/generator-parity-gaps.md). Post-emit pass
+	// (per ROADMAP.md). Post-emit pass
 	// keeps lowerTarget's signature stable and applies uniformly
 	// to all the rule families.
 	reclassifyHeaderOnlySources(pkg, headerOnlySources)
@@ -1485,7 +1485,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// or TargetLink.LTO (EXECUTABLE / SHARED_LIBRARY / MODULE_LIBRARY).
 	// Map to Bazel's features=["lto"] — the operator's cc_toolchain
 	// owns the actual -flto flag set; see Phase 5's
-	// docs/design/sanitizer-as-feature.md for the feature-definition
+	// examples/sanitizer-features/README.md for the feature-definition
 	// convention (lto is in SANITIZER_FEATURES alongside the
 	// sanitizers).
 	if (t.Archive != nil && t.Archive.LTO) || (t.Link != nil && t.Link.LTO) {
@@ -2808,7 +2808,7 @@ func isAddDependenciesEdge(dep fileapi.TargetDependency, g fileapi.BacktraceGrap
 // `LanguageStandard` field has different semantics.
 //
 // Phase 1 task 3 successor (per
-// docs/design/generator-parity-gaps.md "Easy" section).
+// ROADMAP.md "Easy" section).
 func prependLanguageStandardCopt(lang string, std *fileapi.LanguageStandard, copts []string) []string {
 	if std == nil || std.Standard == "" {
 		return copts

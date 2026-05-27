@@ -21,12 +21,12 @@
 // stay literal until the operator declares a pattern for
 // them.
 //
-// Per Phase 8 of docs/design/build-output-conventions.md.
+// Per Phase 8 of ROADMAP.md.
 // Designed to run after build-cc-index and before the
 // `bazel run //:gazelle` step of the write-a + Bazel
 // driver's Phase 8b gazelle tail.
 //
-// See docs/design/operator-gazelle-step.md for the full
+// See ROADMAP.md for the full
 // post-conversion + gazelle workflow.
 package main
 

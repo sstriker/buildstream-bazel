@@ -9,7 +9,7 @@ import (
 
 // TestCmakeDepBundleLabels_TraceDrivenDep covers the cross-element
 // configure-step bootstrap rendezvous (see
-// docs/design/cross-element-config-rendezvous.md): a kind:cmake
+// docs/design/rendezvous.md): a kind:cmake
 // element with a trace-driven (kind:autotools) dep gets the dep's
 // :<dep>_trace_load target staged via cmakeDepBundleLabels so the
 // AC-published config bundle can flow into the consumer's

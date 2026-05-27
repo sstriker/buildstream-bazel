@@ -16,7 +16,7 @@
 //	lower  ─▶ ir.Package
 //	emit   ─▶ BUILD.bazel.out
 //
-// See docs/design/meson-native-render.md for the full architecture
+// See docs/architecture.md for the full architecture
 // and the patterns we cover vs. refuse.
 package main
 
@@ -76,7 +76,7 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	fs.StringVar(&a.importsManifest, "imports-manifest", "", "path to JSON imports manifest mapping cross-element meson dependency names to Bazel labels (optional)")
 	var mesonArgs string
 	fs.StringVar(&mesonArgs, "meson-args", "", "additional arguments to pass to `meson setup` (FDSDK's meson-local slot). Whitespace-split.")
-	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs referencing install_tree.tar, plus an extract genrule that untars it. Project B's install genrule (write-a's --meson-round2-fallback shape) produces install_tree.tar from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/meson-round2-fallback.md.")
+	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs referencing install_tree.tar, plus an extract genrule that untars it. Project B's install genrule (write-a's --meson-round2-fallback shape) produces install_tree.tar from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/rendezvous.md.")
 	fs.StringVar(&a.bazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/foo\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths meson recorded. Empty suppresses the directive.")
 	if err := fs.Parse(argv); err != nil {
 		return a, exitUsage
@@ -257,7 +257,7 @@ func run(a args) error {
 		// v1: emit an empty bundle directory. The genrule contract
 		// requires the declared output to exist; the synthesis of
 		// a real pkg-config tree is queued in
-		// docs/design/meson-native-render.md.
+		// docs/architecture.md.
 		if err := os.MkdirAll(a.outBundleDir, 0o755); err != nil {
 			return err
 		}

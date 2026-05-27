@@ -74,13 +74,11 @@ the per-kind translator. **Project B** is the materialized output
 — a normal Bazel workspace with `cc_library` / `cc_binary` rules
 your team builds against.
 
-The architectural deep-dive lives in
-[`docs/overview.md`](docs/overview.md) (5-minute read with
-flowcharts),
-[`docs/design/conversion-architecture.md`](docs/design/conversion-architecture.md)
-(the end-state architecture with three diagrams), and
-[`docs/three-pass-flow.md`](docs/three-pass-flow.md) (per-pass
-cost model + scenario walks).
+The architecture story lives in
+[`docs/architecture.md`](docs/architecture.md) (single doc, prose +
+diagrams, the two workspaces + three passes + per-kind paths +
+cost model). For deeper design specs of individual mechanisms see
+[`docs/design/`](docs/design/).
 
 ## Quick start
 
@@ -139,21 +137,13 @@ bzlmod builds it.
 
 To turn on the optional CAS-aware source mount (sources stream
 into action sandboxes through a daemon-served FUSE mount, no
-materialisation on dev disk), use Bazel 9 + `bb_clientd` —
-Bazel trusts the daemon's reported digests through
-`--experimental_remote_output_service` instead of re-hashing
-inputs locally. See
-[`docs/design/bazel9-cas-fs.md`](docs/design/bazel9-cas-fs.md).
-The repo previously shipped an in-tree `cmd/cas-fuse` daemon
-for Bazel 7 / 8 (paired with the
-`--unix_digest_hash_attribute_name` xattr path the flag
-provided); both were retired once `bb_clientd` became the
-production direction.
+materialisation on dev disk), use Bazel 9 + `bb_clientd`. See
+[`docs/design/sources.md`](docs/design/sources.md).
+
 Cmake-side conversion needs `cmake` on the host; autotools-side
 needs `cmake`, `make`, and either Linux/amd64 (native ptrace) or
-`strace` on `$PATH`. See
-[`docs/architecture.md`](docs/architecture.md) for the full
-host-tool table.
+`strace` on `$PATH`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for
+the full host-tool table.
 
 ## Trying the FreeDesktop SDK
 
@@ -167,12 +157,11 @@ make fdsdk-reality-check     # surveys the FDSDK graph; stops at first kind we d
 ```
 
 Empirical coverage status lives in
-[`docs/fdsdk-coverage-status.md`](docs/fdsdk-coverage-status.md);
-known-delta catalog in
-[`docs/cmake-conversion-deltas.md`](docs/cmake-conversion-deltas.md).
-Both are honest about what's not yet handled — this is a tool
-under active development against a real-world project, not a
-clean-room implementation.
+[`docs/fdsdk-coverage.md`](docs/fdsdk-coverage.md); known-delta
+catalog in [`docs/known-deltas.md`](docs/known-deltas.md). Both are
+honest about what's not yet handled — this is a tool under active
+development against a real-world project, not a clean-room
+implementation.
 
 ## Repository layout
 
@@ -182,23 +171,24 @@ clean-room implementation.
 | `cmd/build-tracer/` | Process tracer for the autotools native path (native ptrace + strace fallback, canonical output). |
 | `cmd/convert-element-trace/` | Trace + `make -np` → native cc rules. |
 | `converter/` | The cmake converter. cmake File API codemodel + `--trace-expand` → native cc rules. |
-| `internal/` | Shared packages — CAS, REAPI, manifest, shadow tree, fidelity, the `.bst` element parser, and the libraries re-homed from the now-deleted orchestrator (regression, sourcecheckout, exports, …). The legacy `orchestrator/` predecessor was fully absorbed into the write-a + Bazel path; see [`docs/design/orchestrator-absorption.md`](docs/design/orchestrator-absorption.md). |
+| `internal/` | Shared packages — CAS, REAPI, manifest, shadow tree, fidelity, the `.bst` element parser, regression, sourcecheckout, exports, etc. See [`docs/codebase-map.md`](docs/codebase-map.md). |
 | `testdata/meta-project/` | End-to-end fixtures driven by the gates under `scripts/`. |
-| `docs/` | Architecture references; see [`ROADMAP.md`](ROADMAP.md) for what's done / next. |
+| `docs/` | Architecture, codebase map, design specs. See [`ROADMAP.md`](ROADMAP.md) for what's done / next. |
 
 ## Where to go next
 
-- **Want to run the converter?** Quick-start above, then
-  [`docs/architecture.md`](docs/architecture.md) for the
-  host-tool table and CLI reference.
-- **Want to understand the design?**
-  [`docs/overview.md`](docs/overview.md) →
-  [`docs/design/conversion-architecture.md`](docs/design/conversion-architecture.md) →
-  [`docs/three-pass-flow.md`](docs/three-pass-flow.md) →
-  [`docs/build-structure.md`](docs/build-structure.md).
-- **Want to contribute?** [`CONTRIBUTING.md`](CONTRIBUTING.md)
-  has the dev-loop commands and the per-handler test map.
-- **Curious what's next?** [`ROADMAP.md`](ROADMAP.md).
+- **Run the converter** — quick-start above, then
+  [`docs/architecture.md`](docs/architecture.md) for the workspace
+  shape and the per-kind paths.
+- **Understand the design** —
+  [`docs/architecture.md`](docs/architecture.md) for the story;
+  [`docs/design/`](docs/design/) for the key mechanism specs
+  (rendezvous, convergence loop, finalize-b, sources, narrowing
+  audit).
+- **Develop the converter** — [`docs/codebase-map.md`](docs/codebase-map.md)
+  for the package tour; [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
+  dev-loop commands and per-handler test map.
+- **See what's next** — [`ROADMAP.md`](ROADMAP.md).
 
 ## License
 

@@ -14,7 +14,7 @@ project(foopkg LANGUAGES C VERSION 1.0.0)
 # only sources (Target.NameOnDisk + Target.Install.Destinations +
 # DirectoryInstaller.Destination); the lowering wires the resulting
 # IR into the producer's BUILD.bazel as cc_import / filegroup
-# targets per docs/design/generator-parity-uplift.md Phase 6.
+# targets (the install(EXPORT) declarative IR projection).
 
 add_library(foo STATIC src/foo.c)
 target_include_directories(foo PUBLIC

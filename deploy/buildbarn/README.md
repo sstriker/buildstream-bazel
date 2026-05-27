@@ -1,8 +1,9 @@
 # Buildbarn validation deployment
 
-A single-node Buildbarn instance for validating the orchestrator's
-M5 (REAPI cache substrate) and M3b (REAPI Execute) paths against
-real Buildbarn code, vs the in-process fake the unit tests use.
+A single-node Buildbarn instance for validating the write-a + Bazel
+path's REAPI cache substrate (M5) and REAPI Execute (M3b) paths
+against real Buildbarn code, vs the in-process fake the unit tests
+use.
 
 ## Components
 
@@ -13,7 +14,7 @@ real Buildbarn code, vs the in-process fake the unit tests use.
 - `bb_clientd` (host-side, see below) — Bazel-9 companion daemon
   serving a FUSE mount + RemoteOutputService gRPC; replaces the
   dropped `--unix_digest_hash_attribute_name` xattr fast-path.
-  See [`docs/design/bazel9-cas-fs.md`](../../docs/design/bazel9-cas-fs.md).
+  See [`docs/design/sources.md`](../../docs/design/sources.md).
 
 No auth, localhost-only port mapping, file-backed blobstore at
 1 GiB CAS / 64 MiB AC. Tear down with `docker compose down -v` to
@@ -36,9 +37,10 @@ make e2e-buildbarn         # M5 cache-share keystone (CAS+AC only)
 make e2e-buildbarn-execute # M3b Execute keystone (full pipeline)
 ```
 
-`e2e-buildbarn` runs the orchestrator twice against the fdsdk-subset
-fixture, each pointed at `grpc://127.0.0.1:8980`; the second pass
-must hit AC for every element and produce byte-identical outputs.
+`e2e-buildbarn` runs the cache-share keystone twice against the
+fdsdk-subset fixture, each pointed at `grpc://127.0.0.1:8980`; the
+second pass must hit AC for every element and produce byte-identical
+outputs.
 
 `e2e-buildbarn-execute` submits a synthetic Action through
 `grpc://127.0.0.1:8983` (the scheduler's client port) and verifies
@@ -148,5 +150,5 @@ install cmake ninja-build`, would close the loop for full
 end-to-end conversion. We don't ship that here because the platform
 properties + version pins cross too many deployment-specific
 concerns; the documented path is "build your own runner image,
-update worker.jsonnet's platform properties, point the orchestrator
-at it".
+update worker.jsonnet's platform properties, point `bazel build`'s
+`--remote_executor` at it".

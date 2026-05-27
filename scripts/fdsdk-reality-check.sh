@@ -12,10 +12,10 @@
 #
 # If FDSDK_DIR is unset, the script tries /tmp/fdsdk; if that doesn't
 # exist either it prints the clone command and exits 0 (the gap survey
-# is documented in docs/fdsdk-reality-check.md, so a fresh checkout
+# is documented in docs/fdsdk-coverage.md, so a fresh checkout
 # isn't required to read the findings).
 #
-# See docs/fdsdk-reality-check.md for the corresponding gap analysis.
+# See docs/fdsdk-coverage.md for the corresponding gap analysis.
 
 set -eu
 
@@ -33,7 +33,7 @@ To run the probe:
     FDSDK_DIR=/tmp/fdsdk scripts/fdsdk-reality-check.sh
 
 The findings from the most recent survey (without re-running) live
-in docs/fdsdk-reality-check.md.
+in docs/fdsdk-coverage.md.
 EOF
     exit 0
 fi
@@ -47,7 +47,7 @@ work_dir="$(mktemp -d)"
 trap "rm -rf '$work_dir'" EXIT
 
 # Curated probe set: each entry exercises one or more bullet points
-# from docs/fdsdk-reality-check.md. The probe runs against the .bst in
+# from docs/fdsdk-coverage.md. The probe runs against the .bst in
 # isolation (no FDSDK project.conf), so the first failure surfaces
 # whichever loader / handler gap matches.
 probes="
@@ -332,4 +332,4 @@ else
     echo "  OK      synthetic"
 fi
 echo
-echo "See docs/fdsdk-reality-check.md for the prioritized punch list."
+echo "See docs/fdsdk-coverage.md for the prioritized punch list."

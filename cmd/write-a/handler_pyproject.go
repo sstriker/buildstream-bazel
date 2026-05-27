@@ -43,7 +43,7 @@ var pyprojectConfig struct {
 
 	// fallbackEnabled toggles per-element auto-detection (Phase
 	// B install-plan fallback's option-A shape — see
-	// docs/design/pyproject-native-render.md). Without it, every
+	// docs/architecture.md). Without it, every
 	// kind:pyproject element renders natively when convertBin
 	// is set; refused-by-Phase-A elements Tier-1 fail at
 	// bazel-build time. With it, write-a probes each element's
@@ -588,7 +588,7 @@ const pyprojectProbeTimeout = 30 * time.Second
 // pyprojectPipelineHandler returns the pipeline-shape handler
 // used when the native path is disabled. Defaults mirror upstream
 // buildstream-plugins-community's pyproject.{py,yaml} (see
-// docs/design/pyproject-native-render.md for the upstream
+// docs/architecture.md for the upstream
 // snippet), with one shape difference: upstream installs via
 // `python -m installer`, this repo's pipeline uses
 // `python -m pip install` so existing operator scripts that

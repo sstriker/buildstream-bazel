@@ -141,7 +141,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// the specific script to rewrite — not just at the
 		// consuming target's output. #207.
 		script := extractCmakeScriptPath(cmd)
-		msg := fmt.Sprintf("custom command for %q runs `cmake -P %s`; rewrite the script in a real language (shell / python), or route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/cmake-execute-process-round2-fallback.md)",
+		msg := fmt.Sprintf("custom command for %q runs `cmake -P %s`; rewrite the script in a real language (shell / python), or route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md)",
 			relOut, script)
 		return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
 	}

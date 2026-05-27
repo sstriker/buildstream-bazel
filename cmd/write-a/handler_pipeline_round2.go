@@ -35,7 +35,7 @@ import (
 //     packs both as a REAPI Directory, uploads to CAS, and writes
 //     an ActionResult under SyntheticActionDigest(srckey).
 //
-// The 3' → 2' feedback loop in docs/three-pass-flow.md is realized
+// The 3' → 2' feedback loop in docs/architecture.md is realized
 // by the AC: the round-1 pass-3 publish lands at the same key the
 // round-2 pass-2 lookup queries. Once published — globally, once
 // per srckey — every subsequent render of project A on any node

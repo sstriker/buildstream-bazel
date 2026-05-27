@@ -6,8 +6,8 @@
 # Why: round-2's chicken-and-egg shape (B publishes the trace; A
 # re-runs to consume it; B then picks up the new fine-grained rules)
 # takes two passes (four `bazel build` invocations) to fully settle
-# when an element's srckey moved. See docs/trace-driven-autotools.md
-# "Re-conversion thrash". Rather than instrument and conditionally
+# when an element's srckey moved. See docs/design/rendezvous.md
+# (round-2 mechanism). Rather than instrument and conditionally
 # re-invoke, just run the four-step loop unconditionally — Bazel's
 # persistent daemons + action cache make redundant invocations
 # cheap when nothing changed (each subsequent step is a no-op for

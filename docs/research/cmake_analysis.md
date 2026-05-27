@@ -274,7 +274,7 @@ Multiple `COMMAND` form a **pipeline** (concurrent, shared stderr). Sequential c
 
 **Trace-driven convergence** (queued in `ROADMAP.md` Later). With B's trace available at A's load time, a future converter version can read the trace to refine refusals — potentially producing fine cc rules for elements that originally fell back to the placeholder shape. The wiring is in place; the converter-side trace consumption is the remaining piece.
 
-Failure schema: `docs/failure-schema.md` `unsupported-execute-process`. Design recipe: `docs/design/cmake-execute-process-round2-fallback.md`.
+Failure schema: `docs/failure-schema.md` `unsupported-execute-process`. Design recipe: `docs/design/rendezvous.md`.
 
 ---
 

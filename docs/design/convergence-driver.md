@@ -139,7 +139,6 @@ Not in v1:
   later optimization once a multi-element fixture surfaces the
   win.
 
-- Integration with the deleted orchestrator's progress
-  reporting. v1 prints a round-by-round summary to stderr; a
-  richer signal (per-element timing, AC hit/miss histogram)
-  lands when an operator workflow needs it.
+- Richer progress reporting. v1 prints a round-by-round summary to
+  stderr; per-element timing + an AC hit/miss histogram land when an
+  operator workflow needs them.

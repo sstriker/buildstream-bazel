@@ -19,7 +19,7 @@
 //	         ▼
 //	      Emit(...) BUILD.bazel.out       (emit.go)
 //
-// See docs/design/pyproject-native-render.md for the full
+// See docs/architecture.md for the full
 // architecture and the patterns covered vs refused.
 package main
 

@@ -7,7 +7,7 @@ project(cons LANGUAGES C VERSION 0.1.0)
 # under $PREFIX/lib/cmake/autoprod/ — the bundle bytes came from
 # the AC via :auto-prod_trace_load's --out-config-bundle output
 # (the cross-element configure-step bootstrap rendezvous; see
-# docs/design/cross-element-config-rendezvous.md).
+# docs/design/rendezvous.md).
 #
 # find_package(autoprod CONFIG REQUIRED) below resolves against
 # that bundle. Before PR-4 this `find_package` would have failed:

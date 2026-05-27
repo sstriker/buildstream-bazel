@@ -1,5 +1,5 @@
 // Command write-a is the production writer-of-A for the meta-project
-// (Bazel-as-orchestrator) shape described in docs/whole-project-plan.md.
+// (Bazel-as-orchestrator) shape described in docs/architecture.md.
 // It parses .bst element files, resolves their sources and dependencies,
 // and renders project A (the meta workspace whose genrules invoke
 // per-kind translator binaries) and project B (the consumer workspace
@@ -393,13 +393,13 @@ func main() {
 	round1 := flag.Bool("trace-round1", false, "opt out of round-2 (the default trace-driven path). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / build / install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available. Previously named with an autotools- prefix; the trace-driven path now serves multiple kinds (autotools / make / manual / script / makemaker / modulebuild), so the prefix dropped the kind specificity.")
 	traceSourceRoot := flag.Bool("trace-source-root", false, "optional: thread --source-root=$$BUILD_ROOT into every build-tracer invocation emitted by wrapAutotoolsPipelineCmds — both the round-2 install genrule for trace-driven kinds and the round-1 single-genrule shape, since both go through the same wrapper. Required to populate the narrowing-undercoverage audit's trace oracle (without it, build-tracer drops openat events entirely — preserves the legacy AC byte schema for trace-driven kinds at the cost of an empty trace oracle). Flipping the flag invalidates existing AC entries for any trace-driven element rendered by this build (one-shot rebake; the round-2 wire-half AC keyspace and the round-1 single-action cache both shift). Off (the default) keeps existing AC entries valid; CI / e2e fixtures opt in to exercise the audit gate. See docs/design/narrowing-audit.md.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
-	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/cmake-execute-process-round2-fallback.md.")
-	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/meson-native-render.md.")
-	mesonRound2Fallback := flag.Bool("meson-round2-fallback", false, "optional: enable kind:meson round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-target-fallback=true into convert-element-meson so native-lowering refusals (subproject, custom_target, generated_sources, cross-compile, unresolved-dependency, unknown target type) produce the install-plan-driven placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (meson setup + ninja + meson install --destdir + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --convert-element-meson + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-meson doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/meson-round2-fallback.md.")
+	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
+	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/architecture.md.")
+	mesonRound2Fallback := flag.Bool("meson-round2-fallback", false, "optional: enable kind:meson round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-target-fallback=true into convert-element-meson so native-lowering refusals (subproject, custom_target, generated_sources, cross-compile, unresolved-dependency, unknown target type) produce the install-plan-driven placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (meson setup + ninja + meson install --destdir + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --convert-element-meson + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-meson doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
 	rulesPath := flag.String("rules-package-path", "", "required: absolute path to the in-repo rules_buildstream_bazel/ directory. Rendered MODULE.bazels reference the package via bazel_dep(name=\"rules_buildstream_bazel\") + local_path_override(path=<this>); the path must be absolute (Bazel's local_path_override doesn't accept relatives). The package itself isn't published to BCR — its rule definitions are tightly coupled to write-a's emit shape + the convert-element-* binaries this repo ships, so version-locking happens via \"same buildstream-bazel commit for write-a and the rules package\" rather than via a BCR-published version. Operators running the converter from this repo pass the absolute path to rules_buildstream_bazel/ at the commit they're using.")
 	platformsJSON := flag.String("platforms-json", "", "optional: path to a JSON manifest declaring the multi-platform matrix for round-2 trace-driven kinds. One entry per platform: name, constraints, optional select_label, optional reapi_properties (a list of {name, value} pairs — write-a maps these onto an exec_properties dict and emits a platform() per entry into project A's //platforms package). When set, project A's per-element render fans out to N converter genrules per element (one per (element, platform) cell) plus one fold-element genrule composing their ir.json outputs; the per-element BUILD also gets N trace_load targets (one per platform tag) so the per-platform AC lookups partition correctly. Project B's install genrule fan-out is queued as a follow-up — today's render emits one install per element regardless of --platforms-json, so the multi-platform path is render-shape complete but at runtime publishes only one platform's trace. Requires --fold-element-bin. Unset preserves the single-platform render shape byte-stably.")
 	foldBin := flag.String("fold-element-bin", "", "optional: path to converter/cmd/fold-element. Required when --platforms-json is set — staged into Project A's tools/ so the per-element fold genrule can compose N per-platform ir.Package JSONs into one BUILD.bazel.")
-	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/design/pyproject-native-render.md.")
+	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/architecture.md.")
 	pyprojectFallback := flag.Bool("pyproject-fallback", false, "optional: per-element auto-detection. When set (alongside --convert-element-pyproject), write-a probes each element's pyproject.toml at render time (running the converter with --probe) and emits the pipeline-shape coarse install genrule for any element whose probe doesn't return exit 0. That covers typed Tier-1 refusals (the native render would refuse), CLI/usage errors (exit 64), untyped Tier-2 errors (exit 65 — filesystem issues, malformed imports manifest), spawn failures (binary missing / wrong arch), and timeouts (probe hung past the per-element deadline). Operators see per-element refusal reasons on stderr; refused elements are still install_tree.tar-shaped (no per-target Bazel labels, but the element builds).")
 	buildFilesDir := flag.String("build-files-dir", "", "optional: directory of operator-supplied per-element BUILD overrides. For each element <name>, if the directory contains <name>/BUILD.bazel (or <name>/BUILD), write-a re-stamps the element as kind:bazel and copies the entire <name>/ subtree on top of project B's elements/<name>/ — overriding whatever the element's declared kind would otherwise render. Sources still stage first so the operator's BUILD can reference them via srcs=[...]; the override tree shadows any colliding files. The directory layout (rather than a flat <name>.BUILD.bazel file) lets one element ship multiple BUILDs — top-level plus subpackages — and drop in .bzl helpers, defs files, etc. alongside. Lets operators hand-author BUILDs for elements whose declared kind (kind:cmake, kind:autotools, ...) doesn't yet convert cleanly without changing the .bst files. Caveat: the kind:bazel re-stamp also skips whatever project-A wiring the original kind would have set up — kind:cmake's converter genrule doesn't fire, so cross-element bundle channels like :<elem>_cmake_config_bundle aren't synthesized for this element. Operators overriding a kind that consumes dep bundles need to wire equivalent staging inside the override BUILD by hand.")
 	flag.Parse()
@@ -586,7 +586,7 @@ func main() {
 	// lookup A's converter genrule references. All four binaries
 	// (the converter, the tracer, the publisher, the lookup tool)
 	// are kind-agnostic — same staging path as kind:cmake. See
-	// docs/design/meson-round2-fallback.md.
+	// docs/design/rendezvous.md.
 	if *mesonRound2Fallback {
 		if *mesonBin == "" {
 			log.Fatalf("--meson-round2-fallback requires --convert-element-meson (the converter's native lowering must be available so refusals can flip into the placeholder shape; without the binary the legacy pipeline-shape coarse install genrule renders unconditionally)")
@@ -1527,7 +1527,7 @@ func stagePyprojectConverter(outDir string) (string, error) {
 // fallback now reuses the same staging primitive.
 // Foundation for the architectural move of the install
 // genrule from project A's BUILD into project B's BUILD
-// (see docs/three-pass-flow.md "1 → 2 → 3 → 2′ → 3′" loop).
+// (see docs/architecture.md "1 → 2 → 3 → 2′ → 3′" loop).
 func stageAutotoolsTools(outDir string) ([]string, error) {
 	autotoolsActive := traceConfig.convertBin != "" && traceConfig.tracerBin != ""
 	cmakeFallbackActive := cmakeConfig.round2FallbackEnabled
@@ -1639,7 +1639,7 @@ func writeProjectB(g *graph, outDir string) error {
 	}
 	// Phase 8: operator-owned overlay.MODULE.bazel stub. Skipped
 	// when the file already exists so operator edits survive
-	// re-renders. See docs/design/operator-gazelle-step.md.
+	// re-renders. See ROADMAP.md.
 	if err := writeOverlayStubIfAbsent(outDir); err != nil {
 		return fmt.Errorf("operator overlay stub: %w", err)
 	}
@@ -1694,7 +1694,7 @@ func writeProjectB(g *graph, outDir string) error {
 	// runs (no behavior change vs pre-Phase-8). Operator adds
 	// patterns when they wire a gazelle extension that handles
 	// the corresponding genrule kind. See
-	// docs/design/operator-gazelle-step.md.
+	// ROADMAP.md.
 	if err := writeRewritableStubIfAbsent(outDir); err != nil {
 		return fmt.Errorf("gazelle-rewritable stub: %w", err)
 	}
@@ -1703,7 +1703,7 @@ func writeProjectB(g *graph, outDir string) error {
 	// when the AC lookup moved from load time to action time.
 	// Stage convert-element-trace + build-tracer when the
 	// trace-driven kind:autotools path is configured. Project B
-	// hosts the install genrule (see docs/three-pass-flow.md);
+	// hosts the install genrule (see docs/architecture.md);
 	// without these tools the //tools:build-tracer +
 	// //tools:convert-element-trace labels resolve to
 	// nothing in the B-side BUILD.
@@ -1866,7 +1866,7 @@ func moduleBazelB(g *graph) string {
 #   plugin at our dist-name → label map.
 #
 # The metadata files themselves ship in tools/ alongside
-# sources.json; see docs/design/build-output-conventions.md.
+# sources.json; see ROADMAP.md.
 # gazelle:cc_indexfile tools/cc_index.json
 # gazelle:cc_use_builtin_bzlmod_index true
 # gazelle:python_module_mapping tools/python_modules.json
@@ -1928,13 +1928,13 @@ local_path_override(
 	// file. write-a emits overlay.MODULE.bazel as a comment-only
 	// stub the first time the project is rendered and skips it
 	// on subsequent runs (operator edits are preserved). See
-	// docs/design/operator-gazelle-step.md.
+	// ROADMAP.md.
 	b.WriteString(`
 # Operator overlay — gives the operator a stable seam to add
 # extra bazel_dep / use_extension / register_toolchains
 # declarations without write-a touching them. The stub is
 # created by write-a on first render; subsequent renders leave
-# it alone. See docs/design/operator-gazelle-step.md.
+# it alone. See ROADMAP.md.
 include("//:overlay.MODULE.bazel")
 `)
 	return b.String()
@@ -1971,7 +1971,7 @@ const overlayModuleBazelStub = `# overlay.MODULE.bazel — operator-owned MODULE
 #   bazel_dep(name = "gazelle", version = "0.40.0")
 #   bazel_dep(name = "gazelle_cc", version = "0.3.0")
 #
-# See docs/design/operator-gazelle-step.md for the full
+# See ROADMAP.md for the full
 # post-conversion + gazelle workflow (including the genrule →
 # custom-rule rewriting story).
 `
@@ -2024,7 +2024,7 @@ const gazelleRewritableStub = `{
     "    {\"name\": \"protoc\", \"cmd_contains\": \"protoc\"}",
     "  ]}",
     "",
-    "See docs/design/operator-gazelle-step.md."
+    "See ROADMAP.md."
   ],
   "version": 1,
   "patterns": []
