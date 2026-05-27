@@ -1293,6 +1293,15 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// include any build-dir path — they consume no
 	// configure_file outputs.
 	targetBuildIncs := map[string]bool{}
+	// walkPkgRootForHdrs is set when a target_include_directories
+	// entry resolves to the package root (rel==""). We drop that
+	// from emit-side Includes (Bazel rejects `includes=[""]`) but
+	// still need discoverHeaders to walk hostSrc so headers under
+	// the package root land in irt.Hdrs and consumers can find
+	// them. Declared at function scope (above the CompileGroups
+	// guard) so the flag survives to the discoverHeaders call
+	// further down.
+	walkPkgRootForHdrs := false
 
 	if len(t.CompileGroups) > 0 {
 		// M1 assumption: at most one language per target. Aggregate the
@@ -1454,8 +1463,16 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// dependents to include any file in your workspace");
 			// same-package consumers already see this target's
 			// headers via hdrs+deps without an explicit include
-			// dir, so dropping the entry is the idiomatic shape.
+			// dir, so dropping the entry from `includes =` is the
+			// idiomatic shape. But the package root is still the
+			// authoritative source for hdrs discovery — record the
+			// signal so the discoverHeaders call below knows to
+			// walk hostSrc itself (otherwise zlib-shape projects
+			// that declare ONLY target_include_directories(.) end
+			// up with empty hdrs and consumers can't find any
+			// header).
 			if rel == "" {
+				walkPkgRootForHdrs = true
 				continue
 			}
 			irt.Includes = append(irt.Includes, rel)
@@ -1586,7 +1603,16 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 	}
 
-	hdrs, err := discoverHeaders(hostSrc, irt.Includes, cc.HeaderWalkCache, cc.MissingIncludeDirs)
+	// Include the package root in the header-discovery walk when
+	// the target's target_include_directories surfaced the empty-
+	// relative entry (the rel=="" drop above sets the flag). The
+	// emit-side `includes = [...]` slot stays untouched (Bazel
+	// rejects `[""]`); hdrs discovery picks up the same files.
+	includesForWalk := irt.Includes
+	if walkPkgRootForHdrs {
+		includesForWalk = append([]string{""}, irt.Includes...)
+	}
+	hdrs, err := discoverHeaders(hostSrc, includesForWalk, cc.HeaderWalkCache, cc.MissingIncludeDirs)
 	if err != nil {
 		return nil, err
 	}
