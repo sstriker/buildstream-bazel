@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"io"
 	"path"
 	"path/filepath"
 	"sort"
@@ -78,6 +79,30 @@ type codegenContext struct {
 	// and project B); the script runner is the same idea for
 	// arbitrary cmake-script-language drivers.
 	CMakeScriptRunner string
+
+	// CMakeScriptTrace, when true, asks the cmake -P lift to
+	// actually run the script under `cmake --trace --trace-format=
+	// json-v1 -P <script>` at convert time. The trace's read
+	// paths drive auto-augmentation of the genrule's srcs and a
+	// structured refusal diagnostic when the script touches
+	// paths Bazel's sandbox can't reproduce. Off by default
+	// because the trace step is convert-time-execution of
+	// arbitrary cmake-script-language; operators opt in via
+	// --cmake-script-trace after acknowledging the side-effect
+	// risk. Requires CMakeBinary to point at a usable cmake.
+	CMakeScriptTrace bool
+
+	// CMakeBinary is the path to the convert-host cmake binary
+	// the trace step uses for `cmake --trace -P`. Set by the
+	// caller (main.go); empty disables the trace step.
+	CMakeBinary string
+
+	// Warnings is the io.Writer the script lift's sysroot-path
+	// notice writes to. Mirrors lower.Options.Warnings; the
+	// codegenContext copies it so the lift can fire warnings
+	// without re-threading the Options struct through every
+	// helper.
+	Warnings io.Writer
 }
 
 func newCodegenContext() *codegenContext {
@@ -174,20 +199,26 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// docs/design/generator-parity-gaps.md's "cmake -P
 		// lift" entry for the limitation details.
 		script := extractCmakeScriptPath(cmd)
+		var liftReason string
 		if cc.CMakeScriptRunner != "" {
-			rel, name, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
+			rel, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
 			if ok {
 				return rel, name, nil
 			}
-			// Fall through to refusal if the lift declined
-			// (script path can't anchor under sourceRoot).
+			// Lift declined; preserve its structured reason
+			// for the refusal message below.
+			liftReason = reason
 		}
 		// Pull the actual `-P <script>` argument out of the
 		// recovered command so the failure points operators at
 		// the specific script to rewrite — not just at the
 		// consuming target's output. #207.
-		msg := fmt.Sprintf("custom command for %q runs `cmake -P %s`; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest",
+		base := fmt.Sprintf("custom command for %q runs `cmake -P %s`",
 			relOut, script)
+		if liftReason != "" {
+			base += "; lift declined: " + liftReason
+		}
+		msg := base + "; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), --cmake-script-trace=true to auto-augment srcs from the script's read paths (convert-time execution), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest"
 		return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
 	}
 

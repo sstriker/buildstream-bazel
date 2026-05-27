@@ -356,6 +356,23 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Trace-based dep discovery for the cmake -P lift
+  (`--cmake-script-trace`).** Opt-in convert-time execution
+  under `cmake --trace --trace-format=json-v1 -P <script>`
+  classifies every read path the script touches as
+  source / build / sysroot / unknown. Source-class paths
+  beyond the ninja edge's declared `DEPENDS` auto-augment
+  the genrule's `srcs` (closes the "script reads
+  `${SRCDIR}/scripts/options.awk` but add_custom_command
+  didn't list it" subset). Unknown / unresolvable
+  build-class paths refuse with a structured diagnostic
+  naming the offending paths so operators see exactly what's
+  blocking. Sysroot-class paths warn but proceed (operator's
+  runner-image responsibility). Convert-time-coupling and
+  side-effect caveats documented in
+  `docs/design/conversion-architecture.md`'s "Convert-time
+  platform coupling" section.
+
 - **`cmake -P <script>` lift via operator-staged runner
   (`--cmake-script-runner`).** The dominant non-audit refusal
   in the cross-project survey (libpng ×4, VTK ×1) becomes a
