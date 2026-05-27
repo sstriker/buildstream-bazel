@@ -9,6 +9,44 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
+// BakeInPolicy controls how the converter responds to convert-time-
+// baked outputs (configure_file base64 captures, execute_process
+// value hoists, cmake -P script bakes, etc.). The default —
+// BakeInWarn — preserves today's behaviour: emit the per-rule
+// inventory to Warnings, but let the conversion succeed. BakeInAllow
+// silences the inventory entirely; BakeInReject turns it into a
+// Tier-2-shaped refusal so operators who want strictly action-time
+// resolution can fail the conversion early and wire the missing
+// action-time tool (--cmake-configure-file-bin, an operator-staged
+// script runner, ...). Bake-in is orthogonal to fidelity: it asks
+// "HOW should successful conversions emit?", not "WHAT to do on
+// refusal?".
+type BakeInPolicy int
+
+const (
+	BakeInWarn BakeInPolicy = iota
+	BakeInAllow
+	BakeInReject
+)
+
+// ParseBakeInPolicy maps a CLI string ("allow" / "warn" / "reject")
+// to its policy value. Empty string resolves to the warn default so
+// callers can leave the field zero-valued when they don't care.
+// Unknown strings return an error suitable for surface as a CLI
+// validation failure.
+func ParseBakeInPolicy(s string) (BakeInPolicy, error) {
+	switch s {
+	case "", "warn":
+		return BakeInWarn, nil
+	case "allow":
+		return BakeInAllow, nil
+	case "reject":
+		return BakeInReject, nil
+	default:
+		return BakeInWarn, fmt.Errorf("--bake-in must be one of %q, %q, or %q (got %q)", "allow", "warn", "reject", s)
+	}
+}
+
 // convertTimeBakedShapes identifies the cmake-codegen-* tags that
 // signal "this rule's output bytes were materialized at convert
 // time" — meaning Bazel won't re-run the upstream cmake-side
@@ -48,29 +86,22 @@ var convertTimeBakedShapes = map[string]string{
 	"cmake-codegen-cmake-script-lift":                 "cmake -P script lifted via operator-staged runner (script-internal paths must survive the sandbox)",
 }
 
-// warnConvertTimeBaking walks the package's targets and emits
-// one aggregated warning per kind of convert-time-baked output
-// to opts.Warnings (typically os.Stderr). Operators see at
-// convert time which rules carry bytes that won't auto-refresh
-// when upstream inputs change.
-//
-// The warning is informational, not blocking. Operators who
-// understand the trade-off can ignore it; first-time conversions
-// of large projects benefit from seeing the inventory.
-//
-// Nil sink suppresses the message (the lower-as-pure-function
-// shape every existing test depends on); non-nil emits one
-// "convert-time-baked outputs: N rules" header line plus a
-// sorted "name (reason)" entry per rule.
-func warnConvertTimeBaking(pkg *ir.Package, sink io.Writer) {
-	if pkg == nil || sink == nil {
-		return
+// bakedEntry is one (target, reason) row in the inventory.
+type bakedEntry struct {
+	name, reason string
+}
+
+// collectBakedEntries walks pkg.Targets and returns the deduped,
+// sorted list of (target, reason) entries for every rule carrying a
+// convertTimeBakedShapes tag. Exposed as a helper because both the
+// warn-path and the reject-path consume the same list (warn writes
+// it to a sink; reject embeds it in an error).
+func collectBakedEntries(pkg *ir.Package) []bakedEntry {
+	if pkg == nil {
+		return nil
 	}
-	type entry struct {
-		name, reason string
-	}
-	var entries []entry
 	seen := map[string]bool{}
+	var entries []bakedEntry
 	for _, t := range pkg.Targets {
 		for _, tag := range t.Tags {
 			reason, ok := convertTimeBakedShapes[tag]
@@ -82,11 +113,8 @@ func warnConvertTimeBaking(pkg *ir.Package, sink io.Writer) {
 				continue
 			}
 			seen[key] = true
-			entries = append(entries, entry{t.Name, reason})
+			entries = append(entries, bakedEntry{t.Name, reason})
 		}
-	}
-	if len(entries) == 0 {
-		return
 	}
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].name != entries[j].name {
@@ -94,11 +122,49 @@ func warnConvertTimeBaking(pkg *ir.Package, sink io.Writer) {
 		}
 		return entries[i].reason < entries[j].reason
 	})
+	return entries
+}
+
+// formatBakedInventory renders the entries as the human-readable
+// listing both the warning text and the rejection error reuse.
+// The leading-line phrasing is tuned for the warn case; the reject
+// caller prepends its own framing.
+func formatBakedInventory(entries []bakedEntry) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "lower: %d convert-time-baked output(s) — these don't auto-refresh when upstream inputs change; re-run convert-element-cmake to update:\n",
+	fmt.Fprintf(&b, "%d convert-time-baked output(s) — these don't auto-refresh when upstream inputs change; re-run convert-element-cmake to update:\n",
 		len(entries))
 	for _, e := range entries {
 		fmt.Fprintf(&b, "  - %s: %s\n", e.name, e.reason)
 	}
-	_, _ = io.WriteString(sink, b.String())
+	return b.String()
+}
+
+// applyBakeInPolicy is the single entry point called from ToIR after
+// every emit-time tagging is done. It enforces the policy:
+//
+//   - BakeInAllow:  no-op (operator opted into silent baking).
+//   - BakeInWarn:   writes the inventory to sink (today's behaviour).
+//   - BakeInReject: returns an error embedding the inventory so the
+//     converter exits non-zero. The same inventory is also written
+//     to sink for visibility, since CLI consumers typically dump
+//     stderr alongside the exit code.
+//
+// Nil sink suppresses the warn-path emission (preserves the lower-
+// as-pure-function shape every existing test depends on); reject
+// still returns the error.
+func applyBakeInPolicy(pkg *ir.Package, sink io.Writer, policy BakeInPolicy) error {
+	if policy == BakeInAllow {
+		return nil
+	}
+	entries := collectBakedEntries(pkg)
+	if len(entries) == 0 {
+		return nil
+	}
+	if sink != nil {
+		_, _ = io.WriteString(sink, "lower: "+formatBakedInventory(entries))
+	}
+	if policy == BakeInReject {
+		return fmt.Errorf("--bake-in=reject refusing: %s", formatBakedInventory(entries))
+	}
+	return nil
 }

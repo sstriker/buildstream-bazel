@@ -481,6 +481,25 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`--bake-in={allow|warn|reject}` dial for write-a + convert-
+  element-cmake.** Orthogonal to `--fidelity`: bake-in asks "HOW
+  should successful conversions emit?" (convert-time-baked bytes
+  vs. action-time resolution) while fidelity asks "WHAT to do on
+  refusal?". `warn` (default) preserves today's behaviour — the
+  baking-warnings post-pass emits the per-rule inventory on
+  stderr but conversion succeeds. `allow` silences the inventory.
+  `reject` turns it into a Tier-2 refusal so operators wiring
+  strictly action-time builds fail early and add the matching
+  tool (`--cmake-configure-file-bin`,
+  `--cmake-script-runner`, ...). Implementation: `lower.Options`
+  gets a `BakeInPolicy` field consumed by the existing
+  `warnConvertTimeBaking` post-pass (now `applyBakeInPolicy`);
+  `convert-element-cmake` adds the `--bake-in` CLI flag;
+  `cmd/write-a` adds an operator-facing `--bake-in` dial that
+  threads through to the converter cmd (both the non-FUSE and
+  FUSE templates), and surfaces the resolved policy in the
+  startup banner alongside `--fidelity` and `--deployment`.
+
 - **Operator-facing mode dials for write-a (`--fidelity` /
   `--deployment`).** Today's CLI exposes ~24 flags on `write-a`
   alone, with the "what should happen on per-element refusal"

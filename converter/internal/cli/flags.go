@@ -334,6 +334,20 @@ type Args struct {
 	// scale.
 	ToolchainCMakeFile string
 
+	// BakeIn names the convert-time-baking policy: "warn" (default,
+	// today's behaviour — every baked output shows up on stderr
+	// but the conversion succeeds), "allow" (silent), or "reject"
+	// (any bake-shaped emission causes the converter to exit
+	// non-zero with the inventory embedded). Orthogonal to
+	// fidelity: it asks "HOW should successful conversions emit?",
+	// not "WHAT to do on refusal?". Operators who want strictly
+	// action-time resolution pass "reject" and wire the
+	// corresponding action-time tool (--cmake-configure-file-bin,
+	// --cmake-script-runner, ...). Empty string is treated as
+	// "warn" inside lower.ParseBakeInPolicy so a zero-value Args
+	// preserves today's CLI semantics.
+	BakeIn string
+
 	// Verify, when true, cross-checks the lowered IR against the
 	// compile_commands.json cmake emits at configure time. Mismatches
 	// (a -D macro or -I include that's in compile_commands but not in
@@ -475,6 +489,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
+	fs.StringVar(&a.BakeIn, "bake-in", "warn", "convert-time-baking policy: \"warn\" (default; today's behaviour — every baked output shows up on stderr but conversion succeeds), \"allow\" (silent), or \"reject\" (any bake-shaped emission exits non-zero with the inventory embedded). Orthogonal to --fidelity in cmd/write-a; operators who want strictly action-time resolution pass \"reject\" and wire the corresponding action-time tool (--cmake-configure-file-bin, --cmake-script-runner, ...).")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
 	fs.StringVar(&a.BazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/hello-world\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths cmake recorded. Empty suppresses the directive; safer than emitting wrong bytes.")
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
@@ -508,6 +523,15 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 		return a, ExitUsage
 	case a.CMakeBuildDir != "":
 		a.ReplyDir = filepath.Join(a.CMakeBuildDir, ".cmake", "api", "v1", "reply")
+	}
+	// --bake-in enum validation. Done here (not at lower.ToIR
+	// time) so an operator typo surfaces as a CLI usage error
+	// before any conversion work happens.
+	switch a.BakeIn {
+	case "", "warn", "allow", "reject":
+	default:
+		fmt.Fprintf(stderr, "convert-element-cmake: --bake-in must be one of %q, %q, or %q (got %q)\n", "allow", "warn", "reject", a.BakeIn)
+		return a, ExitUsage
 	}
 	return a, ExitSuccess
 }

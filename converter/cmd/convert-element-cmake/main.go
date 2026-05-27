@@ -354,6 +354,10 @@ func run(a cli.Args) error {
 		rejections = rejection.New()
 		execFallback = true
 	}
+	bakeIn, err := lower.ParseBakeInPolicy(a.BakeIn)
+	if err != nil {
+		return err
+	}
 	pkg, err := lower.ToIR(r, g, lower.Options{
 		HostSourceRoot:                    a.SourceRoot,
 		HostPrefixDir:                     prefixAbs,
@@ -370,6 +374,7 @@ func run(a cli.Args) error {
 		CMakeScriptRunner:                 a.CMakeScriptRunner,
 		CMakeScriptTrace:                  a.CMakeScriptTrace,
 		CMakeScriptBake:                   a.CMakeScriptBake,
+		BakeIn:                            bakeIn,
 		Rejections:                        rejections,
 		Warnings:                          os.Stderr,
 	})

@@ -411,11 +411,13 @@ func main() {
 	// values, so existing scripts keep their semantics.
 	fidelity := flag.String("fidelity", fidelityStrict, "conversion fidelity dial: \"strict\" (refusals exit non-zero) or \"best-effort\" (refusals lower to install_tree.tar placeholder shapes so downstream Bazel still resolves labels). Drives the defaults for --cmake-round2-fallback / --meson-round2-fallback / --pyproject-fallback; explicit values for those flags override the derived default.")
 	deployment := flag.String("deployment", deploymentAuto, "deployment dial for trace-driven kinds: \"local\" (round-1 monolithic install genrule; no REAPI AC), \"production\" (round-2 split with publish/lookup via REAPI AC), or \"auto\" (production if --trace-publish-bin + --trace-lookup-bin are set, else local). --platforms requires production.")
+	bakeIn := flag.String("bake-in", bakeInWarn, "convert-time-baking dial (kind:cmake only): \"warn\" (default; today's behaviour — every baked output shows up on stderr but conversion succeeds), \"allow\" (silent), or \"reject\" (any bake-shaped emission exits non-zero with the inventory embedded). Orthogonal to --fidelity: it asks \"HOW should successful conversions emit?\", not \"WHAT to do on refusal?\". Operators who want strictly action-time resolution pass \"reject\" and wire the corresponding action-time tool (--cmake-configure-file-bin, --cmake-script-runner, ...). Threaded into convert-element-cmake's --bake-in.")
 	flag.Parse()
 
 	modeFlagsIn := modeFlags{
 		fidelity:              *fidelity,
 		deployment:            *deployment,
+		bakeIn:                *bakeIn,
 		convertElementTrace:   *traceBin,
 		buildTracer:           *tracerBin,
 		tracePublish:          *publishBin,
@@ -442,6 +444,7 @@ func main() {
 	*mesonRound2Fallback = resolved.mesonFallback
 	*pyprojectFallback = resolved.pyprojectFallback
 	*round1 = resolved.traceRound1
+	cmakeConfig.bakeIn = resolved.bakeIn
 
 	if *bstRoot != "" {
 		if len(bstPaths) > 0 {
@@ -2148,7 +2151,7 @@ func printBanner(g *graph, r resolvedModes, m modeFlags, outA, outB string) {
 	} else if r.deployment == deploymentLocal {
 		deploymentNote = " (round-1; monolithic install genrule)"
 	}
-	fmt.Printf("write-a  fidelity=%s  deployment=%s%s\n", r.fidelity, r.deployment, deploymentNote)
+	fmt.Printf("write-a  fidelity=%s  deployment=%s%s  bake-in=%s\n", r.fidelity, r.deployment, deploymentNote, r.bakeIn)
 
 	fmt.Printf("input:   %d elements  kinds: %s\n", len(g.Elements), summarizeKinds(g))
 

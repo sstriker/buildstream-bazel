@@ -48,6 +48,14 @@ var cmakeConfig struct {
 	// install genrule can wrap the build and publish to the
 	// REAPI AC.
 	round2FallbackEnabled bool
+
+	// bakeIn is the convert-time-baking policy threaded into
+	// convert-element-cmake's --bake-in flag. Empty string preserves
+	// today's behaviour (the converter's own default is "warn");
+	// "allow" suppresses the inventory; "reject" turns it into a
+	// Tier-2 refusal. main.go populates from the operator-facing
+	// --bake-in dial.
+	bakeIn string
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
@@ -495,6 +503,7 @@ filegroup(
 	importsFlag := ""
 	liftFlag := ""
 	fallbackFlag := ""
+	bakeInFlag := ""
 	if cmakeConfig.configureFileBin != "" {
 		liftFlag = ` \
             --lift-configure-file=true`
@@ -510,6 +519,16 @@ filegroup(
 	if cmakeConfig.round2FallbackEnabled {
 		fallbackFlag = ` \
             --unsupported-execute-process-fallback=true`
+	}
+	// --bake-in passes through write-a's operator-facing dial to
+	// convert-element-cmake's --bake-in. Empty (write-a default
+	// "warn", which matches convert-element-cmake's own default)
+	// elides the flag so the cache key + golden-byte shape stays
+	// stable for the common case; only non-default values change
+	// the rendered cmd.
+	if cmakeConfig.bakeIn != "" && cmakeConfig.bakeIn != bakeInWarn {
+		bakeInFlag = fmt.Sprintf(` \
+            --bake-in=%s`, cmakeConfig.bakeIn)
 	}
 	if len(cmakeDepLabels) > 0 {
 		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
@@ -575,7 +594,7 @@ genrule(
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
-            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -596,7 +615,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, bakeInFlag)
 	return b.String()
 }
 
@@ -664,6 +683,18 @@ func cmakeDepBundleLabels(elem *element) []cmakeDepBundleLabel {
 		}
 	}
 	return out
+}
+
+// fuseBakeInFlag returns the --bake-in= flag fragment to thread into
+// the FUSE template's converter cmd, or empty when the policy is the
+// default ("warn"). Separated from the non-FUSE bakeInFlag rendering
+// so the FUSE template's small substitution list stays self-contained.
+func fuseBakeInFlag() string {
+	if cmakeConfig.bakeIn == "" || cmakeConfig.bakeIn == bakeInWarn {
+		return ""
+	}
+	return fmt.Sprintf(` \
+            --bake-in=%s`, cmakeConfig.bakeIn)
 }
 
 // cmakeElementBuildFuse renders the FUSE-sources variant of the
@@ -787,7 +818,7 @@ genrule(
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
-            --bazel-package-path="elements/%[1]s"
+            --bazel-package-path="elements/%[1]s"%[4]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -802,6 +833,6 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, sourceKey, srcsList)
+`, elem.Name, sourceKey, srcsList, fuseBakeInFlag())
 	return b.String()
 }

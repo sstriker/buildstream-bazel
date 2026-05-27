@@ -237,6 +237,42 @@ func TestDeriveModes_AutoWithPlatformsNotesDowngrade(t *testing.T) {
 	}
 }
 
+func TestDeriveModes_BakeInDefaultsAndValidation(t *testing.T) {
+	// Empty bakeIn resolves to "warn" (matches the CLI default).
+	in := modeFlags{
+		fidelity:   fidelityStrict,
+		deployment: deploymentAuto,
+		explicit:   map[string]bool{},
+	}
+	r, err := deriveModes(in)
+	if err != nil {
+		t.Fatalf("deriveModes: %v", err)
+	}
+	if r.bakeIn != bakeInWarn {
+		t.Errorf("empty bakeIn should resolve to %q; got %q", bakeInWarn, r.bakeIn)
+	}
+
+	// Explicit values pass through.
+	for _, v := range []string{bakeInAllow, bakeInWarn, bakeInReject} {
+		in.bakeIn = v
+		r, err = deriveModes(in)
+		if err != nil {
+			t.Errorf("deriveModes(bakeIn=%q): %v", v, err)
+			continue
+		}
+		if r.bakeIn != v {
+			t.Errorf("bakeIn=%q resolved to %q", v, r.bakeIn)
+		}
+	}
+
+	// Unknown values reject.
+	in.bakeIn = "bogus"
+	_, err = deriveModes(in)
+	if err == nil || !strings.Contains(err.Error(), "--bake-in") {
+		t.Errorf("expected --bake-in validation error, got %v", err)
+	}
+}
+
 func TestDeriveModes_AutoWithBestEffortDerivedFallbackTriggersDowngradeNote(t *testing.T) {
 	// best-effort with the meson converter wired but trace publish/
 	// lookup absent: mesonFB derives to false (tracePipelineToolsReady

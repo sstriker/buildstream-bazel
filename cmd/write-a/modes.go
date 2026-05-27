@@ -54,6 +54,16 @@ const (
 	deploymentAuto       = "auto"
 	deploymentLocal      = "local"
 	deploymentProduction = "production"
+
+	// Bake-in is orthogonal to fidelity: it asks "HOW should
+	// successful conversions emit?" while fidelity asks "WHAT to do
+	// on refusal?". A kind:cmake-only knob today (only the cmake
+	// converter has convert-time-baking sites worth gating);
+	// threaded into convert-element-cmake's --bake-in via
+	// handler_cmake.go.
+	bakeInAllow  = "allow"
+	bakeInWarn   = "warn"
+	bakeInReject = "reject"
 )
 
 // resolvedModes is the per-invocation outcome of mode derivation. It
@@ -67,6 +77,7 @@ const (
 type resolvedModes struct {
 	fidelity   string
 	deployment string
+	bakeIn     string
 
 	// Per-kind effective fallback decisions, post-derivation. main()
 	// writes these onto the matching *flag.Bool pointers so the
@@ -97,6 +108,7 @@ type resolvedModes struct {
 type modeFlags struct {
 	fidelity   string
 	deployment string
+	bakeIn     string
 
 	// Tool-binary presence. Empty string ⇒ the corresponding
 	// --bin flag wasn't set. Mode derivation reads these to decide
@@ -177,6 +189,18 @@ func deriveModes(m modeFlags) (resolvedModes, error) {
 		return resolvedModes{}, fmt.Errorf("--deployment must be one of %q, %q, or %q (got %q)",
 			deploymentAuto, deploymentLocal, deploymentProduction, m.deployment)
 	}
+	// Empty bakeIn resolves to "warn" so tests building modeFlags
+	// by hand don't have to set every dial; the CLI default already
+	// fills in "warn" before deriveModes runs in production.
+	if m.bakeIn == "" {
+		m.bakeIn = bakeInWarn
+	}
+	switch m.bakeIn {
+	case bakeInAllow, bakeInWarn, bakeInReject:
+	default:
+		return resolvedModes{}, fmt.Errorf("--bake-in must be one of %q, %q, or %q (got %q)",
+			bakeInAllow, bakeInWarn, bakeInReject, m.bakeIn)
+	}
 	if m.deployment == deploymentProduction && m.explicit["trace-round1"] && m.traceRound1 {
 		return resolvedModes{}, fmt.Errorf("--deployment=production is incompatible with --trace-round1=true (round-1 IS local deployment); set --deployment=local or drop --trace-round1")
 	}
@@ -184,7 +208,7 @@ func deriveModes(m modeFlags) (resolvedModes, error) {
 		return resolvedModes{}, fmt.Errorf("--deployment=local is incompatible with --trace-round1=false (local deployment IS round-1); set --deployment=production or drop --trace-round1")
 	}
 
-	res := resolvedModes{fidelity: m.fidelity, deployment: m.deployment}
+	res := resolvedModes{fidelity: m.fidelity, deployment: m.deployment, bakeIn: m.bakeIn}
 
 	// Fidelity drives the per-kind fallback defaults. Each explicit
 	// flag wins over the derived default. best-effort with no

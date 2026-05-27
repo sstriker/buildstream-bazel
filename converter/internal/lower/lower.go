@@ -255,6 +255,14 @@ type Options struct {
 	// the lower-as-pure-function shape every existing test
 	// depends on).
 	Warnings io.Writer
+
+	// BakeIn controls the convert-time-baked-output post-pass.
+	// Zero-value (BakeInWarn) preserves today's behaviour: writes
+	// the inventory to Warnings, but lets conversion succeed.
+	// BakeInAllow silences the inventory entirely; BakeInReject
+	// turns it into a Tier-2 refusal that ToIR returns as an error.
+	// See baking_warnings.go for the per-tag taxonomy.
+	BakeIn BakeInPolicy
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -851,10 +859,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// after every emit-time tagging is done. The post-pass writes
 	// a single aggregated warning to opts.Warnings so operators
 	// see at convert time which rules carry bytes that won't
-	// auto-refresh when upstream inputs change. Nil sink
-	// suppresses; non-nil emits a sorted list. Per-tag taxonomy
-	// in converter/internal/lower/baking_warnings.go.
-	warnConvertTimeBaking(pkg, opts.Warnings)
+	// auto-refresh when upstream inputs change. opts.BakeIn
+	// controls the policy: warn (today's default), allow (silent),
+	// or reject (return an error so the converter exits non-zero
+	// and the operator wires the missing action-time tool). Nil
+	// sink suppresses the warn-path emission; reject still returns
+	// the error. Per-tag taxonomy in
+	// converter/internal/lower/baking_warnings.go.
+	if err := applyBakeInPolicy(pkg, opts.Warnings, opts.BakeIn); err != nil {
+		return nil, err
+	}
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the
