@@ -1,12 +1,12 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        fetch-fmt fetch-zlib fetch-spdlog update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -19,6 +19,8 @@ FMT_VERSION    ?= 11.0.2
 FMT_DIR        ?= /tmp/fmt
 ZLIB_VERSION   ?= v1.3.1
 ZLIB_DIR       ?= /tmp/zlib
+SPDLOG_VERSION ?= v1.14.1
+SPDLOG_DIR     ?= /tmp/spdlog
 
 GO        ?= go
 GOFLAGS   ?=
@@ -681,6 +683,14 @@ e2e-fidelity-compare-zlib: check-cmake-toolchain converter fetch-zlib
 		--bazel-artifact-pattern libzlibstatic.a \
 		--allowlist testdata/fidelity/zlib.allowlist.txt
 
+e2e-fidelity-compare-spdlog: check-cmake-toolchain converter fetch-spdlog
+	scripts/run-fidelity.sh \
+		--project-name spdlog \
+		--source-root $(SPDLOG_DIR) \
+		--target spdlog \
+		--artifact-pattern libspdlog.a \
+		--allowlist testdata/fidelity/spdlog.allowlist.txt
+
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,
 # tears down. Replaces the in-process fake with actual Buildbarn code.
@@ -854,6 +864,14 @@ fetch-zlib:
 		git clone --depth 1 --branch $(ZLIB_VERSION) https://github.com/madler/zlib.git "$(ZLIB_DIR)"; \
 	else \
 		echo "zlib already at $(ZLIB_DIR); rm -rf to refetch"; \
+	fi
+
+# Fetch spdlog for the fidelity-compare gate. Idempotent.
+fetch-spdlog:
+	@if [ ! -d "$(SPDLOG_DIR)" ]; then \
+		git clone --depth 1 --branch $(SPDLOG_VERSION) https://github.com/gabime/spdlog.git "$(SPDLOG_DIR)"; \
+	else \
+		echo "spdlog already at $(SPDLOG_DIR); rm -rf to refetch"; \
 	fi
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.

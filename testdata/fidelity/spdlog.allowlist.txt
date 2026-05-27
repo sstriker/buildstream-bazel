@@ -1,0 +1,31 @@
+# Per-fixture benign-delta allowlist for the e2e-fidelity-compare-spdlog gate.
+#
+# Format: one symbol name per line; lines starting with `#` and
+# blank lines are ignored. Each entry pre-empts impactful
+# classification — use sparingly and only for symbols where
+# operator triage confirmed the diff is structural / toolchain-
+# origin and not a converter bug.
+#
+# spdlog v1.14.1 (close-gaps campaign rollout): 1404/1404 exported
+# symbols match. The five entries below are C++ template
+# instantiations from spdlog's vendored fmt header-only inclusion
+# that exist on one side but not the other — the cmake distro
+# toolchain and Bazel's hermetic toolchain make different
+# inlining / instantiation decisions at -O3 -DNDEBUG. The
+# fidelity-compare prefix pairer (24-char shared mangled prefix)
+# can't pair them because each has no counterpart on the other
+# side. None of these are exposed in spdlog's public API; they're
+# internal fmt template instantiations spdlog re-emits from
+# `#include <spdlog/fmt/bundled/...>` at varying inlining depths
+# across the two toolchains.
+
+# fmt::v10::detail::write_escaped_string — bazel-side instantiation
+_ZN3fmt3v106detail20write_escaped_stringIcNS1_17counting_iteratorEEET0_S4_NS0_17basic_string_viewIT_EE
+# fmt::v10::detail::parse_nonnegative_int — bazel-side instantiation
+_ZN3fmt3v106detail21parse_nonnegative_intIcEEiRPKT_S5_i
+# fmt::v10::system_error<> ctor — cmake-side instantiation
+_ZN3fmt3v1012system_errorIJEEESt12system_erroriNS0_19basic_format_stringIcJDpNS0_13type_identityIT_E4typeEEEEDpOS5_
+# fmt::v10::detail::format_decimal<char, octal> — cmake-side instantiation
+_ZN3fmt3v106detail14format_decimalIcoEENS1_21format_decimal_resultIPT_EES5_T0_i
+# fmt::v10::detail::write_escaped_cp — cmake-side instantiation
+_ZN3fmt3v106detail16write_escaped_cpINS1_17counting_iteratorEcEET_S4_RKNS1_18find_escape_resultIT0_EE
