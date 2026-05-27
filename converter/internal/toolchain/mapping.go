@@ -31,6 +31,15 @@ const (
 	BazelFeatureUbsan    BazelFeature = "ubsan"    // -fsanitize=undefined
 	BazelFeatureCoverage BazelFeature = "coverage" // --coverage / -fprofile-instr-generate
 	BazelFeatureLto      BazelFeature = "lto"      // -flto
+
+	// Hardening features. Unlike sanitizers / LTO, these don't
+	// derive from a probe variant — they're constant flag
+	// bundles matching distro cc's spec-file defaults. Wired
+	// in via Config.HardeningFeatures on the bazeltoolchain
+	// emit side; default-enabled so converted-then-rebuilt
+	// artifacts match cmake's symbol-set.
+	BazelFeatureFortifySource  BazelFeature = "fortify_source"  // -D_FORTIFY_SOURCE=2
+	BazelFeatureStackProtector BazelFeature = "stack_protector" // -fstack-protector-strong
 )
 
 // FeatureVariants is the canonical catalog of feature probe
