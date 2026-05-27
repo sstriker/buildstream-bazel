@@ -427,20 +427,21 @@ func main() {
 		pyprojectFallback:     *pyprojectFallback,
 		traceRound1:           *round1,
 		platformsJSON:         *platformsJSON,
+		useFuseSources:        *useFuseSources,
 		cmakeConfigureFileBin: *cmakeConfigureFileBin,
 		explicit:              flagExplicit(),
 	}
-	resolved, cmakeFBEff, mesonFBEff, pyprojectFBEff, traceR1Eff, err := deriveModes(modeFlagsIn)
+	resolved, err := deriveModes(modeFlagsIn)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
 	// Effective values feed the existing downstream wiring. main()
 	// reads these locals from here on rather than the raw *flag
 	// pointers so the mode-derivation defaults take effect.
-	*cmakeRound2Fallback = cmakeFBEff
-	*mesonRound2Fallback = mesonFBEff
-	*pyprojectFallback = pyprojectFBEff
-	*round1 = traceR1Eff
+	*cmakeRound2Fallback = resolved.cmakeFallback
+	*mesonRound2Fallback = resolved.mesonFallback
+	*pyprojectFallback = resolved.pyprojectFallback
+	*round1 = resolved.traceRound1
 
 	if *bstRoot != "" {
 		if len(bstPaths) > 0 {
@@ -667,7 +668,7 @@ func main() {
 	// binaries OR opt out via --trace-round1).
 	if traceConfig.convertBin != "" && !*round1 {
 		if *publishBin == "" || *lookupBin == "" {
-			log.Fatalf("trace-driven round-2 (the default for kinds opted into the trace-driven path — autotools / make / manual / script / makemaker / modulebuild — when --convert-element-trace is set) requires --trace-publish-bin and --trace-lookup-bin; pass --trace-round1 to opt back into the legacy single-genrule shape that doesn't need them")
+			log.Fatalf("trace-driven round-2 (the default for kinds opted into the trace-driven path — autotools / make / manual / script / makemaker / modulebuild — when --convert-element-trace is set) requires --trace-publish-bin and --trace-lookup-bin; pass --deployment=local (or the legacy --trace-round1) to opt back into the single-genrule shape that doesn't need them")
 		}
 		pubAbs, err := filepath.Abs(*publishBin)
 		if err != nil {
@@ -701,7 +702,7 @@ func main() {
 			log.Fatalf("--platforms-json requires --fold-element-bin (the fold tool composes N per-platform ir.json outputs into one BUILD.bazel)")
 		}
 		if !traceConfig.round2Enabled {
-			log.Fatalf("--platforms-json requires the trace-driven round-2 path (--convert-element-trace + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin without --trace-round1); the per-platform fold only applies to round-2's per-element converter genrule")
+			log.Fatalf("--platforms-json requires the trace-driven round-2 path (--deployment=production with --convert-element-trace + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin); the per-platform fold only applies to round-2's per-element converter genrule")
 		}
 		fAbs, err := filepath.Abs(*foldBin)
 		if err != nil {
@@ -766,8 +767,11 @@ func main() {
 	if err := writeProjectA(g, *outA, convertAbs); err != nil {
 		log.Fatalf("write project A: %v", err)
 	}
-	fmt.Printf("wrote project A at %s (%d elements: %s)\n",
-		*outA, len(g.Elements), summarizeKinds(g))
+	// Banner above already printed the element count + kind summary
+	// + output paths. The post-render line keeps a terse success
+	// marker so CI log scrapers that grep for "wrote project A at"
+	// keep working without duplicating the banner's content.
+	fmt.Printf("wrote project A at %s\n", *outA)
 
 	if *outB != "" {
 		if err := writeProjectB(g, *outB); err != nil {
@@ -2148,36 +2152,29 @@ func printBanner(g *graph, r resolvedModes, m modeFlags, outA, outB string) {
 
 	fmt.Printf("input:   %d elements  kinds: %s\n", len(g.Elements), summarizeKinds(g))
 
-	// Tools line: every binary write-a knows about, with ✓ when
-	// wired and a one-line summary otherwise. The reader can spot
-	// "convert-element-meson – not provided" without scanning a
-	// help-text wall.
+	// Tools line: every binary write-a knows about, with the
+	// resolved path when wired and a "not provided" bucket otherwise.
+	// The reader can spot "convert-element-meson – not provided"
+	// without scanning a help-text wall.
+	//
+	// convert-element-cmake is required (validated upstream) so it
+	// always lists as wired; all the others key off the matching
+	// flag value, or — for fold-element, which doesn't surface its
+	// path on modeFlags — off traceConfig.foldBin.
 	type toolState struct{ name, path string }
 	tools := []toolState{
-		{"convert-element-cmake", "(required; passed as --convert-element-cmake)"},
+		{"convert-element-cmake", "(required)"},
 		{"convert-element-trace", m.convertElementTrace},
 		{"convert-element-meson", m.convertElementMeson},
 		{"convert-element-pyproject", m.pyprojectConverter},
 		{"build-tracer", m.buildTracer},
 		{"trace-publish", m.tracePublish},
 		{"trace-lookup", m.traceLookup},
-		{"fold-element", "(set via --fold-element-bin when --platforms is in play)"},
+		{"fold-element", traceConfig.foldBin},
 		{"cmake-configure-file", m.cmakeConfigureFileBin},
 	}
 	var wired, missing []string
 	for _, t := range tools {
-		if t.name == "convert-element-cmake" {
-			wired = append(wired, t.name)
-			continue
-		}
-		if t.name == "fold-element" {
-			if traceConfig.foldBin != "" {
-				wired = append(wired, t.name)
-			} else if m.platformsJSON != "" {
-				missing = append(missing, t.name)
-			}
-			continue
-		}
 		if t.path != "" {
 			wired = append(wired, t.name)
 		} else {

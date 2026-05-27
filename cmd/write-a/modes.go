@@ -39,7 +39,8 @@ package main
 //
 // Explicit --trace-round1 sets deployment to local; passing both
 // --trace-round1 and --deployment=production is rejected as a
-// contradiction (rather than silently picking one).
+// contradiction (rather than silently picking one). Same for
+// --trace-round1=false combined with --deployment=local.
 
 import (
 	"flag"
@@ -58,10 +59,26 @@ const (
 // resolvedModes is the per-invocation outcome of mode derivation. It
 // records both the operator's nominal request (the enum values
 // printed in the startup banner) and the effective decisions write-a
-// took for kinds whose tools weren't wired (the "downgrade" notes).
+// took for kinds whose tools weren't wired (the "downgrade" notes),
+// plus the per-kind fallback bools and the trace-round1 effective
+// value that main() writes back onto the corresponding *flag
+// pointers. Single-struct return keeps the API stable against
+// future per-kind dial additions.
 type resolvedModes struct {
 	fidelity   string
 	deployment string
+
+	// Per-kind effective fallback decisions, post-derivation. main()
+	// writes these onto the matching *flag.Bool pointers so the
+	// existing downstream wiring (which reads the flag pointers) sees
+	// the mode-derived defaults.
+	cmakeFallback     bool
+	mesonFallback     bool
+	pyprojectFallback bool
+
+	// traceRound1 is the effective value for the --trace-round1 flag,
+	// derived from --deployment. main() writes it back onto *round1.
+	traceRound1 bool
 
 	// downgrades is the list of human-readable lines printed in the
 	// banner explaining where best-effort silently degraded to
@@ -73,10 +90,10 @@ type resolvedModes struct {
 }
 
 // modeFlags collects the raw values of every flag that participates
-// in mode derivation. main() builds one of these from its flag
-// pointers and hands it to deriveModes. Splitting parsing from
-// derivation keeps the validation testable without a process
-// boundary.
+// in mode derivation OR in the startup banner's tools-list display.
+// main() builds one of these from its flag pointers and hands it to
+// deriveModes. Splitting parsing from derivation keeps the validation
+// testable without a process boundary.
 type modeFlags struct {
 	fidelity   string
 	deployment string
@@ -96,11 +113,27 @@ type modeFlags struct {
 	// carry the EXPLICIT setting only when explicit[<name>] is
 	// true; otherwise they're zero-valued (the flag default) and
 	// the derivation pass picks the value from fidelity.
-	cmakeRound2Fallback   bool
-	mesonRound2Fallback   bool
-	pyprojectFallback     bool
-	traceRound1           bool
-	platformsJSON         string
+	cmakeRound2Fallback bool
+	mesonRound2Fallback bool
+	pyprojectFallback   bool
+	traceRound1         bool
+	platformsJSON       string
+
+	// useFuseSources is the experimental fuse-sources opt-in. It's
+	// not a fidelity/deployment input per se, but the FUSE template
+	// for kind:cmake doesn't thread --unsupported-execute-process-
+	// fallback through to convert-element-cmake (see main.go's
+	// rejection on the explicit-fallback path), so deriveModes must
+	// know about it to avoid implicitly turning on cmake-round2-
+	// fallback under --fidelity=best-effort + --use-fuse-sources —
+	// the implicit opt-in would then trip the same fatal error the
+	// explicit one does, surprising operators who never typed
+	// --cmake-round2-fallback.
+	useFuseSources bool
+
+	// cmakeConfigureFileBin doesn't participate in derivation; it's
+	// read only by printBanner for the tools-list display. Carried
+	// here so callers build one struct instead of two.
 	cmakeConfigureFileBin string
 
 	// explicit is the set of flag names the operator passed on
@@ -110,16 +143,19 @@ type modeFlags struct {
 
 // deriveModes validates the operator's mode choices and returns the
 // effective fallback / deployment decisions. It does NOT mutate any
-// package-level config — callers consume the returned struct and the
-// resolved booleans alongside it to drive the rest of main().
+// package-level config — callers consume resolvedModes and write its
+// per-kind fallback bools / traceRound1 onto the corresponding
+// *flag.Bool pointers to drive the rest of main().
 //
 // Validation surface (returns an error rather than fatal-ing so tests
 // can assert against the message):
 //
 //   - --fidelity ∈ {strict, best-effort}.
 //   - --deployment ∈ {auto, local, production}.
-//   - --deployment=production with --trace-round1 set explicitly is
-//     a contradiction.
+//   - --deployment=production with --trace-round1=true is a
+//     contradiction (round-1 IS local deployment).
+//   - --deployment=local with --trace-round1=false is the symmetric
+//     contradiction (local deployment IS round-1).
 //   - --deployment=production with no publish+lookup binaries and
 //     trace-driven kinds active will be rejected by the existing
 //     downstream checks in main(); this validator doesn't duplicate
@@ -128,24 +164,24 @@ type modeFlags struct {
 //     explicitly set to true is allowed but surfaces in the banner
 //     (operator wanted strict mode for most kinds but opted in to
 //     one fallback explicitly — legitimate but worth showing).
-func deriveModes(m modeFlags) (resolvedModes, bool, bool, bool, bool, error) {
+func deriveModes(m modeFlags) (resolvedModes, error) {
 	switch m.fidelity {
 	case fidelityStrict, fidelityBestEffort:
 	default:
-		return resolvedModes{}, false, false, false, false,
-			fmt.Errorf("--fidelity must be one of %q or %q (got %q)",
-				fidelityStrict, fidelityBestEffort, m.fidelity)
+		return resolvedModes{}, fmt.Errorf("--fidelity must be one of %q or %q (got %q)",
+			fidelityStrict, fidelityBestEffort, m.fidelity)
 	}
 	switch m.deployment {
 	case deploymentAuto, deploymentLocal, deploymentProduction:
 	default:
-		return resolvedModes{}, false, false, false, false,
-			fmt.Errorf("--deployment must be one of %q, %q, or %q (got %q)",
-				deploymentAuto, deploymentLocal, deploymentProduction, m.deployment)
+		return resolvedModes{}, fmt.Errorf("--deployment must be one of %q, %q, or %q (got %q)",
+			deploymentAuto, deploymentLocal, deploymentProduction, m.deployment)
 	}
 	if m.deployment == deploymentProduction && m.explicit["trace-round1"] && m.traceRound1 {
-		return resolvedModes{}, false, false, false, false,
-			fmt.Errorf("--deployment=production is incompatible with --trace-round1 (round-1 IS local deployment); set --deployment=local or drop --trace-round1")
+		return resolvedModes{}, fmt.Errorf("--deployment=production is incompatible with --trace-round1=true (round-1 IS local deployment); set --deployment=local or drop --trace-round1")
+	}
+	if m.deployment == deploymentLocal && m.explicit["trace-round1"] && !m.traceRound1 {
+		return resolvedModes{}, fmt.Errorf("--deployment=local is incompatible with --trace-round1=false (local deployment IS round-1); set --deployment=production or drop --trace-round1")
 	}
 
 	res := resolvedModes{fidelity: m.fidelity, deployment: m.deployment}
@@ -157,63 +193,76 @@ func deriveModes(m modeFlags) (resolvedModes, bool, bool, bool, bool, error) {
 	// kind keeps its strict refusal semantics.
 	tracePipelineToolsReady := m.tracePublish != "" && m.traceLookup != "" && m.buildTracer != ""
 
-	cmakeFB := m.cmakeRound2Fallback
+	res.cmakeFallback = m.cmakeRound2Fallback
 	if !m.explicit["cmake-round2-fallback"] {
-		cmakeFB = m.fidelity == fidelityBestEffort && tracePipelineToolsReady
-		if m.fidelity == fidelityBestEffort && !tracePipelineToolsReady {
+		// --use-fuse-sources is incompatible with the
+		// cmake-round2-fallback path (the FUSE template doesn't
+		// thread the fallback flag into convert-element-cmake; see
+		// main.go's explicit-flag rejection). Auto-enabling
+		// cmake fallback here would then trip that fatal even
+		// though the operator never typed --cmake-round2-fallback.
+		// Refuse to auto-enable under fuse-sources and surface a
+		// downgrade note explaining the choice.
+		switch {
+		case m.fidelity == fidelityBestEffort && m.useFuseSources:
+			res.cmakeFallback = false
+			res.downgrades = append(res.downgrades,
+				"kind:cmake fallback unavailable under --use-fuse-sources (the FUSE template doesn't yet thread --unsupported-execute-process-fallback); refusals will exit non-zero")
+		case m.fidelity == fidelityBestEffort && tracePipelineToolsReady:
+			res.cmakeFallback = true
+		case m.fidelity == fidelityBestEffort:
 			res.downgrades = append(res.downgrades,
 				"kind:cmake fallback unavailable (need --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin); refusals will exit non-zero")
 		}
 	}
-	mesonFB := m.mesonRound2Fallback
+	res.mesonFallback = m.mesonRound2Fallback
 	if !m.explicit["meson-round2-fallback"] {
-		mesonFB = m.fidelity == fidelityBestEffort && tracePipelineToolsReady && m.convertElementMeson != ""
+		res.mesonFallback = m.fidelity == fidelityBestEffort && tracePipelineToolsReady && m.convertElementMeson != ""
 		if m.fidelity == fidelityBestEffort && m.convertElementMeson != "" && !tracePipelineToolsReady {
 			res.downgrades = append(res.downgrades,
 				"kind:meson fallback unavailable (need --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin); refusals will exit non-zero")
 		}
 	}
-	pyprojectFB := m.pyprojectFallback
+	res.pyprojectFallback = m.pyprojectFallback
 	if !m.explicit["pyproject-fallback"] {
-		pyprojectFB = m.fidelity == fidelityBestEffort && m.pyprojectConverter != ""
+		res.pyprojectFallback = m.fidelity == fidelityBestEffort && m.pyprojectConverter != ""
 	}
 
 	// Deployment drives traceRound1. local ⇒ round-1; production ⇒
 	// round-2; auto ⇒ round-2 if publish+lookup, else round-1.
-	traceR1 := m.traceRound1
+	// Explicit --trace-round1 under auto picks the deployment label
+	// from the value: true ⇒ local, false ⇒ production. (For
+	// non-auto deployments, the symmetric contradiction checks
+	// above already rejected mismatched explicit values.)
+	res.traceRound1 = m.traceRound1
 	switch m.deployment {
 	case deploymentLocal:
-		traceR1 = true
+		res.traceRound1 = true
 	case deploymentProduction:
-		traceR1 = false
+		res.traceRound1 = false
 	case deploymentAuto:
-		if m.explicit["trace-round1"] {
-			// Operator explicitly chose round-1 inside auto.
-			// Honor it; banner records the resolved deployment as
-			// local for visibility.
-			traceR1 = m.traceRound1
-			if traceR1 {
+		switch {
+		case m.explicit["trace-round1"]:
+			res.traceRound1 = m.traceRound1
+			if res.traceRound1 {
 				res.deployment = deploymentLocal
 			} else {
 				res.deployment = deploymentProduction
 			}
-		} else {
-			if m.tracePublish != "" && m.traceLookup != "" {
-				traceR1 = false
-				res.deployment = deploymentProduction
-			} else {
-				traceR1 = true
-				res.deployment = deploymentLocal
-				if m.convertElementTrace != "" || m.cmakeRound2Fallback ||
-					m.mesonRound2Fallback || m.platformsJSON != "" {
-					res.downgrades = append(res.downgrades,
-						"--deployment=auto picked local (round-1) because --trace-publish-bin / --trace-lookup-bin weren't set; --platforms requires production")
-				}
+		case m.tracePublish != "" && m.traceLookup != "":
+			res.traceRound1 = false
+			res.deployment = deploymentProduction
+		default:
+			res.traceRound1 = true
+			res.deployment = deploymentLocal
+			if m.convertElementTrace != "" || res.cmakeFallback || res.mesonFallback || m.platformsJSON != "" {
+				res.downgrades = append(res.downgrades,
+					"--deployment=auto picked local (round-1) because --trace-publish-bin / --trace-lookup-bin weren't set; --platforms requires production")
 			}
 		}
 	}
 
-	return res, cmakeFB, mesonFB, pyprojectFB, traceR1, nil
+	return res, nil
 }
 
 // flagExplicit returns the set of flag names that were set on the

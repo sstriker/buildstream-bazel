@@ -11,16 +11,16 @@ func TestDeriveModes_StrictDefault(t *testing.T) {
 		deployment: deploymentAuto,
 		explicit:   map[string]bool{},
 	}
-	r, cmakeFB, mesonFB, pyprojectFB, traceR1, err := deriveModes(in)
+	r, err := deriveModes(in)
 	if err != nil {
 		t.Fatalf("deriveModes: %v", err)
 	}
-	if cmakeFB || mesonFB || pyprojectFB {
+	if r.cmakeFallback || r.mesonFallback || r.pyprojectFallback {
 		t.Errorf("strict defaults should leave all per-kind fallbacks off; got cmake=%v meson=%v py=%v",
-			cmakeFB, mesonFB, pyprojectFB)
+			r.cmakeFallback, r.mesonFallback, r.pyprojectFallback)
 	}
-	if !traceR1 {
-		t.Errorf("deployment=auto with no publish+lookup should pick local (traceR1=true); got false")
+	if !r.traceRound1 {
+		t.Errorf("deployment=auto with no publish+lookup should pick local (traceRound1=true); got false")
 	}
 	if r.deployment != deploymentLocal {
 		t.Errorf("resolved deployment = %q, want %q", r.deployment, deploymentLocal)
@@ -41,16 +41,16 @@ func TestDeriveModes_BestEffortEnablesFallbacksWhenToolsWired(t *testing.T) {
 		pyprojectConverter:  "/bin/convert-element-pyproject",
 		explicit:            map[string]bool{},
 	}
-	r, cmakeFB, mesonFB, pyprojectFB, traceR1, err := deriveModes(in)
+	r, err := deriveModes(in)
 	if err != nil {
 		t.Fatalf("deriveModes: %v", err)
 	}
-	if !cmakeFB || !mesonFB || !pyprojectFB {
+	if !r.cmakeFallback || !r.mesonFallback || !r.pyprojectFallback {
 		t.Errorf("best-effort with tools wired should enable all per-kind fallbacks; got cmake=%v meson=%v py=%v",
-			cmakeFB, mesonFB, pyprojectFB)
+			r.cmakeFallback, r.mesonFallback, r.pyprojectFallback)
 	}
-	if traceR1 {
-		t.Errorf("deployment=auto with publish+lookup should pick production (traceR1=false); got true")
+	if r.traceRound1 {
+		t.Errorf("deployment=auto with publish+lookup should pick production (traceRound1=false); got true")
 	}
 	if r.deployment != deploymentProduction {
 		t.Errorf("resolved deployment = %q, want %q", r.deployment, deploymentProduction)
@@ -58,18 +58,16 @@ func TestDeriveModes_BestEffortEnablesFallbacksWhenToolsWired(t *testing.T) {
 }
 
 func TestDeriveModes_BestEffortWithoutToolsDowngrades(t *testing.T) {
-	// best-effort but no tracer/publish/lookup wired ⇒ cmake fallback
-	// can't engage. Should surface a downgrade note, not error.
 	in := modeFlags{
 		fidelity:   fidelityBestEffort,
 		deployment: deploymentAuto,
 		explicit:   map[string]bool{},
 	}
-	r, cmakeFB, _, _, _, err := deriveModes(in)
+	r, err := deriveModes(in)
 	if err != nil {
 		t.Fatalf("deriveModes: %v", err)
 	}
-	if cmakeFB {
+	if r.cmakeFallback {
 		t.Errorf("cmake fallback should stay off when tools aren't wired (best-effort downgrades to strict for that kind)")
 	}
 	if len(r.downgrades) == 0 {
@@ -86,23 +84,53 @@ func TestDeriveModes_BestEffortWithoutToolsDowngrades(t *testing.T) {
 	}
 }
 
+func TestDeriveModes_BestEffortWithFuseSourcesNoCmakeFallback(t *testing.T) {
+	// --use-fuse-sources is incompatible with cmake-round2-fallback (see
+	// main.go's explicit-flag rejection). deriveModes must NOT
+	// auto-enable cmake fallback under best-effort + fuse, even with
+	// every other tool wired.
+	in := modeFlags{
+		fidelity:       fidelityBestEffort,
+		deployment:     deploymentAuto,
+		buildTracer:    "/bin/build-tracer",
+		tracePublish:   "/bin/trace-publish",
+		traceLookup:    "/bin/trace-lookup",
+		useFuseSources: true,
+		explicit:       map[string]bool{},
+	}
+	r, err := deriveModes(in)
+	if err != nil {
+		t.Fatalf("deriveModes: %v", err)
+	}
+	if r.cmakeFallback {
+		t.Errorf("cmake fallback should stay off under --use-fuse-sources to avoid the FUSE-template incompatibility")
+	}
+	found := false
+	for _, n := range r.downgrades {
+		if strings.Contains(n, "--use-fuse-sources") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a downgrade note explaining the fuse-sources interaction; got %v", r.downgrades)
+	}
+}
+
 func TestDeriveModes_ExplicitOverridesMode(t *testing.T) {
-	// strict + explicit --cmake-round2-fallback=true ⇒ cmake fallback on.
 	in := modeFlags{
 		fidelity:            fidelityStrict,
 		deployment:          deploymentAuto,
 		cmakeRound2Fallback: true,
 		explicit:            map[string]bool{"cmake-round2-fallback": true},
 	}
-	_, cmakeFB, _, _, _, err := deriveModes(in)
+	r, err := deriveModes(in)
 	if err != nil {
 		t.Fatalf("deriveModes: %v", err)
 	}
-	if !cmakeFB {
+	if !r.cmakeFallback {
 		t.Errorf("explicit --cmake-round2-fallback=true under strict should still enable cmake fallback")
 	}
 
-	// best-effort + explicit --cmake-round2-fallback=false ⇒ cmake fallback off.
 	in2 := modeFlags{
 		fidelity:            fidelityBestEffort,
 		deployment:          deploymentAuto,
@@ -112,11 +140,11 @@ func TestDeriveModes_ExplicitOverridesMode(t *testing.T) {
 		cmakeRound2Fallback: false,
 		explicit:            map[string]bool{"cmake-round2-fallback": true},
 	}
-	_, cmakeFB2, _, _, _, err := deriveModes(in2)
+	r2, err := deriveModes(in2)
 	if err != nil {
 		t.Fatalf("deriveModes (best-effort, explicit false): %v", err)
 	}
-	if cmakeFB2 {
+	if r2.cmakeFallback {
 		t.Errorf("explicit --cmake-round2-fallback=false under best-effort should leave cmake fallback off")
 	}
 }
@@ -129,12 +157,12 @@ func TestDeriveModes_DeploymentLocal(t *testing.T) {
 		traceLookup:  "/bin/trace-lookup",
 		explicit:     map[string]bool{},
 	}
-	r, _, _, _, traceR1, err := deriveModes(in)
+	r, err := deriveModes(in)
 	if err != nil {
 		t.Fatalf("deriveModes: %v", err)
 	}
-	if !traceR1 {
-		t.Errorf("deployment=local should force traceR1=true even when publish+lookup are wired")
+	if !r.traceRound1 {
+		t.Errorf("deployment=local should force traceRound1=true even when publish+lookup are wired")
 	}
 	if r.deployment != deploymentLocal {
 		t.Errorf("resolved deployment = %q, want %q", r.deployment, deploymentLocal)
@@ -148,9 +176,25 @@ func TestDeriveModes_DeploymentProductionRejectsTraceRound1(t *testing.T) {
 		traceRound1: true,
 		explicit:    map[string]bool{"trace-round1": true},
 	}
-	_, _, _, _, _, err := deriveModes(in)
+	_, err := deriveModes(in)
 	if err == nil {
-		t.Fatalf("deriveModes accepted --deployment=production with --trace-round1; want error")
+		t.Fatalf("deriveModes accepted --deployment=production with --trace-round1=true; want error")
+	}
+	if !strings.Contains(err.Error(), "incompatible") {
+		t.Errorf("error %q should explain the deployment / round-1 conflict", err)
+	}
+}
+
+func TestDeriveModes_DeploymentLocalRejectsTraceRound1False(t *testing.T) {
+	in := modeFlags{
+		fidelity:    fidelityStrict,
+		deployment:  deploymentLocal,
+		traceRound1: false,
+		explicit:    map[string]bool{"trace-round1": true},
+	}
+	_, err := deriveModes(in)
+	if err == nil {
+		t.Fatalf("deriveModes accepted --deployment=local with --trace-round1=false; want error")
 	}
 	if !strings.Contains(err.Error(), "incompatible") {
 		t.Errorf("error %q should explain the deployment / round-1 conflict", err)
@@ -158,31 +202,28 @@ func TestDeriveModes_DeploymentProductionRejectsTraceRound1(t *testing.T) {
 }
 
 func TestDeriveModes_RejectsUnknownEnumValues(t *testing.T) {
-	_, _, _, _, _, err := deriveModes(modeFlags{fidelity: "lax", deployment: deploymentAuto, explicit: map[string]bool{}})
+	_, err := deriveModes(modeFlags{fidelity: "lax", deployment: deploymentAuto, explicit: map[string]bool{}})
 	if err == nil || !strings.Contains(err.Error(), "--fidelity") {
 		t.Errorf("expected --fidelity validation error, got %v", err)
 	}
-	_, _, _, _, _, err = deriveModes(modeFlags{fidelity: fidelityStrict, deployment: "staging", explicit: map[string]bool{}})
+	_, err = deriveModes(modeFlags{fidelity: fidelityStrict, deployment: "staging", explicit: map[string]bool{}})
 	if err == nil || !strings.Contains(err.Error(), "--deployment") {
 		t.Errorf("expected --deployment validation error, got %v", err)
 	}
 }
 
 func TestDeriveModes_AutoWithPlatformsNotesDowngrade(t *testing.T) {
-	// --platforms requires production, but deployment=auto with no
-	// publish+lookup downgrades to local. Surface that as a note so
-	// the operator sees why their --platforms is about to fail.
 	in := modeFlags{
 		fidelity:      fidelityStrict,
 		deployment:    deploymentAuto,
 		platformsJSON: "/path/to/platforms.json",
 		explicit:      map[string]bool{},
 	}
-	r, _, _, _, traceR1, err := deriveModes(in)
+	r, err := deriveModes(in)
 	if err != nil {
 		t.Fatalf("deriveModes: %v", err)
 	}
-	if !traceR1 {
+	if !r.traceRound1 {
 		t.Errorf("auto with no publish+lookup should pick local")
 	}
 	matched := false
@@ -193,5 +234,32 @@ func TestDeriveModes_AutoWithPlatformsNotesDowngrade(t *testing.T) {
 	}
 	if !matched {
 		t.Errorf("expected a downgrade note about --platforms wanting production; got %v", r.downgrades)
+	}
+}
+
+func TestDeriveModes_AutoWithBestEffortDerivedFallbackTriggersDowngradeNote(t *testing.T) {
+	// best-effort with the meson converter wired but trace publish/
+	// lookup absent: mesonFB derives to false (tracePipelineToolsReady
+	// is false) but the operator's intent was best-effort, so the auto
+	// downgrade note should fire. Before the fix this checked raw
+	// m.mesonRound2Fallback (always false here) and missed the case.
+	in := modeFlags{
+		fidelity:            fidelityBestEffort,
+		deployment:          deploymentAuto,
+		convertElementMeson: "/bin/convert-element-meson",
+		explicit:            map[string]bool{},
+	}
+	r, err := deriveModes(in)
+	if err != nil {
+		t.Fatalf("deriveModes: %v", err)
+	}
+	matchedMeson := false
+	for _, n := range r.downgrades {
+		if strings.Contains(n, "kind:meson fallback unavailable") {
+			matchedMeson = true
+		}
+	}
+	if !matchedMeson {
+		t.Errorf("expected per-kind meson downgrade note when best-effort + converter wired + tracer missing; got %v", r.downgrades)
 	}
 }
