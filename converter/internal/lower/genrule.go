@@ -51,13 +51,25 @@ type codegenContext struct {
 	// include roots (`include/`, `src/`); without the cache each
 	// target re-walks every shared dir.
 	HeaderWalkCache map[string][]string
+
+	// MissingIncludeDirs collects absolute include-directory paths
+	// referenced by the codemodel that don't exist on disk. cmake
+	// permits these (LLVM's llvm-mca declares
+	// `target_include_directories(... include)` for forward-
+	// declared headers); the converter skips them silently per-dir
+	// but ToIR aggregates the set and emits one stderr warning at
+	// the end so the operator sees the cmake oddity. Keyed for
+	// dedup across the multiple targets that typically share an
+	// include root.
+	MissingIncludeDirs map[string]bool
 }
 
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
-		OutToGenrule:    map[string]string{},
-		SeenBuilds:      map[*ninja.Build]string{},
-		HeaderWalkCache: map[string][]string{},
+		OutToGenrule:       map[string]string{},
+		SeenBuilds:         map[*ninja.Build]string{},
+		HeaderWalkCache:    map[string][]string{},
+		MissingIncludeDirs: map[string]bool{},
 	}
 }
 

@@ -195,3 +195,40 @@ func TestParseFile_DefaultResolver_FailingIncludeBubblesUp(t *testing.T) {
 		t.Errorf("err %q does not mention missing.ninja", err.Error())
 	}
 }
+
+// TestParseFile_NestedIncludeAnchorsAtBuildRoot pins the
+// cmake Ninja Multi-Config behaviour: build.ninja includes
+// CMakeFiles/impl-Debug.ninja, which in turn includes
+// CMakeFiles/common.ninja — and that second include must
+// resolve to <build>/CMakeFiles/common.ninja, NOT to
+// <build>/CMakeFiles/CMakeFiles/common.ninja. ninja's
+// documented include resolution is relative to the working
+// directory (the top-level build dir), not to the including
+// file's directory. Surfaced by running convert-element-cmake
+// against spdlog / zlib under --build-types Debug,Release.
+func TestParseFile_NestedIncludeAnchorsAtBuildRoot(t *testing.T) {
+	dir := t.TempDir()
+	cmakeFilesDir := filepath.Join(dir, "CMakeFiles")
+	if err := os.MkdirAll(cmakeFilesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmakeFilesDir, "common.ninja"),
+		[]byte("rule CXX_COMPILER\n  command = c++ -o $out $in\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmakeFilesDir, "impl-Debug.ninja"),
+		[]byte("include CMakeFiles/common.ninja\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "build.ninja"),
+		[]byte("include CMakeFiles/impl-Debug.ninja\n\nbuild hello.o: CXX_COMPILER hello.cc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g, err := ninja.ParseFile(filepath.Join(dir, "build.ninja"))
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if _, ok := g.Rules["CXX_COMPILER"]; !ok {
+		t.Errorf("CXX_COMPILER (defined in transitively-included common.ninja) missing; rules=%v", g.Rules)
+	}
+}

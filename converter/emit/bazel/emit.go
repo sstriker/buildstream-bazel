@@ -324,9 +324,17 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	}
 	// Package-level header comments — find_package resolutions
 	// and other attribution data the lifter wants to surface.
+	// Collapse any embedded newlines / carriage returns to spaces
+	// so a multi-line cmake HELPSTRING (LLVM's
+	// `option(LLVM_BUILD_BENCHMARKS "Add ...\ntargets. If OFF
+	// ...")` shape) doesn't break the comment block by emitting an
+	// unprefixed continuation line that Bazel parses as bare
+	// syntax. Producers in lower/ aren't aware of this constraint;
+	// the emit-side scrub keeps every producer safe by
+	// construction.
 	for _, line := range pkg.HeaderComments {
 		buf.WriteString("# ")
-		buf.WriteString(line)
+		buf.WriteString(collapseToSingleLine(line))
 		buf.WriteString("\n")
 	}
 	if len(pkg.HeaderComments) > 0 {
@@ -1177,16 +1185,20 @@ func strList(items []string) string {
 	if len(items) == 0 {
 		return "[]"
 	}
-	// single-line trial
+	// single-line trial. %q escapes embedded quotes / backslashes /
+	// control bytes so values like `LZ4_VERSION="1.8.0"` (cmake
+	// derives these from add_definitions(-DLZ4_VERSION="1.8.0"))
+	// produce valid Starlark string literals instead of unparseable
+	// `"LZ4_VERSION="1.8.0""`. Same escaping the multi-line arm
+	// already uses; the divergence was a latent bug surfaced by
+	// real-world (VTK / lz4) defines.
 	var single bytes.Buffer
 	single.WriteByte('[')
 	for i, s := range items {
 		if i > 0 {
 			single.WriteString(", ")
 		}
-		single.WriteByte('"')
-		single.WriteString(s)
-		single.WriteByte('"')
+		fmt.Fprintf(&single, "%q", s)
 	}
 	single.WriteByte(']')
 	if single.Len() <= 60 {
@@ -1287,4 +1299,25 @@ func indentArmList(items []string) string {
 	}
 	b.WriteString("        ]")
 	return b.String()
+}
+
+// collapseToSingleLine maps any embedded newline / carriage return
+// in a header-comment line to a single space, then collapses
+// runs of whitespace introduced by the substitution. Used to keep
+// the file-head `# <line>\n` shape stable when an upstream
+// producer (cmake HELPSTRING, deprecation message, find_package
+// attribution) carries multi-line text that would otherwise
+// break the emitted comment block.
+func collapseToSingleLine(s string) string {
+	if !strings.ContainsAny(s, "\n\r") {
+		return s
+	}
+	r := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+	out := r.Replace(s)
+	// Collapse adjacent spaces to one so "foo\n   bar" doesn't
+	// render as "foo    bar".
+	for strings.Contains(out, "  ") {
+		out = strings.ReplaceAll(out, "  ", " ")
+	}
+	return strings.TrimSpace(out)
 }

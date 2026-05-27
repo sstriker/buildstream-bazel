@@ -268,9 +268,19 @@ func auditRawCompileFlags(rule, target string, call *build.CallExpr) []Finding {
 // first-class cc_toolchain feature equivalent. Conservative —
 // matches the common cmake-derived patterns; unrelated flags
 // pass through silently.
+//
+// The visibility-* and -O<n> cases are emit-shape outputs from
+// the converter's CMAKE_<LANG>_VISIBILITY_PRESET /
+// CMAKE_BUILD_TYPE=Release lifts: those land as per-rule copts
+// today, but the Bazel-idiomatic form is a cc_toolchain feature
+// (per SANITIZER_FEATURES) so the toolchain owns the flag set
+// uniformly. Each target picks them up via --features=<name>
+// instead of repeating the flag list per cc_library.
 func looksLikeFeatureFlag(flag string) bool {
 	switch flag {
 	case "-fPIC", "-fpic", "-flto":
+		return true
+	case "-fvisibility=hidden", "-fvisibility-inlines-hidden":
 		return true
 	}
 	if strings.HasPrefix(flag, "-fsanitize=") {
@@ -289,6 +299,10 @@ func featureForRawFlag(flag string) string {
 		return "pic"
 	case "-flto":
 		return "lto"
+	case "-fvisibility=hidden":
+		return "visibility_hidden"
+	case "-fvisibility-inlines-hidden":
+		return "visibility_inlines_hidden"
 	case "-fsanitize=address":
 		return "asan"
 	case "-fsanitize=thread":

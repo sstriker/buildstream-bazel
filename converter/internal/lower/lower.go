@@ -11,6 +11,7 @@ package lower
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -185,6 +187,39 @@ type Options struct {
 	// pure-function over the reply data, no FS reads beyond
 	// configure_file's rendered output capture).
 	ConfigureLog []fileapi.Event
+
+	// Rejections, when non-nil, switches Tier-1 refusal sites
+	// from "return a typed failure.Error" to "record the
+	// rejection and continue with a local skip (drop the bad
+	// source / dep / target / genrule)". The resulting IR is
+	// NOT guaranteed to be buildable — the goal is diagnostic
+	// surveys against large real-world projects so the operator
+	// sees every refusal in one pass. Driven by the
+	// --ignore-rejections-for-diagnostics CLI flag.
+	//
+	// Sites covered: UnsupportedSourcePath (drop the source),
+	// UnresolvedLinkDep (drop the dep), UnsupportedTargetType
+	// (skip the target), UnsupportedCustomCommand /
+	// UnsupportedCustomCommandScript (skip the consuming source),
+	// FileAPIMalformed dangling-target-ref (skip the target),
+	// UnsupportedExecuteProcess (route through the existing
+	// execute-process fallback automatically — the flag sets
+	// UnsupportedExecuteProcessFallback implicitly when this
+	// field is non-nil).
+	Rejections *rejection.Collector
+
+	// Warnings, when non-nil, is the sink lower writes non-fatal
+	// diagnostics to. The first user is the missing-include-dir
+	// notice: cmake permits target_include_directories(...) entries
+	// whose path doesn't physically exist on disk (LLVM's
+	// llvm-mca declares `include` without the matching
+	// subdirectory), and we silently skip those rather than
+	// aborting the conversion. With Warnings set, ToIR emits one
+	// aggregated line listing the skipped dirs so the operator
+	// sees the cmake oddity. Nil suppresses the message (matches
+	// the lower-as-pure-function shape every existing test
+	// depends on).
+	Warnings io.Writer
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -210,8 +245,23 @@ var headerExts = map[string]bool{
 // unsupported-custom-command).
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
-		return nil, failure.New(failure.UnsupportedTargetType,
-			"M1 supports exactly one configuration; got %d", got)
+		// Diagnostic mode: continue against the first
+		// configuration so the survey reaches every
+		// per-target refusal site. The Phase 5 multi-config
+		// codemodel fold (lowerMultiConfigDeltas at the end
+		// of this function) still runs when r.TargetsByConfig
+		// is populated, so the per-config select() arms still
+		// land on top of cfg[0]'s walk. Strict mode keeps
+		// rejecting — production callers want the loud Tier-1
+		// until Phase 5 ships full multi-config support.
+		if opts.Rejections != nil {
+			opts.Rejections.Add(failure.UnsupportedTargetType,
+				fmt.Sprintf("multi-config codemodel (%d configurations) — surveying against the first one only; Phase 5 multi-config fold is the canonical path",
+					got))
+		} else {
+			return nil, failure.New(failure.UnsupportedTargetType,
+				"M1 supports exactly one configuration; got %d", got)
+		}
 	}
 	cfg := r.Codemodel.Configurations[0]
 
@@ -606,6 +656,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
 	if len(executeProcessRefusals) > 0 {
+		if opts.Rejections != nil {
+			// Diagnostic mode: record the refusal AND route
+			// through the existing execute-process fallback so
+			// the operator sees both the rejection record and a
+			// best-effort BUILD shape in the same pass.
+			var tier1 *failure.Error
+			if errors.As(formatExecuteProcessFailure(executeProcessRefusals), &tier1) {
+				opts.Rejections.AddError(tier1)
+			}
+			return emitFallbackPlaceholder(r, hostSrc)
+		}
 		if !opts.UnsupportedExecuteProcessFallback {
 			return nil, formatExecuteProcessFailure(executeProcessRefusals)
 		}
@@ -682,10 +743,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	for _, tref := range cfg.Targets {
 		t, ok := r.Targets[tref.Id]
 		if !ok {
+			if opts.Rejections != nil {
+				opts.Rejections.AddWithContext(failure.FileAPIMalformed,
+					fmt.Sprintf("target id %q in codemodel but not loaded", tref.Id),
+					tref.Name, "")
+				continue
+			}
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot, opts.Rejections)
 		if err != nil {
 			return nil, err
 		}
@@ -763,6 +830,36 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs)
 	}
+	// Surface missing-include-dir skips so the operator sees the
+	// cmake oddity instead of silently losing the dir. Per-dir
+	// dedup happens via the map; we render a deterministic
+	// alphabetical list. When the diagnostic-mode rejection
+	// collector is active, also record a synthetic rejection per
+	// dir so the rejections.json sidecar captures the survey
+	// signal alongside the other refusal records.
+	if len(cc.MissingIncludeDirs) > 0 {
+		dirs := make([]string, 0, len(cc.MissingIncludeDirs))
+		for d := range cc.MissingIncludeDirs {
+			dirs = append(dirs, d)
+		}
+		sort.Strings(dirs)
+		if opts.Warnings != nil {
+			fmt.Fprintf(opts.Warnings,
+				"lower: %d include dir(s) declared by the codemodel are missing on disk; treated as empty:\n",
+				len(dirs))
+			for _, d := range dirs {
+				fmt.Fprintf(opts.Warnings, "  - %s\n", d)
+			}
+		}
+		if opts.Rejections != nil {
+			for _, d := range dirs {
+				opts.Rejections.AddWithContext(
+					failure.UnsupportedSourcePath,
+					fmt.Sprintf("include dir %q referenced by codemodel doesn't exist on disk; treated as empty (cmake permits forward-declared include paths — LLVM's llvm-mca shape)", d),
+					"", d)
+			}
+		}
+	}
 	return pkg, nil
 }
 
@@ -773,7 +870,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string, rejections *rejection.Collector) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -831,6 +928,12 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// the utility node itself has no Bazel equivalent.
 		return nil, nil
 	default:
+		if rejections != nil {
+			rejections.AddWithContext(failure.UnsupportedTargetType,
+				fmt.Sprintf("target %q has unsupported type %q", t.Name, t.Type),
+				t.Name, "")
+			return nil, nil
+		}
 		return nil, failure.New(failure.UnsupportedTargetType,
 			"target %q has unsupported type %q", t.Name, t.Type)
 	}
@@ -882,6 +985,24 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			}
 			relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
 			if err != nil {
+				if rejections != nil {
+					// Diagnostic mode: drop the generated source
+					// and continue. The consuming target keeps its
+					// other srcs; the missing generated input is
+					// recorded as a rejection for the operator to
+					// triage. A typed *failure.Error carries the
+					// stable Code; bare errors (returned by
+					// recoverGenrule for non-typed shapes — none
+					// today, but defensive) record under a generic
+					// custom-command code so the report is total.
+					var tier1 *failure.Error
+					if errors.As(err, &tier1) {
+						rejections.AddWithContext(tier1.Code, tier1.Message, t.Name, src.Path)
+					} else {
+						rejections.AddWithContext(failure.UnsupportedCustomCommand, err.Error(), t.Name, src.Path)
+					}
+					continue
+				}
 				return nil, err
 			}
 			consumesCodegen = true
@@ -974,6 +1095,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// sees the broken cmake call, not a downstream Bazel
 		// load error.
 		if filepath.IsAbs(srcPath) {
+			if rejections != nil {
+				rejections.AddWithContext(failure.UnsupportedSourcePath,
+					fmt.Sprintf("target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
+						t.Name, srcPath, labelRoot, cmakeBuild),
+					t.Name, srcPath)
+				continue
+			}
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
 				t.Name, srcPath, labelRoot, cmakeBuild)
@@ -993,6 +1121,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// package (broken without warning). The clean refusal
 		// surfaces the cmake misuse explicitly.
 		if pathHasDotDotSegment(srcPath) {
+			if rejections != nil {
+				rejections.AddWithContext(failure.UnsupportedSourcePath,
+					fmt.Sprintf("target %q references source %q whose path escapes the project source tree via `..` segments; Bazel labels must stay within the package",
+						t.Name, src.Path),
+					t.Name, src.Path)
+				continue
+			}
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q whose path escapes the project source tree via `..` segments; Bazel labels must stay within the package",
 				t.Name, src.Path)
@@ -1001,6 +1136,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// "./" strip on a pathological input like "./" alone)
 		// or single ".": refuse — there's no useful label here.
 		if srcPath == "" || srcPath == "." {
+			if rejections != nil {
+				rejections.AddWithContext(failure.UnsupportedSourcePath,
+					fmt.Sprintf("target %q references source %q which normalizes to an empty Bazel label",
+						t.Name, src.Path),
+					t.Name, src.Path)
+				continue
+			}
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q which normalizes to an empty Bazel label",
 				t.Name, src.Path)
@@ -1338,7 +1480,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 	}
 
-	hdrs, err := discoverHeaders(hostSrc, irt.Includes, cc.HeaderWalkCache)
+	hdrs, err := discoverHeaders(hostSrc, irt.Includes, cc.HeaderWalkCache, cc.MissingIncludeDirs)
 	if err != nil {
 		return nil, err
 	}
@@ -1442,6 +1584,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					}
 				}
 			} else {
+				if rejections != nil {
+					rejections.AddWithContext(failure.UnresolvedLinkDep,
+						fmt.Sprintf("target %q depends on %q which is neither in-codebase nor in the imports manifest",
+							t.Name, cmakeName),
+						t.Name, cmakeName)
+					continue
+				}
 				return nil, failure.New(failure.UnresolvedLinkDep,
 					"target %q depends on %q which is neither in-codebase nor in the imports manifest",
 					t.Name, cmakeName)
@@ -3177,7 +3326,7 @@ func pathHasDotDotSegment(p string) bool {
 // Walks are memoized through cache (keyed on absolute include-dir path)
 // so that multiple targets sharing an include root don't re-walk the
 // same filesystem subtree. Pass nil for cache to disable memoization.
-func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string) ([]string, error) {
+func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string, missing map[string]bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, inc := range includeDirs {
 		absDir := filepath.Join(sourceRoot, inc)
@@ -3189,13 +3338,43 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 				continue
 			}
 		}
+		// cmake's target_include_directories accepts paths that
+		// don't physically exist on disk — LLVM's llvm-mca declares
+		// `target_include_directories(... include)` with no
+		// include/ subdir present, presumably for future headers.
+		// Stat-check the dir before WalkDir so an honest "no such
+		// directory" case yields zero headers instead of aborting
+		// the whole conversion. Other walk errors (permission
+		// denied mid-walk, etc.) still propagate. Record the dir
+		// in `missing` so ToIR can stderr-warn once at the end
+		// (silent skip is wrong — operator should see the cmake
+		// oddity even though it isn't fatal).
+		if st, statErr := os.Stat(absDir); statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				if cache != nil {
+					cache[absDir] = nil
+				}
+				if missing != nil {
+					missing[absDir] = true
+				}
+				continue
+			}
+			return nil, fmt.Errorf("stat include dir %q: %w", absDir, statErr)
+		} else if !st.IsDir() {
+			if cache != nil {
+				cache[absDir] = nil
+			}
+			if missing != nil {
+				missing[absDir] = true
+			}
+			continue
+		}
 		var perDir []string
 		walkErr := filepath.WalkDir(absDir, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
-				// An include dir that doesn't exist on disk is an error
-				// worth surfacing; this is rare (CMake validates include
-				// dirs on PUBLIC), but possible if the shadow tree is
-				// out of sync.
+				// Post-stat walk errors (permission denied mid-walk,
+				// I/O failures, etc.) still surface — the absence
+				// case was handled above.
 				return err
 			}
 			if d.IsDir() {
