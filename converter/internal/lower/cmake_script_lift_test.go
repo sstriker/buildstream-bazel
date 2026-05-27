@@ -228,3 +228,55 @@ func TestExtractCmakePDashArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractCmakePScriptPositionalArgs covers the libpng
+// `cmake -P gensrc.cmake <output-name>` dispatch shape: the
+// switch arg is positional, lives after the script path, and
+// must round-trip through to the bake invocation so the
+// script's ${CMAKE_ARGV3} dispatch sees the right value.
+func TestExtractCmakePScriptPositionalArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  string
+		want []string
+	}{
+		{
+			name: "single positional after script",
+			cmd:  "cmake -P script.cmake pnglibconf.h",
+			want: []string{"pnglibconf.h"},
+		},
+		{
+			name: "multiple positionals",
+			cmd:  "cmake -P script.cmake out1 out2",
+			want: []string{"out1", "out2"},
+		},
+		{
+			name: "no positionals",
+			cmd:  "cmake -P script.cmake",
+			want: nil,
+		},
+		{
+			name: "positional mixed with -D, only positional returned",
+			cmd:  "cmake -DFOO=1 -P script.cmake -DBAR=2 pnglibconf.h",
+			want: []string{"pnglibconf.h"},
+		},
+		{
+			name: "leading cd-and prefix stripped",
+			cmd:  "cd /build && cmake -P script.cmake out1",
+			want: []string{"out1"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := extractCmakePScriptPositionalArgs(c.cmd)
+			if len(got) != len(c.want) {
+				t.Fatalf("got %v (len %d), want %v (len %d)", got, len(got), c.want, len(c.want))
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("got[%d] = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
