@@ -59,7 +59,7 @@ func TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput(t *testing.T) {
 	cc.CMakeBinary = cmakeBin
 
 	cmd := cmakeBin + " -P " + scriptPath
-	rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build)
+	rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
 	if !ok {
 		t.Fatalf("bake failed: reason=%q", reason)
 	}
@@ -148,7 +148,7 @@ endif()
 	cc := newCodegenContext()
 	cc.CMakeBinary = cmakeBin
 	cmd := cmakeBin + " -P " + scriptPath + " a.txt"
-	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build)
+	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
 	if !ok {
 		t.Fatalf("bake failed (positional arg not forwarded?): reason=%q", reason)
 	}
@@ -223,7 +223,7 @@ endif()
 	cc := newCodegenContext()
 	cc.CMakeBinary = cmakeBin
 	cmd := cmakeBin + " -DOUTPUT=a.txt -P " + scriptPath
-	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build)
+	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
 	if !ok {
 		t.Fatalf("bake failed (-D arg ordering bug?): reason=%q", reason)
 	}
@@ -240,11 +240,92 @@ endif()
 	}
 }
 
+// TestBakeCmakeScriptGenrule_TopologicalChain pins the producer-
+// chain bake: when build B reads input X produced by build A
+// (both cmake -P), baking B triggers A first so the
+// configure-substituted ${BINDIR}-absolute read in B succeeds.
+// Surfaced by libpng's gensrc.cmake → genout.cmake → pnglibconf.h
+// chain where each step reads ${BINDIR}/<output-of-prior-step>.
+func TestBakeCmakeScriptGenrule_TopologicalChain(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+
+	src := t.TempDir()
+	build := t.TempDir()
+	// Producer script: writes "step1\n" to step1.txt in $CWD.
+	producerPath := filepath.Join(src, "producer.cmake")
+	if err := os.WriteFile(producerPath, []byte(`file(WRITE "step1.txt" "step1\n")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Consumer script: reads step1.txt (from $CWD == buildDir
+	// post-producer-bake) and writes step2.txt with the contents
+	// + "step2".
+	consumerPath := filepath.Join(src, "consumer.cmake")
+	consumerSrc := `
+file(READ "step1.txt" STEP1)
+file(WRITE "step2.txt" "${STEP1}step2\n")
+`
+	if err := os.WriteFile(consumerPath, []byte(consumerSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{
+		Name:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"command": "$COMMAND"},
+		BindingOrder: []string{"command"},
+	}
+	producerBuild := &ninja.Build{
+		Outputs:      []string{"step1.txt"},
+		Rule:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"COMMAND": cmakeBin + " -P " + producerPath},
+		BindingOrder: []string{"COMMAND"},
+	}
+	consumerBuild := &ninja.Build{
+		Outputs:      []string{"step2.txt"},
+		Inputs:       []string{"step1.txt"}, // chain input
+		Rule:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"COMMAND": cmakeBin + " -P " + consumerPath},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, producerBuild, consumerBuild)
+
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	// Bake the consumer; bakeProducerChain should pre-bake the
+	// producer so step1.txt exists in buildDir when consumer runs.
+	cmd := cmakeBin + " -P " + consumerPath
+	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, consumerBuild, cmd, consumerPath, build, g)
+	if !ok {
+		t.Fatalf("chain bake failed: reason=%q", reason)
+	}
+	if rel != "step2.txt" {
+		t.Errorf("rel = %q, want step2.txt", rel)
+	}
+	// Two genrules emitted: producer + consumer (chain).
+	if len(cc.Genrules) != 2 {
+		t.Errorf("Genrules len = %d, want 2 (producer + consumer)", len(cc.Genrules))
+	}
+	// Consumer's cmd should carry the chained payload "step1\nstep2\n".
+	wantBase64 := base64.StdEncoding.EncodeToString([]byte("step1\nstep2\n"))
+	consumerCmd := cc.Genrules[len(cc.Genrules)-1].GenruleCmd
+	if !strings.Contains(consumerCmd, wantBase64) {
+		t.Errorf("consumer cmd doesn't carry the chained payload; got %q want substring %q",
+			consumerCmd, wantBase64)
+	}
+}
+
 func TestBakeCmakeScriptGenrule_NoCmakeRefuses(t *testing.T) {
 	cc := newCodegenContext()
 	cc.CMakeBinary = "" // not available
 	b := &ninja.Build{Outputs: []string{"foo"}}
-	_, _, reason, ok := bakeCmakeScriptGenrule(cc, b, "cmake -P /x/y.cmake", "/x/y.cmake", "/build")
+	_, _, reason, ok := bakeCmakeScriptGenrule(cc, b, "cmake -P /x/y.cmake", "/x/y.cmake", "/build", nil)
 	if ok {
 		t.Fatal("expected refusal when CMakeBinary empty; got ok")
 	}

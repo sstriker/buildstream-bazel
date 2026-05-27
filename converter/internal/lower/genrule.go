@@ -225,7 +225,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// bake declines (e.g. cmake not on PATH, script
 		// produced no output).
 		if cc.CMakeScriptBake {
-			rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir)
+			rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
 			if ok {
 				return rel, name, nil
 			}

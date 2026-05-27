@@ -45,7 +45,7 @@ import (
 // reason carries a structured diagnostic on failure (cmake
 // non-zero exit, missing output files, etc.) that the caller
 // surfaces in the refusal message.
-func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string) (relOut, name, reason string, ok bool) {
+func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string, g *ninja.Graph) (relOut, name, reason string, ok bool) {
 	if cc.CMakeBinary == "" {
 		return "", "", "cmake binary not on PATH at convert time — --cmake-script-bake requires the convert host to have cmake available", false
 	}
@@ -53,6 +53,38 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	if len(outs) == 0 {
 		return "", "", "", false
 	}
+
+	// Producer-chain pre-bake: libpng's genchk.cmake reads
+	// pnglibconf.out which is produced by another cmake -P build
+	// statement (genout.cmake), which in turn reads pnglibconf.c
+	// from a third (gensrc.cmake -DOUTPUT=pnglibconf.c). The
+	// scripts read inputs from `${BINDIR}/<input>` — the build dir
+	// absolute path baked into the configure-substituted scripts.
+	// cmake configure only emits the scripts; the intermediate
+	// outputs aren't on disk yet. Walk this build's Inputs and
+	// recursively bake any input that's itself produced by a
+	// CUSTOM_COMMAND so the file lands at `${BINDIR}/<input>`
+	// before this script runs.
+	//
+	// The recursion preserves cc.SeenBuilds, so two consumers of
+	// the same producer share one bake. baking same producer
+	// twice is correct (idempotent) but wasteful. Cycle detection
+	// is implicit: SeenBuilds[producer] is set before bake
+	// recurses, so a cycle (impossible in a valid ninja graph
+	// but defensive) terminates on the second visit.
+	if g != nil {
+		for _, in := range b.Inputs {
+			if reason, ok := bakeProducerChain(cc, g, in, buildDir); !ok {
+				return "", "", "producer-chain bake of input " + in + ": " + reason, false
+			}
+		}
+		for _, in := range b.ImplicitInputs {
+			if reason, ok := bakeProducerChain(cc, g, in, buildDir); !ok {
+				return "", "", "producer-chain bake of implicit input " + in + ": " + reason, false
+			}
+		}
+	}
+
 	dArgs := extractCmakePDashArgs(cmd)
 	// Positional args after the script (libpng's gensrc.cmake
 	// shape: `cmake -P gensrc.cmake <output-name>` — the script
@@ -63,14 +95,36 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	// the wrong output.
 	posArgs := extractCmakePScriptPositionalArgs(cmd)
 
-	// Run the script in a fresh tmp dir. Map cmake's
-	// CMAKE_BINARY_DIR to it via the workDir so file(WRITE
-	// "${CMAKE_BINARY_DIR}/foo") lands inside the sandbox.
-	tmpDir, err := os.MkdirTemp("", "cmake-script-bake-*")
-	if err != nil {
-		return "", "", fmt.Sprintf("mktmpdir: %v", err), false
+	// Working directory: prefer the cmake build dir itself.
+	// configure-time-substituted scripts (libpng's gensrc.cmake
+	// shape) bake `${BINDIR}` as an absolute path equal to the
+	// cmake build dir and bridge between absolute-${BINDIR}
+	// writes (via execute_process WORKING_DIRECTORY=${BINDIR})
+	// and $CWD-relative file(RENAME)/file(READ), assuming the
+	// two are the same. A tmpDir $CWD breaks that bridge — awk
+	// output lands in the real build dir but the cmake-side
+	// rename reads from tmpDir and fails.
+	//
+	// Running in buildDir means bake's side effects live in the
+	// operator's cmake build dir at convert time. That's an
+	// acceptable trade-off — bake is opt-in via --cmake-script-bake
+	// and the buildDir is transient (cmake's own output). We still
+	// record outputs in cc.Genrules so the rendered BUILD.bazel
+	// is self-contained.
+	//
+	// Falls back to a tmpDir when buildDir is empty (the unit-test
+	// shape that doesn't have a real cmake build dir on hand).
+	var workDir string
+	if buildDir != "" {
+		workDir = buildDir
+	} else {
+		tmpDir, err := os.MkdirTemp("", "cmake-script-bake-*")
+		if err != nil {
+			return "", "", fmt.Sprintf("mktmpdir: %v", err), false
+		}
+		defer os.RemoveAll(tmpDir)
+		workDir = tmpDir
 	}
-	defer os.RemoveAll(tmpDir)
 
 	// cmake -P doesn't set CMAKE_BINARY_DIR / CMAKE_SOURCE_DIR
 	// itself (those are configure-time variables). Many cmake -P
@@ -101,9 +155,9 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	exe := exec.CommandContext(ctx, cc.CMakeBinary, argv...)
-	exe.Dir = tmpDir
+	exe.Dir = workDir
 	exe.Env = []string{
-		"HOME=" + tmpDir,
+		"HOME=" + workDir,
 		"LC_ALL=C",
 		"PATH=" + os.Getenv("PATH"),
 	}
@@ -114,28 +168,27 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	}
 
 	// Read each declared output's bytes. The script's
-	// output-path is typically under the cmake build dir; map
-	// from the build-dir-relative `out` back to the script's
-	// actual write target. For now, we look for the file at
-	// `<tmpDir>/<out>` AND at `<buildDir>/<out>` (cmake may
-	// have written to the original build dir if the script's
-	// var substitution baked that in).
+	// output-path is typically under the cmake build dir; we
+	// look in workDir first (the directory cmake actually ran
+	// in — either buildDir or a fresh tmp dir for unit tests)
+	// and fall back to buildDir if the script's path
+	// substitution wrote elsewhere.
 	type baked struct {
 		out, name string
 		body      []byte
 	}
 	var entries []baked
 	for _, out := range outs {
-		// Try the sandbox-relative location first.
-		body, err := os.ReadFile(filepath.Join(tmpDir, out))
-		if err != nil {
-			// Fall back to the original build dir — cmake-
-			// configure-time substitution may have baked the
-			// absolute path in.
+		// Try the workDir-relative location first.
+		body, err := os.ReadFile(filepath.Join(workDir, out))
+		if err != nil && workDir != buildDir {
+			// Fall back to the original build dir when workDir
+			// is a tmpDir — cmake-configure-time substitution
+			// may have baked the absolute path in.
 			body, err = os.ReadFile(filepath.Join(buildDir, out))
 			if err != nil {
 				return "", "", fmt.Sprintf("cmake -P bake of %q ran but didn't produce output %q (looked in %s and %s): %v",
-					scriptArg, out, tmpDir, buildDir, err), false
+					scriptArg, out, workDir, buildDir, err), false
 			}
 		}
 		entries = append(entries, baked{
@@ -169,6 +222,56 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	}
 	cc.SeenBuilds[b] = name
 	return relOut, name, "", true
+}
+
+// bakeProducerChain recurses to bake any CUSTOM_COMMAND build
+// statement that produces inputPath, so the input file lands at
+// `${BINDIR}/<inputPath>` before the consumer's bake invocation
+// reads it. Quietly returns ok=true for inputs that aren't
+// CUSTOM_COMMAND outputs (regular source files, phony aliases,
+// inputs from other build statements that don't use cmake -P).
+// Returns ok=false + a structured reason only when the recursive
+// bake of a cmake -P producer fails — surfaces that up the chain
+// so the original refusal message names the precise upstream
+// failure.
+func bakeProducerChain(cc *codegenContext, g *ninja.Graph, inputPath, buildDir string) (string, bool) {
+	producer := g.BuildFor(inputPath)
+	if producer == nil {
+		// Not produced by any ninja build — source file or
+		// out-of-graph external. Nothing to do.
+		return "", true
+	}
+	if producer.Rule != "CUSTOM_COMMAND" {
+		// Object files, etc. Not a script we can bake.
+		return "", true
+	}
+	if _, seen := cc.SeenBuilds[producer]; seen {
+		// Already baked (or recursion-in-progress sentinel).
+		return "", true
+	}
+	cmd, ok := ninja.CommandFor(g, producer)
+	if !ok || strings.TrimSpace(cmd) == "" {
+		// Producer's command isn't resolvable. Don't fail —
+		// the consumer's bake will surface the missing file
+		// with its own diagnostic, which is more informative
+		// for operators.
+		return "", true
+	}
+	if !usesCmakeScriptMode(cmd) {
+		// Producer isn't a cmake -P invocation (could be a
+		// COMPILE rule, a copy, etc.). Out of bake's scope.
+		return "", true
+	}
+	script := extractCmakeScriptPath(cmd)
+	// Mark in-progress to break any pathological cycles (a valid
+	// ninja graph is acyclic, but defensive).
+	cc.SeenBuilds[producer] = ""
+	_, _, reason, ok := bakeCmakeScriptGenrule(cc, producer, cmd, script, buildDir, g)
+	if !ok {
+		delete(cc.SeenBuilds, producer)
+		return reason, false
+	}
+	return "", true
 }
 
 // sanitizeForName replaces non-identifier chars with `_` so the
