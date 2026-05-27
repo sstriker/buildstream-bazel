@@ -29,6 +29,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/hardeningprobe"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
@@ -61,6 +62,21 @@ func main() {
 func run(a cli.Args) error {
 	t0 := time.Now()
 	var configureElapsed time.Duration
+
+	if a.ProbeDistroHardening {
+		// Probe the convert host's cc for distro-default
+		// hardening flags. Diagnostic-only — we don't change
+		// any BUILD.bazel emit decisions; the goal is to
+		// surface the expected symbol-set delta between cmake
+		// and Bazel rebuilds so operators don't chase ghost
+		// regressions.
+		r := hardeningprobe.Probe("")
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: --probe-distro-hardening skipped: %v\n", r.Err)
+		} else if !r.Empty() {
+			fmt.Fprint(os.Stderr, r.FormatForOperator())
+		}
+	}
 
 	replyDir := a.ReplyDir
 	var ninjaPath string

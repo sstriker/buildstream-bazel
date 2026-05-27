@@ -228,6 +228,26 @@ func TestParse_IgnoreRejectionsForDiagnostics(t *testing.T) {
 	}
 }
 
+// TestParse_ProbeDistroHardening pins the diagnostic-mode flag
+// that runs the host-cc hardening probe.
+func TestParse_ProbeDistroHardening(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--probe-distro-hardening"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !args.ProbeDistroHardening {
+		t.Errorf("ProbeDistroHardening=false; want true")
+	}
+
+	// Default off.
+	stderr.Reset()
+	args, _ = Parse([]string{"--source-root", "/proj"}, &stderr)
+	if args.ProbeDistroHardening {
+		t.Errorf("ProbeDistroHardening default=true; want false")
+	}
+}
+
 // TestParse_BuildTypesCommaSlice covers the Phase 5 multi-config
 // CLI flag: --build-types takes a comma-separated list and pins
 // the entries (preserving order, dropping empties).

@@ -168,3 +168,38 @@ but not cmake" in `fidelity.DiffSymbols.Format()` output.
    `converter/emit/bazel/emit_test.go` that loads the fixture +
    golden + asserts equivalence.
 5. Document any surfaced gaps under "Open conversion deltas" above.
+
+## Cross-fixture: distro hardening defaults
+
+**Symptom**: cmake-built artifacts reference `__*_chk` (FORTIFY_SOURCE) and
+`__stack_chk_fail` / `__stack_chk_guard` (stack-protector) symbols; Bazel-built
+artifacts from the converted BUILD.bazel do not.
+
+**Reproducer**: surfaced by the zlib convert-and-build comparison
+(`bazel build //:zlibstatic` vs. `cmake --build . --target zlibstatic`,
+`nm -u libz.a` vs. `nm -u libzlibstatic.a`). The cmake archive has 47 undefined
+symbols; the Bazel one 46; the diff is `__snprintf_chk`, `__vsnprintf_chk`,
+`__stack_chk_fail`.
+
+**Root cause**: the system `/usr/bin/cc` on Debian/Ubuntu (and most distros)
+applies `-D_FORTIFY_SOURCE=2 -fstack-protector-strong` via the spec file even
+when no CFLAGS are passed. cmake's compile_commands.json doesn't capture this
+(the spec defaults are baked into the compiler invocation, not into the
+user-visible command line). Bazel's hermetic cc_toolchain has no equivalent
+default; the converted BUILD.bazel doesn't lift the flags because they were
+never visible to the converter in the first place.
+
+**Detection**: `convert-element-cmake --probe-distro-hardening` compiles a
+trivial stub with the host cc, inspects the resulting object file's undefined
+symbols, and emits a stderr warning naming the detected flags with a remediation
+recipe. Diagnostic-only — the probe doesn't change BUILD.bazel emit decisions.
+
+**Status**: open. Two closure paths:
+- **Match by adding flags to copts**: ad-hoc, leaks host state into BUILD.bazel.
+  Reasonable for one-off operators who need bit-exact symbol-set parity.
+- **Match by adding features to the converted cc_toolchain**:
+  `feature("fortify_source")` + `feature("stack_protector")` definitions with
+  `--features=fortify_source` enabled by default in the toolchain config.
+  Architecturally cleaner; keeps BUILD.bazel hermetic. Tracked as a Next item
+  in `ROADMAP.md` ("Toolchain-feature parity vs. cmake's default Release
+  hardening flags").
