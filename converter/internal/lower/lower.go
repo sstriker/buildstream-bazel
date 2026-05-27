@@ -11,6 +11,7 @@ package lower
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -206,6 +207,19 @@ type Options struct {
 	// UnsupportedExecuteProcessFallback implicitly when this
 	// field is non-nil).
 	Rejections *rejection.Collector
+
+	// Warnings, when non-nil, is the sink lower writes non-fatal
+	// diagnostics to. The first user is the missing-include-dir
+	// notice: cmake permits target_include_directories(...) entries
+	// whose path doesn't physically exist on disk (LLVM's
+	// llvm-mca declares `include` without the matching
+	// subdirectory), and we silently skip those rather than
+	// aborting the conversion. With Warnings set, ToIR emits one
+	// aggregated line listing the skipped dirs so the operator
+	// sees the cmake oddity. Nil suppresses the message (matches
+	// the lower-as-pure-function shape every existing test
+	// depends on).
+	Warnings io.Writer
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -800,6 +814,36 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			configs = append(configs, cfg.Name)
 		}
 		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs)
+	}
+	// Surface missing-include-dir skips so the operator sees the
+	// cmake oddity instead of silently losing the dir. Per-dir
+	// dedup happens via the map; we render a deterministic
+	// alphabetical list. When the diagnostic-mode rejection
+	// collector is active, also record a synthetic rejection per
+	// dir so the rejections.json sidecar captures the survey
+	// signal alongside the other refusal records.
+	if len(cc.MissingIncludeDirs) > 0 {
+		dirs := make([]string, 0, len(cc.MissingIncludeDirs))
+		for d := range cc.MissingIncludeDirs {
+			dirs = append(dirs, d)
+		}
+		sort.Strings(dirs)
+		if opts.Warnings != nil {
+			fmt.Fprintf(opts.Warnings,
+				"lower: %d include dir(s) declared by the codemodel are missing on disk; treated as empty:\n",
+				len(dirs))
+			for _, d := range dirs {
+				fmt.Fprintf(opts.Warnings, "  - %s\n", d)
+			}
+		}
+		if opts.Rejections != nil {
+			for _, d := range dirs {
+				opts.Rejections.AddWithContext(
+					failure.UnsupportedSourcePath,
+					fmt.Sprintf("include dir %q referenced by codemodel doesn't exist on disk; treated as empty (cmake permits forward-declared include paths — LLVM's llvm-mca shape)", d),
+					"", d)
+			}
+		}
 	}
 	return pkg, nil
 }
@@ -1421,7 +1465,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 	}
 
-	hdrs, err := discoverHeaders(hostSrc, irt.Includes, cc.HeaderWalkCache)
+	hdrs, err := discoverHeaders(hostSrc, irt.Includes, cc.HeaderWalkCache, cc.MissingIncludeDirs)
 	if err != nil {
 		return nil, err
 	}
@@ -3267,7 +3311,7 @@ func pathHasDotDotSegment(p string) bool {
 // Walks are memoized through cache (keyed on absolute include-dir path)
 // so that multiple targets sharing an include root don't re-walk the
 // same filesystem subtree. Pass nil for cache to disable memoization.
-func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string) ([]string, error) {
+func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string, missing map[string]bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, inc := range includeDirs {
 		absDir := filepath.Join(sourceRoot, inc)
@@ -3279,13 +3323,43 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 				continue
 			}
 		}
+		// cmake's target_include_directories accepts paths that
+		// don't physically exist on disk — LLVM's llvm-mca declares
+		// `target_include_directories(... include)` with no
+		// include/ subdir present, presumably for future headers.
+		// Stat-check the dir before WalkDir so an honest "no such
+		// directory" case yields zero headers instead of aborting
+		// the whole conversion. Other walk errors (permission
+		// denied mid-walk, etc.) still propagate. Record the dir
+		// in `missing` so ToIR can stderr-warn once at the end
+		// (silent skip is wrong — operator should see the cmake
+		// oddity even though it isn't fatal).
+		if st, statErr := os.Stat(absDir); statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				if cache != nil {
+					cache[absDir] = nil
+				}
+				if missing != nil {
+					missing[absDir] = true
+				}
+				continue
+			}
+			return nil, fmt.Errorf("stat include dir %q: %w", absDir, statErr)
+		} else if !st.IsDir() {
+			if cache != nil {
+				cache[absDir] = nil
+			}
+			if missing != nil {
+				missing[absDir] = true
+			}
+			continue
+		}
 		var perDir []string
 		walkErr := filepath.WalkDir(absDir, func(p string, d os.DirEntry, err error) error {
 			if err != nil {
-				// An include dir that doesn't exist on disk is an error
-				// worth surfacing; this is rare (CMake validates include
-				// dirs on PUBLIC), but possible if the shadow tree is
-				// out of sync.
+				// Post-stat walk errors (permission denied mid-walk,
+				// I/O failures, etc.) still surface — the absence
+				// case was handled above.
 				return err
 			}
 			if d.IsDir() {

@@ -352,6 +352,7 @@ func run(a cli.Args) error {
 		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 		UnsupportedExecuteProcessFallback: execFallback,
 		Rejections:                        rejections,
+		Warnings:                          os.Stderr,
 	})
 	if err != nil {
 		return err
