@@ -100,6 +100,7 @@ type ClassifyResult struct {
 var supportedCMakeEOps = map[string]string{
 	"copy":              "copy a single file",
 	"copy_if_different": "copy a single file (no-op if dst is byte-identical)",
+	"create_symlink":    "create a symlink (lifted as a copy under Bazel's hermetic action model — same path semantics, no symlink/copy distinction at action time)",
 	"touch":             "create an empty file",
 	"configure_file":    "@VAR@/${VAR}/#cmakedefine substitution from input template",
 }

@@ -356,6 +356,19 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`cmake -E create_symlink` op support.** Adds the
+  `create_symlink` op to the cmake -E lift's allowlist
+  (alongside `copy` / `copy_if_different` / `touch` /
+  `configure_file`). LLVM's AddLLVM.cmake uses this for
+  tool-aliases (`clang` → `clang-18`); under Bazel's
+  hermetic action model the link-vs-copy distinction is
+  meaningless (consumers read bytes by path), so the lift
+  reuses `liftCMakeECopy` with the original op preserved
+  in the genrule tag for audit/triage. Refusal message
+  for the harder cmake-P-script residue now mentions all
+  four operator escape hatches (rewrite, override via
+  --build-files-dir, round-2 fallback, diagnostic flag).
+
 - **Strip cross-target hdrs duplication
   (`stripDepOwnedHdrs`).** Real-world cmake projects
   surface every public header in every target's `hdrs`
