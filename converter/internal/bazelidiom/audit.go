@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchainfeature"
 )
 
 // Finding is one audit observation.
@@ -264,58 +265,13 @@ func auditRawCompileFlags(rule, target string, call *build.CallExpr) []Finding {
 	return findings
 }
 
-// looksLikeFeatureFlag identifies raw flag strings that have a
-// first-class cc_toolchain feature equivalent. Conservative —
-// matches the common cmake-derived patterns; unrelated flags
-// pass through silently.
-//
-// The visibility-* and -O<n> cases are emit-shape outputs from
-// the converter's CMAKE_<LANG>_VISIBILITY_PRESET /
-// CMAKE_BUILD_TYPE=Release lifts: those land as per-rule copts
-// today, but the Bazel-idiomatic form is a cc_toolchain feature
-// (per SANITIZER_FEATURES) so the toolchain owns the flag set
-// uniformly. Each target picks them up via --features=<name>
-// instead of repeating the flag list per cc_library.
-func looksLikeFeatureFlag(flag string) bool {
-	switch flag {
-	case "-fPIC", "-fpic", "-flto":
-		return true
-	case "-fvisibility=hidden", "-fvisibility-inlines-hidden":
-		return true
-	}
-	if strings.HasPrefix(flag, "-fsanitize=") {
-		return true
-	}
-	return false
-}
+// looksLikeFeatureFlag and featureForRawFlag delegate to the
+// shared toolchainfeature package so the audit-side detection
+// and the lower-side rewrite stay in lockstep — adding a new
+// raw-flag mapping is a single edit visible to both consumers.
+func looksLikeFeatureFlag(flag string) bool { return toolchainfeature.LooksLikeFeatureFlag(flag) }
 
-// featureForRawFlag maps a raw compile/link flag to the
-// cc_toolchain feature name that owns it (per the
-// SANITIZER_FEATURES convention in
-// examples/sanitizer-features/toolchain/features.bzl).
-func featureForRawFlag(flag string) string {
-	switch flag {
-	case "-fPIC", "-fpic":
-		return "pic"
-	case "-flto":
-		return "lto"
-	case "-fvisibility=hidden":
-		return "visibility_hidden"
-	case "-fvisibility-inlines-hidden":
-		return "visibility_inlines_hidden"
-	case "-fsanitize=address":
-		return "asan"
-	case "-fsanitize=thread":
-		return "tsan"
-	case "-fsanitize=memory":
-		return "msan"
-	case "-fsanitize=undefined":
-		return "ubsan"
-	case "-fsanitize=leak":
-		return "lsan"
-	}
-	return ""
-}
+func featureForRawFlag(flag string) string { return toolchainfeature.Feature(flag) }
 
 // flatListContains returns flat-list literal entries in the named
 // attribute that match the predicate. Skips select() arms (covered
@@ -456,15 +412,27 @@ func collectSelectKeys(e build.Expr, match func(string) bool) []string {
 func auditCCLibrary(rule, target string, call *build.CallExpr) []Finding {
 	srcs := listAttrLen(call, "srcs")
 	hdrs := listAttrLen(call, "hdrs")
-	if srcs == 0 && hdrs == 0 {
-		return []Finding{{
-			Rule:    rule,
-			Target:  target,
-			Code:    "empty-cc-library",
-			Message: "cc_library has no srcs and no hdrs — typically means the converter refused everything for this target; expected an upstream lowerer to produce sources or a deliberate INTERFACE_LIBRARY (cc_library with hdrs only) when the target is header-only",
-		}}
+	if srcs > 0 || hdrs > 0 {
+		return nil
 	}
-	return nil
+	// A deps-only cc_library is an idiomatic transparent
+	// re-export: the wrapper exposes the union of its deps'
+	// interfaces. Bazel accepts this shape; the convertor
+	// produces it as the wrapper for multi-language splits
+	// (LLVMSupport -> :LLVMSupport_c + :LLVMSupport_cxx) and
+	// as the parent of cross-target hdrs-strip cases. The
+	// audit shouldn't surface a finding for these — the
+	// "converter refused everything" diagnostic only applies
+	// when there's truly nothing to expose.
+	if listAttrLen(call, "deps") > 0 || listAttrLen(call, "implementation_deps") > 0 {
+		return nil
+	}
+	return []Finding{{
+		Rule:    rule,
+		Target:  target,
+		Code:    "empty-cc-library",
+		Message: "cc_library has no srcs, hdrs, or deps — typically means the converter refused everything for this target; expected an upstream lowerer to produce sources or a deliberate INTERFACE_LIBRARY (cc_library with hdrs only) when the target is header-only",
+	}}
 }
 
 // auditCCImport fires on cc_import with no static_library and no

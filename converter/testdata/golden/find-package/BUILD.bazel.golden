@@ -8,14 +8,12 @@ cc_library(
     name = "usepkg",
     srcs = ["src/usepkg.c"],
     hdrs = ["include/usepkg.h"],
-    copts = [
-        "-O3",
-        "-fPIC",
-    ],  # keep
+    copts = ["-O3"],  # keep
     defines = [
         "NDEBUG",
         "usepkg_EXPORTS",
     ],  # keep
+    features = ["pic"],
     includes = ["include"],  # keep
     deps = ["//elements/zlib"],
 )

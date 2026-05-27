@@ -208,10 +208,16 @@ func TestLowerTarget_FindPackageAttrib_ManifestProvided_AttributionMissed(t *tes
 	if !stringSliceContains(found.Tags, "cmake-codegen-find-package-attribution-missed=libz.so") {
 		t.Errorf("Tags should include attribution-missed; got %v", found.Tags)
 	}
-	// The cmake-elided-link-fragment tag also fires (full-path
-	// anchor for the generic silent-drop case) — both tags are
-	// expected together here.
-	if !stringSliceContains(found.Tags, "cmake-elided-link-fragment=/usr/lib/x86_64-linux-gnu/libz.so") {
-		t.Errorf("Tags should also include elided-link-fragment; got %v", found.Tags)
+	// The cmake-elided-link-fragment tag previously fired
+	// alongside the attribution-missed tag, but the system-lib
+	// lift now routes /usr/lib*-paths to `-lz` linkopts
+	// instead of eliding (the linker resolves system libs via
+	// the toolchain's default library search path). The
+	// attribution-missed tag still fires because the operator
+	// asked for the imports-manifest path AND find_package
+	// missed — the lift doesn't replace that signal, it only
+	// upgrades the elision shape.
+	if !stringSliceContains(found.LinkOpts, "-lz") {
+		t.Errorf("LinkOpts should include -lz post system-lib lift; got %v", found.LinkOpts)
 	}
 }

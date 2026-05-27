@@ -7,10 +7,6 @@ package(default_visibility = ["//visibility:public"])  # keep
 cc_library(
     name = "toplib",
     srcs = ["src/toplib.c"],
-    hdrs = [
-        "include/toplib.h",
-        "include/util.h",
-    ],
     copts = ["-O3"],  # keep
     defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep

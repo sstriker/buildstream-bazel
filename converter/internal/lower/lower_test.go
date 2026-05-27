@@ -1302,12 +1302,16 @@ func TestToIR_ElidedLinkFragment(t *testing.T) {
 }
 
 // TestToIR_ElidedLinkFragmentNoBasenameCollision pins the
-// payload de-collision fix for link fragments: two distinct
-// abs paths sharing a trailing basename (the typical Linux
-// multi-arch shape /usr/lib/x86_64-linux-gnu/libz.so vs
-// /usr/lib/i386-linux-gnu/libz.so) emit distinct tags rather
-// than merging on the dedup.
-func TestToIR_ElidedLinkFragmentNoBasenameCollision(t *testing.T) {
+// Multi-arch system library paths
+// (/usr/lib/x86_64-linux-gnu/libz.so vs
+// /usr/lib/i386-linux-gnu/libz.so) now lift to a single
+// `-lz` linkopt — the toolchain's library search path covers
+// both. The dedup is intentional: both paths point at the
+// same library name. (Pre-lift behaviour emitted separate
+// elided tags to avoid the basename dedup hiding distinct
+// vendored paths; the lift handles the system-lib case by
+// routing them all through one linkopts entry instead.)
+func TestToIR_SystemLibsLiftToLinkOpts(t *testing.T) {
 	r := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{
 			Paths: fileapi.CodemodelPaths{
@@ -1345,14 +1349,75 @@ func TestToIR_ElidedLinkFragmentNoBasenameCollision(t *testing.T) {
 		t.Fatalf("ToIR: %v", err)
 	}
 	tgt := pkg.Targets[0]
-	want := []string{
-		"cmake-elided-link-fragment=/usr/lib/x86_64-linux-gnu/libz.so",
-		"cmake-elided-link-fragment=/usr/lib/i386-linux-gnu/libz.so",
+	if !contains(tgt.LinkOpts, "-lz") {
+		t.Errorf("LinkOpts = %v, want to contain %q", tgt.LinkOpts, "-lz")
 	}
-	for _, w := range want {
-		if !contains(tgt.Tags, w) {
-			t.Errorf("Tags = %v, want to contain %q (no basename-collision dedup)", tgt.Tags, w)
+	// Both paths collapse to one `-lz`; the dedup is
+	// intentional now (they target the same library).
+	count := 0
+	for _, l := range tgt.LinkOpts {
+		if l == "-lz" {
+			count++
 		}
+	}
+	if count != 1 {
+		t.Errorf("LinkOpts contained -lz %d times, want exactly 1; %v", count, tgt.LinkOpts)
+	}
+	// The cmake-elided-link-fragment tag must NOT fire for
+	// system libs — that elision was the pre-lift behaviour.
+	for _, tag := range tgt.Tags {
+		if contains([]string{
+			"cmake-elided-link-fragment=/usr/lib/x86_64-linux-gnu/libz.so",
+			"cmake-elided-link-fragment=/usr/lib/i386-linux-gnu/libz.so",
+		}, tag) {
+			t.Errorf("system lib should NOT be elided post-lift; got tag %q", tag)
+		}
+	}
+}
+
+// TestToIR_NonSystemLibPathStaysElided pins the conservative
+// half of the system-lib lift: a /opt/vendor/lib/... path (not
+// in the toolchain's default library search) keeps the elided
+// tag because the bare -l<name> wouldn't resolve.
+func TestToIR_NonSystemLibPathStaysElided(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{
+					{Path: "main.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+				}},
+				Link: &fileapi.TargetLink{
+					Language: "C",
+					CommandFragments: []fileapi.CommandFragment{
+						{Fragment: "/opt/vendor/lib/libmystery.so", Role: "libraries"},
+					},
+				},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if !contains(tgt.Tags, "cmake-elided-link-fragment=/opt/vendor/lib/libmystery.so") {
+		t.Errorf("Tags = %v, want to contain elided tag for non-system path", tgt.Tags)
 	}
 }
 

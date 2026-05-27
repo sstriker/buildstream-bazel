@@ -21,14 +21,12 @@ cc_library(
     name = "multishared",
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
-    copts = [
-        "-O3",
-        "-fPIC",
-    ],  # keep
+    copts = ["-O3"],  # keep
     defines = [
         "NDEBUG",
         "multishared_EXPORTS",
     ],  # keep
+    features = ["pic"],
     includes = ["include"],  # keep
 )
 

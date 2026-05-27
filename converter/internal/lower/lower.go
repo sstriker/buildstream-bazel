@@ -788,6 +788,23 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// probe ran (opts.GenexProbes empty) so back-compat preserved
 	// for callers that don't pass --probe-genex.
 	applyProbeGenexProperties(pkg, opts.GenexProbes)
+	// Lift raw toolchain-feature flags out of copts/linkopts into
+	// the Features attribute so the cc_toolchain owns the flag
+	// set instead of every cc_library carrying the same per-rule
+	// emission. Runs AFTER applyProbeGenexProperties so the
+	// visibility presets that pass routes to copts (today)
+	// immediately move to features here. Closes the
+	// `raw-toolchain-feature-flag` audit gap (~785 findings
+	// across the 9-project survey on PR #247).
+	liftRawFeatureFlags(pkg)
+	// Strip cross-target hdrs duplication: when target C declares
+	// a header H also owned by sibling S that's already in C's
+	// deps, drop H from C.hdrs — Bazel propagates hdrs through
+	// deps, so re-listing is redundant. At LLVM/VTK/Boost scale
+	// this collapses per-target hdrs counts by 10-100x. The
+	// dep-aware guard preserves compilability for consumers that
+	// would otherwise lose access to a transitively-owned header.
+	stripDepOwnedHdrs(pkg)
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the
@@ -1760,17 +1777,39 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// attribution. Either cmake hardcoded an absolute
 			// path that didn't flow through find_package
 			// (rare), or the imports manifest hasn't learned
-			// about this dep yet. Tag-only emission so
-			// operators see the unresolved link. Emit the full
-			// path (post-manifestPrefixAnchor rewrite when the
-			// fragment was under hostPrefix) rather than the
-			// basename so multi-arch layouts
-			// (/usr/lib/x86_64-linux-gnu/libz.so vs
-			// /usr/lib/i386-linux-gnu/libz.so → both libz.so)
-			// don't collide on the dedup.
-			tag := "cmake-elided-link-fragment=" + path
-			if !stringSliceContains(irt.Tags, tag) {
-				irt.Tags = append(irt.Tags, tag)
+			// about this dep yet.
+			//
+			// For libraries under standard system locations
+			// (/usr/lib*, /lib*, /usr/local/lib*) the
+			// Bazel-idiomatic shape is `linkopts = ["-l<name>"]`
+			// — the toolchain's library search path covers
+			// these paths universally, and -l<name> lets the
+			// linker resolve via the same mechanism it'd use
+			// for any other system dep. Lift the path's
+			// basename → -l<name> so the rule actually links
+			// against the lib at Bazel build time instead of
+			// failing with undefined references. For non-
+			// standard paths (vendored installs at
+			// /opt/<vendor>/lib/..., custom prefixes) we keep
+			// the tag-only elision — those need an explicit
+			// -L<dir> the operator's imports manifest is the
+			// right home for.
+			if name := systemLibName(path); name != "" {
+				flag := "-l" + name
+				if !stringSliceContains(irt.LinkOpts, flag) {
+					irt.LinkOpts = append(irt.LinkOpts, flag)
+				}
+			} else {
+				// Emit the full path (post-manifestPrefixAnchor
+				// rewrite when the fragment was under hostPrefix)
+				// rather than the basename so multi-arch layouts
+				// (/usr/lib/x86_64-linux-gnu/libz.so vs
+				// /usr/lib/i386-linux-gnu/libz.so → both libz.so)
+				// don't collide on the dedup.
+				tag := "cmake-elided-link-fragment=" + path
+				if !stringSliceContains(irt.Tags, tag) {
+					irt.Tags = append(irt.Tags, tag)
+				}
 			}
 			// Dual to the cmake-codegen-find-package-fallback
 			// tag above: that one fires when find_package

@@ -7,7 +7,6 @@ package(default_visibility = ["//visibility:public"])  # keep
 cc_library(
     name = "objlib_archive",
     srcs = ["src/main.c"],
-    hdrs = ["include/objlib.h"],
     copts = ["-O3"],  # keep
     defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
