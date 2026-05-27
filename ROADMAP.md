@@ -244,23 +244,53 @@ transition cleanly.
 
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
   survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
-  + `scripts/run-fidelity.sh` driver + first
-  `make e2e-fidelity-compare-zlib` gate + `testdata/fidelity/*.allowlist.txt`
-  shape. Drives the full A-B-C cycle (cmake build → convert →
-  bazel build → fidelity-compare → classify against allowlist) and
-  exits non-zero on impactful deltas (unexplained symbol drops,
-  hermeticity leaks). Built-in heuristics auto-classify the
-  common benign categories: FORTIFY_SOURCE / stack-protector
-  hardening symbols, C++ template-instantiation pairs (matched on
-  shared mangled-prefix), `.o` vs `.pic.o` archive-member name
-  differences. Self-skips the bazel half cleanly when bazel isn't
-  on PATH; honors RULES_CC_TARBALL for hosts that vendor rules_cc.
+  + `scripts/run-fidelity.sh` driver + `make e2e-fidelity-compare-{zlib,
+  spdlog,fmt}` gates + `testdata/fidelity/*.allowlist.txt` companions.
+  Drives the full A-B-C cycle (cmake build → convert → bazel build →
+  fidelity-compare → classify against allowlist) and exits non-zero on
+  impactful deltas (unexplained symbol drops, hermeticity leaks).
+  Built-in heuristics auto-classify the common benign categories:
+  FORTIFY_SOURCE / stack-protector hardening symbols, C++
+  template-instantiation pairs (matched on shared mangled-prefix),
+  `.o` vs `.pic.o` archive-member name differences. Self-skips the
+  bazel half cleanly when bazel isn't on PATH; honors RULES_CC_TARBALL
+  for hosts that vendor rules_cc.
+
+  Per-project gate status (Δ vs. the original "all five are ~10-line
+  Makefile adds" claim — the harness expansion to spdlog + fmt
+  surfaced that the other three need harness extensions, not just
+  fixture wiring):
+    - **zlib v1.3.1** ✅ shipped — 105/105 exact, empty allowlist.
+    - **spdlog v1.14.1** ✅ shipped — 1404/1404, 5 template-instantiation
+      entries (vendored fmt headers, inlining-decision deltas).
+    - **fmt 11.0.2** ✅ shipped — 146/146, 3 detail-namespace
+      template-instantiation entries (inlining-decision deltas).
+    - **nlohmann-json 3.11.3** ⚠️ deferred — header-only INTERFACE
+      library produces no static-archive artifact for fidelity-compare
+      to diff. Either re-key fidelity-compare to compare a downstream
+      test binary's symbol set (artifact shifts from "the converted
+      library" to "what consumers see", changes the contract) or skip
+      json from this gate's scope and rely on the broader e2e suite.
+    - **Catch2 3.5.3** ⚠️ deferred — needs the converter invoked with
+      `--lift-configure-file` (to recover `catch_user_config.hpp` from
+      the configure_file template) AND `//tools:cmake-configure-file`
+      staged in the test workspace as a Bazel-build-time tool. Harness
+      extension: a `--convert-flags '...'` passthrough in
+      `scripts/run-fidelity.sh` + a tool-staging step that builds the
+      converter's existing `cmd/cmake-configure-file` and writes a
+      `tools/BUILD.bazel` exposing it as a `sh_binary`.
+    - **libpng 1.6.x** ⚠️ deferred — `find_package(ZLIB REQUIRED)` in
+      libpng's CMakeLists means Bazel-side needs a `@zlib` external
+      repo with cc_library labels libpng's converted BUILD can resolve.
+      Harness extension: a `--bazel-external '...'` passthrough that
+      writes `http_archive`/`new_local_repository` entries into the
+      synthesized WORKSPACE.
 
   Remaining work:
-    - Per-project gates for spdlog / fmt / nlohmann-json / Catch2
-      / libpng (each is a ~10-line Makefile + allowlist add; no
-      Go changes). VTK / LLVM gates need the project's specific
-      configure flags + tooling and may need larger allowlists.
+    - Harness extensions for Catch2 (`--convert-flags` + tool staging)
+      and libpng (Bazel-side external repos). VTK / LLVM gates need
+      the project's specific configure flags + tooling and may need
+      larger allowlists.
     - CI wiring (`continue-on-error: true` initially, then promote
       to blocking after three consecutive green merges across all
       configured fixtures).
