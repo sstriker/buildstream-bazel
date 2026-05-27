@@ -123,7 +123,17 @@ func includeFile(g *Graph, p *Parser, parentDir, path string) error {
 		return nil // resolver elected to skip
 	}
 	defer rc.Close()
-	return parseInto(g, rc, filepath.Dir(filepath.Join(parentDir, path)), p)
+	// ninja resolves include / subninja paths relative to the
+	// top-level build directory (the working dir ninja was
+	// invoked in), NOT relative to the including file's
+	// directory. Cmake's Ninja Multi-Config generator relies on
+	// this: `build.ninja` does `include CMakeFiles/impl-<cfg>.ninja`,
+	// and impl-<cfg>.ninja in turn does `include CMakeFiles/common.ninja`
+	// — the latter must resolve to `<build>/CMakeFiles/common.ninja`,
+	// not to `<build>/CMakeFiles/CMakeFiles/common.ninja`. Pass the
+	// same parentDir through recursive parses so nested includes
+	// all anchor at the build root.
+	return parseInto(g, rc, parentDir, p)
 }
 
 func parseRuleStmt(g *Graph, s *lineScanner, head logicalLine, rest string) error {
