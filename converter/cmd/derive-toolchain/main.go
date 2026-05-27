@@ -47,6 +47,7 @@ func main() {
 	outDir := fs.String("out", "", "output directory; created if absent. BUILD.bazel + cc_toolchain_config.bzl + toolchain.cmake land here.")
 	pkgName := fs.String("package-name", "toolchain", "Bazel package name for the emitted rules (purely cosmetic; affects the toolchain identifier suffix).")
 	targetLibc := fs.String("target-libc", "", "target libc identifier (glibc, musl, macosx, ...). Auto-derived from CMAKE_SYSTEM_NAME when empty.")
+	hardeningFeatures := fs.Bool("inherit-distro-hardening", false, "emit fortify_source + stack_protector feature() blocks enabled-by-default in the cc_toolchain_config, mirroring the spec-file hardening Debian/Ubuntu cc applies. Closes the symbol-set delta the hardening probe surfaces. Operators opt out per-build with `--features=-fortify_source` or `--features=-stack_protector`.")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(64)
@@ -78,9 +79,9 @@ func main() {
 		err       error
 	)
 	if *replyDir != "" {
-		baseModel, bundle, err = fromReplyDir(*replyDir, *pkgName, *targetLibc)
+		baseModel, bundle, err = fromReplyDir(*replyDir, *pkgName, *targetLibc, *hardeningFeatures)
 	} else {
-		baseModel, bundle, err = fromProbe(*probeSrc, *buildRoot, *pkgName, *targetLibc)
+		baseModel, bundle, err = fromProbe(*probeSrc, *buildRoot, *pkgName, *targetLibc, *hardeningFeatures)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "derive-toolchain: %v\n", err)
@@ -118,7 +119,7 @@ func main() {
 // CMAKE_<LANG>_FLAGS from the reply; per-mode slots stay empty.
 // Useful for fixture-driven smoke tests and operators who already
 // have a reply on disk.
-func fromReplyDir(replyDir, pkgName, libc string) (*toolchain.Model, *bazeltoolchain.Bundle, error) {
+func fromReplyDir(replyDir, pkgName, libc string, hardening bool) (*toolchain.Model, *bazeltoolchain.Bundle, error) {
 	r, err := fileapi.Load(replyDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load reply: %w", err)
@@ -128,8 +129,9 @@ func fromReplyDir(replyDir, pkgName, libc string) (*toolchain.Model, *bazeltoolc
 		return nil, nil, fmt.Errorf("extract: %w", err)
 	}
 	b, err := bazeltoolchain.Emit(m, bazeltoolchain.Config{
-		PackageName: pkgName,
-		TargetLibc:  libc,
+		PackageName:       pkgName,
+		TargetLibc:        libc,
+		HardeningFeatures: hardening,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("emit: %w", err)
@@ -142,7 +144,7 @@ func fromReplyDir(replyDir, pkgName, libc string) (*toolchain.Model, *bazeltoolc
 // emit a multi-variant Bundle whose cc_toolchain_config carries
 // per-mode (dbg / opt) flag sets distinct from the always-on
 // baseline.
-func fromProbe(srcRoot, buildRoot, pkgName, libc string) (*toolchain.Model, *bazeltoolchain.Bundle, error) {
+func fromProbe(srcRoot, buildRoot, pkgName, libc string, hardening bool) (*toolchain.Model, *bazeltoolchain.Bundle, error) {
 	abs := func(p string) string {
 		out, err := filepath.Abs(p)
 		if err != nil {
@@ -167,8 +169,9 @@ func fromProbe(srcRoot, buildRoot, pkgName, libc string) (*toolchain.Model, *baz
 		return nil, nil, fmt.Errorf("probe: no results to observe")
 	}
 	b, err := bazeltoolchain.EmitResolved(rt, bazeltoolchain.Config{
-		PackageName: pkgName,
-		TargetLibc:  libc,
+		PackageName:       pkgName,
+		TargetLibc:        libc,
+		HardeningFeatures: hardening,
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("emit: %w", err)

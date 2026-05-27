@@ -83,6 +83,75 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 	}
 }
 
+// TestEmit_HardeningFeaturesOff is the no-op baseline: with
+// Config.HardeningFeatures = false (the default), the emitted
+// cc_toolchain_config.bzl carries no fortify_source /
+// stack_protector blocks.
+func TestEmit_HardeningFeaturesOff(t *testing.T) {
+	r, err := fileapi.Load("../../../testdata/fileapi/hello-world")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m, err := toolchain.FromReply(r)
+	if err != nil {
+		t.Fatalf("FromReply: %v", err)
+	}
+	m.HostPlatform = toolchain.Platform{OS: "Linux", CPU: "x86_64"}
+	m.TargetPlatform = m.HostPlatform
+
+	b, err := Emit(m, Config{PackageName: "toolchain"})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	cfg := string(b.Files["cc_toolchain_config.bzl"])
+	for _, banned := range []string{
+		`fortify_source`,
+		`stack_protector`,
+		`_FORTIFY_SOURCE=2`,
+		`-fstack-protector`,
+	} {
+		if strings.Contains(cfg, banned) {
+			t.Errorf("cc_toolchain_config.bzl carries %q with HardeningFeatures=false:\n%s", banned, cfg)
+		}
+	}
+}
+
+// TestEmit_HardeningFeaturesOn covers the opt-in path: with
+// HardeningFeatures = true the emitted .bzl carries
+// fortify_source + stack_protector feature() blocks with the
+// distro-default flag bundles AND `enabled = True`.
+func TestEmit_HardeningFeaturesOn(t *testing.T) {
+	r, err := fileapi.Load("../../../testdata/fileapi/hello-world")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m, err := toolchain.FromReply(r)
+	if err != nil {
+		t.Fatalf("FromReply: %v", err)
+	}
+	m.HostPlatform = toolchain.Platform{OS: "Linux", CPU: "x86_64"}
+	m.TargetPlatform = m.HostPlatform
+
+	b, err := Emit(m, Config{PackageName: "toolchain", HardeningFeatures: true})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	cfg := string(b.Files["cc_toolchain_config.bzl"])
+
+	for _, want := range []string{
+		`_FORTIFY_SOURCE_COMPILE_FLAGS = [`,
+		`"-D_FORTIFY_SOURCE=2"`,
+		`_STACK_PROTECTOR_COMPILE_FLAGS = [`,
+		`"-fstack-protector-strong"`,
+		`_feature_with_flags("fortify_source", True, _FORTIFY_SOURCE_COMPILE_FLAGS, _FORTIFY_SOURCE_LINK_FLAGS)`,
+		`_feature_with_flags("stack_protector", True, _STACK_PROTECTOR_COMPILE_FLAGS, _STACK_PROTECTOR_LINK_FLAGS)`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)
+		}
+	}
+}
+
 func TestEmit_RejectsEmptyModel(t *testing.T) {
 	if _, err := Emit(&toolchain.Model{}, Config{}); err == nil {
 		t.Error("Emit on empty model should error")

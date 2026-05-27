@@ -56,6 +56,25 @@ type Config struct {
 	// opt). Operators with custom matrices (sanitizers, alt-
 	// compilers) override.
 	VariantMapping toolchain.VariantMapping
+
+	// HardeningFeatures, when true, emits `fortify_source` and
+	// `stack_protector` feature() blocks with default-enabled =
+	// True and the standard distro-default flag bundles
+	// (-D_FORTIFY_SOURCE=2, -fstack-protector-strong). Closes
+	// the symbol-set delta the hardening probe in
+	// internal/hardeningprobe surfaced: cmake's distro cc
+	// applies these via the spec file by default; Bazel's
+	// hermetic cc_toolchain doesn't, so converted-then-rebuilt
+	// artifacts miss the __*_chk / __stack_chk_* references
+	// the cmake-built artifacts carry.
+	//
+	// Off by default — opt-in keeps existing toolchain
+	// behaviour unchanged. Operators who saw the
+	// --probe-distro-hardening diagnostic enable this flag on
+	// the next derive-toolchain run. Disable a single feature
+	// per-build with `--features=-fortify_source` (Bazel's
+	// per-feature opt-out shape).
+	HardeningFeatures bool
 }
 
 // Bundle is the result of Emit: a map from filename (relative to the
@@ -214,6 +233,44 @@ var featureSlots = []toolchain.BazelFeature{
 	toolchain.BazelFeatureLto,
 }
 
+// hardeningFeatureSlots is the ordered list of opt-in hardening
+// features (emitted only when Config.HardeningFeatures is true).
+// Unlike featureSlots, these carry fixed flag bundles instead of
+// probe-derived ones — they mirror distro cc's spec-file defaults
+// (-D_FORTIFY_SOURCE=2, -fstack-protector-strong) that cmake
+// inherits silently but Bazel's hermetic toolchain doesn't.
+//
+// Both features land with enabled = True in the .bzl so they
+// apply by default; opt out per-build with `--features=-<name>`.
+var hardeningFeatureSlots = []struct {
+	feature toolchain.BazelFeature
+	compile []string
+	link    []string
+}{
+	{
+		feature: toolchain.BazelFeatureFortifySource,
+		// -D_FORTIFY_SOURCE=2 requires optimization (-O1+);
+		// distro spec wires it to act only when -O is set, so
+		// putting it in the always-on compile flags is safe
+		// in practice (cmake's Release default carries -O3
+		// upstream and the converter preserves that via the
+		// dbg/opt features). _FORTIFY_SOURCE=2 is the level
+		// libc surfaces __sprintf_chk etc. from; level=1 is
+		// less complete and level=3 is gcc-13+/glibc-2.34+ only.
+		compile: []string{"-D_FORTIFY_SOURCE=2"},
+	},
+	{
+		feature: toolchain.BazelFeatureStackProtector,
+		// -fstack-protector-strong is the Debian/Ubuntu default
+		// since ~14.04 (Ubuntu) / Buster (Debian). RHEL/Fedora
+		// use the same setting. The older -fstack-protector-all
+		// is more aggressive but slower; -fstack-protector (no
+		// suffix) is the conservative original. -strong matches
+		// the survey-host distro behaviour cmake mirrors.
+		compile: []string{"-fstack-protector-strong"},
+	},
+}
+
 // emitConfigBzl renders a hand-rolled cc_toolchain_config rule.
 // The Starlark structure: module-level constants for every
 // toolchain field (tool paths, builtin includes, per-feature flag
@@ -277,6 +334,16 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
 		compile, link := variantFlagsFor(rt, cfg.VariantMapping, f)
 		emitStringListConst(&buf, "_"+strings.ToUpper(string(f))+"_COMPILE_FLAGS", compile)
 		emitStringListConst(&buf, "_"+strings.ToUpper(string(f))+"_LINK_FLAGS", link)
+	}
+	// Hardening features (opt-in via Config.HardeningFeatures).
+	// Constant flag bundles, not probe-derived. Empty slots when
+	// the flag is off so the rendered .bzl byte-stable across the
+	// off-by-default path.
+	if cfg.HardeningFeatures {
+		for _, hf := range hardeningFeatureSlots {
+			emitStringListConst(&buf, "_"+strings.ToUpper(string(hf.feature))+"_COMPILE_FLAGS", hf.compile)
+			emitStringListConst(&buf, "_"+strings.ToUpper(string(hf.feature))+"_LINK_FLAGS", hf.link)
+		}
 	}
 	buf.WriteString("\n")
 
@@ -354,6 +421,16 @@ def _impl(ctx):
 			string(f),
 			strings.ToUpper(string(f)),
 			strings.ToUpper(string(f)))
+	}
+	// Hardening features: enabled = True (apply by default to
+	// match cmake's distro-cc behaviour). Operators opt out per
+	// build with `--features=-fortify_source` etc.
+	if cfg.HardeningFeatures {
+		for _, hf := range hardeningFeatureSlots {
+			upper := strings.ToUpper(string(hf.feature))
+			fmt.Fprintf(&buf, "        _feature_with_flags(%q, True, _%s_COMPILE_FLAGS, _%s_LINK_FLAGS),\n",
+				string(hf.feature), upper, upper)
+		}
 	}
 	buf.WriteString(`    ]
     return [cc_common.create_cc_toolchain_config_info(
