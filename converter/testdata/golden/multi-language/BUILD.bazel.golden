@@ -6,7 +6,6 @@ package(default_visibility = ["//visibility:public"])  # keep
 
 cc_library(
     name = "multilang",
-    hdrs = ["include/multilang.h"],
     includes = ["include"],  # keep
     linkstatic = True,  # keep
     deps = [

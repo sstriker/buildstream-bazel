@@ -797,6 +797,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// `raw-toolchain-feature-flag` audit gap (~785 findings
 	// across the 9-project survey on PR #247).
 	liftRawFeatureFlags(pkg)
+	// Strip cross-target hdrs duplication: when target C declares
+	// a header H also owned by sibling S that's already in C's
+	// deps, drop H from C.hdrs — Bazel propagates hdrs through
+	// deps, so re-listing is redundant. At LLVM/VTK/Boost scale
+	// this collapses per-target hdrs counts by 10-100x. The
+	// dep-aware guard preserves compilability for consumers that
+	// would otherwise lose access to a transitively-owned header.
+	stripDepOwnedHdrs(pkg)
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the

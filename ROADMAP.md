@@ -356,6 +356,23 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Strip cross-target hdrs duplication
+  (`stripDepOwnedHdrs`).** Real-world cmake projects
+  surface every public header in every target's `hdrs`
+  attribute (cmake's per-target include-dir walk includes
+  shared `include/` roots). At LLVM / VTK scale this
+  inflated per-target hdrs counts by ~11× — LLVM 1808 →
+  571 hdrs/lib, VTK 577 → 59. New post-pass
+  `liftRawFeatureFlags` walks each cc_library /
+  cc_interface in the package and drops `hdrs` entries
+  owned by a sibling that's already in the consumer's
+  `deps` / `implementation_deps`. Bazel propagates hdrs
+  through deps so the re-listing was pure noise. The
+  conservative dep-aware guard preserves compilability
+  for any latent consumer-without-declared-dep cases.
+  PR #247 survey impact: LLVM BUILD 19M → 11M, VTK BUILD
+  5.2M → 1.6M.
+
 - **Lift per-target raw toolchain-feature flags into
   `features = [...]`.** Closes the single biggest non-idiom in
   real-world converter output. New post-pass
