@@ -412,15 +412,27 @@ func collectSelectKeys(e build.Expr, match func(string) bool) []string {
 func auditCCLibrary(rule, target string, call *build.CallExpr) []Finding {
 	srcs := listAttrLen(call, "srcs")
 	hdrs := listAttrLen(call, "hdrs")
-	if srcs == 0 && hdrs == 0 {
-		return []Finding{{
-			Rule:    rule,
-			Target:  target,
-			Code:    "empty-cc-library",
-			Message: "cc_library has no srcs and no hdrs — typically means the converter refused everything for this target; expected an upstream lowerer to produce sources or a deliberate INTERFACE_LIBRARY (cc_library with hdrs only) when the target is header-only",
-		}}
+	if srcs > 0 || hdrs > 0 {
+		return nil
 	}
-	return nil
+	// A deps-only cc_library is an idiomatic transparent
+	// re-export: the wrapper exposes the union of its deps'
+	// interfaces. Bazel accepts this shape; the convertor
+	// produces it as the wrapper for multi-language splits
+	// (LLVMSupport -> :LLVMSupport_c + :LLVMSupport_cxx) and
+	// as the parent of cross-target hdrs-strip cases. The
+	// audit shouldn't surface a finding for these — the
+	// "converter refused everything" diagnostic only applies
+	// when there's truly nothing to expose.
+	if listAttrLen(call, "deps") > 0 || listAttrLen(call, "implementation_deps") > 0 {
+		return nil
+	}
+	return []Finding{{
+		Rule:    rule,
+		Target:  target,
+		Code:    "empty-cc-library",
+		Message: "cc_library has no srcs, hdrs, or deps — typically means the converter refused everything for this target; expected an upstream lowerer to produce sources or a deliberate INTERFACE_LIBRARY (cc_library with hdrs only) when the target is header-only",
+	}}
 }
 
 // auditCCImport fires on cc_import with no static_library and no

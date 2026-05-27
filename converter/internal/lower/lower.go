@@ -1777,17 +1777,39 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// attribution. Either cmake hardcoded an absolute
 			// path that didn't flow through find_package
 			// (rare), or the imports manifest hasn't learned
-			// about this dep yet. Tag-only emission so
-			// operators see the unresolved link. Emit the full
-			// path (post-manifestPrefixAnchor rewrite when the
-			// fragment was under hostPrefix) rather than the
-			// basename so multi-arch layouts
-			// (/usr/lib/x86_64-linux-gnu/libz.so vs
-			// /usr/lib/i386-linux-gnu/libz.so → both libz.so)
-			// don't collide on the dedup.
-			tag := "cmake-elided-link-fragment=" + path
-			if !stringSliceContains(irt.Tags, tag) {
-				irt.Tags = append(irt.Tags, tag)
+			// about this dep yet.
+			//
+			// For libraries under standard system locations
+			// (/usr/lib*, /lib*, /usr/local/lib*) the
+			// Bazel-idiomatic shape is `linkopts = ["-l<name>"]`
+			// — the toolchain's library search path covers
+			// these paths universally, and -l<name> lets the
+			// linker resolve via the same mechanism it'd use
+			// for any other system dep. Lift the path's
+			// basename → -l<name> so the rule actually links
+			// against the lib at Bazel build time instead of
+			// failing with undefined references. For non-
+			// standard paths (vendored installs at
+			// /opt/<vendor>/lib/..., custom prefixes) we keep
+			// the tag-only elision — those need an explicit
+			// -L<dir> the operator's imports manifest is the
+			// right home for.
+			if name := systemLibName(path); name != "" {
+				flag := "-l" + name
+				if !stringSliceContains(irt.LinkOpts, flag) {
+					irt.LinkOpts = append(irt.LinkOpts, flag)
+				}
+			} else {
+				// Emit the full path (post-manifestPrefixAnchor
+				// rewrite when the fragment was under hostPrefix)
+				// rather than the basename so multi-arch layouts
+				// (/usr/lib/x86_64-linux-gnu/libz.so vs
+				// /usr/lib/i386-linux-gnu/libz.so → both libz.so)
+				// don't collide on the dedup.
+				tag := "cmake-elided-link-fragment=" + path
+				if !stringSliceContains(irt.Tags, tag) {
+					irt.Tags = append(irt.Tags, tag)
+				}
 			}
 			// Dual to the cmake-codegen-find-package-fallback
 			// tag above: that one fires when find_package
