@@ -242,6 +242,40 @@ transition cleanly.
 
 ## Next
 
+- **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
+  survey.** The close-gaps campaign (PRs #248–#258) used an ad-hoc
+  shell loop to validate that the converter's BUILD.bazel (project B)
+  produces an artifact whose exported-symbol set matches the cmake
+  build's (project C, the oracle) across spdlog, fmt, nlohmann-json,
+  zlib, Catch2, libpng, VTK, LLVM. The harness shape, the per-step
+  recipe, and the impactful-vs-benign classifier landed in
+  `docs/fidelity-known-deltas.md` ("The A-B-C harness shape" /
+  "Delta classifier" sections). Productionizing it:
+
+    - `cmd/fidelity-compare` (Go): take cmake build dir + Bazel build
+      dir + target name; run nm / strings extractions; classify deltas
+      against the rules in the doc; exit 0 when no impactful deltas,
+      non-zero with a structured report otherwise.
+    - `make e2e-fidelity-<project>` gates per surveyed fixture
+      (extends the existing `make e2e-fidelity` from M5b). Each gate
+      drives configure + cmake build + convert + Bazel build +
+      `fidelity-compare`; uploads the structured report as a CI
+      artifact.
+    - Per-project "expected benign deltas" allowlist files (sibling
+      to the audit-narrowing allowlists). Operator-acknowledged
+      deltas get suppressed; unexplained deltas surface as gate
+      failures.
+    - Promotion criterion: three consecutive green merges across
+      all configured fixtures, then flip `continue-on-error: true`
+      → `false` on the e2e-fidelity job header.
+
+  Acceptance: a converter regression that drops a symbol from the
+  output artifact (e.g. accidentally skipping a source file in some
+  edge case) fails CI with a precise per-symbol diagnostic instead
+  of being caught only when a downstream consumer breaks. Surfaces
+  hermeticity leaks (absolute paths embedded in the artifact) the
+  same way.
+
 - **Per-platform fold for round-2 trace-driven kinds —
   kind:meson Phase B promotion.** The render gate for the
   install fan-out shipped
