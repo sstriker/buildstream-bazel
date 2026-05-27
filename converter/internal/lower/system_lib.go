@@ -44,10 +44,10 @@ var systemLibPrefixes = []string{
 //   - `lib<name>.so.<version...>`     → <name>  (libfoo.so.1.2.3)
 //   - `lib<name>.a`                   → <name>
 //   - `lib<name>.dylib`               → <name>  (macOS — convert may
-//                                                run on darwin even
-//                                                though probe-cell
-//                                                emits linux-host
-//                                                cmake reply data)
+//     run on darwin even
+//     though probe-cell
+//     emits linux-host
+//     cmake reply data)
 //
 // Anything not matching the lib*.so* / lib*.a / lib*.dylib shapes
 // is rejected (Windows .lib/.dll/etc not yet handled — Bazel emits
