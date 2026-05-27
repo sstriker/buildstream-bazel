@@ -817,6 +817,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// dep-aware guard preserves compilability for consumers that
 	// would otherwise lose access to a transitively-owned header.
 	stripDepOwnedHdrs(pkg)
+	// Convert-time baked outputs (configure_file legacy capture,
+	// file(GENERATE) (b) base64 shape, execute_process value
+	// hoists, cmake -P lift, etc.) carry tags that ToIR scans
+	// after every emit-time tagging is done. The post-pass writes
+	// a single aggregated warning to opts.Warnings so operators
+	// see at convert time which rules carry bytes that won't
+	// auto-refresh when upstream inputs change. Nil sink
+	// suppresses; non-nil emits a sorted list. Per-tag taxonomy
+	// in converter/internal/lower/baking_warnings.go.
+	warnConvertTimeBaking(pkg, opts.Warnings)
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the
