@@ -130,6 +130,30 @@ func TestParse_StrictTraceParsesAsBool(t *testing.T) {
 	}
 }
 
+// TestParse_CMakeScriptRunner covers the cmake-P-lift opt-in
+// flag. Empty by default; non-empty enables the genrule lift
+// of add_custom_command(... cmake -P ...) shapes.
+func TestParse_CMakeScriptRunner(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{
+		"--source-root", "/proj",
+		"--cmake-script-runner=//tools:cmake-script-runner",
+	}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.CMakeScriptRunner != "//tools:cmake-script-runner" {
+		t.Errorf("CMakeScriptRunner=%q; want //tools:cmake-script-runner", args.CMakeScriptRunner)
+	}
+
+	// Default empty.
+	stderr.Reset()
+	args, _ = Parse([]string{"--source-root", "/proj"}, &stderr)
+	if args.CMakeScriptRunner != "" {
+		t.Errorf("CMakeScriptRunner default=%q; want empty", args.CMakeScriptRunner)
+	}
+}
+
 // TestParse_IgnoreRejectionsForDiagnostics covers the diagnostic-
 // mode flag pair: --ignore-rejections-for-diagnostics flips the bool
 // and --rejections-report carries the JSON sidecar path.

@@ -347,6 +347,21 @@ type Args struct {
 	// unframed directive as pointing at the workspace root.
 	BazelPackagePath string
 
+	// CMakeScriptRunner is the operator-supplied Bazel label of a
+	// target that, when invoked, behaves like cmake (specifically:
+	// supports `<runner> -P <script.cmake> [-D <var>=<val> ...]`).
+	// When non-empty, custom commands using `cmake -P` lift to a
+	// genrule that calls the runner at Bazel build time instead of
+	// refusing with UnsupportedCustomCommandScript.
+	//
+	// Soundness caveats: cmake -P scripts that hardcode absolute
+	// paths (configure_file-derived scripts with `set(SRCDIR
+	// "/abs/path")`) won't resolve under Bazel's sandbox.
+	// Parameter-driven scripts (e.g. VTK's vtkHashSource shape,
+	// which takes inputs via -D args) work cleanly. Off by
+	// default; only operators who stage a runner tool opt in.
+	CMakeScriptRunner string
+
 	// IgnoreRejectionsForDiagnostics switches the converter from
 	// "first Tier-1 refusal aborts" to "collect every refusal,
 	// continue past each with a local skip, write a diagnostic
@@ -426,6 +441,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.BazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/hello-world\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths cmake recorded. Empty suppresses the directive; safer than emitting wrong bytes.")
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
+	fs.StringVar(&a.CMakeScriptRunner, "cmake-script-runner", "", "Bazel label of a target that behaves like cmake (supports `<runner> -P <script.cmake> [-D ...]`). When set, add_custom_command(... cmake -P <script> ...) shapes lift to a genrule invoking the runner at build time. Off by default; only operators who stage the tool opt in. Soundness caveats apply: scripts with hardcoded absolute paths (configure_file-derived) won't resolve under Bazel's sandbox; parameter-driven scripts work cleanly.")
 	fs.BoolVar(&a.IgnoreRejectionsForDiagnostics, "ignore-rejections-for-diagnostics", false, "collect every Tier-1 refusal and continue past each with a local skip rather than aborting on the first one. The resulting BUILD.bazel is NOT guaranteed to build — refused constructs are silently elided. Use with --rejections-report to capture the structured rejection list. Diagnostic surveys only; production paths want the strict refusal.")
 	fs.StringVar(&a.RejectionsReport, "rejections-report", "", "write the structured rejection records (JSON array) here. Only meaningful with --ignore-rejections-for-diagnostics.")
 

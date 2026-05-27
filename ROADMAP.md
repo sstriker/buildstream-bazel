@@ -356,6 +356,25 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`cmake -P <script>` lift via operator-staged runner
+  (`--cmake-script-runner`).** The dominant non-audit refusal
+  in the cross-project survey (libpng ×4, VTK ×1) becomes a
+  genrule that invokes `<runner> -P <script> [preserved -D
+  args]` at Bazel build time. Off by default — only operators
+  who stage a runner target (a Bazel `sh_binary` / `alias` /
+  `cc_binary` that behaves like cmake) pass
+  `--cmake-script-runner=<label>` to opt in. Soundness
+  caveats: parameter-driven scripts (VTK's vtkHashSource
+  shape, which takes inputs via `-D` args) work cleanly;
+  configure_file-derived scripts with hardcoded absolute
+  paths under the build dir fail because the paths don't
+  exist in Bazel's sandbox. The lift refuses cleanly when
+  the script path doesn't anchor under `cmakeSrc`, falling
+  through to the existing UnsupportedCustomCommandScript
+  refusal (preserves pre-lift behaviour for the
+  configure_file-shape case). Same operator-plumbing pattern
+  as `--cmake-configure-file-bin`.
+
 - **`cmake -E create_symlink` op support.** Adds the
   `create_symlink` op to the cmake -E lift's allowlist
   (alongside `copy` / `copy_if_different` / `touch` /

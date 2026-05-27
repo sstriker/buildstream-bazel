@@ -351,6 +351,7 @@ func run(a cli.Args) error {
 		ConfigureLog:                      configureLogEvents,
 		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 		UnsupportedExecuteProcessFallback: execFallback,
+		CMakeScriptRunner:                 a.CMakeScriptRunner,
 		Rejections:                        rejections,
 		Warnings:                          os.Stderr,
 	})

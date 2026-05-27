@@ -319,3 +319,65 @@ from `ROADMAP.md` lands cleanly: the *thing* the conversion yields
 is a literal artifact (finalized project B), not "the converged
 state of project B." A is conversion scaffolding that exists to
 produce the final B and can be discarded thereafter.
+
+## Convert-time platform coupling
+
+The converter (`convert-element-cmake`) and the cmake configure
+step it drives currently run on the **same platform** with the
+**same source-tree view**. Several converter features depend on
+this assumption:
+
+- **cmake's File API reply** records absolute paths (sources,
+  includes, install destinations) anchored at convert-host
+  filesystem locations. The lower walks these against the
+  convert-host's source-tree layout.
+- **`--trace-expand` JSON events** carry convert-host paths in
+  every `file`/`line` record. Recovery passes
+  (`platform_conditional`, `configure_file`, `file_generate`,
+  the cmake -P lift) anchor against `cmakeSrc` and `cmakeBuild`
+  as convert-host absolute paths.
+- **`discoverHeaders`** walks `target_include_directories`
+  entries on the convert-host filesystem.
+- **Convert-time-baked outputs** (configure_file legacy
+  capture, file(GENERATE) (b) base64 shape, execute_process
+  stamps, the cmake -P script lift) materialize bytes derived
+  from convert-host environment data — most importantly, the
+  resolved values of `CMAKE_<LANG>_COMPILER_ID`,
+  `CMAKE_SYSTEM_NAME`, sysroot-derived paths, and host-discovered
+  find_package results. The lower's
+  `warnConvertTimeBaking` post-pass emits one stderr line per
+  baked output so operators see the inventory.
+
+This coupling is intentional today: the convert flow needs cmake
+to actually configure (compiler detection, find_package, native
+checks) to produce the codemodel + trace inputs the converter
+reads. The compiler-detection step alone requires the host
+toolchain — running it elsewhere means materializing the
+toolchain elsewhere.
+
+**Future shapes** that would relax the coupling:
+
+- **Multi-platform configure → centralized convert.** Operator
+  runs cmake configure on each target platform (e.g. Linux +
+  macOS + Windows), captures the reply directories per platform,
+  ships them all to a single Linux convert host. The converter
+  would need to fold per-platform replies into one IR — already
+  partially shaped via `--build-types` (multi-config per
+  platform) and per-platform `select()` arms in lowered output,
+  but multi-PLATFORM (vs multi-config) fold is a separate axis.
+  Per-platform absolute paths in the replies would need
+  canonicalization, and convert-time-baked outputs that depend on
+  platform-discovered values would need to gate per-platform
+  (today they're embedded once with the convert-host's values).
+
+- **Bazel-action convert.** The converter itself runs as a Bazel
+  genrule action so it inherits Bazel's sandbox + remote
+  execution semantics. The convert-host coupling becomes "the
+  cmake-configure action's platform constraint;" the converter
+  reads the resulting reply from a sibling action's outputs.
+  Shape sketched under "Dev-loop guidance for routing local Bazel
+  at the executor" in `ROADMAP.md`.
+
+Both shapes are deferred pending real demand. Until they land,
+the operator-visible contract is "convert host == cmake configure
+host == source-tree view."
