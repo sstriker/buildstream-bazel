@@ -1177,16 +1177,20 @@ func strList(items []string) string {
 	if len(items) == 0 {
 		return "[]"
 	}
-	// single-line trial
+	// single-line trial. %q escapes embedded quotes / backslashes /
+	// control bytes so values like `LZ4_VERSION="1.8.0"` (cmake
+	// derives these from add_definitions(-DLZ4_VERSION="1.8.0"))
+	// produce valid Starlark string literals instead of unparseable
+	// `"LZ4_VERSION="1.8.0""`. Same escaping the multi-line arm
+	// already uses; the divergence was a latent bug surfaced by
+	// real-world (VTK / lz4) defines.
 	var single bytes.Buffer
 	single.WriteByte('[')
 	for i, s := range items {
 		if i > 0 {
 			single.WriteString(", ")
 		}
-		single.WriteByte('"')
-		single.WriteString(s)
-		single.WriteByte('"')
+		fmt.Fprintf(&single, "%q", s)
 	}
 	single.WriteByte(']')
 	if single.Len() <= 60 {
