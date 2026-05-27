@@ -166,6 +166,55 @@ func extractCmakePDashArgs(cmd string) []string {
 	return out
 }
 
+// extractCmakePScriptPositionalArgs walks the recovered command
+// and returns the positional arguments that appear AFTER the
+// script path (i.e. the args cmake exposes inside the script as
+// ${CMAKE_ARGV3}, ${CMAKE_ARGV4}, ...). Excludes `cmake`, `-P`,
+// `-D <var>` / `-D<var>` pairs, and the script path itself.
+// Order is preserved.
+//
+// Surfaced by libpng's gensrc.cmake shape: a single script
+// reads its first positional arg as a switch (`if(${CMAKE_ARGV3}
+// STREQUAL "pnglibconf.h") ...`) and writes one of several
+// declared outputs per invocation. extractCmakePDashArgs alone
+// drops the switch arg, so the bake invocation runs without the
+// dispatch input and the script falls through to its error case.
+func extractCmakePScriptPositionalArgs(cmd string) []string {
+	tokens := splitShellTokens(cmd)
+	for i, tok := range tokens {
+		if tok == "&&" {
+			tokens = tokens[i+1:]
+			break
+		}
+	}
+	// Find the `-P <script>` pair; positional args are everything
+	// after that, excluding any further `-D` pairs (those still
+	// flow through extractCmakePDashArgs).
+	var pIdx = -1
+	for i := 0; i < len(tokens); i++ {
+		if tokens[i] == "-P" && i+1 < len(tokens) {
+			pIdx = i + 1 // script path index
+			break
+		}
+	}
+	if pIdx < 0 || pIdx+1 >= len(tokens) {
+		return nil
+	}
+	var out []string
+	for i := pIdx + 1; i < len(tokens); i++ {
+		tok := tokens[i]
+		if tok == "-D" && i+1 < len(tokens) {
+			i++
+			continue
+		}
+		if strings.HasPrefix(tok, "-D") {
+			continue
+		}
+		out = append(out, tok)
+	}
+	return out
+}
+
 // appendUnique appends entries to a slice, dropping duplicates of
 // values already present. Stable order: keeps the first-seen
 // position.

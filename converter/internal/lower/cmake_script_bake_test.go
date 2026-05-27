@@ -91,6 +91,155 @@ func TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput(t *testing.T) {
 	}
 }
 
+// TestBakeCmakeScriptGenrule_ForwardsPositionalArgs covers the
+// libpng `cmake -P gensrc.cmake <output-name>` dispatch shape:
+// the script reads ${CMAKE_ARGV3} as a switch and writes one of
+// several declared outputs per invocation. Bake must forward
+// positional args so the script's dispatch logic sees the right
+// value.
+func TestBakeCmakeScriptGenrule_ForwardsPositionalArgs(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+
+	src := t.TempDir()
+	build := t.TempDir()
+	scriptPath := filepath.Join(src, "dispatch.cmake")
+	// Script: dispatch on the first positional arg
+	// (${CMAKE_ARGV3} — argv[0..2] are cmake/-P/script-path).
+	// Writes a different byte sequence depending on the arg.
+	script := `
+if(NOT DEFINED CMAKE_ARGV3)
+  message(FATAL_ERROR "missing positional arg")
+endif()
+if("${CMAKE_ARGV3}" STREQUAL "a.txt")
+  file(WRITE "a.txt" "alpha\n")
+elseif("${CMAKE_ARGV3}" STREQUAL "b.txt")
+  file(WRITE "b.txt" "beta\n")
+else()
+  message(FATAL_ERROR "unknown arg: ${CMAKE_ARGV3}")
+endif()
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{
+		Name:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"command": "$COMMAND"},
+		BindingOrder: []string{"command"},
+	}
+	b := &ninja.Build{
+		Outputs: []string{"a.txt"},
+		Rule:    "CUSTOM_COMMAND",
+		Bindings: map[string]string{
+			"COMMAND": cmakeBin + " -P " + scriptPath + " a.txt",
+		},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, b)
+
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	cmd := cmakeBin + " -P " + scriptPath + " a.txt"
+	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build)
+	if !ok {
+		t.Fatalf("bake failed (positional arg not forwarded?): reason=%q", reason)
+	}
+	if rel != "a.txt" {
+		t.Errorf("rel = %q, want a.txt", rel)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
+	}
+	wantBase64 := base64.StdEncoding.EncodeToString([]byte("alpha\n"))
+	if !strings.Contains(cc.Genrules[0].GenruleCmd, wantBase64) {
+		t.Errorf("cmd doesn't carry expected payload; got %q want substring %q",
+			cc.Genrules[0].GenruleCmd, wantBase64)
+	}
+}
+
+// TestBakeCmakeScriptGenrule_ForwardsDashDArgsBeforeScript covers
+// libpng's gensrc.cmake-style dispatch where the build invokes
+// `cmake -DOUTPUT=name -P script.cmake` and the script reads
+// ${OUTPUT} as a switch (`if(OUTPUT STREQUAL "pnglibconf.h") ...`).
+// cmake requires -D vars BEFORE the -P arg or it treats them as
+// positional ${CMAKE_ARGV*} entries instead of setting the
+// variable. Verify bake preserves that ordering so dispatch
+// scripts pick the right branch.
+func TestBakeCmakeScriptGenrule_ForwardsDashDArgsBeforeScript(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+
+	src := t.TempDir()
+	build := t.TempDir()
+	scriptPath := filepath.Join(src, "dispatch_d.cmake")
+	// Script reads ${OUTPUT} (set via -DOUTPUT=...) and writes
+	// different bytes per arm.
+	script := `
+if(NOT DEFINED OUTPUT)
+  message(FATAL_ERROR "OUTPUT not set — -D arg landed after -P script?")
+endif()
+if(OUTPUT STREQUAL "a.txt")
+  file(WRITE "a.txt" "alpha\n")
+elseif(OUTPUT STREQUAL "b.txt")
+  file(WRITE "b.txt" "beta\n")
+else()
+  message(FATAL_ERROR "unknown OUTPUT: ${OUTPUT}")
+endif()
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{
+		Name:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"command": "$COMMAND"},
+		BindingOrder: []string{"command"},
+	}
+	b := &ninja.Build{
+		Outputs: []string{"a.txt"},
+		Rule:    "CUSTOM_COMMAND",
+		Bindings: map[string]string{
+			"COMMAND": cmakeBin + " -DOUTPUT=a.txt -P " + scriptPath,
+		},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, b)
+
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	cmd := cmakeBin + " -DOUTPUT=a.txt -P " + scriptPath
+	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build)
+	if !ok {
+		t.Fatalf("bake failed (-D arg ordering bug?): reason=%q", reason)
+	}
+	if rel != "a.txt" {
+		t.Errorf("rel = %q, want a.txt", rel)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
+	}
+	wantBase64 := base64.StdEncoding.EncodeToString([]byte("alpha\n"))
+	if !strings.Contains(cc.Genrules[0].GenruleCmd, wantBase64) {
+		t.Errorf("cmd doesn't carry expected payload; got %q want substring %q",
+			cc.Genrules[0].GenruleCmd, wantBase64)
+	}
+}
+
 func TestBakeCmakeScriptGenrule_NoCmakeRefuses(t *testing.T) {
 	cc := newCodegenContext()
 	cc.CMakeBinary = "" // not available

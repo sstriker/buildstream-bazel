@@ -54,6 +54,14 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 		return "", "", "", false
 	}
 	dArgs := extractCmakePDashArgs(cmd)
+	// Positional args after the script (libpng's gensrc.cmake
+	// shape: `cmake -P gensrc.cmake <output-name>` — the script
+	// reads ${CMAKE_ARGV3} as a dispatch switch and writes one
+	// of several declared outputs per invocation). Without
+	// forwarding these the script sees no dispatch input and the
+	// bake either falls through to its error case or produces
+	// the wrong output.
+	posArgs := extractCmakePScriptPositionalArgs(cmd)
 
 	// Run the script in a fresh tmp dir. Map cmake's
 	// CMAKE_BINARY_DIR to it via the workDir so file(WRITE
@@ -77,8 +85,18 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	// more than that (the convert-machine BUILD_DIR equivalent)
 	// won't bake cleanly — that's the same limitation as the
 	// non-bake lift, surfaced honestly here.
-	argv := []string{"-P", scriptArg}
-	argv = append(argv, dArgs...)
+	// Arg-ordering matters: cmake parses `-D <var>=<val>` only
+	// when it appears BEFORE `-P <script>`. If `-D` comes after
+	// `-P <script>`, cmake exposes it inside the script as a
+	// positional ${CMAKE_ARGV*} rather than setting the variable,
+	// so any `if(VAR STREQUAL ...)` dispatch (libpng's gensrc.cmake
+	// shape: `if(OUTPUT STREQUAL "pnglibconf.h") ...`) sees an
+	// unset variable and falls through to the script's error
+	// branch. The recovered ninja COMMAND already places -D first;
+	// preserve that ordering here.
+	argv := append([]string{}, dArgs...)
+	argv = append(argv, "-P", scriptArg)
+	argv = append(argv, posArgs...)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
