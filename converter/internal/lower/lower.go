@@ -208,6 +208,17 @@ type Options struct {
 	// field is non-nil).
 	Rejections *rejection.Collector
 
+	// CMakeScriptRunner, when non-empty, is the Bazel label of a
+	// target that the cmake-P lift will invoke at Bazel build
+	// time in place of refusing add_custom_command(... cmake -P
+	// <script> ...) shapes. Empty (the default) preserves the
+	// pre-existing UnsupportedCustomCommandScript refusal — only
+	// operators who stage a runner (a Bazel cc_binary / sh_binary
+	// / alias that behaves like cmake) opt in via
+	// --cmake-script-runner=<label>. Soundness caveats apply; see
+	// liftCmakeScriptGenrule for the limitation details.
+	CMakeScriptRunner string
+
 	// Warnings, when non-nil, is the sink lower writes non-fatal
 	// diagnostics to. The first user is the missing-include-dir
 	// notice: cmake permits target_include_directories(...) entries
@@ -592,6 +603,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	cc := newCodegenContext()
+	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's

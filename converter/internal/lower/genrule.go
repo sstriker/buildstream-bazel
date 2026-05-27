@@ -62,6 +62,22 @@ type codegenContext struct {
 	// dedup across the multiple targets that typically share an
 	// include root.
 	MissingIncludeDirs map[string]bool
+
+	// CMakeScriptRunner is the operator-supplied Bazel label of a
+	// target that, when invoked, IS cmake (or behaves like
+	// `cmake -P`). When non-empty, recoverGenrule lifts
+	// `add_custom_command(... COMMAND cmake -P <script> ...)`
+	// shapes to a genrule that calls the runner instead of
+	// refusing with UnsupportedCustomCommandScript. Empty (the
+	// default) preserves the historical refusal — operators who
+	// don't stage the tool see no behaviour change.
+	//
+	// Same operator-plumbing shape as the cmake-configure-file
+	// flag (cli.Args.LiftConfigureFile + write-a's
+	// --cmake-configure-file-bin stages the tool into project A
+	// and project B); the script runner is the same idea for
+	// arbitrary cmake-script-language drivers.
+	CMakeScriptRunner string
 }
 
 func newCodegenContext() *codegenContext {
@@ -148,22 +164,29 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// transparently via scope chain. The literal "cd <dir> &&" prefix
 	// gets handled at command translation time.
 	if usesCmakeScriptMode(cmd) {
+		// Operator can opt into the cmake-P lift by staging the
+		// runner tool and passing --cmake-script-runner=<label>.
+		// Soundness caveats apply: scripts that hardcode
+		// absolute paths (configure_file-derived scripts with
+		// `set(SRCDIR "/abs/path")`) won't resolve under
+		// Bazel's sandbox; parameter-driven scripts (VTK's
+		// vtkHashSource shape) work cleanly. See
+		// docs/design/generator-parity-gaps.md's "cmake -P
+		// lift" entry for the limitation details.
+		script := extractCmakeScriptPath(cmd)
+		if cc.CMakeScriptRunner != "" {
+			rel, name, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
+			if ok {
+				return rel, name, nil
+			}
+			// Fall through to refusal if the lift declined
+			// (script path can't anchor under sourceRoot).
+		}
 		// Pull the actual `-P <script>` argument out of the
 		// recovered command so the failure points operators at
 		// the specific script to rewrite — not just at the
 		// consuming target's output. #207.
-		//
-		// The cmake-P-as-genrule lift (emit a genrule that
-		// invokes `cmake -P <script>` via a host-tool dep at
-		// Bazel build time) is queued — same general shape as
-		// the cmake-configure-file pattern but for arbitrary
-		// scripts. See docs/design/generator-parity-gaps.md's
-		// "Genuinely queued" entry. Until that lands, operators'
-		// options are: rewrite the script in shell/python,
-		// override the element via --build-files-dir, or route
-		// through the per-element round-2 cmake fallback.
-		script := extractCmakeScriptPath(cmd)
-		msg := fmt.Sprintf("custom command for %q runs `cmake -P %s`; rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest",
+		msg := fmt.Sprintf("custom command for %q runs `cmake -P %s`; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest",
 			relOut, script)
 		return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
 	}
