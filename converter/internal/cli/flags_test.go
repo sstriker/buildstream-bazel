@@ -130,6 +130,40 @@ func TestParse_StrictTraceParsesAsBool(t *testing.T) {
 	}
 }
 
+// TestParse_IgnoreRejectionsForDiagnostics covers the diagnostic-
+// mode flag pair: --ignore-rejections-for-diagnostics flips the bool
+// and --rejections-report carries the JSON sidecar path.
+func TestParse_IgnoreRejectionsForDiagnostics(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{
+		"--source-root", "/proj",
+		"--ignore-rejections-for-diagnostics",
+		"--rejections-report=/tmp/rej.json",
+	}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !args.IgnoreRejectionsForDiagnostics {
+		t.Errorf("IgnoreRejectionsForDiagnostics=false; want true")
+	}
+	if args.RejectionsReport != "/tmp/rej.json" {
+		t.Errorf("RejectionsReport=%q; want /tmp/rej.json", args.RejectionsReport)
+	}
+
+	// Default off.
+	stderr.Reset()
+	args, code = Parse([]string{"--source-root", "/proj"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.IgnoreRejectionsForDiagnostics {
+		t.Errorf("IgnoreRejectionsForDiagnostics default=true; want false")
+	}
+	if args.RejectionsReport != "" {
+		t.Errorf("RejectionsReport default=%q; want empty", args.RejectionsReport)
+	}
+}
+
 // TestParse_BuildTypesCommaSlice covers the Phase 5 multi-config
 // CLI flag: --build-types takes a comma-separated list and pins
 // the entries (preserving order, dropping empties).

@@ -31,6 +31,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -326,6 +327,17 @@ func run(a cli.Args) error {
 		}
 	}
 
+	// Diagnostic mode: --ignore-rejections-for-diagnostics implies
+	// the execute-process fallback (any execute_process refusal
+	// routes through the existing placeholder emit path) and gives
+	// every other refusal site somewhere to record before falling
+	// through with a local skip.
+	var rejections *rejection.Collector
+	execFallback := a.UnsupportedExecuteProcessFallback
+	if a.IgnoreRejectionsForDiagnostics {
+		rejections = rejection.New()
+		execFallback = true
+	}
 	pkg, err := lower.ToIR(r, g, lower.Options{
 		HostSourceRoot:                    a.SourceRoot,
 		HostPrefixDir:                     prefixAbs,
@@ -338,10 +350,34 @@ func run(a cli.Args) error {
 		GenexProbes:                       genexProbes,
 		ConfigureLog:                      configureLogEvents,
 		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
-		UnsupportedExecuteProcessFallback: a.UnsupportedExecuteProcessFallback,
+		UnsupportedExecuteProcessFallback: execFallback,
+		Rejections:                        rejections,
 	})
 	if err != nil {
 		return err
+	}
+	// Always materialize the rejections report when its path is
+	// set so consumers (CI gates, downstream scripts) can rely on
+	// the file existing. Empty array when no rejections fired or
+	// the diagnostic flag wasn't on.
+	if a.RejectionsReport != "" {
+		items := []rejection.Rejection{}
+		if rejections != nil {
+			items = rejections.Items()
+			if items == nil {
+				items = []rejection.Rejection{}
+			}
+		}
+		body, _ := json.MarshalIndent(items, "", "  ")
+		if err := os.MkdirAll(filepath.Dir(a.RejectionsReport), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.RejectionsReport, append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+	if rejections != nil && rejections.Len() > 0 {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: --ignore-rejections-for-diagnostics collected %d rejection(s); output BUILD.bazel is best-effort and not guaranteed to build\n", rejections.Len())
 	}
 
 	if a.Verify {

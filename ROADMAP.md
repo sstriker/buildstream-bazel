@@ -356,6 +356,25 @@ transition cleanly.
 
 ## Done (high points)
 
+- **`--ignore-rejections-for-diagnostics` flag for cmake converter.**
+  Diagnostic-survey mode for running the converter against large
+  real-world cmake projects (VTK, LLVM, etc.) without aborting on
+  the first Tier-1 refusal. When set, every refusal site in
+  `converter/internal/lower/` (UnsupportedTargetType, UnresolvedLinkDep,
+  UnsupportedSourcePath, UnsupportedCustomCommand / -Script,
+  FileAPIMalformed dangling-target-ref, UnsupportedExecuteProcess)
+  appends to a `*rejection.Collector` and falls through with a local
+  skip (drop the bad source / dep / target) instead of returning the
+  typed `failure.Error`. The execute_process arm implicitly enables
+  the pre-existing `--unsupported-execute-process-fallback` placeholder
+  emit. Output BUILD.bazel is best-effort and not guaranteed to build;
+  the goal is enumerating the refusal surface in one pass, not
+  producing usable output. `--rejections-report=<path>` captures the
+  structured rejections JSON (one `{code, message, target, source}`
+  record per refusal). Off by default — strict-mode callers (the
+  M3 orchestrator + every render gate) see no behaviour change. New
+  package: `converter/internal/rejection/`.
+
 - **Phase 4 trace cross-reference + execute_process unknown-arm
   retirement.** Closes the two residue items the standalone-
   genrule graduation left behind. `internal/shadow/trace_commands.go`

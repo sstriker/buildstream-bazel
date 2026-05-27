@@ -347,6 +347,29 @@ type Args struct {
 	// unframed directive as pointing at the workspace root.
 	BazelPackagePath string
 
+	// IgnoreRejectionsForDiagnostics switches the converter from
+	// "first Tier-1 refusal aborts" to "collect every refusal,
+	// continue past each with a local skip, write a diagnostic
+	// report at the end". The resulting BUILD.bazel is NOT
+	// guaranteed to build — refused constructs (bad source paths,
+	// unresolved link deps, unsupported target types, missing
+	// custom commands, classifier-refused execute_process calls)
+	// are silently elided so the lower can reach the end of the
+	// codemodel walk. Implicitly enables
+	// UnsupportedExecuteProcessFallback (any execute_process
+	// refusal routes through that pre-existing fallback path).
+	// Use with --rejections-report=<path> to capture the structured
+	// rejection list. Off by default — production conversion paths
+	// want the strict refusal so broken output never lands.
+	IgnoreRejectionsForDiagnostics bool
+
+	// RejectionsReport, when non-empty, is the path the converter
+	// writes a JSON array of recorded Rejection records to. Only
+	// meaningful with --ignore-rejections-for-diagnostics; ignored
+	// when the strict path runs (an empty file is written instead
+	// so consumers can rely on the path existing).
+	RejectionsReport string
+
 	// SourceKey, when non-empty, names the @src_<key>// external
 	// repository the FUSE-sources path declared for this element's
 	// source tree. The Bazel emitter prefixes every relative source
@@ -403,6 +426,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.BazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/hello-world\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths cmake recorded. Empty suppresses the directive; safer than emitting wrong bytes.")
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
+	fs.BoolVar(&a.IgnoreRejectionsForDiagnostics, "ignore-rejections-for-diagnostics", false, "collect every Tier-1 refusal and continue past each with a local skip rather than aborting on the first one. The resulting BUILD.bazel is NOT guaranteed to build — refused constructs are silently elided. Use with --rejections-report to capture the structured rejection list. Diagnostic surveys only; production paths want the strict refusal.")
+	fs.StringVar(&a.RejectionsReport, "rejections-report", "", "write the structured rejection records (JSON array) here. Only meaningful with --ignore-rejections-for-diagnostics.")
 
 	if err := fs.Parse(argv); err != nil {
 		return a, ExitUsage

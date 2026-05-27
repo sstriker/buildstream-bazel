@@ -22,6 +22,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -185,6 +186,26 @@ type Options struct {
 	// pure-function over the reply data, no FS reads beyond
 	// configure_file's rendered output capture).
 	ConfigureLog []fileapi.Event
+
+	// Rejections, when non-nil, switches Tier-1 refusal sites
+	// from "return a typed failure.Error" to "record the
+	// rejection and continue with a local skip (drop the bad
+	// source / dep / target / genrule)". The resulting IR is
+	// NOT guaranteed to be buildable — the goal is diagnostic
+	// surveys against large real-world projects so the operator
+	// sees every refusal in one pass. Driven by the
+	// --ignore-rejections-for-diagnostics CLI flag.
+	//
+	// Sites covered: UnsupportedSourcePath (drop the source),
+	// UnresolvedLinkDep (drop the dep), UnsupportedTargetType
+	// (skip the target), UnsupportedCustomCommand /
+	// UnsupportedCustomCommandScript (skip the consuming source),
+	// FileAPIMalformed dangling-target-ref (skip the target),
+	// UnsupportedExecuteProcess (route through the existing
+	// execute-process fallback automatically — the flag sets
+	// UnsupportedExecuteProcessFallback implicitly when this
+	// field is non-nil).
+	Rejections *rejection.Collector
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -606,6 +627,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
 	if len(executeProcessRefusals) > 0 {
+		if opts.Rejections != nil {
+			// Diagnostic mode: record the refusal AND route
+			// through the existing execute-process fallback so
+			// the operator sees both the rejection record and a
+			// best-effort BUILD shape in the same pass.
+			var tier1 *failure.Error
+			if errors.As(formatExecuteProcessFailure(executeProcessRefusals), &tier1) {
+				opts.Rejections.AddError(tier1)
+			}
+			return emitFallbackPlaceholder(r, hostSrc)
+		}
 		if !opts.UnsupportedExecuteProcessFallback {
 			return nil, formatExecuteProcessFailure(executeProcessRefusals)
 		}
@@ -682,10 +714,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	for _, tref := range cfg.Targets {
 		t, ok := r.Targets[tref.Id]
 		if !ok {
+			if opts.Rejections != nil {
+				opts.Rejections.AddWithContext(failure.FileAPIMalformed,
+					fmt.Sprintf("target id %q in codemodel but not loaded", tref.Id),
+					tref.Name, "")
+				continue
+			}
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot, opts.Rejections)
 		if err != nil {
 			return nil, err
 		}
@@ -773,7 +811,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string, rejections *rejection.Collector) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -831,6 +869,12 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// the utility node itself has no Bazel equivalent.
 		return nil, nil
 	default:
+		if rejections != nil {
+			rejections.AddWithContext(failure.UnsupportedTargetType,
+				fmt.Sprintf("target %q has unsupported type %q", t.Name, t.Type),
+				t.Name, "")
+			return nil, nil
+		}
 		return nil, failure.New(failure.UnsupportedTargetType,
 			"target %q has unsupported type %q", t.Name, t.Type)
 	}
@@ -882,6 +926,24 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			}
 			relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
 			if err != nil {
+				if rejections != nil {
+					// Diagnostic mode: drop the generated source
+					// and continue. The consuming target keeps its
+					// other srcs; the missing generated input is
+					// recorded as a rejection for the operator to
+					// triage. A typed *failure.Error carries the
+					// stable Code; bare errors (returned by
+					// recoverGenrule for non-typed shapes — none
+					// today, but defensive) record under a generic
+					// custom-command code so the report is total.
+					var tier1 *failure.Error
+					if errors.As(err, &tier1) {
+						rejections.AddWithContext(tier1.Code, tier1.Message, t.Name, src.Path)
+					} else {
+						rejections.AddWithContext(failure.UnsupportedCustomCommand, err.Error(), t.Name, src.Path)
+					}
+					continue
+				}
 				return nil, err
 			}
 			consumesCodegen = true
@@ -974,6 +1036,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// sees the broken cmake call, not a downstream Bazel
 		// load error.
 		if filepath.IsAbs(srcPath) {
+			if rejections != nil {
+				rejections.AddWithContext(failure.UnsupportedSourcePath,
+					fmt.Sprintf("target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
+						t.Name, srcPath, labelRoot, cmakeBuild),
+					t.Name, srcPath)
+				continue
+			}
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
 				t.Name, srcPath, labelRoot, cmakeBuild)
@@ -993,6 +1062,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// package (broken without warning). The clean refusal
 		// surfaces the cmake misuse explicitly.
 		if pathHasDotDotSegment(srcPath) {
+			if rejections != nil {
+				rejections.AddWithContext(failure.UnsupportedSourcePath,
+					fmt.Sprintf("target %q references source %q whose path escapes the project source tree via `..` segments; Bazel labels must stay within the package",
+						t.Name, src.Path),
+					t.Name, src.Path)
+				continue
+			}
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q whose path escapes the project source tree via `..` segments; Bazel labels must stay within the package",
 				t.Name, src.Path)
@@ -1001,6 +1077,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// "./" strip on a pathological input like "./" alone)
 		// or single ".": refuse — there's no useful label here.
 		if srcPath == "" || srcPath == "." {
+			if rejections != nil {
+				rejections.AddWithContext(failure.UnsupportedSourcePath,
+					fmt.Sprintf("target %q references source %q which normalizes to an empty Bazel label",
+						t.Name, src.Path),
+					t.Name, src.Path)
+				continue
+			}
 			return nil, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q which normalizes to an empty Bazel label",
 				t.Name, src.Path)
@@ -1442,6 +1525,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					}
 				}
 			} else {
+				if rejections != nil {
+					rejections.AddWithContext(failure.UnresolvedLinkDep,
+						fmt.Sprintf("target %q depends on %q which is neither in-codebase nor in the imports manifest",
+							t.Name, cmakeName),
+						t.Name, cmakeName)
+					continue
+				}
 				return nil, failure.New(failure.UnresolvedLinkDep,
 					"target %q depends on %q which is neither in-codebase nor in the imports manifest",
 					t.Name, cmakeName)
