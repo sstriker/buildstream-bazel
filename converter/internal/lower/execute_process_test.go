@@ -87,6 +87,46 @@ func TestRecoverExecuteProcess_LiftCMakeECopy(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_LiftCMakeECreateSymlink covers the
+// `cmake -E create_symlink <target> <link_name>` shape — LLVM's
+// AddLLVM.cmake uses this for tool-vs-link aliases (clang →
+// clang-18). Under Bazel's hermetic action model the link-vs-
+// copy distinction is meaningless (consumers read bytes by
+// path), so the lift reuses liftCMakeECopy. Tag reflects the
+// original op so audit/triage can distinguish symlink calls
+// from real copies.
+func TestRecoverExecuteProcess_LiftCMakeECreateSymlink(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:     "/src/CMakeLists.txt",
+		Line:     20,
+		Commands: [][]string{{"cmake", "-E", "create_symlink", "/src/bin/clang-18", "/build/bin/clang"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if len(g.Srcs) != 1 || g.Srcs[0] != "bin/clang-18" {
+		t.Errorf("srcs: %v want [bin/clang-18]", g.Srcs)
+	}
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "bin/clang" {
+		t.Errorf("outs: %v want [bin/clang]", g.GenruleOuts)
+	}
+	// The tag preserves the original op for triage.
+	foundSymlinkTag := false
+	for _, tag := range g.Tags {
+		if strings.Contains(tag, "create_symlink") {
+			foundSymlinkTag = true
+		}
+	}
+	if !foundSymlinkTag {
+		t.Errorf("expected create_symlink tag; got tags %v", g.Tags)
+	}
+}
+
 // TestRecoverExecuteProcess_LiftCMakeECopy_RejectsSourceOutsideTree
 // covers the anchor-failure path: if the recorded source path
 // isn't under the source root, the lift falls through to

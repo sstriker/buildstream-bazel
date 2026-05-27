@@ -240,7 +240,16 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 	switch v.CMakeEOp {
 	case "touch":
 		return liftCMakeETouch(args, recordedBuildDir, cc)
-	case "copy", "copy_if_different":
+	case "copy", "copy_if_different", "create_symlink":
+		// create_symlink shares the (src, dst) two-arg shape with
+		// copy / copy_if_different. Bazel actions run hermetically;
+		// the action's output is the file at <dst>. Whether the
+		// cmake-side path creates that file via cp or ln -sf is
+		// irrelevant to downstream consumers — they read bytes by
+		// path. Lifting symlink as copy preserves the dst-anchored
+		// path semantics and avoids the subtle issues genrule
+		// outputs have with symlinks (action-cache hashing,
+		// sandbox cleanup, cross-fs handling).
 		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	case "configure_file":
 		return liftCMakeEConfigureFile(args, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
