@@ -1,0 +1,14 @@
+# Per-fixture benign-delta allowlist for the e2e-fidelity-compare-zlib gate.
+#
+# Format: one symbol name per line; lines starting with `#` and
+# blank lines are ignored. Each entry pre-empts impactful
+# classification — use sparingly and only for symbols where
+# operator triage confirmed the diff is structural / toolchain-
+# origin and not a converter bug.
+#
+# zlib 1.3.1 (close-gaps campaign May 2026): 105/105 exported
+# symbols exact match, no entries needed. The hardening
+# undefined-symbol delta (__snprintf_chk / __vsnprintf_chk /
+# __stack_chk_fail only in cmake) is auto-classified as benign
+# by fidelity-compare's FORTIFY + stack-protector heuristics —
+# no allowlist entry required.

@@ -37,14 +37,24 @@ project_name=""
 source_root=""
 target=""
 artifact_pattern=""
+cmake_artifact_pattern=""
+bazel_artifact_pattern=""
 allowlist=""
 cmake_flags=""
 bazel_target_label=""
 
 usage() {
     echo "usage: $0 --project-name <name> --source-root <abs> --target <name>" >&2
-    echo "          --artifact-pattern <libfoo.a> [--allowlist <abs>]" >&2
-    echo "          [--cmake-flags '...'] [--bazel-target-label '//:foo']" >&2
+    echo "          --artifact-pattern <libfoo.a>" >&2
+    echo "          [--cmake-artifact-pattern <libfoo.a>] [--bazel-artifact-pattern <libfoo.a>]" >&2
+    echo "          [--allowlist <abs>] [--cmake-flags '...']" >&2
+    echo "          [--bazel-target-label '//:foo']" >&2
+    echo "" >&2
+    echo "  --artifact-pattern sets a default for both sides; the" >&2
+    echo "  per-side --cmake-artifact-pattern / --bazel-artifact-pattern" >&2
+    echo "  overrides apply when cmake and bazel emit different names" >&2
+    echo "  (e.g. zlib's cmake zlibstatic target emits libz.a; Bazel" >&2
+    echo "  emits libzlibstatic.a from the same target)." >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -53,6 +63,8 @@ while [ $# -gt 0 ]; do
         --source-root) source_root="$2"; shift 2 ;;
         --target) target="$2"; shift 2 ;;
         --artifact-pattern) artifact_pattern="$2"; shift 2 ;;
+        --cmake-artifact-pattern) cmake_artifact_pattern="$2"; shift 2 ;;
+        --bazel-artifact-pattern) bazel_artifact_pattern="$2"; shift 2 ;;
         --allowlist) allowlist="$2"; shift 2 ;;
         --cmake-flags) cmake_flags="$2"; shift 2 ;;
         --bazel-target-label) bazel_target_label="$2"; shift 2 ;;
@@ -61,8 +73,20 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$project_name" ] || [ -z "$source_root" ] || [ -z "$target" ] || [ -z "$artifact_pattern" ]; then
+if [ -z "$project_name" ] || [ -z "$source_root" ] || [ -z "$target" ]; then
     echo "missing required arg" >&2
+    usage
+    exit 64
+fi
+# Per-side patterns fall back to the shared --artifact-pattern.
+if [ -z "$cmake_artifact_pattern" ]; then
+    cmake_artifact_pattern="$artifact_pattern"
+fi
+if [ -z "$bazel_artifact_pattern" ]; then
+    bazel_artifact_pattern="$artifact_pattern"
+fi
+if [ -z "$cmake_artifact_pattern" ] || [ -z "$bazel_artifact_pattern" ]; then
+    echo "missing --artifact-pattern (or per-side overrides)" >&2
     usage
     exit 64
 fi
@@ -96,9 +120,9 @@ cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -B "$cmake_build" -S "$source_root" \
     $cmake_flags > "$work_dir/cmake-configure.log" 2>&1
 cmake --build "$cmake_build" --target "$target" > "$work_dir/cmake-build.log" 2>&1
 
-cmake_artifact="$(find "$cmake_build" -name "$artifact_pattern" -type f | head -1)"
+cmake_artifact="$(find "$cmake_build" -name "$cmake_artifact_pattern" -type f | head -1)"
 if [ -z "$cmake_artifact" ]; then
-    echo "fidelity[$project_name]: cmake build produced no artifact matching $artifact_pattern" >&2
+    echo "fidelity[$project_name]: cmake build produced no artifact matching $cmake_artifact_pattern" >&2
     exit 1
 fi
 echo "fidelity[$project_name]:   cmake artifact: $cmake_artifact" >&2
@@ -160,9 +184,12 @@ fi
     exit 1
 }
 
-bazel_artifact="$(find "$bazel_ws/bazel-bin" -name "$artifact_pattern" -type f | head -1)"
+# `bazel-bin` is a symlink into bazel's output base; `find -L`
+# follows it. Without -L the find walks the symlink's target as a
+# leaf and finds nothing.
+bazel_artifact="$(find -L "$bazel_ws/bazel-bin" -name "$bazel_artifact_pattern" -type f 2>/dev/null | head -1)"
 if [ -z "$bazel_artifact" ]; then
-    echo "fidelity[$project_name]: bazel build produced no artifact matching $artifact_pattern" >&2
+    echo "fidelity[$project_name]: bazel build produced no artifact matching $bazel_artifact_pattern" >&2
     exit 1
 fi
 echo "fidelity[$project_name]:   bazel artifact: $bazel_artifact" >&2
