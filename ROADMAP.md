@@ -243,38 +243,33 @@ transition cleanly.
 ## Next
 
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
-  survey.** The close-gaps campaign (PRs #248–#258) used an ad-hoc
-  shell loop to validate that the converter's BUILD.bazel (project B)
-  produces an artifact whose exported-symbol set matches the cmake
-  build's (project C, the oracle) across spdlog, fmt, nlohmann-json,
-  zlib, Catch2, libpng, VTK, LLVM. The harness shape, the per-step
-  recipe, and the impactful-vs-benign classifier landed in
-  `docs/fidelity-known-deltas.md` ("The A-B-C harness shape" /
-  "Delta classifier" sections). Productionizing it:
+  survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
+  + `scripts/run-fidelity.sh` driver + first
+  `make e2e-fidelity-compare-zlib` gate + `testdata/fidelity/*.allowlist.txt`
+  shape. Drives the full A-B-C cycle (cmake build → convert →
+  bazel build → fidelity-compare → classify against allowlist) and
+  exits non-zero on impactful deltas (unexplained symbol drops,
+  hermeticity leaks). Built-in heuristics auto-classify the
+  common benign categories: FORTIFY_SOURCE / stack-protector
+  hardening symbols, C++ template-instantiation pairs (matched on
+  shared mangled-prefix), `.o` vs `.pic.o` archive-member name
+  differences. Self-skips the bazel half cleanly when bazel isn't
+  on PATH; honors RULES_CC_TARBALL for hosts that vendor rules_cc.
 
-    - `cmd/fidelity-compare` (Go): take cmake build dir + Bazel build
-      dir + target name; run nm / strings extractions; classify deltas
-      against the rules in the doc; exit 0 when no impactful deltas,
-      non-zero with a structured report otherwise.
-    - `make e2e-fidelity-<project>` gates per surveyed fixture
-      (extends the existing `make e2e-fidelity` from M5b). Each gate
-      drives configure + cmake build + convert + Bazel build +
-      `fidelity-compare`; uploads the structured report as a CI
-      artifact.
-    - Per-project "expected benign deltas" allowlist files (sibling
-      to the audit-narrowing allowlists). Operator-acknowledged
-      deltas get suppressed; unexplained deltas surface as gate
-      failures.
-    - Promotion criterion: three consecutive green merges across
-      all configured fixtures, then flip `continue-on-error: true`
-      → `false` on the e2e-fidelity job header.
+  Remaining work:
+    - Per-project gates for spdlog / fmt / nlohmann-json / Catch2
+      / libpng (each is a ~10-line Makefile + allowlist add; no
+      Go changes). VTK / LLVM gates need the project's specific
+      configure flags + tooling and may need larger allowlists.
+    - CI wiring (`continue-on-error: true` initially, then promote
+      to blocking after three consecutive green merges across all
+      configured fixtures).
 
   Acceptance: a converter regression that drops a symbol from the
-  output artifact (e.g. accidentally skipping a source file in some
-  edge case) fails CI with a precise per-symbol diagnostic instead
-  of being caught only when a downstream consumer breaks. Surfaces
-  hermeticity leaks (absolute paths embedded in the artifact) the
-  same way.
+  output artifact (e.g. accidentally skipping a source file in
+  some edge case — see post-#258/#253 interaction caught by hand
+  in PR #261) fails CI with a precise per-symbol diagnostic
+  instead of being caught only when a downstream consumer breaks.
 
 - **Per-platform fold for round-2 trace-driven kinds —
   kind:meson Phase B promotion.** The render gate for the
