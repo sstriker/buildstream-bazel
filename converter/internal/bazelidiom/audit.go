@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchainfeature"
 )
 
 // Finding is one audit observation.
@@ -264,58 +265,13 @@ func auditRawCompileFlags(rule, target string, call *build.CallExpr) []Finding {
 	return findings
 }
 
-// looksLikeFeatureFlag identifies raw flag strings that have a
-// first-class cc_toolchain feature equivalent. Conservative —
-// matches the common cmake-derived patterns; unrelated flags
-// pass through silently.
-//
-// The visibility-* and -O<n> cases are emit-shape outputs from
-// the converter's CMAKE_<LANG>_VISIBILITY_PRESET /
-// CMAKE_BUILD_TYPE=Release lifts: those land as per-rule copts
-// today, but the Bazel-idiomatic form is a cc_toolchain feature
-// (per SANITIZER_FEATURES) so the toolchain owns the flag set
-// uniformly. Each target picks them up via --features=<name>
-// instead of repeating the flag list per cc_library.
-func looksLikeFeatureFlag(flag string) bool {
-	switch flag {
-	case "-fPIC", "-fpic", "-flto":
-		return true
-	case "-fvisibility=hidden", "-fvisibility-inlines-hidden":
-		return true
-	}
-	if strings.HasPrefix(flag, "-fsanitize=") {
-		return true
-	}
-	return false
-}
+// looksLikeFeatureFlag and featureForRawFlag delegate to the
+// shared toolchainfeature package so the audit-side detection
+// and the lower-side rewrite stay in lockstep — adding a new
+// raw-flag mapping is a single edit visible to both consumers.
+func looksLikeFeatureFlag(flag string) bool { return toolchainfeature.LooksLikeFeatureFlag(flag) }
 
-// featureForRawFlag maps a raw compile/link flag to the
-// cc_toolchain feature name that owns it (per the
-// SANITIZER_FEATURES convention in
-// examples/sanitizer-features/toolchain/features.bzl).
-func featureForRawFlag(flag string) string {
-	switch flag {
-	case "-fPIC", "-fpic":
-		return "pic"
-	case "-flto":
-		return "lto"
-	case "-fvisibility=hidden":
-		return "visibility_hidden"
-	case "-fvisibility-inlines-hidden":
-		return "visibility_inlines_hidden"
-	case "-fsanitize=address":
-		return "asan"
-	case "-fsanitize=thread":
-		return "tsan"
-	case "-fsanitize=memory":
-		return "msan"
-	case "-fsanitize=undefined":
-		return "ubsan"
-	case "-fsanitize=leak":
-		return "lsan"
-	}
-	return ""
-}
+func featureForRawFlag(flag string) string { return toolchainfeature.Feature(flag) }
 
 // flatListContains returns flat-list literal entries in the named
 // attribute that match the predicate. Skips select() arms (covered

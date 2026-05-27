@@ -356,6 +356,29 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Lift per-target raw toolchain-feature flags into
+  `features = [...]`.** Closes the single biggest non-idiom in
+  real-world converter output. New post-pass
+  `liftRawFeatureFlags` walks each ir.Target's Copts/LinkOpts
+  and rewrites `-fPIC` → `features = ["pic"]`,
+  `-fvisibility=hidden` → `["visibility_hidden"]`,
+  `-fvisibility-inlines-hidden` → `["visibility_inlines_hidden"]`,
+  `-flto` → `["lto"]`, `-fsanitize=<x>` → `["<x>"]`. The
+  9-project cross-project survey on PR #247 dropped from
+  ~785 `raw-toolchain-feature-flag` audit findings to **0**
+  (LLVM 390 → 0, VTK 346 → 0, fmt 46 → 0, others 1–10 → 0).
+  Per-target dedup + sort keeps the Features list byte-stable
+  when multiple sources (probe-genex, codemodel LTO flag,
+  raw copts) compose. Mapping shared with the audit via
+  `converter/internal/toolchainfeature.Feature` so detection
+  and rewrite stay in lockstep. Operator concomitant: the
+  cc_toolchain must declare the matching feature names
+  (template in
+  `examples/sanitizer-features/toolchain/features.bzl`);
+  Bazel ignores unknown features in user-supplied lists, so
+  toolchains that haven't opted in still get a clean build.
+  Surfaced + prioritized by the survey on PR #247.
+
 - **bazelidiom audit catches raw `-fvisibility=hidden` /
   `-fvisibility-inlines-hidden` copts.** Extends the
   `raw-toolchain-feature-flag` finding kind to also fire on the

@@ -11,14 +11,12 @@ cc_library(
     name = "usepkg_var",
     srcs = ["src/usepkg_var.c"],
     hdrs = ["include/usepkg_var.h"],
-    copts = [
-        "-O3",
-        "-fPIC",
-    ],  # keep
+    copts = ["-O3"],  # keep
     defines = [
         "NDEBUG",
         "usepkg_var_EXPORTS",
     ],  # keep
+    features = ["pic"],
     includes = ["include"],  # keep
     deps = ["//elements/zlib"],
 )

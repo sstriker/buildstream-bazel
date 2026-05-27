@@ -788,6 +788,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// probe ran (opts.GenexProbes empty) so back-compat preserved
 	// for callers that don't pass --probe-genex.
 	applyProbeGenexProperties(pkg, opts.GenexProbes)
+	// Lift raw toolchain-feature flags out of copts/linkopts into
+	// the Features attribute so the cc_toolchain owns the flag
+	// set instead of every cc_library carrying the same per-rule
+	// emission. Runs AFTER applyProbeGenexProperties so the
+	// visibility presets that pass routes to copts (today)
+	// immediately move to features here. Closes the
+	// `raw-toolchain-feature-flag` audit gap (~785 findings
+	// across the 9-project survey on PR #247).
+	liftRawFeatureFlags(pkg)
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the
