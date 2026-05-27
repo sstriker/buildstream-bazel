@@ -42,6 +42,8 @@ bazel_artifact_pattern=""
 allowlist=""
 cmake_flags=""
 bazel_target_label=""
+consumer_file=""
+consumer_bazel_dep=""
 
 usage() {
     echo "usage: $0 --project-name <name> --source-root <abs> --target <name>" >&2
@@ -49,12 +51,21 @@ usage() {
     echo "          [--cmake-artifact-pattern <libfoo.a>] [--bazel-artifact-pattern <libfoo.a>]" >&2
     echo "          [--allowlist <abs>] [--cmake-flags '...']" >&2
     echo "          [--bazel-target-label '//:foo']" >&2
+    echo "          [--consumer-file <abs.c|.cpp>] [--consumer-bazel-dep '//:foo']" >&2
     echo "" >&2
     echo "  --artifact-pattern sets a default for both sides; the" >&2
     echo "  per-side --cmake-artifact-pattern / --bazel-artifact-pattern" >&2
     echo "  overrides apply when cmake and bazel emit different names" >&2
     echo "  (e.g. zlib's cmake zlibstatic target emits libz.a; Bazel" >&2
     echo "  emits libzlibstatic.a from the same target)." >&2
+    echo "" >&2
+    echo "  --consumer-file switches to consumer-side fidelity: the" >&2
+    echo "  given .c/.cpp source is compiled twice (once against" >&2
+    echo "  cmake's installed prefix, once via Bazel as a cc_library" >&2
+    echo "  depending on --consumer-bazel-dep) and the two .o files" >&2
+    echo "  are diffed instead of the static libraries. Useful for" >&2
+    echo "  header-only / INTERFACE libraries with no static-archive" >&2
+    echo "  artifact, and as an extra signal for library projects." >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -68,6 +79,8 @@ while [ $# -gt 0 ]; do
         --allowlist) allowlist="$2"; shift 2 ;;
         --cmake-flags) cmake_flags="$2"; shift 2 ;;
         --bazel-target-label) bazel_target_label="$2"; shift 2 ;;
+        --consumer-file) consumer_file="$2"; shift 2 ;;
+        --consumer-bazel-dep) consumer_bazel_dep="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage; exit 64 ;;
     esac
@@ -126,6 +139,45 @@ if [ -z "$cmake_artifact" ]; then
     exit 1
 fi
 echo "fidelity[$project_name]:   cmake artifact: $cmake_artifact" >&2
+
+# --- Step 1b (consumer mode): cmake install + cmake-side consumer compile.
+# The consumer.c/.cpp is compiled against the headers cmake's install
+# step lays under <install>/include/ — exactly what a downstream
+# package consuming the project via find_package() would see.
+consumer_cmake_o=""
+if [ -n "$consumer_file" ]; then
+    install_stage="$work_dir/cmake-install"
+    # cmake's install target may depend on artifacts the single
+    # --target build didn't produce (e.g. zlib's install lists
+    # both the static and shared libs, but we only built static).
+    # Re-run --build with no --target arg to build everything
+    # install touches.
+    cmake --build "$cmake_build" > "$work_dir/cmake-build-all.log" 2>&1 || {
+        echo "fidelity[$project_name]: cmake-side full build (for install) FAILED — see $work_dir/cmake-build-all.log" >&2
+        tail -20 "$work_dir/cmake-build-all.log" >&2
+        exit 1
+    }
+    cmake --install "$cmake_build" --prefix "$install_stage" \
+        > "$work_dir/cmake-install.log" 2>&1 || {
+            echo "fidelity[$project_name]: cmake install FAILED — see $work_dir/cmake-install.log" >&2
+            tail -20 "$work_dir/cmake-install.log" >&2
+            exit 1
+        }
+    case "$consumer_file" in
+        *.cpp|*.cc|*.cxx) consumer_cc="g++" ;;
+        *) consumer_cc="gcc" ;;
+    esac
+    consumer_cmake_o="$work_dir/consumer.cmake.o"
+    "$consumer_cc" -O2 -fPIC -c "$consumer_file" \
+        -I"$install_stage/include" \
+        -o "$consumer_cmake_o" \
+        2> "$work_dir/consumer-cmake-compile.log" || {
+            echo "fidelity[$project_name]: consumer cmake-side compile FAILED — see $work_dir/consumer-cmake-compile.log" >&2
+            cat "$work_dir/consumer-cmake-compile.log" >&2
+            exit 1
+        }
+    echo "fidelity[$project_name]:   consumer cmake-side .o: $consumer_cmake_o" >&2
+fi
 
 # --- Step 2: convert.
 echo "fidelity[$project_name]: convert-element-cmake" >&2
@@ -193,6 +245,54 @@ if [ -z "$bazel_artifact" ]; then
     exit 1
 fi
 echo "fidelity[$project_name]:   bazel artifact: $bazel_artifact" >&2
+
+# --- Step 3b (consumer mode): bazel-side consumer compile.
+# Append a cc_library rule consuming the converted target's exported
+# headers, then bazel-build it. The resulting .o is the bazel-side
+# counterpart of the cmake-side consumer.cmake.o produced in step 1b.
+consumer_bazel_o=""
+if [ -n "$consumer_file" ]; then
+    # Pick a default Bazel dep label when the caller didn't specify one.
+    if [ -z "$consumer_bazel_dep" ]; then
+        consumer_bazel_dep=":$target"
+    fi
+    case "$consumer_file" in
+        *.cpp|*.cc|*.cxx) consumer_ext=".cpp" ;;
+        *) consumer_ext=".c" ;;
+    esac
+    cp "$consumer_file" "$bazel_ws/_fidelity_consumer$consumer_ext"
+    cat >> "$bazel_ws/BUILD.bazel" <<EOF
+
+cc_library(
+    name = "_fidelity_consumer",
+    srcs = ["_fidelity_consumer$consumer_ext"],
+    deps = ["$consumer_bazel_dep"],
+)
+EOF
+    # shellcheck disable=SC2086
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build :_fidelity_consumer) \
+        > "$work_dir/bazel-consumer.log" 2>&1 || {
+            echo "fidelity[$project_name]: consumer bazel-side build FAILED — see $work_dir/bazel-consumer.log" >&2
+            tail -20 "$work_dir/bazel-consumer.log" >&2
+            exit 1
+        }
+    # Look for the consumer's .o or .pic.o under bazel-bin.
+    consumer_bazel_o="$(find -L "$bazel_ws/bazel-bin" \
+        \( -name '_fidelity_consumer.pic.o' -o -name '_fidelity_consumer.o' \) \
+        -type f 2>/dev/null | head -1)"
+    if [ -z "$consumer_bazel_o" ]; then
+        echo "fidelity[$project_name]: bazel produced no consumer .o" >&2
+        exit 1
+    fi
+    echo "fidelity[$project_name]:   consumer bazel-side .o: $consumer_bazel_o" >&2
+fi
+
+# In consumer mode, swap the artifacts handed to fidelity-compare from
+# the static-archive pair to the consumer .o pair.
+if [ -n "$consumer_file" ]; then
+    cmake_artifact="$consumer_cmake_o"
+    bazel_artifact="$consumer_bazel_o"
+fi
 
 # --- Step 4: classify deltas.
 echo "fidelity[$project_name]: fidelity-compare" >&2
