@@ -691,6 +691,14 @@ e2e-fidelity-compare-spdlog: check-cmake-toolchain converter fetch-spdlog
 		--artifact-pattern libspdlog.a \
 		--allowlist testdata/fidelity/spdlog.allowlist.txt
 
+e2e-fidelity-compare-fmt: check-cmake-toolchain converter fetch-fmt
+	scripts/run-fidelity.sh \
+		--project-name fmt \
+		--source-root $(FMT_DIR) \
+		--target fmt \
+		--artifact-pattern libfmt.a \
+		--allowlist testdata/fidelity/fmt.allowlist.txt
+
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,
 # tears down. Replaces the in-process fake with actual Buildbarn code.
