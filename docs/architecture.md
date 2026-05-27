@@ -88,6 +88,16 @@ fragments), toolchains-v1 (compiler ID, flags), and cmakeFiles-v1
 both into an IR (`converter/internal/ir`) and emits native `cc_library`
 / `cc_binary`. Known gaps: [`known-deltas.md`](known-deltas.md).
 
+`Ninja Multi-Config` runs (`--build-types=Release,Debug,…`) still
+emit a single `toolchains-v1` reply per configure — per-config
+variation lives only on the codemodel's per-target compile / link
+fragments. The converter folds non-sanitizer configs into
+`select({"//config:<name>": …})` arms on `defines` / `copts` /
+`linkopts` / `includes`, and routes sanitizer-shaped cells
+(asan / tsan / msan / ubsan / coverage / lto, recognised by flag
+content) through `cc_toolchain` `--features` instead of per-rule
+selects.
+
 ### Trace-driven kinds — coarse-then-fine via REAPI ActionCache
 
 `kind:autotools` / `kind:make` / `kind:makemaker` / `kind:modulebuild`
