@@ -183,3 +183,101 @@ func TestLowerTarget_WorkspaceRoot_PathOutsideWorkspace_StillRefuses(t *testing.
 		t.Error("expected unsupported-source-path refusal for path outside workspace; got nil")
 	}
 }
+
+// TestLowerTarget_UmbrellaReanchorsCmakeRelativeSources covers
+// the LLVM-shape gap that the umbrella detection exposed: cmake
+// records sources as cmakeSrc-relative when they live INSIDE
+// cmakeSrc (per codemodel-v2 spec). When the umbrella detection
+// promotes labelRoot above cmakeSrc (e.g., LLVM's `llvm-project/`
+// becomes labelRoot above cmakeSrc=`llvm-project/llvm/`), the
+// cmakeSrc-relative path needs re-anchoring so both the on-disk
+// existence check AND the emitted Bazel label resolve correctly.
+//
+// Pre-fix: the on-disk check joined the promoted hostSrc
+// (=labelRoot) with the still-cmakeSrc-relative path, looked
+// at the wrong location, didn't find the file, and elided the
+// source. The cc_binary ended up with empty srcs and the audit
+// flagged it as empty-srcs.
+//
+// Surfaced by LLVM unittests (191 empty-srcs cc_binary
+// targets like ADTTests, AnalysisTests after #258 enabled
+// LLVM convert).
+func TestLowerTarget_UmbrellaReanchorsCmakeRelativeSources(t *testing.T) {
+	monorepo := t.TempDir()
+	// Umbrella marker (no top-level CMakeLists.txt → umbrella).
+	if err := os.WriteFile(filepath.Join(monorepo, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// cmakeSrc one level under the umbrella.
+	cmakeSrc := filepath.Join(monorepo, "llvm")
+	if err := os.MkdirAll(cmakeSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmakeSrc, "CMakeLists.txt"), []byte("project(llvm)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Source lives inside cmakeSrc — codemodel records it
+	// cmakeSrc-relative (LLVM unittests shape).
+	srcRel := filepath.Join("unittests", "ADT", "AnyTest.cpp")
+	srcAbs := filepath.Join(cmakeSrc, srcRel)
+	if err := os.MkdirAll(filepath.Dir(srcAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(srcAbs, []byte("// gtest stub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	target := fileapi.Target{
+		Name: "ADTTests",
+		Type: "EXECUTABLE",
+		Sources: []fileapi.TargetSource{
+			{Path: srcRel}, // cmakeSrc-relative per codemodel-v2 spec
+		},
+		CompileGroups: []fileapi.CompileGroup{{
+			Language:      "CXX",
+			SourceIndexes: []int{0},
+		}},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"ADTTests::@": target},
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: cmakeSrc,
+				Build:  t.TempDir(),
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "ADTTests::@", Name: "ADTTests"}},
+			}},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	var got *struct {
+		Name string
+		Srcs []string
+	}
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "ADTTests" {
+			got = &struct {
+				Name string
+				Srcs []string
+			}{
+				Name: pkg.Targets[i].Name,
+				Srcs: pkg.Targets[i].Srcs,
+			}
+		}
+	}
+	if got == nil {
+		t.Fatal("ADTTests not in pkg.Targets")
+	}
+	// The source must survive (not be elided as missing-on-disk)
+	// AND must be re-anchored to labelRoot-relative.
+	want := "llvm/unittests/ADT/AnyTest.cpp"
+	if len(got.Srcs) != 1 || got.Srcs[0] != want {
+		t.Errorf("Srcs: got %v; want [%q] (labelRoot-relative after umbrella re-anchor)",
+			got.Srcs, want)
+	}
+}

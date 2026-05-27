@@ -1142,15 +1142,43 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		if workspaceRoot != "" {
 			labelRoot = workspaceRoot
 		}
+		// cmake's codemodel-v2 spec: source paths are
+		// cmakeSrc-relative when the file is inside the cmake
+		// source root, absolute otherwise. The two cases need
+		// different normalization to land at a valid labelRoot-
+		// relative Bazel label.
+		origAbs := filepath.IsAbs(srcPath)
 		// In-tree absolute path: cmake recorded an absolute
 		// path that happens to live under labelRoot. Normalize
 		// to the documented label-relative form so the
 		// emitted label is valid. labelRoot is "" on
 		// reply-dir-only replay runs; skip in that case
 		// because the relativeIfInside check can't run.
-		if labelRoot != "" && filepath.IsAbs(srcPath) {
+		if labelRoot != "" && origAbs {
 			if rel, inside := relativeIfInside(labelRoot, srcPath); inside {
 				srcPath = rel
+			}
+		}
+		// Re-anchor cmakeSrc-relative paths to labelRoot-relative
+		// when labelRoot is a parent of cmakeSrc (umbrella
+		// detection — LLVM's llvm-project/ promoted above
+		// cmakeSrc=llvm-project/llvm/). cmake records these
+		// sources as cmakeSrc-relative per codemodel-v2 spec;
+		// after the umbrella promotion, both:
+		//   - on-disk existence checks (which join against the
+		//     promoted hostSrc=labelRoot below)
+		//   - emitted Bazel labels (BUILD.bazel at labelRoot
+		//     expecting labelRoot-relative srcs)
+		// need the path re-anchored. Example: LLVM's
+		// `unittests/ADT/AnyTest.cpp` (cmakeSrc-relative)
+		// becomes `llvm/unittests/ADT/AnyTest.cpp` (labelRoot-
+		// relative). Gated on origAbs=false to skip absolute
+		// paths that were stripped above — those were anchored
+		// to labelRoot directly, not cmakeSrc, and re-anchoring
+		// them would double-prefix.
+		if !origAbs && labelRoot != "" && labelRoot != cmakeSrc {
+			if cmakeRel, ok := relativeIfInside(labelRoot, cmakeSrc); ok && cmakeRel != "" && cmakeRel != "." {
+				srcPath = filepath.Join(cmakeRel, srcPath)
 			}
 		}
 		// Out-of-tree absolute path: at this point we've
