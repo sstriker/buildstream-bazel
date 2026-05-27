@@ -356,6 +356,19 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Convert-time output bake for the cmake -P lift
+  (`--cmake-script-bake`).** Opt-in convert-time execution
+  that runs `cmake -P <script>` in a fresh tmp dir,
+  captures the declared output bytes, and emits genrules
+  that materialize them via base64-decode. Closes the
+  script-hardcoded-absolute-paths gap (paths resolve at
+  convert time where they exist) but at the cost of
+  convert-time-baked outputs that don't auto-refresh on
+  upstream input change — same trade-off + warning shape
+  as the legacy configure_file capture. The
+  `cmake-codegen-cmake-script-bake` tag funnels into the
+  existing `warnConvertTimeBaking` post-pass.
+
 - **Trace-based dep discovery for the cmake -P lift
   (`--cmake-script-trace`).** Opt-in convert-time execution
   under `cmake --trace --trace-format=json-v1 -P <script>`

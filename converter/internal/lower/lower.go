@@ -219,6 +219,17 @@ type Options struct {
 	// liftCmakeScriptGenrule for the limitation details.
 	CMakeScriptRunner string
 
+	// CMakeScriptBake, when true (and CMakeBinary is set), runs
+	// the cmake -P script at convert time, captures the declared
+	// output bytes, and emits genrules that materialize them via
+	// base64-decode. Closes the script-hardcoded-absolute-paths
+	// gap (paths resolve at convert time where they exist).
+	// Outputs are convert-time-baked — the
+	// warnConvertTimeBaking post-pass picks up the
+	// cmake-codegen-cmake-script-bake tag so operators see the
+	// inventory. Off by default.
+	CMakeScriptBake bool
+
 	// CMakeScriptTrace, when true (and a runner is set), runs
 	// the cmake -P script under `cmake --trace -P` at convert
 	// time. The trace's read paths drive auto-augmentation of
@@ -618,6 +629,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc := newCodegenContext()
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
+	cc.CMakeScriptBake = opts.CMakeScriptBake
 	cc.CMakeBinary = lookupCmakeBinary()
 	cc.Warnings = opts.Warnings
 

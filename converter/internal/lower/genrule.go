@@ -80,6 +80,24 @@ type codegenContext struct {
 	// arbitrary cmake-script-language drivers.
 	CMakeScriptRunner string
 
+	// CMakeScriptBake, when true (and CMakeBinary is set), runs
+	// the cmake -P script at convert time, captures the declared
+	// output bytes, and emits genrules that materialize them
+	// via base64-decode. Closes the "script's hardcoded
+	// absolute paths don't survive Bazel's sandbox" gap by
+	// resolving the paths at convert time (where they exist).
+	// Trade-off: outputs are convert-time-baked and don't
+	// auto-refresh when upstream inputs change — the operator
+	// re-runs convert. Same trade-off + warning shape as the
+	// legacy configure_file capture; the
+	// cmake-codegen-cmake-script-bake tag funnels into the
+	// existing warnConvertTimeBaking post-pass.
+	//
+	// Off by default. Independent of CMakeScriptTrace (bake
+	// captures bytes; trace captures dep paths — different
+	// closures of the cmake-P gap).
+	CMakeScriptBake bool
+
 	// CMakeScriptTrace, when true, asks the cmake -P lift to
 	// actually run the script under `cmake --trace --trace-format=
 	// json-v1 -P <script>` at convert time. The trace's read
@@ -200,6 +218,19 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// lift" entry for the limitation details.
 		script := extractCmakeScriptPath(cmd)
 		var liftReason string
+		// Bake mode (convert-time execution + bytes capture)
+		// runs first when opted in: it solves the
+		// hardcoded-paths case the runner-only lift can't.
+		// Falls through to the standard runner lift if the
+		// bake declines (e.g. cmake not on PATH, script
+		// produced no output).
+		if cc.CMakeScriptBake {
+			rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir)
+			if ok {
+				return rel, name, nil
+			}
+			liftReason = reason
+		}
 		if cc.CMakeScriptRunner != "" {
 			rel, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
 			if ok {
@@ -207,7 +238,11 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 			}
 			// Lift declined; preserve its structured reason
 			// for the refusal message below.
-			liftReason = reason
+			if liftReason == "" {
+				liftReason = reason
+			} else if reason != "" {
+				liftReason = liftReason + "; runner lift also declined: " + reason
+			}
 		}
 		// Pull the actual `-P <script>` argument out of the
 		// recovered command so the failure points operators at
@@ -218,7 +253,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		if liftReason != "" {
 			base += "; lift declined: " + liftReason
 		}
-		msg := base + "; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), --cmake-script-trace=true to auto-augment srcs from the script's read paths (convert-time execution), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest"
+		msg := base + "; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), --cmake-script-trace=true to auto-augment srcs from the script's read paths (convert-time execution), --cmake-script-bake=true to bake the script's output bytes at convert time (closes hardcoded-paths but outputs don't auto-refresh on input change), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest"
 		return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
 	}
 
