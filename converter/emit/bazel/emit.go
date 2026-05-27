@@ -324,9 +324,17 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	}
 	// Package-level header comments — find_package resolutions
 	// and other attribution data the lifter wants to surface.
+	// Collapse any embedded newlines / carriage returns to spaces
+	// so a multi-line cmake HELPSTRING (LLVM's
+	// `option(LLVM_BUILD_BENCHMARKS "Add ...\ntargets. If OFF
+	// ...")` shape) doesn't break the comment block by emitting an
+	// unprefixed continuation line that Bazel parses as bare
+	// syntax. Producers in lower/ aren't aware of this constraint;
+	// the emit-side scrub keeps every producer safe by
+	// construction.
 	for _, line := range pkg.HeaderComments {
 		buf.WriteString("# ")
-		buf.WriteString(line)
+		buf.WriteString(collapseToSingleLine(line))
 		buf.WriteString("\n")
 	}
 	if len(pkg.HeaderComments) > 0 {
@@ -1291,4 +1299,25 @@ func indentArmList(items []string) string {
 	}
 	b.WriteString("        ]")
 	return b.String()
+}
+
+// collapseToSingleLine maps any embedded newline / carriage return
+// in a header-comment line to a single space, then collapses
+// runs of whitespace introduced by the substitution. Used to keep
+// the file-head `# <line>\n` shape stable when an upstream
+// producer (cmake HELPSTRING, deprecation message, find_package
+// attribution) carries multi-line text that would otherwise
+// break the emitted comment block.
+func collapseToSingleLine(s string) string {
+	if !strings.ContainsAny(s, "\n\r") {
+		return s
+	}
+	r := strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
+	out := r.Replace(s)
+	// Collapse adjacent spaces to one so "foo\n   bar" doesn't
+	// render as "foo    bar".
+	for strings.Contains(out, "  ") {
+		out = strings.ReplaceAll(out, "  ", " ")
+	}
+	return strings.TrimSpace(out)
 }
