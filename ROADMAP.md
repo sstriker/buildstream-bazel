@@ -356,6 +356,24 @@ transition cleanly.
 
 ## Done (high points)
 
+- **bazelidiom audit catches raw `-fvisibility=hidden` /
+  `-fvisibility-inlines-hidden` copts.** Extends the
+  `raw-toolchain-feature-flag` finding kind to also fire on the
+  two visibility-related flags the converter emits today from
+  the `CMAKE_<LANG>_VISIBILITY_PRESET` /
+  `VISIBILITY_INLINES_HIDDEN` lifts. Surfaced by running the
+  converter against VTK 9.3.0's StandAlone module set, where
+  every cc_library carried both flags as per-rule copts (213
+  rules, the largest single audit-able gap in that output
+  alongside 133 `-fPIC` rules — same pattern, different
+  feature name). Bazel-idiomatic form: a cc_toolchain feature
+  named `visibility_hidden` / `visibility_inlines_hidden`
+  that consumers enable via `--features=`. Default-visibility
+  (`-fvisibility=default`) is not flagged — it's the toolchain
+  default anyway. Audit-only for now: lowering the converter
+  emit shape from copts to `features = [...]` is a separate
+  follow-on (matches the queued `-fPIC` migration).
+
 - **`--ignore-rejections-for-diagnostics` flag for cmake converter.**
   Diagnostic-survey mode for running the converter against large
   real-world cmake projects (VTK, LLVM, etc.) without aborting on

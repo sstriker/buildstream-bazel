@@ -381,6 +381,61 @@ func TestAudit_RawSanitizeFlag(t *testing.T) {
 	}
 }
 
+func TestAudit_RawVisibilityFlag(t *testing.T) {
+	// `-fvisibility=hidden` + `-fvisibility-inlines-hidden` are the
+	// emit-shape outputs of the CMAKE_<LANG>_VISIBILITY_PRESET /
+	// VISIBILITY_INLINES_HIDDEN lift; the Bazel-idiomatic form is
+	// a cc_toolchain feature so the toolchain owns the flag set
+	// instead of every cc_library carrying the same per-rule copts.
+	// Surfaced by running the converter against VTK 9.3.0 where
+	// every module carries both flags in copts.
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = ["-fvisibility=hidden", "-fvisibility-inlines-hidden"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	visHit, inlineHit := false, false
+	for _, f := range findings {
+		if f.Code == "raw-toolchain-feature-flag" {
+			if strings.Contains(f.Message, "-fvisibility=hidden") &&
+				strings.Contains(f.Message, "visibility_hidden") {
+				visHit = true
+			}
+			if strings.Contains(f.Message, "-fvisibility-inlines-hidden") &&
+				strings.Contains(f.Message, "visibility_inlines_hidden") {
+				inlineHit = true
+			}
+		}
+	}
+	if !visHit || !inlineHit {
+		t.Errorf("expected raw-toolchain-feature-flag for both visibility flags; got %v", findings)
+	}
+}
+
+// -fvisibility=default is the default; don't flag it.
+func TestAudit_VisibilityDefault_NoFinding(t *testing.T) {
+	body := []byte(`cc_library(
+    name = "lib",
+    srcs = ["a.c"],
+    copts = ["-fvisibility=default"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "raw-toolchain-feature-flag" {
+			t.Errorf("unexpected raw-toolchain-feature-flag for -fvisibility=default: %v", f)
+		}
+	}
+}
+
 func TestAudit_NonFeatureFlag_NoFinding(t *testing.T) {
 	// -O2 isn't a toolchain-feature equivalent; should pass silently.
 	body := []byte(`cc_library(
