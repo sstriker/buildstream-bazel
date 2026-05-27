@@ -242,33 +242,6 @@ transition cleanly.
 
 ## Next
 
-- **Lower per-target copts that are toolchain features into
-  `features = [...]`.** Single biggest non-idiom in real-world
-  converter output. The audit (`bazelidiom.Audit`'s
-  `raw-toolchain-feature-flag` code) already flags this — a
-  9-project survey
-  (spdlog / fmt / nlohmann-json / zlib / boost-core / libpng /
-  Catch2 / VTK 9.3.0 / LLVM 18.1.3) recorded ~785 findings, all
-  the same shape: every cc_library carrying `-fPIC` and the
-  visibility-* flags as per-rule copts (LLVM: 390, VTK: 346,
-  fmt: 46, others: 1–10). The conversion is mechanical at the
-  lower side: `-fPIC` → `features = ["pic"]`,
-  `-fvisibility=hidden` → `["visibility_hidden"]`,
-  `-fvisibility-inlines-hidden` → `["visibility_inlines_hidden"]`,
-  `-flto` → `["lto"]`, `-fsanitize=<x>` → `["<x>"]` (the
-  mapping is already declared in
-  `converter/internal/bazelidiom/audit.go`'s `featureForRawFlag`
-  — promote it from audit-only to actual emit-side rewrite).
-  Operator-side concomitant: the cc_toolchain must declare
-  the matching feature names; the SANITIZER_FEATURES shape
-  in `examples/sanitizer-features/toolchain/features.bzl`
-  is the template. Render gate: a small fixture asserting
-  the emitted IR carries `features = [...]` rather than the
-  raw copts, plus a `bazelidiom.Audit` post-pass that fires
-  zero `raw-toolchain-feature-flag` findings on the fixture.
-  Surfaced and prioritized by the 9-project survey on PR #247;
-  earlier roadmap iterations under-weighted it.
-
 - **Per-platform fold for round-2 trace-driven kinds —
   kind:meson Phase B promotion.** The render gate for the
   install fan-out shipped
