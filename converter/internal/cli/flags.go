@@ -71,6 +71,18 @@ type Args struct {
 	// instead of refusing.
 	StrictTrace bool
 
+	// ProbeDistroHardening, when true, compiles a tiny stub
+	// with the convert host's cc and inspects the resulting
+	// object file for hardening-symbol references
+	// (__*_chk → -D_FORTIFY_SOURCE, __stack_chk_* →
+	// -fstack-protector-*). Surfaces the detected flags as a
+	// stderr warning so operators see the symbol-set delta
+	// they should expect between the cmake-produced artifact
+	// and the Bazel-rebuilt one. Diagnostic-only: no BUILD.bazel
+	// emit-side change. Off by default; the probe costs one
+	// cc invocation per convert run.
+	ProbeDistroHardening bool
+
 	// OutBuild is the destination path for the generated BUILD.bazel.
 	OutBuild string
 
@@ -439,6 +451,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.ReplyDir, "reply-dir", "", "skip cmake invocation; read File API reply from this dir (typically <build>/.cmake/api/v1/reply). --cmake-build-dir is the friendlier alias")
 	fs.StringVar(&a.CMakeBuildDir, "cmake-build-dir", "", "skip cmake invocation; point at an existing cmake build dir (the value passed to cmake -B). Derives the reply dir as <cmake-build-dir>/.cmake/api/v1/reply and auto-picks up build.ninja / trace.jsonl / cmake-variable dump from the same dir")
 	fs.BoolVar(&a.StrictTrace, "strict-trace", false, "refuse with a Tier-1 error when no cmake trace data is available (instead of warning and continuing with degraded recovery). Recommended for production runs; off by default to preserve existing behaviour")
+	fs.BoolVar(&a.ProbeDistroHardening, "probe-distro-hardening", false, "probe the convert host's cc for distro-default hardening flags (FORTIFY_SOURCE, stack-protector) that Bazel's hermetic cc_toolchain won't reproduce; emit a stderr warning naming the detected flags + a remediation recipe. Diagnostic-only.")
 	fs.StringVar(&a.OutBuild, "out-build", "BUILD.bazel", "destination path for generated BUILD.bazel")
 	fs.StringVar(&a.OutBundleDir, "out-bundle-dir", "", "directory for synthesized cmake-config bundle (optional)")
 	fs.StringVar(&a.OutFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
