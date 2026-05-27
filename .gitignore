@@ -35,6 +35,7 @@ converter/testdata/sample-projects/libdrm/
 # `go build ./converter/cmd/<name>`. Anchored so the per-binary
 # source directories under converter/cmd/ aren't swept up.
 /convert-element
+/convert-element-cmake
 /convert-element-meson
 /convert-element-pyproject
 /derive-toolchain
@@ -51,6 +52,7 @@ converter/testdata/sample-projects/libdrm/
 /stage-b
 /write-a
 /convert-element
+/convert-element-cmake
 /convert-element-meson
 /convert-element-pyproject
 /convert-element-trace
