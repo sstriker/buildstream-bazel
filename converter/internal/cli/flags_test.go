@@ -154,6 +154,30 @@ func TestParse_CMakeScriptRunner(t *testing.T) {
 	}
 }
 
+// TestParse_CMakeScriptTrace covers the opt-in trace-based
+// dep discovery flag for the cmake-P lift.
+func TestParse_CMakeScriptTrace(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{
+		"--source-root", "/proj",
+		"--cmake-script-runner=//tools:cmake-script-runner",
+		"--cmake-script-trace",
+	}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !args.CMakeScriptTrace {
+		t.Errorf("CMakeScriptTrace=false; want true")
+	}
+
+	// Default off.
+	stderr.Reset()
+	args, _ = Parse([]string{"--source-root", "/proj"}, &stderr)
+	if args.CMakeScriptTrace {
+		t.Errorf("CMakeScriptTrace default=true; want false")
+	}
+}
+
 // TestParse_IgnoreRejectionsForDiagnostics covers the diagnostic-
 // mode flag pair: --ignore-rejections-for-diagnostics flips the bool
 // and --rejections-report carries the JSON sidecar path.

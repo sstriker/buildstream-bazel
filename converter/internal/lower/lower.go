@@ -219,6 +219,19 @@ type Options struct {
 	// liftCmakeScriptGenrule for the limitation details.
 	CMakeScriptRunner string
 
+	// CMakeScriptTrace, when true (and a runner is set), runs
+	// the cmake -P script under `cmake --trace -P` at convert
+	// time. The trace's read paths drive auto-augmentation of
+	// the genrule's srcs and a structured refusal diagnostic
+	// when the script touches paths Bazel's sandbox can't
+	// reproduce. Off by default — see CMakeScriptRunner for the
+	// operator-opt-in shape. The trace step uses the convert-host
+	// `cmake` from PATH (the same one cmakerun.Configure shells
+	// to); convert-time execution is gated on the
+	// docs/design/conversion-architecture.md platform-coupling
+	// caveat.
+	CMakeScriptTrace bool
+
 	// Warnings, when non-nil, is the sink lower writes non-fatal
 	// diagnostics to. The first user is the missing-include-dir
 	// notice: cmake permits target_include_directories(...) entries
@@ -604,6 +617,9 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 
 	cc := newCodegenContext()
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
+	cc.CMakeScriptTrace = opts.CMakeScriptTrace
+	cc.CMakeBinary = lookupCmakeBinary()
+	cc.Warnings = opts.Warnings
 
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's

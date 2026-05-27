@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -21,11 +22,20 @@ import (
 //	    tags = ["cmake-codegen-cmake-script-lift", ...],
 //	)
 //
-// Returns the package-relative first output, the genrule name,
-// and ok=true on success. ok=false means the lift declined
-// (script path can't anchor under sourceRoot — typical when the
-// script lives under the build dir as the output of a
-// configure_file). The caller falls back to refusal in that case.
+// Returns (relOut, name, reason, ok). ok=true on success; reason
+// is empty. ok=false means the lift declined; reason carries a
+// structured diagnostic for the caller's refusal message
+// (empty reason ⇒ the caller's generic message stands).
+//
+// When CMakeScriptTrace is on, the lift runs the script under
+// `cmake --trace --trace-format=json-v1 -P <script>` at convert
+// time, classifies every read path (source / build / sysroot /
+// unknown), and:
+//   - augments srcs with source-class paths the operator's
+//     add_custom_command(DEPENDS) didn't capture;
+//   - warns about sysroot-class paths (operator-toolchain dep);
+//   - refuses with a structured list of unknown / unresolvable
+//     build-class paths.
 //
 // Soundness: cmake -P scripts can read files via cmake's
 // `file(READ)` / `include()` / `execute_process()` etc. The
@@ -37,26 +47,70 @@ import (
 // vtkHashSource shape) work cleanly; configure_file-derived
 // scripts with hardcoded absolute paths fail because the paths
 // don't exist on the action's sandbox filesystem.
-func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (relOut, name string, ok bool) {
+func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (relOut, name, reason string, ok bool) {
 	scriptRel, ok := relativeIfInside(cmakeSrc, scriptArg)
 	if !ok {
-		// Script not under source root — typically a
-		// configure_file output under the build dir. Refuse
-		// the lift; the script's hardcoded paths likely
-		// wouldn't work anyway.
-		return "", "", false
+		return "", "", "script path %q is not under the source root — typical of configure_file-derived scripts whose hardcoded /tmp/build paths won't survive Bazel's sandbox", false
 	}
 	dArgs := extractCmakePDashArgs(cmd)
 
 	outs := genruleOuts(b, buildDir)
 	if len(outs) == 0 {
-		// Defensive: a CUSTOM_COMMAND with no declared outputs
-		// can't form a valid genrule. Refuse so the caller's
-		// existing error path covers it.
-		return "", "", false
+		return "", "", "", false
 	}
 	srcs := genruleSrcs(b, cmakeSrc, buildDir)
 	srcs = appendUnique(srcs, scriptRel)
+
+	// Trace-based dep discovery + path classification. Opt-in
+	// via codegenContext.CMakeScriptTrace because actually
+	// running the script at convert time has side-effect risk;
+	// operators acknowledge the risk by setting the flag. When
+	// off, the lift behaves as the pre-trace shape: srcs only
+	// reflect the ninja edge's DEPENDS, and script-internal
+	// reads fail at action time with a Bazel sandbox miss.
+	tags := []string{"cmake-codegen-cmake-script-lift"}
+	if cc.CMakeScriptTrace && cc.CMakeBinary != "" {
+		traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs)
+		if err != nil {
+			return "", "", fmt.Sprintf("cmake --trace -P %s failed: %v — convert-time trace required for --cmake-script-trace; rerun without it (sandbox miss may occur at Bazel build time) or fix the script", scriptArg, err), false
+		}
+		cls := ClassifyScriptTrace(traceRaw, cmakeSrc, buildDir)
+
+		// Unknown paths block the lift. The script touches a
+		// path Bazel's sandbox won't reproduce; refusing at
+		// convert time is more actionable than a runtime
+		// sandbox miss.
+		if len(cls.UnknownPaths) > 0 {
+			return "", "", fmt.Sprintf("cmake -P script reads %d path(s) outside source/build/sysroot — Bazel's sandbox won't have these:\n  %s",
+				len(cls.UnknownPaths), strings.Join(cls.UnknownPaths, "\n  ")), false
+		}
+
+		// Build-class reads need a ninja producer to substitute
+		// $(location :producer). Skip the cross-reference for
+		// now (queued for a follow-up — current shape: refuse
+		// unresolved build paths so the diagnostic is honest).
+		if len(cls.BuildPaths) > 0 {
+			return "", "", fmt.Sprintf("cmake -P script reads %d path(s) under the build dir — these are likely cmake-side configure-time outputs and need explicit producer-lift wiring (not yet implemented):\n  %s",
+				len(cls.BuildPaths), strings.Join(cls.BuildPaths, "\n  ")), false
+		}
+
+		// Augment srcs with source-class paths the trace found
+		// beyond the ninja edge's declared DEPENDS.
+		for _, p := range cls.SourcePaths {
+			srcs = appendUnique(srcs, p)
+		}
+
+		// Sysroot-class: warn but proceed. The operator's
+		// runner image must have these paths; tagging makes
+		// the assumption visible.
+		if len(cls.SysrootPaths) > 0 && cc.Warnings != nil {
+			fmt.Fprintf(cc.Warnings, "lower: cmake -P lift of %s assumes sysroot paths exist on the build host:\n", name)
+			for _, p := range cls.SysrootPaths {
+				fmt.Fprintf(cc.Warnings, "  - %s\n", p)
+			}
+		}
+		tags = append(tags, "cmake-codegen-cmake-script-traced")
+	}
 
 	name = genruleNameFor(b, buildDir)
 	runnerExec := fmt.Sprintf("$(execpath %s)", cc.CMakeScriptRunner)
@@ -70,7 +124,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 		GenruleOuts:  outs,
 		Srcs:         srcs,
 		GenruleTools: []string{cc.CMakeScriptRunner},
-		Tags:         []string{"cmake-codegen-cmake-script-lift"},
+		Tags:         tags,
 		Visibility:   []string{"//visibility:private"},
 	}
 	cc.Genrules = append(cc.Genrules, gen)
@@ -78,7 +132,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	for _, o := range outs {
 		cc.OutToGenrule[o] = name
 	}
-	return outs[0], name, true
+	return outs[0], name, "", true
 }
 
 // extractCmakePDashArgs walks the recovered command and returns

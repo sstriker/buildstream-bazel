@@ -362,6 +362,20 @@ type Args struct {
 	// default; only operators who stage a runner tool opt in.
 	CMakeScriptRunner string
 
+	// CMakeScriptTrace asks the cmake -P lift to actually run
+	// the script under `cmake --trace --trace-format=json-v1
+	// -P <script>` at convert time. The trace's read paths
+	// drive auto-augmentation of the genrule's srcs and a
+	// structured refusal diagnostic when the script touches
+	// paths Bazel's sandbox can't reproduce. Off by default —
+	// the trace step is convert-time execution of arbitrary
+	// cmake-script-language; operators opt in by passing
+	// --cmake-script-trace after acknowledging the side-effect
+	// risk. Requires --cmake-script-runner (no trace without a
+	// runner — the operator's already opted into the lift
+	// flow).
+	CMakeScriptTrace bool
+
 	// IgnoreRejectionsForDiagnostics switches the converter from
 	// "first Tier-1 refusal aborts" to "collect every refusal,
 	// continue past each with a local skip, write a diagnostic
@@ -442,6 +456,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
 	fs.StringVar(&a.CMakeScriptRunner, "cmake-script-runner", "", "Bazel label of a target that behaves like cmake (supports `<runner> -P <script.cmake> [-D ...]`). When set, add_custom_command(... cmake -P <script> ...) shapes lift to a genrule invoking the runner at build time. Off by default; only operators who stage the tool opt in. Soundness caveats apply: scripts with hardcoded absolute paths (configure_file-derived) won't resolve under Bazel's sandbox; parameter-driven scripts work cleanly.")
+	fs.BoolVar(&a.CMakeScriptTrace, "cmake-script-trace", false, "actually run the cmake -P script under `cmake --trace --trace-format=json-v1 -P <script>` at convert time. The trace's read paths drive auto-augmentation of the genrule's srcs and a structured refusal diagnostic when the script touches paths Bazel's sandbox can't reproduce. Off by default — convert-time execution carries side-effect risk; opt in after reading docs/design/conversion-architecture.md's convert-time platform coupling note. Requires --cmake-script-runner.")
 	fs.BoolVar(&a.IgnoreRejectionsForDiagnostics, "ignore-rejections-for-diagnostics", false, "collect every Tier-1 refusal and continue past each with a local skip rather than aborting on the first one. The resulting BUILD.bazel is NOT guaranteed to build — refused constructs are silently elided. Use with --rejections-report to capture the structured rejection list. Diagnostic surveys only; production paths want the strict refusal.")
 	fs.StringVar(&a.RejectionsReport, "rejections-report", "", "write the structured rejection records (JSON array) here. Only meaningful with --ignore-rejections-for-diagnostics.")
 

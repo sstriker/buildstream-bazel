@@ -352,6 +352,7 @@ func run(a cli.Args) error {
 		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 		UnsupportedExecuteProcessFallback: execFallback,
 		CMakeScriptRunner:                 a.CMakeScriptRunner,
+		CMakeScriptTrace:                  a.CMakeScriptTrace,
 		Rejections:                        rejections,
 		Warnings:                          os.Stderr,
 	})
