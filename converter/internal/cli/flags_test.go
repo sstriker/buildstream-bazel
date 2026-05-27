@@ -178,6 +178,22 @@ func TestParse_CMakeScriptTrace(t *testing.T) {
 	}
 }
 
+// TestParse_CMakeScriptBake covers the convert-time-bake
+// opt-in for the cmake -P lift.
+func TestParse_CMakeScriptBake(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{
+		"--source-root", "/proj",
+		"--cmake-script-bake",
+	}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !args.CMakeScriptBake {
+		t.Errorf("CMakeScriptBake=false; want true")
+	}
+}
+
 // TestParse_IgnoreRejectionsForDiagnostics covers the diagnostic-
 // mode flag pair: --ignore-rejections-for-diagnostics flips the bool
 // and --rejections-report carries the JSON sidecar path.

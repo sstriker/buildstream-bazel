@@ -353,6 +353,7 @@ func run(a cli.Args) error {
 		UnsupportedExecuteProcessFallback: execFallback,
 		CMakeScriptRunner:                 a.CMakeScriptRunner,
 		CMakeScriptTrace:                  a.CMakeScriptTrace,
+		CMakeScriptBake:                   a.CMakeScriptBake,
 		Rejections:                        rejections,
 		Warnings:                          os.Stderr,
 	})
