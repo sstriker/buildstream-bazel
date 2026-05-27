@@ -1419,6 +1419,17 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				irt.Copts = append(irt.Copts, "-I"+rel)
 				continue
 			}
+			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+			// resolves to rel == "". Bazel rejects
+			// `includes = [""]` ("resolves to the workspace root,
+			// which would allow this rule and all of its transitive
+			// dependents to include any file in your workspace");
+			// same-package consumers already see this target's
+			// headers via hdrs+deps without an explicit include
+			// dir, so dropping the entry is the idiomatic shape.
+			if rel == "" {
+				continue
+			}
 			irt.Includes = append(irt.Includes, rel)
 		}
 	}

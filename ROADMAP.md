@@ -300,6 +300,50 @@ transition cleanly.
   flat 2× on the whole tar; legacy `install(FILES ...)`
   entries stay in tar only). FDSDK-scale numbers from this
   gate would drive the promotion decision.
+- **Toolchain-feature parity vs. cmake's default Release
+  hardening flags.** Surfaced by the convert-and-build
+  artifact comparison of zlib (cmake `libz.a` vs. Bazel
+  `libzlibstatic.a` from the converted BUILD.bazel):
+  exported-symbol sets are identical (105/105), but cmake's
+  archive references `__snprintf_chk` / `__vsnprintf_chk` /
+  `__stack_chk_fail` (FORTIFY_SOURCE + stack-protector)
+  while Bazel's does not. cmake's distro defaults add
+  `-D_FORTIFY_SOURCE=2 -fstack-protector-strong` to Release
+  copts; Bazel's hermetic toolchain doesn't. The audit-time
+  feature-lift (raw flags → `features = ["pic", ...]`) only
+  fires when the cmake CMakeLists explicitly sets these
+  flags — distro-default copts arrive via CFLAGS-env and
+  the codemodel never records them. Closure path: either
+  detect distro-default hardening via a probe at toolchain-
+  derive time and emit `features = ["fortify_source",
+  "stack_protector"]` on the cc_toolchain (requires a real
+  Bazel cc_toolchain feature definition), or document the
+  delta as expected and surface it via the verify pass.
+  Same shape applies to other distro CFLAGS additions
+  (`-fasynchronous-unwind-tables`, `-grecord-gcc-switches`).
+- **Bake refinement: positional output-name args for
+  `cmake -P` scripts.** Surfaced by re-surveying libpng:
+  `add_custom_command(... cmake -P gensrc.cmake <output-name>
+  ...)` is the canonical "one script, many outputs" shape.
+  `--cmake-script-bake` currently passes the script path and
+  `-D var=val` args verbatim but drops post-script positional
+  args (the `<output-name>`), so cmake's argv[1+] indexing
+  inside the script sees nothing and the bake fails with
+  "Unsupported output:". Closure: pull positional args off
+  the recovered command (between the `-P <script>` and the
+  next cmake / shell metachar) and pass them to the
+  convert-time cmake invocation as `cmake -P <script>
+  <arg1> <arg2> ...`. Outputs would still bake one
+  invocation per declared OUTPUT; if the script's argv-
+  switched single invocation produces multiple outputs the
+  bake harness already loops over `b.Outputs` and re-runs
+  cmake per output. Each bake invocation needs its own
+  positional-arg selection — the first OUTPUT's positional
+  arg index would need to come from a `bake-args = [...]`
+  binding on the build statement, OR (simpler) we pass
+  ALL the build statement's recovered command tail and let
+  the script's own `if(${ARGV0} STREQUAL "x")` logic
+  dispatch.
 ## Later (research / open questions)
 
 

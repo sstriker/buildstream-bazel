@@ -1248,6 +1248,61 @@ func TestToIR_NoElidedPrefixIncludeForSystemPath(t *testing.T) {
 	}
 }
 
+// TestToIR_DropsEmptyRelativeInclude pins the converter's
+// drop of include entries whose source-relative form is "".
+// `target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})`
+// resolves to the cmake source root itself; the relative-to-
+// source form is the empty string. Bazel rejects
+// `includes = [""]` ("resolves to the workspace root, which
+// would allow this rule and all of its transitive dependents
+// to include any file in your workspace"), so the converted
+// BUILD.bazel won't even analyze. Same-package consumers
+// already see this target's headers via hdrs+deps without
+// an explicit include dir, so dropping the entry is the
+// idiomatic shape.
+func TestToIR_DropsEmptyRelativeInclude(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "foo.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+					Includes: []fileapi.CompileInclude{
+						// The cmake source root itself —
+						// rel == "" after relativization.
+						{Path: "/src"},
+					},
+				}},
+			},
+		},
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	for _, inc := range tgt.Includes {
+		if inc == "" {
+			t.Errorf("Includes = %v, contains empty entry; Bazel rejects includes=[\"\"]", tgt.Includes)
+		}
+	}
+}
+
 // TestToIR_ElidedLinkFragment covers #220: when an abs-path
 // `libraries`-role link fragment escapes both the imports
 // manifest (LookupLinkPath) AND the find_package attribution
