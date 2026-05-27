@@ -54,10 +54,32 @@ func detectWorkspaceRoot(dir string) string {
 		return ""
 	}
 	dir = filepath.Clean(dir)
+	cmakeSrc := dir
 	for steps := 0; steps <= workspaceMarkerMaxDepth; steps++ {
 		for _, marker := range workspaceMarkers {
 			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
 				return dir
+			}
+		}
+		// Umbrella / monorepo marker: dirs that aren't a cmake
+		// project themselves (no CMakeLists.txt at the top)
+		// but carry `.gitignore` or `.gitattributes`. LLVM's
+		// shape — `llvm-project/llvm/CMakeLists.txt` is the
+		// cmake source but `llvm-project/third-party/benchmark/`
+		// is a sibling tree the build references. The umbrella
+		// root has no CMakeLists.txt and carries `.gitignore`
+		// (the monorepo's git-housekeeping). Skip cmakeSrc
+		// itself — it may have a `.gitignore` for git-tracked
+		// build artefacts and we want the higher umbrella.
+		if dir != cmakeSrc {
+			for _, marker := range umbrellaMarkers {
+				if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+					if _, err := os.Stat(filepath.Join(dir, "CMakeLists.txt")); err != nil {
+						// No top-level CMakeLists.txt; this
+						// dir is an umbrella, not a project.
+						return dir
+					}
+				}
 			}
 		}
 		parent := filepath.Dir(dir)
@@ -86,4 +108,19 @@ var workspaceMarkers = []string{
 	"MODULE.bazel",
 	"WORKSPACE",
 	"WORKSPACE.bazel",
+}
+
+// umbrellaMarkers identify a monorepo / multi-project parent
+// directory that isn't itself a cmake project but contains
+// multiple subtrees referenced by sibling cmake projects.
+// Distinct from workspaceMarkers because the test is conditional
+// on the absence of a top-level CMakeLists.txt — these markers
+// would otherwise false-positive on the cmake source dir itself
+// (single-project repos like spdlog/ have both `.gitignore` AND
+// a CMakeLists.txt). LLVM's `llvm-project/` shape: no top-level
+// CMakeLists.txt but carries `.gitignore` and `.gitattributes`
+// for the monorepo's git housekeeping.
+var umbrellaMarkers = []string{
+	".gitignore",
+	".gitattributes",
 }

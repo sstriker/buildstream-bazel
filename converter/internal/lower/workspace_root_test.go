@@ -121,3 +121,87 @@ func TestDetectWorkspaceRoot_DepthCap(t *testing.T) {
 		t.Errorf("detectWorkspaceRoot(%q) = %q; want %q (within cap)", withinCap, got, root)
 	}
 }
+
+// TestDetectWorkspaceRoot_UmbrellaMonorepo covers LLVM's shape:
+// `llvm-project/llvm/CMakeLists.txt` is the cmake source root,
+// `llvm-project/` has no top-level CMakeLists.txt but carries
+// `.gitignore`, and the build references sources at
+// `llvm-project/third-party/benchmark/*`. The walk should
+// promote `llvm-project/` to workspace root so those sibling-
+// tree paths fall inside `labelRoot`.
+func TestDetectWorkspaceRoot_UmbrellaMonorepo(t *testing.T) {
+	root := t.TempDir()
+	monorepo := filepath.Join(root, "llvm-project")
+	cmakeSrc := filepath.Join(monorepo, "llvm")
+	if err := os.MkdirAll(cmakeSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// llvm-project/.gitignore (umbrella marker).
+	if err := os.WriteFile(filepath.Join(monorepo, ".gitignore"), []byte("*.o\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// llvm-project/llvm/CMakeLists.txt (the cmake project).
+	if err := os.WriteFile(filepath.Join(cmakeSrc, "CMakeLists.txt"), []byte("project(llvm)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// llvm/.gitignore (subproject's own ignore — should NOT
+	// short-circuit; the cmakeSrc itself is excluded from
+	// umbrella-marker matching).
+	if err := os.WriteFile(filepath.Join(cmakeSrc, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectWorkspaceRoot(cmakeSrc); got != monorepo {
+		t.Errorf("detectWorkspaceRoot(%q) = %q; want %q (monorepo umbrella)",
+			cmakeSrc, got, monorepo)
+	}
+}
+
+// TestDetectWorkspaceRoot_UmbrellaSkipsParentWithCMakeLists
+// pins the safety guard: a parent dir with .gitignore AND a
+// CMakeLists.txt is itself a cmake project, not an umbrella.
+// The walk should NOT promote it (would break per-target
+// include resolution for the cmakeSrc).
+func TestDetectWorkspaceRoot_UmbrellaSkipsParentWithCMakeLists(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	cmakeSrc := filepath.Join(parent, "subproject")
+	if err := os.MkdirAll(cmakeSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Parent has both .gitignore AND CMakeLists.txt — looks like
+	// a cmake project that happens to have a subdir build, not
+	// an umbrella.
+	if err := os.WriteFile(filepath.Join(parent, ".gitignore"), []byte("*.o\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "CMakeLists.txt"), []byte("project(parent)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectWorkspaceRoot(cmakeSrc); got != "" {
+		t.Errorf("detectWorkspaceRoot(%q) = %q; want \"\" (parent has CMakeLists, not umbrella)",
+			cmakeSrc, got)
+	}
+}
+
+// TestDetectWorkspaceRoot_SingleProjectGitignoreNoFalsePositive
+// covers spdlog's shape: cmakeSrc itself has `.gitignore` (its
+// own git housekeeping) and a CMakeLists.txt. The detection
+// should return "" — the cmakeSrc isn't an umbrella, and no
+// higher dir carries a marker.
+func TestDetectWorkspaceRoot_SingleProjectGitignoreNoFalsePositive(t *testing.T) {
+	root := t.TempDir()
+	cmakeSrc := filepath.Join(root, "spdlog")
+	if err := os.MkdirAll(cmakeSrc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmakeSrc, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cmakeSrc, "CMakeLists.txt"), []byte("project(spdlog)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectWorkspaceRoot(cmakeSrc); got != "" {
+		t.Errorf("detectWorkspaceRoot(%q) = %q; want \"\" (single-project, no umbrella)",
+			cmakeSrc, got)
+	}
+}
