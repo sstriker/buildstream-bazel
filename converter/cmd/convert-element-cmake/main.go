@@ -144,6 +144,17 @@ func run(a cli.Args) error {
 		cmakeVars = reply.Vars
 		ninjaPath = filepath.Join(buildDir, "build.ninja")
 	} else {
+		// --cmake-build-dir mode populates hostBuildDir from the
+		// operator-supplied path so downstream consumers (CTest
+		// parsing, trace.jsonl lookup, etc.) see the same dir the
+		// real-cmake path would have synthesized. Without this,
+		// CTestTestfile.cmake never gets parsed and add_test()
+		// registrations silently emit as cc_binary instead of
+		// cc_test — visible in survey converts that pass an
+		// already-configured build dir.
+		if a.CMakeBuildDir != "" {
+			hostBuildDir = a.CMakeBuildDir
+		}
 		// Offline path: a build.ninja is sometimes checked in alongside the
 		// reply (recording script captures both); use it if present.
 		candidate := filepath.Join(filepath.Dir(replyDir), "..", "..", "..", "build.ninja")
