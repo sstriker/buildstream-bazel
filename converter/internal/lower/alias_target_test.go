@@ -152,3 +152,32 @@ func TestLowerAliasTargets_NilDecoded(t *testing.T) {
 		t.Errorf("nil decoded should return nil; got %v", got)
 	}
 }
+
+// TestLowerAliasTargets_TraceSynthesizedInterfaceLibraryAsActual pins
+// the Boost.Core shape: `add_library(boost_core INTERFACE)` followed
+// by `add_library(Boost::core ALIAS boost_core)`. The INTERFACE
+// library typically isn't in the codemodel's knownTargets (cmake
+// doesn't expose INTERFACE-only targets in target-*.json), so the
+// caller has to extend the resolvable set with names of
+// trace-synthesized interface libraries before calling
+// lowerAliasTargets — otherwise the alias drops because the actual
+// target name isn't in knownTargets.
+func TestLowerAliasTargets_TraceSynthesizedInterfaceLibraryAsActual(t *testing.T) {
+	decoded := &shadow.Decoded{
+		AddLibraries: []shadow.AddLibraryCall{
+			{Name: "boost_core", Type: "INTERFACE"},
+			{Name: "Boost::core", Type: "ALIAS", Aliases: []string{"boost_core"}},
+		},
+	}
+	// Resolvable set includes the trace-synthesized name (boost_core)
+	// — caller-side knownTargets ∪ pkg.Targets[].Name.
+	resolvable := map[string]bool{"boost_core": true}
+	got := lowerAliasTargets(decoded, resolvable, "/src")
+	if len(got) != 1 {
+		t.Fatalf("expected 1 alias for Boost::core → :boost_core; got %v", got)
+	}
+	if got[0].Name != "Boost_core" || got[0].AliasActual != ":boost_core" {
+		t.Errorf("alias = (%q → %q); want (Boost_core → :boost_core)",
+			got[0].Name, got[0].AliasActual)
+	}
+}
