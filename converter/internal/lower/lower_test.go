@@ -711,7 +711,7 @@ func TestToIR_PlatformConditionalSrcs_ArmSorted(t *testing.T) {
 }
 
 // TestToIR_PlatformConditionalSrcs_MultiLanguage pins that
-// when splitMultiLanguage moves srcs into per-language sub-
+// when splitCompileGroups moves srcs into per-language sub-
 // libraries, the platform-conditional partition still applies
 // to each sub-library. The wrapper's irt.Srcs is empty after
 // the split (so the wrapper has no partition to do), but the
