@@ -845,6 +845,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// keeps lowerTarget's signature stable and applies uniformly
 	// to all the rule families.
 	reclassifyHeaderOnlySources(pkg, headerOnlySources)
+	// Route PRIVATE-scoped target_compile_definitions trace
+	// events into Bazel's non-transitive `local_defines`
+	// attribute instead of the transitive `defines`. Closes the
+	// scope-fidelity gap: cmake's PRIVATE means "only for this
+	// target's own compile", which is local_defines in Bazel;
+	// the codemodel folds everything into CompileGroups.Defines
+	// without a scope tag, so the trace is the only source of
+	// truth here. No-op when trace was absent (decodedTrace nil)
+	// or when no PRIVATE-scoped defines appear.
+	if decodedTrace != nil {
+		applyPrivateScopeToDefines(pkg, decodedTrace.CompileDefinitions)
+	}
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
 	// POSITION_INDEPENDENT_CODE to features=["pic"] /
