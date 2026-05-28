@@ -1,0 +1,25 @@
+# Per-fixture benign-delta allowlist for the e2e-fidelity-compare-fmt gate.
+#
+# Format: one symbol name per line; lines starting with `#` and
+# blank lines are ignored. Each entry pre-empts impactful
+# classification — use sparingly and only for symbols where
+# operator triage confirmed the diff is structural / toolchain-
+# origin and not a converter bug.
+#
+# fmt 11.0.2 (close-gaps campaign rollout): 146/146 exported
+# symbols match. The three entries below are C++ template
+# instantiations that exist on one side but not the other — the
+# cmake distro toolchain and Bazel's hermetic toolchain make
+# different inlining / instantiation decisions at -O3 -DNDEBUG.
+# The fidelity-compare prefix pairer (24-char shared mangled
+# prefix) can't pair them because each has no counterpart on the
+# other side. None of these are exposed in fmt's public API;
+# they're internal detail-namespace helpers emitted at varying
+# inlining depths across the two toolchains.
+
+# fmt::v11::detail::utf8_decode — bazel-side instantiation
+_ZN3fmt3v116detail11utf8_decodeEPKcPjPi
+# fmt::v11::detail::parse_dynamic_spec — bazel-side instantiation
+_ZN3fmt3v116detail18parse_dynamic_specIcEEPKT_S5_S5_RiRNS1_7arg_refIS3_EERNS0_26basic_format_parse_contextIS3_EE
+# fmt::v11::detail::format_float<double> inner lambda — cmake-side instantiation
+_ZZN3fmt3v116detail12format_floatIdEEiT_iNS1_11float_specsERNS1_6bufferIcEEENKUljPcE_clEjS8_
