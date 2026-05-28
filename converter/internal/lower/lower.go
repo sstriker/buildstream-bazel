@@ -989,6 +989,29 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			cmd = t.BacktraceGraph.Commands[node.Command]
 		}
 		if file != "" {
+			// Re-anchor source-tree-absolute provenance paths to
+			// workspace-relative so the rendered `# Source: ...`
+			// comment doesn't leak the convert-host filesystem
+			// prefix. LLVM-shape sub-package CMakeLists (e.g.
+			// `third-party/benchmark/src/CMakeLists.txt`) arrive
+			// from cmake's BacktraceGraph as absolute paths;
+			// preserving the prefix isn't useful to operators and
+			// breaks byte-identical convert runs across host roots.
+			// Try cmakeSrc first (in-package paths), then
+			// workspaceRoot (sibling-package paths under the same
+			// workspace, e.g. LLVM's third-party/ tree).
+			if filepath.IsAbs(file) {
+				if cmakeSrc != "" {
+					if rel, ok := relativeIfInside(cmakeSrc, file); ok {
+						file = rel
+					}
+				}
+				if filepath.IsAbs(file) && workspaceRoot != "" {
+					if rel, ok := relativeIfInside(workspaceRoot, file); ok {
+						file = rel
+					}
+				}
+			}
 			irt.Provenance = ir.Provenance{File: file, Line: node.Line, Command: cmd}
 		}
 	}
