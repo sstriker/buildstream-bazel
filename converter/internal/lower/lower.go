@@ -1196,9 +1196,37 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 
 		if !inCompileGroup[i] {
-			// Not assigned to a compile group: probably a header in
-			// target_sources(); we'll discover hdrs via include-dir
-			// walking below. Skip here.
+			// Not assigned to a compile group: typically a header
+			// in target_sources(). The include-dir walking below
+			// usually picks them up via the target's declared
+			// includes — but when the target declares no
+			// target_include_directories (small projects:
+			// `add_library(foo bar.cu bar.h)` with the headers
+			// resolved from cwd via #include "bar.h"), the walk
+			// produces nothing and the explicit header gets
+			// silently dropped. Surface explicit header-extension
+			// sources directly into irt.Hdrs so they land in the
+			// emitted cc_library regardless of whether the include
+			// walk fires.
+			//
+			// Path resolution mirrors the compile-group branch:
+			// absolute paths under cmakeSrc relativize to package-
+			// relative; cmakeSrc-relative paths pass through.
+			srcPath := src.Path
+			if filepath.IsAbs(srcPath) {
+				if rel, inside := relativeIfInside(cmakeSrc, srcPath); inside {
+					srcPath = rel
+				} else {
+					continue
+				}
+			}
+			if pathHasDotDotSegment(srcPath) {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(srcPath))
+			if headerExts[ext] {
+				irt.Hdrs = append(irt.Hdrs, srcPath)
+			}
 			continue
 		}
 		// Configure-time-created files living under the build dir
