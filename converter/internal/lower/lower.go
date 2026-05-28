@@ -697,28 +697,40 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
 	if len(executeProcessRefusals) > 0 {
 		if opts.Rejections != nil {
-			// Diagnostic mode: record the refusal AND route
-			// through the existing execute-process fallback so
-			// the operator sees both the rejection record and a
-			// best-effort BUILD shape in the same pass.
+			// Diagnostic mode: record the refusal and fall
+			// through to the rich lift below. The rich lift
+			// produces every cc_library / cc_binary the
+			// codemodel exposes plus the genrules every
+			// other lift path can recover — strictly more
+			// information for the survey than the
+			// install_tree_extract placeholder
+			// emitFallbackPlaceholder used to return here.
+			// Operator sees the per-call refusal record AND
+			// the rest of the project's targets in one pass.
 			var tier1 *failure.Error
 			if errors.As(formatExecuteProcessFailure(executeProcessRefusals), &tier1) {
 				opts.Rejections.AddError(tier1)
 			}
+			// Empty executeProcesses (refusals didn't produce
+			// liftable replacements) means the rich lift won't
+			// have any genrule entries to emit FROM those
+			// execute_process calls — that's the intended
+			// behaviour; the rejection record carries the
+			// per-call diagnosis.
+		} else if !opts.UnsupportedExecuteProcessFallback {
+			return nil, formatExecuteProcessFailure(executeProcessRefusals)
+		} else {
+			// Phase B fallback (strict mode, fallback opt-in):
+			// emit a placeholder ir.Package rather than
+			// continuing into the native lowering path. The
+			// native path would either redo the refusal
+			// analysis or trip on the unliftable call later
+			// in lowerTarget; the placeholder is the cleaner
+			// cut, and it lets downstream consumers see
+			// per-target labels at analysis time even when
+			// the element itself can't be fine-converted.
 			return emitFallbackPlaceholder(r, hostSrc)
 		}
-		if !opts.UnsupportedExecuteProcessFallback {
-			return nil, formatExecuteProcessFailure(executeProcessRefusals)
-		}
-		// Phase B fallback: emit a placeholder ir.Package
-		// rather than continuing into the native lowering
-		// path. The native path would either redo the
-		// refusal analysis or trip on the unliftable call
-		// later in lowerTarget; the placeholder is the
-		// cleaner cut, and it lets downstream consumers see
-		// per-target labels at analysis time even when the
-		// element itself can't be fine-converted.
-		return emitFallbackPlaceholder(r, hostSrc)
 	}
 
 	// Recover configure_file outputs from trace before lowering
@@ -3706,15 +3718,19 @@ func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
 		}
 	}
 	// version-script / retain-symbols-file embed a single path in
-	// the comma-separated wire shape `-Wl,--<name>,<path>` (often
-	// with `<path>` quoted). Re-anchor when the path is absolute
-	// under cmakeSrc; drop the token when it's under buildDir
-	// (convert-time-generated; the .exports / .map file won't be
-	// in Bazel's input closure).
+	// the linker wire shape `-Wl,--<name>,<path>` (with comma) or
+	// `-Wl,--<name>=<path>` (with `=`), often with `<path>` quoted.
+	// Both forms are accepted by ld/gold/lld. Re-anchor when the
+	// path is absolute under cmakeSrc; drop the token when it's
+	// under buildDir (convert-time-generated; the .exports / .map
+	// file won't be in Bazel's input closure).
 	for _, prefix := range []string{
 		`-Wl,--version-script,`,
+		`-Wl,--version-script=`,
 		`-Wl,--retain-symbols-file,`,
+		`-Wl,--retain-symbols-file=`,
 		`-Wl,--dynamic-list,`,
+		`-Wl,--dynamic-list=`,
 	} {
 		if !strings.HasPrefix(tok, prefix) {
 			continue

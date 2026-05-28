@@ -152,6 +152,20 @@ func lowerInterfaceLibraries(
 		if knownTargets[call.Name] {
 			continue
 		}
+		// Skip namespaced cmake names like `OpenGL::GL` /
+		// `Foo::Bar` — these are cmake's IMPORTED-target alias
+		// surface from find_package(). The underlying actual
+		// target (e.g. the system OpenGL library) isn't
+		// declarable as a Bazel rule from converter side; the
+		// operator's manifest resolves these through their own
+		// rules. Emitting them here would produce a
+		// `cc_library(name = "OpenGL::GL", ...)` which Bazel
+		// rejects ("not a valid Bazel identifier") — even
+		// sanitizing the name doesn't help since the resulting
+		// rule still wouldn't have the right hdrs/deps.
+		if strings.Contains(call.Name, "::") {
+			continue
+		}
 		if emitted[call.Name] {
 			continue
 		}
