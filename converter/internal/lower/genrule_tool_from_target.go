@@ -46,7 +46,17 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string) (string
 			return
 		}
 		tok := cmd[tokStart:end]
-		if name, ok := artifactToName[tok]; ok {
+		// Normalise the leading `./` that cmake's Ninja generator
+		// sometimes prepends to make the tool resolve via the
+		// current working directory (e.g. `./bin/llvm-lit`). The
+		// artifact map keys are plain build-dir-relative paths
+		// (`bin/llvm-lit`); strip the `./` before lookup so both
+		// forms match.
+		key := tok
+		if strings.HasPrefix(key, "./") {
+			key = key[2:]
+		}
+		if name, ok := artifactToName[key]; ok {
 			b.WriteString("$(location :")
 			b.WriteString(name)
 			b.WriteByte(')')

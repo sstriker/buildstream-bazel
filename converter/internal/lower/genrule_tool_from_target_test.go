@@ -55,6 +55,12 @@ func TestRewriteToolFromTarget(t *testing.T) {
 			wantCmd:   "bin/llvm-min-tblgen -gen",
 			wantTools: nil,
 		},
+		{
+			name:      "leading ./ rewrites — cmake-Ninja shape",
+			in:        "python3 ./bin/llvm-min-tblgen -gen-attrs",
+			wantCmd:   "python3 $(location :llvm-min-tblgen) -gen-attrs",
+			wantTools: []string{":llvm-min-tblgen"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
