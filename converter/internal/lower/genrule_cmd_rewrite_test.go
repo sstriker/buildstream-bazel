@@ -24,7 +24,7 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "strip cd targeting buildDir subdir",
 			in:   "cd /tmp/proj/build/Remote && /usr/bin/cmake -E echo hi",
-			want: "/usr/bin/cmake -E echo hi",
+			want: "echo hi",
 		},
 		{
 			name: "strip cd targeting cmakeSrc subdir",
@@ -64,12 +64,12 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "bare anchor at `=` boundary",
 			in:   "/usr/bin/cmake -DCMAKE_BINARY_DIR=/tmp/proj/build -P script.cmake",
-			want: "/usr/bin/cmake -DCMAKE_BINARY_DIR=. -P script.cmake",
+			want: "cmake -DCMAKE_BINARY_DIR=. -P script.cmake",
 		},
 		{
 			name: "bare anchor at `-S` flag boundary",
 			in:   "/usr/bin/cmake --regenerate-during-build -S/tmp/proj/src -B/tmp/proj/build",
-			want: "/usr/bin/cmake --regenerate-during-build -S. -B.",
+			want: "cmake --regenerate-during-build -S. -B.",
 		},
 		{
 			name: "bare anchor at trailing position",
@@ -85,6 +85,71 @@ func TestRewriteGenruleCmd(t *testing.T) {
 			name: "bare anchor followed by `;`",
 			in:   "do /tmp/proj/build;rest",
 			want: "do .;rest",
+		},
+		{
+			name: "cmake -E make_directory → mkdir -p",
+			in:   "cmake -E make_directory ./lib/ocaml/llvm",
+			want: "mkdir -p ./lib/ocaml/llvm",
+		},
+		{
+			name: "cmake -E create_symlink → ln -sfn",
+			in:   "cmake -E create_symlink target link",
+			want: "ln -sfn target link",
+		},
+		{
+			name: "cmake -E copy → cp",
+			in:   "cmake -E copy src dst",
+			want: "cp src dst",
+		},
+		{
+			name: "cmake -E copy_directory → cp -r",
+			in:   "cmake -E copy_directory src dst",
+			want: "cp -r src dst",
+		},
+		{
+			name: "cmake -E remove_directory → rm -rf",
+			in:   "cmake -E remove_directory foo",
+			want: "rm -rf foo",
+		},
+		{
+			name: "cmake -E rename → mv",
+			in:   "cmake -E rename a b",
+			want: "mv a b",
+		},
+		{
+			name: "cmake -E touch → touch",
+			in:   "cmake -E touch foo.stamp",
+			want: "touch foo.stamp",
+		},
+		{
+			name: "cmake -E unsupported op passes through",
+			in:   "cmake -E env FOO=1 cmd",
+			want: "cmake -E env FOO=1 cmd",
+		},
+		{
+			name: "cmake -E chained with &&",
+			in:   "cmake -E make_directory a && cmake -E touch a/x",
+			want: "mkdir -p a && touch a/x",
+		},
+		{
+			name: "host-bin /usr/bin strip at leading position",
+			in:   "/usr/bin/python3 script.py arg",
+			want: "python3 script.py arg",
+		},
+		{
+			name: "host-bin /usr/local/bin strip at leading position",
+			in:   "/usr/local/bin/cmake -E touch f",
+			want: "touch f",
+		},
+		{
+			name: "host-bin strip after shell separator",
+			in:   "true && /usr/bin/echo hi",
+			want: "true && echo hi",
+		},
+		{
+			name: "host-bin embedded in arg does not strip",
+			in:   "tool --toolchain=/usr/bin/gcc",
+			want: "tool --toolchain=/usr/bin/gcc",
 		},
 	}
 	for _, tc := range cases {

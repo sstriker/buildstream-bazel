@@ -18,7 +18,7 @@ genrule(
     name = "gen_version_h",
     srcs = ["scripts/gen_version.py"],
     outs = ["version.h"],
-    cmd = "/usr/bin/python3 scripts/gen_version.py version.h 0.1.0",
+    cmd = "python3 scripts/gen_version.py version.h 0.1.0",
     tags = [
         "cmake-codegen",
         "cmake-codegen-driver=python3",

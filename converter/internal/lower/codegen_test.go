@@ -59,8 +59,11 @@ func TestToIR_CodegenTarget(t *testing.T) {
 	if !slicesContain(gen.GenruleOuts, "version.h") {
 		t.Errorf("genrule.GenruleOuts = %v, want to contain version.h", gen.GenruleOuts)
 	}
-	if !strings.Contains(gen.GenruleCmd, "/usr/bin/python3") {
-		t.Errorf("genrule.GenruleCmd = %q, want to contain /usr/bin/python3", gen.GenruleCmd)
+	// rewriteGenruleCmd strips the /usr/bin/ host-bin prefix so the
+	// rendered cmd resolves through $PATH at action time. The bare
+	// `python3` token is what survives.
+	if !strings.Contains(gen.GenruleCmd, "python3") {
+		t.Errorf("genrule.GenruleCmd = %q, want to contain python3", gen.GenruleCmd)
 	}
 	if !strings.Contains(gen.GenruleCmd, "gen_version.py") {
 		t.Errorf("genrule.GenruleCmd = %q, want to contain gen_version.py", gen.GenruleCmd)

@@ -35,6 +35,19 @@ import (
 // hazards (e.g. `<buildDir>` vs `<buildDir>_other`) are avoided.
 //
 // Tokens without an embedded anchor pass through unchanged.
+//
+// Additional normalisations layered on top of the anchor pass:
+//
+//   - `cmake -E <op> ...` invocations rewrite to their POSIX
+//     equivalents when the op has a clear shell analogue
+//     (`make_directory` → `mkdir -p`, `create_symlink` → `ln -sfn`,
+//     `copy` → `cp`, etc.). Keeps the cmd portable in Bazel's
+//     bash-runs-the-genrule shell without needing cmake at action
+//     time.
+//   - Host-tool prefixes on the leading command token (`/usr/bin/`,
+//     `/usr/local/bin/`, `/usr/sbin/`) strip to the bare tool name
+//     so the rendered cmd resolves through `$PATH` instead of
+//     hardcoding the convert-host's filesystem.
 func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 	if cmd == "" {
 		return cmd
@@ -91,7 +104,191 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 		}
 		cmd = replaceBareAnchorAtBoundary(cmd, anchor, ".")
 	}
+	// Rewrite `cmake -E <op> ...` to POSIX equivalents — keeps
+	// the cmd portable in Bazel's sandbox shell without needing
+	// cmake at action time. Runs after the anchor passes so the
+	// args themselves are already workspace-relative.
+	cmd = rewriteCMakeEInvocation(cmd)
+	// Strip host-tool prefixes from the leading command token
+	// (`/usr/bin/`, `/usr/local/bin/`, `/usr/sbin/`) so the cmd
+	// resolves through $PATH at action time. Avoids leaking the
+	// convert-host's filesystem layout when the tool lives at a
+	// distribution-specific path the action's environment may
+	// not match.
+	cmd = stripHostBinPrefix(cmd)
 	return cmd
+}
+
+// rewriteCMakeEInvocation rewrites every `cmake -E <op>` (or
+// `<host-bin>/cmake -E <op>`) prefix in cmd to the POSIX
+// equivalent. The cmake-E ops are stable across cmake versions;
+// rewriting at convert time means the rendered genrule cmd runs
+// under Bazel's bash without needing cmake on the action's PATH.
+//
+// Supported ops + their POSIX equivalents:
+//
+//	make_directory <dirs...>     → mkdir -p <dirs...>
+//	create_symlink T L           → ln -sfn T L
+//	copy <src> <dst>             → cp <src> <dst>
+//	copy_if_different <src> <dst>→ cp <src> <dst>
+//	copy_directory <src> <dst>   → cp -r <src> <dst>
+//	remove <files...>            → rm -f <files...>
+//	remove_directory <dirs...>   → rm -rf <dirs...>
+//	rename <src> <dst>           → mv <src> <dst>
+//	touch <files...>             → touch <files...>
+//	true                         → true
+//	echo <args...>               → echo <args...>
+//
+// Ops without a clear POSIX equivalent (e.g. `cmake -E env` with
+// shell-quoted argv, `cmake -E time`, `cmake -E compare_files`
+// with its specific exit-code semantics, `cmake -E chdir`) pass
+// through unchanged — operators see the original cmd and can
+// stage a cmake runner if needed.
+func rewriteCMakeEInvocation(cmd string) string {
+	// Find every `cmake -E ` occurrence (with optional preceding
+	// host-bin prefix) and rewrite it. Loop because the cmd can
+	// chain (e.g. `cmake -E ... && cmake -E ...`).
+	for {
+		idx := strings.Index(cmd, "cmake -E ")
+		if idx < 0 {
+			break
+		}
+		// Find the start of the cmake token (including any
+		// preceding `/abs/path/`).
+		tokStart := idx
+		for tokStart > 0 && cmd[tokStart-1] != ' ' && cmd[tokStart-1] != '\t' && cmd[tokStart-1] != ';' && cmd[tokStart-1] != '&' {
+			tokStart--
+		}
+		// Extract the args after `cmake -E `.
+		argsStart := idx + len("cmake -E ")
+		// Find end of this cmake -E invocation: stop at `&&`,
+		// `||`, `;`, or end-of-string.
+		argsEnd := len(cmd)
+		for j := argsStart; j < len(cmd); j++ {
+			if cmd[j] == ';' {
+				argsEnd = j
+				break
+			}
+			if j+1 < len(cmd) && (cmd[j] == '&' && cmd[j+1] == '&' || cmd[j] == '|' && cmd[j+1] == '|') {
+				argsEnd = j
+				break
+			}
+		}
+		// Strip trailing whitespace from the slice.
+		end := argsEnd
+		for end > argsStart && (cmd[end-1] == ' ' || cmd[end-1] == '\t') {
+			end--
+		}
+		args := cmd[argsStart:end]
+		rewritten, ok := posixForCMakeE(args)
+		if !ok {
+			// Skip this occurrence; replace the `cmake -E ` bytes
+			// with a sentinel so the next strings.Index doesn't
+			// re-find this one and spin.
+			cmd = cmd[:idx] + "@CMAKE_E_SKIP@" + cmd[argsStart:]
+			continue
+		}
+		// Preserve the whitespace between the rewritten args and a
+		// trailing shell separator (`&&` / `||` / `;`). The trailing-
+		// space strip during `args` slicing dropped it; without
+		// re-inserting we'd end up with `mkdir -p a&& next` (a
+		// shell-token-fusion bug).
+		sep := ""
+		if argsEnd < len(cmd) && argsEnd > end {
+			sep = " "
+		}
+		cmd = cmd[:tokStart] + rewritten + sep + cmd[argsEnd:]
+	}
+	// Undo the skip markers from non-rewritable occurrences.
+	cmd = strings.ReplaceAll(cmd, "@CMAKE_E_SKIP@", "cmake -E ")
+	return cmd
+}
+
+// posixForCMakeE returns the POSIX shell rewrite of a `cmake -E
+// <op> <args...>` invocation given the slice that follows `cmake
+// -E `. Returns ok=false for ops we don't rewrite.
+func posixForCMakeE(args string) (string, bool) {
+	// Split off the op name (first token).
+	op, rest := splitFirstToken(args)
+	switch op {
+	case "make_directory":
+		return "mkdir -p " + rest, true
+	case "create_symlink":
+		// cmake's create_symlink takes (target, linkname). POSIX
+		// `ln -sfn <target> <linkname>` mirrors that.
+		return "ln -sfn " + rest, true
+	case "copy", "copy_if_different":
+		return "cp " + rest, true
+	case "copy_directory", "copy_directory_if_different":
+		return "cp -r " + rest, true
+	case "remove":
+		return "rm -f " + rest, true
+	case "remove_directory":
+		return "rm -rf " + rest, true
+	case "rename":
+		return "mv " + rest, true
+	case "touch":
+		return "touch " + rest, true
+	case "true":
+		return "true", true
+	case "echo":
+		return "echo " + rest, true
+	}
+	return "", false
+}
+
+// splitFirstToken splits s into (firstToken, rest) on the first
+// whitespace run. Returns (s, "") when s has no whitespace.
+func splitFirstToken(s string) (string, string) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' {
+			// Skip the whitespace run.
+			j := i
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t') {
+				j++
+			}
+			return s[:i], s[j:]
+		}
+	}
+	return s, ""
+}
+
+// stripHostBinPrefix removes `/usr/bin/`, `/usr/local/bin/`, and
+// `/usr/sbin/` from the leading command token so the cmd resolves
+// through $PATH at action time instead of hardcoding the
+// convert-host's distribution layout. Only strips when the prefix
+// is at the very start OR follows a shell separator (`&&`, `||`,
+// `;`); embedded references (e.g. `--toolchain=/usr/bin/gcc`)
+// pass through unchanged.
+func stripHostBinPrefix(cmd string) string {
+	prefixes := []string{"/usr/bin/", "/usr/local/bin/", "/usr/sbin/"}
+	// Process every shell-separator boundary.
+	out := strings.Builder{}
+	i := 0
+	for i < len(cmd) {
+		// Possible leading-position strip: at start OR after a
+		// shell-token boundary.
+		stripped := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(cmd[i:], p) {
+				out.WriteString(cmd[i+len(p):][:0]) // no-op
+				// Verify the prefix isn't a substring of a longer
+				// token: byte before must be a shell boundary or
+				// start-of-string.
+				if i == 0 || cmd[i-1] == ' ' || cmd[i-1] == '\t' || cmd[i-1] == ';' || cmd[i-1] == '&' || cmd[i-1] == '|' {
+					i += len(p)
+					stripped = true
+					break
+				}
+			}
+		}
+		if stripped {
+			continue
+		}
+		out.WriteByte(cmd[i])
+		i++
+	}
+	return out.String()
 }
 
 // replaceBareAnchorAtBoundary rewrites every occurrence of
