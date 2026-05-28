@@ -412,20 +412,34 @@ func filterOutVarRefs(xs []string) []string {
 }
 
 // isCMakeBookkeepingOutput reports whether a build-edge output
-// path is one of cmake's internal IDE / regen utility outputs.
-// cmake's Ninja generator emits a standalone CUSTOM_COMMAND for
-// each of edit_cache / rebuild_cache (always present), plus a
-// handful more under multi-target generators (install / package /
-// package_source / test / list_install_components). The
-// canonical shape is `CMakeFiles/<name>.util` — checking that
-// prefix + suffix pair is both necessary and sufficient: no
-// user-declared add_custom_command lands an output under
-// `CMakeFiles/<n>.util` (cmake reserves the `.util` extension
-// for these bookkeeping edges).
+// path is one of cmake's internal IDE / regen / packaging /
+// install utility outputs. cmake's Ninja generator emits a
+// standalone CUSTOM_COMMAND for each of edit_cache /
+// rebuild_cache (always present), plus a handful more under
+// multi-target generators (install / package / package_source /
+// test / list_install_components).
+//
+// Shapes observed:
+//
+//   - Single-config (Ninja): `CMakeFiles/<name>.util`.
+//   - Multi-config (Ninja Multi-Config): `<subdir>/CMakeFiles/
+//     <Config>/<name>.util` per CMAKE_CONFIGURATION_TYPES entry
+//     and per subdirectory cmake recursed through.
+//
+// Both shapes share `CMakeFiles/` as a path component and end
+// in `.util`; checking that pair is both necessary and sufficient
+// because cmake reserves the `.util` extension for these
+// bookkeeping edges (no user-declared add_custom_command lands
+// an output with that extension).
 func isCMakeBookkeepingOutput(p string) bool {
-	const prefix = "CMakeFiles/"
-	const suffix = ".util"
-	return strings.HasPrefix(p, prefix) && strings.HasSuffix(p, suffix)
+	if !strings.HasSuffix(p, ".util") {
+		return false
+	}
+	// Match `CMakeFiles/` as a path component (either at the
+	// start or following a `/`). strings.Contains is too
+	// permissive — a user could name a directory `myCMakeFiles/`
+	// — but the .util-extension reservation keeps it sound.
+	return strings.HasPrefix(p, "CMakeFiles/") || strings.Contains(p, "/CMakeFiles/")
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a

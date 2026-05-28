@@ -245,18 +245,31 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 		in   string
 		want bool
 	}{
+		// Single-config (Ninja) shape: CMakeFiles/<name>.util at
+		// the build-dir root.
 		{"CMakeFiles/edit_cache.util", true},
 		{"CMakeFiles/rebuild_cache.util", true},
 		{"CMakeFiles/install.util", true},
 		{"CMakeFiles/package_source.util", true},
 		{"CMakeFiles/list_install_components.util", true},
+		// Multi-config (Ninja Multi-Config) shape: per-subdir
+		// per-config CMakeFiles dir holding the .util bookkeeping
+		// output. Surveyed against zlib/spdlog/Catch2/libpng/VTK/
+		// LLVM under -G "Ninja Multi-Config" Release;Debug — these
+		// surface as `<subdir>/CMakeFiles/<Config>/<name>.util`
+		// and previously slipped through the filter, lifting
+		// cpack / ctest / install / uninstall genrules with
+		// convert-time absolute paths in their cmd.
+		{"test/CMakeFiles/Release/package.util", true},
+		{"contrib/CMakeFiles/Debug/install.util", true},
+		{"src/CMakeFiles/Release/test.util", true},
 		// User-declared add_custom_command outputs never land
 		// under CMakeFiles/ with the .util suffix.
 		{"version.txt", false},
 		{"gen/version.h", false},
 		{"CMakeFiles/stub.dir/src/stub.c.o", false}, // compile artefact, not bookkeeping
-		{"some/CMakeFiles/foo.util", false},         // not at the build-dir root
 		{"CMakeFiles/foo.txt", false},               // wrong suffix
+		{"some/notCMakeFiles/foo.util", false},      // CMakeFiles not a path component
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
