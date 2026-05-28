@@ -475,14 +475,30 @@ func filterOutVarRefs(xs []string) []string {
 // bookkeeping edges (no user-declared add_custom_command lands
 // an output with that extension).
 func isCMakeBookkeepingOutput(p string) bool {
-	if !strings.HasSuffix(p, ".util") {
-		return false
+	// `.util`-extension shape (single-config + multi-config Ninja
+	// generators).
+	if strings.HasSuffix(p, ".util") {
+		if strings.HasPrefix(p, "CMakeFiles/") || strings.Contains(p, "/CMakeFiles/") {
+			return true
+		}
 	}
-	// Match `CMakeFiles/` as a path component (either at the
-	// start or following a `/`). strings.Contains is too
-	// permissive — a user could name a directory `myCMakeFiles/`
-	// — but the .util-extension reservation keeps it sound.
-	return strings.HasPrefix(p, "CMakeFiles/") || strings.Contains(p, "/CMakeFiles/")
+	// `CMakeFiles/check-<name>` shape — cmake's add_custom_target
+	// for project test runners (LLVM's `check-all`, `check-llvm`,
+	// `check-mlgo-utils`, etc., plus a per-leaf-test variant under
+	// each subdirectory). These emit
+	// `add_custom_target(check-<name> COMMAND llvm-lit -sv test/<name>)`,
+	// which Bazel users replace with `cc_test` rules; converting them
+	// to genrules emits broken cmds (the test runner is
+	// configure_file-generated, not a build target). Same
+	// `CMakeFiles/` path-component check as the .util shape keeps
+	// the filter from misfiring on user directories.
+	if strings.HasPrefix(p, "CMakeFiles/check-") {
+		return true
+	}
+	if i := strings.Index(p, "/CMakeFiles/check-"); i >= 0 {
+		return true
+	}
+	return false
 }
 
 // isCMakeInternalCmd reports whether a recovered ninja
