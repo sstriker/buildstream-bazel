@@ -83,6 +83,23 @@ func run(a cli.Args) error {
 	var hostBuildDir string
 	var cmakeVars map[string]string
 	ctx := context.Background()
+	// When the operator passes --cmake-build-dir, the CLI Parse
+	// step derives a.ReplyDir but leaves hostBuildDir empty —
+	// which silently disables CTest classification, the direct
+	// trace-path lookup (`<build>/trace.jsonl`), and the
+	// compile_commands.json lookup downstream. All three care
+	// about the build dir, not the reply dir. Populate
+	// hostBuildDir from a.CMakeBuildDir so the --cmake-build-dir
+	// path gets the same treatment as the real-cmake-run path.
+	//
+	// Pure offline --reply-dir runs (no --cmake-build-dir, no
+	// --source-root) intentionally leave hostBuildDir empty —
+	// fixture replay paths typically don't have a live build dir
+	// the converter can poke at, and historical behavior is to
+	// skip the build-dir-dependent passes silently.
+	if a.CMakeBuildDir != "" {
+		hostBuildDir = a.CMakeBuildDir
+	}
 	if replyDir == "" {
 
 		// Architectural floor: cmake >= 3.20 (codemodel-v2 minimum). The
