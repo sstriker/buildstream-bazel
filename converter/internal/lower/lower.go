@@ -3750,7 +3750,14 @@ func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
 // pieces are returned as defines (with the leading -D stripped); everything
 // else is a copt. -I and -isystem are dropped — those come through
-// compileGroup.includes structurally.
+// compileGroup.includes structurally. -ffile-prefix-map / -fmacro-prefix-map
+// / -fdebug-prefix-map are dropped too — they're reproducible-build
+// directives that rewrite the compile-host's source path layout into debug
+// info; under Bazel's hermetic sandbox the compile-time paths are already
+// workspace-relative, so the directive's <from> path (typically a convert-
+// time absolute like /tmp/proj/) never matches anything in the compile
+// invocation and the flag becomes either a no-op or a leak of convert-time
+// state into the audit surface.
 func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []string) {
 	for _, f := range frags {
 		if f.Role != "" {
@@ -3763,6 +3770,13 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 				defines = append(defines, strings.TrimPrefix(p, "-D"))
 			case strings.HasPrefix(p, "-I"), strings.HasPrefix(p, "-isystem"):
 				// dropped: see compileGroup.includes
+			case strings.HasPrefix(p, "-ffile-prefix-map="),
+				strings.HasPrefix(p, "-fmacro-prefix-map="),
+				strings.HasPrefix(p, "-fdebug-prefix-map="):
+				// dropped: convert-time host-path-rewrite
+				// directives have no meaning under Bazel's
+				// hermetic compile (the <from> never matches
+				// anything the compiler sees).
 			default:
 				copts = append(copts, p)
 			}
