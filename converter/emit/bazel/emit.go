@@ -601,6 +601,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .LinkoptsExpr}}
     linkopts = {{.LinkoptsExpr}},
 {{- end}}
+{{- if .AdditionalLinkerInputsExpr}}
+    additional_linker_inputs = {{.AdditionalLinkerInputsExpr}},
+{{- end}}
 {{- if .DepsExpr}}
     deps = {{.DepsExpr}},
 {{- end}}
@@ -756,11 +759,12 @@ type ccView struct {
 	IncludesExpr           string
 	IncludePrefix          string
 	StripIncludePrefix     string
-	CoptsExpr              string
-	DefinesExpr            string
-	LinkoptsExpr           string
-	DepsExpr               string
-	ImplementationDepsExpr string
+	CoptsExpr                  string
+	DefinesExpr                string
+	LinkoptsExpr               string
+	AdditionalLinkerInputsExpr string
+	DepsExpr                   string
+	ImplementationDepsExpr     string
 	Linkstatic             bool
 	Alwayslink             bool
 	Features               []string
@@ -926,8 +930,9 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		StripIncludePrefix:     t.StripIncludePrefix,
 		CoptsExpr:              attrExpr(copts, perPlatformAttr(t, "copts")),
 		DefinesExpr:            attrExpr(defines, perPlatformAttr(t, "defines")),
-		LinkoptsExpr:           attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
-		DepsExpr:               attrExpr(deps, perPlatformAttr(t, "deps")),
+		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
+		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
+		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
 		ImplementationDepsExpr: attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:             t.Linkstatic,
 		Alwayslink:             t.Alwayslink,

@@ -1827,8 +1827,13 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				// this split the linker receives the entire
 				// string as a single (invalid) flag.
 				for _, tok := range strings.Fields(frag.Fragment) {
-					if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
-						irt.LinkOpts = append(irt.LinkOpts, rewritten)
+					rewritten, keep, addlInput := reanchorLinkOptTokenWithInput(tok, cmakeSrc, cmakeBuild)
+					if !keep {
+						continue
+					}
+					irt.LinkOpts = append(irt.LinkOpts, rewritten)
+					if addlInput != "" && !stringSliceContains(irt.AdditionalLinkerInputs, addlInput) {
+						irt.AdditionalLinkerInputs = append(irt.AdditionalLinkerInputs, addlInput)
 					}
 				}
 				continue
@@ -3693,8 +3698,27 @@ func reanchorDefineValue(def, cmakeSrc, buildDir string) (string, bool) {
 //
 // Tokens without an embedded absolute path pass through unchanged.
 func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
+	rewritten, keep, _ := reanchorLinkOptTokenWithInput(tok, cmakeSrc, buildDir)
+	return rewritten, keep
+}
+
+// reanchorLinkOptTokenWithInput is the staging-aware variant that
+// also returns a workspace-relative file path the caller should
+// add to the target's additional_linker_inputs. Empty
+// additionalInput means no file needs staging (or the source-side
+// reanchor already produced a self-contained linkopts token).
+//
+// When the token references a source-tree file (e.g. zlib's
+// `-Wl,--version-script,"/tmp/zlib/zlib.map"`), the rewritten
+// token uses Bazel's `$(location ...)` substitution to resolve
+// the file at link action time, AND the workspace-relative path
+// (`zlib.map`) is returned so the caller can pin the file into
+// the rule's additional_linker_inputs. Closes the gap left by
+// the prior reanchor that rewrote the path's prefix but didn't
+// stage the file.
+func reanchorLinkOptTokenWithInput(tok, cmakeSrc, buildDir string) (string, bool, string) {
 	if tok == "" {
-		return tok, true
+		return tok, true, ""
 	}
 	// cmake-internal rpath-link to the build dir's per-config lib
 	// dir. cmake's generator emits one per target; Bazel's link
@@ -3711,19 +3735,27 @@ func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
 			payload := tok[len(prefix):]
 			if buildDir != "" && filepath.IsAbs(payload) {
 				if _, ok := relativeIfInside(buildDir, payload); ok {
-					return "", false
+					return "", false, ""
 				}
 			}
-			return tok, true
+			return tok, true, ""
 		}
 	}
 	// version-script / retain-symbols-file embed a single path in
 	// the linker wire shape `-Wl,--<name>,<path>` (with comma) or
 	// `-Wl,--<name>=<path>` (with `=`), often with `<path>` quoted.
-	// Both forms are accepted by ld/gold/lld. Re-anchor when the
-	// path is absolute under cmakeSrc; drop the token when it's
-	// under buildDir (convert-time-generated; the .exports / .map
-	// file won't be in Bazel's input closure).
+	// Both forms are accepted by ld/gold/lld.
+	//
+	// Source-tree-rooted paths: rewrite to use Bazel's `$(location
+	// <rel>)` substitution and return the workspace-relative path
+	// for staging via additional_linker_inputs. The emitted
+	// linkopts entry then resolves the path at link-action time
+	// to whatever Bazel staged the source under in the sandbox.
+	//
+	// Build-dir-rooted paths: drop the token. The convert-time
+	// generated .exports / .map file isn't reachable through any
+	// Bazel input closure; an operator who needs the linker
+	// directive must wire a producer genrule themselves.
 	for _, prefix := range []string{
 		`-Wl,--version-script,`,
 		`-Wl,--version-script=`,
@@ -3746,21 +3778,26 @@ func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
 			stripped = raw[1 : len(raw)-1]
 		}
 		if !filepath.IsAbs(stripped) {
-			return tok, true
+			return tok, true, ""
 		}
 		if buildDir != "" {
 			if _, ok := relativeIfInside(buildDir, stripped); ok {
-				return "", false
+				return "", false, ""
 			}
 		}
 		if cmakeSrc != "" {
 			if rel, ok := relativeIfInside(cmakeSrc, stripped); ok {
-				return prefix + `"` + rel + `"`, true
+				// Use $(location <rel>) so Bazel resolves the
+				// path at link time. additional_linker_inputs
+				// (returned via addlInput) pins the file into
+				// the action's input closure so the location
+				// substitution succeeds.
+				return prefix + `"$(location ` + rel + `)"`, true, rel
 			}
 		}
-		return tok, true
+		return tok, true, ""
 	}
-	return tok, true
+	return tok, true, ""
 }
 
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
