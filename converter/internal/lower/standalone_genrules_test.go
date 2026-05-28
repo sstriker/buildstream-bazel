@@ -263,6 +263,18 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 		{"test/CMakeFiles/Release/package.util", true},
 		{"contrib/CMakeFiles/Debug/install.util", true},
 		{"src/CMakeFiles/Release/test.util", true},
+		// Install-component marker outputs: cmake emits these as
+		// `CMakeFiles/install-<component>` phony markers when
+		// install(TARGETS ... COMPONENT ...) is populated. LLVM
+		// emits ~358 of these (one per llvm-headers / llvm-libraries
+		// / clang-* component, plus -stripped siblings under
+		// multi-config). They run `cmake -P cmake_install.cmake`
+		// which has no Bazel equivalent — install isn't a Bazel
+		// concept; the round-2 install-tree.tar fallback covers
+		// install behaviour where operators need it.
+		{"CMakeFiles/install-llvm-headers", true},
+		{"CMakeFiles/install-llvm-libraries-stripped", true},
+		{"tools/CMakeFiles/install-clang-tools", true},
 		// User-declared add_custom_command outputs never land
 		// under CMakeFiles/ with the .util suffix.
 		{"version.txt", false},
@@ -270,6 +282,7 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 		{"CMakeFiles/stub.dir/src/stub.c.o", false}, // compile artefact, not bookkeeping
 		{"CMakeFiles/foo.txt", false},               // wrong suffix
 		{"some/notCMakeFiles/foo.util", false},      // CMakeFiles not a path component
+		{"install-output.txt", false},               // install- only matches under CMakeFiles/
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {

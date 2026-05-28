@@ -450,21 +450,40 @@ func filterOutVarRefs(xs []string) []string {
 //   - Multi-config (Ninja Multi-Config): `<subdir>/CMakeFiles/
 //     <Config>/<name>.util` per CMAKE_CONFIGURATION_TYPES entry
 //     and per subdirectory cmake recursed through.
+//   - Install-component edges (any generator with
+//     install(TARGETS COMPONENT ...) populated): `CMakeFiles/
+//     install-<component>` and `CMakeFiles/install-<component>-stripped`
+//     — phony marker outputs of `cmake -P cmake_install.cmake
+//     -DCMAKE_INSTALL_COMPONENT=<name>` edges. LLVM emits ~358 of
+//     these (one per llvm-headers / llvm-libraries / clang-*
+//     component etc.). They have no Bazel equivalent — install is
+//     not a Bazel concept; the round-2 install-tree.tar fallback
+//     covers the install behaviour where operators need it.
 //
-// Both shapes share `CMakeFiles/` as a path component and end
-// in `.util`; checking that pair is both necessary and sufficient
-// because cmake reserves the `.util` extension for these
-// bookkeeping edges (no user-declared add_custom_command lands
-// an output with that extension).
+// The .util shape and the install-<...> shape share the
+// `CMakeFiles/` path-component prefix; both are filtered as
+// "cmake-internal bookkeeping".
 func isCMakeBookkeepingOutput(p string) bool {
-	if !strings.HasSuffix(p, ".util") {
+	// Match `CMakeFiles/` as a path component (either at the
+	// start or following a `/`).
+	hasCMakeFiles := strings.HasPrefix(p, "CMakeFiles/") || strings.Contains(p, "/CMakeFiles/")
+	if !hasCMakeFiles {
 		return false
 	}
-	// Match `CMakeFiles/` as a path component (either at the
-	// start or following a `/`). strings.Contains is too
-	// permissive — a user could name a directory `myCMakeFiles/`
-	// — but the .util-extension reservation keeps it sound.
-	return strings.HasPrefix(p, "CMakeFiles/") || strings.Contains(p, "/CMakeFiles/")
+	if strings.HasSuffix(p, ".util") {
+		return true
+	}
+	// Install-component marker shapes. cmake emits these as
+	// `CMakeFiles/install-<component>` (and the `-stripped`
+	// sibling under multi-config) — they have no Bazel
+	// equivalent. The user-facing add_custom_command shape
+	// never produces an output named "install-..." under
+	// CMakeFiles/, so the pattern is unambiguous.
+	base := p[strings.LastIndex(p, "/")+1:]
+	if strings.HasPrefix(base, "install-") {
+		return true
+	}
+	return false
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a
