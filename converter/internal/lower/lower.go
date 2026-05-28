@@ -1799,7 +1799,9 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				// this split the linker receives the entire
 				// string as a single (invalid) flag.
 				for _, tok := range strings.Fields(frag.Fragment) {
-					irt.LinkOpts = append(irt.LinkOpts, tok)
+					if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
+						irt.LinkOpts = append(irt.LinkOpts, rewritten)
+					}
 				}
 				continue
 			case "libraryPath":
@@ -3420,6 +3422,95 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 		}
 	}
 	return out
+}
+
+// reanchorLinkOptToken rewrites convert-time absolute paths embedded
+// in a tokenised linker flag to a form that survives into Bazel's
+// hermetic build. Returns (token, keep): keep=false signals "drop
+// this token entirely" — used for cmake-internal flags whose value
+// is the convert-time build dir (Bazel has no equivalent and the
+// flag would refer to a path that doesn't exist at action time).
+//
+// Rewrites:
+//
+//   - `-Wl,-rpath-link,<absbuild>...` / `-Wl,-rpath,<absbuild>...`:
+//     cmake's Ninja generator emits these so the convert-time
+//     build can find sibling libraries during link without
+//     re-running the configure cache. Bazel's hermetic action
+//     model resolves deps through cc_library labels and doesn't
+//     need rpath-link at link time. Drop. (Source-relative
+//     -rpath / -rpath-link is legitimate runtime metadata for
+//     downstream consumers and stays.)
+//
+//   - `-Wl,--version-script,<srcabs>` / `-Wl,--retain-symbols-file,
+//     <srcabs>` and the comma-quoted variants: re-anchor the
+//     embedded path to source-relative slash form when it sits
+//     under cmakeSrc. The operator's BUILD.bazel ends up with
+//     e.g. `-Wl,--version-script,"zlib.map"`. (A workspace-relative
+//     reference still leaks the convert-time current-working-dir
+//     assumption; queued is a follow-up that swaps this for
+//     `additional_linker_inputs = [...]` + `$(location ...)`. For
+//     now, removing the absolute prefix is the table-stakes fix.)
+//
+// Tokens without an embedded absolute path pass through unchanged.
+func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
+	if tok == "" {
+		return tok, true
+	}
+	// cmake-internal rpath-link to the build dir's per-config lib
+	// dir. cmake's generator emits one per target; Bazel's link
+	// action doesn't need rpath-link because the action's input
+	// closure pins every library participating in the link. The
+	// reference also baked the convert-time absolute path AND
+	// often an unresolved ${CONFIGURATION} placeholder, neither
+	// of which would resolve at Bazel build time.
+	for _, prefix := range []string{
+		"-Wl,-rpath-link,",
+		"-Wl,-rpath,",
+	} {
+		if strings.HasPrefix(tok, prefix) {
+			payload := tok[len(prefix):]
+			if buildDir != "" && filepath.IsAbs(payload) {
+				if _, ok := relativeIfInside(buildDir, payload); ok {
+					return "", false
+				}
+			}
+			return tok, true
+		}
+	}
+	// version-script / retain-symbols-file embed a single path in
+	// the comma-separated wire shape `-Wl,--<name>,<path>` (often
+	// with `<path>` quoted). Re-anchor when the path is absolute
+	// under cmakeSrc; drop the token when it's under buildDir
+	// (convert-time-generated; the .exports / .map file won't be
+	// in Bazel's input closure).
+	for _, prefix := range []string{
+		`-Wl,--version-script,`,
+		`-Wl,--retain-symbols-file,`,
+		`-Wl,--dynamic-list,`,
+	} {
+		if !strings.HasPrefix(tok, prefix) {
+			continue
+		}
+		raw := tok[len(prefix):]
+		// Strip wrapping quotes (cmake serialises some as `"<abs>"`).
+		stripped := strings.Trim(raw, `"`)
+		if !filepath.IsAbs(stripped) {
+			return tok, true
+		}
+		if buildDir != "" {
+			if _, ok := relativeIfInside(buildDir, stripped); ok {
+				return "", false
+			}
+		}
+		if cmakeSrc != "" {
+			if rel, ok := relativeIfInside(cmakeSrc, stripped); ok {
+				return prefix + `"` + rel + `"`, true
+			}
+		}
+		return tok, true
+	}
+	return tok, true
 }
 
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
