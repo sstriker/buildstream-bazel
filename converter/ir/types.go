@@ -191,6 +191,26 @@ type Target struct {
 	Defines  []string
 	LinkOpts []string
 
+	// LocalDefines maps to Bazel's `local_defines = [...]`
+	// attribute on cc_library / cc_binary / cc_test. Same shape
+	// as Defines but non-transitive: consumers of the rule don't
+	// see the macro at compile time. The cmake equivalent is
+	// `target_compile_definitions(t PRIVATE FOO)` — PRIVATE
+	// scope means the define applies only when compiling t's
+	// own sources. Routing PRIVATE-scope defines here keeps the
+	// rendered BUILD honest about cmake's scope rules instead
+	// of over-propagating defines to consumers via Bazel's
+	// transitive `defines`.
+	//
+	// Populated by applyPrivateScopeToDefines (lower-side
+	// post-pass that consults shadow.Decoded.CompileDefinitions)
+	// when the trace classifies a define as PRIVATE-scoped. The
+	// post-pass only moves defines the trace explicitly tags
+	// PRIVATE; codemodel-only paths (no trace) leave the field
+	// unset and fold everything into Defines — strictly safe,
+	// preserves byte-identical pre-existing emit.
+	LocalDefines []string
+
 	// Deps are Bazel labels to other targets whose headers are
 	// reachable through this target's public hdrs. Maps to
 	// `deps = [...]` on the emitted rule. Per gazelle_cc canon,
