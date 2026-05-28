@@ -46,6 +46,7 @@ var convertTimeBakedShapes = map[string]string{
 	"cmake-codegen-file-generate":                     "file(GENERATE) rendered bytes baked at convert time (genex evaluator declined)",
 	"cmake-codegen-execute-process-op=configure_file": "configure_file shape lifted at convert time",
 	"cmake-codegen-cmake-script-lift":                 "cmake -P script lifted via operator-staged runner (script-internal paths must survive the sandbox)",
+	"cmake-codegen-autoinit-bake":                     "VTK-shape AUTOINIT_INCLUDE header bytes baked at convert time",
 }
 
 // warnConvertTimeBaking walks the package's targets and emits
