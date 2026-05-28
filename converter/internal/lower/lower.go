@@ -989,7 +989,11 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			cmd = t.BacktraceGraph.Commands[node.Command]
 		}
 		if file != "" {
-			irt.Provenance = ir.Provenance{File: file, Line: node.Line, Command: cmd}
+			irt.Provenance = ir.Provenance{
+				File:    reanchorProvenanceFile(file, cmakeSrc, cmakeBuild),
+				Line:    node.Line,
+				Command: cmd,
+			}
 		}
 	}
 
