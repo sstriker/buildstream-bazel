@@ -24,7 +24,7 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "strip cd prefix targeting buildDir",
 			in:   "cd /tmp/proj/build && /usr/bin/cmake -E touch foo",
-			want: "/usr/bin/cmake -E touch foo",
+			want: "cmake -E touch foo",
 		},
 		{
 			name: "strip cd prefix targeting buildDir subdir",
@@ -34,7 +34,7 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "strip cd prefix targeting cmakeSrc subdir",
 			in:   "cd /tmp/proj/src/sub && /usr/bin/foo bar",
-			want: "/usr/bin/foo bar",
+			want: "foo bar",
 		},
 		{
 			name: "leave cd prefix when target outside anchors",
@@ -44,12 +44,12 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "rewrite cmakeSrc-rooted path references",
 			in:   "/usr/bin/cmake -P /tmp/proj/src/scripts/run.cmake -DIN=/tmp/proj/src/in.txt",
-			want: "/usr/bin/cmake -P scripts/run.cmake -DIN=in.txt",
+			want: "cmake -P scripts/run.cmake -DIN=in.txt",
 		},
 		{
 			name: "rewrite buildDir-rooted path references",
 			in:   "/usr/bin/cmake -E copy /tmp/proj/build/scripts/foo.out /tmp/proj/build/libfoo.sym",
-			want: "/usr/bin/cmake -E copy scripts/foo.out libfoo.sym",
+			want: "cmake -E copy scripts/foo.out libfoo.sym",
 		},
 		{
 			name: "combo — strip cd, rewrite both anchors",
@@ -60,6 +60,26 @@ func TestRewriteGenruleCmd(t *testing.T) {
 			name: "partial-match safety — buildDir vs buildDir_other",
 			in:   "cd /tmp/proj/build_other && do_thing /tmp/proj/build_other/foo",
 			want: "cd /tmp/proj/build_other && do_thing /tmp/proj/build_other/foo",
+		},
+		{
+			name: "strip /usr/bin/ prefix at cmd start",
+			in:   "/usr/bin/cmake -E remove foo",
+			want: "cmake -E remove foo",
+		},
+		{
+			name: "strip /usr/local/bin/ prefix at cmd start",
+			in:   "/usr/local/bin/python3 script.py",
+			want: "python3 script.py",
+		},
+		{
+			name: "strip host-bin after && separator",
+			in:   "/usr/bin/cmake -E remove foo && /usr/bin/cmake -E copy a b",
+			want: "cmake -E remove foo && cmake -E copy a b",
+		},
+		{
+			name: "preserve host-bin embedded inside argv arg",
+			in:   "do_thing --option=/usr/bin/foo",
+			want: "do_thing --option=/usr/bin/foo",
 		},
 	}
 	for _, tc := range cases {

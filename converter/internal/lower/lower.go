@@ -3490,6 +3490,53 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 	if buildDir != "" {
 		cmd = strings.ReplaceAll(cmd, buildDir+"/", "")
 	}
+	// Strip well-known host-bin tool prefixes so the command relies
+	// on PATH (the operator's responsibility) instead of baking the
+	// convert-host's filesystem layout. Bazel's sandbox typically
+	// provides /usr/bin on PATH but the cross-distro picture is
+	// noisy (Alpine, NixOS, custom images) — `/usr/local/bin/python3`
+	// definitely doesn't exist on Debian/Ubuntu where Bazel images
+	// are commonly based. The bare-name form (`cmake`, `python3`)
+	// resolves via PATH on every host that has the tool installed.
+	for _, prefix := range []string{
+		"/usr/bin/",
+		"/usr/local/bin/",
+	} {
+		// Replace only when the prefix sits at a word boundary
+		// (start of cmd, or preceded by whitespace / `&&` / `||`
+		// / `;` / `|` / `(` ) so we don't accidentally maul an
+		// `<absbuild>/.../usr/bin/...` payload. Conservative
+		// regex would handle this; for a one-off rewrite, a
+		// HasPrefix check at cmd start + a `&& <prefix>` /
+		// `|| <prefix>` / `; <prefix>` / `| <prefix>` substring
+		// scan covers the common cases.
+		cmd = stripToolPrefixAtBoundaries(cmd, prefix)
+	}
+	return cmd
+}
+
+// stripToolPrefixAtBoundaries removes `prefix` from `cmd` wherever
+// it sits at the start of a command word — start of cmd, or right
+// after a shell command-separator. Conservative: misses prefix
+// occurrences inside argv args (e.g. `--option=/usr/bin/...`) on
+// purpose; those are typically genuine path values where the host
+// layout is operator-significant.
+func stripToolPrefixAtBoundaries(cmd, prefix string) string {
+	// Cmd-start prefix.
+	if strings.HasPrefix(cmd, prefix) {
+		cmd = cmd[len(prefix):]
+	}
+	// Common shell separators followed by the prefix. Each separator
+	// is space-padded by cmake's emit.
+	for _, sep := range []string{
+		" && ",
+		" || ",
+		" ; ",
+		" | ",
+	} {
+		needle := sep + prefix
+		cmd = strings.ReplaceAll(cmd, needle, sep)
+	}
 	return cmd
 }
 
