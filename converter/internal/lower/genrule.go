@@ -121,6 +121,16 @@ type codegenContext struct {
 	// without re-threading the Options struct through every
 	// helper.
 	Warnings io.Writer
+
+	// ArtifactToName maps each codemodel target's artifact paths
+	// (build-dir-relative, e.g. `bin/llvm-min-tblgen`) to the
+	// target's name. Used by recoverGenrule's tool-from-target
+	// rewrite — same role as the value lowerStandaloneCustomCommands
+	// receives as a parameter, but threaded through the
+	// codegenContext so the per-target recovery path can lift
+	// bare-tool-path references in the same way without changing
+	// the recoverGenrule signature.
+	ArtifactToName map[string]string
 }
 
 func newCodegenContext() *codegenContext {
@@ -264,14 +274,17 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	srcs := genruleSrcs(b, cmakeSrc, buildDir)
 	tags := genruleTags(cmd, b, g)
 
+	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
+	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName)
 	gen := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
-		GenruleOuts: outs,
-		Srcs:        srcs,
-		Tags:        tags,
-		Visibility:  []string{"//visibility:private"},
+		Name:         name,
+		Kind:         ir.KindGenrule,
+		GenruleCmd:   rewrittenCmd,
+		GenruleOuts:  outs,
+		GenruleTools: tools,
+		Srcs:         srcs,
+		Tags:         tags,
+		Visibility:   []string{"//visibility:private"},
 	}
 	cc.Genrules = append(cc.Genrules, gen)
 	cc.SeenBuilds[b] = name

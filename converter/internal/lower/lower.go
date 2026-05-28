@@ -804,6 +804,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 	}
+	// Thread the artifact-path map into the codegenContext so
+	// recoverGenrule's tool-from-target rewrite can lift bare
+	// `bin/<tool>` references in per-target generated-source
+	// genrule cmds — same shape lowerStandaloneCustomCommands
+	// receives the map as a parameter.
+	cc.ArtifactToName = artifactToName
 
 	for _, tref := range cfg.Targets {
 		t, ok := r.Targets[tref.Id]
