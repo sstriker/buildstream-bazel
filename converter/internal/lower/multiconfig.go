@@ -80,6 +80,38 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		// arm is the canonical source for cross-config-varying
 		// values.
 		dedupBaselineAgainstDeltas(tgt)
+		// applyPartition can leave behind empty per-config arms
+		// when its inner filter (libraries-role skip, build-dir
+		// reanchor drop) removes every value the cell had. An
+		// empty select() arm renders as `"//config:debug": [],`
+		// which is verbose noise — the operator-visible select
+		// becomes a no-op. Prune any attr in PerPlatform whose
+		// arms are all empty.
+		pruneEmptyPerPlatform(tgt)
+	}
+}
+
+// pruneEmptyPerPlatform drops any tgt.PerPlatform[attr] map whose
+// per-cell value slices are all empty. Leaves attrs with at least
+// one non-empty cell intact.
+func pruneEmptyPerPlatform(tgt *ir.Target) {
+	if tgt == nil || tgt.PerPlatform == nil {
+		return
+	}
+	for attr, arms := range tgt.PerPlatform {
+		allEmpty := true
+		for _, vs := range arms {
+			if len(vs) > 0 {
+				allEmpty = false
+				break
+			}
+		}
+		if allEmpty {
+			delete(tgt.PerPlatform, attr)
+		}
+	}
+	if len(tgt.PerPlatform) == 0 {
+		tgt.PerPlatform = nil
 	}
 }
 
