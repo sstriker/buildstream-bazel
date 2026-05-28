@@ -54,6 +54,23 @@ type TargetFold struct {
 	// (language, fragment) pair, prefixed by language to
 	// disambiguate.
 	CompileFragments Partition
+
+	// Sources is the per-target source file set keyed on
+	// TargetSource.Path. Tracks per-config source-list deltas —
+	// projects whose CMakeLists.txt gates `target_sources(X
+	// PRIVATE ${SRC})` on the build configuration (e.g.
+	// `if(CMAKE_BUILD_TYPE STREQUAL "Debug") target_sources(X
+	// PRIVATE debug_only.c) endif()`) emit different Sources[]
+	// per config; the partition routes the deltas to
+	// PerPlatform["srcs"] select() arms instead of dropping
+	// to cfg[0]'s view.
+	Sources Partition
+	// Dependencies is the per-target codemodel-deps set keyed on
+	// TargetDependency.Id. Same shape as Sources, gated on
+	// `target_link_libraries(X PRIVATE ${LIB})` under build-
+	// config-conditional cmake blocks; routes per-config dep
+	// deltas to PerPlatform["deps"] arms.
+	Dependencies Partition
 }
 
 // Partition is one fact family's cross-cell split. Baseline keeps
@@ -89,6 +106,8 @@ func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []
 		includes map[string]map[string]bool
 		link     map[string]map[string]bool
 		compile  map[string]map[string]bool
+		sources  map[string]map[string]bool
+		deps     map[string]map[string]bool
 	}
 	perTarget := map[string]*tables{}
 	targetNames := map[string]string{} // id → display name
@@ -102,11 +121,34 @@ func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []
 					includes: map[string]map[string]bool{},
 					link:     map[string]map[string]bool{},
 					compile:  map[string]map[string]bool{},
+					sources:  map[string]map[string]bool{},
+					deps:     map[string]map[string]bool{},
 				}
 				perTarget[id] = tbl
 			}
 			if t.Name != "" {
 				targetNames[id] = t.Name
+			}
+			// Per-config sources. Skip generated sources (cmake
+			// records `<gen>` flag on sources from configure_file
+			// / add_custom_command outputs; those are handled by
+			// the genrule lift, not the per-config srcs fold).
+			for _, src := range t.Sources {
+				if src.IsGenerated {
+					continue
+				}
+				if tbl.sources[src.Path] == nil {
+					tbl.sources[src.Path] = map[string]bool{}
+				}
+				tbl.sources[src.Path][cfgName] = true
+			}
+			// Per-config codemodel dependencies (target IDs that
+			// the lower path will later resolve to Bazel labels).
+			for _, d := range t.Dependencies {
+				if tbl.deps[d.Id] == nil {
+					tbl.deps[d.Id] = map[string]bool{}
+				}
+				tbl.deps[d.Id][cfgName] = true
 			}
 			for _, cg := range t.CompileGroups {
 				for _, def := range cg.Defines {
@@ -184,6 +226,8 @@ func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []
 			Includes:         partitionToShape(empfold.Partition(configs, tbl.includes)),
 			LinkFragments:    partitionToShape(empfold.Partition(configs, tbl.link)),
 			CompileFragments: partitionToShape(empfold.Partition(configs, tbl.compile)),
+			Sources:          partitionToShape(empfold.Partition(configs, tbl.sources)),
+			Dependencies:     partitionToShape(empfold.Partition(configs, tbl.deps)),
 		})
 	}
 	return out

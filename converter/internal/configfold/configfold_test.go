@@ -271,6 +271,112 @@ func TestProject_TokenisesWhitespaceJoinedFragments(t *testing.T) {
 	}
 }
 
+// TestProject_PerConfigSourcesPartition pins Phase 5's target-
+// graph fold for sources: when CMakeLists gates `target_sources(X
+// PRIVATE ${SRC})` on the build config, the resulting Sources[]
+// list differs across configs; Project() partitions by config so
+// the per-config delta routes through PerPlatform["srcs"] arms
+// instead of dropping to cfg[0]'s view.
+func TestProject_PerConfigSourcesPartition(t *testing.T) {
+	byCfg := map[string]map[string]fileapi.Target{
+		"foo::@": {
+			"Release": fileapi.Target{
+				Name: "foo",
+				Sources: []fileapi.TargetSource{
+					{Path: "src/common.c"},
+					{Path: "src/release_only.c"},
+				},
+			},
+			"Debug": fileapi.Target{
+				Name: "foo",
+				Sources: []fileapi.TargetSource{
+					{Path: "src/common.c"},
+					{Path: "src/debug_only.c"},
+				},
+			},
+		},
+	}
+	out := configfold.Project(byCfg, []string{"Release", "Debug"})
+	fold := out[0]
+	if !fold.Sources.Baseline["src/common.c"] {
+		t.Errorf("common.c in both → baseline; got %v", fold.Sources.Baseline)
+	}
+	if !fold.Sources.Deltas["Release"]["src/release_only.c"] {
+		t.Errorf("release_only.c should be Release delta; got %v", fold.Sources.Deltas)
+	}
+	if !fold.Sources.Deltas["Debug"]["src/debug_only.c"] {
+		t.Errorf("debug_only.c should be Debug delta; got %v", fold.Sources.Deltas)
+	}
+}
+
+// TestProject_PerConfigSourcesSkipsGenerated pins that
+// configure_file / add_custom_command outputs (IsGenerated == true
+// in the codemodel) are excluded from the Sources partition.
+// Generated outputs are handled by the genrule lift, not the
+// per-config srcs fold; routing them through PerPlatform["srcs"]
+// would double-account them.
+func TestProject_PerConfigSourcesSkipsGenerated(t *testing.T) {
+	byCfg := map[string]map[string]fileapi.Target{
+		"foo::@": {
+			"Release": fileapi.Target{
+				Name: "foo",
+				Sources: []fileapi.TargetSource{
+					{Path: "src/real.c"},
+					{Path: "build/generated.c", IsGenerated: true},
+				},
+			},
+			"Debug": fileapi.Target{
+				Name: "foo",
+				Sources: []fileapi.TargetSource{
+					{Path: "src/real.c"},
+				},
+			},
+		},
+	}
+	out := configfold.Project(byCfg, []string{"Release", "Debug"})
+	fold := out[0]
+	if fold.Sources.Baseline["build/generated.c"] ||
+		fold.Sources.Deltas["Release"]["build/generated.c"] {
+		t.Errorf("generated source should be excluded; got %v", fold.Sources)
+	}
+}
+
+// TestProject_PerConfigDependenciesPartition pins the same shape
+// for codemodel Dependencies — when `target_link_libraries(X
+// PRIVATE ${LIB})` differs per config, the Dependency.Id sets
+// partition correctly.
+func TestProject_PerConfigDependenciesPartition(t *testing.T) {
+	byCfg := map[string]map[string]fileapi.Target{
+		"foo::@": {
+			"Release": fileapi.Target{
+				Name: "foo",
+				Dependencies: []fileapi.TargetDependency{
+					{Id: "common::@xyz"},
+					{Id: "release_only_lib::@xyz"},
+				},
+			},
+			"Debug": fileapi.Target{
+				Name: "foo",
+				Dependencies: []fileapi.TargetDependency{
+					{Id: "common::@xyz"},
+					{Id: "debug_only_lib::@xyz"},
+				},
+			},
+		},
+	}
+	out := configfold.Project(byCfg, []string{"Release", "Debug"})
+	fold := out[0]
+	if !fold.Dependencies.Baseline["common::@xyz"] {
+		t.Errorf("common dep should be baseline; got %v", fold.Dependencies.Baseline)
+	}
+	if !fold.Dependencies.Deltas["Release"]["release_only_lib::@xyz"] {
+		t.Errorf("release_only_lib should be Release delta; got %v", fold.Dependencies.Deltas)
+	}
+	if !fold.Dependencies.Deltas["Debug"]["debug_only_lib::@xyz"] {
+		t.Errorf("debug_only_lib should be Debug delta; got %v", fold.Dependencies.Deltas)
+	}
+}
+
 // TestProject_DeterministicOrder confirms target output order is
 // sorted by id so callers can use the slice index as a stable key.
 func TestProject_DeterministicOrder(t *testing.T) {
