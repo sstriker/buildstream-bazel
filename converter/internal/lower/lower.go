@@ -1835,6 +1835,15 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					if !keep {
 						continue
 					}
+					// Drop compile-only flags that cmake folded into
+					// the link line via CMAKE_*_FLAGS — warnings,
+					// preprocessor defines, include dirs, language
+					// standard. Bazel separates compile/link and
+					// rejects these on the link line at best as
+					// dead bytes, at worst as warnings.
+					if isCompileOnlyLinkFlag(rewritten) {
+						continue
+					}
 					irt.LinkOpts = append(irt.LinkOpts, rewritten)
 					if addlInput != "" && !stringSliceContains(irt.AdditionalLinkerInputs, addlInput) {
 						irt.AdditionalLinkerInputs = append(irt.AdditionalLinkerInputs, addlInput)
