@@ -1011,6 +1011,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 	}
+	// Surface install(SCRIPT) / install(CODE) directives. These run
+	// cmake script code at install time and have no Bazel
+	// analogue — the converter drops them silently. The warning
+	// makes the omission auditable so operators who care about
+	// install-time logic see what was lost.
+	surfaceInstallScriptInstallers(r, opts.Warnings)
 	return pkg, nil
 }
 
