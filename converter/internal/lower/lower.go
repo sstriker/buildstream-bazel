@@ -784,12 +784,25 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// resolution can distinguish "skip utility" from "unresolved".
 	idToName := map[string]string{}
 	utilityIDs := map[string]bool{}
+	// artifactToName maps each codemodel target's artifact paths
+	// (build-dir-relative, e.g. `bin/llvm-min-tblgen`) to the
+	// target's name. Used by rewriteToolFromTarget to lift bare
+	// artifact-path tool references in genrule cmds into
+	// `$(location :<name>)` form plus a tools attr entry.
+	artifactToName := map[string]string{}
 	for _, tref := range cfg.Targets {
 		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
 			utilityIDs[tref.Id] = true
 			continue
 		}
 		idToName[tref.Id] = tref.Name
+		if t, ok := r.Targets[tref.Id]; ok {
+			for _, art := range t.Artifacts {
+				if art.Path != "" {
+					artifactToName[art.Path] = tref.Name
+				}
+			}
+		}
 	}
 
 	for _, tref := range cfg.Targets {
@@ -931,7 +944,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			AddDependencies: decodedAddDependencies,
 		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, traceCtx)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, artifactToName, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
