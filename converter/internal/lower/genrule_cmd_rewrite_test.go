@@ -61,6 +61,31 @@ func TestRewriteGenruleCmd(t *testing.T) {
 			in:   "",
 			want: "",
 		},
+		{
+			name: "bare anchor at `=` boundary",
+			in:   "/usr/bin/cmake -DCMAKE_BINARY_DIR=/tmp/proj/build -P script.cmake",
+			want: "/usr/bin/cmake -DCMAKE_BINARY_DIR=. -P script.cmake",
+		},
+		{
+			name: "bare anchor at `-S` flag boundary",
+			in:   "/usr/bin/cmake --regenerate-during-build -S/tmp/proj/src -B/tmp/proj/build",
+			want: "/usr/bin/cmake --regenerate-during-build -S. -B.",
+		},
+		{
+			name: "bare anchor at trailing position",
+			in:   "echo /tmp/proj/build",
+			want: "echo .",
+		},
+		{
+			name: "bare anchor inside longer token does not match",
+			in:   "echo /tmp/proj/build_other",
+			want: "echo /tmp/proj/build_other",
+		},
+		{
+			name: "bare anchor followed by `;`",
+			in:   "do /tmp/proj/build;rest",
+			want: "do .;rest",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -72,5 +72,77 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 		}
 		cmd = strings.ReplaceAll(cmd, anchor+"/", "")
 	}
+	// Also rewrite bare-anchor occurrences (no trailing slash) when
+	// the anchor sits at a token boundary — covers cmake-Ninja
+	// bookkeeping shapes that don't fit the trailing-slash pass:
+	//
+	//     /usr/bin/cmake -DCMAKE_BINARY_DIR=<buildDir> -P ...
+	//     /usr/bin/cmake --regenerate-during-build -S<cmakeSrc> -B<buildDir>
+	//
+	// Rewriting to "." points the cmake invocation at the genrule's
+	// sandbox cwd — the closest workspace-relative analogue. These
+	// cmds typically belong to cmake-internal regen / install edges
+	// that a separate filter discards entirely; even if a few slip
+	// through, the rendered cmd shouldn't leak the convert-host
+	// filesystem layout.
+	for _, anchor := range []string{cmakeSrc, buildDir} {
+		if anchor == "" {
+			continue
+		}
+		cmd = replaceBareAnchorAtBoundary(cmd, anchor, ".")
+	}
 	return cmd
+}
+
+// replaceBareAnchorAtBoundary rewrites every occurrence of
+// `anchor` in `s` where the anchor sits at a token boundary — i.e.
+// preceded by start-of-string, whitespace, `=`, OR the cmake CLI
+// `-S` / `-B` flag prefix (these fuse the path to the flag with no
+// separating space), AND followed by end-of-string, whitespace,
+// `=`, `&`, or `;`. Occurrences inside a longer token
+// (`<anchor>foo`) pass through unchanged — those are caller-handled
+// via the strings.ReplaceAll trailing-slash pass.
+func replaceBareAnchorAtBoundary(s, anchor, replacement string) string {
+	if anchor == "" || !strings.Contains(s, anchor) {
+		return s
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		idx := strings.Index(s[i:], anchor)
+		if idx < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		start := i + idx
+		end := start + len(anchor)
+		// Boundary check: byte before.
+		prevOK := start == 0
+		if !prevOK {
+			c := s[start-1]
+			if c == ' ' || c == '\t' || c == '=' {
+				prevOK = true
+			} else if start >= 2 && s[start-2] == '-' && (s[start-1] == 'S' || s[start-1] == 'B') {
+				// cmake CLI: `-S<path>` / `-B<path>` fuses the
+				// path to the flag with no separating space.
+				prevOK = true
+			}
+		}
+		// Boundary check: byte after.
+		nextOK := end == len(s)
+		if !nextOK {
+			c := s[end]
+			if c == ' ' || c == '\t' || c == '=' || c == '&' || c == ';' {
+				nextOK = true
+			}
+		}
+		b.WriteString(s[i:start])
+		if prevOK && nextOK {
+			b.WriteString(replacement)
+		} else {
+			b.WriteString(anchor)
+		}
+		i = end
+	}
+	return b.String()
 }
