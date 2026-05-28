@@ -96,3 +96,56 @@ func rewriteToolFromTargetTokens(cmd string, artifactToLabel map[string]string) 
 	}
 	return strings.Join(tokens, " "), tools
 }
+
+// applyToolFromTargetToGenrules walks every genrule in pkg.Targets
+// and applies the artifactToLabel rewrite: cmd tokens that match
+// an artifact basename become `$(location :<targetName>)`, the
+// matched labels join the genrule's tools attribute, and the
+// corresponding srcs entry (the verbatim cmake-recorded artifact
+// path that the ninja graph captured as an input) is removed so
+// it doesn't double as a phantom src-shaped file Bazel would
+// fail to find under the package.
+//
+// Runs as a post-pass over pkg.Targets after every cc_binary /
+// cc_library is in place so the artifact lookup sees the complete
+// target set — the per-target recoverGenrule path runs before all
+// targets are lowered, so its cmds couldn't be rewritten in-place.
+//
+// Conservative: a nil / empty artifactToLabel is a no-op; targets
+// other than KindGenrule are untouched; the rewrite only fires
+// when at least one token matches.
+func applyToolFromTargetToGenrules(pkg *ir.Package, artifactToLabel map[string]string) {
+	if pkg == nil || len(artifactToLabel) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindGenrule {
+			continue
+		}
+		newCmd, newTools := rewriteToolFromTargetTokens(t.GenruleCmd, artifactToLabel)
+		if len(newTools) == 0 {
+			continue
+		}
+		t.GenruleCmd = newCmd
+		for _, lbl := range newTools {
+			if !stringSliceContains(t.GenruleTools, lbl) {
+				t.GenruleTools = append(t.GenruleTools, lbl)
+			}
+		}
+		// Drop srcs entries whose basename matches an artifact —
+		// those moved into tools and shouldn't double as phantom
+		// src-shaped files Bazel can't locate under the package.
+		kept := t.Srcs[:0]
+		for _, s := range t.Srcs {
+			if _, isTool := artifactToLabel[path.Base(s)]; isTool {
+				continue
+			}
+			if _, isTool := artifactToLabel[s]; isTool {
+				continue
+			}
+			kept = append(kept, s)
+		}
+		t.Srcs = kept
+	}
+}

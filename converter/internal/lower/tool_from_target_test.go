@@ -107,3 +107,66 @@ func TestRewriteToolFromTargetTokens_EmptyCmd(t *testing.T) {
 		t.Errorf("empty cmd: got (%q, %v); want (%q, nil)", gotCmd, gotTools, "")
 	}
 }
+
+func TestApplyToolFromTargetToGenrules(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{Name: "H5detect", Kind: ir.KindCCBinary, ArtifactName: "vtkH5detect"},
+			{
+				Name:        "gen_H5Tinit",
+				Kind:        ir.KindGenrule,
+				Srcs:        []string{"bin/vtkH5detect", "other.h"},
+				GenruleCmd:  "bin/vtkH5detect H5Tinit.c",
+				GenruleOuts: []string{"H5Tinit.c"},
+			},
+			{
+				Name:       "unrelated",
+				Kind:       ir.KindCCLibrary,
+				Srcs:       []string{"lib.cc"},
+				GenruleCmd: "should not touch this cc_library",
+			},
+		},
+	}
+	artifactToLabel := buildArtifactToLabelMap(pkg.Targets)
+	applyToolFromTargetToGenrules(pkg, artifactToLabel)
+
+	gen := pkg.Targets[1]
+	wantCmd := "$(location :H5detect) H5Tinit.c"
+	if gen.GenruleCmd != wantCmd {
+		t.Errorf("cmd = %q; want %q", gen.GenruleCmd, wantCmd)
+	}
+	if len(gen.GenruleTools) != 1 || gen.GenruleTools[0] != ":H5detect" {
+		t.Errorf("tools = %v; want [:H5detect]", gen.GenruleTools)
+	}
+	// srcs should have bin/vtkH5detect dropped; other.h kept.
+	if len(gen.Srcs) != 1 || gen.Srcs[0] != "other.h" {
+		t.Errorf("srcs after rewrite = %v; want [other.h]", gen.Srcs)
+	}
+
+	lib := pkg.Targets[2]
+	if lib.GenruleCmd != "should not touch this cc_library" {
+		t.Errorf("cc_library cmd was mutated: %q", lib.GenruleCmd)
+	}
+}
+
+func TestApplyToolFromTargetToGenrules_NoMatch(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{Name: "unmatched", Kind: ir.KindCCBinary, ArtifactName: "different"},
+			{
+				Name:       "gen_thing",
+				Kind:       ir.KindGenrule,
+				Srcs:       []string{"a.h"},
+				GenruleCmd: "echo hi > $@",
+			},
+		},
+	}
+	applyToolFromTargetToGenrules(pkg, buildArtifactToLabelMap(pkg.Targets))
+	gen := pkg.Targets[1]
+	if gen.GenruleCmd != "echo hi > $@" {
+		t.Errorf("cmd should pass through; got %q", gen.GenruleCmd)
+	}
+	if gen.GenruleTools != nil {
+		t.Errorf("tools should stay nil; got %v", gen.GenruleTools)
+	}
+}

@@ -910,6 +910,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		pkg.Targets = append(pkg.Targets,
 			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, traceCtx)...)
 	}
+	// Post-pass: rewrite genrule cmds whose tokens reference an
+	// in-tree cc_binary artifact (cmake's `bin/<artifact>` shape)
+	// into `$(location :<target>)` form and populate the genrule's
+	// tools attribute. This covers the recoverGenrule path whose
+	// per-target lift runs before all targets exist; the standalone-
+	// custom-command lift already applied the rewrite inline with
+	// the same artifact→label map.
+	applyToolFromTargetToGenrules(pkg, buildArtifactToLabelMap(pkg.Targets))
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
 	// project the cross-config Partition into PerPlatform-shaped
