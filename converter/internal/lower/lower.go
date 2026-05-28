@@ -1334,7 +1334,9 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
-			defs = append(defs, d.Define)
+			if reanchored, keep := reanchorDefineValue(d.Define, cmakeSrc, cmakeBuild); keep {
+				defs = append(defs, reanchored)
+			}
 		}
 		irt.Defines = defs
 
@@ -2081,7 +2083,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
 	if shouldSplitCompileGroups(t) {
-		if err := splitMultiLanguage(t, irt, cc); err != nil {
+		if err := splitMultiLanguage(t, irt, cc, cmakeSrc, cmakeBuild); err != nil {
 			return nil, err
 		}
 	}
@@ -2324,7 +2326,7 @@ func intSuffix(n int) string {
 // The wrapper drops Srcs / Copts / Defines, retains the
 // public surface (hdrs, includes, visibility, install
 // metadata), and adds a Deps edge to each sub-library.
-func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) error {
+func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string) error {
 	// Sort CompileGroups by language for deterministic sub-
 	// library ordering across runs (the codemodel records them
 	// in source-declaration order, which is stable but harder
@@ -2388,7 +2390,9 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 		// already inlined a -std flag).
 		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
 		for _, d := range cg.Defines {
-			defs = append(defs, d.Define)
+			if reanchored, keep := reanchorDefineValue(d.Define, cmakeSrc, cmakeBuild); keep {
+				defs = append(defs, reanchored)
+			}
 		}
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
@@ -3422,6 +3426,50 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 		}
 	}
 	return out
+}
+
+// reanchorDefineValue rewrites convert-time absolute paths
+// embedded in a preprocessor define's value to a form that
+// survives into Bazel's hermetic build. Returns (define, keep):
+// keep=false signals "drop this define entirely" — used when
+// the value points at a convert-time-generated file in the
+// cmake build dir that won't survive into Bazel's input closure.
+//
+// The shape this targets: `KEY="<absolute-path>"`. VTK's
+// `vtkRenderingCore_AUTOINIT_INCLUDE="/tmp/<build>/CMakeFiles/
+// vtkModuleAutoInit_<hash>.h"` is the canonical case; cmake
+// generates these auto-init headers per-module at configure
+// time and embeds the absolute path as a preprocessor define.
+// Bazel sandbox-misses the file at action time.
+//
+// Behaviour:
+//
+//   - Define value with no embedded absolute path → unchanged.
+//   - Path under cmakeSrc → re-anchor + requote.
+//   - Path under buildDir → drop (cmake-internal; convert-time-
+//     generated file isn't reachable at Bazel build time).
+//   - Other absolute path → leave alone (operator's responsibility).
+func reanchorDefineValue(def, cmakeSrc, buildDir string) (string, bool) {
+	eq := strings.IndexByte(def, '=')
+	if eq < 0 {
+		return def, true
+	}
+	key, raw := def[:eq], def[eq+1:]
+	stripped := strings.Trim(raw, `"`)
+	if !filepath.IsAbs(stripped) {
+		return def, true
+	}
+	if buildDir != "" {
+		if _, ok := relativeIfInside(buildDir, stripped); ok {
+			return "", false
+		}
+	}
+	if cmakeSrc != "" {
+		if rel, ok := relativeIfInside(cmakeSrc, stripped); ok {
+			return key + `="` + rel + `"`, true
+		}
+	}
+	return def, true
 }
 
 // reanchorLinkOptToken rewrites convert-time absolute paths embedded

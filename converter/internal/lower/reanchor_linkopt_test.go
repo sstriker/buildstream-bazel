@@ -2,6 +2,84 @@ package lower
 
 import "testing"
 
+// TestReanchorDefineValue pins the survey-2026-05-28 follow-on
+// behaviour for preprocessor define values: convert-time absolute
+// paths embedded in KEY="<path>" defines either get re-anchored
+// to workspace-relative form (when under the cmake source root)
+// or the define gets dropped entirely (when under the cmake build
+// dir, since the referenced file is convert-time-only and won't
+// reach Bazel's input closure).
+//
+// Canonical case: VTK's `vtkRenderingCore_AUTOINIT_INCLUDE="/abs/
+// build/CMakeFiles/vtkModuleAutoInit_<hash>.h"` — cmake generates
+// these auto-init headers per-module at configure time. Bazel
+// sandbox-misses the file at action time; dropping the define is
+// the table-stakes fix (an operator using VTK in earnest needs
+// to wire AUTOINIT via a Bazel-aware mechanism anyway).
+func TestReanchorDefineValue(t *testing.T) {
+	cmakeSrc := "/tmp/proj/src"
+	buildDir := "/tmp/proj/build"
+
+	cases := []struct {
+		name    string
+		in      string
+		wantDef string
+		wantOk  bool
+	}{
+		{
+			name:    "passthrough — no equals",
+			in:      "DEBUG",
+			wantDef: "DEBUG",
+			wantOk:  true,
+		},
+		{
+			name:    "passthrough — non-path value",
+			in:      "FOO=1",
+			wantDef: "FOO=1",
+			wantOk:  true,
+		},
+		{
+			name:    "passthrough — non-absolute path value",
+			in:      `HEADER_PATH="some/header.h"`,
+			wantDef: `HEADER_PATH="some/header.h"`,
+			wantOk:  true,
+		},
+		{
+			name:    "drop — value points at build dir (AUTOINIT_INCLUDE shape)",
+			in:      `vtkRenderingCore_AUTOINIT_INCLUDE="/tmp/proj/build/CMakeFiles/vtkModuleAutoInit_abc123.h"`,
+			wantDef: "",
+			wantOk:  false,
+		},
+		{
+			name:    "re-anchor — value points at source",
+			in:      `CONFIG_HEADER="/tmp/proj/src/include/config.h"`,
+			wantDef: `CONFIG_HEADER="include/config.h"`,
+			wantOk:  true,
+		},
+		{
+			name:    "passthrough — absolute path outside both anchors (operator's problem)",
+			in:      `SYS_HEADER="/usr/include/foo.h"`,
+			wantDef: `SYS_HEADER="/usr/include/foo.h"`,
+			wantOk:  true,
+		},
+		{
+			name:    "passthrough — empty value",
+			in:      `KEY=`,
+			wantDef: `KEY=`,
+			wantOk:  true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotDef, gotOk := reanchorDefineValue(tc.in, cmakeSrc, buildDir)
+			if gotDef != tc.wantDef || gotOk != tc.wantOk {
+				t.Errorf("reanchorDefineValue(%q) = (%q, %v); want (%q, %v)",
+					tc.in, gotDef, gotOk, tc.wantDef, tc.wantOk)
+			}
+		})
+	}
+}
+
 // TestReanchorLinkOptToken pins the survey-2026-05-28 follow-on
 // behaviour: convert-time absolute paths embedded in tokenised
 // linker flags either get re-anchored to workspace-relative form
