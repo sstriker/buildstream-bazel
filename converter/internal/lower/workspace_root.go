@@ -55,6 +55,16 @@ func detectWorkspaceRoot(dir string) string {
 	}
 	dir = filepath.Clean(dir)
 	cmakeSrc := dir
+	// Hard markers (`.git`, MODULE.bazel, WORKSPACE) short-circuit
+	// the walk — they're unambiguous workspace identifiers. The
+	// umbrella heuristic (`.gitignore` / `.gitattributes` in a
+	// CMakeLists-free dir) is fuzzier: zstd's `build/.gitignore`
+	// fires the umbrella check but `build/` isn't the project root
+	// — `zstd-1.5.6/` (one level up) is. Collect all umbrella
+	// candidates as we walk, then return the HIGHEST one within
+	// the depth cap. This way nested .gitignore files in build
+	// subdirs lose to the project-root .gitignore.
+	var highestUmbrella string
 	for steps := 0; steps <= workspaceMarkerMaxDepth; steps++ {
 		for _, marker := range workspaceMarkers {
 			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
@@ -75,21 +85,23 @@ func detectWorkspaceRoot(dir string) string {
 			for _, marker := range umbrellaMarkers {
 				if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
 					if _, err := os.Stat(filepath.Join(dir, "CMakeLists.txt")); err != nil {
-						// No top-level CMakeLists.txt; this
-						// dir is an umbrella, not a project.
-						return dir
+						// Record but keep walking — a higher
+						// ancestor's marker is more
+						// authoritative than this nested one.
+						highestUmbrella = dir
+						break
 					}
 				}
 			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			// Hit filesystem root without finding a marker.
-			return ""
+			// Hit filesystem root.
+			break
 		}
 		dir = parent
 	}
-	return ""
+	return highestUmbrella
 }
 
 // workspaceMarkerMaxDepth caps detectWorkspaceRoot's walk-up.
