@@ -44,6 +44,13 @@ func TestIsCMakeInternalCmd(t *testing.T) {
 		// Dashboard arg shape.
 		{"user ctest passes through",
 			`ctest --output-on-failure`, false},
+		// mbedtls's memcheck target wraps ctest -D ExperimentalMemCheck
+		// in a sed/ctest/tail/rm pipeline. The dashboard arg is no
+		// longer at a `ctest ` prefix; substring match catches it.
+		{"ctest -D ExperimentalMemCheck wrapped in sed pipeline",
+			`sed -i.bak s+/usr/bin/valgrind+` + "`which valgrind`" + `+ DartConfiguration.tcl && ctest -O memcheck.log -D ExperimentalMemCheck && tail -n1 memcheck.log | grep 'Memory checking results:' > /dev/null`, true},
+		{"ctest -D ExperimentalCoverage (Coverage variant)",
+			`ctest -D ExperimentalCoverage`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -576,10 +576,17 @@ func isCMakeInternalCmd(cmd string) bool {
 	// through CTest classification (lower/ctest) into cc_test
 	// rules; the dashboard targets are orthogonal infrastructure
 	// for `ninja Experimental` etc.
-	if strings.HasPrefix(c, "ctest ") &&
-		(strings.Contains(c, "-D Experimental") ||
-			strings.Contains(c, "-D Nightly") ||
-			strings.Contains(c, "-D Continuous")) {
+	//
+	// Match the dashboard arg anywhere in the cmd, not just at a
+	// `ctest ` prefix — mbedtls wraps the call in a
+	// sed/ctest/tail/rm pipeline (the memcheck target). The
+	// `-D Experimental` / `Nightly` / `Continuous` substring is
+	// stable across all wrapper shapes and only appears in
+	// cmake's auto-generated dashboard cmds (user-written ctest
+	// invocations don't use the `-D <Dashboard>` arg form).
+	if strings.Contains(c, "-D Experimental") ||
+		strings.Contains(c, "-D Nightly") ||
+		strings.Contains(c, "-D Continuous") {
 		return true
 	}
 	// `cmake -E echo No interactive CMake dialog available.` IDE
