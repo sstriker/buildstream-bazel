@@ -2084,7 +2084,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
 	if shouldSplitCompileGroups(t) {
-		if err := splitMultiLanguage(t, irt, cc); err != nil {
+		if err := splitCompileGroups(t, irt, cc); err != nil {
 			return nil, err
 		}
 	}
@@ -2098,10 +2098,10 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// projects without platform conditionals.
 	//
 	// Apply to the wrapper AND to any sub-libraries that
-	// splitMultiLanguage just appended to cc.Subs. The wrapper
+	// splitCompileGroups just appended to cc.Subs. The wrapper
 	// case covers single-language targets (where irt.Srcs
 	// carries everything); the sub-library case covers
-	// multi-language targets (where splitMultiLanguage cleared
+	// multi-language targets (where splitCompileGroups cleared
 	// irt.Srcs and distributed sources across per-language sub-
 	// libraries — those subs carry the conditional sources now
 	// and need partitioning too).
@@ -2178,7 +2178,7 @@ func addPlatformConditionalSrcs(t *ir.Target, srcsByKey map[string][]string) {
 // arm so emit's verbatim arm rendering is byte-stable.
 //
 // Used by lowerTarget to apply the #217 Tier 1 partition both
-// to the wrapper target and to splitMultiLanguage's per-
+// to the wrapper target and to splitCompileGroups's per-
 // language sub-libraries (which inherit the wrapper's
 // trace-recovered conditionality map — the trace records
 // (target, src, selectKey) without sub-library scope).
@@ -2268,7 +2268,10 @@ func shouldSplitCompileGroups(t *fileapi.Target) bool {
 
 // shouldSplitMultiLanguage is the legacy name for the gate;
 // preserved as a thin alias for any external test consumer that
-// still references it.
+// still references it. The current `shouldSplitCompileGroups`
+// name is more accurate — the gate covers both multi-language
+// and per-source-defines (single-language CGs with differing
+// Defines / CompileCommandFragments) shapes.
 func shouldSplitMultiLanguage(t *fileapi.Target) bool {
 	return shouldSplitCompileGroups(t)
 }
@@ -2293,7 +2296,7 @@ func joinFragments(frags []fileapi.CommandFragment) string {
 	return strings.Join(parts, "\x00")
 }
 
-// intSuffix is itoa for the splitMultiLanguage sub-name
+// intSuffix is itoa for the splitCompileGroups sub-name
 // disambiguator. The expected range is small (handful of CGs
 // per language); avoiding strconv keeps the per-target loop's
 // allocation profile predictable.
@@ -2309,16 +2312,24 @@ func intSuffix(n int) string {
 	return string(digits)
 }
 
-// splitMultiLanguage rewrites irt as a deps-only wrapper and
-// appends one per-language ir.Target to cc.Subs. Each sub-
-// library carries:
+// splitCompileGroups rewrites irt as a deps-only wrapper and
+// appends one ir.Target per cmake CompileGroup to cc.Subs.
+// Triggered whenever shouldSplitCompileGroups returns true —
+// both the historical multi-language case (target has both .c
+// and .cc sources cmake records as separate language CGs) AND
+// the per-source-defines case (set_source_files_properties
+// gives sources differing compile contexts, surfacing as
+// multiple same-language CGs with distinct Defines /
+// CompileCommandFragments).
+//
+// Each sub-library carries:
 //
 //   - Srcs filtered to the sources cmake assigned to that
 //     compile group.
 //   - Copts + Defines extracted from that compile group's
 //     command fragments (each cmake CG carries its own full
-//     flag set including general flags like -O3, so per-
-//     language flag isolation is automatic).
+//     flag set including general flags like -O3, so per-CG
+//     flag isolation is automatic).
 //   - The same Hdrs / Includes as the wrapper would have had
 //     (cmake doesn't language-tag headers; the public include
 //     surface is shared).
@@ -2327,7 +2338,7 @@ func intSuffix(n int) string {
 // The wrapper drops Srcs / Copts / Defines, retains the
 // public surface (hdrs, includes, visibility, install
 // metadata), and adds a Deps edge to each sub-library.
-func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) error {
+func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext) error {
 	// Sort CompileGroups by language for deterministic sub-
 	// library ordering across runs (the codemodel records them
 	// in source-declaration order, which is stable but harder
