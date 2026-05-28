@@ -178,6 +178,9 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		if isCMakeBookkeepingOutput(outs[0]) {
 			continue
 		}
+		if isPackagingToolCmd(cmd) {
+			continue
+		}
 		// Use genruleSrcs so source-tree-absolute inputs
 		// (e.g. `/tmp/<src>/foo.c` from a `cmake -P` build line
 		// that the ninja generator resolved with the cmake build
@@ -434,6 +437,77 @@ func filterOutVarRefs(xs []string) []string {
 		out = append(out, x)
 	}
 	return out
+}
+
+// isPackagingToolCmd reports whether a custom-command cmd is a
+// distro-packaging tool invocation that Bazel can't reproduce.
+// Surfaced by LLVM's srpm-generation edge (`cpack ... &&
+// rpmbuild ...`); cmake projects with PackageConfig.cmake hooks
+// commonly emit one of these per packaging format. They run on
+// the convert host successfully but have no Bazel-side analogue:
+// cpack expects a configured cmake build dir, rpmbuild expects
+// the convert host's RPM toolchain, etc. Skipping them prevents
+// emit of genrules that would fail at action time.
+//
+// Conservative match: scan the cmd for any of a small,
+// hand-curated set of distro packaging-tool driver names at a
+// word boundary (so `dpkg-buildpackage-helper` doesn't match
+// the dpkg-buildpackage check). The cmake-Ninja preamble
+// (`cd <buildDir> && ...`) hasn't been stripped at this point,
+// so a first-token-only check would miss the actual driver.
+func isPackagingToolCmd(cmd string) bool {
+	if cmd == "" {
+		return false
+	}
+	for _, driver := range []string{
+		"cpack",
+		"rpmbuild",
+		"dpkg-buildpackage",
+		"debuild",
+	} {
+		if containsCmdToken(cmd, driver) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsCmdToken returns true if `cmd` contains `tok` as a
+// space-separated word OR as the basename of a `/`-rooted path
+// (so `/usr/bin/cpack` counts as a `cpack` invocation). The
+// boundary check avoids `cpack-helper` triggering the cpack
+// filter.
+func containsCmdToken(cmd, tok string) bool {
+	for i := 0; i < len(cmd); {
+		// Find next occurrence.
+		idx := strings.Index(cmd[i:], tok)
+		if idx < 0 {
+			return false
+		}
+		pos := i + idx
+		// Check left boundary: must be start, space, `&`, `;`,
+		// `|`, or `/`.
+		leftOK := pos == 0
+		if !leftOK {
+			c := cmd[pos-1]
+			leftOK = c == ' ' || c == '\t' || c == '&' ||
+				c == ';' || c == '|' || c == '/'
+		}
+		// Check right boundary: must be end, space, or one of
+		// the same shell separators (no alnum / `-` continuation).
+		end := pos + len(tok)
+		rightOK := end == len(cmd)
+		if !rightOK {
+			c := cmd[end]
+			rightOK = c == ' ' || c == '\t' || c == '&' ||
+				c == ';' || c == '|'
+		}
+		if leftOK && rightOK {
+			return true
+		}
+		i = pos + 1
+	}
+	return false
 }
 
 // isCMakeBookkeepingOutput reports whether a build-edge output

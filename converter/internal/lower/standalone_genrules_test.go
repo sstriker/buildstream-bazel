@@ -293,6 +293,41 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 	}
 }
 
+func TestIsPackagingToolCmd(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		// Plain driver invocations (after rewriteGenruleCmd).
+		{"cpack -G TGZ", true},
+		{"rpmbuild -bs llvm.spec", true},
+		{"dpkg-buildpackage -us -uc", true},
+		{"debuild -i", true},
+		// Pre-rewrite shape: cmake's `cd <abs> && <driver>` prefix.
+		{"cd /tmp/survey/build-llvm && cpack -G TGZ --config CPackSourceConfig.cmake -B srpm/SOURCES && rpmbuild -bs --define '_topdir srpm' llvm.spec", true},
+		// Absolute-path driver shapes.
+		{"/usr/bin/cpack -G DEB", true},
+		{"./cpack", true},
+		// Combined cmds that include packaging tool somewhere.
+		{"echo hi && cpack args", true},
+		// Negative: similar but not matching driver names.
+		{"echo cpack-helper foo", false}, // dash continuation is not a boundary
+		{"./rpmbuild-wrapper", false},
+		{"some/dir/cpacker", false},
+		// Negative: unrelated cmds.
+		{"echo hello world", false},
+		{"$(location :gen) input.txt", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := isPackagingToolCmd(tc.in); got != tc.want {
+				t.Errorf("isPackagingToolCmd(%q) = %v; want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLowerStandaloneCustomCommands_TraceNamesFromAddCustomTarget
 // covers the trace cross-reference: when an in-trace
 // add_custom_target wraps the OUTPUT (via DEPENDS), the emitted
