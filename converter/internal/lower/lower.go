@@ -1790,8 +1790,16 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// "libraries"-only path below handles deps wiring.
 			switch frag.Role {
 			case "flags":
-				if v := strings.TrimSpace(frag.Fragment); v != "" {
-					irt.LinkOpts = append(irt.LinkOpts, v)
+				// cmake's File API serialises link flags as one
+				// whitespace-joined string per fragment (e.g.
+				// "-Wl,--gc-sections -Wl,-z,now -O3 -DNDEBUG").
+				// Tokenise so each flag lands as its own linkopts
+				// entry — Bazel passes each list entry as a
+				// separate argv to the linker driver; without
+				// this split the linker receives the entire
+				// string as a single (invalid) flag.
+				for _, tok := range strings.Fields(frag.Fragment) {
+					irt.LinkOpts = append(irt.LinkOpts, tok)
 				}
 				continue
 			case "libraryPath":
