@@ -882,7 +882,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			AddDependencies: decodedAddDependencies,
 		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, opts.BuildDir, traceCtx)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
@@ -3426,6 +3426,71 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 		}
 	}
 	return out
+}
+
+// rewriteGenruleCmd strips convert-time-only constructs from a
+// custom-command's verbatim shell command before it lands as the
+// genrule's cmd attribute. Specifically:
+//
+//   - `cd <abs-under-buildDir> && ` prefix: cmake's Ninja generator
+//     prepends this so the command runs in the per-target build
+//     subdir during the convert-time configure. Bazel genrules run
+//     in $(GENDIR) which is Bazel-managed; the cd path doesn't
+//     exist at action time. Drop the prefix entirely.
+//
+//   - Verbatim `<cmakeSrc>/`-rooted path references: re-anchor to
+//     workspace-relative by stripping the convert-time prefix.
+//
+//   - Verbatim `<buildDir>/`-rooted path references: re-anchor to
+//     genrule-output-relative by stripping the convert-time prefix.
+//     For files the genrule itself produces this is correct (Bazel
+//     puts genrule outputs under $(GENDIR) at the matching relative
+//     path); for files the genrule consumes from the convert-time
+//     build dir that aren't reproduced at Bazel build time, the
+//     stripped reference will still fail — but the diagnostic at
+//     action time names the workspace-relative path the operator
+//     can investigate, not the convert-time absolute prefix.
+//
+// All rewrites are conservative — paths only re-anchor when they
+// start with the canonical anchor prefix + "/", so partial-match
+// hazards (e.g. `<buildDir>` vs `<buildDir>_other`) are avoided.
+func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
+	if cmd == "" {
+		return cmd
+	}
+	// Strip `cd <abs> && ` prefix when <abs> is under buildDir or
+	// cmakeSrc. Bazel runs the genrule in its sandbox-rooted
+	// $(GENDIR); the cd is cmake-internal.
+	if strings.HasPrefix(cmd, "cd ") {
+		if end := strings.Index(cmd, " && "); end > 0 {
+			target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
+			if filepath.IsAbs(target) {
+				drop := false
+				if buildDir != "" {
+					if _, ok := relativeIfInside(buildDir, target); ok {
+						drop = true
+					}
+				}
+				if !drop && cmakeSrc != "" {
+					if _, ok := relativeIfInside(cmakeSrc, target); ok {
+						drop = true
+					}
+				}
+				if drop {
+					cmd = cmd[end+4:]
+				}
+			}
+		}
+	}
+	// Strip cmakeSrc/ and buildDir/ prefixes from the cmd body.
+	// Trailing slash ensures partial-match safety.
+	if cmakeSrc != "" {
+		cmd = strings.ReplaceAll(cmd, cmakeSrc+"/", "")
+	}
+	if buildDir != "" {
+		cmd = strings.ReplaceAll(cmd, buildDir+"/", "")
+	}
+	return cmd
 }
 
 // reanchorDefineValue rewrites convert-time absolute paths

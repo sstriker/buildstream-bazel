@@ -2,6 +2,76 @@ package lower
 
 import "testing"
 
+// TestRewriteGenruleCmd pins the survey-2026-05-28 follow-on
+// behaviour for genrule cmd strings: the cmake-Ninja-generator's
+// `cd <abs-build> && ` prefix and any embedded source-tree / build-
+// tree absolute path references get rewritten to a form Bazel's
+// hermetic sandbox can resolve at action time.
+func TestRewriteGenruleCmd(t *testing.T) {
+	cmakeSrc := "/tmp/proj/src"
+	buildDir := "/tmp/proj/build"
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "passthrough — no abs paths",
+			in:   "echo hello",
+			want: "echo hello",
+		},
+		{
+			name: "strip cd prefix targeting buildDir",
+			in:   "cd /tmp/proj/build && /usr/bin/cmake -E touch foo",
+			want: "/usr/bin/cmake -E touch foo",
+		},
+		{
+			name: "strip cd prefix targeting buildDir subdir",
+			in:   "cd /tmp/proj/build/sub/dir && cmake -P x.cmake",
+			want: "cmake -P x.cmake",
+		},
+		{
+			name: "strip cd prefix targeting cmakeSrc subdir",
+			in:   "cd /tmp/proj/src/sub && /usr/bin/foo bar",
+			want: "/usr/bin/foo bar",
+		},
+		{
+			name: "leave cd prefix when target outside anchors",
+			in:   "cd /other/place && do_thing",
+			want: "cd /other/place && do_thing",
+		},
+		{
+			name: "rewrite cmakeSrc-rooted path references",
+			in:   "/usr/bin/cmake -P /tmp/proj/src/scripts/run.cmake -DIN=/tmp/proj/src/in.txt",
+			want: "/usr/bin/cmake -P scripts/run.cmake -DIN=in.txt",
+		},
+		{
+			name: "rewrite buildDir-rooted path references",
+			in:   "/usr/bin/cmake -E copy /tmp/proj/build/scripts/foo.out /tmp/proj/build/libfoo.sym",
+			want: "/usr/bin/cmake -E copy scripts/foo.out libfoo.sym",
+		},
+		{
+			name: "combo — strip cd, rewrite both anchors",
+			in:   "cd /tmp/proj/build && /tmp/proj/build/bin/vtkH5detect /tmp/proj/src/H5Tinit.c",
+			want: "bin/vtkH5detect H5Tinit.c",
+		},
+		{
+			name: "partial-match safety — buildDir vs buildDir_other",
+			in:   "cd /tmp/proj/build_other && do_thing /tmp/proj/build_other/foo",
+			want: "cd /tmp/proj/build_other && do_thing /tmp/proj/build_other/foo",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rewriteGenruleCmd(tc.in, cmakeSrc, buildDir)
+			if got != tc.want {
+				t.Errorf("rewriteGenruleCmd:\n  in:   %q\n  got:  %q\n  want: %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestReanchorDefineValue pins the survey-2026-05-28 follow-on
 // behaviour for preprocessor define values: convert-time absolute
 // paths embedded in KEY="<path>" defines either get re-anchored

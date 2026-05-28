@@ -210,7 +210,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			Kind:        ir.KindGenrule,
 			Srcs:        srcs,
 			GenruleOuts: outs,
-			GenruleCmd:  cmd,
+			GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
 			Visibility:  visibility,
 			Tags:        []string{"cmake-codegen-standalone-custom-command"},
 		})

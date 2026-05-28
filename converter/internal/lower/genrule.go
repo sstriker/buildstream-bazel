@@ -267,7 +267,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	gen := ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
-		GenruleCmd:  cmd,
+		GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
 		GenruleOuts: outs,
 		Srcs:        srcs,
 		Tags:        tags,
