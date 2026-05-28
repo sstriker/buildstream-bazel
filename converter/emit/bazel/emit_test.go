@@ -1498,7 +1498,7 @@ func TestEmit_GeneratorExpressions_Golden(t *testing.T) {
 //     std flag), failing as C++ in C dialect.
 //
 // Fix shape (deferred): split multi-language targets into one
-// cc_library per language. See docs/known-deltas.md.
+// cc_library per language. See docs/cmake-conversion-deltas.md.
 func TestEmit_MultiLanguage_Golden(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/multi-language")
 	if err != nil {

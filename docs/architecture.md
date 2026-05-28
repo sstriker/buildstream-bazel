@@ -86,7 +86,10 @@ fragments), toolchains-v1 (compiler ID, flags), and cmakeFiles-v1
 (read paths). `--trace-expand` adds PUBLIC/PRIVATE keyword arms,
 `target_link_libraries`, `configure_file` calls. The converter folds
 both into an IR (`converter/internal/ir`) and emits native `cc_library`
-/ `cc_binary`. Known gaps: [`known-deltas.md`](known-deltas.md).
+/ `cc_binary`. Known gaps:
+[`cmake-conversion-deltas.md`](cmake-conversion-deltas.md) (cmake →
+converter) and [`fidelity-deltas.md`](fidelity-deltas.md) (artifact
+diffs).
 
 ### Trace-driven kinds — coarse-then-fine via REAPI ActionCache
 
@@ -287,7 +290,8 @@ disk (the default dev path).
 | BwoB / source mount | [`design/sources.md`](design/sources.md) |
 | FDSDK kind coverage | [`fdsdk-coverage.md`](fdsdk-coverage.md) |
 | Multi-version cmake compatibility matrix | [`cmake-version-matrix.md`](cmake-version-matrix.md) |
-| Known fidelity / conversion gaps | [`known-deltas.md`](known-deltas.md) |
+| Known conversion gaps (cmake → converter) | [`cmake-conversion-deltas.md`](cmake-conversion-deltas.md) |
+| Known fidelity gaps (cmake-built vs Bazel-built) | [`fidelity-deltas.md`](fidelity-deltas.md) |
 | Failure-code taxonomy | [`failure-schema.md`](failure-schema.md) |
 | Codegen tag taxonomy | [`codegen-tags.md`](codegen-tags.md) |
 | Repo package tour | [`codebase-map.md`](codebase-map.md) |

@@ -11,7 +11,7 @@ transition cleanly.
   current cmake converter reads File API codemodel-v2 +
   `--trace-expand` and emits BUILD files; that recovers
   ~67% of FDSDK with fidelity gaps catalogued in
-  `docs/known-deltas.md` and the genex / install
+  `docs/cmake-conversion-deltas.md` and the genex / install
   bullets under `Later`. A hypothetical `cmake -G Bazel`
   generator running inside cmake's generation pass would
   resolve most of those gaps for free by virtue of being

@@ -110,7 +110,7 @@ var configureHints = []configureHint{
 		// hasn't already forced CMP0026 to NEW; in cmake
 		// 4.x the policy is gone entirely and the override
 		// is rejected with "policy CMP0026 was removed".
-		// See docs/known-deltas.md for the full
+		// See docs/cmake-conversion-deltas.md for the full
 		// recipe.
 		hint: "cmake 4.x removed the OLD behaviour of CMP0026; legacy `get_target_property(<var> <tgt> LOCATION)` calls now fatal-error.\n" +
 			"  Workarounds (in preference order):\n" +
@@ -118,7 +118,7 @@ var configureHints = []configureHint{
 			"         find . \\( -name CMakeLists.txt -o -name '*.cmake' \\) -exec sed -i -E 's/get_target_property\\(([^ ]+) +([^ ]+) +LOCATION\\)/set(\\1 $<TARGET_FILE:\\2>)/g' {} +\n" +
 			"    2. Re-run convert-element-cmake with --cmp0026-shim. The shim wraps get_target_property to translate LOCATION queries into $<TARGET_FILE:<tgt>> at configure time without touching the source tree. Caveat: the wrapper returns a generator expression rather than a configure-time-resolved path, so projects that string-compose LOCATION values at configure time (e.g. into a message() call) will see literal `$<TARGET_FILE:foo>` text. See #208.\n" +
 			"    3. Pin the orchestrator's cmake to a 3.x release (the Makefile's CMAKE_VERSION pin is 3.28.3); cmake 3.x emits a deprecation warning but still resolves LOCATION.\n" +
-			"  See docs/known-deltas.md for the catalogue entry.",
+			"  See docs/cmake-conversion-deltas.md for the catalogue entry.",
 		match: matchCMP0026,
 	},
 }
