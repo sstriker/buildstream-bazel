@@ -3555,20 +3555,28 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 	}
 	// Strip `cd <abs> && ` prefix when <abs> is under buildDir or
 	// cmakeSrc. Bazel runs the genrule in its sandbox-rooted
-	// $(GENDIR); the cd is cmake-internal.
+	// $(GENDIR); the cd is cmake-internal. Capture the stripped
+	// subdir's build-dir-relative form so the later redirect-
+	// qualification pass can prepend it to bare-basename redirect
+	// targets (cmake records `> LLVMHello.exports` as relative
+	// to the cd dir; after the cd-strip the basename is in the
+	// wrong cwd unless qualified).
+	var strippedCdSubdir string
 	if strings.HasPrefix(cmd, "cd ") {
 		if end := strings.Index(cmd, " && "); end > 0 {
 			target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
 			if filepath.IsAbs(target) {
 				drop := false
 				if buildDir != "" {
-					if _, ok := relativeIfInside(buildDir, target); ok {
+					if rel, ok := relativeIfInside(buildDir, target); ok {
 						drop = true
+						strippedCdSubdir = rel
 					}
 				}
 				if !drop && cmakeSrc != "" {
-					if _, ok := relativeIfInside(cmakeSrc, target); ok {
+					if rel, ok := relativeIfInside(cmakeSrc, target); ok {
 						drop = true
+						strippedCdSubdir = rel
 					}
 				}
 				if drop {
@@ -3625,6 +3633,16 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 	// without needing cmake at action time. Runs after the
 	// host-bin strip so the `cmake` token is already bare.
 	cmd = rewriteCMakeEInvocations(cmd)
+	// Qualify bare-basename redirect targets with the stripped
+	// cd-subdir prefix. cmake emits `cd <subdir> && ... >
+	// <basename>` for per-target output paths; after the cd-strip
+	// the basename is in the wrong cwd unless prepended with the
+	// subdir. Runs last so all upstream rewrites have settled
+	// their tokens (e.g. cmake -E echo's args don't get rewritten
+	// twice).
+	if strippedCdSubdir != "" {
+		cmd = qualifyRedirectBasenames(cmd, strippedCdSubdir)
+	}
 	return cmd
 }
 
