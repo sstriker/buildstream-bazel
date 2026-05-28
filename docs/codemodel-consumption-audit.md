@@ -9,6 +9,18 @@ survey (LLVM, VTK, fmt, json, libpng, zlib) on the post-#298 main —
 For the operator-side flag-set discussion that complements this
 audit, see [`operator-toolchain-features.md`](operator-toolchain-features.md).
 
+**Queued corpus expansion** (not yet folded into the census above):
+four projects picked to maximise pattern coverage over the current
+six — `abseil-cpp` (idiom oracle; ships its own BUILD),
+`protobuf` (protoc codegen + `install(EXPORT)` config-mode producer —
+fills the cross-target-codegen / export-bundle shape that the six
+leaf libraries don't exercise), `googletest` (`add_test` /
+`gtest_discover_tests` — real-world datapoint for the ctest
+edge-filtering path), and `Eigen` (header-only INTERFACE library +
+config-mode export/components). Clone them with `make fetch-survey`
+(pins live in the `Makefile`); the census numbers here stay scoped
+to the six until a survey run against the expanded set lands.
+
 ## Codemodel field census
 
 | Field | Survey usage | Consumed? | Notes |

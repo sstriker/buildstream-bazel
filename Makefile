@@ -6,7 +6,7 @@
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-survey update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -23,6 +23,20 @@ SPDLOG_VERSION ?= v1.14.1
 SPDLOG_DIR     ?= /tmp/spdlog
 JSON_VERSION   ?= v3.11.3
 JSON_DIR       ?= /tmp/json
+
+# Diagnostic-survey corpus (see docs/codemodel-consumption-audit.md).
+# Cloned out-of-band, then run through the converter in
+# --ignore-rejections-for-diagnostics mode to enumerate the
+# codemodel-consumption + idiom gap surface. NOT fidelity gates —
+# best-effort BUILD output, not guaranteed to build.
+ABSEIL_VERSION    ?= 20260107.1
+ABSEIL_DIR        ?= /tmp/abseil-cpp
+PROTOBUF_VERSION  ?= v6.31.1
+PROTOBUF_DIR      ?= /tmp/protobuf
+GTEST_VERSION     ?= v1.17.0
+GTEST_DIR         ?= /tmp/googletest
+EIGEN_VERSION     ?= 3.4.1
+EIGEN_DIR         ?= /tmp/eigen
 
 GO        ?= go
 GOFLAGS   ?=
@@ -943,6 +957,48 @@ fetch-nlohmann-json:
 	else \
 		echo "nlohmann/json already at $(JSON_DIR); rm -rf to refetch"; \
 	fi
+
+# --- Diagnostic-survey corpus (docs/codemodel-consumption-audit.md) ---
+# Each clone is idempotent. `fetch-survey` grabs the whole set.
+
+# abseil-cpp: large modern target-based CMake; ships its own BUILD, so
+# it doubles as a feature-flag idiom oracle.
+fetch-abseil:
+	@if [ ! -d "$(ABSEIL_DIR)" ]; then \
+		git clone --depth 1 --branch $(ABSEIL_VERSION) https://github.com/abseil/abseil-cpp.git "$(ABSEIL_DIR)"; \
+	else \
+		echo "abseil-cpp already at $(ABSEIL_DIR); rm -rf to refetch"; \
+	fi
+
+# protobuf: protoc custom-command codegen + install(EXPORT) config-mode
+# producer. Fills the cross-target-codegen / export-bundle shape.
+fetch-protobuf:
+	@if [ ! -d "$(PROTOBUF_DIR)" ]; then \
+		git clone --depth 1 --branch $(PROTOBUF_VERSION) https://github.com/protocolbuffers/protobuf.git "$(PROTOBUF_DIR)"; \
+	else \
+		echo "protobuf already at $(PROTOBUF_DIR); rm -rf to refetch"; \
+	fi
+
+# googletest: enable_testing() + add_test / gtest_discover_tests — the
+# real-world datapoint for the ctest edge-filtering path.
+fetch-googletest:
+	@if [ ! -d "$(GTEST_DIR)" ]; then \
+		git clone --depth 1 --branch $(GTEST_VERSION) https://github.com/google/googletest.git "$(GTEST_DIR)"; \
+	else \
+		echo "googletest already at $(GTEST_DIR); rm -rf to refetch"; \
+	fi
+
+# Eigen: header-only INTERFACE library + config-mode export/components.
+# Cheap; stresses the interface-lib + install-export path.
+fetch-eigen:
+	@if [ ! -d "$(EIGEN_DIR)" ]; then \
+		git clone --depth 1 --branch $(EIGEN_VERSION) https://gitlab.com/libeigen/eigen.git "$(EIGEN_DIR)"; \
+	else \
+		echo "eigen already at $(EIGEN_DIR); rm -rf to refetch"; \
+	fi
+
+# Convenience aggregate: fetch the whole survey corpus.
+fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
 update-golden:
