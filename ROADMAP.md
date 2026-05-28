@@ -245,7 +245,8 @@ transition cleanly.
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
   survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
   + `scripts/run-fidelity.sh` driver + `make e2e-fidelity-compare-{zlib,
-  spdlog,fmt}` gates + `testdata/fidelity/*.allowlist.txt` companions.
+  spdlog,fmt}` library-side gates + `make e2e-fidelity-compare-{zlib,fmt}-consumer`
+  consumer-side gates + `testdata/fidelity/*.allowlist.txt` companions.
   Drives the full A-B-C cycle (cmake build → convert → bazel build →
   fidelity-compare → classify against allowlist) and exits non-zero on
   impactful deltas (unexplained symbol drops, hermeticity leaks).
@@ -256,21 +257,37 @@ transition cleanly.
   bazel half cleanly when bazel isn't on PATH; honors RULES_CC_TARBALL
   for hosts that vendor rules_cc.
 
-  Per-project gate status (Δ vs. the original "all five are ~10-line
-  Makefile adds" claim — the harness expansion to spdlog + fmt
-  surfaced that the other three need harness extensions, not just
-  fixture wiring):
-    - **zlib v1.3.1** ✅ shipped — 105/105 exact, empty allowlist.
-    - **spdlog v1.14.1** ✅ shipped — 1404/1404, 5 template-instantiation
-      entries (vendored fmt headers, inlining-decision deltas).
-    - **fmt 11.0.2** ✅ shipped — 146/146, 3 detail-namespace
-      template-instantiation entries (inlining-decision deltas).
-    - **nlohmann-json 3.11.3** ⚠️ deferred — header-only INTERFACE
-      library produces no static-archive artifact for fidelity-compare
-      to diff. Either re-key fidelity-compare to compare a downstream
-      test binary's symbol set (artifact shifts from "the converted
-      library" to "what consumers see", changes the contract) or skip
-      json from this gate's scope and rely on the broader e2e suite.
+  Two complementary signals:
+    - **Library-side** (default mode): diffs the cmake-built `.a` and
+      Bazel-built `.a`. Verifies the converter preserves the
+      project's own internal symbol set.
+    - **Consumer-side** (`--consumer-file`): compiles a small
+      consumer .c/.cpp twice (once against cmake's installed
+      headers, once via Bazel as a `cc_library` depending on the
+      converted target) and diffs the resulting `.o`s. Verifies
+      the converter preserves the project's *exported contract*:
+      `INTERFACE_INCLUDE_DIRECTORIES` reachability,
+      `strip_include_prefix` resolution, INTERFACE_COMPILE_DEFINITIONS
+      propagation. Works for any project including header-only.
+
+  Per-project gate status:
+    - **zlib v1.3.1** ✅ library + consumer both shipped — 105/105
+      lib-side exact, 1/1 consumer-side exact (empty allowlists).
+    - **spdlog v1.14.1** ✅ library shipped — 1404/1404, 5
+      template-instantiation entries.
+    - **fmt 11.0.2** ✅ library + consumer both shipped — 146/146
+      lib-side, 1/1 consumer-side; 3 lib-side + 4 consumer-side
+      template-instantiation allowlist entries.
+    - **nlohmann-json 3.11.3** ⚠️ blocked on converter — consumer-side
+      gate is the right shape for this header-only INTERFACE library,
+      but the converter today emits only an `install_directory__include`
+      filegroup for json (no `cc_library`), so a consumer's
+      `cc_library(deps = [...])` can't depend on it. Unblocking work:
+      teach the converter to lower INTERFACE library targets to
+      `cc_library(hdrs = glob(...), strip_include_prefix = ...)` when
+      `target_include_directories(... INTERFACE ...)` is the only
+      surface — separate converter improvement, then this gate becomes
+      a clean addition.
     - **Catch2 3.5.3** ⚠️ deferred — needs the converter invoked with
       `--lift-configure-file` (to recover `catch_user_config.hpp` from
       the configure_file template) AND `//tools:cmake-configure-file`
@@ -287,6 +304,11 @@ transition cleanly.
       synthesized WORKSPACE.
 
   Remaining work:
+    - Converter improvement to emit `cc_library` for INTERFACE-only
+      targets — unblocks nlohmann-json's consumer-side gate.
+    - Consumer-side gates for spdlog (the project's own static lib
+      consumers also use header-side typedefs / templates; an extra
+      signal beyond the lib-side 1404 match).
     - Harness extensions for Catch2 (`--convert-flags` + tool staging)
       and libpng (Bazel-side external repos). VTK / LLVM gates need
       the project's specific configure flags + tooling and may need

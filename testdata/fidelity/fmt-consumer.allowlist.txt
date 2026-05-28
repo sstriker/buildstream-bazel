@@ -1,0 +1,22 @@
+# Per-fixture benign-delta allowlist for the
+# e2e-fidelity-compare-fmt-consumer gate.
+#
+# Consumer-mode fidelity diffs the consumer .o (testdata/fidelity/
+# consumers/fmt_consumer.cpp compiled twice: once against cmake's
+# installed fmt headers, once via Bazel against the converted
+# //:fmt target). The four entries below are C++ template
+# instantiations that the Bazel-side compile emits at .o-level
+# while the cmake-side compile inlines them away (or vice versa).
+#
+# Same benign category as the lib-side fmt allowlist — inlining
+# decisions differ between the cmake distro toolchain and Bazel's
+# hermetic toolchain, neither is wrong; the converter's exposure
+# of fmt's public headers is correct on both sides.
+
+# basic_string_view<char> constructor (complete + base) — bazel-side
+_ZN3fmt3v1117basic_string_viewIcEC1EPKc
+_ZN3fmt3v1117basic_string_viewIcEC2EPKc
+# detail::make_arg<custom, context, double> — bazel-side
+_ZN3fmt3v116detail8make_argILb1ENS0_7contextEdLi0EEENS1_5valueIT0_EERT1_
+# detail::make_arg<custom, context, int> — bazel-side
+_ZN3fmt3v116detail8make_argILb1ENS0_7contextEiLi0EEENS1_5valueIT0_EERT1_
