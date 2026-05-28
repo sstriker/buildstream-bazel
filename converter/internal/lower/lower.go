@@ -3909,6 +3909,17 @@ func reanchorLinkOptTokenWithInput(tok, cmakeSrc, buildDir string) (string, bool
 // invocation and the flag becomes either a no-op or a leak of convert-time
 // state into the audit surface.
 func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []string) {
+	// Order-preserving dedup against cmake's own duplication —
+	// projects with `add_compile_options` chains, transitive
+	// PUBLIC propagation through multiple deps, or just hand-
+	// duplicated CMakeLists.txt entries surface the same flag
+	// in CompileCommandFragments multiple times. Keep the first
+	// occurrence (cmake's argv-order semantics for warning /
+	// language flags care about first-vs-last only when the
+	// flags conflict; identical-flag dedup is unambiguously
+	// safe). Same dedup applies to defines.
+	coptsSeen := map[string]bool{}
+	defSeen := map[string]bool{}
 	for _, f := range frags {
 		if f.Role != "" {
 			// Reserved for link fragments; ignore on the compile side.
@@ -3917,7 +3928,12 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 		for _, p := range strings.Fields(f.Fragment) {
 			switch {
 			case strings.HasPrefix(p, "-D"):
-				defines = append(defines, strings.TrimPrefix(p, "-D"))
+				val := strings.TrimPrefix(p, "-D")
+				if defSeen[val] {
+					continue
+				}
+				defSeen[val] = true
+				defines = append(defines, val)
 			case strings.HasPrefix(p, "-I"), strings.HasPrefix(p, "-isystem"):
 				// dropped: see compileGroup.includes
 			case strings.HasPrefix(p, "-ffile-prefix-map="),
@@ -3928,6 +3944,10 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 				// hermetic compile (the <from> never matches
 				// anything the compiler sees).
 			default:
+				if coptsSeen[p] {
+					continue
+				}
+				coptsSeen[p] = true
 				copts = append(copts, p)
 			}
 		}
