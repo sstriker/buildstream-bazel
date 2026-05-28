@@ -375,6 +375,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			}
 			continue
 		}
+		if t.Kind == ir.KindAlias {
+			if err := emitAlias(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
 			return nil, err
 		}
@@ -598,6 +604,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .DefinesExpr}}
     defines = {{.DefinesExpr}},
 {{- end}}
+{{- if .LocalDefinesExpr}}
+    local_defines = {{.LocalDefinesExpr}},
+{{- end}}
 {{- if .LinkoptsExpr}}
     linkopts = {{.LinkoptsExpr}},
 {{- end}}
@@ -717,6 +726,24 @@ var filegroupTmpl = template.Must(template.New("filegroup").Funcs(template.FuncM
 )
 `))
 
+// aliasTmpl renders Bazel-native `alias()`. Lifts cmake's
+// `add_library(<alias> ALIAS <target>)` shape recovered from the
+// trace; emitted via lowerAliasTargets. No load() needed; alias
+// is in the global Bazel namespace.
+var aliasTmpl = template.Must(template.New("alias").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`alias(
+    name = "{{.Name}}",
+    actual = "{{.Actual}}",
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
 var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 	"strList": strList,
 }).Parse(`genrule(
@@ -761,6 +788,7 @@ type ccView struct {
 	StripIncludePrefix         string
 	CoptsExpr                  string
 	DefinesExpr                string
+	LocalDefinesExpr           string
 	LinkoptsExpr               string
 	AdditionalLinkerInputsExpr string
 	DepsExpr                   string
@@ -855,6 +883,23 @@ func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 	})
 }
 
+// aliasView projects ir.Target into the alias template.
+type aliasView struct {
+	Name       string
+	Actual     string
+	Tags       []string
+	Visibility []string
+}
+
+func emitAlias(w *bytes.Buffer, t ir.Target) error {
+	return aliasTmpl.Execute(w, aliasView{
+		Name:       t.Name,
+		Actual:     t.AliasActual,
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
+}
+
 func emitCCTarget(w *bytes.Buffer, t ir.Target) error {
 	return emitCCTargetWithOptions(w, t, Options{})
 }
@@ -930,6 +975,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		StripIncludePrefix:         t.StripIncludePrefix,
 		CoptsExpr:                  attrExpr(copts, perPlatformAttr(t, "copts")),
 		DefinesExpr:                attrExpr(defines, perPlatformAttr(t, "defines")),
+		LocalDefinesExpr:           attrExpr(sortedCopy(t.LocalDefines), perPlatformAttr(t, "local_defines")),
 		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),

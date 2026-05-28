@@ -30,6 +30,11 @@ cc_binary(
     deps = [":aliaslib"],
 )
 
+alias(
+    name = "aliaslib_aliaslib",
+    actual = ":aliaslib",
+)
+
 filegroup(
     name = "install_directory__include",
     srcs = ["include"],

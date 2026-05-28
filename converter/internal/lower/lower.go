@@ -784,12 +784,25 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// resolution can distinguish "skip utility" from "unresolved".
 	idToName := map[string]string{}
 	utilityIDs := map[string]bool{}
+	// artifactToName maps each codemodel target's artifact paths
+	// (build-dir-relative, e.g. `bin/llvm-min-tblgen`) to the
+	// target's name. Used by rewriteToolFromTarget to lift bare
+	// artifact-path tool references in genrule cmds into
+	// `$(location :<name>)` form plus a tools attr entry.
+	artifactToName := map[string]string{}
 	for _, tref := range cfg.Targets {
 		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
 			utilityIDs[tref.Id] = true
 			continue
 		}
 		idToName[tref.Id] = tref.Name
+		if t, ok := r.Targets[tref.Id]; ok {
+			for _, art := range t.Artifacts {
+				if art.Path != "" {
+					artifactToName[art.Path] = tref.Name
+				}
+			}
+		}
 	}
 
 	for _, tref := range cfg.Targets {
@@ -825,6 +838,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// Alias-target lift from trace: `add_library(<alias> ALIAS
+	// <target>)` shapes don't appear in codemodel.targets[]
+	// (cmake resolves aliases at configure time so codemodel
+	// only records the underlying target). The trace captures
+	// the source-level alias declaration; emit Bazel-native
+	// alias() rules so operator-written cross-package consumers
+	// resolve the alias name correctly.
+	if decodedTrace != nil {
+		pkg.Targets = append(pkg.Targets,
+			lowerAliasTargets(decodedTrace, knownTargets, cmakeSrc)...)
+	}
 	// HEADER_FILE_ONLY reclassification — walk every target's
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked
@@ -833,6 +857,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// keeps lowerTarget's signature stable and applies uniformly
 	// to all the rule families.
 	reclassifyHeaderOnlySources(pkg, headerOnlySources)
+	// Route PRIVATE-scoped target_compile_definitions trace
+	// events into Bazel's non-transitive `local_defines`
+	// attribute instead of the transitive `defines`. Closes the
+	// scope-fidelity gap: cmake's PRIVATE means "only for this
+	// target's own compile", which is local_defines in Bazel;
+	// the codemodel folds everything into CompileGroups.Defines
+	// without a scope tag, so the trace is the only source of
+	// truth here. No-op when trace was absent (decodedTrace nil)
+	// or when no PRIVATE-scoped defines appear.
+	if decodedTrace != nil {
+		applyPrivateScopeToDefines(pkg, decodedTrace.CompileDefinitions)
+	}
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
 	// POSITION_INDEPENDENT_CODE to features=["pic"] /
@@ -908,7 +944,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			AddDependencies: decodedAddDependencies,
 		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, traceCtx)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, artifactToName, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
@@ -3575,6 +3611,11 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 		// scan covers the common cases.
 		cmd = stripToolPrefixAtBoundaries(cmd, prefix)
 	}
+	// Rewrite `cmake -E <op> ...` to POSIX equivalents — keeps
+	// the rendered genrule cmd portable in Bazel's bash sandbox
+	// without needing cmake at action time. Runs after the
+	// host-bin strip so the `cmake` token is already bare.
+	cmd = rewriteCMakeEInvocations(cmd)
 	return cmd
 }
 
