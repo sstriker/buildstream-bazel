@@ -48,6 +48,17 @@ var cmakeConfig struct {
 	// install genrule can wrap the build and publish to the
 	// REAPI AC.
 	round2FallbackEnabled bool
+
+	// fidelity / bakeIn / diagnostics are the operator-facing dial
+	// values resolved by deriveModes (see modes.go) and threaded
+	// from main.go into the cmake-converter genrule cmd. Empty
+	// strings (the zero value, never set in production but possible
+	// in tests) elide the matching --fidelity / --bake-in /
+	// --diagnostics flag in the converter cmd so the cache key
+	// stays stable for the legacy callsite shape.
+	fidelity    string
+	bakeIn      string
+	diagnostics bool
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
@@ -495,6 +506,26 @@ filegroup(
 	importsFlag := ""
 	liftFlag := ""
 	fallbackFlag := ""
+	// Operator-facing dial pass-through: thread --fidelity, --bake-
+	// in, --diagnostics into the converter cmd. Each is elided when
+	// the value is empty or matches the converter's own default, so
+	// the cache key / golden-byte shape stays stable for legacy
+	// callsites that never set the dial.
+	fidelityFlag := ""
+	if cmakeConfig.fidelity != "" && cmakeConfig.fidelity != fidelityStrict {
+		fidelityFlag = fmt.Sprintf(` \
+            --fidelity=%s`, cmakeConfig.fidelity)
+	}
+	bakeInFlag := ""
+	if cmakeConfig.bakeIn != "" && cmakeConfig.bakeIn != bakeInWarn {
+		bakeInFlag = fmt.Sprintf(` \
+            --bake-in=%s`, cmakeConfig.bakeIn)
+	}
+	diagnosticsFlag := ""
+	if cmakeConfig.diagnostics {
+		diagnosticsFlag = ` \
+            --diagnostics=true`
+	}
 	if cmakeConfig.configureFileBin != "" {
 		liftFlag = ` \
             --lift-configure-file=true`
@@ -575,7 +606,7 @@ genrule(
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
-            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -596,7 +627,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag)
 	return b.String()
 }
 
@@ -787,7 +818,7 @@ genrule(
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
-            --bazel-package-path="elements/%[1]s"
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -802,6 +833,29 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, sourceKey, srcsList)
+`, elem.Name, sourceKey, srcsList, fuseFidelityFlag(), fuseDiagnosticsFlag())
 	return b.String()
+}
+
+// fuseFidelityFlag / fuseDiagnosticsFlag thread the operator-facing
+// dials into the FUSE cmake template. --bake-in is intentionally
+// NOT threaded here today (deriveModes surfaces a downgrade note
+// when --bake-in=reject + --use-fuse-sources both fire) — the FUSE
+// template's existing limitations around --lift-configure-file etc.
+// argue for keeping new dial integration minimal until the FUSE
+// template grows feature parity with the staging template.
+func fuseFidelityFlag() string {
+	if cmakeConfig.fidelity == "" || cmakeConfig.fidelity == fidelityStrict {
+		return ""
+	}
+	return fmt.Sprintf(` \
+            --fidelity=%s`, cmakeConfig.fidelity)
+}
+
+func fuseDiagnosticsFlag() string {
+	if !cmakeConfig.diagnostics {
+		return ""
+	}
+	return ` \
+            --diagnostics=true`
 }

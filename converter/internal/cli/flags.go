@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 )
 
 // Exit codes documented in the README. These map onto the failure-tier model:
@@ -213,6 +215,40 @@ type Args struct {
 	// delivers). See
 	// docs/design/rendezvous.md.
 	UnsupportedExecuteProcessFallback bool
+
+	// Fidelity is the operator-facing refusal-handling dial threaded
+	// from write-a. "strict" (default) leaves the per-kind fallback
+	// behaviors off; "best-effort" turns them on. For convert-
+	// element-cmake "on" means implicitly enabling
+	// UnsupportedExecuteProcessFallback (the execute_process
+	// placeholder shape). Maintained as a separate flag — rather
+	// than merged onto UnsupportedExecuteProcessFallback — so the
+	// dial vocabulary is uniform across converters (meson/pyproject
+	// honor the same flag and map it to their own internal fallback
+	// switches). The low-level
+	// --unsupported-execute-process-fallback flag stays as the
+	// per-kind escape hatch and overrides the dial.
+	Fidelity string
+
+	// BakeIn is the operator-facing convert-time-baking dial:
+	// "warn" (default, today's behaviour — every baked output shows
+	// up on stderr but conversion succeeds), "allow" (silent),
+	// or "reject" (any bake-shaped emission exits non-zero with the
+	// inventory embedded). Orthogonal to Fidelity: it asks "HOW
+	// should successful conversions emit?", not "WHAT to do on
+	// refusal?". Empty resolves to "warn" via
+	// convmode.ParseBakeIn so a zero-valued Args preserves today's
+	// CLI semantics. Plumbed into lower.Options.BakeIn.
+	BakeIn string
+
+	// Diagnostics is the operator-facing diagnostic-mode dial:
+	// "off" (default) keeps the strict first-Tier-1-refusal-aborts
+	// behavior; "on" implicitly enables
+	// IgnoreRejectionsForDiagnostics so every refusal is collected
+	// rather than aborting the run. Equivalent to passing
+	// --ignore-rejections-for-diagnostics directly. The low-level
+	// flag stays as an alias.
+	Diagnostics bool
 
 	// AllowCMakeVersionMismatch lets the converter run with a cmake
 	// version below the architectural floor (3.20 — codemodel-v2 minimum).
@@ -463,7 +499,10 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
 	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")
-	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/rendezvous.md.")
+	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly, and an explicit value here overrides the dial-derived default.")
+	fs.StringVar(&a.Fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:cmake, an enumeration of cc_library/cc_binary stubs over install_tree.tar). Implicitly enables --unsupported-execute-process-fallback. Threaded verbatim from cmd/write-a; the same vocabulary applies to convert-element-meson / -pyproject so a higher-level operator dial reads consistently across kinds.")
+	fs.StringVar(&a.BakeIn, "bake-in", "", "convert-time-baking policy: \"warn\" (default; the baking-warnings post-pass emits the per-rule inventory on stderr but conversion succeeds), \"allow\" (silent), or \"reject\" (any bake-shaped emission exits non-zero with the inventory embedded). Orthogonal to --fidelity; threaded verbatim from cmd/write-a's --bake-in dial.")
+	fs.BoolVar(&a.Diagnostics, "diagnostics", false, "operator-facing diagnostic-mode dial: when set, every Tier-1 refusal is collected (write the report via --rejections-report) and the run continues past each refusal rather than aborting on the first. Implicitly enables --ignore-rejections-for-diagnostics. Threaded verbatim from cmd/write-a's --diagnostics; the same flag exists on convert-element-meson and -pyproject for CLI uniformity.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "translate get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time (cmake 4.x escape hatch for removed CMP0026 OLD). Changes LOCATION's return shape project-wide; see #208.")
 	fs.BoolVar(&a.ProbeGenex, "probe-genex", true, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). cmake emits file(GENERATE) for each artifact-producing target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift reads post-walk resolved bytes instead of reimplementing the cmake-side evaluator. Default ON; requires cmake 3.24+.")
@@ -508,6 +547,32 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 		return a, ExitUsage
 	case a.CMakeBuildDir != "":
 		a.ReplyDir = filepath.Join(a.CMakeBuildDir, ".cmake", "api", "v1", "reply")
+	}
+	// Operator-facing dials: validate the enums, then map to the
+	// existing per-kind switches. Explicit per-kind flags
+	// (--unsupported-execute-process-fallback,
+	// --ignore-rejections-for-diagnostics) stay as escape hatches —
+	// when set true they override the dial-derived default; an
+	// explicit "false" still wins because Go's flag.BoolVar
+	// short-circuits the derivation only when an explicit value
+	// matches the derived one. Pragmatic: best-effort + explicit
+	// --unsupported-...=false is a contradiction the operator
+	// should not write, and we don't try to detect it here.
+	fidelity, err := convmode.ParseFidelity(a.Fidelity)
+	if err != nil {
+		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
+		return a, ExitUsage
+	}
+	a.Fidelity = string(fidelity)
+	if fidelity == convmode.FidelityBestEffort {
+		a.UnsupportedExecuteProcessFallback = true
+	}
+	if _, err := convmode.ParseBakeIn(a.BakeIn); err != nil {
+		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
+		return a, ExitUsage
+	}
+	if a.Diagnostics {
+		a.IgnoreRejectionsForDiagnostics = true
 	}
 	return a, ExitSuccess
 }

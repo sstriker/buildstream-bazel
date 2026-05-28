@@ -481,6 +481,56 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Operator-facing mode dials for write-a (`--fidelity` /
+  `--bake-in` / `--diagnostics` / `--deployment`) with pass-
+  through architecture into the converters.** Today's CLI exposes
+  ~24 flags on `write-a` alone, with the "what should happen on
+  per-element refusal" question spread across
+  `--cmake-round2-fallback` / `--meson-round2-fallback` /
+  `--pyproject-fallback` and converter-internal `--unsupported-*-
+  fallback` switches; the "how should conversion shape its
+  emission" question spread across `--lift-configure-file` /
+  `--cmake-script-bake` / per-converter bake toggles; the "where
+  should it run" question across `--trace-round1` + implicit
+  presence checks. Four operator-facing dials replace the
+  forest:
+
+  - `--fidelity={strict|best-effort}` (default strict; refusals
+    exit vs. lower to install_tree.tar placeholders).
+  - `--bake-in={warn|allow|reject}` (default warn; convert-time-
+    baked bytes surfaced / silent / rejected).
+  - `--diagnostics` (default off; collect every Tier-1 refusal
+    rather than aborting on the first).
+  - `--deployment={auto|local|production}` (default auto: round-2
+    REAPI-AC split if publish+lookup wired, else round-1).
+
+  Pass-through architecture: write-a threads the operator's dial
+  value VERBATIM into each converter's matching `--fidelity` /
+  `--bake-in` / `--diagnostics` flag (lives on convert-element-
+  cmake / -meson / -pyproject; shared enum vocabulary in
+  `internal/convmode`). Each converter interprets per-kind:
+  cmake → execute_process placeholder + bake-in inventory +
+  rejection collector; meson → install-plan stubs + dial
+  validation (rejection collector future-ready); pyproject →
+  write-a's pipeline-shape dispatch (dial pass-through validation
+  only). Per-kind escape hatches (`--cmake-round2-fallback`,
+  `--unsupported-execute-process-fallback`, ...) stay as
+  overrides that pre-empt the dial-derived default. `--deployment`
+  is the one dial that stays write-a-local — it controls
+  workspace-rendering (Project B install genrule emission,
+  Project A converter-genrule fan-out for `--platforms-json`,
+  round-1-vs-round-2 trace shape) rather than per-converter
+  behavior, so it doesn't pass through.
+
+  The startup banner prints the resolved dials, the wired vs.
+  not-provided tools, the kind summary, and any downgrade notes
+  (e.g. "auto picked local because publish/lookup weren't set")
+  — operators see the run context at a glance instead of
+  grepping rendered BUILDs. `cmd/write-a/modes.go` keeps the
+  derivation testable apart from `flag.Parse()`. README quick-
+  start and `tools/bst` switched to the dials; per-kind flags +
+  all `meta-*` render gates continue to work unmodified.
+
 - **Convert-time output bake for the cmake -P lift
   (`--cmake-script-bake`).** Opt-in convert-time execution
   that runs `cmake -P <script>` in a fresh tmp dir,

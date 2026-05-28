@@ -32,6 +32,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
@@ -51,7 +52,24 @@ type args struct {
 	importsManifest           string
 	mesonExtraArgs            []string
 	unsupportedTargetFallback bool
-	bazelPackagePath          string
+	// fidelity is the operator-facing refusal-handling dial
+	// threaded from cmd/write-a. "best-effort" implicitly enables
+	// unsupportedTargetFallback. The same enum exists on every
+	// converter binary so the operator-facing vocabulary is
+	// uniform; per-converter --unsupported-*-fallback flags stay
+	// as escape hatches.
+	fidelity string
+	// diagnostics is the operator-facing diagnostic-mode dial
+	// threaded from cmd/write-a. Today meson has no rejection-
+	// collection machinery (the converter exits on the first
+	// refusal), so the flag is currently a no-op pass-through:
+	// validation exists so the CLI accepts the flag uniformly
+	// across converters, but enabling it changes nothing yet. A
+	// future PR can add a Collector and write the rejection report
+	// the way convert-element-cmake's --ignore-rejections-for-
+	// diagnostics + --rejections-report shape does.
+	diagnostics      bool
+	bazelPackagePath string
 }
 
 func main() {
@@ -76,10 +94,22 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	fs.StringVar(&a.importsManifest, "imports-manifest", "", "path to JSON imports manifest mapping cross-element meson dependency names to Bazel labels (optional)")
 	var mesonArgs string
 	fs.StringVar(&mesonArgs, "meson-args", "", "additional arguments to pass to `meson setup` (FDSDK's meson-local slot). Whitespace-split.")
-	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs referencing install_tree.tar, plus an extract genrule that untars it. Project B's install genrule (write-a's --meson-round2-fallback shape) produces install_tree.tar from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/rendezvous.md.")
+	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs referencing install_tree.tar, plus an extract genrule that untars it. Project B's install genrule (write-a's --fidelity=best-effort shape for kind:meson) produces install_tree.tar from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly.")
+	fs.StringVar(&a.fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:meson, install-plan-derived stubs over install_tree.tar). Implicitly enables --unsupported-target-fallback. Threaded verbatim from cmd/write-a; the same vocabulary applies to convert-element-cmake / -pyproject so the dial reads consistently across kinds.")
+	fs.BoolVar(&a.diagnostics, "diagnostics", false, "operator-facing diagnostic-mode dial: when set, the converter is supposed to collect every Tier-1 refusal and continue rather than aborting on the first. Today the meson converter has no rejection-collection machinery (exits on the first refusal), so this flag is a no-op pass-through — the same flag exists on convert-element-cmake (where it actually does something) and on -pyproject so the CLI surface is uniform.")
 	fs.StringVar(&a.bazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/foo\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths meson recorded. Empty suppresses the directive.")
 	if err := fs.Parse(argv); err != nil {
 		return a, exitUsage
+	}
+	// Validate + apply the operator-facing dial.
+	fidelity, err := convmode.ParseFidelity(a.fidelity)
+	if err != nil {
+		fmt.Fprintln(stderr, "convert-element-meson: "+err.Error())
+		return a, exitUsage
+	}
+	a.fidelity = string(fidelity)
+	if fidelity == convmode.FidelityBestEffort {
+		a.unsupportedTargetFallback = true
 	}
 	// --source-root is required in both modes: meson introspection
 	// records absolute source paths in intro-targets.json's

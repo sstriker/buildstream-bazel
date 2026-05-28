@@ -34,6 +34,7 @@ import (
 	"sort"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
@@ -52,6 +53,16 @@ type args struct {
 	elementName         string
 	probe               bool
 	alwaysEmitEntryShim bool
+	// fidelity / diagnostics: operator-facing dials threaded from
+	// cmd/write-a. The pyproject converter doesn't have an internal
+	// fallback shape (its "best-effort" path is write-a's --probe
+	// + pipeline-shape dispatch, which lives outside the converter
+	// process), so both flags are pass-through validation only —
+	// they're accepted so the CLI surface matches convert-element-
+	// cmake / -meson without changing behavior here. Documented
+	// in the flag-help text so operators understand the no-op.
+	fidelity    string
+	diagnostics bool
 }
 
 func main() {
@@ -75,7 +86,13 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	flags.StringVar(&a.elementName, "element-name", "", "the .bst element name (optional). When set, emit a stable `py_library(name = <element-name>)` facade target that aggregates the per-package targets, so downstream consumers can reference the element via the convention bind `//elements/<element-name>:<element-name>` even when the primary py_library is named differently (e.g. setuptools' dist-name → package-name normalization, or script-name collision suffixing _lib).")
 	flags.BoolVar(&a.probe, "probe", false, "probe-only mode: parse + discover + lower without emitting output. Exit 0 on would-succeed; non-zero otherwise. Tier-1 refusals (typed pyproject codes, including unresolved-pyproject-dependency when --imports-manifest is omitted on a dep-bearing project) exit 1 with the failure on stderr. Exit 64 = CLI usage error; exit 65 = any other untyped/Tier-2 error (filesystem issues, malformed imports manifest, unhandled converter path — not necessarily a bug). write-a's --pyproject-fallback dispatch treats any non-zero exit as 'would refuse' and falls back to the pipeline shape, so the 0-vs-non-zero contract is what callers should rely on.")
 	flags.BoolVar(&a.alwaysEmitEntryShim, "always-emit-entry-shim", false, "force the legacy entry-shim genrule + py_binary shape for every [project.scripts] entry, even when the target module self-invokes via `if __name__ == \"__main__\":`. Default false (Phase 5) emits the strict shape — py_binary pointing directly at the module file with no shim — for self-invoking entry modules. Operator opt-in for entry modules whose top-level side effects make the shim's clean `from <m> import <f>; sys.exit(f() or 0)` shape preferable.")
+	flags.StringVar(&a.fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero — same as today) or \"best-effort\". For convert-element-pyproject the dial is a pass-through no-op: pyproject's \"best-effort\" path is write-a's --probe + pipeline-shape dispatch around this converter, not an internal switch. The flag is accepted so the CLI surface matches convert-element-cmake / -meson.")
+	flags.BoolVar(&a.diagnostics, "diagnostics", false, "operator-facing diagnostic-mode dial. Today the pyproject converter has no rejection-collection machinery (exits on the first Tier-1 refusal); the flag is a no-op pass-through for CLI uniformity with convert-element-cmake.")
 	if err := flags.Parse(argv); err != nil {
+		return a, exitUsage
+	}
+	if _, err := convmode.ParseFidelity(a.fidelity); err != nil {
+		fmt.Fprintln(stderr, "convert-element-pyproject: "+err.Error())
 		return a, exitUsage
 	}
 	if a.sourceRoot == "" {

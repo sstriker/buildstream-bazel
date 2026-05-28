@@ -25,6 +25,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
@@ -255,6 +256,16 @@ type Options struct {
 	// the lower-as-pure-function shape every existing test
 	// depends on).
 	Warnings io.Writer
+
+	// BakeIn controls the convert-time-baked-output post-pass.
+	// Zero value (empty string) resolves to convmode.BakeInWarn so
+	// callers leaving the field default get today's behaviour:
+	// write the inventory to Warnings, but let conversion succeed.
+	// convmode.BakeInAllow silences the inventory;
+	// convmode.BakeInReject turns it into a Tier-2 refusal that
+	// ToIR returns as an error. See baking_warnings.go for the
+	// per-tag taxonomy.
+	BakeIn convmode.BakeIn
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -903,12 +914,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// file(GENERATE) (b) base64 shape, execute_process value
 	// hoists, cmake -P lift, etc.) carry tags that ToIR scans
 	// after every emit-time tagging is done. The post-pass writes
-	// a single aggregated warning to opts.Warnings so operators
-	// see at convert time which rules carry bytes that won't
-	// auto-refresh when upstream inputs change. Nil sink
-	// suppresses; non-nil emits a sorted list. Per-tag taxonomy
-	// in converter/internal/lower/baking_warnings.go.
-	warnConvertTimeBaking(pkg, opts.Warnings)
+	// a single aggregated warning to opts.Warnings (and / or
+	// refuses with the inventory embedded, depending on
+	// opts.BakeIn) so operators see at convert time which rules
+	// carry bytes that won't auto-refresh when upstream inputs
+	// change. Empty BakeIn resolves to convmode.BakeInWarn so
+	// existing callers see today's behaviour without setting the
+	// field. Per-tag taxonomy in
+	// converter/internal/lower/baking_warnings.go.
+	if err := applyBakeInPolicy(pkg, opts.Warnings, opts.BakeIn); err != nil {
+		return nil, err
+	}
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
 	// changes. Uses the same per-pkg walk shape as the

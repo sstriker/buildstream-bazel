@@ -34,6 +34,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
@@ -387,6 +388,7 @@ func run(a cli.Args) error {
 		CMakeScriptRunner:                 a.CMakeScriptRunner,
 		CMakeScriptTrace:                  a.CMakeScriptTrace,
 		CMakeScriptBake:                   a.CMakeScriptBake,
+		BakeIn:                            convmode.BakeIn(a.BakeIn),
 		Rejections:                        rejections,
 		Warnings:                          os.Stderr,
 	})

@@ -114,12 +114,13 @@ cmd_build() {
     project_b="$cache/B"
     mkdir -p "$cache"
 
-    # Round-1 trace-driven shape: project A is a marker, project B
-    # hosts the install genrule with build-tracer + convert-element-
-    # trace inline. Avoids the round-2 rendezvous infra (REAPI AC
-    # + cas-fuse / bb_clientd mount) that the wrapper doesn't aim to
-    # set up. Round-2 (publish/lookup binaries + bb_clientd) is the
-    # production deployment shape; the wrapper is for local dev.
+    # --deployment=local picks the round-1 trace-driven shape:
+    # project A is a marker, project B hosts the install genrule with
+    # build-tracer + convert-element-trace inline. Avoids the round-2
+    # rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) that
+    # the wrapper doesn't aim to set up. The wrapper deliberately
+    # leaves --fidelity at the strict default; operators wanting
+    # best-effort lowering pass it explicitly via `--` separator.
     #
     # --bst-root hands write-a the leaf .bst; write-a walks the
     # depends / build-depends / runtime-depends graph on disk
@@ -134,7 +135,7 @@ cmd_build() {
         --convert-element-cmake "$root/build/bin/convert-element-cmake" \
         --convert-element-trace "$root/build/bin/convert-element-trace" \
         --build-tracer-bin "$root/build/bin/build-tracer" \
-        --trace-round1
+        --deployment=local
 
     # Pick the leaf target. autotools elements expose
     # <name>_install (the genrule producing install_tree.tar +
