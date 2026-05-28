@@ -89,10 +89,19 @@ type standaloneTraceContext struct {
 // target in the package references the OUTPUT, so no consumer
 // needs to see it).
 //
+// cmakeSrc is the cmake source root — used by genruleSrcs to
+// re-anchor source-tree-absolute input paths (`/tmp/<src>/foo.c`)
+// to workspace-relative form (`foo.c`); essential for the
+// --cmake-script-bake / Phase 4 standalone-edge cases where the
+// edge's ninja-recorded inputs arrive as absolute paths from
+// cmake's `cmake -P` build-line resolution. Without it the
+// rendered genrule's srcs leak the convert-time absolute prefix,
+// and Bazel sandbox-misses the input at action time.
+//
 // buildDir is the cmake build directory — used to convert build-
 // relative output paths to package-relative paths the emitted
 // genrule's outs reference.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -160,10 +169,14 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 		if isCMakeBookkeepingOutput(outs[0]) {
 			continue
 		}
-		srcs := append([]string(nil), b.Inputs...)
-		srcs = append(srcs, b.ImplicitInputs...)
-		sort.Strings(srcs)
-		srcs = dedupSorted(srcs)
+		// Use genruleSrcs so source-tree-absolute inputs
+		// (e.g. `/tmp/<src>/foo.c` from a `cmake -P` build line
+		// that the ninja generator resolved with the cmake build
+		// dir's absolute prefix) get re-anchored to workspace-
+		// relative form. The pre-genruleSrcs path appended the
+		// raw ninja inputs verbatim, leaking convert-time
+		// absolute paths into the rendered genrule.
+		srcs := genruleSrcs(b, cmakeSrc, buildDir)
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
