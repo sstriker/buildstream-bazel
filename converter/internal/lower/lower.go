@@ -1890,6 +1890,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 					if isCompileOnlyLinkFlag(rewritten) {
 						continue
 					}
+					// Dedup against earlier appends — cmake's
+					// commandFragments occasionally lists the same
+					// flag multiple times (transitive PUBLIC
+					// propagation, hand-duplicated CMakeLists
+					// entries). Mirrors the copts/defines dedup in
+					// splitCompileFragments. First-occurrence-wins
+					// matches the linker's argv-order semantics for
+					// flags whose duplicates are noise (`-Wl,--gc-sections`,
+					// `-O3`).
+					if stringSliceContains(irt.LinkOpts, rewritten) {
+						continue
+					}
 					irt.LinkOpts = append(irt.LinkOpts, rewritten)
 					if addlInput != "" && !stringSliceContains(irt.AdditionalLinkerInputs, addlInput) {
 						irt.AdditionalLinkerInputs = append(irt.AdditionalLinkerInputs, addlInput)
