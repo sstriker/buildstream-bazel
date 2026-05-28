@@ -33,6 +33,17 @@ func TestIsCMakeInternalCmd(t *testing.T) {
 			`echo "hello"`, false},
 		{"user cmake -P with non-install script passes through",
 			`cmake -P myscript.cmake`, false},
+		// ctest -D <Dashboard> — CDash dashboard submission edges.
+		{"ctest -D Experimental",
+			`ctest -D Experimental`, true},
+		{"ctest -D Nightly",
+			`ctest -D Nightly`, true},
+		{"ctest -D Continuous",
+			`ctest -D Continuous`, true},
+		// User-written ctest invocations don't carry the -D
+		// Dashboard arg shape.
+		{"user ctest passes through",
+			`ctest --output-on-failure`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
