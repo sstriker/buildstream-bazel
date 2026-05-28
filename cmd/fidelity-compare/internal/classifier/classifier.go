@@ -88,7 +88,7 @@ func (r *Report) FormatForOperator() string {
 // artifact and classifies the deltas. Returns the structured report
 // or an error if nm/strings is unavailable or an artifact can't be
 // read.
-func Compare(cmakePath, bazelPath string, allowed map[string]bool) (*Report, error) {
+func Compare(cmakePath, bazelPath string, allowed Allowlist) (*Report, error) {
 	if _, err := os.Stat(cmakePath); err != nil {
 		return nil, fmt.Errorf("stat cmake artifact: %w", err)
 	}
@@ -123,7 +123,7 @@ func Compare(cmakePath, bazelPath string, allowed map[string]bool) (*Report, err
 	rep := &Report{CMakeArtifact: cmakePath, BazelArtifact: bazelPath}
 	rep.ExportedBoth = countCommon(cExported, bExported)
 	classifyExportedDeltas(rep, cExported, bExported, allowed)
-	classifyUndefinedDeltas(rep, cUndef, bUndef)
+	classifyUndefinedDeltas(rep, cUndef, bUndef, allowed)
 	classifyAbsolutePaths(rep, cAbsPaths, bAbsPaths)
 	return rep, nil
 }
@@ -238,7 +238,7 @@ func countCommon(a, b map[string]bool) int {
 // Same-name on both sides → ExportedBoth contribution. Only on one
 // side → check allowlist + template-instantiation heuristic +
 // fall-through to Impactful.
-func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[string]bool) {
+func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist) {
 	onlyCmake := setSub(c, b)
 	onlyBazel := setSub(b, c)
 	// Template-instantiation pairs: when both sides have unique
@@ -250,7 +250,7 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[strin
 	cMangled := mangledSymbols(onlyCmake)
 	bMangled := mangledSymbols(onlyBazel)
 	for sym := range onlyCmake {
-		if allowed[sym] {
+		if allowed.Match(sym) {
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "allowlist-suppressed", Detail: sym})
 			continue
 		}
@@ -261,7 +261,7 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[strin
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "exported-symbol-only-in-cmake", Detail: sym})
 	}
 	for sym := range onlyBazel {
-		if allowed[sym] {
+		if allowed.Match(sym) {
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "allowlist-suppressed", Detail: sym})
 			continue
 		}
@@ -281,17 +281,140 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[strin
 // reproduce those by default). Other undefined-set deltas are
 // informational only — they reflect link-time behavior the operator's
 // downstream linker resolves, not artifact correctness.
-func classifyUndefinedDeltas(rep *Report, c, b map[string]bool) {
-	for sym := range setSub(c, b) {
+func classifyUndefinedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist) {
+	onlyCmake := setSub(c, b)
+	onlyBazel := setSub(b, c)
+	// Template-pair heuristic on _Z-mangled symbols (same shape
+	// as classifyExportedDeltas). Two undefined references that
+	// share a long mangled prefix on opposite sides are two
+	// instantiations of the same template — the consumer pulled
+	// in inline-by-different-rules code paths, but the underlying
+	// library API contract is intact.
+	cMangled := mangledSymbols(onlyCmake)
+	bMangled := mangledSymbols(onlyBazel)
+	for sym := range onlyCmake {
 		switch {
 		case strings.HasSuffix(sym, "_chk"):
+			// FORTIFY_SOURCE — cmake's distro toolchain emits
+			// these; Bazel's hermetic toolchain doesn't. Benign.
 			rep.BenignDeltas = append(rep.BenignDeltas,
 				Delta{Kind: "fortify-symbol-only-in-cmake", Detail: sym})
 		case strings.HasPrefix(sym, "__stack_chk_"):
+			// Stack-protector — same distro-vs-hermetic toolchain
+			// shape as FORTIFY. Benign.
 			rep.BenignDeltas = append(rep.BenignDeltas,
 				Delta{Kind: "stack-protector-symbol-only-in-cmake", Detail: sym})
+		case allowed.Match(sym):
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "allowlist-suppressed-undefined", Detail: sym})
+		case isLibcRuntimeHelper(sym):
+			// Same toolchain-noise category as fortify/stack-
+			// protector; libc/libstdc++ runtime helpers one side
+			// inlines and the other references. Direction-
+			// agnostic — cmake or bazel could be the inliner
+			// depending on builtin-recognition behavior.
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "libc-runtime-helper-only-in-cmake", Detail: sym})
+		case strings.HasPrefix(sym, "_Z") && hasPrefixPair(sym, bMangled):
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "template-instantiation-undefined-only-in-cmake", Detail: sym})
+		default:
+			rep.ImpactfulDeltas = append(rep.ImpactfulDeltas,
+				Delta{Kind: "undefined-symbol-only-in-cmake", Detail: sym})
 		}
 	}
+	// Bazel-only undefined symbols are the consumer's link-time
+	// ABI dependency on the library that the cmake-side build
+	// doesn't have. Real ABI regressions (e.g. the converter's
+	// INTERFACE-library lift emitted a different mangled symbol
+	// due to wrong template parameter substitution) surface here
+	// as the bazel-side consumer.o referencing a symbol the
+	// cmake-side build doesn't need to link against. Classify
+	// strictly: allowlist + template-pair heuristic + the
+	// FORTIFY-replacement counterpart pair (cmake-side `__X_chk`
+	// pairs with bazel-side `X` as the same call un-hardened).
+	for sym := range onlyBazel {
+		switch {
+		case allowed.Match(sym):
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "allowlist-suppressed-undefined", Detail: sym})
+		case fortifyCounterpart(sym, onlyCmake):
+			// Bazel-side `snprintf` is the same call as cmake-side
+			// `__snprintf_chk` — FORTIFY just wrapped cmake's.
+			// Benign pair.
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "fortify-counterpart-only-in-bazel", Detail: sym})
+		case isLibcRuntimeHelper(sym):
+			// Glibc / libstdc++ runtime helpers cmake's distro
+			// build inlines or links statically but Bazel's
+			// hermetic toolchain references at link time:
+			// __tls_get_addr (dynamic TLS resolution),
+			// __cxa_atexit / __cxa_thread_atexit (C++ static
+			// destructor registration), and friends. Same
+			// distro-vs-hermetic toolchain-noise category as
+			// fortify/stack-protector; not a converter signal.
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "libc-runtime-helper-only-in-bazel", Detail: sym})
+		case strings.HasPrefix(sym, "_Z") && hasPrefixPair(sym, cMangled):
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "template-instantiation-undefined-only-in-bazel", Detail: sym})
+		default:
+			rep.ImpactfulDeltas = append(rep.ImpactfulDeltas,
+				Delta{Kind: "undefined-symbol-only-in-bazel", Detail: sym})
+		}
+	}
+}
+
+// isLibcRuntimeHelper reports whether `sym` is a glibc /
+// libstdc++ runtime helper that distro toolchains inline,
+// builtin-replace, or link statically while hermetic toolchains
+// reference at link time (or vice versa — gcc's -fno-builtin
+// can flip the direction). Same distro-vs-hermetic toolchain-
+// noise category as FORTIFY/stack-protector; classifying these
+// as impactful would flag toolchain differences as if they
+// were converter bugs.
+func isLibcRuntimeHelper(sym string) bool {
+	switch sym {
+	// libc string/mem builtins — compilers replace these with
+	// inline ops at -O2+ when builtin recognition fires, leaving
+	// the symbol undefined on one side and defined on the other
+	// depending on which side recognised the builtin pattern.
+	case "memcpy", "memmove", "memcmp", "memset",
+		"strlen", "strcmp", "strncmp", "strcpy", "strncpy",
+		"strcat", "strncat", "strchr", "strrchr", "strstr":
+		return true
+	// C++ runtime helpers — static-init guards, atexit,
+	// pure-virtual handler. All in libstdc++/libgcc; distro
+	// toolchains link these into the consumer when needed,
+	// hermetic toolchains reference at link time.
+	case "__tls_get_addr", // dynamic TLS resolution
+		"__cxa_atexit",        // C++ static destructor registration
+		"__cxa_thread_atexit", // C++ thread_local destructor
+		"__cxa_finalize",      // C++ shared-lib cleanup
+		"__cxa_guard_acquire", // function-static initialisation
+		"__cxa_guard_release",
+		"__cxa_guard_abort",
+		"__cxa_pure_virtual": // pure-virtual call handler
+		return true
+	}
+	// libstdc++ standard-exception vtables (std::exception,
+	// std::runtime_error, std::logic_error, std::bad_alloc,
+	// std::out_of_range, std::invalid_argument, ...). These
+	// are emitted by the toolchain runtime whenever the
+	// consumer references any standard exception type. Match
+	// the mangled-vtable prefix for std namespace.
+	if strings.HasPrefix(sym, "_ZTVSt") || strings.HasPrefix(sym, "_ZTISt") {
+		return true
+	}
+	return false
+}
+
+// fortifyCounterpart reports whether `sym` is the unhardened
+// counterpart of a `__<sym>_chk` entry in the cmake-only set.
+// Used to pair cmake-side `__snprintf_chk` with bazel-side
+// `snprintf` as the same call, FORTIFY-wrapped on cmake.
+func fortifyCounterpart(sym string, cmakeOnly map[string]bool) bool {
+	return cmakeOnly["__"+sym+"_chk"]
 }
 
 // classifyAbsolutePaths flags absolute host paths embedded in the
@@ -306,17 +429,54 @@ func classifyAbsolutePaths(rep *Report, c, b map[string]bool) {
 	}
 }
 
-// LoadAllowlist reads a per-fixture allowlist file. Format: one
-// symbol name per line, '#' comments, blank lines ignored. Empty
-// path yields an empty (always-empty) map.
-func LoadAllowlist(path string) (map[string]bool, error) {
-	out := map[string]bool{}
+// Allowlist is the parsed allowlist contents. Symbols matches
+// exact-name entries; Prefixes carries `prefix:<mangled-prefix>`
+// entries that suppress any symbol starting with the given
+// mangled prefix.
+//
+// The prefix shape (introduced for the nlohmann/json gate)
+// closes the "huge namespace of template instantiations" case:
+// adding a single `prefix:_ZN8nlohmann16json_abi_v3_11_3`
+// entry covers every basic_json template instantiation +
+// typeinfo + vtable in one line, instead of listing 1000+
+// mangled symbols. Use sparingly — a broad prefix can hide
+// real regressions inside the namespace; narrow the prefix as
+// far as you can while still covering the noise.
+type Allowlist struct {
+	Symbols  map[string]bool
+	Prefixes []string
+}
+
+// Match reports whether sym is allowlisted (either by exact
+// match against Symbols or by any prefix match against Prefixes).
+func (a Allowlist) Match(sym string) bool {
+	if a.Symbols[sym] {
+		return true
+	}
+	for _, p := range a.Prefixes {
+		if strings.HasPrefix(sym, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// LoadAllowlist reads a per-fixture allowlist file. Format:
+//
+//   - blank lines and '#' comments ignored
+//   - `<symbol>` — exact-match entry
+//   - `prefix:<mangled-prefix>` — prefix-match entry (matches
+//     any symbol starting with <mangled-prefix>)
+//
+// Empty path yields an empty (always-empty) allowlist.
+func LoadAllowlist(path string) (Allowlist, error) {
+	out := Allowlist{Symbols: map[string]bool{}}
 	if path == "" {
 		return out, nil
 	}
 	buf, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	s := bufio.NewScanner(bytes.NewReader(buf))
 	for s.Scan() {
@@ -324,7 +484,14 @@ func LoadAllowlist(path string) (map[string]bool, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		out[line] = true
+		if rest, ok := strings.CutPrefix(line, "prefix:"); ok {
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				out.Prefixes = append(out.Prefixes, rest)
+			}
+			continue
+		}
+		out.Symbols[line] = true
 	}
 	return out, nil
 }

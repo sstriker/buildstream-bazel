@@ -98,10 +98,20 @@ fi
 if [ -z "$bazel_artifact_pattern" ]; then
     bazel_artifact_pattern="$artifact_pattern"
 fi
-if [ -z "$cmake_artifact_pattern" ] || [ -z "$bazel_artifact_pattern" ]; then
-    echo "missing --artifact-pattern (or per-side overrides)" >&2
-    usage
-    exit 64
+# Header-only / INTERFACE-only projects (nlohmann-json, boost-core
+# shape) don't produce a static-archive artifact — the fidelity
+# check has to ride on the consumer .o pair only. Allow missing
+# --artifact-pattern when --consumer-file is set; the library-
+# build + artifact-find blocks self-skip on the empty pattern.
+if [ -n "$consumer_file" ] && [ -z "$cmake_artifact_pattern" ] && [ -z "$bazel_artifact_pattern" ]; then
+    no_library=true
+else
+    no_library=false
+    if [ -z "$cmake_artifact_pattern" ] || [ -z "$bazel_artifact_pattern" ]; then
+        echo "missing --artifact-pattern (or per-side overrides)" >&2
+        usage
+        exit 64
+    fi
 fi
 if [ -z "$bazel_target_label" ]; then
     bazel_target_label="//:$target"
@@ -129,16 +139,33 @@ for k in codemodel-v2 toolchains-v1 cmakeFiles-v1 cache-v2; do
     touch "$cmake_build/.cmake/api/v1/query/$k"
 done
 # shellcheck disable=SC2086
+# Enable cmake's --trace-expand so convert-element-cmake's
+# trace-driven lifts fire (INTERFACE-library cc_library
+# synthesis, target_link_libraries STATIC IMPORTED dep
+# recovery, PRIVATE/PUBLIC visibility on
+# target_include_directories, etc.). The converter auto-
+# detects trace.jsonl at <build>/trace.jsonl when present.
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -B "$cmake_build" -S "$source_root" \
+    --trace-expand --trace-format=json-v1 \
+    --trace-redirect="$cmake_build/trace.jsonl" \
     $cmake_flags > "$work_dir/cmake-configure.log" 2>&1
-cmake --build "$cmake_build" --target "$target" > "$work_dir/cmake-build.log" 2>&1
-
-cmake_artifact="$(find "$cmake_build" -name "$cmake_artifact_pattern" -type f | head -1)"
-if [ -z "$cmake_artifact" ]; then
-    echo "fidelity[$project_name]: cmake build produced no artifact matching $cmake_artifact_pattern" >&2
-    exit 1
+# For INTERFACE-only (no_library) projects there's nothing to
+# build at this step; the install step in 1b is what stages
+# headers for the consumer compile. Single --target call still
+# runs to surface any configure-side errors.
+if [ "$no_library" = false ]; then
+    cmake --build "$cmake_build" --target "$target" > "$work_dir/cmake-build.log" 2>&1
 fi
-echo "fidelity[$project_name]:   cmake artifact: $cmake_artifact" >&2
+
+cmake_artifact=""
+if [ "$no_library" = false ]; then
+    cmake_artifact="$(find "$cmake_build" -name "$cmake_artifact_pattern" -type f | head -1)"
+    if [ -z "$cmake_artifact" ]; then
+        echo "fidelity[$project_name]: cmake build produced no artifact matching $cmake_artifact_pattern" >&2
+        exit 1
+    fi
+    echo "fidelity[$project_name]:   cmake artifact: $cmake_artifact" >&2
+fi
 
 # --- Step 1b (consumer mode): cmake install + cmake-side consumer compile.
 # The consumer.c/.cpp is compiled against the headers cmake's install
@@ -221,7 +248,6 @@ if ! command -v bazel >/dev/null 2>&1; then
     exit 0
 fi
 
-echo "fidelity[$project_name]: bazel build $bazel_target_label" >&2
 bazel_jvm_args=""
 if [ -f /etc/ssl/certs/java/cacerts ]; then
     # On hosts where the JVM's embedded cacerts doesn't trust the
@@ -229,22 +255,25 @@ if [ -f /etc/ssl/certs/java/cacerts ]; then
     # the JVM at the system store.
     bazel_jvm_args="--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit"
 fi
-# shellcheck disable=SC2086
-(cd "$bazel_ws" && bazel $bazel_jvm_args build "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
-    echo "fidelity[$project_name]: bazel build FAILED — see $work_dir/bazel.log" >&2
-    tail -20 "$work_dir/bazel.log" >&2
-    exit 1
-}
-
-# `bazel-bin` is a symlink into bazel's output base; `find -L`
-# follows it. Without -L the find walks the symlink's target as a
-# leaf and finds nothing.
-bazel_artifact="$(find -L "$bazel_ws/bazel-bin" -name "$bazel_artifact_pattern" -type f 2>/dev/null | head -1)"
-if [ -z "$bazel_artifact" ]; then
-    echo "fidelity[$project_name]: bazel build produced no artifact matching $bazel_artifact_pattern" >&2
-    exit 1
+bazel_artifact=""
+if [ "$no_library" = false ]; then
+    echo "fidelity[$project_name]: bazel build $bazel_target_label" >&2
+    # shellcheck disable=SC2086
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
+        echo "fidelity[$project_name]: bazel build FAILED — see $work_dir/bazel.log" >&2
+        tail -20 "$work_dir/bazel.log" >&2
+        exit 1
+    }
+    # `bazel-bin` is a symlink into bazel's output base; `find -L`
+    # follows it. Without -L the find walks the symlink's target as a
+    # leaf and finds nothing.
+    bazel_artifact="$(find -L "$bazel_ws/bazel-bin" -name "$bazel_artifact_pattern" -type f 2>/dev/null | head -1)"
+    if [ -z "$bazel_artifact" ]; then
+        echo "fidelity[$project_name]: bazel build produced no artifact matching $bazel_artifact_pattern" >&2
+        exit 1
+    fi
+    echo "fidelity[$project_name]:   bazel artifact: $bazel_artifact" >&2
 fi
-echo "fidelity[$project_name]:   bazel artifact: $bazel_artifact" >&2
 
 # --- Step 3b (consumer mode): bazel-side consumer compile.
 # Append a cc_library rule consuming the converted target's exported
