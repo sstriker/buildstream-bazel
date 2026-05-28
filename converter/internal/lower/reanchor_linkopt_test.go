@@ -24,7 +24,9 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "strip cd prefix targeting buildDir",
 			in:   "cd /tmp/proj/build && /usr/bin/cmake -E touch foo",
-			want: "cmake -E touch foo",
+			// /usr/bin/ host-prefix stripped + cmake -E touch
+			// rewritten to POSIX touch (cmake_e_rewrite.go).
+			want: "touch foo",
 		},
 		{
 			name: "strip cd prefix targeting buildDir subdir",
@@ -49,7 +51,9 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "rewrite buildDir-rooted path references",
 			in:   "/usr/bin/cmake -E copy /tmp/proj/build/scripts/foo.out /tmp/proj/build/libfoo.sym",
-			want: "cmake -E copy scripts/foo.out libfoo.sym",
+			// /usr/bin/ host-prefix stripped + cmake -E copy
+			// rewritten to POSIX cp (cmake_e_rewrite.go).
+			want: "cp scripts/foo.out libfoo.sym",
 		},
 		{
 			name: "combo — strip cd, rewrite both anchors",
@@ -79,7 +83,9 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "strip /usr/bin/ prefix at cmd start",
 			in:   "/usr/bin/cmake -E remove foo",
-			want: "cmake -E remove foo",
+			// /usr/bin/ host-prefix stripped + cmake -E remove
+			// rewritten to POSIX rm -f (cmake_e_rewrite.go).
+			want: "rm -f foo",
 		},
 		{
 			name: "strip /usr/local/bin/ prefix at cmd start",
@@ -89,7 +95,9 @@ func TestRewriteGenruleCmd(t *testing.T) {
 		{
 			name: "strip host-bin after && separator",
 			in:   "/usr/bin/cmake -E remove foo && /usr/bin/cmake -E copy a b",
-			want: "cmake -E remove foo && cmake -E copy a b",
+			// /usr/bin/ host-prefix stripped + cmake -E remove/copy
+			// rewritten to POSIX rm/cp (cmake_e_rewrite.go).
+			want: "rm -f foo && cp a b",
 		},
 		{
 			name: "preserve host-bin embedded inside argv arg",

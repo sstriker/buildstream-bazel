@@ -3604,6 +3604,12 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 		// scan covers the common cases.
 		cmd = stripToolPrefixAtBoundaries(cmd, prefix)
 	}
+	// Rewrite `cmake -E <op>` builtins to POSIX equivalents so
+	// the genrule doesn't depend on the action sandbox having
+	// cmake on PATH. Bazel sandboxes typically have ln / cp /
+	// mkdir / rm but not cmake — the rewrite turns recoverable
+	// genrules into ones that work without a staged cmake tool.
+	cmd = rewriteCmakeECommand(cmd)
 	return cmd
 }
 
