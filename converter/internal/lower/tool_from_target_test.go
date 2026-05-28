@@ -16,8 +16,15 @@ func TestBuildArtifactToLabelMap(t *testing.T) {
 		{Name: "nameless_artifact", Kind: ir.KindCCBinary, ArtifactName: ""}, // falls back to Name
 	}
 	got := buildArtifactToLabelMap(targets)
+	// Each cc_binary contributes the target Name + the
+	// ArtifactName (with basename if rooted). Aliasing the
+	// target name and the artifact basename means tokens
+	// referencing either form (e.g. `WrapHierarchy` from a
+	// trace, or `vtkWrapHierarchy-9.3` from a cmake-emitted
+	// cmd) hit the rewrite.
 	want := map[string]string{
 		"vtkWrapHierarchy-9.3": ":WrapHierarchy",
+		"WrapHierarchy":        ":WrapHierarchy",
 		"vtkH5detect":          ":vtkH5detect",
 		"nameless_artifact":    ":nameless_artifact",
 	}

@@ -26,22 +26,39 @@ import (
 // identically to an empty map.
 func buildArtifactToLabelMap(existing []ir.Target) map[string]string {
 	var out map[string]string
+	add := func(key, label string) {
+		if key == "" {
+			return
+		}
+		if out == nil {
+			out = map[string]string{}
+		}
+		out[key] = label
+	}
 	for i := range existing {
 		t := &existing[i]
 		if t.Kind != ir.KindCCBinary {
 			continue
 		}
-		name := t.ArtifactName
-		if name == "" {
-			name = t.Name
+		label := ":" + t.Name
+		// cmake's Artifact.Path is build-dir-relative — typically
+		// `bin/<artifact>` for EXECUTABLE targets. Register both
+		// the full key (`bin/<artifact>`) and the basename
+		// (`<artifact>`) so cmd tokens that reference either form
+		// hit the rewrite: cmake-Ninja-recorded `bin/<artifact>`
+		// AND post-rewriteGenruleCmd bare-basename forms (e.g.
+		// `ln -sf llvm-ar` after the cmake -E create_symlink
+		// rewrite + buildDir-prefix strip).
+		if t.ArtifactName != "" {
+			add(t.ArtifactName, label)
+			if base := t.ArtifactName[strings.LastIndex(t.ArtifactName, "/")+1:]; base != t.ArtifactName {
+				add(base, label)
+			}
 		}
-		if name == "" {
-			continue
-		}
-		if out == nil {
-			out = map[string]string{}
-		}
-		out[name] = ":" + t.Name
+		// Always register the cmake target name as a key too —
+		// some custom-command cmds reference the source-level
+		// target name rather than the artifact path.
+		add(t.Name, label)
 	}
 	return out
 }
