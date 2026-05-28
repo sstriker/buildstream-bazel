@@ -69,7 +69,52 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		// rather than copts -I, matching the rest of the lift's
 		// includes handling.
 		applyPartition(tgt, "includes", fold.Includes, cmakeSrc, cmakeBuild)
+		// Single-config baseline (the IR's flat copts / defines /
+		// linkopts populated by lowerTarget's first-config view)
+		// can carry the same value a per-config delta added —
+		// because lowerTarget runs on CompileGroups[0] (typically
+		// Release), it picks up Release-only flags as "baseline".
+		// The multi-config delta then re-adds them in the Release
+		// select arm. Drop the duplicates from the flat baseline
+		// when they appear in any per-config delta — the select()
+		// arm is the canonical source for cross-config-varying
+		// values.
+		dedupBaselineAgainstDeltas(tgt)
 	}
+}
+
+// dedupBaselineAgainstDeltas removes entries from tgt.Copts /
+// tgt.Defines / tgt.LinkOpts whose value appears in any of the
+// per-config delta arms in tgt.PerPlatform for the same attr.
+// The select() arm is the authoritative source for cross-config-
+// varying values; the flat baseline ends up reflecting only
+// truly-baseline values (those common to every config).
+func dedupBaselineAgainstDeltas(tgt *ir.Target) {
+	if tgt == nil || tgt.PerPlatform == nil {
+		return
+	}
+	dedup := func(attr string, baseline []string) []string {
+		deltas, ok := tgt.PerPlatform[attr]
+		if !ok || len(deltas) == 0 {
+			return baseline
+		}
+		inDelta := map[string]bool{}
+		for _, arm := range deltas {
+			for _, v := range arm {
+				inDelta[v] = true
+			}
+		}
+		out := baseline[:0]
+		for _, v := range baseline {
+			if !inDelta[v] {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	tgt.Copts = dedup("copts", tgt.Copts)
+	tgt.Defines = dedup("defines", tgt.Defines)
+	tgt.LinkOpts = dedup("linkopts", tgt.LinkOpts)
 }
 
 // applyPartition writes the per-cell deltas of one fact family
