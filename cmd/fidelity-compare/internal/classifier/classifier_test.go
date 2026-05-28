@@ -52,7 +52,7 @@ func TestClassifyUndefinedDeltas_FortifyAndStackProtector(t *testing.T) {
 		"printf":    true,
 	}
 	rep := &Report{}
-	classifyUndefinedDeltas(rep, cUndef, bUndef)
+	classifyUndefinedDeltas(rep, cUndef, bUndef, Allowlist{})
 
 	// FORTIFY + stack-protector → benign, three entries.
 	kinds := map[string]int{}
