@@ -9,17 +9,44 @@ survey (LLVM, VTK, fmt, json, libpng, zlib) on the post-#298 main —
 For the operator-side flag-set discussion that complements this
 audit, see [`operator-toolchain-features.md`](operator-toolchain-features.md).
 
-**Queued corpus expansion** (not yet folded into the census above):
-four projects picked to maximise pattern coverage over the current
-six — `abseil-cpp` (idiom oracle; ships its own BUILD),
-`protobuf` (protoc codegen + `install(EXPORT)` config-mode producer —
-fills the cross-target-codegen / export-bundle shape that the six
-leaf libraries don't exercise), `googletest` (`add_test` /
-`gtest_discover_tests` — real-world datapoint for the ctest
-edge-filtering path), and `Eigen` (header-only INTERFACE library +
-config-mode export/components). Clone them with `make fetch-survey`
-(pins live in the `Makefile`); the census numbers here stay scoped
-to the six until a survey run against the expanded set lands.
+## Corpus expansion run (abseil / protobuf / googletest / eigen)
+
+Four projects added to maximise pattern coverage over the original
+six. Reproduce with `make fetch-survey && make converter &&
+scripts/run-survey.sh` (pins in the `Makefile`; the runner drives
+`convert-element-cmake --source-root … --diagnostics` per project).
+Run against cmake 3.28.3 on the post-#306 main:
+
+| Project | cc targets | Tier-1 rejections | bazel-idiom findings |
+|---|---:|---:|---|
+| abseil-cpp `20260107.1` | 209 | 0 | 0 |
+| protobuf `v6.31.1` | 122 | 0 | 6 |
+| googletest `v1.17.0` | 9 | 0 | 0 |
+| Eigen `3.4.1` | 492 | 1 | 0 |
+
+Two genuine new datapoints:
+
+- **protobuf — 6 × `find-package-dep-unresolved`.** Every `protoc` /
+  plugin / test binary links `find_package(ZLIB)` (`libz.so`), which
+  has no imports-manifest entry, so the dep is dropped from `deps`
+  and the BUILD would link-fail. Not a converter bug — it's the
+  expected config-mode-consumer gap the six leaf libraries never
+  exercised: the operator supplies an `--imports-manifest` mapping
+  `ZLIB::ZLIB` → a real `cc_import`/`cc_library` label. First survey
+  member that makes the imports-manifest path load-bearing.
+- **Eigen — 1 × `unsupported-execute-process`.** `test/CMakeLists.txt`
+  runs `c++ --version | head -n 1` — a multi-COMMAND pipeline the
+  execute_process classifier refuses (concurrent stages with stdout
+  chaining). Confined to the test tree; the library graph converts
+  clean.
+
+abseil (the idiom oracle) and googletest convert with **zero** raw
+feature-flag findings — consistent with the post-#247 `liftRawFeatureFlags`
+result on LLVM/VTK/fmt; the feature-flag lift generalises to abseil's
+209 targets without a single `raw-toolchain-feature-flag` residue.
+The codemodel census table above is unchanged: the expansion surfaced
+no newly-consumed-or-dropped field, only the two lift-quality / operator-input
+datapoints noted here.
 
 ## Codemodel field census
 
