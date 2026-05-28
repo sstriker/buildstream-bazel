@@ -521,10 +521,23 @@ filegroup(
 		bakeInFlag = fmt.Sprintf(` \
             --bake-in=%s`, cmakeConfig.bakeIn)
 	}
+	// Diagnostics dial: thread --diagnostics + a per-element
+	// rejections.json output. The converter writes the file (empty
+	// when no rejections fired) so the declared output always
+	// exists for Bazel; the operator can read elements/<name>/
+	// rejections.json post-build to see the structured rejection
+	// list. Without the --rejections-report path, --diagnostics
+	// would silently collect rejections but write nothing — the
+	// dial's whole point is producing readable output for
+	// surveys.
 	diagnosticsFlag := ""
+	diagnosticOuts := ""
 	if cmakeConfig.diagnostics {
 		diagnosticsFlag = ` \
-            --diagnostics=true`
+            --diagnostics=true \
+            --rejections-report="$(location rejections.json)"`
+		diagnosticOuts = `
+        "rejections.json",`
 	}
 	if cmakeConfig.configureFileBin != "" {
 		liftFlag = ` \
@@ -576,7 +589,7 @@ genrule(
     outs = [
         "BUILD.bazel.out",
         "read_paths.json",
-        "cmake-config-bundle.tar",
+        "cmake-config-bundle.tar",%[11]s
     ],
     cmd = """
         # Build a unified source-root by merging real srcs (workspace
@@ -627,7 +640,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts)
 	return b.String()
 }
 

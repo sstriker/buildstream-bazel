@@ -522,6 +522,19 @@ transition cleanly.
   round-1-vs-round-2 trace shape) rather than per-converter
   behavior, so it doesn't pass through.
 
+  Converter-side dial implications (cmake): `--fidelity=strict`
+  implies `--strict-trace=true` (offline replay flows that lack
+  trace data must opt out via explicit `--strict-trace=false`);
+  `--diagnostics=true` implies `--ignore-rejections-for-
+  diagnostics=true`, `--probe-distro-hardening=true`, and
+  `--verify=true`. Each implication respects an explicit
+  per-flag override. Write-a's `--diagnostics` additionally
+  threads `--rejections-report="$(location rejections.json)"`
+  into the cmake-converter genrule and declares the per-element
+  rejections.json output, so the structured rejection list
+  actually lands on disk under elements/<name>/ rather than
+  being silently collected and dropped.
+
   The startup banner prints the resolved dials, the wired vs.
   not-provided tools, the kind summary, and any downgrade notes
   (e.g. "auto picked local because publish/lookup weren't set")

@@ -486,7 +486,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.SourceRoot, "source-root", "", "absolute path to the CMake project root; the converter runs cmake itself in a fresh build dir")
 	fs.StringVar(&a.ReplyDir, "reply-dir", "", "skip cmake invocation; read File API reply from this dir (typically <build>/.cmake/api/v1/reply). --cmake-build-dir is the friendlier alias")
 	fs.StringVar(&a.CMakeBuildDir, "cmake-build-dir", "", "skip cmake invocation; point at an existing cmake build dir (the value passed to cmake -B). Derives the reply dir as <cmake-build-dir>/.cmake/api/v1/reply and auto-picks up build.ninja / trace.jsonl / cmake-variable dump from the same dir")
-	fs.BoolVar(&a.StrictTrace, "strict-trace", false, "refuse with a Tier-1 error when no cmake trace data is available (instead of warning and continuing with degraded recovery). Recommended for production runs; off by default to preserve existing behaviour")
+	fs.BoolVar(&a.StrictTrace, "strict-trace", false, "refuse with a Tier-1 error when no cmake trace data is available (instead of warning and continuing with degraded recovery). Implicitly enabled by --fidelity=strict (the dial default); pass --strict-trace=false to opt out — needed for offline replay flows where trace data isn't available alongside the fileapi reply.")
 	fs.BoolVar(&a.ProbeDistroHardening, "probe-distro-hardening", false, "probe the convert host's cc for distro-default hardening flags (FORTIFY_SOURCE, stack-protector) that Bazel's hermetic cc_toolchain won't reproduce; emit a stderr warning naming the detected flags + a remediation recipe. Diagnostic-only.")
 	fs.StringVar(&a.OutBuild, "out-build", "BUILD.bazel", "destination path for generated BUILD.bazel")
 	fs.StringVar(&a.OutBundleDir, "out-bundle-dir", "", "directory for synthesized cmake-config bundle (optional)")
@@ -567,12 +567,43 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	if fidelity == convmode.FidelityBestEffort {
 		a.UnsupportedExecuteProcessFallback = true
 	}
+	// --fidelity=strict implies --strict-trace: the strict-refusal
+	// dial values "I want every undefined / degraded shape to
+	// fail loudly", which includes missing cmake trace data
+	// (Lower's PUBLIC/PRIVATE recovery, IMPORTED-target dep
+	// recovery, etc. all degrade silently without trace). Operator
+	// can pass --strict-trace=false explicitly to keep the
+	// degrade-and-warn shape under strict fidelity (e.g. offline
+	// replay flows where trace data isn't available); the explicit
+	// override wins. Detection uses fs.Visit because Go's flag
+	// package doesn't track explicit-vs-default for bool flags any
+	// other way.
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	if fidelity == convmode.FidelityStrict && !explicit["strict-trace"] {
+		a.StrictTrace = true
+	}
 	if _, err := convmode.ParseBakeIn(a.BakeIn); err != nil {
 		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
 		return a, ExitUsage
 	}
 	if a.Diagnostics {
+		// --diagnostics is "I'm surveying this codebase; surface
+		// everything you know how to surface, and don't abort on
+		// the first refusal". That collects rejections
+		// (--ignore-rejections-for-diagnostics), reports distro-
+		// hardening drift (--probe-distro-hardening), and cross-
+		// checks the IR against compile_commands (--verify). Each
+		// is independently silenceable via an explicit
+		// --<flag>=false override; the dial only sets unset
+		// defaults.
 		a.IgnoreRejectionsForDiagnostics = true
+		if !explicit["probe-distro-hardening"] {
+			a.ProbeDistroHardening = true
+		}
+		if !explicit["verify"] {
+			a.Verify = true
+		}
 	}
 	return a, ExitSuccess
 }
