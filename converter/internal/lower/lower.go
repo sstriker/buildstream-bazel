@@ -1158,6 +1158,50 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				elidedCompilerArtifact = true
 				continue
 			}
+			// Pre-existing checked-in "generated" source: libevent's
+			// test/regress.gen.{c,h} are the canonical case — they're
+			// produced by an event_rpcgen.py code generator BUT the
+			// generated files are committed to the repo so the build
+			// works without re-running the generator. cmake records
+			// IsGenerated=true unconditionally; the converter previously
+			// passed them to recoverGenrule, which refused with
+			// "generated source outside the build dir" (they live under
+			// cmakeSrc, not cmakeBuild). When the source exists on
+			// disk at its expected package-relative location, route
+			// it through the regular source-path handling — the
+			// cc_library entry picks up the already-committed file.
+			// The genrule that would re-produce the file is preserved
+			// via the standalone-custom-command edge so operators can
+			// still wire the generator if they want runtime
+			// regeneration.
+			//
+			// cmake records IsGenerated source paths as either
+			// absolute or cmakeSrc-relative; resolve both forms to
+			// a package-relative path before the existence check.
+			{
+				rel := src.Path
+				if filepath.IsAbs(rel) {
+					if r, inside := relativeIfInside(cmakeSrc, rel); inside {
+						rel = r
+					} else {
+						rel = "" // outside cmakeSrc; let recoverGenrule handle it
+					}
+				}
+				if rel != "" && hostSrc != "" {
+					if _, err := os.Stat(filepath.Join(hostSrc, rel)); err == nil {
+						ext := strings.ToLower(filepath.Ext(rel))
+						switch {
+						case inCompileGroup[i]:
+							irt.Srcs = append(irt.Srcs, rel)
+						case headerExts[ext]:
+							irt.Hdrs = append(irt.Hdrs, rel)
+						default:
+							irt.Srcs = append(irt.Srcs, rel)
+						}
+						continue
+					}
+				}
+			}
 			relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
 			if err != nil {
 				if rejections != nil {
