@@ -2,6 +2,7 @@ package lower
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/configfold"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -108,6 +109,21 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 			tok := stripFactPrefix(fact)
 			switch attr {
 			case "linkopts":
+				// Skip "libraries"-role link fragments — those
+				// are static archives / cmake import targets that
+				// belong in `deps`, not linkopts. The single-
+				// config baseline path at lower.go's t.Link.
+				// CommandFragments loop already routes them
+				// through imports.LookupLinkPath into the IR's
+				// deps slice; per-config delta entries that
+				// reflect different build-dir paths per config
+				// would otherwise leak in as bogus
+				// `linkopts = ["Debug/lib/libfoo.a", ...]` select
+				// arms (LLVM-shape).
+				if strings.HasPrefix(fact, "libraries|") ||
+					strings.HasPrefix(fact, "libraryPath|") {
+					continue
+				}
 				if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
 					values = append(values, rewritten)
 				}

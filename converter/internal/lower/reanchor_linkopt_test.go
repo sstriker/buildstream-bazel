@@ -253,6 +253,18 @@ func TestReanchorLinkOptToken(t *testing.T) {
 			wantTok: "",
 			wantOk:  true,
 		},
+		{
+			name:    "version-script single-quoted under build dir — drop (libpng shape)",
+			in:      `-Wl,--version-script,'/tmp/proj/build/libpng.vers'`,
+			wantTok: "",
+			wantOk:  false,
+		},
+		{
+			name:    "version-script single-quoted under source — re-anchor + requote with double",
+			in:      `-Wl,--version-script,'/tmp/proj/src/syms.map'`,
+			wantTok: `-Wl,--version-script,"syms.map"`,
+			wantOk:  true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

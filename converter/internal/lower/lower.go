@@ -3653,8 +3653,15 @@ func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
 			continue
 		}
 		raw := tok[len(prefix):]
-		// Strip wrapping quotes (cmake serialises some as `"<abs>"`).
-		stripped := strings.Trim(raw, `"`)
+		// Strip wrapping double- or single-quotes. cmake serialises
+		// the path either way depending on the originating
+		// CMakeLists shape; libpng uses single quotes, zlib uses
+		// double quotes for the same `--version-script` flag.
+		stripped := raw
+		if (strings.HasPrefix(raw, `"`) && strings.HasSuffix(raw, `"`)) ||
+			(strings.HasPrefix(raw, `'`) && strings.HasSuffix(raw, `'`)) {
+			stripped = raw[1 : len(raw)-1]
+		}
 		if !filepath.IsAbs(stripped) {
 			return tok, true
 		}
