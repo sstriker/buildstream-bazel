@@ -826,6 +826,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// Alias-target lift from trace: `add_library(<alias> ALIAS
+	// <target>)` shapes don't appear in codemodel.targets[]
+	// (cmake resolves aliases at configure time so codemodel
+	// only records the underlying target). The trace captures
+	// the source-level alias declaration; emit Bazel-native
+	// alias() rules so operator-written cross-package consumers
+	// resolve the alias name correctly.
+	if decodedTrace != nil {
+		pkg.Targets = append(pkg.Targets,
+			lowerAliasTargets(decodedTrace, knownTargets, cmakeSrc)...)
+	}
 	// HEADER_FILE_ONLY reclassification — walk every target's
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked

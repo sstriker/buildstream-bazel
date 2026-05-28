@@ -1855,6 +1855,34 @@ func TestEmit_Filegroup_Basic(t *testing.T) {
 	}
 }
 
+// TestEmit_Alias_Basic covers KindAlias emission — the cmake
+// ALIAS-target lift (alias_target.go) projects
+// `add_library(<alias> ALIAS <target>)` shapes from the trace
+// into Bazel `alias(name=, actual=)` rules.
+func TestEmit_Alias_Basic(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:        "foo_alias",
+			Kind:        ir.KindAlias,
+			AliasActual: ":foo",
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.Contains(gotStr, `alias(`) {
+		t.Errorf("expected alias rule; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `name = "foo_alias"`) {
+		t.Errorf("expected name attribute; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `actual = ":foo"`) {
+		t.Errorf("expected actual attribute; got:\n%s", gotStr)
+	}
+}
+
 // TestEmit_Provenance_RendersWhenEnabled covers Phase 1 task 1:
 // when EmitProvenance is on, each rule with a non-zero Provenance
 // gets a leading `# Source: <file>:<line> (<command>)` comment.
