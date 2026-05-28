@@ -89,10 +89,18 @@ type standaloneTraceContext struct {
 // target in the package references the OUTPUT, so no consumer
 // needs to see it).
 //
+// cmakeSrc is the cmake source root — used by rewriteGenruleCmd
+// to re-anchor source-tree-absolute path references in the cmd
+// body to workspace-relative form. Without it the emitted cmd
+// keeps the convert-time prefix and Bazel sandbox-misses the
+// referenced file.
+//
 // buildDir is the cmake build directory — used to convert build-
 // relative output paths to package-relative paths the emitted
-// genrule's outs reference.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
+// genrule's outs reference, AND used by rewriteGenruleCmd to
+// strip the cmake-Ninja `cd <abs-build-subdir> &&` preamble +
+// buildDir-rooted path references from the cmd body.
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -197,7 +205,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 			Kind:        ir.KindGenrule,
 			Srcs:        srcs,
 			GenruleOuts: outs,
-			GenruleCmd:  cmd,
+			GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
 			Visibility:  visibility,
 			Tags:        []string{"cmake-codegen-standalone-custom-command"},
 		})

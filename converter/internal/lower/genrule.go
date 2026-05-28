@@ -265,9 +265,16 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	tags := genruleTags(cmd, b, g)
 
 	gen := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  cmd,
+		Name: name,
+		Kind: ir.KindGenrule,
+		// Normalise cmake-Ninja's `cd <abs-build-subdir> &&`
+		// preamble + absolute buildDir/cmakeSrc path references
+		// to workspace-relative form before the cmd lands on the
+		// IR. Without the call here the rendered genrule leaked
+		// convert-time absolute paths (`cd /tmp/<build>/sub &&
+		// /tmp/<build>/bin/tool ...`) into the BUILD where
+		// Bazel's hermetic sandbox can't resolve them.
+		GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
 		GenruleOuts: outs,
 		Srcs:        srcs,
 		Tags:        tags,

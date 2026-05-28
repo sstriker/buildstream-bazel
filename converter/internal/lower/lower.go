@@ -882,7 +882,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			AddDependencies: decodedAddDependencies,
 		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir, traceCtx)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
