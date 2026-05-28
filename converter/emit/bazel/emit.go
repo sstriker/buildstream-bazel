@@ -752,24 +752,24 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 // Test-only fields (Args, Env, Timeout, Data) stay zero except
 // when RuleKind == "cc_test".
 type ccView struct {
-	RuleKind               string
-	Name                   string
-	SrcsExpr               string
-	HdrsExpr               string
-	IncludesExpr           string
-	IncludePrefix          string
-	StripIncludePrefix     string
+	RuleKind                   string
+	Name                       string
+	SrcsExpr                   string
+	HdrsExpr                   string
+	IncludesExpr               string
+	IncludePrefix              string
+	StripIncludePrefix         string
 	CoptsExpr                  string
 	DefinesExpr                string
 	LinkoptsExpr               string
 	AdditionalLinkerInputsExpr string
 	DepsExpr                   string
 	ImplementationDepsExpr     string
-	Linkstatic             bool
-	Alwayslink             bool
-	Features               []string
-	Tags                   []string
-	Visibility             []string
+	Linkstatic                 bool
+	Alwayslink                 bool
+	Features                   []string
+	Tags                       []string
+	Visibility                 []string
 
 	// cc_test-only.
 	Args    []string
@@ -921,22 +921,22 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 
 	v := ccView{
-		RuleKind:               t.Kind.String(),
-		Name:                   t.Name,
-		SrcsExpr:               attrExpr(srcs, srcsSel),
-		HdrsExpr:               attrExpr(hdrs, hdrsSel),
-		IncludesExpr:           attrExpr(includes, perPlatformAttr(t, "includes")),
-		IncludePrefix:          t.IncludePrefix,
-		StripIncludePrefix:     t.StripIncludePrefix,
-		CoptsExpr:              attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:            attrExpr(defines, perPlatformAttr(t, "defines")),
+		RuleKind:                   t.Kind.String(),
+		Name:                       t.Name,
+		SrcsExpr:                   attrExpr(srcs, srcsSel),
+		HdrsExpr:                   attrExpr(hdrs, hdrsSel),
+		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),
+		IncludePrefix:              t.IncludePrefix,
+		StripIncludePrefix:         t.StripIncludePrefix,
+		CoptsExpr:                  attrExpr(copts, perPlatformAttr(t, "copts")),
+		DefinesExpr:                attrExpr(defines, perPlatformAttr(t, "defines")),
 		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
-		ImplementationDepsExpr: attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
-		Linkstatic:             t.Linkstatic,
-		Alwayslink:             t.Alwayslink,
-		Features:               sortedCopy(t.Features),
+		ImplementationDepsExpr:     attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
+		Linkstatic:                 t.Linkstatic,
+		Alwayslink:                 t.Alwayslink,
+		Features:                   sortedCopy(t.Features),
 		// Data lifts cmake's add_dependencies-derived build-order
 		// edges (set via the per-target backtrace recovery in
 		// lower). cc_test additionally appends t.TestData below
