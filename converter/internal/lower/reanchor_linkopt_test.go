@@ -235,13 +235,13 @@ func TestReanchorLinkOptToken(t *testing.T) {
 		{
 			name:    "version-script under source root — re-anchor + requote",
 			in:      `-Wl,--version-script,"/tmp/proj/src/zlib.map"`,
-			wantTok: `-Wl,--version-script,"zlib.map"`,
+			wantTok: `-Wl,--version-script,"$(location zlib.map)"`,
 			wantOk:  true,
 		},
 		{
 			name:    "version-script under source root, unquoted — re-anchor + add quotes",
 			in:      `-Wl,--version-script,/tmp/proj/src/sub/exports.txt`,
-			wantTok: `-Wl,--version-script,"sub/exports.txt"`,
+			wantTok: `-Wl,--version-script,"$(location sub/exports.txt)"`,
 			wantOk:  true,
 		},
 		{
@@ -253,13 +253,13 @@ func TestReanchorLinkOptToken(t *testing.T) {
 		{
 			name:    "retain-symbols-file under source — re-anchor",
 			in:      `-Wl,--retain-symbols-file,"/tmp/proj/src/syms.txt"`,
-			wantTok: `-Wl,--retain-symbols-file,"syms.txt"`,
+			wantTok: `-Wl,--retain-symbols-file,"$(location syms.txt)"`,
 			wantOk:  true,
 		},
 		{
 			name:    "dynamic-list under source — re-anchor",
 			in:      `-Wl,--dynamic-list,/tmp/proj/src/dyn.list`,
-			wantTok: `-Wl,--dynamic-list,"dyn.list"`,
+			wantTok: `-Wl,--dynamic-list,"$(location dyn.list)"`,
 			wantOk:  true,
 		},
 		{
@@ -277,7 +277,7 @@ func TestReanchorLinkOptToken(t *testing.T) {
 		{
 			name:    "version-script single-quoted under source — re-anchor + requote with double",
 			in:      `-Wl,--version-script,'/tmp/proj/src/syms.map'`,
-			wantTok: `-Wl,--version-script,"syms.map"`,
+			wantTok: `-Wl,--version-script,"$(location syms.map)"`,
 			wantOk:  true,
 		},
 	}
@@ -287,6 +287,72 @@ func TestReanchorLinkOptToken(t *testing.T) {
 			if gotTok != tc.wantTok || gotOk != tc.wantOk {
 				t.Errorf("reanchorLinkOptToken(%q) = (%q, %v); want (%q, %v)",
 					tc.in, gotTok, gotOk, tc.wantTok, tc.wantOk)
+			}
+		})
+	}
+}
+
+// TestReanchorLinkOptTokenWithInput pins the staging-aware variant:
+// source-tree-rooted version-script / retain-symbols-file /
+// dynamic-list flags return the workspace-relative path so the
+// caller can stage it as the rule's additional_linker_inputs entry.
+// The rewritten token uses $(location <rel>) substitution so Bazel
+// resolves the path at link-action time. Build-dir-rooted paths
+// drop with no additional input. Non-version-script tokens carry
+// no addlInput regardless of path shape.
+func TestReanchorLinkOptTokenWithInput(t *testing.T) {
+	cmakeSrc := "/tmp/proj/src"
+	buildDir := "/tmp/proj/build"
+
+	cases := []struct {
+		name     string
+		in       string
+		wantTok  string
+		wantOk   bool
+		wantAddl string
+	}{
+		{
+			name:     "version-script src — stage + location",
+			in:       `-Wl,--version-script,"/tmp/proj/src/zlib.map"`,
+			wantTok:  `-Wl,--version-script,"$(location zlib.map)"`,
+			wantOk:   true,
+			wantAddl: "zlib.map",
+		},
+		{
+			name:     "version-script under build dir — drop, no addlInput",
+			in:       `-Wl,--version-script,"/tmp/proj/build/foo.exports"`,
+			wantTok:  "",
+			wantOk:   false,
+			wantAddl: "",
+		},
+		{
+			name:     "version-script with subdir — preserves slashes in addlInput",
+			in:       `-Wl,--version-script,"/tmp/proj/src/lib/foo.map"`,
+			wantTok:  `-Wl,--version-script,"$(location lib/foo.map)"`,
+			wantOk:   true,
+			wantAddl: "lib/foo.map",
+		},
+		{
+			name:     "passthrough flag — no addlInput",
+			in:       "-Wl,--gc-sections",
+			wantTok:  "-Wl,--gc-sections",
+			wantOk:   true,
+			wantAddl: "",
+		},
+		{
+			name:     "rpath dropped — no addlInput",
+			in:       "-Wl,-rpath-link,/tmp/proj/build/lib",
+			wantTok:  "",
+			wantOk:   false,
+			wantAddl: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTok, gotOk, gotAddl := reanchorLinkOptTokenWithInput(tc.in, cmakeSrc, buildDir)
+			if gotTok != tc.wantTok || gotOk != tc.wantOk || gotAddl != tc.wantAddl {
+				t.Errorf("reanchorLinkOptTokenWithInput(%q):\n  got  = (%q, %v, %q)\n  want = (%q, %v, %q)",
+					tc.in, gotTok, gotOk, gotAddl, tc.wantTok, tc.wantOk, tc.wantAddl)
 			}
 		})
 	}

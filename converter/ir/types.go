@@ -174,6 +174,16 @@ type Target struct {
 	Defines  []string
 	LinkOpts []string
 
+	// AdditionalLinkerInputs are workspace-relative file paths
+	// (typically version-script .map / .exports / .ver files
+	// referenced from LinkOpts via `-Wl,--version-script,$(location
+	// :foo.map)` substitution). The emitter renders them as
+	// `additional_linker_inputs = [...]` so Bazel pins the files
+	// into the link action's input closure — closes the gap left
+	// by the prior reanchor pass that rewrote the path's prefix
+	// but didn't stage the file as a Bazel-visible source.
+	AdditionalLinkerInputs []string
+
 	// Deps are Bazel labels to other targets whose headers are
 	// reachable through this target's public hdrs. Maps to
 	// `deps = [...]` on the emitted rule. Per gazelle_cc canon,
