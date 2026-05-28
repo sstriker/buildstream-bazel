@@ -117,6 +117,15 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 	// path stays intact on the offline-replay-no-trace path.
 	outputToTargetName := buildOutputToCustomTargetIndex(traceCtx.CustomCommands, traceCtx.CustomTargets)
 	consumedOutputs := buildConsumedOutputIndex(traceCtx.CustomCommands, traceCtx.CustomTargets, traceCtx.AddDependencies)
+	// In-tree tool lookup: when a standalone-edge cmd invokes an
+	// in-package cc_binary's on-disk artifact (cmake's
+	// `bin/vtkWrapHierarchy-9.3` shape — the cmake build dir's
+	// artifact path + OUTPUT_NAME/VERSION rename), rewrite the
+	// token to `$(location :<targetName>)` and add the label to
+	// the genrule's tools attribute so Bazel pins the tool in
+	// the action's input closure. nil-safe — projects with no
+	// matching artifact names emit unchanged.
+	artifactToLabel := buildArtifactToLabelMap(existing)
 
 	var out []ir.Target
 	seenNames := map[string]int{}
@@ -205,14 +214,17 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			visibility = []string{":__pkg__"}
 		}
 
+		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
+		rewrittenCmd, tools := rewriteToolFromTargetTokens(rewrittenCmd, artifactToLabel)
 		out = append(out, ir.Target{
-			Name:        name,
-			Kind:        ir.KindGenrule,
-			Srcs:        srcs,
-			GenruleOuts: outs,
-			GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
-			Visibility:  visibility,
-			Tags:        []string{"cmake-codegen-standalone-custom-command"},
+			Name:         name,
+			Kind:         ir.KindGenrule,
+			Srcs:         srcs,
+			GenruleOuts:  outs,
+			GenruleCmd:   rewrittenCmd,
+			GenruleTools: tools,
+			Visibility:   visibility,
+			Tags:         []string{"cmake-codegen-standalone-custom-command"},
 		})
 	}
 	return out
