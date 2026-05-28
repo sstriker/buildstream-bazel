@@ -440,21 +440,31 @@ func filterOutVarRefs(xs []string) []string {
 }
 
 // isPackagingToolCmd reports whether a custom-command cmd is a
-// distro-packaging tool invocation that Bazel can't reproduce.
-// Surfaced by LLVM's srpm-generation edge (`cpack ... &&
-// rpmbuild ...`); cmake projects with PackageConfig.cmake hooks
-// commonly emit one of these per packaging format. They run on
-// the convert host successfully but have no Bazel-side analogue:
-// cpack expects a configured cmake build dir, rpmbuild expects
-// the convert host's RPM toolchain, etc. Skipping them prevents
-// emit of genrules that would fail at action time.
+// distro-packaging or dashboard-submission tool invocation that
+// Bazel can't reproduce. Surfaced by:
+//
+//   - LLVM's srpm-generation edge (`cpack ... && rpmbuild ...`);
+//     cmake projects with PackageConfig.cmake hooks commonly
+//     emit one of these per packaging format.
+//   - nlohmann-json's CDash dashboard edges (`ctest -D
+//     <Mode>` for Experimental / Nightly / Continuous / variants,
+//     28 such edges emitted as CMakeFiles/<Mode> marker outputs).
+//
+// These run on the convert host successfully but have no
+// Bazel-side analogue: cpack expects a configured cmake build
+// dir, ctest -D <Mode> submits to a CDash dashboard. Skipping
+// them prevents emit of genrules that would fail at action time.
 //
 // Conservative match: scan the cmd for any of a small,
-// hand-curated set of distro packaging-tool driver names at a
-// word boundary (so `dpkg-buildpackage-helper` doesn't match
-// the dpkg-buildpackage check). The cmake-Ninja preamble
-// (`cd <buildDir> && ...`) hasn't been stripped at this point,
-// so a first-token-only check would miss the actual driver.
+// hand-curated set of driver names at a word boundary (so
+// `dpkg-buildpackage-helper` doesn't match the dpkg-buildpackage
+// check). The cmake-Ninja preamble (`cd <buildDir> && ...`)
+// hasn't been stripped at this point, so a first-token-only
+// check would miss the actual driver.
+//
+// ctest is filtered ONLY when followed by `-D` (dashboard mode);
+// bare `ctest` invocations are kept — those are legitimate test-
+// runner shapes operators may want to lift to sh_test/cc_test.
 func isPackagingToolCmd(cmd string) bool {
 	if cmd == "" {
 		return false
@@ -468,6 +478,14 @@ func isPackagingToolCmd(cmd string) bool {
 		if containsCmdToken(cmd, driver) {
 			return true
 		}
+	}
+	// `ctest -D <Mode>` is CDash dashboard-submission shape. The
+	// `<Mode>` token is one of cmake's reserved dashboard names
+	// (Experimental / Nightly / Continuous / Nightly{Memory,
+	// Configure, Build, Test, Submit}Check etc.); cmake doesn't
+	// allow user-named -D values that aren't in this set.
+	if containsCmdToken(cmd, "ctest -D") {
+		return true
 	}
 	return false
 }

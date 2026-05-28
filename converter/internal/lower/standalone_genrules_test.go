@@ -321,6 +321,14 @@ func TestIsPackagingToolCmd(t *testing.T) {
 		{"echo cpack-helper foo", false}, // dash continuation is not a boundary
 		{"./rpmbuild-wrapper", false},
 		{"some/dir/cpacker", false},
+		// CDash dashboard mode (`ctest -D <Mode>`) — drop.
+		{"ctest -D Experimental", true},
+		{"ctest -D Nightly", true},
+		{"ctest -D Continuous", true},
+		{"cd /tmp/build && ctest -D NightlyMemoryCheck", true},
+		// Bare ctest (no -D) is a legitimate test runner — keep.
+		{"ctest --output-on-failure", false},
+		{"ctest -V", false},
 		// Negative: unrelated cmds.
 		{"echo hello world", false},
 		{"$(location :gen) input.txt", false},
