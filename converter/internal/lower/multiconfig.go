@@ -218,6 +218,15 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 					strings.HasPrefix(fact, "libraryPath|") {
 					continue
 				}
+				// Same compile-only filter as the single-config
+				// baseline at lower.go's Link.CommandFragments
+				// loop — keeps `-DNDEBUG` / `-O3` out of select
+				// arms where cmake mirrored CMAKE_<LANG>_FLAGS
+				// into the per-target Link.CommandFragments
+				// alongside CompileCommandFragments.
+				if isCompileOnlyLinkFlag(tok) {
+					continue
+				}
 				if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
 					values = append(values, rewritten)
 				}

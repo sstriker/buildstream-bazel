@@ -1831,6 +1831,9 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				// this split the linker receives the entire
 				// string as a single (invalid) flag.
 				for _, tok := range strings.Fields(frag.Fragment) {
+					if isCompileOnlyLinkFlag(tok) {
+						continue
+					}
 					if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
 						irt.LinkOpts = append(irt.LinkOpts, rewritten)
 					}

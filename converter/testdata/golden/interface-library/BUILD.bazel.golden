@@ -13,10 +13,7 @@ cc_binary(
     copts = ["-O3"],  # keep
     defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
-    linkopts = [
-        "-O3",
-        "-DNDEBUG",
-    ],  # keep
+    linkopts = ["-O3"],  # keep
 )
 
 cc_library(
