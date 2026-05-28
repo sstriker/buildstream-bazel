@@ -2,6 +2,7 @@ package lower
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/configfold"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -31,7 +32,7 @@ import (
 // Returns when byConfig is empty (single-config reply) or when no
 // target has cross-config deltas (every fact agreed across cells).
 // Pure function on pkg.Targets except for PerPlatform mutation.
-func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string) {
+func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string, cmakeSrc, cmakeBuild string) {
 	if len(byConfig) == 0 || len(configNames) < 2 {
 		return
 	}
@@ -61,14 +62,91 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		if !ok {
 			continue
 		}
-		applyPartition(tgt, "defines", fold.Defines)
-		applyPartition(tgt, "copts", fold.CompileFragments)
-		applyPartition(tgt, "linkopts", fold.LinkFragments)
+		applyPartition(tgt, "defines", fold.Defines, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "copts", fold.CompileFragments, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "linkopts", fold.LinkFragments, cmakeSrc, cmakeBuild)
 		// Includes are routed to the "includes" Bazel attribute
 		// rather than copts -I, matching the rest of the lift's
 		// includes handling.
-		applyPartition(tgt, "includes", fold.Includes)
+		applyPartition(tgt, "includes", fold.Includes, cmakeSrc, cmakeBuild)
+		// Single-config baseline (the IR's flat copts / defines /
+		// linkopts populated by lowerTarget's first-config view)
+		// can carry the same value a per-config delta added —
+		// because lowerTarget runs on CompileGroups[0] (typically
+		// Release), it picks up Release-only flags as "baseline".
+		// The multi-config delta then re-adds them in the Release
+		// select arm. Drop the duplicates from the flat baseline
+		// when they appear in any per-config delta — the select()
+		// arm is the canonical source for cross-config-varying
+		// values.
+		dedupBaselineAgainstDeltas(tgt)
+		// applyPartition can leave behind empty per-config arms
+		// when its inner filter (libraries-role skip, build-dir
+		// reanchor drop) removes every value the cell had. An
+		// empty select() arm renders as `"//config:debug": [],`
+		// which is verbose noise — the operator-visible select
+		// becomes a no-op. Prune any attr in PerPlatform whose
+		// arms are all empty.
+		pruneEmptyPerPlatform(tgt)
 	}
+}
+
+// pruneEmptyPerPlatform drops any tgt.PerPlatform[attr] map whose
+// per-cell value slices are all empty. Leaves attrs with at least
+// one non-empty cell intact.
+func pruneEmptyPerPlatform(tgt *ir.Target) {
+	if tgt == nil || tgt.PerPlatform == nil {
+		return
+	}
+	for attr, arms := range tgt.PerPlatform {
+		allEmpty := true
+		for _, vs := range arms {
+			if len(vs) > 0 {
+				allEmpty = false
+				break
+			}
+		}
+		if allEmpty {
+			delete(tgt.PerPlatform, attr)
+		}
+	}
+	if len(tgt.PerPlatform) == 0 {
+		tgt.PerPlatform = nil
+	}
+}
+
+// dedupBaselineAgainstDeltas removes entries from tgt.Copts /
+// tgt.Defines / tgt.LinkOpts whose value appears in any of the
+// per-config delta arms in tgt.PerPlatform for the same attr.
+// The select() arm is the authoritative source for cross-config-
+// varying values; the flat baseline ends up reflecting only
+// truly-baseline values (those common to every config).
+func dedupBaselineAgainstDeltas(tgt *ir.Target) {
+	if tgt == nil || tgt.PerPlatform == nil {
+		return
+	}
+	dedup := func(attr string, baseline []string) []string {
+		deltas, ok := tgt.PerPlatform[attr]
+		if !ok || len(deltas) == 0 {
+			return baseline
+		}
+		inDelta := map[string]bool{}
+		for _, arm := range deltas {
+			for _, v := range arm {
+				inDelta[v] = true
+			}
+		}
+		out := baseline[:0]
+		for _, v := range baseline {
+			if !inDelta[v] {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+	tgt.Copts = dedup("copts", tgt.Copts)
+	tgt.Defines = dedup("defines", tgt.Defines)
+	tgt.LinkOpts = dedup("linkopts", tgt.LinkOpts)
 }
 
 // applyPartition writes the per-cell deltas of one fact family
@@ -76,7 +154,19 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 // for CompileFragments) is decomposed: for compile / link
 // fragments we strip the role/language prefix before emit so the
 // select() arm carries the flag itself, not the disambiguator key.
-func applyPartition(tgt *ir.Target, attr string, p configfold.Partition) {
+//
+// Per-attribute re-anchor pass:
+//
+//   - linkopts: drop / re-anchor tokens that embed convert-time
+//     absolute paths via reanchorLinkOptToken (same policy as the
+//     single-config baseline path in lower.go's Link fragment
+//     handling).
+//   - defines: drop / re-anchor define values that embed convert-
+//     time absolute paths via reanchorDefineValue.
+//   - copts / includes: unchanged. copts tokens are short flags
+//     without embedded paths after splitCompileFragments;
+//     includes are paths the existing includes handler normalises.
+func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSrc, cmakeBuild string) {
 	if len(p.Deltas) == 0 {
 		return
 	}
@@ -93,7 +183,34 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition) {
 		label := configLabel(cell)
 		values := make([]string, 0, len(facts))
 		for fact := range facts {
-			values = append(values, stripFactPrefix(fact))
+			tok := stripFactPrefix(fact)
+			switch attr {
+			case "linkopts":
+				// Skip "libraries"-role link fragments — those
+				// are static archives / cmake import targets that
+				// belong in `deps`, not linkopts. The single-
+				// config baseline path at lower.go's t.Link.
+				// CommandFragments loop already routes them
+				// through imports.LookupLinkPath into the IR's
+				// deps slice; per-config delta entries that
+				// reflect different build-dir paths per config
+				// would otherwise leak in as bogus
+				// `linkopts = ["Debug/lib/libfoo.a", ...]` select
+				// arms (LLVM-shape).
+				if strings.HasPrefix(fact, "libraries|") ||
+					strings.HasPrefix(fact, "libraryPath|") {
+					continue
+				}
+				if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
+					values = append(values, rewritten)
+				}
+			case "defines":
+				if rewritten, keep := reanchorDefineValue(tok, cmakeSrc, cmakeBuild); keep {
+					values = append(values, rewritten)
+				}
+			default:
+				values = append(values, tok)
+			}
 		}
 		sort.Strings(values)
 		// Merge: a target already populated with per-platform

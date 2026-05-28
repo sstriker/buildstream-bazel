@@ -43,6 +43,7 @@ type Decoded struct {
 	AddCustomCommands          []AddCustomCommandCall
 	AddCustomTargets           []AddCustomTargetCall
 	AddDependencies            []AddDependenciesCall
+	AddLibraries               []AddLibraryCall
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -60,6 +61,28 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 	reads := map[string]struct{}{}
 	var d Decoded
 	ifStack := newPlatformIfStack()
+	// Detect whether the trace omits `endif` events (cmake's
+	// `--trace-format=json-v1` does — endif is a structural
+	// delimiter, not a command). Without endif the
+	// platformIfStack can never pop; every if() event
+	// permanently adds to the stack and downstream source
+	// attribution is bogus. When the trace has if() events but
+	// no endif, suppress Tier 1 platform-conditional collection
+	// entirely — flat srcs is the safe fallback.
+	traceHasEndif := false
+	traceHasIf := false
+	for _, ev := range events {
+		switch strings.ToLower(ev.Cmd) {
+		case "if":
+			traceHasIf = true
+		case "endif":
+			traceHasEndif = true
+		}
+		if traceHasIf && traceHasEndif {
+			break
+		}
+	}
+	suppressTier1 := traceHasIf && !traceHasEndif
 	for _, ev := range events {
 		collectReadPath(ev, sourceRoot, reads)
 		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
@@ -95,13 +118,18 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		if call, ok := classifyAddDependencies(ev, sourceRoot); ok {
 			d.AddDependencies = append(d.AddDependencies, call)
 		}
+		if call, ok := classifyAddLibrary(ev, sourceRoot); ok {
+			d.AddLibraries = append(d.AddLibraries, call)
+		}
 		// Platform-conditional source attribution. Helper
 		// updates the per-file if-stack and appends any
 		// matching records. Stateful — must run on every
 		// event to keep the stack in sync; see
 		// platform_conditional.go for the source-of-truth
 		// docs.
-		d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, ifStack, sourceRoot, knownTargets, d.PlatformConditionalSources)
+		if !suppressTier1 {
+			d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, ifStack, sourceRoot, knownTargets, d.PlatformConditionalSources)
+		}
 	}
 	d.Reads = make([]string, 0, len(reads))
 	for k := range reads {
@@ -1575,6 +1603,84 @@ func ExtractAddDependencies(traceRaw []byte, sourceRoot string) []AddDependencie
 		}
 	}
 	return out
+}
+
+// AddLibraryCall records one user-written `add_library(<name>
+// [<type>] ...)` call. Surfaces INTERFACE-only library
+// declarations that cmake's File API codemodel doesn't expose
+// (its `targets[]` array is keyed on EXECUTABLE / STATIC /
+// SHARED / MODULE / OBJECT targets only — INTERFACE-only nodes
+// like nlohmann_json's main library are absent), so the
+// converter's main lift would skip them without trace-side
+// recovery.
+type AddLibraryCall struct {
+	File string
+	Line int
+
+	// Name is the target name (first positional argument).
+	Name string
+
+	// Type is the explicit library type keyword (STATIC / SHARED
+	// / MODULE / OBJECT / INTERFACE / IMPORTED / ALIAS). When the
+	// caller omits the keyword, cmake defaults based on the
+	// BUILD_SHARED_LIBS variable; for trace replay we leave Type
+	// empty and let the consumer decide.
+	Type string
+
+	// Aliases is the list of ALIAS-form names cmake recorded.
+	// Filled when the call is `add_library(<alias> ALIAS <target>)`;
+	// in that case Name is <alias> and Aliases is [<target>] so
+	// callers can resolve alias-to-actual mappings.
+	Aliases []string
+
+	// RawArgs preserves the verbatim argv for callers that need
+	// extra tokens (e.g. EXCLUDE_FROM_ALL / GLOBAL keywords).
+	RawArgs []string
+}
+
+// ExtractAddLibrary walks the cmake trace for user-written
+// add_library() calls. Filters to in-source-tree call sites so
+// cmake's own internal libraries don't pollute the result.
+func ExtractAddLibrary(traceRaw []byte, sourceRoot string) []AddLibraryCall {
+	var out []AddLibraryCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyAddLibrary(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+func classifyAddLibrary(ev TraceEvent, sourceRoot string) (AddLibraryCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_library") {
+		return AddLibraryCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return AddLibraryCall{}, false
+	}
+	if len(ev.Args) == 0 {
+		return AddLibraryCall{}, false
+	}
+	call := AddLibraryCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		Name:    ev.Args[0],
+		RawArgs: append([]string(nil), ev.Args...),
+	}
+	if len(ev.Args) >= 2 {
+		switch strings.ToUpper(ev.Args[1]) {
+		case "STATIC", "SHARED", "MODULE", "OBJECT", "INTERFACE", "IMPORTED":
+			call.Type = strings.ToUpper(ev.Args[1])
+		case "ALIAS":
+			// add_library(<alias> ALIAS <target>) — alias-form.
+			// The third arg is the underlying target.
+			call.Type = "ALIAS"
+			if len(ev.Args) >= 3 {
+				call.Aliases = []string{ev.Args[2]}
+			}
+		}
+	}
+	return call, true
 }
 
 func classifyAddDependencies(ev TraceEvent, sourceRoot string) (AddDependenciesCall, bool) {

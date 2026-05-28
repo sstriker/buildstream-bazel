@@ -697,28 +697,40 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
 	if len(executeProcessRefusals) > 0 {
 		if opts.Rejections != nil {
-			// Diagnostic mode: record the refusal AND route
-			// through the existing execute-process fallback so
-			// the operator sees both the rejection record and a
-			// best-effort BUILD shape in the same pass.
+			// Diagnostic mode: record the refusal and fall
+			// through to the rich lift below. The rich lift
+			// produces every cc_library / cc_binary the
+			// codemodel exposes plus the genrules every
+			// other lift path can recover — strictly more
+			// information for the survey than the
+			// install_tree_extract placeholder
+			// emitFallbackPlaceholder used to return here.
+			// Operator sees the per-call refusal record AND
+			// the rest of the project's targets in one pass.
 			var tier1 *failure.Error
 			if errors.As(formatExecuteProcessFailure(executeProcessRefusals), &tier1) {
 				opts.Rejections.AddError(tier1)
 			}
+			// Empty executeProcesses (refusals didn't produce
+			// liftable replacements) means the rich lift won't
+			// have any genrule entries to emit FROM those
+			// execute_process calls — that's the intended
+			// behaviour; the rejection record carries the
+			// per-call diagnosis.
+		} else if !opts.UnsupportedExecuteProcessFallback {
+			return nil, formatExecuteProcessFailure(executeProcessRefusals)
+		} else {
+			// Phase B fallback (strict mode, fallback opt-in):
+			// emit a placeholder ir.Package rather than
+			// continuing into the native lowering path. The
+			// native path would either redo the refusal
+			// analysis or trip on the unliftable call later
+			// in lowerTarget; the placeholder is the cleaner
+			// cut, and it lets downstream consumers see
+			// per-target labels at analysis time even when
+			// the element itself can't be fine-converted.
 			return emitFallbackPlaceholder(r, hostSrc)
 		}
-		if !opts.UnsupportedExecuteProcessFallback {
-			return nil, formatExecuteProcessFailure(executeProcessRefusals)
-		}
-		// Phase B fallback: emit a placeholder ir.Package
-		// rather than continuing into the native lowering
-		// path. The native path would either redo the
-		// refusal analysis or trip on the unliftable call
-		// later in lowerTarget; the placeholder is the
-		// cleaner cut, and it lets downstream consumers see
-		// per-target labels at analysis time even when the
-		// element itself can't be fine-converted.
-		return emitFallbackPlaceholder(r, hostSrc)
 	}
 
 	// Recover configure_file outputs from trace before lowering
@@ -871,6 +883,20 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// targets stay grouped by family: cc rules first, generated
 	// content next, then install-side filegroups.
 	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
+	// INTERFACE-only library lift. cmake's File API codemodel
+	// omits INTERFACE_LIBRARY targets from its targets[] array —
+	// they're header-only declarations with no link step to
+	// model. The trace records them via add_library(<name>
+	// INTERFACE); cross-referencing against the codemodel-known
+	// set gives us the INTERFACE-only residue the main lift
+	// missed (nlohmann-json's nlohmann_json, boost-core's
+	// boost_core, etc.). For each, synthesize a cc_library
+	// carrying the trace-recorded INTERFACE_INCLUDE_DIRECTORIES
+	// + INTERFACE_COMPILE_DEFINITIONS as hdrs / defines / includes.
+	if decodedTrace != nil {
+		pkg.Targets = append(pkg.Targets,
+			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, cc)...)
+	}
 	// Phase 4 standalone custom-command emission. Opt-in via
 	// Options.EmitStandaloneCustomCommands; the dedup against
 	// existing genrules keeps the recoverGenrule path's output
@@ -882,7 +908,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			AddDependencies: decodedAddDependencies,
 		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, opts.BuildDir, traceCtx)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
@@ -895,7 +921,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		for _, cfg := range r.Codemodel.Configurations {
 			configs = append(configs, cfg.Name)
 		}
-		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs)
+		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs, cmakeSrc, cmakeBuild)
 	}
 	// Surface missing-include-dir skips so the operator sees the
 	// cmake oddity instead of silently losing the dir. Per-dir
@@ -1334,7 +1360,9 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
-			defs = append(defs, d.Define)
+			if reanchored, keep := reanchorDefineValue(d.Define, cmakeSrc, cmakeBuild); keep {
+				defs = append(defs, reanchored)
+			}
 		}
 		irt.Defines = defs
 
@@ -1790,8 +1818,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// "libraries"-only path below handles deps wiring.
 			switch frag.Role {
 			case "flags":
-				if v := strings.TrimSpace(frag.Fragment); v != "" {
-					irt.LinkOpts = append(irt.LinkOpts, v)
+				// cmake's File API serialises link flags as one
+				// whitespace-joined string per fragment (e.g.
+				// "-Wl,--gc-sections -Wl,-z,now -O3 -DNDEBUG").
+				// Tokenise so each flag lands as its own linkopts
+				// entry — Bazel passes each list entry as a
+				// separate argv to the linker driver; without
+				// this split the linker receives the entire
+				// string as a single (invalid) flag.
+				for _, tok := range strings.Fields(frag.Fragment) {
+					if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
+						irt.LinkOpts = append(irt.LinkOpts, rewritten)
+					}
 				}
 				continue
 			case "libraryPath":
@@ -2071,7 +2109,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
 	if shouldSplitCompileGroups(t) {
-		if err := splitMultiLanguage(t, irt, cc); err != nil {
+		if err := splitMultiLanguage(t, irt, cc, cmakeSrc, cmakeBuild); err != nil {
 			return nil, err
 		}
 	}
@@ -2314,7 +2352,7 @@ func intSuffix(n int) string {
 // The wrapper drops Srcs / Copts / Defines, retains the
 // public surface (hdrs, includes, visibility, install
 // metadata), and adds a Deps edge to each sub-library.
-func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) error {
+func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string) error {
 	// Sort CompileGroups by language for deterministic sub-
 	// library ordering across runs (the codemodel records them
 	// in source-declaration order, which is stable but harder
@@ -2378,7 +2416,9 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext) e
 		// already inlined a -std flag).
 		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
 		for _, d := range cg.Defines {
-			defs = append(defs, d.Define)
+			if reanchored, keep := reanchorDefineValue(d.Define, cmakeSrc, cmakeBuild); keep {
+				defs = append(defs, reanchored)
+			}
 		}
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
@@ -3414,10 +3454,326 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 	return out
 }
 
+// rewriteGenruleCmd strips convert-time-only constructs from a
+// custom-command's verbatim shell command before it lands as the
+// genrule's cmd attribute. Specifically:
+//
+//   - `cd <abs-under-buildDir> && ` prefix: cmake's Ninja generator
+//     prepends this so the command runs in the per-target build
+//     subdir during the convert-time configure. Bazel genrules run
+//     in $(GENDIR) which is Bazel-managed; the cd path doesn't
+//     exist at action time. Drop the prefix entirely.
+//
+//   - Verbatim `<cmakeSrc>/`-rooted path references: re-anchor to
+//     workspace-relative by stripping the convert-time prefix.
+//
+//   - Verbatim `<buildDir>/`-rooted path references: re-anchor to
+//     genrule-output-relative by stripping the convert-time prefix.
+//     For files the genrule itself produces this is correct (Bazel
+//     puts genrule outputs under $(GENDIR) at the matching relative
+//     path); for files the genrule consumes from the convert-time
+//     build dir that aren't reproduced at Bazel build time, the
+//     stripped reference will still fail — but the diagnostic at
+//     action time names the workspace-relative path the operator
+//     can investigate, not the convert-time absolute prefix.
+//
+// All rewrites are conservative — paths only re-anchor when they
+// start with the canonical anchor prefix + "/", so partial-match
+// hazards (e.g. `<buildDir>` vs `<buildDir>_other`) are avoided.
+func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
+	if cmd == "" {
+		return cmd
+	}
+	// Strip `cd <abs> && ` prefix when <abs> is under buildDir or
+	// cmakeSrc. Bazel runs the genrule in its sandbox-rooted
+	// $(GENDIR); the cd is cmake-internal.
+	if strings.HasPrefix(cmd, "cd ") {
+		if end := strings.Index(cmd, " && "); end > 0 {
+			target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
+			if filepath.IsAbs(target) {
+				drop := false
+				if buildDir != "" {
+					if _, ok := relativeIfInside(buildDir, target); ok {
+						drop = true
+					}
+				}
+				if !drop && cmakeSrc != "" {
+					if _, ok := relativeIfInside(cmakeSrc, target); ok {
+						drop = true
+					}
+				}
+				if drop {
+					cmd = cmd[end+4:]
+				}
+			}
+		}
+	}
+	// Strip cmakeSrc and buildDir prefixes from the cmd body.
+	// Two variants per anchor:
+	//
+	//   - <anchor>/<rel> → <rel>      (the typical embedded-path
+	//     case; trailing slash ensures partial-match safety
+	//     against e.g. <buildDir>_other).
+	//   - bare <anchor> at an argv boundary → "." (Bazel's
+	//     genrule cwd / workspace root, depending on direction).
+	//     The boundary requirement (whitespace / quote / argv
+	//     separator on the right side) avoids mangling argv
+	//     values that happen to start with the anchor prefix
+	//     but continue with letters or digits (e.g. <buildDir>_other
+	//     stays intact; <buildDir> followed by space or quote
+	//     gets re-anchored).
+	for _, anchor := range []string{cmakeSrc, buildDir} {
+		if anchor == "" {
+			continue
+		}
+		cmd = strings.ReplaceAll(cmd, anchor+"/", "")
+		cmd = replaceBareAnchorAtBoundary(cmd, anchor)
+	}
+	// Strip well-known host-bin tool prefixes so the command relies
+	// on PATH (the operator's responsibility) instead of baking the
+	// convert-host's filesystem layout. Bazel's sandbox typically
+	// provides /usr/bin on PATH but the cross-distro picture is
+	// noisy (Alpine, NixOS, custom images) — `/usr/local/bin/python3`
+	// definitely doesn't exist on Debian/Ubuntu where Bazel images
+	// are commonly based. The bare-name form (`cmake`, `python3`)
+	// resolves via PATH on every host that has the tool installed.
+	for _, prefix := range []string{
+		"/usr/bin/",
+		"/usr/local/bin/",
+	} {
+		// Replace only when the prefix sits at a word boundary
+		// (start of cmd, or preceded by whitespace / `&&` / `||`
+		// / `;` / `|` / `(` ) so we don't accidentally maul an
+		// `<absbuild>/.../usr/bin/...` payload. Conservative
+		// regex would handle this; for a one-off rewrite, a
+		// HasPrefix check at cmd start + a `&& <prefix>` /
+		// `|| <prefix>` / `; <prefix>` / `| <prefix>` substring
+		// scan covers the common cases.
+		cmd = stripToolPrefixAtBoundaries(cmd, prefix)
+	}
+	return cmd
+}
+
+// replaceBareAnchorAtBoundary replaces `anchor` (no trailing slash)
+// with `.` whenever it sits at an argv-token boundary in `cmd`.
+// "Boundary" = the character immediately after `anchor` is one of:
+// whitespace, double-quote, single-quote, `=` (DKEY=VALUE shape),
+// shell command-separator (`&`, `|`, `;`), or end-of-string.
+//
+// The argv-boundary requirement avoids mangling argv values that
+// happen to start with the anchor prefix but continue with letters
+// or digits (e.g. `<buildDir>_other` stays intact). Conservative on
+// purpose — the cmake-emitted shapes that surface this (LLVM's
+// -DLLVM_SOURCE_DIR=<abs-src>, VTK's -DCMAKE_BINARY_DIR=<abs-build>)
+// all hit a clean argv boundary.
+func replaceBareAnchorAtBoundary(cmd, anchor string) string {
+	if anchor == "" {
+		return cmd
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(cmd) {
+		if i+len(anchor) <= len(cmd) && cmd[i:i+len(anchor)] == anchor {
+			endByte := byte(0)
+			if i+len(anchor) < len(cmd) {
+				endByte = cmd[i+len(anchor)]
+			}
+			isBoundary := endByte == 0 ||
+				endByte == ' ' || endByte == '\t' || endByte == '\n' ||
+				endByte == '"' || endByte == '\'' ||
+				endByte == '=' || endByte == '&' || endByte == '|' || endByte == ';'
+			if isBoundary {
+				b.WriteByte('.')
+				i += len(anchor)
+				continue
+			}
+		}
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return b.String()
+}
+
+// stripToolPrefixAtBoundaries removes `prefix` from `cmd` wherever
+// it sits at the start of a command word — start of cmd, or right
+// after a shell command-separator. Conservative: misses prefix
+// occurrences inside argv args (e.g. `--option=/usr/bin/...`) on
+// purpose; those are typically genuine path values where the host
+// layout is operator-significant.
+func stripToolPrefixAtBoundaries(cmd, prefix string) string {
+	// Cmd-start prefix.
+	if strings.HasPrefix(cmd, prefix) {
+		cmd = cmd[len(prefix):]
+	}
+	// Common shell separators followed by the prefix. Each separator
+	// is space-padded by cmake's emit.
+	for _, sep := range []string{
+		" && ",
+		" || ",
+		" ; ",
+		" | ",
+	} {
+		needle := sep + prefix
+		cmd = strings.ReplaceAll(cmd, needle, sep)
+	}
+	return cmd
+}
+
+// reanchorDefineValue rewrites convert-time absolute paths
+// embedded in a preprocessor define's value to a form that
+// survives into Bazel's hermetic build. Returns (define, keep):
+// keep=false signals "drop this define entirely" — used when
+// the value points at a convert-time-generated file in the
+// cmake build dir that won't survive into Bazel's input closure.
+//
+// The shape this targets: `KEY="<absolute-path>"`. VTK's
+// `vtkRenderingCore_AUTOINIT_INCLUDE="/tmp/<build>/CMakeFiles/
+// vtkModuleAutoInit_<hash>.h"` is the canonical case; cmake
+// generates these auto-init headers per-module at configure
+// time and embeds the absolute path as a preprocessor define.
+// Bazel sandbox-misses the file at action time.
+//
+// Behaviour:
+//
+//   - Define value with no embedded absolute path → unchanged.
+//   - Path under cmakeSrc → re-anchor + requote.
+//   - Path under buildDir → drop (cmake-internal; convert-time-
+//     generated file isn't reachable at Bazel build time).
+//   - Other absolute path → leave alone (operator's responsibility).
+func reanchorDefineValue(def, cmakeSrc, buildDir string) (string, bool) {
+	eq := strings.IndexByte(def, '=')
+	if eq < 0 {
+		return def, true
+	}
+	key, raw := def[:eq], def[eq+1:]
+	stripped := strings.Trim(raw, `"`)
+	if !filepath.IsAbs(stripped) {
+		return def, true
+	}
+	if buildDir != "" {
+		if _, ok := relativeIfInside(buildDir, stripped); ok {
+			return "", false
+		}
+	}
+	if cmakeSrc != "" {
+		if rel, ok := relativeIfInside(cmakeSrc, stripped); ok {
+			return key + `="` + rel + `"`, true
+		}
+	}
+	return def, true
+}
+
+// reanchorLinkOptToken rewrites convert-time absolute paths embedded
+// in a tokenised linker flag to a form that survives into Bazel's
+// hermetic build. Returns (token, keep): keep=false signals "drop
+// this token entirely" — used for cmake-internal flags whose value
+// is the convert-time build dir (Bazel has no equivalent and the
+// flag would refer to a path that doesn't exist at action time).
+//
+// Rewrites:
+//
+//   - `-Wl,-rpath-link,<absbuild>...` / `-Wl,-rpath,<absbuild>...`:
+//     cmake's Ninja generator emits these so the convert-time
+//     build can find sibling libraries during link without
+//     re-running the configure cache. Bazel's hermetic action
+//     model resolves deps through cc_library labels and doesn't
+//     need rpath-link at link time. Drop. (Source-relative
+//     -rpath / -rpath-link is legitimate runtime metadata for
+//     downstream consumers and stays.)
+//
+//   - `-Wl,--version-script,<srcabs>` / `-Wl,--retain-symbols-file,
+//     <srcabs>` and the comma-quoted variants: re-anchor the
+//     embedded path to source-relative slash form when it sits
+//     under cmakeSrc. The operator's BUILD.bazel ends up with
+//     e.g. `-Wl,--version-script,"zlib.map"`. (A workspace-relative
+//     reference still leaks the convert-time current-working-dir
+//     assumption; queued is a follow-up that swaps this for
+//     `additional_linker_inputs = [...]` + `$(location ...)`. For
+//     now, removing the absolute prefix is the table-stakes fix.)
+//
+// Tokens without an embedded absolute path pass through unchanged.
+func reanchorLinkOptToken(tok, cmakeSrc, buildDir string) (string, bool) {
+	if tok == "" {
+		return tok, true
+	}
+	// cmake-internal rpath-link to the build dir's per-config lib
+	// dir. cmake's generator emits one per target; Bazel's link
+	// action doesn't need rpath-link because the action's input
+	// closure pins every library participating in the link. The
+	// reference also baked the convert-time absolute path AND
+	// often an unresolved ${CONFIGURATION} placeholder, neither
+	// of which would resolve at Bazel build time.
+	for _, prefix := range []string{
+		"-Wl,-rpath-link,",
+		"-Wl,-rpath,",
+	} {
+		if strings.HasPrefix(tok, prefix) {
+			payload := tok[len(prefix):]
+			if buildDir != "" && filepath.IsAbs(payload) {
+				if _, ok := relativeIfInside(buildDir, payload); ok {
+					return "", false
+				}
+			}
+			return tok, true
+		}
+	}
+	// version-script / retain-symbols-file embed a single path in
+	// the linker wire shape `-Wl,--<name>,<path>` (with comma) or
+	// `-Wl,--<name>=<path>` (with `=`), often with `<path>` quoted.
+	// Both forms are accepted by ld/gold/lld. Re-anchor when the
+	// path is absolute under cmakeSrc; drop the token when it's
+	// under buildDir (convert-time-generated; the .exports / .map
+	// file won't be in Bazel's input closure).
+	for _, prefix := range []string{
+		`-Wl,--version-script,`,
+		`-Wl,--version-script=`,
+		`-Wl,--retain-symbols-file,`,
+		`-Wl,--retain-symbols-file=`,
+		`-Wl,--dynamic-list,`,
+		`-Wl,--dynamic-list=`,
+	} {
+		if !strings.HasPrefix(tok, prefix) {
+			continue
+		}
+		raw := tok[len(prefix):]
+		// Strip wrapping double- or single-quotes. cmake serialises
+		// the path either way depending on the originating
+		// CMakeLists shape; libpng uses single quotes, zlib uses
+		// double quotes for the same `--version-script` flag.
+		stripped := raw
+		if (strings.HasPrefix(raw, `"`) && strings.HasSuffix(raw, `"`)) ||
+			(strings.HasPrefix(raw, `'`) && strings.HasSuffix(raw, `'`)) {
+			stripped = raw[1 : len(raw)-1]
+		}
+		if !filepath.IsAbs(stripped) {
+			return tok, true
+		}
+		if buildDir != "" {
+			if _, ok := relativeIfInside(buildDir, stripped); ok {
+				return "", false
+			}
+		}
+		if cmakeSrc != "" {
+			if rel, ok := relativeIfInside(cmakeSrc, stripped); ok {
+				return prefix + `"` + rel + `"`, true
+			}
+		}
+		return tok, true
+	}
+	return tok, true
+}
+
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
 // pieces are returned as defines (with the leading -D stripped); everything
 // else is a copt. -I and -isystem are dropped — those come through
-// compileGroup.includes structurally.
+// compileGroup.includes structurally. -ffile-prefix-map / -fmacro-prefix-map
+// / -fdebug-prefix-map are dropped too — they're reproducible-build
+// directives that rewrite the compile-host's source path layout into debug
+// info; under Bazel's hermetic sandbox the compile-time paths are already
+// workspace-relative, so the directive's <from> path (typically a convert-
+// time absolute like /tmp/proj/) never matches anything in the compile
+// invocation and the flag becomes either a no-op or a leak of convert-time
+// state into the audit surface.
 func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []string) {
 	for _, f := range frags {
 		if f.Role != "" {
@@ -3430,6 +3786,13 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 				defines = append(defines, strings.TrimPrefix(p, "-D"))
 			case strings.HasPrefix(p, "-I"), strings.HasPrefix(p, "-isystem"):
 				// dropped: see compileGroup.includes
+			case strings.HasPrefix(p, "-ffile-prefix-map="),
+				strings.HasPrefix(p, "-fmacro-prefix-map="),
+				strings.HasPrefix(p, "-fdebug-prefix-map="):
+				// dropped: convert-time host-path-rewrite
+				// directives have no meaning under Bazel's
+				// hermetic compile (the <from> never matches
+				// anything the compiler sees).
 			default:
 				copts = append(copts, p)
 			}

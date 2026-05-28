@@ -25,6 +25,7 @@ package configfold
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/internal/empfold"
@@ -121,26 +122,43 @@ func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []
 					tbl.includes[inc.Path][cfgName] = true
 				}
 				for _, frag := range cg.CompileCommandFragments {
+					// cmake's File API serialises compile flags as
+					// ONE whitespace-joined fragment per compile
+					// group (the verbatim `CMAKE_CXX_FLAGS_<CFG>`
+					// + per-target value). Tokenise on whitespace
+					// so each flag lands as its own select() arm
+					// element — Bazel passes each list entry as
+					// a separate argv to gcc; without this split
+					// gcc receives the entire string as one
+					// (invalid) flag.
+					//
 					// Disambiguate same-string fragments across
 					// languages — a `-O2` under C compiles
 					// differently from a `-O2` under CXX in
-					// practice (different driver, different
-					// downstream flag normalization), so partition
-					// per (language, fragment).
-					key := cg.Language + "|" + frag.Fragment
-					if tbl.compile[key] == nil {
-						tbl.compile[key] = map[string]bool{}
+					// practice, so partition per (language, token).
+					for _, tok := range strings.Fields(frag.Fragment) {
+						key := cg.Language + "|" + tok
+						if tbl.compile[key] == nil {
+							tbl.compile[key] = map[string]bool{}
+						}
+						tbl.compile[key][cfgName] = true
 					}
-					tbl.compile[key][cfgName] = true
 				}
 			}
 			if t.Link != nil {
 				for _, frag := range t.Link.CommandFragments {
-					key := frag.Role + "|" + frag.Fragment
-					if tbl.link[key] == nil {
-						tbl.link[key] = map[string]bool{}
+					// Same tokenisation as compile fragments. The
+					// "flags" role typically carries multiple
+					// `-Wl,...` joined; "libraries" / "libraryPath"
+					// / "frameworkPath" are usually single tokens
+					// already so Fields is a no-op for those.
+					for _, tok := range strings.Fields(frag.Fragment) {
+						key := frag.Role + "|" + tok
+						if tbl.link[key] == nil {
+							tbl.link[key] = map[string]bool{}
+						}
+						tbl.link[key][cfgName] = true
 					}
-					tbl.link[key][cfgName] = true
 				}
 			}
 		}

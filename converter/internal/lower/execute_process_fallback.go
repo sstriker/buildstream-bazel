@@ -75,9 +75,18 @@ type fallbackStub struct {
 // distinguishes the extract genrule from the per-target stubs
 // in case operators want to query just the stubs.
 func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, error) {
-	if got := len(r.Codemodel.Configurations); got != 1 {
+	// Multi-config (N > 1) consumes the first configuration's
+	// targets only; the placeholder emit doesn't care about
+	// per-config differences (the install-tree.tar genrule is
+	// config-invariant by design). Strict refusal here was a
+	// pre-Phase-5 floor; with the main ToIR's multi-config path
+	// now downgraded to a rejection record + cfg[0] survey, this
+	// placeholder path follows the same policy so the survey
+	// reaches every refusal site uniformly. Empty configurations
+	// is still a malformed reply we can't recover from.
+	if got := len(r.Codemodel.Configurations); got == 0 {
 		return nil, failure.New(failure.UnsupportedTargetType,
-			"M1 supports exactly one configuration; got %d", got)
+			"placeholder emit: codemodel has zero configurations")
 	}
 	pkg := &ir.Package{
 		Name:       projectName(r),

@@ -89,10 +89,19 @@ type standaloneTraceContext struct {
 // target in the package references the OUTPUT, so no consumer
 // needs to see it).
 //
+// cmakeSrc is the cmake source root — used by genruleSrcs to
+// re-anchor source-tree-absolute input paths (`/tmp/<src>/foo.c`)
+// to workspace-relative form (`foo.c`); essential for the
+// --cmake-script-bake / Phase 4 standalone-edge cases where the
+// edge's ninja-recorded inputs arrive as absolute paths from
+// cmake's `cmake -P` build-line resolution. Without it the
+// rendered genrule's srcs leak the convert-time absolute prefix,
+// and Bazel sandbox-misses the input at action time.
+//
 // buildDir is the cmake build directory — used to convert build-
 // relative output paths to package-relative paths the emitted
 // genrule's outs reference.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -160,10 +169,14 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 		if isCMakeBookkeepingOutput(outs[0]) {
 			continue
 		}
-		srcs := append([]string(nil), b.Inputs...)
-		srcs = append(srcs, b.ImplicitInputs...)
-		sort.Strings(srcs)
-		srcs = dedupSorted(srcs)
+		// Use genruleSrcs so source-tree-absolute inputs
+		// (e.g. `/tmp/<src>/foo.c` from a `cmake -P` build line
+		// that the ninja generator resolved with the cmake build
+		// dir's absolute prefix) get re-anchored to workspace-
+		// relative form. The pre-genruleSrcs path appended the
+		// raw ninja inputs verbatim, leaking convert-time
+		// absolute paths into the rendered genrule.
+		srcs := genruleSrcs(b, cmakeSrc, buildDir)
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
@@ -197,7 +210,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, buildDi
 			Kind:        ir.KindGenrule,
 			Srcs:        srcs,
 			GenruleOuts: outs,
-			GenruleCmd:  cmd,
+			GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
 			Visibility:  visibility,
 			Tags:        []string{"cmake-codegen-standalone-custom-command"},
 		})
@@ -412,20 +425,34 @@ func filterOutVarRefs(xs []string) []string {
 }
 
 // isCMakeBookkeepingOutput reports whether a build-edge output
-// path is one of cmake's internal IDE / regen utility outputs.
-// cmake's Ninja generator emits a standalone CUSTOM_COMMAND for
-// each of edit_cache / rebuild_cache (always present), plus a
-// handful more under multi-target generators (install / package /
-// package_source / test / list_install_components). The
-// canonical shape is `CMakeFiles/<name>.util` — checking that
-// prefix + suffix pair is both necessary and sufficient: no
-// user-declared add_custom_command lands an output under
-// `CMakeFiles/<n>.util` (cmake reserves the `.util` extension
-// for these bookkeeping edges).
+// path is one of cmake's internal IDE / regen / packaging /
+// install utility outputs. cmake's Ninja generator emits a
+// standalone CUSTOM_COMMAND for each of edit_cache /
+// rebuild_cache (always present), plus a handful more under
+// multi-target generators (install / package / package_source /
+// test / list_install_components).
+//
+// Shapes observed:
+//
+//   - Single-config (Ninja): `CMakeFiles/<name>.util`.
+//   - Multi-config (Ninja Multi-Config): `<subdir>/CMakeFiles/
+//     <Config>/<name>.util` per CMAKE_CONFIGURATION_TYPES entry
+//     and per subdirectory cmake recursed through.
+//
+// Both shapes share `CMakeFiles/` as a path component and end
+// in `.util`; checking that pair is both necessary and sufficient
+// because cmake reserves the `.util` extension for these
+// bookkeeping edges (no user-declared add_custom_command lands
+// an output with that extension).
 func isCMakeBookkeepingOutput(p string) bool {
-	const prefix = "CMakeFiles/"
-	const suffix = ".util"
-	return strings.HasPrefix(p, prefix) && strings.HasSuffix(p, suffix)
+	if !strings.HasSuffix(p, ".util") {
+		return false
+	}
+	// Match `CMakeFiles/` as a path component (either at the
+	// start or following a `/`). strings.Contains is too
+	// permissive — a user could name a directory `myCMakeFiles/`
+	// — but the .util-extension reservation keeps it sound.
+	return strings.HasPrefix(p, "CMakeFiles/") || strings.Contains(p, "/CMakeFiles/")
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a

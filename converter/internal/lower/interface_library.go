@@ -1,0 +1,305 @@
+package lower
+
+import (
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
+)
+
+// lowerInterfaceLibraries synthesizes cc_library IR targets for
+// `add_library(<name> INTERFACE)` calls the cmake codemodel
+// dropped. cmake's File API doesn't list INTERFACE_LIBRARY targets
+// in its `targets[]` array (they have no link step to model), so
+// the main lift's codemodel walk emits nothing for them. The
+// trace records `add_library(<name> INTERFACE)` directly; this
+// lift cross-references against the codemodel-known set
+// (knownTargets) and emits one cc_library per INTERFACE-only
+// declaration the codemodel didn't already cover.
+//
+// Resulting cc_library shape:
+//
+//	cc_library(
+//	    name      = <call.Name>,
+//	    hdrs      = glob([<rel-include-dir>/**/*.h, *.hpp, ...]),
+//	    includes  = [<rel-include-dir>],          // from
+//	                                              // target_include_directories(... INTERFACE ...)
+//	    defines   = [<defs>...],                  // from
+//	                                              // target_compile_definitions(... INTERFACE ...)
+//	)
+//
+// Walks the trace-recorded INTERFACE arms of `target_include_directories`
+// and `target_compile_definitions` for the same target name to
+// populate the body. PUBLIC arms also propagate to consumers under
+// cmake semantics so they're folded in too; PRIVATE arms are
+// excluded (they're compile-only for the target itself, but an
+// INTERFACE library has no compile step).
+//
+// hostSrc is the on-disk path to the project source tree used to
+// resolve absolute include paths to workspace-relative form;
+// cmakeSrc is the cmake-recorded source root, workspaceRoot the
+// detected (umbrella-or-cmakeSrc) anchor the rest of the lift uses
+// for path keys. Returns an empty slice when no add_library
+// INTERFACE calls survive the cross-reference (typical for
+// projects that have compiled libraries — every target is already
+// in the codemodel).
+//
+// ALIAS-form declarations are skipped; they're already covered by
+// the underlying target's emission, and Bazel doesn't need an
+// extra rule for them.
+func lowerInterfaceLibraries(
+	decoded *shadow.Decoded,
+	knownTargets map[string]bool,
+	hostSrc, cmakeSrc, workspaceRoot string,
+	cc *codegenContext,
+) []ir.Target {
+	if decoded == nil || len(decoded.AddLibraries) == 0 {
+		return nil
+	}
+
+	// Build per-target Includes (INTERFACE + PUBLIC) and Defines.
+	// PUBLIC arms apply to the target itself AND propagate; for
+	// an INTERFACE-only target, both arms describe what consumers
+	// see, which is the entire interface surface.
+	includesByTarget := map[string][]string{}
+	for _, ic := range decoded.Includes {
+		for _, grp := range ic.Groups {
+			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
+				continue
+			}
+			for _, dir := range grp.Dirs {
+				rel := dir
+				if filepath.IsAbs(dir) {
+					if r, ok := relativeIfInside(workspaceRoot, dir); ok {
+						rel = r
+					} else if r, ok := relativeIfInside(cmakeSrc, dir); ok {
+						rel = r
+					}
+				}
+				rel = strings.TrimSpace(rel)
+				if rel == "" || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+					continue
+				}
+				includesByTarget[ic.Target] = append(includesByTarget[ic.Target], rel)
+			}
+		}
+	}
+
+	definesByTarget := map[string][]string{}
+	for _, tc := range decoded.CompileDefinitions {
+		for _, grp := range tc.Groups {
+			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
+				continue
+			}
+			for _, def := range grp.Items {
+				def = strings.TrimSpace(def)
+				if def == "" {
+					continue
+				}
+				// Evaluate cmake generator expressions like
+				// `$<$<BOOL:OFF>:FOO=1>`. nlohmann-json emits ~5
+				// of these as the INTERFACE define list; cmake
+				// evaluates them at generate time based on the
+				// option values.
+				//
+				// Try the (a) genexeval parser first for shapes
+				// it supports; fall back to a small BOOL/NOT-
+				// specific evaluator for the nested
+				// `$<$<BOOL:...>:RESULT>` shape the parser
+				// rejects (its op-name lexer doesn't accept
+				// nested `$<`).
+				if strings.Contains(def, "$<") {
+					if nodes, err := genexeval.Parse([]byte(def)); err == nil {
+						if eval, err := genexeval.Eval(nodes, genexeval.Context{}); err == nil {
+							def = strings.TrimSpace(string(eval))
+						}
+					} else if evalled, ok := evalNestedBoolGenex(def); ok {
+						def = strings.TrimSpace(evalled)
+					}
+				}
+				if def == "" {
+					continue
+				}
+				// If we couldn't evaluate and the value still
+				// contains unresolved `$<`, drop it — emitting
+				// a literal `$<...>` define into BUILD.bazel
+				// would surface to the compiler as garbage. An
+				// operator who needs the define can re-add it
+				// by hand (or open an issue to extend the
+				// evaluator).
+				if strings.Contains(def, "$<") {
+					continue
+				}
+				definesByTarget[tc.Target] = append(definesByTarget[tc.Target], def)
+			}
+		}
+	}
+
+	var out []ir.Target
+	emitted := map[string]bool{}
+	for _, call := range decoded.AddLibraries {
+		if call.Type != "INTERFACE" {
+			continue
+		}
+		// Skip when the codemodel already knew about this target —
+		// no need to double-emit. (cmake 3.19+ does expose
+		// INTERFACE_LIBRARYs in codemodel-v2 under some shapes;
+		// the cross-reference keeps the lift's output stable
+		// regardless of codemodel surface.)
+		if knownTargets[call.Name] {
+			continue
+		}
+		// Skip namespaced cmake names like `OpenGL::GL` /
+		// `Foo::Bar` — these are cmake's IMPORTED-target alias
+		// surface from find_package(). The underlying actual
+		// target (e.g. the system OpenGL library) isn't
+		// declarable as a Bazel rule from converter side; the
+		// operator's manifest resolves these through their own
+		// rules. Emitting them here would produce a
+		// `cc_library(name = "OpenGL::GL", ...)` which Bazel
+		// rejects ("not a valid Bazel identifier") — even
+		// sanitizing the name doesn't help since the resulting
+		// rule still wouldn't have the right hdrs/deps.
+		if strings.Contains(call.Name, "::") {
+			continue
+		}
+		if emitted[call.Name] {
+			continue
+		}
+		emitted[call.Name] = true
+
+		includes := dedupSlice(includesByTarget[call.Name])
+		defines := dedupSlice(definesByTarget[call.Name])
+
+		// Walk each include dir at convert time to materialise an
+		// explicit hdrs list. The walk uses the existing
+		// discoverHeaders helper so the missing-include-dir
+		// warning path is shared with the codemodel-driven lift.
+		// Bazel-idiom: a fixed list is fine here because the
+		// converter re-runs on source-tree changes anyway; using
+		// `glob(...)` would require an IR/emit change we can
+		// queue separately.
+		var hdrs []string
+		if hostSrc != "" {
+			cache := cc.HeaderWalkCache
+			if cache == nil {
+				cache = map[string][]string{}
+			}
+			missing := cc.MissingIncludeDirs
+			if missing == nil {
+				missing = map[string]bool{}
+			}
+			h, err := discoverHeaders(hostSrc, includes, cache, missing)
+			if err == nil {
+				hdrs = h
+			}
+		}
+
+		tgt := ir.Target{
+			Name:       call.Name,
+			Kind:       ir.KindCCLibrary,
+			Hdrs:       hdrs,
+			Includes:   includes,
+			Defines:    defines,
+			Visibility: []string{"//visibility:public"},
+			Tags:       []string{"cmake-codegen-interface-library-from-trace"},
+		}
+		out = append(out, tgt)
+	}
+	// Deterministic order by name.
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// evalNestedBoolGenex evaluates the cmake genex shape
+//
+//	$<$<BOOL:<val>>:<result>>
+//	$<$<NOT:$<BOOL:<val>>>:<result>>
+//
+// that the (a) genexeval parser rejects (its op-name scan doesn't
+// accept nested `$<`). This covers the common header-only-library
+// pattern of guarding INTERFACE defines on cmake-side options
+// (e.g. nlohmann-json's
+// $<$<BOOL:OFF>:JSON_DIAGNOSTICS=1>).
+//
+// Returns (result, true) on a recognised shape; (_, false)
+// otherwise. The caller falls through to "drop the define" when
+// false (literal `$<` text reaching the C compiler is worse than
+// silent drop).
+func evalNestedBoolGenex(s string) (string, bool) {
+	// Shape 1: $<$<BOOL:<val>>:<result>>
+	if rest, ok := stripPrefix(s, "$<$<BOOL:"); ok {
+		// rest is "<val>>:<result>>"
+		i := strings.Index(rest, ">:")
+		if i < 0 {
+			return "", false
+		}
+		val := rest[:i]
+		body := rest[i+2:]
+		if !strings.HasSuffix(body, ">") {
+			return "", false
+		}
+		body = body[:len(body)-1]
+		if isBoolTrue(val) {
+			return body, true
+		}
+		return "", true
+	}
+	// Shape 2: $<$<NOT:$<BOOL:<val>>>:<result>>
+	if rest, ok := stripPrefix(s, "$<$<NOT:$<BOOL:"); ok {
+		i := strings.Index(rest, ">>>:")
+		if i < 0 {
+			return "", false
+		}
+		val := rest[:i]
+		body := rest[i+4:]
+		if !strings.HasSuffix(body, ">") {
+			return "", false
+		}
+		body = body[:len(body)-1]
+		if isBoolTrue(val) {
+			return "", true
+		}
+		return body, true
+	}
+	return "", false
+}
+
+func stripPrefix(s, prefix string) (string, bool) {
+	if strings.HasPrefix(s, prefix) {
+		return s[len(prefix):], true
+	}
+	return "", false
+}
+
+// isBoolTrue mirrors cmake's BOOL coercion: case-insensitive
+// "1", "ON", "YES", "TRUE", "Y" → true; anything else → false.
+// cmake's actual rules cover more strings (any non-zero number,
+// etc.) but the common cases the genex shape carries are limited.
+func isBoolTrue(s string) bool {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "1", "ON", "YES", "TRUE", "Y":
+		return true
+	}
+	return false
+}
+
+// dedupSlice returns a copy of vs with duplicate entries removed
+// while preserving first-occurrence order.
+func dedupSlice(vs []string) []string {
+	if len(vs) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(vs))
+	out := make([]string, 0, len(vs))
+	for _, v := range vs {
+		if !seen[v] {
+			seen[v] = true
+			out = append(out, v)
+		}
+	}
+	return out
+}
