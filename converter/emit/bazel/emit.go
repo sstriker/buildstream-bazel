@@ -604,6 +604,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .DefinesExpr}}
     defines = {{.DefinesExpr}},
 {{- end}}
+{{- if .LocalDefinesExpr}}
+    local_defines = {{.LocalDefinesExpr}},
+{{- end}}
 {{- if .LinkoptsExpr}}
     linkopts = {{.LinkoptsExpr}},
 {{- end}}
@@ -785,6 +788,7 @@ type ccView struct {
 	StripIncludePrefix         string
 	CoptsExpr                  string
 	DefinesExpr                string
+	LocalDefinesExpr           string
 	LinkoptsExpr               string
 	AdditionalLinkerInputsExpr string
 	DepsExpr                   string
@@ -971,6 +975,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		StripIncludePrefix:         t.StripIncludePrefix,
 		CoptsExpr:                  attrExpr(copts, perPlatformAttr(t, "copts")),
 		DefinesExpr:                attrExpr(defines, perPlatformAttr(t, "defines")),
+		LocalDefinesExpr:           attrExpr(sortedCopy(t.LocalDefines), perPlatformAttr(t, "local_defines")),
 		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
