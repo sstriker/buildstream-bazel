@@ -107,26 +107,80 @@ func TestParse_RejectsReplyDirPlusCMakeBuildDir(t *testing.T) {
 
 // TestParse_StrictTraceParsesAsBool pins that --strict-trace
 // is wired through and is false by default.
-func TestParse_StrictTraceParsesAsBool(t *testing.T) {
+func TestParse_StrictTraceImpliedByFidelityStrict(t *testing.T) {
 	var stderr bytes.Buffer
 
-	// Default: false.
+	// Default --fidelity=strict implicitly enables --strict-trace.
 	args, code := Parse([]string{"--source-root", "/proj"}, &stderr)
 	if code != ExitSuccess {
 		t.Fatalf("default parse failed: code=%d stderr=%q", code, stderr.String())
 	}
-	if args.StrictTrace {
-		t.Errorf("StrictTrace = true by default; want false")
+	if !args.StrictTrace {
+		t.Errorf("StrictTrace = false under default --fidelity=strict; want true (the dial implies it)")
 	}
 
-	// Explicit: true.
+	// Explicit --strict-trace=false wins over the dial-derived default.
 	stderr.Reset()
-	args, code = Parse([]string{"--source-root", "/proj", "--strict-trace"}, &stderr)
+	args, code = Parse([]string{"--source-root", "/proj", "--strict-trace=false"}, &stderr)
 	if code != ExitSuccess {
-		t.Fatalf("explicit parse failed: code=%d stderr=%q", code, stderr.String())
+		t.Fatalf("explicit-false parse failed: code=%d stderr=%q", code, stderr.String())
 	}
-	if !args.StrictTrace {
-		t.Errorf("StrictTrace = false after --strict-trace; want true")
+	if args.StrictTrace {
+		t.Errorf("explicit --strict-trace=false should override dial-derived default; got true")
+	}
+
+	// --fidelity=best-effort doesn't imply --strict-trace.
+	stderr.Reset()
+	args, code = Parse([]string{"--source-root", "/proj", "--fidelity=best-effort"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("best-effort parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.StrictTrace {
+		t.Errorf("StrictTrace = true under --fidelity=best-effort; want false (only strict implies it)")
+	}
+}
+
+func TestParse_DiagnosticsImpliesProbeDistroHardeningAndVerify(t *testing.T) {
+	var stderr bytes.Buffer
+
+	// --diagnostics implicitly enables probe-distro-hardening, verify,
+	// and ignore-rejections-for-diagnostics.
+	args, code := Parse([]string{"--source-root", "/proj", "--diagnostics"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("diagnostics parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !args.IgnoreRejectionsForDiagnostics {
+		t.Errorf("--diagnostics should imply --ignore-rejections-for-diagnostics")
+	}
+	if !args.ProbeDistroHardening {
+		t.Errorf("--diagnostics should imply --probe-distro-hardening")
+	}
+	if !args.Verify {
+		t.Errorf("--diagnostics should imply --verify")
+	}
+
+	// Explicit --verify=false wins over the dial-derived default.
+	stderr.Reset()
+	args, code = Parse([]string{"--source-root", "/proj", "--diagnostics", "--verify=false"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("diagnostics + explicit verify=false parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.Verify {
+		t.Errorf("explicit --verify=false should override dial-derived default; got true")
+	}
+
+	// Without --diagnostics, the dial-implied switches stay off (only
+	// the explicit values flow through).
+	stderr.Reset()
+	args, code = Parse([]string{"--source-root", "/proj"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("no-diagnostics parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.ProbeDistroHardening {
+		t.Errorf("ProbeDistroHardening = true without --diagnostics; want false")
+	}
+	if args.Verify {
+		t.Errorf("Verify = true without --diagnostics; want false")
 	}
 }
 

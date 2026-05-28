@@ -402,7 +402,83 @@ func main() {
 	pyprojectBin := flag.String("convert-element-pyproject", "", "optional: path to convert-element-pyproject. When set, kind:pyproject elements render natively (per-element genrule that statically analyzes pyproject.toml + the source tree, producing py_library / py_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/architecture.md.")
 	pyprojectFallback := flag.Bool("pyproject-fallback", false, "optional: per-element auto-detection. When set (alongside --convert-element-pyproject), write-a probes each element's pyproject.toml at render time (running the converter with --probe) and emits the pipeline-shape coarse install genrule for any element whose probe doesn't return exit 0. That covers typed Tier-1 refusals (the native render would refuse), CLI/usage errors (exit 64), untyped Tier-2 errors (exit 65 — filesystem issues, malformed imports manifest), spawn failures (binary missing / wrong arch), and timeouts (probe hung past the per-element deadline). Operators see per-element refusal reasons on stderr; refused elements are still install_tree.tar-shaped (no per-target Bazel labels, but the element builds).")
 	buildFilesDir := flag.String("build-files-dir", "", "optional: directory of operator-supplied per-element BUILD overrides. For each element <name>, if the directory contains <name>/BUILD.bazel (or <name>/BUILD), write-a re-stamps the element as kind:bazel and copies the entire <name>/ subtree on top of project B's elements/<name>/ — overriding whatever the element's declared kind would otherwise render. Sources still stage first so the operator's BUILD can reference them via srcs=[...]; the override tree shadows any colliding files. The directory layout (rather than a flat <name>.BUILD.bazel file) lets one element ship multiple BUILDs — top-level plus subpackages — and drop in .bzl helpers, defs files, etc. alongside. Lets operators hand-author BUILDs for elements whose declared kind (kind:cmake, kind:autotools, ...) doesn't yet convert cleanly without changing the .bst files. Caveat: the kind:bazel re-stamp also skips whatever project-A wiring the original kind would have set up — kind:cmake's converter genrule doesn't fire, so cross-element bundle channels like :<elem>_cmake_config_bundle aren't synthesized for this element. Operators overriding a kind that consumes dep bundles need to wire equivalent staging inside the override BUILD by hand.")
+	// Operator-facing mode dials. See modes.go for the derivation
+	// logic. Defaults match today's behaviour: strict refusals,
+	// warn-on-bake, diagnostics off, deployment auto-detects
+	// round-2 if publish + lookup binaries are wired else round-1.
+	// Explicit lower-level flags (--cmake-round2-fallback,
+	// --trace-round1, ...) still work and override the derived
+	// values, so existing scripts keep their semantics.
+	fidelity := flag.String("fidelity", fidelityStrict, "operator-facing conversion-fidelity dial: \"strict\" (refusals exit non-zero) or \"best-effort\" (refusals lower to install_tree.tar placeholder shapes so downstream Bazel still resolves labels). Threaded verbatim into every converter's --fidelity flag; each converter interprets it against its own fallback shapes.")
+	bakeIn := flag.String("bake-in", bakeInWarn, "operator-facing convert-time-baking dial: \"warn\" (default; today's behaviour — every baked output shows up on stderr but conversion succeeds), \"allow\" (silent), or \"reject\" (any bake-shaped emission exits non-zero with the inventory embedded). Orthogonal to --fidelity. Threaded verbatim into convert-element-cmake's --bake-in (kind:cmake is the only converter with bake sites today; the flag is a no-op on -meson / -pyproject).")
+	diagnostics := flag.Bool("diagnostics", false, "operator-facing diagnostic-mode dial: when set, every Tier-1 refusal is collected and the run continues past each rather than aborting on the first; the per-converter report (only convert-element-cmake's --rejections-report is wired today) captures the structured rejection list. Threaded verbatim into every converter's --diagnostics flag.")
+	deployment := flag.String("deployment", deploymentAuto, "deployment dial for trace-driven kinds: \"local\" (round-1 monolithic install genrule; no REAPI AC), \"production\" (round-2 split with publish/lookup via REAPI AC), or \"auto\" (production if --trace-publish-bin + --trace-lookup-bin are set, else local). --platforms requires production. Write-a-local (not threaded into converters); the dial value gates write-a's workspace-rendering decisions only.")
 	flag.Parse()
+
+	modeFlagsIn := modeFlags{
+		fidelity:              *fidelity,
+		bakeIn:                *bakeIn,
+		diagnostics:           *diagnostics,
+		deployment:            *deployment,
+		convertElementTrace:   *traceBin,
+		buildTracer:           *tracerBin,
+		tracePublish:          *publishBin,
+		traceLookup:           *lookupBin,
+		convertElementMeson:   *mesonBin,
+		pyprojectConverter:    *pyprojectBin,
+		cmakeRound2Fallback:   *cmakeRound2Fallback,
+		mesonRound2Fallback:   *mesonRound2Fallback,
+		pyprojectFallback:     *pyprojectFallback,
+		traceRound1:           *round1,
+		platformsJSON:         *platformsJSON,
+		useFuseSources:        *useFuseSources,
+		cmakeConfigureFileBin: *cmakeConfigureFileBin,
+		explicit:              flagExplicit(),
+	}
+	resolved, err := deriveModes(modeFlagsIn)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	// Pass-through architecture: write-a passes the operator's
+	// dial values verbatim into every converter genrule cmd; each
+	// converter decides what they mean internally. write-a also
+	// derives a couple of WORKSPACE-rendering decisions from the
+	// dials — Project B's install genrule emission for best-effort
+	// kind:cmake / kind:meson, and the round-1 vs round-2 shape —
+	// because those are write-a's own emission choices, not
+	// converter-internal ones. The legacy per-kind --cmake-round2-
+	// fallback / --meson-round2-fallback / --pyproject-fallback
+	// flags stay as escape hatches that pre-empt the dial-derived
+	// default (explicit-true wins).
+	// Tools-aware derivation: best-effort enables the per-kind
+	// install-genrule emission ONLY when the supporting tools are
+	// wired. The downstream validation in main.go fatals on
+	// *cmakeRound2Fallback / *mesonRound2Fallback /
+	// *pyprojectFallback with missing tools — leaving those at
+	// false when tools are absent keeps best-effort a soft
+	// preference rather than a hard requirement (operators see a
+	// downgrade note in the banner via deriveModes' downgrades
+	// list; the per-kind missing-tools note comes from those tools
+	// being absent in the banner's tools-list view).
+	bestEffort := resolved.fidelity == fidelityBestEffort
+	tracePipelineReady := *tracerBin != "" && *publishBin != "" && *lookupBin != ""
+	if !modeFlagsIn.explicit["cmake-round2-fallback"] && bestEffort && tracePipelineReady && !*useFuseSources {
+		*cmakeRound2Fallback = true
+	}
+	if !modeFlagsIn.explicit["meson-round2-fallback"] && bestEffort && tracePipelineReady && *mesonBin != "" {
+		*mesonRound2Fallback = true
+	}
+	if !modeFlagsIn.explicit["pyproject-fallback"] && bestEffort && *pyprojectBin != "" {
+		*pyprojectFallback = true
+	}
+	*round1 = resolved.traceRound1
+	cmakeConfig.fidelity = resolved.fidelity
+	cmakeConfig.bakeIn = resolved.bakeIn
+	cmakeConfig.diagnostics = resolved.diagnostics
+	mesonConfig.fidelity = resolved.fidelity
+	mesonConfig.diagnostics = resolved.diagnostics
+	pyprojectConfig.fidelity = resolved.fidelity
+	pyprojectConfig.diagnostics = resolved.diagnostics
 
 	if *bstRoot != "" {
 		if len(bstPaths) > 0 {
@@ -723,11 +799,17 @@ func main() {
 		staticDispatchVars["bootstrap_build_arch"] = *bootstrapBuildArch
 	}
 
+	printBanner(g, resolved, modeFlagsIn, *outA, *outB)
+
 	if err := writeProjectA(g, *outA, convertAbs); err != nil {
 		log.Fatalf("write project A: %v", err)
 	}
-	fmt.Printf("wrote project A at %s (%d elements: %s)\n",
-		*outA, len(g.Elements), summarizeKinds(g))
+	// Banner above already printed the element count + kind
+	// summary + output paths. The post-render line keeps a terse
+	// success marker so CI log scrapers that grep for "wrote
+	// project A at" keep working without duplicating the banner's
+	// content.
+	fmt.Printf("wrote project A at %s\n", *outA)
 
 	if *outB != "" {
 		if err := writeProjectB(g, *outB); err != nil {
@@ -735,6 +817,89 @@ func main() {
 		}
 		fmt.Printf("wrote project B at %s\n", *outB)
 	}
+}
+
+// printBanner prints the resolved mode + tools state at the top of
+// every write-a invocation. Output goes to stdout, same stream as
+// the "wrote project A at ..." lines. Designed so an operator can
+// tell at a glance what mode this run is in — fidelity / bake-in /
+// deployment / diagnostics, the wired/missing tools, and any
+// downgrade notes — without grepping the rendered BUILDs.
+func printBanner(g *graph, r resolvedModes, m modeFlags, outA, outB string) {
+	deploymentNote := ""
+	if r.deployment == deploymentProduction {
+		deploymentNote = " (round-2; REAPI AC via trace-publish/trace-lookup)"
+	} else if r.deployment == deploymentLocal {
+		deploymentNote = " (round-1; monolithic install genrule)"
+	}
+	diagNote := ""
+	if r.diagnostics {
+		diagNote = "  diagnostics=on"
+	}
+	fmt.Printf("write-a  fidelity=%s  bake-in=%s  deployment=%s%s%s\n",
+		r.fidelity, r.bakeIn, r.deployment, deploymentNote, diagNote)
+
+	fmt.Printf("input:   %d elements  kinds: %s\n", len(g.Elements), summarizeKinds(g))
+
+	// Tools line: every binary write-a knows about, with the
+	// resolved path when wired and a "not provided" bucket
+	// otherwise. The reader can spot "convert-element-meson — not
+	// provided" without scanning a help-text wall.
+	type toolState struct{ name, path string }
+	tools := []toolState{
+		{"convert-element-cmake", "(required)"},
+		{"convert-element-trace", m.convertElementTrace},
+		{"convert-element-meson", m.convertElementMeson},
+		{"convert-element-pyproject", m.pyprojectConverter},
+		{"build-tracer", m.buildTracer},
+		{"trace-publish", m.tracePublish},
+		{"trace-lookup", m.traceLookup},
+		{"fold-element", traceConfig.foldBin},
+		{"cmake-configure-file", m.cmakeConfigureFileBin},
+	}
+	var wired, missing []string
+	for _, t := range tools {
+		if t.path != "" {
+			wired = append(wired, t.name)
+		} else {
+			missing = append(missing, t.name)
+		}
+	}
+	fmt.Printf("tools:   wired: %s\n", strings.Join(wired, ", "))
+	if len(missing) > 0 {
+		fmt.Printf("         not provided: %s\n", strings.Join(missing, ", "))
+	}
+
+	if m.platformsJSON != "" {
+		fmt.Printf("platforms: %s (multi-platform fan-out)\n", m.platformsJSON)
+	}
+
+	// Effective fallback shapes. Per-kind so operators reading the
+	// banner can confirm "did fallback engage for kind:cmake on
+	// this run?" without grepping the rendered BUILD.
+	var fallbackOn []string
+	if cmakeConfig.round2FallbackEnabled {
+		fallbackOn = append(fallbackOn, "cmake")
+	}
+	if mesonConfig.round2FallbackEnabled {
+		fallbackOn = append(fallbackOn, "meson")
+	}
+	if pyprojectConfig.fallbackEnabled {
+		fallbackOn = append(fallbackOn, "pyproject")
+	}
+	if len(fallbackOn) > 0 {
+		fmt.Printf("fallback engaged for kinds: %s\n", strings.Join(fallbackOn, ", "))
+	}
+
+	for _, note := range r.downgrades {
+		fmt.Printf("note:    %s\n", note)
+	}
+
+	fmt.Printf("output:  project A → %s", outA)
+	if outB != "" {
+		fmt.Printf("  ·  project B → %s", outB)
+	}
+	fmt.Println()
 }
 
 // discoverBstGraph walks the depends / build-depends / runtime-depends

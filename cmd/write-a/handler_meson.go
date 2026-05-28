@@ -52,6 +52,14 @@ var mesonConfig struct {
 	// so A's converter genrule can wire the load-time
 	// @trace_<elem>//:trace lookup.
 	round2FallbackEnabled bool
+
+	// fidelity / diagnostics are the operator-facing dial values
+	// resolved by deriveModes (see modes.go) and threaded from
+	// main.go into the meson-converter genrule cmd. Empty strings
+	// (the zero value, never set in production but possible in
+	// tests) elide the matching --fidelity / --diagnostics flag.
+	fidelity    string
+	diagnostics bool
 }
 
 // mesonHandler is the kind:meson dispatch. It picks between the
@@ -255,6 +263,21 @@ filegroup(
 		// round-2 wiring.
 		srcsList += fmt.Sprintf(`, ":%s_trace_load"`, elem.Name)
 	}
+	// Operator-facing dial pass-through. fidelity threads in only
+	// when non-default; --diagnostics threads in when set. The
+	// converter's --bake-in is a no-op on meson today so we don't
+	// thread it (avoids polluting the cmd with a flag the converter
+	// ignores).
+	fidelityFlag := ""
+	if mesonConfig.fidelity != "" && mesonConfig.fidelity != fidelityStrict {
+		fidelityFlag = fmt.Sprintf(` \
+            --fidelity=%s`, mesonConfig.fidelity)
+	}
+	diagnosticsFlag := ""
+	if mesonConfig.diagnostics {
+		diagnosticsFlag = ` \
+            --diagnostics=true`
+	}
 
 	fmt.Fprintf(&b, `
 genrule(
@@ -284,7 +307,7 @@ genrule(
             --source-root="$$SHADOW" \\
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
-            --bazel-package-path="elements/%[1]s"%[3]s%[4]s
+            --bazel-package-path="elements/%[1]s"%[3]s%[4]s%[5]s%[6]s
         # v1 emits an empty bundle dir. We deliberately do NOT use
         # "tar -C $$BUNDLE_DIR ." — that includes the "." directory
         # entry with the bundle dir's mtime/uid/gid, making the tar
@@ -310,7 +333,7 @@ filegroup(
     name = "pkg_config_bundle",
     srcs = ["pkg-config-bundle.tar"],
 )
-`, elem.Name, srcsList, importsFlag, fallbackFlag)
+`, elem.Name, srcsList, importsFlag, fallbackFlag, fidelityFlag, diagnosticsFlag)
 
 	return b.String()
 }

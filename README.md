@@ -92,20 +92,33 @@ make e2e-meta-hello
 # 3. Drive the trace-driven autotools path end-to-end.
 make e2e-meta-autotools-native
 
-# 4. Convert your own BuildStream project.
-#    --trace-round1 picks the local-dev round-1 shape (project B
-#    hosts an install genrule with build-tracer + convert-element-
-#    trace inline). For the production round-2 shape, drop
-#    --trace-round1 and add --trace-publish-bin / --trace-lookup-bin
-#    (and ensure bb_clientd is up).
+# 4. Convert your own BuildStream project. write-a takes four
+#    operator-facing dials:
+#
+#      --fidelity={strict|best-effort}  refusal handling (default strict)
+#      --bake-in={warn|allow|reject}    convert-time-bake policy (default warn)
+#      --diagnostics                    collect every Tier-1 refusal instead
+#                                       of aborting on the first
+#      --deployment={auto|local|production}  trace-driven kinds' install shape
+#                                            (default auto: production if the
+#                                            REAPI AC publish+lookup binaries
+#                                            are wired, else local)
+#
+#    --fidelity / --bake-in / --diagnostics are threaded verbatim
+#    into every converter's matching --fidelity / --bake-in /
+#    --diagnostics flag; each converter decides what they mean for
+#    its own kind. Per-kind escape hatches (--cmake-round2-fallback,
+#    --meson-round2-fallback, --pyproject-fallback,
+#    --unsupported-execute-process-fallback, ...) still work and
+#    override the dial-derived defaults.
 build/bin/write-a \
     --bst path/to/yours.bst \
     --out /tmp/project-a \
     --out-b /tmp/project-b \
-    --convert-element-cmake           build/bin/convert-element-cmake \
+    --convert-element-cmake     build/bin/convert-element-cmake \
     --convert-element-trace     build/bin/convert-element-trace \
     --build-tracer-bin          build/bin/build-tracer \
-    --trace-round1
+    --deployment=local
 ```
 
 Then `cd /tmp/project-b && bazel build //...`. That's it.

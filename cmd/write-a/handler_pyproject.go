@@ -54,6 +54,15 @@ var pyprojectConfig struct {
 	// and have every kind:pyproject element render correctly
 	// regardless of per-element backend / metadata shape.
 	fallbackEnabled bool
+
+	// fidelity / diagnostics are the operator-facing dial values
+	// resolved by deriveModes (see modes.go) and threaded from
+	// main.go into the pyproject-converter genrule cmd. Both flags
+	// are pass-through no-ops at the converter today (see
+	// convert-element-pyproject/main.go for why); they're threaded
+	// for CLI uniformity.
+	fidelity    string
+	diagnostics bool
 }
 
 // pyprojectHandler is the kind:pyproject dispatch. It picks
@@ -665,6 +674,22 @@ filegroup(
 		importsFlag = ` \
             --imports-manifest="$(location imports.json)"`
 	}
+	// Operator-facing dial pass-through. The pyproject converter
+	// treats both flags as no-ops today (its "best-effort" path is
+	// write-a's --probe + pipeline-shape dispatch, not an internal
+	// switch; rejection collection isn't wired). Threading them
+	// anyway keeps the per-element cmd byte-identical with what
+	// future converter changes will rely on.
+	fidelityFlag := ""
+	if pyprojectConfig.fidelity != "" && pyprojectConfig.fidelity != fidelityStrict {
+		fidelityFlag = fmt.Sprintf(` \
+            --fidelity=%s`, pyprojectConfig.fidelity)
+	}
+	diagnosticsFlag := ""
+	if pyprojectConfig.diagnostics {
+		diagnosticsFlag = ` \
+            --diagnostics=true`
+	}
 
 	fmt.Fprintf(&b, `
 genrule(
@@ -692,7 +717,7 @@ genrule(
         $(location //tools:convert-element-pyproject) \\
             --source-root="$$SHADOW" \\
             --element-name="%[1]s" \\
-            --out-build="$(location BUILD.bazel.out)"%[3]s
+            --out-build="$(location BUILD.bazel.out)"%[3]s%[4]s%[5]s
     """,
     tools = ["//tools:convert-element-pyproject"],
 )
@@ -701,7 +726,7 @@ filegroup(
     name = "build_bazel",
     srcs = ["BUILD.bazel.out"],
 )
-`, elem.Name, srcsList, importsFlag)
+`, elem.Name, srcsList, importsFlag, fidelityFlag, diagnosticsFlag)
 
 	return b.String()
 }
