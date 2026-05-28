@@ -168,6 +168,23 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		if isCMakeBookkeepingOutput(outs[0]) {
 			continue
 		}
+		// Skip cmake-internal install / regen / cpack edges
+		// regardless of output path. These run cmake (or
+		// cpack/rpmbuild) at action time against cmake's own
+		// build-dir layout — they don't translate to the Bazel
+		// sandbox AT ALL, and even when the cmd's paths look
+		// workspace-relative after rewriteGenruleCmd, the cmake
+		// invocation itself depends on `cmake_install.cmake` /
+		// `CPackSourceConfig.cmake` / regen state that isn't
+		// staged into the sandbox. Filtering at the cmd-shape
+		// level catches every install-component variant
+		// (DCMAKE_INSTALL_COMPONENT, DCMAKE_INSTALL_DO_STRIP,
+		// DCMAKE_INSTALL_LOCAL_ONLY) plus cpack/rpmbuild +
+		// regen-during-build edges that wouldn't fit the
+		// .util output-path filter above.
+		if isCMakeInternalCmd(cmd) {
+			continue
+		}
 		srcs := append([]string(nil), b.Inputs...)
 		srcs = append(srcs, b.ImplicitInputs...)
 		sort.Strings(srcs)
@@ -434,6 +451,83 @@ func isCMakeBookkeepingOutput(p string) bool {
 	const prefix = "CMakeFiles/"
 	const suffix = ".util"
 	return strings.HasPrefix(p, prefix) && strings.HasSuffix(p, suffix)
+}
+
+// isCMakeInternalCmd reports whether a recovered ninja
+// CUSTOM_COMMAND cmd belongs to cmake's own install / regen / cpack
+// bookkeeping infrastructure and should be filtered from the
+// rendered BUILD. These edges invoke cmake / cpack / rpmbuild
+// against cmake's build-dir state at action time, which doesn't
+// translate to Bazel's hermetic sandbox — they exist purely so
+// `ninja install` / `ninja package` work in the cmake build dir
+// and serve no purpose in the converted Bazel graph.
+//
+// Matched cmd shapes:
+//
+//   - `cmake ... -P cmake_install.cmake` (any DCMAKE_INSTALL_*
+//     env-shape variant — component / strip / local-only).
+//   - `cmake --regenerate-during-build ...` (CMakeFiles regen
+//     hook).
+//   - `cpack ...` / `cpack ... && rpmbuild ...` (package
+//     distribution edges).
+//
+// The cmake-cmd check requires the install-script path
+// (`cmake_install.cmake`) rather than just `-P` so user-written
+// `add_custom_command(... cmake -P myscript.cmake)` shapes aren't
+// caught — those route through the operator-staged runner path
+// (CMakeScriptRunner) or refuse with UnsupportedCustomCommandScript.
+func isCMakeInternalCmd(cmd string) bool {
+	// Trim any leading whitespace from rewriteGenruleCmd's output
+	// so the prefix checks below stay robust against cleanup
+	// changes.
+	c := strings.TrimSpace(cmd)
+	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's
+	// per-target build-subdir cd, present on the raw cmd before
+	// rewriteGenruleCmd runs). The shape check should match
+	// regardless of cd presence.
+	if strings.HasPrefix(c, "cd ") {
+		if i := strings.Index(c, " && "); i > 0 {
+			c = strings.TrimSpace(c[i+4:])
+		}
+	}
+	// Strip host-tool prefix on the leading command token so the
+	// shape check matches before rewriteGenruleCmd has had a
+	// chance to normalise — recoverGenrule / standalone-edges
+	// both run this check on the raw ninja cmd.
+	for _, p := range []string{"/usr/bin/", "/usr/local/bin/", "/usr/sbin/"} {
+		if strings.HasPrefix(c, p) {
+			c = c[len(p):]
+			break
+		}
+	}
+	// cmake_install.cmake invocations — `cmake ... cmake_install.cmake`
+	// (the -P arg may carry a relative or absolute path; check any
+	// occurrence of the script-name token). The bare `cmake -P
+	// cmake_install.cmake` form (no -D flags) is the leaf-package
+	// install variant; covered by the same Contains check.
+	if strings.HasPrefix(c, "cmake ") &&
+		strings.Contains(c, "cmake_install.cmake") {
+		return true
+	}
+	// `--regenerate-during-build` — cmake's CMakeFiles regen hook.
+	if strings.HasPrefix(c, "cmake ") &&
+		strings.Contains(c, "--regenerate-during-build") {
+		return true
+	}
+	// cpack + cpack-with-rpmbuild — package distribution.
+	if strings.HasPrefix(c, "cpack ") || strings.HasPrefix(c, "cpack-") {
+		return true
+	}
+	// `cmake -E echo` chains that the existing .util filter doesn't
+	// catch in nested build dirs (typical "No interactive CMake
+	// dialog available" stub). Echo with no side effect is a
+	// bookkeeping no-op. Filter only when the cmd is pure-echo,
+	// not when the echo is embedded in a larger script.
+	if strings.HasPrefix(c, "echo No interactive CMake dialog") ||
+		strings.HasPrefix(c, "echo No\\ interactive\\ CMake\\ dialog") {
+		return true
+	}
+	return false
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a
