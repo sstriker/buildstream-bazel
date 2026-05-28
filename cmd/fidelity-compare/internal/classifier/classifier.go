@@ -387,14 +387,14 @@ func isLibcRuntimeHelper(sym string) bool {
 	// pure-virtual handler. All in libstdc++/libgcc; distro
 	// toolchains link these into the consumer when needed,
 	// hermetic toolchains reference at link time.
-	case "__tls_get_addr",       // dynamic TLS resolution
-		"__cxa_atexit",          // C++ static destructor registration
-		"__cxa_thread_atexit",   // C++ thread_local destructor
-		"__cxa_finalize",        // C++ shared-lib cleanup
-		"__cxa_guard_acquire",   // function-static initialisation
+	case "__tls_get_addr", // dynamic TLS resolution
+		"__cxa_atexit",        // C++ static destructor registration
+		"__cxa_thread_atexit", // C++ thread_local destructor
+		"__cxa_finalize",      // C++ shared-lib cleanup
+		"__cxa_guard_acquire", // function-static initialisation
 		"__cxa_guard_release",
 		"__cxa_guard_abort",
-		"__cxa_pure_virtual":    // pure-virtual call handler
+		"__cxa_pure_virtual": // pure-virtual call handler
 		return true
 	}
 	// libstdc++ standard-exception vtables (std::exception,
