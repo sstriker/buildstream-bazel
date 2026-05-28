@@ -43,19 +43,44 @@ func TestLowerAliasTargets_EmitsAliasForInTreeUnderlying(t *testing.T) {
 	}
 }
 
-func TestLowerAliasTargets_SkipsNamespacedAliases(t *testing.T) {
+func TestLowerAliasTargets_SanitizesNamespacedAliases(t *testing.T) {
 	decoded := &shadow.Decoded{
 		AddLibraries: []shadow.AddLibraryCall{
 			{
 				Name: "Foo::Bar", Type: "ALIAS",
-				Aliases: []string{"foo_bar"},
+				Aliases: []string{"bar_impl"},
 			},
 		},
 	}
-	known := map[string]bool{"foo_bar": true}
+	known := map[string]bool{"bar_impl": true}
+	got := lowerAliasTargets(decoded, known, "/src")
+	if len(got) != 1 {
+		t.Fatalf("namespaced alias should be sanitized + emitted; got %v", got)
+	}
+	// `Foo::Bar` → `Foo_Bar` (Bazel rejects `::` in target names).
+	if got[0].Name != "Foo_Bar" {
+		t.Errorf("expected sanitized name Foo_Bar; got %q", got[0].Name)
+	}
+	if got[0].AliasActual != ":bar_impl" {
+		t.Errorf("AliasActual = %q; want :bar_impl", got[0].AliasActual)
+	}
+}
+
+func TestLowerAliasTargets_SkipsNamespacedShadowingSanitizedCodemodelName(t *testing.T) {
+	// `Foo::Bar` sanitizes to `Foo_Bar`. If the codemodel also
+	// has a target named `Foo_Bar`, skip to avoid the duplicate.
+	decoded := &shadow.Decoded{
+		AddLibraries: []shadow.AddLibraryCall{
+			{
+				Name: "Foo::Bar", Type: "ALIAS",
+				Aliases: []string{"bar_impl"},
+			},
+		},
+	}
+	known := map[string]bool{"bar_impl": true, "Foo_Bar": true}
 	got := lowerAliasTargets(decoded, known, "/src")
 	if len(got) != 0 {
-		t.Errorf("namespaced alias should be skipped; got %v", got)
+		t.Errorf("sanitized-name collision should skip; got %v", got)
 	}
 }
 

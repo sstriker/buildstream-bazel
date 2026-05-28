@@ -23,13 +23,15 @@ import (
 // but cross-tree consumers that hardcode the alias name break
 // without it.
 //
-// Skipped shapes:
+// Namespaced aliases (`Pkg::Target` shape) are sanitized at emit
+// time — Bazel rejects `::` in target names, so we replace `::`
+// with `_` and emit `alias(name = "Pkg_Target", actual =
+// ":target")`. Operators referencing the cmake-style namespaced
+// name from external Bazel code use the sanitized form; the
+// trade-off is a name shift but the alias rule still exists and
+// resolves correctly.
 //
-//   - Namespaced aliases (`Pkg::Target` — find_package's
-//     IMPORTED-target surface). Bazel rejects `::` in target
-//     names; namespaced consumers ride through the imports
-//     manifest path, where the manifest's bazel_label field maps
-//     `Pkg::Target` → the operator-supplied Bazel label.
+// Skipped shapes:
 //
 //   - Aliases pointing at targets cmake doesn't expose (the
 //     underlying name isn't in `knownTargets`). Bazel `alias`
@@ -37,9 +39,11 @@ import (
 //     reference would just produce a Bazel load error.
 //
 //   - Re-declarations of names already in the codemodel
-//     (`knownTargets[call.Name]`). The same name owned by both
-//     the codemodel AND an ALIAS would produce a duplicate-target
-//     diagnostic; conservative skip preserves the strict shape.
+//     (`knownTargets[call.Name]` for the bare form OR
+//     `knownTargets[<sanitized name>]` for the namespaced form).
+//     The same name owned by both the codemodel AND an ALIAS
+//     would produce a duplicate-target diagnostic; conservative
+//     skip preserves the strict shape.
 //
 // cmakeSrc is the cmake source root used to reanchor absolute
 // trace-recorded file paths to workspace-relative provenance,
@@ -62,27 +66,27 @@ func lowerAliasTargets(decoded *shadow.Decoded, knownTargets map[string]bool, cm
 			continue
 		}
 		actual := call.Aliases[0]
-		// Bazel rejects `::` in target names; namespaced ALIAS
-		// rides through the imports manifest path instead.
-		if strings.Contains(call.Name, "::") {
-			continue
-		}
 		// Underlying target must exist in the codemodel — Bazel
 		// alias requires a resolvable `actual` label.
 		if !knownTargets[actual] {
 			continue
 		}
+		// Sanitize namespaced names: `MyProj::Foo` → `MyProj_Foo`
+		// so the resulting rule name passes Bazel's
+		// target-name validation (`::` is rejected).
+		aliasName := strings.ReplaceAll(call.Name, "::", "_")
 		// Don't shadow a codemodel-emitted target of the same
-		// name.
-		if knownTargets[call.Name] {
+		// name (either the bare alias OR the sanitized form for
+		// namespaced cases).
+		if knownTargets[aliasName] || knownTargets[call.Name] {
 			continue
 		}
 		// Dedup: cmake may declare the same alias from multiple
 		// CMakeLists if the macro fans out.
-		if emitted[call.Name] {
+		if emitted[aliasName] {
 			continue
 		}
-		emitted[call.Name] = true
+		emitted[aliasName] = true
 		// Reanchor source-tree-absolute file paths to
 		// workspace-relative provenance.
 		file := call.File
@@ -92,7 +96,7 @@ func lowerAliasTargets(decoded *shadow.Decoded, knownTargets map[string]bool, cm
 			}
 		}
 		out = append(out, ir.Target{
-			Name:        call.Name,
+			Name:        aliasName,
 			Kind:        ir.KindAlias,
 			AliasActual: ":" + actual,
 			Provenance: ir.Provenance{
