@@ -514,7 +514,16 @@ func run(a cli.Args) error {
 	}
 
 	if a.OutBundleDir != "" {
-		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{})
+		// Recover the real install(EXPORT ... NAMESPACE ...) prefix
+		// from the trace. The codemodel drops it, so cmakecfg
+		// otherwise guesses "<pkgName>::" — right only when the
+		// project name happens to match the export namespace.
+		// Sourcing it from the trace makes the synthetic bundle
+		// export the consumer-facing target name a real package
+		// like Foo::foo (project "foo") declares.
+		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{
+			Namespace: exportNamespaceForPackage(traceRaw, pkg.Name),
+		})
 		if err != nil {
 			return err
 		}
@@ -942,6 +951,38 @@ func cmakeConfigDestination(dest, pkgName string) bool {
 		return true
 	}
 	return strings.HasPrefix(dest, want+"/")
+}
+
+// exportNamespaceForPackage recovers the install(EXPORT ... NAMESPACE
+// ...) prefix the producer declared for the bundle that lands under
+// lib/cmake/<pkgName>. The cmake File API codemodel drops the
+// namespace (shadow.InstallExportCall documents why), so without this
+// cmakecfg falls back to its "<pkgName>::" guess — correct only when
+// the project name matches the export namespace. Returns "" when no
+// namespace-bearing install(EXPORT) is recoverable, leaving cmakecfg's
+// default in place.
+func exportNamespaceForPackage(traceRaw []byte, pkgName string) string {
+	if len(traceRaw) == 0 {
+		return ""
+	}
+	// classifyInstallExport ignores sourceRoot/knownTargets, so the
+	// empty/nil args are fine here.
+	exports := shadow.Decode(traceRaw, "", nil).InstallExports
+	fallback := ""
+	for _, e := range exports {
+		if e.Namespace == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = e.Namespace
+		}
+		// Prefer the export whose DESTINATION is this package's
+		// own cmake-config dir; that's the bundle cmakecfg emits.
+		if cmakeConfigDestination(strings.TrimSuffix(e.Destination, "/"), pkgName) {
+			return e.Namespace
+		}
+	}
+	return fallback
 }
 
 func handleError(a cli.Args, err error) int {

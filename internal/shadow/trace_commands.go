@@ -44,6 +44,7 @@ type Decoded struct {
 	AddCustomTargets           []AddCustomTargetCall
 	AddDependencies            []AddDependenciesCall
 	AddLibraries               []AddLibraryCall
+	InstallExports             []InstallExportCall
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -118,6 +119,9 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyAddLibrary(ev, traceSourceRoot); ok {
 			d.AddLibraries = append(d.AddLibraries, call)
+		}
+		if call, ok := classifyInstallExport(ev); ok {
+			d.InstallExports = append(d.InstallExports, call)
 		}
 		if traceHasEndif {
 			d.PlatformConditionalSources = maybeCollectPlatformConditionalSourceTraceStack(ev, tier1Stack, traceSourceRoot, knownTargets, d.PlatformConditionalSources)
@@ -1672,6 +1676,58 @@ func classifyAddLibrary(ev TraceEvent, sourceRoot string) (AddLibraryCall, bool)
 			if len(ev.Args) >= 3 {
 				call.Aliases = []string{ev.Args[2]}
 			}
+		}
+	}
+	return call, true
+}
+
+// InstallExportCall records one install(EXPORT <name> [FILE <file>]
+// [NAMESPACE <ns>] DESTINATION <dest> ...) trace event. The cmake
+// File API codemodel exposes the export's member targets
+// (DirectoryInstaller.ExportTargets) but drops the NAMESPACE prefix
+// the generated <name>Targets.cmake file actually uses at consumer
+// time — ExportTarget.Name is the bare target ("foo"), not the
+// consumer-facing "NS::foo". The namespace lives only here in the
+// trace; recovering it lets the converter emit the real export name
+// (e.g. ZLIB::ZLIB) instead of guessing "<project>::<project>".
+type InstallExportCall struct {
+	ExportName  string // the EXPORT <name> arg (e.g. "usepkgTargets")
+	Namespace   string // the NAMESPACE <ns> arg incl. trailing "::" (e.g. "usepkg::"); empty if omitted
+	File        string // the FILE <file> arg (e.g. "usepkgTargets.cmake"); empty if omitted
+	Destination string // the DESTINATION <dest> arg (e.g. "lib/cmake/usepkg")
+}
+
+// classifyInstallExport recognizes the install(EXPORT ...) form
+// (args[0] == "EXPORT"). This is distinct from the
+// install(TARGETS ... EXPORT <name> ...) form, which associates
+// targets with an export name but carries no NAMESPACE. No
+// source-tree filter: install(EXPORT) is always project-authored
+// (cmake's own modules never call it), so over-collection isn't a
+// concern, and the call can legitimately live in an included
+// .cmake under the source tree.
+func classifyInstallExport(ev TraceEvent) (InstallExportCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "install") {
+		return InstallExportCall{}, false
+	}
+	if len(ev.Args) < 2 || !strings.EqualFold(ev.Args[0], "EXPORT") {
+		return InstallExportCall{}, false
+	}
+	call := InstallExportCall{ExportName: ev.Args[1]}
+	for i := 2; i < len(ev.Args); i++ {
+		key := strings.ToUpper(ev.Args[i])
+		if key != "NAMESPACE" && key != "FILE" && key != "DESTINATION" {
+			continue
+		}
+		if i+1 >= len(ev.Args) {
+			break
+		}
+		switch key {
+		case "NAMESPACE":
+			call.Namespace = ev.Args[i+1]
+		case "FILE":
+			call.File = ev.Args[i+1]
+		case "DESTINATION":
+			call.Destination = ev.Args[i+1]
 		}
 	}
 	return call, true
