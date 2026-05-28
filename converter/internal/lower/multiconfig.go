@@ -32,7 +32,7 @@ import (
 // Returns when byConfig is empty (single-config reply) or when no
 // target has cross-config deltas (every fact agreed across cells).
 // Pure function on pkg.Targets except for PerPlatform mutation.
-func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string, cmakeSrc, cmakeBuild string) {
+func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string, cmakeSrc, cmakeBuild string, idToName map[string]string) {
 	if len(byConfig) == 0 || len(configNames) < 2 {
 		return
 	}
@@ -69,6 +69,23 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		// rather than copts -I, matching the rest of the lift's
 		// includes handling.
 		applyPartition(tgt, "includes", fold.Includes, cmakeSrc, cmakeBuild)
+		// Phase 5 target-graph fold: per-config srcs / deps.
+		// Source files gated on `if(CMAKE_BUILD_TYPE STREQUAL
+		// "X") target_sources(... ${SRC})` end up with different
+		// Sources[] across configs — without per-config srcs
+		// routing they'd silently drop to cfg[0]'s view. Same
+		// for codemodel-deps gated on build-type. Source paths
+		// and target IDs are already package-relative-ish in the
+		// codemodel; no reanchor needed here.
+		applyPartition(tgt, "srcs", fold.Sources, cmakeSrc, cmakeBuild)
+		// Deps need an id→label translation pass before applyPartition
+		// — configfold's Dependencies partition is keyed on cmake
+		// target IDs (matching codemodel TargetDependency.Id), while
+		// the IR's PerPlatform["deps"] needs Bazel-format labels.
+		// Substitute IDs with their target names (":<name>") where
+		// idToName covers the ID; drop unresolvable IDs (out-of-tree
+		// targets the codemodel saw but the lower path didn't lower).
+		applyPartition(tgt, "deps", relabelDependencyPartition(fold.Dependencies, idToName), cmakeSrc, cmakeBuild)
 		// Single-config baseline (the IR's flat copts / defines /
 		// linkopts populated by lowerTarget's first-config view)
 		// can carry the same value a per-config delta added —
@@ -272,4 +289,34 @@ func stripFactPrefix(fact string) string {
 		}
 	}
 	return fact
+}
+
+// relabelDependencyPartition rewrites a partition keyed on cmake
+// target IDs into one keyed on Bazel labels (":<name>"). IDs
+// without an entry in idToName are dropped — these are typically
+// IMPORTED targets the codemodel saw but that the lower path
+// didn't synthesize an IR target for (their proper Bazel
+// resolution rides through the imports.Manifest path, not the
+// id→label codemodel translation).
+func relabelDependencyPartition(p configfold.Partition, idToName map[string]string) configfold.Partition {
+	out := configfold.Partition{
+		Baseline: map[string]bool{},
+		Deltas:   map[string]map[string]bool{},
+	}
+	for id := range p.Baseline {
+		if name, ok := idToName[id]; ok && name != "" {
+			out.Baseline[":"+name] = true
+		}
+	}
+	for cell, ids := range p.Deltas {
+		for id := range ids {
+			if name, ok := idToName[id]; ok && name != "" {
+				if out.Deltas[cell] == nil {
+					out.Deltas[cell] = map[string]bool{}
+				}
+				out.Deltas[cell][":"+name] = true
+			}
+		}
+	}
+	return out
 }
