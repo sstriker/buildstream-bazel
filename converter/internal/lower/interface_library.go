@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -94,9 +95,45 @@ func lowerInterfaceLibraries(
 				continue
 			}
 			for _, def := range grp.Items {
-				if def = strings.TrimSpace(def); def != "" {
-					definesByTarget[tc.Target] = append(definesByTarget[tc.Target], def)
+				def = strings.TrimSpace(def)
+				if def == "" {
+					continue
 				}
+				// Evaluate cmake generator expressions like
+				// `$<$<BOOL:OFF>:FOO=1>`. nlohmann-json emits ~5
+				// of these as the INTERFACE define list; cmake
+				// evaluates them at generate time based on the
+				// option values.
+				//
+				// Try the (a) genexeval parser first for shapes
+				// it supports; fall back to a small BOOL/NOT-
+				// specific evaluator for the nested
+				// `$<$<BOOL:...>:RESULT>` shape the parser
+				// rejects (its op-name lexer doesn't accept
+				// nested `$<`).
+				if strings.Contains(def, "$<") {
+					if nodes, err := genexeval.Parse([]byte(def)); err == nil {
+						if eval, err := genexeval.Eval(nodes, genexeval.Context{}); err == nil {
+							def = strings.TrimSpace(string(eval))
+						}
+					} else if evalled, ok := evalNestedBoolGenex(def); ok {
+						def = strings.TrimSpace(evalled)
+					}
+				}
+				if def == "" {
+					continue
+				}
+				// If we couldn't evaluate and the value still
+				// contains unresolved `$<`, drop it — emitting
+				// a literal `$<...>` define into BUILD.bazel
+				// would surface to the compiler as garbage. An
+				// operator who needs the define can re-add it
+				// by hand (or open an issue to extend the
+				// evaluator).
+				if strings.Contains(def, "$<") {
+					continue
+				}
+				definesByTarget[tc.Target] = append(definesByTarget[tc.Target], def)
 			}
 		}
 	}
@@ -161,6 +198,79 @@ func lowerInterfaceLibraries(
 	// Deterministic order by name.
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// evalNestedBoolGenex evaluates the cmake genex shape
+//
+//	$<$<BOOL:<val>>:<result>>
+//	$<$<NOT:$<BOOL:<val>>>:<result>>
+//
+// that the (a) genexeval parser rejects (its op-name scan doesn't
+// accept nested `$<`). This covers the common header-only-library
+// pattern of guarding INTERFACE defines on cmake-side options
+// (e.g. nlohmann-json's
+// $<$<BOOL:OFF>:JSON_DIAGNOSTICS=1>).
+//
+// Returns (result, true) on a recognised shape; (_, false)
+// otherwise. The caller falls through to "drop the define" when
+// false (literal `$<` text reaching the C compiler is worse than
+// silent drop).
+func evalNestedBoolGenex(s string) (string, bool) {
+	// Shape 1: $<$<BOOL:<val>>:<result>>
+	if rest, ok := stripPrefix(s, "$<$<BOOL:"); ok {
+		// rest is "<val>>:<result>>"
+		i := strings.Index(rest, ">:")
+		if i < 0 {
+			return "", false
+		}
+		val := rest[:i]
+		body := rest[i+2:]
+		if !strings.HasSuffix(body, ">") {
+			return "", false
+		}
+		body = body[:len(body)-1]
+		if isBoolTrue(val) {
+			return body, true
+		}
+		return "", true
+	}
+	// Shape 2: $<$<NOT:$<BOOL:<val>>>:<result>>
+	if rest, ok := stripPrefix(s, "$<$<NOT:$<BOOL:"); ok {
+		i := strings.Index(rest, ">>>:")
+		if i < 0 {
+			return "", false
+		}
+		val := rest[:i]
+		body := rest[i+4:]
+		if !strings.HasSuffix(body, ">") {
+			return "", false
+		}
+		body = body[:len(body)-1]
+		if isBoolTrue(val) {
+			return "", true
+		}
+		return body, true
+	}
+	return "", false
+}
+
+func stripPrefix(s, prefix string) (string, bool) {
+	if strings.HasPrefix(s, prefix) {
+		return s[len(prefix):], true
+	}
+	return "", false
+}
+
+// isBoolTrue mirrors cmake's BOOL coercion: case-insensitive
+// "1", "ON", "YES", "TRUE", "Y" → true; anything else → false.
+// cmake's actual rules cover more strings (any non-zero number,
+// etc.) but the common cases the genex shape carries are limited.
+func isBoolTrue(s string) bool {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case "1", "ON", "YES", "TRUE", "Y":
+		return true
+	}
+	return false
 }
 
 // dedupSlice returns a copy of vs with duplicate entries removed
