@@ -158,7 +158,10 @@ make fdsdk-reality-check     # surveys the FDSDK graph; stops at first kind we d
 
 Empirical coverage status lives in
 [`docs/fdsdk-coverage.md`](docs/fdsdk-coverage.md); known-delta
-catalog in [`docs/known-deltas.md`](docs/known-deltas.md). Both are
+catalogues in [`docs/cmake-conversion-deltas.md`](docs/cmake-conversion-deltas.md)
+(cmake → converter) and
+[`docs/fidelity-deltas.md`](docs/fidelity-deltas.md) (cmake-built vs
+Bazel-built artifact diffs). Both are
 honest about what's not yet handled — this is a tool under active
 development against a real-world project, not a clean-room
 implementation.

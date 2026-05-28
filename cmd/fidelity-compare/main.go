@@ -5,7 +5,7 @@
 // The comparison is symbol-set-tier: extract exported and undefined
 // symbols via nm, classify each delta as benign / impactful /
 // configuration-mismatch per the rules documented in
-// docs/known-deltas.md, and exit 0 when no impactful deltas remain
+// docs/fidelity-deltas.md, and exit 0 when no impactful deltas remain
 // after applying the per-fixture allowlist.
 //
 // Why a tool rather than inline shell: the classifier rules (FORTIFY

@@ -1,6 +1,6 @@
 // Package classifier compares two cc-link artifacts (typically a
 // cmake-built libfoo.a vs. a converted-then-bazel-built libfoo.a)
-// and classifies each delta per the rules in docs/known-deltas.md
+// and classifies each delta per the rules in docs/fidelity-deltas.md
 // ("Delta classifier" section).
 //
 // The classifier is pure: it shells out to `nm` and `strings` to

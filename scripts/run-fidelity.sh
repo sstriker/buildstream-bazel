@@ -4,7 +4,7 @@
 #
 # Steps, all in a fresh scratch tree:
 #   1. cmake configure + build the project (the oracle, project C in
-#      docs/known-deltas.md's A-B-C harness terminology).
+#      docs/fidelity-deltas.md's A-B-C harness terminology).
 #   2. convert-element-cmake against the same build dir → produce
 #      BUILD.bazel.
 #   3. Stage a Bazel workspace: the project sources + the converted
