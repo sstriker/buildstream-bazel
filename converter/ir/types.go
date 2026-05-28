@@ -35,6 +35,21 @@ const (
 	// rules_pkg) Phase 1 task 2's full pkg_files emission would
 	// slot in alongside.
 	KindFilegroup
+	// KindAlias renders as Bazel-native `alias(name=, actual=)`.
+	// Lifts cmake's `add_library(<alias> ALIAS <target>)` shape:
+	// downstream Bazel code referencing the alias name resolves
+	// to the underlying target. cmake resolves aliases at
+	// configure time so the codemodel's TargetDependency.Id
+	// points at the actual target; the alias rule exists so
+	// operator-written Bazel code (cross-package consumers,
+	// scripts, .bzl files) can use either name.
+	//
+	// Only emitted for non-namespaced aliases — `Pkg::Target`
+	// shapes (find_package's IMPORTED-target surface) ride
+	// through the imports manifest path instead. Bazel rejects
+	// `::` in target names, so the namespaced form has no
+	// usable alias label anyway.
+	KindAlias
 )
 
 func (k Kind) String() string {
@@ -55,6 +70,8 @@ func (k Kind) String() string {
 		return "sh_binary"
 	case KindFilegroup:
 		return "filegroup"
+	case KindAlias:
+		return "alias"
 	}
 	return "unknown"
 }
@@ -341,6 +358,12 @@ type Target struct {
 	// substitution tool with the .h.in template as a real srcs
 	// input — see lower/configure_file.go.
 	GenruleTools []string
+
+	// AliasActual is the Bazel label the alias resolves to.
+	// Populated only when Kind == KindAlias; renders as
+	// `actual = "<label>"` on the alias rule. Typically a
+	// package-relative `:<target>` form for in-tree aliases.
+	AliasActual string
 
 	// cc_test-specific fields. Populated only when Kind == KindCCTest;
 	// recovered from set_tests_properties() in CTestTestfile.cmake.

@@ -375,6 +375,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			}
 			continue
 		}
+		if t.Kind == ir.KindAlias {
+			if err := emitAlias(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
 			return nil, err
 		}
@@ -717,6 +723,24 @@ var filegroupTmpl = template.Must(template.New("filegroup").Funcs(template.FuncM
 )
 `))
 
+// aliasTmpl renders Bazel-native `alias()`. Lifts cmake's
+// `add_library(<alias> ALIAS <target>)` shape recovered from the
+// trace; emitted via lowerAliasTargets. No load() needed; alias
+// is in the global Bazel namespace.
+var aliasTmpl = template.Must(template.New("alias").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`alias(
+    name = "{{.Name}}",
+    actual = "{{.Actual}}",
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
 var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 	"strList": strList,
 }).Parse(`genrule(
@@ -850,6 +874,23 @@ func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 	return filegroupTmpl.Execute(w, filegroupView{
 		Name:       t.Name,
 		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
+}
+
+// aliasView projects ir.Target into the alias template.
+type aliasView struct {
+	Name       string
+	Actual     string
+	Tags       []string
+	Visibility []string
+}
+
+func emitAlias(w *bytes.Buffer, t ir.Target) error {
+	return aliasTmpl.Execute(w, aliasView{
+		Name:       t.Name,
+		Actual:     t.AliasActual,
 		Tags:       sortedCopy(t.Tags),
 		Visibility: nonDefaultVisibility(t.Visibility),
 	})
