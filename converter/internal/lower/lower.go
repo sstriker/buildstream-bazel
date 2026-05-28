@@ -3611,6 +3611,11 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 		// scan covers the common cases.
 		cmd = stripToolPrefixAtBoundaries(cmd, prefix)
 	}
+	// Rewrite `cmake -E <op> ...` to POSIX equivalents — keeps
+	// the rendered genrule cmd portable in Bazel's bash sandbox
+	// without needing cmake at action time. Runs after the
+	// host-bin strip so the `cmake` token is already bare.
+	cmd = rewriteCMakeEInvocations(cmd)
 	return cmd
 }
 
