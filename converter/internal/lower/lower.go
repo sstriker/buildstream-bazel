@@ -871,6 +871,20 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// targets stay grouped by family: cc rules first, generated
 	// content next, then install-side filegroups.
 	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
+	// INTERFACE-only library lift. cmake's File API codemodel
+	// omits INTERFACE_LIBRARY targets from its targets[] array —
+	// they're header-only declarations with no link step to
+	// model. The trace records them via add_library(<name>
+	// INTERFACE); cross-referencing against the codemodel-known
+	// set gives us the INTERFACE-only residue the main lift
+	// missed (nlohmann-json's nlohmann_json, boost-core's
+	// boost_core, etc.). For each, synthesize a cc_library
+	// carrying the trace-recorded INTERFACE_INCLUDE_DIRECTORIES
+	// + INTERFACE_COMPILE_DEFINITIONS as hdrs / defines / includes.
+	if decodedTrace != nil {
+		pkg.Targets = append(pkg.Targets,
+			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, cc)...)
+	}
 	// Phase 4 standalone custom-command emission. Opt-in via
 	// Options.EmitStandaloneCustomCommands; the dedup against
 	// existing genrules keeps the recoverGenrule path's output
