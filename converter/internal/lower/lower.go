@@ -1360,6 +1360,10 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
+			if baked, ok := bakeAutoinitIncludeDefine(d.Define, cmakeBuild, cc, irt); ok {
+				defs = append(defs, baked)
+				continue
+			}
 			if reanchored, keep := reanchorDefineValue(d.Define, cmakeSrc, cmakeBuild); keep {
 				defs = append(defs, reanchored)
 			}
@@ -2420,11 +2424,25 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// (idempotent if the CG's CompileCommandFragments
 		// already inlined a -std flag).
 		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		// Sub-library defines: same bake-first / reanchor-fallback
+		// dispatch as the main target loop. Bake mutates a local
+		// subHdrs / subTags pair (not sub yet — sub is built
+		// further down) so the AUTOINIT header lands in the
+		// sub-lib's Hdrs closure where its compile action runs.
+		subHdrs := append([]string{}, sharedHdrs...)
+		var subTags []string
+		subBakeView := ir.Target{Hdrs: subHdrs, Tags: subTags}
 		for _, d := range cg.Defines {
+			if baked, ok := bakeAutoinitIncludeDefine(d.Define, cmakeBuild, cc, &subBakeView); ok {
+				defs = append(defs, baked)
+				continue
+			}
 			if reanchored, keep := reanchorDefineValue(d.Define, cmakeSrc, cmakeBuild); keep {
 				defs = append(defs, reanchored)
 			}
 		}
+		subHdrs = subBakeView.Hdrs
+		subTags = subBakeView.Tags
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
 		if langCount[cg.Language] > 1 {
@@ -2442,10 +2460,11 @@ func splitMultiLanguage(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			Name:       subName,
 			Kind:       irt.Kind,
 			Srcs:       subSrcs,
-			Hdrs:       sharedHdrs,
+			Hdrs:       subHdrs,
 			Includes:   sharedIncludes,
 			Copts:      copts,
 			Defines:    defs,
+			Tags:       subTags,
 			Linkstatic: irt.Linkstatic,
 			Alwayslink: irt.Alwayslink,
 			Visibility: []string{"//visibility:private"},
