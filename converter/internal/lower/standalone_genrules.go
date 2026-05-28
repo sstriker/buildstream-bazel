@@ -565,6 +565,23 @@ func isCMakeInternalCmd(cmd string) bool {
 	if strings.HasPrefix(c, "cpack ") || strings.HasPrefix(c, "cpack-") {
 		return true
 	}
+	// `ctest -D <Dashboard>` — CDash dashboard submission edges
+	// (Experimental / Nightly / Continuous + Memory/Coverage
+	// variants). cmake's CTest module emits an
+	// add_custom_target(<Dashboard> COMMAND ctest -D <Dashboard>)
+	// per dashboard mode when enable_testing() is called; these
+	// invoke ctest's dashboard-submission mode against an external
+	// CDash server, which has no Bazel sandbox analogue. The
+	// in-tree test running covered by add_test() already routes
+	// through CTest classification (lower/ctest) into cc_test
+	// rules; the dashboard targets are orthogonal infrastructure
+	// for `ninja Experimental` etc.
+	if strings.HasPrefix(c, "ctest ") &&
+		(strings.Contains(c, "-D Experimental") ||
+			strings.Contains(c, "-D Nightly") ||
+			strings.Contains(c, "-D Continuous")) {
+		return true
+	}
 	// `cmake -E echo No interactive CMake dialog available.` IDE
 	// stubs that the `.util`-suffix filter misses when the output
 	// lands under a nested CMakeFiles/ subdir.
