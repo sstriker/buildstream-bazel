@@ -138,6 +138,72 @@ func lowerInterfaceLibraries(
 		}
 	}
 
+	// Build per-target Deps from INTERFACE/PUBLIC arms of
+	// target_link_libraries. cmake projects with deep modular
+	// structure (abseil, modular Boost) declare INTERFACE
+	// libraries as deps-only wrappers — `absl_check`
+	// `target_link_libraries(absl_check INTERFACE
+	// absl::log_internal_check_impl)`. Without routing the deps,
+	// the trace-synthesized cc_library is empty and the
+	// `empty-cc-library` audit fires (abseil: 100 findings, all
+	// these wrapper interfaces).
+	//
+	// Lib name → Bazel label resolution:
+	//
+	//   1. If the lib appears in `decoded.AddLibraries` as an
+	//      ALIAS, resolve to the underlying target's sanitized
+	//      name (`absl::log_internal_check_impl` →
+	//      `:absl_log_internal_check_impl`).
+	//   2. If the lib is a plain in-tree name (no `::`), emit as
+	//      `:<name>` — the consumer side resolves it whether the
+	//      target is codemodel-emitted or trace-synthesized.
+	//   3. If the lib has `::` but no recorded ALIAS, sanitize
+	//      `::` → `_` and emit (alias-target rule will resolve).
+	//   4. Empty / build-genex / link-flag tokens drop silently.
+	aliasMap := map[string]string{}
+	for _, call := range decoded.AddLibraries {
+		if call.Type == "ALIAS" && len(call.Aliases) > 0 {
+			aliasMap[call.Name] = call.Aliases[0]
+		}
+	}
+	resolveLibToLabel := func(lib string) string {
+		lib = strings.TrimSpace(lib)
+		if lib == "" {
+			return ""
+		}
+		// Drop link-flag tokens; cmake's File API records flags
+		// (`-Wl,...`, `-pthread`) here too — those route through
+		// the link path, not deps.
+		if strings.HasPrefix(lib, "-") {
+			return ""
+		}
+		// Drop genex placeholders cmake didn't expand.
+		if strings.Contains(lib, "$<") {
+			return ""
+		}
+		if actual, ok := aliasMap[lib]; ok {
+			return ":" + strings.ReplaceAll(actual, "::", "_")
+		}
+		return ":" + strings.ReplaceAll(lib, "::", "_")
+	}
+	depsByTarget := map[string][]string{}
+	for _, link := range decoded.Links {
+		for _, grp := range link.Groups {
+			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
+				continue
+			}
+			seen := map[string]bool{}
+			for _, lib := range grp.Libs {
+				label := resolveLibToLabel(lib)
+				if label == "" || seen[label] {
+					continue
+				}
+				seen[label] = true
+				depsByTarget[link.Target] = append(depsByTarget[link.Target], label)
+			}
+		}
+	}
+
 	var out []ir.Target
 	emitted := map[string]bool{}
 	for _, call := range decoded.AddLibraries {
@@ -198,12 +264,24 @@ func lowerInterfaceLibraries(
 			}
 		}
 
+		// Filter self-deps that snuck through (an INTERFACE lib
+		// shouldn't list itself, but the trace can record both
+		// the bare name and the `::` form of the same target).
+		deps := depsByTarget[call.Name]
+		filtered := deps[:0]
+		selfLabel := ":" + call.Name
+		for _, d := range deps {
+			if d != selfLabel {
+				filtered = append(filtered, d)
+			}
+		}
 		tgt := ir.Target{
 			Name:       call.Name,
 			Kind:       ir.KindCCLibrary,
 			Hdrs:       hdrs,
 			Includes:   includes,
 			Defines:    defines,
+			Deps:       filtered,
 			Visibility: []string{"//visibility:public"},
 			Tags:       []string{"cmake-codegen-interface-library-from-trace"},
 		}

@@ -427,6 +427,18 @@ func auditCCLibrary(rule, target string, call *build.CallExpr) []Finding {
 	if listAttrLen(call, "deps") > 0 || listAttrLen(call, "implementation_deps") > 0 {
 		return nil
 	}
+	// Suppress when the target is a trace-synthesized INTERFACE
+	// library marker. Some projects (abseil's `config`,
+	// `pretty_function`) declare INTERFACE libraries deliberately
+	// empty — they serve as cmake-side namespace anchors with no
+	// content. The `cmake-codegen-interface-library-from-trace`
+	// tag signals this; emitting the empty-cc-library finding for
+	// them would surface noise without operator-actionable signal.
+	if flatListContains(call, "tags", func(s string) bool {
+		return s == "cmake-codegen-interface-library-from-trace"
+	}) != nil {
+		return nil
+	}
 	return []Finding{{
 		Rule:    rule,
 		Target:  target,
