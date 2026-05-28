@@ -20,20 +20,25 @@ Run against cmake 3.28.3 on the post-#306 main:
 | Project | cc targets | Tier-1 rejections | bazel-idiom findings |
 |---|---:|---:|---|
 | abseil-cpp `20260107.1` | 209 | 0 | 0 |
-| protobuf `v6.31.1` | 122 | 0 | 6 |
+| protobuf `v6.31.1` | 122 | 0 | 0 (6 without the imports manifest) |
 | googletest `v1.17.0` | 9 | 0 | 0 |
 | Eigen `3.4.1` | 492 | 1 | 0 |
 
 Two genuine new datapoints:
 
-- **protobuf — 6 × `find-package-dep-unresolved`.** Every `protoc` /
-  plugin / test binary links `find_package(ZLIB)` (`libz.so`), which
-  has no imports-manifest entry, so the dep is dropped from `deps`
-  and the BUILD would link-fail. Not a converter bug — it's the
-  expected config-mode-consumer gap the six leaf libraries never
-  exercised: the operator supplies an `--imports-manifest` mapping
-  `ZLIB::ZLIB` → a real `cc_import`/`cc_library` label. First survey
-  member that makes the imports-manifest path load-bearing.
+- **protobuf — `find_package(ZLIB)` needs an imports manifest.** Out of
+  the box, every `protoc` / plugin / test binary links
+  `find_package(ZLIB)` (`libz.so`) with no manifest entry, so 6 targets
+  emit `find-package-dep-unresolved` and the dep is dropped from `deps`
+  (the BUILD would link-fail). Not a converter bug — it's the expected
+  config-mode-consumer gap the six leaf libraries never exercised:
+  protobuf is the first survey member that makes the imports-manifest
+  path load-bearing. `run-survey.sh` auto-loads
+  `testdata/survey/protobuf.imports.json` (mapping `ZLIB::ZLIB` →
+  `@zlib`, the idiomatic external-repo label); with it the converter
+  routes all 7 ZLIB link sites to `deps = [… "@zlib"]`, the
+  `cmake-codegen-find-package-fallback=ZLIB=libz.so` tags disappear, and
+  the finding count drops to 0.
 - **Eigen — 1 × `unsupported-execute-process`.** `test/CMakeLists.txt`
   runs `c++ --version | head -n 1` — a multi-COMMAND pipeline the
   execute_process classifier refuses (concurrent stages with stdout

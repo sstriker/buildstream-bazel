@@ -82,12 +82,25 @@ for entry in $projects; do
     idiom="$proj_out/bazel-idiom.json"
     status="ok"
 
+    # Optional per-project imports manifest: resolves out-of-tree
+    # find_package(...) deps to Bazel labels (e.g. protobuf's
+    # find_package(ZLIB) → ZLIB::ZLIB). When present, it clears the
+    # corresponding find-package-dep-unresolved idiom findings.
+    manifest="$repo_root/testdata/survey/$name.imports.json"
+    manifest_flag=""
+    if [ -f "$manifest" ]; then
+        manifest_flag="--imports-manifest $manifest"
+        status="ok (imports-manifest)"
+    fi
+
     # --diagnostics implies --ignore-rejections-for-diagnostics; the run
     # continues past refusals. A non-zero exit here means cmake configure
     # itself failed (itself a survey datapoint), not a refusal.
+    # shellcheck disable=SC2086  # manifest_flag is an intentional split
     if ! run_converter \
         --source-root "$src" \
         --diagnostics \
+        $manifest_flag \
         --rejections-report "$rej" \
         --audit-bazel-idiom-report "$idiom" \
         --out-build "$proj_out/BUILD.bazel" \

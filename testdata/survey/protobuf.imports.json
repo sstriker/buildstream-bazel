@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "zlib",
+      "exports": [
+        {
+          "cmake_target": "ZLIB::ZLIB",
+          "bazel_label": "@zlib//:zlib",
+          "link_libraries": ["z"],
+          "link_paths": [
+            "/lib/x86_64-linux-gnu/libz.so",
+            "/usr/lib/x86_64-linux-gnu/libz.so",
+            "/usr/lib/libz.so"
+          ]
+        }
+      ]
+    }
+  ]
+}
