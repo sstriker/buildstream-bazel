@@ -112,5 +112,19 @@ func isCompileOnlyLinkFlag(tok string) bool {
 		strings.HasPrefix(tok, "-fvisibility-inlines-") {
 		return true
 	}
+	// `-fdiagnostics-*` family — diagnostic output formatting
+	// (color, format selection, message-line-length, etc.).
+	// Affects how the compiler prints messages; not link-time.
+	if strings.HasPrefix(tok, "-fdiagnostics-") {
+		return true
+	}
+	// `-ffunction-sections` / `-fdata-sections` — compile-time
+	// flags that emit each function / data symbol into its own
+	// section. The link-time partner is `-Wl,--gc-sections`
+	// (passed through unchanged), but the compile-time
+	// preconditions don't belong on the link command.
+	if tok == "-ffunction-sections" || tok == "-fdata-sections" {
+		return true
+	}
 	return false
 }

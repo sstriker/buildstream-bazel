@@ -48,6 +48,11 @@ func TestIsCompileOnlyLinkFlag(t *testing.T) {
 		{"-fno-exceptions", true},
 		{"-fvisibility=hidden", true},
 		{"-fvisibility-inlines-hidden", true},
+		{"-fdiagnostics-color", true},
+		{"-fdiagnostics-color=auto", true},
+		{"-fdiagnostics-format=clang", true},
+		{"-ffunction-sections", true},
+		{"-fdata-sections", true},
 
 		// -f link-affecting forms — keep.
 		{"-flto", false},
