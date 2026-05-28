@@ -3482,13 +3482,26 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 			}
 		}
 	}
-	// Strip cmakeSrc/ and buildDir/ prefixes from the cmd body.
-	// Trailing slash ensures partial-match safety.
-	if cmakeSrc != "" {
-		cmd = strings.ReplaceAll(cmd, cmakeSrc+"/", "")
-	}
-	if buildDir != "" {
-		cmd = strings.ReplaceAll(cmd, buildDir+"/", "")
+	// Strip cmakeSrc and buildDir prefixes from the cmd body.
+	// Two variants per anchor:
+	//
+	//   - <anchor>/<rel> → <rel>      (the typical embedded-path
+	//     case; trailing slash ensures partial-match safety
+	//     against e.g. <buildDir>_other).
+	//   - bare <anchor> at an argv boundary → "." (Bazel's
+	//     genrule cwd / workspace root, depending on direction).
+	//     The boundary requirement (whitespace / quote / argv
+	//     separator on the right side) avoids mangling argv
+	//     values that happen to start with the anchor prefix
+	//     but continue with letters or digits (e.g. <buildDir>_other
+	//     stays intact; <buildDir> followed by space or quote
+	//     gets re-anchored).
+	for _, anchor := range []string{cmakeSrc, buildDir} {
+		if anchor == "" {
+			continue
+		}
+		cmd = strings.ReplaceAll(cmd, anchor+"/", "")
+		cmd = replaceBareAnchorAtBoundary(cmd, anchor)
 	}
 	// Strip well-known host-bin tool prefixes so the command relies
 	// on PATH (the operator's responsibility) instead of baking the
@@ -3513,6 +3526,46 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 		cmd = stripToolPrefixAtBoundaries(cmd, prefix)
 	}
 	return cmd
+}
+
+// replaceBareAnchorAtBoundary replaces `anchor` (no trailing slash)
+// with `.` whenever it sits at an argv-token boundary in `cmd`.
+// "Boundary" = the character immediately after `anchor` is one of:
+// whitespace, double-quote, single-quote, `=` (DKEY=VALUE shape),
+// shell command-separator (`&`, `|`, `;`), or end-of-string.
+//
+// The argv-boundary requirement avoids mangling argv values that
+// happen to start with the anchor prefix but continue with letters
+// or digits (e.g. `<buildDir>_other` stays intact). Conservative on
+// purpose — the cmake-emitted shapes that surface this (LLVM's
+// -DLLVM_SOURCE_DIR=<abs-src>, VTK's -DCMAKE_BINARY_DIR=<abs-build>)
+// all hit a clean argv boundary.
+func replaceBareAnchorAtBoundary(cmd, anchor string) string {
+	if anchor == "" {
+		return cmd
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(cmd) {
+		if i+len(anchor) <= len(cmd) && cmd[i:i+len(anchor)] == anchor {
+			endByte := byte(0)
+			if i+len(anchor) < len(cmd) {
+				endByte = cmd[i+len(anchor)]
+			}
+			isBoundary := endByte == 0 ||
+				endByte == ' ' || endByte == '\t' || endByte == '\n' ||
+				endByte == '"' || endByte == '\'' ||
+				endByte == '=' || endByte == '&' || endByte == '|' || endByte == ';'
+			if isBoundary {
+				b.WriteByte('.')
+				i += len(anchor)
+				continue
+			}
+		}
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return b.String()
 }
 
 // stripToolPrefixAtBoundaries removes `prefix` from `cmd` wherever

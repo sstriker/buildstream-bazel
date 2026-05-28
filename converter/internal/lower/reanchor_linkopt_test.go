@@ -62,6 +62,21 @@ func TestRewriteGenruleCmd(t *testing.T) {
 			want: "cd /tmp/proj/build_other && do_thing /tmp/proj/build_other/foo",
 		},
 		{
+			name: "rewrite bare cmakeSrc at -D arg boundary",
+			in:   "cmake -DLLVM_SOURCE_DIR=/tmp/proj/src -P script.cmake",
+			want: "cmake -DLLVM_SOURCE_DIR=. -P script.cmake",
+		},
+		{
+			name: "rewrite bare buildDir at -D arg boundary",
+			in:   "cmake -DCMAKE_BINARY_DIR=/tmp/proj/build -P script.cmake",
+			want: "cmake -DCMAKE_BINARY_DIR=. -P script.cmake",
+		},
+		{
+			name: "partial-match safety — bare anchor not followed by boundary",
+			in:   "do_thing /tmp/proj/src_other_thing",
+			want: "do_thing /tmp/proj/src_other_thing",
+		},
+		{
 			name: "strip /usr/bin/ prefix at cmd start",
 			in:   "/usr/bin/cmake -E remove foo",
 			want: "cmake -E remove foo",
