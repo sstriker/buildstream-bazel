@@ -31,7 +31,7 @@ import (
 // Returns when byConfig is empty (single-config reply) or when no
 // target has cross-config deltas (every fact agreed across cells).
 // Pure function on pkg.Targets except for PerPlatform mutation.
-func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string) {
+func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string, cmakeSrc, cmakeBuild string) {
 	if len(byConfig) == 0 || len(configNames) < 2 {
 		return
 	}
@@ -61,13 +61,13 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		if !ok {
 			continue
 		}
-		applyPartition(tgt, "defines", fold.Defines)
-		applyPartition(tgt, "copts", fold.CompileFragments)
-		applyPartition(tgt, "linkopts", fold.LinkFragments)
+		applyPartition(tgt, "defines", fold.Defines, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "copts", fold.CompileFragments, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "linkopts", fold.LinkFragments, cmakeSrc, cmakeBuild)
 		// Includes are routed to the "includes" Bazel attribute
 		// rather than copts -I, matching the rest of the lift's
 		// includes handling.
-		applyPartition(tgt, "includes", fold.Includes)
+		applyPartition(tgt, "includes", fold.Includes, cmakeSrc, cmakeBuild)
 	}
 }
 
@@ -76,7 +76,19 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 // for CompileFragments) is decomposed: for compile / link
 // fragments we strip the role/language prefix before emit so the
 // select() arm carries the flag itself, not the disambiguator key.
-func applyPartition(tgt *ir.Target, attr string, p configfold.Partition) {
+//
+// Per-attribute re-anchor pass:
+//
+//   - linkopts: drop / re-anchor tokens that embed convert-time
+//     absolute paths via reanchorLinkOptToken (same policy as the
+//     single-config baseline path in lower.go's Link fragment
+//     handling).
+//   - defines: drop / re-anchor define values that embed convert-
+//     time absolute paths via reanchorDefineValue.
+//   - copts / includes: unchanged. copts tokens are short flags
+//     without embedded paths after splitCompileFragments;
+//     includes are paths the existing includes handler normalises.
+func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSrc, cmakeBuild string) {
 	if len(p.Deltas) == 0 {
 		return
 	}
@@ -93,7 +105,19 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition) {
 		label := configLabel(cell)
 		values := make([]string, 0, len(facts))
 		for fact := range facts {
-			values = append(values, stripFactPrefix(fact))
+			tok := stripFactPrefix(fact)
+			switch attr {
+			case "linkopts":
+				if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
+					values = append(values, rewritten)
+				}
+			case "defines":
+				if rewritten, keep := reanchorDefineValue(tok, cmakeSrc, cmakeBuild); keep {
+					values = append(values, rewritten)
+				}
+			default:
+				values = append(values, tok)
+			}
 		}
 		sort.Strings(values)
 		// Merge: a target already populated with per-platform

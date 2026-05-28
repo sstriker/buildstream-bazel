@@ -895,7 +895,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		for _, cfg := range r.Codemodel.Configurations {
 			configs = append(configs, cfg.Name)
 		}
-		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs)
+		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs, cmakeSrc, cmakeBuild)
 	}
 	// Surface missing-include-dir skips so the operator sees the
 	// cmake oddity instead of silently losing the dir. Per-dir
