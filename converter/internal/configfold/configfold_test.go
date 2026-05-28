@@ -193,6 +193,84 @@ func TestProject_LanguagePrefixedCompileFragments(t *testing.T) {
 	}
 }
 
+// TestProject_TokenisesWhitespaceJoinedFragments pins the fix for
+// the survey 2026-05-28 finding: cmake's File API serialises
+// CMAKE_CXX_FLAGS_<CFG> as one space-joined string per fragment.
+// Without tokenisation, that string flows into select() arms as
+// one list element — Bazel passes each list entry as one argv to
+// gcc, so `"-O3 -DNDEBUG -fvisibility=hidden"` arrives as a single
+// (invalid) flag.
+func TestProject_TokenisesWhitespaceJoinedFragments(t *testing.T) {
+	byCfg := map[string]map[string]fileapi.Target{
+		"foo::@": {
+			"Release": fileapi.Target{
+				Name: "foo",
+				CompileGroups: []fileapi.CompileGroup{{
+					Language: "CXX",
+					CompileCommandFragments: []fileapi.CommandFragment{
+						// One fragment, multiple flags — the
+						// canonical shape cmake emits for
+						// CMAKE_CXX_FLAGS_RELEASE.
+						{Fragment: "-O3 -DNDEBUG -fvisibility=hidden"},
+					},
+				}},
+				Link: &fileapi.TargetLink{
+					CommandFragments: []fileapi.CommandFragment{
+						{Role: "flags", Fragment: "-Wl,--gc-sections -Wl,-z,now"},
+					},
+				},
+			},
+			"Debug": fileapi.Target{
+				Name: "foo",
+				CompileGroups: []fileapi.CompileGroup{{
+					Language: "CXX",
+					CompileCommandFragments: []fileapi.CommandFragment{
+						{Fragment: "-g -fvisibility=hidden"},
+					},
+				}},
+				Link: &fileapi.TargetLink{
+					CommandFragments: []fileapi.CommandFragment{
+						{Role: "flags", Fragment: "-Wl,--gc-sections"},
+					},
+				},
+			},
+		},
+	}
+	out := configfold.Project(byCfg, []string{"Release", "Debug"})
+	if len(out) != 1 {
+		t.Fatalf("expected 1 target; got %d", len(out))
+	}
+	fold := out[0]
+	// -fvisibility=hidden appears in both configs → baseline.
+	if !fold.CompileFragments.Baseline["CXX|-fvisibility=hidden"] {
+		t.Errorf("CXX|-fvisibility=hidden should be baseline (in both); got baseline=%v", fold.CompileFragments.Baseline)
+	}
+	// -O3 / -DNDEBUG only in Release → Release deltas.
+	for _, want := range []string{"CXX|-O3", "CXX|-DNDEBUG"} {
+		if !fold.CompileFragments.Deltas["Release"][want] {
+			t.Errorf("%q should be Release-only delta; got Release deltas=%v", want, fold.CompileFragments.Deltas["Release"])
+		}
+	}
+	// -g only in Debug → Debug delta.
+	if !fold.CompileFragments.Deltas["Debug"]["CXX|-g"] {
+		t.Errorf("CXX|-g should be Debug-only delta; got Debug deltas=%v", fold.CompileFragments.Deltas["Debug"])
+	}
+	// The concatenated string should NOT appear as a key — that's
+	// the bug we're guarding against.
+	if fold.CompileFragments.Baseline["CXX|-O3 -DNDEBUG -fvisibility=hidden"] ||
+		fold.CompileFragments.Deltas["Release"]["CXX|-O3 -DNDEBUG -fvisibility=hidden"] {
+		t.Error("whitespace-joined fragment leaked into partition unsplit")
+	}
+	// Same check on the link side: -Wl,--gc-sections in both →
+	// baseline; -Wl,-z,now only in Release.
+	if !fold.LinkFragments.Baseline["flags|-Wl,--gc-sections"] {
+		t.Errorf("link flags|-Wl,--gc-sections should be baseline; got %v", fold.LinkFragments.Baseline)
+	}
+	if !fold.LinkFragments.Deltas["Release"]["flags|-Wl,-z,now"] {
+		t.Errorf("link flags|-Wl,-z,now should be Release delta")
+	}
+}
+
 // TestProject_DeterministicOrder confirms target output order is
 // sorted by id so callers can use the slice index as a stable key.
 func TestProject_DeterministicOrder(t *testing.T) {
