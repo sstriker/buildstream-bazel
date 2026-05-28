@@ -275,6 +275,13 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 		{"CMakeFiles/install-llvm-headers", true},
 		{"CMakeFiles/install-llvm-libraries-stripped", true},
 		{"tools/CMakeFiles/install-clang-tools", true},
+		// Lit-test driver edges: `cmake --build . --target
+		// check-<suite>` invocations. LLVM emits ~1116 of these
+		// (per-pass / per-analysis / per-target suites).
+		{"CMakeFiles/check-all", true},
+		{"test/CMakeFiles/check-llvm", true},
+		{"test/CMakeFiles/check-llvm-analysis-aliasset", true},
+		{"utils/lit/CMakeFiles/check-lit", true},
 		// User-declared add_custom_command outputs never land
 		// under CMakeFiles/ with the .util suffix.
 		{"version.txt", false},

@@ -547,14 +547,29 @@ func isCMakeBookkeepingOutput(p string) bool {
 	if strings.HasSuffix(p, ".util") {
 		return true
 	}
-	// Install-component marker shapes. cmake emits these as
-	// `CMakeFiles/install-<component>` (and the `-stripped`
-	// sibling under multi-config) — they have no Bazel
-	// equivalent. The user-facing add_custom_command shape
-	// never produces an output named "install-..." under
-	// CMakeFiles/, so the pattern is unambiguous.
+	// Install-component / lit-test marker shapes:
+	//
+	//   - `CMakeFiles/install-<component>` (and the `-stripped`
+	//     sibling under multi-config) — cmake emits these for
+	//     install(TARGETS ... COMPONENT ...) registrations; they
+	//     have no Bazel equivalent. LLVM emits ~358 of these.
+	//
+	//   - `CMakeFiles/check-<suite>` / `<subdir>/CMakeFiles/
+	//     check-<suite>` — cmake's lit-test driver edge. The cmd
+	//     runs `python3 ./bin/llvm-lit -sv <suite>...`. Wiring
+	//     these as Bazel genrules requires lit + every individual
+	//     test src to be staged as inputs (and operators wanting
+	//     Bazel-side lit would use a py_test rule, not genrule);
+	//     LLVM emits ~1116 of these.
+	//
+	// The user-facing add_custom_command shape never produces an
+	// output named "install-..." or "check-..." under CMakeFiles/,
+	// so the patterns are unambiguous.
 	base := p[strings.LastIndex(p, "/")+1:]
 	if strings.HasPrefix(base, "install-") {
+		return true
+	}
+	if strings.HasPrefix(base, "check-") {
 		return true
 	}
 	return false
