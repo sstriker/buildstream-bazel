@@ -323,14 +323,37 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string)
 }
 
 // projectToSourceRoot returns the source-tree-relative form of p.
+//
+// cmake's File API records installer paths (`paths[].from` for both
+// FILES and DIRECTORY installer types) as **top-level-source-relative**,
+// not per-directory-source-relative. Joining with `dirSrc` —
+// cmake's per-directory CMakeLists location — double-prefixes the
+// path when the install() call lives in a subdirectory's
+// CMakeLists.txt:
+//
+//	dirSrc = "googletest"
+//	p      = "googletest/include"  (cmake-recorded form)
+//	wrong  = "googletest/googletest/include"   ← old behaviour
+//	right  = "googletest/include"               ← top-level-relative
+//
+// Same bug surfaced in LLVM (`tools/lto/include/llvm-c/lto.h`
+// instead of `include/llvm-c/lto.h`). The fmt + json + zlib +
+// libpng surveys masked it because every project's `install()`
+// directives live in the top-level CMakeLists where dirSrc = ".".
+//
 // p may be absolute (typically when cmake recorded an out-of-tree
-// path) or relative to dirSrc (cmake's per-directory source path).
-// Returns "" when p resolves to a location outside cmakeSrc — those
-// can't be addressed as a Bazel label in the converted package.
+// path); those resolve via filepath.Rel against cmakeSrc unchanged.
+// Returns "" when p resolves to a location outside cmakeSrc —
+// those can't be addressed as a Bazel label in the converted
+// package.
+//
+// dirSrc is kept in the signature for back-compat with existing
+// callers (the value is no longer consulted).
 func projectToSourceRoot(p, dirSrc, cmakeSrc string) string {
+	_ = dirSrc
 	abs := p
 	if !filepath.IsAbs(abs) {
-		abs = filepath.Join(dirSrc, p)
+		abs = filepath.Join(cmakeSrc, p)
 	}
 	abs = filepath.Clean(abs)
 	rel, err := filepath.Rel(cmakeSrc, abs)
