@@ -100,7 +100,11 @@ type standaloneTraceContext struct {
 // genrule's outs reference, AND used by rewriteGenruleCmd to
 // strip the cmake-Ninja `cd <abs-build-subdir> &&` preamble +
 // buildDir-rooted path references from the cmd body.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, traceCtx standaloneTraceContext) []ir.Target {
+// artifactToName threads the codemodel artifact-path → IR target-name
+// map into the lift so rewriteToolFromTarget can lift bare
+// `bin/<tool>` references in the cmd into `$(location :<name>)` +
+// tools attribute entries. Empty map disables tool rewriting.
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, artifactToName map[string]string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -217,14 +221,24 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			visibility = []string{":__pkg__"}
 		}
 
+		// Two-pass: anchor / cmake-E / host-bin normalisation
+		// first, then tool-from-target lift on the workspace-
+		// relative cmd. The tool lift's artifact-path keys are
+		// build-dir-relative (cmake records them that way); the
+		// anchor pass strips buildDir prefixes from the cmd so
+		// the bare `bin/<tool>` form survives intact for the
+		// lookup.
+		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
+		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName)
 		out = append(out, ir.Target{
-			Name:        name,
-			Kind:        ir.KindGenrule,
-			Srcs:        srcs,
-			GenruleOuts: outs,
-			GenruleCmd:  rewriteGenruleCmd(cmd, cmakeSrc, buildDir),
-			Visibility:  visibility,
-			Tags:        []string{"cmake-codegen-standalone-custom-command"},
+			Name:         name,
+			Kind:         ir.KindGenrule,
+			Srcs:         srcs,
+			GenruleOuts:  outs,
+			GenruleCmd:   rewrittenCmd,
+			GenruleTools: tools,
+			Visibility:   visibility,
+			Tags:         []string{"cmake-codegen-standalone-custom-command"},
 		})
 	}
 	return out
