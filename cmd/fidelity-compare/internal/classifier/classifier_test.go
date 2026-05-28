@@ -86,7 +86,7 @@ func TestClassifyExportedDeltas_TemplateInstantiationPairing(t *testing.T) {
 		"_ZN3fmt3v106detail14format_decimalIclNS0_8appenderELi0EEENS1_21format_decimal_resultIT1_EES5_T0_i": true,
 	}
 	rep := &Report{}
-	classifyExportedDeltas(rep, cExported, bExported, nil)
+	classifyExportedDeltas(rep, cExported, bExported, Allowlist{})
 
 	for _, d := range rep.BenignDeltas {
 		if !strings.Contains(d.Kind, "template-instantiation") {
@@ -104,7 +104,7 @@ func TestClassifyExportedDeltas_TemplateInstantiationPairing(t *testing.T) {
 func TestClassifyExportedDeltas_AllowlistSuppression(t *testing.T) {
 	c := map[string]bool{"shared": true, "cmake_only_known_benign": true}
 	b := map[string]bool{"shared": true}
-	allowed := map[string]bool{"cmake_only_known_benign": true}
+	allowed := Allowlist{Symbols: map[string]bool{"cmake_only_known_benign": true}}
 
 	rep := &Report{}
 	classifyExportedDeltas(rep, c, b, allowed)
@@ -117,12 +117,55 @@ func TestClassifyExportedDeltas_AllowlistSuppression(t *testing.T) {
 	}
 }
 
+// TestClassifyExportedDeltas_AllowlistPrefixSuppression pins the
+// `prefix:<mangled>` syntax that closes the
+// huge-namespace-of-template-instantiations case (nlohmann/json's
+// 1000+ basic_json template entries). One prefix entry covers
+// every symbol in the namespace; the allowlist file stays small.
+func TestClassifyExportedDeltas_AllowlistPrefixSuppression(t *testing.T) {
+	c := map[string]bool{"shared": true}
+	b := map[string]bool{
+		"shared":                       true,
+		"_ZN8nlohmann10basic_jsonXYZ":  true,
+		"_ZN8nlohmann10basic_jsonABC":  true,
+		"_ZN9otherpkg10basic_thingDEF": true,
+	}
+	allowed := Allowlist{
+		Symbols:  map[string]bool{},
+		Prefixes: []string{"_ZN8nlohmann"},
+	}
+
+	rep := &Report{}
+	classifyExportedDeltas(rep, c, b, allowed)
+
+	// nlohmann-prefixed entries → benign (allowlist-suppressed)
+	// otherpkg-prefixed entry → still impactful
+	gotImpactful := 0
+	for _, d := range rep.ImpactfulDeltas {
+		if d.Detail == "_ZN9otherpkg10basic_thingDEF" {
+			gotImpactful++
+		}
+	}
+	if gotImpactful != 1 {
+		t.Errorf("expected non-prefix-matching symbol to remain impactful; got %v", rep.ImpactfulDeltas)
+	}
+	suppressed := 0
+	for _, d := range rep.BenignDeltas {
+		if d.Kind == "allowlist-suppressed" {
+			suppressed++
+		}
+	}
+	if suppressed != 2 {
+		t.Errorf("expected 2 prefix-suppressed entries; got %v", rep.BenignDeltas)
+	}
+}
+
 func TestClassifyExportedDeltas_UnexplainedDropIsImpactful(t *testing.T) {
 	c := map[string]bool{"shared": true, "regression_symbol": true}
 	b := map[string]bool{"shared": true}
 
 	rep := &Report{}
-	classifyExportedDeltas(rep, c, b, nil)
+	classifyExportedDeltas(rep, c, b, Allowlist{})
 
 	if len(rep.ImpactfulDeltas) != 1 {
 		t.Fatalf("expected 1 impactful delta; got %d (%v)", len(rep.ImpactfulDeltas), rep.ImpactfulDeltas)
@@ -199,17 +242,58 @@ _ZN3fmt3v106detail17do_write_floatVariant
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !allowed["_ZN3fmt3v106detail14format_decimalSpecific"] {
+	if !allowed.Symbols["_ZN3fmt3v106detail14format_decimalSpecific"] {
 		t.Error("expected first entry to be loaded")
 	}
-	if !allowed["_ZN3fmt3v106detail17do_write_floatVariant"] {
+	if !allowed.Symbols["_ZN3fmt3v106detail17do_write_floatVariant"] {
 		t.Error("expected second entry to be loaded")
 	}
-	if allowed["# fmt's known template-inlining differences"] {
+	if allowed.Symbols["# fmt's known template-inlining differences"] {
 		t.Error("comment line should not load as allowlist entry")
 	}
-	if len(allowed) != 2 {
-		t.Errorf("expected 2 entries; got %d (%v)", len(allowed), allowed)
+	if len(allowed.Symbols) != 2 {
+		t.Errorf("expected 2 Symbols entries; got %d (%v)", len(allowed.Symbols), allowed.Symbols)
+	}
+}
+
+// TestLoadAllowlist_PrefixEntries pins the `prefix:<mangled>`
+// syntax that closes the huge-namespace case (e.g. nlohmann/json's
+// _ZN8nlohmann*).
+func TestLoadAllowlist_PrefixEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "allowlist.txt")
+	body := `
+# header comment
+exact_symbol_foo
+prefix:_ZN8nlohmann
+prefix:_ZTSN8nlohmann
+not_a_prefix_entry
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := LoadAllowlist(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allowed.Symbols) != 2 {
+		t.Errorf("expected 2 exact symbols; got %d (%v)", len(allowed.Symbols), allowed.Symbols)
+	}
+	if !allowed.Symbols["exact_symbol_foo"] || !allowed.Symbols["not_a_prefix_entry"] {
+		t.Errorf("exact entries missing: %v", allowed.Symbols)
+	}
+	if len(allowed.Prefixes) != 2 {
+		t.Errorf("expected 2 prefixes; got %d (%v)", len(allowed.Prefixes), allowed.Prefixes)
+	}
+	// Match should hit both shapes.
+	if !allowed.Match("_ZN8nlohmann16json_abi_v3_11_3basic_jsonXYZ") {
+		t.Error("expected prefix match for _ZN8nlohmann*")
+	}
+	if !allowed.Match("exact_symbol_foo") {
+		t.Error("expected exact match for symbol")
+	}
+	if allowed.Match("_ZN9otherpkg") {
+		t.Error("unexpected match for unrelated prefix")
 	}
 }
 
@@ -218,8 +302,8 @@ func TestLoadAllowlist_EmptyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 {
-		t.Errorf("expected empty map for empty path; got %v", got)
+	if len(got.Symbols) != 0 || len(got.Prefixes) != 0 {
+		t.Errorf("expected empty allowlist for empty path; got %v", got)
 	}
 }
 

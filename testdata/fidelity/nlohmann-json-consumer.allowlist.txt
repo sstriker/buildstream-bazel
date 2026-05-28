@@ -1,0 +1,82 @@
+# Per-fixture benign-delta allowlist for the
+# e2e-fidelity-compare-nlohmann-json-consumer gate.
+#
+# Consumer-mode fidelity diffs the consumer .o (testdata/fidelity/
+# consumers/json_consumer.cpp compiled twice: once against cmake's
+# installed nlohmann/json headers, once via Bazel against the
+# converted :nlohmann_json cc_library that PR #268's
+# lowerInterfaceLibraries lift synthesizes from the trace's
+# add_library(nlohmann_json INTERFACE) call).
+#
+# nlohmann/json is template-heavy (basic_json + adl_serializer +
+# detail::* all parameterised on the value-type tree). A single
+# consumer.cpp pulls in 1000+ template instantiations + typeinfo /
+# vtable / runtime-string machinery; the cmake-side build and
+# Bazel-side build differ slightly per toolchain (visibility,
+# inlining heuristics) so the resulting .o symbol sets diverge.
+# None of the deltas are nlohmann/json *correctness* issues —
+# they're all toolchain-noise inside the json template surface.
+#
+# Mass-allowlisting with `prefix:` (a syntax added alongside this
+# gate in cmd/fidelity-compare/internal/classifier — see
+# TestLoadAllowlist_PrefixEntries) suppresses every symbol in
+# the nlohmann namespace + its RTTI / vtable mangling shapes.
+# An operator-curated narrow prefix could be more precise; the
+# broad-prefix approach keeps the allowlist file small and the
+# gate signal focused on real per-target regressions.
+
+# All basic_json template instantiations + lambdas + nested types
+prefix:_ZN8nlohmann
+# typeinfo / typeinfo-string / vtable for nlohmann classes
+prefix:_ZTIN8nlohmann
+prefix:_ZTSN8nlohmann
+prefix:_ZTVN8nlohmann
+# Lambdas inside basic_json::create<...> instantiations
+prefix:_ZZN8nlohmann
+# libstdc++ free helpers (std::forward, std::eq, std::ne,
+# std::lt, std::__find_if, std::__advance, std::_Destroy,
+# std::signbit, std::isfinite, std::move, std::forward, etc.)
+# instantiated against json's value-type tree as template
+# parameters. The Bazel-side hermetic toolchain emits these
+# at .o level; the cmake-side host toolchain inlines them
+# inside the basic_json template body. Pure libstdc++ /
+# inlining-decision noise — no correctness signal for the
+# converter.
+# All non-member std::* functions (_ZSt*) — the consumer.cpp uses
+# only json APIs, so any std::* symbol that appears bazel-only is a
+# libstdc++ helper inlined cmake-side (std::forward, std::move,
+# std::swap, std::eq/ne/lt, std::_Destroy, std::__find_if,
+# std::__advance, std::signbit, std::isfinite, ...). No converter-
+# regression signal can hide behind this — the consumer touches
+# no std:: symbols directly.
+prefix:_ZSt
+# std::* member functions instantiated against json types
+# (basic_string<char>, vector<json>, map<string,json>, etc.):
+prefix:_ZNSt
+# const std::* member functions (same coverage as _ZNSt but for
+# const-qualified methods):
+prefix:_ZNKSt
+# const non-member std::* helpers
+prefix:_ZNK
+# __gnu_cxx::* (libstdc++'s extension namespace — __normal_iterator,
+# __aligned_buffer, char_traits<char>, __ops::* iterator algorithms,
+# eq/ne/mi operators on iterators). Same noise category as _ZSt/_ZNSt:
+# inlining-decision deltas on libstdc++ helpers the consumer
+# transitively pulls in through json.
+prefix:_ZN9__gnu_cxx
+# libstdc++ shared_ptr / make_shared machinery — std::_Sp_*
+# vtable + typeinfo entries the consumer pulls in via json's
+# detail::output_adapter shared_ptr usage.
+_ZTISt19_Sp_make_shared_tag
+_ZTVSt16_Sp_counted_baseILN9__gnu_cxx12_Lock_policyE2EE
+# libstdc++ basic_string _M_construct internal _Guard scope —
+# the ctor/dtor of the RAII guard that wraps string construction
+# when an iterator throws. Bazel's libstdc++ emits these,
+# cmake's host gcc inlines them.
+prefix:_ZZNSt7__cxx1112basic_string
+# Placement new + matching delete (operator new(size_t, void*)
+# and operator delete(void*, void*)). Bazel-side compile emits
+# these when json's basic_json constructor uses placement-new
+# for its variant union.
+_ZdlPvS_
+_ZnwmPv

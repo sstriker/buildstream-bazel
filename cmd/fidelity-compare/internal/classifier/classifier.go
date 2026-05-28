@@ -88,7 +88,7 @@ func (r *Report) FormatForOperator() string {
 // artifact and classifies the deltas. Returns the structured report
 // or an error if nm/strings is unavailable or an artifact can't be
 // read.
-func Compare(cmakePath, bazelPath string, allowed map[string]bool) (*Report, error) {
+func Compare(cmakePath, bazelPath string, allowed Allowlist) (*Report, error) {
 	if _, err := os.Stat(cmakePath); err != nil {
 		return nil, fmt.Errorf("stat cmake artifact: %w", err)
 	}
@@ -238,7 +238,7 @@ func countCommon(a, b map[string]bool) int {
 // Same-name on both sides → ExportedBoth contribution. Only on one
 // side → check allowlist + template-instantiation heuristic +
 // fall-through to Impactful.
-func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[string]bool) {
+func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist) {
 	onlyCmake := setSub(c, b)
 	onlyBazel := setSub(b, c)
 	// Template-instantiation pairs: when both sides have unique
@@ -250,7 +250,7 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[strin
 	cMangled := mangledSymbols(onlyCmake)
 	bMangled := mangledSymbols(onlyBazel)
 	for sym := range onlyCmake {
-		if allowed[sym] {
+		if allowed.Match(sym) {
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "allowlist-suppressed", Detail: sym})
 			continue
 		}
@@ -261,7 +261,7 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed map[strin
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "exported-symbol-only-in-cmake", Detail: sym})
 	}
 	for sym := range onlyBazel {
-		if allowed[sym] {
+		if allowed.Match(sym) {
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "allowlist-suppressed", Detail: sym})
 			continue
 		}
@@ -306,17 +306,54 @@ func classifyAbsolutePaths(rep *Report, c, b map[string]bool) {
 	}
 }
 
-// LoadAllowlist reads a per-fixture allowlist file. Format: one
-// symbol name per line, '#' comments, blank lines ignored. Empty
-// path yields an empty (always-empty) map.
-func LoadAllowlist(path string) (map[string]bool, error) {
-	out := map[string]bool{}
+// Allowlist is the parsed allowlist contents. Symbols matches
+// exact-name entries; Prefixes carries `prefix:<mangled-prefix>`
+// entries that suppress any symbol starting with the given
+// mangled prefix.
+//
+// The prefix shape (introduced for the nlohmann/json gate)
+// closes the "huge namespace of template instantiations" case:
+// adding a single `prefix:_ZN8nlohmann16json_abi_v3_11_3`
+// entry covers every basic_json template instantiation +
+// typeinfo + vtable in one line, instead of listing 1000+
+// mangled symbols. Use sparingly — a broad prefix can hide
+// real regressions inside the namespace; narrow the prefix as
+// far as you can while still covering the noise.
+type Allowlist struct {
+	Symbols  map[string]bool
+	Prefixes []string
+}
+
+// Match reports whether sym is allowlisted (either by exact
+// match against Symbols or by any prefix match against Prefixes).
+func (a Allowlist) Match(sym string) bool {
+	if a.Symbols[sym] {
+		return true
+	}
+	for _, p := range a.Prefixes {
+		if strings.HasPrefix(sym, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// LoadAllowlist reads a per-fixture allowlist file. Format:
+//
+//   - blank lines and '#' comments ignored
+//   - `<symbol>` — exact-match entry
+//   - `prefix:<mangled-prefix>` — prefix-match entry (matches
+//     any symbol starting with <mangled-prefix>)
+//
+// Empty path yields an empty (always-empty) allowlist.
+func LoadAllowlist(path string) (Allowlist, error) {
+	out := Allowlist{Symbols: map[string]bool{}}
 	if path == "" {
 		return out, nil
 	}
 	buf, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 	s := bufio.NewScanner(bytes.NewReader(buf))
 	for s.Scan() {
@@ -324,7 +361,14 @@ func LoadAllowlist(path string) (map[string]bool, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		out[line] = true
+		if rest, ok := strings.CutPrefix(line, "prefix:"); ok {
+			rest = strings.TrimSpace(rest)
+			if rest != "" {
+				out.Prefixes = append(out.Prefixes, rest)
+			}
+			continue
+		}
+		out.Symbols[line] = true
 	}
 	return out, nil
 }

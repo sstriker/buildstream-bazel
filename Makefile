@@ -1,12 +1,12 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-nlohmann-json-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -21,6 +21,8 @@ ZLIB_VERSION   ?= v1.3.1
 ZLIB_DIR       ?= /tmp/zlib
 SPDLOG_VERSION ?= v1.14.1
 SPDLOG_DIR     ?= /tmp/spdlog
+JSON_VERSION   ?= v3.11.3
+JSON_DIR       ?= /tmp/json
 
 GO        ?= go
 GOFLAGS   ?=
@@ -727,6 +729,30 @@ e2e-fidelity-compare-fmt-consumer: check-cmake-toolchain converter fetch-fmt
 		--consumer-bazel-dep :fmt \
 		--allowlist testdata/fidelity/fmt-consumer.allowlist.txt
 
+# nlohmann/json INTERFACE-only consumer-side fidelity gate.
+# json has no static archive — library-mode comparison doesn't
+# apply. Consumer-mode is the only meaningful signal: compile a
+# small consumer.cpp against (a) cmake's installed json headers,
+# (b) Bazel's converted :nlohmann_json cc_library, then diff
+# the resulting .o pair. The harness's no_library mode (auto-
+# detected when --consumer-file is set + no --artifact-pattern)
+# skips the static-archive build + find for both sides.
+#
+# The :nlohmann_json cc_library is synthesized by the converter
+# from the trace's add_library(nlohmann_json INTERFACE) call —
+# shipped in PR #268's lowerInterfaceLibraries lift. Without
+# that lift, the converter emitted only an install_directory__include
+# filegroup, which a consumer cc_library can't depend on.
+e2e-fidelity-compare-nlohmann-json-consumer: check-cmake-toolchain converter fetch-nlohmann-json
+	scripts/run-fidelity.sh \
+		--project-name nlohmann-json-consumer \
+		--source-root $(JSON_DIR) \
+		--target nlohmann_json \
+		--cmake-flags '-DJSON_BuildTests=OFF' \
+		--consumer-file $(CURDIR)/testdata/fidelity/consumers/json_consumer.cpp \
+		--consumer-bazel-dep :nlohmann_json \
+		--allowlist testdata/fidelity/nlohmann-json-consumer.allowlist.txt
+
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,
 # tears down. Replaces the in-process fake with actual Buildbarn code.
@@ -908,6 +934,14 @@ fetch-spdlog:
 		git clone --depth 1 --branch $(SPDLOG_VERSION) https://github.com/gabime/spdlog.git "$(SPDLOG_DIR)"; \
 	else \
 		echo "spdlog already at $(SPDLOG_DIR); rm -rf to refetch"; \
+	fi
+
+# Fetch nlohmann/json for the consumer-mode fidelity gate. Idempotent.
+fetch-nlohmann-json:
+	@if [ ! -d "$(JSON_DIR)" ]; then \
+		git clone --depth 1 --branch $(JSON_VERSION) https://github.com/nlohmann/json.git "$(JSON_DIR)"; \
+	else \
+		echo "nlohmann/json already at $(JSON_DIR); rm -rf to refetch"; \
 	fi
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
