@@ -57,78 +57,72 @@ type Decoded struct {
 // FileGenerates / ExecuteProcesses / PlatformConditionalSources)
 // preserve insertion order from the trace.
 func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
+	return DecodeWithFS(traceRaw, sourceRoot, sourceRoot, knownTargets, defaultFS{})
+}
+
+// DecodeWithFS is the file-system-abstracted variant. Required
+// for offline-replay tests where trace-event paths sit under
+// traceSourceRoot but the actual CMakeLists files live under
+// hostSourceRoot (cmakeparse needs the host-side bytes for Tier
+// 1 platform-conditional scope tracking).
+//
+// In-process callers (the converter) pass traceSourceRoot ==
+// hostSourceRoot since cmake just ran on the same machine.
+func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, knownTargets map[string]bool, fs fsReader) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
 	var d Decoded
-	ifStack := newPlatformIfStack()
-	// Detect whether the trace omits `endif` events (cmake's
-	// `--trace-format=json-v1` does — endif is a structural
-	// delimiter, not a command). Without endif the
-	// platformIfStack can never pop; every if() event
-	// permanently adds to the stack and downstream source
-	// attribution is bogus. When the trace has if() events but
-	// no endif, suppress Tier 1 platform-conditional collection
-	// entirely — flat srcs is the safe fallback.
-	traceHasEndif := false
-	traceHasIf := false
+	// Tier 1 platform-conditional scope tracking is dispatched
+	// on the trace's shape — see extractPlatformConditionalSources
+	// in platform_conditional.go. Production cmake's
+	// --trace-format=json-v1 omits endif events so the
+	// cmakeparse path activates; synthetic test traces that
+	// emit endif use the legacy trace-event stack.
+	traceHasEndif := hasEndifEvent(events)
+	tier1Stack := newPlatformIfStack()
+	tier1Idx := newCmakeFileIfIndex()
 	for _, ev := range events {
-		switch strings.ToLower(ev.Cmd) {
-		case "if":
-			traceHasIf = true
-		case "endif":
-			traceHasEndif = true
-		}
-		if traceHasIf && traceHasEndif {
-			break
-		}
-	}
-	suppressTier1 := traceHasIf && !traceHasEndif
-	for _, ev := range events {
-		collectReadPath(ev, sourceRoot, reads)
-		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
+		collectReadPath(ev, traceSourceRoot, reads)
+		if call, ok := classifyTargetIncludes(ev, traceSourceRoot, knownTargets); ok {
 			d.Includes = append(d.Includes, call)
 		}
-		if call, ok := classifyTargetLinks(ev, sourceRoot, knownTargets); ok {
+		if call, ok := classifyTargetLinks(ev, traceSourceRoot, knownTargets); ok {
 			d.Links = append(d.Links, call)
 		}
-		if call, ok := classifyTargetCompile(ev, sourceRoot, knownTargets, "target_compile_definitions"); ok {
+		if call, ok := classifyTargetCompile(ev, traceSourceRoot, knownTargets, "target_compile_definitions"); ok {
 			d.CompileDefinitions = append(d.CompileDefinitions, call)
 		}
-		if call, ok := classifyTargetCompile(ev, sourceRoot, knownTargets, "target_compile_options"); ok {
+		if call, ok := classifyTargetCompile(ev, traceSourceRoot, knownTargets, "target_compile_options"); ok {
 			d.CompileOptions = append(d.CompileOptions, call)
 		}
-		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
+		if call, ok := classifyConfigureFile(ev, traceSourceRoot); ok {
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
-		if call, ok := classifyFileGenerate(ev, sourceRoot); ok {
+		if call, ok := classifyFileGenerate(ev, traceSourceRoot); ok {
 			d.FileGenerates = append(d.FileGenerates, call)
 		}
-		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
+		if call, ok := classifyExecuteProcess(ev, traceSourceRoot); ok {
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
 		}
-		if call, ok := classifySourceFileProperties(ev, sourceRoot); ok {
+		if call, ok := classifySourceFileProperties(ev, traceSourceRoot); ok {
 			d.SourceFileProperties = append(d.SourceFileProperties, call)
 		}
-		if call, ok := classifyAddCustomCommand(ev, sourceRoot); ok {
+		if call, ok := classifyAddCustomCommand(ev, traceSourceRoot); ok {
 			d.AddCustomCommands = append(d.AddCustomCommands, call)
 		}
-		if call, ok := classifyAddCustomTarget(ev, sourceRoot); ok {
+		if call, ok := classifyAddCustomTarget(ev, traceSourceRoot); ok {
 			d.AddCustomTargets = append(d.AddCustomTargets, call)
 		}
-		if call, ok := classifyAddDependencies(ev, sourceRoot); ok {
+		if call, ok := classifyAddDependencies(ev, traceSourceRoot); ok {
 			d.AddDependencies = append(d.AddDependencies, call)
 		}
-		if call, ok := classifyAddLibrary(ev, sourceRoot); ok {
+		if call, ok := classifyAddLibrary(ev, traceSourceRoot); ok {
 			d.AddLibraries = append(d.AddLibraries, call)
 		}
-		// Platform-conditional source attribution. Helper
-		// updates the per-file if-stack and appends any
-		// matching records. Stateful — must run on every
-		// event to keep the stack in sync; see
-		// platform_conditional.go for the source-of-truth
-		// docs.
-		if !suppressTier1 {
-			d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, ifStack, sourceRoot, knownTargets, d.PlatformConditionalSources)
+		if traceHasEndif {
+			d.PlatformConditionalSources = maybeCollectPlatformConditionalSourceTraceStack(ev, tier1Stack, traceSourceRoot, knownTargets, d.PlatformConditionalSources)
+		} else {
+			d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, tier1Idx, traceSourceRoot, hostSourceRoot, fs, knownTargets, d.PlatformConditionalSources)
 		}
 	}
 	d.Reads = make([]string, 0, len(reads))

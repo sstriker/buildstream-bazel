@@ -48,44 +48,114 @@ type PlatformConditionalSource struct {
 // sourceRoot is the project source root; sources outside it
 // are dropped (their package-relative path would escape with
 // `..`, which the lower path doesn't accept).
+//
+// Scope tracking: for each (file, line) event, looks up the
+// active if-stack by parsing the CMakeLists.txt source bytes
+// via cmakeparse. This replaces the previous trace-event-driven
+// stack which relied on `endif` events that cmake's
+// `--trace-format=json-v1` does NOT emit (endif is a structural
+// delimiter, not a command). The cmakeparse-based lookup is
+// stack-balance-correct by construction regardless of trace
+// event ordering.
+//
+// File reads go through defaultFS (os.ReadFile). For tests +
+// offline-replay use ExtractPlatformConditionalSourcesWithFS.
 func ExtractPlatformConditionalSources(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) []PlatformConditionalSource {
-	events := ParseTrace(traceRaw)
-	// cmake's `--trace-format=json-v1` does NOT emit `endif`
-	// events — endif is a structural delimiter, not a command,
-	// so cmake skips it during trace. Without endif events the
-	// platformIfStack handler can never pop: every if() event
-	// permanently adds to the stack. Every subsequent target
-	// declaration then gets attributed to the most recent
-	// recognized predicate (e.g. an if(WIN32) at the top of
-	// CMakeLists.txt attributes EVERY downstream add_executable
-	// to @platforms//os:windows, including ones in unrelated
-	// subdirs). Safety check: if we see any `if` events but no
-	// `endif`, the stack tracking is unreliable — skip the Tier
-	// 1 attribution entirely. The flat srcs list (Tier 0
-	// behaviour) is the correct fallback in that case.
-	var sawIf, sawEndif bool
-	for _, ev := range events {
-		switch strings.ToLower(ev.Cmd) {
-		case "if":
-			sawIf = true
-		case "endif":
-			sawEndif = true
-		}
-		if sawIf && sawEndif {
-			break
-		}
-	}
-	if sawIf && !sawEndif {
-		return nil
-	}
-	return extractPlatformConditionalSources(events, sourceRoot, knownTargets)
+	return ExtractPlatformConditionalSourcesWithFS(traceRaw, sourceRoot, sourceRoot, knownTargets, defaultFS{})
 }
 
-func extractPlatformConditionalSources(events []TraceEvent, sourceRoot string, knownTargets map[string]bool) []PlatformConditionalSource {
-	st := newPlatformIfStack()
+// ExtractPlatformConditionalSourcesWithFS is the file-system-
+// abstracted variant. Required for offline-replay tests where
+// trace events record paths under traceSourceRoot but the
+// CMakeLists files live under hostSourceRoot. Production
+// callers (the converter's Decode) thread hostSourceRoot in;
+// the file-less standalone signature delegates here with
+// traceSourceRoot == hostSourceRoot which matches the
+// in-process recording case.
+func ExtractPlatformConditionalSourcesWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, knownTargets map[string]bool, fs fsReader) []PlatformConditionalSource {
+	events := ParseTrace(traceRaw)
+	return extractPlatformConditionalSources(events, traceSourceRoot, hostSourceRoot, knownTargets, fs)
+}
+
+func extractPlatformConditionalSources(events []TraceEvent, traceSourceRoot, hostSourceRoot string, knownTargets map[string]bool, fs fsReader) []PlatformConditionalSource {
+	// Two implementations, selected on the trace's shape:
+	//
+	//   - cmake's `--trace-format=json-v1` (the real cmake
+	//     mode the converter sees in production) doesn't emit
+	//     `endif` events, so the trace-event-driven stack
+	//     can't pop. Use the cmakeparse-based per-file scope
+	//     index instead, which is stack-balance-correct by
+	//     construction (reads if/endif structure from the
+	//     source bytes).
+	//
+	//   - Synthetic test traces (and any hypothetical future
+	//     cmake-output mode that does emit endif) preserve
+	//     the trace-event stack: the tests pass synthetic if
+	//     + endif events without providing CMakeLists.txt
+	//     source bytes on disk, so the cmakeparse path can't
+	//     resolve the file and would attribute nothing.
+	//
+	// Detection: any `endif` event in the trace → use
+	// trace-event stack. Otherwise (typical of cmake's real
+	// JSON-v1 trace) → cmakeparse-based.
+	if hasEndifEvent(events) {
+		st := newPlatformIfStack()
+		var out []PlatformConditionalSource
+		for _, ev := range events {
+			out = maybeCollectPlatformConditionalSourceTraceStack(ev, st, traceSourceRoot, knownTargets, out)
+		}
+		return out
+	}
+	idx := newCmakeFileIfIndex()
 	var out []PlatformConditionalSource
 	for _, ev := range events {
-		out = maybeCollectPlatformConditionalSource(ev, st, sourceRoot, knownTargets, out)
+		out = maybeCollectPlatformConditionalSource(ev, idx, traceSourceRoot, hostSourceRoot, fs, knownTargets, out)
+	}
+	return out
+}
+
+func hasEndifEvent(events []TraceEvent) bool {
+	for _, ev := range events {
+		if strings.EqualFold(ev.Cmd, "endif") {
+			return true
+		}
+	}
+	return false
+}
+
+// maybeCollectPlatformConditionalSourceTraceStack is the
+// pre-cmakeparse code path: maintains the global
+// platformIfStack via trace-event observation and attributes
+// sources using the current stack at each event. Kept for the
+// trace-with-endif case (synthetic tests + any future cmake
+// output mode that emits endif events). The body is the
+// original maybeCollect implementation before the cmakeparse
+// rewrite.
+func maybeCollectPlatformConditionalSourceTraceStack(ev TraceEvent, st *platformIfStack, sourceRoot string, knownTargets map[string]bool, out []PlatformConditionalSource) []PlatformConditionalSource {
+	if inSourceTree(ev.File, sourceRoot) {
+		st.observe(ev)
+	}
+	key := st.currentSelectKey(ev.File)
+	if key == "" {
+		return out
+	}
+	target, srcs, ok := sourcesFromAddOrTargetCall(ev)
+	if !ok {
+		return out
+	}
+	if !knownTargets[target] {
+		return out
+	}
+	for _, src := range srcs {
+		rel := resolveSourceRelative(src, ev.File, sourceRoot)
+		if rel == "" {
+			continue
+		}
+		out = append(out, PlatformConditionalSource{
+			Target:    target,
+			Source:    rel,
+			SelectKey: key,
+		})
 	}
 	return out
 }
@@ -116,12 +186,12 @@ func extractPlatformConditionalSources(events []TraceEvent, sourceRoot string, k
 // cmake guarantees if/elseif/else/endif balance within a single
 // file, so the per-file filter preserves stack balance for
 // whichever subset of files we choose to observe.
-func maybeCollectPlatformConditionalSource(ev TraceEvent, st *platformIfStack, sourceRoot string, knownTargets map[string]bool, out []PlatformConditionalSource) []PlatformConditionalSource {
-	if inSourceTree(ev.File, sourceRoot) {
-		st.observe(ev)
-	}
-	key := st.currentSelectKey(ev.File)
-	if key == "" {
+func maybeCollectPlatformConditionalSource(ev TraceEvent, idx *cmakeFileIfIndex, traceSourceRoot, hostSourceRoot string, fs fsReader, knownTargets map[string]bool, out []PlatformConditionalSource) []PlatformConditionalSource {
+	// Only in-tree events can produce attributions — cmake's
+	// internal modules under /usr/share/cmake-* fire if(WIN32)
+	// / if(APPLE) etc. during compiler detection probes that
+	// have nothing to do with the user's project intent.
+	if !inSourceTree(ev.File, traceSourceRoot) {
 		return out
 	}
 	target, srcs, ok := sourcesFromAddOrTargetCall(ev)
@@ -131,8 +201,16 @@ func maybeCollectPlatformConditionalSource(ev TraceEvent, st *platformIfStack, s
 	if !knownTargets[target] {
 		return out
 	}
+	// Look up the active if-stack for (file, line) via cmakeparse.
+	// Returns "" when no recognized platform constraint sits in
+	// the active stack — sources fall through to flat srcs.
+	hostFile := remapHostPath(ev.File, traceSourceRoot, hostSourceRoot)
+	key := idx.currentSelectKey(hostFile, ev.Line, fs)
+	if key == "" {
+		return out
+	}
 	for _, src := range srcs {
-		rel := resolveSourceRelative(src, ev.File, sourceRoot)
+		rel := resolveSourceRelative(src, ev.File, traceSourceRoot)
 		if rel == "" {
 			continue
 		}
