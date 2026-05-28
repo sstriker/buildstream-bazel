@@ -270,6 +270,21 @@ func TestIsCMakeBookkeepingOutput(t *testing.T) {
 		{"CMakeFiles/stub.dir/src/stub.c.o", false}, // compile artefact, not bookkeeping
 		{"CMakeFiles/foo.txt", false},               // wrong suffix
 		{"some/notCMakeFiles/foo.util", false},      // CMakeFiles not a path component
+
+		// cmake's add_custom_target(check-<name> COMMAND llvm-lit ...)
+		// shape — test-runner edges that don't end in .util. cmake
+		// uses these for `ninja check-all` etc; Bazel users emit
+		// cc_test rules instead, so the converted genrule would be
+		// dead code with a broken cmd (llvm-lit is configure_file-
+		// generated and not a build artifact).
+		{"CMakeFiles/check-all", true},
+		{"test/CMakeFiles/check-llvm", true},
+		{"test/CMakeFiles/check-llvm-analysis-aliasset", true},
+		{"utils/mlgo-utils/CMakeFiles/check-mlgo-utils", true},
+		// User-declared `check-config` outputs (not under
+		// CMakeFiles/) pass through.
+		{"check-config", false},
+		{"some/notCMakeFiles/check-foo", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
