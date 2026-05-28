@@ -61,6 +61,28 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 	reads := map[string]struct{}{}
 	var d Decoded
 	ifStack := newPlatformIfStack()
+	// Detect whether the trace omits `endif` events (cmake's
+	// `--trace-format=json-v1` does — endif is a structural
+	// delimiter, not a command). Without endif the
+	// platformIfStack can never pop; every if() event
+	// permanently adds to the stack and downstream source
+	// attribution is bogus. When the trace has if() events but
+	// no endif, suppress Tier 1 platform-conditional collection
+	// entirely — flat srcs is the safe fallback.
+	traceHasEndif := false
+	traceHasIf := false
+	for _, ev := range events {
+		switch strings.ToLower(ev.Cmd) {
+		case "if":
+			traceHasIf = true
+		case "endif":
+			traceHasEndif = true
+		}
+		if traceHasIf && traceHasEndif {
+			break
+		}
+	}
+	suppressTier1 := traceHasIf && !traceHasEndif
 	for _, ev := range events {
 		collectReadPath(ev, sourceRoot, reads)
 		if call, ok := classifyTargetIncludes(ev, sourceRoot, knownTargets); ok {
@@ -105,7 +127,9 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 		// event to keep the stack in sync; see
 		// platform_conditional.go for the source-of-truth
 		// docs.
-		d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, ifStack, sourceRoot, knownTargets, d.PlatformConditionalSources)
+		if !suppressTier1 {
+			d.PlatformConditionalSources = maybeCollectPlatformConditionalSource(ev, ifStack, sourceRoot, knownTargets, d.PlatformConditionalSources)
+		}
 	}
 	d.Reads = make([]string, 0, len(reads))
 	for k := range reads {

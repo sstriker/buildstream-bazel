@@ -50,6 +50,34 @@ type PlatformConditionalSource struct {
 // `..`, which the lower path doesn't accept).
 func ExtractPlatformConditionalSources(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) []PlatformConditionalSource {
 	events := ParseTrace(traceRaw)
+	// cmake's `--trace-format=json-v1` does NOT emit `endif`
+	// events — endif is a structural delimiter, not a command,
+	// so cmake skips it during trace. Without endif events the
+	// platformIfStack handler can never pop: every if() event
+	// permanently adds to the stack. Every subsequent target
+	// declaration then gets attributed to the most recent
+	// recognized predicate (e.g. an if(WIN32) at the top of
+	// CMakeLists.txt attributes EVERY downstream add_executable
+	// to @platforms//os:windows, including ones in unrelated
+	// subdirs). Safety check: if we see any `if` events but no
+	// `endif`, the stack tracking is unreliable — skip the Tier
+	// 1 attribution entirely. The flat srcs list (Tier 0
+	// behaviour) is the correct fallback in that case.
+	var sawIf, sawEndif bool
+	for _, ev := range events {
+		switch strings.ToLower(ev.Cmd) {
+		case "if":
+			sawIf = true
+		case "endif":
+			sawEndif = true
+		}
+		if sawIf && sawEndif {
+			break
+		}
+	}
+	if sawIf && !sawEndif {
+		return nil
+	}
 	return extractPlatformConditionalSources(events, sourceRoot, knownTargets)
 }
 
