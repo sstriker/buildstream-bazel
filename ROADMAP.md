@@ -51,12 +51,16 @@ transition cleanly.
   install-derived / synthesized targets (filegroups, `cc_import`,
   `cmake_config_bundle`, aliases, genrules, interface libs)
   stay in the root package. Wired end-to-end through the
-  orchestrator: `cmd/write-a --split-packages` makes the
-  converter genrule emit a single `build-packages.tar` of the
-  per-sub-package tree (a genrule can't declare the
-  discovered-at-action-time sub-package set as static `outs`),
-  and `cmd/stage-b` unpacks it into project B's
-  `elements/<name>/`. See `docs/design/cmake-split-packages.md`.
+  orchestrator: `cmd/write-a --split-packages` converts the
+  element with the `cmake_split_convert` custom rule
+  (`rules_buildstream_bazel/rules/cmake_packages.bzl`), whose
+  action declares the per-sub-package BUILD tree as a Bazel
+  **TreeArtifact** (`ctx.actions.declare_directory`,
+  content-addressed per file — no opaque tar; a genrule can't
+  declare the discovered-at-action-time sub-package set as static
+  `outs`), and `cmd/stage-b` merges that materialized directory
+  into project B's `elements/<name>/` by per-file digest. See
+  `docs/design/cmake-split-packages.md`.
 
   Phasing (each phase is a self-contained PR stack with its
   own render gate):

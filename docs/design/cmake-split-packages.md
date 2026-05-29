@@ -126,25 +126,45 @@ Deps are deduped.
 
 `cmd/write-a --split-packages` threads the mode end-to-end. A Bazel
 genrule can't statically declare the discovered-at-action-time
-sub-package set as `outs`, so the converter genrule instead writes the
-per-sub-package BUILD tree into a temp dir and tars it into a single
-declared `build-packages.tar` output (mirroring the existing
-`cmake-config-bundle.tar` produce pattern); `--out-build` points into
-that temp tree and the `build_bazel` filegroup points at the tar. The
-default (off) keeps the single `BUILD.bazel.out` output byte-for-byte.
+sub-package set as `outs`, so on the split path the element is converted
+by the `cmake_split_convert` custom rule
+(`rules_buildstream_bazel/rules/cmake_packages.bzl`) instead of the
+single-`BUILD.bazel.out` genrule. The rule's action runs
+convert-element-cmake in `--split-packages` mode and declares the
+per-sub-package BUILD tree as a **TreeArtifact**
+(`ctx.actions.declare_directory`) — Bazel content-addresses each
+generated BUILD file individually, so there is no opaque
+`build-packages.tar` whose digest churns on any one BUILD changing.
+`--out-build` points at `<packages>/BUILD.bazel` inside the TreeArtifact;
+the rule also declares the scalar `read_paths.json`,
+`cmake-config-bundle.tar`, and `exports.json` outputs. Per-element flag
+logic (lift / fallback / fidelity / bake-in) is assembled by write-a and
+passed through the rule's `converter_args` string attr, keeping the
+Starlark mechanical (shadow-build + dep-extract + convert + bundle-tar,
+mirroring the genrule bash); kind:cmake dep bundles ride `dep_bundles`
+and `imports.json` / dep `exports.json` ride `aux`. The default (off)
+path keeps the single `BUILD.bazel.out` genrule byte-for-byte.
+
+The rule's action behavior is verified by CI/`bazel build` — there is no
+local bazel in the dev sandbox, so the contract write-a owes the rule is
+checked via render-shape assertions, and the action itself runs in CI.
 
 `cmd/stage-b` consumes it: when project A's
-`bazel-bin/elements/<name>/build-packages.tar` exists and is
-non-empty, it unpacks the tree into project B's `elements/<name>/`
-(overwriting the root placeholder and creating the sub-package BUILD
-files), reporting the element changed only when a staged file's
-content actually differs — the same idempotent "what re-converted"
-signal the single-file path returns. Tar members are path-sanitized
-(an absolute or `..`-escaping entry is refused). Project B already
-co-locates each element's sources with its BUILD (the single-BUILD
-shape builds there with element-root-relative `srcs`), so distributing
-the BUILD files across sub-directories of that same tree needs no extra
-source staging.
+`bazel-bin/elements/<name>/<name>_converted/packages` (the rule's
+TreeArtifact directory; `declare_directory` path is
+`<rule-name>/packages` and the rule name is `<name>_converted`) exists,
+it merges the live directory into project B's `elements/<name>/` by
+per-file digest — walking the tree, writing each BUILD under its
+relative sub-package path (overwriting the root placeholder and creating
+the sub-package BUILD files), and reporting the element changed only when
+a staged file's content actually differs — the same idempotent "what
+re-converted" signal the single-file path returns. The merge stages
+regular files only (escaping symlinks are skipped, not followed) and
+rejects any `..`-escaping relative path. Project B already co-locates
+each element's sources with its BUILD (the single-BUILD shape builds
+there with element-root-relative `srcs`), so distributing the BUILD
+files across sub-directories of that same tree needs no extra source
+staging.
 
 ## Gazelle stability
 
