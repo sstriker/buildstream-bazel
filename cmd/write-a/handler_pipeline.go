@@ -58,10 +58,10 @@ type pipelineHandler struct {
 	// Used by the trace-driven kind:autotools path: it wraps
 	// the configure/build/install commands in build-tracer and
 	// appends a convert-element-trace step that emits
-	// BUILD.bazel.out alongside install_tree.tar.
+	// BUILD.bazel.out alongside the install-root TreeArtifact.
 	//
-	// Nil = no transformation; the existing single-genrule
-	// install_tree.tar shape renders unchanged.
+	// Nil = no transformation; the plain pipeline_install
+	// (install-root-only) shape renders unchanged.
 	extension *pipelineExtension
 
 	// traceDrivenSrckeyPatterns: when non-nil AND the trace-driven
@@ -94,14 +94,17 @@ type pipelineHandler struct {
 //     already-rendered shell snippet (with comments and the
 //     `# === <phase> ===` markers); the returned string replaces
 //     it. Used to inject a tracer wrapper around the build.
-//   - AppendCmd: shell snippet inserted between the pipeline
-//     commands and the `tar -cf install_tree.tar ...` step.
-//     Used to run convert-element-trace against the
-//     trace before the install tree is tarred.
-//   - ExtraOuts: additional Bazel `outs` filenames the genrule
-//     produces (e.g. "BUILD.bazel.out").
-//   - ExtraTools: additional `//tools:X` labels the genrule
-//     depends on (e.g. "//tools:build-tracer",
+//   - AppendCmd: shell snippet inserted after the pipeline
+//     commands (which install directly into the install-root
+//     TreeArtifact). Used to run convert-element-trace against
+//     the trace once the install tree is populated.
+//   - ExtraOuts: additional scalar file outputs the
+//     pipeline_install rule declares via extra_outs (e.g.
+//     "BUILD.bazel.out"). The install root itself is the
+//     rule's TreeArtifact, not an ExtraOuts entry.
+//   - ExtraTools: additional `//tools:X` labels the rule
+//     consumes (cfg=exec), referenced positionally as
+//     @@TOOL:N@@ (e.g. "//tools:build-tracer",
 //     "//tools:convert-element-trace").
 type pipelineExtension struct {
 	WrapPipelineCmds func(cmds string) string
@@ -110,22 +113,21 @@ type pipelineExtension struct {
 	ExtraOuts        []string
 	ExtraTools       []string
 
-	// DepLabels lists Bazel labels (typically per-file
-	// outputs of upstream `<dep>_install` genrules, e.g.
-	// `//elements/foo:install_tree.tar`) added to the
-	// install genrule's srcs. Used by kinds whose build
-	// pipeline consumes upstream install trees — autotools'
-	// configure / make need dep .h / .a from upstream
-	// elements.
+	// DepLabels lists Bazel labels (the install-root
+	// TreeArtifacts of upstream `<dep>_install` rules, e.g.
+	// `//elements/foo:foo_install`) added to the install
+	// rule's deps. Used by kinds whose build pipeline consumes
+	// upstream install trees — autotools' configure / make need
+	// dep .h / .a from upstream elements.
 	DepLabels []string
 
 	// DepExtractCmd is a shell snippet spliced into the
-	// install genrule's cmd, between the source-tree staging
-	// step and the user-provided pipeline cmds. Sets up
-	// $DEP_PREFIX with extracted dep install trees and
-	// exports build flags (CPPFLAGS / LDFLAGS for autotools)
-	// so the pipeline can find the deps' headers and
-	// libraries. No-op when DepLabels is empty.
+	// install rule's cmd, between the source-tree staging step
+	// and the user-provided pipeline cmds. Exports build flags
+	// (CPPFLAGS / LDFLAGS for autotools) pointing at the dep
+	// install-root directories IN PLACE (via @@DEP_INSTALL_DIRS@@,
+	// no untar into a $DEP_PREFIX) so the pipeline can find the
+	// deps' headers and libraries. No-op when DepLabels is empty.
 	DepExtractCmd string
 
 	// Multi-platform install-genrule knobs. All three are zero-
@@ -134,11 +136,11 @@ type pipelineExtension struct {
 	// fan-out — one pipelineExtension per (element, platform)
 	// cell.
 	//
-	//   - OutputPrefix prefixes every declared output (install_tree.tar
-	//     and ExtraOuts) with "<platform>/" so the N per-platform
-	//     genrules don't collide on output paths. Cmd-side
-	//     $(location <out>) references compose with the prefix so
-	//     the genrule's shell sees the correct exec-root-relative
+	//   - OutputPrefix prefixes every declared output (the install
+	//     root and ExtraOuts) with "<platform>/" so the N per-platform
+	//     rules don't collide on output paths. The rule's path tokens
+	//     (@@INSTALL_DIR@@ / @@OUT:<name>@@) compose with the prefix
+	//     so the action's shell sees the correct exec-root-relative
 	//     path at action time.
 	//
 	//   - NameSuffix appends to the genrule's name (e.g.
@@ -246,15 +248,16 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), body)
 }
 
-// renderInstallGenruleBody is the legacy install-genrule rendering —
+// renderInstallGenruleBody renders the coarse install rule body —
 // the shape pipelineHandler.RenderA emits when the kind isn't
-// opted into round-2 (or when round-2 is globally disabled). The
-// genrule's outs include install_tree.tar; cmd stages sources,
-// runs configure/build/install/strip phases, and tars
-// %{install-root}.
+// opted into round-2 (or when round-2 is globally disabled). It
+// emits a pipeline_install rule whose install root is a
+// TreeArtifact (no install_tree.tar); cmd stages sources, runs
+// configure/build/install/strip phases, and installs into
+// %{install-root} (the @@INSTALL_DIR@@ TreeArtifact).
 //
 // Returns the body as a string so a caller composing multiple
-// install genrules in one BUILD.bazel (the project-B per-platform
+// install rules in one BUILD.bazel (the project-B per-platform
 // fan-out) can stitch them together without writing intermediate
 // files. skipStaging suppresses the per-call source-tree copy
 // when the caller already staged sources once for the element
@@ -593,14 +596,15 @@ func (h pipelineHandler) RenderB(elem *element, elemPkg string) error {
 		// both places to keep each project's BUILD self-contained.
 		return renderSrckey(elem, elemPkg, h.traceDrivenSrckeyPatterns)
 	}
-	// Legacy / non-opted-in path: install_tree.tar lives in
-	// project A; project B is a placeholder for the
-	// typed-filegroup wrapper that future work lands.
+	// Legacy / non-opted-in path: the install root (a TreeArtifact
+	// produced by project A's pipeline_install) lives in project A;
+	// project B is a placeholder for the typed-filegroup wrapper
+	// that future work lands.
 	body := fmt.Sprintf(`# Generated by cmd/write-a. Do not edit by hand.
-# kind:%[2]s — install tree produced by project A's genrule.
+# kind:%[2]s — install root produced by project A's pipeline_install.
 # The driver script overwrites this file with the typed-filegroup
 # wrapper once that lands; until then, downstream consumers fetch
-# install_tree.tar from project A directly.
+# the :%[1]s_install TreeArtifact from project A directly.
 filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
 `, elem.Name, h.kindName)
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), body)
@@ -617,16 +621,16 @@ filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
 //     Byte-stable with the pre-fan-out rendered goldens.
 //
 //   - Multi-platform fan-out (traceConfig.platforms non-empty):
-//     N install genrules, one per platform, each with the
+//     N install rules, one per platform, each with the
 //     platform's constraint set in exec_compatible_with so Bazel
 //     routes the action to a matching executor pool. Each
-//     genrule's outputs land under "<platform>/" so the N
-//     genrules don't collide, and each one's trace-publish step
+//     rule's outputs land under "<platform>/" so the N
+//     rules don't collide, and each one's trace-publish step
 //     bakes its platform tag literally into the --platform= argv
 //     so each cell publishes under the matching AC partition.
-//     A top-level filegroup at ":install_tree.tar" select()s the
-//     right per-platform tarball so downstream
-//     //elements/<dep>:install_tree.tar references resolve
+//     A top-level filegroup at ":<elem>_install" select()s the
+//     right per-platform install-root directory so downstream
+//     //elements/<dep>:<dep>_install references resolve
 //     correctly at the consumer's build platform.
 func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) error {
 	if len(traceConfig.platforms) == 0 {
@@ -640,7 +644,7 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 	// install-genrule bodies and stitch them together
 	// (sharing the top-of-file `package(...)` header so the
 	// rendered BUILD.bazel is valid Bazel) plus a top-level
-	// select()-filegroup at install_tree.tar.
+	// select()-filegroup at <elem>_install.
 	//
 	// FUSE-sources eligibility check mirrors what
 	// renderInstallGenruleBody would do internally: when the
@@ -665,40 +669,42 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 		}
 		bodies = append(bodies, body)
 	}
-	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), composeMultiPlatformInstallBuild(bodies, traceConfig.platforms))
+	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), composeMultiPlatformInstallBuild(elem.Name, bodies, traceConfig.platforms))
 }
 
 // composeMultiPlatformInstallBuild stitches N per-platform install-
-// genrule body strings into one BUILD.bazel: the first body's
+// rule body strings into one BUILD.bazel: the first body's
 // `package(...)` header survives as the file header, subsequent
 // bodies have their header stripped, and a trailing top-level
-// filegroup at ":install_tree.tar" select()s the matching
-// per-platform tarball so downstream //elements/<dep>:install_tree.tar
-// references stay valid.
-func composeMultiPlatformInstallBuild(bodies []string, platforms []tracePlatform) string {
+// filegroup at ":<elem>_install" select()s the matching
+// per-platform install-root directory so downstream
+// //elements/<dep>:<dep>_install references stay valid.
+func composeMultiPlatformInstallBuild(elemName string, bodies []string, platforms []tracePlatform) string {
 	var b strings.Builder
 	for i, body := range bodies {
 		if i > 0 {
-			// renderPipelineBuild prepends a fixed package(...)
-			// header to every body. The first body's header
-			// becomes the file header; strip the duplicate
-			// headers from the rest by dropping everything
-			// before the first `genrule(`.
-			if idx := strings.Index(body, "genrule("); idx >= 0 {
+			// renderPipelineBuild prepends a fixed load(...) +
+			// package(...) header to every body. The first body's
+			// header becomes the file header; strip the duplicate
+			// headers from the rest by dropping everything before
+			// the first `pipeline_install(` call.
+			if idx := strings.Index(body, "pipeline_install("); idx >= 0 {
 				body = body[idx:]
 			}
 		}
 		b.WriteString(body)
 	}
 	// Top-level filegroup: routes a consumer's
-	// //elements/<dep>:install_tree.tar reference to the right
-	// per-platform tarball. Per-platform select() arms key on
-	// the platform's pre-resolved SelectKey (loadPlatformsManifest
-	// ran PickSelectKeys at flag-parse time, so every platform's
-	// SelectKey is populated here without any error path to
-	// handle).
+	// //elements/<dep>:<elem>_install reference to the right
+	// per-platform install-root directory. Per-platform select()
+	// arms key on the platform's pre-resolved SelectKey
+	// (loadPlatformsManifest ran PickSelectKeys at flag-parse time,
+	// so every platform's SelectKey is populated here without any
+	// error path to handle). The select arms point at each
+	// per-platform pipeline_install target (<elem>_trace_build_<plat>),
+	// whose default output is the install-root TreeArtifact.
 	b.WriteString("\nfilegroup(\n")
-	fmt.Fprintf(&b, "    name = %q,\n", "install_tree.tar")
+	fmt.Fprintf(&b, "    name = %q,\n", elemName+"_install")
 	b.WriteString("    srcs = select({\n")
 	// Stable sort by SelectKey so the rendered output is
 	// deterministic.
@@ -706,12 +712,12 @@ func composeMultiPlatformInstallBuild(bodies []string, platforms []tracePlatform
 	copy(sorted, platforms)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].SelectKey < sorted[j].SelectKey })
 	for _, p := range sorted {
-		fmt.Fprintf(&b, "        %q: [%q],\n", p.SelectKey, p.Name+"/install_tree.tar")
+		fmt.Fprintf(&b, "        %q: [%q],\n", p.SelectKey, ":"+elemName+"_trace_build_"+p.Name)
 	}
 	// Trailing "//conditions:default": [] arm matches the
 	// convention emit/bazel uses for list-attr select() blocks.
 	// Platforms whose constraints don't match any of the
-	// rendered select() arm keys resolve install_tree.tar to
+	// rendered select() arm keys resolve <elem>_install to
 	// an empty list rather than failing analysis with a "no
 	// matching condition" diagnostic on the filegroup itself —
 	// the failure surfaces at the consumer, where it points at
@@ -724,12 +730,12 @@ func composeMultiPlatformInstallBuild(bodies []string, platforms []tracePlatform
 	// the chosen axis with one of the matrix cells (e.g. a
 	// hypothetical `linux_x86_64_v2` matching the manifest's
 	// `linux_x86_64` cell's `@platforms//cpu:x86_64` arm) will
-	// pick that arm's tarball rather than fall through to the
-	// default. Operators who need strict in-matrix-only matching
-	// supply per-platform select_label / config_setting labels
-	// (see PickSelectKeys' escalation path), which scope the arm
-	// keys to operator-declared config_settings rather than
-	// shared constraint axes.
+	// pick that arm's install-root directory rather than fall
+	// through to the default. Operators who need strict
+	// in-matrix-only matching supply per-platform select_label /
+	// config_setting labels (see PickSelectKeys' escalation path),
+	// which scope the arm keys to operator-declared config_settings
+	// rather than shared constraint axes.
 	b.WriteString(`        "//conditions:default": [],` + "\n")
 	b.WriteString("    }),\n")
 	b.WriteString(")\n")
@@ -779,16 +785,17 @@ func pipelineFuseEligible(elem *element) string {
 }
 
 // renderPipelineBuild renders the per-element BUILD for a coarse-
-// grained pipeline kind: a glob over staged sources + a genrule
-// whose cmd stages the sources into a fresh work dir, runs each
-// phase's commands in order, then tars %{install-root} as the
-// element's primary output (install_tree.tar).
+// grained pipeline kind: a glob over staged sources + a
+// pipeline_install rule whose cmd stages the sources into a fresh
+// work dir, runs each phase's commands in order, then installs
+// %{install-root} as the element's primary output (the install-root
+// TreeArtifact, no tar).
 //
 // Phase commands arrive here already variable-expanded (RenderA
 // runs each through substituteCmd before getting here), so the
-// only thing the genrule cmd binds at action time is the runtime
-// sentinels: $$INSTALL_ROOT (the per-action mktemp dir tarred as
-// install_tree.tar) and $$BUILD_ROOT (the staged source dir, also
+// only thing the rule cmd binds at action time is the runtime
+// sentinels: $$INSTALL_ROOT (the install-root TreeArtifact dir the
+// rule declares) and $$BUILD_ROOT (the staged source dir, also
 // the cwd where phase commands run).
 //
 // groups carries one or more pre-resolved phase command sets:
@@ -804,6 +811,8 @@ func pipelineFuseEligible(elem *element) string {
 func renderPipelineBuild(elem *element, dispatch []dispatchVar, groups []dispatchGroup, fuseKey string, ext *pipelineExtension) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, `# Generated by cmd/write-a. Do not edit by hand.
+
+load("@rules_buildstream_bazel//rules:install.bzl", "pipeline_install")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -857,21 +866,30 @@ package(default_visibility = ["//visibility:public"])
 		nameSuffix = ext.NameSuffix
 		execCompatibleWith = ext.ExecCompatibleWith
 	}
-	rawOuts := []string{"install_tree.tar"}
+	// extra_outs: the scalar side outputs (trace.log, make-db.txt,
+	// generated-headers.txt, BUILD.bazel.out, install-mapping.json)
+	// the round-2 extension declares. Under the per-platform fan-out
+	// each declared output lives under "<platform>/" so the N cells
+	// don't collide; the rule declares declare_file(<name>/<entry>)
+	// and binds @@OUT:<entry>@@ — but the command (renderPipelineCmdBody)
+	// references the prefixed names, so we pass the prefixed forms here
+	// and the command builders use the matching @@OUT:<prefix>/<name>@@
+	// tokens.
+	var rawOuts []string
 	var tools []string
 	if ext != nil {
 		rawOuts = append(rawOuts, ext.ExtraOuts...)
 		tools = append(tools, ext.ExtraTools...)
 	}
-	outs := rawOuts
+	extraOuts := rawOuts
 	if prefix != "" {
-		outs = make([]string, len(rawOuts))
+		extraOuts = make([]string, len(rawOuts))
 		for i, o := range rawOuts {
-			outs[i] = prefix + "/" + o
+			extraOuts[i] = prefix + "/" + o
 		}
 	}
 
-	// Round-2 (IsTraceBuild) renames the genrule to
+	// Round-2 (IsTraceBuild) renames the install target to
 	// "<elem>_trace_build" and tags it with "trace_build" so
 	// `bazel query attr(tags, trace_build, //...)` finds the
 	// set the convergence driver needs to (re-)build. Round-1
@@ -884,22 +902,40 @@ package(default_visibility = ["//visibility:public"])
 		tagsAttr = "    tags = [\"trace_build\"],\n"
 	}
 
-	fmt.Fprintf(&b, `genrule(
+	// deps: this element's upstream pipeline_install install-root
+	// directories, consumed in place by the command's
+	// @@DEP_INSTALL_DIRS@@ token (no untar). Replaces the old
+	// DepLabels-into-srcs + tar-extract mechanism.
+	depsAttr := ""
+	if ext != nil && len(ext.DepLabels) > 0 {
+		depsAttr = fmt.Sprintf("    deps = %s,\n", strList(ext.DepLabels))
+	}
+
+	fmt.Fprintf(&b, `pipeline_install(
     name = "%[1]s_%[8]s%[6]s",
     srcs = %[3]s,
-    outs = %[4]s,
-    cmd = %[2]s,
-%[5]s%[7]s%[9]s)
+%[10]s    command = %[2]s,
+%[4]s%[5]s%[7]s%[9]s)
 `, elem.Name,
 		renderPipelineCmdAttr(dispatch, groups, fuseKey != "", ext),
 		srcsAttr,
-		strList(outs),
+		extraOutsAttr(extraOuts),
 		toolsAttr(tools),
 		nameSuffix,
 		execCompatibleWithAttr(execCompatibleWith),
 		stem,
-		tagsAttr)
+		tagsAttr,
+		depsAttr)
 	return b.String()
+}
+
+// extraOutsAttr renders the optional `extra_outs = [...]`
+// pipeline_install attribute. Empty list returns the empty string.
+func extraOutsAttr(outs []string) string {
+	if len(outs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("    extra_outs = %s,\n", strList(outs))
 }
 
 // execCompatibleWithAttr renders the optional
@@ -1100,16 +1136,6 @@ func renderPipelineCmdBody(p pipelinePhases, fuseSources bool, ext *pipelineExte
 	if fuseSources {
 		stripFrom = "tree_dir/"
 	}
-	// installTar names the install_tree.tar output the cmd's tar
-	// step writes to. Single-platform legacy shape: bare
-	// "install_tree.tar". Per-platform install fan-out: the
-	// OutputPrefix-prefixed path so each cell's output lives at
-	// its own location. $(location ...) takes the declared-output
-	// path verbatim, so the prefix has to be embedded here.
-	installTar := "install_tree.tar"
-	if ext != nil && ext.OutputPrefix != "" {
-		installTar = ext.OutputPrefix + "/install_tree.tar"
-	}
 
 	// Resolved configure/build/install/strip command block.
 	// pipelineExtension.WrapPipelineCmds rewrites this when
@@ -1139,26 +1165,28 @@ func renderPipelineCmdBody(p pipelinePhases, fuseSources bool, ext *pipelineExte
 	}
 
 	return fmt.Sprintf(`"""
-        # Snapshot the exec root before any cd. Bazel resolves
-        # location expressions to exec-root-relative paths, and the
+        # Snapshot the exec root before any cd. The rule resolves the
+        # @@...@@ tokens to exec-root-relative paths, and the
         # user-provided commands below cd into the staged work dir,
-        # so we restore PWD before tarring the install tree.
+        # so we restore PWD before referencing exec-root-relative
+        # outputs / tools.
         EXEC_ROOT="$$PWD"
         # Stage sources into a fresh work dir; honor the original
         # source-relative layout via the same shadow-merge pattern
         # the cmake handler uses (strip the leading "sources/" of
-        # each $(SRCS) entry to recover the source-relative path).
+        # each @@SRCS@@ entry to recover the source-relative path).
         BUILD_ROOT="$$(mktemp -d)"
-        for src in $(SRCS); do
+        for src in @@SRCS@@; do
             # Skip extension-supplied non-source files (imports.json
-            # for the autotools native render path; install_tree.tar
-            # entries from upstream deps, handled by DepExtractCmd
-            # below). Their access happens via $$(location <name>) /
-            # $(SRCS) iteration in extension snippets; copying them
-            # into BUILD_ROOT would leak into the staged source tree.
+            # / srckey.txt for the trace-driven render paths). Their
+            # access happens via dedicated tokens in extension
+            # snippets; copying them into BUILD_ROOT would leak into
+            # the staged source tree. Upstream dep install roots no
+            # longer ride @@SRCS@@ — they're the rule's deps attr,
+            # consumed in place via @@DEP_INSTALL_DIRS@@.
             case "$$src" in
-                */imports.json) continue ;;
-                */install_tree.tar) continue ;;
+                */imports.json) IMPORTS_JSON="$$EXEC_ROOT/$$src"; continue ;;
+                */srckey.txt) SRCKEY_TXT="$$EXEC_ROOT/$$src"; continue ;;
             esac
             rel="$${src##*%[3]s}"
             mkdir -p "$$BUILD_ROOT/$$(dirname "$$rel")"
@@ -1169,27 +1197,17 @@ func renderPipelineCmdBody(p pipelinePhases, fuseSources bool, ext *pipelineExte
         # Runtime variable bindings (every other %%{...} reference is
         # already expanded at codegen time by handler_pipeline's
         # substituteCmd):
-        #   $$INSTALL_ROOT — DESTDIR-style staging dir; tarred as
-        #                    the element's output below.
+        #   $$INSTALL_ROOT — the install-root TreeArtifact directory
+        #                    (@@INSTALL_DIR@@); the build installs
+        #                    DIRECTLY into it (DESTDIR-style), so it
+        #                    becomes the element's output with no tar.
         #   $$BUILD_ROOT   — the staged source dir (set above).
-        export INSTALL_ROOT="$$(mktemp -d)"
+        export INSTALL_ROOT="$$EXEC_ROOT/@@INSTALL_DIR@@"
+        mkdir -p "$$INSTALL_ROOT"
         export PATH=/usr/local/bin:/usr/bin:/bin
 %[2]s%[5]s
 %[1]s%[4]s
-        # Tar the install tree as the element's primary output.
-        # Deterministic options give byte-stable archives across
-        # builds with byte-identical content: --mtime=@0 zeros out
-        # mtimes; --sort=name removes filesystem-readdir-order
-        # variation; --owner=0 --group=0 --numeric-owner removes
-        # uid/gid drift across machines. Without these, an
-        # upstream's tar would churn even when the install
-        # contents didn't change, breaking downstream cache-narrow
-        # transitivity (the consumer's _install action would
-        # cache-miss on the changed tar input).
-        cd "$$EXEC_ROOT"
-        tar --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
-            -cf "$(location %[6]s)" -C "$$INSTALL_ROOT" .
-    """`, cmds, renderEnvExports(p.Env), stripFrom, appendCmd, depExtractCmd, installTar)
+    """`, cmds, renderEnvExports(p.Env), stripFrom, appendCmd, depExtractCmd)
 }
 
 // renderEnvExports emits one `export K=V` line per env entry,

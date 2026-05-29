@@ -17,11 +17,16 @@ dead) or still depends on the round-2 publish/lookup machinery
   strip:
   - `trace_load(...)` targets (action-time AC lookup; useless
     once the converter emitted real cc rules).
-  - `genrule(... tags = ["trace_build"])` targets (configure +
-    build + install + publish; useless once consumers point at
-    the cc rules).
-  - Conversion-era intermediate filegroups: `:install_tree.tar`,
+  - `tags = ["trace_build"]` install targets (the
+    `pipeline_install` configure + build + install + publish;
+    useless once consumers point at the cc rules). Matched by tag,
+    so the rule kind is irrelevant.
+  - Conversion-era intermediate filegroups: the per-platform
+    `:<elem>_install` install-root select() (and the legacy
+    `:install_tree.tar` name, kept for back-compat),
     `:cmake_config_bundle`, `:pkg_config_bundle`, `:build_bazel`.
+  - Round-2 execute-process / target fallback `pick_file` stubs
+    (tagged `*-fallback-extract`).
   - `load()` statements whose imported names are no longer
     referenced (typically the
     `@rules_buildstream_bazel//rules:traces.bzl` import).

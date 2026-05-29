@@ -147,14 +147,14 @@ func TestWriter_MakeRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`pipeline_install(`,
 		`name = "mk_trace_build"`,
 		`tags = ["trace_build"]`,
-		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"make-db.txt"`,
 		`"//tools:build-tracer"`,
 		`"//tools:trace-publish"`,
-		`$(location //tools:trace-publish)`,
+		`"@@TOOL:1@@"`,
 		`CAS_GRPC_ADDR`,
 		`--srckey=`,
 	} {
@@ -231,8 +231,8 @@ func TestWriter_MakeWithoutRound2_StillRendersInstallInA(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`pipeline_install(`,
 		`name = "mk_install"`,
-		`"install_tree.tar"`,
 	} {
 		if !strings.Contains(string(aBody), want) {
 			t.Errorf("project A legacy BUILD missing %q\n%s", want, aBody)

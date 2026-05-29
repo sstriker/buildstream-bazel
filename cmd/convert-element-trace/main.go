@@ -5,7 +5,7 @@
 // tracer; the trace gets registered (CAS-keyed by srckey) and
 // read back by project A's render in round 2. With the trace in
 // hand, the element converts to native cc_library / cc_binary
-// targets instead of the opaque install_tree.tar genrule.
+// targets instead of the coarse opaque install-root TreeArtifact.
 //
 // The binary used to live under cmd/convert-element-autotools/
 // when only autotools opted into the trace-driven path. The

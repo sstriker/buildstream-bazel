@@ -10,9 +10,9 @@ import (
 // to the coarse install-pipeline shape; when --convert-element-trace
 // is supplied, it additionally wraps the build cmd in build-tracer
 // + runs convert-element-trace to emit a native BUILD.bazel.out
-// alongside the install_tree.tar.
+// alongside the install-root TreeArtifact.
 //
-// One genrule with two outputs (install_tree.tar +
+// One rule with two outputs (the install-root TreeArtifact +
 // BUILD.bazel.out). Bazel's action cache (buildbarn in CI)
 // handles convergence — same source + same toolchain + same
 // converter version → same action result, shared across nodes
@@ -57,7 +57,7 @@ var traceConfig struct {
 	// renderPipelineRound2B's multi-platform branch, each
 	// baking --platform=<name> into the trace-publish step and
 	// carrying exec_compatible_with constraints + an
-	// install_tree.tar select() arm. The per-element BUILD also
+	// install-root select() arm. The per-element BUILD also
 	// gets one trace_load target per platform so the per-platform
 	// AC lookups partition correctly. The fan-out covers
 	// every cc-emitting trace-driven kind today
@@ -91,7 +91,7 @@ var traceConfig struct {
 
 // autotoolsHandler picks the right pipelineHandler shape based
 // on the global traceConfig. Without a converter binary,
-// the coarse install_tree.tar pipeline is the rendered shape;
+// the coarse install-root pipeline is the rendered shape;
 // with it, the pipelineExtension wraps the cmd in build-tracer
 // and runs convert-element-trace after the install phase.
 type autotoolsHandler struct{}
@@ -106,8 +106,8 @@ func (autotoolsHandler) DefaultReadPathsPatterns() *readPathsPatterns { return n
 // enabled:
 //
 //   - Trace-driven (traceConfig.convertBin set): the install
-//     genrule lives in PROJECT B (RenderB below), where deps are
-//     materialized as Bazel cc_library / install_tree.tar
+//     rule lives in PROJECT B (RenderB below), where deps are
+//     materialized as Bazel cc_library / install-root TreeArtifact
 //     targets. Project A only carries a marker BUILD plus the
 //     srckey debug artifacts the registry-driven round-2 lookup
 //     consults. See docs/architecture.md for the
@@ -264,7 +264,7 @@ func autotoolsSrckeyPatterns() *readPathsPatterns {
 //
 // Without --convert-element-trace / --build-tracer-bin, the
 // returned handler has no extension — the unmodified coarse
-// install_tree.tar pipeline renders.
+// install-root pipeline renders.
 func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipelineHandler, error) {
 	h := autotoolsBasePipelineHandler()
 	if traceConfig.convertBin == "" {
@@ -359,8 +359,8 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 
 // autotoolsTraceExtension is the pipelineExtension that wires
 // the build-tracer + convert-element-trace steps into the
-// rendered install-genrule cmd. Outputs: install_tree.tar
-// (existing) + BUILD.bazel.out (converter output) + make-db.txt
+// rendered install-rule cmd. Outputs: the install-root
+// TreeArtifact + BUILD.bazel.out (converter output) + make-db.txt
 // (post-build dump of `make -np`, fed back to the converter as
 // a structural hint) + install-mapping.json (sidecar). Tools:
 // build-tracer + convert-element-trace (both staged into
@@ -386,13 +386,16 @@ func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension 
 		// and there's exactly one such genrule per element
 		// regardless of --platforms-json. The wrapper's
 		// outputPrefix is always "" because there's only one
-		// declared `install_tree.tar` output for the
+		// declared install-root TreeArtifact output for the
 		// generated-headers.txt $(location ...) reference to
 		// resolve against. Round-2's per-platform install
 		// fan-out is the separate renderPipelineRound2B call
 		// site in RenderB above.
-		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, "") },
-		AppendCmd:        autotoolsConverterStep(hasImports, elem.Name),
+		// ExtraTools order fixes the @@TOOL:N@@ indices the command
+		// builders reference: build-tracer is tool 0,
+		// convert-element-trace is tool 1.
+		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, "", 0) },
+		AppendCmd:        autotoolsConverterStep(hasImports, elem.Name, 1),
 		ExtraOuts: []string{
 			"BUILD.bazel.out",
 			"make-db.txt",
@@ -407,20 +410,21 @@ func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension 
 	if hasImports {
 		ext.ExtraSrcs = []string{"imports.json"}
 	}
-	// Wire dep install_tree.tar outputs into the consumer's
-	// _install srcs so configure / make can find dep .h / .a.
+	// Wire dep install-root TreeArtifacts into the consumer's
+	// pipeline_install deps so configure / make can find dep
+	// .h / .a in place (no untar; @@DEP_INSTALL_DIRS@@ overlay).
 	// Scoped to autotools-kind deps for now: pipeline kinds
 	// install under the same /usr/{include,lib} convention,
-	// so a single $DEP_PREFIX with CPPFLAGS / LDFLAGS overlay
-	// is a clean, kind-uniform extraction. Other dep kinds
-	// (kind:cmake, kind:manual) likely need similar wiring;
-	// expand when those fixtures land.
+	// so a single CPPFLAGS / LDFLAGS overlay per dep dir is a
+	// clean, kind-uniform wiring. Other dep kinds (kind:cmake,
+	// kind:manual) likely need similar wiring; expand when
+	// those fixtures land.
 	var depLabels []string
 	for _, dep := range elem.Deps {
 		if dep == nil || dep.Bst.Kind != "autotools" {
 			continue
 		}
-		depLabels = append(depLabels, fmt.Sprintf("//elements/%s:install_tree.tar", dep.Name))
+		depLabels = append(depLabels, fmt.Sprintf("//elements/%s:%s_install", dep.Name, dep.Name))
 	}
 	if len(depLabels) > 0 {
 		ext.DepLabels = depLabels
@@ -429,31 +433,35 @@ func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension 
 	return ext
 }
 
-// autotoolsDepExtractCmd is the shell snippet that stages
-// upstream autotools deps' install trees. The pipeline cmd
-// template's source-staging loop already skips
-// `*/install_tree.tar` entries; this loop picks them up
-// and untars each into a shared $DEP_PREFIX. CPPFLAGS /
-// LDFLAGS prepend the conventional /usr layout (matches
-// every fixture's `./configure --prefix=/usr`).
+// autotoolsDepExtractCmd is the shell snippet that wires upstream
+// autotools deps' install-root TreeArtifacts into the build's
+// compile flags. The deps ride the pipeline_install rule's `deps`
+// attr; @@DEP_INSTALL_DIRS@@ expands to the space-separated
+// exec-root-relative install-root DIRECTORIES. Each is referenced
+// IN PLACE — no untar, no per-consumer $DEP_PREFIX copy. CPPFLAGS /
+// LDFLAGS prepend the conventional /usr layout (matches every
+// fixture's `./configure --prefix=/usr`), accumulating one -I/-L
+// pair per dep.
 //
-// The `${VAR:-}` fallback preserves any user-set values
-// from the .bst's environment block.
+// The `${VAR:-}` fallback preserves any user-set values from the
+// .bst's environment block. The DEP_PREFIX placeholder (a synthetic
+// pipe-joined list of the in-place dirs) is still exported so the
+// trace-normalization sed (build-tracer --normalize-prefix and the
+// make-db filter) can neutralize the action-time dep paths.
 func autotoolsDepExtractCmd() string {
-	return `        # Stage upstream autotools deps' install trees under
-        # a shared $$DEP_PREFIX. The for-src loop above skipped
-        # */install_tree.tar entries; here we iterate $(SRCS)
-        # again to pick them up. CPPFLAGS / LDFLAGS prepend the
-        # /usr layout each dep installed with so the build's
-        # configure / make can find the dep's .h / .a.
-        DEP_PREFIX="$$(mktemp -d)"
-        for src in $(SRCS); do
-            case "$$src" in
-                */install_tree.tar) tar -xf "$$src" -C "$$DEP_PREFIX" ;;
-            esac
-        done
-        export CPPFLAGS="-I$$DEP_PREFIX/usr/include $${CPPFLAGS:-}"
-        export LDFLAGS="-L$$DEP_PREFIX/usr/lib $${LDFLAGS:-}"`
+	return `        # Wire upstream autotools deps' install-root TreeArtifact
+        # directories into CPPFLAGS / LDFLAGS. @@DEP_INSTALL_DIRS@@
+        # expands to the space-separated install-root dirs (the
+        # rule's deps attr, consumed in place — no untar). One -I/-L
+        # pair per dep so the build's configure / make can find each
+        # dep's .h / .a under the /usr layout it installed with.
+        DEP_PREFIX=""
+        for d in @@DEP_INSTALL_DIRS@@; do
+            ad="$$EXEC_ROOT/$$d"
+            export CPPFLAGS="-I$$ad/usr/include $${CPPFLAGS:-}"
+            export LDFLAGS="-L$$ad/usr/lib $${LDFLAGS:-}"
+            if [ -z "$$DEP_PREFIX" ]; then DEP_PREFIX="$$ad"; else DEP_PREFIX="$$DEP_PREFIX|$$ad"; fi
+        done`
 }
 
 // wrapAutotoolsPipelineCmds rewrites the resolved
@@ -481,10 +489,16 @@ func autotoolsDepExtractCmd() string {
 // generated-headers.txt diff is written to that prefix so
 // $(location <prefix>/generated-headers.txt) resolves to the
 // genrule's actual declared output path.
-func wrapAutotoolsPipelineCmds(cmds, outputPrefix string) string {
-	generatedHeaders := "generated-headers.txt"
+//
+// toolIdx is the positional index of //tools:build-tracer in the
+// pipeline_install rule's `tools` attr (write-a controls the order
+// via the extension's ExtraTools). The command references the tracer
+// binary via the @@TOOL:<toolIdx>@@ sentinel the rule substitutes
+// with the binary's exec-root path.
+func wrapAutotoolsPipelineCmds(cmds, outputPrefix string, toolIdx int) string {
+	generatedHeaders := "@@OUT:generated-headers.txt@@"
 	if outputPrefix != "" {
-		generatedHeaders = outputPrefix + "/generated-headers.txt"
+		generatedHeaders = "@@OUT:" + outputPrefix + "/generated-headers.txt@@"
 	}
 	// --source-root opts the tracer into capturing openat events
 	// (filtered to the source tree). Required for the narrowing-
@@ -528,10 +542,26 @@ func wrapAutotoolsPipelineCmds(cmds, outputPrefix string) string {
         # (substitutes empty-string, which trivially matches
         # nothing).
         export AUTOTOOLS_TRACE="$$(mktemp)"
-        "$$EXEC_ROOT/$(location //tools:build-tracer)" \
+        # Build one --normalize-prefix flag per upstream dep install
+        # root (the pipe-joined DEP_PREFIX set by the dep-extract
+        # snippet) so each dep's action-time bazel-out path is
+        # neutralized to a stable /DEP_PREFIX_N placeholder in the
+        # canonical trace. Empty DEP_PREFIX (no deps) yields no extra
+        # flags.
+        DEP_NORMALIZE=""
+        if [ -n "$${DEP_PREFIX:-}" ]; then
+            _i=0
+            _ifs="$$IFS"; IFS='|'
+            for _d in $$DEP_PREFIX; do
+                DEP_NORMALIZE="$$DEP_NORMALIZE --normalize-prefix=$$_d=/DEP_PREFIX_$$_i"
+                _i=$$((_i+1))
+            done
+            IFS="$$_ifs"
+        fi
+        "@@TOOL:%[4]d@@" \
             --normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT" \
             --normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT" \
-            --normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"%[1]s \
+            $$DEP_NORMALIZE%[1]s \
             --out="$$AUTOTOOLS_TRACE" -- sh -c '
 %[2]s
 '
@@ -543,8 +573,8 @@ func wrapAutotoolsPipelineCmds(cmds, outputPrefix string) string {
         # leading "./" before adding to BUILD.bazel.out.
         POST_HEADERS_LIST="$$(mktemp)"
         ( cd "$$BUILD_ROOT" && find . -type f -name '*.h' | sort > "$$POST_HEADERS_LIST" )
-        comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST" > "$$EXEC_ROOT/$(location %[3]s)"
-`, sourceRootFlag, cmds, generatedHeaders)
+        comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST" > "$$EXEC_ROOT/%[3]s"
+`, sourceRootFlag, cmds, generatedHeaders, toolIdx)
 }
 
 // autotoolsConverterStep is the shell snippet inserted between
@@ -567,11 +597,15 @@ func wrapAutotoolsPipelineCmds(cmds, outputPrefix string) string {
 // When hasImports is true, --imports-manifest=$(location
 // imports.json) threads through so cross-element `-l<name>`
 // flags resolve to the right Bazel labels.
-func autotoolsConverterStep(hasImports bool, elementName string) string {
+//
+// convertToolIdx is the positional index of
+// //tools:convert-element-trace in the pipeline_install rule's
+// `tools` attr. The command invokes it via @@TOOL:<convertToolIdx>@@.
+func autotoolsConverterStep(hasImports bool, elementName string, convertToolIdx int) string {
 	importsFlag := ""
 	if hasImports {
 		importsFlag = ` \
-            --imports-manifest="$(location imports.json)"`
+            --imports-manifest="$$IMPORTS_JSON"`
 	}
 	bazelPkgFlag := fmt.Sprintf(` \
             --bazel-package-path="elements/%s"`, elementName)
@@ -601,12 +635,25 @@ func autotoolsConverterStep(hasImports bool, elementName string) string {
         #      CURDIR / DESTDIR variable dumps. The empty-string
         #      fallback (bash ${VAR:-default} form) keeps the sed
         #      script harmless when the variable isn't set.
+        # Build per-dep sed substitutions for the pipe-joined
+        # DEP_PREFIX so each dep install root in make's variable
+        # dumps maps to a stable /DEP_PREFIX_N placeholder.
+        DEP_SED=""
+        if [ -n "$${DEP_PREFIX:-}" ]; then
+            _i=0
+            _ifs="$$IFS"; IFS='|'
+            for _d in $$DEP_PREFIX; do
+                DEP_SED="$$DEP_SED -e s|$$_d|/DEP_PREFIX_$$_i|g"
+                _i=$$((_i+1))
+            done
+            IFS="$$_ifs"
+        fi
         ( make -np 2>/dev/null || true ) \
             | sed -E '/^#[[:space:]]+Last modified /d; /\(device [0-9]+, inode [0-9]+\): [0-9]+ files,/d; /^# [0-9]+ files,.*impossibilities in /d; /^# Make data base, printed on /d; /^# Finished Make data base on /d' \
             | sed -e "s|$$INSTALL_ROOT|/INSTALL_ROOT|g" \
                   -e "s|$$BUILD_ROOT|/BUILD_ROOT|g" \
-                  -e "s|$${DEP_PREFIX:-/__unset_dep_prefix__}|/DEP_PREFIX|g" \
-            > "$$EXEC_ROOT/$(location make-db.txt)"
+                  $$DEP_SED \
+            > "$$EXEC_ROOT/@@OUT:make-db.txt@@"
 
         # Trace + make-db -> native cc_library / cc_binary
         # BUILD.bazel.out. Output goes through bazel's normal
@@ -614,10 +661,10 @@ func autotoolsConverterStep(hasImports bool, elementName string) string {
         # cross-node convergence — same trace + same converter
         # version => same BUILD.bazel.out everywhere.
         cd "$$EXEC_ROOT"
-        $(location //tools:convert-element-trace) \
+        "@@TOOL:%[3]d@@" \
             --trace="$$AUTOTOOLS_TRACE" \
-            --make-db="$(location make-db.txt)" \
-            --generated-headers="$(location generated-headers.txt)" \
-            --out-install-mapping="$(location install-mapping.json)" \
-            --out-build="$(location BUILD.bazel.out)"%s%s`, importsFlag, bazelPkgFlag)
+            --make-db="@@OUT:make-db.txt@@" \
+            --generated-headers="@@OUT:generated-headers.txt@@" \
+            --out-install-mapping="@@OUT:install-mapping.json@@" \
+            --out-build="@@OUT:BUILD.bazel.out@@"%[1]s%[2]s`, importsFlag, bazelPkgFlag, convertToolIdx)
 }

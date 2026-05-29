@@ -2,7 +2,8 @@ package main
 
 // autotoolsPipelineHandler returns the coarse install-pipeline
 // shape of kind:autotools (./configure + make + make install
-// running in a genrule, output is install_tree.tar). Used as
+// running via the pipeline_install rule, output is the
+// install-root TreeArtifact). Used as
 // the cache-miss branch of nativeAutotoolsHandler. Defined as
 // a function rather than a top-level var so init-order across
 // handler files stays well-defined.

@@ -14,9 +14,9 @@ package main
 // Shape (parallels docs/design/rendezvous.md
 // — the kind:cmake Phase B sibling):
 //
-//   - one extract genrule that untars install_tree.tar into
-//     per-file outs derived from intro-install_plan.json's
-//     `targets` + `headers` sections.
+//   - one pick_file projection per file over the install-root
+//     TreeArtifact, deriving each projected path from intro-
+//     install_plan.json's `targets` + `headers` sections.
 //   - per-target stubs dispatched on (Tag, install-path basename):
 //     * tag=devel + libfoo.a       → cc_import + static_library
 //     * tag=runtime + libfoo.so*   → cc_import + shared_library
@@ -35,7 +35,7 @@ package main
 //
 // Path resolution: meson's destinations embed `{libdir_static}`,
 // `{libdir_shared}`, `{bindir}`, `{includedir}` etc. The install
-// genrule in project B pins `meson setup --prefix=/ --libdir=lib`,
+// rule in project B pins `meson setup --prefix=/ --libdir=lib`,
 // which makes those placeholders resolve to clean relative paths
 // (`lib/libfoo.a`, `bin/foo`, `include/foo.h`). resolvePlaceholders
 // reads intro-buildoptions.json's `section: directory` rows for the
@@ -114,7 +114,12 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		if dest == "" {
 			continue
 		}
-		installPath := path.Join("install_tree", dest)
+		// Tree-relative path inside the install-root TreeArtifact
+		// (e.g. "lib/libfoo.a"). pick_file projects it out in place;
+		// no "install_tree/" prefix — that named the old extract
+		// genrule's untar subdirectory, which the TreeArtifact shape
+		// removes.
+		installPath := path.Clean(dest)
 		baseName := path.Base(installPath)
 		stub := ir.Target{
 			Name:       targetNameFromInstallPath(baseName),
@@ -141,15 +146,15 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		default:
 			// Unknown artefact shape (e.g. tag="man" or a custom
 			// tag a meson module emits) — fall back to a private
-			// filegroup so the extract genrule still claims the
+			// filegroup so a pick_file projection still claims the
 			// path. cc_binary/cc_import would mis-classify; a
-			// filegroup keeps install_tree.tar honest without
+			// filegroup keeps the install root honest without
 			// claiming a typed shape we can't validate.
 			//
-			// v1 drops the entry entirely: the install_tree.tar
-			// still carries the bytes (the install genrule's tar
-			// step preserves them), but no per-target Bazel label
-			// surfaces. A real fixture forcing the divergence
+			// v1 drops the entry entirely: the install-root
+			// TreeArtifact still carries the bytes (the install
+			// rule installs them in place), but no per-target Bazel
+			// label surfaces. A real fixture forcing the divergence
 			// drives a typed-filegroup follow-up.
 			continue
 		}
@@ -181,7 +186,10 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		if dest == "" {
 			continue
 		}
-		installPath := path.Join("install_tree", dest)
+		// Tree-relative header path inside the install-root
+		// TreeArtifact (e.g. "include/foo.h"). pick_file projects it
+		// out in place; no "install_tree/" prefix.
+		installPath := path.Clean(dest)
 		headerOuts = append(headerOuts, installPath)
 		// Fold the header into a library stub if we can find one
 		// whose name plausibly matches the project. v1 attaches
@@ -198,25 +206,33 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		}
 	}
 
-	// Emit one extract genrule whose outs union every per-stub
-	// install path + every header path. The genrule's src is the
-	// literal label "install_tree.tar" — resolves once A's
-	// BUILD.bazel.out gets symlinked into project B's package and
-	// co-locates with B's install genrule.
-	var extractOuts []string
-	for _, s := range stubs {
-		extractOuts = append(extractOuts, s.installPath)
+	// Emit one pick_file per unique install path the stubs
+	// reference (artefacts + headers), projecting it out of the
+	// install-root TreeArtifact (installTarget) in place. Replaces
+	// the old _install_tree_extract tar-untar genrule: no
+	// per-consumer re-materialization of the whole tree, file-
+	// granular CAS dedup. installTarget defaults to the same-package
+	// pipeline_install target write-a renders for the round-2
+	// fallback.
+	installTarget := opts.FallbackInstallTarget
+	if installTarget == "" {
+		installTarget = ":_trace_build"
 	}
-	extractOuts = append(extractOuts, headerOuts...)
-	extractOuts = dedupeSorted(extractOuts)
-	if len(extractOuts) > 0 {
+	var pickPaths []string
+	for _, s := range stubs {
+		pickPaths = append(pickPaths, s.installPath)
+	}
+	pickPaths = append(pickPaths, headerOuts...)
+	pickPaths = dedupeSorted(pickPaths)
+	pickLabel := map[string]string{}
+	for _, p := range pickPaths {
+		name := mesonPickFileName(p)
+		pickLabel[p] = ":" + name
 		pkg.Targets = append(pkg.Targets, ir.Target{
-			Name:        "_install_tree_extract",
-			Kind:        ir.KindGenrule,
-			Srcs:        []string{"install_tree.tar"},
-			GenruleOuts: extractOuts,
-			GenruleCmd: `mkdir -p "$(RULEDIR)/install_tree" && ` +
-				`tar -C "$(RULEDIR)/install_tree" -xf "$(location install_tree.tar)"`,
+			Name:     name,
+			Kind:     ir.KindPickFile,
+			PickSrc:  installTarget,
+			PickPath: p,
 			Tags: []string{
 				"meson-codegen-target-fallback",
 				"meson-codegen-target-fallback-extract",
@@ -224,16 +240,63 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 			Visibility: []string{"//visibility:private"},
 		})
 	}
+	resolve := func(p string) string {
+		if l, ok := pickLabel[p]; ok {
+			return l
+		}
+		return p
+	}
 
 	for _, s := range stubs {
+		t := s.stub
+		switch t.Kind {
+		case ir.KindCCImport:
+			if t.StaticLibrary != "" {
+				t.StaticLibrary = resolve(t.StaticLibrary)
+			}
+			if t.SharedLibrary != "" {
+				t.SharedLibrary = resolve(t.SharedLibrary)
+			}
+		case ir.KindShBinary:
+			for i, src := range t.Srcs {
+				t.Srcs[i] = resolve(src)
+			}
+		}
 		// Sort hdrs deterministically — they accumulate via the
 		// header fold loop which preserves install-plan iteration
 		// order, but we always emit sorted lists for golden
-		// stability.
-		sort.Strings(s.stub.Hdrs)
-		pkg.Targets = append(pkg.Targets, s.stub)
+		// stability. Rewrite each to its pick_file label.
+		sort.Strings(t.Hdrs)
+		if len(t.Hdrs) > 0 {
+			hdrs := make([]string, len(t.Hdrs))
+			for i, h := range t.Hdrs {
+				hdrs[i] = resolve(h)
+			}
+			t.Hdrs = hdrs
+		}
+		pkg.Targets = append(pkg.Targets, t)
 	}
 	return pkg, nil
+}
+
+// mesonPickFileName derives a deterministic, Bazel-legal target
+// name for the pick_file that projects a tree-relative install
+// path. Mirrors the cmake fallback's pickFileName: the "_pick_"
+// prefix namespaces these private stub targets and non-identifier
+// bytes collapse to '_' (e.g. "lib/libfoo.a" -> "_pick_lib_libfoo_a").
+func mesonPickFileName(p string) string {
+	var b strings.Builder
+	b.WriteString("_pick_")
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // disambiguateLibraryCollisions renames stubs whose `stub.Name`
@@ -314,8 +377,8 @@ const (
 // "emit a stub when we're confident" — false positives produce
 // resolution-time errors at consumer build time (clearer than
 // silently dropping); false negatives just drop the label,
-// which the operator can recover by referencing
-// install_tree.tar directly via filegroup.
+// which the operator can recover by referencing the
+// install root directly via filegroup.
 func classifyArtefact(tag, basename string) artefactKind {
 	if hasLibPrefix(basename) {
 		if strings.HasSuffix(basename, ".a") {
@@ -450,7 +513,7 @@ func dirValuesFromOptions(opts []BuildOption) map[string]string {
 // Returns "" when the resolved string is empty or still
 // contains `{` (some placeholder didn't resolve). An empty /
 // unresolved destination prevents the caller from emitting a
-// stub with a path the install_tree.tar can't satisfy.
+// stub with a path the install root can't satisfy.
 func resolvePlaceholders(s string, dirs map[string]string) string {
 	if s == "" {
 		return ""

@@ -293,11 +293,10 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 	// NOT emitted in this branch. Post-build the driver
 	// stages A's BUILD.bazel.out alongside this BUILD.bazel
 	// (same package), so labels declared in BUILD.bazel.out
-	// (cc_import / sh_binary stubs + the extract genrule
-	// referencing "install_tree.tar") resolve to this
-	// genrule's install_tree.tar output via same-package
-	// label resolution. See
-	// docs/design/rendezvous.md.
+	// (cc_import / sh_binary stubs fed by pick_file over the
+	// install-root TreeArtifact) resolve to this element's
+	// pipeline_install output via same-package label
+	// resolution. See docs/design/rendezvous.md.
 	if cmakeConfig.round2FallbackEnabled {
 		// cmakeSrckeyPatterns() already includes "CMakeLists.txt"
 		// + "**/CMakeLists.txt" rules, so withCMakeListsRule
@@ -568,11 +567,11 @@ filegroup(
 	}
 	// Phase B round-2 fallback: when enabled, convert-element-cmake
 	// is told to turn classifier refusals into the placeholder
-	// shape (cc_import / sh_binary stubs referencing
-	// install_tree.tar) instead of exiting Tier-1. The
-	// install_tree.tar reference resolves to Project B's
-	// install genrule (emitted by RenderB when the same flag
-	// is enabled) once the BUILD.bazel.out gets symlinked
+	// shape (cc_import / sh_binary stubs fed by pick_file over
+	// the install-root TreeArtifact) instead of exiting Tier-1.
+	// Those pick_file targets resolve against Project B's
+	// pipeline_install rule (emitted by RenderB when the same
+	// flag is enabled) once the BUILD.bazel.out gets symlinked
 	// into B's package.
 	if cmakeConfig.round2FallbackEnabled {
 		fallbackFlag = ` \

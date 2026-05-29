@@ -52,6 +52,7 @@ cat > "$B/BUILD.bazel" <<'EOF'
 EOF
 cat > "$B/elements/demo/BUILD.bazel" <<'EOF'
 load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
+load("@rules_buildstream_bazel//rules:install.bzl", "pipeline_install")
 load("@rules_cc//cc:defs.bzl", "cc_library")
 
 trace_load(
@@ -60,17 +61,16 @@ trace_load(
     trace_lookup = "//tools:trace-lookup",
 )
 
-genrule(
+pipeline_install(
     name = "demo_trace_build",
     srcs = ["s"],
-    outs = ["install_tree.tar"],
-    cmd = "echo",
+    command = "echo",
     tags = ["trace_build"],
 )
 
 filegroup(
-    name = "install_tree.tar",
-    srcs = ["install_tree.tar"],
+    name = "demo_install",
+    srcs = [":demo_trace_build"],
 )
 
 cc_library(
@@ -98,8 +98,10 @@ for banned in \
     'trace_load(' \
     '"demo_trace_build"' \
     '"trace_build"' \
-    '"install_tree.tar"' \
-    '@rules_buildstream_bazel//rules:traces.bzl'; do
+    '"demo_install"' \
+    'pipeline_install(' \
+    '@rules_buildstream_bazel//rules:traces.bzl' \
+    '@rules_buildstream_bazel//rules:install.bzl'; do
     if grep -qF -- "$banned" "$build_out"; then
         echo "meta-finalize-b: converged BUILD unexpectedly contains $banned" >&2
         cat "$build_out" >&2
@@ -140,6 +142,7 @@ sed -i 's/demo_trace_load/unconv_trace_load/g; s/demo_trace_build/unconv_trace_b
 # Unconverged: no cc rules.
 cat > "$BMIX/elements/unconv/BUILD.bazel" <<'EOF'
 load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
+load("@rules_buildstream_bazel//rules:install.bzl", "pipeline_install")
 
 trace_load(
     name = "unconv_trace_load",
@@ -147,11 +150,10 @@ trace_load(
     trace_lookup = "//tools:trace-lookup",
 )
 
-genrule(
+pipeline_install(
     name = "unconv_trace_build",
     srcs = ["s"],
-    outs = ["install_tree.tar"],
-    cmd = "echo",
+    command = "echo",
     tags = ["trace_build"],
 )
 EOF

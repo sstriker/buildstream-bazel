@@ -8,14 +8,14 @@ import (
 func init() { registerHandler(checkForbiddenHandler{}) }
 
 // checkForbiddenHandler renders kind:check_forbidden as an
-// empty-install genrule. The plugin is a CI-style assertion
+// empty-install rule. The plugin is a CI-style assertion
 // from buildstream-plugins-community: it walks dep install
 // trees and fails if any path matches an operator-declared
 // forbidden glob (e.g. asserting no element under
 // `components/sdk/` accidentally exposes
 // `/usr/lib/debug/`). The assertion runs at build time and
 // produces no install bytes by design — even the real plugin's
-// install_tree.tar is conceptually empty.
+// install-root TreeArtifact is conceptually empty.
 //
 // 2 of FDSDK's elements use kind:check_forbidden (0.2 % of the
 // total). Both are CI-only assertion gates.
@@ -50,15 +50,15 @@ func (checkForbiddenHandler) RenderA(elem *element, elemPkg string) error {
 # declared forbidden patterns, fail-with-diagnostic on match)
 # lands when an FDSDK fixture forces it.
 
+load("@rules_buildstream_bazel//rules:install.bzl", "pipeline_install")
+
 package(default_visibility = ["//visibility:public"])
 
-genrule(
+pipeline_install(
     name = "%[1]s_install",
     srcs = [],
-    outs = ["install_tree.tar"],
-    cmd = """
-        EMPTY="$$(mktemp -d)"
-        tar -cf "$(location install_tree.tar)" -C "$$EMPTY" .
+    command = """
+        mkdir -p "@@INSTALL_DIR@@"
     """,
 )
 `, elem.Name)

@@ -326,12 +326,13 @@ func foldCellArg(p tracePlatform, irPath string) string {
 }
 
 // pipelineTraceExtensionRound2 is the pipelineExtension for
-// project B's coarse install genrule under round-2: build-tracer
-// wraps configure/build/install, the genrule's AppendCmd
-// post-processes make-db and runs trace-publish. Outputs:
-// install_tree.tar + trace.log + make-db.txt + the per-element
+// project B's coarse install rule under round-2: build-tracer
+// wraps configure/build/install, the AppendCmd post-processes
+// make-db and runs trace-publish. Outputs: the install-root
+// TreeArtifact + trace.log + make-db.txt + the per-element
 // generated-headers.txt the autotools handler already emits
-// (kept under round-2 too — generated-headers feeds future
+// (the latter three ride pipeline_install's extra_outs; kept
+// under round-2 too — generated-headers feeds future
 // converter improvements without re-running the action).
 //
 // imports.json is intentionally NOT in ExtraSrcs here: the
@@ -343,9 +344,10 @@ func foldCellArg(p tracePlatform, irPath string) string {
 // no corresponding behavioral effect on the build.
 //
 // depKindAllow is the set of dep `Bst.Kind` strings whose
-// install_tree.tar tarballs should be staged + extracted under
-// $DEP_PREFIX so the build pipeline's compile commands can find
-// dep headers / libraries. autotools passes []string{"autotools"};
+// install-root TreeArtifacts are consumed in place (the build's
+// compile commands get -I<dir>/usr/include / -L<dir>/usr/lib via
+// @@DEP_INSTALL_DIRS@@ — no untar into $DEP_PREFIX) so the
+// pipeline can find dep headers / libraries. autotools passes []string{"autotools"};
 // kind:make passes []string{"make"}; cross-kind dep wiring is a
 // follow-up once the fixtures land.
 //
@@ -368,8 +370,10 @@ func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tra
 		// (<plat>/generated-headers.txt under multi-platform
 		// fan-out, bare generated-headers.txt under the
 		// single-platform legacy shape).
-		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, plat.Name) },
-		AppendCmd:        pipelineTracePublishStep(elem.Name, plat.Name, plat.Name),
+		// ExtraTools order fixes the @@TOOL:N@@ indices: build-tracer
+		// is tool 0, trace-publish is tool 1.
+		WrapPipelineCmds: func(cmds string) string { return wrapAutotoolsPipelineCmds(cmds, plat.Name, 0) },
+		AppendCmd:        pipelineTracePublishStep(elem.Name, plat.Name, plat.Name, 1),
 		ExtraOuts: []string{
 			"trace.log",
 			"make-db.txt",
@@ -402,32 +406,32 @@ func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tra
 			continue
 		}
 		// Multi-platform mode: depend on the dep's per-platform
-		// install_tree.tar output directly rather than the
+		// pipeline_install target directly rather than the
 		// top-level select()-filegroup. Bazel's select()
 		// resolves on the build's TARGET platform, not the
 		// dependent action's exec_compatible_with, so when N
 		// per-platform install actions run in one Bazel
 		// invocation they would all see the same select-
-		// resolved tar (the target platform's) rather than
-		// each platform's matching tar. Pointing at
-		// `//elements/<dep>:<plat>/install_tree.tar` directly
-		// — the per-platform output file the dep's
-		// `<dep>_install_<plat>` genrule declared — bypasses
-		// the select and routes each action to the matching
-		// per-platform dep. The top-level
-		// :install_tree.tar filegroup stays valid for
-		// downstream consumers that don't have their own
-		// per-platform fan-out.
+		// resolved install root (the target platform's) rather
+		// than each platform's matching root. Pointing at
+		// `//elements/<dep>:<dep>_trace_build_<plat>` directly
+		// — the per-platform pipeline_install target the dep
+		// declared — bypasses the select and routes each action
+		// to the matching per-platform dep install root (its
+		// install-root TreeArtifact rides PipelineInstallInfo).
+		// The top-level :<dep>_install select()-filegroup stays
+		// valid for downstream consumers that don't have their
+		// own per-platform fan-out.
 		//
 		// Single-platform legacy mode (plat.Name == ""):
-		// the dep's per-element render also emitted a single
-		// :install_tree.tar genrule output without any
-		// platform prefix, so the legacy label form points at
-		// the right thing as before.
+		// the dep's per-element render emitted a single
+		// `<dep>_trace_build` pipeline_install target without
+		// any platform suffix, so the legacy label form points
+		// at the right thing as before.
 		if plat.Name != "" {
-			depLabels = append(depLabels, fmt.Sprintf("//elements/%s:%s/install_tree.tar", dep.Name, plat.Name))
+			depLabels = append(depLabels, fmt.Sprintf("//elements/%s:%s_trace_build_%s", dep.Name, dep.Name, plat.Name))
 		} else {
-			depLabels = append(depLabels, fmt.Sprintf("//elements/%s:install_tree.tar", dep.Name))
+			depLabels = append(depLabels, fmt.Sprintf("//elements/%s:%s_trace_build", dep.Name, dep.Name))
 		}
 	}
 	if len(depLabels) > 0 {
@@ -464,13 +468,17 @@ func pipelineTraceExtensionRound2(elem *element, depKindAllow []string, plat tra
 // and make-db.txt $(location) references — must agree with the
 // extension's ExtraOuts so the cmd writes to the right declared
 // output paths.
-func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
+//
+// publishToolIdx is the positional index of //tools:trace-publish
+// in the pipeline_install rule's `tools` attr. The command invokes
+// it via @@TOOL:<publishToolIdx>@@.
+func pipelineTracePublishStep(elemName, platform, outputPrefix string, publishToolIdx int) string {
 	_ = elemName // reserved for future per-element diagnostics
-	trace := "trace.log"
-	makeDB := "make-db.txt"
+	trace := "@@OUT:trace.log@@"
+	makeDB := "@@OUT:make-db.txt@@"
 	if outputPrefix != "" {
-		trace = outputPrefix + "/trace.log"
-		makeDB = outputPrefix + "/make-db.txt"
+		trace = "@@OUT:" + outputPrefix + "/trace.log@@"
+		makeDB = "@@OUT:" + outputPrefix + "/make-db.txt@@"
 	}
 	// publishPlatform is the literal value the trace-publish
 	// invocation sends as --platform=. When the caller supplied
@@ -489,16 +497,26 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
         # file-count summaries, db print timestamps). The
         # publisher path's tracenorm.FilterMakeDB re-applies the
         # same drop list defensively in-process.
+        DEP_SED=""
+        if [ -n "$${DEP_PREFIX:-}" ]; then
+            _i=0
+            _ifs="$$IFS"; IFS='|'
+            for _d in $$DEP_PREFIX; do
+                DEP_SED="$$DEP_SED -e s|$$_d|/DEP_PREFIX_$$_i|g"
+                _i=$$((_i+1))
+            done
+            IFS="$$_ifs"
+        fi
         ( make -np 2>/dev/null || true ) \
             | sed -E '/^#[[:space:]]+Last modified /d; /\(device [0-9]+, inode [0-9]+\): [0-9]+ files,/d; /^# [0-9]+ files,.*impossibilities in /d; /^# Make data base, printed on /d; /^# Finished Make data base on /d' \
             | sed -e "s|$$INSTALL_ROOT|/INSTALL_ROOT|g" \
                   -e "s|$$BUILD_ROOT|/BUILD_ROOT|g" \
-                  -e "s|$${DEP_PREFIX:-/__unset_dep_prefix__}|/DEP_PREFIX|g" \
-            > "$$EXEC_ROOT/$(location %[2]s)"
+                  $$DEP_SED \
+            > "$$EXEC_ROOT/%[2]s"
 
         # Surface the canonical trace.log as a declared output of
-        # this genrule. trace-publish reads it from here.
-        cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/$(location %[1]s)"
+        # this install action. trace-publish reads it from here.
+        cp -L "$$AUTOTOOLS_TRACE" "$$EXEC_ROOT/%[1]s"
 
 %[4]s
 
@@ -507,7 +525,7 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
         # the build succeeds, no AC entry is written, and the
         # next render of project A sees a miss → coarse fallback.
         # The trace-publish binary itself ALSO short-circuits on
-        # empty --cas; checking here keeps the genrule output
+        # empty --cas; checking here keeps the action output
         # readable when a developer is debugging.
         cd "$$EXEC_ROOT"
         if [ -n "$${CAS_GRPC_ADDR:-}" ]; then
@@ -515,12 +533,12 @@ func pipelineTracePublishStep(elemName, platform, outputPrefix string) string {
             # per target platform. --config-bundle publishes the
             # synthesized bundle under SyntheticConfigDigest
             # (distinct keyspace from the trace).
-            $(location //tools:trace-publish) \
+            "@@TOOL:%[5]d@@" \
                 --cas="$${CAS_GRPC_ADDR}" \
-                --srckey="$$(cat $(location srckey.txt) | tr -d '[:space:]')" \
+                --srckey="$$(cat $$SRCKEY_TXT | tr -d '[:space:]')" \
                 --platform="%[3]s" \
-                --trace="$(location %[1]s)" \
-                --make-db="$(location %[2]s)" \
+                --trace="%[1]s" \
+                --make-db="%[2]s" \
                 --config-bundle="$$CONFIG_BUNDLE_TAR" >/dev/null
-        fi`, trace, makeDB, publishPlatform, bundleSynthShell())
+        fi`, trace, makeDB, publishPlatform, bundleSynthShell(), publishToolIdx)
 }

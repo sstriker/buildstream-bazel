@@ -72,6 +72,19 @@ type args struct {
 	bazelPackagePath string
 }
 
+// fallbackInstallTarget derives the same-package pipeline_install
+// target label the round-2 target-fallback's pick_file stubs
+// project files out of. write-a names that target
+// "<elem>_trace_build", and the bazel package path's basename is
+// the element name (e.g. "elements/foo" -> ":foo_trace_build").
+// Empty package path yields "" (the lower-side default).
+func fallbackInstallTarget(bazelPackagePath string) string {
+	if bazelPackagePath == "" {
+		return ""
+	}
+	return ":" + filepath.Base(bazelPackagePath) + "_trace_build"
+}
+
 func main() {
 	a, code := parseArgs(os.Args[1:], os.Stderr)
 	if code != exitSuccess {
@@ -94,8 +107,8 @@ func parseArgs(argv []string, stderr *os.File) (args, int) {
 	fs.StringVar(&a.importsManifest, "imports-manifest", "", "path to JSON imports manifest mapping cross-element meson dependency names to Bazel labels (optional)")
 	var mesonArgs string
 	fs.StringVar(&mesonArgs, "meson-args", "", "additional arguments to pass to `meson setup` (FDSDK's meson-local slot). Whitespace-split.")
-	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs referencing install_tree.tar, plus an extract genrule that untars it. Project B's install genrule (write-a's --fidelity=best-effort shape for kind:meson) produces install_tree.tar from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly.")
-	fs.StringVar(&a.fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:meson, install-plan-derived stubs over install_tree.tar). Implicitly enables --unsupported-target-fallback. Threaded verbatim from cmd/write-a; the same vocabulary applies to convert-element-cmake / -pyproject so the dial reads consistently across kinds.")
+	fs.BoolVar(&a.unsupportedTargetFallback, "unsupported-target-fallback", false, "on typed Tier-1 refusal of the native lowering pass (unsupported-meson-subproject, unsupported-meson-custom-target, unsupported-meson-generated-sources, unsupported-meson-cross-compile, unresolved-meson-dependency, unsupported-meson-target-type), emit a placeholder BUILD.bazel.out derived from intro-install_plan.json + intro-buildoptions.json — per-target cc_import / sh_binary stubs plus pick_file targets projecting each referenced file out of the install-root TreeArtifact. Project B's pipeline_install (write-a's --fidelity=best-effort shape for kind:meson) installs into that TreeArtifact from a real `meson setup + ninja + meson install --destdir` run wrapped under build-tracer. Off by default to preserve the strict-fail behaviour. See docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly.")
+	fs.StringVar(&a.fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:meson, install-plan-derived stubs over the install-root TreeArtifact (via pick_file)). Implicitly enables --unsupported-target-fallback. Threaded verbatim from cmd/write-a; the same vocabulary applies to convert-element-cmake / -pyproject so the dial reads consistently across kinds.")
 	fs.BoolVar(&a.diagnostics, "diagnostics", false, "operator-facing diagnostic-mode dial: when set, the converter is supposed to collect every Tier-1 refusal and continue rather than aborting on the first. Today the meson converter has no rejection-collection machinery (exits on the first refusal), so this flag is a no-op pass-through — the same flag exists on convert-element-cmake (where it actually does something) and on -pyproject so the CLI surface is uniform.")
 	fs.StringVar(&a.bazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/foo\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths meson recorded. Empty suppresses the directive.")
 	if err := fs.Parse(argv); err != nil {
@@ -152,7 +165,7 @@ func run(a args) error {
 		buildDir = bd
 		defer os.RemoveAll(bd)
 		ctx := context.Background()
-		// Phase B fallback contract: the install genrule in
+		// Phase B fallback contract: the install rule in
 		// project B pins `meson setup --prefix=/ --libdir=lib`,
 		// which makes intro-install_plan.json's `{libdir_static}`
 		// / `{libdir_shared}` / `{bindir}` / `{includedir}`
@@ -162,7 +175,7 @@ func run(a args) error {
 		// the host's defaults (multiarch libdir on debian,
 		// /usr/local prefix everywhere) and the placeholder shape
 		// in BUILD.bazel.out references paths that don't exist
-		// inside install_tree.tar.
+		// inside the install root.
 		//
 		// We thread the pin via ExtraArgs so operator-supplied
 		// --meson-args (the FDSDK meson-local slot) still wins on
@@ -253,9 +266,10 @@ func run(a args) error {
 			var tier1 *failure.Error
 			if errors.As(err, &tier1) && len(intro.InstallPlan.Targets) > 0 {
 				placeholderPkg, placeholderErr := emitFallbackPlaceholder(intro, LowerOptions{
-					SourceRoot: a.sourceRoot,
-					BuildDir:   buildDir,
-					Imports:    imports,
+					SourceRoot:            a.sourceRoot,
+					BuildDir:              buildDir,
+					Imports:               imports,
+					FallbackInstallTarget: fallbackInstallTarget(a.bazelPackagePath),
 				})
 				if placeholderErr == nil && len(placeholderPkg.Targets) > 0 {
 					pkg = placeholderPkg

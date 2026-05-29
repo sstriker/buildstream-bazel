@@ -12,9 +12,9 @@ func init() { registerHandler(collectInitialScriptsHandler{}) }
 // under FreeDesktop SDK's own plugins/, not buildstream-plugins-
 // community); real behaviour walks dep install trees for
 // `%{install-root}/usr/lib/initial-scripts/*` and assembles a
-// runtime init-script set. v1 produces a placeholder install_tree.tar
-// so downstream consumers (kind:flatpak_image, etc.) can reference
-// it without breaking the graph.
+// runtime init-script set. v1 produces a placeholder install-root
+// TreeArtifact so downstream consumers (kind:flatpak_image, etc.)
+// can reference it without breaking the graph.
 //
 // 15 of FDSDK's elements use kind:collect_initial_scripts
 // (1.4 % of the total). All live under elements/initial-scripts/
@@ -44,15 +44,15 @@ func (collectInitialScriptsHandler) RenderA(elem *element, elemPkg string) error
 # %%{install-root}/usr/lib/initial-scripts/) lands when an
 # FDSDK fixture forces it.
 
+load("@rules_buildstream_bazel//rules:install.bzl", "pipeline_install")
+
 package(default_visibility = ["//visibility:public"])
 
-genrule(
+pipeline_install(
     name = "%[1]s_install",
     srcs = [],
-    outs = ["install_tree.tar"],
-    cmd = """
-        EMPTY="$$(mktemp -d)"
-        tar -cf "$(location install_tree.tar)" -C "$$EMPTY" .
+    command = """
+        mkdir -p "@@INSTALL_DIR@@"
     """,
 )
 `, elem.Name)

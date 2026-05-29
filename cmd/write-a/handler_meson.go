@@ -117,8 +117,8 @@ func (mesonHandler) RenderB(elem *element, elemPkg string) error {
 	// emitted in this branch. Post-build the driver stages A's
 	// BUILD.bazel.out alongside this BUILD.bazel (same package), so
 	// labels declared in BUILD.bazel.out (cc_import / sh_binary
-	// stubs + the extract genrule referencing "install_tree.tar")
-	// resolve to this genrule's install_tree.tar output via
+	// stubs fed by pick_file over the install-root TreeArtifact)
+	// resolve to this element's pipeline_install output via
 	// same-package label resolution. Mirrors kind:cmake's
 	// renderCmakeRound2B; see
 	// docs/design/rendezvous.md.

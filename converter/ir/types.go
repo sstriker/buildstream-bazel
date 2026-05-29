@@ -22,13 +22,21 @@ const (
 	KindGenrule
 	KindCCTest
 	KindShBinary
+	// KindPickFile renders as the rules_buildstream_bazel
+	// `pick_file(name=, src=, path=)` rule: it projects a single
+	// file out of a pipeline_install install-root TreeArtifact into
+	// a plain File label. The round-2 execute-process fallback emits
+	// one per artefact / header the cc_import / sh_binary stubs
+	// reference, replacing the old _install_tree_extract tar-untar
+	// genrule (no per-consumer re-materialization of the whole tree).
+	KindPickFile
 	// KindFilegroup carries a list of source files exposed via a
 	// Bazel-native `filegroup()` rule. The cmake converter uses
 	// it to lower install(FILES ...) / install(DIRECTORY ...)
 	// declarations at convert time (Phase 1 task 2 of the
 	// generator-parity uplift in ROADMAP.md) — exposing the
 	// named files as a labeled filegroup downstream consumers
-	// can depend on without pulling install_tree.tar through
+	// can depend on without pulling the install root through
 	// the round-2 fallback. filegroup is in the global Bazel
 	// namespace (no MODULE.bazel deps); for richer attribute
 	// support (per-file destination renames via pkg_files +
@@ -68,6 +76,8 @@ func (k Kind) String() string {
 		return "cc_test"
 	case KindShBinary:
 		return "sh_binary"
+	case KindPickFile:
+		return "pick_file"
 	case KindFilegroup:
 		return "filegroup"
 	case KindAlias:
@@ -382,6 +392,17 @@ type Target struct {
 	// object / dynamic library. Empty when the imported
 	// library has no shared form.
 	SharedLibrary string
+
+	// PickFile-specific fields. Populated only when Kind == KindPickFile.
+
+	// PickSrc is the Bazel label of the pipeline_install target whose
+	// install-root TreeArtifact this pick_file projects a file out of
+	// (e.g. ":foo_trace_build", the same-package install target).
+	PickSrc string
+
+	// PickPath is the path inside the TreeArtifact to project, e.g.
+	// "lib/libthelib.a". The projected File keeps this path's basename.
+	PickPath string
 
 	// Genrule-specific fields. Populated only when Kind == KindGenrule.
 

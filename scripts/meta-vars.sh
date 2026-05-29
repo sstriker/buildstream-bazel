@@ -21,7 +21,7 @@
 #      %{install-root} mapped to $$INSTALL_ROOT, and no literal
 #      %{prefix} / %{greeting-dir} / %{datadir} leak through.
 #   2. bazel build //elements/greet:greet_install in project A.
-#   3. The driver extracts bazel-bin/elements/greet/install_tree.tar
+#   3. The driver reads bazel-bin/elements/greet/greet_install/install/
 #      and asserts opt/freedesktop-sdk/share/greetings/hello.txt
 #      exists with the fixture's expected content.
 #
@@ -69,7 +69,7 @@ done
 for marker in 'name = "greet_install"' \
               '# === install ===' \
               '$$INSTALL_ROOT/opt/freedesktop-sdk/share/greetings/hello.txt' \
-              'outs = ["install_tree.tar"]'; do
+              'pipeline_install('; do
     if ! grep -qF "$marker" "$A/elements/greet/BUILD.bazel"; then
         echo "meta-vars: project A greet BUILD missing marker: $marker" >&2
         cat "$A/elements/greet/BUILD.bazel" >&2
@@ -126,21 +126,20 @@ run_bazel() {
 
 # === bazel build project A ===
 run_bazel "$A" build //elements/greet:greet_install 2>&1 | tail -10
-install_tar="$A/bazel-bin/elements/greet/install_tree.tar"
-if [ ! -f "$install_tar" ]; then
-    echo "meta-vars: install_tree.tar not produced" >&2
+# The install root is a TreeArtifact directory (declare_directory),
+# read in place (no untar).
+extract_dir="$A/bazel-bin/elements/greet/greet_install/install"
+if [ ! -d "$extract_dir" ]; then
+    echo "meta-vars: install-root TreeArtifact not produced at $extract_dir" >&2
     exit 1
 fi
 
-# === Extract + verify ===
-extract_dir="$work_dir/extract"
-mkdir -p "$extract_dir"
-tar -xf "$install_tar" -C "$extract_dir"
+# === Verify in place ===
 greeting="$extract_dir/opt/freedesktop-sdk/share/greetings/hello.txt"
 if [ ! -f "$greeting" ]; then
-    echo "meta-vars: extracted tarball missing opt/freedesktop-sdk/share/greetings/hello.txt" >&2
-    echo "  tarball contents:" >&2
-    tar -tf "$install_tar" | sed 's/^/    /' >&2
+    echo "meta-vars: install root missing opt/freedesktop-sdk/share/greetings/hello.txt" >&2
+    echo "  install root contents:" >&2
+    find "$extract_dir" | sed 's/^/    /' >&2
     exit 1
 fi
 content=$(cat "$greeting")
@@ -151,6 +150,6 @@ if [ "$content" != "$expected" ]; then
     echo "  got:  $content" >&2
     exit 1
 fi
-echo "meta-vars: install_tree.tar contains opt/freedesktop-sdk/share/greetings/hello.txt with expected content"
+echo "meta-vars: install-root TreeArtifact contains opt/freedesktop-sdk/share/greetings/hello.txt with expected content"
 
 echo "meta-vars: ok (element variable overrides resolved through derived defaults; install tarball lands at the overridden path)"

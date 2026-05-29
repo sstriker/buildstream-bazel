@@ -52,6 +52,20 @@ type timings struct {
 	TotalSecs          float64 `json:"total_seconds"`
 }
 
+// fallbackInstallTarget derives the same-package pipeline_install
+// target label the round-2 execute-process fallback's pick_file
+// stubs project files out of. write-a names that target
+// "<elem>_trace_build", and the bazel package path's basename is
+// the element name (e.g. "elements/foo" -> ":foo_trace_build").
+// Empty package path yields ":_trace_build" (the lower-side
+// default), which a consumer build surfaces loudly if it diverges.
+func fallbackInstallTarget(bazelPackagePath string) string {
+	if bazelPackagePath == "" {
+		return ""
+	}
+	return ":" + filepath.Base(bazelPackagePath) + "_trace_build"
+}
+
 func main() {
 	args, code := cli.Parse(os.Args[1:], os.Stderr)
 	if code != cli.ExitSuccess {
@@ -403,6 +417,7 @@ func run(a cli.Args) error {
 		ConfigureLog:                      configureLogEvents,
 		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 		UnsupportedExecuteProcessFallback: execFallback,
+		FallbackInstallTarget:             fallbackInstallTarget(a.BazelPackagePath),
 		CMakeScriptRunner:                 a.CMakeScriptRunner,
 		CMakeScriptTrace:                  a.CMakeScriptTrace,
 		CMakeScriptBake:                   a.CMakeScriptBake,

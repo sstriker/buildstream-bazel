@@ -103,7 +103,7 @@ DESTDIR="$$INSTALL_ROOT" meson install -C "$$BUILD_ROOT"`
 	got := wrapMesonPipelineCmds(cmds)
 
 	for _, want := range []string{
-		`"$$EXEC_ROOT/$(location //tools:build-tracer)"`,
+		`"@@TOOL:0@@"`,
 		`--normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT"`,
 		`--normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT"`,
 		`--normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"`,
@@ -148,9 +148,9 @@ func TestMesonRound2InstallBuild_RenderShape(t *testing.T) {
 	got := mesonRound2InstallBuild(elem, tracePlatform{})
 
 	for _, want := range []string{
+		`pipeline_install(`,
 		`name = "demo_trace_build"`,
 		`tags = ["trace_build"]`,
-		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"//tools:build-tracer"`,
 		`"//tools:trace-publish"`,
@@ -195,7 +195,6 @@ func TestMesonRound2InstallBuild_MultiPlatform(t *testing.T) {
 	for _, want := range []string{
 		`name = "demo_trace_build_linux_x86_64"`,
 		`tags = ["trace_build"]`,
-		`"linux_x86_64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
 		`exec_compatible_with`,
 		`"@platforms//cpu:x86_64"`,

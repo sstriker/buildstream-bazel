@@ -1,0 +1,8 @@
+# Self-contained spike workspace. Intentionally dependency-free: the
+# custom rules drive the host cc/ar directly via run_shell so the
+# proof needs no rules_cc / cc-toolchain bzlmod wiring — the point
+# under test is the TreeArtifact plumbing, not toolchain resolution.
+module(
+    name = "tree_artifact_install_spike",
+    version = "0.0.0",
+)

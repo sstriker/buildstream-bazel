@@ -15,7 +15,8 @@
 #      generated_sources / cross-compile / unresolved-dependency /
 #      unknown target type) produce the install-plan-driven
 #      placeholder shape (per-target cc_import / sh_binary stubs +
-#      extract genrule pointing at install_tree.tar) instead of
+#      pick_file targets projecting from the install-root
+#      TreeArtifact) instead of
 #      Tier-1 exit.
 #   2. Project B's per-element BUILD emits a real install genrule
 #      wrapping `meson setup --prefix=/ --libdir=lib + ninja + meson
@@ -127,9 +128,9 @@ done
 # B-side: real install genrule replaces the placeholder.
 b_build="$B/elements/meson-greet/BUILD.bazel"
 for marker in \
+    'pipeline_install(' \
     'name = "meson-greet_trace_build"' \
     'tags = ["trace_build"]' \
-    '"install_tree.tar"' \
     '"trace.log"' \
     '"//tools:build-tracer"' \
     '"//tools:trace-publish"' \
@@ -233,15 +234,15 @@ EOF
         --out-build="$out_build" \
         --unsupported-target-fallback=true >"$work_dir/standalone-fallback.log" 2>&1
     for marker in \
-        '_install_tree_extract' \
-        '"install_tree.tar"' \
-        '"install_tree/lib/libfoo.a"' \
-        '"install_tree/bin/foo-bin"' \
-        '"install_tree/include/foo.h"' \
+        'load("@rules_buildstream_bazel//rules:install.bzl", "pick_file")' \
+        'pick_file(' \
+        'path = "lib/libfoo.a"' \
+        'path = "bin/foo-bin"' \
+        'path = "include/foo.h"' \
         'cc_import' \
         'sh_binary' \
-        'static_library = "install_tree/lib/libfoo.a"' \
-        'srcs = ["install_tree/bin/foo-bin"]' \
+        'static_library = ":_pick_lib_libfoo_a"' \
+        'srcs = [":_pick_bin_foo_bin"]' \
         'meson-codegen-target-fallback'; do
         if ! grep -qF -- "$marker" "$out_build"; then
             echo "meta-meson-round2-fallback: standalone fallback BUILD missing marker: $marker" >&2

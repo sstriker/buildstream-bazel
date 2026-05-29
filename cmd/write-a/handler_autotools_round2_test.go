@@ -171,14 +171,14 @@ func TestWriter_AutotoolsRound2_ProjectAConverterGenrule(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`pipeline_install(`,
 		`name = "auto_trace_build"`,
 		`tags = ["trace_build"]`,
-		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"make-db.txt"`,
 		`"//tools:build-tracer"`,
 		`"//tools:trace-publish"`,
-		`$(location //tools:trace-publish)`,
+		`"@@TOOL:1@@"`,
 		`CAS_GRPC_ADDR`,
 		`--srckey=`,
 	} {
@@ -272,8 +272,6 @@ func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		`name = "auto_trace_build_linux_x86_64"`,
 		`name = "auto_trace_build_darwin_arm64"`,
 		`tags = ["trace_build"]`,
-		`"linux_x86_64/install_tree.tar"`,
-		`"darwin_arm64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
 		`"darwin_arm64/trace.log"`,
 		`"linux_x86_64/generated-headers.txt"`,
@@ -289,22 +287,24 @@ func TestWriter_AutotoolsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		`"@platforms//os:darwin"`,
 		`--platform="linux_x86_64"`,
 		`--platform="darwin_arm64"`,
-		`name = "install_tree.tar"`,
-		`["linux_x86_64/install_tree.tar"]`,
-		`["darwin_arm64/install_tree.tar"]`,
+		// Top-level install-root select() filegroup + per-platform
+		// install targets as its arms.
+		`name = "auto_install"`,
+		`[":auto_trace_build_linux_x86_64"]`,
+		`[":auto_trace_build_darwin_arm64"]`,
 		`"//conditions:default": [],`,
-		`$(location linux_x86_64/generated-headers.txt)`,
-		`$(location darwin_arm64/generated-headers.txt)`,
+		`@@OUT:linux_x86_64/generated-headers.txt@@`,
+		`@@OUT:darwin_arm64/generated-headers.txt@@`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("multi-platform autotools project B missing %q\n%s", want, got)
 		}
 	}
 
-	// Legacy single-platform genrule name (`_install` or
-	// unsuffixed `_trace_build`) must NOT appear.
+	// Legacy unsuffixed install rule name must NOT appear. (The
+	// top-level "auto_install" filegroup IS expected — it's the
+	// install-root select() the per-platform fan-out emits.)
 	for _, banned := range []string{
-		`name = "auto_install"`,
 		`name = "auto_trace_build",`,
 	} {
 		if strings.Contains(got, banned) {

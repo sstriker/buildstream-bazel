@@ -14,7 +14,7 @@ import (
 // one of the converter's emitted cc rules.
 //
 // Downstream Phase 4 typed-filegroup work consumes this to
-// split the install_tree.tar artifact into typed slices —
+// split the install-root TreeArtifact into typed slices —
 // libs, binaries, headers, share data — each fronted by its
 // own filegroup. Phase 4 lives in write-a; this artifact is
 // the contract.

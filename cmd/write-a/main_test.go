@@ -747,8 +747,9 @@ func TestWriter_AutotoolsElementShape(t *testing.T) {
 	got := string(body)
 	for _, marker := range []string{
 		// Pipeline shape inherited from pipelineHandler.
+		`pipeline_install(`,
 		`name = "auto_install"`,
-		`outs = ["install_tree.tar"]`,
+		`export INSTALL_ROOT="$$EXEC_ROOT/@@INSTALL_DIR@@"`,
 		// All three phase headers render (autotools defaults supply
 		// commands for configure / build / install).
 		"# === configure ===",
@@ -984,24 +985,27 @@ func TestWriter_AutotoolsNativeWraps(t *testing.T) {
 	// pipeline cmds are wrapped in build-tracer; the AppendCmd
 	// dumps `make -np` and runs convert-element-trace inline.
 	for _, marker := range []string{
+		`pipeline_install(`,
 		`name = "auto_install"`,
-		`"install_tree.tar"`,
+		// extra_outs carry the converter side outputs; the install
+		// root is the TreeArtifact (no install_tree.tar out).
 		`"BUILD.bazel.out"`,
 		`"make-db.txt"`,
 		`"install-mapping.json"`,
 		`"generated-headers.txt"`,
 		`"//tools:build-tracer"`,
 		`"//tools:convert-element-trace"`,
-		`"$$EXEC_ROOT/$(location //tools:build-tracer)"`,
+		// build-tracer is tool 0, convert-element-trace is tool 1.
+		`"@@TOOL:0@@"`,
 		`--normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT"`,
 		`--normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT"`,
 		`--out="$$AUTOTOOLS_TRACE"`,
-		`$(location //tools:convert-element-trace)`,
+		`"@@TOOL:1@@"`,
 		`( make -np 2>/dev/null || true )`,
 		`/^#[[:space:]]+Last modified /d`,
-		`> "$$EXEC_ROOT/$(location make-db.txt)"`,
-		`--make-db="$(location make-db.txt)"`,
-		`--generated-headers="$(location generated-headers.txt)"`,
+		`> "$$EXEC_ROOT/@@OUT:make-db.txt@@"`,
+		`--make-db="@@OUT:make-db.txt@@"`,
+		`--generated-headers="@@OUT:generated-headers.txt@@"`,
 		`PRE_HEADERS_LIST="$$(mktemp)"`,
 		`comm -13 "$$PRE_HEADERS_LIST" "$$POST_HEADERS_LIST"`,
 	} {
@@ -1059,8 +1063,8 @@ func TestWriter_AutotoolsCoarseFallbackWithoutFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(body)
-	if !strings.Contains(got, `outs = ["install_tree.tar"]`) {
-		t.Errorf("coarse fallback should output only install_tree.tar:\n%s", got)
+	if !strings.Contains(got, `pipeline_install(`) {
+		t.Errorf("coarse fallback should emit a pipeline_install (TreeArtifact) install:\n%s", got)
 	}
 	for _, missing := range []string{
 		`BUILD.bazel.out`,
@@ -1896,15 +1900,15 @@ config:
 	}
 	got := string(body)
 	for _, marker := range []string{
+		`pipeline_install(`,
 		`name = "greet_install"`,
-		`outs = ["install_tree.tar"]`,
 		// %{install-root} stays as the runtime sentinel ($$INSTALL_ROOT);
 		// %{prefix} expands to /usr/local at codegen time (BuildStream
 		// stock default — this fixture has no project.conf to override
 		// it the way the real meta-project fixtures do).
 		`$$INSTALL_ROOT/usr/local/share/greeting.txt`,
 		// Source-staging shadow merge same as cmake handler.
-		`for src in $(SRCS)`,
+		`for src in @@SRCS@@`,
 		// install-commands phase header rendered.
 		`# === install ===`,
 	} {
@@ -1972,9 +1976,9 @@ sources:
 	got := string(body)
 	for _, marker := range []string{
 		// Pipeline shape.
+		`pipeline_install(`,
 		`name = "build-it_install"`,
-		`outs = ["install_tree.tar"]`,
-		`for src in $(SRCS)`,
+		`for src in @@SRCS@@`,
 		// kind:make defaults render verbatim — no per-element
 		// build/install commands in the .bst, so the handler's
 		// pipelineDefaults filled them in.
@@ -2455,7 +2459,7 @@ config:
 	got := string(rendered)
 	for _, marker := range []string{
 		// cmd attribute is a select() over @platforms//cpu:*.
-		"cmd = select({",
+		"command = select({",
 		`"@platforms//cpu:x86_64":`,
 		`"@platforms//cpu:aarch64":`,
 		// Per-arch resolved paths flow through.
@@ -3265,9 +3269,9 @@ func TestWriter_CollectManifestHandler(t *testing.T) {
 	}
 	got := string(body)
 	for _, marker := range []string{
+		`pipeline_install(`,
 		`name = "manifest_install"`,
-		`outs = ["install_tree.tar"]`,
-		`EMPTY="$$(mktemp -d)"`,
+		`mkdir -p "@@INSTALL_DIR@@"`,
 		// No source staging for collect_manifest.
 		`srcs = []`,
 	} {
@@ -3327,9 +3331,9 @@ func TestWriter_FDSDKGlueHandlers(t *testing.T) {
 			}
 			got := string(body)
 			for _, marker := range []string{
+				`pipeline_install(`,
 				`name = "` + c.elemName + `_install"`,
-				`outs = ["install_tree.tar"]`,
-				`EMPTY="$$(mktemp -d)"`,
+				`mkdir -p "@@INSTALL_DIR@@"`,
 				`srcs = []`,
 				c.commentMust, // per-kind comment distinguisher
 			} {

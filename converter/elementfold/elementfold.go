@@ -93,7 +93,7 @@ type Cell struct {
 // renders a select(). This is the round-2 fallback's main
 // divergence axis — `lib/x86_64-linux-gnu/libfoo.a` on linux vs
 // `lib/libfoo.dylib` on darwin lives at distinct paths inside
-// install_tree.tar.
+// the install root.
 func Fold(cells []Cell) (*ir.Package, error) {
 	if len(cells) == 0 {
 		return nil, fmt.Errorf("elementfold: no cells")
@@ -466,7 +466,7 @@ var targetAttrs = []attrDef{
 
 // scalarAttrDef declares one single-string attribute the fold
 // partitions per platform. The cc_import path attrs (static_library
-// / shared_library) are the v1 use case: install_tree.tar's path
+// / shared_library) are the v1 use case: the install root's path
 // layout diverges by platform (multiarch lib dirs, .so vs .dylib),
 // so two cells legitimately carry different values for the same
 // target. Folding them into PerPlatformScalar lets emit render a

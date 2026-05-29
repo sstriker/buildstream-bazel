@@ -33,8 +33,8 @@ import (
 // Each entry drives one converter genrule + one trace_repo
 // instance in project A — the project-A render fans out per
 // platform and a fold-element genrule composes the per-platform
-// ir.json outputs — and one install genrule + one
-// install_tree.tar select() arm in project B for kinds that
+// ir.json outputs — and one install rule + one
+// install-root select() arm in project B for kinds that
 // went through the per-platform install fan-out. The fan-out
 // covers pipelineHandler kinds (kind:make / manual / script /
 // makemaker / modulebuild), kind:autotools (RenderB routes
@@ -71,7 +71,7 @@ type tracePlatform struct {
 
 	// SelectKey is the resolved select() arm label this platform
 	// uses in rendered Bazel select() blocks (project A's fold,
-	// project B's install_tree.tar filegroup). Populated by
+	// project B's install-root select() filegroup). Populated by
 	// loadPlatformsManifest via elementfold.PickSelectKeys after
 	// the matrix is loaded, so consumers can read it directly
 	// without re-validating. The same algorithm runs at fold-

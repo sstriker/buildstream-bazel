@@ -12,8 +12,9 @@
 #      --unsupported-execute-process-fallback=true into
 #      convert-element-cmake so classifier refusals on
 #      execute_process produce the placeholder shape (per-target
-#      cc_import / sh_binary stubs + extract genrule pointing
-#      at install_tree.tar) instead of exiting Tier-1.
+#      cc_import / sh_binary stubs + pick_file targets projecting
+#      files out of the install-root TreeArtifact) instead of
+#      exiting Tier-1.
 #   2. Project B's per-element BUILD emits a real install
 #      genrule wrapping cmake configure + ninja + install + tar
 #      under build-tracer, plus inline trace-publish (when
@@ -125,9 +126,9 @@ done
 # B-side: real install genrule replaces the placeholder.
 b_build="$B/elements/hello-world/BUILD.bazel"
 for marker in \
+    'pipeline_install(' \
     'name = "hello-world_trace_build"' \
     'tags = ["trace_build"]' \
-    '"install_tree.tar"' \
     '"trace.log"' \
     '"//tools:build-tracer"' \
     '"//tools:trace-publish"' \

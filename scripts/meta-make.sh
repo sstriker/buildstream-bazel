@@ -7,12 +7,13 @@
 #      pipelineHandler shape with `make` / `make ... install`
 #      defaults, so the .bst doesn't need a config: block) and
 #      project B (placeholder package).
-#   2. bazel build in project A runs the manual element's genrule;
-#      the install_tree.tar artifact lands at
-#      bazel-bin/elements/greet/install_tree.tar.
-#   3. The driver extracts the tarball and asserts:
+#   2. bazel build in project A runs the element's pipeline_install;
+#      the install-root TreeArtifact lands at
+#      bazel-bin/elements/greet/greet_install/install/.
+#   3. The driver reads the directory in place (no untar) and asserts:
 #        - usr/bin/greet exists and is executable
 #        - running it prints "greet from kind:make"
+#        - aquery shows PipelineInstall + zero tar/untar actions
 #      That's the round-trip — `make` compiled greet.c, `make install`
 #      placed the binary, both kind:make defaults resolved.
 #
@@ -108,21 +109,21 @@ run_bazel() {
 
 # === bazel build project A ===
 run_bazel "$A" build //elements/greet:greet_install 2>&1 | tail -10
-install_tar="$A/bazel-bin/elements/greet/install_tree.tar"
-if [ ! -f "$install_tar" ]; then
-    echo "meta-make: install_tree.tar not produced" >&2
+# The install root is a TreeArtifact directory (declare_directory),
+# not an opaque install_tree.tar. pipeline_install declares it at
+# <name>/install under the target's package output dir.
+install_root="$A/bazel-bin/elements/greet/greet_install/install"
+if [ ! -d "$install_root" ]; then
+    echo "meta-make: install-root TreeArtifact not produced at $install_root" >&2
     exit 1
 fi
 
-# === Extract + verify ===
-extract_dir="$work_dir/extract"
-mkdir -p "$extract_dir"
-tar -xf "$install_tar" -C "$extract_dir"
-greet="$extract_dir/usr/bin/greet"
+# === Verify in place (no untar) ===
+greet="$install_root/usr/bin/greet"
 if [ ! -x "$greet" ]; then
-    echo "meta-make: extracted tarball missing executable usr/bin/greet" >&2
-    echo "  tarball contents:" >&2
-    tar -tf "$install_tar" | sed 's/^/    /' >&2
+    echo "meta-make: install root missing executable usr/bin/greet" >&2
+    echo "  install root contents:" >&2
+    find "$install_root" | sed 's/^/    /' >&2
     exit 1
 fi
 output=$("$greet")
@@ -133,6 +134,20 @@ if [ "$output" != "$expected" ]; then
     echo "  got:  $output" >&2
     exit 1
 fi
-echo "meta-make: install_tree.tar contains usr/bin/greet that runs and prints expected output"
+echo "meta-make: install-root TreeArtifact contains usr/bin/greet that runs and prints expected output"
 
-echo "meta-make: ok (kind:make defaults resolved; make compiled greet.c; install placed binary; runtime output validated)"
+# === aquery: confirm zero tar/untar actions in the install graph ===
+aq=$(run_bazel "$A" aquery '//elements/greet:greet_install' 2>/dev/null || true)
+if echo "$aq" | grep -qiE 'Mnemonic: .*[Tt]ar'; then
+    echo "meta-make: FAIL unexpected tar/untar action in install graph" >&2
+    echo "$aq" | grep -i mnemonic >&2
+    exit 1
+fi
+if ! echo "$aq" | grep -q 'Mnemonic: PipelineInstall'; then
+    echo "meta-make: FAIL expected a PipelineInstall action in the graph" >&2
+    echo "$aq" | grep -i mnemonic >&2
+    exit 1
+fi
+echo "meta-make: aquery confirms PipelineInstall + zero tar/untar actions"
+
+echo "meta-make: ok (kind:make defaults resolved; make compiled greet.c; install placed binary into TreeArtifact root; runtime output validated)"
