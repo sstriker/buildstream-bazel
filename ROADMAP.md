@@ -32,6 +32,29 @@ transition cleanly.
   output (the existing Phase 8 gazelle-roundtrip contract
   in `ROADMAP.md`).
 
+  Multi-package split (opt-in, shipped): `convert-element-cmake
+  --split-packages` emits one BUILD.bazel per directory (the
+  "gazelle model") mirroring the CMakeLists/add_subdirectory
+  layout instead of a single monolithic BUILD. Targets land in
+  the package matching their declaring cmake dir; each include-
+  root becomes a synthesized header `cc_library` (so cmake's
+  single-`-I`-root include semantics survive the split); intra-
+  element deps and cross-package sources are rewritten to label
+  form; `exports.json` carries the sub-package label so cross-
+  element consumers resolve the right package. `buildifier
+  -mode=diff` is a no-op over every emitted BUILD (render gate
+  `scripts/meta-cmake-split-packages.sh`). v1 boundaries: OFF by
+  default and byte-identical to the single-BUILD emit when off;
+  both the local and `--source-key` (orchestrator FUSE-sources)
+  regimes are supported for the header-library idiom; mutually
+  exclusive with `--out-ir-json` (the multi-platform fold path);
+  install-derived / synthesized targets (filegroups, `cc_import`,
+  `cmake_config_bundle`, aliases, genrules, interface libs)
+  stay in the root package; the write-a / stage-b orchestrator
+  unpack wiring is a follow-up (the split is a
+  convert-element-cmake CLI + exports.json capability today).
+  See `docs/design/cmake-split-packages.md`.
+
   Phasing (each phase is a self-contained PR stack with its
   own render gate):
 
