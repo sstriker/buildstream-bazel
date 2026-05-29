@@ -123,6 +123,15 @@ func supportedCMakeEOpsList() string {
 	return strings.Join(parts, ", ")
 }
 
+// copyDrivers names argv[0] basenames the lifter reproduces as
+// a copy genrule. v1 covers POSIX `cp`; the lifter (liftCp)
+// decides file-vs-directory and symlink-deref from the on-disk
+// source. Kept a map (not a bare ==) so widening to `install -m`
+// / `rsync` shapes later is a one-line addition.
+var copyDrivers = map[string]bool{
+	"cp": true,
+}
+
 // stampDrivers names argv[0] basenames whose presence
 // classifies the call as Stamp regardless of how the output
 // is captured. VCS query tools have no legitimate
@@ -253,6 +262,27 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		return ClassifyResult{
 			Bucket: BucketRefuse,
 			Reason: "cmake -E " + op + " is not in the v1 supported-op set (supported: " + supportedCMakeEOpsList() + ")",
+		}
+	}
+
+	// Raw `cp` (POSIX copy) is lifted as a copy, mirroring how
+	// `cmake -E copy` is already lifted. The classifier can't
+	// prove a cp is build-irrelevant from argv alone — `cp
+	// generated.h ${BINARY}/include/` is load-bearing — so
+	// reproducing the copy as a genrule is SOUND, whereas
+	// skipping it would risk dropping a real compile input.
+	//
+	// argv-only here: file-vs-directory and symlink-deref
+	// decisions need the on-disk source and belong in the lifter
+	// (liftCp), which HAS filesystem access. OUTPUT_VARIABLE /
+	// RESULT_VARIABLE-bearing cp calls still classify as copy —
+	// the copy happens regardless; any captured exit/var flows
+	// through the existing dump-vars rescue.
+	if copyDrivers[driver] {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "cp (POSIX copy)",
+			CMakeEOp: "cp",
 		}
 	}
 
