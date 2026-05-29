@@ -169,7 +169,16 @@ def _pick_file_impl(ctx):
     if PipelineInstallInfo in ctx.attr.src:
         tree = ctx.attr.src[PipelineInstallInfo].install_root
     else:
-        tree = ctx.file.src
+        # No provider: take the single DefaultInfo file. (A bare
+        # install-root directory label passed directly, rather than a
+        # pipeline_install target, lands here.) Not allow_single_file
+        # on the attr: a pipeline_install with extra_outs exposes >1
+        # DefaultInfo file, which allow_single_file would reject before
+        # the provider branch above ever runs.
+        files = ctx.attr.src[DefaultInfo].files.to_list()
+        if len(files) != 1:
+            fail("pick_file src %s without PipelineInstallInfo must produce exactly one file; got %d" % (ctx.attr.src.label, len(files)))
+        tree = files[0]
 
     # Declare the projected file under the rule's name, preserving the
     # basename of the requested path so the cc_import / sh_binary stub
@@ -200,9 +209,8 @@ pick_file = rule(
     implementation = _pick_file_impl,
     attrs = {
         "src": attr.label(
-            allow_single_file = True,
             mandatory = True,
-            doc = "The pipeline_install target (or its install-root TreeArtifact label) to project a file out of. Resolved through PipelineInstallInfo when present, else the single declared file.",
+            doc = "The pipeline_install target (or its install-root TreeArtifact label) to project a file out of. Resolved through PipelineInstallInfo when present (the common case — a pipeline_install target may carry extra_outs, so the directory comes from the provider, not allow_single_file), else the single DefaultInfo file.",
         ),
         "path": attr.string(
             mandatory = True,
