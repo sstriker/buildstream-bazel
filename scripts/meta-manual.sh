@@ -8,10 +8,10 @@
 #      the install root) and project B (placeholder package, see
 #      assertion below).
 #   2. bazel build in project A runs the manual element's genrule;
-#      the install_tree.tar artifact lands at
-#      bazel-bin/elements/greet/install_tree.tar.
+#      the install-root TreeArtifact lands at
+#      bazel-bin/elements/greet/greet_install/install/.
 #   3. The driver extracts the tarball and asserts:
-#        - install_tree.tar/usr/share/greeting.txt exists
+#        - usr/share/greeting.txt exists in the install root
 #        - its content is "Hello from kind:manual!"
 #      That's the Phase 3 round-trip — the .bst's install-commands
 #      ran, %{install-root}/%{prefix} substitutions resolved, and
@@ -66,7 +66,7 @@ done
 for marker in 'name = "greet_install"' \
               '# === install ===' \
               '$$INSTALL_ROOT/usr/share/greeting.txt' \
-              'outs = ["install_tree.tar"]'; do
+              'pipeline_install('; do
     if ! grep -qF "$marker" "$A/elements/greet/BUILD.bazel"; then
         echo "meta-manual: project A greet BUILD missing marker: $marker" >&2
         cat "$A/elements/greet/BUILD.bazel" >&2
@@ -112,21 +112,19 @@ run_bazel() {
 
 # === bazel build project A ===
 run_bazel "$A" build //elements/greet:greet_install 2>&1 | tail -10
-install_tar="$A/bazel-bin/elements/greet/install_tree.tar"
-if [ ! -f "$install_tar" ]; then
-    echo "meta-manual: install_tree.tar not produced" >&2
+# The install root is a TreeArtifact directory (declare_directory).
+install_root="$A/bazel-bin/elements/greet/greet_install/install"
+if [ ! -d "$install_root" ]; then
+    echo "meta-manual: install-root TreeArtifact not produced at $install_root" >&2
     exit 1
 fi
 
-# === Extract + verify ===
-extract_dir="$work_dir/extract"
-mkdir -p "$extract_dir"
-tar -xf "$install_tar" -C "$extract_dir"
-greeting="$extract_dir/usr/share/greeting.txt"
+# === Verify in place (no untar) ===
+greeting="$install_root/usr/share/greeting.txt"
 if [ ! -f "$greeting" ]; then
-    echo "meta-manual: extracted tarball missing usr/share/greeting.txt" >&2
-    echo "  tarball contents:" >&2
-    tar -tf "$install_tar" | sed 's/^/    /' >&2
+    echo "meta-manual: install root missing usr/share/greeting.txt" >&2
+    echo "  install root contents:" >&2
+    find "$install_root" | sed 's/^/    /' >&2
     exit 1
 fi
 content=$(cat "$greeting")
@@ -137,6 +135,15 @@ if [ "$content" != "$expected" ]; then
     echo "  got:  $content" >&2
     exit 1
 fi
-echo "meta-manual: install_tree.tar contains usr/share/greeting.txt with expected content"
+echo "meta-manual: install-root TreeArtifact contains usr/share/greeting.txt with expected content"
 
-echo "meta-manual: ok (kind:manual genrule ran; %{install-root}/%{prefix} substitutions resolved; install tarball validated)"
+# === aquery: zero tar/untar actions ===
+aq=$(run_bazel "$A" aquery '//elements/greet:greet_install' 2>/dev/null || true)
+if echo "$aq" | grep -qiE 'Mnemonic: .*[Tt]ar'; then
+    echo "meta-manual: FAIL unexpected tar/untar action" >&2
+    echo "$aq" | grep -i mnemonic >&2
+    exit 1
+fi
+echo "meta-manual: aquery confirms zero tar/untar actions"
+
+echo "meta-manual: ok (kind:manual install ran; %{install-root}/%{prefix} substitutions resolved; install-root TreeArtifact validated)"
