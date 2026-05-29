@@ -22,11 +22,14 @@
 # --split-packages mode writing BUILDs under the TreeArtifact, then tar
 # the synthesized config bundle from the converter's bundle dir.
 #
-# Flag LOGIC stays out of Starlark: write-a assembles the per-element
-# converter flag string (lift / fallback / fidelity / bake-in /
-# diagnostics / exports-in / imports-manifest / prefix presence) and
-# passes it through `converter_args`. The rule only knows the
-# mechanical shadow-build + dep-extract + convert + bundle-tar steps.
+# Dial flag LOGIC stays out of Starlark: write-a assembles the
+# per-element converter dial string (lift / fallback / fidelity /
+# bake-in) and passes it through `converter_args`. The cross-element
+# dep channel (imports.json / dep exports.json) and the diagnostics
+# dial are typed attrs (`imports_manifest` / `exports_in` /
+# `emit_rejections`) the rule turns into converter flags by
+# action-input path. The rule otherwise only knows the mechanical
+# shadow-build + dep-extract + convert + bundle-tar steps.
 
 def _cmake_split_convert_impl(ctx):
     # TreeArtifact: the per-sub-package BUILD tree. The converter writes
@@ -42,7 +45,7 @@ def _cmake_split_convert_impl(ctx):
 
     srcs = ctx.files.srcs
     dep_bundles = ctx.files.dep_bundles
-    aux = ctx.files.aux
+    extra_inputs = []
 
     # Build the shadow source-root the same way the genrule did: merge
     # real srcs (workspace paths under elements/<name>/sources/) and
@@ -50,8 +53,8 @@ def _cmake_split_convert_impl(ctx):
     # Both share a "sources/" segment; strip up to the last one to
     # recover the source-relative suffix. Skip dep artifacts (the
     # bundle tars / imports.json / exports.json) that ride in via srcs
-    # in the genrule — here those live in dep_bundles / aux instead, so
-    # the case guards are belt-and-suspenders.
+    # in the genrule — here those live in dep_bundles / imports_manifest /
+    # exports_in instead, so the case guards are belt-and-suspenders.
     lines = [
         "set -euo pipefail",
         "SHADOW=\"$(mktemp -d)\"",
@@ -100,6 +103,30 @@ def _cmake_split_convert_impl(ctx):
         "--out-exports=%s" % _shquote(exports.path),
         "--bazel-package-path=%s" % _shquote(ctx.attr.bazel_package_path),
     ]
+
+    # Cross-element dep channel (the producer→consumer wiring #310 owns):
+    # the imports manifest + each kind:cmake dep's exports.json. A custom
+    # rule holds the input File objects directly, so these resolve by
+    # action-input path — no genrule $(location) substitution needed (the
+    # reason an earlier draft dropped them). The converter accepts
+    # repeated --exports-in.
+    if ctx.file.imports_manifest:
+        convert_cmd.append("--imports-manifest=%s" % _shquote(ctx.file.imports_manifest.path))
+        extra_inputs.append(ctx.file.imports_manifest)
+    for ex in ctx.files.exports_in:
+        convert_cmd.append("--exports-in=%s" % _shquote(ex.path))
+    extra_inputs += ctx.files.exports_in
+
+    # Diagnostics dial: declare the rejections.json output and ask the
+    # converter to write it, mirroring the genrule's diagnosticOuts +
+    # --diagnostics/--rejections-report pair.
+    outputs = [packages, read_paths, bundle, exports]
+    if ctx.attr.emit_rejections:
+        rejections = ctx.actions.declare_file(ctx.label.name + "/rejections.json")
+        outputs.append(rejections)
+        convert_cmd.append("--diagnostics=true")
+        convert_cmd.append("--rejections-report=%s" % _shquote(rejections.path))
+
     convert_line = " ".join(convert_cmd) + prefix_flag
     if ctx.attr.converter_args:
         convert_line += " " + ctx.attr.converter_args
@@ -112,15 +139,15 @@ def _cmake_split_convert_impl(ctx):
     cmd = "\n".join(lines) + "\n"
 
     ctx.actions.run_shell(
-        outputs = [packages, read_paths, bundle, exports],
-        inputs = depset(srcs + dep_bundles + aux),
+        outputs = outputs,
+        inputs = depset(srcs + dep_bundles + extra_inputs),
         tools = [ctx.executable.converter],
         command = cmd,
         use_default_shell_env = True,
         mnemonic = "CmakeSplitConvert",
         progress_message = "cmake-split-convert %{label}",
     )
-    return [DefaultInfo(files = depset([packages, read_paths, bundle, exports]))]
+    return [DefaultInfo(files = depset(outputs))]
 
 def _shquote(s):
     # Single-quote a literal for safe interpolation into the bash
@@ -141,10 +168,18 @@ cmake_split_convert = rule(
             default = [],
             doc = "Cross-element cmake-config bundle inputs: each kind:cmake dep's :cmake_config_bundle filegroup (or :<dep>_trace_load outputs). The action untars every basename-cmake-config-bundle.tar non-empty member into a shared $PREFIX so find_package(<Pkg> CONFIG) resolves; passing any entry adds --prefix-dir=$PREFIX to the converter invocation.",
         ),
-        "aux": attr.label_list(
+        "imports_manifest": attr.label(
+            allow_single_file = True,
+            doc = "The element's imports.json (present when it has kind:cmake deps). Passed to the converter as --imports-manifest by action-input path so cross-element imported targets resolve. Unset (no deps) elides the flag.",
+        ),
+        "exports_in": attr.label_list(
             allow_files = True,
             default = [],
-            doc = "Auxiliary converter inputs referenced by flags in converter_args (imports.json, dep exports.json). These are staged into the action's input set but NOT shadowed; write-a must reference them in converter_args by their workspace-relative exec path. v1 wires the no-dep / simple case; richer imports/exports threading is documented as a follow-on (see docs/design/cmake-split-packages.md).",
+            doc = "Each kind:cmake dep's exports.json. Each is passed as a repeated --exports-in flag (by action-input path) so the converter resolves dep targets to the producer's emitted labels — the consumer side of the #310 export channel.",
+        ),
+        "emit_rejections": attr.bool(
+            default = False,
+            doc = "Diagnostics dial: when true the rule declares a rejections.json output and passes --diagnostics=true --rejections-report so the converter writes the structured rejection list. Mirrors the genrule's diagnosticOuts.",
         ),
         "bazel_package_path": attr.string(
             mandatory = True,
@@ -152,7 +187,7 @@ cmake_split_convert = rule(
         ),
         "converter_args": attr.string(
             default = "",
-            doc = "Pre-assembled converter flag string built by write-a (lift / fallback / fidelity / bake-in / diagnostics / exports-in / imports-manifest, etc.). Keeping flag LOGIC in write-a means this rule only encodes the mechanical shadow-build + dep-extract + convert + bundle-tar steps. Appended verbatim to the converter invocation.",
+            doc = "Pre-assembled converter dial-flag string built by write-a (lift / fallback / fidelity / bake-in). Keeping dial LOGIC in write-a means this rule only encodes the mechanical shadow-build + dep-extract + convert + bundle-tar steps. Appended verbatim to the converter invocation. The dep channel (imports/exports) and diagnostics are separate typed attrs, not part of this string.",
         ),
         "converter": attr.label(
             mandatory = True,

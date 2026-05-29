@@ -141,13 +141,26 @@ the rule also declares the scalar `read_paths.json`,
 logic (lift / fallback / fidelity / bake-in) is assembled by write-a and
 passed through the rule's `converter_args` string attr, keeping the
 Starlark mechanical (shadow-build + dep-extract + convert + bundle-tar,
-mirroring the genrule bash); kind:cmake dep bundles ride `dep_bundles`
-and `imports.json` / dep `exports.json` ride `aux`. The default (off)
-path keeps the single `BUILD.bazel.out` genrule byte-for-byte.
+mirroring the genrule bash). The cross-element dep channel is threaded
+as typed attrs, not `converter_args`: kind:cmake dep config bundles ride
+`dep_bundles` (untarred into `$PREFIX` for `find_package(<Pkg> CONFIG)`),
+the element's `imports.json` rides `imports_manifest`, and each dep's
+`exports.json` rides `exports_in` — the rule turns the latter two into
+`--imports-manifest` / repeated `--exports-in` flags by action-input
+path (a custom rule holds the input `File`s, so no genrule `$(location)`
+is needed). The diagnostics dial rides `emit_rejections` (declares the
+`rejections.json` output + passes `--diagnostics`/`--rejections-report`).
+The default (off) path keeps the single `BUILD.bazel.out` genrule
+byte-for-byte.
 
-The rule's action behavior is verified by CI/`bazel build` — there is no
-local bazel in the dev sandbox, so the contract write-a owes the rule is
-checked via render-shape assertions, and the action itself runs in CI.
+The rule's action behavior is verified end-to-end under Bazel 9.1.0:
+rendering a project A with `--split-packages` over a multi-directory
+fixture, `bazel build`-ing the `<name>_converted` target, and confirming
+the TreeArtifact materializes the per-sub-package BUILDs; stage-b then
+merges them into project B and `bazel build` over project B compiles the
+split tree (the synthesized header library's `includes=["."]` carries the
+cross-package include path, so `toplib`/`util` compile against the
+`include/` package). CI exercises the same path.
 
 `cmd/stage-b` consumes it: when project A's
 `bazel-bin/elements/<name>/<name>_converted/packages` (the rule's

@@ -77,6 +77,44 @@ func TestWriter_SplitPackages_RuleShape(t *testing.T) {
 	}
 }
 
+// TestWriter_SplitPackages_DepChannel covers the cross-element dep
+// channel on the split path: a kind:cmake element with deps emits the
+// imports_manifest + exports_in typed attrs (which the cmake_split_convert
+// rule turns into --imports-manifest / --exports-in by action-input path),
+// and the diagnostics dial emits emit_rejections. A no-dep element emits
+// none of them.
+func TestWriter_SplitPackages_DepChannel(t *testing.T) {
+	prev := cmakeConfig
+	cmakeConfig.splitPackages = true
+	cmakeConfig.diagnostics = true
+	t.Cleanup(func() { cmakeConfig = prev })
+
+	elem := &element{Name: "consumer"}
+	deps := []cmakeDepBundleLabel{{DepName: "lib", Label: "//elements/lib:cmake_config_bundle"}}
+	depExports := []string{"//elements/lib:exports.json"}
+	block := cmakeSplitConvertBlock(elem, deps, depExports, "", "", "", "")
+
+	for _, want := range []string{
+		`imports_manifest = "imports.json",`,
+		`exports_in = ["//elements/lib:exports.json"],`,
+		`dep_bundles = ["//elements/lib:cmake_config_bundle"],`,
+		`emit_rejections = True,`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("dep-channel split block missing %q\n%s", want, block)
+		}
+	}
+
+	// No-dep, no-diagnostics element: none of the dep-channel attrs.
+	cmakeConfig.diagnostics = false
+	bare := cmakeSplitConvertBlock(&element{Name: "solo"}, nil, nil, "", "", "", "")
+	for _, unwanted := range []string{"imports_manifest", "exports_in", "dep_bundles", "emit_rejections"} {
+		if strings.Contains(bare, unwanted) {
+			t.Errorf("no-dep split block unexpectedly contains %q\n%s", unwanted, bare)
+		}
+	}
+}
+
 // TestWriter_SplitPackages_OffShapeUnchanged pins that the default
 // (flag off) render keeps the single BUILD.bazel.out genrule and emits
 // neither the cmake_split_convert rule nor any --split-packages

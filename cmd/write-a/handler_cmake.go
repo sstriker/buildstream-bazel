@@ -747,19 +747,23 @@ func cmakeSplitConvertBlock(elem *element, cmakeDepLabels []cmakeDepBundleLabel,
 		depBundlesAttr = fmt.Sprintf("\n    dep_bundles = [%s],", strings.Join(q, ", "))
 	}
 
-	// aux: imports.json (when the element has kind:cmake deps) + each
-	// dep's exports.json. Staged into the action's input set; richer
-	// threading through converter_args is a v1 follow-on (see doc).
-	var aux []string
+	// Cross-element dep channel (#310): imports.json (when the element
+	// has kind:cmake deps) rides imports_manifest; each dep's exports.json
+	// rides exports_in. The rule turns these into --imports-manifest /
+	// --exports-in flags by action-input path.
+	depChannelAttrs := ""
 	if len(cmakeDepLabels) > 0 {
-		aux = append(aux, `"imports.json"`)
+		depChannelAttrs += "\n    imports_manifest = \"imports.json\","
 	}
-	for _, lbl := range depExportsLabels {
-		aux = append(aux, fmt.Sprintf("%q", lbl))
+	if len(depExportsLabels) > 0 {
+		var q []string
+		for _, lbl := range depExportsLabels {
+			q = append(q, fmt.Sprintf("%q", lbl))
+		}
+		depChannelAttrs += fmt.Sprintf("\n    exports_in = [%s],", strings.Join(q, ", "))
 	}
-	auxAttr := ""
-	if len(aux) > 0 {
-		auxAttr = fmt.Sprintf("\n    aux = [%s],", strings.Join(aux, ", "))
+	if cmakeConfig.diagnostics {
+		depChannelAttrs += "\n    emit_rejections = True,"
 	}
 
 	// converter_args: the flag LOGIC write-a owns. Each piece is the
@@ -805,7 +809,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = [":%[1]s_converted"],
 )
-`, elem.Name, srcs, depBundlesAttr, auxAttr, converterArgs)
+`, elem.Name, srcs, depBundlesAttr, depChannelAttrs, converterArgs)
 }
 
 // flagTokens strips a genrule flag fragment's bash line-continuation
