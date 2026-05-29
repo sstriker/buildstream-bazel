@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -247,11 +249,17 @@ func run(a cli.Args) error {
 	}
 
 	var imports *manifest.Resolver
-	if a.ImportsManifest != "" {
+	switch {
+	case len(a.ExportsIn) > 0:
+		// Merge the (optional) render-time convention base with the
+		// producer-emitted --exports-in docs, base first so the
+		// producer's real export surface wins on any shared key.
+		imports, err = manifest.LoadMerged(append([]string{a.ImportsManifest}, a.ExportsIn...)...)
+	case a.ImportsManifest != "":
 		imports, err = manifest.Load(a.ImportsManifest)
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 
 	prefixAbs := ""
@@ -513,8 +521,46 @@ func run(a cli.Args) error {
 		}
 	}
 
+	// Producer self-description channels (bundle + exports.json) share
+	// the export namespace recovered from the trace — the codemodel
+	// drops the install(EXPORT ... NAMESPACE ...) prefix, so without
+	// this both would fall back to the project name (right only when
+	// project name == export namespace). The namespace stem keys the
+	// bundle (lib/cmake/<stem>/<stem>Config.cmake) so a consumer's
+	// find_package(<stem>) (with CMAKE_FIND_PACKAGE_PREFER_CONFIG)
+	// resolves against this bundle instead of the host's Find<stem>
+	// module — e.g. project("zlib") + NAMESPACE ZLIB:: ⇒
+	// lib/cmake/ZLIB/ZLIBConfig.cmake exporting ZLIB::ZLIB.
+	var exportNS, bundlePkgName, nsPrefix string
+	var aliases []cmakecfg.Alias
+	if a.OutBundleDir != "" || a.OutExports != "" {
+		exportNS = exportNamespaceForPackage(traceRaw, pkg.Name)
+		bundlePkgName = pkg.Name
+		if exportNS != "" {
+			bundlePkgName = strings.TrimSuffix(exportNS, "::")
+		}
+		nsPrefix = exportNS
+		if nsPrefix == "" {
+			nsPrefix = bundlePkgName + "::"
+		}
+		// Recover add_library(<alias> ALIAS <target>) redirects so a
+		// consumer linking the alias name (e.g. ZLIB::ZLIB aliasing
+		// the real target zlibstatic) resolves both at cmake-configure
+		// time (bundle) and at lower time (exports.json). The codemodel
+		// omits ALIAS targets; the trace records them.
+		importable := map[string]bool{}
+		for _, t := range cmakecfg.ImportableTargets(pkg) {
+			importable[t.Name] = true
+		}
+		aliases = recoverAliases(traceRaw, a.SourceRoot, importable)
+	}
+
 	if a.OutBundleDir != "" {
-		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{})
+		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{
+			Namespace:   exportNS,
+			PackageName: bundlePkgName,
+			Aliases:     aliases,
+		})
 		if err != nil {
 			return err
 		}
@@ -559,9 +605,23 @@ func run(a cli.Args) error {
 			return err
 		}
 		if err := synthprefix.BuildSlice(a.OutBundleDir, []synthprefix.DepBundle{{
-			Pkg:       pkg.Name,
+			Pkg:       bundlePkgName,
 			SourceDir: flatDir,
 		}}); err != nil {
+			return err
+		}
+	}
+
+	if a.OutExports != "" {
+		doc := buildExportsDoc(pkg, bundlePkgName, nsPrefix, a.BazelPackagePath, aliases)
+		body, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutExports), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutExports, append(body, '\n'), 0o644); err != nil {
 			return err
 		}
 	}
@@ -942,6 +1002,152 @@ func cmakeConfigDestination(dest, pkgName string) bool {
 		return true
 	}
 	return strings.HasPrefix(dest, want+"/")
+}
+
+// exportNamespaceForPackage recovers the install(EXPORT ... NAMESPACE
+// ...) prefix the producer declared for the bundle that lands under
+// lib/cmake/<pkgName>. The cmake File API codemodel drops the
+// namespace (shadow.InstallExportCall documents why), so without this
+// cmakecfg falls back to its "<pkgName>::" guess — correct only when
+// the project name matches the export namespace. Returns "" when no
+// namespace-bearing install(EXPORT) is recoverable, leaving cmakecfg's
+// default in place.
+func exportNamespaceForPackage(traceRaw []byte, pkgName string) string {
+	if len(traceRaw) == 0 {
+		return ""
+	}
+	// classifyInstallExport ignores sourceRoot/knownTargets, so the
+	// empty/nil args are fine here.
+	exports := shadow.Decode(traceRaw, "", nil).InstallExports
+	fallback := ""
+	for _, e := range exports {
+		if e.Namespace == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = e.Namespace
+		}
+		// Prefer the export whose DESTINATION is this package's
+		// own cmake-config dir; that's the bundle cmakecfg emits.
+		if cmakeConfigDestination(strings.TrimSuffix(e.Destination, "/"), pkgName) {
+			return e.Namespace
+		}
+	}
+	return fallback
+}
+
+// buildExportsDoc assembles this element's exports manifest: one
+// manifest.Element (named after the bundle's package name) whose
+// exports map each importable library's real namespaced cmake target
+// (<nsPrefix><target>) to this element's Bazel label
+// (//<bazelPkgPath>:<target>). The target set matches cmakecfg's
+// bundle exactly (both go through cmakecfg.ImportableTargets), so the
+// config-mode and label-mapping channels stay in lockstep. Content is
+// source-intrinsic and sorted by cmake_target, so the file is
+// byte-stable across rebuilds that don't change the export surface — a
+// consumer staging it via --exports-in only re-converts when the
+// surface actually changes, not on every producer edit.
+func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, aliases []cmakecfg.Alias) *manifest.Imports {
+	label := func(target string) string {
+		if bazelPkgPath != "" {
+			return "//" + bazelPkgPath + ":" + target
+		}
+		return ":" + target
+	}
+	libs := cmakecfg.ImportableTargets(pkg)
+	exports := make([]*manifest.Export, 0, len(libs)+len(aliases))
+	for _, lib := range libs {
+		ex := &manifest.Export{
+			CMakeTarget: nsPrefix + lib.Name,
+			BazelLabel:  label(lib.Name),
+		}
+		// B: variable-only Find modules (no <Pkg>::<Pkg> target)
+		// resolve via ${<Pkg>_LIBRARIES} → a path or -l<name>. Carry
+		// the produced lib's link name + synth-prefix-anchored path so
+		// the consumer's link-fragment redirect (LookupLinkLibrary /
+		// LookupLinkPath) maps it to this element whether it resolved
+		// against our prefix or the host.
+		if name := linkLibName(lib.ArtifactName); name != "" {
+			ex.LinkLibraries = []string{name}
+			ex.LinkPaths = []string{lower.ManifestPrefixAnchor + installRel(lib)}
+		}
+		exports = append(exports, ex)
+	}
+	// Alias entries map the verbatim consumer-facing name (e.g.
+	// ZLIB::ZLIB) to the underlying target's label, so a consumer
+	// linking the alias resolves to the same element.
+	for _, a := range aliases {
+		exports = append(exports, &manifest.Export{
+			CMakeTarget: a.Name,
+			BazelLabel:  label(a.Underlying),
+		})
+	}
+	sort.Slice(exports, func(i, j int) bool {
+		return exports[i].CMakeTarget < exports[j].CMakeTarget
+	})
+	return &manifest.Imports{
+		Version:  1,
+		Elements: []*manifest.Element{{Name: pkgName, Exports: exports}},
+	}
+}
+
+// linkLibName derives the linker -l<name> from a library artifact
+// basename (libz.so → z, libfoo.a → foo, libz.so.1.3.1 → z). Returns
+// "" for non-library artifacts or unparseable names. Versioned sonames
+// collapse to the unversioned name so the key stays source-stable
+// across version bumps that don't change the link name.
+func linkLibName(artifact string) string {
+	if !strings.HasPrefix(artifact, "lib") {
+		return ""
+	}
+	rest := artifact[len("lib"):]
+	for _, suffix := range []string{".so", ".a", ".dylib"} {
+		if i := strings.Index(rest, suffix); i > 0 {
+			return rest[:i]
+		}
+	}
+	return ""
+}
+
+// installRel is the install-tree-relative path of a target's artifact
+// (<dest>/<artifact>, dest defaulting to "lib"), matching cmakecfg's
+// IMPORTED_LOCATION and the path synthprefix stages — so the anchored
+// link_path lines up with the consumer's resolved fragment.
+func installRel(t ir.Target) string {
+	dest := t.InstallDest
+	if dest == "" {
+		dest = "lib"
+	}
+	return dest + "/" + t.ArtifactName
+}
+
+// recoverAliases extracts add_library(<alias> ALIAS <target>)
+// redirects from the trace (the codemodel omits ALIAS targets),
+// keeping only those whose underlying target is importable so the
+// re-published alias doesn't dangle. Deterministic order (by alias
+// name) keeps exports.json + the bundle byte-stable.
+func recoverAliases(traceRaw []byte, sourceRoot string, importable map[string]bool) []cmakecfg.Alias {
+	if len(traceRaw) == 0 {
+		return nil
+	}
+	// classifyAddLibrary filters to in-source-tree call sites, so the
+	// real source root is required (unlike install(EXPORT) recovery,
+	// which isn't source-filtered).
+	var out []cmakecfg.Alias
+	seen := map[string]bool{}
+	for _, call := range shadow.Decode(traceRaw, sourceRoot, nil).AddLibraries {
+		if call.Type != "ALIAS" || len(call.Aliases) == 0 {
+			continue
+		}
+		underlying := call.Aliases[0]
+		if !importable[underlying] || seen[call.Name] {
+			continue
+		}
+		seen[call.Name] = true
+		out = append(out, cmakecfg.Alias{Name: call.Name, Underlying: underlying})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func handleError(a cli.Args, err error) int {

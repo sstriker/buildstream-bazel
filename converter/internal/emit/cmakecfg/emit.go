@@ -38,13 +38,44 @@ type Bundle struct {
 // packages.
 type Options struct {
 	// Namespace is the prefix added to imported targets. Defaults to
-	// "<Package>::". Set explicitly when the upstream uses a different
+	// "<PackageName>::". Set explicitly when the upstream uses a different
 	// convention (e.g. "Foo::" when project is "foo").
 	Namespace string
+
+	// PackageName is the find_package(<name>) the bundle answers to —
+	// it names the config files (<PackageName>Config.cmake etc.) and,
+	// via the caller, the lib/cmake/<PackageName>/ directory. Defaults
+	// to pkg.Name. Set it to the install(EXPORT ... NAMESPACE <ns>::)
+	// stem (e.g. "ZLIB" for a project("zlib") that exports ZLIB::ZLIB)
+	// so a consumer's find_package(ZLIB) resolves against this bundle
+	// rather than the host's FindZLIB module. The cmake File API
+	// codemodel drops the namespace, so the caller recovers it from
+	// the trace (shadow.InstallExportCall).
+	PackageName string
 
 	// Configs lists the per-config bundle files to emit. Defaults to
 	// ["Release"].
 	Configs []string
+
+	// Aliases lists consumer-facing add_library(<Name> ALIAS
+	// <Underlying>) redirects to re-publish in the bundle. The cmake
+	// File API codemodel omits ALIAS targets (they're configure-time
+	// name redirects), so a consumer linking the alias name (e.g.
+	// ZLIB::ZLIB aliasing the real target zlibstatic) would find no
+	// such target in the synthesized config. Each alias renders as an
+	// `add_library(<Name> ALIAS <Namespace><Underlying>)` line, so the
+	// alias resolves to the same imported artifact. Underlyings not in
+	// the importable set are dropped by Emit (the ALIAS would dangle).
+	Aliases []Alias
+}
+
+// Alias is one add_library(<Name> ALIAS <Underlying>) redirect to
+// re-publish in the synthesized bundle. Name is the verbatim
+// consumer-facing name (already namespaced, e.g. "ZLIB::ZLIB");
+// Underlying is the bare name of the importable target it points at.
+type Alias struct {
+	Name       string
+	Underlying string
 }
 
 // Emit produces a Bundle for pkg. Only kinds that map onto IMPORTED targets
@@ -54,8 +85,11 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 	if pkg.Name == "" {
 		return nil, fmt.Errorf("cmakecfg.Emit: package has empty Name")
 	}
+	if opts.PackageName == "" {
+		opts.PackageName = pkg.Name
+	}
 	if opts.Namespace == "" {
-		opts.Namespace = pkg.Name + "::"
+		opts.Namespace = opts.PackageName + "::"
 	}
 	if len(opts.Configs) == 0 {
 		opts.Configs = []string{"Release"}
@@ -76,20 +110,34 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 		return b, nil
 	}
 
-	cfg, err := renderConfig(pkg.Name)
+	cfg, err := renderConfig(opts.PackageName)
 	if err != nil {
 		return nil, err
 	}
-	b.Files[pkg.Name+"Config.cmake"] = cfg
+	b.Files[opts.PackageName+"Config.cmake"] = cfg
 
-	tgts, err := renderTargets(pkg.Name, opts.Namespace, libs)
+	// Keep only aliases whose underlying is an exported library; an
+	// ALIAS to an unexported target would dangle at consumer
+	// find_package time.
+	importable := make(map[string]bool, len(libs))
+	for _, l := range libs {
+		importable[l.Name] = true
+	}
+	var aliases []Alias
+	for _, a := range opts.Aliases {
+		if importable[a.Underlying] {
+			aliases = append(aliases, a)
+		}
+	}
+
+	tgts, err := renderTargets(opts.PackageName, opts.Namespace, libs, aliases)
 	if err != nil {
 		return nil, err
 	}
-	b.Files[pkg.Name+"Targets.cmake"] = tgts
+	b.Files[opts.PackageName+"Targets.cmake"] = tgts
 
 	for _, conf := range opts.Configs {
-		name := pkg.Name + "Targets-" + lowercase(conf) + ".cmake"
+		name := opts.PackageName + "Targets-" + lowercase(conf) + ".cmake"
 		body, err := renderTargetsConfig(opts.Namespace, libs, conf)
 		if err != nil {
 			return nil, err
@@ -97,6 +145,15 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 		b.Files[name] = body
 	}
 	return b, nil
+}
+
+// ImportableTargets returns the library targets a find_package
+// consumer can import from pkg — the same set Emit publishes as
+// IMPORTED targets in the synthetic bundle. Exposed so the
+// exports.json producer (convert-element-cmake) lists exactly the
+// targets the bundle exports, keeping the two channels in lockstep.
+func ImportableTargets(pkg *ir.Package) []ir.Target {
+	return filterImportable(pkg.Targets)
 }
 
 func filterImportable(ts []ir.Target) []ir.Target {
@@ -189,6 +246,11 @@ set_target_properties({{$.NS}}{{.Name}} PROPERTIES
 )
 {{end}}
 {{end -}}
+{{range .Aliases}}
+# Consumer-facing alias (add_library({{.Name}} ALIAS ...)); inherits
+# the underlying imported target's properties.
+add_library({{.Name}} ALIAS {{$.NS}}{{.Underlying}})
+{{end -}}
 
 # Per-config target details.
 file(GLOB _cmake_config_files "${CMAKE_CURRENT_LIST_DIR}/{{.Pkg}}Targets-*.cmake")
@@ -239,7 +301,7 @@ func renderConfig(pkg string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func renderTargets(pkg, ns string, targets []ir.Target) ([]byte, error) {
+func renderTargets(pkg, ns string, targets []ir.Target, aliases []Alias) ([]byte, error) {
 	funcs := template.FuncMap{
 		"importedKind": importedKind,
 	}
@@ -249,6 +311,7 @@ func renderTargets(pkg, ns string, targets []ir.Target) ([]byte, error) {
 		"Pkg":     pkg,
 		"NS":      ns,
 		"Targets": targets,
+		"Aliases": aliases,
 	}); err != nil {
 		return nil, err
 	}

@@ -132,6 +132,74 @@ func Load(path string) (*Resolver, error) {
 	return Index(&im)
 }
 
+// LoadDoc reads and parses an imports manifest without indexing it.
+// Used by callers that merge several docs before building one
+// Resolver (e.g. a base --imports-manifest plus N --exports-in
+// producer manifests).
+func LoadDoc(path string) (*Imports, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("manifest: read %s: %w", path, err)
+	}
+	var im Imports
+	if err := json.Unmarshal(b, &im); err != nil {
+		return nil, fmt.Errorf("manifest: parse %s: %w", path, err)
+	}
+	return &im, nil
+}
+
+// LoadMerged reads several manifest docs (skipping empty paths) and
+// indexes them with last-wins precedence on key collisions, rather
+// than Index's strict duplicate-is-an-error. Paths are processed in
+// order, so a caller that lists the render-time convention base
+// first and producer-emitted --exports-in docs after gets the
+// producer's real export surface winning over the convention guess
+// for any shared cmake_target / link key. Each doc must be schema
+// version 1; bazel_label must be non-empty (a mapping to nothing is
+// always an authoring error, never an intended override).
+func LoadMerged(paths ...string) (*Resolver, error) {
+	r := &Resolver{
+		byCMakeTarget: map[string]*Export{},
+		byElement:     map[string]*Element{},
+		byLinkPath:    map[string]*Export{},
+		byLinkLib:     map[string]*Export{},
+	}
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		doc, err := LoadDoc(p)
+		if err != nil {
+			return nil, err
+		}
+		if doc.Version != 1 {
+			return nil, fmt.Errorf("manifest: %s unsupported version %d (want 1)", p, doc.Version)
+		}
+		for _, el := range doc.Elements {
+			if el == nil || el.Name == "" {
+				continue
+			}
+			r.byElement[el.Name] = el
+			for _, ex := range el.Exports {
+				if ex == nil || ex.CMakeTarget == "" {
+					continue
+				}
+				if ex.BazelLabel == "" {
+					return nil, fmt.Errorf("manifest: %s element %q export %q: empty bazel_label", p, el.Name, ex.CMakeTarget)
+				}
+				r.byCMakeTarget[ex.CMakeTarget] = ex
+				for _, lp := range ex.LinkPaths {
+					r.byLinkPath[lp] = ex
+				}
+				for _, ll := range ex.LinkLibraries {
+					r.byLinkLib[ll] = ex
+				}
+			}
+		}
+	}
+	return r, nil
+}
+
 // Index validates the manifest and returns a Resolver.
 //
 // Validation:

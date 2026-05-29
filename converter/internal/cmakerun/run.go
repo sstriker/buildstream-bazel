@@ -403,6 +403,18 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath 
 		)
 	}
 
+	// With cross-element synth bundles staged under PrefixDir, prefer
+	// config mode so a bare find_package(<Pkg>) resolves against the
+	// producer element's synthesized <Pkg>Config.cmake instead of a
+	// host Find<Pkg> module that would pull in /usr/lib (the ~50
+	// builtin Find modules that fabricate a <Pkg>::<Pkg> target —
+	// ZLIB, PNG, Freetype, ...). Non-destructive: config-first still
+	// falls back to module mode for any package we didn't synthesize a
+	// bundle for, so un-elemented deps resolve exactly as before.
+	if opts.PrefixDir != "" {
+		argv = append(argv, "-DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON")
+	}
+
 	if len(opts.ExtraCacheVars) > 0 {
 		keys := make([]string, 0, len(opts.ExtraCacheVars))
 		for k := range opts.ExtraCacheVars {

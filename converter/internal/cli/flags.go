@@ -92,6 +92,26 @@ type Args struct {
 	// cmake-config bundle is written (one .cmake file per kind).
 	OutBundleDir string
 
+	// OutExports, when non-empty, is the path where the element's
+	// exports manifest (a manifest.Imports doc describing this element
+	// as a producer: real namespaced cmake targets → this element's
+	// Bazel labels) is written. Downstream consumers stage it via
+	// --exports-in so their lower pass resolves the producer's
+	// IMPORTED targets to real labels — replacing write-a's render-time
+	// "<elem>::<elem>" convention guess with the producer's own
+	// trace-recovered export surface. Content is deterministic
+	// (sorted, source-intrinsic) so it doesn't churn consumer caches.
+	OutExports string
+
+	// ExportsIn lists producer exports-manifest files (each a
+	// manifest.Imports doc emitted by a dep's --out-exports) to merge
+	// into the imports resolver alongside --imports-manifest. This is
+	// the action-time half of the producer→consumer export channel:
+	// the dep's real export surface arrives as a build input rather
+	// than being guessed at write-a render time. Repeatable
+	// (--exports-in a --exports-in b).
+	ExportsIn []string
+
 	// OutFailure, when non-empty, is the path to write failure.json on
 	// Tier-1 errors.
 	OutFailure string
@@ -490,6 +510,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.ProbeDistroHardening, "probe-distro-hardening", false, "probe the convert host's cc for distro-default hardening flags (FORTIFY_SOURCE, stack-protector) that Bazel's hermetic cc_toolchain won't reproduce; emit a stderr warning naming the detected flags + a remediation recipe. Diagnostic-only.")
 	fs.StringVar(&a.OutBuild, "out-build", "BUILD.bazel", "destination path for generated BUILD.bazel")
 	fs.StringVar(&a.OutBundleDir, "out-bundle-dir", "", "directory for synthesized cmake-config bundle (optional)")
+	fs.StringVar(&a.OutExports, "out-exports", "", "path to write this element's exports manifest (manifest.Imports JSON: real namespaced cmake targets → this element's Bazel labels) for downstream consumers' --exports-in (optional; requires --bazel-package-path for label formation)")
+	fs.Var(repeatedString{&a.ExportsIn}, "exports-in", "producer exports-manifest file to merge into the imports resolver (the action-time half of the producer→consumer export channel). Repeatable: --exports-in a --exports-in b.")
 	fs.StringVar(&a.OutFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	fs.StringVar(&a.ImportsManifest, "imports-manifest", "", "path to JSON imports manifest mapping out-of-tree CMake targets to Bazel labels (optional)")
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
@@ -614,6 +636,25 @@ type LookEnv func(string) (string, bool)
 
 // OSLookEnv is the production env reader.
 var OSLookEnv LookEnv = func(k string) (string, bool) { return os.LookupEnv(k) }
+
+// repeatedString adapts a *[]string to flag.Value, appending one
+// entry per flag occurrence (`--foo a --foo b` → []string{"a","b"}).
+// Used for path-valued flags where comma-splitting would be wrong.
+type repeatedString struct{ p *[]string }
+
+func (r repeatedString) String() string {
+	if r.p == nil {
+		return ""
+	}
+	return strings.Join(*r.p, " ")
+}
+
+func (r repeatedString) Set(v string) error {
+	if v != "" {
+		*r.p = append(*r.p, v)
+	}
+	return nil
+}
 
 // commaSlice adapts a *[]string to flag.Value so the CLI can take
 // `--foo=a,b,c` (single repeat) and surface as `[]string{"a","b","c"}`.

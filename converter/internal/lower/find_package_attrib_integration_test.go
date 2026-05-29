@@ -9,6 +9,70 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
+// TestLowerTarget_LinkLibraryRedirect covers B: a host-resolved link
+// fragment (/usr/lib/.../libfoo.so) with no find_package attribution
+// and no <Pkg>::<Pkg> manifest entry — the variable-only Find module
+// case. When a producer element claims the lib name via link_libraries,
+// the fragment redirects to the producer's label instead of linking the
+// host -lfoo.
+func TestLowerTarget_LinkLibraryRedirect(t *testing.T) {
+	target := &fileapi.Target{
+		Name: "consumer",
+		Type: "STATIC_LIBRARY",
+		Link: &fileapi.TargetLink{
+			Language: "C",
+			CommandFragments: []fileapi.CommandFragment{
+				{Fragment: "/usr/lib/x86_64-linux-gnu/libfoo.so", Role: "libraries"},
+			},
+		},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"consumer::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "consumer::@", Name: "consumer"}},
+			}},
+		},
+	}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget:   "Foo::foo",
+				BazelLabel:    "//elements/foo:foo",
+				LinkLibraries: []string{"foo"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	// No ConfigureLog / CMakeVars: find_package attribution misses, so
+	// the fragment reaches the systemLibName fallback where the B
+	// redirect fires.
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: imports})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	var found *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "consumer" {
+			found = &pkg.Targets[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("consumer not in pkg.Targets")
+	}
+	if !stringSliceContains(found.Deps, "//elements/foo:foo") {
+		t.Errorf("Deps should include //elements/foo:foo via link-library redirect; got %v", found.Deps)
+	}
+	if stringSliceContains(found.LinkOpts, "-lfoo") {
+		t.Errorf("LinkOpts should not contain -lfoo (redirected to the producer element); got %v", found.LinkOpts)
+	}
+}
+
 // TestLowerTarget_FindPackageAttrib_ManifestHit covers the case
 // where a Link.CommandFragments path resolves via the
 // find_package(X) attribution AND the imports manifest has an

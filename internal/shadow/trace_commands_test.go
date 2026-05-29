@@ -379,6 +379,50 @@ func TestExtract_RealCmakeTrace(t *testing.T) {
 	}
 }
 
+// TestDecode_InstallExportNamespace recovers the NAMESPACE the
+// codemodel drops. The install(TARGETS ... EXPORT <name> ...) form
+// (which carries no NAMESPACE) must be ignored; only the
+// install(EXPORT <name> ... NAMESPACE <ns> ...) form is recorded.
+func TestDecode_InstallExportNamespace(t *testing.T) {
+	trace := strings.Join([]string{
+		// Associates the target with an export — no namespace; must NOT match.
+		`{"args":["TARGETS","usepkg","EXPORT","usepkgTargets","ARCHIVE","DESTINATION","lib"],"cmd":"install","file":"/src/CMakeLists.txt","line":17}`,
+		// The real namespace-bearing form.
+		`{"args":["EXPORT","usepkgTargets","FILE","usepkgTargets.cmake","NAMESPACE","usepkg::","DESTINATION","lib/cmake/usepkg"],"cmd":"install","file":"/src/CMakeLists.txt","line":21}`,
+	}, "\n") + "\n"
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.InstallExports) != 1 {
+		t.Fatalf("want 1 install(EXPORT) call, got %d (%+v)", len(d.InstallExports), d.InstallExports)
+	}
+	c := d.InstallExports[0]
+	if c.ExportName != "usepkgTargets" {
+		t.Errorf("ExportName = %q, want usepkgTargets", c.ExportName)
+	}
+	if c.Namespace != "usepkg::" {
+		t.Errorf("Namespace = %q, want usepkg::", c.Namespace)
+	}
+	if c.File != "usepkgTargets.cmake" {
+		t.Errorf("File = %q, want usepkgTargets.cmake", c.File)
+	}
+	if c.Destination != "lib/cmake/usepkg" {
+		t.Errorf("Destination = %q, want lib/cmake/usepkg", c.Destination)
+	}
+}
+
+// TestDecode_InstallExportNoNamespace covers install(EXPORT) without
+// a NAMESPACE keyword (legal cmake — the targets export under their
+// bare names). The call is still recorded; Namespace is empty.
+func TestDecode_InstallExportNoNamespace(t *testing.T) {
+	trace := `{"args":["EXPORT","fooTargets","DESTINATION","lib/cmake/foo"],"cmd":"install","file":"/src/CMakeLists.txt","line":9}` + "\n"
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.InstallExports) != 1 {
+		t.Fatalf("want 1 call, got %d", len(d.InstallExports))
+	}
+	if d.InstallExports[0].Namespace != "" {
+		t.Errorf("Namespace = %q, want empty", d.InstallExports[0].Namespace)
+	}
+}
+
 // TestExtractFileGenerate_InputForm walks the INPUT shape:
 // file(GENERATE OUTPUT <out> INPUT <in> CONDITION <c> NEWLINE_STYLE UNIX).
 // CONDITION is recorded verbatim — evaluation happens at

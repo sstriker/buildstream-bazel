@@ -477,6 +477,19 @@ filegroup(
 		// the right Bazel labels.
 		srcsList += `, "imports.json"`
 	}
+	// Each kind:cmake dep's exports.json (the producer's own
+	// trace-recovered export surface) is staged + threaded via
+	// --exports-in below. Depending on the narrow exports.json
+	// output (not the dep's whole converted BUILD) means a dep edit
+	// that leaves its export surface unchanged doesn't re-invalidate
+	// this consumer's conversion.
+	depExportsLabels := cmakeDepExportsLabels(elem)
+	exportsInFlag := ""
+	for _, lbl := range depExportsLabels {
+		srcsList += fmt.Sprintf(`, %q`, lbl)
+		exportsInFlag += fmt.Sprintf(` \
+            --exports-in="$(location %s)"`, lbl)
+	}
 	if cmakeConfig.round2FallbackEnabled {
 		// :<elem>_trace_load is an action-time trace_load target
 		// (see rules/traces.bzl) that shells to trace-lookup at
@@ -589,7 +602,8 @@ genrule(
     outs = [
         "BUILD.bazel.out",
         "read_paths.json",
-        "cmake-config-bundle.tar",%[11]s
+        "cmake-config-bundle.tar",
+        "exports.json",%[11]s
     ],
     cmd = """
         # Build a unified source-root by merging real srcs (workspace
@@ -604,6 +618,7 @@ genrule(
             case "$$src" in
                 *cmake-config-bundle.tar) continue ;;
                 */imports.json) continue ;;
+                */exports.json) continue ;;
             esac
             rel="$${src##*sources/}"
             mkdir -p "$$SHADOW/$$(dirname "$$rel")"
@@ -619,7 +634,8 @@ genrule(
             --out-build="$(location BUILD.bazel.out)" \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
-            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s
+            --out-exports="$(location exports.json)" \\
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -640,7 +656,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag)
 	return b.String()
 }
 
@@ -686,6 +702,25 @@ type cmakeDepBundleLabel struct {
 // traceDrivenSrckeyPatternsForKind returns non-nil for its kind —
 // and that's exactly when the dep has published bundle bytes
 // available via :<dep>_trace_load.
+// cmakeDepExportsLabels returns the exports.json labels for this
+// element's kind:cmake deps only. Each kind:cmake producer emits an
+// exports.json (via --out-exports); the consumer stages them via
+// --exports-in so its lower pass resolves the producer's real
+// namespaced targets to real Bazel labels — the action-time
+// replacement for write-a's render-time "<dep>::<dep>" convention
+// guess. Trace-driven deps don't run convert-element-cmake, so they
+// have no exports.json and are excluded.
+func cmakeDepExportsLabels(elem *element) []string {
+	var out []string
+	for _, dep := range elem.Deps {
+		if dep == nil || dep.Bst == nil || dep.Bst.Kind != "cmake" {
+			continue
+		}
+		out = append(out, fmt.Sprintf("//elements/%s:exports.json", dep.Name))
+	}
+	return out
+}
+
 func cmakeDepBundleLabels(elem *element) []cmakeDepBundleLabel {
 	var out []cmakeDepBundleLabel
 	for _, dep := range elem.Deps {

@@ -9,6 +9,56 @@ survey (LLVM, VTK, fmt, json, libpng, zlib) on the post-#298 main —
 For the operator-side flag-set discussion that complements this
 audit, see [`operator-toolchain-features.md`](operator-toolchain-features.md).
 
+## Corpus expansion run (abseil / protobuf / googletest / eigen)
+
+Four projects added to maximise pattern coverage over the original
+six. Reproduce with `make fetch-survey && make converter &&
+scripts/run-survey.sh` (pins in the `Makefile`; the runner drives
+`convert-element-cmake --source-root … --diagnostics` per project).
+Run against cmake 3.28.3 on the post-#306 main:
+
+| Project | cc targets | Tier-1 rejections | bazel-idiom findings |
+|---|---:|---:|---|
+| abseil-cpp `20260107.1` | 209 | 0 | 0 |
+| protobuf `v6.31.1` | 122 | 0 | 6 (standalone; see below) |
+| googletest `v1.17.0` | 9 | 0 | 0 |
+| Eigen `3.4.1` | 492 | 1 | 0 |
+
+Two genuine new datapoints:
+
+- **protobuf — `find_package(ZLIB)` is a cross-element dep.** Every
+  `protoc` / plugin / test binary links `find_package(ZLIB)` (`libz.so`),
+  so standalone (the survey runs each project on its own) 6 targets emit
+  `find-package-dep-unresolved` and the dep is dropped from `deps`. Not a
+  converter bug — it's the config-mode-consumer shape the six leaf
+  libraries never exercised. In a real `.bst` element graph (zlib as a
+  sibling kind:cmake element) this resolves through the orchestrated
+  producer→consumer export channel rather than a hand-authored manifest:
+  the zlib producer's convert run synthesizes a `lib/cmake/ZLIB/
+  ZLIBConfig.cmake` bundle (keyed on the trace-recovered
+  `install(EXPORT … NAMESPACE ZLIB::)` stem) plus an `exports.json`
+  mapping `ZLIB::ZLIB` → its Bazel label; write-a stages both into the
+  consumer's convert genrule (`--prefix-dir` + `--exports-in`), and
+  `CMAKE_FIND_PACKAGE_PREFER_CONFIG` makes `find_package(ZLIB)` resolve
+  to the producer bundle instead of the host `libz`. The
+  `TestE2E_CMakeConsumer_NamespaceDiffersFromProject` gate proves the
+  end-to-end edge for a project-name ≠ namespace ≠ target case. The
+  standalone survey deliberately leaves the 6 findings visible rather
+  than masking them with a bespoke imports manifest.
+- **Eigen — 1 × `unsupported-execute-process`.** `test/CMakeLists.txt`
+  runs `c++ --version | head -n 1` — a multi-COMMAND pipeline the
+  execute_process classifier refuses (concurrent stages with stdout
+  chaining). Confined to the test tree; the library graph converts
+  clean.
+
+abseil (the idiom oracle) and googletest convert with **zero** raw
+feature-flag findings — consistent with the post-#247 `liftRawFeatureFlags`
+result on LLVM/VTK/fmt; the feature-flag lift generalises to abseil's
+209 targets without a single `raw-toolchain-feature-flag` residue.
+The codemodel census table above is unchanged: the expansion surfaced
+no newly-consumed-or-dropped field, only the two lift-quality / operator-input
+datapoints noted here.
+
 ## Codemodel field census
 
 | Field | Survey usage | Consumed? | Notes |
