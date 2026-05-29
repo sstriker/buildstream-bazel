@@ -96,6 +96,52 @@ func TestEmit_SubdirLibrary_Split_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_Split_SourceKey_LeavesElementRootRelative asserts the
+// SourceKey (orchestrator FUSE-sources) regime under --split-packages:
+// srcs/hdrs are emitted as @src_<key>//:tree_dir/<element-root-relative>
+// absolute labels that are package-location-independent, so the
+// transform must NOT re-relativize them to the sub-package — it only
+// trims paths in the local (SourceKey=="") regime. Deps still rewrite to
+// cross-package labels in both regimes.
+func TestEmit_Split_SourceKey_LeavesElementRootRelative(t *testing.T) {
+	src, err := filepath.Abs("../../testdata/sample-projects/subdir-library")
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	r, err := fileapi.Load("../../testdata/fileapi/subdir-library")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{
+		BazelPackagePath: "elements/subdir-library",
+		SourceKey:        "abc",
+	})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	util, ok := tree["src/util"]
+	if !ok {
+		t.Fatalf("no src/util package emitted")
+	}
+	body := string(util)
+	// util.c stays element-root-relative under the @src label, NOT
+	// trimmed to "util.c".
+	if !contains(body, "@src_abc//:tree_dir/src/util/util.c") {
+		t.Errorf("SourceKey regime should keep element-root-relative @src path; got:\n%s", body)
+	}
+	if contains(body, "\"util.c\"") {
+		t.Errorf("SourceKey regime must not re-relativize to a bare \"util.c\"; got:\n%s", body)
+	}
+	// Deps still rewrite to the cross-package header-lib label.
+	if !contains(body, "//elements/subdir-library/include:include_headers") {
+		t.Errorf("SourceKey regime should still rewrite deps to cross-package labels; got:\n%s", body)
+	}
+}
+
 // TestEmit_SplitOff_ByteIdenticalToSingleGolden asserts the OFF
 // byte-identity constraint at the EmitSplit boundary: --split-packages
 // false (the single-BUILD path) on subdir-library must byte-match the
