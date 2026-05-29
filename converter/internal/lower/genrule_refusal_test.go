@@ -68,7 +68,7 @@ func TestRecoverGenrule_RefusalBranches(t *testing.T) {
 			srcPath:    buildDir + "/gen/foo.h",
 			graph:      nil,
 			wantCode:   failure.UnsupportedCustomCommand,
-			wantSubstr: "no build.ninja was provided",
+			wantSubstr: "no cmake build graph (build.ninja) was available",
 		},
 		{
 			name:    "no build statement produces the output",
@@ -151,6 +151,27 @@ func TestRecoverGenrule_RefusalBranches(t *testing.T) {
 				t.Errorf("refusal populated SeenBuilds: %d entries; want 0", len(cc.SeenBuilds))
 			}
 		})
+	}
+}
+
+// TestRecoverGenrule_NoGraph_ActionableHint locks in the #215
+// diagnostic: when a target references a generated source but the
+// converter has no build graph (it ran without --source-root /
+// --cmake-build-dir, the common configure_file() case), the refusal
+// must name the fix rather than emit an opaque "no build.ninja"
+// message. Asserts both the configure_file framing and the concrete
+// flags, so a future message edit that drops the actionable hint
+// fails loudly.
+func TestRecoverGenrule_NoGraph_ActionableHint(t *testing.T) {
+	cc := newCodegenContext()
+	_, _, err := cc.recoverGenrule("/tmp/build/gen/config.h", "/src/project", "/tmp/build", nil)
+	if err == nil {
+		t.Fatal("recoverGenrule with nil graph succeeded; want refusal")
+	}
+	for _, want := range []string{"configure_file()", "--source-root", "--cmake-build-dir"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal message %q does not mention %q (the #215 actionable hint)", err.Error(), want)
+		}
 	}
 }
 
