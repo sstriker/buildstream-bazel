@@ -17,11 +17,6 @@ cc_library(
 )
 
 filegroup(
-    name = "install_directory__include",
-    srcs = ["include"],
-)  # keep
-
-filegroup(
     name = "cmake_config_bundle",
     srcs = ["lib/cmake/toplib/toplibTargets.cmake"],
 )  # keep

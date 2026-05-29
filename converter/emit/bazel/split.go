@@ -3,7 +3,6 @@ package bazel
 import (
 	"bytes"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 
@@ -67,6 +66,13 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		dir := plan.targetDir(t.Name)
 		ensure(dir)
 		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
+		// A filegroup whose only srcs were bare packaged directories
+		// (dropped above) would render as an empty, useless rule — skip it.
+		// install(DIRECTORY) of a dir that became its own package is
+		// served by the layout-independent install_tree.tar path.
+		if rt.Kind == ir.KindFilegroup && len(rt.Srcs) == 0 && len(t.Srcs) > 0 {
+			continue
+		}
 		groups[dir] = append(groups[dir], rt)
 	}
 
@@ -117,6 +123,22 @@ type splitPlan struct {
 	headerLibs map[string]string   // include-root dir → header-lib name
 	headersIn  map[string][]string // include-root dir → element-root-relative header paths under it
 	base       string              // repo-root-relative element package path (label base)
+	pkgs       []string            // every sub-package dir (incl. ""), longest-first
+}
+
+// deepestPkg returns the longest sub-package directory that owns path p
+// (p equals it or sits under it). "" (the root package) owns everything
+// not claimed by a deeper package, so it is always the fallback. Used to
+// detect when a retained srcs/hdrs entry would cross into a deeper
+// package — an illegal Bazel cross-boundary reference once that
+// directory has its own BUILD.
+func (p *splitPlan) deepestPkg(s string) string {
+	for _, d := range p.pkgs {
+		if _, ok := relUnder(d, s); ok {
+			return d
+		}
+	}
+	return ""
 }
 
 // targetDir returns the declaring directory of target name, "" (root)
@@ -208,6 +230,26 @@ func planSplit(pkg *ir.Package) *splitPlan {
 		}
 		p.headerLibs[r] = name
 	}
+
+	// The full sub-package set = root ∪ target-declaring dirs ∪
+	// include-root dirs, longest-first so deepestPkg does longest-prefix
+	// matching.
+	pkgSet := map[string]struct{}{"": {}}
+	for _, d := range p.sub {
+		pkgSet[normDir(d)] = struct{}{}
+	}
+	for r := range p.headerLibs {
+		pkgSet[normDir(r)] = struct{}{}
+	}
+	for d := range pkgSet {
+		p.pkgs = append(p.pkgs, d)
+	}
+	sort.Slice(p.pkgs, func(i, j int) bool {
+		if len(p.pkgs[i]) != len(p.pkgs[j]) {
+			return len(p.pkgs[i]) > len(p.pkgs[j])
+		}
+		return p.pkgs[i] < p.pkgs[j]
+	})
 	return p
 }
 
@@ -245,37 +287,54 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		if owned {
 			continue
 		}
-		if local {
-			if rel, ok := relUnder(dir, h); ok {
-				keepHdrs = append(keepHdrs, rel)
-				continue
-			}
-			// Cross-package header not under any include root: keep
-			// element-root-relative (rare; emit as-is).
+		if !local {
+			// SourceKey regime: hdrs become @src_<key>//: absolute labels,
+			// which are package-location-independent — keep as-is.
 			keepHdrs = append(keepHdrs, h)
 			continue
 		}
-		keepHdrs = append(keepHdrs, h)
+		if plan.deepestPkg(h) == dir {
+			rel, _ := relUnder(dir, h)
+			keepHdrs = append(keepHdrs, rel)
+			continue
+		}
+		// Cross-package header with no owning header lib isn't expressible
+		// as a local hdr (listing it would cross a package boundary and
+		// fail to load); drop it. Rare — a discoverHeaders artifact whose
+		// dir became its own package without being an include root. The
+		// header still reaches consumers via the owning package's own rule
+		// and the layout-independent install path.
 	}
 	rt.Hdrs = keepHdrs
 
-	// Re-relativize srcs to the declaring dir in the local regime.
+	// Re-relativize srcs to the declaring dir in the local regime, routing
+	// any entry that belongs to a deeper/other package to a cross-package
+	// label (files) or dropping it (a bare packaged directory).
 	if local {
 		var srcs []string
 		for _, s := range t.Srcs {
-			if rel, ok := relUnder(dir, s); ok {
+			d := plan.deepestPkg(s)
+			if d == dir {
+				rel, _ := relUnder(dir, s)
 				srcs = append(srcs, rel)
 				continue
 			}
-			// Cross-package source: reference it as a label and raise
-			// an exports_files() need in the owning package.
-			sdir := normDir(path.Dir(s))
-			file, _ := relUnder(sdir, s)
-			srcs = append(srcs, crossPkgFileLabel(plan, sdir, file))
-			if exportsByDir[sdir] == nil {
-				exportsByDir[sdir] = map[string]struct{}{}
+			file, _ := relUnder(d, s)
+			if file == "" {
+				// s names a packaged directory itself (e.g. an
+				// install(DIRECTORY) filegroup src pointing at a dir that
+				// became its own package). Not expressible as a
+				// cross-package file label; drop it — the install path is
+				// served by install_tree.tar, which is layout-independent.
+				continue
 			}
-			exportsByDir[sdir][file] = struct{}{}
+			// Cross-package source FILE: reference by label + raise an
+			// exports_files() need in the owning package.
+			srcs = append(srcs, crossPkgFileLabel(plan, d, file))
+			if exportsByDir[d] == nil {
+				exportsByDir[d] = map[string]struct{}{}
+			}
+			exportsByDir[d][file] = struct{}{}
 		}
 		rt.Srcs = srcs
 	}

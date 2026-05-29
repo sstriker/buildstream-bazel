@@ -107,12 +107,21 @@ Deps are deduped.
   installers, aliases, genrules, interface libs, per-language
   sub-libraries) all stay in the **root** package; their cross-element
   labels keep the element-root form.
-- **`install_directory__include` filegroup**: its `srcs = ["include"]`
-  references the `include` directory, which is now its own package under
-  `--split-packages`. The filegroup is left at the root unchanged in v1
-  (a directory-as-filegroup-source reference across a package boundary
-  is a known rough edge documented here rather than papered over). The
-  install-tree path that consumes it is layout-independent and untouched.
+- **Cross-package references from root-pinned targets**: a root-pinned
+  install-derived target whose `srcs` name a directory that became its
+  own package (e.g. `install(DIRECTORY include/ …)` lowering to
+  `filegroup(srcs = ["include"])` once `include/` is a package) would
+  otherwise emit a label that crosses a package boundary and fail to
+  load the whole root package. The split transform detects this via
+  `splitPlan.deepestPkg`: a `srcs`/`hdrs` entry owned by a *deeper*
+  package than the rule's own is re-pointed to a cross-package file
+  label (and the owning package gains an `exports_files`), and a bare
+  packaged-*directory* entry — which has no expressible cross-package
+  file label — is dropped. A filegroup left empty by such a drop is
+  omitted entirely. `install(DIRECTORY)` of a directory that became its
+  own package is therefore not re-emitted as a build rule under split;
+  its content is served by the layout-independent `install_tree.tar`
+  path, which is untouched.
 - **write-a / stage-b orchestrator wiring** is a follow-up. Bazel
   genrules need statically-declared `outs`, but the sub-package set is
   only known at action time; the orchestrator path would need the
