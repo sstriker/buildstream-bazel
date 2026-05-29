@@ -42,40 +42,45 @@ func renderCmakeProjectA(t *testing.T) string {
 	return string(body)
 }
 
-// TestWriter_SplitPackages_GenruleShape covers write-a's project-A
-// render when --split-packages is on: the converter genrule threads
-// --split-packages, declares the single build-packages.tar output
-// (not BUILD.bazel.out), tars the per-sub-package tree, and the
-// build_bazel filegroup points at the tar. The default (off) keeps
-// the single BUILD.bazel.out shape.
-func TestWriter_SplitPackages_GenruleShape(t *testing.T) {
+// TestWriter_SplitPackages_RuleShape covers write-a's project-A render
+// when --split-packages is on: the element is converted by the
+// cmake_split_convert custom rule (a TreeArtifact directory emitter,
+// not a genrule), loaded from rules/cmake_packages.bzl, with the
+// element's package path and the //tools converter wired through. The
+// old build-packages.tar genrule mechanics must be gone.
+func TestWriter_SplitPackages_RuleShape(t *testing.T) {
 	prev := cmakeConfig
 	cmakeConfig.splitPackages = true
 	t.Cleanup(func() { cmakeConfig = prev })
 
 	body := renderCmakeProjectA(t)
 	for _, want := range []string{
-		// The threaded flag line (indented), not the bare token that
-		// also appears in the template's explanatory comment.
-		"\n            --split-packages",
-		`"build-packages.tar",`,
-		`tar -cf "$(location build-packages.tar)" -C "$$PKGTREE" .`,
-		`--out-build="$$PKGTREE/BUILD.bazel"`,
+		`load("@rules_buildstream_bazel//rules:cmake_packages.bzl", "cmake_split_convert")`,
+		`cmake_split_convert(`,
+		`bazel_package_path = "elements/demo"`,
+		`converter = "//tools:convert-element-cmake"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("split-mode project A BUILD missing %q\n%s", want, body)
 		}
 	}
-	// In split mode the single-file output is replaced, not added.
-	if strings.Contains(body, `"BUILD.bazel.out",`) {
-		t.Errorf("split-mode project A BUILD still declares BUILD.bazel.out:\n%s", body)
+	// The tar-based genrule mechanism is gone on the split path.
+	for _, unwanted := range []string{
+		`"build-packages.tar",`,
+		`tar -cf`,
+		`--out-build="$$PKGTREE/BUILD.bazel"`,
+		`"BUILD.bazel.out",`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("split-mode project A BUILD unexpectedly contains %q:\n%s", unwanted, body)
+		}
 	}
 }
 
 // TestWriter_SplitPackages_OffShapeUnchanged pins that the default
-// (flag off) render keeps the single BUILD.bazel.out output and emits
-// neither --split-packages nor build-packages.tar — the byte-shape
-// guarantee for the untouched path.
+// (flag off) render keeps the single BUILD.bazel.out genrule and emits
+// neither the cmake_split_convert rule nor any --split-packages
+// construct — the byte-shape guarantee for the untouched path.
 func TestWriter_SplitPackages_OffShapeUnchanged(t *testing.T) {
 	prev := cmakeConfig
 	cmakeConfig.splitPackages = false
@@ -90,13 +95,14 @@ func TestWriter_SplitPackages_OffShapeUnchanged(t *testing.T) {
 			t.Errorf("off-mode project A BUILD missing %q:\n%s", want, body)
 		}
 	}
-	// Assert on split-only *constructs* (a threaded flag line, the
-	// tar command, the tar output entry) rather than bare tokens that
-	// also appear in the template's explanatory comment.
+	// Assert on split-only *constructs* — the rule name, its load, and
+	// the tar output entry — not bare tokens like "--split-packages"
+	// that also appear in the template's explanatory comments.
 	for _, unwanted := range []string{
-		`--out-build="$$PKGTREE/BUILD.bazel"`,
-		`tar -cf "$(location build-packages.tar)" -C "$$PKGTREE" .`,
+		`cmake_split_convert`,
+		`rules:cmake_packages.bzl`,
 		`"build-packages.tar",`,
+		`--out-build="$$PKGTREE/BUILD.bazel"`,
 	} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("off-mode project A BUILD unexpectedly contains split construct %q:\n%s", unwanted, body)

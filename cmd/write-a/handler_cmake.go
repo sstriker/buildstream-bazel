@@ -606,27 +606,25 @@ filegroup(
 	}
 
 	// Split-packages reshapes the converter's BUILD output: instead of
-	// a single BUILD.bazel.out, the converter writes one BUILD.bazel per
-	// sub-package into a temp tree, which the genrule tars into a single
-	// declared build-packages.tar output (a genrule can't statically
-	// declare the discovered-at-action-time sub-package set). stage-b
-	// unpacks that tar into project B's elements/<name>/ tree. Default
-	// (off) keeps the single-file shape byte-for-byte.
+	// a single BUILD.bazel.out genrule, the element is converted by the
+	// cmake_split_convert custom rule (rules/cmake_packages.bzl), whose
+	// action runs the converter in --split-packages mode and declares
+	// the discovered-at-action-time per-sub-package BUILD tree as a
+	// TreeArtifact directory (content-addressed per file — no opaque
+	// build-packages.tar). stage-b merges that directory into project
+	// B's elements/<name>/ tree by per-file content compare. Default
+	// (off) keeps the single-file genrule shape byte-for-byte.
+	if cmakeConfig.splitPackages {
+		b.WriteString(cmakeSplitConvertBlock(elem, cmakeDepLabels, depExportsLabels, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag))
+		return b.String()
+	}
+
 	primaryOut := `"BUILD.bazel.out",`
 	outBuildSetup := ""
 	outBuildFlag := `--out-build="$(location BUILD.bazel.out)"`
 	splitFlag := ""
 	buildPackagingStep := ""
 	buildBazelSrcs := `"BUILD.bazel.out"`
-	if cmakeConfig.splitPackages {
-		primaryOut = `"build-packages.tar",`
-		outBuildSetup = "        PKGTREE=\"$$(mktemp -d)\"\n"
-		outBuildFlag = `--out-build="$$PKGTREE/BUILD.bazel"`
-		splitFlag = ` \
-            --split-packages`
-		buildPackagingStep = "\n        tar -cf \"$(location build-packages.tar)\" -C \"$$PKGTREE\" ."
-		buildBazelSrcs = `"build-packages.tar"`
-	}
 
 	fmt.Fprintf(&b, `
 genrule(
@@ -693,6 +691,129 @@ filegroup(
 )
 `, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs)
 	return b.String()
+}
+
+// cmakeSplitConvertBlock renders the --split-packages delivery shape
+// for one kind:cmake element: a cmake_split_convert custom rule
+// (rules/cmake_packages.bzl) whose action runs convert-element-cmake in
+// --split-packages mode and declares the per-sub-package BUILD tree as
+// a TreeArtifact directory (content-addressed per file — no
+// build-packages.tar). This replaces the BUILD.bazel.out genrule on the
+// split path; the off (default) path keeps the genrule byte-for-byte.
+//
+// The rule's attrs partition the genrule's $(SRCS) by role:
+//   - srcs: shadow source-root inputs (:<name>_real + optional
+//     :<name>_zero_stubs).
+//   - dep_bundles: each kind:cmake dep's cmake_config_bundle filegroup,
+//     untarred into $PREFIX inside the action; presence adds
+//     --prefix-dir. The round-2 :<name>_trace_load (whose outputs
+//     include a cmake-config-bundle.tar) rides here too when enabled.
+//   - aux: imports.json + dep exports.json — staged into the action but
+//     referenced via converter_args by path. See the v1 boundary note
+//     below.
+//
+// converter_args carries the flag LOGIC write-a owns (lift / fallback /
+// fidelity / bake-in) so the Starlark rule stays mechanical.
+//
+// v1 boundary: --diagnostics (--rejections-report), --imports-manifest,
+// and --exports-in all reference genrule $(location) outputs/inputs that
+// have no $(location) analogue in a custom-rule string, so they are NOT
+// threaded into converter_args on the split path yet. dep_bundles
+// extraction (the prefix wiring) IS supported. See
+// docs/design/cmake-split-packages.md for the follow-on.
+func cmakeSplitConvertBlock(elem *element, cmakeDepLabels []cmakeDepBundleLabel, depExportsLabels []string, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag string) string {
+	// srcs: real sources + (when narrowed) zero stubs only — the
+	// shadow source-root inputs. Dep bundles / aux ride separate attrs.
+	srcs := fmt.Sprintf(`":%s_real"`, elem.Name)
+	if len(elem.ZeroPaths) > 0 {
+		srcs += fmt.Sprintf(`, ":%s_zero_stubs"`, elem.Name)
+	}
+
+	// dep_bundles: each kind:cmake dep's cmake_config_bundle filegroup,
+	// plus the round-2 trace_load (its outputs include a config bundle).
+	var depBundles []string
+	for _, depLabel := range cmakeDepLabels {
+		depBundles = append(depBundles, depLabel.Label)
+	}
+	if cmakeConfig.round2FallbackEnabled {
+		depBundles = append(depBundles, fmt.Sprintf(":%s_trace_load", elem.Name))
+	}
+	depBundlesAttr := ""
+	if len(depBundles) > 0 {
+		var q []string
+		for _, l := range depBundles {
+			q = append(q, fmt.Sprintf("%q", l))
+		}
+		depBundlesAttr = fmt.Sprintf("\n    dep_bundles = [%s],", strings.Join(q, ", "))
+	}
+
+	// aux: imports.json (when the element has kind:cmake deps) + each
+	// dep's exports.json. Staged into the action's input set; richer
+	// threading through converter_args is a v1 follow-on (see doc).
+	var aux []string
+	if len(cmakeDepLabels) > 0 {
+		aux = append(aux, `"imports.json"`)
+	}
+	for _, lbl := range depExportsLabels {
+		aux = append(aux, fmt.Sprintf("%q", lbl))
+	}
+	auxAttr := ""
+	if len(aux) > 0 {
+		auxAttr = fmt.Sprintf("\n    aux = [%s],", strings.Join(aux, ", "))
+	}
+
+	// converter_args: the flag LOGIC write-a owns. Each piece is the
+	// same string the genrule appended; here they're concatenated into
+	// one space-separated attr value (no leading-backslash line
+	// continuations — those are genrule-bash artifacts). Trim each
+	// fragment's leading " \\\n            " wrapper down to the bare
+	// flag tokens.
+	converterArgs := strings.TrimSpace(strings.Join([]string{
+		flagTokens(liftFlag),
+		flagTokens(fallbackFlag),
+		flagTokens(fidelityFlag),
+		flagTokens(bakeInFlag),
+	}, " "))
+	converterArgs = strings.Join(strings.Fields(converterArgs), " ")
+
+	return fmt.Sprintf(`
+load("@rules_buildstream_bazel//rules:cmake_packages.bzl", "cmake_split_convert")
+
+cmake_split_convert(
+    name = "%[1]s_converted",
+    srcs = [%[2]s],%[3]s%[4]s
+    converter_args = %[5]q,
+    bazel_package_path = "elements/%[1]s",
+    converter = "//tools:convert-element-cmake",
+)
+
+# Typed exports project B consumes. Under --split-packages the
+# converted output is the cmake_split_convert rule's TreeArtifact
+# packages/ directory (content-addressed per file); stage-b reads
+# bazel-bin directly and merges it into elements/%[1]s/, so this
+# filegroup is informational — it points at the rule's DefaultInfo
+# (which includes the packages directory).
+filegroup(
+    name = "build_bazel",
+    srcs = [":%[1]s_converted"],
+)
+
+# Cross-element handle: downstream cmake elements reference this
+# label in their own srcs, which extracts the tar into
+# $PREFIX/lib/cmake/<this>/ at convert-element-cmake action time.
+filegroup(
+    name = "cmake_config_bundle",
+    srcs = [":%[1]s_converted"],
+)
+`, elem.Name, srcs, depBundlesAttr, auxAttr, converterArgs)
+}
+
+// flagTokens strips a genrule flag fragment's bash line-continuation
+// wrapper (` \\\n            `) down to bare " --flag=value" tokens
+// suitable for the cmake_split_convert converter_args string attr.
+func flagTokens(frag string) string {
+	frag = strings.ReplaceAll(frag, "\\\n", " ")
+	return strings.TrimSpace(frag)
 }
 
 // cmakeDepBundleLabel pairs a cross-element dep's name with the
