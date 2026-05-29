@@ -88,7 +88,7 @@ func TestBundleSynthShell_UsedByAllThreeHandlers(t *testing.T) {
 	snippet := bundleSynthShell()
 
 	// Pipeline handler emits via pipelineTracePublishStep.
-	pipelineOut := pipelineTracePublishStep("elem", "", "")
+	pipelineOut := pipelineTracePublishStep("elem", "", "", 1)
 	if !strings.Contains(pipelineOut, snippet) {
 		t.Errorf("pipelineTracePublishStep does not embed bundleSynthShell() verbatim")
 	}

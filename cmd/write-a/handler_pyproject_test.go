@@ -68,7 +68,7 @@ version = "0.1.0"
 	for _, marker := range []string{
 		"python",
 		"build",
-		"install_tree.tar",
+		"pipeline_install(",
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("pipeline-fallback BUILD missing marker %q\n%s", marker, got)
@@ -158,7 +158,7 @@ version = "0.1.0"
 	}
 	// Pipeline-fallback markers must be absent in native mode.
 	for _, dropped := range []string{
-		"install_tree.tar",
+		"pipeline_install(",
 	} {
 		if strings.Contains(got, dropped) {
 			t.Errorf("native-render BUILD unexpectedly contains %q\n%s", dropped, got)
@@ -248,8 +248,8 @@ sources:
 		t.Fatal(err)
 	}
 	got := string(body)
-	if !strings.Contains(got, "install_tree.tar") {
-		t.Errorf("Directory-set element should have routed to pipeline shape (install_tree.tar) regardless of --convert-element-pyproject, but got native render:\n%s", got)
+	if !strings.Contains(got, "pipeline_install(") {
+		t.Errorf("Directory-set element should have routed to pipeline shape (pipeline_install) regardless of --convert-element-pyproject, but got native render:\n%s", got)
 	}
 	if strings.Contains(got, "//tools:convert-element-pyproject") {
 		t.Errorf("Directory-set element unexpectedly rendered the native genrule:\n%s", got)
@@ -424,8 +424,8 @@ sources:
 	if strings.Contains(string(refusedBuild), "//tools:convert-element-pyproject") {
 		t.Errorf("refused element should have fallen back to pipeline shape (probe refuses pdm.backend):\n%s", refusedBuild)
 	}
-	if !strings.Contains(string(refusedBuild), "install_tree.tar") {
-		t.Errorf("refused element's fallback BUILD missing install_tree.tar (expected pipeline shape):\n%s", refusedBuild)
+	if !strings.Contains(string(refusedBuild), "pipeline_install(") {
+		t.Errorf("refused element's fallback BUILD missing pipeline_install (expected pipeline shape):\n%s", refusedBuild)
 	}
 
 	// Operator-visible refusal diagnostic for the refused

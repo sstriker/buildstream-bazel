@@ -138,9 +138,9 @@ func TestWriter_CmakeRound2Fallback_RenderShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`pipeline_install(`,
 		`name = "demo_trace_build"`,
 		`tags = ["trace_build"]`,
-		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"//tools:build-tracer"`,
 		`"//tools:trace-publish"`,
@@ -337,8 +337,6 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 		`name = "demo_trace_build_linux_x86_64"`,
 		`name = "demo_trace_build_darwin_arm64"`,
 		`tags = ["trace_build"]`,
-		`"linux_x86_64/install_tree.tar"`,
-		`"darwin_arm64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
 		`"darwin_arm64/trace.log"`,
 		// exec_compatible_with sorted (@platforms//cpu:* precedes
@@ -351,10 +349,11 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 		`"@platforms//os:darwin"`,
 		`--platform="linux_x86_64"`,
 		`--platform="darwin_arm64"`,
-		// Top-level filegroup routes consumers.
-		`name = "install_tree.tar"`,
-		`["linux_x86_64/install_tree.tar"]`,
-		`["darwin_arm64/install_tree.tar"]`,
+		// Top-level install-root select() filegroup routes consumers
+		// to the per-platform pipeline_install targets.
+		`name = "demo_install"`,
+		`[":demo_trace_build_linux_x86_64"]`,
+		`[":demo_trace_build_darwin_arm64"]`,
 		`"//conditions:default": [],`,
 	} {
 		if !strings.Contains(got, want) {
@@ -362,11 +361,10 @@ func TestWriter_CmakeRound2Fallback_MultiPlatform_ProjectB(t *testing.T) {
 		}
 	}
 
-	// Legacy single-platform genrule name (either historical
-	// `demo_install` or the new unsuffixed `demo_trace_build`)
-	// must NOT appear under multi-platform mode.
+	// Legacy unsuffixed install rule name must NOT appear under
+	// multi-platform mode. (The top-level "demo_install" filegroup
+	// IS expected — it's the install-root select().)
 	for _, banned := range []string{
-		`name = "demo_install"`,
 		`name = "demo_trace_build"`,
 	} {
 		// `demo_trace_build` is a prefix of the per-platform

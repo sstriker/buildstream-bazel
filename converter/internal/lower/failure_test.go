@@ -260,8 +260,13 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 	for _, target := range pkg.Targets {
 		byName[target.Name] = target
 	}
-	if _, ok := byName["_install_tree_extract"]; !ok {
-		t.Errorf("expected _install_tree_extract genrule; got %+v", byName)
+	// pick_file targets project each artefact out of the install-
+	// root TreeArtifact (replacing the old _install_tree_extract
+	// tar-untar genrule). One per unique install path.
+	for _, pn := range []string{"_pick_lib_libthelib_a", "_pick_lib_libshared_so_1", "_pick_bin_thetool"} {
+		if _, ok := byName[pn]; !ok {
+			t.Errorf("expected pick_file %q; got %+v", pn, byName)
+		}
 	}
 	if _, ok := byName["thelib"]; !ok {
 		t.Errorf("expected thelib stub; got %+v", byName)
@@ -284,8 +289,8 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 	if thelib.Kind != ir.KindCCImport {
 		t.Errorf("thelib kind: %v want cc_import", thelib.Kind)
 	}
-	if thelib.StaticLibrary != "install_tree/lib/libthelib.a" {
-		t.Errorf("thelib StaticLibrary: %q want install_tree/lib/libthelib.a", thelib.StaticLibrary)
+	if thelib.StaticLibrary != ":_pick_lib_libthelib_a" {
+		t.Errorf("thelib StaticLibrary: %q want :_pick_lib_libthelib_a", thelib.StaticLibrary)
 	}
 	if thelib.SharedLibrary != "" {
 		t.Errorf("thelib SharedLibrary should be empty for STATIC; got %q", thelib.SharedLibrary)
@@ -296,8 +301,8 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 	if shared.Kind != ir.KindCCImport {
 		t.Errorf("shared kind: %v want cc_import", shared.Kind)
 	}
-	if shared.SharedLibrary != "install_tree/lib/libshared.so.1" {
-		t.Errorf("shared SharedLibrary: %q want install_tree/lib/libshared.so.1", shared.SharedLibrary)
+	if shared.SharedLibrary != ":_pick_lib_libshared_so_1" {
+		t.Errorf("shared SharedLibrary: %q want :_pick_lib_libshared_so_1", shared.SharedLibrary)
 	}
 
 	// EXECUTABLE → sh_binary + srcs[0] = bin path.
@@ -305,32 +310,29 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 	if thetool.Kind != ir.KindShBinary {
 		t.Errorf("thetool kind: %v want sh_binary", thetool.Kind)
 	}
-	if len(thetool.Srcs) != 1 || thetool.Srcs[0] != "install_tree/bin/thetool" {
-		t.Errorf("thetool Srcs: %v want [install_tree/bin/thetool]", thetool.Srcs)
+	if len(thetool.Srcs) != 1 || thetool.Srcs[0] != ":_pick_bin_thetool" {
+		t.Errorf("thetool Srcs: %v want [:_pick_bin_thetool]", thetool.Srcs)
 	}
 
-	// Extract genrule: every per-target install path appears
-	// as one of its outs; src is the literal "install_tree.tar"
-	// label that write-a wires later.
-	extract := byName["_install_tree_extract"]
-	if extract.Kind != ir.KindGenrule {
-		t.Errorf("extract kind: %v want genrule", extract.Kind)
+	// pick_file targets: each projects one tree-relative path out
+	// of the install-root TreeArtifact via the same-package install
+	// target (":_trace_build" default when no package path is set).
+	wantPicks := map[string]string{
+		"_pick_lib_libthelib_a":    "lib/libthelib.a",
+		"_pick_lib_libshared_so_1": "lib/libshared.so.1",
+		"_pick_bin_thetool":        "bin/thetool",
 	}
-	wantOuts := map[string]bool{
-		"install_tree/lib/libthelib.a":    true,
-		"install_tree/lib/libshared.so.1": true,
-		"install_tree/bin/thetool":        true,
-	}
-	if len(extract.GenruleOuts) != len(wantOuts) {
-		t.Errorf("extract GenruleOuts: %v want %v", extract.GenruleOuts, wantOuts)
-	}
-	for _, o := range extract.GenruleOuts {
-		if !wantOuts[o] {
-			t.Errorf("extract GenruleOuts unexpected entry %q", o)
+	for name, wantPath := range wantPicks {
+		p := byName[name]
+		if p.Kind != ir.KindPickFile {
+			t.Errorf("%s kind: %v want pick_file", name, p.Kind)
 		}
-	}
-	if len(extract.Srcs) != 1 || extract.Srcs[0] != "install_tree.tar" {
-		t.Errorf("extract Srcs: %v want [install_tree.tar]", extract.Srcs)
+		if p.PickPath != wantPath {
+			t.Errorf("%s PickPath: %q want %q", name, p.PickPath, wantPath)
+		}
+		if p.PickSrc != ":_trace_build" {
+			t.Errorf("%s PickSrc: %q want :_trace_build", name, p.PickSrc)
+		}
 	}
 
 	// Marker tags + visibility on every emitted target.
@@ -346,12 +348,14 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 			t.Errorf("target %q missing cmake-codegen-execute-process-fallback tag; tags=%v", target.Name, target.Tags)
 		}
 	}
-	// Per-target stubs are public; the extract genrule is private.
+	// Per-target stubs are public; the pick_file projections are private.
 	for name, want := range map[string]string{
-		"thelib":                "//visibility:public",
-		"shared":                "//visibility:public",
-		"thetool":               "//visibility:public",
-		"_install_tree_extract": "//visibility:private",
+		"thelib":                   "//visibility:public",
+		"shared":                   "//visibility:public",
+		"thetool":                  "//visibility:public",
+		"_pick_lib_libthelib_a":    "//visibility:private",
+		"_pick_lib_libshared_so_1": "//visibility:private",
+		"_pick_bin_thetool":        "//visibility:private",
 	} {
 		got := byName[name]
 		if len(got.Visibility) != 1 || got.Visibility[0] != want {
@@ -424,9 +428,11 @@ func TestFallback_PopulatesHdrsFromFileSets(t *testing.T) {
 		byName[target.Name] = target
 	}
 	thelibStub := byName["thelib"]
+	// hdrs now reference per-header pick_file labels (sorted by
+	// the tree-relative path before name derivation).
 	wantHdrs := []string{
-		"install_tree/include/sub/internal.h",
-		"install_tree/include/thelib.h",
+		":_pick_include_sub_internal_h",
+		":_pick_include_thelib_h",
 	}
 	if len(thelibStub.Hdrs) != len(wantHdrs) {
 		t.Fatalf("hdrs: %v want %v", thelibStub.Hdrs, wantHdrs)
@@ -437,21 +443,20 @@ func TestFallback_PopulatesHdrsFromFileSets(t *testing.T) {
 		}
 	}
 
-	// Extract genrule's outs include both the artefact path
-	// and every header path so the cc_import.hdrs labels
-	// resolve.
-	extract := byName["_install_tree_extract"]
-	wantOuts := map[string]bool{
-		"install_tree/lib/libthelib.a":        true,
-		"install_tree/include/thelib.h":       true,
-		"install_tree/include/sub/internal.h": true,
+	// One pick_file per artefact + header path so the cc_import's
+	// static_library / hdrs labels resolve out of the install root.
+	wantPicks := map[string]string{
+		"_pick_lib_libthelib_a":        "lib/libthelib.a",
+		"_pick_include_thelib_h":       "include/thelib.h",
+		"_pick_include_sub_internal_h": "include/sub/internal.h",
 	}
-	if len(extract.GenruleOuts) != len(wantOuts) {
-		t.Errorf("extract outs: %v want %v", extract.GenruleOuts, wantOuts)
-	}
-	for _, o := range extract.GenruleOuts {
-		if !wantOuts[o] {
-			t.Errorf("extract outs unexpected entry %q", o)
+	for name, wantPath := range wantPicks {
+		p := byName[name]
+		if p.Kind != ir.KindPickFile {
+			t.Errorf("%s kind: %v want pick_file", name, p.Kind)
+		}
+		if p.PickPath != wantPath {
+			t.Errorf("%s PickPath: %q want %q", name, p.PickPath, wantPath)
 		}
 	}
 }

@@ -146,7 +146,7 @@ func TestRun_FallbackEmitsPlaceholderForValidInstallPlan(t *testing.T) {
 	}
 	for _, want := range []string{
 		`name = "main"`,
-		`static_library = "install_tree/lib/libmain.a"`,
+		`static_library = ":_pick_lib_libmain_a"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("fallback BUILD missing marker %q\n--- BUILD ---\n%s", want, body)

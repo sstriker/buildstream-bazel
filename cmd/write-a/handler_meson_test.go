@@ -53,12 +53,12 @@ func TestMesonElement_PipelineFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(body)
-	// Pipeline shape: an install genrule wrapping `meson` /
-	// `ninja` invocations, output is install_tree.tar.
+	// Pipeline shape: a pipeline_install wrapping `meson` /
+	// `ninja` invocations, installing into the TreeArtifact root.
 	for _, marker := range []string{
 		"meson",
 		"ninja",
-		"install_tree.tar",
+		"pipeline_install(",
 	} {
 		if !strings.Contains(got, marker) {
 			t.Errorf("pipeline-fallback BUILD missing marker %q\n%s", marker, got)
@@ -185,9 +185,9 @@ func TestMesonElement_Round2Fallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, marker := range []string{
+		`pipeline_install(`,
 		`name = "elem_trace_build"`,
 		`tags = ["trace_build"]`,
-		`"install_tree.tar"`,
 		`"trace.log"`,
 		`"//tools:build-tracer"`,
 		`"//tools:trace-publish"`,
@@ -283,7 +283,7 @@ func TestMesonElement_NativeRender(t *testing.T) {
 	}
 	// Pipeline-fallback markers must be absent.
 	for _, dropped := range []string{
-		"install_tree.tar",
+		"pipeline_install(",
 	} {
 		if strings.Contains(got, dropped) {
 			t.Errorf("native-render BUILD unexpectedly contains %q\n%s", dropped, got)

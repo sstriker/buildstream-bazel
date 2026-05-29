@@ -66,25 +66,31 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 	}
 	got := string(out)
 
-	// Extract genrule + per-target stubs.
+	// pick_file projections + per-target stubs.
 	for _, want := range []string{
-		`name = "_install_tree_extract"`,
-		`"install_tree.tar"`,
-		`"install_tree/lib/libgreet.a"`,
-		`"install_tree/lib/libgreetshared.so"`,
-		`"install_tree/bin/greet-bin"`,
-		`"install_tree/include/greet.h"`,
+		`load("@rules_buildstream_bazel//rules:install.bzl", "pick_file")`,
+		`name = "_pick_lib_libgreet_a"`,
+		`name = "_pick_lib_libgreetshared_so"`,
+		`name = "_pick_bin_greet_bin"`,
+		`name = "_pick_include_greet_h"`,
+		`path = "lib/libgreet.a"`,
+		`path = "lib/libgreetshared.so"`,
+		`path = "bin/greet-bin"`,
+		`path = "include/greet.h"`,
+		// pick_file src is the same-package install target
+		// (default ":_trace_build" when no package path is set).
+		`src = ":_trace_build"`,
 		// Static lib stub.
 		`name = "greet"`,
-		`static_library = "install_tree/lib/libgreet.a"`,
+		`static_library = ":_pick_lib_libgreet_a"`,
 		// Shared lib stub.
 		`name = "greetshared"`,
-		`shared_library = "install_tree/lib/libgreetshared.so"`,
+		`shared_library = ":_pick_lib_libgreetshared_so"`,
 		// Executable stub.
 		`name = "greet-bin"`,
-		`srcs = ["install_tree/bin/greet-bin"]`,
-		// Header fold: every library carries the header.
-		`hdrs = ["install_tree/include/greet.h"]`,
+		`srcs = [":_pick_bin_greet_bin"]`,
+		// Header fold: every library carries the header (as a pick_file label).
+		`hdrs = [":_pick_include_greet_h"]`,
 		// Tags for audit queries.
 		`meson-codegen-target-fallback`,
 	} {
@@ -100,7 +106,7 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 	// The bazel.Emit assertion above only verifies that *some*
 	// `hdrs = [...]` line exists; verifying every library carries
 	// it needs per-pkg.Targets inspection.
-	var sawCCImport, sawShBinary, sawExtract bool
+	var sawCCImport, sawShBinary, sawPick bool
 	libsWithHeader := map[string]bool{}
 	for _, tgt := range pkg.Targets {
 		switch tgt.Name {
@@ -110,7 +116,7 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 			}
 			sawCCImport = true
 			for _, h := range tgt.Hdrs {
-				if h == "install_tree/include/greet.h" {
+				if h == ":_pick_include_greet_h" {
 					libsWithHeader[tgt.Name] = true
 				}
 			}
@@ -119,11 +125,11 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 				t.Errorf("target greet-bin kind=%v want KindShBinary", tgt.Kind)
 			}
 			sawShBinary = true
-		case "_install_tree_extract":
-			if tgt.Kind != ir.KindGenrule {
-				t.Errorf("extract kind=%v want KindGenrule", tgt.Kind)
+		case "_pick_include_greet_h":
+			if tgt.Kind != ir.KindPickFile {
+				t.Errorf("pick_file kind=%v want KindPickFile", tgt.Kind)
 			}
-			sawExtract = true
+			sawPick = true
 		}
 	}
 	if !sawCCImport {
@@ -132,12 +138,12 @@ func TestEmitFallbackPlaceholder_RealFixtureShape(t *testing.T) {
 	if !sawShBinary {
 		t.Errorf("no sh_binary stub emitted")
 	}
-	if !sawExtract {
-		t.Errorf("no extract genrule emitted")
+	if !sawPick {
+		t.Errorf("no pick_file projection emitted")
 	}
 	for _, lib := range []string{"greet", "greetshared"} {
 		if !libsWithHeader[lib] {
-			t.Errorf("library %q missing hdrs entry install_tree/include/greet.h (header should fold into every library; got hdrs map %v)", lib, libsWithHeader)
+			t.Errorf("library %q missing hdrs entry :_pick_include_greet_h (header should fold into every library; got hdrs map %v)", lib, libsWithHeader)
 		}
 	}
 }
@@ -177,7 +183,7 @@ func TestEmitFallbackPlaceholder_SubprojectSkipped(t *testing.T) {
 	for _, tgt := range pkg.Targets {
 		names = append(names, tgt.Name)
 	}
-	for _, want := range []string{"main", "_install_tree_extract"} {
+	for _, want := range []string{"main", "_pick_lib_libmain_a"} {
 		found := false
 		for _, n := range names {
 			if n == want {
@@ -211,10 +217,10 @@ func TestEmitFallbackPlaceholder_SharedSONameVariants(t *testing.T) {
 		wantName    string
 		wantPath    string
 	}{
-		{"unversioned-so", "{libdir_shared}/libfoo.so", "foo", "install_tree/lib/libfoo.so"},
-		{"major-soname", "{libdir_shared}/libfoo.so.1", "foo", "install_tree/lib/libfoo.so.1"},
-		{"full-soname", "{libdir_shared}/libfoo.so.1.2.3", "foo", "install_tree/lib/libfoo.so.1.2.3"},
-		{"macos-dylib", "{libdir_shared}/libfoo.dylib", "foo", "install_tree/lib/libfoo.dylib"},
+		{"unversioned-so", "{libdir_shared}/libfoo.so", "foo", ":_pick_lib_libfoo_so"},
+		{"major-soname", "{libdir_shared}/libfoo.so.1", "foo", ":_pick_lib_libfoo_so_1"},
+		{"full-soname", "{libdir_shared}/libfoo.so.1.2.3", "foo", ":_pick_lib_libfoo_so_1_2_3"},
+		{"macos-dylib", "{libdir_shared}/libfoo.dylib", "foo", ":_pick_lib_libfoo_dylib"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -300,14 +306,14 @@ func TestEmitFallbackPlaceholder_BothLibrariesDisambiguated(t *testing.T) {
 	stat, ok := got["foo_static"]
 	if !ok {
 		t.Errorf("missing foo_static stub; have %v", got)
-	} else if stat.StaticLibrary != "install_tree/lib/libfoo.a" {
-		t.Errorf("foo_static.StaticLibrary=%q want install_tree/lib/libfoo.a", stat.StaticLibrary)
+	} else if stat.StaticLibrary != ":_pick_lib_libfoo_a" {
+		t.Errorf("foo_static.StaticLibrary=%q want :_pick_lib_libfoo_a", stat.StaticLibrary)
 	}
 	shr, ok := got["foo_shared"]
 	if !ok {
 		t.Errorf("missing foo_shared stub; have %v", got)
-	} else if shr.SharedLibrary != "install_tree/lib/libfoo.so" {
-		t.Errorf("foo_shared.SharedLibrary=%q want install_tree/lib/libfoo.so", shr.SharedLibrary)
+	} else if shr.SharedLibrary != ":_pick_lib_libfoo_so" {
+		t.Errorf("foo_shared.SharedLibrary=%q want :_pick_lib_libfoo_so", shr.SharedLibrary)
 	}
 	// Single-library cases must NOT be renamed — the disambiguator
 	// only fires on actual collisions. Re-run with just the static

@@ -183,9 +183,9 @@ config:
 				t.Fatal(err)
 			}
 			for _, want := range []string{
+				`pipeline_install(`,
 				`name = "elem_trace_build"`,
 				`tags = ["trace_build"]`,
-				`"install_tree.tar"`,
 				`"trace.log"`,
 				`"make-db.txt"`,
 				`"//tools:build-tracer"`,
@@ -471,13 +471,13 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		}
 	}
 
-	// Outputs land under <platform>/ subdirs so the N genrules
-	// don't collide.
+	// extra_outs land under <platform>/ subdirs so the N install
+	// actions don't collide. The install root itself is the
+	// per-platform TreeArtifact (declare_directory under the
+	// suffixed rule name), not a prefixed install_tree.tar out.
 	for _, want := range []string{
-		`"linux_x86_64/install_tree.tar"`,
 		`"linux_x86_64/trace.log"`,
 		`"linux_x86_64/make-db.txt"`,
-		`"darwin_arm64/install_tree.tar"`,
 		`"darwin_arm64/trace.log"`,
 		`"darwin_arm64/make-db.txt"`,
 	} {
@@ -526,11 +526,11 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 	// label that doesn't exist as an out and Bazel would fail
 	// at action time.
 	for _, want := range []string{
-		`$(location linux_x86_64/generated-headers.txt)`,
-		`$(location darwin_arm64/generated-headers.txt)`,
+		`@@OUT:linux_x86_64/generated-headers.txt@@`,
+		`@@OUT:darwin_arm64/generated-headers.txt@@`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("multi-platform project B header diff missing prefixed location %q\n%s", want, got)
+			t.Errorf("multi-platform project B header diff missing prefixed out token %q\n%s", want, got)
 		}
 	}
 
@@ -546,13 +546,15 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 	// platforms manifest — see TestWriter_TraceDriven
 	// Round2A_OperatorSelectLabelOverride for that escalation.
 	for _, want := range []string{
-		`name = "install_tree.tar"`,
+		`name = "elem_install"`,
 		`srcs = select({`,
 		// Phase 3's buildtools-canonical formatter wraps the
 		// single-key arms across lines; assert on the value
 		// substring rather than the inline `"key": [...]` shape.
-		`["linux_x86_64/install_tree.tar"]`,
-		`["darwin_arm64/install_tree.tar"]`,
+		// The select arms now point at the per-platform
+		// pipeline_install targets (install-root TreeArtifacts).
+		`[":elem_trace_build_linux_x86_64"]`,
+		`[":elem_trace_build_darwin_arm64"]`,
 		// Trailing default arm matches emit/bazel's list-attr
 		// select() convention: out-of-matrix builds resolve to
 		// an empty list rather than failing analysis on the
@@ -561,17 +563,16 @@ func TestWriter_PipelineKindsRound2_MultiPlatform_ProjectB(t *testing.T) {
 		`"//conditions:default": [],`,
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("multi-platform project B missing top-level install_tree.tar filegroup marker %q\n%s", want, got)
+			t.Errorf("multi-platform project B missing top-level :elem_install filegroup marker %q\n%s", want, got)
 		}
 	}
 
-	// Legacy single-platform shape MUST NOT appear: no bare
-	// "elem_install" or unsuffixed "elem_trace_build" name, no
-	// unprefixed install_tree.tar / trace.log outputs.
+	// Legacy single-platform shape MUST NOT appear: no unsuffixed
+	// "elem_trace_build" install rule, no unprefixed trace.log out.
+	// (The top-level "elem_install" filegroup IS expected — it's the
+	// install-root select() the per-platform fan-out emits.)
 	for _, banned := range []string{
-		`name = "elem_install"`,
 		`name = "elem_trace_build",`,
-		`"install_tree.tar", "trace.log"`, // the un-prefixed outs list
 	} {
 		if strings.Contains(got, banned) {
 			t.Errorf("multi-platform project B unexpectedly contains legacy single-platform shape %q\n%s", banned, got)
@@ -611,14 +612,14 @@ func TestPipelineTraceExtensionRound2_DepLabelsPerPlatform(t *testing.T) {
 		want string
 	}{
 		{
-			name: "single-platform legacy uses bare filegroup label",
+			name: "single-platform legacy uses bare install target label",
 			plat: tracePlatform{},
-			want: "//elements/libdep:install_tree.tar",
+			want: "//elements/libdep:libdep_trace_build",
 		},
 		{
-			name: "multi-platform routes per-platform output file directly",
+			name: "multi-platform routes per-platform install target directly",
 			plat: tracePlatform{Name: "linux_x86_64"},
-			want: "//elements/libdep:linux_x86_64/install_tree.tar",
+			want: "//elements/libdep:libdep_trace_build_linux_x86_64",
 		},
 	}
 	for _, tc := range cases {

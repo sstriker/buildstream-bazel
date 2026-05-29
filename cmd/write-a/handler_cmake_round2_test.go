@@ -112,7 +112,7 @@ cmake --install "$$BUILD_ROOT" --prefix "$$INSTALL_ROOT"`
 	got := wrapCmakePipelineCmds(cmds)
 
 	for _, want := range []string{
-		`"$$EXEC_ROOT/$(location //tools:build-tracer)"`,
+		`"@@TOOL:0@@"`,
 		`--normalize-prefix="$$INSTALL_ROOT=/INSTALL_ROOT"`,
 		`--normalize-prefix="$$BUILD_ROOT=/BUILD_ROOT"`,
 		`--normalize-prefix="$${DEP_PREFIX:-/__unset_dep_prefix__}=/DEP_PREFIX"`,
