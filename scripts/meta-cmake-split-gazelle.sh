@@ -150,8 +150,25 @@ run_bazel() {
     return $rc
 }
 
+# run_gazelle runs `bazel run //:gazelle -- <pkgs>`. Bazel build-time
+# flags (META_BAZEL_BUILD_ARGS, e.g. --registry) MUST go BEFORE the `--`
+# separator — anything after `--` is forwarded to the gazelle binary as
+# positional args, where `--registry=...` would be misread as a directory
+# to scan and gazelle would no-op (a silent false "fixpoint"). Like
+# run_bazel, it captures output and propagates bazel's real exit status
+# (no masking `| tail` at the call site).
+run_gazelle() {
+    rc=0
+    # shellcheck disable=SC2086 # META_BAZEL_*_ARGS is intentionally word-split.
+    (cd "$B" && "$BZL" --output_user_root="$bzl_cache" \
+        $META_BAZEL_STARTUP_ARGS \
+        run //:gazelle $META_BAZEL_BUILD_ARGS -- elements/subdir-library) >"$bzl_log" 2>&1 || rc=$?
+    tail -20 "$bzl_log"
+    return $rc
+}
+
 # === Build project A's cmake_split_convert TreeArtifact + stage into B. ===
-run_bazel "$A" build //elements/subdir-library:subdir-library_converted 2>&1 | tail -10
+run_bazel "$A" build //elements/subdir-library:subdir-library_converted
 "$bin_dir/stage-b" --project-a "$A" --project-b "$B" >/dev/null
 for want in \
     "elements/subdir-library/BUILD.bazel" \
@@ -168,7 +185,7 @@ chmod -R u+w "$B/elements/subdir-library"
 echo "meta-cmake-split-gazelle: project A built + staged the split tree into B"
 
 # === First gazelle pass: gazelle_cc canonicalizes / owns the layout. ===
-run_bazel "$B" run //:gazelle -- elements/subdir-library 2>&1 | tail -20
+run_gazelle
 echo "meta-cmake-split-gazelle: gazelle_cc first pass done"
 
 # (a) The build still works after gazelle's canonicalization.
@@ -210,7 +227,7 @@ before="$work_dir/before-fixpoint"
 after="$work_dir/after-fixpoint"
 rm -rf "$before" "$after"
 cp -r "$B/elements/subdir-library" "$before"
-run_bazel "$B" run //:gazelle -- elements/subdir-library 2>&1 | tail -20
+run_gazelle
 cp -r "$B/elements/subdir-library" "$after"
 if ! diff -ru "$before" "$after"; then
     echo "meta-cmake-split-gazelle: gazelle_cc is NOT a fixpoint — second pass changed the BUILD tree" >&2
