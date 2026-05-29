@@ -14,9 +14,10 @@ import "fmt"
 // Phase B replaces the exclusion with a round-2 coarse-genrule
 // fallback: A's converter genrule emits an install-plan-driven
 // placeholder shape (per-target cc_import / sh_binary / cc_library
-// stubs referencing `install_tree.tar`); B's install genrule wraps
-// `meson setup + ninja + meson install --destdir + tar` under
-// build-tracer with inline trace-publish.
+// stubs that pick_file-project over the install-root TreeArtifact);
+// B's install rule wraps `meson setup + ninja + meson install
+// --destdir` under build-tracer with inline trace-publish,
+// installing into the install-root TreeArtifact (no tar).
 //
 // Architectural shape mirrors kind:cmake's Phase B fallback
 // (`docs/design/rendezvous.md`). The
@@ -88,11 +89,11 @@ func mesonSrckeyPatterns() *readPathsPatterns {
 	}
 }
 
-// mesonRound2InstallBuild renders Project B's install genrule
-// for the kind:meson round-2 fallback shape. The genrule wraps
+// mesonRound2InstallBuild renders Project B's install rule
+// for the kind:meson round-2 fallback shape. The rule wraps
 // `meson setup` + `ninja` + `meson install --destdir` under
-// build-tracer, tars the install tree, and inline-publishes the
-// trace via trace-publish.
+// build-tracer, installs into the install-root TreeArtifact (no
+// tar), and inline-publishes the trace via trace-publish.
 //
 // The configure step pins `--prefix=/` + `--libdir=lib` so the
 // install tree's relative layout (`lib/libfoo.a`, `bin/foo`,
@@ -104,9 +105,9 @@ func mesonSrckeyPatterns() *readPathsPatterns {
 // computed paths drift from B's actual install bytes.
 //
 // Outputs:
-//   - install_tree.tar — the installed artefacts the
-//     placeholder's extract genrule untars (referenced via
-//     same-package label "install_tree.tar" once A's
+//   - the install-root TreeArtifact — the installed artefacts the
+//     placeholder's pick_file projection reads (referenced via
+//     the same-package "<elem>_install" label once A's
 //     BUILD.bazel.out gets symlinked in).
 //   - trace.log — canonical build-tracer output; trace-publish
 //     reads it to land the AC entry.
@@ -242,13 +243,13 @@ pipeline_install(
 
 // renderMesonRound2B is project B's per-element render for the
 // kind:meson round-2 fallback shape. Single-platform legacy
-// emits one install genrule via mesonRound2InstallBuild (byte-
+// emits one install rule via mesonRound2InstallBuild (byte-
 // stable with the pre-fan-out shape). Multi-platform mode
 // (--platforms-json set on write-a) emits N per-platform install
-// genrules + a top-level select()-filegroup at
-// `:install_tree.tar` so downstream
-// //elements/<dep>:install_tree.tar references resolve to the
-// matching per-platform tarball.
+// rules + a top-level select()-filegroup at
+// `:<elem>_install` so downstream
+// //elements/<dep>:<dep>_install references resolve to the
+// matching per-platform install-root directory.
 func renderMesonRound2B(elem *element) string {
 	if len(traceConfig.platforms) == 0 {
 		return mesonRound2InstallBuild(elem, tracePlatform{})

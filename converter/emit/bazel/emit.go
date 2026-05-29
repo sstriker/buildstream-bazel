@@ -703,7 +703,7 @@ var ccImportTmpl = template.Must(template.New("cc_import").Funcs(template.FuncMa
 // rendered list expression — flat literal when single-platform,
 // `select({...})` (or `[…] + select({...})`) when elementfold
 // populated PerPlatform["srcs"] for the round-2 multi-platform
-// fan-out (where the install_tree.tar's binary path is
+// fan-out (where the install root's binary path is
 // arch-tagged on some platforms).
 var shBinaryTmpl = template.Must(template.New("sh_binary").Funcs(template.FuncMap{
 	"strList": strList,

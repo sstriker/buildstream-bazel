@@ -136,16 +136,16 @@ func cmakeSrckeyPatterns() *readPathsPatterns {
 	}
 }
 
-// cmakeRound2InstallBuild renders Project B's install genrule
-// for the kind:cmake round-2 fallback shape. The genrule wraps
-// cmake configure + ninja + install under build-tracer, tars
-// the install tree, and inline-publishes the trace via
-// trace-publish.
+// cmakeRound2InstallBuild renders Project B's install rule
+// for the kind:cmake round-2 fallback shape. The rule wraps
+// cmake configure + ninja + install under build-tracer, installs
+// into the install-root TreeArtifact (no tar), and inline-
+// publishes the trace via trace-publish.
 //
 // Outputs:
-//   - install_tree.tar — the installed artefacts the
-//     placeholder's extract genrule untars (referenced via
-//     same-package label "install_tree.tar" once A's
+//   - the install-root TreeArtifact — the installed artefacts the
+//     placeholder's pick_file projection reads (referenced via
+//     the same-package "<elem>_install" label once A's
 //     BUILD.bazel.out gets symlinked in).
 //   - trace.log — canonical build-tracer output;
 //     trace-publish reads it to land the AC entry.
@@ -317,13 +317,13 @@ pipeline_install(
 
 // renderCmakeRound2B is project B's per-element render for the
 // kind:cmake round-2 fallback shape. Single-platform legacy
-// emits one install genrule via cmakeRound2InstallBuild (byte-
+// emits one install rule via cmakeRound2InstallBuild (byte-
 // stable with the pre-fan-out shape). Multi-platform mode
 // (--platforms-json set on write-a) emits N per-platform
-// install genrules + a top-level select()-filegroup at
-// `:install_tree.tar` so downstream
-// //elements/<dep>:install_tree.tar references resolve to the
-// matching per-platform tarball.
+// install rules + a top-level select()-filegroup at
+// `:<elem>_install` so downstream
+// //elements/<dep>:<dep>_install references resolve to the
+// matching per-platform install-root directory.
 func renderCmakeRound2B(elem *element) string {
 	if len(traceConfig.platforms) == 0 {
 		return cmakeRound2InstallBuild(elem, tracePlatform{})

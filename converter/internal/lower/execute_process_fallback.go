@@ -37,8 +37,8 @@ type fallbackStub struct {
 //
 // Shape (per
 // docs/design/rendezvous.md):
-//   - one extract genrule that untars install_tree.tar into
-//     per-file outs derived from the codemodel
+//   - one pick_file projection per file over the install-root
+//     TreeArtifact, deriving each projected path from the codemodel
 //   - per-target stubs dispatched on Target.Type:
 //     STATIC_LIBRARY → cc_import + static_library; SHARED /
 //     MODULE → cc_import + shared_library; EXECUTABLE →
@@ -48,15 +48,15 @@ type fallbackStub struct {
 // Path conventions: install paths derive from
 // Target.Install.Destinations[0].Path + Target.NameOnDisk
 // (e.g. STATIC_LIBRARY thelib with install destination "lib"
-// and NameOnDisk "libthelib.a" → "install_tree/lib/libthelib.a").
-// The "install_tree/" prefix names the extract genrule's output
-// directory; downstream rules reference paths inside it.
+// and NameOnDisk "libthelib.a" → "lib/libthelib.a"). The path is
+// tree-relative to the install-root TreeArtifact; each pick_file
+// projects one such path out in place for downstream rules.
 //
-// The extract genrule's src is the literal label
-// "install_tree.tar". Resolution: when A's BUILD.bazel.out
+// Each pick_file's src is the install-root TreeArtifact target.
+// Resolution: when A's BUILD.bazel.out
 // gets symlinked into Project B's package, the placeholder
-// co-locates with B's install genrule, which produces
-// install_tree.tar as one of its outs (Step 3, write-a side
+// co-locates with B's install rule, which produces
+// the install-root TreeArtifact as its output (Step 3, write-a side
 // — wraps cmake configure + ninja + install under
 // build-tracer + inline trace-publish). Same Bazel package =
 // label resolution succeeds. convert-element-cmake's executor
@@ -72,8 +72,8 @@ type fallbackStub struct {
 //
 // Marker tag cmake-codegen-execute-process-fallback flags every
 // emitted rule for audit queries; cmake-codegen-execute-process-fallback-extract
-// distinguishes the extract genrule from the per-target stubs
-// in case operators want to query just the stubs.
+// distinguishes the pick_file projections from the per-target
+// stubs in case operators want to query just the stubs.
 func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*ir.Package, error) {
 	if installTarget == "" {
 		// Default to the same-package install target write-a renders
@@ -84,7 +84,7 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*
 	}
 	// Multi-config (N > 1) consumes the first configuration's
 	// targets only; the placeholder emit doesn't care about
-	// per-config differences (the install-tree.tar genrule is
+	// per-config differences (the install rule is
 	// config-invariant by design). Strict refusal here was a
 	// pre-Phase-5 floor; with the main ToIR's multi-config path
 	// now downgraded to a rejection record + cfg[0] survey, this
@@ -173,18 +173,18 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*
 		// (or `include_prefix` / `strip_include_prefix`), so
 		// downstream consumers using `#include <foo.h>` (or
 		// `<sub/foo.h>`) won't resolve through the placeholder
-		// even though the header file is in the genrule's outs.
-		// Direct `#include "install_tree/include/foo.h"` works.
+		// even though the header file is projected by pick_file.
+		// Direct `#include "include/foo.h"` works.
 		// The canonical fix is to wrap the cc_import in a
 		// cc_library that adds `strip_include_prefix =
-		// "install_tree/include"` — the IR now carries
+		// "include"` — the IR now carries
 		// IncludePrefix / StripIncludePrefix fields (Phase 2)
 		// and the emitter renders them on cc_library, so the
 		// remaining work is to emit a sibling cc_library here
 		// alongside the cc_import. A real fixture exercising
 		// cross-element header consumption drives the
 		// implementation; until then the headers are declared
-		// so the extract genrule keeps the files available, but
+		// so the pick_file projections keep the files available, but
 		// bare-bracket includes won't resolve.
 
 		switch t.Type {
@@ -231,10 +231,10 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*
 		case "INTERFACE_LIBRARY":
 			base.Kind = ir.KindCCInterface
 			base.Hdrs = hdrs
-			// Header-only: the InstallPath is empty for the
-			// extract genrule's artefact-side outs; the
-			// HeaderPaths field is what carries the FileSet
-			// headers into the genrule's outs list.
+			// Header-only: the InstallPath is empty (no artefact-
+			// side pick_file); the HeaderPaths field is what
+			// carries the FileSet headers into their own pick_file
+			// projections.
 			stubs = append(stubs, fallbackStub{Target: base, InstallPath: "", HeaderPaths: hdrs})
 		default:
 			// UTILITY targets (add_custom_target / dependency
@@ -292,11 +292,11 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*
 	return pkg, nil
 }
 
-// installPathFor derives the package-relative path inside the
-// extract genrule's outputs for a single target. Combines
+// installPathFor derives the tree-relative path inside the
+// install-root TreeArtifact for a single target. Combines
 // Target.Install.Destinations[0].Path (the dest directory,
 // e.g. "lib") with Target.NameOnDisk (the artifact filename,
-// e.g. "libthelib.a") under the "install_tree/" prefix.
+// e.g. "libthelib.a") into a path pick_file projects out in place.
 //
 // The first destination wins. cmake's install(TARGETS) can
 // declare multiple destinations (ARCHIVE / LIBRARY / RUNTIME),
@@ -310,15 +310,14 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*
 //
 // Returns "" if the target has no install destination, no
 // NameOnDisk, or its install destination would escape the
-// "install_tree/" prefix (an absolute path or one whose
+// install-root TreeArtifact (an absolute path or one whose
 // path.Clean form starts with "..") — caller skips emitting a
 // stub for that target. The escape check matters because
-// path.Join with "install_tree/" + "../lib" would silently
-// resolve to "lib/...", which the extract genrule (which
-// always extracts under "install_tree/") wouldn't satisfy
-// and could push outs out of the genrule's declared output
-// directory. Refusing such targets is safer than emitting
-// stubs whose paths the genrule can never produce.
+// an upward-traversing "../lib" would resolve to a path outside
+// the install-root tree, which pick_file can't project (the
+// tree only carries paths under the install root). Refusing such
+// targets is safer than emitting stubs whose paths the install
+// root can never carry.
 func installPathFor(t fileapi.Target) string {
 	if t.Install == nil || len(t.Install.Destinations) == 0 {
 		return ""
@@ -332,10 +331,9 @@ func installPathFor(t fileapi.Target) string {
 	// always pass (the TrimPrefix removes the leading "/" that
 	// IsAbs needs to fire on POSIX paths). cmake's install
 	// destinations are conventionally relative (e.g. "lib",
-	// "include/foo"); an absolute one would either escape the
-	// install_tree/ prefix on path.Join or stomp the genrule's
-	// output dir, neither of which the extract genrule
-	// produces.
+	// "include/foo"); an absolute one would point outside the
+	// install-root tree, which pick_file can't project (the
+	// install root only carries paths under it).
 	if path.IsAbs(dest) {
 		return ""
 	}
@@ -348,7 +346,7 @@ func installPathFor(t fileapi.Target) string {
 	cleaned := path.Clean(dest)
 	if cleaned == "." {
 		// destination was empty / "./"; place artefact
-		// directly under install_tree/.
+		// directly at the install root.
 		cleaned = ""
 	}
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
@@ -368,20 +366,20 @@ func installPathFor(t fileapi.Target) string {
 // internal-only headers (target_sources(... FILE_SET
 // HEADERS PRIVATE ...)) that aren't part of the install
 // contract; surfacing them as cc_import.hdrs would expose
-// internal-only headers to consumers AND have the extract
-// genrule claim outs that install_tree.tar never produces.
+// internal-only headers to consumers AND have a pick_file
+// project a path the install root never carries.
 // For each PUBLIC/INTERFACE HEADERS FileSet, walks
 // Target.Sources looking for entries whose FileSetIndex
 // points back at it; for each match, computes the path
 // under the first matching BaseDirectory (iteration order
-// of fs.BaseDirectories) and prefixes "install_tree/include/".
+// of fs.BaseDirectories) and prefixes "include/".
 //
-// The "install_tree/include/" convention reflects cmake's
+// The "include/" convention reflects cmake's
 // GNUInstallDirs default (CMAKE_INSTALL_INCLUDEDIR == "include").
 // Projects that override this either via per-FileSet
 // install destinations or non-default install prefixes will
 // produce placeholder hdrs that don't match the actual
-// install_tree.tar layout. The mismatch surfaces at consumer
+// install-root layout. The mismatch surfaces at consumer
 // build time as a missing-header error rather than silently;
 // a real fixture forcing the divergence drives codemodel
 // FileSet install-destination support as a follow-on.
@@ -395,9 +393,9 @@ func installPathFor(t fileapi.Target) string {
 // FileSets to install(TARGETS ... FILE_SET HEADERS) will
 // still produce hdrs entries here — the function gates on
 // FileSet visibility, not on whether the FileSet appears in
-// the install contract. The extract genrule then declares
-// outs that install_tree.tar won't carry, surfacing as a
-// missing-out failure at A's build time. Honest behaviour
+// the install contract. A pick_file then projects a path the
+// install root won't carry, surfacing as a
+// missing-file failure at A's build time. Honest behaviour
 // vs. silently dropping the headers; a real fixture forcing
 // the divergence drives FileSet install-membership lookup as
 // a follow-on (Target.Install.FileSets / a codemodel field
@@ -484,8 +482,8 @@ func installHeadersFor(t fileapi.Target, projectSrcRoot string) []string {
 // would then have a broken hdrs reference at consumer build
 // time, which surfaces the issue loudly rather than silently
 // missing the header). The fallback is best-effort: if the
-// project's install_tree.tar doesn't actually carry that
-// basename at install_tree/include/<basename>, the consumer's
+// project's install root doesn't actually carry that
+// basename at include/<basename>, the consumer's
 // build fails with a missing-file error pointing at the right
 // path. Returns "" only when src is empty or has no basename.
 func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string {
@@ -519,8 +517,8 @@ func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string 
 		}
 	}
 	// No base dir matched — return the source basename so
-	// the consumer at least gets `install_tree/include/<name>`
-	// (which install_tree.tar typically does carry under cmake's
+	// the consumer at least gets `include/<name>`
+	// (which the install root typically does carry under cmake's
 	// GNUInstallDirs default). A miss surfaces as a missing-
 	// header error at consumer build time rather than silent
 	// drop.

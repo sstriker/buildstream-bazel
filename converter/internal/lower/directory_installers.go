@@ -55,7 +55,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 	// verdicts produce cc_import + cmake_config_bundle filegroup
 	// + per-target headers via exportshape.EmitDeclarative.
 	// Imperative installers fall through to the round-2
-	// _install_tree_extract fallback unchanged (no IR emission
+	// pick_file-projection fallback unchanged (no IR emission
 	// here for them — they're outside this function's surface).
 	exportTargets := lowerExportInstallers(r)
 
@@ -170,7 +170,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 //
 // Imperative installers (Verdict.Declarative == false) fall through
 // unchanged — they stay on the existing round-2
-// _install_tree_extract fallback the meson lowering uses.
+// pick_file-projection fallback the meson lowering uses.
 //
 // Phase 6 of the generator-parity uplift (ROADMAP.md). The slice
 // projecting from codemodel-only sources — Target.Artifacts /
@@ -227,7 +227,7 @@ func lowerExportInstallers(r *fileapi.Reply) []ir.Target {
 			verdict := exportshape.Classify(inst, r.Targets)
 			if !verdict.Declarative {
 				// Imperative bundle: stays on the round-2
-				// _install_tree_extract fallback. Phase 6
+				// pick_file-projection fallback. Phase 6
 				// scope deliberately doesn't touch that path
 				// — it's the safety net for cmake projects
 				// whose install(EXPORT) shape this classifier

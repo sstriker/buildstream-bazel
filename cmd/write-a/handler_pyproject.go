@@ -95,8 +95,8 @@ func (pyprojectHandler) RenderA(elem *element, elemPkg string) error {
 	if pyprojectConfig.fallbackEnabled && !pyprojectShouldUseNative(elem) {
 		// Probe says this element would refuse Phase A — render
 		// the pipeline shape instead. Operator-visible: the
-		// element still ships its install_tree.tar; downstream
-		// consumers reference //elements/<elem>:<elem>_install.
+		// element still ships its install-root TreeArtifact;
+		// downstream consumers reference //elements/<elem>:<elem>_install.
 		// Same stale-sources concern as the convertBin="" branch
 		// above — clear the stage dir before delegating.
 		if err := os.RemoveAll(filepath.Join(elemPkg, "sources")); err != nil {

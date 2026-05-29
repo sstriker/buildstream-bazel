@@ -101,8 +101,8 @@ type Options struct {
 	// (one per non-UTILITY codemodel target, public
 	// visibility) so downstream label references still
 	// resolve at analysis time. The per-target artifact
-	// wiring (cc_import / sh_binary referencing install_tree.tar
-	// paths reconstructed from Target.Install.Destinations
+	// wiring (cc_import / sh_binary referencing install-root
+	// TreeArtifact paths reconstructed from Target.Install.Destinations
 	// + NameOnDisk) lands in Step 2.5 — until then,
 	// downstream consumers' compile/link actions against the
 	// stubs fail. See

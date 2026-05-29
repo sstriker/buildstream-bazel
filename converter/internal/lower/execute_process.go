@@ -63,7 +63,7 @@ type executeProcessOut struct {
 //     codemodel target with public visibility, so downstream
 //     label references resolve at analysis time. Step 2.5
 //     (PR #98) extends the placeholder to wire those stubs
-//     to install_tree.tar via per-target cc_import / sh_binary
+//     to the install root via per-target cc_import / sh_binary
 //     reconstructed from Target.Install.Destinations +
 //     NameOnDisk.
 //

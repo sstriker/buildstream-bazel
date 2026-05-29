@@ -227,7 +227,7 @@ type Args struct {
 	// cc_library-interface stubs** with public visibility, so
 	// downstream label references resolve at analysis time.
 	// Step 2.5 (PR #98) wires those stubs to the element's
-	// round-2 install_tree.tar via per-target cc_import /
+	// round-2 install root via per-target cc_import /
 	// sh_binary rules reconstructed from
 	// Target.Install.Destinations + NameOnDisk; until then,
 	// downstream consumers' compile/link actions against the

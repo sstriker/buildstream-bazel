@@ -14,9 +14,9 @@ package main
 // Shape (parallels docs/design/rendezvous.md
 // — the kind:cmake Phase B sibling):
 //
-//   - one extract genrule that untars install_tree.tar into
-//     per-file outs derived from intro-install_plan.json's
-//     `targets` + `headers` sections.
+//   - one pick_file projection per file over the install-root
+//     TreeArtifact, deriving each projected path from intro-
+//     install_plan.json's `targets` + `headers` sections.
 //   - per-target stubs dispatched on (Tag, install-path basename):
 //     * tag=devel + libfoo.a       → cc_import + static_library
 //     * tag=runtime + libfoo.so*   → cc_import + shared_library
@@ -35,7 +35,7 @@ package main
 //
 // Path resolution: meson's destinations embed `{libdir_static}`,
 // `{libdir_shared}`, `{bindir}`, `{includedir}` etc. The install
-// genrule in project B pins `meson setup --prefix=/ --libdir=lib`,
+// rule in project B pins `meson setup --prefix=/ --libdir=lib`,
 // which makes those placeholders resolve to clean relative paths
 // (`lib/libfoo.a`, `bin/foo`, `include/foo.h`). resolvePlaceholders
 // reads intro-buildoptions.json's `section: directory` rows for the
@@ -146,15 +146,15 @@ func emitFallbackPlaceholder(intro *Introspect, opts LowerOptions) (*ir.Package,
 		default:
 			// Unknown artefact shape (e.g. tag="man" or a custom
 			// tag a meson module emits) — fall back to a private
-			// filegroup so the extract genrule still claims the
+			// filegroup so a pick_file projection still claims the
 			// path. cc_binary/cc_import would mis-classify; a
-			// filegroup keeps install_tree.tar honest without
+			// filegroup keeps the install root honest without
 			// claiming a typed shape we can't validate.
 			//
-			// v1 drops the entry entirely: the install_tree.tar
-			// still carries the bytes (the install genrule's tar
-			// step preserves them), but no per-target Bazel label
-			// surfaces. A real fixture forcing the divergence
+			// v1 drops the entry entirely: the install-root
+			// TreeArtifact still carries the bytes (the install
+			// rule installs them in place), but no per-target Bazel
+			// label surfaces. A real fixture forcing the divergence
 			// drives a typed-filegroup follow-up.
 			continue
 		}
@@ -377,8 +377,8 @@ const (
 // "emit a stub when we're confident" — false positives produce
 // resolution-time errors at consumer build time (clearer than
 // silently dropping); false negatives just drop the label,
-// which the operator can recover by referencing
-// install_tree.tar directly via filegroup.
+// which the operator can recover by referencing the
+// install root directly via filegroup.
 func classifyArtefact(tag, basename string) artefactKind {
 	if hasLibPrefix(basename) {
 		if strings.HasSuffix(basename, ".a") {
@@ -513,7 +513,7 @@ func dirValuesFromOptions(opts []BuildOption) map[string]string {
 // Returns "" when the resolved string is empty or still
 // contains `{` (some placeholder didn't resolve). An empty /
 // unresolved destination prevents the caller from emitting a
-// stub with a path the install_tree.tar can't satisfy.
+// stub with a path the install root can't satisfy.
 func resolvePlaceholders(s string, dirs map[string]string) string {
 	if s == "" {
 		return ""

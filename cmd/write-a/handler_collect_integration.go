@@ -8,13 +8,13 @@ import (
 func init() { registerHandler(collectIntegrationHandler{}) }
 
 // collectIntegrationHandler renders kind:collect_integration as
-// an empty-install genrule. The plugin is from
+// an empty-install rule. The plugin is from
 // buildstream-plugins-community; real behaviour walks dep
 // install trees for integration-command metadata (the
 // `integration-commands` field on each dep's public domain
 // info) and assembles a runtime integration script into
 // %{install-root}/usr/share/integration/integrate.sh. v1
-// produces a placeholder install_tree.tar so downstream
+// produces a placeholder install-root TreeArtifact so downstream
 // consumers can reference it without breaking the graph.
 //
 // 2 of FDSDK's elements use kind:collect_integration (0.2 % of
@@ -23,9 +23,9 @@ func init() { registerHandler(collectIntegrationHandler{}) }
 // fixtures.
 //
 // v1 caveats — same shape as collect_manifest:
-//   - The emitted tarball is empty; downstream elements that
-//     execute the assembled integration script in real builds
-//     will get nothing useful from it. Fine for write-a's
+//   - The emitted install-root TreeArtifact is empty; downstream
+//     elements that execute the assembled integration script in
+//     real builds will get nothing useful from it. Fine for write-a's
 //     render success; bazel-build-time correctness for these
 //     elements lands when the real plugin's logic is ported.
 //   - The element's build-depends are still honored at the

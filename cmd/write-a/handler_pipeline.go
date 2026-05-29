@@ -621,16 +621,16 @@ filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
 //     Byte-stable with the pre-fan-out rendered goldens.
 //
 //   - Multi-platform fan-out (traceConfig.platforms non-empty):
-//     N install genrules, one per platform, each with the
+//     N install rules, one per platform, each with the
 //     platform's constraint set in exec_compatible_with so Bazel
 //     routes the action to a matching executor pool. Each
-//     genrule's outputs land under "<platform>/" so the N
-//     genrules don't collide, and each one's trace-publish step
+//     rule's outputs land under "<platform>/" so the N
+//     rules don't collide, and each one's trace-publish step
 //     bakes its platform tag literally into the --platform= argv
 //     so each cell publishes under the matching AC partition.
-//     A top-level filegroup at ":install_tree.tar" select()s the
-//     right per-platform tarball so downstream
-//     //elements/<dep>:install_tree.tar references resolve
+//     A top-level filegroup at ":<elem>_install" select()s the
+//     right per-platform install-root directory so downstream
+//     //elements/<dep>:<dep>_install references resolve
 //     correctly at the consumer's build platform.
 func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) error {
 	if len(traceConfig.platforms) == 0 {
@@ -644,7 +644,7 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 	// install-genrule bodies and stitch them together
 	// (sharing the top-of-file `package(...)` header so the
 	// rendered BUILD.bazel is valid Bazel) plus a top-level
-	// select()-filegroup at install_tree.tar.
+	// select()-filegroup at <elem>_install.
 	//
 	// FUSE-sources eligibility check mirrors what
 	// renderInstallGenruleBody would do internally: when the
@@ -673,12 +673,12 @@ func (h pipelineHandler) renderPipelineRound2B(elem *element, elemPkg string) er
 }
 
 // composeMultiPlatformInstallBuild stitches N per-platform install-
-// genrule body strings into one BUILD.bazel: the first body's
+// rule body strings into one BUILD.bazel: the first body's
 // `package(...)` header survives as the file header, subsequent
 // bodies have their header stripped, and a trailing top-level
-// filegroup at ":install_tree.tar" select()s the matching
-// per-platform tarball so downstream //elements/<dep>:install_tree.tar
-// references stay valid.
+// filegroup at ":<elem>_install" select()s the matching
+// per-platform install-root directory so downstream
+// //elements/<dep>:<dep>_install references stay valid.
 func composeMultiPlatformInstallBuild(elemName string, bodies []string, platforms []tracePlatform) string {
 	var b strings.Builder
 	for i, body := range bodies {
@@ -717,7 +717,7 @@ func composeMultiPlatformInstallBuild(elemName string, bodies []string, platform
 	// Trailing "//conditions:default": [] arm matches the
 	// convention emit/bazel uses for list-attr select() blocks.
 	// Platforms whose constraints don't match any of the
-	// rendered select() arm keys resolve install_tree.tar to
+	// rendered select() arm keys resolve <elem>_install to
 	// an empty list rather than failing analysis with a "no
 	// matching condition" diagnostic on the filegroup itself —
 	// the failure surfaces at the consumer, where it points at
@@ -730,12 +730,12 @@ func composeMultiPlatformInstallBuild(elemName string, bodies []string, platform
 	// the chosen axis with one of the matrix cells (e.g. a
 	// hypothetical `linux_x86_64_v2` matching the manifest's
 	// `linux_x86_64` cell's `@platforms//cpu:x86_64` arm) will
-	// pick that arm's tarball rather than fall through to the
-	// default. Operators who need strict in-matrix-only matching
-	// supply per-platform select_label / config_setting labels
-	// (see PickSelectKeys' escalation path), which scope the arm
-	// keys to operator-declared config_settings rather than
-	// shared constraint axes.
+	// pick that arm's install-root directory rather than fall
+	// through to the default. Operators who need strict
+	// in-matrix-only matching supply per-platform select_label /
+	// config_setting labels (see PickSelectKeys' escalation path),
+	// which scope the arm keys to operator-declared config_settings
+	// rather than shared constraint axes.
 	b.WriteString(`        "//conditions:default": [],` + "\n")
 	b.WriteString("    }),\n")
 	b.WriteString(")\n")
@@ -785,16 +785,17 @@ func pipelineFuseEligible(elem *element) string {
 }
 
 // renderPipelineBuild renders the per-element BUILD for a coarse-
-// grained pipeline kind: a glob over staged sources + a genrule
-// whose cmd stages the sources into a fresh work dir, runs each
-// phase's commands in order, then tars %{install-root} as the
-// element's primary output (install_tree.tar).
+// grained pipeline kind: a glob over staged sources + a
+// pipeline_install rule whose cmd stages the sources into a fresh
+// work dir, runs each phase's commands in order, then installs
+// %{install-root} as the element's primary output (the install-root
+// TreeArtifact, no tar).
 //
 // Phase commands arrive here already variable-expanded (RenderA
 // runs each through substituteCmd before getting here), so the
-// only thing the genrule cmd binds at action time is the runtime
-// sentinels: $$INSTALL_ROOT (the per-action mktemp dir tarred as
-// install_tree.tar) and $$BUILD_ROOT (the staged source dir, also
+// only thing the rule cmd binds at action time is the runtime
+// sentinels: $$INSTALL_ROOT (the install-root TreeArtifact dir the
+// rule declares) and $$BUILD_ROOT (the staged source dir, also
 // the cwd where phase commands run).
 //
 // groups carries one or more pre-resolved phase command sets:

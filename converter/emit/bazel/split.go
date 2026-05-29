@@ -69,7 +69,7 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		// A filegroup whose only srcs were bare packaged directories
 		// (dropped above) would render as an empty, useless rule — skip it.
 		// install(DIRECTORY) of a dir that became its own package is
-		// served by the layout-independent install_tree.tar path.
+		// served by the layout-independent install-root path.
 		if rt.Kind == ir.KindFilegroup && len(rt.Srcs) == 0 && len(t.Srcs) > 0 {
 			continue
 		}
@@ -325,7 +325,7 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 				// install(DIRECTORY) filegroup src pointing at a dir that
 				// became its own package). Not expressible as a
 				// cross-package file label; drop it — the install path is
-				// served by install_tree.tar, which is layout-independent.
+				// served by the install root, which is layout-independent.
 				continue
 			}
 			// Cross-package source FILE: reference by label + raise an

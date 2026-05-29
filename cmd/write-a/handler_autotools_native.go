@@ -10,9 +10,9 @@ import (
 // to the coarse install-pipeline shape; when --convert-element-trace
 // is supplied, it additionally wraps the build cmd in build-tracer
 // + runs convert-element-trace to emit a native BUILD.bazel.out
-// alongside the install_tree.tar.
+// alongside the install-root TreeArtifact.
 //
-// One genrule with two outputs (install_tree.tar +
+// One rule with two outputs (the install-root TreeArtifact +
 // BUILD.bazel.out). Bazel's action cache (buildbarn in CI)
 // handles convergence — same source + same toolchain + same
 // converter version → same action result, shared across nodes
@@ -57,7 +57,7 @@ var traceConfig struct {
 	// renderPipelineRound2B's multi-platform branch, each
 	// baking --platform=<name> into the trace-publish step and
 	// carrying exec_compatible_with constraints + an
-	// install_tree.tar select() arm. The per-element BUILD also
+	// install-root select() arm. The per-element BUILD also
 	// gets one trace_load target per platform so the per-platform
 	// AC lookups partition correctly. The fan-out covers
 	// every cc-emitting trace-driven kind today
@@ -91,7 +91,7 @@ var traceConfig struct {
 
 // autotoolsHandler picks the right pipelineHandler shape based
 // on the global traceConfig. Without a converter binary,
-// the coarse install_tree.tar pipeline is the rendered shape;
+// the coarse install-root pipeline is the rendered shape;
 // with it, the pipelineExtension wraps the cmd in build-tracer
 // and runs convert-element-trace after the install phase.
 type autotoolsHandler struct{}
@@ -106,8 +106,8 @@ func (autotoolsHandler) DefaultReadPathsPatterns() *readPathsPatterns { return n
 // enabled:
 //
 //   - Trace-driven (traceConfig.convertBin set): the install
-//     genrule lives in PROJECT B (RenderB below), where deps are
-//     materialized as Bazel cc_library / install_tree.tar
+//     rule lives in PROJECT B (RenderB below), where deps are
+//     materialized as Bazel cc_library / install-root TreeArtifact
 //     targets. Project A only carries a marker BUILD plus the
 //     srckey debug artifacts the registry-driven round-2 lookup
 //     consults. See docs/architecture.md for the
@@ -264,7 +264,7 @@ func autotoolsSrckeyPatterns() *readPathsPatterns {
 //
 // Without --convert-element-trace / --build-tracer-bin, the
 // returned handler has no extension — the unmodified coarse
-// install_tree.tar pipeline renders.
+// install-root pipeline renders.
 func autotoolsPipelineHandlerForElement(elem *element, elemPkg string) (pipelineHandler, error) {
 	h := autotoolsBasePipelineHandler()
 	if traceConfig.convertBin == "" {
@@ -359,8 +359,8 @@ func writeAutotoolsImportsManifest(elem *element, elemPkg string) (bool, error) 
 
 // autotoolsTraceExtension is the pipelineExtension that wires
 // the build-tracer + convert-element-trace steps into the
-// rendered install-genrule cmd. Outputs: install_tree.tar
-// (existing) + BUILD.bazel.out (converter output) + make-db.txt
+// rendered install-rule cmd. Outputs: the install-root
+// TreeArtifact + BUILD.bazel.out (converter output) + make-db.txt
 // (post-build dump of `make -np`, fed back to the converter as
 // a structural hint) + install-mapping.json (sidecar). Tools:
 // build-tracer + convert-element-trace (both staged into
@@ -386,7 +386,7 @@ func autotoolsTraceExtension(elem *element, hasImports bool) *pipelineExtension 
 		// and there's exactly one such genrule per element
 		// regardless of --platforms-json. The wrapper's
 		// outputPrefix is always "" because there's only one
-		// declared `install_tree.tar` output for the
+		// declared install-root TreeArtifact output for the
 		// generated-headers.txt $(location ...) reference to
 		// resolve against. Round-2's per-platform install
 		// fan-out is the separate renderPipelineRound2B call

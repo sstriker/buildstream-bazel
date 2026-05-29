@@ -165,7 +165,7 @@ func run(a args) error {
 		buildDir = bd
 		defer os.RemoveAll(bd)
 		ctx := context.Background()
-		// Phase B fallback contract: the install genrule in
+		// Phase B fallback contract: the install rule in
 		// project B pins `meson setup --prefix=/ --libdir=lib`,
 		// which makes intro-install_plan.json's `{libdir_static}`
 		// / `{libdir_shared}` / `{bindir}` / `{includedir}`
@@ -175,7 +175,7 @@ func run(a args) error {
 		// the host's defaults (multiarch libdir on debian,
 		// /usr/local prefix everywhere) and the placeholder shape
 		// in BUILD.bazel.out references paths that don't exist
-		// inside install_tree.tar.
+		// inside the install root.
 		//
 		// We thread the pin via ExtraArgs so operator-supplied
 		// --meson-args (the FDSDK meson-local slot) still wins on

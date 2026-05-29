@@ -534,16 +534,16 @@ func main() {
 	// Wire the trace-driven autotools converter's render-time
 	// config. Empty convertBin disables the trace+convert wrap
 	// entirely — kind:autotools elements render as the
-	// unmodified coarse install_tree.tar pipeline. With both
-	// flags set, the install genrule wraps the build cmd in
+	// unmodified coarse install-root pipeline. With both
+	// flags set, the install rule wraps the build cmd in
 	// build-tracer, runs convert-element-trace against the
 	// trace, and produces a native BUILD.bazel.out alongside
-	// install_tree.tar. Bazel's action cache (buildbarn in CI)
-	// handles cross-node convergence via the existing
-	// remote-cache plumbing.
+	// the install-root TreeArtifact. Bazel's action cache
+	// (buildbarn in CI) handles cross-node convergence via the
+	// existing remote-cache plumbing.
 	// --build-tracer-bin without --convert-element-trace is
 	// allowed when --cmake-round2-fallback is set (kind:cmake's
-	// install genrule wraps cmake under build-tracer without
+	// install rule wraps cmake under build-tracer without
 	// involving the autotools converter); the inverse (autotools
 	// without tracer) is still an error. The earlier check
 	// rejected both shapes; relax it for the cmake-only case.

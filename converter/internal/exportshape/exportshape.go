@@ -6,7 +6,7 @@
 // classifier to gate convert-time emission of cc_import + pkg_files
 // targets that mirror the bundle a consumer's find_package would
 // otherwise pull in. The non-declarative residue stays on the
-// existing round-2 `_install_tree_extract` fallback.
+// existing round-2 pick_file-projection fallback.
 //
 // "Declarative" here means the bundle is expected to be the canonical
 // CMakePackageConfigHelpers::configure_package_config_file shape:
