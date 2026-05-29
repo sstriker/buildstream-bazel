@@ -843,26 +843,21 @@ func TestEmit_FindPackageVariableForm_NoManifest_FallbackTag(t *testing.T) {
 	}
 }
 
-// TestEmit_FindPackageVariableForm_ManifestProvided_AttributionMissedTag
-// covers the dual to the no-manifest fallback test above:
-//   - imports manifest IS provided (the operator opted into
-//     find_package attribution)
-//   - configureLog is empty (no find_package-v1 events — the
-//     cmake-3.32 hook didn't fire)
-//   - cmakeVars is empty (--dump-vars=false path — no
-//     `<Pkg>_FOUND` to recover the package name)
+// TestEmit_FindPackageVariableForm_LinkLibraryRedirect covers B: even
+// when find_package attribution misses entirely —
+//   - configureLog is empty (no find_package-v1 events)
+//   - cmakeVars is empty (--dump-vars=false path)
 //
-// In this configuration findPackageAttrib returns nil and
-// .Lookup() returns "" for every path. Pre-fix the link
-// fragment surfaced only the broad cmake-elided-link-fragment
-// tag, leaving no distinct signal that the operator's
-// find_package attribution opt-in went unfulfilled. Post-fix
-// the lower also emits a
-// `cmake-codegen-find-package-attribution-missed=<basename>`
-// tag so the audit framework can surface the gap with the
-// right diagnostic (re-run with --dump-vars=true OR add the
-// library link-path to the manifest entry).
-func TestEmit_FindPackageVariableForm_ManifestProvided_AttributionMissedTag(t *testing.T) {
+// the imports manifest's link_libraries:["z"] entry redirects the host
+// libz.so link fragment to //elements/zlib via LookupLinkLibrary. This
+// is the variable-only Find module path (find_package sets
+// <Pkg>_LIBRARIES, no <Pkg>::<Pkg> target): the link-library key, not a
+// namespaced target, carries the resolution. The attribution-missed
+// diagnostic the lower would otherwise emit is superseded — there's no
+// unresolved dep to flag. (The diagnostic itself is still covered by
+// the lower-level test, where the manifest declares no matching link
+// library.)
+func TestEmit_FindPackageVariableForm_LinkLibraryRedirect(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/find-package-variable-form")
 	if err != nil {
 		t.Fatal(err)
@@ -896,23 +891,27 @@ func TestEmit_FindPackageVariableForm_ManifestProvided_AttributionMissedTag(t *t
 	if found == nil {
 		t.Fatal("usepkg_var not in pkg.Targets")
 	}
-	wantTag := "cmake-codegen-find-package-attribution-missed=libz.so"
-	hasTag := false
-	for _, tag := range found.Tags {
-		if tag == wantTag {
-			hasTag = true
+	// B: even with find_package attribution missing (empty CMakeVars +
+	// ConfigureLog), the imports manifest declares link_libraries:["z"]
+	// for //elements/zlib, so the host libz.so fragment redirects to
+	// that producer label via LookupLinkLibrary instead of emitting the
+	// attribution-missed diagnostic. The link-library redirect IS the
+	// resolution.
+	hasDep := false
+	for _, d := range found.Deps {
+		if d == "//elements/zlib" {
+			hasDep = true
 			break
 		}
 	}
-	if !hasTag {
-		t.Errorf("Tags should include %q (attribution-missed dual); got %v", wantTag, found.Tags)
+	if !hasDep {
+		t.Errorf("Deps should include //elements/zlib via link-library redirect; got %v", found.Deps)
 	}
-	// The find_package-fallback tag (attribution succeeded but
-	// manifest missed) must NOT also fire here — these two tags
-	// are mutually exclusive on a given (target, path).
+	// No find-package diagnostic tag should fire — the dep resolved.
 	for _, tag := range found.Tags {
-		if strings.HasPrefix(tag, "cmake-codegen-find-package-fallback=") {
-			t.Errorf("attribution-missed path should not also emit fallback tag: %v", found.Tags)
+		if strings.HasPrefix(tag, "cmake-codegen-find-package-attribution-missed=") ||
+			strings.HasPrefix(tag, "cmake-codegen-find-package-fallback=") {
+			t.Errorf("resolved-via-link-library path should emit no find-package diagnostic tag: %v", found.Tags)
 		}
 	}
 }

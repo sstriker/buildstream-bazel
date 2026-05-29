@@ -1057,10 +1057,21 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 	libs := cmakecfg.ImportableTargets(pkg)
 	exports := make([]*manifest.Export, 0, len(libs)+len(aliases))
 	for _, lib := range libs {
-		exports = append(exports, &manifest.Export{
+		ex := &manifest.Export{
 			CMakeTarget: nsPrefix + lib.Name,
 			BazelLabel:  label(lib.Name),
-		})
+		}
+		// B: variable-only Find modules (no <Pkg>::<Pkg> target)
+		// resolve via ${<Pkg>_LIBRARIES} → a path or -l<name>. Carry
+		// the produced lib's link name + synth-prefix-anchored path so
+		// the consumer's link-fragment redirect (LookupLinkLibrary /
+		// LookupLinkPath) maps it to this element whether it resolved
+		// against our prefix or the host.
+		if name := linkLibName(lib.ArtifactName); name != "" {
+			ex.LinkLibraries = []string{name}
+			ex.LinkPaths = []string{lower.ManifestPrefixAnchor + installRel(lib)}
+		}
+		exports = append(exports, ex)
 	}
 	// Alias entries map the verbatim consumer-facing name (e.g.
 	// ZLIB::ZLIB) to the underlying target's label, so a consumer
@@ -1078,6 +1089,36 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 		Version:  1,
 		Elements: []*manifest.Element{{Name: pkgName, Exports: exports}},
 	}
+}
+
+// linkLibName derives the linker -l<name> from a library artifact
+// basename (libz.so → z, libfoo.a → foo, libz.so.1.3.1 → z). Returns
+// "" for non-library artifacts or unparseable names. Versioned sonames
+// collapse to the unversioned name so the key stays source-stable
+// across version bumps that don't change the link name.
+func linkLibName(artifact string) string {
+	if !strings.HasPrefix(artifact, "lib") {
+		return ""
+	}
+	rest := artifact[len("lib"):]
+	for _, suffix := range []string{".so", ".a", ".dylib"} {
+		if i := strings.Index(rest, suffix); i > 0 {
+			return rest[:i]
+		}
+	}
+	return ""
+}
+
+// installRel is the install-tree-relative path of a target's artifact
+// (<dest>/<artifact>, dest defaulting to "lib"), matching cmakecfg's
+// IMPORTED_LOCATION and the path synthprefix stages — so the anchored
+// link_path lines up with the consumer's resolved fragment.
+func installRel(t ir.Target) string {
+	dest := t.InstallDest
+	if dest == "" {
+		dest = "lib"
+	}
+	return dest + "/" + t.ArtifactName
 }
 
 // recoverAliases extracts add_library(<alias> ALIAS <target>)

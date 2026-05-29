@@ -273,7 +273,14 @@ type Options struct {
 // orchestrator.sandboxPrefix). The token is virtual — no filesystem path
 // of that name exists; lower remaps real prefix paths onto it before
 // LookupLinkPath.
-const manifestPrefixAnchor = "/opt/prefix/"
+const manifestPrefixAnchor = ManifestPrefixAnchor
+
+// ManifestPrefixAnchor is the exported form of manifestPrefixAnchor. A
+// producer emitting cross-element link_paths in its exports.json
+// (convert-element-cmake --out-exports) anchors them with this token so
+// they match a consumer's synth-prefix link fragment after lower's
+// hostPrefix→anchor rewrite.
+const ManifestPrefixAnchor = "/opt/prefix/"
 
 // Header file extensions we treat as `hdrs` candidates when walking include
 // directories. Lowercase comparison.
@@ -2194,6 +2201,23 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			// -L<dir> the operator's imports manifest is the
 			// right home for.
 			if name := systemLibName(path); name != "" {
+				// B: variable-only Find modules (no <Pkg>::<Pkg>
+				// target) resolve via ${<Pkg>_LIBRARIES}, so the
+				// host-resolved fragment lands here. If a producer
+				// element claims this lib name (exports.json
+				// link_libraries), redirect to it instead of linking
+				// the host -l<name>.
+				if export := imports.LookupLinkLibrary(name); export != nil {
+					if !seen[export.BazelLabel] {
+						seen[export.BazelLabel] = true
+						if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+							irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+						} else {
+							irt.Deps = append(irt.Deps, export.BazelLabel)
+						}
+					}
+					continue
+				}
 				flag := "-l" + name
 				if !stringSliceContains(irt.LinkOpts, flag) {
 					irt.LinkOpts = append(irt.LinkOpts, flag)

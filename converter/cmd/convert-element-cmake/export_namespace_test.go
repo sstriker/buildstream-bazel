@@ -14,7 +14,7 @@ func TestBuildExportsDoc(t *testing.T) {
 	pkg := &ir.Package{
 		Name: "greetpkg",
 		Targets: []ir.Target{
-			{Name: "greeter", Kind: ir.KindCCLibrary},
+			{Name: "greeter", Kind: ir.KindCCLibrary, ArtifactName: "libgreeter.a"},
 			{Name: "tool", Kind: ir.KindCCBinary}, // excluded — not importable
 			{Name: "aux", Kind: ir.KindCCLibrary},
 		},
@@ -47,6 +47,38 @@ func TestBuildExportsDoc(t *testing.T) {
 	}
 	if el.Exports[0].CMakeTarget != "Greeter::Greeter" {
 		t.Errorf("not sorted: export[0] = %q, want Greeter::Greeter", el.Exports[0].CMakeTarget)
+	}
+	// B link keys: greeter has an ArtifactName, so it carries the link
+	// name + anchored path; aux/alias (no artifact) don't.
+	for _, ex := range el.Exports {
+		if ex.CMakeTarget == "Greeter::greeter" {
+			if len(ex.LinkLibraries) != 1 || ex.LinkLibraries[0] != "greeter" {
+				t.Errorf("Greeter::greeter link_libraries = %v, want [greeter]", ex.LinkLibraries)
+			}
+			if len(ex.LinkPaths) != 1 || ex.LinkPaths[0] != "/opt/prefix/lib/libgreeter.a" {
+				t.Errorf("Greeter::greeter link_paths = %v, want [/opt/prefix/lib/libgreeter.a]", ex.LinkPaths)
+			}
+		}
+		if ex.CMakeTarget == "Greeter::aux" && len(ex.LinkLibraries) != 0 {
+			t.Errorf("aux (no artifact) should have no link_libraries; got %v", ex.LinkLibraries)
+		}
+	}
+}
+
+func TestLinkLibName(t *testing.T) {
+	cases := map[string]string{
+		"libz.so":       "z",
+		"libgreeter.a":  "greeter",
+		"libz.so.1.3.1": "z",
+		"libfoo.dylib":  "foo",
+		"greeter.a":     "", // no lib prefix
+		"lib.so":        "", // empty name
+		"":              "",
+	}
+	for in, want := range cases {
+		if got := linkLibName(in); got != want {
+			t.Errorf("linkLibName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
