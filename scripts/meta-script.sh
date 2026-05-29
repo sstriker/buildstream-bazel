@@ -9,7 +9,7 @@
 #      root} / %{datadir} into the rendered cmd.
 #   2. bazel build runs the genrule. The two commands stage
 #      greeting.txt under DESTDIR/usr/share/scripts/.
-#   3. The driver extracts bazel-bin/elements/greet/install_tree.tar
+#   3. The driver reads bazel-bin/elements/greet/greet_install/install/
 #      and asserts:
 #        - usr/share/scripts/hello.txt exists
 #        - its content is "Hello from kind:script!"
@@ -56,7 +56,7 @@ for marker in 'name = "greet_install"' \
               '# === install ===' \
               'mkdir -p $$INSTALL_ROOT/usr/share/scripts' \
               'install -D -m 0644 greeting.txt $$INSTALL_ROOT/usr/share/scripts/hello.txt' \
-              'outs = ["install_tree.tar"]'; do
+              'pipeline_install('; do
     if ! grep -qF -- "$marker" "$build_path"; then
         echo "meta-script: project A greet BUILD missing marker: $marker" >&2
         cat "$build_path" >&2
@@ -109,19 +109,17 @@ run_bazel() {
 }
 
 run_bazel "$A" build //elements/greet:greet_install 2>&1 | tail -10
-install_tar="$A/bazel-bin/elements/greet/install_tree.tar"
-if [ ! -f "$install_tar" ]; then
-    echo "meta-script: install_tree.tar not produced" >&2
+# The install root is a TreeArtifact directory (declare_directory),
+# read in place (no untar).
+extract_dir="$A/bazel-bin/elements/greet/greet_install/install"
+if [ ! -d "$extract_dir" ]; then
+    echo "meta-script: install-root TreeArtifact not produced at $extract_dir" >&2
     exit 1
 fi
-
-extract_dir="$work_dir/extract"
-mkdir -p "$extract_dir"
-tar -xf "$install_tar" -C "$extract_dir"
 hello="$extract_dir/usr/share/scripts/hello.txt"
 if [ ! -f "$hello" ]; then
-    echo "meta-script: extracted tarball missing usr/share/scripts/hello.txt" >&2
-    tar -tf "$install_tar" | sed 's/^/    /' >&2
+    echo "meta-script: install root missing usr/share/scripts/hello.txt" >&2
+    find "$extract_dir" | sed 's/^/    /' >&2
     exit 1
 fi
 content=$(cat "$hello")
@@ -133,4 +131,12 @@ if [ "$content" != "$expected" ]; then
     exit 1
 fi
 
-echo "meta-script: ok (kind:script flat command list rendered + bazel-built; install tarball validated)"
+# === aquery: zero tar/untar actions ===
+aq=$(run_bazel "$A" aquery '//elements/greet:greet_install' 2>/dev/null || true)
+if echo "$aq" | grep -qiE 'Mnemonic: .*[Tt]ar'; then
+    echo "meta-script: FAIL unexpected tar/untar action" >&2
+    echo "$aq" | grep -i mnemonic >&2
+    exit 1
+fi
+
+echo "meta-script: ok (kind:script flat command list rendered + bazel-built; install-root TreeArtifact validated; zero tar/untar)"
