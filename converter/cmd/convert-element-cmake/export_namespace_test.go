@@ -1,6 +1,52 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+)
+
+// TestBuildExportsDoc checks the producer-side exports manifest: each
+// importable library maps to <nsPrefix><target> → //<pkgPath>:<target>,
+// sorted by cmake_target, with non-library targets excluded.
+func TestBuildExportsDoc(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "greetpkg",
+		Targets: []ir.Target{
+			{Name: "greeter", Kind: ir.KindCCLibrary},
+			{Name: "tool", Kind: ir.KindCCBinary}, // excluded — not importable
+			{Name: "aux", Kind: ir.KindCCLibrary},
+		},
+	}
+	doc := buildExportsDoc(pkg, "Greeter", "Greeter::", "elements/greetlib")
+	if doc.Version != 1 || len(doc.Elements) != 1 {
+		t.Fatalf("doc shape: version=%d elements=%d", doc.Version, len(doc.Elements))
+	}
+	el := doc.Elements[0]
+	if el.Name != "Greeter" {
+		t.Errorf("element name = %q, want Greeter", el.Name)
+	}
+	if len(el.Exports) != 2 {
+		t.Fatalf("want 2 exports (libraries only), got %d", len(el.Exports))
+	}
+	// Sorted by cmake_target: Greeter::aux before Greeter::greeter.
+	if el.Exports[0].CMakeTarget != "Greeter::aux" || el.Exports[0].BazelLabel != "//elements/greetlib:aux" {
+		t.Errorf("export[0] = %+v", el.Exports[0])
+	}
+	if el.Exports[1].CMakeTarget != "Greeter::greeter" || el.Exports[1].BazelLabel != "//elements/greetlib:greeter" {
+		t.Errorf("export[1] = %+v", el.Exports[1])
+	}
+}
+
+// TestBuildExportsDoc_NoPackagePath falls back to a package-relative
+// label when --bazel-package-path is absent.
+func TestBuildExportsDoc_NoPackagePath(t *testing.T) {
+	pkg := &ir.Package{Name: "p", Targets: []ir.Target{{Name: "p", Kind: ir.KindCCLibrary}}}
+	doc := buildExportsDoc(pkg, "P", "P::", "")
+	if got := doc.Elements[0].Exports[0].BazelLabel; got != ":p" {
+		t.Errorf("label = %q, want :p", got)
+	}
+}
 
 // TestExportNamespaceForPackage covers the trace-driven recovery of
 // the install(EXPORT ... NAMESPACE ...) prefix the codemodel drops.

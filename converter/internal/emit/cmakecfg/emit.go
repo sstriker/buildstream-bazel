@@ -38,9 +38,20 @@ type Bundle struct {
 // packages.
 type Options struct {
 	// Namespace is the prefix added to imported targets. Defaults to
-	// "<Package>::". Set explicitly when the upstream uses a different
+	// "<PackageName>::". Set explicitly when the upstream uses a different
 	// convention (e.g. "Foo::" when project is "foo").
 	Namespace string
+
+	// PackageName is the find_package(<name>) the bundle answers to —
+	// it names the config files (<PackageName>Config.cmake etc.) and,
+	// via the caller, the lib/cmake/<PackageName>/ directory. Defaults
+	// to pkg.Name. Set it to the install(EXPORT ... NAMESPACE <ns>::)
+	// stem (e.g. "ZLIB" for a project("zlib") that exports ZLIB::ZLIB)
+	// so a consumer's find_package(ZLIB) resolves against this bundle
+	// rather than the host's FindZLIB module. The cmake File API
+	// codemodel drops the namespace, so the caller recovers it from
+	// the trace (shadow.InstallExportCall).
+	PackageName string
 
 	// Configs lists the per-config bundle files to emit. Defaults to
 	// ["Release"].
@@ -54,8 +65,11 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 	if pkg.Name == "" {
 		return nil, fmt.Errorf("cmakecfg.Emit: package has empty Name")
 	}
+	if opts.PackageName == "" {
+		opts.PackageName = pkg.Name
+	}
 	if opts.Namespace == "" {
-		opts.Namespace = pkg.Name + "::"
+		opts.Namespace = opts.PackageName + "::"
 	}
 	if len(opts.Configs) == 0 {
 		opts.Configs = []string{"Release"}
@@ -76,20 +90,20 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 		return b, nil
 	}
 
-	cfg, err := renderConfig(pkg.Name)
+	cfg, err := renderConfig(opts.PackageName)
 	if err != nil {
 		return nil, err
 	}
-	b.Files[pkg.Name+"Config.cmake"] = cfg
+	b.Files[opts.PackageName+"Config.cmake"] = cfg
 
-	tgts, err := renderTargets(pkg.Name, opts.Namespace, libs)
+	tgts, err := renderTargets(opts.PackageName, opts.Namespace, libs)
 	if err != nil {
 		return nil, err
 	}
-	b.Files[pkg.Name+"Targets.cmake"] = tgts
+	b.Files[opts.PackageName+"Targets.cmake"] = tgts
 
 	for _, conf := range opts.Configs {
-		name := pkg.Name + "Targets-" + lowercase(conf) + ".cmake"
+		name := opts.PackageName + "Targets-" + lowercase(conf) + ".cmake"
 		body, err := renderTargetsConfig(opts.Namespace, libs, conf)
 		if err != nil {
 			return nil, err
@@ -97,6 +111,15 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 		b.Files[name] = body
 	}
 	return b, nil
+}
+
+// ImportableTargets returns the library targets a find_package
+// consumer can import from pkg — the same set Emit publishes as
+// IMPORTED targets in the synthetic bundle. Exposed so the
+// exports.json producer (convert-element-cmake) lists exactly the
+// targets the bundle exports, keeping the two channels in lockstep.
+func ImportableTargets(pkg *ir.Package) []ir.Target {
+	return filterImportable(pkg.Targets)
 }
 
 func filterImportable(ts []ir.Target) []ir.Target {

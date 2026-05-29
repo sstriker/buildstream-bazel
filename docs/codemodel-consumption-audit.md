@@ -20,25 +20,31 @@ Run against cmake 3.28.3 on the post-#306 main:
 | Project | cc targets | Tier-1 rejections | bazel-idiom findings |
 |---|---:|---:|---|
 | abseil-cpp `20260107.1` | 209 | 0 | 0 |
-| protobuf `v6.31.1` | 122 | 0 | 0 (6 without the imports manifest) |
+| protobuf `v6.31.1` | 122 | 0 | 6 (standalone; see below) |
 | googletest `v1.17.0` | 9 | 0 | 0 |
 | Eigen `3.4.1` | 492 | 1 | 0 |
 
 Two genuine new datapoints:
 
-- **protobuf — `find_package(ZLIB)` needs an imports manifest.** Out of
-  the box, every `protoc` / plugin / test binary links
-  `find_package(ZLIB)` (`libz.so`) with no manifest entry, so 6 targets
-  emit `find-package-dep-unresolved` and the dep is dropped from `deps`
-  (the BUILD would link-fail). Not a converter bug — it's the expected
-  config-mode-consumer gap the six leaf libraries never exercised:
-  protobuf is the first survey member that makes the imports-manifest
-  path load-bearing. `run-survey.sh` auto-loads
-  `testdata/survey/protobuf.imports.json` (mapping `ZLIB::ZLIB` →
-  `@zlib`, the idiomatic external-repo label); with it the converter
-  routes all 7 ZLIB link sites to `deps = [… "@zlib"]`, the
-  `cmake-codegen-find-package-fallback=ZLIB=libz.so` tags disappear, and
-  the finding count drops to 0.
+- **protobuf — `find_package(ZLIB)` is a cross-element dep.** Every
+  `protoc` / plugin / test binary links `find_package(ZLIB)` (`libz.so`),
+  so standalone (the survey runs each project on its own) 6 targets emit
+  `find-package-dep-unresolved` and the dep is dropped from `deps`. Not a
+  converter bug — it's the config-mode-consumer shape the six leaf
+  libraries never exercised. In a real `.bst` element graph (zlib as a
+  sibling kind:cmake element) this resolves through the orchestrated
+  producer→consumer export channel rather than a hand-authored manifest:
+  the zlib producer's convert run synthesizes a `lib/cmake/ZLIB/
+  ZLIBConfig.cmake` bundle (keyed on the trace-recovered
+  `install(EXPORT … NAMESPACE ZLIB::)` stem) plus an `exports.json`
+  mapping `ZLIB::ZLIB` → its Bazel label; write-a stages both into the
+  consumer's convert genrule (`--prefix-dir` + `--exports-in`), and
+  `CMAKE_FIND_PACKAGE_PREFER_CONFIG` makes `find_package(ZLIB)` resolve
+  to the producer bundle instead of the host `libz`. The
+  `TestE2E_CMakeConsumer_NamespaceDiffersFromProject` gate proves the
+  end-to-end edge for a project-name ≠ namespace ≠ target case. The
+  standalone survey deliberately leaves the 6 findings visible rather
+  than masking them with a bespoke imports manifest.
 - **Eigen — 1 × `unsupported-execute-process`.** `test/CMakeLists.txt`
   runs `c++ --version | head -n 1` — a multi-COMMAND pipeline the
   execute_process classifier refuses (concurrent stages with stdout

@@ -72,6 +72,63 @@ func TestLoad_HandwrittenManifest(t *testing.T) {
 	}
 }
 
+// TestLoadMerged_ProducerWins checks the consumer-side merge: a
+// render-time convention base maps zlib::zlib (wrong), a producer
+// exports.json maps ZLIB::ZLIB (right), and — crucially — when both
+// declare the same cmake_target the later (producer) doc wins,
+// instead of erroring as strict Index would.
+func TestLoadMerged_ProducerWins(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "imports.json")
+	prod := filepath.Join(dir, "exports.json")
+	// Convention base: wrong casing + a stale label for a shared key.
+	if err := os.WriteFile(base, []byte(`{"version":1,"elements":[
+		{"name":"zlib","exports":[
+			{"cmake_target":"zlib::zlib","bazel_label":"//elements/zlib:zlib"},
+			{"cmake_target":"Shared::Shared","bazel_label":"//stale:label"}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Producer truth: real ZLIB::ZLIB + a fresh label for the shared key.
+	if err := os.WriteFile(prod, []byte(`{"version":1,"elements":[
+		{"name":"ZLIB","exports":[
+			{"cmake_target":"ZLIB::ZLIB","bazel_label":"//elements/zlib:zlibstatic"},
+			{"cmake_target":"Shared::Shared","bazel_label":"//fresh:label"}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.LoadMerged(base, prod)
+	if err != nil {
+		t.Fatalf("LoadMerged: %v", err)
+	}
+	if ex := r.LookupCMakeTarget("ZLIB::ZLIB"); ex == nil || ex.BazelLabel != "//elements/zlib:zlibstatic" {
+		t.Errorf("ZLIB::ZLIB = %+v, want //elements/zlib:zlibstatic", ex)
+	}
+	// Shared key: producer (listed after base) wins.
+	if ex := r.LookupCMakeTarget("Shared::Shared"); ex == nil || ex.BazelLabel != "//fresh:label" {
+		t.Errorf("Shared::Shared = %+v, want //fresh:label (producer wins)", ex)
+	}
+	// Base-only key survives.
+	if ex := r.LookupCMakeTarget("zlib::zlib"); ex == nil {
+		t.Errorf("base-only zlib::zlib should survive the merge")
+	}
+}
+
+// TestLoadMerged_SkipsEmptyPaths lets callers pass an empty base
+// (no --imports-manifest) followed by producer docs.
+func TestLoadMerged_SkipsEmptyPaths(t *testing.T) {
+	dir := t.TempDir()
+	prod := filepath.Join(dir, "exports.json")
+	if err := os.WriteFile(prod, []byte(`{"version":1,"elements":[{"name":"P","exports":[{"cmake_target":"P::p","bazel_label":"//e/p:p"}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.LoadMerged("", prod)
+	if err != nil {
+		t.Fatalf("LoadMerged: %v", err)
+	}
+	if ex := r.LookupCMakeTarget("P::p"); ex == nil || ex.BazelLabel != "//e/p:p" {
+		t.Errorf("P::p = %+v", ex)
+	}
+}
+
 func TestIndex_RejectsDuplicateCMakeTarget(t *testing.T) {
 	im := &manifest.Imports{
 		Version: 1,

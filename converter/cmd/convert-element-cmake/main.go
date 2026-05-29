@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -247,11 +249,17 @@ func run(a cli.Args) error {
 	}
 
 	var imports *manifest.Resolver
-	if a.ImportsManifest != "" {
+	switch {
+	case len(a.ExportsIn) > 0:
+		// Merge the (optional) render-time convention base with the
+		// producer-emitted --exports-in docs, base first so the
+		// producer's real export surface wins on any shared key.
+		imports, err = manifest.LoadMerged(append([]string{a.ImportsManifest}, a.ExportsIn...)...)
+	case a.ImportsManifest != "":
 		imports, err = manifest.Load(a.ImportsManifest)
-		if err != nil {
-			return err
-		}
+	}
+	if err != nil {
+		return err
 	}
 
 	prefixAbs := ""
@@ -513,16 +521,33 @@ func run(a cli.Args) error {
 		}
 	}
 
+	// Producer self-description channels (bundle + exports.json) share
+	// the export namespace recovered from the trace — the codemodel
+	// drops the install(EXPORT ... NAMESPACE ...) prefix, so without
+	// this both would fall back to the project name (right only when
+	// project name == export namespace). The namespace stem keys the
+	// bundle (lib/cmake/<stem>/<stem>Config.cmake) so a consumer's
+	// find_package(<stem>) (with CMAKE_FIND_PACKAGE_PREFER_CONFIG)
+	// resolves against this bundle instead of the host's Find<stem>
+	// module — e.g. project("zlib") + NAMESPACE ZLIB:: ⇒
+	// lib/cmake/ZLIB/ZLIBConfig.cmake exporting ZLIB::ZLIB.
+	var exportNS, bundlePkgName, nsPrefix string
+	if a.OutBundleDir != "" || a.OutExports != "" {
+		exportNS = exportNamespaceForPackage(traceRaw, pkg.Name)
+		bundlePkgName = pkg.Name
+		if exportNS != "" {
+			bundlePkgName = strings.TrimSuffix(exportNS, "::")
+		}
+		nsPrefix = exportNS
+		if nsPrefix == "" {
+			nsPrefix = bundlePkgName + "::"
+		}
+	}
+
 	if a.OutBundleDir != "" {
-		// Recover the real install(EXPORT ... NAMESPACE ...) prefix
-		// from the trace. The codemodel drops it, so cmakecfg
-		// otherwise guesses "<pkgName>::" — right only when the
-		// project name happens to match the export namespace.
-		// Sourcing it from the trace makes the synthetic bundle
-		// export the consumer-facing target name a real package
-		// like Foo::foo (project "foo") declares.
 		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{
-			Namespace: exportNamespaceForPackage(traceRaw, pkg.Name),
+			Namespace:   exportNS,
+			PackageName: bundlePkgName,
 		})
 		if err != nil {
 			return err
@@ -568,9 +593,23 @@ func run(a cli.Args) error {
 			return err
 		}
 		if err := synthprefix.BuildSlice(a.OutBundleDir, []synthprefix.DepBundle{{
-			Pkg:       pkg.Name,
+			Pkg:       bundlePkgName,
 			SourceDir: flatDir,
 		}}); err != nil {
+			return err
+		}
+	}
+
+	if a.OutExports != "" {
+		doc := buildExportsDoc(pkg, bundlePkgName, nsPrefix, a.BazelPackagePath)
+		body, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutExports), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutExports, append(body, '\n'), 0o644); err != nil {
 			return err
 		}
 	}
@@ -983,6 +1022,39 @@ func exportNamespaceForPackage(traceRaw []byte, pkgName string) string {
 		}
 	}
 	return fallback
+}
+
+// buildExportsDoc assembles this element's exports manifest: one
+// manifest.Element (named after the bundle's package name) whose
+// exports map each importable library's real namespaced cmake target
+// (<nsPrefix><target>) to this element's Bazel label
+// (//<bazelPkgPath>:<target>). The target set matches cmakecfg's
+// bundle exactly (both go through cmakecfg.ImportableTargets), so the
+// config-mode and label-mapping channels stay in lockstep. Content is
+// source-intrinsic and sorted by cmake_target, so the file is
+// byte-stable across rebuilds that don't change the export surface — a
+// consumer staging it via --exports-in only re-converts when the
+// surface actually changes, not on every producer edit.
+func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string) *manifest.Imports {
+	libs := cmakecfg.ImportableTargets(pkg)
+	exports := make([]*manifest.Export, 0, len(libs))
+	for _, lib := range libs {
+		label := ":" + lib.Name
+		if bazelPkgPath != "" {
+			label = "//" + bazelPkgPath + ":" + lib.Name
+		}
+		exports = append(exports, &manifest.Export{
+			CMakeTarget: nsPrefix + lib.Name,
+			BazelLabel:  label,
+		})
+	}
+	sort.Slice(exports, func(i, j int) bool {
+		return exports[i].CMakeTarget < exports[j].CMakeTarget
+	})
+	return &manifest.Imports{
+		Version:  1,
+		Elements: []*manifest.Element{{Name: pkgName, Exports: exports}},
+	}
 }
 
 func handleError(a cli.Args, err error) int {
