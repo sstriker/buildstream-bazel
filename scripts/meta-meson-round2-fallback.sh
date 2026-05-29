@@ -15,7 +15,8 @@
 #      generated_sources / cross-compile / unresolved-dependency /
 #      unknown target type) produce the install-plan-driven
 #      placeholder shape (per-target cc_import / sh_binary stubs +
-#      extract genrule pointing at install_tree.tar) instead of
+#      pick_file targets projecting from the install-root
+#      TreeArtifact) instead of
 #      Tier-1 exit.
 #   2. Project B's per-element BUILD emits a real install genrule
 #      wrapping `meson setup --prefix=/ --libdir=lib + ninja + meson
@@ -127,9 +128,9 @@ done
 # B-side: real install genrule replaces the placeholder.
 b_build="$B/elements/meson-greet/BUILD.bazel"
 for marker in \
+    'pipeline_install(' \
     'name = "meson-greet_trace_build"' \
     'tags = ["trace_build"]' \
-    '"install_tree.tar"' \
     '"trace.log"' \
     '"//tools:build-tracer"' \
     '"//tools:trace-publish"' \
