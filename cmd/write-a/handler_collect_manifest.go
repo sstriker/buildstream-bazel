@@ -12,9 +12,9 @@ func init() { registerHandler(collectManifestHandler{}) }
 // trees + emitting JSON listing every artifact under
 // %{install-root}) is FDSDK-specific glue from the
 // buildstream-plugins-community `collect_manifest` plugin; v1
-// produces a placeholder install_tree.tar so downstream consumers
-// (kind:flatpak_image, etc.) can reference it without breaking
-// the graph.
+// produces a placeholder install-root TreeArtifact so downstream
+// consumers (kind:flatpak_image, etc.) can reference it without
+// breaking the graph.
 //
 // 18 of FDSDK's elements use kind:collect_manifest (1.6 % of the
 // total). All live under elements/manifests/ and

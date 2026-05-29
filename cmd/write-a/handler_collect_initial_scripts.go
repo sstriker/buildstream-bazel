@@ -12,9 +12,9 @@ func init() { registerHandler(collectInitialScriptsHandler{}) }
 // under FreeDesktop SDK's own plugins/, not buildstream-plugins-
 // community); real behaviour walks dep install trees for
 // `%{install-root}/usr/lib/initial-scripts/*` and assembles a
-// runtime init-script set. v1 produces a placeholder install_tree.tar
-// so downstream consumers (kind:flatpak_image, etc.) can reference
-// it without breaking the graph.
+// runtime init-script set. v1 produces a placeholder install-root
+// TreeArtifact so downstream consumers (kind:flatpak_image, etc.)
+// can reference it without breaking the graph.
 //
 // 15 of FDSDK's elements use kind:collect_initial_scripts
 // (1.4 % of the total). All live under elements/initial-scripts/

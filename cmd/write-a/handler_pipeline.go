@@ -58,10 +58,10 @@ type pipelineHandler struct {
 	// Used by the trace-driven kind:autotools path: it wraps
 	// the configure/build/install commands in build-tracer and
 	// appends a convert-element-trace step that emits
-	// BUILD.bazel.out alongside install_tree.tar.
+	// BUILD.bazel.out alongside the install-root TreeArtifact.
 	//
-	// Nil = no transformation; the existing single-genrule
-	// install_tree.tar shape renders unchanged.
+	// Nil = no transformation; the plain pipeline_install
+	// (install-root-only) shape renders unchanged.
 	extension *pipelineExtension
 
 	// traceDrivenSrckeyPatterns: when non-nil AND the trace-driven
@@ -94,14 +94,17 @@ type pipelineHandler struct {
 //     already-rendered shell snippet (with comments and the
 //     `# === <phase> ===` markers); the returned string replaces
 //     it. Used to inject a tracer wrapper around the build.
-//   - AppendCmd: shell snippet inserted between the pipeline
-//     commands and the `tar -cf install_tree.tar ...` step.
-//     Used to run convert-element-trace against the
-//     trace before the install tree is tarred.
-//   - ExtraOuts: additional Bazel `outs` filenames the genrule
-//     produces (e.g. "BUILD.bazel.out").
-//   - ExtraTools: additional `//tools:X` labels the genrule
-//     depends on (e.g. "//tools:build-tracer",
+//   - AppendCmd: shell snippet inserted after the pipeline
+//     commands (which install directly into the install-root
+//     TreeArtifact). Used to run convert-element-trace against
+//     the trace once the install tree is populated.
+//   - ExtraOuts: additional scalar file outputs the
+//     pipeline_install rule declares via extra_outs (e.g.
+//     "BUILD.bazel.out"). The install root itself is the
+//     rule's TreeArtifact, not an ExtraOuts entry.
+//   - ExtraTools: additional `//tools:X` labels the rule
+//     consumes (cfg=exec), referenced positionally as
+//     @@TOOL:N@@ (e.g. "//tools:build-tracer",
 //     "//tools:convert-element-trace").
 type pipelineExtension struct {
 	WrapPipelineCmds func(cmds string) string
@@ -110,22 +113,21 @@ type pipelineExtension struct {
 	ExtraOuts        []string
 	ExtraTools       []string
 
-	// DepLabels lists Bazel labels (typically per-file
-	// outputs of upstream `<dep>_install` genrules, e.g.
-	// `//elements/foo:install_tree.tar`) added to the
-	// install genrule's srcs. Used by kinds whose build
-	// pipeline consumes upstream install trees — autotools'
-	// configure / make need dep .h / .a from upstream
-	// elements.
+	// DepLabels lists Bazel labels (the install-root
+	// TreeArtifacts of upstream `<dep>_install` rules, e.g.
+	// `//elements/foo:foo_install`) added to the install
+	// rule's deps. Used by kinds whose build pipeline consumes
+	// upstream install trees — autotools' configure / make need
+	// dep .h / .a from upstream elements.
 	DepLabels []string
 
 	// DepExtractCmd is a shell snippet spliced into the
-	// install genrule's cmd, between the source-tree staging
-	// step and the user-provided pipeline cmds. Sets up
-	// $DEP_PREFIX with extracted dep install trees and
-	// exports build flags (CPPFLAGS / LDFLAGS for autotools)
-	// so the pipeline can find the deps' headers and
-	// libraries. No-op when DepLabels is empty.
+	// install rule's cmd, between the source-tree staging step
+	// and the user-provided pipeline cmds. Exports build flags
+	// (CPPFLAGS / LDFLAGS for autotools) pointing at the dep
+	// install-root directories IN PLACE (via @@DEP_INSTALL_DIRS@@,
+	// no untar into a $DEP_PREFIX) so the pipeline can find the
+	// deps' headers and libraries. No-op when DepLabels is empty.
 	DepExtractCmd string
 
 	// Multi-platform install-genrule knobs. All three are zero-
@@ -134,11 +136,11 @@ type pipelineExtension struct {
 	// fan-out — one pipelineExtension per (element, platform)
 	// cell.
 	//
-	//   - OutputPrefix prefixes every declared output (install_tree.tar
-	//     and ExtraOuts) with "<platform>/" so the N per-platform
-	//     genrules don't collide on output paths. Cmd-side
-	//     $(location <out>) references compose with the prefix so
-	//     the genrule's shell sees the correct exec-root-relative
+	//   - OutputPrefix prefixes every declared output (the install
+	//     root and ExtraOuts) with "<platform>/" so the N per-platform
+	//     rules don't collide on output paths. The rule's path tokens
+	//     (@@INSTALL_DIR@@ / @@OUT:<name>@@) compose with the prefix
+	//     so the action's shell sees the correct exec-root-relative
 	//     path at action time.
 	//
 	//   - NameSuffix appends to the genrule's name (e.g.
@@ -246,15 +248,16 @@ func (h pipelineHandler) renderInstallGenrule(elem *element, elemPkg string) err
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), body)
 }
 
-// renderInstallGenruleBody is the legacy install-genrule rendering —
+// renderInstallGenruleBody renders the coarse install rule body —
 // the shape pipelineHandler.RenderA emits when the kind isn't
-// opted into round-2 (or when round-2 is globally disabled). The
-// genrule's outs include install_tree.tar; cmd stages sources,
-// runs configure/build/install/strip phases, and tars
-// %{install-root}.
+// opted into round-2 (or when round-2 is globally disabled). It
+// emits a pipeline_install rule whose install root is a
+// TreeArtifact (no install_tree.tar); cmd stages sources, runs
+// configure/build/install/strip phases, and installs into
+// %{install-root} (the @@INSTALL_DIR@@ TreeArtifact).
 //
 // Returns the body as a string so a caller composing multiple
-// install genrules in one BUILD.bazel (the project-B per-platform
+// install rules in one BUILD.bazel (the project-B per-platform
 // fan-out) can stitch them together without writing intermediate
 // files. skipStaging suppresses the per-call source-tree copy
 // when the caller already staged sources once for the element

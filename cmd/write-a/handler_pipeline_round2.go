@@ -326,12 +326,13 @@ func foldCellArg(p tracePlatform, irPath string) string {
 }
 
 // pipelineTraceExtensionRound2 is the pipelineExtension for
-// project B's coarse install genrule under round-2: build-tracer
-// wraps configure/build/install, the genrule's AppendCmd
-// post-processes make-db and runs trace-publish. Outputs:
-// install_tree.tar + trace.log + make-db.txt + the per-element
+// project B's coarse install rule under round-2: build-tracer
+// wraps configure/build/install, the AppendCmd post-processes
+// make-db and runs trace-publish. Outputs: the install-root
+// TreeArtifact + trace.log + make-db.txt + the per-element
 // generated-headers.txt the autotools handler already emits
-// (kept under round-2 too — generated-headers feeds future
+// (the latter three ride pipeline_install's extra_outs; kept
+// under round-2 too — generated-headers feeds future
 // converter improvements without re-running the action).
 //
 // imports.json is intentionally NOT in ExtraSrcs here: the
@@ -343,9 +344,10 @@ func foldCellArg(p tracePlatform, irPath string) string {
 // no corresponding behavioral effect on the build.
 //
 // depKindAllow is the set of dep `Bst.Kind` strings whose
-// install_tree.tar tarballs should be staged + extracted under
-// $DEP_PREFIX so the build pipeline's compile commands can find
-// dep headers / libraries. autotools passes []string{"autotools"};
+// install-root TreeArtifacts are consumed in place (the build's
+// compile commands get -I<dir>/usr/include / -L<dir>/usr/lib via
+// @@DEP_INSTALL_DIRS@@ — no untar into $DEP_PREFIX) so the
+// pipeline can find dep headers / libraries. autotools passes []string{"autotools"};
 // kind:make passes []string{"make"}; cross-kind dep wiring is a
 // follow-up once the fixtures land.
 //
