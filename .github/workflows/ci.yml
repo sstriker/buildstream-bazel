@@ -175,6 +175,15 @@ jobs:
         # header library carries the cross-package include path).
         run: make e2e-meta-cmake-split-build 2>&1 | tee -a /tmp/cijob.log
 
+      - name: gazelle_cc-owns-layout e2e (--split-packages --gazelle-cc)
+        # Phase-8b continuous conversion: render the --split-packages
+        # output with --gazelle-cc, run `bazel run //:gazelle` over it,
+        # and assert the build still works, the install-export cc_imports
+        # survive (the whole-rule # keep fix), and a second gazelle pass
+        # is a fixpoint. CI uses gazelle_cc's transitive go_sdk.download
+        # (META_GAZELLE_USE_HOST_GO unset).
+        run: make e2e-meta-cmake-split-gazelle 2>&1 | tee -a /tmp/cijob.log
+
       - name: run-vs-run regression e2e
         # cmd/run-manifest snapshots a built project A; orchestrate-diff
         # diffs two runs. Asserts the no-drift invariant + drift
