@@ -392,18 +392,20 @@ transition cleanly.
   subset of its contents via a per-element `_install_tree_extract`
   genrule, costing CAS roughly tar_bytes + Σ(per-target
   artifact bytes the cc_import / sh_binary stubs reference).
-  Storage duplication adds up across a fleet. Alternative: a
+  Storage duplication adds up across a fleet. Ruled out: a
   Bazel repository rule whose `repository_ctx.execute()` either
   runs cmake at loading time directly OR untars
   `install_tree.tar` into a per-element repo, exposing
   per-target labels without the extract genrule + CAS
   duplication. Precedent: `rules/traces.bzl`'s `_trace_repo`
   (loading-time AC lookup) — but that one only does AC
-  `GetActionResult`, not a full build. Trade-offs: loading-time
-  work blocks Bazel startup; repo rules don't run on RBE
-  (executor-pool advantages forfeited); hermeticity weaker
-  (relies on host-side cmake/ninja). A render-time
-  measurement gate shipped
+  `GetActionResult`, not a full build. **Rejected because it
+  can't remote-execute:** loading-time work blocks Bazel
+  startup; repo rules don't run on RBE (executor-pool
+  advantages forfeited); hermeticity weaker (relies on
+  host-side cmake/ninja). The live candidate is the
+  tree-artifact bullet below, which keeps the dedup win without
+  the RBE disqualifier. A render-time measurement gate shipped
   (`scripts/meta-cmake-round2-fallback-storage-cost.sh`,
   `make e2e-meta-cmake-round2-fallback-storage-cost`) that
   reports the extract-genrule outs count for a small fixture —
@@ -411,6 +413,36 @@ transition cleanly.
   flat 2× on the whole tar; legacy `install(FILES ...)`
   entries stay in tar only). FDSDK-scale numbers from this
   gate would drive the promotion decision.
+- **TreeArtifact install root (the live alternative to the
+  ruled-out repo rule).** Re-express the coarse install
+  transport as a Bazel TreeArtifact (`declare_directory`)
+  instead of `install_tree.tar`: the install root becomes a
+  REAPI `Directory` merkle tree, so identical files dedup in
+  CAS at file granularity (collapsing the `tar_bytes + Σ
+  extract-genrule bytes` duplication above) and downstream
+  consumers build against the directory in place — no `tar -xf`
+  into a per-consumer `$DEP_PREFIX` (cf. `autotoolsDepExtractCmd`
+  in `cmd/write-a/handler_autotools_native.go`). Unlike the repo
+  rule, TreeArtifact actions are ordinary Bazel actions: they
+  run on RBE, do no loading-time work, and stay as hermetic as
+  any other action — same dedup win, none of the disqualifiers.
+  A self-contained spike under
+  `experiments/tree-artifact-install/` proves the three needed
+  mechanisms under bazel 7.4.1 — install root as a Directory,
+  direct cross-element consumption with zero tar/untar actions
+  in the graph (`bazel aquery`), and a `pick_file` projection
+  pulling a single file out of the tree as a plain `File` label
+  to feed the fallback's `cc_import` stubs (replacing the
+  `_install_tree_extract` genrule). Migration work (not yet
+  done): move project B's install step from a `genrule` (file
+  outputs only) to a custom rule using `declare_directory`
+  (precedent: `rules_buildstream_bazel/rules/traces.bzl`),
+  swap the dep-extract untar loop for in-place
+  `-I`/`-L` references, and feed the stubs via `pick_file`. The
+  cross-workspace A↔B transport is unaffected — the rendezvous
+  already moves directories as REAPI `output_directories`
+  (`docs/design/rendezvous.md`). Promotion gated on the same
+  storage-cost gate proving the dedup at FDSDK scale.
 - **Toolchain-feature parity vs. cmake's default Release
   hardening flags.** Surfaced by the convert-and-build
   artifact comparison of zlib (cmake `libz.a` vs. Bazel
