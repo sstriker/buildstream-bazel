@@ -1,52 +1,38 @@
 package main
 
 import (
-	"archive/tar"
-	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 )
 
-// writeBuildPackagesTar lays out a --split-packages element under
-// project A's bazel-bin: a build-packages.tar holding the per-sub-
-// package BUILD.bazel tree (entries named "./<dir>/BUILD.bazel" the
-// way `tar -C $PKGTREE .` produces them), plus a project-B
-// elements/<name>/ dir carrying the root placeholder write-a rendered.
-func writeBuildPackagesTar(t *testing.T, files map[string]string) (projectA, projectB, name string) {
+// writeSplitDir lays out a --split-packages element under project A's
+// bazel-bin: the cmake_split_convert rule's TreeArtifact directory at
+// bazel-bin/elements/<name>/<name>_converted/packages/ holding the
+// per-sub-package BUILD.bazel tree, plus a project-B elements/<name>/
+// dir carrying the root placeholder write-a rendered.
+func writeSplitDir(t *testing.T, files map[string]string) (projectA, projectB, name string) {
 	t.Helper()
 	root := t.TempDir()
 	projectA = filepath.Join(root, "A")
 	projectB = filepath.Join(root, "B")
 	name = "demo"
 
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for rel, content := range files {
-		if err := tw.WriteHeader(&tar.Header{
-			Name:     "./" + rel,
-			Mode:     0o644,
-			Size:     int64(len(content)),
-			Typeflag: tar.TypeReg,
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(content)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := tw.Close(); err != nil {
+	pkgDir := filepath.Join(projectA, "bazel-bin", "elements", name, name+"_converted", "packages")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	for rel, content := range files {
+		p := filepath.Join(pkgDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	aDir := filepath.Join(projectA, "bazel-bin", "elements", name)
-	if err := os.MkdirAll(aDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(aDir, "build-packages.tar"), buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	bDir := filepath.Join(projectB, "elements", name)
 	if err := os.MkdirAll(bDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -57,17 +43,17 @@ func writeBuildPackagesTar(t *testing.T, files map[string]string) (projectA, pro
 	return projectA, projectB, name
 }
 
-// TestRun_SplitTar_UnpacksTree stages a build-packages.tar and checks
-// the per-sub-package BUILD tree lands under project B's
+// TestRun_SplitDir_MergesTree stages a TreeArtifact packages/ directory
+// and checks the per-sub-package BUILD tree lands under project B's
 // elements/<name>/, the root placeholder is overwritten, and the
 // element is reported changed.
-func TestRun_SplitTar_UnpacksTree(t *testing.T) {
+func TestRun_SplitDir_MergesTree(t *testing.T) {
 	files := map[string]string{
 		"BUILD.bazel":          "cc_library(name = \"toplib\")\n",
 		"src/util/BUILD.bazel": "cc_library(name = \"util\")\n",
 		"include/BUILD.bazel":  "cc_library(name = \"include_headers\")\n",
 	}
-	a, b, name := writeBuildPackagesTar(t, files)
+	a, b, name := writeSplitDir(t, files)
 
 	changed, err := run(args{projectA: a, projectB: b})
 	if err != nil {
@@ -87,15 +73,15 @@ func TestRun_SplitTar_UnpacksTree(t *testing.T) {
 	}
 }
 
-// TestRun_SplitTar_Idempotent re-stages an unchanged tar and asserts
-// nothing is reported changed — the same content-diff signal the
+// TestRun_SplitDir_Idempotent re-merges an unchanged TreeArtifact and
+// asserts nothing is reported changed — the same content-diff signal the
 // single-file path returns.
-func TestRun_SplitTar_Idempotent(t *testing.T) {
+func TestRun_SplitDir_Idempotent(t *testing.T) {
 	files := map[string]string{
 		"BUILD.bazel":          "cc_library(name = \"toplib\")\n",
 		"src/util/BUILD.bazel": "cc_library(name = \"util\")\n",
 	}
-	a, b, _ := writeBuildPackagesTar(t, files)
+	a, b, _ := writeSplitDir(t, files)
 	if _, err := run(args{projectA: a, projectB: b}); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -104,28 +90,115 @@ func TestRun_SplitTar_Idempotent(t *testing.T) {
 		t.Fatalf("second run: %v", err)
 	}
 	if len(changed) != 0 {
-		t.Errorf("re-stage reported %v, want none", changed)
+		t.Errorf("re-merge reported %v, want none", changed)
 	}
 }
 
-// TestStageSplitTar_RejectsEscape guards the path-sanitization: a
-// "../"-escaping member must be refused rather than written outside
-// the destination package.
-func TestStageSplitTar_RejectsEscape(t *testing.T) {
-	dir := t.TempDir()
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	body := []byte("evil\n")
-	if err := tw.WriteHeader(&tar.Header{Name: "../escape/BUILD.bazel", Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg}); err != nil {
+// TestStageSplitDir_PartialChange asserts that when only one sub-package
+// BUILD differs on a re-merge, the element is still reported changed and
+// the unchanged files are left untouched.
+func TestStageSplitDir_PartialChange(t *testing.T) {
+	files := map[string]string{
+		"BUILD.bazel":          "cc_library(name = \"toplib\")\n",
+		"src/util/BUILD.bazel": "cc_library(name = \"util\")\n",
+	}
+	a, b, name := writeSplitDir(t, files)
+	if _, err := run(args{projectA: a, projectB: b}); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	// Mutate one source-side BUILD; re-merge must report changed.
+	pkgDir := filepath.Join(a, "bazel-bin", "elements", name, name+"_converted", "packages")
+	if err := os.WriteFile(filepath.Join(pkgDir, "src", "util", "BUILD.bazel"), []byte("cc_library(name = \"util2\")\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	tw.Write(body)
-	tw.Close()
-	tarPath := filepath.Join(dir, "build-packages.tar")
-	if err := os.WriteFile(tarPath, buf.Bytes(), 0o644); err != nil {
+	changed, err := run(args{projectA: a, projectB: b})
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if want := []string{"elements/" + name}; !reflect.DeepEqual(changed, want) {
+		t.Fatalf("changed = %v, want %v", changed, want)
+	}
+	got, _ := os.ReadFile(filepath.Join(b, "elements", name, "src", "util", "BUILD.bazel"))
+	if string(got) != "cc_library(name = \"util2\")\n" {
+		t.Errorf("changed file not restaged: %q", got)
+	}
+}
+
+// TestStageSplitDir_SkipsEscapingSymlink guards path safety: a symlink
+// inside the TreeArtifact pointing outside the destination must not be
+// followed and written through — stageSplitDir only stages regular
+// files, so the escape target is left untouched.
+func TestStageSplitDir_SkipsEscapingSymlink(t *testing.T) {
+	root := t.TempDir()
+	srcDir := filepath.Join(root, "packages")
+	destDir := filepath.Join(root, "dest")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stageSplitTar(tarPath, filepath.Join(dir, "dest")); err == nil {
-		t.Fatal("expected escape rejection, got nil error")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A would-be escape target outside destDir.
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A real regular file (should stage) and an escaping symlink (should
+	// be skipped, never followed/copied).
+	if err := os.WriteFile(filepath.Join(srcDir, "BUILD.bazel"), []byte("cc_library(name = \"ok\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(srcDir, "evil")); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	changed, err := stageSplitDir(srcDir, destDir)
+	if err != nil {
+		t.Fatalf("stageSplitDir: %v", err)
+	}
+	if !changed {
+		t.Error("expected the regular file to be reported changed")
+	}
+	if got, _ := os.ReadFile(filepath.Join(destDir, "BUILD.bazel")); string(got) != "cc_library(name = \"ok\")\n" {
+		t.Errorf("regular file not staged: %q", got)
+	}
+	// The symlink must not have been staged into destDir.
+	if _, err := os.Lstat(filepath.Join(destDir, "evil")); !os.IsNotExist(err) {
+		t.Errorf("escaping symlink was staged into destDir (err=%v)", err)
+	}
+	// The outside target is untouched.
+	if got, _ := os.ReadFile(outside); string(got) != "original\n" {
+		t.Errorf("escape target was modified: %q", got)
+	}
+}
+
+// TestStageSplitDir_StaysWithinDest asserts the merge never writes
+// outside destDir: every staged path is contained even when the source
+// tree is deeply nested. Combined with the symlink-skip test above, this
+// covers the path-safety contract of the directory merge (a real os.Walk
+// over a TreeArtifact cannot emit a "../"-escaping relative path, so the
+// defensive `..` guard in stageSplitDir is belt-and-suspenders for
+// hand-crafted on-disk trees).
+func TestStageSplitDir_StaysWithinDest(t *testing.T) {
+	root := t.TempDir()
+	srcDir := filepath.Join(root, "packages")
+	destDir := filepath.Join(root, "dest")
+	deep := filepath.Join(srcDir, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "BUILD.bazel"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stageSplitDir(srcDir, destDir); err != nil {
+		t.Fatalf("stageSplitDir: %v", err)
+	}
+	staged := filepath.Join(destDir, "a", "b", "c", "BUILD.bazel")
+	rel, err := filepath.Rel(destDir, staged)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." {
+		t.Fatalf("staged path escaped destDir: %q (rel %q)", staged, rel)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("deep file not staged within destDir: %v", err)
 	}
 }

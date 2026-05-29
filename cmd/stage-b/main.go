@@ -30,11 +30,9 @@
 package main
 
 import (
-	"archive/tar"
 	"bytes"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -127,15 +125,21 @@ func run(a args) ([]string, error) {
 		}
 		name := e.Name()
 
-		// --split-packages elements emit a single build-packages.tar
-		// (the per-sub-package BUILD tree) instead of BUILD.bazel.out,
-		// because a genrule can't statically declare the discovered-at-
-		// action-time sub-package set. Prefer it when present: unpack
-		// the tree into project B's elements/<name>/, overwriting the
-		// root placeholder and creating the sub-package BUILD files.
-		tarPath := filepath.Join(aElements, name, "build-packages.tar")
-		if info, statErr := os.Stat(tarPath); statErr == nil && info.Size() > 0 {
-			ch, err := stageSplitTar(tarPath, filepath.Join(bElements, name))
+		// --split-packages elements are converted by the
+		// cmake_split_convert custom rule (rules/cmake_packages.bzl),
+		// whose action declares the discovered-at-action-time
+		// per-sub-package BUILD tree as a TreeArtifact directory. It
+		// materializes under bazel-bin at
+		// elements/<name>/<name>_converted/packages/ (the rule name is
+		// "<name>_converted"; declare_directory path is
+		// "<rule-name>/packages"). Prefer it when present: merge the
+		// live directory into project B's elements/<name>/ by per-file
+		// content compare, overwriting the root placeholder and creating
+		// the sub-package BUILD files. No tar to unpack — each generated
+		// BUILD is content-addressed individually.
+		pkgDir := filepath.Join(aElements, name, name+"_converted", "packages")
+		if info, statErr := os.Stat(pkgDir); statErr == nil && info.IsDir() {
+			ch, err := stageSplitDir(pkgDir, filepath.Join(bElements, name))
 			if err != nil {
 				return nil, fmt.Errorf("stage split element %s: %v", name, err)
 			}
@@ -144,7 +148,7 @@ func run(a args) ([]string, error) {
 			}
 			continue
 		} else if statErr != nil && !os.IsNotExist(statErr) {
-			return nil, fmt.Errorf("stat %s: %v", tarPath, statErr)
+			return nil, fmt.Errorf("stat %s: %v", pkgDir, statErr)
 		}
 
 		src := filepath.Join(aElements, name, "BUILD.bazel.out")
@@ -177,63 +181,66 @@ func run(a args) ([]string, error) {
 	return changed, nil
 }
 
-// stageSplitTar unpacks a --split-packages build-packages.tar (the
-// per-sub-package BUILD.bazel tree produced by project A's converter
-// genrule) into destDir, the project-B elements/<name>/ package root.
-// It writes each regular-file entry, creating sub-package directories
-// as needed, and reports whether any staged file's content changed
-// (added or differing) versus what was already there — the same
-// idempotent "what re-converted" signal the single-file path returns,
-// so a re-stage with an unchanged tar reports nothing.
+// stageSplitDir merges a --split-packages TreeArtifact directory (the
+// per-sub-package BUILD.bazel tree the cmake_split_convert rule's action
+// materialized under project A's bazel-bin) into destDir, the project-B
+// elements/<name>/ package root. It walks srcDir recursively, writing
+// each regular file under its srcDir-relative path and creating
+// sub-package directories as needed, and reports whether any staged
+// file's content changed (added or differing) versus what was already
+// there — the same idempotent "what re-converted" signal the single-file
+// path returns, so a re-merge of an unchanged tree reports nothing.
 //
-// Entry paths are sanitized: a "../"-escaping or absolute member is
-// rejected rather than allowed to write outside destDir.
-func stageSplitTar(tarPath, destDir string) (bool, error) {
-	f, err := os.Open(tarPath)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-
+// Relative paths are sanitized: a "../"-escaping or absolute member is
+// rejected rather than allowed to write outside destDir. (A TreeArtifact
+// can't normally contain such entries, but the guard keeps the merge
+// safe regardless of what's on disk.)
+func stageSplitDir(srcDir, destDir string) (bool, error) {
 	changed := false
-	tr := tar.NewReader(f)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
+	walkErr := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return false, fmt.Errorf("read tar %s: %v", tarPath, err)
+			return err
 		}
-		if hdr.Typeflag != tar.TypeReg {
-			continue // skip dir entries; we MkdirAll per file below
+		if info.IsDir() {
+			return nil // directories are created lazily per file below
 		}
-		rel := filepath.Clean(filepath.FromSlash(hdr.Name))
+		if !info.Mode().IsRegular() {
+			return nil // skip symlinks / sockets / etc.
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return fmt.Errorf("relativize %s: %v", path, err)
+		}
+		rel = filepath.Clean(rel)
 		if rel == "" || rel == "." {
-			continue
+			return nil
 		}
 		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return false, fmt.Errorf("tar %s: member %q escapes destination", tarPath, hdr.Name)
+			return fmt.Errorf("split dir %s: member %q escapes destination", srcDir, rel)
 		}
 		dst := filepath.Join(destDir, rel)
-		newBytes, err := io.ReadAll(tr)
+		newBytes, err := os.ReadFile(path)
 		if err != nil {
-			return false, fmt.Errorf("read tar member %q: %v", hdr.Name, err)
+			return fmt.Errorf("read split member %s: %v", path, err)
 		}
 		oldBytes, rdErr := os.ReadFile(dst)
 		if rdErr != nil && !os.IsNotExist(rdErr) {
-			return false, fmt.Errorf("read staged %s: %v", dst, rdErr)
+			return fmt.Errorf("read staged %s: %v", dst, rdErr)
 		}
 		if bytes.Equal(oldBytes, newBytes) {
-			continue
+			return nil
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return false, fmt.Errorf("mkdir for %s: %v", dst, err)
+			return fmt.Errorf("mkdir for %s: %v", dst, err)
 		}
 		if err := os.WriteFile(dst, newBytes, 0o644); err != nil {
-			return false, fmt.Errorf("stage %s: %v", dst, err)
+			return fmt.Errorf("stage %s: %v", dst, err)
 		}
 		changed = true
+		return nil
+	})
+	if walkErr != nil {
+		return false, walkErr
 	}
 	return changed, nil
 }
