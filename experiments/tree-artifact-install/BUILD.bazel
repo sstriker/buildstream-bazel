@@ -1,0 +1,47 @@
+load("//rules:install.bzl", "install_tree", "pick_file")
+load("//rules:consume.bzl", "build_against")
+
+# ── Producer ────────────────────────────────────────────────────
+# The "dep" element. Compiles + installs into a TreeArtifact install
+# root (usr/include/foo.h + usr/lib/libfoo.a). This is the
+# install_tree.tar replacement: a Directory, not an opaque tarball.
+install_tree(
+    name = "foo_install",
+    srcs = [
+        "src/foo.c",
+        "src/foo.h",
+    ],
+    libname = "foo",
+)
+
+# ── Cross-element consumers ──────────────────────────────────────
+# Compile directly against the dep's install tree — references
+# usr/include + usr/lib INSIDE the TreeArtifact, with no tar -xf and
+# no per-consumer $DEP_PREFIX copy (cf. autotoolsDepExtractCmd).
+build_against(
+    name = "app",
+    src = "src/main.c",
+    dep = ":foo_install",
+    libname = "foo",
+)
+
+# A SECOND consumer of the very same install tree. Two edges, one
+# shared Directory — nothing duplicated per consumer. On RBE the
+# Directory lives once in CAS and both actions reference it.
+build_against(
+    name = "app2",
+    src = "src/main2.c",
+    dep = ":foo_install",
+    libname = "foo",
+)
+
+# ── Per-target projection ────────────────────────────────────────
+# Pull libfoo.a out of the tree as a plain File label — the
+# mechanism a round-2 fallback cc_import stub uses instead of the
+# extract genrule. Proves you can hand individual artifacts to
+# label-consuming rules without re-materializing the whole tree.
+pick_file(
+    name = "libfoo_a",
+    tree = ":foo_install",
+    rel = "usr/lib/libfoo.a",
+)
