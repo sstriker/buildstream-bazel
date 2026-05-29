@@ -45,6 +45,41 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "copy_if_different",
 		},
 		{
+			// Raw `cp` (issue #312): classified as a copy and
+			// lifted, not refused. The classifier doesn't touch
+			// the filesystem — file-vs-dir / symlink-deref is the
+			// lifter's job.
+			name: "raw cp → cmake-e cp",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"cp", "-RauL", "/src/data", "/build"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "cp",
+		},
+		{
+			// cp with a captured exit/var still classifies as a
+			// copy — the copy happens; the captured value flows
+			// through the dump-vars rescue.
+			name: "cp with RESULT_VARIABLE → cmake-e cp",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"/bin/cp", "a.txt", "/build/a.txt"}},
+				ResultVariable: "_R",
+			},
+			bucket: BucketCMakeE,
+			op:     "cp",
+		},
+		{
+			// A genuinely opaque copy-shaped driver (rsync) is NOT
+			// in copyDrivers, so it still refuses — the cp lift is
+			// scoped to drivers whose semantics the lifter can
+			// reproduce exactly.
+			name: "rsync (not cp) still refuses",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"rsync", "-a", "/src/data", "/build"}},
+			},
+			bucket: BucketUnknown,
+		},
+		{
 			name: "cmake -E with unrecognized op falls back to Unknown",
 			call: shadow.ExecuteProcessCall{
 				Commands: [][]string{{"cmake", "-E", "compare_files", "a", "b"}},

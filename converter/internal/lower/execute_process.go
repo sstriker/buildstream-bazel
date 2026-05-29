@@ -253,6 +253,11 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	case "configure_file":
 		return liftCMakeEConfigureFile(args, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
+	case "cp":
+		// Raw POSIX `cp` (issue #312). argv is `cp <flags...>
+		// <src> <dst>` (no `-E <op>` prefix), so the operands
+		// start at argv[1].
+		return liftCp(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	}
 	return nil, "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
@@ -341,6 +346,228 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 	})
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, "", true
+}
+
+// liftCp translates a raw POSIX `cp` execute_process call into
+// one or more copy genrules, mirroring liftCMakeECopy's shape.
+// Unlike cmake -E copy, raw cp can copy a directory recursively,
+// and its source may be a symlink — so liftCp consults the
+// on-disk source root (hostSrcDir) to decide file-vs-directory
+// and to dereference symlinks, work that the argv-only
+// classifier intentionally leaves to the lifter.
+//
+// args is everything after `cp` (flags + operands). v1 supports
+// exactly the 2-operand `<src> <dst>` form; 3+ operands
+// (multi-src into a dir) refuse with a precise diagnostic so the
+// caller never mis-lifts. recursive is inferred from -R / -r /
+// -a (archive implies recursive); other flags are ignored.
+//
+// Anchoring: src must resolve under the source root (real Bazel
+// input), dst under the build dir (real Bazel output). The
+// on-disk source is stat'd through filepath.EvalSymlinks so the
+// emitted Srcs point at the REAL files, not through a symlink
+// (e.g. tests/types/data -> ../data resolves to tests/data/...).
+//
+// Returns (rels, "", true) on success; (nil, reason, false) on
+// any refusal.
+func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	// Split flags (tokens starting with '-') from operands.
+	var operands []string
+	recursive := false
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			// -RauL, -r, -a, --recursive, etc. Recursion is
+			// implied by R / r anywhere in a short-flag cluster,
+			// or by archive mode (a).
+			body := strings.TrimLeft(a, "-")
+			if strings.ContainsAny(body, "Rra") || a == "--recursive" || a == "--archive" {
+				recursive = true
+			}
+			continue
+		}
+		operands = append(operands, a)
+	}
+	if len(operands) != 2 {
+		return nil, fmt.Sprintf("cp: v1 supports the 2-operand <src> <dst> form only (got %d operands)", len(operands)), false
+	}
+	src, dst := operands[0], operands[1]
+
+	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+	if !ok {
+		return nil, fmt.Sprintf("cp: source %q is not under the source root", src), false
+	}
+	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	if !ok {
+		return nil, fmt.Sprintf("cp: destination %q is not under the build dir", dst), false
+	}
+	// relativeIfInsideRelaxed maps the build dir itself to ".";
+	// normalise that to "" so the file/dir branches treat the
+	// build-dir root uniformly (outputs land directly under it).
+	if dstRel == "." {
+		dstRel = ""
+	}
+
+	// Resolve the on-disk source to decide file-vs-directory and
+	// to dereference symlinks. EvalSymlinks failure (broken link,
+	// race) falls back to the raw abs path so the os.Stat below
+	// produces the authoritative refusal.
+	abs := filepath.Join(hostSrcDir, srcRel)
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		real = abs
+	}
+	info, err := os.Stat(real)
+	if err != nil {
+		return nil, fmt.Sprintf("cp: source %q does not exist on disk", src), false
+	}
+
+	// Re-anchor the deref'd real path back under the source root
+	// so emitted Srcs point at the real files, not through the
+	// symlink. Fall back to srcRel when the real path escapes the
+	// root (defensive — a symlink pointing outside the tree).
+	realSrcRel, ok := executeProcessAnchorSource(real, hostSrcDir, recordedSrcDir)
+	if !ok {
+		realSrcRel = srcRel
+	}
+
+	if !info.IsDir() {
+		return liftCpFile(realSrcRel, dst, dstRel, cc)
+	}
+	// Directory source. POSIX `cp` without -R/-r/-a fails on a
+	// directory; reproducing it would emit a genrule that copies
+	// nothing useful, so refuse with a diagnostic that names the
+	// missing flag rather than silently emitting an empty rule.
+	if !recursive {
+		return nil, fmt.Sprintf("cp: source %q is a directory but no recursive flag (-R/-r/-a) was given", src), false
+	}
+	return liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir, cc)
+}
+
+// liftCpFile handles `cp <file> <dst>`. When dst names a
+// directory (the recorded dst is the build dir, ends in '/', or
+// has no file extension while src has a basename), cp drops the
+// source basename into it — the output is dstRel/<basename>;
+// otherwise dst is the literal output path. The dir heuristic is
+// best-effort (a real on-disk stat of dst isn't available — it
+// doesn't exist yet at convert time), documented here so the
+// limitation is visible: an extensionless destination FILE
+// (e.g. `cp x README`) is mis-treated as a directory.
+func liftCpFile(realSrcRel, dst, dstRel string, cc *codegenContext) ([]string, string, bool) {
+	outRel := dstRel
+	// POSIX `cp <file> <dst>`: when <dst> doesn't already exist as a
+	// directory, cp creates a file AT <dst>; it only drops the source
+	// basename into <dst> when <dst> is an existing directory. At
+	// convert time the build-dir destination never pre-exists, so the
+	// only reliable "this is a directory" signals are a trailing slash
+	// or the build-dir root itself (dstRel==""). An extensionless dst
+	// like `${BINARY}/script` is therefore treated as a FILE — so
+	// `cp src/script ${BINARY}/script` yields `script`, not
+	// `script/script`.
+	dstIsDir := dstRel == "" || strings.HasSuffix(dst, "/")
+	if dstIsDir {
+		base := filepath.Base(realSrcRel)
+		if dstRel == "" {
+			outRel = base
+		} else {
+			outRel = dstRel + "/" + base
+		}
+	}
+	if _, exists := cc.OutToGenrule[outRel]; exists {
+		return []string{outRel}, "", true
+	}
+	name := executeProcessGenruleName(outRel)
+	cc.Genrules = append(cc.Genrules, ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		Srcs:        []string{realSrcRel},
+		GenruleCmd:  fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && cp "$(location %s)" "$@"`, realSrcRel),
+		GenruleOuts: []string{outRel},
+		Tags:        cmakeETags("cp"),
+		Visibility:  []string{"//visibility:private"},
+	})
+	cc.OutToGenrule[outRel] = name
+	return []string{outRel}, "", true
+}
+
+// liftCpDir handles `cp -R <srcdir> <dstdir>`. POSIX cp -R copies
+// srcdir INTO dstdir, landing files at
+// dstdir/<basename(srcdir)>/<rel>. The basename used is the
+// ORIGINAL srcRel basename (e.g. `data`), NOT the deref'd target
+// name, matching what cp does with a symlinked source argument.
+//
+// One multi-output genrule is emitted covering every regular
+// file under the (deref'd) source dir. Multi-out genrules
+// reference $(RULEDIR) rather than $@ (which is single-output
+// only). Srcs/outs are sorted for determinism. An empty source
+// dir succeeds with no rels (an empty copy is a no-op — failing
+// conversion over it would be wrong).
+func liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir string, cc *codegenContext) ([]string, string, bool) {
+	type pair struct{ src, out string }
+	var pairs []pair
+	base := filepath.Base(srcRel)
+	err := filepath.WalkDir(real, func(p string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		fileUnder, rerr := filepath.Rel(real, p)
+		if rerr != nil {
+			return rerr
+		}
+		fileUnder = filepath.ToSlash(fileUnder)
+		// Re-anchor each file against the source root (robust to
+		// nested symlinks); fall back to joining the deref'd
+		// dir's source-root rel with the walked sub-path.
+		srcFileRel, ok := executeProcessAnchorSource(p, hostSrcDir, recordedSrcDir)
+		if !ok {
+			srcFileRel = realSrcRel + "/" + fileUnder
+		}
+		outRel := dstRel + "/" + base + "/" + fileUnder
+		if dstRel == "" {
+			outRel = base + "/" + fileUnder
+		}
+		if _, exists := cc.OutToGenrule[outRel]; exists {
+			return nil
+		}
+		pairs = append(pairs, pair{src: srcFileRel, out: outRel})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Sprintf("cp -R: failed to walk source dir %q: %v", srcRel, err), false
+	}
+	if len(pairs) == 0 {
+		// Empty dir (or every file already recovered): no-op copy,
+		// succeed with no rels rather than failing conversion.
+		return nil, "", true
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].out < pairs[j].out })
+
+	srcs := make([]string, 0, len(pairs))
+	outs := make([]string, 0, len(pairs))
+	cmds := make([]string, 0, len(pairs))
+	for _, pr := range pairs {
+		srcs = append(srcs, pr.src)
+		outs = append(outs, pr.out)
+		cmds = append(cmds, fmt.Sprintf(
+			`mkdir -p "$(RULEDIR)/%s" && cp -L "$(location %s)" "$(RULEDIR)/%s"`,
+			filepath.ToSlash(filepath.Dir(pr.out)), pr.src, pr.out))
+	}
+	name := executeProcessGenruleName(outs[0])
+	cc.Genrules = append(cc.Genrules, ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		Srcs:        srcs,
+		GenruleCmd:  strings.Join(cmds, " && "),
+		GenruleOuts: outs,
+		Tags:        cmakeETags("cp"),
+		Visibility:  []string{"//visibility:private"},
+	})
+	for _, o := range outs {
+		cc.OutToGenrule[o] = name
+	}
+	return outs, "", true
 }
 
 // liftCMakeEConfigureFile translates `cmake -E configure_file

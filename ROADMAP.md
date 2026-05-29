@@ -636,6 +636,17 @@ transition cleanly.
   four operator escape hatches (rewrite, override via
   --build-files-dir, round-2 fallback, diagnostic flag).
 
+- **Raw `cp` lifted to copy genrules (issue #312).** Configure-time
+  `execute_process(COMMAND cp ...)` calls (e.g. test-fixture
+  staging `cp -RauL ${SRC}/data ${BINARY}`) no longer hard-fail the
+  element. The classifier routes raw `cp` to the cmake-e copy path;
+  `liftCp` reproduces it as a genrule — single-file copies and
+  recursive directory copies (deref'ing a symlinked source, one
+  multi-output genrule under `$(RULEDIR)`) — alongside the existing
+  `cmake -E copy*` support. Sound by construction: a `cp` of a
+  generated header is load-bearing, so reproducing the copy can't
+  drop a real compile input.
+
 - **Strip cross-target hdrs duplication
   (`stripDepOwnedHdrs`).** Real-world cmake projects
   surface every public header in every target's `hdrs`
