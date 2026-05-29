@@ -6,10 +6,10 @@
 # genrule). The install root becomes a Bazel TreeArtifact carried
 # through Bazel / REAPI as a `Directory` merkle tree, so:
 #
-#   * identical files dedup in CAS at file granularity — the
+#   * identical files dedup in CAS at file granularity -- the
 #     duplication the ROADMAP flagged for the round-2 fallback
-#     (`tar_bytes + Σ extract-genrule bytes`) collapses;
-#   * downstream consumers build against the directory IN PLACE — no
+#     (`tar_bytes + sum extract-genrule bytes`) collapses;
+#   * downstream consumers build against the directory IN PLACE -- no
 #     `tar -xf */install_tree.tar -C $DEP_PREFIX` per-consumer copy
 #     (cf. the old autotoolsDepExtractCmd untar loop);
 #   * unlike the ruled-out repo-rule alternative, these are ordinary
@@ -24,22 +24,20 @@
 # per-kind orchestration command STRING; this rule is a mechanical
 # host for the well-known tokens that string references. write-a
 # builds the command with `@@INSTALL_DIR@@` / `@@SRCS@@` /
-# `@@DEP_INSTALL_DIRS@@` / `@@TRACE_LOG@@` / `@@MAKE_DB@@` /
-# `@@GENERATED_HEADERS@@` sentinel tokens; the rule `.replace()`s each
-# with the action-time exec-root-relative path of the declared output
-# / input. Sentinels (not Python `.format` braces) so the shell body
-# — which is dense with `${var}` / `$(cmd)` / brace-expansion — passes
-# through verbatim with no brace-doubling. No dial / per-kind LOGIC
-# lives here.
+# `@@DEP_INSTALL_DIRS@@` / `@@OUT:<name>@@` / `@@TOOL:<N>@@` sentinel
+# tokens; the rule `.replace()`s each with the action-time exec-root-
+# relative path of the declared output / input / tool. Sentinels (not
+# Python `.format` braces) so the shell body -- which is dense with
+# `${var}` / `$(cmd)` / brace-expansion -- passes through verbatim
+# with no brace-doubling. No dial / per-kind LOGIC lives here.
 
 # Sentinel tokens write-a embeds in the `command` string. Kept in one
 # place so the producer (cmd/write-a) and this consumer stay in sync.
+# @@OUT:<name>@@ and @@TOOL:<N>@@ are parameterised forms built at
+# substitution time from the extra_outs / tools attrs.
 _TOK_INSTALL_DIR = "@@INSTALL_DIR@@"
 _TOK_SRCS = "@@SRCS@@"
 _TOK_DEP_INSTALL_DIRS = "@@DEP_INSTALL_DIRS@@"
-_TOK_TRACE_LOG = "@@TRACE_LOG@@"
-_TOK_MAKE_DB = "@@MAKE_DB@@"
-_TOK_GENERATED_HEADERS = "@@GENERATED_HEADERS@@"
 
 def _pipeline_install_impl(ctx):
     # The install root. A TreeArtifact: its contents aren't known at
@@ -53,26 +51,24 @@ def _pipeline_install_impl(ctx):
     command = ctx.attr.command
     command = command.replace(_TOK_INSTALL_DIR, install_root.path)
 
-    # Scalar side outputs the round-2 extension emitted as extra
-    # genrule `outs` (trace.log / make-db.txt / generated-headers.txt).
-    # Each is declared only when the kind requests it via the matching
-    # emit_* bool, mirroring traces.bzl's expect_* gating, so the
-    # coarse (round-1 / legacy) path declares only the install root and
-    # stays byte-minimal.
-    if ctx.attr.emit_trace_log:
-        trace_log = ctx.actions.declare_file(ctx.label.name + "/trace.log")
-        outputs.append(trace_log)
-        command = command.replace(_TOK_TRACE_LOG, trace_log.path)
+    # Scalar side outputs (trace.log / make-db.txt / generated-
+    # headers.txt / BUILD.bazel.out / install-mapping.json). Each name
+    # in extra_outs is declared as a regular file under the rule's
+    # name and bound to its @@OUT:<name>@@ token. The coarse (round-1 /
+    # legacy) path passes no extra_outs and stays byte-minimal --
+    # declaring only the install root.
+    for name in ctx.attr.extra_outs:
+        f = ctx.actions.declare_file(ctx.label.name + "/" + name)
+        outputs.append(f)
+        command = command.replace("@@OUT:" + name + "@@", f.path)
 
-    if ctx.attr.emit_make_db:
-        make_db = ctx.actions.declare_file(ctx.label.name + "/make-db.txt")
-        outputs.append(make_db)
-        command = command.replace(_TOK_MAKE_DB, make_db.path)
-
-    if ctx.attr.emit_generated_headers:
-        generated_headers = ctx.actions.declare_file(ctx.label.name + "/generated-headers.txt")
-        outputs.append(generated_headers)
-        command = command.replace(_TOK_GENERATED_HEADERS, generated_headers.path)
+    # @@TOOL:<N>@@: positional exec-configuration tool paths. write-a
+    # controls the order of the tools list and references each by its
+    # index, so the same command string stays stable regardless of how
+    # the rule lays the tool inputs out.
+    tool_files = ctx.files.tools
+    for i in range(len(tool_files)):
+        command = command.replace("@@TOOL:" + str(i) + "@@", tool_files[i].path)
 
     # @@SRCS@@: the element's staged sources, space-joined exec-root-
     # relative. The command iterates these the same way the old genrule
@@ -82,7 +78,7 @@ def _pipeline_install_impl(ctx):
 
     # @@DEP_INSTALL_DIRS@@: space-joined TreeArtifact directory paths of
     # this element's deps' install roots. The command references each
-    # dir IN PLACE (`-I<dir>/usr/include`, `-L<dir>/usr/lib`) — no
+    # dir IN PLACE (`-I<dir>/usr/include`, `-L<dir>/usr/lib`) -- no
     # untar, no per-consumer $DEP_PREFIX. A dep target that provides
     # PipelineInstallInfo contributes only its install-root directory
     # (not its scalar side outputs); other deps contribute their files.
@@ -139,25 +135,17 @@ pipeline_install = rule(
         ),
         "command": attr.string(
             mandatory = True,
-            doc = "The orchestration shell command, built by write-a, with well-known sentinel tokens the rule replaces with real paths: @@INSTALL_DIR@@ (the install-root TreeArtifact — the build installs directly into it), @@SRCS@@, @@DEP_INSTALL_DIRS@@, and @@TRACE_LOG@@/@@MAKE_DB@@/@@GENERATED_HEADERS@@ when the matching emit_* bool is set. Sentinels (not Python .format braces) so the shell body's ${var}/$(cmd)/brace-expansion passes through verbatim. Keeping the command in write-a means this rule holds no per-kind LOGIC, only the mechanical declare_directory + token substitution (the cmake_packages.bzl pattern).",
+            doc = "The orchestration shell command, built by write-a, with well-known sentinel tokens the rule replaces with real paths: @@INSTALL_DIR@@ (the install-root TreeArtifact -- the build installs directly into it), @@SRCS@@, @@DEP_INSTALL_DIRS@@, @@OUT:<name>@@ for each name in extra_outs, and @@TOOL:<N>@@ for each positional tool. Sentinels (not Python .format braces) so the shell body's ${var}/$(cmd)/brace-expansion passes through verbatim. Keeping the command in write-a means this rule holds no per-kind LOGIC, only the mechanical declare_directory + token substitution (the cmake_packages.bzl pattern).",
         ),
         "tools": attr.label_list(
             cfg = "exec",
             allow_files = True,
             default = [],
-            doc = "Exec-configuration tool dependencies the command invokes (build-tracer / trace-publish / convert-element-trace / etc.). Threaded into the action's tools so they're built for the exec platform. write-a references them by their exec-root path inside the command string.",
+            doc = "Exec-configuration tool dependencies the command invokes (build-tracer / trace-publish / convert-element-trace / etc.). Threaded into the action's tools so they're built for the exec platform. write-a references them positionally by @@TOOL:<N>@@ (the index into this list).",
         ),
-        "emit_trace_log": attr.bool(
-            default = False,
-            doc = "Declare a trace.log side output and bind the @@TRACE_LOG@@ token. Set by the round-2 trace-driven path (the build-tracer wrap writes the trace there). Default False keeps the coarse path emitting only the install root.",
-        ),
-        "emit_make_db": attr.bool(
-            default = False,
-            doc = "Declare a make-db.txt side output and bind the @@MAKE_DB@@ token. Set by round-2 trace-driven kinds that also publish a make database alongside the trace.",
-        ),
-        "emit_generated_headers": attr.bool(
-            default = False,
-            doc = "Declare a generated-headers.txt side output and bind the @@GENERATED_HEADERS@@ token. Set when the round-2 extension emits the generated-headers manifest.",
+        "extra_outs": attr.string_list(
+            default = [],
+            doc = "Names of scalar side-output files the command produces (e.g. trace.log, make-db.txt, generated-headers.txt, BUILD.bazel.out, install-mapping.json). Each is declared as a regular file under the rule's name and bound to its @@OUT:<name>@@ token. Default empty keeps the coarse path emitting only the install root.",
         ),
     },
     provides = [PipelineInstallInfo],
@@ -167,7 +155,7 @@ pipeline_install = rule(
 def _pick_file_impl(ctx):
     # The install-root TreeArtifact to project a single file out of.
     # Resolve through PipelineInstallInfo when the src target provides
-    # it (the common case — src is a pipeline_install target), else
+    # it (the common case -- src is a pipeline_install target), else
     # fall back to the single declared file (allow_single_file).
     if PipelineInstallInfo in ctx.attr.src:
         tree = ctx.attr.src[PipelineInstallInfo].install_root
@@ -182,7 +170,7 @@ def _pick_file_impl(ctx):
 
     # Copy one entry out of the TreeArtifact into a regular File. On
     # RBE the input is the dep's Directory tree (already in CAS), so
-    # this is a single-file materialization — NOT the whole-subset
+    # this is a single-file materialization -- NOT the whole-subset
     # re-materialization the old _install_tree_extract genrule did
     # (which re-emitted every referenced artifact per consumer).
     ctx.actions.run_shell(
@@ -212,5 +200,5 @@ pick_file = rule(
             doc = "Path inside the TreeArtifact to extract, e.g. \"usr/lib/libfoo.a\". The projected File keeps this path's basename.",
         ),
     },
-    doc = "Project one file out of a pipeline_install TreeArtifact into a plain File label — the cc_import / sh_binary stub mechanism that replaces the round-2 fallback's _install_tree_extract genrule (no per-consumer re-materialization of the whole tree).",
+    doc = "Project one file out of a pipeline_install TreeArtifact into a plain File label -- the cc_import / sh_binary stub mechanism that replaces the round-2 fallback's _install_tree_extract genrule (no per-consumer re-materialization of the whole tree).",
 )
