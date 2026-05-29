@@ -30,6 +30,6 @@ filegroup(
 
 cc_import(
     name = "usepkg_import",
-    shared_library = "lib/libusepkg.so",  # keep
+    shared_library = "lib/libusepkg.so",
     tags = ["cmake-codegen-install-export-import"],
-)
+)  # keep

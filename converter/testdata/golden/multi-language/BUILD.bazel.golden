@@ -54,6 +54,6 @@ filegroup(
 
 cc_import(
     name = "multilang_import",
-    static_library = "lib/libmultilang.a",  # keep
+    static_library = "lib/libmultilang.a",
     tags = ["cmake-codegen-install-export-import"],
-)
+)  # keep

@@ -30,6 +30,6 @@ filegroup(
 
 cc_import(
     name = "pcuser_import",
-    shared_library = "lib/libpcuser.so",  # keep
+    shared_library = "lib/libpcuser.so",
     tags = ["cmake-codegen-install-export-import"],
-)
+)  # keep
