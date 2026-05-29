@@ -68,8 +68,8 @@ if grep -qF -- '//tools:convert-element-pyproject' "$pdm_build"; then
     cat "$pdm_build" >&2
     exit 1
 fi
-if ! grep -qF -- 'install_tree.tar' "$pdm_build"; then
-    echo "meta-pyproject-fallback: pyproject-pdm-greet's fallback BUILD missing install_tree.tar (expected pipeline shape)" >&2
+if ! grep -qF -- 'pipeline_install(' "$pdm_build"; then
+    echo "meta-pyproject-fallback: pyproject-pdm-greet's fallback BUILD missing pipeline_install (expected pipeline shape)" >&2
     cat "$pdm_build" >&2
     exit 1
 fi

@@ -164,8 +164,6 @@ b_build="$B/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_trace_build_linux_x86_64"' \
     'name = "greet_trace_build_darwin_arm64"' \
-    '"linux_x86_64/install_tree.tar"' \
-    '"darwin_arm64/install_tree.tar"' \
     '"linux_x86_64/trace.log"' \
     '"darwin_arm64/trace.log"' \
     '"linux_x86_64/make-db.txt"' \
@@ -177,11 +175,11 @@ for marker in \
     '"@platforms//os:darwin",' \
     '--platform="linux_x86_64"' \
     '--platform="darwin_arm64"' \
-    '$(location linux_x86_64/generated-headers.txt)' \
-    '$(location darwin_arm64/generated-headers.txt)' \
-    'name = "install_tree.tar"' \
-    '"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]' \
-    '"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]' \
+    '@@OUT:linux_x86_64/generated-headers.txt@@' \
+    '@@OUT:darwin_arm64/generated-headers.txt@@' \
+    'name = "greet_install"' \
+    '":greet_trace_build_linux_x86_64"' \
+    '":greet_trace_build_darwin_arm64"' \
     '"//conditions:default": [],'; do
     if ! grep -qF -- "$marker" "$b_build"; then
         echo "meta-trace-round2-fold: B-side BUILD missing marker: $marker" >&2
