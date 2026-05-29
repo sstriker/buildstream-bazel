@@ -98,8 +98,6 @@ b_build="$B/elements/meson-greet/BUILD.bazel"
 for marker in \
     'name = "meson-greet_trace_build_linux_x86_64"' \
     'name = "meson-greet_trace_build_darwin_arm64"' \
-    '"linux_x86_64/install_tree.tar"' \
-    '"darwin_arm64/install_tree.tar"' \
     '"linux_x86_64/trace.log"' \
     '"darwin_arm64/trace.log"' \
     'exec_compatible_with = [' \
@@ -109,9 +107,9 @@ for marker in \
     '"@platforms//os:darwin",' \
     '--platform="linux_x86_64"' \
     '--platform="darwin_arm64"' \
-    'name = "install_tree.tar"' \
-    '"@platforms//cpu:x86_64": ["linux_x86_64/install_tree.tar"]' \
-    '"@platforms//cpu:arm64": ["darwin_arm64/install_tree.tar"]' \
+    'name = "meson-greet_install"' \
+    '":meson-greet_trace_build_linux_x86_64"' \
+    '":meson-greet_trace_build_darwin_arm64"' \
     '"//conditions:default": [],' \
     'meson setup' \
     '--prefix=/' \

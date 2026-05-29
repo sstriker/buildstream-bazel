@@ -126,7 +126,7 @@ b_build="$B/elements/greet/BUILD.bazel"
 for marker in \
     'name = "greet_trace_build"' \
     'tags = ["trace_build"]' \
-    '"install_tree.tar"' \
+    'pipeline_install(' \
     '"trace.log"' \
     '"make-db.txt"' \
     '"//tools:build-tracer"' \
