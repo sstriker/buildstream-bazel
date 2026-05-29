@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -18,7 +19,10 @@ func TestBuildExportsDoc(t *testing.T) {
 			{Name: "aux", Kind: ir.KindCCLibrary},
 		},
 	}
-	doc := buildExportsDoc(pkg, "Greeter", "Greeter::", "elements/greetlib")
+	// An alias (Greeter::Greeter) of the real target greeter — maps to
+	// greeter's label under its verbatim name.
+	aliases := []cmakecfg.Alias{{Name: "Greeter::Greeter", Underlying: "greeter"}}
+	doc := buildExportsDoc(pkg, "Greeter", "Greeter::", "elements/greetlib", aliases)
 	if doc.Version != 1 || len(doc.Elements) != 1 {
 		t.Fatalf("doc shape: version=%d elements=%d", doc.Version, len(doc.Elements))
 	}
@@ -26,15 +30,23 @@ func TestBuildExportsDoc(t *testing.T) {
 	if el.Name != "Greeter" {
 		t.Errorf("element name = %q, want Greeter", el.Name)
 	}
-	if len(el.Exports) != 2 {
-		t.Fatalf("want 2 exports (libraries only), got %d", len(el.Exports))
+	if len(el.Exports) != 3 {
+		t.Fatalf("want 3 exports (2 libs + 1 alias), got %d", len(el.Exports))
 	}
-	// Sorted by cmake_target: Greeter::aux before Greeter::greeter.
-	if el.Exports[0].CMakeTarget != "Greeter::aux" || el.Exports[0].BazelLabel != "//elements/greetlib:aux" {
-		t.Errorf("export[0] = %+v", el.Exports[0])
+	// Sorted by cmake_target: Greeter::Greeter (alias), Greeter::aux,
+	// Greeter::greeter. (Uppercase sorts before lowercase.)
+	want := map[string]string{
+		"Greeter::Greeter": "//elements/greetlib:greeter", // alias → underlying
+		"Greeter::aux":     "//elements/greetlib:aux",
+		"Greeter::greeter": "//elements/greetlib:greeter",
 	}
-	if el.Exports[1].CMakeTarget != "Greeter::greeter" || el.Exports[1].BazelLabel != "//elements/greetlib:greeter" {
-		t.Errorf("export[1] = %+v", el.Exports[1])
+	for _, ex := range el.Exports {
+		if want[ex.CMakeTarget] != ex.BazelLabel {
+			t.Errorf("%s = %q, want %q", ex.CMakeTarget, ex.BazelLabel, want[ex.CMakeTarget])
+		}
+	}
+	if el.Exports[0].CMakeTarget != "Greeter::Greeter" {
+		t.Errorf("not sorted: export[0] = %q, want Greeter::Greeter", el.Exports[0].CMakeTarget)
 	}
 }
 
@@ -42,7 +54,7 @@ func TestBuildExportsDoc(t *testing.T) {
 // label when --bazel-package-path is absent.
 func TestBuildExportsDoc_NoPackagePath(t *testing.T) {
 	pkg := &ir.Package{Name: "p", Targets: []ir.Target{{Name: "p", Kind: ir.KindCCLibrary}}}
-	doc := buildExportsDoc(pkg, "P", "P::", "")
+	doc := buildExportsDoc(pkg, "P", "P::", "", nil)
 	if got := doc.Elements[0].Exports[0].BazelLabel; got != ":p" {
 		t.Errorf("label = %q, want :p", got)
 	}

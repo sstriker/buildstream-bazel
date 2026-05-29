@@ -56,6 +56,26 @@ type Options struct {
 	// Configs lists the per-config bundle files to emit. Defaults to
 	// ["Release"].
 	Configs []string
+
+	// Aliases lists consumer-facing add_library(<Name> ALIAS
+	// <Underlying>) redirects to re-publish in the bundle. The cmake
+	// File API codemodel omits ALIAS targets (they're configure-time
+	// name redirects), so a consumer linking the alias name (e.g.
+	// ZLIB::ZLIB aliasing the real target zlibstatic) would find no
+	// such target in the synthesized config. Each alias renders as an
+	// `add_library(<Name> ALIAS <Namespace><Underlying>)` line, so the
+	// alias resolves to the same imported artifact. Underlyings not in
+	// the importable set are dropped by Emit (the ALIAS would dangle).
+	Aliases []Alias
+}
+
+// Alias is one add_library(<Name> ALIAS <Underlying>) redirect to
+// re-publish in the synthesized bundle. Name is the verbatim
+// consumer-facing name (already namespaced, e.g. "ZLIB::ZLIB");
+// Underlying is the bare name of the importable target it points at.
+type Alias struct {
+	Name       string
+	Underlying string
 }
 
 // Emit produces a Bundle for pkg. Only kinds that map onto IMPORTED targets
@@ -96,7 +116,21 @@ func Emit(pkg *ir.Package, opts Options) (*Bundle, error) {
 	}
 	b.Files[opts.PackageName+"Config.cmake"] = cfg
 
-	tgts, err := renderTargets(opts.PackageName, opts.Namespace, libs)
+	// Keep only aliases whose underlying is an exported library; an
+	// ALIAS to an unexported target would dangle at consumer
+	// find_package time.
+	importable := make(map[string]bool, len(libs))
+	for _, l := range libs {
+		importable[l.Name] = true
+	}
+	var aliases []Alias
+	for _, a := range opts.Aliases {
+		if importable[a.Underlying] {
+			aliases = append(aliases, a)
+		}
+	}
+
+	tgts, err := renderTargets(opts.PackageName, opts.Namespace, libs, aliases)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +246,11 @@ set_target_properties({{$.NS}}{{.Name}} PROPERTIES
 )
 {{end}}
 {{end -}}
+{{range .Aliases}}
+# Consumer-facing alias (add_library({{.Name}} ALIAS ...)); inherits
+# the underlying imported target's properties.
+add_library({{.Name}} ALIAS {{$.NS}}{{.Underlying}})
+{{end -}}
 
 # Per-config target details.
 file(GLOB _cmake_config_files "${CMAKE_CURRENT_LIST_DIR}/{{.Pkg}}Targets-*.cmake")
@@ -262,7 +301,7 @@ func renderConfig(pkg string) ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-func renderTargets(pkg, ns string, targets []ir.Target) ([]byte, error) {
+func renderTargets(pkg, ns string, targets []ir.Target, aliases []Alias) ([]byte, error) {
 	funcs := template.FuncMap{
 		"importedKind": importedKind,
 	}
@@ -272,6 +311,7 @@ func renderTargets(pkg, ns string, targets []ir.Target) ([]byte, error) {
 		"Pkg":     pkg,
 		"NS":      ns,
 		"Targets": targets,
+		"Aliases": aliases,
 	}); err != nil {
 		return nil, err
 	}

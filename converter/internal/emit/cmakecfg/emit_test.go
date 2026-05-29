@@ -5,12 +5,42 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// TestEmit_Aliases re-publishes add_library(<alias> ALIAS <target>)
+// redirects in the bundle so a consumer linking the alias name
+// resolves it. Dangling aliases (underlying not exported) are dropped.
+func TestEmit_Aliases(t *testing.T) {
+	pkg := &ir.Package{
+		Name:    "greetpkg",
+		Targets: []ir.Target{{Name: "greeter", Kind: ir.KindCCLibrary, ArtifactName: "libgreeter.a"}},
+	}
+	bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{
+		Namespace:   "Greeter::",
+		PackageName: "Greeter",
+		Aliases: []cmakecfg.Alias{
+			{Name: "Greeter::Greeter", Underlying: "greeter"}, // valid
+			{Name: "Greeter::Ghost", Underlying: "missing"},   // dangling — dropped
+		},
+	})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	tgts := string(bundle.Files["GreeterTargets.cmake"])
+	if !strings.Contains(tgts, "add_library(Greeter::Greeter ALIAS Greeter::greeter)") {
+		t.Errorf("missing alias line for Greeter::Greeter:\n%s", tgts)
+	}
+	if strings.Contains(tgts, "Greeter::Ghost") {
+		t.Errorf("dangling alias Greeter::Ghost should have been dropped:\n%s", tgts)
+	}
+}
 
 var update = flag.Bool("update", false, "overwrite *.golden files")
 

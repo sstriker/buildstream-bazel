@@ -532,6 +532,7 @@ func run(a cli.Args) error {
 	// module — e.g. project("zlib") + NAMESPACE ZLIB:: ⇒
 	// lib/cmake/ZLIB/ZLIBConfig.cmake exporting ZLIB::ZLIB.
 	var exportNS, bundlePkgName, nsPrefix string
+	var aliases []cmakecfg.Alias
 	if a.OutBundleDir != "" || a.OutExports != "" {
 		exportNS = exportNamespaceForPackage(traceRaw, pkg.Name)
 		bundlePkgName = pkg.Name
@@ -542,12 +543,23 @@ func run(a cli.Args) error {
 		if nsPrefix == "" {
 			nsPrefix = bundlePkgName + "::"
 		}
+		// Recover add_library(<alias> ALIAS <target>) redirects so a
+		// consumer linking the alias name (e.g. ZLIB::ZLIB aliasing
+		// the real target zlibstatic) resolves both at cmake-configure
+		// time (bundle) and at lower time (exports.json). The codemodel
+		// omits ALIAS targets; the trace records them.
+		importable := map[string]bool{}
+		for _, t := range cmakecfg.ImportableTargets(pkg) {
+			importable[t.Name] = true
+		}
+		aliases = recoverAliases(traceRaw, a.SourceRoot, importable)
 	}
 
 	if a.OutBundleDir != "" {
 		bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{
 			Namespace:   exportNS,
 			PackageName: bundlePkgName,
+			Aliases:     aliases,
 		})
 		if err != nil {
 			return err
@@ -601,7 +613,7 @@ func run(a cli.Args) error {
 	}
 
 	if a.OutExports != "" {
-		doc := buildExportsDoc(pkg, bundlePkgName, nsPrefix, a.BazelPackagePath)
+		doc := buildExportsDoc(pkg, bundlePkgName, nsPrefix, a.BazelPackagePath, aliases)
 		body, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			return err
@@ -1035,17 +1047,28 @@ func exportNamespaceForPackage(traceRaw []byte, pkgName string) string {
 // byte-stable across rebuilds that don't change the export surface — a
 // consumer staging it via --exports-in only re-converts when the
 // surface actually changes, not on every producer edit.
-func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string) *manifest.Imports {
-	libs := cmakecfg.ImportableTargets(pkg)
-	exports := make([]*manifest.Export, 0, len(libs))
-	for _, lib := range libs {
-		label := ":" + lib.Name
+func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, aliases []cmakecfg.Alias) *manifest.Imports {
+	label := func(target string) string {
 		if bazelPkgPath != "" {
-			label = "//" + bazelPkgPath + ":" + lib.Name
+			return "//" + bazelPkgPath + ":" + target
 		}
+		return ":" + target
+	}
+	libs := cmakecfg.ImportableTargets(pkg)
+	exports := make([]*manifest.Export, 0, len(libs)+len(aliases))
+	for _, lib := range libs {
 		exports = append(exports, &manifest.Export{
 			CMakeTarget: nsPrefix + lib.Name,
-			BazelLabel:  label,
+			BazelLabel:  label(lib.Name),
+		})
+	}
+	// Alias entries map the verbatim consumer-facing name (e.g.
+	// ZLIB::ZLIB) to the underlying target's label, so a consumer
+	// linking the alias resolves to the same element.
+	for _, a := range aliases {
+		exports = append(exports, &manifest.Export{
+			CMakeTarget: a.Name,
+			BazelLabel:  label(a.Underlying),
 		})
 	}
 	sort.Slice(exports, func(i, j int) bool {
@@ -1055,6 +1078,35 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string) *m
 		Version:  1,
 		Elements: []*manifest.Element{{Name: pkgName, Exports: exports}},
 	}
+}
+
+// recoverAliases extracts add_library(<alias> ALIAS <target>)
+// redirects from the trace (the codemodel omits ALIAS targets),
+// keeping only those whose underlying target is importable so the
+// re-published alias doesn't dangle. Deterministic order (by alias
+// name) keeps exports.json + the bundle byte-stable.
+func recoverAliases(traceRaw []byte, sourceRoot string, importable map[string]bool) []cmakecfg.Alias {
+	if len(traceRaw) == 0 {
+		return nil
+	}
+	// classifyAddLibrary filters to in-source-tree call sites, so the
+	// real source root is required (unlike install(EXPORT) recovery,
+	// which isn't source-filtered).
+	var out []cmakecfg.Alias
+	seen := map[string]bool{}
+	for _, call := range shadow.Decode(traceRaw, sourceRoot, nil).AddLibraries {
+		if call.Type != "ALIAS" || len(call.Aliases) == 0 {
+			continue
+		}
+		underlying := call.Aliases[0]
+		if !importable[underlying] || seen[call.Name] {
+			continue
+		}
+		seen[call.Name] = true
+		out = append(out, cmakecfg.Alias{Name: call.Name, Underlying: underlying})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func handleError(a cli.Args, err error) int {
