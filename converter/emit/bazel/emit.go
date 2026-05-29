@@ -451,8 +451,13 @@ func canonicalize(body []byte) ([]byte, error) {
 //     linkopts, includes, tags, linkstatic, alwayslink,
 //     include_prefix, strip_include_prefix.
 //   - cc_test additionally: args, env, timeout, data.
-//   - cc_import: includes (when present), system_provided,
-//     alwayslink (per the rule schema differences).
+//   - cc_import + alias: whole-rule keep. gazelle / gazelle_cc
+//     can't regenerate install-export imports (the round-2
+//     fallback's library exports) or aliases from post-
+//     conversion sources, so a rule-level keep is the only
+//     scope that survives a gazelle maintenance pass — an
+//     attribute-level keep leaves the rule itself a deletion
+//     candidate when gazelle finds no source to back it.
 //   - genrule + filegroup: whole-rule keep (closing-paren
 //     suffix comment).
 //   - package(...): whole-rule keep.
@@ -470,12 +475,10 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package":
+		case "genrule", "filegroup", "package", "cc_import", "alias":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
 			markAttrsKeep(call, ccKeepAttrs(kind))
-		case "cc_import":
-			markAttrsKeep(call, ccImportKeepAttrs)
 		}
 	}
 }
@@ -565,26 +568,6 @@ func ccKeepAttrs(kind string) map[string]bool {
 		base["data"] = true
 	}
 	return base
-}
-
-// ccImportKeepAttrs are the keep-tagged attributes on
-// cc_import — the rule schema differs from cc_library and
-// excludes most of the compile-side attrs. Per Phase 2's
-// `execute_process_fallback.go` gap update, stock
-// rules_cc's cc_import doesn't actually accept `includes`
-// either; the canonical fix for the round-2 fallback's
-// bracket-include consumers is wrapping cc_import in a
-// cc_library that uses strip_include_prefix. The
-// `includes` entry stays in this map defensively for any
-// future emit-time wrap that targets cc_import directly.
-// `static_library` / `shared_library` carry the per-
-// platform select() shapes the round-2 fallback emits.
-var ccImportKeepAttrs = map[string]bool{
-	"includes":        true,
-	"system_provided": true,
-	"alwayslink":      true,
-	"static_library":  true,
-	"shared_library":  true,
 }
 
 var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{

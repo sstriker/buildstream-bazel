@@ -68,6 +68,17 @@ import (
 // sources / trace_load).
 var rulesPackagePath string
 
+// gazelleCC is set by --gazelle-cc. When true, project B's
+// MODULE.bazel gains the gazelle / gazelle_cc / rules_go
+// bazel_deps and its root BUILD.bazel gains a gazelle_binary
+// (languages=["@gazelle_cc//language/cc"]) + gazelle(name="gazelle")
+// pair, so `bazel run //:gazelle` maintains the converted BUILDs
+// (the Phase-8b continuous-conversion flow: the converter
+// bootstraps the per-directory split, gazelle_cc canonicalizes /
+// owns the layout). Off (the default) leaves project B's
+// MODULE.bazel + root BUILD.bazel byte-identical to today.
+var gazelleCC bool
+
 // bstFile is the YAML shape we parse out of a .bst element file.
 // We only read the fields write-a's per-kind dispatch and source
 // resolution need; other fields BuildStream understands (e.g.
@@ -393,6 +404,7 @@ func main() {
 	round1 := flag.Bool("trace-round1", false, "opt out of round-2 (the default trace-driven path). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / build / install + build-tracer + the converter inline, producing install_tree.tar + BUILD.bazel.out as sibling outputs of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available. Previously named with an autotools- prefix; the trace-driven path now serves multiple kinds (autotools / make / manual / script / makemaker / modulebuild), so the prefix dropped the kind specificity.")
 	traceSourceRoot := flag.Bool("trace-source-root", false, "optional: thread --source-root=$$BUILD_ROOT into every build-tracer invocation emitted by wrapAutotoolsPipelineCmds — both the round-2 install genrule for trace-driven kinds and the round-1 single-genrule shape, since both go through the same wrapper. Required to populate the narrowing-undercoverage audit's trace oracle (without it, build-tracer drops openat events entirely — preserves the legacy AC byte schema for trace-driven kinds at the cost of an empty trace oracle). Flipping the flag invalidates existing AC entries for any trace-driven element rendered by this build (one-shot rebake; the round-2 wire-half AC keyspace and the round-1 single-action cache both shift). Off (the default) keeps existing AC entries valid; CI / e2e fixtures opt in to exercise the audit gate. See docs/design/narrowing-audit.md.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
+	gazelleCCFlag := flag.Bool("gazelle-cc", false, "optional: wire gazelle_cc into project B so `bazel run //:gazelle` maintains the converted BUILDs (the Phase-8b continuous-conversion flow: the converter bootstraps the per-directory split via --split-packages, then gazelle_cc canonicalizes / owns the layout — relocating cc_library targets to their source dirs, preferring implementation_deps; converter targets gazelle_cc can't regenerate carry rule-level # keep to survive). Adds bazel_dep(gazelle/gazelle_cc/rules_go) to project B's MODULE.bazel and a gazelle_binary(languages=[\"@gazelle_cc//language/cc\"]) + gazelle(name=\"gazelle\") pair to project B's root BUILD.bazel. No go_sdk extension is emitted — gazelle_cc's transitive go_sdk.download handles the toolchain in network-having environments; the sandbox e2e gate appends go_sdk.host() to overlay.MODULE.bazel. Off (the default) leaves project B's MODULE.bazel + root BUILD.bazel byte-identical to today. See docs/design/cmake-split-packages.md.")
 	splitPackages := flag.Bool("split-packages", false, "optional: render kind:cmake elements as one BUILD.bazel per CMake source directory (the gazelle per-directory model) instead of a single monolithic BUILD per element. The converter genrule threads --split-packages and emits a single build-packages.tar of the per-sub-package tree (a genrule can't declare the discovered-at-action-time sub-package set as static outs); stage-b unpacks it into project B's elements/<name>/. Off (the default) keeps the single-BUILD shape. See docs/design/cmake-split-packages.md.")
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/architecture.md.")
@@ -477,6 +489,7 @@ func main() {
 	cmakeConfig.bakeIn = resolved.bakeIn
 	cmakeConfig.diagnostics = resolved.diagnostics
 	cmakeConfig.splitPackages = *splitPackages
+	gazelleCC = *gazelleCCFlag
 	mesonConfig.fidelity = resolved.fidelity
 	mesonConfig.diagnostics = resolved.diagnostics
 	pyprojectConfig.fidelity = resolved.fidelity
@@ -1810,9 +1823,7 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeOverlayStubIfAbsent(outDir); err != nil {
 		return fmt.Errorf("operator overlay stub: %w", err)
 	}
-	if err := writeFile(filepath.Join(outDir, "BUILD.bazel"),
-		"# project B root; per-element packages live under elements/<name>/.\n",
-	); err != nil {
+	if err := writeFile(filepath.Join(outDir, "BUILD.bazel"), projectBRootBUILD()); err != nil {
 		return err
 	}
 
@@ -2010,6 +2021,41 @@ local_path_override(
 	return b.String()
 }
 
+// projectBRootBUILD returns project B's root BUILD.bazel
+// content. The default is a one-line comment marker. When
+// --gazelle-cc is set it additionally emits the gazelle_cc
+// wiring (gazelle_binary + gazelle target) per gazelle_cc's
+// README recipe, so `bazel run //:gazelle` maintains the
+// converted per-element BUILDs. Off (the default) is
+// byte-identical to the pre-flag single-line content so
+// existing project-B renders don't move.
+func projectBRootBUILD() string {
+	const header = "# project B root; per-element packages live under elements/<name>/.\n"
+	if !gazelleCC {
+		return header
+	}
+	// gazelle_cc README wiring: a gazelle_binary compiled with the
+	// cc language, driven by a gazelle() target named "gazelle".
+	// `bazel run //:gazelle` then canonicalizes / owns the layout
+	// of the converter-bootstrapped BUILDs (the Phase-8b flow).
+	return header + `
+# --gazelle-cc: gazelle_cc maintains the converted BUILDs.
+# Run ` + "`bazel run //:gazelle -- elements/<name>`" + ` to
+# canonicalize a converted element's per-directory layout.
+load("@gazelle//:def.bzl", "gazelle", "gazelle_binary")
+
+gazelle_binary(
+    name = "gazelle_cc_bin",
+    languages = ["@gazelle_cc//language/cc"],
+)
+
+gazelle(
+    name = "gazelle",
+    gazelle = ":gazelle_cc_bin",
+)
+`
+}
+
 // moduleBazelB declares rules_cc so project A's converted
 // BUILD.bazel.out (which loads cc_library from @rules_cc//cc:defs.bzl)
 // resolves cleanly in project B.
@@ -2059,6 +2105,21 @@ local_path_override(
     path = %q,
 )
 `, rulesPackagePath)
+	if gazelleCC {
+		// --gazelle-cc: wire gazelle_cc so `bazel run //:gazelle`
+		// maintains the converted BUILDs. gazelle_cc 0.5.0 is
+		// published in BCR; its deps (gazelle 0.46.0, rules_go
+		// 0.59.0) come down from bcr.bazel.build at project B's
+		// first bazel build. rules_go is also listed explicitly so
+		// the e2e gate's overlay `use_extension("@rules_go//go:…")`
+		// resolves. No go_sdk extension is emitted here — gazelle_cc
+		// pulls a transitive go_sdk.download(); the sandbox gate
+		// overlays go_sdk.host(). See docs/design/cmake-split-packages.md.
+		b.WriteString(`bazel_dep(name = "gazelle", version = "0.46.0")
+bazel_dep(name = "gazelle_cc", version = "0.5.0")
+bazel_dep(name = "rules_go", version = "0.59.0")
+`)
+	}
 	if pyprojectConfig.convertBin != "" && hasKind(g, "pyproject") {
 		// kind:pyproject's native render emits py_library /
 		// py_binary rules that load() against
@@ -2134,9 +2195,11 @@ const overlayModuleBazelStub = `# overlay.MODULE.bazel — operator-owned MODULE
 # os.Stat()-doesn't-exist. Edit freely.
 #
 # Example: add gazelle for post-conversion BUILD maintenance.
+# (Or just pass write-a --gazelle-cc, which wires gazelle_cc
+# into the converter-owned MODULE.bazel + root BUILD for you.)
 #
-#   bazel_dep(name = "gazelle", version = "0.40.0")
-#   bazel_dep(name = "gazelle_cc", version = "0.3.0")
+#   bazel_dep(name = "gazelle", version = "0.46.0")
+#   bazel_dep(name = "gazelle_cc", version = "0.5.0")
 #
 # See ROADMAP.md for the full
 # post-conversion + gazelle workflow (including the genrule →

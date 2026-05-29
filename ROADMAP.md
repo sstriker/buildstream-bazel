@@ -1548,14 +1548,32 @@ transition cleanly.
     `bazel run //:gazelle -- $changed`; `scripts/meta-gazelle-roundtrip.sh`
     is the reference driver and conformance gate. "Opt in" =
     the driver includes the tail once the operator has wired
-    gazelle / gazelle_cc into `overlay.MODULE.bazel` (there is
-    no orchestrator and no `--enable-gazelle` flag — the driver
-    is a script). The one boundary: the actual
-    `bazel run //:gazelle` needs `gazelle_cc` declared as a
-    `bazel_dep`, which waits on a bcr-published gazelle_cc
-    release; the gate runs the tail guarded on the `//:gazelle`
-    target existing, exercising the changed-element plumbing
-    unconditionally either way.
+    gazelle / gazelle_cc into `overlay.MODULE.bazel`, OR — newly
+    shipped — by passing `cmd/write-a --gazelle-cc`, which has
+    write-a own the wiring directly. gazelle_cc 0.5.0 is now
+    published in BCR, so `bazel run //:gazelle` no longer waits on
+    an operator overlay: `--gazelle-cc` adds
+    `bazel_dep(gazelle 0.46.0 / gazelle_cc 0.5.0 / rules_go 0.59.0)`
+    to project B's MODULE.bazel and a `gazelle_binary`
+    (`languages=["@gazelle_cc//language/cc"]`) + `gazelle(name="gazelle")`
+    pair to its root BUILD. (No `go_sdk` extension is emitted —
+    gazelle_cc's transitive `go_sdk.download` handles the toolchain
+    where the network reaches go.dev; the e2e gate overlays
+    `go_sdk.host()` for sandboxes.)
+  - **Phase 8b — gazelle_cc owns the layout** (shipped for the
+    `--split-packages` flow). The converter bootstraps the per-dir
+    split; gazelle_cc then canonicalizes / owns it: it relocates a
+    `cc_library` to its source file's directory (naming the target
+    after that directory) and prefers `implementation_deps` over
+    `deps` — both accepted. Converter targets gazelle_cc *can't*
+    regenerate from post-conversion sources — `cc_import`
+    install-exports, aliases, genrules, filegroups — carry
+    **rule-level** `# keep` (not just attribute-level) so they
+    survive a gazelle maintenance pass instead of being deleted.
+    `scripts/meta-cmake-split-gazelle.sh` is the gate:
+    `write-a --split-packages --gazelle-cc`, `bazel run //:gazelle`,
+    assert the build still works, the `cc_import` install-exports
+    survive, and a second gazelle pass is a fixpoint.
 - **Narrowing-undercoverage audit CI gate (soft launch).**
   The audit (`cmd/audit-narrowing`) now runs in CI as
   `make e2e-audit-narrowing` via

@@ -191,3 +191,31 @@ directory whose `CMakeLists.txt` *declared* it (a target whose
 `src/` lands at the root for us, in `src/` for gazelle). `buildifier
 -mode=diff` *is* a no-op (the hard formatting contract), gated by
 `scripts/meta-cmake-split-packages.sh`.
+
+### gazelle_cc owns the layout (keep-marker scope)
+
+The Phase-8b flow is "converter bootstraps, `gazelle_cc` maintains": the
+converter emits the per-directory split, then `bazel run //:gazelle`
+(with `gazelle_cc` compiled in) canonicalizes and *owns* the layout from
+then on. That means gazelle_cc is allowed to relocate a `cc_library` to
+its source file's directory and to prefer `implementation_deps` over
+`deps` — both are accepted, not regressions.
+
+What gazelle_cc must **not** do is delete the targets it can't
+regenerate from post-conversion sources. The converter therefore tags
+those with **whole-rule keep** (a `# keep` suffix on the closing `)`),
+not attribute-level keep:
+
+| Rule kind | Keep scope | Why |
+| --- | --- | --- |
+| `cc_library` / `cc_binary` / `cc_test` | attribute-level (`copts`, `defines`, `linkopts`, `includes`, `tags`, `linkstatic`, `alwayslink`, `include_prefix`, `strip_include_prefix`; `cc_test` also `args`/`env`/`timeout`/`data`) | gazelle_cc regenerates the rule from sources; only the CMake-derived attributes it can't re-derive need pinning. |
+| `cc_import` | whole-rule | install-export imports (the round-2 fallback's library exports, e.g. `toplib_import`) have no backing source for gazelle_cc to find, so an attribute-level keep would leave the rule itself a deletion candidate on the first maintenance pass. |
+| `alias` | whole-rule | aliases map a name onto another label; gazelle_cc can't synthesize them, so they need rule-level keep to survive. |
+| `genrule` / `filegroup` | whole-rule | conversion-era / install-derived targets gazelle_cc never emits. |
+| `package(...)` | whole-rule | gazelle owns `# gazelle:` directives, not the converter's `package()` defaults. |
+
+`scripts/meta-cmake-split-gazelle.sh` is the e2e proof: it renders the
+split output with `--gazelle-cc`, runs `bazel run //:gazelle` over it,
+and asserts (a) the build still works, (b) the `cc_import`
+install-exports survived, and (c) a second gazelle pass is a fixpoint
+(no further diff).

@@ -27,6 +27,6 @@ filegroup(
 
 cc_import(
     name = "usepkgst_import",
-    static_library = "lib/libusepkgst.a",  # keep
+    static_library = "lib/libusepkgst.a",
     tags = ["cmake-codegen-install-export-import"],
-)
+)  # keep

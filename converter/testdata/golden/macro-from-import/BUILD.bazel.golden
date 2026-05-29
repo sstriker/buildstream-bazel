@@ -27,6 +27,6 @@ filegroup(
 
 cc_import(
     name = "mfi_import",
-    static_library = "lib/libmfi.a",  # keep
+    static_library = "lib/libmfi.a",
     tags = ["cmake-codegen-install-export-import"],
-)
+)  # keep
