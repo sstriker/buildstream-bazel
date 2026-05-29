@@ -205,6 +205,15 @@ func emitGazelleCcSearch(buf *bytes.Buffer, pkg *ir.Package, opts Options) {
 		// ("include", "src") but defend against the occasional
 		// "./include" the lower path might produce.
 		rel := strings.TrimPrefix(strings.TrimPrefix(d, "./"), "/")
+		// A "." include dir (the split-packages synthesized header
+		// lib's own-package include) means "this package's root" —
+		// emit the package path alone rather than "<pkg>/." so the
+		// directive reads cleanly and gazelle_cc resolves it to the
+		// package, not a literal "." subdir.
+		if rel == "." || rel == "" {
+			fmt.Fprintf(buf, "# gazelle:cc_search \"\" %s\n", pkgPath)
+			continue
+		}
 		fmt.Fprintf(buf, "# gazelle:cc_search \"\" %s/%s\n", pkgPath, rel)
 	}
 	buf.WriteString("\n")

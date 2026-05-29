@@ -66,6 +66,16 @@ func run(a cli.Args) error {
 	t0 := time.Now()
 	var configureElapsed time.Duration
 
+	// --split-packages is mutually exclusive with --out-ir-json: the
+	// latter round-trips IR through JSON for the multi-platform fold,
+	// and the per-directory split is a v1 single-platform-only emit
+	// transform. Refuse loudly rather than silently splitting an IR the
+	// fold path will re-merge from JSON that omits SubPackages.
+	if a.SplitPackages && a.OutIRJSON != "" {
+		return failure.New(failure.UnsupportedTargetType,
+			"--split-packages is mutually exclusive with --out-ir-json (the multi-platform fold path); pick one")
+	}
+
 	if a.ProbeDistroHardening {
 		// Probe the convert host's cc for distro-default
 		// hardening flags. Diagnostic-only — we don't change
@@ -449,37 +459,85 @@ func run(a cli.Args) error {
 		}
 	}
 
-	out, err := bazel.EmitWithOptions(pkg, bazel.Options{
-		SourceKey:        a.SourceKey,
-		BazelPackagePath: a.BazelPackagePath,
-		EmitProvenance:   a.EmitProvenance,
-	})
-	if err != nil {
-		// canonicalize failures arrive pre-typed as
-		// *failure.Error{Code: BazelCanonicalizeFailed}; #210.
-		// Constraint-pass violations stay untyped — they're
-		// converter-side data-integrity bugs, which the schema
-		// classes as Tier-2 (the orchestrator collects them by
-		// exit code, not by stable dedup key). handleError
-		// routes both correctly.
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(a.OutBuild), 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(a.OutBuild, out, 0o644); err != nil {
-		return err
+	// auditBlobs collects every emitted BUILD.bazel blob so the
+	// Phase 7 idiom audit can run over each (single-BUILD: one blob;
+	// --split-packages: one per emitted package). Keeps the audit
+	// running over the full output regardless of layout.
+	var auditBlobs [][]byte
+
+	if a.SplitPackages {
+		// --split-packages: one BUILD.bazel per directory, mirroring
+		// the CMakeLists/add_subdirectory layout. Root → a.OutBuild;
+		// subdir "src/util" → <dir(a.OutBuild)>/src/util/BUILD.bazel.
+		tree, err := bazel.EmitSplit(pkg, bazel.Options{
+			SourceKey:        a.SourceKey,
+			BazelPackagePath: a.BazelPackagePath,
+			EmitProvenance:   a.EmitProvenance,
+		})
+		if err != nil {
+			return err
+		}
+		rootDir := filepath.Dir(a.OutBuild)
+		// Deterministic write order (sorted dirs) for stable logs.
+		dirs := make([]string, 0, len(tree))
+		for d := range tree {
+			dirs = append(dirs, d)
+		}
+		sort.Strings(dirs)
+		for _, d := range dirs {
+			var dst string
+			if d == "" {
+				dst = a.OutBuild
+			} else {
+				dst = filepath.Join(rootDir, filepath.FromSlash(d), "BUILD.bazel")
+			}
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(dst, tree[d], 0o644); err != nil {
+				return err
+			}
+			auditBlobs = append(auditBlobs, tree[d])
+		}
+	} else {
+		out, err := bazel.EmitWithOptions(pkg, bazel.Options{
+			SourceKey:        a.SourceKey,
+			BazelPackagePath: a.BazelPackagePath,
+			EmitProvenance:   a.EmitProvenance,
+		})
+		if err != nil {
+			// canonicalize failures arrive pre-typed as
+			// *failure.Error{Code: BazelCanonicalizeFailed}; #210.
+			// Constraint-pass violations stay untyped — they're
+			// converter-side data-integrity bugs, which the schema
+			// classes as Tier-2 (the orchestrator collects them by
+			// exit code, not by stable dedup key). handleError
+			// routes both correctly.
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutBuild), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutBuild, out, 0o644); err != nil {
+			return err
+		}
+		auditBlobs = append(auditBlobs, out)
 	}
 
 	// Phase 7: post-emission Bazel-idiom audit. Runs
 	// unconditionally — the audit is read-only and FormatFindings
 	// returns "" when there are no findings, so silent on clean
 	// conversions. --audit-bazel-idiom-report writes the
-	// structured findings as JSON in addition.
+	// structured findings as JSON in addition. With --split-packages,
+	// every emitted BUILD is audited and findings are aggregated.
 	{
-		findings, ferr := bazelidiom.Audit(out)
-		if ferr != nil {
-			return failure.New(failure.BazelCanonicalizeFailed, "audit-bazel-idiom: %v", ferr)
+		var findings []bazelidiom.Finding
+		for _, blob := range auditBlobs {
+			f, ferr := bazelidiom.Audit(blob)
+			if ferr != nil {
+				return failure.New(failure.BazelCanonicalizeFailed, "audit-bazel-idiom: %v", ferr)
+			}
+			findings = append(findings, f...)
 		}
 		if msg := bazelidiom.FormatFindings(findings); msg != "" {
 			fmt.Fprint(os.Stderr, msg)
@@ -613,7 +671,7 @@ func run(a cli.Args) error {
 	}
 
 	if a.OutExports != "" {
-		doc := buildExportsDoc(pkg, bundlePkgName, nsPrefix, a.BazelPackagePath, aliases)
+		doc := buildExportsDoc(pkg, bundlePkgName, nsPrefix, a.BazelPackagePath, aliases, a.SplitPackages)
 		body, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			return err
@@ -1047,10 +1105,31 @@ func exportNamespaceForPackage(traceRaw []byte, pkgName string) string {
 // byte-stable across rebuilds that don't change the export surface — a
 // consumer staging it via --exports-in only re-converts when the
 // surface actually changes, not on every producer edit.
-func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, aliases []cmakecfg.Alias) *manifest.Imports {
+// When split is true, an importable target declared under an
+// add_subdirectory child resolves to the sub-package label
+// (//<bazelPkgPath>/<subdir>:<target>) via pkg.SubPackages, matching
+// where --split-packages actually emits the rule. Install-derived
+// importable targets (cc_imports) carry no SubPackages entry and stay
+// at the element root, so their labels keep the //<bazelPkgPath>:<target>
+// form. OFF keeps the legacy single-package label.
+func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, aliases []cmakecfg.Alias, split bool) *manifest.Imports {
+	pkgPathFor := func(target string) string {
+		if !split {
+			return bazelPkgPath
+		}
+		sub := pkg.SubPackages[target]
+		switch {
+		case sub == "" || sub == ".":
+			return bazelPkgPath
+		case bazelPkgPath == "":
+			return sub
+		default:
+			return bazelPkgPath + "/" + sub
+		}
+	}
 	label := func(target string) string {
-		if bazelPkgPath != "" {
-			return "//" + bazelPkgPath + ":" + target
+		if pp := pkgPathFor(target); pp != "" {
+			return "//" + pp + ":" + target
 		}
 		return ":" + target
 	}

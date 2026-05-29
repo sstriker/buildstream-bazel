@@ -32,6 +32,36 @@ transition cleanly.
   output (the existing Phase 8 gazelle-roundtrip contract
   in `ROADMAP.md`).
 
+  Multi-package split (opt-in, shipped): `convert-element-cmake
+  --split-packages` emits one BUILD.bazel per directory (the
+  "gazelle model") mirroring the CMakeLists/add_subdirectory
+  layout instead of a single monolithic BUILD. Targets land in
+  the package matching their declaring cmake dir; each include-
+  root becomes a synthesized header `cc_library` (so cmake's
+  single-`-I`-root include semantics survive the split); intra-
+  element deps and cross-package sources are rewritten to label
+  form; `exports.json` carries the sub-package label so cross-
+  element consumers resolve the right package. `buildifier
+  -mode=diff` is a no-op over every emitted BUILD (render gate
+  `scripts/meta-cmake-split-packages.sh`). v1 boundaries: OFF by
+  default and byte-identical to the single-BUILD emit when off;
+  both the local and `--source-key` (orchestrator FUSE-sources)
+  regimes are supported for the header-library idiom; mutually
+  exclusive with `--out-ir-json` (the multi-platform fold path);
+  install-derived / synthesized targets (filegroups, `cc_import`,
+  `cmake_config_bundle`, aliases, genrules, interface libs)
+  stay in the root package. Wired end-to-end through the
+  orchestrator: `cmd/write-a --split-packages` converts the
+  element with the `cmake_split_convert` custom rule
+  (`rules_buildstream_bazel/rules/cmake_packages.bzl`), whose
+  action declares the per-sub-package BUILD tree as a Bazel
+  **TreeArtifact** (`ctx.actions.declare_directory`,
+  content-addressed per file — no opaque tar; a genrule can't
+  declare the discovered-at-action-time sub-package set as static
+  `outs`), and `cmd/stage-b` merges that materialized directory
+  into project B's `elements/<name>/` by per-file digest. See
+  `docs/design/cmake-split-packages.md`.
+
   Phasing (each phase is a self-contained PR stack with its
   own render gate):
 

@@ -22,7 +22,7 @@ func TestBuildExportsDoc(t *testing.T) {
 	// An alias (Greeter::Greeter) of the real target greeter — maps to
 	// greeter's label under its verbatim name.
 	aliases := []cmakecfg.Alias{{Name: "Greeter::Greeter", Underlying: "greeter"}}
-	doc := buildExportsDoc(pkg, "Greeter", "Greeter::", "elements/greetlib", aliases)
+	doc := buildExportsDoc(pkg, "Greeter", "Greeter::", "elements/greetlib", aliases, false)
 	if doc.Version != 1 || len(doc.Elements) != 1 {
 		t.Fatalf("doc shape: version=%d elements=%d", doc.Version, len(doc.Elements))
 	}
@@ -86,7 +86,7 @@ func TestLinkLibName(t *testing.T) {
 // label when --bazel-package-path is absent.
 func TestBuildExportsDoc_NoPackagePath(t *testing.T) {
 	pkg := &ir.Package{Name: "p", Targets: []ir.Target{{Name: "p", Kind: ir.KindCCLibrary}}}
-	doc := buildExportsDoc(pkg, "P", "P::", "", nil)
+	doc := buildExportsDoc(pkg, "P", "P::", "", nil, false)
 	if got := doc.Elements[0].Exports[0].BazelLabel; got != ":p" {
 		t.Errorf("label = %q, want :p", got)
 	}

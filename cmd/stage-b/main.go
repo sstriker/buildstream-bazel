@@ -36,6 +36,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const (
@@ -123,6 +124,33 @@ func run(a args) ([]string, error) {
 			continue
 		}
 		name := e.Name()
+
+		// --split-packages elements are converted by the
+		// cmake_split_convert custom rule (rules/cmake_packages.bzl),
+		// whose action declares the discovered-at-action-time
+		// per-sub-package BUILD tree as a TreeArtifact directory. It
+		// materializes under bazel-bin at
+		// elements/<name>/<name>_converted/packages/ (the rule name is
+		// "<name>_converted"; declare_directory path is
+		// "<rule-name>/packages"). Prefer it when present: merge the
+		// live directory into project B's elements/<name>/ by per-file
+		// content compare, overwriting the root placeholder and creating
+		// the sub-package BUILD files. No tar to unpack — each generated
+		// BUILD is content-addressed individually.
+		pkgDir := filepath.Join(aElements, name, name+"_converted", "packages")
+		if info, statErr := os.Stat(pkgDir); statErr == nil && info.IsDir() {
+			ch, err := stageSplitDir(pkgDir, filepath.Join(bElements, name))
+			if err != nil {
+				return nil, fmt.Errorf("stage split element %s: %v", name, err)
+			}
+			if ch {
+				changed = append(changed, "elements/"+name)
+			}
+			continue
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("stat %s: %v", pkgDir, statErr)
+		}
+
 		src := filepath.Join(aElements, name, "BUILD.bazel.out")
 		srcBytes, err := os.ReadFile(src)
 		if err != nil {
@@ -150,5 +178,69 @@ func run(a args) ([]string, error) {
 		changed = append(changed, "elements/"+name)
 	}
 	sort.Strings(changed)
+	return changed, nil
+}
+
+// stageSplitDir merges a --split-packages TreeArtifact directory (the
+// per-sub-package BUILD.bazel tree the cmake_split_convert rule's action
+// materialized under project A's bazel-bin) into destDir, the project-B
+// elements/<name>/ package root. It walks srcDir recursively, writing
+// each regular file under its srcDir-relative path and creating
+// sub-package directories as needed, and reports whether any staged
+// file's content changed (added or differing) versus what was already
+// there — the same idempotent "what re-converted" signal the single-file
+// path returns, so a re-merge of an unchanged tree reports nothing.
+//
+// Relative paths are sanitized: a "../"-escaping or absolute member is
+// rejected rather than allowed to write outside destDir. (A TreeArtifact
+// can't normally contain such entries, but the guard keeps the merge
+// safe regardless of what's on disk.)
+func stageSplitDir(srcDir, destDir string) (bool, error) {
+	changed := false
+	walkErr := filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil // directories are created lazily per file below
+		}
+		if !info.Mode().IsRegular() {
+			return nil // skip symlinks / sockets / etc.
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return fmt.Errorf("relativize %s: %v", path, err)
+		}
+		rel = filepath.Clean(rel)
+		if rel == "" || rel == "." {
+			return nil
+		}
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("split dir %s: member %q escapes destination", srcDir, rel)
+		}
+		dst := filepath.Join(destDir, rel)
+		newBytes, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read split member %s: %v", path, err)
+		}
+		oldBytes, rdErr := os.ReadFile(dst)
+		if rdErr != nil && !os.IsNotExist(rdErr) {
+			return fmt.Errorf("read staged %s: %v", dst, rdErr)
+		}
+		if bytes.Equal(oldBytes, newBytes) {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return fmt.Errorf("mkdir for %s: %v", dst, err)
+		}
+		if err := os.WriteFile(dst, newBytes, 0o644); err != nil {
+			return fmt.Errorf("stage %s: %v", dst, err)
+		}
+		changed = true
+		return nil
+	})
+	if walkErr != nil {
+		return false, walkErr
+	}
 	return changed, nil
 }

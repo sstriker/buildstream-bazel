@@ -167,6 +167,14 @@ jobs:
         # into B, bazel-build the consumer there.
         run: make e2e-meta-cross-cmake 2>&1 | tee -a /tmp/cijob.log
 
+      - name: split-packages TreeArtifact e2e (--split-packages)
+        # Exercises the cmake_split_convert TreeArtifact rule end-to-end:
+        # render a multi-CMakeLists element with write-a --split-packages,
+        # bazel-build the per-package TreeArtifact in project A, stage-b
+        # it into B, and bazel-build the split tree there (the synthesized
+        # header library carries the cross-package include path).
+        run: make e2e-meta-cmake-split-build 2>&1 | tee -a /tmp/cijob.log
+
       - name: run-vs-run regression e2e
         # cmd/run-manifest snapshots a built project A; orchestrate-diff
         # diffs two runs. Asserts the no-drift invariant + drift
