@@ -1665,6 +1665,68 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		}
 	}
 
+	// INTERFACE_LIBRARY include extraction (#308). Starting with
+	// cmake 3.19 INTERFACE_LIBRARY targets surface in the codemodel
+	// targets[] array, so they reach this codemodel path instead of
+	// the trace-based lowerInterfaceLibraries fallback. They have no
+	// CompileGroups (cmake never compiles them), so the include loop
+	// above — gated on len(t.CompileGroups) > 0 — produces nothing
+	// and the emitted cc_library lacks an `includes =` attribute.
+	// Consumers that `#include <foo.h>` then hit Bazel "undeclared
+	// inclusion" errors. The include dirs for these targets live in
+	// the HEADERS-typed FileSets' BaseDirectories (codemodel-v2
+	// minor 5, cmake 3.25+, `target_sources(... FILE_SET HEADERS
+	// BASE_DIRS ...)`). Mirror the CompileGroups extraction above but
+	// source the directory list from FileSets metadata: relativize
+	// each base dir against cmakeSrc, route the package-root case to
+	// the discoverHeaders walk via walkPkgRootForHdrs, and append the
+	// rest to irt.Includes.
+	if irt.Kind == ir.KindCCInterface && len(t.CompileGroups) == 0 {
+		seenIfaceInc := map[string]bool{}
+		addInclude := func(dir string) {
+			rel := dir
+			if filepath.IsAbs(rel) {
+				r, inside := relativeIfInside(cmakeSrc, rel)
+				if !inside {
+					return
+				}
+				rel = r
+			} else {
+				rel = filepath.Clean(rel)
+			}
+			if rel == "" || rel == "." {
+				// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR}):
+				// Bazel rejects `includes = [""]`; record the
+				// signal so discoverHeaders walks the package root
+				// (same shape as the CompileGroups branch above).
+				walkPkgRootForHdrs = true
+				return
+			}
+			if pathHasDotDotSegment(rel) || seenIfaceInc[rel] {
+				return
+			}
+			seenIfaceInc[rel] = true
+			irt.Includes = append(irt.Includes, rel)
+		}
+		for _, fs := range t.FileSets {
+			if fs.Type != "HEADERS" {
+				continue
+			}
+			for _, bd := range fs.BaseDirectories {
+				addInclude(bd)
+			}
+		}
+		// Fallback: when the target declares a distinct source dir
+		// (a subdirectory target) that resolves inside cmakeSrc and
+		// FileSets surfaced no usable include, treat the target's own
+		// source dir as an include directory so package-root-relative
+		// #includes still resolve.
+		if len(irt.Includes) == 0 && !walkPkgRootForHdrs &&
+			t.Paths.Source != "" && t.Paths.Source != cmakeSrc {
+			addInclude(t.Paths.Source)
+		}
+	}
+
 	// configure_file consumer attribution. Any target whose
 	// codemodel-recorded includes contain the cmake build dir
 	// (or a subdir thereof) is a candidate consumer of
