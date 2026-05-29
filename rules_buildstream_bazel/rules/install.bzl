@@ -49,6 +49,15 @@ def _pipeline_install_impl(ctx):
     outputs = [install_root]
 
     command = ctx.attr.command
+
+    # write-a builds the command string with genrule-style `$$`
+    # escaping (the install orchestration was historically a genrule,
+    # whose `cmd` runs through Bazel's Make-variable expansion where
+    # `$$` -> `$`). run_shell does NOT do that expansion, so unescape
+    # `$$` -> `$` here to preserve the same shell semantics. Done
+    # FIRST, before token substitution, so a substituted path (which
+    # in practice never contains `$$`) can't be mangled.
+    command = command.replace("$$", "$")
     command = command.replace(_TOK_INSTALL_DIR, install_root.path)
 
     # Scalar side outputs (trace.log / make-db.txt / generated-
