@@ -2195,9 +2195,11 @@ const overlayModuleBazelStub = `# overlay.MODULE.bazel — operator-owned MODULE
 # os.Stat()-doesn't-exist. Edit freely.
 #
 # Example: add gazelle for post-conversion BUILD maintenance.
+# (Or just pass write-a --gazelle-cc, which wires gazelle_cc
+# into the converter-owned MODULE.bazel + root BUILD for you.)
 #
-#   bazel_dep(name = "gazelle", version = "0.40.0")
-#   bazel_dep(name = "gazelle_cc", version = "0.3.0")
+#   bazel_dep(name = "gazelle", version = "0.46.0")
+#   bazel_dep(name = "gazelle_cc", version = "0.5.0")
 #
 # See ROADMAP.md for the full
 # post-conversion + gazelle workflow (including the genrule →
