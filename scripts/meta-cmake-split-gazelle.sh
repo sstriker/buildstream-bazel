@@ -12,9 +12,12 @@
 #     MODULE.bazel + a gazelle_binary/gazelle pair in the root BUILD).
 #   - project A bazel-builds the cmake_split_convert TreeArtifact;
 #     stage-b merges it into project B.
-#   - `bazel run //:gazelle -- elements/subdir-library` canonicalizes
-#     the layout (gazelle_cc relocates cc_library targets to their
-#     source dirs and prefers implementation_deps — both accepted).
+#   - `bazel run //:gazelle` (top-level — project B is one build tree)
+#     canonicalizes the layout (gazelle_cc relocates cc_library targets
+#     to their source dirs and prefers implementation_deps — both
+#     accepted). gazelle_cc only manages cc_* rules, so the top-level
+#     pass leaves the operator scaffolding (root gazelle rules, tools/)
+#     untouched; no per-element scoping needed.
 #
 # Asserts after the gazelle pass:
 #   (a) the build still works — `bazel build //elements/subdir-library/...`.
@@ -150,19 +153,24 @@ run_bazel() {
     return $rc
 }
 
-# run_gazelle runs `bazel run //:gazelle -- <pkgs>`. Bazel build-time
-# flags (META_BAZEL_BUILD_ARGS, e.g. --registry) MUST go BEFORE the `--`
-# separator — anything after `--` is forwarded to the gazelle binary as
-# positional args, where `--registry=...` would be misread as a directory
-# to scan and gazelle would no-op (a silent false "fixpoint"). Like
-# run_bazel, it captures output and propagates bazel's real exit status
-# (no masking `| tail` at the call site).
+# run_gazelle runs `bazel run //:gazelle` TOP-LEVEL over the whole project
+# B tree (no per-element `-- <pkg>` scoping). Project B is one build tree,
+# so gazelle_cc is a workspace tool: a top-level pass gives a global
+# fixpoint and consistent cross-element resolution (a per-element run on a
+# producer wouldn't propagate gazelle_cc's cross-package relocations/renames
+# to consumers elsewhere). It's clean — gazelle_cc only manages cc_* rules,
+# so it leaves the operator scaffolding (the root gazelle_binary/gazelle
+# rules, tools/) untouched. The per-element `-- $changed` form is an
+# incremental-driver optimization (see scripts/meta-gazelle-roundtrip.sh),
+# not needed here. META_BAZEL_BUILD_ARGS (e.g. --registry) are bazel build
+# flags and stay before any `--`. Captures output + propagates bazel's real
+# exit status (no masking `| tail` at the call site).
 run_gazelle() {
     rc=0
     # shellcheck disable=SC2086 # META_BAZEL_*_ARGS is intentionally word-split.
     (cd "$B" && "$BZL" --output_user_root="$bzl_cache" \
         $META_BAZEL_STARTUP_ARGS \
-        run //:gazelle $META_BAZEL_BUILD_ARGS -- elements/subdir-library) >"$bzl_log" 2>&1 || rc=$?
+        run //:gazelle $META_BAZEL_BUILD_ARGS) >"$bzl_log" 2>&1 || rc=$?
     tail -20 "$bzl_log"
     return $rc
 }
@@ -222,13 +230,15 @@ for want in toplib_import util_import; do
 done
 echo "meta-cmake-split-gazelle: install-export cc_imports (toplib_import, util_import) survived"
 
-# (c) FIXPOINT — a second gazelle pass must produce no diff.
+# (c) FIXPOINT — a second top-level gazelle pass must produce no diff
+#     anywhere in the converted tree (snapshot all of elements/, not just
+#     one element, since the pass is workspace-wide).
 before="$work_dir/before-fixpoint"
 after="$work_dir/after-fixpoint"
 rm -rf "$before" "$after"
-cp -r "$B/elements/subdir-library" "$before"
+cp -r "$B/elements" "$before"
 run_gazelle
-cp -r "$B/elements/subdir-library" "$after"
+cp -r "$B/elements" "$after"
 if ! diff -ru "$before" "$after"; then
     echo "meta-cmake-split-gazelle: gazelle_cc is NOT a fixpoint — second pass changed the BUILD tree" >&2
     exit 1
