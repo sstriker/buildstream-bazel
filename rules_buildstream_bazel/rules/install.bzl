@@ -23,11 +23,23 @@
 # Division of labour (mirrors cmake_packages.bzl): write-a owns the
 # per-kind orchestration command STRING; this rule is a mechanical
 # host for the well-known tokens that string references. write-a
-# builds the command with `{install_dir}` / `{srcs}` /
-# `{dep_install_dirs}` / `{trace_log}` / `{make_db}` /
-# `{generated_headers}` placeholders; the rule `.format()`s them to
-# the action-time exec-root-relative paths of the declared outputs
-# and inputs. No dial / per-kind LOGIC lives here.
+# builds the command with `@@INSTALL_DIR@@` / `@@SRCS@@` /
+# `@@DEP_INSTALL_DIRS@@` / `@@TRACE_LOG@@` / `@@MAKE_DB@@` /
+# `@@GENERATED_HEADERS@@` sentinel tokens; the rule `.replace()`s each
+# with the action-time exec-root-relative path of the declared output
+# / input. Sentinels (not Python `.format` braces) so the shell body
+# — which is dense with `${var}` / `$(cmd)` / brace-expansion — passes
+# through verbatim with no brace-doubling. No dial / per-kind LOGIC
+# lives here.
+
+# Sentinel tokens write-a embeds in the `command` string. Kept in one
+# place so the producer (cmd/write-a) and this consumer stay in sync.
+_TOK_INSTALL_DIR = "@@INSTALL_DIR@@"
+_TOK_SRCS = "@@SRCS@@"
+_TOK_DEP_INSTALL_DIRS = "@@DEP_INSTALL_DIRS@@"
+_TOK_TRACE_LOG = "@@TRACE_LOG@@"
+_TOK_MAKE_DB = "@@MAKE_DB@@"
+_TOK_GENERATED_HEADERS = "@@GENERATED_HEADERS@@"
 
 def _pipeline_install_impl(ctx):
     # The install root. A TreeArtifact: its contents aren't known at
@@ -38,52 +50,58 @@ def _pipeline_install_impl(ctx):
     install_root = ctx.actions.declare_directory(ctx.label.name + "/install")
     outputs = [install_root]
 
+    command = ctx.attr.command
+    command = command.replace(_TOK_INSTALL_DIR, install_root.path)
+
     # Scalar side outputs the round-2 extension emitted as extra
     # genrule `outs` (trace.log / make-db.txt / generated-headers.txt).
     # Each is declared only when the kind requests it via the matching
     # emit_* bool, mirroring traces.bzl's expect_* gating, so the
     # coarse (round-1 / legacy) path declares only the install root and
     # stays byte-minimal.
-    fmt_args = {
-        "install_dir": install_root.path,
-    }
-
-    trace_log = None
     if ctx.attr.emit_trace_log:
         trace_log = ctx.actions.declare_file(ctx.label.name + "/trace.log")
         outputs.append(trace_log)
-        fmt_args["trace_log"] = trace_log.path
+        command = command.replace(_TOK_TRACE_LOG, trace_log.path)
 
-    make_db = None
     if ctx.attr.emit_make_db:
         make_db = ctx.actions.declare_file(ctx.label.name + "/make-db.txt")
         outputs.append(make_db)
-        fmt_args["make_db"] = make_db.path
+        command = command.replace(_TOK_MAKE_DB, make_db.path)
 
-    generated_headers = None
     if ctx.attr.emit_generated_headers:
         generated_headers = ctx.actions.declare_file(ctx.label.name + "/generated-headers.txt")
         outputs.append(generated_headers)
-        fmt_args["generated_headers"] = generated_headers.path
+        command = command.replace(_TOK_GENERATED_HEADERS, generated_headers.path)
 
-    # {srcs}: the element's staged sources, space-joined exec-root-
+    # @@SRCS@@: the element's staged sources, space-joined exec-root-
     # relative. The command iterates these the same way the old genrule
     # iterated $(SRCS) (stage into a fresh BUILD_ROOT by stripping the
     # leading sources/ segment).
-    fmt_args["srcs"] = " ".join([s.path for s in ctx.files.srcs])
+    command = command.replace(_TOK_SRCS, " ".join([s.path for s in ctx.files.srcs]))
 
-    # {dep_install_dirs}: space-joined TreeArtifact directory paths of
+    # @@DEP_INSTALL_DIRS@@: space-joined TreeArtifact directory paths of
     # this element's deps' install roots. The command references each
     # dir IN PLACE (`-I<dir>/usr/include`, `-L<dir>/usr/lib`) — no
-    # untar, no per-consumer $DEP_PREFIX. Each dep is consumed as a
-    # whole-directory action input.
-    fmt_args["dep_install_dirs"] = " ".join([d.path for d in ctx.files.deps])
-
-    command = ctx.attr.command.format(**fmt_args)
+    # untar, no per-consumer $DEP_PREFIX. A dep target that provides
+    # PipelineInstallInfo contributes only its install-root directory
+    # (not its scalar side outputs); other deps contribute their files.
+    dep_dirs = []
+    dep_inputs = []
+    for dep in ctx.attr.deps:
+        if PipelineInstallInfo in dep:
+            root = dep[PipelineInstallInfo].install_root
+            dep_dirs.append(root.path)
+            dep_inputs.append(root)
+        else:
+            for f in dep[DefaultInfo].files.to_list():
+                dep_dirs.append(f.path)
+                dep_inputs.append(f)
+    command = command.replace(_TOK_DEP_INSTALL_DIRS, " ".join(dep_dirs))
 
     ctx.actions.run_shell(
         outputs = outputs,
-        inputs = depset(ctx.files.srcs + ctx.files.deps),
+        inputs = depset(ctx.files.srcs + dep_inputs),
         tools = ctx.files.tools,
         command = command,
         use_default_shell_env = True,
@@ -113,15 +131,15 @@ pipeline_install = rule(
     attrs = {
         "srcs": attr.label_list(
             allow_files = True,
-            doc = "The element's staged source inputs (the :<name>_sources glob filegroup, or @src_<key>//:tree under FUSE-sources). Referenced via the {srcs} token (space-joined exec-root-relative paths) the command iterates to stage a fresh BUILD_ROOT.",
+            doc = "The element's staged source inputs (the :<name>_sources glob filegroup, or @src_<key>//:tree under FUSE-sources). Referenced via the @@SRCS@@ token (space-joined exec-root-relative paths) the command iterates to stage a fresh BUILD_ROOT.",
         ),
         "deps": attr.label_list(
             default = [],
-            doc = "Other elements' pipeline_install install-root TreeArtifacts this element builds against. Each is referenced IN PLACE via the {dep_install_dirs} token (no untar). Pass the dep's :<dep>_install target; the rule resolves the directory through PipelineInstallInfo when available, else the DefaultInfo fileset.",
+            doc = "Other elements' pipeline_install install-root TreeArtifacts this element builds against. Each is referenced IN PLACE via the @@DEP_INSTALL_DIRS@@ token (no untar). Pass the dep's :<dep>_install target; the rule resolves the directory through PipelineInstallInfo when available (consuming ONLY the directory, not the dep's scalar side outputs), else the DefaultInfo fileset.",
         ),
         "command": attr.string(
             mandatory = True,
-            doc = "The orchestration shell command, built by write-a, with well-known tokens the rule .format()s to real paths: {install_dir} (the install-root TreeArtifact — the build installs directly into it), {srcs}, {dep_install_dirs}, and {trace_log}/{make_db}/{generated_headers} when the matching emit_* bool is set. Keeping the command in write-a means this rule holds no per-kind LOGIC, only the mechanical declare_directory + token substitution (the cmake_packages.bzl pattern).",
+            doc = "The orchestration shell command, built by write-a, with well-known sentinel tokens the rule replaces with real paths: @@INSTALL_DIR@@ (the install-root TreeArtifact — the build installs directly into it), @@SRCS@@, @@DEP_INSTALL_DIRS@@, and @@TRACE_LOG@@/@@MAKE_DB@@/@@GENERATED_HEADERS@@ when the matching emit_* bool is set. Sentinels (not Python .format braces) so the shell body's ${var}/$(cmd)/brace-expansion passes through verbatim. Keeping the command in write-a means this rule holds no per-kind LOGIC, only the mechanical declare_directory + token substitution (the cmake_packages.bzl pattern).",
         ),
         "tools": attr.label_list(
             cfg = "exec",
@@ -131,15 +149,15 @@ pipeline_install = rule(
         ),
         "emit_trace_log": attr.bool(
             default = False,
-            doc = "Declare a trace.log side output and bind the {trace_log} token. Set by the round-2 trace-driven path (the build-tracer wrap writes the trace there). Default False keeps the coarse path emitting only the install root.",
+            doc = "Declare a trace.log side output and bind the @@TRACE_LOG@@ token. Set by the round-2 trace-driven path (the build-tracer wrap writes the trace there). Default False keeps the coarse path emitting only the install root.",
         ),
         "emit_make_db": attr.bool(
             default = False,
-            doc = "Declare a make-db.txt side output and bind the {make_db} token. Set by round-2 trace-driven kinds that also publish a make database alongside the trace.",
+            doc = "Declare a make-db.txt side output and bind the @@MAKE_DB@@ token. Set by round-2 trace-driven kinds that also publish a make database alongside the trace.",
         ),
         "emit_generated_headers": attr.bool(
             default = False,
-            doc = "Declare a generated-headers.txt side output and bind the {generated_headers} token. Set when the round-2 extension emits the generated-headers manifest.",
+            doc = "Declare a generated-headers.txt side output and bind the @@GENERATED_HEADERS@@ token. Set when the round-2 extension emits the generated-headers manifest.",
         ),
     },
     provides = [PipelineInstallInfo],
