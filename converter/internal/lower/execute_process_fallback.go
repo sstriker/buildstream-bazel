@@ -74,7 +74,14 @@ type fallbackStub struct {
 // emitted rule for audit queries; cmake-codegen-execute-process-fallback-extract
 // distinguishes the extract genrule from the per-target stubs
 // in case operators want to query just the stubs.
-func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, error) {
+func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*ir.Package, error) {
+	if installTarget == "" {
+		// Default to the same-package install target write-a renders
+		// for the round-2 fallback. A consumer build surfaces a
+		// divergent name loudly; the empty BazelPackagePath case
+		// (unit tests) gets a stable placeholder.
+		installTarget = ":_trace_build"
+	}
 	// Multi-config (N > 1) consumes the first configuration's
 	// targets only; the placeholder emit doesn't care about
 	// per-config differences (the install-tree.tar genrule is
@@ -247,18 +254,40 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc string) (*ir.Package, err
 		}
 	}
 
-	// Emit one extract genrule wrapping every per-target
-	// install path. cmake's tar archive layout mirrors
-	// CMAKE_INSTALL_PREFIX; we strip the leading "/" and
-	// place outputs under "install_tree/<dest>". The genrule's
-	// cmd untars install_tree.tar into the package's output
-	// dir under the install_tree/ subdirectory.
-	if extract := buildExtractGenrule(stubs); extract != nil {
-		pkg.Targets = append(pkg.Targets, *extract)
-	}
+	// Emit one pick_file per unique install path the stubs
+	// reference (artefacts + headers), projecting it out of the
+	// install-root TreeArtifact in place. Replaces the old
+	// _install_tree_extract tar-untar genrule: no per-consumer
+	// re-materialization of the whole tree, file-granular CAS
+	// dedup. Each stub's static_library / shared_library / srcs /
+	// hdrs is rewritten from the tree-relative path to the
+	// matching pick_file label (":<pickname>").
+	picks, pickName := buildPickFiles(stubs, installTarget)
+	pkg.Targets = append(pkg.Targets, picks...)
 
 	for _, s := range stubs {
-		pkg.Targets = append(pkg.Targets, s.Target)
+		t := s.Target
+		switch t.Kind {
+		case ir.KindCCImport:
+			if t.StaticLibrary != "" {
+				t.StaticLibrary = pickName(t.StaticLibrary)
+			}
+			if t.SharedLibrary != "" {
+				t.SharedLibrary = pickName(t.SharedLibrary)
+			}
+		case ir.KindShBinary:
+			for i, src := range t.Srcs {
+				t.Srcs[i] = pickName(src)
+			}
+		}
+		if len(t.Hdrs) > 0 {
+			hdrs := make([]string, len(t.Hdrs))
+			for i, h := range t.Hdrs {
+				hdrs[i] = pickName(h)
+			}
+			t.Hdrs = hdrs
+		}
+		pkg.Targets = append(pkg.Targets, t)
 	}
 	return pkg, nil
 }
@@ -325,7 +354,11 @@ func installPathFor(t fileapi.Target) string {
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return ""
 	}
-	return path.Join("install_tree", cleaned, t.NameOnDisk)
+	// Tree-relative path inside the install-root TreeArtifact (e.g.
+	// "lib/libthelib.a"). pick_file projects it out in place; no
+	// "install_tree/" prefix — that named the old extract genrule's
+	// untar subdirectory, which the TreeArtifact shape removes.
+	return path.Join(cleaned, t.NameOnDisk)
 }
 
 // installHeadersFor enumerates the install-tree-relative
@@ -419,7 +452,10 @@ func installHeadersFor(t fileapi.Target, projectSrcRoot string) []string {
 		if rel == "" {
 			continue
 		}
-		installPath := path.Join("install_tree", "include", rel)
+		// Tree-relative header path inside the install-root
+		// TreeArtifact (e.g. "include/foo.h"). pick_file projects
+		// it out in place; no "install_tree/" prefix.
+		installPath := path.Join("include", rel)
 		if seen[installPath] {
 			continue
 		}
@@ -491,29 +527,33 @@ func stripFileSetBase(srcPath string, baseDirs []string, srcRoot string) string 
 	return path.Base(filepath.ToSlash(srcPath))
 }
 
-// buildExtractGenrule emits the single tar-extract genrule
-// that produces every install path the per-target stubs
-// reference (artefacts + headers). Returns nil when there
-// are no extractable paths.
+// buildPickFiles emits one pick_file target per unique install
+// path the per-target stubs reference (artefacts + headers),
+// projecting each out of the install-root TreeArtifact (the
+// installTarget label) in place. Returns the pick_file targets
+// plus a resolver mapping a tree-relative path (e.g.
+// "lib/libthelib.a") to its pick_file label (":<pickname>"); the
+// resolver returns the input unchanged for an unknown path so a
+// stray reference fails loudly at consumer build time rather than
+// silently dropping.
 //
-// The genrule reads "install_tree.tar" — a literal label
-// that resolves once A's BUILD.bazel.out is symlinked into
-// Project B's package and co-locates with B's install
-// genrule. The extract cmd untars into $(RULEDIR)/install_tree,
-// matching the "install_tree/" prefix the per-target paths
-// share. $(RULEDIR) (not $(@D)) so the base stays the package
-// output root regardless of which `outs` entry comes first
-// (a nested first out under install_tree/lib would make
-// $(@D) point one level too deep).
-func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
-	var outs []string
+// Replaces the old single _install_tree_extract tar-untar genrule:
+// each pick_file is a single-file materialization out of the dep's
+// Directory tree (already in CAS on RBE), so identical files dedup
+// at file granularity and no consumer re-emits the whole subset.
+//
+// installTarget is the same-package pipeline_install target write-a
+// renders for the round-2 fallback; pick_file resolves its
+// install-root TreeArtifact through PipelineInstallInfo.
+func buildPickFiles(stubs []fallbackStub, installTarget string) ([]ir.Target, func(string) string) {
+	var paths []string
 	seen := map[string]bool{}
 	add := func(p string) {
 		if p == "" || seen[p] {
 			return
 		}
 		seen[p] = true
-		outs = append(outs, p)
+		paths = append(paths, p)
 	}
 	for _, s := range stubs {
 		add(s.InstallPath)
@@ -521,26 +561,55 @@ func buildExtractGenrule(stubs []fallbackStub) *ir.Target {
 			add(h)
 		}
 	}
-	if len(outs) == 0 {
-		return nil
-	}
 	// Sort for deterministic rendering. The encounter order
-	// follows cfg.Targets + per-target FileSets + Sources,
-	// which can drift across cmake versions / File API JSON
-	// decode order; without a sort the emitted BUILD.bazel.out
-	// would shuffle outs across runs and break golden tests.
-	sort.Strings(outs)
-	return &ir.Target{
-		Name:        "_install_tree_extract",
-		Kind:        ir.KindGenrule,
-		Srcs:        []string{"install_tree.tar"},
-		GenruleOuts: outs,
-		GenruleCmd: `mkdir -p "$(RULEDIR)/install_tree" && ` +
-			`tar -C "$(RULEDIR)/install_tree" -xf "$(location install_tree.tar)"`,
-		Tags: []string{
-			"cmake-codegen-execute-process-fallback",
-			"cmake-codegen-execute-process-fallback-extract",
-		},
-		Visibility: []string{"//visibility:private"},
+	// follows cfg.Targets + per-target FileSets + Sources, which
+	// can drift across cmake versions / File API JSON decode
+	// order; without a sort the emitted BUILD.bazel.out would
+	// shuffle pick_file targets across runs and break goldens.
+	sort.Strings(paths)
+
+	label := map[string]string{}
+	var targets []ir.Target
+	for _, p := range paths {
+		name := pickFileName(p)
+		label[p] = ":" + name
+		targets = append(targets, ir.Target{
+			Name:     name,
+			Kind:     ir.KindPickFile,
+			PickSrc:  installTarget,
+			PickPath: p,
+			Tags: []string{
+				"cmake-codegen-execute-process-fallback",
+				"cmake-codegen-execute-process-fallback-extract",
+			},
+			Visibility: []string{"//visibility:private"},
+		})
 	}
+	resolve := func(p string) string {
+		if l, ok := label[p]; ok {
+			return l
+		}
+		return p
+	}
+	return targets, resolve
+}
+
+// pickFileName derives a deterministic, Bazel-legal target name for
+// the pick_file that projects a tree-relative install path. The
+// "_pick_" prefix namespaces these private stub targets; the path's
+// separators and other non-identifier bytes collapse to '_' so e.g.
+// "lib/libthelib.a" → "_pick_lib_libthelib_a".
+func pickFileName(p string) string {
+	var b strings.Builder
+	b.WriteString("_pick_")
+	for i := 0; i < len(p); i++ {
+		c := p[i]
+		switch {
+		case (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }

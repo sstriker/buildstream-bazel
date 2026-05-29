@@ -72,6 +72,19 @@ type args struct {
 	bazelPackagePath string
 }
 
+// fallbackInstallTarget derives the same-package pipeline_install
+// target label the round-2 target-fallback's pick_file stubs
+// project files out of. write-a names that target
+// "<elem>_trace_build", and the bazel package path's basename is
+// the element name (e.g. "elements/foo" -> ":foo_trace_build").
+// Empty package path yields "" (the lower-side default).
+func fallbackInstallTarget(bazelPackagePath string) string {
+	if bazelPackagePath == "" {
+		return ""
+	}
+	return ":" + filepath.Base(bazelPackagePath) + "_trace_build"
+}
+
 func main() {
 	a, code := parseArgs(os.Args[1:], os.Stderr)
 	if code != exitSuccess {
@@ -253,9 +266,10 @@ func run(a args) error {
 			var tier1 *failure.Error
 			if errors.As(err, &tier1) && len(intro.InstallPlan.Targets) > 0 {
 				placeholderPkg, placeholderErr := emitFallbackPlaceholder(intro, LowerOptions{
-					SourceRoot: a.sourceRoot,
-					BuildDir:   buildDir,
-					Imports:    imports,
+					SourceRoot:            a.sourceRoot,
+					BuildDir:              buildDir,
+					Imports:               imports,
+					FallbackInstallTarget: fallbackInstallTarget(a.bazelPackagePath),
 				})
 				if placeholderErr == nil && len(placeholderPkg.Targets) > 0 {
 					pkg = placeholderPkg

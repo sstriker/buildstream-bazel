@@ -219,6 +219,22 @@ func mentionsRulesPackage(body []byte) bool {
 // and `load("@rules_buildstream_bazel//rules:zero_files.bzl", ...)`
 // load() statements when no surviving rule in the BUILD uses
 // them (i.e. once trace_load + zero_files targets are gone).
+// elemInstallName returns the per-platform install-root select()
+// filegroup name for the element whose BUILD.bazel is at relPath
+// (e.g. "elements/foo/BUILD.bazel" -> "foo_install"). The
+// multi-platform round-2 fan-out emits this filegroup; it's
+// conversion-era scaffolding stripped once the element converges.
+func elemInstallName(relPath string) string {
+	dir := filepath.Dir(relPath)
+	base := filepath.Base(dir)
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		// No element segment to derive a name from; return a
+		// sentinel that won't match any real filegroup name.
+		return "\x00"
+	}
+	return base + "_install"
+}
+
 func cleanupBuild(body []byte, relPath string) ([]byte, error) {
 	f, err := build.Parse(relPath, body)
 	if err != nil {
@@ -281,25 +297,39 @@ func cleanupBuild(body []byte, relPath string) ([]byte, error) {
 		if ruleKind == "trace_load" || ruleKind == "zero_files" {
 			continue
 		}
-		// Strip the trace_build genrule. The recognition is by
+		// Strip the trace_build install rule. The recognition is by
 		// the `tags = ["trace_build"]` attribute the round-2
 		// install templates emit (set by handler_pipeline.go's
 		// IsTraceBuild flag + the standalone cmake/meson round-2
-		// templates' literal `tags = ["trace_build"]`).
-		if ruleKind == "genrule" && hasStringInListAttr(call, "tags", "trace_build") {
+		// templates' literal `tags = ["trace_build"]`). The install
+		// rule is now a pipeline_install (TreeArtifact) rather than
+		// a genrule; match on the tag regardless of rule kind so a
+		// future rename of the install rule keeps converging.
+		if hasStringInListAttr(call, "tags", "trace_build") {
 			continue
 		}
 		// Strip conversion-era intermediate filegroups that
 		// nothing in this BUILD references. The match is by
 		// well-known target names; surviving consumers (if any)
 		// would have produced fine cc rules that don't need
-		// them, so the filegroups dangle.
+		// them, so the filegroups dangle. "<elem>_install" is the
+		// per-platform install-root select() filegroup the
+		// multi-platform fan-out emits (the TreeArtifact-era
+		// successor to the old "install_tree.tar" filegroup).
 		if ruleKind == "filegroup" {
 			switch nameAttr {
 			case "install_tree.tar", "cmake_config_bundle",
-				"pkg_config_bundle", "build_bazel":
+				"pkg_config_bundle", "build_bazel", elemInstallName(relPath):
 				continue
 			}
+		}
+		// Strip the round-2 execute-process-fallback pick_file
+		// stubs (and the old extract genrule, for forward-compat).
+		// They project files out of the now-stripped trace_build
+		// install root; once fine cc rules exist they dangle.
+		if hasStringInListAttr(call, "tags", "cmake-codegen-execute-process-fallback-extract") ||
+			hasStringInListAttr(call, "tags", "meson-codegen-target-fallback-extract") {
+			continue
 		}
 		stripped = append(stripped, stmt)
 	}

@@ -53,6 +53,14 @@ type LowerOptions struct {
 	// Imports, when non-nil, resolves cross-element external
 	// dependencies (`dependency('foo')`) onto Bazel labels.
 	Imports *manifest.Resolver
+
+	// FallbackInstallTarget is the Bazel label of the
+	// pipeline_install target whose install-root TreeArtifact the
+	// target-fallback's pick_file stubs project files out of
+	// (":<elem>_trace_build", the same-package install target). The
+	// caller derives it from --bazel-package-path; empty yields the
+	// ":_trace_build" default.
+	FallbackInstallTarget string
 }
 
 // Lower translates the introspection bundle into an ir.Package

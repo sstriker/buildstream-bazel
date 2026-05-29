@@ -44,15 +44,15 @@ func (collectManifestHandler) RenderA(elem *element, elemPkg string) error {
 # walks dep install trees and produces a JSON manifest under
 # %%{install-root}/usr/share/manifests/).
 
+load("@rules_buildstream_bazel//rules:install.bzl", "pipeline_install")
+
 package(default_visibility = ["//visibility:public"])
 
-genrule(
+pipeline_install(
     name = "%[1]s_install",
     srcs = [],
-    outs = ["install_tree.tar"],
-    cmd = """
-        EMPTY="$$(mktemp -d)"
-        tar -cf "$(location install_tree.tar)" -C "$$EMPTY" .
+    command = """
+        mkdir -p "@@INSTALL_DIR@@"
     """,
 )
 `, elem.Name)

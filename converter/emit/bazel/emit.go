@@ -244,6 +244,20 @@ func emitLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	buf.WriteString(")\n\n")
 }
 
+// emitInstallLoad writes the
+// `load("@rules_buildstream_bazel//rules:install.bzl", "pick_file")`
+// line when pkg emits any pick_file target (the round-2
+// execute-process fallback shape). No-op otherwise so the cc-only
+// BUILD output stays byte-stable.
+func emitInstallLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindPickFile {
+			buf.WriteString(`load("@rules_buildstream_bazel//rules:install.bzl", "pick_file")` + "\n\n")
+			return
+		}
+	}
+}
+
 // Options tunes the BUILD.bazel emission. Zero-value Options
 // preserves the legacy relative-path emission.
 type Options struct {
@@ -351,6 +365,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	}
 	emitGazelleCcSearch(&buf, pkg, opts)
 	emitLoad(&buf, pkg)
+	emitInstallLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -374,6 +389,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindShBinary {
 			if err := emitShBinary(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindPickFile {
+			if err := emitPickFile(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -718,6 +739,25 @@ var filegroupTmpl = template.Must(template.New("filegroup").Funcs(template.FuncM
 )
 `))
 
+// pickFileTmpl renders the rules_buildstream_bazel `pick_file()`
+// rule. Projects one file out of a pipeline_install install-root
+// TreeArtifact (the round-2 fallback's per-artefact / per-header
+// stub mechanism). Needs the install.bzl load (emitInstallLoad).
+var pickFileTmpl = template.Must(template.New("pick_file").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`pick_file(
+    name = "{{.Name}}",
+    src = "{{.Src}}",
+    path = "{{.Path}}",
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
 // aliasTmpl renders Bazel-native `alias()`. Lifts cmake's
 // `add_library(<alias> ALIAS <target>)` shape recovered from the
 // trace; emitted via lowerAliasTargets. No load() needed; alias
@@ -864,6 +904,25 @@ type filegroupView struct {
 	SrcsExpr   string
 	Tags       []string
 	Visibility []string
+}
+
+// pickFileView projects ir.Target into the pick_file template.
+type pickFileView struct {
+	Name       string
+	Src        string
+	Path       string
+	Tags       []string
+	Visibility []string
+}
+
+func emitPickFile(w *bytes.Buffer, t ir.Target) error {
+	return pickFileTmpl.Execute(w, pickFileView{
+		Name:       t.Name,
+		Src:        t.PickSrc,
+		Path:       t.PickPath,
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
 }
 
 func emitFilegroup(w *bytes.Buffer, t ir.Target) error {

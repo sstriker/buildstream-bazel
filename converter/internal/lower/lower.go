@@ -110,6 +110,17 @@ type Options struct {
 	// for the architectural shape.
 	UnsupportedExecuteProcessFallback bool
 
+	// FallbackInstallTarget is the Bazel label of the
+	// pipeline_install target whose install-root TreeArtifact the
+	// execute-process-fallback's pick_file stubs project files out
+	// of. Defaults to ":<basename(BazelPackagePath)>_trace_build"
+	// (the same-package install target write-a renders for the
+	// round-2 fallback). The caller (convert-element-cmake) derives
+	// it from --bazel-package-path; when empty the fallback uses
+	// the literal ":_trace_build" default, which a consumer build
+	// surfaces loudly if the install target name diverges.
+	FallbackInstallTarget string
+
 	// LiftConfigureFile toggles the configure_file recovery's
 	// lifted shape. When true (and a values namespace is
 	// available — either via CMakeVars below or via per-template
@@ -747,7 +758,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			// cut, and it lets downstream consumers see
 			// per-target labels at analysis time even when
 			// the element itself can't be fine-converted.
-			return emitFallbackPlaceholder(r, hostSrc)
+			return emitFallbackPlaceholder(r, hostSrc, opts.FallbackInstallTarget)
 		}
 	}
 
