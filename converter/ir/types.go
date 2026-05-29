@@ -96,6 +96,27 @@ type Package struct {
 	// surface find_package resolutions at the top of the BUILD
 	// — operators see the external-dep inventory at a glance.
 	HeaderComments []string
+
+	// SubPackages maps each real (codemodel-derived) target Name to
+	// the element-root-relative directory the cmake CMakeLists that
+	// declared it lived in ("" = the root package, e.g. "src/util"
+	// for a target declared under add_subdirectory(src/util)). It is
+	// the out-of-band signal the --split-packages emit transform
+	// consumes to mirror the CMakeLists/add_subdirectory layout as a
+	// per-directory BUILD.bazel tree ("gazelle model").
+	//
+	// The `json:"-"` tag is load-bearing: this field MUST NOT
+	// serialize into --out-ir-json. The multi-platform fold path
+	// (which round-trips IR through JSON) is mutually exclusive with
+	// --split-packages, and keeping the field out of the wire shape
+	// guarantees the JSON byte-output is unperturbed by the feature.
+	//
+	// Targets without an entry (install-derived filegroups, cc_import
+	// / cmake_config_bundle synthesized by lowerExportInstallers,
+	// aliases, genrules, interface libs, per-language sub-libraries)
+	// have no declaring CMakeLists dir and resolve to the root
+	// package; the split transform treats a missing key as "".
+	SubPackages map[string]string `json:"-"`
 }
 
 // Provenance records the originating source location of a Target.

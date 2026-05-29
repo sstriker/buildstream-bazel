@@ -853,6 +853,21 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			continue
 		}
 		pkg.Targets = append(pkg.Targets, *irt)
+
+		// Record the element-root-relative declaring directory for the
+		// --split-packages emit transform (out-of-band; never
+		// serialized, see ir.Package.SubPackages). The codemodel's
+		// ConfigDirectory.Source is cmakeSrc-relative; reconcile it
+		// with the same labelRoot base srcs are relativized against so
+		// dirs and srcs agree (see the labelRoot pick in lowerTarget,
+		// ~1328). When workspaceRoot is a strict ancestor of cmakeSrc
+		// (the umbrella / zstd shape), prepend the cmakeSrc-under-
+		// workspaceRoot prefix so the recorded dir is workspace-root-
+		// relative like the srcs.
+		if pkg.SubPackages == nil {
+			pkg.SubPackages = map[string]string{}
+		}
+		pkg.SubPackages[irt.Name] = subPackageDir(cfg, tref.DirectoryIndex, cmakeSrc, workspaceRoot)
 	}
 
 	// Append recovered genrules then per-language sub-libraries
@@ -4159,6 +4174,39 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 		}
 	}
 	return copts, defines
+}
+
+// subPackageDir returns the element-root-relative directory the target at
+// dirIndex was declared in, expressed against the same base srcs are
+// relativized against (workspaceRoot when set and a strict ancestor of
+// cmakeSrc, else cmakeSrc). "" means the root package.
+//
+// The codemodel's ConfigDirectory.Source is cmakeSrc-relative ("." for the
+// top-level CMakeLists, "src/util" for an add_subdirectory child). When the
+// label base is the workspace root above cmakeSrc, prepend the cmakeSrc-
+// under-workspaceRoot prefix so the recorded dir lines up with the
+// re-anchored source labels.
+func subPackageDir(cfg fileapi.Configuration, dirIndex int, cmakeSrc, workspaceRoot string) string {
+	if dirIndex < 0 || dirIndex >= len(cfg.Directories) {
+		return ""
+	}
+	src := cfg.Directories[dirIndex].Source
+	src = filepath.ToSlash(src)
+	if src == "." {
+		src = ""
+	}
+	src = strings.TrimSuffix(src, "/")
+	// Re-anchor to workspaceRoot when it sits strictly above cmakeSrc,
+	// matching lowerTarget's labelRoot pick.
+	if workspaceRoot != "" && workspaceRoot != cmakeSrc {
+		if prefix, inside := relativeIfInside(workspaceRoot, cmakeSrc); inside && prefix != "" {
+			if src == "" {
+				return prefix
+			}
+			return prefix + "/" + src
+		}
+	}
+	return src
 }
 
 // relativeIfInside returns (rel-path, true) if abs is at or below root, else
