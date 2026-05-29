@@ -192,7 +192,7 @@ transition cleanly.
     build was backed out (it would have changed the
     project's runtime model from sandboxable-and-cheap to
     "build farms"). The non-declarative residue stays on
-    the round-2 `_install_tree_extract` fallback. The
+    the round-2 pick_file-over-install-root fallback. The
     `resolved-lift` manifest-synth piece queued under
     `Later` is the remaining slice (the orchestrator's
     M3 step that populates the new manifest fields from
@@ -404,45 +404,11 @@ transition cleanly.
   startup; repo rules don't run on RBE (executor-pool
   advantages forfeited); hermeticity weaker (relies on
   host-side cmake/ninja). The live candidate is the
-  tree-artifact bullet below, which keeps the dedup win without
-  the RBE disqualifier. A render-time measurement gate shipped
-  (`scripts/meta-cmake-round2-fallback-storage-cost.sh`,
-  `make e2e-meta-cmake-round2-fallback-storage-cost`) that
-  reports the extract-genrule outs count for a small fixture —
-  enough to confirm the duplication is per-stub-artifact (not a
-  flat 2× on the whole tar; legacy `install(FILES ...)`
-  entries stay in tar only). FDSDK-scale numbers from this
-  gate would drive the promotion decision.
-- **TreeArtifact install root (the live alternative to the
-  ruled-out repo rule).** Re-express the coarse install
-  transport as a Bazel TreeArtifact (`declare_directory`)
-  instead of `install_tree.tar`: the install root becomes a
-  REAPI `Directory` merkle tree, so identical files dedup in
-  CAS at file granularity (collapsing the `tar_bytes + Σ
-  extract-genrule bytes` duplication above) and downstream
-  consumers build against the directory in place — no `tar -xf`
-  into a per-consumer `$DEP_PREFIX` (cf. `autotoolsDepExtractCmd`
-  in `cmd/write-a/handler_autotools_native.go`). Unlike the repo
-  rule, TreeArtifact actions are ordinary Bazel actions: they
-  run on RBE, do no loading-time work, and stay as hermetic as
-  any other action — same dedup win, none of the disqualifiers.
-  A self-contained spike under
-  `experiments/tree-artifact-install/` proves the three needed
-  mechanisms under bazel 7.4.1 — install root as a Directory,
-  direct cross-element consumption with zero tar/untar actions
-  in the graph (`bazel aquery`), and a `pick_file` projection
-  pulling a single file out of the tree as a plain `File` label
-  to feed the fallback's `cc_import` stubs (replacing the
-  `_install_tree_extract` genrule). Migration work (not yet
-  done): move project B's install step from a `genrule` (file
-  outputs only) to a custom rule using `declare_directory`
-  (precedent: `rules_buildstream_bazel/rules/traces.bzl`),
-  swap the dep-extract untar loop for in-place
-  `-I`/`-L` references, and feed the stubs via `pick_file`. The
-  cross-workspace A↔B transport is unaffected — the rendezvous
-  already moves directories as REAPI `output_directories`
-  (`docs/design/rendezvous.md`). Promotion gated on the same
-  storage-cost gate proving the dedup at FDSDK scale.
+  TreeArtifact install root, which kept the dedup win without
+  the RBE disqualifier and **shipped** — see the "TreeArtifact
+  install root" entry under Done (high points). The repo-rule
+  alternative stays rejected; this bullet is retained only as the
+  record of why.
 - **Toolchain-feature parity vs. cmake's default Release
   hardening flags.** Surfaced by the convert-and-build
   artifact comparison of zlib (cmake `libz.a` vs. Bazel
@@ -543,6 +509,30 @@ transition cleanly.
 
 ## Done (high points)
 
+- **TreeArtifact install root (replaces the coarse
+  `install_tree.tar` transport).** Project B's per-element install
+  step is now the `pipeline_install` custom rule
+  (`rules_buildstream_bazel/rules/install.bzl`): it installs
+  directly into a `declare_directory` install root (a REAPI
+  `Directory` merkle tree) instead of a genrule tarring
+  `install_tree.tar`. Identical files dedup in CAS at file
+  granularity; downstream `pipeline_install` deps build against the
+  directory IN PLACE via the rule's `deps` attr (`@@DEP_INSTALL_DIRS@@`
+  overlays `-I`/`-L`, no `tar -xf` into a per-consumer `$DEP_PREFIX`);
+  and the round-2 execute-process / target fallback projects each
+  referenced artefact/header out of the shared install root with a
+  `pick_file` target (cmake + meson converters, `KindPickFile`),
+  replacing the per-element `_install_tree_extract` tar-untar
+  genrule and its CAS duplication. write-a owns the orchestration
+  command via `@@INSTALL_DIR@@` / `@@SRCS@@` / `@@DEP_INSTALL_DIRS@@`
+  / `@@OUT:<name>@@` / `@@TOOL:<N>@@` sentinel tokens; the rule is a
+  mechanical token-substitution host. Verified under bazel 9 with
+  `bazel aquery` showing PipelineInstall/PickFile + ZERO tar/untar
+  actions across the coarse (`meta-make` / `meta-manual`), round-1
+  (`meta-autotools-native`), and round-2 fallback
+  (`meta-cmake-round2-fallback`) paths. The storage-cost gate now
+  asserts the per-consumer duplication is gone (zero extract copies;
+  one `pick_file` view per file).
 - **Operator-facing mode dials for write-a (`--fidelity` /
   `--bake-in` / `--diagnostics` / `--deployment`) with pass-
   through architecture into the converters.** Today's CLI exposes

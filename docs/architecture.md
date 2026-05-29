@@ -138,8 +138,10 @@ write-a flag; round-2 is the default.
 
 `kind:make` / `kind:manual` / `kind:script` / `kind:makemaker` /
 `kind:modulebuild` without the trace-driven config render as a single
-install genrule producing `install_tree.tar`. Consumers reference
-the tar via filegroup composition.
+`pipeline_install` (`rules_buildstream_bazel/rules/install.bzl`) that
+installs into a `declare_directory` install-root TreeArtifact (no
+`install_tree.tar`). Consumers reference the directory in place via
+the rule's `deps` attr / `pick_file` (no untar).
 
 ### Composition kinds (`stack` / `filter` / `compose` / `import`)
 
@@ -206,7 +208,7 @@ stable label namespace:
 | Label | Meaning |
 |---|---|
 | `//elements/<name>:<name>` | Primary cc rule for `kind:cmake` / native `kind:autotools` |
-| `//elements/<name>:<name>_install` | Install genrule (project B); outputs `install_tree.tar`, plus `trace.log` / `make-db.txt` for trace-driven kinds |
+| `//elements/<name>:<name>_install` | `pipeline_install` (project B); outputs the install-root TreeArtifact directory, plus `trace.log` / `make-db.txt` (extra_outs) for trace-driven kinds |
 | `//elements/<name>:<name>_build` | Round-2 converter genrule (project A, trace-driven kinds) |
 | `//elements/<name>:<name>_converted` | cmake converter genrule (project A); outputs `BUILD.bazel.out` + `cmake-config-bundle.tar` |
 | `//elements/<name>:cmake_config_bundle` | Synthesized cmake-config bundle tar for cross-element `find_package` |
