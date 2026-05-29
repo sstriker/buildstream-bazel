@@ -54,8 +54,8 @@ func TestRecoverExecuteProcess_LiftCp_SingleFile(t *testing.T) {
 }
 
 // TestRecoverExecuteProcess_LiftCp_FileIntoDir covers `cp a.txt
-// <dir>` where the destination is an (extensionless) directory:
-// cp drops the source basename into it, so the output is
+// <dir>/` where the trailing slash marks the destination as a
+// directory: cp drops the source basename into it, so the output is
 // <dir>/a.txt.
 func TestRecoverExecuteProcess_LiftCp_FileIntoDir(t *testing.T) {
 	hostSrc := t.TempDir()
@@ -64,7 +64,7 @@ func TestRecoverExecuteProcess_LiftCp_FileIntoDir(t *testing.T) {
 	}
 	calls := []shadow.ExecuteProcessCall{{
 		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
-		Commands: [][]string{{"cp", filepath.Join(hostSrc, "a.txt"), "/build/dir"}},
+		Commands: [][]string{{"cp", filepath.Join(hostSrc, "a.txt"), "/build/dir/"}},
 	}}
 	cc := newCodegenContext()
 	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
@@ -73,6 +73,30 @@ func TestRecoverExecuteProcess_LiftCp_FileIntoDir(t *testing.T) {
 	g := cc.Genrules[0]
 	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "dir/a.txt" {
 		t.Errorf("outs: %v want [dir/a.txt]", g.GenruleOuts)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftCp_FileToExtensionlessDest pins the
+// POSIX-faithful default: `cp src/script ${BINARY}/script` copies to a
+// FILE named `script` (the dst doesn't pre-exist as a directory at
+// convert time), NOT `script/script`. Only a trailing slash or the
+// build-dir root marks a directory destination.
+func TestRecoverExecuteProcess_LiftCp_FileToExtensionlessDest(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "script"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{"cp", filepath.Join(hostSrc, "script"), "/build/script"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "script" {
+		t.Errorf("outs: %v want [script]", g.GenruleOuts)
 	}
 }
 

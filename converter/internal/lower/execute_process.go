@@ -454,8 +454,16 @@ func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 // (e.g. `cp x README`) is mis-treated as a directory.
 func liftCpFile(realSrcRel, dst, dstRel string, cc *codegenContext) ([]string, string, bool) {
 	outRel := dstRel
-	dstIsDir := dstRel == "" || strings.HasSuffix(dst, "/") ||
-		(filepath.Ext(dstRel) == "" && filepath.Base(realSrcRel) != "")
+	// POSIX `cp <file> <dst>`: when <dst> doesn't already exist as a
+	// directory, cp creates a file AT <dst>; it only drops the source
+	// basename into <dst> when <dst> is an existing directory. At
+	// convert time the build-dir destination never pre-exists, so the
+	// only reliable "this is a directory" signals are a trailing slash
+	// or the build-dir root itself (dstRel==""). An extensionless dst
+	// like `${BINARY}/script` is therefore treated as a FILE — so
+	// `cp src/script ${BINARY}/script` yields `script`, not
+	// `script/script`.
+	dstIsDir := dstRel == "" || strings.HasSuffix(dst, "/")
 	if dstIsDir {
 		base := filepath.Base(realSrcRel)
 		if dstRel == "" {
