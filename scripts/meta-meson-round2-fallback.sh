@@ -234,15 +234,15 @@ EOF
         --out-build="$out_build" \
         --unsupported-target-fallback=true >"$work_dir/standalone-fallback.log" 2>&1
     for marker in \
-        '_install_tree_extract' \
-        '"install_tree.tar"' \
-        '"install_tree/lib/libfoo.a"' \
-        '"install_tree/bin/foo-bin"' \
-        '"install_tree/include/foo.h"' \
+        'load("@rules_buildstream_bazel//rules:install.bzl", "pick_file")' \
+        'pick_file(' \
+        'path = "lib/libfoo.a"' \
+        'path = "bin/foo-bin"' \
+        'path = "include/foo.h"' \
         'cc_import' \
         'sh_binary' \
-        'static_library = "install_tree/lib/libfoo.a"' \
-        'srcs = ["install_tree/bin/foo-bin"]' \
+        'static_library = ":_pick_lib_libfoo_a"' \
+        'srcs = [":_pick_bin_foo_bin"]' \
         'meson-codegen-target-fallback'; do
         if ! grep -qF -- "$marker" "$out_build"; then
             echo "meta-meson-round2-fallback: standalone fallback BUILD missing marker: $marker" >&2
