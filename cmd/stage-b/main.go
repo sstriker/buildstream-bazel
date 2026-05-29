@@ -30,12 +30,15 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 const (
@@ -123,6 +126,27 @@ func run(a args) ([]string, error) {
 			continue
 		}
 		name := e.Name()
+
+		// --split-packages elements emit a single build-packages.tar
+		// (the per-sub-package BUILD tree) instead of BUILD.bazel.out,
+		// because a genrule can't statically declare the discovered-at-
+		// action-time sub-package set. Prefer it when present: unpack
+		// the tree into project B's elements/<name>/, overwriting the
+		// root placeholder and creating the sub-package BUILD files.
+		tarPath := filepath.Join(aElements, name, "build-packages.tar")
+		if info, statErr := os.Stat(tarPath); statErr == nil && info.Size() > 0 {
+			ch, err := stageSplitTar(tarPath, filepath.Join(bElements, name))
+			if err != nil {
+				return nil, fmt.Errorf("stage split element %s: %v", name, err)
+			}
+			if ch {
+				changed = append(changed, "elements/"+name)
+			}
+			continue
+		} else if statErr != nil && !os.IsNotExist(statErr) {
+			return nil, fmt.Errorf("stat %s: %v", tarPath, statErr)
+		}
+
 		src := filepath.Join(aElements, name, "BUILD.bazel.out")
 		srcBytes, err := os.ReadFile(src)
 		if err != nil {
@@ -150,5 +174,66 @@ func run(a args) ([]string, error) {
 		changed = append(changed, "elements/"+name)
 	}
 	sort.Strings(changed)
+	return changed, nil
+}
+
+// stageSplitTar unpacks a --split-packages build-packages.tar (the
+// per-sub-package BUILD.bazel tree produced by project A's converter
+// genrule) into destDir, the project-B elements/<name>/ package root.
+// It writes each regular-file entry, creating sub-package directories
+// as needed, and reports whether any staged file's content changed
+// (added or differing) versus what was already there — the same
+// idempotent "what re-converted" signal the single-file path returns,
+// so a re-stage with an unchanged tar reports nothing.
+//
+// Entry paths are sanitized: a "../"-escaping or absolute member is
+// rejected rather than allowed to write outside destDir.
+func stageSplitTar(tarPath, destDir string) (bool, error) {
+	f, err := os.Open(tarPath)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	changed := false
+	tr := tar.NewReader(f)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("read tar %s: %v", tarPath, err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue // skip dir entries; we MkdirAll per file below
+		}
+		rel := filepath.Clean(filepath.FromSlash(hdr.Name))
+		if rel == "" || rel == "." {
+			continue
+		}
+		if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return false, fmt.Errorf("tar %s: member %q escapes destination", tarPath, hdr.Name)
+		}
+		dst := filepath.Join(destDir, rel)
+		newBytes, err := io.ReadAll(tr)
+		if err != nil {
+			return false, fmt.Errorf("read tar member %q: %v", hdr.Name, err)
+		}
+		oldBytes, rdErr := os.ReadFile(dst)
+		if rdErr != nil && !os.IsNotExist(rdErr) {
+			return false, fmt.Errorf("read staged %s: %v", dst, rdErr)
+		}
+		if bytes.Equal(oldBytes, newBytes) {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return false, fmt.Errorf("mkdir for %s: %v", dst, err)
+		}
+		if err := os.WriteFile(dst, newBytes, 0o644); err != nil {
+			return false, fmt.Errorf("stage %s: %v", dst, err)
+		}
+		changed = true
+	}
 	return changed, nil
 }

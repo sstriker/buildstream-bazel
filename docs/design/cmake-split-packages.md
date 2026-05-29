@@ -122,14 +122,29 @@ Deps are deduped.
   own package is therefore not re-emitted as a build rule under split;
   its content is served by the layout-independent `install_tree.tar`
   path, which is untouched.
-- **write-a / stage-b orchestrator wiring** is a follow-up. Bazel
-  genrules need statically-declared `outs`, but the sub-package set is
-  only known at action time; the orchestrator path would need the
-  converter genrule to emit a single tar of the package tree (mirroring
-  `cmake-config-bundle.tar`) that a downstream consumer unpacks. Until
-  that lands, `--split-packages` is a `convert-element-cmake` CLI +
-  `exports.json` capability; the orchestrator keeps emitting
-  single-BUILD genrules.
+## Orchestrator wiring (write-a / stage-b)
+
+`cmd/write-a --split-packages` threads the mode end-to-end. A Bazel
+genrule can't statically declare the discovered-at-action-time
+sub-package set as `outs`, so the converter genrule instead writes the
+per-sub-package BUILD tree into a temp dir and tars it into a single
+declared `build-packages.tar` output (mirroring the existing
+`cmake-config-bundle.tar` produce pattern); `--out-build` points into
+that temp tree and the `build_bazel` filegroup points at the tar. The
+default (off) keeps the single `BUILD.bazel.out` output byte-for-byte.
+
+`cmd/stage-b` consumes it: when project A's
+`bazel-bin/elements/<name>/build-packages.tar` exists and is
+non-empty, it unpacks the tree into project B's `elements/<name>/`
+(overwriting the root placeholder and creating the sub-package BUILD
+files), reporting the element changed only when a staged file's
+content actually differs — the same idempotent "what re-converted"
+signal the single-file path returns. Tar members are path-sanitized
+(an absolute or `..`-escaping entry is refused). Project B already
+co-locates each element's sources with its BUILD (the single-BUILD
+shape builds there with element-root-relative `srcs`), so distributing
+the BUILD files across sub-directories of that same tree needs no extra
+source staging.
 
 ## Gazelle stability
 

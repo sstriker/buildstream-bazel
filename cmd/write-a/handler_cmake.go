@@ -59,6 +59,16 @@ var cmakeConfig struct {
 	fidelity    string
 	bakeIn      string
 	diagnostics bool
+
+	// splitPackages toggles the per-directory BUILD split (see
+	// docs/design/cmake-split-packages.md). When true the
+	// converter genrule threads `--split-packages`, writes the
+	// per-sub-package BUILD tree into a temp dir, and tars it into
+	// a single declared `build-packages.tar` output (a genrule
+	// cannot declare the sub-package set statically); stage-b
+	// unpacks that tar into project B's elements/<name>/ tree.
+	// Off (default) keeps the single BUILD.bazel.out shape.
+	splitPackages bool
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
@@ -595,12 +605,35 @@ filegroup(
             --imports-manifest="$(location imports.json)"`
 	}
 
+	// Split-packages reshapes the converter's BUILD output: instead of
+	// a single BUILD.bazel.out, the converter writes one BUILD.bazel per
+	// sub-package into a temp tree, which the genrule tars into a single
+	// declared build-packages.tar output (a genrule can't statically
+	// declare the discovered-at-action-time sub-package set). stage-b
+	// unpacks that tar into project B's elements/<name>/ tree. Default
+	// (off) keeps the single-file shape byte-for-byte.
+	primaryOut := `"BUILD.bazel.out",`
+	outBuildSetup := ""
+	outBuildFlag := `--out-build="$(location BUILD.bazel.out)"`
+	splitFlag := ""
+	buildPackagingStep := ""
+	buildBazelSrcs := `"BUILD.bazel.out"`
+	if cmakeConfig.splitPackages {
+		primaryOut = `"build-packages.tar",`
+		outBuildSetup = "        PKGTREE=\"$$(mktemp -d)\"\n"
+		outBuildFlag = `--out-build="$$PKGTREE/BUILD.bazel"`
+		splitFlag = ` \
+            --split-packages`
+		buildPackagingStep = "\n        tar -cf \"$(location build-packages.tar)\" -C \"$$PKGTREE\" ."
+		buildBazelSrcs = `"build-packages.tar"`
+	}
+
 	fmt.Fprintf(&b, `
 genrule(
     name = "%[1]s_converted",
     srcs = [%[2]s],
     outs = [
-        "BUILD.bazel.out",
+        %[13]s
         "read_paths.json",
         "cmake-config-bundle.tar",
         "exports.json",%[11]s
@@ -629,14 +662,14 @@ genrule(
         # CMakeLists resolves against it. No-op when the element
         # has no kind:cmake deps.
 %[3]s        BUNDLE_DIR="$$(mktemp -d)"
-        $(location //tools:convert-element-cmake) \\
+%[14]s        $(location //tools:convert-element-cmake) \\
             --source-root="$$SHADOW" \\
-            --out-build="$(location BUILD.bazel.out)" \\
+            %[15]s \\
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
             --out-exports="$(location exports.json)" \\
-            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s
-        tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s%[16]s
+        tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .%[17]s
     """,
     tools = ["//tools:convert-element-cmake"],
 )
@@ -644,9 +677,11 @@ genrule(
 # Typed exports project B consumes. Phase 1/2 emit the converter's
 # raw outputs; later phases expand cmake-config-bundle.tar into
 # the typed slices (cmake_config / pkg_config / headers / libs).
+# Under --split-packages this is the build-packages.tar tree that
+# stage-b unpacks into elements/<name>/.
 filegroup(
     name = "build_bazel",
-    srcs = ["BUILD.bazel.out"],
+    srcs = [%[18]s],
 )
 
 # Cross-element handle: downstream cmake elements reference this
@@ -656,7 +691,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs)
 	return b.String()
 }
 
