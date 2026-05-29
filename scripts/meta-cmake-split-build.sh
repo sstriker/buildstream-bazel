@@ -31,7 +31,10 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 work_dir=$(mktemp -d)
-trap 'rm -rf "$work_dir"' EXIT
+# Bazel materializes declare_directory (TreeArtifact) outputs read-only —
+# the packages/ dirs lack the write bit, so a plain `rm -rf` of the work
+# dir fails with "Permission denied". Restore write perms before removing.
+trap 'chmod -R u+w "$work_dir" 2>/dev/null || true; rm -rf "$work_dir"' EXIT
 
 bin_dir="$work_dir/bin"
 mkdir -p "$bin_dir"
