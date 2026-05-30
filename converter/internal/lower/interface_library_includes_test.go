@@ -18,7 +18,7 @@ func callLowerTargetIface(t *testing.T, tgt *fileapi.Target, cmakeSrc string) *i
 	irt, err := lowerTarget(tgt, cmakeSrc, "/build", "", "", false, nil, cc,
 		map[string]string{}, map[string]bool{}, nil, nil,
 		map[string]bool{}, nil, nil, nil, nil, nil,
-		map[string]string{}, map[string][]string{}, nil, "", nil)
+		map[string]string{}, map[string][]string{}, nil, "", nil, nil)
 	if err != nil {
 		t.Fatalf("lowerTarget: %v", err)
 	}

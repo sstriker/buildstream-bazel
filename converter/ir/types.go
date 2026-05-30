@@ -31,18 +31,40 @@ const (
 	// genrule (no per-consumer re-materialization of the whole tree).
 	KindPickFile
 	// KindFilegroup carries a list of source files exposed via a
-	// Bazel-native `filegroup()` rule. The cmake converter uses
-	// it to lower install(FILES ...) / install(DIRECTORY ...)
-	// declarations at convert time (Phase 1 task 2 of the
-	// generator-parity uplift in ROADMAP.md) — exposing the
-	// named files as a labeled filegroup downstream consumers
-	// can depend on without pulling the install root through
-	// the round-2 fallback. filegroup is in the global Bazel
-	// namespace (no MODULE.bazel deps); for richer attribute
-	// support (per-file destination renames via pkg_files +
-	// rules_pkg) Phase 1 task 2's full pkg_files emission would
-	// slot in alongside.
+	// Bazel-native `filegroup()` rule. The cmake converter no
+	// longer routes install(FILES) / install(DIRECTORY) here —
+	// those lower to KindPkgFiles (see below). KindFilegroup
+	// remains for the install(EXPORT) cmake_config_bundle shape
+	// (lowerExportInstallers) and any other Bazel-native file
+	// grouping. filegroup is in the global Bazel namespace (no
+	// MODULE.bazel deps).
 	KindFilegroup
+	// KindPkgFiles renders as rules_pkg's
+	// `pkg_files(name=, srcs=[...], prefix="<dest>")` rule. The
+	// cmake converter lowers install(FILES ...) /
+	// install(DIRECTORY ...) declarations here at convert time
+	// (Phase 1 slice 1b of the generator-parity uplift in
+	// ROADMAP.md): unlike a bare filegroup, pkg_files carries the
+	// install **destination** as the `prefix` attribute, so the
+	// converted shape is a real declarative packaging mapping that
+	// downstream pkg_tar / pkg_install rules can consume to
+	// reconstruct the install layout — instead of an opaque
+	// filegroup that loses the destination.
+	//
+	// Srcs are the installed source-root-relative files (Type=="file")
+	// or the files under the installed directory tree
+	// (Type=="directory"); PkgPrefix is the install destination
+	// (e.g. "lib", "include", "share/foo"). pkg_files comes from
+	// @rules_pkg//pkg:mappings.bzl, so a BUILD that emits one needs
+	// rules_pkg on the consuming project's MODULE.bazel — the
+	// emitter writes the load and write-a adds the bazel_dep (see
+	// emit/bazel/emit.go's emitPkgFilesLoad + cmd/write-a's
+	// moduleBazelB). Per-file destination renames (cmake's
+	// install(FILES ... RENAME ...)) are NOT modeled — the File
+	// API codemodel's DirectoryInstaller doesn't expose the
+	// rename target cleanly; documented as a follow-up in
+	// ROADMAP.md.
+	KindPkgFiles
 	// KindAlias renders as Bazel-native `alias(name=, actual=)`.
 	// Lifts cmake's `add_library(<alias> ALIAS <target>)` shape:
 	// downstream Bazel code referencing the alias name resolves
@@ -80,6 +102,8 @@ func (k Kind) String() string {
 		return "pick_file"
 	case KindFilegroup:
 		return "filegroup"
+	case KindPkgFiles:
+		return "pkg_files"
 	case KindAlias:
 		return "alias"
 	}
@@ -346,6 +370,52 @@ type Target struct {
 	// headers + link) and ImplementationDeps (PRIVATE
 	// target_link_libraries). Empty / nil skips the attribute.
 	Data []string
+
+	// PkgPrefix is the install destination carried by a
+	// KindPkgFiles target — it renders as the `prefix = "<dest>"`
+	// attribute on the emitted pkg_files rule. cmake's
+	// install(FILES ... DESTINATION lib) / install(DIRECTORY ...
+	// DESTINATION include) records the DESTINATION; the lowering
+	// pass (lowerDirectoryInstallers) carries it here so the
+	// packaging shape preserves where each file lands. Empty on
+	// every non-pkg_files target.
+	PkgPrefix string
+
+	// PkgSrcsGlob, when true on a KindPkgFiles target, makes the
+	// emitter render `srcs = glob(["<dir>/**"])` (one glob per Srcs
+	// entry) instead of the literal `srcs = [...]` list. This is the
+	// install(DIRECTORY ...) shape: cmake's install(DIRECTORY) names
+	// a *source directory* whose entire tree is packaged, and a bare
+	// directory in a pkg_files `srcs` does NOT package the directory's
+	// files — a consuming pkg_tar fails with IsADirectoryError. The
+	// glob expands the directory to its constituent files so they're
+	// addressable Bazel inputs. install(FILES ...) keeps the literal
+	// list (PkgSrcsGlob == false) since those srcs are already
+	// individual files.
+	PkgSrcsGlob bool
+
+	// PkgStripPrefix, when non-empty on a KindPkgFiles target with
+	// PkgSrcsGlob, renders as
+	// `strip_prefix = strip_prefix.from_pkg("<PkgStripPrefix>")`. It
+	// carries the package-relative source directory whose leading path
+	// rules_pkg strips before applying `prefix`, so the globbed files
+	// land at "<PkgPrefix>/<rel-under-dir>" rather than
+	// "<PkgPrefix>/<dir>/<rel>". For cmake's
+	// install(DIRECTORY include/ DESTINATION include) (trailing slash
+	// = "contents of include/ into DESTINATION") this is "include":
+	// glob(["include/**"]) + strip_prefix.from_pkg("include") +
+	// prefix="include" packages include/foo.h at include/foo.h.
+	//
+	// Known limitation: cmake's no-trailing-slash form
+	// (install(DIRECTORY include DESTINATION include) — "the include
+	// dir itself into DESTINATION", yielding include/include/foo.h)
+	// is recoverable from the File API (the codemodel records it as a
+	// plain-string path rather than the trailing-slash form's
+	// {"from","to":"."} object) but is NOT separately modeled here —
+	// the lowering treats every directory installer as the
+	// contents-into-dest shape. See lowerDirectoryInstallers and
+	// ROADMAP.md.
+	PkgStripPrefix string
 
 	// InstallDest is the relative path under the install prefix where the
 	// CMake install(TARGETS) rule places this target's artifact (e.g. "lib"

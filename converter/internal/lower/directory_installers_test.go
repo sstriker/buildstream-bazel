@@ -42,11 +42,14 @@ func TestLowerDirectoryInstallers_FileInstaller(t *testing.T) {
 		t.Fatalf("want 1 filegroup; got %d (%+v)", len(got), got)
 	}
 	tgt := got[0]
-	if tgt.Kind != ir.KindFilegroup {
-		t.Errorf("Kind: got %v want KindFilegroup", tgt.Kind)
+	if tgt.Kind != ir.KindPkgFiles {
+		t.Errorf("Kind: got %v want KindPkgFiles", tgt.Kind)
 	}
 	if tgt.Name != "install_files__include_foo" {
 		t.Errorf("Name: %q", tgt.Name)
+	}
+	if tgt.PkgPrefix != "include/foo" {
+		t.Errorf("PkgPrefix: got %q want %q", tgt.PkgPrefix, "include/foo")
 	}
 	wantSrcs := []string{"include/bar.h", "include/foo.h"}
 	if len(tgt.Srcs) != len(wantSrcs) {
@@ -56,6 +59,14 @@ func TestLowerDirectoryInstallers_FileInstaller(t *testing.T) {
 		if tgt.Srcs[i] != s {
 			t.Errorf("Srcs[%d]: got %q want %q", i, tgt.Srcs[i], s)
 		}
+	}
+	// install(FILES) srcs are individual files — they stay a literal
+	// list (no glob, no strip_prefix). Only install(DIRECTORY) globs.
+	if tgt.PkgSrcsGlob {
+		t.Errorf("PkgSrcsGlob: got true, want false (file installer keeps literal srcs)")
+	}
+	if tgt.PkgStripPrefix != "" {
+		t.Errorf("PkgStripPrefix: got %q, want empty (file installer)", tgt.PkgStripPrefix)
 	}
 }
 
@@ -136,11 +147,26 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
+	if got[0].Kind != ir.KindPkgFiles {
+		t.Errorf("Kind: got %v want KindPkgFiles", got[0].Kind)
+	}
 	if got[0].Name != "install_directory__share_myapp" {
 		t.Errorf("Name: %q", got[0].Name)
 	}
+	if got[0].PkgPrefix != "share/myapp" {
+		t.Errorf("PkgPrefix: got %q want %q", got[0].PkgPrefix, "share/myapp")
+	}
 	if len(got[0].Srcs) != 1 || got[0].Srcs[0] != "share/data" {
 		t.Errorf("Srcs: %v", got[0].Srcs)
+	}
+	// install(DIRECTORY) must glob the source dir's contents (a bare
+	// directory in pkg_files srcs doesn't package its files) and strip
+	// the source dir so files land at "<dest>/<rel>".
+	if !got[0].PkgSrcsGlob {
+		t.Errorf("PkgSrcsGlob: got false, want true (directory installer)")
+	}
+	if got[0].PkgStripPrefix != "share/data" {
+		t.Errorf("PkgStripPrefix: got %q want %q", got[0].PkgStripPrefix, "share/data")
 	}
 }
 

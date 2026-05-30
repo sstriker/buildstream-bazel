@@ -2120,6 +2120,33 @@ bazel_dep(name = "gazelle_cc", version = "0.5.0")
 bazel_dep(name = "rules_go", version = "0.59.0")
 `)
 	}
+	if hasKind(g, "cmake") {
+		// Phase 1 slice 1b: convert-element-cmake lowers
+		// install(FILES) / install(DIRECTORY) to rules_pkg's
+		// pkg_files (load("@rules_pkg//pkg:mappings.bzl",
+		// "pkg_files")) whenever a cmake element declares them. The
+		// emitted BUILD's load resolves only if project B's
+		// MODULE.bazel declares rules_pkg, so the bazel_dep is added
+		// whenever the graph carries any kind:cmake element.
+		//
+		// Coarser than ideal: write-a renders MODULE.bazel before the
+		// per-element converter runs (the converter runs inside a
+		// genrule at project-B bazel-build time), so write-a can't
+		// know whether a given cmake element actually emits a
+		// pkg_files target — only that the kind is present. This
+		// mirrors the rules_python gate below (added on any
+		// kind:pyproject element regardless of whether it renders
+		// natively): the extra registry fetch for rules_pkg is a
+		// small, hermetic cost vs. threading per-element converter
+		// verdicts through MODULE.bazel rendering. The per-element
+		// BUILD output stays byte-identical — an element with no
+		// install(FILES) emits no pkg_files load — only the
+		// project-level MODULE.bazel gains the dep. Documented in
+		// ROADMAP.md. rules_pkg 1.0.1 is published in BCR; downloaded
+		// from the registry at project B's first bazel build.
+		b.WriteString(`bazel_dep(name = "rules_pkg", version = "1.0.1")
+`)
+	}
 	if pyprojectConfig.convertBin != "" && hasKind(g, "pyproject") {
 		// kind:pyproject's native render emits py_library /
 		// py_binary rules that load() against

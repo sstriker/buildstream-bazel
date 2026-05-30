@@ -65,21 +65,62 @@ transition cleanly.
   Phasing (each phase is a self-contained PR stack with its
   own render gate):
 
-  - **Phase 1 — read what we already loaded.** Consume the
-    `backtraceGraph` indices on `Target.Dependencies[]` to
-    recover PUBLIC/PRIVATE/INTERFACE keywords without
-    re-parsing `--trace-expand` (trace stays as fallback
-    for cmake < 3.21 where backtraces are incomplete).
-    Plumb `DirectoryInstaller.Type == "file"` /
-    `"directory"` from `directory-*.json` into `ir.Package`
-    so install(FILES) / install(DIRECTORY) lower to
-    `pkg_files` at convert time instead of falling into the
-    round-2 install-tree.tar path. Add a
-    `shadow.ExtractSourceFileProperties` decoder mirroring
-    `ExtractFileGenerate` to recover per-file
-    `COMPILE_DEFINITIONS` / `GENERATED` / `OBJECT_DEPENDS`
-    from the trace. No new cmake hooks; pure consumer-side
-    wins on data the converter already pulls in.
+  - **Phase 1 — read what we already loaded (SHIPPED).**
+    Consume the `backtraceGraph` indices on
+    `Target.Dependencies[]` to recover PUBLIC/PRIVATE/INTERFACE
+    keywords without re-parsing `--trace-expand` (trace stays
+    as fallback for cmake < 3.21 where backtraces are
+    incomplete) — **shipped (1a)**. Plumb
+    `DirectoryInstaller.Type == "file"` / `"directory"` from
+    `directory-*.json` into `ir.Package` so install(FILES) /
+    install(DIRECTORY) lower to `pkg_files` (rules_pkg) at
+    convert time, carrying the install DESTINATION as the
+    `pkg_files` `prefix`, instead of an opaque filegroup /
+    the round-2 install-tree.tar path — **shipped (1b)**.
+    `convert-element-cmake` emits
+    `load("@rules_pkg//pkg:mappings.bzl", "pkg_files")` and
+    `cmd/write-a` adds `bazel_dep(rules_pkg)` to project B's
+    MODULE.bazel when the graph has any kind:cmake element
+    (coarse gate — write-a renders MODULE.bazel before the
+    per-element converter runs, so it can't see whether a
+    given element emits a pkg_files target; mirrors the
+    rules_python precedent). install(DIRECTORY) lowers to
+    `pkg_files(srcs = glob(["<dir>/**"]), prefix = "<dest>",
+    strip_prefix = strip_prefix.from_pkg("<dir>"))` — a glob over
+    the source directory's contents, not a bare directory in
+    `srcs` (a bare dir doesn't package its files; a consuming
+    `pkg_tar` fails with `IsADirectoryError`). install(FILES)
+    keeps the literal `srcs` list. *Limitations:* (a) per-file
+    destination renames (cmake `install(FILES ... RENAME ...)`)
+    are not modeled — the File API `DirectoryInstaller` doesn't
+    surface the rename target cleanly; a follow-up can map it
+    onto `pkg_files` `renames`. (b) install(DIRECTORY) assumes
+    the trailing-slash "contents of `<dir>/` into DESTINATION"
+    semantic (the overwhelmingly common shape). cmake's
+    no-trailing-slash form (`install(DIRECTORY include
+    DESTINATION include)` → `include/include/...`) is
+    distinguishable in the codemodel (recorded as a plain-string
+    path vs. the trailing-slash `{"from","to":"."}` object) but
+    is treated identically; a follow-up can carry the distinction
+    through the `to` field. Render gate
+    `scripts/meta-cmake-install-files-pkg.sh`.
+    `shadow.ExtractSourceFileProperties` decodes per-file
+    `set_source_files_properties` and lowering now consumes it
+    — **shipped (1c)**: `HEADER_FILE_ONLY` → hdrs reclassify;
+    `OBJECT_DEPENDS` → consuming target's hdrs (rebuild-trip
+    edge); `LANGUAGE` → audit tag (Bazel has no per-source
+    language override); `GENERATED` → a manually-marked
+    missing source is kept (not elided) as a generator-output
+    edge and tagged `cmake-declared-generated-source`;
+    `COMPILE_DEFINITIONS` → folded into the target's `defines`
+    when uniform across the target's sources, else tagged
+    `cmake-per-source-compile-definitions-divergent`.
+    *Limitation:* per-file COMPILE_DEFINITIONS that genuinely
+    differ between sources in one target are not expressible in
+    a single cc_library (Bazel's defines/copts are per-target);
+    the operator's remedy is splitting the divergent sources
+    into separate cc_library targets. No new cmake hooks; pure
+    consumer-side wins on data the converter already pulls in.
 
   - **Phase 2 — request `configureLog-v1`.** Add a fourth
     File API object kind alongside codemodel / cache /
