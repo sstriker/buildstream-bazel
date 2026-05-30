@@ -404,29 +404,88 @@ func run(a cli.Args) error {
 		rejections = rejection.New()
 		execFallback = true
 	}
-	pkg, err := lower.ToIR(r, g, lower.Options{
-		HostSourceRoot:                    a.SourceRoot,
-		HostPrefixDir:                     prefixAbs,
-		BuildDir:                          hostBuildOrReply,
-		Imports:                           imports,
-		CTest:                             testRegistry,
-		TraceRaw:                          traceRaw,
-		LiftConfigureFile:                 a.LiftConfigureFile,
-		CMakeVars:                         cmakeVars,
-		GenexProbes:                       genexProbes,
-		ConfigureLog:                      configureLogEvents,
-		EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
-		UnsupportedExecuteProcessFallback: execFallback,
-		FallbackInstallTarget:             fallbackInstallTarget(a.BazelPackagePath),
-		CMakeScriptRunner:                 a.CMakeScriptRunner,
-		CMakeScriptTrace:                  a.CMakeScriptTrace,
-		CMakeScriptBake:                   a.CMakeScriptBake,
-		BakeIn:                            convmode.BakeIn(a.BakeIn),
-		Rejections:                        rejections,
-		Warnings:                          os.Stderr,
-	})
+	// runToIR lowers the reply with a given literal-probe sink and
+	// resolution map. Hoisted to a closure so the generalized-genex
+	// two-pass can run it twice: pass 1 with a collecting sink (no
+	// resolutions), pass 2 with the warm-reconfigure resolutions in
+	// hand. Every other field is identical between passes.
+	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution) (*ir.Package, error) {
+		return lower.ToIR(r, g, lower.Options{
+			HostSourceRoot:                    a.SourceRoot,
+			HostPrefixDir:                     prefixAbs,
+			BuildDir:                          hostBuildOrReply,
+			Imports:                           imports,
+			CTest:                             testRegistry,
+			TraceRaw:                          traceRaw,
+			LiftConfigureFile:                 a.LiftConfigureFile,
+			CMakeVars:                         cmakeVars,
+			GenexProbes:                       genexProbes,
+			ConfigureLog:                      configureLogEvents,
+			EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
+			UnsupportedExecuteProcessFallback: execFallback,
+			FallbackInstallTarget:             fallbackInstallTarget(a.BazelPackagePath),
+			CMakeScriptRunner:                 a.CMakeScriptRunner,
+			CMakeScriptTrace:                  a.CMakeScriptTrace,
+			CMakeScriptBake:                   a.CMakeScriptBake,
+			BakeIn:                            convmode.BakeIn(a.BakeIn),
+			Rejections:                        rejections,
+			Warnings:                          os.Stderr,
+			LiteralProbeSink:                  sink,
+			LiteralResolutions:                resolutions,
+		})
+	}
+
+	// Pass 1: lower with a collecting sink. Arbitrary genex literals
+	// the Go-side evaluator + structural probe can't resolve land in
+	// the sink instead of being dropped.
+	literalSink := &lower.LiteralProbeSink{}
+	pkg, err := runToIR(literalSink, nil)
 	if err != nil {
 		return err
+	}
+
+	// Pass 2 (conditional, warm): if the first pass left unresolved
+	// literals AND we have a live build dir to reconfigure, run a
+	// second cmake configure against the SAME build dir injecting a
+	// file(GENERATE) literal-probe hook, read the resolved bytes
+	// back, and re-lift with them. Skipped when nothing was
+	// unresolved (the common case → zero overhead), when the
+	// operator opted out (--two-pass-genex=false), or in the offline
+	// --reply-dir / --cmake-build-dir paths (no live build dir).
+	if a.TwoPassGenex && hostBuildDir != "" && literalSink.Len() > 0 {
+		reqs := literalSink.Requests()
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: %d unresolved genex literal(s) after pass 1; running warm second configure pass to resolve them.\n", len(reqs))
+		if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
+			SourceRoot:         a.SourceRoot,
+			BuildDir:           hostBuildDir,
+			PrefixDir:          a.PrefixDir,
+			ToolchainCMakeFile: a.ToolchainCMakeFile,
+			BuildType:          a.BuildType,
+			BuildTypes:         a.BuildTypes,
+			// Inject ONLY the literal-probe hook. No trace, no
+			// structural probe, no dump-vars — those already ran in
+			// pass 1, and adding them (or any cache var) would
+			// disturb the warm cache. Reusing hostBuildDir keeps the
+			// try_compile / find_package results cached, so this pass
+			// costs a small fraction of the first configure.
+			LiteralProbes: reqs,
+			Stdout:        os.Stderr,
+			Stderr:        os.Stderr,
+		}); cfgErr != nil {
+			// A failed second pass is non-fatal: fall back to pass 1's
+			// result (the unresolved literals stay dropped, exactly as
+			// they would without the two-pass feature). Surface the
+			// degradation so it isn't invisible.
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure pass failed (%v); keeping pass-1 result with %d literal(s) unresolved.\n", cfgErr, len(reqs))
+		} else if resolutions, readErr := cmakerun.ReadLiteralProbe(hostBuildDir); readErr != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); keeping pass-1 result.\n", readErr)
+		} else if len(resolutions) > 0 {
+			pkg2, err2 := runToIR(nil, resolutions)
+			if err2 != nil {
+				return err2
+			}
+			pkg = pkg2
+		}
 	}
 	// Always materialize the rejections report when its path is
 	// set so consumers (CI gates, downstream scripts) can rely on
