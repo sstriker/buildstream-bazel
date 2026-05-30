@@ -95,11 +95,21 @@ type executeProcessOut struct {
 // Each try_compile-v1 / try_run-v1 / find_package-v1 event whose
 // payload binds a result variable shows up; the value is the
 // exitCode-derived "1"/"0" for try_compile / try_run, or the
-// resolved found-package metadata for find_package.
+// resolved found-package outcome for find_package.
 //
-// Phase 4 of the generator-parity uplift: extends the dump-vars
-// rescue to also cover probes whose results land in cmake's cache
-// via Check_* modules rather than directly in user variables.
+// try_compile / try_run record the result variable directly
+// (BuildResult.Variable / RunResult.Variable). find_package-v1
+// doesn't carry an explicit result-variable field — cmake's
+// documented contract is that `find_package(<Pkg> ...)` sets
+// `<Pkg>_FOUND` to a truthy / falsey value. We reconstruct that
+// variable name from Found.Package and project the resolution as
+// cmake's canonical boolean ("1" found / "0" not found), so a
+// probe whose OUTPUT_VARIABLE is bound to a `<Pkg>_FOUND` outcome
+// is rescued the same way a try_compile-keyed probe is.
+//
+// Phase 4 of the generator-parity uplift extended the dump-vars
+// rescue to cover probes whose results land in cmake's cache via
+// Check_* modules; Phase 2 adds the find_package leg here.
 func configureLogVars(events []fileapi.Event) map[string]string {
 	if len(events) == 0 {
 		return nil
@@ -120,6 +130,24 @@ func configureLogVars(events []fileapi.Event) map[string]string {
 					out[e.RunResult.Variable] = "1"
 				} else {
 					out[e.RunResult.Variable] = "0"
+				}
+			}
+		case "find_package-v1":
+			// find_package(<Pkg>) sets `<Pkg>_FOUND`. The event's
+			// Found payload carries the resolved package name and
+			// the boolean outcome; bind `<Pkg>_FOUND` to cmake's
+			// canonical "1"/"0" so a probe whose OUTPUT_VARIABLE is
+			// that variable rescues. We require Found.Package so the
+			// synthesised variable name is real; events that recorded
+			// no package name (or the cmake 4.3 find-v1 scalar shape,
+			// which carries a path rather than a package) contribute
+			// nothing here.
+			if e.Found != nil && e.Found.Package != "" {
+				v := e.Found.Package + "_FOUND"
+				if e.Found.IsFound {
+					out[v] = "1"
+				} else {
+					out[v] = "0"
 				}
 			}
 		}
