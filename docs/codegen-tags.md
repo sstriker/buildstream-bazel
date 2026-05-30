@@ -21,7 +21,9 @@ Applied to the `genrule` that the converter emits.
 | `cmake-codegen-execute-process-op=<op>` | execute_process-derived cmake -E call carries the op name (`touch` / `copy` / `copy_if_different` / `configure_file`) so audits can split lifted ops without re-parsing the cmd. | append-only |
 | `cmake-codegen-configure-file` | configure_file-derived genrule (either lifted or legacy bytes-embedded). | append-only |
 | `cmake-codegen-file-generate` | file(GENERATE)-derived genrule (either lifted or legacy bytes-embedded). Distinguishes from configure_file via the driver=file_generate facet on the same rule. | append-only |
-| `cmake-codegen-file-generate-genex` | file(GENERATE) call with a `$<...>` generator expression in INPUT / CONTENT — the lift short-circuited to the legacy bytes-embedded shape because configurefile.Substitute doesn't evaluate genex. Mutually exclusive with cmake-codegen-lifted on the same rule. Future genex-evaluation work (see ROADMAP "Generator-expression evaluation in lifted genrules") targets exactly this set. **Note:** cmake also allows generator expressions in `OUTPUT` (and `CONDITION`); the trace records the literal `$<...>` so the lifter can't map it back to the on-disk filename without a genex evaluator. v1 drops these calls entirely (no genrule emitted, no tag — there's nothing to anchor); the same Later roadmap bullet covers the path forward. | append-only |
+| `cmake-codegen-genex-resolved` | file(GENERATE) call carrying a `$<...>` generator expression that the converter **resolved** — either via the (a) Go-side `internal/genexeval` evaluator (cmd wire `--genex-context=`) or the (b) structured-base64 capture (cmd wire `--genex-values=`). Rendered output is no longer content-load-bearing in srckey; cmake-configure-file re-evaluates at Bazel time. Phase 3 of the generator-parity uplift collapsed the former four-way split (`cmake-codegen-file-generate-genex{,-lifted,-evaluated,-cross-package}`) into this one positive tag for resolved genexes; the (a)-vs-(b) distinction now lives only in the cmd wire, not the tag set. Co-occurs with `cmake-codegen-lifted`. | append-only |
+| `cmake-codegen-genex-unresolved` | file(GENERATE) call with a `$<...>` the lift could NOT resolve — short-circuited to the legacy bytes-embedded shape because neither the (a) evaluator nor the (b) capture could anchor the value. Mutually exclusive with `cmake-codegen-lifted` and `cmake-codegen-genex-resolved` on the same rule; the rendered output stays content-load-bearing in srckey. Audits hunting conversions not yet at genex parity key on this. **Note:** cmake also allows generator expressions in `OUTPUT` (and `CONDITION`); the trace records the literal `$<...>` so the lifter can't map it back to the on-disk filename without a genex evaluator. v1 drops these calls entirely (no genrule emitted, no tag — there's nothing to anchor). | append-only |
+| `cmake-codegen-genex-cross-package` | file(GENERATE) whose body references a cross-package `$<TARGET_FILE:Pkg::tgt>` the converter could neither resolve same-package nor through the imports manifest. The emitted genrule is a **refusal stub** that fails at bazel-build time on purpose (soundness gate) rather than baking wrong bytes. Not a resolution — kept distinct from `-resolved`. | append-only |
 | `cmake-codegen-lifted` | Genrule emits via a Bazel-time tool (`//tools:cmake-configure-file`) reading a values dict + a template (srcs entry for INPUT form, or `--content-base64` inline blob for CONTENT form). The template body — not the rendered output — drives the cmd, so editing the template invalidates the genrule through Bazel's source graph rather than through convert-element-cmake rerun. Applied by the configure_file, file(GENERATE), and cmake -E configure_file lifters. | append-only |
 | `cmake-codegen-tool-from-target` | The driver tool is itself a target inside this element (typical of generator binaries built earlier in the same project). Useful for build-graph layering checks. | append-only |
 | `cmake-codegen-source-only` | Output is consumed only as a `srcs`/`hdrs` entry of a downstream cc_library/cc_binary — i.e. the codegen exists purely to feed the compile graph. | append-only |
@@ -62,9 +64,13 @@ bazel query 'attr("tags", "cmake-codegen-cmake-e", //...)'
 # Lifted-shape codegen (BUILD.bazel content decoupled from rendered output).
 bazel query 'attr("tags", "cmake-codegen-lifted", //...)'
 
-# file(GENERATE) calls that fell back to legacy because of a generator
-# expression — the future genex-evaluation work targets exactly this set.
-bazel query 'attr("tags", "cmake-codegen-file-generate-genex", //...)'
+# file(GENERATE) calls that fell back to legacy because a generator
+# expression couldn't be resolved — remaining genex-parity work targets this set.
+bazel query 'attr("tags", "cmake-codegen-genex-unresolved", //...)'
+
+# file(GENERATE) calls whose generator expression the converter resolved
+# (via the Go-side evaluator or the structured-base64 capture).
+bazel query 'attr("tags", "cmake-codegen-genex-resolved", //...)'
 ```
 
 A wrapper at `tools/audit/list-codegen.sh` exposes these query shapes
@@ -76,5 +82,11 @@ codegen rules grouped by driver tool).
 - Tag names listed above are stable and append-only after this document
   is published.
 - New facets become new tags; existing tags don't change meaning.
+- One-time exception (Phase 3, generator-parity uplift): the four
+  `cmake-codegen-file-generate-genex{,-lifted,-evaluated,-cross-package}`
+  tags were renamed/collapsed into `cmake-codegen-genex-resolved`,
+  `cmake-codegen-genex-unresolved`, and `cmake-codegen-genex-cross-package`.
+  The meaning is preserved (resolved/unresolved/refusal); the (a)-vs-(b)
+  resolution-path facet was dropped because no consumer keyed on it.
 - The audit script's flag surface is the same: removed flags get
   preserved as no-ops with a deprecation log line for one minor version.

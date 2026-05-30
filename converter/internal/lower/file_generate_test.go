@@ -166,7 +166,7 @@ func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 // TestRecoverFileGenerate_GenexFallsBackToLegacy asserts that
 // a template containing $<...> short-circuits to legacy
 // (rendered bytes embedded in cmd) and gets the explicit
-// cmake-codegen-file-generate-genex audit tag. The cmake-
+// cmake-codegen-genex-unresolved audit tag. The cmake-
 // codegen-lifted tag must NOT appear on the same genrule.
 func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 	template := "tag=$<CONFIG:Release>;ver=@VERSION@\n"
@@ -189,7 +189,7 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 	if hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("genex-bearing template should NOT carry cmake-codegen-lifted; got %v", g.Tags)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("genex audit tag missing: %v", g.Tags)
 	}
 	if !strings.Contains(g.GenruleCmd, "base64 -d") {
@@ -205,7 +205,7 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 // the lifted shape; the cmd carries --genex-values=<sidecar>
 // alongside the existing --values=<sidecar>, and the audit
 // tag set carries BOTH cmake-codegen-lifted AND
-// cmake-codegen-file-generate-genex-lifted so the audit can
+// cmake-codegen-genex-resolved so the audit can
 // distinguish "lifted via the (b) capture" from "lifted via
 // plain non-genex emit". The rendered bytes do NOT appear in
 // the cmd (the (b) shape's whole point: rendered output is
@@ -230,13 +230,13 @@ func TestRecoverFileGenerate_GenexLiftedViaStructuredBase64(t *testing.T) {
 	g := cc.Genrules[0]
 	for _, want := range []string{
 		"cmake-codegen-lifted",
-		"cmake-codegen-file-generate-genex-lifted",
+		"cmake-codegen-genex-resolved",
 	} {
 		if !hasTag(g.Tags, want) {
 			t.Errorf("missing tag %q in %v", want, g.Tags)
 		}
 	}
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("(b)-lifted shape should NOT carry the legacy-fallback genex tag; got %v", g.Tags)
 	}
 	if len(g.Srcs) != 1 || g.Srcs[0] != "src/g.in" {
@@ -326,7 +326,7 @@ func extractGenexValuesFromCmd(t *testing.T, cmd string) (map[string]string, boo
 // value contains the next static anchor's bytes verbatim, so
 // the lockstep walker mis-aligns and extraction returns an
 // error. The lifter must fall back to the legacy bytes-
-// embedded shape with cmake-codegen-file-generate-genex
+// embedded shape with cmake-codegen-genex-unresolved
 // (NOT the -lifted variant), so the audit signal stays
 // honest.
 func TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy(t *testing.T) {
@@ -353,10 +353,10 @@ func TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy(t *testing.
 	if hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("extraction failure should fall back to legacy; got lifted tag in %v", g.Tags)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("legacy fallback after extraction failure must carry the genex audit tag; got %v", g.Tags)
 	}
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
+	if hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("extraction-failure fallback must NOT carry the lifted-genex tag; got %v", g.Tags)
 	}
 }
@@ -398,19 +398,18 @@ func TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator(t *testing.T) {
 	g := cc.Genrules[0]
 	for _, want := range []string{
 		"cmake-codegen-lifted",
-		"cmake-codegen-file-generate-genex-evaluated",
+		"cmake-codegen-genex-resolved",
 	} {
 		if !hasTag(g.Tags, want) {
 			t.Errorf("missing tag %q in %v", want, g.Tags)
 		}
 	}
-	for _, unwanted := range []string{
-		"cmake-codegen-file-generate-genex",        // legacy fallback
-		"cmake-codegen-file-generate-genex-lifted", // (b)-shape only
-	} {
-		if hasTag(g.Tags, unwanted) {
-			t.Errorf("unexpected tag %q in %v", unwanted, g.Tags)
-		}
+	// Post Phase-3 tag collapse the (a) and (b) shapes share the
+	// single cmake-codegen-genex-resolved tag; the (a)-vs-(b)
+	// distinction is no longer a tag-level fact, so we assert it
+	// via the cmd (--genex-context= is the (a) evaluator wire).
+	if hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
+		t.Errorf("unexpected legacy-fallback tag in %v", g.Tags)
 	}
 	if !strings.Contains(g.GenruleCmd, "--genex-context=") {
 		t.Errorf("cmd should pass --genex-context=; got %q", g.GenruleCmd)
@@ -521,11 +520,19 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
-		t.Errorf("unsupported $<TARGET_OBJECTS:> should NOT yield (a) tag; got %v", g.Tags)
+	// Post Phase-3 collapse the (a) evaluator and (b) capture
+	// share cmake-codegen-genex-resolved; the (a)-refused-but-(b)-
+	// succeeded shape is verified via the cmd wire below
+	// (--genex-values= is the (b) capture, --genex-context= the
+	// (a) evaluator).
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
+		t.Errorf("expected (b) capture to resolve the genex; got %v", g.Tags)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
-		t.Errorf("expected (b) fallback tag in %v", g.Tags)
+	if strings.Contains(g.GenruleCmd, "--genex-context=") {
+		t.Errorf("(a) evaluator should have refused $<TARGET_OBJECTS:> with empty Objects; got %q", g.GenruleCmd)
+	}
+	if !strings.Contains(g.GenruleCmd, "--genex-values=") {
+		t.Errorf("expected (b) capture wire --genex-values=; got %q", g.GenruleCmd)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("(b) fallback should still carry cmake-codegen-lifted; got %v", g.Tags)
@@ -554,11 +561,18 @@ func TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty(t *testing.
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
-		t.Errorf("empty cmakeVars should NOT yield (a) tag; got %v", g.Tags)
+	// Post Phase-3 collapse, (a) and (b) share the single
+	// cmake-codegen-genex-resolved tag. The "(a) refused, (b)
+	// succeeded" shape shows in the cmd wire: (b) uses
+	// --genex-values=, (a) uses --genex-context=.
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
+		t.Errorf("expected (b) capture to resolve the genex; got %v", g.Tags)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") {
-		t.Errorf("expected (b) fallback tag in %v", g.Tags)
+	if strings.Contains(g.GenruleCmd, "--genex-context=") {
+		t.Errorf("empty cmakeVars should make (a) refuse; got %q", g.GenruleCmd)
+	}
+	if !strings.Contains(g.GenruleCmd, "--genex-values=") {
+		t.Errorf("expected (b) capture wire --genex-values=; got %q", g.GenruleCmd)
 	}
 }
 
@@ -689,7 +703,7 @@ func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted tag missing: %v", g.Tags)
 	}
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("resolved INPUT-arg genex should NOT carry the legacy-fallback tag; got %v", g.Tags)
 	}
 }
@@ -698,7 +712,7 @@ func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
 // covers the fallthrough: $<TARGET_FILE:foo> in INPUT can't be
 // resolved by the (a) evaluator, so the lifter retains the
 // pre-evaluator behaviour — legacy fallback with the
-// cmake-codegen-file-generate-genex audit tag.
+// cmake-codegen-genex-unresolved audit tag.
 func TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy(t *testing.T) {
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", "x\n", "b.h", []byte("x\n"))
 	calls := []shadow.FileGenerateCall{{
@@ -719,7 +733,7 @@ func TestRecoverFileGenerate_InputArgGenexUnsupportedFallsBackToLegacy(t *testin
 	if hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("unresolved INPUT-arg genex should NOT lift; got %v", g.Tags)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("expected legacy-fallback tag; got %v", g.Tags)
 	}
 }
@@ -747,7 +761,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetProperty(t *testing.T) {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	rendEnc := base64.StdEncoding.EncodeToString(rendered)
@@ -786,7 +800,7 @@ func TestRecoverFileGenerate_GenexEvaluatedPrunesTargetsWhenUnused(t *testing.T)
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
@@ -845,7 +859,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFile(t *testing.T) {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	// cmd must carry the --target-file flag for foo.
@@ -897,7 +911,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFileVariants(t *testing.T) 
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	// Exactly one --target-file flag for foo (not one per op form).
@@ -982,7 +996,7 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	// cmd must carry the --target-objects flag for objlib with the
@@ -1257,7 +1271,7 @@ func TestRecoverFileGenerate_SkipsCollisionWithOtherLifter(t *testing.T) {
 // path itself (resolved at generate-time) and the trace keeps
 // it literal. The lifter can't find the on-disk template, but
 // must still tag the legacy fallback with
-// cmake-codegen-file-generate-genex so the audit signal
+// cmake-codegen-genex-unresolved so the audit signal
 // matches the body-level genex case.
 func TestRecoverFileGenerate_InputArgGenexTagsLegacy(t *testing.T) {
 	rendered := []byte("v=1\n")
@@ -1283,7 +1297,7 @@ func TestRecoverFileGenerate_InputArgGenexTagsLegacy(t *testing.T) {
 	if hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("INPUT-arg genex must NOT carry cmake-codegen-lifted; got %v", g.Tags)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("INPUT-arg genex must carry the genex audit tag; got %v", g.Tags)
 	}
 }
@@ -1351,7 +1365,7 @@ func TestHasGenex(t *testing.T) {
 // must refuse the lift entirely. The genrule still emits (so
 // the consumer-attribution pass finds the output) but its cmd
 // is a `false; echo <diagnostic>` exit-1 stub and the audit
-// tag set carries cmake-codegen-file-generate-genex-cross-package.
+// tag set carries cmake-codegen-genex-cross-package.
 //
 // This is the fix for a latent soundness bug: pre-gate, the
 // lift would refuse via (a) and fall through to (b), which
@@ -1378,15 +1392,14 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_Refused(t *testing.T) {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-cross-package") {
 		t.Errorf("cross-package refusal tag missing: %v", g.Tags)
 	}
 	// The lift-success facets must NOT appear — this isn't a
 	// successful lift, it's a refusal stub.
 	for _, banned := range []string{
 		"cmake-codegen-lifted",
-		"cmake-codegen-file-generate-genex-lifted",
-		"cmake-codegen-file-generate-genex-evaluated",
+		"cmake-codegen-genex-resolved",
 	} {
 		if hasTag(g.Tags, banned) {
 			t.Errorf("refusal stub should NOT carry %q; got %v", banned, g.Tags)
@@ -1434,7 +1447,7 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_VariantOps(t *testing.T) {
 				t.Fatalf("recover: %v", err)
 			}
 			g := cc.Genrules[0]
-			if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+			if !hasTag(g.Tags, "cmake-codegen-genex-cross-package") {
 				t.Errorf("%s: cross-package refusal tag missing: %v", op, g.Tags)
 			}
 		})
@@ -1483,7 +1496,7 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable(t *testing.T) {
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+	if hasTag(g.Tags, "cmake-codegen-genex-cross-package") {
 		t.Errorf("soundness gate should NOT fire when imports manifest resolves Foo::bar; got tags %v", g.Tags)
 	}
 	// Without PR 2's resolution wiring, the lift still falls
@@ -1493,8 +1506,8 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_Resolvable(t *testing.T) {
 	// pins that the SOUNDNESS GATE quiets correctly when the
 	// resolver knows the target; the wrong-bytes-via-(b) leak
 	// for resolvable cases is what PR 2 closes.
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-lifted") &&
-		!hasTag(g.Tags, "cmake-codegen-file-generate-genex") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") &&
+		!hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("expected (b) or legacy genex tag in fallback; got %v", g.Tags)
 	}
 }
@@ -1793,12 +1806,12 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 	g := cc.Genrules[0]
 	// PR 2: the (a) lift fires — the byte-equal check matches
 	// because FileLocation came from the manifest's LinkPaths.
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	// The refusal-stub tag must NOT appear — the resolved lift
 	// path explicitly handles this case.
-	if hasTag(g.Tags, "cmake-codegen-file-generate-genex-cross-package") {
+	if hasTag(g.Tags, "cmake-codegen-genex-cross-package") {
 		t.Errorf("refusal-stub tag should NOT fire for manifest-resolved: %v", g.Tags)
 	}
 	// cmd carries the manifest-resolved label, NOT `:Foo::bar`.
@@ -1863,7 +1876,7 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage(t *
 		t.Fatalf("recover: %v", err)
 	}
 	g := cc.Genrules[0]
-	if !hasTag(g.Tags, "cmake-codegen-file-generate-genex-evaluated") {
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
 	if !strings.Contains(g.GenruleCmd, `--target-file=foo="$(location :foo)"`) {

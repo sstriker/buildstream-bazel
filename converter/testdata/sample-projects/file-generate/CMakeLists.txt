@@ -27,7 +27,7 @@ file(GENERATE
 # 3. CONTENT form with a generator expression: $<CONFIG>
 #    resolves at generate-time. Lifter's hasGenex short-circuit
 #    routes this to the legacy bytes-embedded shape and tags it
-#    cmake-codegen-file-generate-genex so the audit can find
+#    cmake-codegen-genex-unresolved so the audit can find
 #    the lift refusal.
 file(GENERATE
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/config_tag.h
