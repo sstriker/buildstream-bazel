@@ -11,6 +11,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -305,6 +306,145 @@ func TestToIR_NoMissingTagWhenAllSourcesPresent(t *testing.T) {
 	tgt := pkg.Targets[0]
 	if contains(tgt.Tags, "cmake-elided-missing-source") {
 		t.Errorf("Tags = %v, did not expect cmake-elided-missing-source", tgt.Tags)
+	}
+}
+
+// TestToIR_RefusesBinaryWhenAllSourcesElided covers the
+// all-sources-elided refusal: an EXECUTABLE whose only compiled
+// source is a build-dir-rooted file with no recovered generator edge
+// (no trace → OutToGenrule empty, so the re-wire can't fire) would
+// otherwise emit a `cc_binary` with `srcs = []`, which Bazel rejects
+// at build time. Rather than ship that silently-broken rule, the
+// lowerer refuses: a typed *failure.Error in strict mode, a recorded
+// rejection + skipped target in diagnostic mode.
+func TestToIR_RefusesBinaryWhenAllSourcesElided(t *testing.T) {
+	mk := func() *fileapi.Reply {
+		return &fileapi.Reply{
+			Codemodel: fileapi.Codemodel{
+				Paths: fileapi.CodemodelPaths{
+					Source: "/src",
+					Build:  "/tmp/convert-element-build-abc123",
+				},
+				Configurations: []fileapi.Configuration{{
+					Name:    "Release",
+					Targets: []fileapi.ConfigTargetRef{{Name: "compile_x", Id: "compile_x::@1"}},
+				}},
+			},
+			Targets: map[string]fileapi.Target{
+				"compile_x::@1": {
+					Name: "compile_x",
+					Type: "EXECUTABLE",
+					Sources: []fileapi.TargetSource{
+						// Only source: a build-dir generated file with
+						// no recovered generator edge.
+						{Path: "/tmp/convert-element-build-abc123/compile_x.cpp", CompileGroupIndex: 0},
+					},
+					CompileGroups: []fileapi.CompileGroup{{
+						Language:      "CXX",
+						SourceIndexes: []int{0},
+					}},
+				},
+			},
+		}
+	}
+
+	// Strict mode: typed *failure.Error with the AllSourcesElided code.
+	if _, err := lower.ToIR(mk(), nil, lower.Options{HostSourceRoot: "/src"}); err == nil {
+		t.Fatalf("ToIR (strict) = nil error; want all-sources-elided refusal")
+	} else {
+		var fe *failure.Error
+		if !errors.As(err, &fe) {
+			t.Fatalf("err = %v (%T), want *failure.Error", err, err)
+		}
+		if fe.Code != failure.AllSourcesElided {
+			t.Errorf("err.Code = %q, want %q", fe.Code, failure.AllSourcesElided)
+		}
+	}
+
+	// Diagnostic mode: target skipped, rejection recorded.
+	rc := rejection.New()
+	pkg, err := lower.ToIR(mk(), nil, lower.Options{HostSourceRoot: "/src", Rejections: rc})
+	if err != nil {
+		t.Fatalf("ToIR (diagnostic) = %v; want collect-and-continue", err)
+	}
+	for _, tgt := range pkg.Targets {
+		if tgt.Name == "compile_x" {
+			t.Errorf("compile_x emitted despite all-sources-elided; Srcs=%v", tgt.Srcs)
+		}
+	}
+	found := false
+	for _, r := range rc.Items() {
+		if r.Code == failure.AllSourcesElided {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no all-sources-elided rejection recorded; got %+v", rc.Items())
+	}
+}
+
+// TestToIR_RewiresElidedBuildDirSourceToGeneratorEdge covers the
+// positive half of the all-sources-elided fix: a build-dir-rooted
+// compiled source that DOES match a recovered generator output (here
+// an execute_process `cmake -E touch` produces it; in the field it's
+// eigen's configure_file-generated compile_<snippet>.cpp) is wired
+// into srcs via that genrule edge instead of being elided. The
+// resulting cc_binary references the package-relative generated source
+// and is NOT refused, NOT tagged cmake-elided-build-dir-source.
+func TestToIR_RewiresElidedBuildDirSourceToGeneratorEdge(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src", Build: "/build"},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "compile_x", Id: "compile_x::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"compile_x::@1": {
+				Name: "compile_x",
+				Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{
+					// Only source: a build-dir file produced by the
+					// recovered generator below.
+					{Path: "/build/compile_x.cpp", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "CXX",
+					SourceIndexes: []int{0},
+				}},
+			},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["COMMAND","cmake","-E","touch","/build/compile_x.cpp"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		BuildDir:       "/build",
+		TraceRaw:       traceRaw,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	var bin *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "compile_x" {
+			bin = &pkg.Targets[i]
+			break
+		}
+	}
+	if bin == nil {
+		t.Fatalf("compile_x not in pkg.Targets (should be re-wired, not refused)")
+	}
+	if !contains(bin.Srcs, "compile_x.cpp") {
+		t.Errorf("Srcs = %v, want the generated source wired in as compile_x.cpp", bin.Srcs)
+	}
+	if contains(bin.Tags, "cmake-elided-build-dir-source") {
+		t.Errorf("Tags = %v, source was elided instead of re-wired", bin.Tags)
+	}
+	if !contains(bin.Tags, "has-cmake-codegen") {
+		t.Errorf("Tags = %v, want has-cmake-codegen (consumes a recovered generator output)", bin.Tags)
 	}
 }
 

@@ -64,6 +64,25 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
+		// Synthesized genrules (configure_file / file(GENERATE) /
+		// execute_process / custom-command recovery) carry no
+		// SubPackages entry, so targetDir defaults them to root. But
+		// a genrule's `outs` must live in the genrule's OWN Bazel
+		// package — a root genrule declaring outs =
+		// ["doc/snippets/x.cpp"] collides with the doc/snippets
+		// package ("output file conflicts with another package").
+		// Place the genrule in the package that owns its (first)
+		// output so the out is package-local and a consumer in that
+		// package resolves the bare-name srcs/hdrs reference (e.g.
+		// eigen's compile_<snippet> cc_binaries, whose generated
+		// source is produced by a configure_file genrule). Only the
+		// local regime re-relativizes outs (rewriteTarget below);
+		// the SourceKey regime keeps element-root-relative paths.
+		if local && t.Kind == ir.KindGenrule && len(t.GenruleOuts) > 0 {
+			if od := plan.deepestPkg(t.GenruleOuts[0]); od != "" {
+				dir = od
+			}
+		}
 		ensure(dir)
 		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
 		// A filegroup / pkg_files whose only srcs were bare packaged
@@ -344,6 +363,31 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	}
 	// (SourceKey regime: srcs/hdrs are left element-root-relative;
 	// EmitWithOptions prefixes them with @src_<key>//: unchanged.)
+
+	// Genrule outs are element-root-relative on the IR target; once
+	// the genrule is placed in its output's package (see EmitSplit's
+	// partition loop), re-relativize each out to that package dir so
+	// Bazel sees a package-local output (outs = ["x.cpp"], not
+	// ["doc/snippets/x.cpp"]). The genrule cmd references outputs via
+	// $@ / $(location), which stay correct regardless of the literal
+	// out path, so this is purely a label re-rooting. Only the local
+	// regime; the SourceKey regime keeps element-root-relative paths.
+	if local && t.Kind == ir.KindGenrule && len(t.GenruleOuts) > 0 {
+		outs := make([]string, 0, len(t.GenruleOuts))
+		for _, o := range t.GenruleOuts {
+			if rel, ok := relUnder(dir, o); ok {
+				outs = append(outs, rel)
+			} else {
+				// Out sits outside this genrule's package (a
+				// multi-output genrule spanning packages — rare and
+				// not expressible as-is in Bazel). Leave it
+				// element-root-relative so the breakage is visible
+				// rather than silently mis-rooted.
+				outs = append(outs, o)
+			}
+		}
+		rt.GenruleOuts = outs
+	}
 
 	// Rewrite intra-element deps (":x") to cross-package labels.
 	rt.Deps = rewriteDeps(t.Deps, plan, headerDeps)

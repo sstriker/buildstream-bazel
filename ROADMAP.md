@@ -49,8 +49,16 @@ transition cleanly.
   regimes are supported for the header-library idiom; mutually
   exclusive with `--out-ir-json` (the multi-platform fold path);
   install-derived / synthesized targets (filegroups, `cc_import`,
-  `cmake_config_bundle`, aliases, genrules, interface libs)
-  stay in the root package. Wired end-to-end through the
+  `cmake_config_bundle`, aliases, interface libs) stay in the root
+  package. Synthesized **genrules** are the exception: a genrule
+  whose recovered output lands in a sub-package is placed in that
+  package (with `outs` re-relativized package-local), because Bazel
+  requires a genrule's `outs` to live in the genrule's own package —
+  a root genrule declaring `outs = ["sub/x.cpp"]` collides with the
+  `sub/` package. This is what lets a generated compiled source
+  (e.g. eigen's `configure_file`-produced `compile_<snippet>.cpp`)
+  feed a cc_binary that moved to its own sub-package. Wired
+  end-to-end through the
   orchestrator: `cmd/write-a --split-packages` converts the
   element with the `cmake_split_convert` custom rule
   (`rules_buildstream_bazel/rules/cmake_packages.bzl`), whose
