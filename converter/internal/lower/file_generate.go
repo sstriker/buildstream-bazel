@@ -799,15 +799,16 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 // cleanly and routes the lift to (b) / legacy.
 func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe, decoded *shadow.Decoded, imports *manifest.Resolver) map[string]genexeval.TargetInfo {
 	if r == nil || len(r.Targets) == 0 {
-		// Imports-only case: even with no local codemodel,
-		// imported targets could still drive an (a)-shape lift
-		// (template that only references `$<TARGET_FILE:Foo::bar>`
-		// with no project-local targets). Build the imports
-		// dict in that case too.
-		if imports == nil || imports.Empty() {
-			return nil
-		}
+		// No local codemodel. Two sources can still populate the
+		// dict: imported targets (a template referencing
+		// `$<TARGET_FILE:Foo::bar>` with no project-local targets)
+		// and INTERFACE_LIBRARY probes (the codemodel omits
+		// INTERFACE libraries from targets[], so an interface-only
+		// project lands here even though its probe captured the
+		// resolved INTERFACE_* aggregates lowerInterfaceLibraries
+		// needs).
 		out := map[string]genexeval.TargetInfo{}
+		foldInterfaceLibraryProbes(out, probes)
 		foldImportedTargets(out, imports)
 		if len(out) == 0 {
 			return nil
@@ -877,16 +878,40 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 			}
 		}
 	}
-	// Fold probe-captured INTERFACE_* aggregates and OBJECT_LIBRARY
-	// Objects list into the matching codemodel entry. Probes for
-	// targets not in the codemodel are skipped — codemodel is
-	// ground truth for "what targets exist". Non-empty probe
-	// values override the convert-time aggregate above (cmake's
-	// own evaluator is the source of truth when it ran).
+	foldInterfaceLibraryProbes(out, probes)
+	// PR 2: fold imports manifest entries — each export's
+	// namespaced cmake target name surfaces as an Imported=true
+	// TargetInfo with FileLocation derived from the
+	// IMPORTED_LOCATION-captured LinkPaths. Local-codemodel
+	// entries win on name collision (the manifest is a fallback
+	// for cmake names not in the codemodel).
+	foldImportedTargets(out, imports)
+	return out
+}
+
+// foldInterfaceLibraryProbes folds probe-captured INTERFACE_*
+// aggregates and the OBJECT_LIBRARY Objects list into out. Non-empty
+// probe values override any convert-time aggregate already in the
+// entry (cmake's own generation-time evaluator is the source of
+// truth when it ran).
+//
+// Probes for targets not already in out are normally skipped — the
+// codemodel is ground truth for "what targets exist" — with ONE
+// exception: INTERFACE_LIBRARY targets, which cmake's File API
+// deliberately omits from targets[] (they have no link step to
+// model). Their probe is the only structured record of the resolved
+// INTERFACE_* aggregates, and lowerInterfaceLibraries (which
+// synthesizes their cc_library from the trace) needs it to reconcile
+// genex-bearing INTERFACE_COMPILE_DEFINITIONS. So add a fresh entry
+// for an INTERFACE_LIBRARY probe rather than dropping it.
+func foldInterfaceLibraryProbes(out map[string]genexeval.TargetInfo, probes []cmakerun.GenexProbe) {
 	for _, p := range probes {
 		ti, ok := out[p.Name]
 		if !ok {
-			continue
+			if p.Type != "INTERFACE_LIBRARY" {
+				continue
+			}
+			ti = genexeval.TargetInfo{Type: p.Type}
 		}
 		ti.Objects = p.Objects
 		if v, ok := p.Interface["INCLUDE_DIRECTORIES"]; ok {
@@ -906,14 +931,6 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 		}
 		out[p.Name] = ti
 	}
-	// PR 2: fold imports manifest entries — each export's
-	// namespaced cmake target name surfaces as an Imported=true
-	// TargetInfo with FileLocation derived from the
-	// IMPORTED_LOCATION-captured LinkPaths. Local-codemodel
-	// entries win on name collision (the manifest is a fallback
-	// for cmake names not in the codemodel).
-	foldImportedTargets(out, imports)
-	return out
 }
 
 // foldImportedTargets adds an Imported=true TargetInfo per

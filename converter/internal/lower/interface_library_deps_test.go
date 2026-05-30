@@ -30,7 +30,7 @@ func TestLowerInterfaceLibraries_RoutesInterfaceLinkLibsAsDeps(t *testing.T) {
 			},
 		},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 2 {
 		t.Fatalf("want 2 interface libs (absl_check + log_internal_check_impl); got %d", len(got))
 	}
@@ -61,7 +61,7 @@ func TestLowerInterfaceLibraries_NamespacedLibWithoutRecordedAliasSanitizes(t *t
 			},
 		},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 1 {
 		t.Fatalf("want 1; got %d", len(got))
 	}
@@ -91,7 +91,7 @@ func TestLowerInterfaceLibraries_DropsLinkFlagAndGenexTokens(t *testing.T) {
 			},
 		},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 1 {
 		t.Fatalf("want 1; got %d", len(got))
 	}
@@ -117,7 +117,7 @@ func TestLowerInterfaceLibraries_PrivateScopeNotRouted(t *testing.T) {
 			},
 		},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 1 {
 		t.Fatalf("want 1; got %d", len(got))
 	}

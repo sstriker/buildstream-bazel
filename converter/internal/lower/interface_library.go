@@ -54,6 +54,7 @@ func lowerInterfaceLibraries(
 	decoded *shadow.Decoded,
 	knownTargets map[string]bool,
 	hostSrc, cmakeSrc, workspaceRoot string,
+	genexTargets map[string]genexeval.TargetInfo,
 	cc *codegenContext,
 ) []ir.Target {
 	if decoded == nil || len(decoded.AddLibraries) == 0 {
@@ -89,6 +90,13 @@ func lowerInterfaceLibraries(
 	}
 
 	definesByTarget := map[string][]string{}
+	// Targets where at least one INTERFACE/PUBLIC define carried a
+	// generator expression the Go-side evaluator couldn't crack.
+	// For these we prefer cmake's own resolved
+	// INTERFACE_COMPILE_DEFINITIONS (captured by the structural
+	// genex probe) over the partial trace-evaluated list — see the
+	// reconciliation pass below.
+	unresolvedGenexTargets := map[string]bool{}
 	for _, tc := range decoded.CompileDefinitions {
 		for _, grp := range tc.Groups {
 			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
@@ -123,19 +131,42 @@ func lowerInterfaceLibraries(
 				if def == "" {
 					continue
 				}
-				// If we couldn't evaluate and the value still
-				// contains unresolved `$<`, drop it — emitting
-				// a literal `$<...>` define into BUILD.bazel
-				// would surface to the compiler as garbage. An
-				// operator who needs the define can re-add it
-				// by hand (or open an issue to extend the
-				// evaluator).
+				// Still unresolved: note the target so the
+				// structural-probe reconciliation below can
+				// substitute cmake's own resolved define list.
+				// Without that, dropping silently loses a define
+				// that genuinely applies under the configured
+				// build (e.g. `$<$<CONFIG:Release>:NDEBUG_EXTRA>`)
+				// — intent loss the probe lets us avoid.
 				if strings.Contains(def, "$<") {
+					unresolvedGenexTargets[tc.Target] = true
 					continue
 				}
 				definesByTarget[tc.Target] = append(definesByTarget[tc.Target], def)
 			}
 		}
+	}
+
+	// Structural-probe reconciliation: for every target whose
+	// INTERFACE defines had an unresolved genex, replace the
+	// partial trace-evaluated list with cmake's own resolved
+	// INTERFACE_COMPILE_DEFINITIONS (the structural genex probe
+	// captured it at generation time, where cmake's evaluator
+	// already answered every `$<…>`). This turns "drop the define
+	// we couldn't evaluate" into "emit the define cmake resolved"
+	// — capturing intent instead of losing it. Empty probe data
+	// (no --probe-genex, cmake < 3.24) leaves behavior unchanged:
+	// the partial list stands and unresolved entries stay dropped.
+	for tgt := range unresolvedGenexTargets {
+		ti, ok := genexTargets[tgt]
+		if !ok || ti.InterfaceCompileDefinitions == "" {
+			continue
+		}
+		resolved := splitResolvedDefines(ti.InterfaceCompileDefinitions)
+		if len(resolved) == 0 {
+			continue
+		}
+		definesByTarget[tgt] = resolved
 	}
 
 	// Build per-target Deps from INTERFACE/PUBLIC arms of
@@ -378,6 +409,27 @@ func dedupSlice(vs []string) []string {
 			seen[v] = true
 			out = append(out, v)
 		}
+	}
+	return out
+}
+
+// splitResolvedDefines splits cmake's resolved
+// INTERFACE_COMPILE_DEFINITIONS string (the structural probe
+// captures it as a `;`-joined list, cmake's native list
+// separator) into individual define entries, trimming whitespace
+// and dropping empties. A define that still carries an unresolved
+// `$<…>` is skipped defensively — the probe resolves everything in
+// practice, but a literal genex must never reach the compiler as a
+// define.
+func splitResolvedDefines(joined string) []string {
+	parts := strings.Split(joined, ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.Contains(p, "$<") {
+			continue
+		}
+		out = append(out, p)
 	}
 	return out
 }
