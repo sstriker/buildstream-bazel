@@ -127,6 +127,20 @@ scripts/run-survey.sh myproj=/path/to/cmake/root
 # Survey llvm correctly (the subdir, not the monorepo root).
 make fetch-llvm
 scripts/run-survey.sh llvm=$LLVM_DIR/llvm
+
+# Multi-config across ALL of each project's declared configuration types.
+# SURVEY_BUILD_TYPES=auto runs a throwaway Ninja Multi-Config configure
+# per project, reads back its CMAKE_CONFIGURATION_TYPES, and surveys with
+# exactly those — so no config's intent is dropped. A fixed subset like
+# "Release,Debug" would silently drop RelWithDebInfo/MinSizeRel/custom
+# configs; an explicit comma list is still accepted as an escape hatch.
+SURVEY_BUILD_TYPES=auto scripts/run-survey.sh
+
+# Split-packages: one BUILD.bazel per directory (the gazelle model) —
+# the shape the converter ultimately targets, for gazelle-compliant
+# output. Composes with SURVEY_BUILD_TYPES.
+SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
+SURVEY_BUILD_TYPES=auto SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
 ```
 
 Each project lands `rejections.json` + `bazel-idiom.json` under the out

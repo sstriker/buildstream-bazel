@@ -34,6 +34,24 @@ set -eu
 out_dir="${SURVEY_OUT_DIR:-/tmp/survey-out}"
 projects=""
 
+# SURVEY_BUILD_TYPES controls multi-config surveying via --build-types
+# (Ninja Multi-Config). Three forms:
+#   - unset / empty  -> single-config Release path (default).
+#   - "auto"         -> detect EACH project's own declared
+#                       CMAKE_CONFIGURATION_TYPES and survey with exactly
+#                       those, so no config's intent is dropped (a fixed
+#                       subset like "Release,Debug" would silently drop
+#                       RelWithDebInfo / MinSizeRel / custom configs).
+#   - explicit list  -> e.g. "Release,Debug" forces that subset (escape
+#                       hatch; not faithful if the project declares more).
+build_types="${SURVEY_BUILD_TYPES:-}"
+
+# SURVEY_SPLIT_PACKAGES=1 surveys with --split-packages (one BUILD per
+# directory, the gazelle model) -- the shape the converter ultimately
+# targets, so split-mode findings are the most representative. Empty
+# (default) emits the single monolithic BUILD.bazel.
+split_packages="${SURVEY_SPLIT_PACKAGES:-}"
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --out-dir) out_dir="$2"; shift 2 ;;
@@ -65,6 +83,21 @@ else
     echo "note: $converter not built; using 'go run' (slower). Run 'make converter' to speed up." >&2
     run_converter() { ( cd "$repo_root" && go run ./converter/cmd/convert-element-cmake "$@" ); }
 fi
+
+# detect_configs <src> — echo the project's declared configuration types
+# as a comma-separated list, for SURVEY_BUILD_TYPES=auto. Runs a throwaway
+# Ninja Multi-Config configure WITHOUT forcing CMAKE_CONFIGURATION_TYPES,
+# so cmake records whatever the project declares (or its default
+# Debug;Release;MinSizeRel;RelWithDebInfo when the project doesn't set it),
+# and reads it back from CMakeCache.txt. Echoes nothing on failure.
+detect_configs() {
+    _dc_bld="$(mktemp -d)"
+    if cmake -S "$1" -B "$_dc_bld" -G "Ninja Multi-Config" >/dev/null 2>&1; then
+        _dc_line="$(grep '^CMAKE_CONFIGURATION_TYPES' "$_dc_bld/CMakeCache.txt" 2>/dev/null | head -1)"
+        printf '%s' "${_dc_line#*=}" | tr ';' ','
+    fi
+    rm -rf "$_dc_bld"
+}
 
 mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
@@ -100,9 +133,33 @@ for entry in $projects; do
     # --diagnostics implies --ignore-rejections-for-diagnostics; the run
     # continues past refusals. A non-zero exit here means cmake configure
     # itself failed (itself a survey datapoint), not a refusal.
+    #
+    # Optional multi-config (--build-types) + split-packages modes, per
+    # SURVEY_BUILD_TYPES / SURVEY_SPLIT_PACKAGES. "auto" detects this
+    # project's own declared configuration types so ALL of them are
+    # surveyed (faithful — no config's intent dropped).
+    bt_args=""
+    if [ "$build_types" = "auto" ]; then
+        bt_detected="$(detect_configs "$src")"
+        if [ -n "$bt_detected" ]; then
+            bt_args="--build-types=$bt_detected"
+            echo "  $name: configuration types: $bt_detected" >&2
+        else
+            echo "  $name: config detection failed; single-config" >&2
+        fi
+    elif [ -n "$build_types" ]; then
+        bt_args="--build-types=$build_types"
+    fi
+    sp_args=""
+    if [ -n "$split_packages" ]; then
+        sp_args="--split-packages"
+    fi
+
     if ! run_converter \
         --source-root "$src" \
         --diagnostics \
+        $bt_args \
+        $sp_args \
         --rejections-report "$rej" \
         --audit-bazel-idiom-report "$idiom" \
         --out-build "$proj_out/BUILD.bazel" \
