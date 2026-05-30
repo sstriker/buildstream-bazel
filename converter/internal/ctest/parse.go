@@ -139,15 +139,104 @@ func (r *Registry) handleAddTest(args []string) {
 	}
 	name := args[0]
 	cmd := args[1]
+	// Under the Ninja Multi-Config generator, cmake wraps each test
+	// in per-configuration branches and emits one add_test per
+	// configuration plus a NOT_AVAILABLE fallback:
+	//
+	//   if(CTEST_CONFIGURATION_TYPE MATCHES "Debug")
+	//     add_test(BVH_1 ".../Debug/BVH_1")
+	//   elseif(... MATCHES "Release")
+	//     add_test(BVH_1 ".../Release/BVH_1")
+	//   else()
+	//     add_test(BVH_1 NOT_AVAILABLE)
+	//   endif()
+	//
+	// scanCalls flattens the if/elseif/else, so the same test name
+	// reaches us once per configuration. At runtime ctest evaluates
+	// exactly one branch by the active config, so the test is a
+	// SINGLE test — emitting one cc_test per branch produces
+	// duplicate Bazel target names and a hard convert failure. A
+	// test NAME is globally unique within a CTest project, so a
+	// repeat is always the multi-config branch shape (or a
+	// hand-edited dup): keep the first real registration and ignore
+	// the rest. The NOT_AVAILABLE branch is cmake's "this config has
+	// no runnable binary" sentinel, not a real command — never a
+	// cc_test.
+	if cmd == "NOT_AVAILABLE" {
+		return
+	}
+	newArgs := append([]string(nil), args[2:]...)
+	if prev, dup := r.byName[name]; dup {
+		// A repeated name is the multi-config branch shape: the same
+		// logical test re-emitted once per configuration. We keep the
+		// first registration and drop the rest. The branches normally
+		// differ only in cmake's per-config artifact PATH (the COMMAND,
+		// which Bazel manages itself) — but a test's ARGS can in
+		// principle vary per config (e.g. an arg embedding $<CONFIG> or
+		// a per-config value). Collapsing such a test to one cc_test
+		// would silently lose that divergence, so detect it: compare the
+		// arg tails path-normalized, and if they materially differ, tag
+		// the kept test so the lift surfaces the gap instead of dropping
+		// it silently. (COMMAND-path-only differences carry no Bazel
+		// intent and are not flagged.)
+		if !argsEquivalent(r.tests[prev].Args, newArgs) {
+			r.tests[prev].Tags = appendUniq(r.tests[prev].Tags,
+				"cmake-test-per-config-args-diverge")
+		}
+		return
+	}
 	target := strings.TrimSuffix(filepath.Base(cmd), ".exe")
 	t := Test{
 		Name:   name,
 		Target: target,
-		Args:   append([]string(nil), args[2:]...),
+		Args:   newArgs,
 	}
 	r.byName[name] = len(r.tests)
 	r.byTarget[target] = append(r.byTarget[target], len(r.tests))
 	r.tests = append(r.tests, t)
+}
+
+// argsEquivalent reports whether two add_test argument tails carry the
+// same Bazel-relevant intent. Per-config CTestTestfile branches differ
+// in cmake's artifact output directory (Debug/ vs Release/ vs
+// RelWithDebInfo/ vs MinSizeRel/), which is meaningless to Bazel, so
+// those tokens are normalized away before comparison. Anything else
+// differing means the test genuinely varies per configuration.
+func argsEquivalent(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if normalizeConfigToken(a[i]) != normalizeConfigToken(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// configNames are the standard CMAKE_CONFIGURATION_TYPES values that
+// vary between a multi-config CTestTestfile's per-configuration
+// branches. Both forms must normalize away before comparison:
+//   - a /<config>/ artifact path segment (e.g. .../Debug/foo), and
+//   - a bare config token, which appears when the test is a cmake
+//     rebuild invocation: `cmake --build . --target T --config Debug`
+//     (Eigen's ei_add_failtest shape). Both are cmake's own per-config
+//     plumbing, not Bazel-relevant test intent.
+var configNames = []string{"Debug", "Release", "RelWithDebInfo", "MinSizeRel"}
+
+// normalizeConfigToken collapses a single add_test arg token's
+// per-config variance: a /<config>/ path segment, or a token that is
+// exactly a config name (optionally double-quoted, as CTestTestfile
+// emits). Anything left differing after this is genuine per-config
+// test intent.
+func normalizeConfigToken(s string) string {
+	for _, c := range configNames {
+		s = strings.ReplaceAll(s, "/"+c+"/", "/<CONFIG>/")
+		if s == c || s == `"`+c+`"` {
+			return "<CONFIG>"
+		}
+	}
+	return s
 }
 
 func (r *Registry) handleSetProperties(args []string) {

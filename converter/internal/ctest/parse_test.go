@@ -168,10 +168,15 @@ func TestParse_ExeSuffixStripped(t *testing.T) {
 	}
 }
 
-func TestParse_DuplicateAddTestNamesLastWins(t *testing.T) {
-	// CMake itself rejects duplicate names at configure time, but if
-	// one slips through (e.g. a hand-edited testfile) the parser
-	// shouldn't crash — last write wins for set_tests_properties.
+func TestParse_DuplicateAddTestNamesFirstWins(t *testing.T) {
+	// A test NAME is globally unique within a CTest project, so a
+	// repeated add_test(<name> ...) is always the Ninja Multi-Config
+	// per-configuration branch shape (one add_test per config for the
+	// same logical test) — or a hand-edited dup. Either way it's a
+	// SINGLE test: the parser keeps the first registration and ignores
+	// the rest, so the lower stage emits exactly one cc_test instead
+	// of N colliding ones. set_tests_properties applies to the kept
+	// (first) entry.
 	dir := t.TempDir()
 	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
 		`add_test([=[dup]=] "/tmp/x/a")`+"\n"+
@@ -182,16 +187,115 @@ func TestParse_DuplicateAddTestNamesLastWins(t *testing.T) {
 		t.Fatalf("Parse: %v", err)
 	}
 	all := r.All()
-	if len(all) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(all))
+	if len(all) != 1 {
+		t.Fatalf("expected 1 deduped entry, got %d", len(all))
 	}
-	// byName index points to the second registration; only it gets the
-	// TIMEOUT property.
-	if all[1].Timeout != 5*time.Second {
-		t.Errorf("second dup should have TIMEOUT 5s, got %v", all[1].Timeout)
+	// The kept (first) entry carries the first command and the property.
+	if all[0].Target != "a" {
+		t.Errorf("kept entry should be the first registration (target a), got %q", all[0].Target)
 	}
-	if all[0].Timeout != 0 {
-		t.Errorf("first dup should be untouched, got %v", all[0].Timeout)
+	if all[0].Timeout != 5*time.Second {
+		t.Errorf("kept entry should have TIMEOUT 5s, got %v", all[0].Timeout)
+	}
+}
+
+func TestParse_MultiConfigBranchesCollapseToOneTest(t *testing.T) {
+	// The exact Ninja Multi-Config CTestTestfile shape: per-config
+	// add_test branches plus a NOT_AVAILABLE fallback, flattened by
+	// the scanner. Must yield ONE test (not three), and the
+	// NOT_AVAILABLE sentinel must never become a test.
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`if(CTEST_CONFIGURATION_TYPE MATCHES "Debug")`+"\n"+
+			`  add_test(BVH_1 "/b/Debug/BVH_1")`+"\n"+
+			`  set_tests_properties(BVH_1 PROPERTIES LABELS "Unsupported")`+"\n"+
+			`elseif(CTEST_CONFIGURATION_TYPE MATCHES "Release")`+"\n"+
+			`  add_test(BVH_1 "/b/Release/BVH_1")`+"\n"+
+			`  set_tests_properties(BVH_1 PROPERTIES LABELS "Unsupported")`+"\n"+
+			`else()`+"\n"+
+			`  add_test(BVH_1 NOT_AVAILABLE)`+"\n"+
+			`endif()`+"\n")
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := r.Lookup("BVH_1")
+	if len(got) != 1 {
+		t.Fatalf("multi-config branches must collapse to ONE test; got %d: %+v", len(got), got)
+	}
+	if got[0].Name != "BVH_1" || got[0].Target != "BVH_1" {
+		t.Errorf("unexpected collapsed test: %+v", got[0])
+	}
+	// All() must also be 1 — the NOT_AVAILABLE branch produced no test.
+	if n := len(r.All()); n != 1 {
+		t.Fatalf("expected 1 total test, got %d", n)
+	}
+}
+
+func TestParse_MultiConfigPathOnlyDifferenceNotFlagged(t *testing.T) {
+	// The common case: per-config branches differ ONLY in the artifact
+	// path (Debug/ vs Release/). That carries no Bazel intent, so the
+	// collapsed test must NOT get the divergence tag.
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`if(CTEST_CONFIGURATION_TYPE MATCHES "Debug")`+"\n"+
+			`  add_test(t1 "/b/Debug/t1" --flag x)`+"\n"+
+			`elseif(CTEST_CONFIGURATION_TYPE MATCHES "Release")`+"\n"+
+			`  add_test(t1 "/b/Release/t1" --flag x)`+"\n"+
+			`endif()`+"\n")
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := r.Lookup("t1")
+	if len(got) != 1 {
+		t.Fatalf("want 1 collapsed test, got %d", len(got))
+	}
+	if contains(got[0].Tags, "cmake-test-per-config-args-diverge") {
+		t.Errorf("path-only difference must NOT flag divergence; tags=%v", got[0].Tags)
+	}
+}
+
+func TestParse_MultiConfigArgDivergenceFlagged(t *testing.T) {
+	// A test whose ARGS genuinely differ per config (beyond the
+	// artifact path) must surface the divergence tag rather than
+	// silently dropping the non-first config's args.
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`if(CTEST_CONFIGURATION_TYPE MATCHES "Debug")`+"\n"+
+			`  add_test(t1 "/b/Debug/t1" --mode debug)`+"\n"+
+			`elseif(CTEST_CONFIGURATION_TYPE MATCHES "Release")`+"\n"+
+			`  add_test(t1 "/b/Release/t1" --mode release)`+"\n"+
+			`endif()`+"\n")
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := r.Lookup("t1")
+	if len(got) != 1 {
+		t.Fatalf("want 1 collapsed test, got %d", len(got))
+	}
+	if !contains(got[0].Tags, "cmake-test-per-config-args-diverge") {
+		t.Errorf("per-config arg divergence must be flagged; tags=%v", got[0].Tags)
+	}
+	// First registration's args are the ones kept.
+	if !equalSlice(got[0].Args, []string{"--mode", "debug"}) {
+		t.Errorf("kept args should be the first config's; got %v", got[0].Args)
+	}
+}
+
+func TestParse_NotAvailableOnlyYieldsNoTest(t *testing.T) {
+	// A test that is NOT_AVAILABLE in every branch (no runnable binary
+	// for any configuration) must not surface as a cc_test.
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`add_test(ghost NOT_AVAILABLE)`+"\n")
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if n := len(r.All()); n != 0 {
+		t.Fatalf("NOT_AVAILABLE-only test must yield no entries; got %d", n)
 	}
 }
 
