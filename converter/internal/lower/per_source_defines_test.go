@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -267,6 +269,208 @@ func TestTagLanguageOverrides_TagsAffectedTargets(t *testing.T) {
 	tagLanguageOverrides(pkg, byPath)
 	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-language-override=CXX") {
 		t.Errorf("Tags: %v should include language-override", pkg.Targets[0].Tags)
+	}
+}
+
+// TestCollectGeneratedSources covers the GENERATED property
+// (Phase 1 slice 1c): a source marked GENERATED TRUE surfaces in the
+// set; non-truthy / absent values don't.
+func TestCollectGeneratedSources(t *testing.T) {
+	calls := []shadowSourceFilePropertiesCallStub{
+		{
+			Files: []string{"gen.c", "gen.h"},
+			Properties: []shadowSourceFilePropertyStub{
+				{Name: "GENERATED", Value: "TRUE"},
+			},
+		},
+		{
+			Files: []string{"plain.c"},
+			Properties: []shadowSourceFilePropertyStub{
+				{Name: "GENERATED", Value: "FALSE"},
+			},
+		},
+	}
+	got := collectGeneratedSources(toShadowCalls(calls))
+	if !got["gen.c"] || !got["gen.h"] {
+		t.Errorf("GENERATED sources should include gen.c, gen.h; got %v", got)
+	}
+	if got["plain.c"] {
+		t.Errorf("GENERATED FALSE should not be in the set; got %v", got)
+	}
+}
+
+// TestCollectPerSourceCompileDefinitions covers the
+// COMPILE_DEFINITIONS decode: semicolon-split, empties dropped.
+func TestCollectPerSourceCompileDefinitions(t *testing.T) {
+	calls := []shadowSourceFilePropertiesCallStub{
+		{
+			Files: []string{"foo.c"},
+			Properties: []shadowSourceFilePropertyStub{
+				{Name: "COMPILE_DEFINITIONS", Value: "FOO=1;BAR;"},
+			},
+		},
+	}
+	got := collectPerSourceCompileDefinitions(toShadowCalls(calls))
+	want := []string{"FOO=1", "BAR"}
+	if len(got["foo.c"]) != len(want) {
+		t.Fatalf("foo.c defines: got %v want %v", got["foo.c"], want)
+	}
+	for i, w := range want {
+		if got["foo.c"][i] != w {
+			t.Errorf("foo.c defines[%d]: got %q want %q", i, got["foo.c"][i], w)
+		}
+	}
+}
+
+// TestApplyPerSourceCompileDefinitions_UniformFolds covers the
+// tractable case: every source carries the same COMPILE_DEFINITIONS,
+// so they fold into the target's defines.
+func TestApplyPerSourceCompileDefinitions_UniformFolds(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:    "foo",
+			Kind:    ir.KindCCLibrary,
+			Srcs:    []string{"a.c", "b.c"},
+			Defines: []string{"PRE"},
+		}},
+	}
+	byPath := map[string][]string{
+		"a.c": {"SHARED=1"},
+		"b.c": {"SHARED=1"},
+	}
+	applyPerSourceCompileDefinitions(pkg, byPath)
+	if !stringSliceContains(pkg.Targets[0].Defines, "SHARED=1") {
+		t.Errorf("uniform define should fold into Defines; got %v", pkg.Targets[0].Defines)
+	}
+	if !stringSliceContains(pkg.Targets[0].Defines, "PRE") {
+		t.Errorf("pre-existing define should be preserved; got %v", pkg.Targets[0].Defines)
+	}
+	for _, tag := range pkg.Targets[0].Tags {
+		if tag == "cmake-per-source-compile-definitions-divergent" {
+			t.Errorf("uniform case should NOT tag divergent; tags %v", pkg.Targets[0].Tags)
+		}
+	}
+}
+
+// TestApplyPerSourceCompileDefinitions_SingleSource covers the common
+// trivial case: one source with COMPILE_DEFINITIONS folds in.
+func TestApplyPerSourceCompileDefinitions_SingleSource(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"only.c"},
+		}},
+	}
+	byPath := map[string][]string{"only.c": {"ONLY=2"}}
+	applyPerSourceCompileDefinitions(pkg, byPath)
+	if !stringSliceContains(pkg.Targets[0].Defines, "ONLY=2") {
+		t.Errorf("single-source define should fold; got %v", pkg.Targets[0].Defines)
+	}
+}
+
+// TestApplyPerSourceCompileDefinitions_DivergentTags covers the
+// limitation: when sources within one target carry DIFFERENT defines,
+// a single cc_library can't express it — we tag instead of folding
+// (which would over-define the other sources).
+func TestApplyPerSourceCompileDefinitions_DivergentTags(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"a.c", "b.c"},
+		}},
+	}
+	byPath := map[string][]string{
+		"a.c": {"AONLY=1"},
+		"b.c": {"BONLY=1"},
+	}
+	applyPerSourceCompileDefinitions(pkg, byPath)
+	if stringSliceContains(pkg.Targets[0].Defines, "AONLY=1") ||
+		stringSliceContains(pkg.Targets[0].Defines, "BONLY=1") {
+		t.Errorf("divergent defines must NOT fold; got %v", pkg.Targets[0].Defines)
+	}
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-per-source-compile-definitions-divergent") {
+		t.Errorf("divergent case should tag; tags %v", pkg.Targets[0].Tags)
+	}
+}
+
+// TestApplyPerSourceCompileDefinitions_PartialIsDivergent covers the
+// case where one source carries a define and another doesn't — the
+// undefined source is an empty set, so folding would leak the define
+// to it. Treated as divergent (tag, no fold).
+func TestApplyPerSourceCompileDefinitions_PartialIsDivergent(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "foo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"a.c", "b.c"},
+		}},
+	}
+	byPath := map[string][]string{"a.c": {"AONLY=1"}}
+	applyPerSourceCompileDefinitions(pkg, byPath)
+	if stringSliceContains(pkg.Targets[0].Defines, "AONLY=1") {
+		t.Errorf("partial define must NOT fold (would leak to b.c); got %v", pkg.Targets[0].Defines)
+	}
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-per-source-compile-definitions-divergent") {
+		t.Errorf("partial case should tag divergent; tags %v", pkg.Targets[0].Tags)
+	}
+}
+
+// TestLowerTarget_GeneratedSourceNotElided covers Phase 1 slice 1c's
+// GENERATED handling: a source the trace marked GENERATED that isn't
+// on disk must NOT be elided as a missing source (it's expected to be
+// produced by a generator); the surviving cc_library keeps it in srcs
+// and the target is tagged cmake-declared-generated-source. A
+// genuinely-missing (non-GENERATED) source is still elided.
+func TestLowerTarget_GeneratedSourceNotElided(t *testing.T) {
+	hostSrc := t.TempDir()
+	// Only real.c exists on disk; gen.c (GENERATED) and gone.c
+	// (plain) are absent.
+	if err := os.WriteFile(filepath.Join(hostSrc, "real.c"), []byte("int r(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tgt := &fileapi.Target{
+		Name: "foo",
+		Type: "STATIC_LIBRARY",
+		Sources: []fileapi.TargetSource{
+			{Path: "real.c", CompileGroupIndex: 0},
+			{Path: "gen.c", CompileGroupIndex: 0},
+			{Path: "gone.c", CompileGroupIndex: 0},
+		},
+		CompileGroups: []fileapi.CompileGroup{{
+			Language:      "C",
+			SourceIndexes: []int{0, 1, 2},
+		}},
+	}
+	cc := &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}}
+	generated := map[string]bool{"gen.c": true}
+
+	irt, err := lowerTarget(tgt, hostSrc, "/build", hostSrc, "", true, nil, cc,
+		map[string]string{}, map[string]bool{}, nil, nil,
+		map[string]bool{}, nil, nil, nil, nil, nil,
+		map[string]string{}, map[string][]string{}, nil, "", generated, nil)
+	if err != nil {
+		t.Fatalf("lowerTarget: %v", err)
+	}
+	if irt == nil {
+		t.Fatal("lowerTarget returned nil")
+	}
+	if !stringSliceContains(irt.Srcs, "real.c") {
+		t.Errorf("real.c should be in srcs; got %v", irt.Srcs)
+	}
+	if !stringSliceContains(irt.Srcs, "gen.c") {
+		t.Errorf("GENERATED gen.c should be kept (not elided); got %v", irt.Srcs)
+	}
+	if stringSliceContains(irt.Srcs, "gone.c") {
+		t.Errorf("plain missing gone.c should be elided; got %v", irt.Srcs)
+	}
+	if !stringSliceContains(irt.Tags, "cmake-declared-generated-source") {
+		t.Errorf("expected cmake-declared-generated-source tag; got %v", irt.Tags)
+	}
+	if !stringSliceContains(irt.Tags, "cmake-elided-missing-source") {
+		t.Errorf("expected cmake-elided-missing-source tag for gone.c; got %v", irt.Tags)
 	}
 }
 

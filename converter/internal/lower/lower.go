@@ -428,6 +428,24 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// override per-source language; the gap needs source rename
 	// or per-source library splits.
 	var languageOverrideBySrc map[string]string
+	// generatedSources holds slash-form source paths the trace
+	// marked set_source_files_properties(... GENERATED TRUE). The
+	// codemodel already flags add_custom_command / configure_file
+	// outputs as IsGenerated, but a project can also mark a source
+	// GENERATED manually — for those the lowerTarget missing-source
+	// elision must NOT drop the file as "missing" (it's expected to
+	// be produced by a generator, not present in the source tree).
+	// Phase 1 slice 1c.
+	var generatedSources map[string]bool
+	// perSourceDefinesBySrc maps source paths to the list of
+	// COMPILE_DEFINITIONS the trace recorded via
+	// set_source_files_properties(... COMPILE_DEFINITIONS ...). The
+	// post-pass folds these into the consuming target's `defines`
+	// when they're uniform across the target's sources (or there's
+	// a single source); genuinely per-file divergent defines aren't
+	// expressible in a single cc_library and get a diagnostic tag
+	// instead. Phase 1 slice 1c.
+	var perSourceDefinesBySrc map[string][]string
 
 	// Phase 1 task 1 keyword recovery runs FIRST — backtrace is
 	// strictly more authoritative than trace in every case where
@@ -526,6 +544,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		headerOnlySources = collectHeaderOnlySources(decoded.SourceFileProperties)
 		objectDependsBySrc = collectObjectDepends(decoded.SourceFileProperties)
 		languageOverrideBySrc = collectLanguageOverrides(decoded.SourceFileProperties)
+		generatedSources = collectGeneratedSources(decoded.SourceFileProperties)
+		perSourceDefinesBySrc = collectPerSourceCompileDefinitions(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
 			platformConditionalSrcs = map[string]map[string]string{}
 			for _, pcs := range decoded.PlatformConditionalSources {
@@ -852,7 +872,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot, opts.Rejections)
+		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot, generatedSources, opts.Rejections)
 		if err != nil {
 			return nil, err
 		}
@@ -958,6 +978,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// cc_library can't directly override per-source language;
 	// tag signals the gap.
 	tagLanguageOverrides(pkg, languageOverrideBySrc)
+	// Per-source COMPILE_DEFINITIONS post-pass (Phase 1 slice 1c):
+	// fold set_source_files_properties(... COMPILE_DEFINITIONS ...)
+	// into the consuming target's defines when uniform across its
+	// sources; tag (don't silently fold) when they diverge per-file,
+	// since a single cc_library can't carry per-source defines.
+	applyPerSourceCompileDefinitions(pkg, perSourceDefinesBySrc)
 	// install(FILES)/install(DIRECTORY) → pkg_files() lowering
 	// (Phase 1 slice 1b of the generator-parity uplift). Appended
 	// last so the file-head targets stay grouped by family: cc rules
@@ -1076,7 +1102,7 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string, rejections *rejection.Collector) (*ir.Target, error) {
+func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string, generatedSources map[string]bool, rejections *rejection.Collector) (*ir.Target, error) {
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
@@ -1159,6 +1185,7 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	elidedBuildDirSrc := false
 	elidedMissingSrc := false
 	elidedCompilerArtifact := false
+	declaredGeneratedSrc := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -1482,6 +1509,23 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 				onDisk = filepath.Join(hostSrc, src.Path)
 			}
 			if _, statErr := os.Stat(onDisk); statErr != nil && errors.Is(statErr, fs.ErrNotExist) {
+				// GENERATED-marked sources (via
+				// set_source_files_properties(... GENERATED TRUE))
+				// are expected to be produced by a generator, not
+				// present in the source tree — don't elide them as
+				// "missing". Keep the source in srcs (it resolves to
+				// the generator's output edge in Bazel) and tag the
+				// target so the convert-time generated-input handling
+				// is auditable. Phase 1 slice 1c. The codemodel's own
+				// IsGenerated outputs are handled in the
+				// src.IsGenerated branch above; this catches sources
+				// the project marked GENERATED manually without the
+				// codemodel flagging them.
+				if generatedSources[src.Path] {
+					declaredGeneratedSrc = true
+					irt.Srcs = append(irt.Srcs, src.Path)
+					continue
+				}
 				elidedMissingSrc = true
 				continue
 			}
@@ -1499,6 +1543,15 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	}
 	if elidedCompilerArtifact {
 		irt.Tags = append(irt.Tags, "cmake-elided-compiler-artifact")
+	}
+	if declaredGeneratedSrc {
+		// A source marked GENERATED via set_source_files_properties
+		// that isn't on disk was kept (not elided) because a
+		// generator is expected to produce it. Tag so operators can
+		// audit which targets consume a manually-declared generated
+		// input — and so they can wire the producing genrule /
+		// configure_file edge if the converter didn't recover one.
+		irt.Tags = append(irt.Tags, "cmake-declared-generated-source")
 	}
 
 	// Build-dir-rooted includes (relative to the cmake build
@@ -3369,6 +3422,187 @@ func tagLanguageOverrides(pkg *ir.Package, byPath map[string]string) {
 			}
 		}
 	}
+}
+
+// collectGeneratedSources walks the decoded
+// set_source_files_properties calls and returns the set of source
+// paths declared with GENERATED=TRUE (cmake's truthy convention).
+// The codemodel already flags add_custom_command / configure_file
+// outputs as IsGenerated; this captures sources a project marked
+// GENERATED manually so the missing-source elision in lowerTarget
+// doesn't drop them as absent — they resolve to a generator's output
+// edge in Bazel rather than to a file in the source tree.
+//
+// Phase 1 slice 1c. Returns nil when no GENERATED property surfaces.
+func collectGeneratedSources(calls []shadow.SourceFilePropertiesCall) map[string]bool {
+	var out map[string]bool
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "GENERATED") {
+				continue
+			}
+			if !cmakeTruthy(prop.Value) {
+				continue
+			}
+			if out == nil {
+				out = map[string]bool{}
+			}
+			for _, f := range call.Files {
+				out[f] = true
+			}
+		}
+	}
+	return out
+}
+
+// collectPerSourceCompileDefinitions walks the decoded
+// set_source_files_properties calls and returns a map from source
+// path → list of COMPILE_DEFINITIONS declared for that source. cmake
+// stores the values as a semicolon-separated list (e.g.
+// "FOO=1;BAR"); we split on ";" and drop empties, preserving the
+// declared order within a single property and across multiple
+// declarations for the same source (additive, last-listed last).
+//
+// Phase 1 slice 1c. Returns nil when no COMPILE_DEFINITIONS surface.
+func collectPerSourceCompileDefinitions(calls []shadow.SourceFilePropertiesCall) map[string][]string {
+	var out map[string][]string
+	for _, call := range calls {
+		for _, prop := range call.Properties {
+			if !strings.EqualFold(prop.Name, "COMPILE_DEFINITIONS") {
+				continue
+			}
+			if prop.Value == "" {
+				continue
+			}
+			defs := strings.Split(prop.Value, ";")
+			for _, f := range call.Files {
+				for _, d := range defs {
+					if d == "" {
+						continue
+					}
+					if out == nil {
+						out = map[string][]string{}
+					}
+					out[f] = append(out[f], d)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// applyPerSourceCompileDefinitions folds per-source COMPILE_DEFINITIONS
+// (from set_source_files_properties(... COMPILE_DEFINITIONS ...)) into
+// the consuming target's defines where Bazel can express it. Bazel's
+// cc_library defines/copts are per-TARGET, not per-source; cmake's
+// per-source COMPILE_DEFINITIONS only maps cleanly when every
+// source-define in a target agrees:
+//
+//   - If the set of defines is identical across every one of the
+//     target's sources that carries the property (and any source
+//     that doesn't carry it is treated as carrying the empty set),
+//     fold the (uniform) defines into the target's Defines. The
+//     common single-source case (one .c with COMPILE_DEFINITIONS)
+//     falls here trivially.
+//   - If the defines genuinely DIFFER between sources within one
+//     target, a single cc_library can't represent that — Bazel would
+//     apply every define to every source. We do NOT silently fold
+//     (that would over-define the sources that didn't ask for it);
+//     instead we tag the target `cmake-per-source-compile-definitions-divergent`
+//     so the gap is auditable, and leave Defines untouched. The
+//     operator's fix is splitting the divergent sources into separate
+//     cc_library targets (the same remedy the per-source LANGUAGE and
+//     per-source-defines compile-group split already use). Documented
+//     in ROADMAP.md.
+//
+// No-op when byPath is empty.
+func applyPerSourceCompileDefinitions(pkg *ir.Package, byPath map[string][]string) {
+	if len(byPath) == 0 || pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		tgt := &pkg.Targets[i]
+		if tgt.Kind != ir.KindCCLibrary && tgt.Kind != ir.KindCCBinary &&
+			tgt.Kind != ir.KindCCInterface && tgt.Kind != ir.KindCCTest {
+			continue
+		}
+		// Gather the per-source define sets for sources this target
+		// actually compiles. A source with no entry contributes the
+		// empty set — which still participates in the uniformity test
+		// (a target with one defined source and one undefined source
+		// is divergent: the define would leak to the undefined one).
+		var defined [][]string // define-sets for sources that carry the property
+		anyUndefined := false
+		for _, src := range tgt.Srcs {
+			if defs, ok := byPath[src]; ok {
+				defined = append(defined, defs)
+			} else {
+				anyUndefined = true
+			}
+		}
+		if len(defined) == 0 {
+			continue
+		}
+		// Uniformity check: every defined source must carry the SAME
+		// set, and no source may be undefined (an undefined source is
+		// a different — empty — set).
+		uniform := !anyUndefined
+		if uniform {
+			first := sortedDedupStrings(defined[0])
+			for _, d := range defined[1:] {
+				if !sameDefineSet(first, sortedDedupStrings(d)) {
+					uniform = false
+					break
+				}
+			}
+		}
+		if !uniform {
+			tag := "cmake-per-source-compile-definitions-divergent"
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+			continue
+		}
+		// Uniform: fold the defines into the target's Defines,
+		// deduping against any already present (codemodel-derived).
+		for _, d := range defined[0] {
+			if !stringSliceContains(tgt.Defines, d) {
+				tgt.Defines = append(tgt.Defines, d)
+			}
+		}
+	}
+}
+
+// sortedDedupStrings returns a sorted, deduped copy of in. Small
+// helper for the COMPILE_DEFINITIONS uniformity comparison.
+func sortedDedupStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	cp := append([]string(nil), in...)
+	sort.Strings(cp)
+	out := cp[:1]
+	for _, x := range cp[1:] {
+		if x != out[len(out)-1] {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+// sameDefineSet reports whether the two already-sorted-and-deduped
+// define lists are identical — the uniformity test for per-source
+// COMPILE_DEFINITIONS folding.
+func sameDefineSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // collectHeaderOnlySources walks the decoded
