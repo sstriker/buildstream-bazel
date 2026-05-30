@@ -325,6 +325,29 @@ var headerExts = map[string]bool{
 	".inl": true,
 }
 
+// dedupeTargetRefsByID returns refs with repeated target ids
+// removed, preserving first-occurrence order. cmake's File API
+// occasionally lists the same target twice within one
+// configuration's targets[] (e.g. Eigen's eigen_blas_static under
+// Ninja Multi-Config); collapsing by the unique codemodel id keeps
+// the per-target walk idempotent without changing target order.
+// Allocates a fresh slice so the caller's value-copy reassignment
+// never mutates the shared codemodel backing array.
+func dedupeTargetRefsByID(refs []fileapi.ConfigTargetRef) []fileapi.ConfigTargetRef {
+	seen := make(map[string]bool, len(refs))
+	out := make([]fileapi.ConfigTargetRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.Id != "" {
+			if seen[ref.Id] {
+				continue
+			}
+			seen[ref.Id] = true
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
 // ToIR lowers a parsed reply into a Package. The optional ninja graph
 // enables genrule recovery for targets with isGenerated sources; pass nil to
 // disable (M1-style behavior — generated sources then trigger
@@ -350,6 +373,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 	}
 	cfg := r.Codemodel.Configurations[0]
+	// cmake's File API can list the same target twice in one
+	// configuration's targets[] — observed under Ninja Multi-Config
+	// for Eigen's eigen_blas_static (identical id AND jsonFile at
+	// adjacent indices 50/51). Walking the slice verbatim lowers the
+	// target twice, producing two ir.Targets with the same name,
+	// which the bazelconstraints duplicate-target-name check then
+	// rejects, hard-failing the entire convert. Dedupe by target id
+	// (the codemodel's unique key) so a repeated ref collapses to a
+	// single target. cfg is a value copy of the codemodel entry, so
+	// reassigning its Targets only affects this lowering pass.
+	cfg.Targets = dedupeTargetRefsByID(cfg.Targets)
 
 	// Pre-parse trace records once so lowerTarget can consult
 	// per-target maps without re-walking the trace bytes per
