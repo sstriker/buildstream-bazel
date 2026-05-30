@@ -161,8 +161,19 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	}
 
 	if g == nil {
+		// No ninja graph at all — the converter ran without a cmake
+		// build dir, so there's nothing to recover the producing
+		// command from. This is the common configure_file() symptom
+		// (#215): version / config headers (config.h, *pubconf.h,
+		// *_version.h) are configure-time outputs that only become
+		// recoverable once cmake has been configured and build.ninja
+		// captured. Name the fix in the message so the operator isn't
+		// left guessing why a "generated source" silently refused.
 		return "", "", failure.New(failure.UnsupportedCustomCommand,
-			"target references generated source %q but no build.ninja was provided to recover the producing custom command",
+			"target references generated source %q but no cmake build graph (build.ninja) was available to recover the producing custom command; "+
+				"generated sources such as configure_file() outputs (version / config headers) can only be lifted with a build graph — "+
+				"re-run convert-element-cmake with --source-root (configures cmake in a fresh build dir and captures build.ninja) "+
+				"or --cmake-build-dir (reuses an existing build dir's build.ninja)",
 			relOut)
 	}
 
