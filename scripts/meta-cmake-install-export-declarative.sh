@@ -50,10 +50,16 @@ work_dir="$(mktemp -d)"
 trap "rm -rf '$work_dir'" EXIT
 
 out_build="$work_dir/BUILD.bazel.out"
+out_exports="$work_dir/exports.json"
 
+# --bazel-package-path frames the synthesized cmake_config_bundle /
+# *_import labels absolutely so the resolved-lift manifest-synth (M3)
+# assertions below see cross-element-resolvable labels.
 "$bin_dir/convert-element-cmake" \
     --source-root "$fixture" \
     --out-build "$out_build" \
+    --out-exports "$out_exports" \
+    --bazel-package-path "elements/foopkg" \
     >"$work_dir/convert.stdout" 2>"$work_dir/convert.stderr" || {
     echo "FAIL: convert-element-cmake exited non-zero"
     sed 's/^/   stderr: /' "$work_dir/convert.stderr"
@@ -104,4 +110,32 @@ if ! grep -q 'cmake-codegen-install-export-import' "$out_build"; then
     fail "Phase 6 install-export-import tag missing on cc_import"
 fi
 
-echo "ok  meta-cmake-install-export-declarative: cc_import + cmake_config_bundle emitted from codemodel without install-tree fallback"
+exports_fail() {
+    echo "FAIL: $1"
+    echo "   --- generated exports.json ---"
+    sed 's/^/   /' "$out_exports"
+    exit 1
+}
+
+# Assert 6 (resolved-lift manifest-synth, M3): the exports.json carries
+# the absolute cmake_config_bundle filegroup label so a cross-element
+# find_package(<Pkg> CONFIG) consumer can resolve straight to the
+# producer's synthesized bundle.
+if ! grep -q '"cmake_config_bundle_label": "//elements/foopkg:cmake_config_bundle"' "$out_exports"; then
+    exports_fail "exports.json missing cmake_config_bundle_label = //elements/foopkg:cmake_config_bundle"
+fi
+
+# Assert 7: the exports.json carries the per-artifact <lib>_import
+# cc_import facade labels, mirroring the BUILD-shape cc_import targets
+# asserted above (foo_import, bar_import), absolutely framed.
+if ! grep -q '"cmake_import_labels"' "$out_exports"; then
+    exports_fail "exports.json missing cmake_import_labels list"
+fi
+if ! grep -q '"//elements/foopkg:foo_import"' "$out_exports"; then
+    exports_fail "exports.json cmake_import_labels missing //elements/foopkg:foo_import"
+fi
+if ! grep -q '"//elements/foopkg:bar_import"' "$out_exports"; then
+    exports_fail "exports.json cmake_import_labels missing //elements/foopkg:bar_import"
+fi
+
+echo "ok  meta-cmake-install-export-declarative: cc_import + cmake_config_bundle emitted from codemodel without install-tree fallback; exports.json carries resolved bundle + import labels"
