@@ -44,7 +44,7 @@ type fileGenerateOut struct {
 //
 // Generator expressions ($<...>) in the template short-circuit
 // to the legacy bytes-embedded shape with the
-// cmake-codegen-file-generate-genex tag — the verify-pass
+// cmake-codegen-genex-unresolved tag — the verify-pass
 // would fail anyway since configurefile.Substitute doesn't
 // evaluate genexes, but we keep the explicit short-circuit so
 // the audit signal distinguishes "lift skipped because of
@@ -244,7 +244,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// template path and we continue down the normal lift
 		// pipeline. UnsupportedError / empty Context routes
 		// to the legacy fallback with the
-		// cmake-codegen-file-generate-genex audit tag (same
+		// cmake-codegen-genex-unresolved audit tag (same
 		// exit as the pre-evaluator gate).
 		if hasGenex([]byte(call.Input)) {
 			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars, genexTargets))
@@ -300,7 +300,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	//      misalignment) route to step 3.
 	//
 	//   3. Legacy bytes-embedded with the
-	//      cmake-codegen-file-generate-genex audit tag —
+	//      cmake-codegen-genex-unresolved audit tag —
 	//      rendered output content-load-bearing in srckey, no
 	//      Bazel-time re-evaluation.
 	//
@@ -676,6 +676,33 @@ type fileGenerateTagSet struct {
 // cmake-codegen-file-generate); the facet flags append one
 // tag each when true. Sorted on return for byte-stable
 // BUILD.bazel output.
+//
+// Phase 3 genex-tag collapse (ROADMAP.md): the former four-way
+// split — cmake-codegen-file-generate-genex{,-lifted,-evaluated,
+// -cross-package} — folds to ONE positive tag,
+// cmake-codegen-genex-resolved, for any genex the converter
+// actually resolved (whether via the (a) Go-side evaluator, the
+// cmake probe that feeds it, or the (b) structured-base64
+// capture). Both the (a) and (b) shapes ship a Bazel-time-stable
+// genrule whose rendered bytes are no longer content-load-bearing
+// in srckey — the audit distinction between "resolved by the Go
+// evaluator" vs "resolved by static-chunk capture" carried no
+// downstream consumer, so collapsing them removes a tag
+// consumers had to OR together.
+//
+// Two facets stay distinct because they are NOT "resolved" and a
+// meaningful audit query still wants to find them:
+//
+//   - GenexFallback → cmake-codegen-genex-unresolved: the legacy
+//     bytes-embedded shape. The genex was NOT resolved; cmake's
+//     rendered output is baked into the cmd and stays
+//     content-load-bearing in srckey. Audits hunting for
+//     conversions that haven't reached genex parity key on this.
+//
+//   - GenexCrossPackage → cmake-codegen-genex-cross-package: the
+//     cross-package TARGET_FILE soundness refusal stub. The
+//     genrule fails at bazel-build time on purpose; this is a
+//     refusal, not a resolution, so it keeps its own tag.
 func fileGenerateTags(s fileGenerateTagSet) []string {
 	tags := []string{
 		"cmake-codegen",
@@ -686,16 +713,13 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 		tags = append(tags, "cmake-codegen-lifted")
 	}
 	if s.GenexFallback {
-		tags = append(tags, "cmake-codegen-file-generate-genex")
+		tags = append(tags, "cmake-codegen-genex-unresolved")
 	}
-	if s.GenexCaptured {
-		tags = append(tags, "cmake-codegen-file-generate-genex-lifted")
-	}
-	if s.GenexEvaluated {
-		tags = append(tags, "cmake-codegen-file-generate-genex-evaluated")
+	if s.GenexCaptured || s.GenexEvaluated {
+		tags = append(tags, "cmake-codegen-genex-resolved")
 	}
 	if s.GenexCrossPackage {
-		tags = append(tags, "cmake-codegen-file-generate-genex-cross-package")
+		tags = append(tags, "cmake-codegen-genex-cross-package")
 	}
 	sort.Strings(tags)
 	return tags

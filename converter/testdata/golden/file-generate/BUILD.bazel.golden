@@ -56,7 +56,7 @@ genrule(
         "cmake-codegen",
         "cmake-codegen-driver=file_generate",
         "cmake-codegen-file-generate",
-        "cmake-codegen-file-generate-genex-evaluated",
+        "cmake-codegen-genex-resolved",
         "cmake-codegen-lifted",
     ],
     tools = ["//tools:cmake-configure-file"],

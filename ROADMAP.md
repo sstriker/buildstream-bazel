@@ -150,25 +150,43 @@ transition cleanly.
     `select()` here would be dishonest about the data we have.
 
   - **Phase 3 — genex-probe TOP_LEVEL_INCLUDES extension.**
-    Generalize `dump-vars.cmake` into a probe-staging pass.
-    The lifter walks trace + codemodel for any `$<…>`
-    literal in a non-File-API site (file(GENERATE) CONTENT,
-    add_custom_command argv, install destinations,
-    target-property aggregates), then emits a per-literal
+    The probe-staging hook (`probe-genex.cmake`, injected via
+    `CMAKE_PROJECT_TOP_LEVEL_INCLUDES`) speculatively emits a
+    `file(GENERATE)` per cmake target resolving the
+    structurally-important genex shapes
+    (`$<TARGET_FILE*:t>`, `$<TARGET_OBJECTS:t>`,
+    `$<TARGET_PROPERTY:t,INTERFACE_*>`) at generation time;
+    `cmakerun.ReadGenexProbe` reads the resolved bytes back
+    and `lower/buildGenexTargets` folds them into the
+    `genexeval.TargetInfo` the (a) Go-side evaluator
+    consults. cmake is the oracle for those ops; the Go
+    evaluator's `UnsupportedError` on those is now the
+    no-probe-available fallback (offline / `--probe-genex=false`),
+    exactly as queued. **Shipped:** the per-target probe
+    feeds the lift end-to-end (live render gate
+    `scripts/meta-cmake-genex-probe.sh` proves
+    `$<TARGET_OBJECTS:obj>` in a `file(GENERATE)` CONTENT
+    body resolves via the probe rather than refusing), and
+    the audit tag set collapsed from
+    `cmake-codegen-file-generate-genex{,-evaluated,-lifted,
+    -cross-package}` to `cmake-codegen-genex-resolved`
+    (resolved), `cmake-codegen-genex-unresolved` (legacy
+    bytes-baked fallback), and `cmake-codegen-genex-cross-package`
+    (refusal stub) — see `docs/codegen-tags.md`. Also fixed
+    an empty-`$<CONFIG>` probe-read drop that silently lost
+    every per-target value for no-build-type configures.
+    **Not yet done:** the *generalized per-literal*
     `file(GENERATE OUTPUT cmake-to-bazel.genex.${hash}.txt
-    CONTENT "<literal>" [TARGET t])` deferred call and reads
-    the resolved bytes back into the lift Context. Retires
-    `internal/genexeval`'s `UnsupportedError` surface
-    (`TARGET_OBJECTS`, `INTERFACE_*` aggregation,
-    cross-package `TARGET_FILE` PR2, and the other
-    target-evaluator-dependent ops queued under `Later`)
-    by letting cmake's own evaluator answer. The existing
-    (a) Go-side evaluator becomes the offline-replay fast
-    path; the probe becomes the source of truth when a
-    fresh configure is available. The audit tag set
-    collapses from `cmake-codegen-file-generate-genex{,-
-    evaluated,-lifted,-cross-package}` to a single
-    `cmake-codegen-genex-resolved`.
+    CONTENT "<literal>" [TARGET t])` staging for arbitrary
+    `$<…>` literals beyond the fixed per-target property set
+    (e.g. `$<GENEX_EVAL:…>`, `$<COMPILE_LANGUAGE:…>`,
+    `$<TARGET_GENEX_EVAL:…>`, `$<INSTALL_INTERFACE:…>` in
+    add_custom_command argv / install destinations) — those
+    still surface `UnsupportedError`, since collecting the
+    literals needs a second configure (the literals aren't
+    known until the trace is parsed post-configure). The
+    `UnsupportedError` surface has shrunk toward — but not
+    to — gone.
 
   - **Phase 4 — build.ninja custom-command walk.** Promote
     `converter/internal/ninja/` from its current
@@ -294,8 +312,11 @@ transition cleanly.
   target-graph shape per `docs/research/cmake_analysis.md`
   §7, which the round-2 fallback covers by construction);
   the `cmake-codegen-*-genex*` audit tag set collapses to
-  one `-resolved` tag; `internal/genexeval`'s
-  `UnsupportedError` surface goes away;
+  one `-resolved` tag (shipped — see Phase 3);
+  `internal/genexeval`'s `UnsupportedError` surface shrinks
+  toward gone (the structural per-target ops now resolve via
+  the probe; the generalized per-literal probe for arbitrary
+  `$<…>` literals remains queued — see Phase 3 "Not yet done");
   `cmake-conversion-deltas.md` "open deltas" closes the
   configurable items; render-gate output for known
   sanitizer configs uses `--features` rather than raw
@@ -1334,7 +1355,12 @@ transition cleanly.
   documents the frame distinction.
 
 - **file(GENERATE) genex lift via structured base64 (the (b)
-  shape).** Phase 7d's file(GENERATE) lifter previously short-
+  shape).** NOTE: the `cmake-codegen-file-generate-genex*` tag
+  names in this and the following Done entries describe the
+  tags as they shipped at the time. Phase 3's tag collapse
+  renamed them to `cmake-codegen-genex-{resolved,unresolved,
+  cross-package}` — `docs/codegen-tags.md` carries the current
+  taxonomy. Phase 7d's file(GENERATE) lifter previously short-
   circuited every `$<...>`-bearing template to the legacy
   bytes-embedded shape — rendered output content-load-bearing
   in srckey, audit-tagged `cmake-codegen-file-generate-genex`.

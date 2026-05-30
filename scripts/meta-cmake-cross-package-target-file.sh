@@ -23,7 +23,7 @@
 #      `--target-file=producer::producer="$(location
 #      //elements/producer:producer)"`.
 #   3. The refusal-stub tag
-#      (`cmake-codegen-file-generate-genex-cross-package`) does
+#      (`cmake-codegen-genex-cross-package`) does
 #      NOT fire — the resolved-lift path replaces the PR 1
 #      refusal stub for the manifest-hit case.
 #
@@ -139,8 +139,8 @@ fi
 echo "meta-cmake-cross-package-target-file: --target-file resolved to cross-package label OK"
 
 # 2. The (a) lift's tag IS present.
-if ! grep -q '"cmake-codegen-file-generate-genex-evaluated"' "$consumer_build"; then
-    echo "meta-cmake-cross-package-target-file: consumer BUILD.bazel.out missing (a) lift tag cmake-codegen-file-generate-genex-evaluated" >&2
+if ! grep -q '"cmake-codegen-genex-resolved"' "$consumer_build"; then
+    echo "meta-cmake-cross-package-target-file: consumer BUILD.bazel.out missing (a) lift tag cmake-codegen-genex-resolved" >&2
     echo "--- consumer BUILD.bazel.out ---" >&2
     cat "$consumer_build" >&2
     exit 1
@@ -148,8 +148,8 @@ fi
 
 # 3. The refusal-stub tag must NOT fire — the resolved-lift
 #    path supersedes PR 1's refusal stub for manifest-hit cases.
-if grep -q '"cmake-codegen-file-generate-genex-cross-package"' "$consumer_build"; then
-    echo "meta-cmake-cross-package-target-file: refusal-stub tag (cmake-codegen-file-generate-genex-cross-package) fired but should NOT — manifest resolved producer::producer" >&2
+if grep -q '"cmake-codegen-genex-cross-package"' "$consumer_build"; then
+    echo "meta-cmake-cross-package-target-file: refusal-stub tag (cmake-codegen-genex-cross-package) fired but should NOT — manifest resolved producer::producer" >&2
     echo "--- consumer BUILD.bazel.out ---" >&2
     cat "$consumer_build" >&2
     exit 1

@@ -294,7 +294,7 @@ func TestEmit_ConfigureFile_Golden(t *testing.T) {
 //   - CONTENT-form, genex-free: --content-base64 inline body
 //     in cmd, no srcs entry, cmake-codegen-lifted tag set.
 //   - CONTENT-form with $<CONFIG>: legacy bytes-embedded shape,
-//     cmake-codegen-file-generate-genex audit tag, no lifted
+//     cmake-codegen-genex-resolved audit tag, with lifted
 //     tag.
 func TestEmit_FileGenerate_Golden(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/file-generate")
@@ -1273,11 +1273,11 @@ func TestEmit_InterfaceLibrary_Golden(t *testing.T) {
 // With the aggregation wired, the (a) Go-side genex evaluator
 // resolves $<TARGET_PROPERTY:leaf,INTERFACE_INCLUDE_DIRECTORIES>
 // at convert time to base's include path (walked through mid),
-// and the resulting genrule carries the `-genex-evaluated`
-// audit tag. Without aggregation, the evaluator would surface an
-// UnsupportedError → the lift would fall back to legacy
-// bytes-embedded shape with `cmake-codegen-file-generate-genex`
-// (no -evaluated suffix).
+// and the resulting genrule carries the
+// `cmake-codegen-genex-resolved` audit tag. Without aggregation,
+// the evaluator would surface an UnsupportedError → the lift
+// would fall back to legacy bytes-embedded shape with
+// `cmake-codegen-genex-unresolved`.
 func TestEmit_InterfacePropertyAggregation_Resolves(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/interface-property-aggregation")
 	if err != nil {
@@ -1327,17 +1327,16 @@ func TestEmit_InterfacePropertyAggregation_Resolves(t *testing.T) {
 	if endIdx := strings.Index(tail, "\n)\n"); endIdx > 0 {
 		tail = tail[:endIdx]
 	}
-	if !strings.Contains(tail, "cmake-codegen-file-generate-genex-evaluated") {
-		t.Errorf("gen_leaf_includes_txt missing -evaluated tag:\n%s", tail)
+	if !strings.Contains(tail, "cmake-codegen-genex-resolved") {
+		t.Errorf("gen_leaf_includes_txt missing -resolved tag:\n%s", tail)
 	}
-	// The legacy fallback tag carries the bare
-	// `cmake-codegen-file-generate-genex` text without
-	// `-evaluated` / `-lifted` suffix; assert it's absent
-	// (a regression on the aggregation would re-introduce it).
+	// The legacy fallback carries cmake-codegen-genex-unresolved
+	// (Phase 3 tag collapse); assert it's absent — a regression
+	// on the aggregation would re-introduce it.
 	for _, line := range strings.Split(tail, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if trimmed == `"cmake-codegen-file-generate-genex",` || trimmed == `"cmake-codegen-file-generate-genex"` {
-			t.Errorf("gen_leaf_includes_txt unexpectedly carries the legacy -genex tag (aggregation pipeline didn't fire):\n%s", tail)
+		if trimmed == `"cmake-codegen-genex-unresolved",` || trimmed == `"cmake-codegen-genex-unresolved"` {
+			t.Errorf("gen_leaf_includes_txt unexpectedly carries the unresolved-genex tag (aggregation pipeline didn't fire):\n%s", tail)
 		}
 	}
 }

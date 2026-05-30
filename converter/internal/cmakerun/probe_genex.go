@@ -265,8 +265,17 @@ func splitProbeConfigFilename(fname string) (basename, config string, ok bool) {
 	// Split into <basename>.<config>. The basename can't contain
 	// "." (cmake property names are [A-Z_]+ with optional digits),
 	// so the first "." is the separator.
+	//
+	// The config segment MAY be empty: a single-config generator
+	// with no CMAKE_BUILD_TYPE set resolves `$<CONFIG>` to the
+	// empty string, so the hook writes `<basename>..txt` (e.g.
+	// `objects..txt`). That's a real, common state (most of our
+	// fixtures don't set a build type) — treat the empty config as
+	// a valid single config so the value still round-trips. Only
+	// reject when there's no separator at all or the basename is
+	// empty.
 	dot := strings.Index(stem, ".")
-	if dot <= 0 || dot == len(stem)-1 {
+	if dot <= 0 {
 		return "", "", false
 	}
 	return stem[:dot], stem[dot+1:], true

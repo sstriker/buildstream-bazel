@@ -21,7 +21,7 @@ project(ifaceagg LANGUAGES C VERSION 0.1.0)
 # genex evaluator must resolve this to the absolute include
 # path at convert time. With the aggregation pipeline
 # wired, the genrule's audit tag carries
-# `cmake-codegen-file-generate-genex-evaluated`; without
+# `cmake-codegen-genex-resolved`; without
 # the aggregation, the evaluator would surface an
 # UnsupportedError and the lift would fall back to the
 # legacy bytes-embedded shape.
@@ -39,7 +39,7 @@ target_link_libraries(leaf PUBLIC mid)
 # Reference leaf's transitively-aggregated INTERFACE_INCLUDE_DIRECTORIES
 # via file(GENERATE). The (a) evaluator resolves this at convert
 # time from the genex Context the lifter builds; the audit tag
-# `cmake-codegen-file-generate-genex-evaluated` confirms the
+# `cmake-codegen-genex-resolved` confirms the
 # resolution succeeded.
 file(GENERATE
     OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/leaf_includes.txt
