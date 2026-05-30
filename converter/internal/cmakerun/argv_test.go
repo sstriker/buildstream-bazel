@@ -12,7 +12,7 @@ func TestBuildCmakeArgv_BaselineOrder(t *testing.T) {
 		SourceRoot: "/src",
 		BuildDir:   "/build",
 		BuildType:  "Release",
-	}, "", "", "")
+	}, "", "", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -46,11 +46,11 @@ func TestBuildCmakeArgv_ExtraCacheVarsSortedDeterministically(t *testing.T) {
 		},
 	}
 	// Run twice; argv must match exactly.
-	first, err := buildCmakeArgv(opts, "", "", "")
+	first, err := buildCmakeArgv(opts, "", "", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv #1: %v", err)
 	}
-	second, err := buildCmakeArgv(opts, "", "", "")
+	second, err := buildCmakeArgv(opts, "", "", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv #2: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBuildCmakeArgv_RejectsBuildTypeInExtras(t *testing.T) {
 		ExtraCacheVars: map[string]string{
 			"CMAKE_BUILD_TYPE": "Release",
 		},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error; got nil")
 	}
@@ -111,7 +111,7 @@ func TestBuildCmakeArgv_TailOptionsCoexist(t *testing.T) {
 		DumpVars:           true,
 		TracePath:          "/tmp/trace.json",
 		ToolchainCMakeFile: tcFile,
-	}, "/build/dump-vars.cmake", "", "")
+	}, "/build/dump-vars.cmake", "", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestBuildCmakeArgv_CMP0026ShimAlone(t *testing.T) {
 		BuildDir:    "/build",
 		BuildType:   "Release",
 		CMP0026Shim: true,
-	}, "", "/build/cmake-to-bazel.cmp0026-shim.cmake", "")
+	}, "", "/build/cmake-to-bazel.cmp0026-shim.cmake", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBuildCmakeArgv_CMP0026ShimComposesWithDumpVars(t *testing.T) {
 		BuildType:   "Release",
 		DumpVars:    true,
 		CMP0026Shim: true,
-	}, "/build/dump-vars.cmake", "/build/cmp0026-shim.cmake", "")
+	}, "/build/dump-vars.cmake", "/build/cmp0026-shim.cmake", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestBuildCmakeArgv_MultiConfig(t *testing.T) {
 		SourceRoot: "/src",
 		BuildDir:   "/build",
 		BuildTypes: []string{"Release", "Debug", "RelWithDebInfo"},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestBuildCmakeArgv_MultiConfigCustomTypes(t *testing.T) {
 		SourceRoot: "/src",
 		BuildDir:   "/build",
 		BuildTypes: []string{"Release", "ASan", "TSan", "UBSan"},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -257,7 +257,7 @@ func TestBuildCmakeArgv_MultiConfigRejectsEmptyEntry(t *testing.T) {
 		SourceRoot: "/src",
 		BuildDir:   "/build",
 		BuildTypes: []string{"Release", ""},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error; got nil")
 	}
@@ -275,7 +275,7 @@ func TestBuildCmakeArgv_MultiConfigRejectsDuplicate(t *testing.T) {
 		SourceRoot: "/src",
 		BuildDir:   "/build",
 		BuildTypes: []string{"Release", "Debug", "Release"},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error; got nil")
 	}
@@ -296,7 +296,7 @@ func TestBuildCmakeArgv_RejectsConfigTypesInExtras(t *testing.T) {
 		ExtraCacheVars: map[string]string{
 			"CMAKE_CONFIGURATION_TYPES": "Release;Debug",
 		},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error; got nil")
 	}
@@ -313,7 +313,7 @@ func TestBuildCmakeArgv_RejectsBothBuildTypeAndBuildTypes(t *testing.T) {
 		BuildDir:   "/build",
 		BuildType:  "Release",
 		BuildTypes: []string{"Debug"},
-	}, "", "", "")
+	}, "", "", "", "")
 	if err == nil {
 		t.Fatal("expected error; got nil")
 	}
@@ -331,7 +331,7 @@ func TestBuildCmakeArgv_ProbeGenexAlone(t *testing.T) {
 		BuildDir:   "/build",
 		BuildType:  "Release",
 		ProbeGenex: true,
-	}, "", "", "/build/cmake-to-bazel.probe-genex.cmake")
+	}, "", "", "/build/cmake-to-bazel.probe-genex.cmake", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestBuildCmakeArgv_AllThreeHooksOrder(t *testing.T) {
 		DumpVars:    true,
 		CMP0026Shim: true,
 		ProbeGenex:  true,
-	}, "/build/dump-vars.cmake", "/build/cmp0026-shim.cmake", "/build/probe-genex.cmake")
+	}, "/build/dump-vars.cmake", "/build/cmp0026-shim.cmake", "/build/probe-genex.cmake", "")
 	if err != nil {
 		t.Fatalf("buildCmakeArgv: %v", err)
 	}

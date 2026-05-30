@@ -81,7 +81,26 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 			// support for genrule.
 			resolved, ok := resolveGenexInPath(call.Output, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
-				continue
+				// The Go-side evaluator + structural probe couldn't
+				// resolve every genex in the OUTPUT path. Try the
+				// generalized two-pass literal probe: on pass 1 this
+				// records a request (and returns false, so we drop
+				// this round); on pass 2 it returns cmake's own
+				// resolved path so the call lifts. OUTPUT must
+				// resolve at convert time (it becomes the genrule's
+				// outs), which the second configure pass — still
+				// pre-Bazel — satisfies.
+				probed, pok := cc.resolveLiteral(call.Output, "")
+				if !pok {
+					continue
+				}
+				if hasGenex([]byte(probed)) {
+					// cmake's evaluator returned a value that still
+					// carries `$<...>` — can't be a static output
+					// path. Drop, same as a failed Go-side resolve.
+					continue
+				}
+				resolved = probed
 			}
 			call.Output = resolved
 		}

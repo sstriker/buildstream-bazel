@@ -175,18 +175,35 @@ transition cleanly.
     (refusal stub) — see `docs/codegen-tags.md`. Also fixed
     an empty-`$<CONFIG>` probe-read drop that silently lost
     every per-target value for no-build-type configures.
-    **Not yet done:** the *generalized per-literal*
-    `file(GENERATE OUTPUT cmake-to-bazel.genex.${hash}.txt
-    CONTENT "<literal>" [TARGET t])` staging for arbitrary
-    `$<…>` literals beyond the fixed per-target property set
-    (e.g. `$<GENEX_EVAL:…>`, `$<COMPILE_LANGUAGE:…>`,
-    `$<TARGET_GENEX_EVAL:…>`, `$<INSTALL_INTERFACE:…>` in
-    add_custom_command argv / install destinations) — those
-    still surface `UnsupportedError`, since collecting the
-    literals needs a second configure (the literals aren't
-    known until the trace is parsed post-configure). The
-    `UnsupportedError` surface has shrunk toward — but not
-    to — gone.
+    **Generalized per-literal probe — mechanism shipped, via a
+    warm second configure pass.** Collecting arbitrary `$<…>`
+    literals (beyond the fixed per-target property set) needs a
+    second configure: the exact literal strings aren't known
+    until the first pass's trace is parsed, but resolving them
+    means emitting `file(GENERATE CONTENT "<literal>")` which
+    must be staged before configure starts. The loop is now
+    closed: `cmakerun.{RenderLiteralProbeHook,ReadLiteralProbe}`
+    + `Options.LiteralProbes` stage a per-literal hook
+    (`cmake-to-bazel.litgenex/<hash>.$<CONFIG>.txt`, per-`$<CONFIG>`
+    so it composes with Multi-Config, per-config divergence
+    preserved for a future `select()`); `lower.LiteralProbeSink`
+    collects unresolved literals on pass 1; and
+    convert-element-cmake's `--two-pass-genex` (default ON) runs a
+    *conditional, warm* second `Configure` against the same build
+    dir (reuses the try_compile/find_package cache → a few % of
+    the first configure; skipped entirely when pass 1 leaves
+    nothing unresolved). The first consumer wired is the
+    `file(GENERATE)` OUTPUT-path site (an arbitrary genex in
+    OUTPUT now resolves to a static genrule `outs` instead of
+    dropping the call); `scripts/meta-cmake-genex-literal-twopass.sh`
+    pins it end-to-end (`$<TARGET_PROPERTY:app,APP_GENDIR>` in an
+    OUTPUT → `gen_out/manifest.txt`, load-bearing under
+    `--two-pass-genex=false`). **Remaining consumers:** wiring the
+    same probe into add_custom_command argv / install destinations
+    / `file(GENERATE)` CONTENT bodies that hit `UnsupportedError`
+    today, and a `select()`-capable consumer for per-config-
+    divergent literals. The `UnsupportedError` surface keeps
+    shrinking as each consumer lands.
 
   - **Phase 4 — build.ninja custom-command walk.** Promote
     `converter/internal/ninja/` from its current

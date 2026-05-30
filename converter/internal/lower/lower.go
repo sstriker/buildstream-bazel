@@ -277,6 +277,28 @@ type Options struct {
 	// ToIR returns as an error. See baking_warnings.go for the
 	// per-tag taxonomy.
 	BakeIn convmode.BakeIn
+
+	// LiteralProbeSink, when non-nil, collects arbitrary genex
+	// literals the lifter could not resolve via the Go-side
+	// evaluator + structural probe (GenexProbes). It drives the
+	// warm second configure pass: pass 1 records unresolved
+	// literals here, the orchestrator feeds Requests() to
+	// cmakerun.Configure as Options.LiteralProbes, and pass 2 reads
+	// the resolutions back into LiteralResolutions below. Nil
+	// disables collection (the two-pass loop is opt-in), so unset
+	// callers keep their existing single-pass behavior.
+	//
+	// Generalized-genex two-pass; see probe_literals.go.
+	LiteralProbeSink *LiteralProbeSink
+
+	// LiteralResolutions carries the second-pass results, keyed by
+	// LiteralProbeRequest.Hash() (the same key LiteralProbeSink.Want
+	// returns). On the second ToIR pass the lift sites that recorded
+	// a request in pass 1 find the resolved value here and emit it
+	// (flat, or a select() over //config:<name> when the literal
+	// diverged per config) instead of recording or refusing. Empty
+	// on the first pass and for single-pass callers.
+	LiteralResolutions map[string]cmakerun.LiteralResolution
 }
 
 // manifestPrefixAnchor is the canonical token the orchestrator's imports
@@ -681,6 +703,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.CMakeScriptBake = opts.CMakeScriptBake
 	cc.CMakeBinary = lookupCmakeBinary()
 	cc.Warnings = opts.Warnings
+	cc.LiteralProbeSink = opts.LiteralProbeSink
+	cc.LiteralResolutions = opts.LiteralResolutions
 
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's
