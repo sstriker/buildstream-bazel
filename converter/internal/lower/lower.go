@@ -1386,7 +1386,35 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 		// the remaining (real) sources, or hdrs-only if this was
 		// the only source.
 		if cmakeBuild != "" && filepath.IsAbs(src.Path) {
-			if _, inside := relativeIfInside(cmakeBuild, src.Path); inside {
+			if rel, inside := relativeIfInside(cmakeBuild, src.Path); inside {
+				// Before eliding: a build-dir source that matches a
+				// recovered generator output (configure_file /
+				// file(GENERATE) / execute_process / custom-command)
+				// is produced by a genrule the converter already
+				// emitted onto cc.Genrules — wire that output edge
+				// into srcs (or hdrs) instead of dropping it. This
+				// captures the project's generated-compile-source
+				// intent natively rather than emitting a broken
+				// empty-srcs target. The canonical case is eigen's
+				// doc-snippet `compile_<snippet>` cc_binaries:
+				// configure_file splices a snippet's .cpp into a
+				// template and the generated .cpp is the binary's
+				// only source, so eliding it leaves srcs empty. The
+				// build-dir-relative `rel` matches OutToGenrule's
+				// keys (both relativize against the codemodel build
+				// dir; see recoverConfigureFiles' recordedBuildDir).
+				if _, produced := cc.OutToGenrule[rel]; produced {
+					consumesCodegen = true
+					ext := strings.ToLower(filepath.Ext(rel))
+					if inCompileGroup[i] && !headerExts[ext] {
+						irt.Srcs = append(irt.Srcs, rel)
+					} else if headerExts[ext] {
+						irt.Hdrs = append(irt.Hdrs, rel)
+					} else {
+						irt.Srcs = append(irt.Srcs, rel)
+					}
+					continue
+				}
 				elidedBuildDirSrc = true
 				continue
 			}
@@ -2014,6 +2042,34 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	merged = append(merged, fileSetHdrs...)
 	sort.Strings(merged)
 	irt.Hdrs = dedupeStrings(merged)
+
+	// Refuse a srcs-less binary/test whose sources were all elided.
+	// When every compiled source of a cc_binary / cc_test got
+	// dropped by the elision branches above — a build-dir-only
+	// generated file with no recovered generator edge
+	// (cmake-elided-build-dir-source), a source missing on disk
+	// (cmake-elided-missing-source), or a compiler artifact
+	// (cmake-elided-compiler-artifact) — emitting the target anyway
+	// produces a `cc_binary`/`cc_test` with `srcs = []` that Bazel
+	// rejects at build time ("missing srcs"). That's a silently
+	// broken BUILD, the worst outcome. The re-wire above already
+	// captures the intent when a generator edge was recovered; this
+	// is the honest fallback for when it wasn't (e.g. trace data
+	// absent). Refuse cleanly so the lost intent is surfaced as a
+	// typed rejection rather than shipped as an unbuildable rule.
+	// Gated on an elision flag so the rare legitimate srcs-less
+	// binary (one that links a dep providing main, with nothing
+	// elided) is left untouched.
+	if (irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) &&
+		len(irt.Srcs) == 0 &&
+		(elidedBuildDirSrc || elidedMissingSrc || elidedCompilerArtifact) {
+		msg := fmt.Sprintf("target %q (%s) has no srcs after lowering — every compiled source was elided (build-dir-only generated file with no recovered generator edge, missing-on-disk source, or compiler artifact); emitting it would produce a Bazel-invalid srcs-less rule", t.Name, t.Type)
+		if rejections != nil {
+			rejections.AddWithContext(failure.AllSourcesElided, msg, t.Name, "")
+			return nil, nil
+		}
+		return nil, failure.New(failure.AllSourcesElided, "%s", msg)
+	}
 
 	// Lower dependencies. In-codebase target ids look like `<name>::@<hash>`
 	// where <name> is the CMake target name; out-of-tree find_package-

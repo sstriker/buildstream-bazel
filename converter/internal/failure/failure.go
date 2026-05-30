@@ -32,6 +32,7 @@ const (
 	UnsupportedSourcePath          Code = "unsupported-source-path"
 	MissingTraceData               Code = "missing-trace-data"
 	BazelCanonicalizeFailed        Code = "bazel-canonicalize-failed"
+	AllSourcesElided               Code = "all-sources-elided"
 )
 
 // Error is a typed Tier-1 failure. It satisfies the error interface, and the

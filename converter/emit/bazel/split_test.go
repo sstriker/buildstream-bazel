@@ -9,6 +9,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestEmit_SubdirLibrary_Split_Golden exercises --split-packages on the
@@ -174,4 +175,77 @@ func TestEmit_SplitOff_ByteIdenticalToSingleGolden(t *testing.T) {
 	if string(got) != string(want) {
 		t.Errorf("split-OFF emit drifted from single golden\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
+}
+
+// TestEmit_Split_GenrulePlacedInOutputPackage pins the split-mode
+// placement of synthesized genrules: a genrule's outs must live in
+// the genrule's own Bazel package, so a genrule producing
+// "doc/snippets/compile_x.cpp" must be emitted in the doc/snippets
+// package (with outs re-relativized to "compile_x.cpp"), NOT left in
+// the root package where it would collide with the doc/snippets
+// package and produce a Bazel "output file conflicts with another
+// package" error. This is the placement that makes the eigen
+// doc-snippet compile_<snippet> re-wire (generated configure_file
+// source fed to a cc_binary) actually resolve in --split-packages
+// output: the consumer in doc/snippets references the bare-name src
+// "compile_x.cpp", which only resolves if the producing genrule is in
+// the same package.
+func TestEmit_Split_GenrulePlacedInOutputPackage(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "snippets",
+		Targets: []ir.Target{
+			{
+				Name:       "compile_x",
+				Kind:       ir.KindCCBinary,
+				Srcs:       []string{"doc/snippets/compile_x.cpp"},
+				Visibility: []string{"//visibility:public"},
+			},
+			{
+				Name:        "gen_doc_snippets_compile_x_cpp",
+				Kind:        ir.KindGenrule,
+				GenruleCmd:  "echo hi > $@",
+				GenruleOuts: []string{"doc/snippets/compile_x.cpp"},
+				Visibility:  []string{"//visibility:private"},
+			},
+		},
+		// Only the codemodel-derived consumer carries a SubPackages
+		// entry; the synthesized genrule has none (defaults to root
+		// via targetDir) — the exact shape the placement fix corrects.
+		SubPackages: map[string]string{"compile_x": "doc/snippets"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/eigen"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+
+	snip, ok := tree["doc/snippets"]
+	if !ok {
+		t.Fatalf("no doc/snippets package emitted; got dirs %v", keysOf(tree))
+	}
+	body := string(snip)
+	// The genrule landed in doc/snippets with a package-relative out.
+	if !contains(body, "gen_doc_snippets_compile_x_cpp") {
+		t.Errorf("genrule not placed in doc/snippets package; got:\n%s", body)
+	}
+	if !contains(body, `outs = ["compile_x.cpp"]`) {
+		t.Errorf("genrule outs not re-relativized to package-local \"compile_x.cpp\"; got:\n%s", body)
+	}
+	// The consumer references the bare-name src in the same package.
+	if !contains(body, `"compile_x.cpp"`) {
+		t.Errorf("consumer srcs not package-local; got:\n%s", body)
+	}
+	// The genrule must NOT remain in the root package (where its
+	// cross-package out would be illegal).
+	if root, ok := tree[""]; ok && contains(string(root), "gen_doc_snippets_compile_x_cpp") {
+		t.Errorf("genrule still in root package; should have moved to doc/snippets:\n%s", root)
+	}
+}
+
+func keysOf(m map[string][]byte) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
 }
