@@ -1,0 +1,4 @@
+#ifndef PROBE_CONFIG_H
+#define PROBE_CONFIG_H
+#define PROBE_RESULT "@PROBE_RESULT@"
+#endif
