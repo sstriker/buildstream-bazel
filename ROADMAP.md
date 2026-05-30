@@ -238,22 +238,34 @@ transition cleanly.
     `cmake_config_bundle` filegroup, all from
     `Target.NameOnDisk`/`Target.Install.Destinations`/
     `Target.FileSets` HEADERS without running
-    `cmake --install` at convert time. The manifest's
-    `*manifest.Export` carries new `omitempty`
+    `cmake --install` at convert time. The
+    resolved-lift manifest-synth (M3) step shipped:
+    `buildExportsDoc` (convert-element-cmake) now
+    populates the `*manifest.Export` `omitempty`
     `cmake_config_bundle_label` + `cmake_import_labels`
-    fields so cross-element `find_package` consumers can
-    resolve directly to the synthesized bundle.
-    **Hard constraint preserved: convert is metadata-only
-    — no `cmake --build` / `cmake --install` runs at
-    convert time.** Earlier WIP that wired convert-time
-    build was backed out (it would have changed the
-    project's runtime model from sandboxable-and-cheap to
-    "build farms"). The non-declarative residue stays on
-    the round-2 pick_file-over-install-root fallback. The
-    `resolved-lift` manifest-synth piece queued under
-    `Later` is the remaining slice (the orchestrator's
-    M3 step that populates the new manifest fields from
-    Phase 6 codemodel verdicts).
+    fields from the lowered codemodel verdict — it scans
+    `pkg.Targets` for the `cmake_config_bundle` filegroup
+    + the `<lib>_import` cc_import facades (tagged
+    `cmake-codegen-install-export-import`) and frames
+    their labels with `--bazel-package-path`, so
+    cross-element `find_package` consumers can resolve
+    directly to the synthesized bundle. Non-bundle
+    elements leave both fields empty (byte-identical
+    exports.json). **Hard constraint preserved: convert
+    is metadata-only — no `cmake --build` /
+    `cmake --install` runs at convert time.** Earlier WIP
+    that wired convert-time build was backed out (it would
+    have changed the project's runtime model from
+    sandboxable-and-cheap to "build farms"). The
+    non-declarative residue stays on the round-2
+    pick_file-over-install-root fallback. Queued follow-on:
+    the consumer side does not yet *read* these manifest
+    fields — cross-element resolution still flows through
+    the synth-prefix bundle + Bazel dep edges (see
+    `scripts/meta-cross-cmake.sh`); a resolver that lifts
+    `find_package(<Pkg> CONFIG)` straight onto
+    `cmake_config_bundle_label`/`cmake_import_labels` is
+    the remaining slice.
 
   - **Phase 7 — Bazel-idiom shaping audit.** A final-
     emission pass that audits the converter's IR against a
