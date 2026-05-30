@@ -703,6 +703,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.CMakeScriptBake = opts.CMakeScriptBake
 	cc.CMakeBinary = lookupCmakeBinary()
 	cc.Warnings = opts.Warnings
+	cc.LiteralProbeSink = opts.LiteralProbeSink
+	cc.LiteralResolutions = opts.LiteralResolutions
 
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's

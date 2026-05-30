@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -131,6 +132,46 @@ type codegenContext struct {
 	// bare-tool-path references in the same way without changing
 	// the recoverGenrule signature.
 	ArtifactToName map[string]string
+
+	// LiteralProbeSink and LiteralResolutions thread the
+	// generalized-genex two-pass through the codegen helpers
+	// (mirrors how Warnings / ArtifactToName ride here rather than
+	// re-threading lower.Options). LiteralProbeSink is the pass-1
+	// collector (nil disables collection); LiteralResolutions holds
+	// the pass-2 results keyed by request hash. resolveLiteral
+	// consults both. See probe_literals.go.
+	LiteralProbeSink   *LiteralProbeSink
+	LiteralResolutions map[string]cmakerun.LiteralResolution
+}
+
+// resolveLiteral attempts to resolve an arbitrary genex literal via
+// the two-pass probe. On the second pass (LiteralResolutions
+// populated) it returns the probe-captured value when present:
+// (value, true) when every config agreed. When the literal diverged
+// per config the value is dropped to ("", false) at this call site
+// because the OUTPUT-path consumer needs a single static path (a
+// per-config OUTPUT can't drive genrule outs). On the first pass
+// (sink non-nil, no resolution yet) it records the request so the
+// orchestrator runs the warm second pass, and returns ("", false)
+// so the caller takes its normal drop/fallback path this round.
+// Returns ("", false) for single-pass callers (both nil),
+// preserving today's behavior.
+//
+// target is the cmake target context the literal evaluates in (""
+// for project-scoped literals).
+func (cc *codegenContext) resolveLiteral(literal, target string) (string, bool) {
+	h := cc.LiteralProbeSink.Want(literal, target)
+	if res, ok := cc.LiteralResolutions[h]; ok {
+		if v, agreed := res.Unified(); agreed {
+			return v, true
+		}
+		// Per-config divergence: no single static value the
+		// OUTPUT-path consumer can use. A future consumer in a
+		// select()-capable position can read res.PerConfig
+		// directly; here we fall through to the drop path.
+		return "", false
+	}
+	return "", false
 }
 
 func newCodegenContext() *codegenContext {
