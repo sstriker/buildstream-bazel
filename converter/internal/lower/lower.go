@@ -815,10 +815,21 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// pre-trace fallback that re-parses opts.TraceRaw doesn't
 	// surface a file(GENERATE) extractor today (none of the
 	// pre-Decode callers need it).
+	// Structural-probe-resolved per-target genex facts (TARGET_FILE
+	// family, TARGET_OBJECTS, INTERFACE_* aggregates), keyed by
+	// cmake target name. Computed once here and shared by every
+	// consumer that resolves genex against cmake's own
+	// generation-time evaluator output: recoverFileGenerate's
+	// template/OUTPUT resolution and lowerInterfaceLibraries'
+	// INTERFACE_COMPILE_DEFINITIONS reconciliation. Empty when no
+	// probe ran (no --probe-genex, cmake < 3.24); each consumer
+	// degrades to its pre-probe behavior in that case.
+	genexTargets := buildGenexTargets(r, cmakeBuild, opts.GenexProbes, decodedTrace, opts.Imports)
+
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
 		var err error
-		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, buildGenexTargets(r, cmakeBuild, opts.GenexProbes, decodedTrace, opts.Imports), opts.Imports, cc)
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, genexTargets, opts.Imports, cc)
 		if err != nil {
 			return nil, err
 		}
@@ -1003,7 +1014,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// + INTERFACE_COMPILE_DEFINITIONS as hdrs / defines / includes.
 	if decodedTrace != nil {
 		pkg.Targets = append(pkg.Targets,
-			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, cc)...)
+			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, genexTargets, cc)...)
 	}
 	// Alias-target lift from trace: `add_library(<alias> ALIAS
 	// <target>)` shapes don't appear in codemodel.targets[]
