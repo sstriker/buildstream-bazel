@@ -197,6 +197,23 @@ type Options struct {
 	// the LOCATION value at configure time. See #208.
 	CMP0026Shim bool
 
+	// LiteralProbes, when non-empty, stages the generalized
+	// genex literal probe hook (RenderLiteralProbeHook) into the
+	// build dir and layers it onto CMAKE_PROJECT_TOP_LEVEL_INCLUDES.
+	// This is the warm SECOND configure pass: the caller runs a
+	// first Configure (with the trace + structural probe),
+	// discovers the arbitrary genex literals the Go evaluator +
+	// structural probe couldn't resolve, then runs Configure again
+	// with the SAME BuildDir and these requests populated. cmake's
+	// own evaluator resolves each literal via file(GENERATE) into
+	// <CMAKE_BINARY_DIR>/cmake-to-bazel.litgenex/<hash>.<config>.txt,
+	// which ReadLiteralProbe reads back. Reusing the warm build dir
+	// keeps the second pass cheap (no try_compile / find_package
+	// re-runs); injecting only this hook changes no cache variable,
+	// preserving the warm cache. Empty (the common case) → no
+	// second pass, no overhead.
+	LiteralProbes []LiteralProbeRequest
+
 	// Stdout/Stderr capture cmake output. Nil discards.
 	Stdout, Stderr io.Writer
 }
@@ -293,6 +310,20 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		}
 	}
 
+	// Stage the generalized genex literal probe hook (the warm
+	// second configure pass) when the caller supplied literals to
+	// resolve. The body is generated from the request set rather
+	// than a static asset because the literals are only known after
+	// the first pass's trace is parsed. Layers onto the same
+	// TOP_LEVEL_INCLUDES slot as the other hooks.
+	var probeLiteralsPath string
+	if len(opts.LiteralProbes) > 0 {
+		probeLiteralsPath = filepath.Join(opts.BuildDir, LiteralProbeFilename)
+		if err := os.WriteFile(probeLiteralsPath, RenderLiteralProbeHook(opts.LiteralProbes), 0o644); err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: stage literal-probe hook: %w", err)
+		}
+	}
+
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
 	// rewrites HOME. Best-effort cleanup; cmake only reads from here.
 	homeDir, err := os.MkdirTemp("", "cmakerun-home-*")
@@ -301,7 +332,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 	defer os.RemoveAll(homeDir)
 
-	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, probeGenexPath)
+	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -361,7 +392,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 // lexicographic key order, then the optional --trace-* and
 // CMAKE_TOOLCHAIN_FILE / CMAKE_PROJECT_TOP_LEVEL_INCLUDES tail.
 // Stable across runs of the same Options.
-func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath string) ([]string, error) {
+func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath string) ([]string, error) {
 	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
 		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
 	}
@@ -455,6 +486,13 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath 
 	}
 	if probeGenexPath != "" {
 		topLevelIncludes = append(topLevelIncludes, probeGenexPath)
+	}
+	// The literal probe runs last — its DEFER fires after the
+	// structural probe's, and it only needs CMAKE_BINARY_DIR +
+	// the project's targets to exist, both of which hold by the
+	// end of the top-level directory.
+	if probeLiteralsPath != "" {
+		topLevelIncludes = append(topLevelIncludes, probeLiteralsPath)
 	}
 	if len(topLevelIncludes) > 0 {
 		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+strings.Join(topLevelIncludes, ";"))
