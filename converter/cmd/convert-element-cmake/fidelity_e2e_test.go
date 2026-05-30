@@ -72,7 +72,8 @@ func TestE2E_Fidelity_HelloWorld_SymbolEquivalent(t *testing.T) {
 		SourceRoot: helloSrc,
 		LibName:    "hello",
 		ModuleBazel: "module(name = \"hello\", version = \"0.0.0\")\n" +
-			"bazel_dep(name = \"rules_cc\", version = \"0.0.10\")\n",
+			"bazel_dep(name = \"rules_cc\", version = \"0.0.10\")\n" +
+			"bazel_dep(name = \"rules_pkg\", version = \"1.0.1\")\n",
 	})
 }
 
@@ -87,7 +88,8 @@ func TestE2E_Fidelity_Fmt_SymbolEquivalent(t *testing.T) {
 		SourceRoot: "/tmp/fmt",
 		LibName:    "fmt",
 		ModuleBazel: "module(name = \"fmt_fidelity\", version = \"0.0.0\")\n" +
-			"bazel_dep(name = \"rules_cc\", version = \"0.0.10\")\n",
+			"bazel_dep(name = \"rules_cc\", version = \"0.0.10\")\n" +
+			"bazel_dep(name = \"rules_pkg\", version = \"1.0.1\")\n",
 		SkipFunc: func(t *testing.T) string {
 			if _, err := os.Stat("/tmp/fmt"); err != nil {
 				return "/tmp/fmt not present (run `make fetch-fmt` first)"
@@ -157,7 +159,8 @@ func runSymbolFidelityCase(t *testing.T, c fidelityCase) {
 	module := c.ModuleBazel
 	if module == "" {
 		module = "module(name = \"" + sanitizeBazelName(c.Name) + "\", version = \"0.0.0\")\n" +
-			"bazel_dep(name = \"rules_cc\", version = \"0.0.10\")\n"
+			"bazel_dep(name = \"rules_cc\", version = \"0.0.10\")\n" +
+			"bazel_dep(name = \"rules_pkg\", version = \"1.0.1\")\n"
 	}
 	mustWriteString(t, filepath.Join(ws, "MODULE.bazel"), module)
 
