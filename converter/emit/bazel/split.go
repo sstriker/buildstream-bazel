@@ -182,11 +182,44 @@ func (p *splitPlan) headerLibTarget(inc, name string) ir.Target {
 		hdrs = append(hdrs, rel)
 	}
 	sort.Strings(hdrs)
+
+	// Forward to descendant include-root header libs. cmake's include
+	// dirs are additive and recursive: a target with `-I<inc>` can
+	// `#include` any header physically under `<inc>`, spelled relative
+	// to `<inc>`. Monolithic emit captures this because discoverHeaders
+	// walks `<inc>` recursively, so every such header lands in one
+	// target's hdrs. Under --split-packages each header is assigned to
+	// its LONGEST-matching include-root (planSplit), so when include
+	// roots nest — VTK's `vtk_module_third_party` forwarders declare
+	// `ThirdParty/token`, `ThirdParty/token/vtktoken`, and (via the
+	// internal lib's `includes=["."]`) `ThirdParty/token/vtktoken/token`
+	// — the deepest root claims every header and the ancestor header
+	// libs are left empty. A consumer that depended on the ancestor lib
+	// (because it had `-IThirdParty/token` on its include path) would
+	// then resolve no headers. Restore the recursive reachability by
+	// depending on every strict-descendant include-root's header lib:
+	// Bazel stages those libs' hdrs at their package-relative paths, and
+	// this lib's own `includes=["."]` supplies the search root, so the
+	// ancestor-prefixed `#include <vtktoken/token/Token.h>` resolves.
+	// As a bonus this turns the otherwise-empty ancestor cc_library into
+	// a non-empty one, clearing the empty-cc-library idiom finding.
+	var deps []string
+	for r2, n2 := range p.headerLibs {
+		if r2 == inc {
+			continue
+		}
+		if _, ok := relUnder(inc, r2); ok {
+			deps = append(deps, headerLibLabel(p, r2, n2))
+		}
+	}
+	sort.Strings(deps)
+
 	return ir.Target{
 		Name:       name,
 		Kind:       ir.KindCCLibrary,
 		Hdrs:       hdrs,
 		Includes:   []string{"."},
+		Deps:       deps,
 		Visibility: []string{"//visibility:public"},
 	}
 }

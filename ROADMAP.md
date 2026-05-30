@@ -38,7 +38,11 @@ transition cleanly.
   layout instead of a single monolithic BUILD. Targets land in
   the package matching their declaring cmake dir; each include-
   root becomes a synthesized header `cc_library` (so cmake's
-  single-`-I`-root include semantics survive the split); intra-
+  single-`-I`-root include semantics survive the split), and when
+  include-roots nest, an ancestor header lib forwards (via `deps`)
+  to its descendant-root header libs so the recursive reachability
+  monolithic emit gets from a single `-I<root>` is preserved
+  (VTK's `vtk_module_third_party` forwarders); intra-
   element deps and cross-package sources are rewritten to label
   form; `exports.json` carries the sub-package label so cross-
   element consumers resolve the right package. `buildifier
