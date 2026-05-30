@@ -13,22 +13,31 @@ corpus** and **how to survey them faithfully** (so two runs are comparable).
 
 | Project | Why it's in the corpus | Source | Fetch |
 | --- | --- | --- | --- |
-| **abseil** | Deeply modular; many INTERFACE deps-only wrapper libraries (exercises interface-library synthesis). | github.com/abseil/abseil-cpp | `make fetch-abseil` |
-| **protobuf** | `find_package` deps (ZLIB), generated sources, host-tool codegen. | github.com/protocolbuffers/protobuf | `make fetch-protobuf` |
-| **googletest** | Small, well-behaved baseline; INTERFACE genex defines (`$<BUILD_INTERFACE:...>`). | github.com/google/googletest | `make fetch-googletest` |
-| **eigen** | Header-only INTERFACE library; install/export surface. | gitlab.com/libeigen/eigen | `make fetch-eigen` |
-| **llvm** | Large; `ENABLE_EXPORTS`, PCH, TableGen generated sources, forward-declared include dirs. The stress test. | github.com/llvm/llvm-project (survey the `llvm/` subdir) | `make fetch-llvm` |
-| **VTK** | Large; heavy `cmake -P` codegen (`vtkEncodeString`), `target_precompile_headers`, version-stamp probes. | github.com/Kitware/VTK (mirror) | `make fetch-vtk` |
+All versions/dirs are pinned as overridable `*_VERSION` / `*_DIR` vars in
+the Makefile (`make fetch-*` clones each at its pinned tag).
+
+| Project | Why it's in the corpus | Source (pinned tag) | Fetch |
+| --- | --- | --- | --- |
+| **abseil** | Deeply modular; many INTERFACE deps-only wrapper libraries (exercises interface-library synthesis); doubles as the feature-flag idiom oracle. | github.com/abseil/abseil-cpp (`ABSEIL_VERSION`) | `make fetch-abseil` |
+| **protobuf** | `find_package` deps (ZLIB), protoc custom-command codegen, install(EXPORT) config-mode producer. | github.com/protocolbuffers/protobuf (`PROTOBUF_VERSION`) | `make fetch-protobuf` |
+| **googletest** | `enable_testing()` + add_test / gtest_discover_tests; INTERFACE genex defines (`$<BUILD_INTERFACE:...>`). | github.com/google/googletest (`GTEST_VERSION`) | `make fetch-googletest` |
+| **eigen** | Header-only INTERFACE library; config-mode export/components. | gitlab.com/libeigen/eigen (`EIGEN_VERSION`) | `make fetch-eigen` |
+| **llvm** | Large stress test; `ENABLE_EXPORTS`, PCH, TableGen generated sources, forward-declared include dirs. | github.com/llvm/llvm-project (`LLVM_VERSION`) — **survey the `llvm/` subdir** | `make fetch-llvm` |
+| **VTK** | Large; heavy `cmake -P` codegen (`vtkEncodeString`), `target_precompile_headers`, version-stamp probes. | github.com/Kitware/VTK mirror (`VTK_VERSION`) | `make fetch-vtk` |
+
+`fetch-survey` fetches the cheap four (abseil, protobuf, googletest,
+eigen). llvm and vtk are large, so fetch them explicitly with
+`make fetch-llvm` / `make fetch-vtk`.
 
 ### Provenance / network notes
 
-- **All fetches use GitHub** (or a GitHub mirror) deliberately: this repo's
-  CI / sandbox network policy allowlists GitHub but **not** every upstream
-  host. In particular **`gitlab.kitware.com` is blocked** (HTTP 403 "Host
-  not in allowlist"), so VTK is fetched from the **`github.com/Kitware/VTK`
-  mirror**, not its canonical GitLab home. Eigen's canonical home is GitLab
-  too; if `gitlab.com` is blocked in your environment, substitute a GitHub
-  mirror and note it in your run.
+- The CI / sandbox network policy allowlists most hosts but **not
+  `gitlab.kitware.com`** (it returns HTTP 403 "Host not in allowlist").
+  That's the one exception: **VTK is fetched from the
+  `github.com/Kitware/VTK` mirror** rather than its canonical GitLab home.
+  Everything else fetches from its canonical home — including **eigen from
+  `gitlab.com/libeigen`, which IS reachable** (only Kitware's GitLab is
+  blocked, not gitlab.com generally).
 - Fetches are **shallow** (`--depth 1`) — the survey only needs a tree to
   configure, not history.
 
@@ -102,16 +111,21 @@ real `.bst` element graph.
 # One-time: build the converter (the survey uses it directly).
 make converter
 
-# Fetch the whole corpus (shallow clones into the pinned dirs).
+# Fetch the default corpus (the cheap four). Add fetch-llvm / fetch-vtk
+# for the large two.
 make fetch-survey
 
-# Survey the whole corpus.
-make run-survey                      # writes /tmp/survey-out/<project>/...
+# Survey the default corpus. The survey is driven by the script, not a
+# make target; with no project args it surveys the four corpus projects
+# at their Makefile-pinned dirs. Output dir defaults to /tmp/survey-out.
+scripts/run-survey.sh
+SURVEY_OUT_DIR=/tmp/my-out scripts/run-survey.sh   # custom out dir
 
 # Survey one ad-hoc project (faithful flags baked into the script).
 scripts/run-survey.sh myproj=/path/to/cmake/root
 
 # Survey llvm correctly (the subdir, not the monorepo root).
+make fetch-llvm
 scripts/run-survey.sh llvm=$LLVM_DIR/llvm
 ```
 

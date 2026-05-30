@@ -37,6 +37,17 @@ GTEST_VERSION     ?= v1.17.0
 GTEST_DIR         ?= /tmp/googletest
 EIGEN_VERSION     ?= 3.4.1
 EIGEN_DIR         ?= /tmp/eigen
+# llvm + vtk are the large stress-test members (ENABLE_EXPORTS, PCH,
+# TableGen / cmake -P codegen, forward-declared includes). Not in the
+# default fetch-survey set — fetch explicitly. See docs/survey-corpus.md.
+# Survey llvm's `llvm/` SUBDIR, not the monorepo root (the root inflates
+# the missing-include-dir count with sibling dirs a shallow clone omits).
+LLVM_VERSION      ?= llvmorg-20.1.8
+LLVM_DIR          ?= /tmp/llvm-project
+# VTK's canonical home (gitlab.kitware.com) is blocked by the CI/sandbox
+# network allowlist; the github.com/Kitware/VTK mirror is allowlisted.
+VTK_VERSION       ?= v9.4.2
+VTK_DIR           ?= /tmp/vtk
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1013,7 +1024,28 @@ fetch-eigen:
 		echo "eigen already at $(EIGEN_DIR); rm -rf to refetch"; \
 	fi
 
-# Convenience aggregate: fetch the whole survey corpus.
+# llvm: the large stress test — ENABLE_EXPORTS, PCH, TableGen generated
+# sources, forward-declared include dirs. Survey the llvm/ subdir (see
+# docs/survey-corpus.md), not the monorepo root.
+fetch-llvm:
+	@if [ ! -d "$(LLVM_DIR)" ]; then \
+		git clone --depth 1 --branch $(LLVM_VERSION) https://github.com/llvm/llvm-project.git "$(LLVM_DIR)"; \
+	else \
+		echo "llvm-project already at $(LLVM_DIR); rm -rf to refetch"; \
+	fi
+
+# VTK: heavy `cmake -P` codegen (vtkEncodeString) + target_precompile_headers.
+# Fetched from the github.com/Kitware/VTK mirror because the canonical
+# gitlab.kitware.com is blocked by the sandbox allowlist.
+fetch-vtk:
+	@if [ ! -d "$(VTK_DIR)" ]; then \
+		git clone --depth 1 --branch $(VTK_VERSION) https://github.com/Kitware/VTK.git "$(VTK_DIR)"; \
+	else \
+		echo "vtk already at $(VTK_DIR); rm -rf to refetch"; \
+	fi
+
+# Convenience aggregate: fetch the default survey corpus (the cheap four;
+# llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
