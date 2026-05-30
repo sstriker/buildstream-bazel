@@ -164,8 +164,12 @@ func codegenTagToFinding(tag string) (code, msg string) {
 		return "qt-autorcc-host-tool-needed",
 			"target has AUTORCC=TRUE — same as automoc but for the rcc-generated resource source"
 	case tag == "cmake-codegen-enable-exports":
-		return "enable-exports-toolchain-feature-needed",
-			"target has ENABLE_EXPORTS=TRUE (executables exporting symbols) — Bazel cc_binary has no native attribute; wire via cc_toolchain feature"
+		// Informational only: the lifter now emits the native
+		// effect (`-rdynamic` in linkopts) for ENABLE_EXPORTS, so
+		// no operator action is required. The tag remains for
+		// auditability; like cmake-codegen-version it signals no
+		// gap, so return no finding.
+		return "", ""
 	case strings.HasPrefix(tag, "cmake-codegen-language-override="):
 		lang := strings.TrimPrefix(tag, "cmake-codegen-language-override=")
 		return "language-override-needs-split",

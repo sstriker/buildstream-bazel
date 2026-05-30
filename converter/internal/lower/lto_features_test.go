@@ -305,6 +305,12 @@ func TestApplyProbeGenexProperties_EnableExports(t *testing.T) {
 		Properties: map[string]string{"ENABLE_EXPORTS": "1"},
 	}}
 	applyProbeGenexProperties(pkg, toProbeSlice(probes))
+	// Native effect: ENABLE_EXPORTS lifts to -rdynamic (export the
+	// dynamic symbol table) in linkopts, cmake's actual behavior.
+	if !stringSliceContains(pkg.Targets[0].LinkOpts, "-rdynamic") {
+		t.Errorf("LinkOpts: %v should include -rdynamic (native ENABLE_EXPORTS effect)", pkg.Targets[0].LinkOpts)
+	}
+	// Tag retained for auditability.
 	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-enable-exports") {
 		t.Errorf("Tags: %v should include cmake-codegen-enable-exports", pkg.Targets[0].Tags)
 	}

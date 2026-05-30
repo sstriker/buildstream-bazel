@@ -6,7 +6,7 @@
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-survey update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -37,6 +37,17 @@ GTEST_VERSION     ?= v1.17.0
 GTEST_DIR         ?= /tmp/googletest
 EIGEN_VERSION     ?= 3.4.1
 EIGEN_DIR         ?= /tmp/eigen
+# llvm + vtk are the large stress-test members (ENABLE_EXPORTS, PCH,
+# TableGen / cmake -P codegen, forward-declared includes). Not in the
+# default fetch-survey set — fetch explicitly. See docs/survey-corpus.md.
+# Survey llvm's `llvm/` SUBDIR, not the monorepo root (the root inflates
+# the missing-include-dir count with sibling dirs a shallow clone omits).
+LLVM_VERSION      ?= llvmorg-20.1.8
+LLVM_DIR          ?= /tmp/llvm-project
+# VTK's canonical home (gitlab.kitware.com) is blocked by the CI/sandbox
+# network allowlist; the github.com/Kitware/VTK mirror is allowlisted.
+VTK_VERSION       ?= v9.4.2
+VTK_DIR           ?= /tmp/vtk
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1013,7 +1024,28 @@ fetch-eigen:
 		echo "eigen already at $(EIGEN_DIR); rm -rf to refetch"; \
 	fi
 
-# Convenience aggregate: fetch the whole survey corpus.
+# llvm: the large stress test — ENABLE_EXPORTS, PCH, TableGen generated
+# sources, forward-declared include dirs. Survey the llvm/ subdir (see
+# docs/survey-corpus.md), not the monorepo root.
+fetch-llvm:
+	@if [ ! -d "$(LLVM_DIR)" ]; then \
+		git clone --depth 1 --branch $(LLVM_VERSION) https://github.com/llvm/llvm-project.git "$(LLVM_DIR)"; \
+	else \
+		echo "llvm-project already at $(LLVM_DIR); rm -rf to refetch"; \
+	fi
+
+# VTK: heavy `cmake -P` codegen (vtkEncodeString) + target_precompile_headers.
+# Fetched from the github.com/Kitware/VTK mirror because the canonical
+# gitlab.kitware.com is blocked by the sandbox allowlist.
+fetch-vtk:
+	@if [ ! -d "$(VTK_DIR)" ]; then \
+		git clone --depth 1 --branch $(VTK_VERSION) https://github.com/Kitware/VTK.git "$(VTK_DIR)"; \
+	else \
+		echo "vtk already at $(VTK_DIR); rm -rf to refetch"; \
+	fi
+
+# Convenience aggregate: fetch the default survey corpus (the cheap four;
+# llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
