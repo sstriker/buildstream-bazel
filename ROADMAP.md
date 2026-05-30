@@ -139,14 +139,35 @@ transition cleanly.
     recognized lift pattern" string. The bucket constant
     keeps the historical `unknown` value for failure.json
     triage continuity; the new `BucketRefuse` alias
-    documents the role. Still queued for Phase 4: a
-    sibling TOP_LEVEL_INCLUDES hook that
-    `file(GENERATE)`s each `OUTPUT_VARIABLE`'s captured
-    probe / stamp value — cmake already executed the
-    probe, we just persist the result. Stamp values lift
-    to `stamp = 1` genrule attrs (so they don't bake into
-    srckey); probe values lift to `select()` over the
-    `configureLog` keys Phase 2 surfaces.
+    documents the role. The OUTPUT_VARIABLE probe/stamp
+    rescue shipped earlier (`recoverExecuteProcess` skips
+    the BucketProbe/BucketStamp refusal when the captured
+    value is present in `cmakeVars` from the dump-vars
+    hook) is now a guarded contract:
+    `scripts/meta-cmake-execute-process-rescue.sh` drives
+    a top-level `execute_process` probe whose value re-renders
+    through a lifted `configure_file` at Bazel time and pins
+    the rescue load-bearing with a `--dump-vars=false`
+    negative arm. The originally-queued *sibling
+    `file(GENERATE)` OUTPUT_VARIABLE hook* is resolved as
+    follows: for the common top-level config-invariant probe
+    it is **redundant** — dump-vars already DEFER-dumps every
+    variable at end-of-directory, so the value is captured
+    without a per-variable `file(GENERATE)`. Its only
+    non-redundant value (capturing a *named* OUTPUT_VARIABLE
+    set in a nested `add_subdirectory()` scope) carries the
+    same second-configure-pass dependency as the Phase 3
+    generalized per-literal probe — the hook must know the
+    variable names before configure starts, but the names
+    come from the post-configure trace — and folds into that
+    two-pass work rather than duplicating it. The `stamp = 1`
+    idea does not map to a standard `genrule` attribute (no
+    `stamp` attr on `genrule`; a true non-baking stamp needs
+    a custom status/repo rule), so BucketStamp's non-hermetic
+    values correctly stay on the round-2 fallback. The probe
+    `select()` is over `@platforms` host/toolchain
+    `config_setting`s per the classifier's own contract;
+    `select()` over build-config is Phase 5's job.
 
   - **Phase 5 — Ninja Multi-Config + sanitizer-as-feature.**
     `cmakerun.Options.BuildType` → `BuildTypes []string`;
