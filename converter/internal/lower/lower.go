@@ -958,10 +958,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// cc_library can't directly override per-source language;
 	// tag signals the gap.
 	tagLanguageOverrides(pkg, languageOverrideBySrc)
-	// install(FILES) → filegroup() lowering (Phase 1 task 2 of the
-	// generator-parity uplift). Appended last so the file-head
-	// targets stay grouped by family: cc rules first, generated
-	// content next, then install-side filegroups.
+	// install(FILES)/install(DIRECTORY) → pkg_files() lowering
+	// (Phase 1 slice 1b of the generator-parity uplift). Appended
+	// last so the file-head targets stay grouped by family: cc rules
+	// first, generated content next, then install-side packaging
+	// rules (pkg_files for FILES/DIRECTORY, cmake_config_bundle
+	// filegroup for declarative install(EXPORT)).
 	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
 	// INTERFACE-only library lift. cmake's File API codemodel
 	// omits INTERFACE_LIBRARY targets from its targets[] array —

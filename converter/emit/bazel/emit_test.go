@@ -1871,6 +1871,47 @@ func TestEmit_Filegroup_Basic(t *testing.T) {
 	}
 }
 
+// TestEmit_PkgFiles_Basic covers KindPkgFiles emission — Phase 1
+// slice 1b's install(FILES) / install(DIRECTORY) → pkg_files
+// declarative-packaging lowering. The rule carries the install
+// destination as `prefix`, loads pkg_files from
+// @rules_pkg//pkg:mappings.bzl, and gets a whole-rule `# keep`.
+func TestEmit_PkgFiles_Basic(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:       "install_files__include_foo",
+			Kind:       ir.KindPkgFiles,
+			Srcs:       []string{"include/foo/a.h", "include/foo/b.h"},
+			PkgPrefix:  "include/foo",
+			Visibility: []string{"//visibility:public"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	if !strings.Contains(gotStr, `load("@rules_pkg//pkg:mappings.bzl", "pkg_files")`) {
+		t.Errorf("expected rules_pkg load; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `pkg_files(`) {
+		t.Errorf("expected pkg_files rule; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `name = "install_files__include_foo"`) {
+		t.Errorf("expected name attribute; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `prefix = "include/foo"`) {
+		t.Errorf("expected prefix attribute carrying the install dest; got:\n%s", gotStr)
+	}
+	if !strings.Contains(gotStr, `"include/foo/a.h"`) || !strings.Contains(gotStr, `"include/foo/b.h"`) {
+		t.Errorf("expected srcs entries; got:\n%s", gotStr)
+	}
+	// Whole-rule keep (pkg_files isn't gazelle-regeneratable).
+	if !strings.Contains(gotStr, `)  # keep`) {
+		t.Errorf("expected whole-rule # keep marker; got:\n%s", gotStr)
+	}
+}
+
 // TestEmit_Alias_Basic covers KindAlias emission — the cmake
 // ALIAS-target lift (alias_target.go) projects
 // `add_library(<alias> ALIAS <target>)` shapes from the trace

@@ -258,6 +258,23 @@ func emitInstallLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
+// emitPkgFilesLoad writes the
+// `load("@rules_pkg//pkg:mappings.bzl", "pkg_files")` line when pkg
+// emits any pkg_files target (the install(FILES)/install(DIRECTORY)
+// declarative-packaging shape, Phase 1 slice 1b). No-op otherwise so
+// the cc-only / filegroup-only BUILD output stays byte-stable — an
+// element with no install(FILES) emits no rules_pkg load and the
+// consuming MODULE.bazel needs no rules_pkg bazel_dep. The
+// corresponding write-a-side dep wiring lives in moduleBazelB.
+func emitPkgFilesLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindPkgFiles {
+			buf.WriteString(`load("@rules_pkg//pkg:mappings.bzl", "pkg_files")` + "\n\n")
+			return
+		}
+	}
+}
+
 // Options tunes the BUILD.bazel emission. Zero-value Options
 // preserves the legacy relative-path emission.
 type Options struct {
@@ -366,6 +383,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitGazelleCcSearch(&buf, pkg, opts)
 	emitLoad(&buf, pkg)
 	emitInstallLoad(&buf, pkg)
+	emitPkgFilesLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -401,6 +419,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindFilegroup {
 			if err := emitFilegroup(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindPkgFiles {
+			if err := emitPkgFiles(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -472,13 +496,15 @@ func canonicalize(body []byte) ([]byte, error) {
 //     linkopts, includes, tags, linkstatic, alwayslink,
 //     include_prefix, strip_include_prefix.
 //   - cc_test additionally: args, env, timeout, data.
-//   - cc_import + alias: whole-rule keep. gazelle / gazelle_cc
-//     can't regenerate install-export imports (the round-2
-//     fallback's library exports) or aliases from post-
-//     conversion sources, so a rule-level keep is the only
-//     scope that survives a gazelle maintenance pass — an
-//     attribute-level keep leaves the rule itself a deletion
-//     candidate when gazelle finds no source to back it.
+//   - cc_import + alias + pkg_files: whole-rule keep. gazelle /
+//     gazelle_cc can't regenerate install-export imports (the
+//     round-2 fallback's library exports), aliases, or the
+//     install(FILES)/install(DIRECTORY)-derived pkg_files
+//     packaging rules from post-conversion sources, so a
+//     rule-level keep is the only scope that survives a gazelle
+//     maintenance pass — an attribute-level keep leaves the rule
+//     itself a deletion candidate when gazelle finds no source to
+//     back it.
 //   - genrule + filegroup: whole-rule keep (closing-paren
 //     suffix comment).
 //   - package(...): whole-rule keep.
@@ -496,7 +522,7 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package", "cc_import", "alias":
+		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
 			markAttrsKeep(call, ccKeepAttrs(kind))
@@ -739,6 +765,33 @@ var filegroupTmpl = template.Must(template.New("filegroup").Funcs(template.FuncM
 )
 `))
 
+// pkgFilesTmpl renders rules_pkg's
+// `pkg_files(name=, srcs=[...], prefix="<dest>")`. Used by the cmake
+// converter's install(FILES)/install(DIRECTORY) lowering (Phase 1
+// slice 1b). Needs the @rules_pkg//pkg:mappings.bzl load
+// (emitPkgFilesLoad). SrcsExpr is pre-rendered as a list expression
+// (the install(FILES)/install(DIRECTORY) lower never produces
+// per-platform deltas, so it's always a flat list literal in
+// practice — the attrExpr path is reused for shape consistency). The
+// prefix attribute is omitted when empty so a destination-less
+// installer (skipped upstream, but defensive) renders a valid rule.
+var pkgFilesTmpl = template.Must(template.New("pkg_files").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`pkg_files(
+    name = "{{.Name}}",
+    srcs = {{.SrcsExpr}},
+{{- if .Prefix}}
+    prefix = "{{.Prefix}}",
+{{- end}}
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
 // pickFileTmpl renders the rules_buildstream_bazel `pick_file()`
 // rule. Projects one file out of a pipeline_install install-root
 // TreeArtifact (the round-2 fallback's per-artefact / per-header
@@ -929,6 +982,25 @@ func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 	return filegroupTmpl.Execute(w, filegroupView{
 		Name:       t.Name,
 		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
+}
+
+// pkgFilesView projects ir.Target into the pkg_files template.
+type pkgFilesView struct {
+	Name       string
+	SrcsExpr   string
+	Prefix     string
+	Tags       []string
+	Visibility []string
+}
+
+func emitPkgFiles(w *bytes.Buffer, t ir.Target) error {
+	return pkgFilesTmpl.Execute(w, pkgFilesView{
+		Name:       t.Name,
+		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
+		Prefix:     t.PkgPrefix,
 		Tags:       sortedCopy(t.Tags),
 		Visibility: nonDefaultVisibility(t.Visibility),
 	})

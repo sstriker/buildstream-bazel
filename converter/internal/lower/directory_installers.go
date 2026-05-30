@@ -12,40 +12,55 @@ import (
 )
 
 // lowerDirectoryInstallers walks every Directory.Installers entry in
-// the reply and emits KindFilegroup IR targets for the install(FILES)
+// the reply and emits KindPkgFiles IR targets for the install(FILES)
 // and install(DIRECTORY) shapes:
 //
 //   - Type == "file" uses plain-string paths in
-//     DirectoryInstaller.Paths.
+//     DirectoryInstaller.Paths. The listed files package under the
+//     install DESTINATION (the pkg_files `prefix`).
 //   - Type == "directory" uses {"from": ..., "to": ...} path
 //     objects; install(DIRECTORY) effectively names a source
 //     directory (`from`) and a destination subdirectory (`to`,
 //     usually empty meaning "preserve hierarchy under DESTINATION").
-//     The lift expands the source directory's contents — recursive
-//     filesystem walk would extend the converter's I/O scope, so v1
-//     records ONLY the source-directory anchor as a filegroup src
-//     (Bazel can resolve via glob in a downstream wrapper, or the
-//     operator can opt into rules_pkg's pkg_files for richer
-//     handling).
+//     The lift records the source-directory anchor as a pkg_files
+//     src (a recursive filesystem walk would extend the converter's
+//     I/O scope); pkg_files packages the directory's tree under the
+//     DESTINATION prefix.
+//
+// Phase 1 slice 1b of the generator-parity uplift (ROADMAP.md):
+// install(FILES)/install(DIRECTORY) lower to rules_pkg's pkg_files
+// rather than a bare filegroup, so the install **destination** rides
+// through as the `prefix` attribute and the converted shape is a real
+// declarative packaging mapping (filegroup dropped the destination
+// entirely). Keeping them off the round-2 install path: a declarative
+// pkg_files target is the convert-time answer, not an opaque
+// install-root extraction.
 //
 // install(TARGETS) (Type == "target") is already covered by the
 // per-target Install slot in the codemodel.
 //
 // install(EXPORT) (Type == "export") is the Phase 6 classifier's
-// surface — gated separately.
+// surface — gated separately, still produces KindFilegroup
+// cmake_config_bundle shapes via lowerExportInstallers.
 //
-// Phase 1 task 2 of the generator-parity uplift (ROADMAP.md).
-//
-// Grouping rule: one filegroup per (destination) — files and
+// Grouping rule: one pkg_files per (destination) — files and
 // directories sharing a destination consolidate into one target.
-// The filegroup name is `install_files__<sanitized destination>`
+// The target name is `install_files__<sanitized destination>`
 // for Type=="file" and `install_directory__<sanitized destination>`
 // for Type=="directory". Empty / unsafe destinations are skipped so
 // the conversion doesn't produce names that violate Bazel
 // target-name rules.
 //
-// Returns IR targets in deterministic order (sorted by filegroup
-// name) so downstream emit produces byte-stable BUILD output.
+// Per-file destination renames (cmake install(FILES ... RENAME ...))
+// are NOT modeled: the File API codemodel's DirectoryInstaller does
+// not expose the rename target cleanly (the rename is folded into the
+// installer's already-resolved destination path bookkeeping, not
+// surfaced as a separate field). Documented as a follow-up in
+// ROADMAP.md; a future revision can map RENAME onto pkg_files'
+// `renames` dict once the codemodel surface is confirmed.
+//
+// Returns IR targets in deterministic order (sorted by target name)
+// so downstream emit produces byte-stable BUILD output.
 func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 	if r == nil || len(r.Directories) == 0 {
 		return nil
@@ -136,9 +151,14 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			prefix = "install_directory__"
 		}
 		out = append(out, ir.Target{
-			Name:       prefix + sanitizeDestination(b.dest),
-			Kind:       ir.KindFilegroup,
-			Srcs:       files,
+			Name: prefix + sanitizeDestination(b.dest),
+			Kind: ir.KindPkgFiles,
+			Srcs: files,
+			// PkgPrefix is the install DESTINATION verbatim (e.g.
+			// "lib", "include", "share/foo") — pkg_files renders it
+			// as the prefix attribute so consumers reconstruct the
+			// install layout.
+			PkgPrefix:  b.dest,
 			Visibility: []string{"//visibility:public"},
 		})
 	}

@@ -66,11 +66,15 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		dir := plan.targetDir(t.Name)
 		ensure(dir)
 		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
-		// A filegroup whose only srcs were bare packaged directories
-		// (dropped above) would render as an empty, useless rule — skip it.
-		// install(DIRECTORY) of a dir that became its own package is
-		// served by the layout-independent install-root path.
-		if rt.Kind == ir.KindFilegroup && len(rt.Srcs) == 0 && len(t.Srcs) > 0 {
+		// A filegroup / pkg_files whose only srcs were bare packaged
+		// directories (dropped above) would render as an empty, useless
+		// rule — and pkg_files/filegroup both require a non-empty srcs
+		// (the template renders `srcs = ,` for an empty list, which is
+		// unparseable). Skip it. install(FILES)/install(DIRECTORY) of a
+		// dir that became its own package is served by the
+		// layout-independent install-root path.
+		if (rt.Kind == ir.KindFilegroup || rt.Kind == ir.KindPkgFiles) &&
+			len(rt.Srcs) == 0 && len(t.Srcs) > 0 {
 			continue
 		}
 		groups[dir] = append(groups[dir], rt)

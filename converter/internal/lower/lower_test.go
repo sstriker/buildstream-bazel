@@ -40,8 +40,8 @@ func TestToIR_HelloWorld(t *testing.T) {
 	}
 	// Four targets:
 	//   - the cc_library (the producer rule for `hello`),
-	//   - the install_directory__include filegroup mirroring
-	//     install(DIRECTORY include ...) (Phase 1 task 2),
+	//   - the install_directory__include pkg_files mirroring
+	//     install(DIRECTORY include ...) (Phase 1 slice 1b),
 	//   - the cmake_config_bundle filegroup synthesizing the
 	//     install(EXPORT) bundle script (Phase 6 declarative
 	//     projection — codemodel-only EmitInputs slice),
