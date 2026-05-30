@@ -381,6 +381,42 @@ type Target struct {
 	// every non-pkg_files target.
 	PkgPrefix string
 
+	// PkgSrcsGlob, when true on a KindPkgFiles target, makes the
+	// emitter render `srcs = glob(["<dir>/**"])` (one glob per Srcs
+	// entry) instead of the literal `srcs = [...]` list. This is the
+	// install(DIRECTORY ...) shape: cmake's install(DIRECTORY) names
+	// a *source directory* whose entire tree is packaged, and a bare
+	// directory in a pkg_files `srcs` does NOT package the directory's
+	// files — a consuming pkg_tar fails with IsADirectoryError. The
+	// glob expands the directory to its constituent files so they're
+	// addressable Bazel inputs. install(FILES ...) keeps the literal
+	// list (PkgSrcsGlob == false) since those srcs are already
+	// individual files.
+	PkgSrcsGlob bool
+
+	// PkgStripPrefix, when non-empty on a KindPkgFiles target with
+	// PkgSrcsGlob, renders as
+	// `strip_prefix = strip_prefix.from_pkg("<PkgStripPrefix>")`. It
+	// carries the package-relative source directory whose leading path
+	// rules_pkg strips before applying `prefix`, so the globbed files
+	// land at "<PkgPrefix>/<rel-under-dir>" rather than
+	// "<PkgPrefix>/<dir>/<rel>". For cmake's
+	// install(DIRECTORY include/ DESTINATION include) (trailing slash
+	// = "contents of include/ into DESTINATION") this is "include":
+	// glob(["include/**"]) + strip_prefix.from_pkg("include") +
+	// prefix="include" packages include/foo.h at include/foo.h.
+	//
+	// Known limitation: cmake's no-trailing-slash form
+	// (install(DIRECTORY include DESTINATION include) — "the include
+	// dir itself into DESTINATION", yielding include/include/foo.h)
+	// is recoverable from the File API (the codemodel records it as a
+	// plain-string path rather than the trailing-slash form's
+	// {"from","to":"."} object) but is NOT separately modeled here —
+	// the lowering treats every directory installer as the
+	// contents-into-dest shape. See lowerDirectoryInstallers and
+	// ROADMAP.md.
+	PkgStripPrefix string
+
 	// InstallDest is the relative path under the install prefix where the
 	// CMake install(TARGETS) rule places this target's artifact (e.g. "lib"
 	// for STATIC_LIBRARY). Used by emit/cmakecfg/ to populate

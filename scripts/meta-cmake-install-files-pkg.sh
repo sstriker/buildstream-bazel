@@ -67,8 +67,11 @@ fail() {
     exit 1
 }
 
-# Assert 2: rules_pkg load present.
-if ! grep -q 'load("@rules_pkg//pkg:mappings.bzl", "pkg_files")' "$out_build"; then
+# Assert 2: rules_pkg load present. The fixture has an
+# install(DIRECTORY) so the load also pulls "strip_prefix" (the
+# directory-glob shape renders strip_prefix.from_pkg(...)); match the
+# pkg_files symbol without pinning the rest of the load line.
+if ! grep -q 'load("@rules_pkg//pkg:mappings.bzl", "pkg_files"' "$out_build"; then
     fail "rules_pkg pkg_files load missing"
 fi
 
@@ -88,12 +91,23 @@ if ! grep -q 'prefix = "include"' "$out_build"; then
     fail "pkg_files prefix for include missing or wrong"
 fi
 
-# Assert 3c: install(DIRECTORY docs/ DESTINATION share/doc).
+# Assert 3c: install(DIRECTORY docs/ DESTINATION share/doc). The
+# directory case must GLOB the source dir's contents and strip the
+# source dir (slice 1b fix): a bare directory in pkg_files srcs does
+# not package the dir's files — a consuming pkg_tar fails with
+# IsADirectoryError. So assert the glob + strip_prefix shape, not the
+# old bare `srcs = ["docs"]`.
 if ! grep -q 'name = "install_directory__share_doc"' "$out_build"; then
     fail "pkg_files for share/doc directory destination missing"
 fi
 if ! grep -q 'prefix = "share/doc"' "$out_build"; then
     fail "pkg_files prefix for share/doc missing or wrong"
+fi
+if ! grep -q 'srcs = glob(\["docs/\*\*"\])' "$out_build"; then
+    fail "install(DIRECTORY) docs/ should glob the dir contents (srcs = glob([\"docs/**\"]))"
+fi
+if ! grep -q 'strip_prefix = strip_prefix.from_pkg("docs")' "$out_build"; then
+    fail "install(DIRECTORY) docs/ should strip the source dir (strip_prefix.from_pkg(\"docs\"))"
 fi
 
 # Assert 4: no bare install filegroup shape (the old lowering).

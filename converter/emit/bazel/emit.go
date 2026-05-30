@@ -267,12 +267,31 @@ func emitInstallLoad(buf *bytes.Buffer, pkg *ir.Package) {
 // consuming MODULE.bazel needs no rules_pkg bazel_dep. The
 // corresponding write-a-side dep wiring lives in moduleBazelB.
 func emitPkgFilesLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	hasPkgFiles := false
+	hasStripPrefix := false
 	for _, t := range pkg.Targets {
-		if t.Kind == ir.KindPkgFiles {
-			buf.WriteString(`load("@rules_pkg//pkg:mappings.bzl", "pkg_files")` + "\n\n")
-			return
+		if t.Kind != ir.KindPkgFiles {
+			continue
+		}
+		hasPkgFiles = true
+		// The install(DIRECTORY) glob shape renders
+		// `strip_prefix.from_pkg(...)`, which needs the `strip_prefix`
+		// symbol loaded alongside `pkg_files`. install(FILES) targets
+		// (literal srcs list, no strip_prefix) don't, so a FILES-only
+		// BUILD keeps the single-symbol load — preserving the
+		// file-case output byte-for-byte.
+		if t.PkgSrcsGlob && t.PkgStripPrefix != "" {
+			hasStripPrefix = true
 		}
 	}
+	if !hasPkgFiles {
+		return
+	}
+	if hasStripPrefix {
+		buf.WriteString(`load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")` + "\n\n")
+		return
+	}
+	buf.WriteString(`load("@rules_pkg//pkg:mappings.bzl", "pkg_files")` + "\n\n")
 }
 
 // Options tunes the BUILD.bazel emission. Zero-value Options
@@ -783,6 +802,9 @@ var pkgFilesTmpl = template.Must(template.New("pkg_files").Funcs(template.FuncMa
 {{- if .Prefix}}
     prefix = "{{.Prefix}}",
 {{- end}}
+{{- if .StripPrefixExpr}}
+    strip_prefix = {{.StripPrefixExpr}},
+{{- end}}
 {{- if .Tags}}
     tags = {{strList .Tags}},
 {{- end}}
@@ -989,21 +1011,58 @@ func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 
 // pkgFilesView projects ir.Target into the pkg_files template.
 type pkgFilesView struct {
-	Name       string
-	SrcsExpr   string
-	Prefix     string
-	Tags       []string
-	Visibility []string
+	Name     string
+	SrcsExpr string
+	Prefix   string
+	// StripPrefixExpr is the pre-rendered `strip_prefix = ...`
+	// value (a `strip_prefix.from_pkg("<dir>")` call) for the
+	// install(DIRECTORY) glob shape, or "" to omit the attribute
+	// (install(FILES) literal-list shape). See pkgFilesSrcsExpr.
+	StripPrefixExpr string
+	Tags            []string
+	Visibility      []string
 }
 
 func emitPkgFiles(w *bytes.Buffer, t ir.Target) error {
+	srcsExpr, stripExpr := pkgFilesSrcsExpr(t)
 	return pkgFilesTmpl.Execute(w, pkgFilesView{
-		Name:       t.Name,
-		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
-		Prefix:     t.PkgPrefix,
-		Tags:       sortedCopy(t.Tags),
-		Visibility: nonDefaultVisibility(t.Visibility),
+		Name:            t.Name,
+		SrcsExpr:        srcsExpr,
+		Prefix:          t.PkgPrefix,
+		StripPrefixExpr: stripExpr,
+		Tags:            sortedCopy(t.Tags),
+		Visibility:      nonDefaultVisibility(t.Visibility),
 	})
+}
+
+// pkgFilesSrcsExpr renders the `srcs` expression (and, for the
+// directory case, the `strip_prefix` expression) for a KindPkgFiles
+// target.
+//
+//   - install(FILES) shape (PkgSrcsGlob == false): srcs is the literal
+//     list `["a", "b"]` of individual files — byte-identical to the
+//     pre-slice-1b-fix emission. No strip_prefix.
+//   - install(DIRECTORY) shape (PkgSrcsGlob == true): srcs is a
+//     `glob(["<dir>/**"])` over the source directory's contents (a
+//     bare directory in srcs doesn't package its files — a consuming
+//     pkg_tar fails with IsADirectoryError). One glob pattern per
+//     source dir, sorted for byte-stable output. strip_prefix renders
+//     as `strip_prefix.from_pkg("<dir>")` (package-relative; strips
+//     the source dir so files land at "<prefix>/<rel>") when the
+//     target carries a PkgStripPrefix.
+func pkgFilesSrcsExpr(t ir.Target) (srcs string, strip string) {
+	if !t.PkgSrcsGlob {
+		return attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")), ""
+	}
+	patterns := make([]string, 0, len(t.Srcs))
+	for _, d := range sortedCopy(t.Srcs) {
+		patterns = append(patterns, d+"/**")
+	}
+	srcs = "glob(" + strList(patterns) + ")"
+	if t.PkgStripPrefix != "" {
+		strip = fmt.Sprintf("strip_prefix.from_pkg(%q)", t.PkgStripPrefix)
+	}
+	return srcs, strip
 }
 
 // aliasView projects ir.Target into the alias template.

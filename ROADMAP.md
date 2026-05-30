@@ -84,11 +84,25 @@ transition cleanly.
     (coarse gate — write-a renders MODULE.bazel before the
     per-element converter runs, so it can't see whether a
     given element emits a pkg_files target; mirrors the
-    rules_python precedent). *Limitation:* per-file
+    rules_python precedent). install(DIRECTORY) lowers to
+    `pkg_files(srcs = glob(["<dir>/**"]), prefix = "<dest>",
+    strip_prefix = strip_prefix.from_pkg("<dir>"))` — a glob over
+    the source directory's contents, not a bare directory in
+    `srcs` (a bare dir doesn't package its files; a consuming
+    `pkg_tar` fails with `IsADirectoryError`). install(FILES)
+    keeps the literal `srcs` list. *Limitations:* (a) per-file
     destination renames (cmake `install(FILES ... RENAME ...)`)
     are not modeled — the File API `DirectoryInstaller` doesn't
     surface the rename target cleanly; a follow-up can map it
-    onto `pkg_files` `renames`. Render gate
+    onto `pkg_files` `renames`. (b) install(DIRECTORY) assumes
+    the trailing-slash "contents of `<dir>/` into DESTINATION"
+    semantic (the overwhelmingly common shape). cmake's
+    no-trailing-slash form (`install(DIRECTORY include
+    DESTINATION include)` → `include/include/...`) is
+    distinguishable in the codemodel (recorded as a plain-string
+    path vs. the trailing-slash `{"from","to":"."}` object) but
+    is treated identically; a follow-up can carry the distinction
+    through the `to` field. Render gate
     `scripts/meta-cmake-install-files-pkg.sh`.
     `shadow.ExtractSourceFileProperties` decodes per-file
     `set_source_files_properties` and lowering now consumes it

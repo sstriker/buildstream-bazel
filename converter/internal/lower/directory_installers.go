@@ -150,7 +150,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 		if b.kind == "directory" {
 			prefix = "install_directory__"
 		}
-		out = append(out, ir.Target{
+		t := ir.Target{
 			Name: prefix + sanitizeDestination(b.dest),
 			Kind: ir.KindPkgFiles,
 			Srcs: files,
@@ -160,7 +160,50 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			// install layout.
 			PkgPrefix:  b.dest,
 			Visibility: []string{"//visibility:public"},
-		})
+		}
+		if b.kind == "directory" {
+			// install(DIRECTORY <dir>/ DESTINATION <dest>) names a
+			// SOURCE DIRECTORY whose whole tree is packaged. A bare
+			// directory in pkg_files `srcs` does NOT package its files
+			// — a consuming pkg_tar fails with IsADirectoryError and
+			// the tar carries only the empty dir entry. So we glob the
+			// directory's contents (the emitter renders
+			// `srcs = glob(["<dir>/**"])`) and strip the source dir so
+			// each file lands at "<dest>/<rel>" rather than
+			// "<dest>/<dir>/<rel>".
+			//
+			// strip_prefix: rules_pkg's strip_prefix.from_pkg("<dir>")
+			// strips up to the current package plus "<dir>", which is
+			// exactly the trailing-slash "contents of <dir>/ into
+			// DESTINATION" cmake semantic. Verified under real bazel +
+			// rules_pkg 1.0.1: glob(["include/**"]) +
+			// strip_prefix.from_pkg("include") + prefix="include"
+			// packages include/foo.h at include/foo.h (not a bare
+			// include/ entry, not include/include/foo.h).
+			//
+			// We use the single source dir's path as the strip prefix.
+			// When a single DESTINATION bucket aggregates more than one
+			// source directory (cmake install(DIRECTORY a b
+			// DESTINATION d) — rare), a single strip_prefix can't
+			// flatten each independently; we fall back to no
+			// strip_prefix so files keep their dir-qualified paths
+			// under the prefix (the conservative, never-wrong shape).
+			//
+			// Known limitation: cmake's NO-trailing-slash form
+			// (install(DIRECTORY include DESTINATION include),
+			// "the include dir itself into DESTINATION" →
+			// include/include/foo.h) is distinguishable in the File API
+			// (recorded as a plain-string path rather than the
+			// trailing-slash {"from","to":"."} object) but is NOT
+			// separately modeled — every directory installer is treated
+			// as the overwhelmingly common contents-into-dest shape.
+			// Documented in ROADMAP.md.
+			t.PkgSrcsGlob = true
+			if len(files) == 1 {
+				t.PkgStripPrefix = files[0]
+			}
+		}
+		out = append(out, t)
 	}
 	// Append declarative install(EXPORT) IR after the file /
 	// directory filegroups. The slot ordering is cosmetic — the

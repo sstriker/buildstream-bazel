@@ -60,6 +60,14 @@ func TestLowerDirectoryInstallers_FileInstaller(t *testing.T) {
 			t.Errorf("Srcs[%d]: got %q want %q", i, tgt.Srcs[i], s)
 		}
 	}
+	// install(FILES) srcs are individual files — they stay a literal
+	// list (no glob, no strip_prefix). Only install(DIRECTORY) globs.
+	if tgt.PkgSrcsGlob {
+		t.Errorf("PkgSrcsGlob: got true, want false (file installer keeps literal srcs)")
+	}
+	if tgt.PkgStripPrefix != "" {
+		t.Errorf("PkgStripPrefix: got %q, want empty (file installer)", tgt.PkgStripPrefix)
+	}
 }
 
 // TestLowerDirectoryInstallers_GroupsByDestination covers multiple
@@ -150,6 +158,15 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath(t *testing.T) {
 	}
 	if len(got[0].Srcs) != 1 || got[0].Srcs[0] != "share/data" {
 		t.Errorf("Srcs: %v", got[0].Srcs)
+	}
+	// install(DIRECTORY) must glob the source dir's contents (a bare
+	// directory in pkg_files srcs doesn't package its files) and strip
+	// the source dir so files land at "<dest>/<rel>".
+	if !got[0].PkgSrcsGlob {
+		t.Errorf("PkgSrcsGlob: got false, want true (directory installer)")
+	}
+	if got[0].PkgStripPrefix != "share/data" {
+		t.Errorf("PkgStripPrefix: got %q want %q", got[0].PkgStripPrefix, "share/data")
 	}
 }
 
