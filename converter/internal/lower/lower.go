@@ -3110,11 +3110,31 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 				tgt.Copts = append(tgt.Copts, flag)
 			}
 		}
-		// ENABLE_EXPORTS (executables) tags so operators can
-		// route the export-symbols-from-executable shape via
-		// the operator's cc_toolchain feature. Bazel cc_binary
-		// has no native attribute for this.
+		// ENABLE_EXPORTS (executables / shared libs that export
+		// their symbols so dynamically-loaded plugins can resolve
+		// against them). cmake implements this by adding the
+		// platform's export-dynamic linker flag — `-rdynamic`
+		// (a.k.a. `-Wl,--export-dynamic`) on GNU/Clang ld. That IS
+		// a native Bazel concept: a linkopts entry. Emit it so the
+		// converted binary actually exports its dynamic symbol
+		// table, instead of only tagging the gap for the operator
+		// to wire by hand. The tag is kept alongside for
+		// auditability (so the bazel-idiom pass and operators can
+		// still see the cmake-side intent), but the flag now
+		// carries the real effect.
+		//
+		// Scope: GNU/Clang-style flag. The structural probe doesn't
+		// record the target platform's linker family here, so we
+		// emit the GNU/Clang spelling — correct for the Linux/macOS
+		// (ld/lld) toolchains this converter targets; an MSVC-link
+		// toolchain ignores `-rdynamic` (it's not the right spelling
+		// there, but cmake's ENABLE_EXPORTS is also a no-op for the
+		// MSVC import-lib model, so emitting nothing harmful).
 		if cmakeTruthy(p.Properties["ENABLE_EXPORTS"]) {
+			const exportDynamic = "-rdynamic"
+			if !stringSliceContains(tgt.LinkOpts, exportDynamic) {
+				tgt.LinkOpts = append(tgt.LinkOpts, exportDynamic)
+			}
 			tag := "cmake-codegen-enable-exports"
 			if !stringSliceContains(tgt.Tags, tag) {
 				tgt.Tags = append(tgt.Tags, tag)
