@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
@@ -61,6 +62,66 @@ func TestBuildExportsDoc(t *testing.T) {
 		}
 		if ex.CMakeTarget == "Greeter::aux" && len(ex.LinkLibraries) != 0 {
 			t.Errorf("aux (no artifact) should have no link_libraries; got %v", ex.LinkLibraries)
+		}
+	}
+}
+
+// TestBuildExportsDoc_DeclarativeBundleLabels checks the Phase 6
+// resolved-lift manifest-synth (M3): when the lowered IR carries a
+// declarative install(EXPORT) projection (a "cmake_config_bundle"
+// filegroup plus tagged `<lib>_import` cc_import facades), every
+// emitted Export carries the absolute bundle label + the sorted list
+// of import-facade labels so a cross-element find_package consumer can
+// resolve straight to them.
+func TestBuildExportsDoc_DeclarativeBundleLabels(t *testing.T) {
+	const tag = "cmake-codegen-install-export-import"
+	pkg := &ir.Package{
+		Name: "foopkg",
+		Targets: []ir.Target{
+			{Name: "foo", Kind: ir.KindCCLibrary, ArtifactName: "libfoo.a"},
+			{Name: "bar", Kind: ir.KindCCLibrary, ArtifactName: "libbar.so.1"},
+			// Phase 6 declarative projection: per-target import
+			// facades (tagged) + the package-wide bundle filegroup.
+			{Name: "bar_import", Kind: ir.KindCCImport, Tags: []string{tag}},
+			{Name: "foo_import", Kind: ir.KindCCImport, Tags: []string{tag}},
+			{Name: "cmake_config_bundle", Kind: ir.KindFilegroup,
+				Srcs: []string{"lib/cmake/foopkg/foopkgTargets.cmake"}},
+		},
+	}
+	doc := buildExportsDoc(pkg, "foopkg", "FooPkg::", "elements/components/foopkg", nil, false)
+	wantBundle := "//elements/components/foopkg:cmake_config_bundle"
+	wantImports := []string{
+		"//elements/components/foopkg:bar_import",
+		"//elements/components/foopkg:foo_import",
+	}
+	for _, ex := range doc.Elements[0].Exports {
+		if ex.CMakeConfigBundleLabel != wantBundle {
+			t.Errorf("%s CMakeConfigBundleLabel = %q, want %q", ex.CMakeTarget, ex.CMakeConfigBundleLabel, wantBundle)
+		}
+		if !reflect.DeepEqual(ex.CMakeImportLabels, wantImports) {
+			t.Errorf("%s CMakeImportLabels = %v, want %v", ex.CMakeTarget, ex.CMakeImportLabels, wantImports)
+		}
+	}
+}
+
+// TestBuildExportsDoc_NoBundleOmitsLabels confirms a non-bundle
+// element (no cmake_config_bundle in the IR) leaves both Phase 6
+// fields empty, so its exports.json stays byte-identical to the
+// pre-Phase-6 shape.
+func TestBuildExportsDoc_NoBundleOmitsLabels(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "plain",
+		Targets: []ir.Target{
+			{Name: "plain", Kind: ir.KindCCLibrary, ArtifactName: "libplain.a"},
+		},
+	}
+	doc := buildExportsDoc(pkg, "Plain", "Plain::", "elements/plain", nil, false)
+	for _, ex := range doc.Elements[0].Exports {
+		if ex.CMakeConfigBundleLabel != "" {
+			t.Errorf("%s CMakeConfigBundleLabel = %q, want empty", ex.CMakeTarget, ex.CMakeConfigBundleLabel)
+		}
+		if ex.CMakeImportLabels != nil {
+			t.Errorf("%s CMakeImportLabels = %v, want nil", ex.CMakeTarget, ex.CMakeImportLabels)
 		}
 	}
 }

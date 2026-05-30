@@ -1148,12 +1148,30 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 		}
 		return ":" + target
 	}
+	// Phase 6 (resolved-lift manifest-synth, M3): if the lowering
+	// pass projected a declarative install(EXPORT) bundle into the
+	// IR, it left a "cmake_config_bundle" filegroup plus one
+	// `<lib>_import` cc_import / cc_interface facade per exported
+	// target (tagged "cmake-codegen-install-export-import"). Those
+	// targets always live at the element root (no SubPackages
+	// entry, see ir.Package.SubPackages), so frame their labels
+	// with bazelPkgPath directly — the same absolute framing the
+	// export BazelLabels above use, so they resolve cross-element.
+	// Carrying them on the exports manifest lets a downstream
+	// find_package(<Pkg> CONFIG) consumer resolve straight to the
+	// synthesized bundle + the per-artifact cc_import facades
+	// without re-deriving them. Stays empty for imperative bundles
+	// (no cmake_config_bundle in the IR) and non-cmake exports, so
+	// non-bundle elements emit byte-identical exports.json.
+	bundleLabel, importLabels := cmakeBundleLabels(pkg, bazelPkgPath)
 	libs := cmakecfg.ImportableTargets(pkg)
 	exports := make([]*manifest.Export, 0, len(libs)+len(aliases))
 	for _, lib := range libs {
 		ex := &manifest.Export{
-			CMakeTarget: nsPrefix + lib.Name,
-			BazelLabel:  label(lib.Name),
+			CMakeTarget:            nsPrefix + lib.Name,
+			BazelLabel:             label(lib.Name),
+			CMakeConfigBundleLabel: bundleLabel,
+			CMakeImportLabels:      importLabels,
 		}
 		// B: variable-only Find modules (no <Pkg>::<Pkg> target)
 		// resolve via ${<Pkg>_LIBRARIES} → a path or -l<name>. Carry
@@ -1172,8 +1190,10 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 	// linking the alias resolves to the same element.
 	for _, a := range aliases {
 		exports = append(exports, &manifest.Export{
-			CMakeTarget: a.Name,
-			BazelLabel:  label(a.Underlying),
+			CMakeTarget:            a.Name,
+			BazelLabel:             label(a.Underlying),
+			CMakeConfigBundleLabel: bundleLabel,
+			CMakeImportLabels:      importLabels,
 		})
 	}
 	sort.Slice(exports, func(i, j int) bool {
@@ -1183,6 +1203,57 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 		Version:  1,
 		Elements: []*manifest.Element{{Name: pkgName, Exports: exports}},
 	}
+}
+
+// cmakeBundleLabels scans the lowered IR for the Phase 6 declarative
+// install(EXPORT) projection and returns the absolute Bazel label of
+// the synthesized "cmake_config_bundle" filegroup plus the sorted
+// list of `<lib>_import` cc_import / cc_interface facade labels (those
+// tagged "cmake-codegen-install-export-import"). All such targets live
+// at the element root, so labels are framed with bazelPkgPath — the
+// same absolute framing buildExportsDoc's BazelLabels use, so they
+// resolve cross-element via the producer's exports manifest. Returns
+// "" / nil when no declarative bundle is present (imperative bundles
+// emit no cmake_config_bundle filegroup, and non-cmake exports have
+// none either) so non-bundle elements emit byte-identical exports.json.
+func cmakeBundleLabels(pkg *ir.Package, bazelPkgPath string) (string, []string) {
+	rootLabel := func(name string) string {
+		if bazelPkgPath != "" {
+			return "//" + bazelPkgPath + ":" + name
+		}
+		return ":" + name
+	}
+	var bundleLabel string
+	var importLabels []string
+	for _, t := range pkg.Targets {
+		switch {
+		case t.Kind == ir.KindFilegroup && t.Name == "cmake_config_bundle":
+			bundleLabel = rootLabel(t.Name)
+		case (t.Kind == ir.KindCCImport || t.Kind == ir.KindCCInterface) &&
+			hasTag(t.Tags, "cmake-codegen-install-export-import"):
+			importLabels = append(importLabels, rootLabel(t.Name))
+		}
+	}
+	// No declarative bundle → leave both empty so the exports.json
+	// stays byte-identical to the pre-Phase-6 shape. The cc_import
+	// facades only exist alongside the bundle filegroup, but guard on
+	// the filegroup explicitly so a future shape that emits one
+	// without the other can't leak orphan import labels.
+	if bundleLabel == "" {
+		return "", nil
+	}
+	sort.Strings(importLabels)
+	return bundleLabel, importLabels
+}
+
+// hasTag reports whether tags contains want.
+func hasTag(tags []string, want string) bool {
+	for _, t := range tags {
+		if t == want {
+			return true
+		}
+	}
+	return false
 }
 
 // linkLibName derives the linker -l<name> from a library artifact
