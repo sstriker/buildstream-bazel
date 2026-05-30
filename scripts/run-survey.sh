@@ -9,6 +9,12 @@
 # hooks), and --diagnostics collects every Tier-1 refusal and continues
 # past it rather than aborting on the first.
 #
+# The corpus (which projects, where they're fetched from, and how to
+# survey faithfully — e.g. survey llvm's `llvm/` subdir, exclude the
+# benign missing-include-dir notices before comparing counts) is
+# documented in docs/survey-corpus.md. Fetch the corpus with
+# `make fetch-survey` (adds fetch-llvm / fetch-vtk for the big two).
+#
 # Each project is converted into a scratch out dir; the emitted
 # BUILD.bazel is best-effort and NOT guaranteed to build — the point is
 # enumerating the refusal + idiom surface in one pass, not producing
