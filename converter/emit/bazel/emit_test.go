@@ -920,10 +920,12 @@ func TestEmit_FindPackageVariableForm_LinkLibraryRedirect(t *testing.T) {
 // `build/cmake/CMakeLists.txt` layout: cmake's source dir is one
 // level below the workspace root, sources live at
 // <workspace>/lib/*, and the codemodel records absolute paths
-// outside cmakeSrc. The fixture carries a `.git/HEAD` marker at
-// the workspace root so detectWorkspaceRoot fires and the lower
-// relativizes labels against the workspace (emitting `lib/demo.c`
-// instead of refusing with unsupported-source-path).
+// outside cmakeSrc. The test materializes a `.git/HEAD` marker at
+// the workspace root (git can't track a nested `.git`, so the
+// committed fixture can't ship one — see the body) so
+// detectWorkspaceRoot fires and the lower relativizes labels
+// against the workspace (emitting `lib/demo.c` instead of refusing
+// with unsupported-source-path).
 //
 // Round-5's fix (PR #227, commit 69786a7).
 //
@@ -953,6 +955,21 @@ func TestEmit_WorkspaceRootLayout_Golden(t *testing.T) {
 		t.Skipf("fixture recorded against %q but test running from %q; re-record via tools/fixtures/record-fileapi.sh workspace-root-layout",
 			r.Codemodel.Paths.Source, src)
 	}
+	// Materialize the workspace-root marker that detectWorkspaceRoot
+	// keys on. git cannot track a nested `.git` directory, so the
+	// committed fixture can't ship one; we recreate it here (mirroring
+	// tools/fixtures/record-fileapi.sh and the meta-cmake-workspace-root
+	// render gate) and remove it after the test. Without it the lower's
+	// per-source normalizer refuses lib/demo.c with unsupported-source-
+	// path because it sits outside cmakeSrc (build/cmake).
+	gitDir := filepath.Join(src, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(gitDir) })
 	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src})
 	if err != nil {
 		t.Fatal(err)
