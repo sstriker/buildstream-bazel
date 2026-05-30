@@ -86,11 +86,27 @@ transition cleanly.
     cmakeFiles / toolchains in `fileapi.Index.requestQuery`
     (cmake 3.26+; gracefully absent on older). Decode
     `try_compile` / `find_package` / `check_*` outcomes into
-    `fileapi.ConfigureLog`. Retire the probe-bucket
-    `unsupported-execute-process` Tier-1 refusals where the
-    outcome is already a recorded try_compile result —
-    emit a `select()` over `@platforms` config_settings with
-    the resolved value baked in.
+    `fileapi.ConfigureLog`. **Shipped:** the probe-bucket
+    `unsupported-execute-process` Tier-1 refusals are retired
+    where the OUTPUT_VARIABLE is already a recorded
+    try_compile / try_run result (`configureLogVars` projects
+    each `buildResult.variable` / `runResult.variable` to
+    cmake's "1"/"0", merged into the rescue `cmakeVars` in
+    `lower.ToIR`) — and now also where it's a `find_package`
+    outcome (`<Pkg>_FOUND` reconstructed from the event's
+    `found.package` + `isFound`). A rescued probe's value
+    flows to downstream configure_file / file(GENERATE)
+    consumers through the same merged var map; nothing fails.
+    **Deferred to Phase 5:** the cross-platform `select()`
+    over `@platforms` config_settings. A single configure run
+    yields ONE platform's configureLog, so there is no
+    per-platform probe data to fold into a `select()` here —
+    the value is baked from the single resolved outcome. The
+    multi-config probe fold (per-config `CMakeConfigureLog`
+    re-keyed alongside `Reply.Targets`, collapsed via the
+    `empfold` cross-config primitive) lands with Phase 5's
+    Ninja Multi-Config work; building a degenerate single-arm
+    `select()` here would be dishonest about the data we have.
 
   - **Phase 3 — genex-probe TOP_LEVEL_INCLUDES extension.**
     Generalize `dump-vars.cmake` into a probe-staging pass.

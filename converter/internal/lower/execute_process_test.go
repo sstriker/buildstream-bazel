@@ -668,3 +668,74 @@ func TestRecoverExecuteProcess_RescueViaConfigureLog(t *testing.T) {
 		t.Errorf("expected configureLog rescue; got refusals: %v", refusals)
 	}
 }
+
+func TestConfigureLogVars_FindPackageFound(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:  "find_package-v1",
+			Found: &fileapi.EventFindPackageFound{Package: "ZLIB", IsFound: true},
+		},
+	}
+	if got := configureLogVars(events)["ZLIB_FOUND"]; got != "1" {
+		t.Errorf("ZLIB_FOUND: %q, want 1", got)
+	}
+}
+
+func TestConfigureLogVars_FindPackageNotFound(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:  "find_package-v1",
+			Found: &fileapi.EventFindPackageFound{Package: "Foo", IsFound: false},
+		},
+	}
+	if got := configureLogVars(events)["Foo_FOUND"]; got != "0" {
+		t.Errorf("Foo_FOUND: %q, want 0", got)
+	}
+}
+
+// TestConfigureLogVars_FindPackageNoPackageName confirms a
+// find_package-v1 event with no resolved package name (or the
+// cmake 4.3 find-v1 scalar shape, which carries a path rather than
+// a package name) contributes no synthesised variable — there's no
+// real `<Pkg>_FOUND` name to bind.
+func TestConfigureLogVars_FindPackageNoPackageName(t *testing.T) {
+	events := []fileapi.Event{
+		{
+			Kind:  "find_package-v1",
+			Found: &fileapi.EventFindPackageFound{Path: "/usr/bin/cc", IsFound: true},
+		},
+	}
+	if got := configureLogVars(events); len(got) != 0 {
+		t.Errorf("expected no vars for package-less find event; got %v", got)
+	}
+}
+
+// TestRecoverExecuteProcess_RescueViaFindPackage covers the
+// find_package leg of the configureLog rescue: a probe whose
+// OUTPUT_VARIABLE is bound to a `<Pkg>_FOUND` outcome recorded in
+// the configureLog rescues without a refusal, and the resolved
+// value reaches downstream consumers through the merged rescueVars
+// map (the same path try_compile-keyed probes use). This mirrors
+// the merge lower.go performs before calling recoverExecuteProcess.
+func TestRecoverExecuteProcess_RescueViaFindPackage(t *testing.T) {
+	clVars := configureLogVars([]fileapi.Event{
+		{
+			Kind:  "find_package-v1",
+			Found: &fileapi.EventFindPackageFound{Package: "OpenSSL", IsFound: true},
+		},
+	})
+	if clVars["OpenSSL_FOUND"] != "1" {
+		t.Fatalf("precondition: OpenSSL_FOUND not projected; got %v", clVars)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           17,
+		Commands:       [][]string{{"pkg-config", "--exists", "openssl"}},
+		OutputVariable: "OpenSSL_FOUND",
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, cc)
+	if len(refusals) != 0 {
+		t.Errorf("expected find_package rescue; got refusals: %v", refusals)
+	}
+}
