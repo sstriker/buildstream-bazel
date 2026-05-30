@@ -77,6 +77,58 @@ func TestReadGenexProbe_OneTarget(t *testing.T) {
 	}
 }
 
+// TestReadGenexProbe_EmptyConfig pins the empty-`$<CONFIG>` round-
+// trip: a single-config generator with no CMAKE_BUILD_TYPE set
+// resolves `$<CONFIG>` to the empty string, so the hook writes
+// `<basename>..txt` (a doubled dot — empty config segment between
+// basename and the .txt suffix). This is the converter's DEFAULT
+// invocation shape (it doesn't force a build type), so the reader
+// MUST treat the empty config as a valid single config and surface
+// the value — not silently drop it. Regression guard: before the
+// fix, splitProbeConfigFilename rejected `objects..txt` (the
+// `dot == len(stem)-1` guard), which dropped every per-target
+// probe value (Objects, INTERFACE_*, TARGET_FILE) for any project
+// configured without a build type, so the probe-as-oracle path
+// never fired in the converter's own default run.
+func TestReadGenexProbe_EmptyConfig(t *testing.T) {
+	buildDir := t.TempDir()
+	tgtDir := filepath.Join(buildDir, "cmake-to-bazel.genex", "obj")
+	if err := os.MkdirAll(tgtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"type.txt":                           "OBJECT_LIBRARY",
+		"objects..txt":                       "/b/CMakeFiles/obj.dir/a.c.o;/b/CMakeFiles/obj.dir/b.c.o",
+		"interface_INCLUDE_DIRECTORIES..txt": "/src/include",
+		"interface_COMPILE_DEFINITIONS..txt": "",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(tgtDir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := ReadGenexProbe(buildDir)
+	if err != nil {
+		t.Fatalf("ReadGenexProbe: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 probe; got %d (%+v)", len(got), got)
+	}
+	p := got[0]
+	if p.Type != "OBJECT_LIBRARY" {
+		t.Errorf("Type: %q", p.Type)
+	}
+	if p.Objects != "/b/CMakeFiles/obj.dir/a.c.o;/b/CMakeFiles/obj.dir/b.c.o" {
+		t.Errorf("Objects under empty config dropped or wrong: %q", p.Objects)
+	}
+	if p.Interface["INCLUDE_DIRECTORIES"] != "/src/include" {
+		t.Errorf("INTERFACE_INCLUDE_DIRECTORIES under empty config: %q", p.Interface["INCLUDE_DIRECTORIES"])
+	}
+	if _, ok := p.Interface["COMPILE_DEFINITIONS"]; !ok {
+		t.Errorf("empty INTERFACE_COMPILE_DEFINITIONS should still be recorded under empty config")
+	}
+}
+
 func TestReadGenexProbe_DeterministicOrder(t *testing.T) {
 	buildDir := t.TempDir()
 	root := filepath.Join(buildDir, "cmake-to-bazel.genex")
