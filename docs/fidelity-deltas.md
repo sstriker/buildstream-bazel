@@ -115,8 +115,8 @@ harness uses them as oracle slots:
 - **Project A** — the cmake source tree (CMakeLists.txt + sources +
   `CMAKE_BUILD_TYPE=Release` configure). The unmodified input.
 - **Project B** — the converted Bazel project (converter's `BUILD.bazel`
-  + the same source tree + a minimal `WORKSPACE` / `MODULE.bazel`).
-  The output we're validating.
+  + the same source tree + a minimal bzlmod `MODULE.bazel` declaring
+  `rules_cc` / `rules_pkg` as bazel_deps). The output we're validating.
 - **Project C** — the cmake-built artifact (oracle). What B should
   reproduce up to documented-benign deltas. Always works because
   cmake's the source of truth for the project's build graph.
