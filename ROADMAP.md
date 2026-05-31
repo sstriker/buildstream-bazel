@@ -294,7 +294,31 @@ transition cleanly.
     projects where the trace shows `if(CMAKE_BUILD_TYPE
     STREQUAL "…")` branches affecting target-graph shape
     (silently no-op under multi-config; would produce
-    wrong output).
+    wrong output). **Shipped.** `cmakerun.BuildTypes` drives
+    the Ninja Multi-Config argv (`--build-types`, including the
+    `auto` sentinel that lets the project's own configs stand
+    without `-DCMAKE_CONFIGURATION_TYPES`; detection runs in the
+    conversion action, not write-a); the `internal/configfold`
+    cross-config primitive collapses per-config src/dep/flag
+    deltas (`lowerMultiConfigDeltas` / `configLabel`) into
+    `select()` arms over `//config:<name>`, backed by the
+    `//config` package (`string_flag build_type` + config_settings)
+    emitted by `converter/emit/configsettings`. The Bazel-idiom
+    sanitizer lowering landed too — `configfold/features.go` +
+    `sanitizer_flags.go` recognize the sanitizer/LTO config set and
+    route their flags to `//features:*` cc_toolchain feature
+    definitions emitted by `internal/emit/sanitizerfeatures` rather
+    than raw selects. The graph-shape refusal is precise:
+    `configOnlyTargetNames` flags targets that exist in only some
+    configs and `--fidelity=strict` refuses exactly those (rather
+    than the whole element). Wired end-to-end through write-a
+    (`--build-types`, `multiConfigEnabled()` gating the
+    bazel_skylib dep + `//config` package emit) and the
+    `--split-packages` path. Render gates
+    `scripts/meta-cmake-sanitizer-features.sh` (sanitizer feature
+    lift) + `scripts/meta-cmake-split-multiconfig.sh` (split +
+    multi-config TreeArtifact `//config` arms, stage-b, and a
+    project-B `bazel build --//config:build_type=debug`).
 
   - **Phase 6 — install(EXPORT) declarative IR
     projection.** Classifier (`internal/exportshape.Classify`)
