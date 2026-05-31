@@ -1966,10 +1966,12 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 	// existing CUSTOM_COMMAND-recovered consumer's shape.
 	if len(configureFiles) > 0 && len(targetBuildIncs) > 0 {
 		var addedHdrs []string
+		hostingIncs := map[string]bool{}
 		for _, cfgOut := range configureFiles {
 			for inc := range targetBuildIncs {
 				if isPathPrefix(inc, cfgOut.RelOutput) {
 					addedHdrs = append(addedHdrs, cfgOut.RelOutput)
+					hostingIncs[inc] = true
 					break
 				}
 			}
@@ -1978,6 +1980,16 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			irt.Hdrs = append(irt.Hdrs, addedHdrs...)
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
+		// The build-dir include that hosts a lifted configure_file
+		// output is a real include path in Bazel — the genrule writes
+		// the header under it (e.g. Catch2's genrule emits
+		// generated-includes/catch2/catch_user_config.hpp, consumed as
+		// `#include <catch2/catch_user_config.hpp>`). Surface it in
+		// `includes` so the angle-bracket include resolves; without it
+		// the header lands in hdrs but the compile can't find it. (Plain
+		// build-dir includes that DON'T host a lifted output stay elided
+		// — they'd point at the absent cmake build dir.)
+		addBuildDirIncludes(irt, hostingIncs)
 	}
 
 	// file(GENERATE) consumer attribution. Sister block to the
@@ -4290,6 +4302,39 @@ func isPathPrefix(prefix, path string) bool {
 		return true
 	}
 	return strings.HasPrefix(path, prefix+"/")
+}
+
+// addBuildDirIncludes appends build-dir-relative include dirs to
+// irt.Includes (sorted, deduped against existing entries). Used by the
+// codegen-consumer attribution blocks when a lifted output
+// (configure_file / file(GENERATE) / execute_process) lands a header under
+// a build-dir include the codemodel recorded but lowerTarget otherwise
+// elides: once the genrule writes the header there, the dir is a real
+// Bazel include path the angle-bracket `#include <…>` needs.
+func addBuildDirIncludes(irt *ir.Target, dirs map[string]bool) {
+	if len(dirs) == 0 {
+		return
+	}
+	existing := map[string]bool{}
+	for _, inc := range irt.Includes {
+		existing[inc] = true
+	}
+	var add []string
+	for d := range dirs {
+		// Skip the package/workspace root ("" or "."): Bazel rejects a
+		// root `includes` entry ("resolves to the workspace root, which
+		// would allow this rule … to include any file in your workspace"
+		// — the #253 fix), and a configured header that lands at the
+		// package root is consumed via a relative `#include "x.h"` that
+		// needs no include path anyway. Only real subdirs (e.g. Catch2's
+		// `generated-includes`) need surfacing.
+		if d == "" || d == "." || existing[d] {
+			continue
+		}
+		add = append(add, d)
+	}
+	sort.Strings(add)
+	irt.Includes = append(irt.Includes, add...)
 }
 
 // dedupeStrings returns a copy of in with consecutive duplicates removed. The

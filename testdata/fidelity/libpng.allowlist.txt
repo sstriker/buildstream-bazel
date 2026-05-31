@@ -1,0 +1,10 @@
+# Per-fixture benign-delta allowlist for the e2e-fidelity-compare-libpng gate.
+#
+# Format: one symbol name per line; '#' and blank lines are ignored.
+#
+# floor: libpng's gamma math calls floor(); cmake's distro toolchain emits
+# an undefined libm reference (resolved at the final link), while Bazel's
+# hermetic toolchain treats floor as a compiler builtin and inlines it.
+# Toolchain inlining variance (the only delta — not a dropped-source
+# pattern, which would shift many symbols), not a converter signal.
+floor

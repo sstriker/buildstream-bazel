@@ -449,29 +449,45 @@ transition cleanly.
       target, and `make e2e-fidelity-compare-nlohmann-json-consumer`
       passes (0 impactful deltas, benign auto-classified). Wired into the
       CI `fidelity` job.
-    - **Catch2 3.5.3** ⚠️ deferred — needs the converter invoked with
-      `--lift-configure-file` (to recover `catch_user_config.hpp` from
-      the configure_file template) AND `//tools:cmake-configure-file`
-      staged in the test workspace as a Bazel-build-time tool. Harness
-      extension: a `--convert-flags '...'` passthrough in
-      `scripts/run-fidelity.sh` + a tool-staging step that builds the
-      converter's existing `cmd/cmake-configure-file` and writes a
-      `tools/BUILD.bazel` exposing it as a `sh_binary`.
-    - **libpng 1.6.x** ⚠️ deferred — `find_package(ZLIB REQUIRED)` in
-      libpng's CMakeLists means Bazel-side needs a `@zlib` external
-      repo with cc_library labels libpng's converted BUILD can resolve.
-      Harness extension: a `--bazel-external '...'` passthrough that
-      writes `http_archive`/`new_local_repository` entries into the
-      synthesized WORKSPACE.
+    - **Catch2 3.5.3** ✅ library-side shipped — `make
+      e2e-fidelity-compare-catch2` passes (0 impactful). `run-fidelity.sh`
+      grew a `--convert-flags` passthrough (threads `--lift-configure-file`
+      to recover `catch_user_config.hpp`) and auto-stages
+      `//tools:cmake-configure-file` when the converted BUILD references
+      it. Wiring it surfaced a converter bug, now fixed: the lifted
+      configure_file genrule's output dir (`generated-includes/`) wasn't
+      added to the consuming cc_library's `includes`, so the header
+      landed in `hdrs` but `#include <catch2/catch_user_config.hpp>`
+      couldn't resolve (`addBuildDirIncludes` in `lower.go`). Also a
+      classifier improvement: unpaired std::/compiler-internal template
+      instantiations now auto-classify benign (Catch2 emitted ~100 of
+      them — toolchain variance the converter never controls); a 5-entry
+      allowlist covers Catch's own template dtors.
+    - **libpng 1.6.43** ✅ library-side shipped — `make
+      e2e-fidelity-compare-libpng` passes (0 impactful). It exercises the
+      whole deferred-blocker set, none of which needed new converter work
+      once PR #350 landed: (1) the `cmake -E create_symlink` install
+      aliases (libpng16.pc → libpng.pc, libpng16-config → libpng-config)
+      skip via #350's install-compat-alias rule; (2) the `cmake -P`
+      script-generated headers (`pnglibconf.h`, `pngprefix.h`, …) bake via
+      `--cmake-script-bake` (self-contained base64 genrules, no runner
+      tool); (3) `find_package(ZLIB)` resolves to `@zlib` via
+      `--imports-manifest` (`testdata/fidelity/libpng-imports.json` maps
+      `ZLIB::ZLIB` → `@zlib`); (4) `--bazel-external` adds the zlib BCR
+      module so `@zlib` resolves. One delta — an undefined `floor`
+      reference cmake's distro toolchain emits and Bazel's inlines as a
+      builtin — is allowlisted. The cmake side needs zlib dev headers on
+      the host for `find_package(ZLIB)`.
 
   Remaining work:
     - Consumer-side gates for spdlog (the project's own static lib
       consumers also use header-side typedefs / templates; an extra
       signal beyond the lib-side 1404 match).
-    - Harness extensions for Catch2 (`--convert-flags` + tool staging)
-      and libpng (Bazel-side external repos). VTK / LLVM gates need
-      the project's specific configure flags + tooling and may need
-      larger allowlists.
+    - VTK / LLVM gates — need the project's specific configure flags +
+      tooling and may need larger allowlists (the std::/libm-builtin
+      classifier rules + the configure_file / cmake-P / imports-manifest /
+      --bazel-external harness machinery the zlib…libpng fixtures built up
+      should carry most of the way).
     - Promote each CI `fidelity` gate from `continue-on-error: true`
       to blocking after three consecutive green merges (the wiring +
       soft launch shipped — see the entry head).

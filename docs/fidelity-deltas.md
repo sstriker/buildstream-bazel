@@ -61,6 +61,32 @@ only. The converter lowers the `INTERFACE_LIBRARY` target to a
 `cmake-codegen-interface-library-from-trace` synthesis) a consumer can
 `deps` on, which is what unblocked this gate.
 
+### Catch2 (`make fetch-catch2`, `CATCH2_VERSION = v3.5.3`)
+
+Status: ✅ library-side shipped — `make e2e-fidelity-compare-catch2` passes
+(0 impactful deltas). Needs `--lift-configure-file` (the lib `#include`s the
+configure_file-generated `catch2/catch_user_config.hpp`); `run-fidelity.sh`
+threads it via `--convert-flags` and auto-stages
+`//tools:cmake-configure-file`. The converter wires the genrule's
+`generated-includes/` output dir into the cc_library's `includes` (the
+`addBuildDirIncludes` fix) so the angle-bracket include resolves. Catch2 is
+template-heavy: ~100 deltas are std::/compiler-internal template-instantiation
+variance, now auto-classified benign by the classifier
+(`stdlib-template-instantiation-*`); the 5-entry allowlist covers Catch's own
+template destructors (Clara `ResultValueBase`, `Detail::unique_ptr`).
+
+### libpng (`make fetch-libpng`, `LIBPNG_VERSION = v1.6.43`)
+
+Status: ✅ library-side shipped — `make e2e-fidelity-compare-libpng` passes
+(0 impactful). The "hard" fixture: it exercises four otherwise-deferred
+mechanisms at once — `cmake -E create_symlink` install aliases skip (PR
+#350), `cmake -P` script headers (`pnglibconf.h`, …) bake via
+`--cmake-script-bake`, `find_package(ZLIB)` resolves to `@zlib` via
+`--imports-manifest` (`testdata/fidelity/libpng-imports.json`), and
+`--bazel-external` supplies the zlib BCR module. One allowlisted delta:
+`floor` (cmake's distro toolchain emits the libm reference; Bazel's inlines
+the builtin). cmake side needs zlib dev headers on the host.
+
 ### Recording a new delta
 
 When the harness surfaces a new impactful delta during gate
@@ -76,9 +102,10 @@ development, capture it as a discrete sub-section:
 
 ## Cross-project Bazel-build fidelity survey (close-gaps campaign, May 2026)
 
-Status: 🟢 4 of 6 projects shipped as productionized gates (zlib, fmt,
-spdlog, nlohmann-json); Catch2 + libpng catalogued as deferred (see
-`ROADMAP.md` "A-B-C fidelity harness" entry).
+Status: 🟢 all 6 surveyed projects shipped as productionized gates (zlib,
+fmt, spdlog, nlohmann-json, Catch2, libpng). VTK / LLVM are the next tier
+(project-specific configure flags + tooling; see `ROADMAP.md` "A-B-C
+fidelity harness" entry).
 
 Manual harness for the initial survey: for each project, run
 `convert-element-cmake --cmake-build-dir <cmake-build>` to produce
