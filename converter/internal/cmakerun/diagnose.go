@@ -117,7 +117,7 @@ var configureHints = []configureHint{
 			"    1. Patch the unpacked source so each call becomes `set(<var> $<TARGET_FILE:<tgt>>)`. With Bazel's http_archive, pass this through patch_cmds:\n" +
 			"         find . \\( -name CMakeLists.txt -o -name '*.cmake' \\) -exec sed -i -E 's/get_target_property\\(([^ ]+) +([^ ]+) +LOCATION\\)/set(\\1 $<TARGET_FILE:\\2>)/g' {} +\n" +
 			"    2. Re-run convert-element-cmake with --cmp0026-shim. The shim wraps get_target_property to translate LOCATION queries into $<TARGET_FILE:<tgt>> at configure time without touching the source tree. Caveat: the wrapper returns a generator expression rather than a configure-time-resolved path, so projects that string-compose LOCATION values at configure time (e.g. into a message() call) will see literal `$<TARGET_FILE:foo>` text. See #208.\n" +
-			"    3. Pin the orchestrator's cmake to a 3.x release (the Makefile's CMAKE_VERSION pin is 3.28.3); cmake 3.x emits a deprecation warning but still resolves LOCATION.\n" +
+			"    3. Override the orchestrator's cmake to a 3.x release (the Makefile's CMAKE_VERSION pin now tracks cmake 4.x; set e.g. CMAKE_VERSION=3.28.3 to downgrade); cmake 3.x emits a deprecation warning but still resolves LOCATION.\n" +
 			"  See docs/cmake-conversion-deltas.md for the catalogue entry.",
 		match: matchCMP0026,
 	},
@@ -144,6 +144,29 @@ func matchCMP0026(stderr []byte) bool {
 		return false
 	}
 	return strings.Contains(s, "CMP0026") || strings.Contains(s, "add_custom_command") || strings.Contains(s, "get_target_property")
+}
+
+// matchPolicyFloorRemoved reports whether the recorded stderr is the
+// cmake 4.x fatal that fires when a project's cmake_minimum_required
+// declares a floor below 3.5 — the compatibility cmake 4 dropped. cmake
+// prints the sentinel together with the exact remediation
+// (CMAKE_POLICY_VERSION_MINIMUM), e.g.:
+//
+//	CMake Error at CMakeLists.txt:1 (cmake_minimum_required):
+//	  Compatibility with CMake < 3.5 has been removed from CMake.
+//	  Or, add -DCMAKE_POLICY_VERSION_MINIMUM=3.5 to try configuring anyway.
+//
+// Configure keys an automatic one-shot retry (with the policy bump) on
+// this match. Matching on the "Compatibility with CMake <" + "has been
+// removed" pair keeps it narrower than a bare "CMAKE_POLICY_VERSION_MINIMUM"
+// scan (which the remediation line for unrelated policy errors could also
+// carry). cmake-wording-tied like matchCMP0026: a rephrase silently stops
+// the retry, leaving the underlying failure to surface normally — re-test
+// when bumping the pinned cmake.
+func matchPolicyFloorRemoved(stderr []byte) bool {
+	s := string(stderr)
+	return strings.Contains(s, "Compatibility with CMake <") &&
+		strings.Contains(s, "has been removed")
 }
 
 // matchTryCompileMissingOutput recognises the cmake try_compile

@@ -23,13 +23,16 @@ import (
 // doesn't fire. cmake 4.x removed the OLD behaviour and
 // fatal-errors. The test detects the cmake major version on
 // PATH and skips on anything below 4.x so it stays neutral
-// against the pinned 3.28.3 dev-loop and against the older
-// 3.31.x the GH runners ship by default.
+// against an operator who downgrades CMAKE_VERSION to a 3.x
+// release and against the 3.x cmakes some hosts still ship.
 //
-// CI: the "End-to-end (latest cmake — non-blocking)" job
-// installs cmake 4.x and runs this test explicitly. The
-// "Build + unit tests" job uses the pinned 3.28.3 and this
-// test skips there.
+// CI: the pinned dev-loop (Makefile CMAKE_VERSION) now tracks
+// cmake 4.x, so the "Build + unit tests" job runs this test
+// directly; the e2e-cmake-matrix 3.22/3.28 entries skip it.
+// Note the CMP0026 fatal is NOT the sub-3.5-floor removal
+// Configure auto-retries (this fixture declares 3.20), so the
+// policy-floor rescue never fires here — the LOCATION read
+// fatal-errors as this test expects.
 func TestConfigure_CMP0026_HintSurfaces(t *testing.T) {
 	ctx := context.Background()
 

@@ -24,11 +24,11 @@ FROM ghcr.io/buildbarn/bb-runner-bare:20251031T081715Z-4415657 AS upstream
 # Stage 2: Debian base with the toolchain tools installed.
 FROM debian:bookworm-slim AS runtime
 
-ARG CMAKE_VERSION=3.28.3
+ARG CMAKE_VERSION=4.3.3
 ARG NINJA_VERSION=1.11.1
 
 # bookworm ships:
-#   cmake          3.25.1   (need 3.28.3 — download from Kitware GitHub releases)
+#   cmake          3.25.1   (need 4.3.3 — download from Kitware GitHub releases)
 #   ninja-build    1.11.1   (matches NINJA_VERSION pin exactly)
 #   gcc            12.2.0   (whatever bookworm ships; convert-element only
 #                            needs *a* C compiler reachable from cmake's

@@ -21,9 +21,9 @@ to blocking is queued — see "Promotion criteria" below.
 | `3.22.6` | Ubuntu 22.04 LTS default; the operator floor we expect downstream BuildStream projects to still ship against. |
 | `3.28.6` | Ubuntu 24.04 LTS default; LLVM 23's floor; the modern stable reference. |
 | `4.0.7`  | The major-bump that dropped pre-3.5 `cmake_minimum_required` compat; most likely to surface drift in fixtures + File API consumers + the build.ninja parser. |
-| `4.3.3`  | Latest stable cmake release as of May 2026; catches new-release bugs before they hit distro defaults. |
+| `4.3.3`  | Latest stable cmake release as of May 2026; catches new-release bugs before they hit distro defaults. **Now also the pinned production version** (Makefile `CMAKE_VERSION`), so its matrix entry overlaps the blocking gate — kept here for the `continue-on-error` early-warning framing and symmetry with the others. Also tracked by the monthly `upstream-drift` workflow against whatever is latest at run time. |
 
-The pinned `e2e` job (Makefile `CMAKE_VERSION`, currently 3.28.3)
+The pinned `e2e` job (Makefile `CMAKE_VERSION`, currently 4.3.3)
 remains the blocking gate — the matrix is the early-warning
 system, not the contract.
 
@@ -31,7 +31,7 @@ system, not the contract.
 
 | Knob | Where set | What it does |
 |------|-----------|--------------|
-| `CMAKE_POLICY_VERSION_MINIMUM=3.5` | matrix `env`, 4.x entries only | Gives projects whose `cmake_minimum_required(VERSION X)` declares X < 3.5 a one-version policy bump so cmake 4.x configures them instead of fatal-erroring. All in-tree fixtures already declare ≥ 3.20, but try_compile sub-projects cmake generates internally + future fixtures might not, so we set it defensively. The variable is only consulted by cmake 3.24+ and only acts on 4.x. |
+| `CMAKE_POLICY_VERSION_MINIMUM=3.5` | matrix `env` (4.x entries) **and** the converter's `cmakerun.Configure`, applied **reactively** — only on a configure that fatal-errors with cmake 4.x's sub-3.5 floor-removal message (`matchPolicyFloorRemoved`), retried once with the var added | Gives projects whose `cmake_minimum_required(VERSION X)` declares X < 3.5 the one-version policy bump cmake itself suggests, so cmake 4.x configures them instead of aborting. In-tree fixtures already declare ≥ 3.20, but try_compile sub-projects cmake generates internally + wild corpus projects (the OpenBLAS class) trip it. The retry is reactive rather than an unconditional env entry on purpose: it keeps the first configure pristine for the projects that don't need it (the var would otherwise flip a sub-3.5-floor project's old-policy defaults to NEW), and the observed first-pass failure stays a visible signal that the project leans on a pre-3.5 floor. The matrix's job-`env` setting is the static analogue for the e2e surface; the converter's hermetic env would strip it on the worker, so the in-Configure retry is what lifts these on the pinned cmake 4.x. |
 
 In-tree fixture floors at the time the matrix landed: every
 `converter/testdata/sample-projects/*/CMakeLists.txt` declares
