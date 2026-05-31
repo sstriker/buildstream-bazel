@@ -1215,8 +1215,25 @@ transition cleanly.
   `--build-types` list so its config_setting is emitted too). Verified:
   `convert-element-cmake --build-types=auto` on eigen detected its own
   `Debug,Release,RelWithDebInfo` (not a forced set) with matching select
-  arms + config_settings. `--split-packages` multi-config composition is
-  a natural follow-on.
+  arms + config_settings.
+
+- **`--split-packages` composes with multi-config.** The split path
+  (`cmake_split_convert` TreeArtifact rule) now carries multi-config:
+  `write-a --split-packages --build-types=…/auto` threads `--build-types`
+  into the split rule's `converter_args`, so each per-directory BUILD in
+  the TreeArtifact carries the `//config:<name>` select() arms (absolute
+  labels, so a single project-B-root `//config` package backs every
+  sub-package). Fixed a regression the auto refactor introduced: the
+  project-B `bazel_skylib` dep was gated on the explicit `buildTypes`
+  list and missed `--build-types=auto`, so auto-mode `//config` loaded
+  without skylib — now both the dep and the `//config` emission key off a
+  shared `multiConfigEnabled` predicate that can't drift. New
+  `scripts/meta-cmake-split-multiconfig.sh` gate (wired into the
+  `bazel-e2e` CI job) renders split+multi-config, builds project A's
+  TreeArtifact, asserts the per-dir BUILDs carry `//config:` arms,
+  stage-b merges, and project B compiles the split `cc_library`s under
+  `--//config:build_type=debug` with the selects resolving against the
+  rendered `//config`. Verified end-to-end under cmake 4.3.3 + bazel 9.
 
 - **probe-genex tolerates dangling `::` link-interface deps.**
   The cmake-4-pin corpus resurvey surfaced abseil

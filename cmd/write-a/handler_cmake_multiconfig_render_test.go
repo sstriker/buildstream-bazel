@@ -172,4 +172,16 @@ func TestWriter_BuildTypes_Auto(t *testing.T) {
 			t.Errorf("auto //config missing %q\n%s", want, got)
 		}
 	}
+
+	// The skylib dep must be added in auto mode too — the //config
+	// string_flag needs it. (Regression guard: the gate keyed on the
+	// explicit buildTypes list, missing auto, until the multiConfigEnabled
+	// predicate unified them.)
+	mod, err := os.ReadFile(filepath.Join(outB, "MODULE.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(mod), `bazel_dep(name = "bazel_skylib"`) {
+		t.Errorf("auto mode: project B MODULE.bazel missing bazel_skylib dep:\n%s", mod)
+	}
 }
