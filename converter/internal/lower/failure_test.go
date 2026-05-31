@@ -78,18 +78,44 @@ func TestFailure_FileAPIMalformed_DanglingTargetRef(t *testing.T) {
 }
 
 func TestFailure_UnsupportedTargetType_MultiConfig(t *testing.T) {
-	// M1 supports exactly one configuration. Codemodel with two trips the
-	// blanket reject in lower.ToIR. Doc lists this under
-	// `unsupported-target-type` until M2 adds multi-config support.
-	r := &fileapi.Reply{
+	// Phase 5: multi-config is a supported path — the fold projects each
+	// config's deltas into //config:<name> select() arms. A codemodel
+	// whose configs share the same target set (the common case: same
+	// targets, flags differ per config) is NOT a Tier-1 refusal in strict
+	// mode anymore; ToIR returns a package.
+	shared := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{
 			Configurations: []fileapi.Configuration{
-				{Name: "Release"},
-				{Name: "Debug"},
+				{Name: "Release", Targets: []fileapi.ConfigTargetRef{{Name: "lib", Id: "lib::@1"}}},
+				{Name: "Debug", Targets: []fileapi.ConfigTargetRef{{Name: "lib", Id: "lib::@1"}}},
 			},
 		},
+		Targets: map[string]fileapi.Target{
+			"lib::@1": {Name: "lib", Type: "STATIC_LIBRARY"},
+		},
 	}
-	_, err := lower.ToIR(r, nil, lower.Options{})
+	if _, err := lower.ToIR(shared, nil, lower.Options{}); err != nil {
+		t.Fatalf("strict-mode multi-config with a shared target set should convert, got: %v", err)
+	}
+
+	// The one residual the first-config-primary fold can't recover is a
+	// target built only in a non-primary configuration — strict mode still
+	// refuses that as genuine intent loss.
+	configOnly := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{
+				{Name: "Release", Targets: []fileapi.ConfigTargetRef{{Name: "lib", Id: "lib::@1"}}},
+				{Name: "Debug", Targets: []fileapi.ConfigTargetRef{
+					{Name: "lib", Id: "lib::@1"},
+					{Name: "debug_only", Id: "debug_only::@2"},
+				}},
+			},
+		},
+		Targets: map[string]fileapi.Target{
+			"lib::@1": {Name: "lib", Type: "STATIC_LIBRARY"},
+		},
+	}
+	_, err := lower.ToIR(configOnly, nil, lower.Options{})
 	assertCode(t, err, failure.UnsupportedTargetType)
 }
 

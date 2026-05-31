@@ -416,22 +416,17 @@ transition cleanly.
 
 ## Next
 
-- **Emit `//config:<name>` config_settings for the multi-config fold.**
-  The Phase 5 fold lands `//config:<name>` `select()` arms (Debug /
-  Release / RelWithDebInfo / …), but `configLabel`'s contract is that
-  the matching `config_setting`s "must be declared by the operator (or
-  a future converter slice)" — so the output isn't self-contained and
-  strict/production conversion still refuses multi-config. Emit them:
-  a `//config` package with a `string_flag` (e.g.
-  `//config:build_type`, default `release`) + one `config_setting` per
-  cmake build type keyed on its `flag_values`, so a converted
-  multi-config element builds with `--//config:build_type=debug`
-  (1:1 with cmake build types, unlike the lossy `compilation_mode`
-  dbg/opt mapping). Touches the emit side (it already renders the
-  select arms) plus write-a's project rendering (the `//config`
-  package is project-level, like the `//platforms` package elementfold
-  emits). Once it lands, drop the strict-mode multi-config refusal in
-  `lower.ToIR` — multi-config becomes a first-class supported path.
+- **Thread `--build-types` through write-a's project rendering.**
+  Multi-config conversion (the Phase 5 fold + `--out-config-settings`,
+  see Done) is wired end-to-end in `convert-element-cmake` standalone,
+  but write-a's pipeline doesn't thread `--build-types` to its per-element
+  converter genrules — so a write-a-rendered project is always
+  single-config. To make multi-config reachable through the full
+  pipeline: thread the build-types list to each element's converter
+  genrule, and render the shared `//config` package once at project root
+  (the same place `renderPlatformsBuild` emits `//platforms`) by reusing
+  `internal/emit/configsettings.Emit`. Until then, multi-config is a
+  convert-element-cmake-direct / survey capability.
 
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
   survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
@@ -1163,14 +1158,37 @@ transition cleanly.
   non-primary configuration (`configOnlyTargetNames` — the one
   thing the first-config-primary fold can't recover), and stays
   silent when the primary config covers the whole target set (the
-  common "same targets, differing per-config flags" case). Strict
-  mode still refuses multi-config, but with an accurate message:
-  the fold lands the select() arms, the blocker is that their
-  `config_setting`s aren't auto-emitted yet (next bullet). Corpus
-  resurvey after the fix: abseil / googletest / brotli drop from
+  common "same targets, differing per-config flags" case). With the
+  config_settings now emitted (next entry), strict mode *accepts*
+  multi-config too — it refuses only the config-only-target residual.
+  Corpus resurvey after the fix: abseil / googletest / brotli drop from
   `1/0/0` to `0/0/0`, eigen from `2/16` to `1/16` (only its real
   execute_process rejection left), select() arms intact. Pinned by
-  `TestRejections_MultiConfig_FoldedNotRejected`.
+  `TestRejections_MultiConfig_FoldedNotRejected` +
+  `TestFailure_UnsupportedTargetType_MultiConfig`.
+
+- **`//config:<name>` config_settings emitted — multi-config output
+  is self-contained.** The fold's `//config:<name>` `select()` arms
+  needed backing `config_setting`s to load; `configLabel`'s old
+  contract punted them to the operator. `convert-element-cmake
+  --out-config-settings <path>` now renders a `//config` package
+  (`internal/emit/configsettings`): a `string_flag build_type` (default
+  = the primary configuration) + one `config_setting` per non-sanitizer
+  cmake config, keyed on `flag_values`. A dedicated string_flag, not
+  Bazel's built-in `compilation_mode` — `dbg`/`opt`/`fastbuild` would
+  conflate Release and RelWithDebInfo (both `opt`) and drop one config's
+  deltas; the flag is 1:1 and lossless. Select a config at build time
+  with `--//config:build_type=debug`. With the package emitted,
+  `lower.ToIR` drops the strict-mode multi-config refusal (keeping only
+  the config-only-target check), so multi-config is a first-class
+  supported path. Verified end-to-end under cmake 4.3.3: googletest
+  converts in strict mode (rc=0) with the emitted config_settings
+  exactly matching its select-arm keys, and a real `bazel build` against
+  the emitted `//config` package resolves the labels, honours
+  `--//config:build_type=debug`, and rejects undeclared values. Pinned
+  by `configsettings` unit tests + the
+  `TestConfigLabel_MatchesConfigSettingsEmit` cross-package parity guard.
+  (write-a pipeline threading is the remaining reach — see Next.)
 
 - **probe-genex tolerates dangling `::` link-interface deps.**
   The cmake-4-pin corpus resurvey surfaced abseil

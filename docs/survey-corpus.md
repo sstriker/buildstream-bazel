@@ -432,11 +432,14 @@ SURVEY_BUILD_TYPES=single SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 > **no** `unsupported-target-type` rejection (it used to emit a blanket one
 > per project; that was stale). The fold's one residual is a target built
 > *only* in a non-primary configuration — the primary walk never sees it,
-> so it's dropped and flagged precisely (by target name). The emitted
-> select() arms aren't yet self-contained: the matching `//config:<name>`
-> `config_setting`s still need declaring (operator-side today; auto-emission
-> is Phase 5's remaining piece), which is why strict/production conversion
-> still refuses multi-config while `--diagnostics` surveys it.
+> so it's dropped and flagged precisely (by target name). The matching
+> `//config:<name>` `config_setting`s are emitted by
+> `convert-element-cmake --out-config-settings` (a `//config` package: a
+> `string_flag build_type` + one `config_setting` per non-sanitizer
+> config), so the output is self-contained — select a config at build time
+> with `--//config:build_type=<name>`. Multi-config is now a supported path
+> in both strict and diagnostic mode; strict mode refuses only the
+> config-only-target residual above.
 
 Each project lands `rejections.json` + `bazel-idiom.json` +
 `coverage.json` under the out dir, with a `summary.txt` table (one column

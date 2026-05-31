@@ -383,6 +383,18 @@ type Args struct {
 	// that don't want the sidecar.
 	OutSanitizerFeatures string
 
+	// OutConfigSettings, when non-empty, writes a //config package
+	// BUILD file at this path: a string_flag `build_type` plus one
+	// config_setting per (non-sanitizer) cmake configuration in
+	// --build-types. These back the multi-config fold's
+	// //config:<name> select() arms, making the converted output
+	// self-contained (select with --//config:build_type=<name>).
+	// Phase 5 of the generator-parity uplift (ROADMAP.md).
+	//
+	// Empty (zero) suppresses the emit; only meaningful with a
+	// multi-config --build-types.
+	OutConfigSettings string
+
 	// BuildTypes selects the cmake "Ninja Multi-Config" generator
 	// path (Phase 5 of the generator-parity uplift). When non-empty,
 	// the configure pass runs once with CMAKE_CONFIGURATION_TYPES=
@@ -572,6 +584,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
+	fs.StringVar(&a.OutConfigSettings, "out-config-settings", "", "write a //config package BUILD (string_flag build_type + one config_setting per non-sanitizer config in --build-types) backing the multi-config fold's //config:<name> select() arms, making the converted output self-contained. Phase 5 of the generator-parity uplift.")
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.AuditCoverageReport, "audit-coverage-report", "", "write the structured lens-3 dependency-coverage findings (JSON) to this path. The check runs unconditionally on every convert (findings to stderr); it flags trace target_link_libraries arms naming an in-codebase target that didn't land in any dep bucket.")
 	fs.StringVar(&a.PrefixDir, "prefix-dir", "", "directory added to CMAKE_PREFIX_PATH (out-of-tree synth-prefix; orchestrator-driven)")

@@ -269,10 +269,12 @@ func configOnlyTargetNames(configs []fileapi.Configuration) []string {
 }
 
 // configLabel maps a cmake config name into the Bazel
-// config_setting label the convention surfaces. The actual
-// config_setting must be declared by the operator (or a future
-// converter slice that emits them automatically); the label is
-// the agreed-upon contract: `//config:<name-lowercased>`.
+// config_setting label the convention surfaces:
+// `//config:<name-lowercased>`. The backing config_settings are
+// emitted by convert-element-cmake --out-config-settings (the
+// internal/emit/configsettings package); the
+// TestConfigLabel_MatchesConfigSettingsEmit parity test pins that
+// the two sides agree on naming.
 func configLabel(cellName string) string {
 	// Lowercased so the same config (Release, RELEASE, release) maps
 	// to a single label regardless of cmake's surface case.
