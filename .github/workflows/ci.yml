@@ -160,6 +160,15 @@ jobs:
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
+      - name: meta-project acceptance gate (hello-world round-trip + narrowing)
+        # The Phase-1 acceptance gate: render project A + B for the
+        # hello-world fixture, bazel-build A, stage into B, link + run
+        # the smoke binary, then exercise the read-paths narrowing
+        # cache-stability scenarios. Wired in so the gate can't rot
+        # unnoticed again — it previously fell behind a removed write-a
+        # flag (--read-paths-feedback) because nothing in CI ran it.
+        run: make e2e-meta-hello 2>&1 | tee -a /tmp/cijob.log
+
       - name: downstream bazel build e2e (cross-element kind:cmake)
         # Re-homed from the (now-deleted) orchestrator's
         # TestE2E_BazelBuild onto the write-a + Bazel path: render a
