@@ -184,6 +184,15 @@ jobs:
         # header library carries the cross-package include path).
         run: make e2e-meta-cmake-split-build 2>&1 | tee -a /tmp/cijob.log
 
+      - name: split-packages + multi-config e2e (--split-packages --build-types)
+        # Composes the split path with multi-config: write-a threads
+        # --build-types into the cmake_split_convert action (each per-dir
+        # BUILD carries //config:<name> select() arms), renders the //config
+        # package + bazel_skylib dep into B, and the staged split tree
+        # compiles under --//config:build_type=debug with the selects
+        # resolving against //config.
+        run: make e2e-meta-cmake-split-multiconfig 2>&1 | tee -a /tmp/cijob.log
+
       - name: gazelle_cc-owns-layout e2e (--split-packages --gazelle-cc)
         # Phase-8b continuous conversion: render the --split-packages
         # output with --gazelle-cc, run `bazel run //:gazelle` over it,

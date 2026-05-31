@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/configsettings"
 )
@@ -18,28 +19,52 @@ import (
 // explicit --build-types list so write-a emits that config_setting too.
 var standardConfigurationTypes = []string{"Debug", "Release", "RelWithDebInfo", "MinSizeRel"}
 
+// multiConfigConfigs resolves the configuration set the //config package
+// covers: the explicit --build-types list, cmake's standard set for
+// --build-types=auto, or nil for the single-config (default) render.
+func multiConfigConfigs() []string {
+	if cmakeConfig.autoBuildTypes {
+		return standardConfigurationTypes
+	}
+	return cmakeConfig.buildTypes
+}
+
+// multiConfigEnabled reports whether this render emits a //config package
+// (and therefore needs project B's bazel_skylib dep). True iff the resolved
+// config set has ≥2 distinct (lowercased) entries — matching
+// configsettings.Emit's nil gate, so the skylib dep and the //config package
+// can't drift apart.
+func multiConfigEnabled() bool {
+	seen := map[string]bool{}
+	for _, c := range multiConfigConfigs() {
+		if c = strings.ToLower(c); c != "" {
+			seen[c] = true
+		}
+	}
+	return len(seen) >= 2
+}
+
 // writeConfigSettingsPackage renders project B's //config package — a
 // string_flag build_type plus one config_setting per cmake configuration —
 // backing the //config:<name> select() arms the multi-config fold lands in
-// the staged BUILD.bazel.out files. Reuses converter/emit/configsettings.Emit
-// so the standalone convert-element-cmake --out-config-settings path and the
-// write-a pipeline path emit byte-identical packages (the
+// the staged BUILD.bazel.out files (monolithic) and the per-directory split
+// BUILDs (--split-packages); both reference the same absolute //config:<name>
+// labels, so a single project-B-root //config package backs either shape.
+// Reuses converter/emit/configsettings.Emit so the standalone
+// convert-element-cmake --out-config-settings path and the write-a pipeline
+// path emit byte-identical packages (the
 // TestConfigLabel_MatchesConfigSettingsEmit parity guard pins the naming).
 //
 // Config set: the explicit --build-types list when given, else cmake's
-// standard set for --build-types=auto (see standardConfigurationTypes — the
-// per-project detection happens in A's conversion genrule, not here). The
-// first config is the string_flag default, so an unset flag reproduces
-// lower's flattened baseline view.
+// standard set for --build-types=auto (the per-project detection happens in
+// A's conversion genrule, not here). The first config is the string_flag
+// default, so an unset flag reproduces lower's flattened baseline view.
 //
 // No-op (writes nothing) when neither --build-types nor auto is set, or the
 // config set resolves to fewer than two distinct configs — there's no
 // multi-config select to back, keeping the single-config render byte-stable.
 func writeConfigSettingsPackage(outDir string) error {
-	configs := cmakeConfig.buildTypes
-	if cmakeConfig.autoBuildTypes {
-		configs = standardConfigurationTypes
-	}
+	configs := multiConfigConfigs()
 	if len(configs) == 0 {
 		return nil
 	}

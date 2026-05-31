@@ -2122,13 +2122,13 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 	// not the rules package — but symmetric wiring keeps the
 	// staging step idempotent (the same MODULE.bazel works
 	// pre- and post-stage).
-	if len(cmakeConfig.buildTypes) > 0 {
-		// Multi-config (--build-types): the //config package this render
-		// emits uses bazel_skylib's string_flag to drive its
+	if multiConfigEnabled() {
+		// Multi-config (--build-types / =auto): the //config package this
+		// render emits uses bazel_skylib's string_flag to drive its
 		// config_settings, so project B's module graph needs skylib for
-		// the //config:build_type load() to resolve. Gated on
-		// --build-types so single-config B's MODULE.bazel stays
-		// byte-stable.
+		// the //config:build_type load() to resolve. Gated to match the
+		// //config emission (multiConfigEnabled) so single-config B's
+		// MODULE.bazel stays byte-stable.
 		b.WriteString(`bazel_dep(name = "bazel_skylib", version = "1.8.2")
 `)
 	}
