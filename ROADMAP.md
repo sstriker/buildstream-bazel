@@ -463,21 +463,24 @@ transition cleanly.
       instantiations now auto-classify benign (Catch2 emitted ~100 of
       them — toolchain variance the converter never controls); a 5-entry
       allowlist covers Catch's own template dtors.
-    - **libpng 1.6.x** ⚠️ deferred — deeper than the earlier "just needs
-      `@zlib`" note. Three compounding blockers, found while wiring it:
+    - **libpng 1.6.x** ⚠️ deferred — but smaller than first thought. Three
+      blockers found while wiring it, only one of which is genuinely new:
       (1) two `cmake -E create_symlink` install steps (libpng16.pc →
-      libpng.pc) hit `unsupported-execute-process` and hard-fail the
-      convert (workaround: `--diagnostics` collect-and-continue, which
-      skips them); (2) the `find_package(ZLIB REQUIRED)` dependency is
-      **dropped entirely** from `png_static`'s `deps` in a standalone
-      convert (no imports manifest), so even with an external zlib module
-      nothing deps on it and `#include <zlib.h>` fails at compile; (3) the
-      external `@zlib` repo itself (the `--bazel-external` passthrough,
-      already added to `run-fidelity.sh`, supplies it). Unblocking needs a
-      converter slice that resolves `find_package(<Pkg>)` to an external
-      Bazel label (akin to the cross-element imports path, but for a BCR
-      module) plus install-symlink tolerance — a converter improvement,
-      not a harness tweak.
+      libpng.pc, libpng16-config → libpng-config) `unsupported-execute-
+      process` and hard-fail the convert. These symlink **build-generated**
+      files, so PR #350's create_symlink lift refuses them ("source not
+      under the source root") — they need a benign-skip rule (an install-
+      compat symlink has zero build-artifact impact, same character as
+      #350's make_directory/remove no-ops); filed as a comment on #350.
+      (2) the `find_package(ZLIB)` dep drops from `png_static` in a
+      standalone convert — **not new work**: it's the existing
+      `--imports-manifest` mechanism (`meta-cmake-find-package-variable-
+      form.sh` maps `ZLIB::ZLIB` → a Bazel label), threadable through the
+      harness's `--convert-flags` passthrough. (3) the external `@zlib`
+      module — the `--bazel-external` passthrough (already in
+      `run-fidelity.sh`) supplies it. So libpng is really: the #350
+      build-generated-symlink skip rule + an imports manifest + the
+      external dep — no new find_package converter slice.
 
   Remaining work:
     - Consumer-side gates for spdlog (the project's own static lib
