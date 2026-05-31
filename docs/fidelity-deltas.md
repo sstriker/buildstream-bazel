@@ -51,6 +51,16 @@ spdlog's vendored fmt headers.
 Status: ✅ shipped — `make e2e-fidelity-compare-zlib` + `-zlib-consumer`
 gates both pass with empty allowlists. 105/105 lib-side exact match.
 
+### nlohmann-json (`make fetch-nlohmann-json`, `JSON_VERSION = 3.11.3`)
+
+Status: ✅ consumer-side shipped — `make
+e2e-fidelity-compare-nlohmann-json-consumer` passes (0 impactful deltas).
+Header-only INTERFACE library: no static archive, so this is consumer-side
+only. The converter lowers the `INTERFACE_LIBRARY` target to a
+`cc_library(hdrs = [...], includes = ["include"])` (the
+`cmake-codegen-interface-library-from-trace` synthesis) a consumer can
+`deps` on, which is what unblocked this gate.
+
 ### Recording a new delta
 
 When the harness surfaces a new impactful delta during gate
@@ -66,9 +76,9 @@ development, capture it as a discrete sub-section:
 
 ## Cross-project Bazel-build fidelity survey (close-gaps campaign, May 2026)
 
-Status: 🟢 3 of 5 projects shipped as productionized gates; the other
-2 catalogued as deferred (see `ROADMAP.md` "A-B-C fidelity harness"
-entry).
+Status: 🟢 4 of 6 projects shipped as productionized gates (zlib, fmt,
+spdlog, nlohmann-json); Catch2 + libpng catalogued as deferred (see
+`ROADMAP.md` "A-B-C fidelity harness" entry).
 
 Manual harness for the initial survey: for each project, run
 `convert-element-cmake --cmake-build-dir <cmake-build>` to produce
@@ -115,8 +125,8 @@ harness uses them as oracle slots:
 - **Project A** — the cmake source tree (CMakeLists.txt + sources +
   `CMAKE_BUILD_TYPE=Release` configure). The unmodified input.
 - **Project B** — the converted Bazel project (converter's `BUILD.bazel`
-  + the same source tree + a minimal `WORKSPACE` / `MODULE.bazel`).
-  The output we're validating.
+  + the same source tree + a minimal bzlmod `MODULE.bazel` declaring
+  `rules_cc` / `rules_pkg` as bazel_deps). The output we're validating.
 - **Project C** — the cmake-built artifact (oracle). What B should
   reproduce up to documented-benign deltas. Always works because
   cmake's the source of truth for the project's build graph.

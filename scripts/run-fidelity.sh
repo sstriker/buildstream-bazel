@@ -8,17 +8,21 @@
 #   2. convert-element-cmake against the same build dir → produce
 #      BUILD.bazel.
 #   3. Stage a Bazel workspace: the project sources + the converted
-#      BUILD.bazel + a minimal WORKSPACE that vendors rules_cc.
+#      BUILD.bazel + a bzlmod MODULE.bazel declaring the converter's
+#      load() deps (rules_cc for the cc_* rules, rules_pkg for the
+#      install pkg_files) as bazel_deps. We keep the converter's real
+#      emitted BUILD — no load-stripping — since Bazel 9 removed the
+#      native cc rules, so `load("@rules_cc//...")` must resolve.
 #      bazel build the same target.
 #   4. Run cmd/fidelity-compare against the two artifacts. Report
 #      benign / impactful deltas and exit non-zero on any impactful.
 #
 # Bazel-availability gating: the cmake configure + convert + classifier
-# half always runs. The bazel build half self-skips when bazel is not
-# on PATH OR when the rules_cc tarball isn't pre-staged at
-# $RULES_CC_TARBALL (CI runners that vendor it expose the path;
-# operators without it see a "skipped (no bazel)" line and exit 0
-# on the configure + convert half).
+# half always runs. The bazel build half self-skips when bazel is not on
+# PATH (operators without it see a "skipped (no bazel)" line and exit 0
+# on the configure + convert half). The bazel half needs a reachable
+# Bazel Central Registry to fetch rules_cc / rules_pkg, the same as the
+# repo's meta-* gates.
 #
 # Usage:
 #   scripts/run-fidelity.sh \
@@ -217,9 +221,6 @@ echo "fidelity[$project_name]: convert-element-cmake" >&2
     }
 
 # --- Step 3: stage Bazel workspace + build (project B).
-# Drop the `load("@rules_cc//...")` shim if present; built-in cc
-# rules are available without it on the Bazel versions we test.
-sed -i 's|load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")||' "$bazel_ws/BUILD.bazel"
 # Copy the project sources into the bazel workspace.
 cp -r "$source_root/." "$bazel_ws/"
 # Overwrite any pre-existing project BUILD.bazel with the converted one.
@@ -227,20 +228,18 @@ cp -r "$source_root/." "$bazel_ws/"
     --cmake-build-dir "$cmake_build" \
     --out-build "$bazel_ws/BUILD.bazel" \
     >> "$work_dir/convert.log" 2>&1
-sed -i 's|load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")||' "$bazel_ws/BUILD.bazel"
-cat > "$bazel_ws/WORKSPACE" <<EOF
-workspace(name = "${project_name}_fidelity_ws")
-EOF
-if [ -n "${RULES_CC_TARBALL:-}" ]; then
-    cat > "$bazel_ws/WORKSPACE" <<EOF
-workspace(name = "${project_name}_fidelity_ws")
-load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-http_archive(name = "rules_cc", urls = ["file://${RULES_CC_TARBALL}"], strip_prefix = "rules_cc-0.0.16")
-EOF
-fi
-cat > "$bazel_ws/.bazelrc" <<'EOF'
-common --noenable_bzlmod
-common --enable_workspace
+# bzlmod MODULE.bazel providing the converter's load() deps as bazel_deps
+# from BCR — rules_cc backs the cc_* rules, rules_pkg backs the install
+# pkg_files. We keep the converter's *real* output (no load-stripping):
+# Bazel 9 removed the native cc rules, so `load("@rules_cc//...")` MUST
+# resolve, and testing the actual emitted BUILD is more faithful than a
+# rewritten one. Versions track write-a's project B (cmd/write-a/main.go),
+# the proven-in-CI reference. Needs a reachable Bazel Central Registry,
+# same as the meta-* gates.
+cat > "$bazel_ws/MODULE.bazel" <<EOF
+module(name = "${project_name}_fidelity", version = "0.0.0")
+bazel_dep(name = "rules_cc", version = "0.0.17")
+bazel_dep(name = "rules_pkg", version = "1.0.1")
 EOF
 
 if ! command -v bazel >/dev/null 2>&1; then

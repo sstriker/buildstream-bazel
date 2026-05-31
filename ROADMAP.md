@@ -387,11 +387,25 @@ transition cleanly.
 
 ## Next
 
-- **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
-  survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
-  + `scripts/run-fidelity.sh` driver + `make e2e-fidelity-compare-{zlib,
-  spdlog,fmt}` library-side gates + `make e2e-fidelity-compare-{zlib,fmt}-consumer`
-  consumer-side gates + `testdata/fidelity/*.allowlist.txt` companions.
+- **A-B-C fidelity harness — productionized (CI-wired, soft launch).**
+  Now runs in CI as the non-blocking `fidelity` job (one
+  `continue-on-error: true` step per fixture; promote each to blocking
+  after three consecutive green merges, same policy as the cmake-matrix /
+  narrowing-audit gates). Wiring it surfaced + fixed a rot: the harness
+  staged a WORKSPACE-mode workspace and *stripped* the converter's
+  `load("@rules_cc//…")` to use Bazel's native cc rules, but (a) the
+  converter's `load()` symbol list had drifted (`+cc_test`, `+@rules_pkg`)
+  so the fixed-string strip no longer matched, and (b) Bazel 9 removed the
+  native cc rules outright. Reworked `run-fidelity.sh` to stage a bzlmod
+  `MODULE.bazel` declaring `rules_cc` / `rules_pkg` as bazel_deps (versions
+  tracking write-a's project B) and build the converter's *real* emitted
+  BUILD unmodified — more faithful, and resilient to future `load()`
+  drift. All five gates green after the fix (zlib lib+consumer, fmt
+  lib+consumer, spdlog lib — 0 impactful deltas each). Foundation:
+  `cmd/fidelity-compare` Go tool + `scripts/run-fidelity.sh` driver +
+  `make e2e-fidelity-compare-{zlib,spdlog,fmt}` library-side gates +
+  `make e2e-fidelity-compare-{zlib,fmt}-consumer` consumer-side gates +
+  `testdata/fidelity/*.allowlist.txt` companions.
   Drives the full A-B-C cycle (cmake build → convert → bazel build →
   fidelity-compare → classify against allowlist) and exits non-zero on
   impactful deltas (unexplained symbol drops, hermeticity leaks).
@@ -423,16 +437,18 @@ transition cleanly.
     - **fmt 11.0.2** ✅ library + consumer both shipped — 146/146
       lib-side, 1/1 consumer-side; 3 lib-side + 4 consumer-side
       template-instantiation allowlist entries.
-    - **nlohmann-json 3.11.3** ⚠️ blocked on converter — consumer-side
-      gate is the right shape for this header-only INTERFACE library,
-      but the converter today emits only an `install_directory__include`
-      filegroup for json (no `cc_library`), so a consumer's
-      `cc_library(deps = [...])` can't depend on it. Unblocking work:
-      teach the converter to lower INTERFACE library targets to
-      `cc_library(hdrs = glob(...), strip_include_prefix = ...)` when
-      `target_include_directories(... INTERFACE ...)` is the only
-      surface — separate converter improvement, then this gate becomes
-      a clean addition.
+    - **nlohmann-json 3.11.3** ✅ consumer-side shipped — header-only
+      INTERFACE library (no static archive to diff). The earlier
+      "blocked on converter" note is stale: the converter now lowers the
+      `INTERFACE_LIBRARY` target to a `cc_library(hdrs = [...], includes
+      = ["include"])` (the `cmake-codegen-interface-library-from-trace`
+      synthesis, driven by `target_include_directories(... INTERFACE ...)`
+      in the trace), so a consumer's `cc_library(deps = [":nlohmann_json"])`
+      resolves the headers + include path. Verified: a consumer
+      `#include <nlohmann/json.hpp>` compiles against the converted
+      target, and `make e2e-fidelity-compare-nlohmann-json-consumer`
+      passes (0 impactful deltas, benign auto-classified). Wired into the
+      CI `fidelity` job.
     - **Catch2 3.5.3** ⚠️ deferred — needs the converter invoked with
       `--lift-configure-file` (to recover `catch_user_config.hpp` from
       the configure_file template) AND `//tools:cmake-configure-file`
@@ -449,8 +465,6 @@ transition cleanly.
       synthesized WORKSPACE.
 
   Remaining work:
-    - Converter improvement to emit `cc_library` for INTERFACE-only
-      targets — unblocks nlohmann-json's consumer-side gate.
     - Consumer-side gates for spdlog (the project's own static lib
       consumers also use header-side typedefs / templates; an extra
       signal beyond the lib-side 1404 match).
@@ -458,9 +472,9 @@ transition cleanly.
       and libpng (Bazel-side external repos). VTK / LLVM gates need
       the project's specific configure flags + tooling and may need
       larger allowlists.
-    - CI wiring (`continue-on-error: true` initially, then promote
-      to blocking after three consecutive green merges across all
-      configured fixtures).
+    - Promote each CI `fidelity` gate from `continue-on-error: true`
+      to blocking after three consecutive green merges (the wiring +
+      soft launch shipped — see the entry head).
 
   Acceptance: a converter regression that drops a symbol from the
   output artifact (e.g. accidentally skipping a source file in
