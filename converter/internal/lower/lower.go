@@ -340,22 +340,39 @@ var headerExts = map[string]bool{
 // unsupported-custom-command).
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
-		// Diagnostic mode: continue against the first
-		// configuration so the survey reaches every
-		// per-target refusal site. The Phase 5 multi-config
-		// codemodel fold (lowerMultiConfigDeltas at the end
-		// of this function) still runs when r.TargetsByConfig
-		// is populated, so the per-config select() arms still
-		// land on top of cfg[0]'s walk. Strict mode keeps
-		// rejecting — production callers want the loud Tier-1
-		// until Phase 5 ships full multi-config support.
+		// The multi-config fold (lowerMultiConfigDeltas, at the
+		// end of this function) projects every non-primary
+		// configuration's flag / src / dep deltas onto cfg[0]'s
+		// targets as //config:<name> select() arms when
+		// r.TargetsByConfig is populated — so multi-config
+		// *intent* is captured, not surveyed-first-only. The one
+		// thing that fold can't recover is a target built only in
+		// a non-primary configuration: cfg[0]'s walk never sees
+		// it, and lowerMultiConfigDeltas only augments targets
+		// cfg[0] emitted, so it's silently dropped.
+		dropped := configOnlyTargetNames(r.Codemodel.Configurations)
 		if opts.Rejections != nil {
-			opts.Rejections.Add(failure.UnsupportedTargetType,
-				fmt.Sprintf("multi-config codemodel (%d configurations) — surveying against the first one only; Phase 5 multi-config fold is the canonical path",
-					got))
-		} else {
+			// Diagnostic mode: flag exactly the config-only
+			// targets (the genuine residual); stay silent when
+			// cfg[0] covers the whole target set (the common
+			// "same targets, differing per-config flags" case the
+			// fold handles end-to-end).
+			for _, name := range dropped {
+				opts.Rejections.AddWithContext(failure.UnsupportedTargetType,
+					"target built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target is dropped",
+					name, "")
+			}
+		} else if len(dropped) > 0 {
+			// Strict mode: the fold captures every config's
+			// flag/src/dep intent as //config:<name> select() arms
+			// (and convert-element-cmake --out-config-settings
+			// emits the backing config_settings), so multi-config
+			// is a supported path now. The lone thing the
+			// first-config-primary fold can't recover is a target
+			// built only in a non-primary configuration — that's
+			// genuine intent loss, so strict mode still refuses it.
 			return nil, failure.New(failure.UnsupportedTargetType,
-				"M1 supports exactly one configuration; got %d", got)
+				"target %q is built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target would be dropped (pass --diagnostics to convert the rest anyway)", dropped[0])
 		}
 	}
 	cfg := r.Codemodel.Configurations[0]

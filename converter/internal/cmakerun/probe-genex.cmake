@@ -92,6 +92,39 @@ function(_cmtb_probe_genex)
         get_target_property(_CMTB_TYPE ${_CMTB_TGT} TYPE)
         set(_CMTB_OUT_DIR "${CMAKE_BINARY_DIR}/cmake-to-bazel.genex/${_CMTB_TGT}")
 
+        # Skip targets whose link interface names a `::` (namespaced)
+        # target that doesn't exist. cmake tolerates such a dangling
+        # reference until something forces the link interface to be
+        # evaluated — but the interface_LINK_LIBRARIES file(GENERATE)
+        # below would do exactly that, turning the benign dangle into a
+        # fatal "the target was not found" at the generate step and
+        # aborting the whole configure. This happens for real: abseil's
+        # non-TESTONLY `heterogeneous_lookup_testing` INTERFACE library
+        # DEPS the TESTONLY `absl::test_instance_tracker`, which abseil
+        # skips creating when testing is off, leaving the consumer with a
+        # dangling `::` dep. Skipping the probe for such a target is safe
+        # — cmakerun.ReadGenexProbe tolerates a missing per-target dir and
+        # the lifter falls back to its legacy genex handling for it.
+        set(_CMTB_DANGLING FALSE)
+        foreach(_CMTB_LLPROP LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+            get_target_property(_CMTB_LLS ${_CMTB_TGT} ${_CMTB_LLPROP})
+            if(_CMTB_LLS)
+                foreach(_CMTB_LL ${_CMTB_LLS})
+                    # Only plain (non-genex) namespaced names are the ones
+                    # cmake validates as must-exist targets; leave genex
+                    # ($<...>) and bare library names alone.
+                    if(_CMTB_LL MATCHES "::" AND NOT _CMTB_LL MATCHES "\\$<")
+                        if(NOT TARGET ${_CMTB_LL})
+                            set(_CMTB_DANGLING TRUE)
+                        endif()
+                    endif()
+                endforeach()
+            endif()
+        endforeach()
+        if(_CMTB_DANGLING)
+            continue()
+        endif()
+
         # TYPE is always available — even on INTERFACE_LIBRARY and
         # ALIAS targets — so probe it unconditionally as the
         # consumer's gating signal.

@@ -35,22 +35,27 @@ out_dir="${SURVEY_OUT_DIR:-/tmp/survey-out}"
 projects=""
 
 # SURVEY_BUILD_TYPES controls multi-config surveying via --build-types
-# (Ninja Multi-Config). Three forms:
-#   - unset / empty  -> single-config Release path (default).
-#   - "auto"         -> detect EACH project's own declared
+# (Ninja Multi-Config). Forms:
+#   - unset / "auto" -> (DEFAULT) detect EACH project's own declared
 #                       CMAKE_CONFIGURATION_TYPES and survey with exactly
 #                       those, so no config's intent is dropped (a fixed
 #                       subset like "Release,Debug" would silently drop
 #                       RelWithDebInfo / MinSizeRel / custom configs).
+#   - "single"/"none"-> single-config Release path (opt out of multi-config).
 #   - explicit list  -> e.g. "Release,Debug" forces that subset (escape
 #                       hatch; not faithful if the project declares more).
-build_types="${SURVEY_BUILD_TYPES:-}"
+# Default is "auto" because a faithful survey shouldn't silently drop a
+# project's non-default configs; opt out with "single" when you only need
+# the Release surface.
+build_types="${SURVEY_BUILD_TYPES:-auto}"
+case "$build_types" in single|none|off) build_types="" ;; esac
 
-# SURVEY_SPLIT_PACKAGES=1 surveys with --split-packages (one BUILD per
-# directory, the gazelle model) -- the shape the converter ultimately
-# targets, so split-mode findings are the most representative. Empty
-# (default) emits the single monolithic BUILD.bazel.
-split_packages="${SURVEY_SPLIT_PACKAGES:-}"
+# SURVEY_SPLIT_PACKAGES controls --split-packages (one BUILD per directory,
+# the gazelle model) — the shape the converter ultimately targets, so
+# split-mode findings are the most representative. Default ON; set to
+# "0"/"no"/"off" to emit the single monolithic BUILD.bazel instead.
+split_packages="${SURVEY_SPLIT_PACKAGES:-1}"
+case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 
 while [ $# -gt 0 ]; do
     case "$1" in

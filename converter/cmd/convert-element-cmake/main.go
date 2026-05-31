@@ -28,6 +28,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/configsettings"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -249,6 +250,36 @@ func run(a cli.Args) error {
 		}
 		if err := os.WriteFile(a.OutSanitizerFeatures, body, 0o644); err != nil {
 			return fmt.Errorf("write sanitizer-features: %w", err)
+		}
+	}
+
+	// Phase 5 //config package emit: when the operator requested it
+	// AND the codemodel is multi-config, render the config_settings
+	// that back the fold's //config:<name> select() arms. Sanitizer-
+	// shaped configs are excluded — they route through --features
+	// (--out-sanitizer-features above), not a per-config select(),
+	// matching lower's nonFeatureConfigNames split. The primary
+	// non-sanitizer configuration is the string_flag default so an
+	// unset flag reproduces lower's flattened baseline view.
+	if a.OutConfigSettings != "" && len(r.Codemodel.Configurations) > 1 {
+		var names []string
+		for _, c := range r.Codemodel.Configurations {
+			if _, isSanitizer := configfold.SanitizerFeature(c.Name); isSanitizer {
+				continue
+			}
+			names = append(names, c.Name)
+		}
+		var primary string
+		if len(names) > 0 {
+			primary = names[0]
+		}
+		if body := configsettings.Emit(names, primary); body != nil {
+			if err := os.MkdirAll(filepath.Dir(a.OutConfigSettings), 0o755); err != nil {
+				return fmt.Errorf("stage config-settings dir: %w", err)
+			}
+			if err := os.WriteFile(a.OutConfigSettings, body, 0o644); err != nil {
+				return fmt.Errorf("write config-settings: %w", err)
+			}
 		}
 	}
 

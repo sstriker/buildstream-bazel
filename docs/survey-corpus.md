@@ -215,6 +215,18 @@ regressing the fix — that's the whole point of keeping them around.
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):
 
+- **abseil (cmake 4 + probe-genex) — fixed:** abseil
+  (`ABSEIL_VERSION` 20260107.1) used to fatal-error at configure under
+  cmake 4.x with the genex-probe hook on, because its non-TESTONLY
+  `heterogeneous_lookup_testing` INTERFACE library DEPS the TESTONLY
+  `absl::test_instance_tracker` (which abseil skips creating when testing
+  is off), and the probe's `INTERFACE_LINK_LIBRARIES` `file(GENERATE)`
+  forced evaluation of that dangling `::` reference. `probe-genex.cmake`
+  now skips probing any target with an unresolvable `::` link-interface
+  dep (see the ROADMAP Done entry +
+  `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil converts
+  with the probe on instead of crashing — no `--probe-genex=false` needed.
+  Surveys clean (`0/0/0`) under the default `auto`+split.
 - **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not
   the repo root — survey `$(ZSTD_DIR)/build/cmake`. (This subdir-under-an-
   umbrella layout is exactly what #303 fixed.)
@@ -240,7 +252,14 @@ llvm-subdir note below):
   `openblas_utest_ext` executable; `disambiguateTestNameCollisions`
   renames the cc_test so the convert no longer hard-fails. Its remaining
   rejection is the `getarch` arch-detection `execute_process` (genuinely
-  not Bazel-modelable).
+  not Bazel-modelable). OpenBLAS's top-level
+  `cmake_minimum_required(VERSION 2.8)` is below the floor cmake 4 dropped;
+  the May-2026 cmake-4-pin resurvey confirmed `cmakerun.Configure`'s
+  policy-floor retry lifts it (the survey log shows the
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` re-run firing), so OpenBLAS surveys
+  `ok` under cmake 4.3.3 with gfortran: 1 rejection (the getarch probe) +
+  51 `fortran-target-needs-ruleset` idioms (the Fortran partition). libevent
+  (floor 3.1) is lifted the same way.
 
 ### Optional toolchains (unlock fuller surveys)
 
@@ -377,6 +396,14 @@ make fetch-survey
 # Survey the default corpus. The survey is driven by the script, not a
 # make target; with no project args it surveys the four corpus projects
 # at their Makefile-pinned dirs. Output dir defaults to /tmp/survey-out.
+#
+# DEFAULT MODE is faithful: multi-config (SURVEY_BUILD_TYPES=auto) +
+# split-packages (SURVEY_SPLIT_PACKAGES=1). auto detects each project's
+# own declared CMAKE_CONFIGURATION_TYPES (so no config's intent is
+# dropped); split emits one BUILD.bazel per directory (the gazelle model
+# the converter ultimately targets). Both are the most representative
+# surface, so they're on by default — opt out below when you only need a
+# narrower/faster pass.
 scripts/run-survey.sh
 SURVEY_OUT_DIR=/tmp/my-out scripts/run-survey.sh   # custom out dir
 
@@ -387,20 +414,32 @@ scripts/run-survey.sh myproj=/path/to/cmake/root
 make fetch-llvm
 scripts/run-survey.sh llvm=$LLVM_DIR/llvm
 
-# Multi-config across ALL of each project's declared configuration types.
-# SURVEY_BUILD_TYPES=auto runs a throwaway Ninja Multi-Config configure
-# per project, reads back its CMAKE_CONFIGURATION_TYPES, and surveys with
-# exactly those — so no config's intent is dropped. A fixed subset like
-# "Release,Debug" would silently drop RelWithDebInfo/MinSizeRel/custom
-# configs; an explicit comma list is still accepted as an escape hatch.
-SURVEY_BUILD_TYPES=auto scripts/run-survey.sh
-
-# Split-packages: one BUILD.bazel per directory (the gazelle model) —
-# the shape the converter ultimately targets, for gazelle-compliant
-# output. Composes with SURVEY_BUILD_TYPES.
-SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
-SURVEY_BUILD_TYPES=auto SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
+# Opt OUT of multi-config (single-config Release surface only):
+SURVEY_BUILD_TYPES=single scripts/run-survey.sh
+# Force a fixed config subset (escape hatch; not faithful if the project
+# declares more — drops RelWithDebInfo/MinSizeRel/custom configs):
+SURVEY_BUILD_TYPES=Release,Debug scripts/run-survey.sh
+# Opt OUT of split-packages (single monolithic BUILD.bazel):
+SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
+# Narrowest/fastest pass (single-config monolithic):
+SURVEY_BUILD_TYPES=single SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 ```
+
+> **Multi-config under the default `auto`.** The converter folds every
+> non-primary configuration's flag / src / dep deltas onto the primary
+> configuration's targets as `//config:<name>` `select()` arms, so
+> multi-config *intent* is captured and a clean multi-config survey records
+> **no** `unsupported-target-type` rejection (it used to emit a blanket one
+> per project; that was stale). The fold's one residual is a target built
+> *only* in a non-primary configuration — the primary walk never sees it,
+> so it's dropped and flagged precisely (by target name). The matching
+> `//config:<name>` `config_setting`s are emitted by
+> `convert-element-cmake --out-config-settings` (a `//config` package: a
+> `string_flag build_type` + one `config_setting` per non-sanitizer
+> config), so the output is self-contained — select a config at build time
+> with `--//config:build_type=<name>`. Multi-config is now a supported path
+> in both strict and diagnostic mode; strict mode refuses only the
+> config-only-target residual above.
 
 Each project lands `rejections.json` + `bazel-idiom.json` +
 `coverage.json` under the out dir, with a `summary.txt` table (one column

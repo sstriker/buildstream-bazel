@@ -416,6 +416,18 @@ transition cleanly.
 
 ## Next
 
+- **Thread `--build-types` through write-a's project rendering.**
+  Multi-config conversion (the Phase 5 fold + `--out-config-settings`,
+  see Done) is wired end-to-end in `convert-element-cmake` standalone,
+  but write-a's pipeline doesn't thread `--build-types` to its per-element
+  converter genrules — so a write-a-rendered project is always
+  single-config. To make multi-config reachable through the full
+  pipeline: thread the build-types list to each element's converter
+  genrule, and render the shared `//config` package once at project root
+  (the same place `renderPlatformsBuild` emits `//platforms`) by reusing
+  `internal/emit/configsettings.Emit`. Until then, multi-config is a
+  convert-element-cmake-direct / survey capability.
+
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
   survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
   + `scripts/run-fidelity.sh` driver + `make e2e-fidelity-compare-{zlib,
@@ -1131,6 +1143,76 @@ transition cleanly.
   hint still surfaces (that fixture declares 3.20, so the
   floor retry never engages). `docs/cmake-version-matrix.md`
   documents the reactive retry alongside the matrix-env knob.
+
+- **Multi-config fold stops blanket-rejecting; flags only the
+  genuine residual.** The Phase 5 fold (`lowerMultiConfigDeltas` +
+  `configfold`) already projects every non-primary configuration's
+  flag / src / dep deltas onto the primary config's targets as
+  `//config:<name>` `select()` arms — so multi-config intent is
+  captured, not "surveyed first-config-only" as the old rejection
+  claimed. But `ToIR` emitted a blanket `unsupported-target-type`
+  for *every* multi-config codemodel regardless, which the
+  auto-default corpus resurvey surfaced as a spurious +1 rejection
+  on every multi-config project. Replace it with a precise check:
+  diagnostic mode now flags only targets built *solely* in a
+  non-primary configuration (`configOnlyTargetNames` — the one
+  thing the first-config-primary fold can't recover), and stays
+  silent when the primary config covers the whole target set (the
+  common "same targets, differing per-config flags" case). With the
+  config_settings now emitted (next entry), strict mode *accepts*
+  multi-config too — it refuses only the config-only-target residual.
+  Corpus resurvey after the fix: abseil / googletest / brotli drop from
+  `1/0/0` to `0/0/0`, eigen from `2/16` to `1/16` (only its real
+  execute_process rejection left), select() arms intact. Pinned by
+  `TestRejections_MultiConfig_FoldedNotRejected` +
+  `TestFailure_UnsupportedTargetType_MultiConfig`.
+
+- **`//config:<name>` config_settings emitted — multi-config output
+  is self-contained.** The fold's `//config:<name>` `select()` arms
+  needed backing `config_setting`s to load; `configLabel`'s old
+  contract punted them to the operator. `convert-element-cmake
+  --out-config-settings <path>` now renders a `//config` package
+  (`internal/emit/configsettings`): a `string_flag build_type` (default
+  = the primary configuration) + one `config_setting` per non-sanitizer
+  cmake config, keyed on `flag_values`. A dedicated string_flag, not
+  Bazel's built-in `compilation_mode` — `dbg`/`opt`/`fastbuild` would
+  conflate Release and RelWithDebInfo (both `opt`) and drop one config's
+  deltas; the flag is 1:1 and lossless. Select a config at build time
+  with `--//config:build_type=debug`. With the package emitted,
+  `lower.ToIR` drops the strict-mode multi-config refusal (keeping only
+  the config-only-target check), so multi-config is a first-class
+  supported path. Verified end-to-end under cmake 4.3.3: googletest
+  converts in strict mode (rc=0) with the emitted config_settings
+  exactly matching its select-arm keys, and a real `bazel build` against
+  the emitted `//config` package resolves the labels, honours
+  `--//config:build_type=debug`, and rejects undeclared values. Pinned
+  by `configsettings` unit tests + the
+  `TestConfigLabel_MatchesConfigSettingsEmit` cross-package parity guard.
+  (write-a pipeline threading is the remaining reach — see Next.)
+
+- **probe-genex tolerates dangling `::` link-interface deps.**
+  The cmake-4-pin corpus resurvey surfaced abseil
+  (`ABSEIL_VERSION` 20260107.1) fatal-erroring at configure with
+  the genex-probe hook on (the default): its non-TESTONLY
+  `heterogeneous_lookup_testing` INTERFACE library DEPS the
+  TESTONLY `absl::test_instance_tracker`, which abseil skips
+  creating when testing is off — leaving a dangling `::`
+  reference in the link interface. cmake tolerates that until
+  something forces evaluation; the probe's
+  `file(GENERATE $<TARGET_PROPERTY:t,INTERFACE_LINK_LIBRARIES>)`
+  forced it and aborted the whole generate step. (Not the
+  policy-floor rescue — it doesn't fire for abseil, top-level
+  floor 3.16; and plain cmake 4.3.3 configures abseil fine.) Fix:
+  `probe-genex.cmake` now skips probing any target whose
+  `LINK_LIBRARIES` / `INTERFACE_LINK_LIBRARIES` names a `::`
+  target that doesn't exist — `cmakerun.ReadGenexProbe` tolerates
+  a missing per-target dir and the lifter falls back to legacy
+  genex handling for it, so the skip is lossless for the residue.
+  Selective: normal targets are still fully probed (abseil: 235
+  targets probed, only the dangling consumer skipped). Pinned by
+  `TestProbeGenex_DanglingLinkInterface_LiveCMake` +
+  `testdata/sample-projects/probe-genex-dangling-link`. The
+  resurvey now has abseil green with the probe on (0/0/0).
 
 - **probe-genex composes with Ninja Multi-Config.**
   `probe-genex.cmake` now emits per-config OUTPUT paths
