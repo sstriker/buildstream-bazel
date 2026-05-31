@@ -79,6 +79,49 @@ func TestEmit_PerPlatform_BaselinePlusSelect(t *testing.T) {
 	}
 }
 
+// TestEmit_PerPlatform_ExplicitDefaultArm pins the #217 else-arm
+// emit: when PerPlatform carries an explicit "//conditions:default"
+// delta (a platform if-chain's else() source), it populates the
+// default arm instead of the empty list — and the arm is still
+// rendered exactly once (no duplicate "//conditions:default" key,
+// which Bazel rejects). The default arm sorts LAST regardless.
+func TestEmit_PerPlatform_ExplicitDefaultArm(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "libfoo",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"common.c"},
+			PerPlatform: map[string]map[string][]string{
+				"srcs": {
+					"@platforms//os:windows": {"win.c"},
+					"//conditions:default":   {"posix.c"},
+				},
+			},
+			Visibility: []string{"//visibility:public"},
+		}},
+	}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotStr := string(got)
+	wantSrcs := `srcs = ["common.c"] + select({
+        "@platforms//os:windows": [
+            "win.c",
+        ],
+        "//conditions:default": [
+            "posix.c",
+        ],
+    }),`
+	if !strings.Contains(gotStr, wantSrcs) {
+		t.Errorf("srcs missing merged default-arm shape; got:\n%s\n\nwant substring:\n%s", gotStr, wantSrcs)
+	}
+	// Exactly one "//conditions:default" key (no duplicate).
+	if n := strings.Count(gotStr, "//conditions:default"); n != 1 {
+		t.Errorf("expected exactly 1 //conditions:default key, got %d:\n%s", n, gotStr)
+	}
+}
+
 // TestEmit_PerPlatform_OnlySelect: an attribute whose IR has an
 // empty flat baseline but non-empty PerPlatform delta renders
 // as a bare select() (no leading list + concatenation).

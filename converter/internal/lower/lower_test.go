@@ -794,6 +794,70 @@ func TestToIR_PlatformConditionalSrcs_Partitioned(t *testing.T) {
 	}
 }
 
+// TestToIR_PlatformConditionalSrcs_ElseArmToDefault pins the #217
+// else-arm fix end-to-end: an `if(WIN32) win.c else() posix.c` chain
+// (every sibling recognized) puts posix.c under
+// PerPlatform["srcs"]["//conditions:default"] — NOT flat. Before the
+// fix posix.c was unconditional, so a Windows build wrongly compiled
+// it. shared.c (no enclosing if) stays flat.
+func TestToIR_PlatformConditionalSrcs_ElseArmToDefault(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{
+				Source: "/src",
+				Build:  "/tmp/convert-element-build-abc123",
+			},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@1": {
+				Name: "foo",
+				Type: "STATIC_LIBRARY",
+				// Configured on a non-Windows host: the else() arm
+				// (posix.c) is the entered one and appears in the
+				// codemodel; win.c is the skipped arm (Tier 2 recovers
+				// it, but it's not in the codemodel sources here).
+				Sources: []fileapi.TargetSource{
+					{Path: "shared.c", CompileGroupIndex: 0},
+					{Path: "posix.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0, 1},
+				}},
+			},
+		},
+	}
+	trace := `
+{"args":["foo","PRIVATE","shared.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":3}
+{"args":["WIN32"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":[],"cmd":"else","file":"/src/CMakeLists.txt","line":7}
+{"args":["foo","PRIVATE","posix.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":8}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":9}
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		TraceRaw:       []byte(trace),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pkg.Targets[0]
+	if !equal(tgt.Srcs, []string{"shared.c"}) {
+		t.Errorf("flat Srcs = %v, want [shared.c] (posix.c should be in the default arm, not flat)", tgt.Srcs)
+	}
+	arm, ok := tgt.PerPlatform["srcs"]["//conditions:default"]
+	if !ok {
+		t.Fatalf("PerPlatform[srcs][//conditions:default] missing; got %+v", tgt.PerPlatform)
+	}
+	if !equal(arm, []string{"posix.c"}) {
+		t.Errorf("PerPlatform[srcs][//conditions:default] = %v, want [posix.c]", arm)
+	}
+}
+
 // TestToIR_PlatformConditionalSrcs_ArmSorted pins the
 // byte-stability fix: multiple conditional sources for the same
 // OS surface in sorted order under PerPlatform["srcs"][key], not

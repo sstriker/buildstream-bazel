@@ -250,8 +250,31 @@ func maybeCollectPlatformConditionalSource(ev TraceEvent, idx *cmakeFileIfIndex,
 // linux.c unconditional. The global stack sees the caller's
 // open if at the moment inner.cmake's target_sources runs and
 // correctly attributes the source.
+// defaultSelectKey is the sentinel SelectKey for a platform
+// if-chain's else() arm. In a Bazel select(), "none of the sibling
+// arms matched" is exactly `//conditions:default`, so an else() whose
+// every prior arm (if/elseif) is a recognized platform constraint maps
+// here — the source is conditional on "not any of the recognized
+// siblings", which the emitted select()'s default arm expresses. When
+// a sibling arm is an UNRECOGNIZED predicate (a non-platform condition
+// like if(BUILD_TESTING)), else() does NOT mean "default platform" and
+// the arm stays "" (flat) — see ifFrame.allSiblingsRecognized.
+const defaultSelectKey = "//conditions:default"
+
+// ifFrame is one open `if()` block on the stack. key is the current
+// arm's select key (a platform constraint, defaultSelectKey for a
+// qualifying else, or "" when unrecognized). allSiblingsRecognized
+// tracks whether EVERY arm seen so far in this block (if + each
+// elseif) mapped to a recognized platform constraint — the guard that
+// lets a trailing else() become defaultSelectKey only when the whole
+// chain is platform-pure.
+type ifFrame struct {
+	key                   string
+	allSiblingsRecognized bool
+}
+
 type platformIfStack struct {
-	stack []string
+	stack []ifFrame
 }
 
 func newPlatformIfStack() *platformIfStack {
@@ -261,21 +284,36 @@ func newPlatformIfStack() *platformIfStack {
 func (p *platformIfStack) observe(ev TraceEvent) {
 	switch strings.ToLower(ev.Cmd) {
 	case "if":
-		p.stack = append(p.stack, selectKeyFromIfArgs(ev.Args))
+		k := selectKeyFromIfArgs(ev.Args)
+		p.stack = append(p.stack, ifFrame{key: k, allSiblingsRecognized: k != ""})
 	case "elseif":
+		prior := true
 		if len(p.stack) > 0 {
+			prior = p.stack[len(p.stack)-1].allSiblingsRecognized
 			p.stack = p.stack[:len(p.stack)-1]
 		}
-		p.stack = append(p.stack, selectKeyFromIfArgs(ev.Args))
+		k := selectKeyFromIfArgs(ev.Args)
+		// This arm contributes to the block's recognized-ness: the
+		// chain stays "all recognized" only if every prior arm AND
+		// this elseif map to a platform constraint.
+		p.stack = append(p.stack, ifFrame{key: k, allSiblingsRecognized: prior && k != ""})
 	case "else":
+		prior := true
 		if len(p.stack) > 0 {
+			prior = p.stack[len(p.stack)-1].allSiblingsRecognized
 			p.stack = p.stack[:len(p.stack)-1]
 		}
-		// We can't express the inverted predicate as a single
-		// positive Bazel constraint label, so the else arm is
-		// always "unrecognized": sources here fall through to
-		// the flat srcs list, matching pre-#217 behaviour.
-		p.stack = append(p.stack, "")
+		// An else() arm maps to //conditions:default ONLY when every
+		// sibling (if + all elseif) was a recognized platform
+		// constraint — then "not any of them" is exactly the select's
+		// default arm. Otherwise the inverted predicate isn't
+		// expressible and the source falls through to flat srcs
+		// (pre-#217 behaviour).
+		key := ""
+		if prior {
+			key = defaultSelectKey
+		}
+		p.stack = append(p.stack, ifFrame{key: key, allSiblingsRecognized: prior})
 	case "endif":
 		if len(p.stack) > 0 {
 			p.stack = p.stack[:len(p.stack)-1]
@@ -301,8 +339,8 @@ func (p *platformIfStack) observe(ev TraceEvent) {
 func (p *platformIfStack) currentSelectKey(file string) string {
 	_ = file
 	for i := len(p.stack) - 1; i >= 0; i-- {
-		if p.stack[i] != "" {
-			return p.stack[i]
+		if p.stack[i].key != "" {
+			return p.stack[i].key
 		}
 	}
 	return ""

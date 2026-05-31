@@ -61,19 +61,13 @@ endif()
 	}
 }
 
-// TestTier2_RecoversBothSidesOfIfElse pins the converse: a
-// project configured for Linux + an `if(WIN32) ... else()
-// ...` block where the trace records the else-arm's body
-// events. Tier 1 ignores the else (no positive constraint),
-// Tier 2 recovers the `if` arm. Tier 1's else-arm sources stay
-// in flat srcs (matching pre-#217 behaviour); Tier 2 surfaces
-// win.c under the windows constraint.
-//
-// Note: this test specifically targets the if/else shape where
-// the else arm is the entered one. Since the else's positive
-// constraint isn't expressible (NOT-of-something), it stays
-// flat — and Tier 2 emits ONLY the WIN32 recovery (no double-
-// emission of the else-arm source).
+// TestTier2_RecoversBothSidesOfIfElse pins the if/else shape where
+// the else arm is the ENTERED one (project configured for non-Windows):
+// `if(WIN32) win.c else() posix.c`. Since if(WIN32) is a recognized
+// platform predicate, the #217 else-arm fix maps the entered else's
+// posix.c to //conditions:default (Tier 1), and Tier 2 recovers the
+// skipped win.c under the windows constraint. Together they fully
+// reconstruct the select() from a single non-Windows configure.
 func TestTier2_RecoversBothSidesOfIfElse(t *testing.T) {
 	cmake := `add_library(app STATIC)
 if(WIN32)
@@ -90,8 +84,11 @@ endif()
 `
 	fs := mapFS{"/src/CMakeLists.txt": []byte(cmake)}
 	tier1 := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"app": true})
-	if len(tier1) != 0 {
-		t.Errorf("tier 1 should be empty (else arm), got %#v", tier1)
+	want1 := []PlatformConditionalSource{
+		{Target: "app", Source: "posix.c", SelectKey: "//conditions:default"},
+	}
+	if !reflect.DeepEqual(tier1, want1) {
+		t.Errorf("tier 1 got %#v, want %#v", tier1, want1)
 	}
 	tier2, _ := extractPlatformConditionalSourcesTier2(
 		[]byte(trace), "/src", "", map[string]bool{"app": true}, tier1, fs,
