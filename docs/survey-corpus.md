@@ -224,8 +224,11 @@ llvm-subdir note below):
   forced evaluation of that dangling `::` reference. `probe-genex.cmake`
   now skips probing any target with an unresolvable `::` link-interface
   dep (see the ROADMAP Done entry +
-  `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil surveys
-  clean (0/0/0) with the probe on — no `--probe-genex=false` needed.
+  `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil converts
+  with the probe on instead of crashing — no `--probe-genex=false` needed.
+  Under the default `auto`+split it surveys `1/0/0` (the lone rejection is
+  the expected multi-config Phase-5 note, see the caveat above), `0/0/0`
+  with `SURVEY_BUILD_TYPES=single`.
 - **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not
   the repo root — survey `$(ZSTD_DIR)/build/cmake`. (This subdir-under-an-
   umbrella layout is exactly what #303 fixed.)
@@ -395,6 +398,14 @@ make fetch-survey
 # Survey the default corpus. The survey is driven by the script, not a
 # make target; with no project args it surveys the four corpus projects
 # at their Makefile-pinned dirs. Output dir defaults to /tmp/survey-out.
+#
+# DEFAULT MODE is faithful: multi-config (SURVEY_BUILD_TYPES=auto) +
+# split-packages (SURVEY_SPLIT_PACKAGES=1). auto detects each project's
+# own declared CMAKE_CONFIGURATION_TYPES (so no config's intent is
+# dropped); split emits one BUILD.bazel per directory (the gazelle model
+# the converter ultimately targets). Both are the most representative
+# surface, so they're on by default — opt out below when you only need a
+# narrower/faster pass.
 scripts/run-survey.sh
 SURVEY_OUT_DIR=/tmp/my-out scripts/run-survey.sh   # custom out dir
 
@@ -405,20 +416,27 @@ scripts/run-survey.sh myproj=/path/to/cmake/root
 make fetch-llvm
 scripts/run-survey.sh llvm=$LLVM_DIR/llvm
 
-# Multi-config across ALL of each project's declared configuration types.
-# SURVEY_BUILD_TYPES=auto runs a throwaway Ninja Multi-Config configure
-# per project, reads back its CMAKE_CONFIGURATION_TYPES, and surveys with
-# exactly those — so no config's intent is dropped. A fixed subset like
-# "Release,Debug" would silently drop RelWithDebInfo/MinSizeRel/custom
-# configs; an explicit comma list is still accepted as an escape hatch.
-SURVEY_BUILD_TYPES=auto scripts/run-survey.sh
-
-# Split-packages: one BUILD.bazel per directory (the gazelle model) —
-# the shape the converter ultimately targets, for gazelle-compliant
-# output. Composes with SURVEY_BUILD_TYPES.
-SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
-SURVEY_BUILD_TYPES=auto SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
+# Opt OUT of multi-config (single-config Release surface only):
+SURVEY_BUILD_TYPES=single scripts/run-survey.sh
+# Force a fixed config subset (escape hatch; not faithful if the project
+# declares more — drops RelWithDebInfo/MinSizeRel/custom configs):
+SURVEY_BUILD_TYPES=Release,Debug scripts/run-survey.sh
+# Opt OUT of split-packages (single monolithic BUILD.bazel):
+SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
+# Narrowest/fastest pass (single-config monolithic):
+SURVEY_BUILD_TYPES=single SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 ```
+
+> **Multi-config caveat (until Phase 5 fold lands).** Under the default
+> `auto`, the converter currently surveys a multi-config codemodel
+> *against its first configuration only* and self-reports one
+> `unsupported-target-type` rejection per multi-config project
+> ("surveying against the first one only; Phase 5 multi-config fold is the
+> canonical path"). That's an honest visibility signal, not lifted debt —
+> subtract one `unsupported-target-type` per multi-config project (same
+> spirit as the benign-missing-include-dir notices in pitfall 3) when
+> reading the headline rejection count, and it retires when the Phase 5
+> fold becomes the survey path.
 
 Each project lands `rejections.json` + `bazel-idiom.json` +
 `coverage.json` under the out dir, with a `summary.txt` table (one column
