@@ -253,9 +253,6 @@ sha_smoke_initial=$(sha_of "$B/bazel-bin/smoke/hello_smoke")
 echo
 echo "=== cache-stability: setting up writable source tree ==="
 
-feedback="$work_dir/feedback-read-paths.json"
-cp "$A/bazel-bin/elements/hello-world/read_paths.json" "$feedback"
-
 # Editable source tree the scenarios will mutate.
 edit_src="$work_dir/edit-src"
 cp -r testdata/meta-project/sources/hello-world/. "$edit_src"
@@ -265,6 +262,21 @@ kind: cmake
 sources:
 - kind: local
   path: $edit_src
+EOF
+
+# Narrowing via the per-element read-paths pattern file (replaces the
+# removed --read-paths-feedback flow). write-a auto-discovers the
+# <bst-without-.bst>.read-paths.txt sibling: loadReadPathsPatterns reads
+# it and the cmake handler zeroes every source file the patterns don't
+# mark real. cmake's configure only reads CMakeLists.txt here (not hello.c
+# / include/hello.h — those are compile-time inputs Bazel consumes
+# downstream), so `include CMakeLists.txt` reproduces exactly the read set
+# the old read_paths.json feedback captured empirically. The result:
+# editing hello.c (Scenario A) leaves the converter genrule's input merkle
+# stable, so convert-element-cmake cache-hits instead of re-running.
+edit_patterns="$work_dir/edit.read-paths.txt"
+cat > "$edit_patterns" <<'EOF'
+include CMakeLists.txt
 EOF
 
 # Each scenario re-renders both projects from the editable tree.
@@ -279,20 +291,22 @@ restage_b() {
     fi
 }
 
-rerender_with_feedback() {
+# Re-renders both projects from the editable tree. write-a picks up the
+# edit.read-paths.txt sibling automatically (no flag), so the cmake
+# element renders with hello.c / include/hello.h narrowed to zero_files.
+rerender_narrowed() {
     "$bin_dir/write-a" \
         --rules-package-path "$repo_root/rules_buildstream_bazel" \
         --bst "$edit_bst" \
         --out "$A" \
         --out-b "$B" \
-        --convert-element-cmake "$bin_dir/convert-element-cmake" \
-        --read-paths-feedback "$feedback" >/dev/null
+        --convert-element-cmake "$bin_dir/convert-element-cmake" >/dev/null
 }
 
-# Narrowing transition: re-render with feedback and confirm project A
-# still produces the same BUILD.bazel.out (zero_files-based shape
-# doesn't shift the converter's view).
-rerender_with_feedback
+# Narrowing transition: re-render with the patterns file and confirm
+# project A still produces the same BUILD.bazel.out (zero_files-based
+# shape doesn't shift the converter's view).
+rerender_narrowed
 run_bazel "$A" build //elements/hello-world:hello-world_converted 2>&1 | tail -3
 sha_a_narrowed=$(sha_of "$build_out_a")
 if [ "$sha_a_narrowed" != "$sha_a1" ]; then
@@ -307,7 +321,7 @@ echo "meta-hello: narrowed-mode A build sha matches initial run"
 echo
 echo "=== Scenario A: edit hello.c (NOT in read set) ==="
 echo "// scenario-A test edit" >> "$edit_src/hello.c"
-rerender_with_feedback
+rerender_narrowed
 scen_a_log=$(run_bazel "$A" build //elements/hello-world:hello-world_converted 2>&1 | tail -3)
 sha_a_scen_a=$(sha_of "$build_out_a")
 if [ "$sha_a_scen_a" != "$sha_a_narrowed" ]; then
@@ -315,11 +329,15 @@ if [ "$sha_a_scen_a" != "$sha_a_narrowed" ]; then
     exit 1
 fi
 echo "Scenario A: A's BUILD.bazel.out byte-identical"
-# Soft check: bazel's "X processes" line on a cache-only run reports
-# only internals. Different bazel versions format slightly; print a
+# Soft check: on a cache-only re-render the converter genrule doesn't
+# re-run — bazel reports it either as a pure "1 internal" (already up to
+# date in this output base) or, after the hello.c edit invalidated the
+# output-tree timestamp, as an "action cache hit" (the narrowing kept the
+# action key stable so the cached result is reused). Either shape proves
+# narrowing worked. Different bazel versions format slightly; print a
 # diagnostic but don't fail on shape mismatch.
-if echo "$scen_a_log" | grep -q '1 process: 1 internal'; then
-    echo "Scenario A: project A reports cache-only (no action ran)"
+if echo "$scen_a_log" | grep -qE '1 process: 1 internal|action cache hit'; then
+    echo "Scenario A: project A reports cache-only (converter genrule did not re-run)"
 else
     echo "Scenario A: project A bazel summary: $scen_a_log"
 fi
@@ -342,7 +360,7 @@ echo "Scenario A: B's smoke binary still prints Hello, World!"
 echo
 echo "=== Scenario B: edit CMakeLists.txt comment (IS in read set) ==="
 echo "# scenario-B comment $(date +%s)" >> "$edit_src/CMakeLists.txt"
-rerender_with_feedback
+rerender_narrowed
 sha_smoke_before_aprime=$(sha_of "$B/bazel-bin/smoke/hello_smoke")
 run_bazel "$A" build //elements/hello-world:hello-world_converted 2>&1 | tail -3
 sha_a_aprime=$(sha_of "$build_out_a")
