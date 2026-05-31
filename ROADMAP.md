@@ -456,8 +456,16 @@ transition cleanly.
   Per-project gate status:
     - **zlib v1.3.1** ✅ library + consumer both shipped — 105/105
       lib-side exact, 1/1 consumer-side exact (empty allowlists).
-    - **spdlog v1.14.1** ✅ library shipped — 1404/1404, 5
-      template-instantiation entries.
+    - **spdlog v1.14.1** ✅ library + consumer both shipped — 1404/1404
+      lib-side (5 template-instantiation allowlist entries); 63/63
+      consumer-side exact, 0 impactful, empty allowlist. spdlog is a
+      compiled library (`PUBLIC SPDLOG_COMPILED_LIB`), so the consumer
+      compiles in compiled-lib mode against the converted target;
+      `run-fidelity.sh` replays the define on the cmake side
+      (`--consumer-cmake-cflags`) and compiles both sides at `-O2` so the
+      template-instantiation symbol sets are comparable (the `-O0`
+      fastbuild default otherwise floods the diff with unpaired weak
+      symbols — a harness artifact, not a converter delta).
     - **fmt 11.0.2** ✅ library + consumer both shipped — 146/146
       lib-side, 1/1 consumer-side; 3 lib-side + 4 consumer-side
       template-instantiation allowlist entries.
@@ -504,9 +512,6 @@ transition cleanly.
       the host for `find_package(ZLIB)`.
 
   Remaining work:
-    - Consumer-side gates for spdlog (the project's own static lib
-      consumers also use header-side typedefs / templates; an extra
-      signal beyond the lib-side 1404 match).
     - VTK / LLVM gates — need the project's specific configure flags +
       tooling and may need larger allowlists (the std::/libm-builtin
       classifier rules + the configure_file / cmake-P / imports-manifest /

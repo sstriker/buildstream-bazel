@@ -1,5 +1,5 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-libpng e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-nlohmann-json-consumer \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-libpng e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-spdlog-consumer e2e-fidelity-compare-nlohmann-json-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file e2e-meta-cmake-split-build e2e-meta-cmake-split-multiconfig e2e-meta-cmake-split-gazelle \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
@@ -807,6 +807,26 @@ e2e-fidelity-compare-fmt-consumer: check-cmake-toolchain converter fetch-fmt
 		--consumer-file $(CURDIR)/testdata/fidelity/consumers/fmt_consumer.cpp \
 		--consumer-bazel-dep :fmt \
 		--allowlist testdata/fidelity/fmt-consumer.allowlist.txt
+
+# spdlog consumer-side fidelity gate. spdlog is a *compiled* library
+# (its CMake sets `target_compile_definitions(spdlog PUBLIC
+# SPDLOG_COMPILED_LIB)`), so a consumer of the converted target compiles
+# in compiled-lib mode (out-of-line refs into libspdlog.a). The cmake-side
+# consumer compile is a bare `-I<install>/include` that wouldn't otherwise
+# carry that PUBLIC define, so --consumer-cmake-cflags replays it to keep
+# both sides in the same codegen mode (otherwise the cmake side compiles
+# spdlog header-only and the two .o symbol sets are incomparable — a
+# harness asymmetry, not a converter delta). 63/63 exported symbols match,
+# 0 impactful deltas, no allowlist needed.
+e2e-fidelity-compare-spdlog-consumer: check-cmake-toolchain converter fetch-spdlog
+	scripts/run-fidelity.sh \
+		--project-name spdlog-consumer \
+		--source-root $(SPDLOG_DIR) \
+		--target spdlog \
+		--artifact-pattern libspdlog.a \
+		--consumer-file $(CURDIR)/testdata/fidelity/consumers/spdlog_consumer.cpp \
+		--consumer-bazel-dep :spdlog \
+		--consumer-cmake-cflags '-DSPDLOG_COMPILED_LIB'
 
 # nlohmann/json INTERFACE-only consumer-side fidelity gate.
 # json has no static archive — library-mode comparison doesn't

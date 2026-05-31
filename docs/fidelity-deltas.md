@@ -9,7 +9,7 @@ Surfaced by the productionized fidelity harness:
 
 - `make e2e-fidelity-compare-{zlib,spdlog,fmt}` — library-side gates
   (cmake-built `.a` vs Bazel-built `.a`).
-- `make e2e-fidelity-compare-{zlib,fmt}-consumer` — consumer-side
+- `make e2e-fidelity-compare-{zlib,fmt,spdlog}-consumer` — consumer-side
   gates (a small consumer .c/.cpp compiled twice; diff the resulting
   `.o`s).
 
@@ -42,9 +42,21 @@ hermetic toolchain).
 
 ### spdlog (`make fetch-spdlog`, `SPDLOG_VERSION = v1.14.1`)
 
-Status: ✅ shipped — `make e2e-fidelity-compare-spdlog` gate passes
-with allowlist suppressing 5 template-instantiation deltas from
-spdlog's vendored fmt headers.
+Status: ✅ library + consumer both shipped. `make
+e2e-fidelity-compare-spdlog` passes with an allowlist suppressing 5
+template-instantiation deltas from spdlog's vendored fmt headers.
+`make e2e-fidelity-compare-spdlog-consumer` passes with an empty
+allowlist (63/63 exported symbols match, 0 impactful). spdlog is a
+*compiled* library — its CMake sets `target_compile_definitions(spdlog
+PUBLIC SPDLOG_COMPILED_LIB)`, so a consumer of the converted target
+compiles in compiled-lib mode (out-of-line refs into `libspdlog.a`).
+The harness replays that PUBLIC define on the cmake-side consumer
+compile (`--consumer-cmake-cflags '-DSPDLOG_COMPILED_LIB'`, since the
+bare `-I<install>/include` compile wouldn't otherwise carry it) and
+compiles both sides at `-O2` so the template-instantiation symbol sets
+are comparable — without the matched opt level the Bazel side's default
+`-O0` fastbuild emits every instantiation as an unpaired weak symbol.
+Both are harness-methodology fixes, not converter deltas.
 
 ### zlib (`make fetch-zlib`, `ZLIB_VERSION = v1.3.1`)
 

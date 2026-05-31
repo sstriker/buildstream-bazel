@@ -50,6 +50,7 @@ bazel_external=""
 bazel_target_label=""
 consumer_file=""
 consumer_bazel_dep=""
+consumer_cmake_cflags=""
 
 usage() {
     echo "usage: $0 --project-name <name> --source-root <abs> --target <name>" >&2
@@ -72,6 +73,15 @@ usage() {
     echo "  are diffed instead of the static libraries. Useful for" >&2
     echo "  header-only / INTERFACE libraries with no static-archive" >&2
     echo "  artifact, and as an extra signal for library projects." >&2
+    echo "" >&2
+    echo "  --consumer-cmake-cflags replays a target's PUBLIC compile" >&2
+    echo "  definitions on the cmake-side consumer compile (the bare" >&2
+    echo "  -I<install>/include compile doesn't carry them, but the" >&2
+    echo "  Bazel-side consumer inherits them transitively from the" >&2
+    echo "  converted target's defines). Without this the two sides" >&2
+    echo "  diverge on a mode toggle like spdlog's SPDLOG_COMPILED_LIB" >&2
+    echo "  (header-only vs compiled-lib codegen), which is a harness" >&2
+    echo "  asymmetry, not a converter delta." >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -89,6 +99,7 @@ while [ $# -gt 0 ]; do
         --bazel-target-label) bazel_target_label="$2"; shift 2 ;;
         --consumer-file) consumer_file="$2"; shift 2 ;;
         --consumer-bazel-dep) consumer_bazel_dep="$2"; shift 2 ;;
+        --consumer-cmake-cflags) consumer_cmake_cflags="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown arg: $1" >&2; usage; exit 64 ;;
     esac
@@ -203,8 +214,11 @@ if [ -n "$consumer_file" ]; then
         *) consumer_cc="gcc" ;;
     esac
     consumer_cmake_o="$work_dir/consumer.cmake.o"
+    # shellcheck disable=SC2086 — consumer_cmake_cflags is an intentional
+    # word-split list of -D defines (replays the converted target's
+    # PUBLIC compile definitions the bare -I compile would otherwise miss).
     "$consumer_cc" -O2 -fPIC -c "$consumer_file" \
-        -I"$install_stage/include" \
+        -I"$install_stage/include" $consumer_cmake_cflags \
         -o "$consumer_cmake_o" \
         2> "$work_dir/consumer-cmake-compile.log" || {
             echo "fidelity[$project_name]: consumer cmake-side compile FAILED — see $work_dir/consumer-cmake-compile.log" >&2
@@ -324,8 +338,14 @@ cc_library(
     deps = ["$consumer_bazel_dep"],
 )
 EOF
+    # Match the cmake-side consumer compile's optimization level (-O2,
+    # step 1b). Bazel's default fastbuild compiles at -O0, where g++
+    # emits every template instantiation as a weak symbol instead of
+    # eliding it — a methodology artifact that floods the diff with
+    # unpaired weak symbols on template-heavy consumers (spdlog), not a
+    # converter delta. Both sides at -O2 makes the symbol sets comparable.
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build :_fidelity_consumer) \
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build --copt=-O2 :_fidelity_consumer) \
         > "$work_dir/bazel-consumer.log" 2>&1 || {
             echo "fidelity[$project_name]: consumer bazel-side build FAILED — see $work_dir/bazel-consumer.log" >&2
             tail -20 "$work_dir/bazel-consumer.log" >&2
