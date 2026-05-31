@@ -416,6 +416,28 @@ transition cleanly.
 
 ## Next
 
+- **Close the cmake-spec coverage gaps.** All five File API
+  object kinds (`codemodel`, `cache`, `cmakeFiles`, `toolchains`,
+  `configureLog`) are consumed; the residue is field-level and
+  catalogued in
+  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md)
+  ("Goal" section). Drive the list to zero, smallest blast radius
+  first: (1) parse `cmakeFiles.globs` and fold matched paths into
+  the configure-inputs fingerprint so `CONFIGURE_DEPENDS` re-triggers
+  our cache the way it re-triggers cmake (the one correctness gap);
+  (2) parse `Directory.installers[].targetInstallNamelink` and
+  preserve the `.so` / `.so.N` namelink split through the install
+  lift; (3) parse `scriptFile` + `backtrace` on script/code
+  installers so the existing `install_script_surface.go` warning can
+  name the declaration site; (4) parse `Target.launchers`
+  (codemodel-v2 minor 7) and route the cross-compile emulator/test
+  launcher to the cc_toolchain / test wrapper — fixture-gated, 0 in
+  the current survey. The directory/project tree-topology indices
+  (`parentIndex` / `childIndexes`) stay unconsumed by design: Bazel
+  packages are path-keyed and each directory already carries its
+  authoritative `source` path, so the flat `directoryIndex → source`
+  mapping `subPackageDir` already uses is the right source of truth.
+
 - **Thread `--build-types` through write-a's project rendering.**
   Multi-config conversion (the Phase 5 fold + `--out-config-settings`,
   see Done) is wired end-to-end in `convert-element-cmake` standalone,

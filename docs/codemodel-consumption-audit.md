@@ -91,20 +91,25 @@ datapoints noted here.
 | `Target.sourceGroups` | 2229 | ✗ | IDE-only; no Bazel analogue |
 | `Target.folder` | 1874 | ✗ | IDE folder name; no Bazel analogue |
 | `Target.fileSets` | varies | ✓ | `target_sources(... FILE_SET HEADERS ...)` |
+| `Target.launchers` | 0 | ✗ | cross-compile emulator / test launchers (codemodel-v2 minor 7, cmake 3.27); **not in the struct** |
+| `Target.link.commandFragments[].backtrace` | 9483 | ✗ | per-fragment provenance; niche |
 | `Directory.installers[type=file]` | 732 | ✓ | filegroup lift |
 | `Directory.installers[type=target]` | 419 | ✓ | install-target routing |
 | `Directory.installers[type=directory]` | 7 | ✓ | filegroup lift |
 | `Directory.installers[type=export]` | 5 | ✓ | export-config tag |
-| `Directory.installers[type=script]` | 10 | ✗ | dropped silently |
-| `Directory.installers[type=code]` | 10 | ✗ | dropped silently |
+| `Directory.installers[type=script]` | 10 | tag-only | warned, not lifted (`install_script_surface.go`) |
+| `Directory.installers[type=code]` | 10 | tag-only | warned, not lifted (`install_script_surface.go`) |
+| `Directory.installers[].targetInstallNamelink` | varies | ✗ | `.so` / `.so.N` namelink split dropped; **not in the struct** |
+| `Directory.installers[].{targetId,targetIndex,targetIsImportLibrary,isForAllComponents,scriptFile,backtrace}` | varies | ✗ | `type==target` routed via `Target.install` instead; **not in the struct** |
+| `ConfigDirectory.{parentIndex,childIndexes}` | 541 | ✗ | directory-tree topology; redundant — see "Index cross-references" below; **not in the struct** |
+| `ConfigProject.{parentIndex,childIndexes}` | varies | ✗ | project-tree topology; same redundancy; **not in the struct** |
 
 ## Genuine gaps (with survey impact)
 
-### 1. `install(SCRIPT)` / `install(CODE)` — 20 dropped silently in LLVM
+### 1. `install(SCRIPT)` / `install(CODE)` — 20 in LLVM, warned not lifted
 
 cmake exposes these as `Directory.installers[].type={script,code}`.
-Survey: LLVM has 10 SCRIPT + 10 CODE; other projects have 0. The
-converter currently silently drops them.
+Survey: LLVM has 10 SCRIPT + 10 CODE; other projects have 0.
 
 Typical contents (from LLVM's `cmake/modules/`): post-install
 patching of cmake config files (substitute `@PACKAGE_INIT@`
@@ -112,10 +117,14 @@ tokens, rewrite `<...>_DIR` paths), chmod adjustments, symlink
 creation. None of these have a clean Bazel translation — Bazel's
 install story is operator-side via `rules_pkg`.
 
-**Recommended action**: emit a `cmake-codegen-install-script`
-tag on the synthetic install-* filegroup so operators see them
-in the audit pass, paired with a one-line warning summarising
-the count. Don't try to lift; the install logic isn't portable.
+**Status**: `surfaceInstallScriptInstallers`
+(`internal/lower/install_script_surface.go`) now emits a stderr
+warning summarising the dropped SCRIPT / CODE count rather than
+dropping them silently. We still don't lift — the install logic
+isn't portable. Closing this gap fully means carrying the
+`scriptFile` path + backtrace onto the warning so operators can
+locate the declaration (the field isn't parsed yet; see the
+struct-gap list in "Goal" below).
 
 ### 2. `Target.compileGroups[].includes[].isSystem` — 0 in survey
 
@@ -139,10 +148,82 @@ PCH attribute — Bazel-idiomatic PCH is a cc_toolchain feature
 operator-side cc_toolchain coordination; documented in
 [`operator-toolchain-features.md`](operator-toolchain-features.md).
 
+## The other File API object kinds
+
+The codemodel is the bulk of what we consume, but cmake's File API
+emits four more object kinds (plus the index). `index.go`'s
+`SupportedObjectMajors` queries all five — `codemodel`, `cache`,
+`cmakeFiles`, `toolchains`, `configureLog` — so no object kind is
+ignored wholesale. The field-level residue:
+
+| Object kind | Coverage | Residue |
+|---|---|---|
+| `cache-v2` | **complete** | All entry fields (`name`/`value`/`type`/`properties`) parsed; only specific named entries (`CMAKE_<LANG>_COMPILER_ID`, `BUILD_SHARED_LIBS`, …) are read downstream via `Cache.Get`. No spec gap. |
+| `toolchains-v1` | **complete** | `language`, `sourceFileExtensions`, `compiler.{id,path,version,target,implicit.*}` all parsed and used for cc_toolchain shaping / implicit-dir filtering. No spec gap. |
+| `cmakeFiles-v1` | partial | Parses `paths` + `inputs[].{path,isGenerated,isExternal,isCMake}`. **Gap: the `globs` array (cmakeFiles-v1 minor 1) is not parsed.** It records `file(GLOB … CONFIGURE_DEPENDS)` expressions and their matched files. Since `cmakeFiles` feeds the configure-inputs cache fingerprint (M3), a `CONFIGURE_DEPENDS` glob that newly matches a file won't invalidate our cache the way it re-triggers cmake. Low-frequency, but a genuine correctness edge. |
+| `configureLog-v1` | **complete** | Handles `try_compile-v1`, `try_run-v1`, `find_package-v1`, `find-v1` (4.3+ polymorphic `found`), `message-v1`, with the full YAML node retained in `Event.Raw` for forward-compat kinds. No known missing event kind. |
+| index file | partial | `objects` / `cmake.version` / `cmake.generator` consumed. `paths.ctest` / `paths.cpack` parsed but unused — there is no CTest/CPack consumption through the File API (CTest has its own parser at `internal/ctest/parse.go`; CPack has no Bazel analogue). Not a gap. |
+
+## Index cross-references as source of truth
+
+The codemodel cross-references its arrays two ways: stable string
+**ids** (`Target.id`, `dependencies[].id`, `exportTargets[].id`) and
+positional **indices** (`ConfigTargetRef.directoryIndex` /
+`projectIndex`, `ConfigDirectory.{project,target}Index{es}`, and the
+tree-topology `parentIndex` / `childIndexes`).
+
+**These are the authoritative truth for membership and dependency
+edges, and we already lean on them** — not on heuristics:
+
+- Dependency edges resolve by **id** (`TargetDependency.Id` →
+  `Reply.Targets[id]`), never by name-matching.
+- Sub-package placement resolves by **index**:
+  `subPackageDir` (`lower.go`) takes `ConfigTargetRef.DirectoryIndex`
+  → `cfg.Directories[i].Source`, i.e. the target's *declaring*
+  directory as cmake recorded it, using the directory's own
+  authoritative `source` path. This is strictly better than
+  string-munging package boundaries out of individual source-file
+  paths, and it's what we do.
+
+The one cross-reference we **don't** consume is the directory/project
+**tree topology** (`parentIndex` / `childIndexes`). It doesn't matter:
+a Bazel package is defined by its filesystem path, and each directory
+already carries its full relative `source` path, so the flat
+`directoryIndex → source` mapping is sufficient — the parent/child
+links are redundant for package placement. They'd only matter if we
+tried to mirror cmake's *logical* `add_subdirectory` grouping, which
+Bazel can't honour when it diverges from on-disk layout anyway. So
+**the indices are the better source of truth, we use the ones that
+carry information, and the topology links are correctly skipped.**
+
+## Goal: close all spec-coverage gaps
+
+Tracked as a `ROADMAP.md` `Next` item. The concrete residue to
+retire, smallest-blast-radius first:
+
+1. **`cmakeFiles.globs`** (correctness) — add the `globs` field to the
+   `CMakeFiles` struct and fold matched paths into the configure-inputs
+   fingerprint so `CONFIGURE_DEPENDS` re-triggers our cache the way it
+   re-triggers cmake.
+2. **`targetInstallNamelink`** (fidelity) — parse it on
+   `DirectoryInstaller` and preserve the `.so` / `.so.N` namelink
+   split through the install lift instead of collapsing it.
+3. **`scriptFile` + `backtrace`** on script/code installers — parse so
+   the install-script warning can name the declaration site (closes
+   gap #1's remaining edge).
+4. **`Target.launchers`** (cross-compile) — parse and route the
+   emulator/test launcher to the cc_toolchain / test wrapper; currently
+   0 in the survey, so fixture-gated.
+
+Not on the list (correctly unconsumed): the tree-topology indices,
+`paths.ctest`/`cpack`, per-fragment/per-source/per-dep backtraces, and
+the IDE-only metadata in the next table.
+
 ## Not-gaps (correctly unconsumed)
 
 | Field | Why we skip |
 |---|---|
+| `ConfigDirectory.{parentIndex,childIndexes}` | Directory-tree topology; redundant for path-keyed Bazel packages (see "Index cross-references") |
 | `Target.folder` | IDE-only metadata; Bazel has no notion of project-tree folder |
 | `Target.sourceGroups` | IDE-only "source group" UI buckets |
 | `Target.sources[].sourceGroupIndex` | Same; IDE-only |
@@ -209,15 +290,24 @@ configure-time-only with no runtime effect.
 
 ## Summary
 
-**Survey-actionable gaps**: 1 (install SCRIPT/CODE surfacing in
-LLVM). Everything else is either empty in the survey, has no
-clean Bazel translation, or is correctly unconsumed (IDE-only
-metadata).
+**No File API object kind is uncovered wholesale** — all five
+(`codemodel`, `cache`, `cmakeFiles`, `toolchains`, `configureLog`)
+are queried and parsed. The residue is field-level, captured in the
+"Goal" section above:
 
-**Cross-cutting story**: the codemodel-v2 + trace coverage in the
-converter is comprehensive for the C/C++ subset Bazel can express.
-The remaining work isn't "consume more codemodel fields" — it's
-"polish the lift quality for what's already consumed" (per-source
-defines via `splitCompileGroups`, alias-name sanitization,
-genrule cmd normalisation, etc., all of which landed in this
-session's PRs #285-#298).
+- **One correctness gap**: `cmakeFiles.globs` (CONFIGURE_DEPENDS cache
+  invalidation).
+- **Three fidelity / cross-compile items not yet parsed**:
+  `targetInstallNamelink`, script/code `scriptFile`+`backtrace`,
+  `Target.launchers`.
+- Everything else is empty in the survey, has no clean Bazel
+  translation, or is correctly unconsumed (IDE metadata, tree-topology
+  indices, ctest/cpack paths, per-fragment backtraces).
+
+The goal is to drive that list to zero (tracked in `ROADMAP.md`'s
+`Next`). `cache-v2` and `toolchains-v1` are already complete; the
+codemodel + trace coverage is comprehensive for the C/C++ subset
+Bazel can express. Beyond closing these gaps, the remaining converter
+work is lift-quality polish for fields already consumed (per-source
+defines via `splitCompileGroups`, alias-name sanitization, genrule
+cmd normalisation, etc., landed across PRs #285–#298).
