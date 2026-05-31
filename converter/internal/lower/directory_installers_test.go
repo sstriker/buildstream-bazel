@@ -99,6 +99,53 @@ func TestLowerDirectoryInstallers_GroupsByDestination(t *testing.T) {
 	}
 }
 
+// TestLowerDirectoryInstallers_SanitizeNameCollisionDisambiguated
+// covers the grpc shape: two DISTINCT install destinations that
+// sanitize to the same target-name-safe string (include/grpc and
+// include/grpc++ both -> install_files__include_grpc, the `++`
+// collapses away) must stay distinct targets with disambiguated names,
+// not collide (Bazel rejects duplicate names). Each keeps its own
+// prefix (the raw destination).
+func TestLowerDirectoryInstallers_SanitizeNameCollisionDisambiguated(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{
+					{Type: "file", Destination: "include/grpc", Paths: rawJSONStrings("/src/grpc/a.h")},
+					{Type: "file", Destination: "include/grpc++", Paths: rawJSONStrings("/src/grpcpp/b.h")},
+				},
+			},
+		},
+	}
+	got := lowerDirectoryInstallers(r)
+	if len(got) != 2 {
+		t.Fatalf("want 2 distinct targets; got %d (%v)", len(got), got)
+	}
+	names := map[string]bool{}
+	for _, tg := range got {
+		if names[tg.Name] {
+			t.Errorf("duplicate target name %q — collision not disambiguated", tg.Name)
+		}
+		names[tg.Name] = true
+	}
+	if !names["install_files__include_grpc"] || !names["install_files__include_grpc_2"] {
+		t.Errorf("want install_files__include_grpc + _2; got names %v", names)
+	}
+	// Each target keeps its own (raw) destination as PkgPrefix.
+	prefixes := map[string]bool{}
+	for _, tg := range got {
+		prefixes[tg.PkgPrefix] = true
+	}
+	if !prefixes["include/grpc"] || !prefixes["include/grpc++"] {
+		t.Errorf("each target should keep its raw destination prefix; got %v", prefixes)
+	}
+}
+
 // TestLowerDirectoryInstallers_SkipsNonFileNonDirectoryTypes
 // confirms install(TARGETS) and install(EXPORT) are skipped (covered
 // by per-target Install + Phase 6's classifier respectively).

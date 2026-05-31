@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-survey-regression \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-survey-regression \
         survey-gazelle update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -75,6 +75,10 @@ OPENBLAS_VERSION  ?= v0.3.28
 OPENBLAS_DIR      ?= /tmp/OpenBLAS
 SDL_VERSION       ?= release-3.2.10
 SDL_DIR           ?= /tmp/SDL
+CURL_VERSION      ?= curl-8_11_1
+CURL_DIR          ?= /tmp/curl
+GRPC_VERSION      ?= v1.68.0
+GRPC_DIR          ?= /tmp/grpc
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1179,6 +1183,31 @@ fetch-sdl:
 		echo "sdl already at $(SDL_DIR); rm -rf to refetch"; \
 	fi
 
+# curl: heavy find_package consumer (OpenSSL + ZLIB linked across
+# hundreds of targets). A standalone survey emits ~1248
+# find-package-dep-unresolved findings — all the "external / resolves in
+# a real element graph" class (like protobuf's ZLIB), inflated by the
+# same few libs re-linked everywhere. 0 rejections, 0 coverage — a
+# stress test of the find_package path, not a converter bug.
+fetch-curl:
+	@if [ ! -d "$(CURL_DIR)" ]; then \
+		git clone --depth 1 --branch $(CURL_VERSION) https://github.com/curl/curl.git "$(CURL_DIR)"; \
+	else \
+		echo "curl already at $(CURL_DIR); rm -rf to refetch"; \
+	fi
+
+# grpc: deep transitive deps + many install(FILES) directives + bundled
+# third_party (zlib submodule). Surfaced the install_files name-collision
+# bug (include/grpc vs include/grpc++ sanitize to the same target name;
+# fixed via the usedNames disambiguation in directory_installers.go).
+# NOTE: needs --recurse-submodules (third_party/zlib etc.) to configure.
+fetch-grpc:
+	@if [ ! -d "$(GRPC_DIR)" ]; then \
+		git clone --depth 1 --branch $(GRPC_VERSION) --recurse-submodules --shallow-submodules https://github.com/grpc/grpc.git "$(GRPC_DIR)"; \
+	else \
+		echo "grpc already at $(GRPC_DIR); rm -rf to refetch"; \
+	fi
+
 # Convenience aggregate: fetch the default survey corpus (the cheap four;
 # llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
@@ -1186,7 +1215,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see

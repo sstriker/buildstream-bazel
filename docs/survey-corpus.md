@@ -178,6 +178,8 @@ the Makefile (`make fetch-*` clones each at its pinned tag).
 | **eigen** | Header-only INTERFACE library; config-mode export/components. Also bundles reference BLAS/LAPACK `.f` Fortran (surfaces the `non-cc-language-source` idiom). | gitlab.com/libeigen/eigen (`EIGEN_VERSION`) | `make fetch-eigen` |
 | **fmt** | Small, clean modern lib; `target_compile_features` C++-standard propagation. The high-signal clean control — converts 0/0/0. | github.com/fmtlib/fmt (`FMT_VERSION`) | `make fetch-fmt` |
 | **SDL** | Heavy platform-conditional source selection (37 `if(WIN32/APPLE/LINUX/...)` blocks) + Objective-C (`.m`) sources + `target_precompile_headers`. Stresses the platform-source-partition path + the objc language surface. | github.com/libsdl-org/SDL (`SDL_VERSION`) | `make fetch-sdl` |
+| **curl** | Heavy `find_package` consumer — OpenSSL + ZLIB linked across hundreds of targets. ~1248 `find-package-dep-unresolved` findings, all the external/resolves-in-graph class (count inflated by the same libs re-linked everywhere); 0 rejections/coverage. Stresses the find_package path. | github.com/curl/curl (`CURL_VERSION`) | `make fetch-curl` |
+| **grpc** | Deep transitive deps + many `install(FILES)` directives + bundled `third_party` (zlib submodule). Surfaced the install_files name-collision bug (`include/grpc` vs `include/grpc++`). Needs `--recurse-submodules` to configure. | github.com/grpc/grpc (`GRPC_VERSION`) | `make fetch-grpc` |
 | **llvm** | Large stress test; `ENABLE_EXPORTS`, PCH, TableGen generated sources, forward-declared include dirs. | github.com/llvm/llvm-project (`LLVM_VERSION`) — **survey the `llvm/` subdir** | `make fetch-llvm` |
 | **VTK** | Large; heavy `cmake -P` codegen (`vtkEncodeString`), `target_precompile_headers`, version-stamp probes. | github.com/Kitware/VTK mirror (`VTK_VERSION`) | `make fetch-vtk` |
 
@@ -236,6 +238,32 @@ llvm-subdir note below):
   renames the cc_test so the convert no longer hard-fails. Its remaining
   rejection is the `getarch` arch-detection `execute_process` (genuinely
   not Bazel-modelable).
+
+### Optional toolchains (unlock fuller surveys)
+
+Some members need a language toolchain beyond the default C/C++/cmake/
+ninja to survey at full fidelity. None are required for the core corpus;
+install them when you want the deeper surface.
+
+- **Fortran (`gfortran`)** — lets OpenBLAS (and eigen's bundled reference
+  BLAS/LAPACK) configure with their **real** Fortran path instead of the
+  C-only fallback. Surveying OpenBLAS *with* gfortran is what surfaced
+  the `non-cc-language-source` idiom (the converter emits `.f` sources
+  into `cc_*` srcs, which Bazel's cc rules can't compile). On
+  Debian/Ubuntu: `apt-get install -y gfortran` (≈ GNU Fortran 13). The
+  portable default stays `-DNOFORTRAN=1 -DC_LAPACK=1` for hosts without
+  it; install gfortran to see the Fortran-target gap.
+- **CUDA toolkit (`nvcc` + driver)** — required for **cutlass** and
+  **cuda-samples** to pass cmake configure at all (they `enable_language(CUDA)`
+  / `find_package(CUDAToolkit)`); without it the survey stops at
+  configure. Install the CUDA toolkit (`nvcc` on `PATH`) and, for any
+  step that runs device code, the NVIDIA driver. Survey these on a
+  CUDA-equipped host; they're fetched so the corpus is whole regardless.
+
+These are container/CI-environment provisioning notes: the ephemeral
+survey container ships neither by default, so a setup step (or a
+`SessionStart`-style hook) should `apt-get install gfortran` and stage
+the CUDA toolkit when those members are in scope for a run.
 
 ### Provenance / network notes
 
