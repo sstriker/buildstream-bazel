@@ -226,9 +226,7 @@ llvm-subdir note below):
   dep (see the ROADMAP Done entry +
   `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil converts
   with the probe on instead of crashing — no `--probe-genex=false` needed.
-  Under the default `auto`+split it surveys `1/0/0` (the lone rejection is
-  the expected multi-config Phase-5 note, see the caveat above), `0/0/0`
-  with `SURVEY_BUILD_TYPES=single`.
+  Surveys clean (`0/0/0`) under the default `auto`+split.
 - **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not
   the repo root — survey `$(ZSTD_DIR)/build/cmake`. (This subdir-under-an-
   umbrella layout is exactly what #303 fixed.)
@@ -427,16 +425,18 @@ SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 SURVEY_BUILD_TYPES=single SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 ```
 
-> **Multi-config caveat (until Phase 5 fold lands).** Under the default
-> `auto`, the converter currently surveys a multi-config codemodel
-> *against its first configuration only* and self-reports one
-> `unsupported-target-type` rejection per multi-config project
-> ("surveying against the first one only; Phase 5 multi-config fold is the
-> canonical path"). That's an honest visibility signal, not lifted debt —
-> subtract one `unsupported-target-type` per multi-config project (same
-> spirit as the benign-missing-include-dir notices in pitfall 3) when
-> reading the headline rejection count, and it retires when the Phase 5
-> fold becomes the survey path.
+> **Multi-config under the default `auto`.** The converter folds every
+> non-primary configuration's flag / src / dep deltas onto the primary
+> configuration's targets as `//config:<name>` `select()` arms, so
+> multi-config *intent* is captured and a clean multi-config survey records
+> **no** `unsupported-target-type` rejection (it used to emit a blanket one
+> per project; that was stale). The fold's one residual is a target built
+> *only* in a non-primary configuration — the primary walk never sees it,
+> so it's dropped and flagged precisely (by target name). The emitted
+> select() arms aren't yet self-contained: the matching `//config:<name>`
+> `config_setting`s still need declaring (operator-side today; auto-emission
+> is Phase 5's remaining piece), which is why strict/production conversion
+> still refuses multi-config while `--diagnostics` surveys it.
 
 Each project lands `rejections.json` + `bazel-idiom.json` +
 `coverage.json` under the out dir, with a `summary.txt` table (one column

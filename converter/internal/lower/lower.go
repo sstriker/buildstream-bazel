@@ -340,22 +340,36 @@ var headerExts = map[string]bool{
 // unsupported-custom-command).
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
-		// Diagnostic mode: continue against the first
-		// configuration so the survey reaches every
-		// per-target refusal site. The Phase 5 multi-config
-		// codemodel fold (lowerMultiConfigDeltas at the end
-		// of this function) still runs when r.TargetsByConfig
-		// is populated, so the per-config select() arms still
-		// land on top of cfg[0]'s walk. Strict mode keeps
-		// rejecting — production callers want the loud Tier-1
-		// until Phase 5 ships full multi-config support.
+		// The multi-config fold (lowerMultiConfigDeltas, at the
+		// end of this function) projects every non-primary
+		// configuration's flag / src / dep deltas onto cfg[0]'s
+		// targets as //config:<name> select() arms when
+		// r.TargetsByConfig is populated — so multi-config
+		// *intent* is captured, not surveyed-first-only. The one
+		// thing that fold can't recover is a target built only in
+		// a non-primary configuration: cfg[0]'s walk never sees
+		// it, and lowerMultiConfigDeltas only augments targets
+		// cfg[0] emitted, so it's silently dropped.
 		if opts.Rejections != nil {
-			opts.Rejections.Add(failure.UnsupportedTargetType,
-				fmt.Sprintf("multi-config codemodel (%d configurations) — surveying against the first one only; Phase 5 multi-config fold is the canonical path",
-					got))
+			// Diagnostic mode: flag exactly the config-only
+			// targets (the genuine residual); stay silent when
+			// cfg[0] covers the whole target set (the common
+			// "same targets, differing per-config flags" case the
+			// fold handles end-to-end).
+			for _, name := range configOnlyTargetNames(r.Codemodel.Configurations) {
+				opts.Rejections.AddWithContext(failure.UnsupportedTargetType,
+					"target built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target is dropped",
+					name, "")
+			}
 		} else {
+			// Strict mode: the fold captures per-config intent,
+			// but the emitted //config:<name> select() arms aren't
+			// self-contained until the converter also emits the
+			// matching config_settings (Phase 5's remaining piece;
+			// see ROADMAP). Production conversion stays loud until
+			// then; --diagnostics surveys it anyway.
 			return nil, failure.New(failure.UnsupportedTargetType,
-				"M1 supports exactly one configuration; got %d", got)
+				"multi-config codemodel (%d configurations): the per-config fold lands //config:<name> select() arms, but the converter doesn't yet emit the matching config_settings, so the output isn't self-contained; pass --diagnostics to survey it anyway", got)
 		}
 	}
 	cfg := r.Codemodel.Configurations[0]

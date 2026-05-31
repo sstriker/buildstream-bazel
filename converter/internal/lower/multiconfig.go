@@ -238,6 +238,36 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 	}
 }
 
+// configOnlyTargetNames returns the names of targets that appear in some
+// non-primary configuration (Configurations[1:]) but not in the primary
+// one (Configurations[0]). lowerMultiConfigDeltas only augments targets
+// the primary config's walk emitted, so a config-only target is the
+// genuine residual of the first-config-primary fold — it's silently
+// dropped. Names are de-duplicated and sorted for deterministic output.
+// Returns nil for single-config (or empty) codemodels.
+func configOnlyTargetNames(configs []fileapi.Configuration) []string {
+	if len(configs) < 2 {
+		return nil
+	}
+	primary := map[string]bool{}
+	for _, tr := range configs[0].Targets {
+		primary[tr.Id] = true
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, cfg := range configs[1:] {
+		for _, tr := range cfg.Targets {
+			if primary[tr.Id] || seen[tr.Id] {
+				continue
+			}
+			seen[tr.Id] = true
+			names = append(names, tr.Name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // configLabel maps a cmake config name into the Bazel
 // config_setting label the convention surfaces. The actual
 // config_setting must be declared by the operator (or a future

@@ -416,6 +416,23 @@ transition cleanly.
 
 ## Next
 
+- **Emit `//config:<name>` config_settings for the multi-config fold.**
+  The Phase 5 fold lands `//config:<name>` `select()` arms (Debug /
+  Release / RelWithDebInfo / …), but `configLabel`'s contract is that
+  the matching `config_setting`s "must be declared by the operator (or
+  a future converter slice)" — so the output isn't self-contained and
+  strict/production conversion still refuses multi-config. Emit them:
+  a `//config` package with a `string_flag` (e.g.
+  `//config:build_type`, default `release`) + one `config_setting` per
+  cmake build type keyed on its `flag_values`, so a converted
+  multi-config element builds with `--//config:build_type=debug`
+  (1:1 with cmake build types, unlike the lossy `compilation_mode`
+  dbg/opt mapping). Touches the emit side (it already renders the
+  select arms) plus write-a's project rendering (the `//config`
+  package is project-level, like the `//platforms` package elementfold
+  emits). Once it lands, drop the strict-mode multi-config refusal in
+  `lower.ToIR` — multi-config becomes a first-class supported path.
+
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
   survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
   + `scripts/run-fidelity.sh` driver + `make e2e-fidelity-compare-{zlib,
@@ -1131,6 +1148,29 @@ transition cleanly.
   hint still surfaces (that fixture declares 3.20, so the
   floor retry never engages). `docs/cmake-version-matrix.md`
   documents the reactive retry alongside the matrix-env knob.
+
+- **Multi-config fold stops blanket-rejecting; flags only the
+  genuine residual.** The Phase 5 fold (`lowerMultiConfigDeltas` +
+  `configfold`) already projects every non-primary configuration's
+  flag / src / dep deltas onto the primary config's targets as
+  `//config:<name>` `select()` arms — so multi-config intent is
+  captured, not "surveyed first-config-only" as the old rejection
+  claimed. But `ToIR` emitted a blanket `unsupported-target-type`
+  for *every* multi-config codemodel regardless, which the
+  auto-default corpus resurvey surfaced as a spurious +1 rejection
+  on every multi-config project. Replace it with a precise check:
+  diagnostic mode now flags only targets built *solely* in a
+  non-primary configuration (`configOnlyTargetNames` — the one
+  thing the first-config-primary fold can't recover), and stays
+  silent when the primary config covers the whole target set (the
+  common "same targets, differing per-config flags" case). Strict
+  mode still refuses multi-config, but with an accurate message:
+  the fold lands the select() arms, the blocker is that their
+  `config_setting`s aren't auto-emitted yet (next bullet). Corpus
+  resurvey after the fix: abseil / googletest / brotli drop from
+  `1/0/0` to `0/0/0`, eigen from `2/16` to `1/16` (only its real
+  execute_process rejection left), select() arms intact. Pinned by
+  `TestRejections_MultiConfig_FoldedNotRejected`.
 
 - **probe-genex tolerates dangling `::` link-interface deps.**
   The cmake-4-pin corpus resurvey surfaced abseil
