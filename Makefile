@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-survey-regression \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-survey-regression \
         survey-gazelle update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -73,6 +73,8 @@ CUDASAMPLES_VERSION ?= v13.3
 CUDASAMPLES_DIR   ?= /tmp/cuda-samples
 OPENBLAS_VERSION  ?= v0.3.28
 OPENBLAS_DIR      ?= /tmp/OpenBLAS
+SDL_VERSION       ?= release-3.2.10
+SDL_DIR           ?= /tmp/SDL
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1163,6 +1165,20 @@ fetch-openblas:
 		echo "openblas already at $(OPENBLAS_DIR); rm -rf to refetch"; \
 	fi
 
+# SDL: heavy platform-conditional source selection (37 if(WIN32/APPLE/
+# LINUX/...) blocks) + Objective-C (.m) sources + target_precompile_headers.
+# A standalone survey resolves to the one configured platform (so the
+# platform-conditional select() arms come from the multi-platform fold,
+# not here); the value is the platform-source-partition path + the objc
+# language surface. Converts clean on Linux (1 benign execute_process
+# rejection for `cmake -E make_directory`, 1 pch operator-action idiom).
+fetch-sdl:
+	@if [ ! -d "$(SDL_DIR)" ]; then \
+		git clone --depth 1 --branch $(SDL_VERSION) https://github.com/libsdl-org/SDL.git "$(SDL_DIR)"; \
+	else \
+		echo "sdl already at $(SDL_DIR); rm -rf to refetch"; \
+	fi
+
 # Convenience aggregate: fetch the default survey corpus (the cheap four;
 # llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
@@ -1170,7 +1186,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see

@@ -177,6 +177,7 @@ the Makefile (`make fetch-*` clones each at its pinned tag).
 | **googletest** | `enable_testing()` + add_test / gtest_discover_tests; INTERFACE genex defines (`$<BUILD_INTERFACE:...>`). | github.com/google/googletest (`GTEST_VERSION`) | `make fetch-googletest` |
 | **eigen** | Header-only INTERFACE library; config-mode export/components. Also bundles reference BLAS/LAPACK `.f` Fortran (surfaces the `non-cc-language-source` idiom). | gitlab.com/libeigen/eigen (`EIGEN_VERSION`) | `make fetch-eigen` |
 | **fmt** | Small, clean modern lib; `target_compile_features` C++-standard propagation. The high-signal clean control — converts 0/0/0. | github.com/fmtlib/fmt (`FMT_VERSION`) | `make fetch-fmt` |
+| **SDL** | Heavy platform-conditional source selection (37 `if(WIN32/APPLE/LINUX/...)` blocks) + Objective-C (`.m`) sources + `target_precompile_headers`. Stresses the platform-source-partition path + the objc language surface. | github.com/libsdl-org/SDL (`SDL_VERSION`) | `make fetch-sdl` |
 | **llvm** | Large stress test; `ENABLE_EXPORTS`, PCH, TableGen generated sources, forward-declared include dirs. | github.com/llvm/llvm-project (`LLVM_VERSION`) — **survey the `llvm/` subdir** | `make fetch-llvm` |
 | **VTK** | Large; heavy `cmake -P` codegen (`vtkEncodeString`), `target_precompile_headers`, version-stamp probes. | github.com/Kitware/VTK mirror (`VTK_VERSION`) | `make fetch-vtk` |
 
