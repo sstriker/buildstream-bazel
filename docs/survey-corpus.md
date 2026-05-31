@@ -40,8 +40,11 @@ they have very different tooling support:
    - **`bazel-idiom.json`** (`bazelidiom.Audit`, runs on every convert):
      the *semantic* idiom check — `empty-srcs`, `empty-cc-library`,
      `empty-cc-import`, `test-with-no-entry`, `raw-toolchain-feature-flag`,
-     etc. Per-survey and fully automated; drive any non-zero count to zero
-     (this surfaced the eigen empty-srcs and VTK empty-cc-library work).
+     `non-cc-language-source` (Fortran `.f` srcs in a cc_* rule — Bazel
+     can't compile them; OpenBLAS's LAPACK targets + eigen's bundled
+     reference BLAS/LAPACK), etc. Per-survey and fully automated; drive
+     any non-zero count to zero (this surfaced the eigen empty-srcs and
+     VTK empty-cc-library work).
    - **`buildifier -mode=diff`**: the *syntactic* canonical-form check.
      The emitter renders through buildifier's own formatter
      (`build.Format`), so output is canonical by construction — the
@@ -172,7 +175,8 @@ the Makefile (`make fetch-*` clones each at its pinned tag).
 | **abseil** | Deeply modular; many INTERFACE deps-only wrapper libraries (exercises interface-library synthesis); doubles as the feature-flag idiom oracle. | github.com/abseil/abseil-cpp (`ABSEIL_VERSION`) | `make fetch-abseil` |
 | **protobuf** | `find_package` deps (ZLIB), protoc custom-command codegen, install(EXPORT) config-mode producer. | github.com/protocolbuffers/protobuf (`PROTOBUF_VERSION`) | `make fetch-protobuf` |
 | **googletest** | `enable_testing()` + add_test / gtest_discover_tests; INTERFACE genex defines (`$<BUILD_INTERFACE:...>`). | github.com/google/googletest (`GTEST_VERSION`) | `make fetch-googletest` |
-| **eigen** | Header-only INTERFACE library; config-mode export/components. | gitlab.com/libeigen/eigen (`EIGEN_VERSION`) | `make fetch-eigen` |
+| **eigen** | Header-only INTERFACE library; config-mode export/components. Also bundles reference BLAS/LAPACK `.f` Fortran (surfaces the `non-cc-language-source` idiom). | gitlab.com/libeigen/eigen (`EIGEN_VERSION`) | `make fetch-eigen` |
+| **fmt** | Small, clean modern lib; `target_compile_features` C++-standard propagation. The high-signal clean control — converts 0/0/0. | github.com/fmtlib/fmt (`FMT_VERSION`) | `make fetch-fmt` |
 | **llvm** | Large stress test; `ENABLE_EXPORTS`, PCH, TableGen generated sources, forward-declared include dirs. | github.com/llvm/llvm-project (`LLVM_VERSION`) — **survey the `llvm/` subdir** | `make fetch-llvm` |
 | **VTK** | Large; heavy `cmake -P` codegen (`vtkEncodeString`), `target_precompile_headers`, version-stamp probes. | github.com/Kitware/VTK mirror (`VTK_VERSION`) | `make fetch-vtk` |
 

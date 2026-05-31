@@ -25,6 +25,57 @@ cc_library(
 	}
 }
 
+func TestAudit_FortranSourceInCCLibrary(t *testing.T) {
+	// A cc_library carrying Fortran sources is unbuildable — Bazel's cc
+	// rules compile by extension and have no Fortran action. (OpenBLAS's
+	// LAPACK_OVERRIDES + eigen's bundled reference BLAS/LAPACK shape.)
+	body := []byte(`cc_library(
+    name = "lapack_overrides",
+    srcs = [
+        "lapack/dlamch.f",
+        "lapack/ilaver.f",
+        "src/helper.c",
+    ],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	var got *bazelidiom.Finding
+	for i := range findings {
+		if findings[i].Code == "non-cc-language-source" {
+			got = &findings[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("want a non-cc-language-source finding; got %v", findings)
+	}
+	if got.Target != "lapack_overrides" {
+		t.Errorf("Target: %q", got.Target)
+	}
+}
+
+func TestAudit_CAndAsmSourcesNotFlagged(t *testing.T) {
+	// C/C++/ASM srcs must NOT trip the Fortran check — rules_cc's
+	// default toolchain assembles .S/.s, and .c/.cc are the norm.
+	body := []byte(`cc_library(
+    name = "kernels",
+    srcs = ["a.c", "b.cc", "c.cpp", "asm/kernel.S", "asm/other.s"],
+    hdrs = ["k.h"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "non-cc-language-source" {
+			t.Errorf("C/ASM srcs wrongly flagged: %v", f)
+		}
+	}
+}
+
 func TestAudit_EmptyCCLibrary(t *testing.T) {
 	body := []byte(`cc_library(
     name = "placeholder",

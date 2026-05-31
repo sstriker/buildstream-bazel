@@ -115,7 +115,61 @@ func auditRule(rule, target string, call *build.CallExpr) []Finding {
 	// above; kept as a separate function so the elision-vs-
 	// codegen distinction stays clear in the tag taxonomy.
 	findings = append(findings, auditCmakeElidedTags(rule, target, call)...)
+	// Cross-rule check: non-C/C++/ASM language sources (Fortran) in a
+	// cc_* rule — Bazel's cc rules compile by file extension and can't
+	// build these, so the target is unbuildable as emitted.
+	findings = append(findings, auditNonCCLanguageSources(rule, target, call)...)
 	return findings
+}
+
+// fortranSrcExts are the source extensions Bazel's cc_* rules do NOT
+// know how to compile. cmake happily puts these in a target the
+// converter lowers to cc_library/cc_binary (cmake drives a Fortran
+// compiler per-source by LANGUAGE; Bazel cc rules dispatch purely on
+// extension and have no Fortran action), so the emitted rule would fail
+// at build time. OpenBLAS's reference-LAPACK targets (LAPACK_OVERRIDES
+// etc., ~3274 `.f` srcs) are the canonical case. ASM (.S/.s) is
+// deliberately excluded — rules_cc's default toolchain DOES assemble
+// those.
+var fortranSrcExts = map[string]bool{
+	".f": true, ".f90": true, ".f95": true, ".f03": true, ".f08": true,
+	".for": true, ".ftn": true, ".fpp": true,
+}
+
+// auditNonCCLanguageSources fires on a cc_library / cc_binary / cc_test
+// whose srcs include Fortran sources. Bazel's cc rules can't compile
+// them, so this is a hard build-time failure the converter emitted
+// silently — surfacing it points the operator at the missing
+// Fortran-ruleset wiring (rules_fortran or a foreign_cc build) rather
+// than a confusing downstream "no compiler for .f" error.
+func auditNonCCLanguageSources(rule, target string, call *build.CallExpr) []Finding {
+	switch rule {
+	case "cc_library", "cc_binary", "cc_test":
+	default:
+		return nil
+	}
+	hits := flatListContains(call, "srcs", func(s string) bool {
+		dot := strings.LastIndex(s, ".")
+		if dot < 0 {
+			return false
+		}
+		return fortranSrcExts[strings.ToLower(s[dot:])]
+	})
+	if len(hits) == 0 {
+		return nil
+	}
+	sample := hits[0]
+	more := ""
+	if len(hits) > 1 {
+		more = fmt.Sprintf(" (and %d more)", len(hits)-1)
+	}
+	return []Finding{{
+		Rule:   rule,
+		Target: target,
+		Code:   "non-cc-language-source",
+		Message: rule + " has Fortran source(s) in srcs (e.g. " + sample + more +
+			") — Bazel's cc rules compile by file extension and can't build these; the target is unbuildable as emitted. cmake drives a per-source Fortran compiler that Bazel cc rules have no equivalent for; route these through a Fortran ruleset (rules_fortran, CcInfo-interop) or a rules_foreign_cc build, or exclude the Fortran-only targets",
+	}}
 }
 
 // auditCmakeCodegenTags surfaces cmake-codegen-* tags that signal
