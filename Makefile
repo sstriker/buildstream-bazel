@@ -8,7 +8,7 @@
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
         fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-survey-regression \
-        survey-gazelle update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -1230,6 +1230,18 @@ fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml
 SURVEY_GAZELLE_PROJECTS ?= googletest=$(GTEST_DIR) brotli=$(BROTLI_DIR)
 survey-gazelle:
 	scripts/survey-gazelle-roundtrip.sh $(SURVEY_GAZELLE_PROJECTS)
+
+# survey-multiplatform: configure each project under linux(native) +
+# synthetic windows/darwin toolchains, fold the per-platform IRs into one
+# BUILD with real select() arms, and report how many targets gained a
+# platform select(). Makes platform/arch intent observable on the corpus
+# (see scripts/survey-multiplatform.sh + scripts/survey-toolchains/).
+# Needs cmake + ninja (skips cleanly otherwise). Platforms a project can't
+# configure are dropped from the matrix; SURVEY_MP_PLATFORMS overrides the
+# set. Defaults to the platform-conditional members.
+SURVEY_MP_PROJECTS ?= sdl=$(SDL_DIR) brotli=$(BROTLI_DIR)
+survey-multiplatform:
+	scripts/survey-multiplatform.sh $(SURVEY_MP_PROJECTS)
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
 update-golden:

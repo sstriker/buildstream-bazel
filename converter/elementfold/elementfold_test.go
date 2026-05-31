@@ -96,6 +96,74 @@ func TestFold_SrcsDivergeAcrossPlatforms(t *testing.T) {
 	}
 }
 
+// TestFold_ArtifactNameDivergesIsNotFatal pins the multi-platform fold
+// fix: ArtifactName (the on-disk file name) LEGITIMATELY differs per OS
+// — libSDL3.so on linux vs SDL3.dll on windows — so a disagreement must
+// NOT hard-error the fold (it did, blocking every shared lib in a real
+// cross-platform fold). The merged target keeps the first cell's name
+// and gains a tag recording the divergence.
+func TestFold_ArtifactNameDivergesIsNotFatal(t *testing.T) {
+	mk := func(plat, constraint, artifact string) Cell {
+		return Cell{
+			Platform: Platform{Name: plat, Constraints: []string{constraint}, SelectKey: constraint},
+			Pkg: &ir.Package{Name: "sdl", Targets: []ir.Target{{
+				Name: "SDL3", Kind: ir.KindCCLibrary,
+				Srcs:         []string{"sdl.c"},
+				ArtifactName: artifact,
+				InstallDest:  "lib",
+			}}},
+		}
+	}
+	merged, err := Fold([]Cell{
+		mk("linux", "@platforms//os:linux", "libSDL3.so"),
+		mk("windows", "@platforms//os:windows", "SDL3.dll"),
+	})
+	if err != nil {
+		t.Fatalf("Fold should not error on ArtifactName divergence: %v", err)
+	}
+	got := merged.Targets[0]
+	// Keeps the first cell's (deterministic) value.
+	if got.ArtifactName != "libSDL3.so" {
+		t.Errorf("ArtifactName = %q; want libSDL3.so (first cell)", got.ArtifactName)
+	}
+	// Tags the divergence.
+	found := false
+	for _, tag := range got.Tags {
+		if tag == "cmake-codegen-artifact-name-per-platform" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected cmake-codegen-artifact-name-per-platform tag; got %v", got.Tags)
+	}
+}
+
+// TestFold_ArtifactNameAgreesNoTag is the no-regression guard: when
+// ArtifactName matches across cells, no divergence tag is added.
+func TestFold_ArtifactNameAgreesNoTag(t *testing.T) {
+	mk := func(plat, constraint string) Cell {
+		return Cell{
+			Platform: Platform{Name: plat, Constraints: []string{constraint}, SelectKey: constraint},
+			Pkg: &ir.Package{Name: "p", Targets: []ir.Target{{
+				Name: "lib", Kind: ir.KindCCLibrary,
+				Srcs: []string{"a.c"}, ArtifactName: "liblib.a",
+			}}},
+		}
+	}
+	merged, err := Fold([]Cell{
+		mk("linux", "@platforms//os:linux"),
+		mk("windows", "@platforms//os:windows"),
+	})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	for _, tag := range merged.Targets[0].Tags {
+		if tag == "cmake-codegen-artifact-name-per-platform" {
+			t.Errorf("no divergence tag expected when ArtifactName agrees; got %v", merged.Targets[0].Tags)
+		}
+	}
+}
+
 // TestFold_AbsorbsCellPerPlatform pins the contract that cells arriving
 // with PRE-EXISTING PerPlatform deltas (the lower-side #217 platform-
 // conditional partition runs per-cell BEFORE the fold) keep those arms
