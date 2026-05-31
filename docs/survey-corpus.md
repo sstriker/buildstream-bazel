@@ -215,6 +215,16 @@ regressing the fix — that's the whole point of keeping them around.
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):
 
+- **abseil (cmake 4 + probe-genex):** under cmake 4.x, abseil
+  (`ABSEIL_VERSION` 20260107.1) fatal-errors at configure when the
+  genex-probe hook is on (the default) — `target_link_libraries` on the
+  `heterogeneous_lookup_testing` test helper can't resolve
+  `absl::test_instance_tracker`. Plain cmake 4.3.3 configures it fine; the
+  trigger is the `probe-genex.cmake` top-level-include hook interacting
+  with abseil's test-helper gating. Survey abseil with
+  `--probe-genex=false` until the interaction is fixed (tracked as a
+  `Now` bullet in `ROADMAP.md`). Other corpus members survey fine with the
+  probe on, so this is abseil-specific.
 - **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not
   the repo root — survey `$(ZSTD_DIR)/build/cmake`. (This subdir-under-an-
   umbrella layout is exactly what #303 fixed.)
@@ -240,7 +250,14 @@ llvm-subdir note below):
   `openblas_utest_ext` executable; `disambiguateTestNameCollisions`
   renames the cc_test so the convert no longer hard-fails. Its remaining
   rejection is the `getarch` arch-detection `execute_process` (genuinely
-  not Bazel-modelable).
+  not Bazel-modelable). OpenBLAS's top-level
+  `cmake_minimum_required(VERSION 2.8)` is below the floor cmake 4 dropped;
+  the May-2026 cmake-4-pin resurvey confirmed `cmakerun.Configure`'s
+  policy-floor retry lifts it (the survey log shows the
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` re-run firing), so OpenBLAS surveys
+  `ok` under cmake 4.3.3 with gfortran: 1 rejection (the getarch probe) +
+  51 `fortran-target-needs-ruleset` idioms (the Fortran partition). libevent
+  (floor 3.1) is lifted the same way.
 
 ### Optional toolchains (unlock fuller surveys)
 
