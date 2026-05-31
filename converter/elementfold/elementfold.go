@@ -341,10 +341,46 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 			foldOrderSensitiveAttr(def, &merged, variants, cells, phantom)
 			continue
 		}
+		// A cell can arrive with PRE-EXISTING PerPlatform[def.name]
+		// deltas — the lower-side #217 platform-conditional partition
+		// already split out per-`@platforms//os:*` (and the else()
+		// `//conditions:default`) sources before the fold runs, so each
+		// cell's effective items are flat Srcs PLUS its own arm
+		// contents. cmake derives a source's if()-guard identically on
+		// every configure platform, so these arms agree across cells
+		// and pass straight through to the merged target's arms. Items
+		// that only ever appear FLAT go through the cell-membership
+		// partition below (baseline = in every cell). Without this,
+		// folding #217-partitioned cells would drop every arm source
+		// (the fold only saw flat Srcs) — losing all platform-specific
+		// sources from the unified BUILD.
+		armUnion := map[string]map[string]bool{} // selectKey -> item set
+		armItemKeys := map[string]bool{}         // items already claimed by an arm
+		for _, c := range cells {
+			pp := variants[c.Platform.Name].PerPlatform[def.name]
+			for selKey, items := range pp {
+				if armUnion[selKey] == nil {
+					armUnion[selKey] = map[string]bool{}
+				}
+				for _, item := range items {
+					armUnion[selKey][item] = true
+					armItemKeys[item] = true
+				}
+			}
+		}
+
 		facts := map[string]map[string]bool{}
 		for _, c := range cells {
 			items := def.get(variants[c.Platform.Name])
 			for _, item := range items {
+				// Skip items already routed to a platform arm — they're
+				// conditional, not flat-baseline candidates. (A source
+				// that is flat in one cell but arm-routed in another
+				// belongs in the arm; the #217 partition is the
+				// authority on conditionality.)
+				if armItemKeys[item] {
+					continue
+				}
 				if facts[item] == nil {
 					facts[item] = map[string]bool{}
 				}
@@ -360,6 +396,32 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 		sort.Strings(flat)
 		def.set(&merged, flat)
 
+		// Emit the pre-existing arm union first, then the
+		// cell-membership deltas. Both feed merged.PerPlatform[def.name].
+		setArm := func(selKey string, items []string) {
+			if len(items) == 0 {
+				return
+			}
+			sort.Strings(items)
+			if merged.PerPlatform == nil {
+				merged.PerPlatform = map[string]map[string][]string{}
+			}
+			if merged.PerPlatform[def.name] == nil {
+				merged.PerPlatform[def.name] = map[string][]string{}
+			}
+			// Merge into any existing arm (a selectKey can come from
+			// both an absorbed arm and a membership delta).
+			existing := merged.PerPlatform[def.name][selKey]
+			merged.PerPlatform[def.name][selKey] = sortedUnion([][]string{existing, items})
+		}
+		for selKey, set := range armUnion {
+			items := make([]string, 0, len(set))
+			for k := range set {
+				items = append(items, k)
+			}
+			setArm(selKey, items)
+		}
+
 		for _, c := range cells {
 			d := deltas[c.Platform.Name]
 			if len(d) == 0 {
@@ -369,14 +431,7 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 			for k := range d {
 				items = append(items, k)
 			}
-			sort.Strings(items)
-			if merged.PerPlatform == nil {
-				merged.PerPlatform = map[string]map[string][]string{}
-			}
-			if merged.PerPlatform[def.name] == nil {
-				merged.PerPlatform[def.name] = map[string][]string{}
-			}
-			merged.PerPlatform[def.name][c.Platform.SelectKey] = items
+			setArm(c.Platform.SelectKey, items)
 		}
 	}
 	return &merged, nil
