@@ -252,17 +252,41 @@ func extractPlatformConditionalSourcesTier2(
 		if block == nil {
 			continue
 		}
+		// Precompute whether EVERY predicate arm (if + elseif) of this
+		// block maps to a recognized platform constraint — the guard
+		// that lets a trailing else() become //conditions:default (in a
+		// select(), "not any of the recognized siblings" is exactly the
+		// default arm). Mirrors Tier 1's platformIfStack else logic.
+		allArmsRecognized := true
+		predicateArmCount := 0
+		for _, arm := range block.Arms {
+			if arm.Kind == "else" {
+				continue
+			}
+			predicateArmCount++
+			if selectKeyFromIfArgs(unquoteAll(arm.PredicateArgs)) == "" {
+				allArmsRecognized = false
+			}
+		}
+
 		// For each arm of the block: if the predicate maps to
 		// a recognized constraint, walk its body and emit
 		// records for every source-attaching call.
 		for _, arm := range block.Arms {
+			var key string
 			if arm.Kind == "else" {
-				// `else()`'s predicate is "not any of the
-				// above" — not single-positive-constraint
-				// expressible. Skip; matches Tier 1's policy.
-				continue
+				// An else() maps to //conditions:default ONLY when every
+				// sibling predicate arm was recognized AND there's at
+				// least one (an else with no/unrecognized siblings isn't
+				// a platform conditional). Otherwise skip — the inverted
+				// predicate isn't expressible (matches Tier 1).
+				if !allArmsRecognized || predicateArmCount == 0 {
+					continue
+				}
+				key = defaultSelectKey
+			} else {
+				key = selectKeyFromIfArgs(unquoteAll(arm.PredicateArgs))
 			}
-			key := selectKeyFromIfArgs(unquoteAll(arm.PredicateArgs))
 			if key == "" {
 				continue
 			}

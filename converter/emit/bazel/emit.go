@@ -1484,8 +1484,19 @@ func attrExpr(flat []string, sel map[string][]string) string {
 	if !hasSel {
 		return flatPart
 	}
+	// The "//conditions:default" arm is rendered LAST and exactly once.
+	// When the caller's select map carries an explicit
+	// "//conditions:default" delta (a platform if-chain's else() arm,
+	// recovered by the #217 partition), its items populate that arm
+	// instead of the empty list — emitting it as a normal key would
+	// produce a duplicate "//conditions:default" key, which Bazel
+	// rejects.
+	defaultArm := sel["//conditions:default"]
 	keys := make([]string, 0, len(sel))
 	for k := range sel {
+		if k == "//conditions:default" {
+			continue
+		}
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -1495,7 +1506,7 @@ func attrExpr(flat []string, sel map[string][]string) string {
 	for _, k := range keys {
 		fmt.Fprintf(&b, "        %q: %s,\n", k, indentArmList(sel[k]))
 	}
-	b.WriteString(`        "//conditions:default": [],` + "\n")
+	fmt.Fprintf(&b, "        %q: %s,\n", "//conditions:default", indentArmList(defaultArm))
 	b.WriteString("    })")
 
 	if hasFlat {

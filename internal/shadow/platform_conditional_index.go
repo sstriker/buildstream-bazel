@@ -118,23 +118,26 @@ func walkIfBlocks(nodes []cmakeparse.Node, out *[]flatIfBlock) {
 	}
 }
 
-// activeStackAt returns the if-arm predicate args active at
-// (hostFilePath, line) in outer-to-inner order. Used by the
-// caller to compute the innermost recognized constraint label
-// (innermost-recognized-key wins; see currentSelectKey).
-func (idx *cmakeFileIfIndex) activeStackAt(hostFilePath string, line int, fs fsReader) [][]string {
+// activeStackAt returns the RESOLVED select key of the active arm of
+// each open if-block at (hostFilePath, line), in outer-to-inner order.
+// Each entry is a platform constraint label, defaultSelectKey (a
+// qualifying else — see resolveArmKey), or "" (unrecognized). Mirrors
+// the runtime platformIfStack: the per-block resolution (including the
+// all-siblings-recognized guard for else arms) happens here, where the
+// full sibling arm list is available.
+func (idx *cmakeFileIfIndex) activeStackAt(hostFilePath string, line int, fs fsReader) []string {
 	blocks := idx.lookupOrParse(hostFilePath, fs)
 	if len(blocks) == 0 {
 		return nil
 	}
-	var stack [][]string
+	var stack []string
 	for _, blk := range blocks {
 		if line < blk.StartLine || line > blk.EndLine {
 			continue
 		}
-		for _, arm := range blk.Arms {
+		for armIdx, arm := range blk.Arms {
 			if line >= arm.StartLine && line <= arm.EndLine {
-				stack = append(stack, arm.PredicateArgs)
+				stack = append(stack, resolveArmKey(blk.Arms, armIdx))
 				break
 			}
 		}
@@ -142,23 +145,44 @@ func (idx *cmakeFileIfIndex) activeStackAt(hostFilePath string, line int, fs fsR
 	return stack
 }
 
-// currentSelectKey returns the innermost recognized Bazel
-// constraint label from the active if-stack at (hostFilePath,
-// line), or "" when no arm in the stack maps to one. Mirrors
-// platformIfStack.currentSelectKey's policy: unrecognized
-// (else / non-platform-predicate) arms contribute "" to the
-// stack, recognized predicates contribute their constraint
-// label, and the innermost recognized one wins.
+// resolveArmKey computes the select key for arm armIdx of a block.
+// A recognized predicate arm maps to its constraint label. An else arm
+// (empty PredicateArgs, last in the block) maps to defaultSelectKey
+// ONLY when every prior arm (if + all elseif) was a recognized
+// platform constraint — then "not any of them" is exactly the select's
+// default. Mixed/unrecognized siblings, or an unrecognized predicate
+// arm, yield "" (flat). Mirrors platformIfStack.observe's else logic.
+func resolveArmKey(arms []flatIfArm, armIdx int) string {
+	args := arms[armIdx].PredicateArgs
+	if len(args) > 0 {
+		return selectKeyFromIfArgs(args)
+	}
+	// Empty PredicateArgs = an else arm. Qualify only if it's the last
+	// arm and all prior arms are recognized platform constraints.
+	if armIdx != len(arms)-1 {
+		return ""
+	}
+	for i := 0; i < armIdx; i++ {
+		if selectKeyFromIfArgs(arms[i].PredicateArgs) == "" {
+			return ""
+		}
+	}
+	if armIdx == 0 {
+		// A block whose only arm is else() — no siblings to negate;
+		// not a platform conditional.
+		return ""
+	}
+	return defaultSelectKey
+}
+
+// currentSelectKey returns the innermost resolved select key from the
+// active if-stack at (hostFilePath, line), or "" when no arm maps to
+// one. The innermost recognized (or qualifying-else) key wins.
 func (idx *cmakeFileIfIndex) currentSelectKey(hostFilePath string, line int, fs fsReader) string {
 	stack := idx.activeStackAt(hostFilePath, line, fs)
 	for i := len(stack) - 1; i >= 0; i-- {
-		// Else arm carries empty PredicateArgs; the key is "" so
-		// it falls through.
-		if len(stack[i]) == 0 {
-			continue
-		}
-		if k := selectKeyFromIfArgs(stack[i]); k != "" {
-			return k
+		if stack[i] != "" {
+			return stack[i]
 		}
 	}
 	return ""

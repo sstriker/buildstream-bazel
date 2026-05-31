@@ -109,12 +109,14 @@ func TestExtractPlatformConditionalSources_UnrecognizedPredicate(t *testing.T) {
 	}
 }
 
-// TestExtractPlatformConditionalSources_ElseArmUnrecognized
-// pins that the else() arm doesn't surface as a positive
-// constraint (since the constraint would be NOT-of-something,
-// not expressible as one @platforms//os:* label). Sources in
-// the else arm stay in flat srcs.
-func TestExtractPlatformConditionalSources_ElseArmUnrecognized(t *testing.T) {
+// TestExtractPlatformConditionalSources_ElseArmAllSiblingsRecognized
+// pins the #217 else-arm fix: when every sibling arm of the if-chain
+// is a recognized platform constraint, the else() arm maps to
+// //conditions:default (in a select() that's exactly "none of the
+// siblings matched"). So the else source is conditional, NOT flat —
+// the old behaviour (else source unconditional) wrongly compiled it on
+// every platform.
+func TestExtractPlatformConditionalSources_ElseArmAllSiblingsRecognized(t *testing.T) {
 	trace := `
 {"args":["CMAKE_SYSTEM_NAME","STREQUAL","Linux"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
 {"args":["foo","PRIVATE","linux.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
@@ -125,9 +127,33 @@ func TestExtractPlatformConditionalSources_ElseArmUnrecognized(t *testing.T) {
 	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
 	want := []PlatformConditionalSource{
 		{Target: "foo", Source: "linux.c", SelectKey: "@platforms//os:linux"},
+		{Target: "foo", Source: "other.c", SelectKey: "//conditions:default"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v", got, want)
+	}
+}
+
+// TestExtractPlatformConditionalSources_ElseArmMixedSiblingStaysFlat
+// is the guard: when ANY sibling arm is an unrecognized (non-platform)
+// predicate — here if(BUILD_TESTING) — the else() doesn't mean
+// "default platform", so its source must stay flat ("" SelectKey, i.e.
+// not surfaced). Mapping it to //conditions:default would wrongly gate
+// the source on platform.
+func TestExtractPlatformConditionalSources_ElseArmMixedSiblingStaysFlat(t *testing.T) {
+	trace := `
+{"args":["BUILD_TESTING"],"cmd":"if","file":"/src/CMakeLists.txt","line":5}
+{"args":["foo","PRIVATE","test.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":6}
+{"args":[],"cmd":"else","file":"/src/CMakeLists.txt","line":7}
+{"args":["foo","PRIVATE","prod.c"],"cmd":"target_sources","file":"/src/CMakeLists.txt","line":8}
+{"args":[],"cmd":"endif","file":"/src/CMakeLists.txt","line":9}
+`
+	got := ExtractPlatformConditionalSources([]byte(trace), "/src", map[string]bool{"foo": true})
+	// if(BUILD_TESTING) is unrecognized, so neither arm surfaces — both
+	// stay flat. (test.c's if-arm is also unrecognized; the point is
+	// prod.c's else does NOT become //conditions:default.)
+	if len(got) != 0 {
+		t.Errorf("mixed-sibling else should stay flat; got %#v", got)
 	}
 }
 

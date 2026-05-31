@@ -96,6 +96,101 @@ func TestFold_SrcsDivergeAcrossPlatforms(t *testing.T) {
 	}
 }
 
+// TestFold_AbsorbsCellPerPlatform pins the contract that cells arriving
+// with PRE-EXISTING PerPlatform deltas (the lower-side #217 platform-
+// conditional partition runs per-cell BEFORE the fold) keep those arms
+// in the merged output. cmake derives a source's if()-guard identically
+// on every configure platform, so each cell carries the SAME PerPlatform
+// arms with only flat Srcs differing. Before the fix the fold read only
+// flat Srcs and dropped every arm source — losing all platform-specific
+// sources. The else() arm (//conditions:default) must survive too.
+func TestFold_AbsorbsCellPerPlatform(t *testing.T) {
+	// Both cells: flat ["common.c"] + identical #217 arms (win/darwin/
+	// default). This is exactly what convert-element-cmake --out-ir-json
+	// emits per platform with trace-driven partitioning.
+	mkCell := func(name, constraint string) Cell {
+		return Cell{
+			Platform: Platform{Name: name, Constraints: []string{constraint}, SelectKey: constraint},
+			Pkg: &ir.Package{
+				Name: "hello",
+				Targets: []ir.Target{{
+					Name: "foo",
+					Kind: ir.KindCCLibrary,
+					Srcs: []string{"common.c"},
+					PerPlatform: map[string]map[string][]string{
+						"srcs": {
+							"@platforms//os:windows": {"win32.c"},
+							"@platforms//os:darwin":  {"darwin.c"},
+							"//conditions:default":   {"linux.c"},
+						},
+					},
+				}},
+			},
+		}
+	}
+	merged, err := Fold([]Cell{
+		mkCell("linux", "@platforms//os:linux"),
+		mkCell("windows", "@platforms//os:windows"),
+	})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if !reflect.DeepEqual(got.Srcs, []string{"common.c"}) {
+		t.Errorf("baseline Srcs = %v; want [common.c]", got.Srcs)
+	}
+	want := map[string][]string{
+		"@platforms//os:windows": {"win32.c"},
+		"@platforms//os:darwin":  {"darwin.c"},
+		"//conditions:default":   {"linux.c"},
+	}
+	if !reflect.DeepEqual(got.PerPlatform["srcs"], want) {
+		t.Errorf("PerPlatform[srcs] = %v; want %v (cell arms must survive the fold)", got.PerPlatform["srcs"], want)
+	}
+}
+
+// TestFold_MergesCellPerPlatformWithMembershipDelta covers the mixed
+// case: a source that is #217-arm-routed in one cell's PerPlatform AND
+// a separate source that diverges only via flat Srcs membership. Both
+// routing mechanisms feed the same merged arm map without collision.
+func TestFold_MergesCellPerPlatformWithMembershipDelta(t *testing.T) {
+	linux := Cell{
+		Platform: Platform{Name: "linux", Constraints: []string{"@platforms//os:linux"}, SelectKey: "@platforms//os:linux"},
+		Pkg: &ir.Package{Name: "h", Targets: []ir.Target{{
+			Name: "foo", Kind: ir.KindCCLibrary,
+			Srcs: []string{"common.c", "linux_only.c"}, // flat-divergent (membership)
+			PerPlatform: map[string]map[string][]string{
+				"srcs": {"@platforms//os:windows": {"win32.c"}}, // #217 arm
+			},
+		}}},
+	}
+	darwin := Cell{
+		Platform: Platform{Name: "darwin", Constraints: []string{"@platforms//os:darwin"}, SelectKey: "@platforms//os:darwin"},
+		Pkg: &ir.Package{Name: "h", Targets: []ir.Target{{
+			Name: "foo", Kind: ir.KindCCLibrary,
+			Srcs: []string{"common.c"},
+			PerPlatform: map[string]map[string][]string{
+				"srcs": {"@platforms//os:windows": {"win32.c"}},
+			},
+		}}},
+	}
+	merged, err := Fold([]Cell{linux, darwin})
+	if err != nil {
+		t.Fatalf("Fold: %v", err)
+	}
+	got := merged.Targets[0]
+	if !reflect.DeepEqual(got.Srcs, []string{"common.c"}) {
+		t.Errorf("baseline Srcs = %v; want [common.c]", got.Srcs)
+	}
+	want := map[string][]string{
+		"@platforms//os:windows": {"win32.c"},      // absorbed #217 arm
+		"@platforms//os:linux":   {"linux_only.c"}, // membership delta (only linux's flat)
+	}
+	if !reflect.DeepEqual(got.PerPlatform["srcs"], want) {
+		t.Errorf("PerPlatform[srcs] = %v; want %v", got.PerPlatform["srcs"], want)
+	}
+}
+
 // TestFold_PhantomTargetScalarAttr: the round-2 stub shape's
 // cc_import target may be present on only one platform (an
 // arch-specific binary, a feature gated by configure). Verify
