@@ -473,13 +473,16 @@ Layered exit-status contract:
   e2e-audit-narrowing` calls) IS the policy layer: it exits
   non-zero when the combined report is non-empty, so the
   make invocation fails like any other check target.
-- The CI step that calls `make e2e-audit-narrowing` uses
-  `continue-on-error: true` to keep the job green while
-  signal accumulates. Promotion to blocking is a real
-  one-line YAML change — flip `continue-on-error` to false
-  once the representative fixture set's allowlists have
-  stabilized; the script's non-zero exit on drift will fail
-  the step naturally.
+- The CI step that calls `make e2e-audit-narrowing` is now
+  **blocking** — the representative fixture set's allowlists
+  stabilized (the audit runs clean: 0 drift entries), so the
+  step's `continue-on-error: true` was removed (May 2026). The
+  audit is deterministic (the cmake oracle vs the read-paths
+  patterns; no network), so the script's non-zero exit on drift
+  fails the step on a real narrowing-undercoverage regression,
+  not a flake. Re-add `continue-on-error: true` only if a
+  deliberately-landed fixture needs its allowlist to catch up
+  across more than one PR.
 
 The trace-side oracle requires `--trace-source-root` on the
 write-a invocation that produced the meta-project; without it,

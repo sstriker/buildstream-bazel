@@ -93,16 +93,15 @@ jobs:
       - name: bst wrapper smoke test
         run: make e2e-meta-bst-wrapper 2>&1 | tee -a /tmp/cijob.log
 
-      - name: Narrowing-undercoverage audit (non-blocking soft gate)
-        # Soft launch: `make e2e-audit-narrowing` exits non-zero
-        # when the combined drift report is non-empty (real signal),
-        # but `continue-on-error: true` keeps the job green while
-        # the representative fixture set's expected-drift allowlists
-        # stabilize. Flipping continue-on-error to false promotes
-        # the gate to blocking — a real one-line change because
-        # the script's exit code already differentiates clean vs
-        # drift. Recipe + policy: docs/design/narrowing-audit.md.
-        continue-on-error: true
+      - name: Narrowing-undercoverage audit (blocking gate)
+        # `make e2e-audit-narrowing` exits non-zero when the combined
+        # drift report is non-empty (real signal). Promoted to blocking
+        # (was continue-on-error: true) — the representative fixture
+        # set's expected-drift allowlists have stabilized (the audit
+        # runs clean: 0 drift entries). The audit is deterministic (the
+        # cmake oracle vs the read-paths patterns; no network), so a red
+        # here is a real narrowing-undercoverage regression, not a
+        # flake. Recipe + policy: docs/design/narrowing-audit.md.
         run: make e2e-audit-narrowing 2>&1 | tee -a /tmp/cijob.log
 
       - name: Install buildifier (for gazelle-roundtrip gate)
@@ -314,26 +313,28 @@ jobs:
     #            propagate down to distro defaults.
     #
     # Tripwire for File API schema bumps, build.ninja shape drift,
-    # and policy-removal regressions in newer cmakes; non-blocking
-    # — `continue-on-error: true` at the job level applies to each
-    # matrix instantiation, and `strategy.fail-fast: false` keeps
-    # one entry's failure from cancelling the others. A single
-    # upstream cmake change can't gate every PR.  Reviewers should
-    # still investigate failures — they signal real compatibility
-    # gaps the pinned-cmake job can't see. Once the matrix has
-    # been green for a release cycle it promotes to a blocking
-    # gate; see docs/cmake-version-matrix.md for promotion
-    # criteria + per-version known notes.
+    # and policy-removal regressions in newer cmakes. **Blocking** —
+    # promoted from the non-blocking shakeout once all four entries
+    # ran green across three consecutive merges (#342 / #343 / #344)
+    # with the per-version known-notes resolved in-tree (4.3.3's
+    # find-v1 decode bug fixed in PR #244). `strategy.fail-fast:
+    # false` stays so one entry's failure doesn't cancel the others'
+    # diagnostics — but a red entry now fails the workflow. See
+    # docs/cmake-version-matrix.md for the criteria + per-version
+    # known notes. (Revert to `continue-on-error: true` if an
+    # upstream-cmake change makes an entry flaky for infra reasons.)
     #
     # Picking specific releases (rather than relying on the runner's
     # stock cmake, which tracks the apt 3.x line) is what gates the
     # TestConfigure_CMP0026_HintSurfaces e2e — CMP0026 only
     # fatal-errors on cmake >= 4.x; under cmake 3.x the test
     # skips.
-    name: End-to-end (cmake ${{ matrix.cmake_version }} — non-blocking)
+    name: End-to-end (cmake ${{ matrix.cmake_version }})
     runs-on: ubuntu-24.04
     needs: unit
-    continue-on-error: true
+    # Promoted to blocking (was continue-on-error: true) — see the job
+    # comment above + docs/cmake-version-matrix.md. fail-fast stays off
+    # so all four entries' results surface on a red.
     strategy:
       fail-fast: false
       matrix:
