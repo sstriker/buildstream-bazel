@@ -1,12 +1,12 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-nlohmann-json-consumer \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-libpng e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-nlohmann-json-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file e2e-meta-cmake-split-build e2e-meta-cmake-split-multiconfig e2e-meta-cmake-split-gazelle \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
         fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
@@ -27,6 +27,8 @@ JSON_VERSION   ?= v3.11.3
 JSON_DIR       ?= /tmp/json
 CATCH2_VERSION ?= v3.5.3
 CATCH2_DIR     ?= /tmp/Catch2
+LIBPNG_VERSION ?= v1.6.43
+LIBPNG_DIR     ?= /tmp/libpng
 
 # Diagnostic-survey corpus (see docs/codemodel-consumption-audit.md).
 # Cloned out-of-band, then run through the converter in
@@ -845,6 +847,28 @@ e2e-fidelity-compare-catch2: check-cmake-toolchain converter fetch-catch2
 		--convert-flags '--lift-configure-file=true' \
 		--allowlist testdata/fidelity/catch2.allowlist.txt
 
+# libpng library-side fidelity. Exercises the full deferred-blocker set:
+#   - cmake -E create_symlink install aliases (libpng16.pc -> libpng.pc)
+#     skip via PR #350's install-compat-alias rule;
+#   - the cmake -P script-generated headers (pnglibconf.h, pngprefix.h, …)
+#     bake via --cmake-script-bake;
+#   - find_package(ZLIB) resolves to @zlib via --imports-manifest
+#     (libpng-imports.json maps ZLIB::ZLIB -> @zlib);
+#   - --bazel-external adds the zlib BCR module so @zlib resolves.
+# The cmake side needs zlib dev headers on the host (find_package(ZLIB)).
+e2e-fidelity-compare-libpng: check-cmake-toolchain converter fetch-libpng
+	scripts/run-fidelity.sh \
+		--project-name libpng \
+		--source-root $(LIBPNG_DIR) \
+		--target png_static \
+		--cmake-artifact-pattern libpng16.a \
+		--bazel-artifact-pattern libpng_static.a \
+		--bazel-target-label //:png_static \
+		--cmake-flags '-DPNG_TESTS=OFF -DPNG_SHARED=OFF' \
+		--convert-flags '--cmake-script-bake=true --imports-manifest=$(CURDIR)/testdata/fidelity/libpng-imports.json' \
+		--bazel-external 'bazel_dep(name = "zlib", version = "1.3.1.bcr.5")' \
+		--allowlist testdata/fidelity/libpng.allowlist.txt
+
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,
 # tears down. Replaces the in-process fake with actual Buildbarn code.
@@ -1042,6 +1066,14 @@ fetch-catch2:
 		git clone --depth 1 --branch $(CATCH2_VERSION) https://github.com/catchorg/Catch2.git "$(CATCH2_DIR)"; \
 	else \
 		echo "Catch2 already at $(CATCH2_DIR); rm -rf to refetch"; \
+	fi
+
+# Fetch libpng for the deferred-blocker fidelity gate. Idempotent.
+fetch-libpng:
+	@if [ ! -d "$(LIBPNG_DIR)" ]; then \
+		git clone --depth 1 --branch $(LIBPNG_VERSION) https://github.com/pnggroup/libpng.git "$(LIBPNG_DIR)"; \
+	else \
+		echo "libpng already at $(LIBPNG_DIR); rm -rf to refetch"; \
 	fi
 
 # --- Diagnostic-survey corpus (docs/codemodel-consumption-audit.md) ---

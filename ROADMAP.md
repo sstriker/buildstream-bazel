@@ -463,34 +463,31 @@ transition cleanly.
       instantiations now auto-classify benign (Catch2 emitted ~100 of
       them — toolchain variance the converter never controls); a 5-entry
       allowlist covers Catch's own template dtors.
-    - **libpng 1.6.x** ⚠️ deferred — but smaller than first thought. Three
-      blockers found while wiring it, only one of which is genuinely new:
-      (1) two `cmake -E create_symlink` install steps (libpng16.pc →
-      libpng.pc, libpng16-config → libpng-config) `unsupported-execute-
-      process` and hard-fail the convert. These symlink **build-generated**
-      files, so PR #350's create_symlink lift refuses them ("source not
-      under the source root") — they need a benign-skip rule (an install-
-      compat symlink has zero build-artifact impact, same character as
-      #350's make_directory/remove no-ops); filed as a comment on #350.
-      (2) the `find_package(ZLIB)` dep drops from `png_static` in a
-      standalone convert — **not new work**: it's the existing
-      `--imports-manifest` mechanism (`meta-cmake-find-package-variable-
-      form.sh` maps `ZLIB::ZLIB` → a Bazel label), threadable through the
-      harness's `--convert-flags` passthrough. (3) the external `@zlib`
-      module — the `--bazel-external` passthrough (already in
-      `run-fidelity.sh`) supplies it. So libpng is really: the #350
-      build-generated-symlink skip rule + an imports manifest + the
-      external dep — no new find_package converter slice.
+    - **libpng 1.6.43** ✅ library-side shipped — `make
+      e2e-fidelity-compare-libpng` passes (0 impactful). It exercises the
+      whole deferred-blocker set, none of which needed new converter work
+      once PR #350 landed: (1) the `cmake -E create_symlink` install
+      aliases (libpng16.pc → libpng.pc, libpng16-config → libpng-config)
+      skip via #350's install-compat-alias rule; (2) the `cmake -P`
+      script-generated headers (`pnglibconf.h`, `pngprefix.h`, …) bake via
+      `--cmake-script-bake` (self-contained base64 genrules, no runner
+      tool); (3) `find_package(ZLIB)` resolves to `@zlib` via
+      `--imports-manifest` (`testdata/fidelity/libpng-imports.json` maps
+      `ZLIB::ZLIB` → `@zlib`); (4) `--bazel-external` adds the zlib BCR
+      module so `@zlib` resolves. One delta — an undefined `floor`
+      reference cmake's distro toolchain emits and Bazel's inlines as a
+      builtin — is allowlisted. The cmake side needs zlib dev headers on
+      the host for `find_package(ZLIB)`.
 
   Remaining work:
     - Consumer-side gates for spdlog (the project's own static lib
       consumers also use header-side typedefs / templates; an extra
       signal beyond the lib-side 1404 match).
-    - libpng: a converter slice to resolve `find_package(<Pkg>)` to an
-      external BCR-module Bazel label + tolerate install-symlink
-      execute_process (see the libpng entry above). VTK / LLVM gates need
-      the project's specific configure flags + tooling and may need
-      larger allowlists.
+    - VTK / LLVM gates — need the project's specific configure flags +
+      tooling and may need larger allowlists (the std::/libm-builtin
+      classifier rules + the configure_file / cmake-P / imports-manifest /
+      --bazel-external harness machinery the zlib…libpng fixtures built up
+      should carry most of the way).
     - Promote each CI `fidelity` gate from `continue-on-error: true`
       to blocking after three consecutive green merges (the wiring +
       soft launch shipped — see the entry head).

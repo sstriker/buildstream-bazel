@@ -75,6 +75,18 @@ variance, now auto-classified benign by the classifier
 (`stdlib-template-instantiation-*`); the 5-entry allowlist covers Catch's own
 template destructors (Clara `ResultValueBase`, `Detail::unique_ptr`).
 
+### libpng (`make fetch-libpng`, `LIBPNG_VERSION = v1.6.43`)
+
+Status: ✅ library-side shipped — `make e2e-fidelity-compare-libpng` passes
+(0 impactful). The "hard" fixture: it exercises four otherwise-deferred
+mechanisms at once — `cmake -E create_symlink` install aliases skip (PR
+#350), `cmake -P` script headers (`pnglibconf.h`, …) bake via
+`--cmake-script-bake`, `find_package(ZLIB)` resolves to `@zlib` via
+`--imports-manifest` (`testdata/fidelity/libpng-imports.json`), and
+`--bazel-external` supplies the zlib BCR module. One allowlisted delta:
+`floor` (cmake's distro toolchain emits the libm reference; Bazel's inlines
+the builtin). cmake side needs zlib dev headers on the host.
+
 ### Recording a new delta
 
 When the harness surfaces a new impactful delta during gate
@@ -90,11 +102,10 @@ development, capture it as a discrete sub-section:
 
 ## Cross-project Bazel-build fidelity survey (close-gaps campaign, May 2026)
 
-Status: 🟢 5 of 6 projects shipped as productionized gates (zlib, fmt,
-spdlog, nlohmann-json, Catch2); libpng catalogued as deferred — it needs a
-converter slice (find_package→external-label resolution + install-symlink
-tolerance), not a harness tweak (see `ROADMAP.md` "A-B-C fidelity harness"
-entry).
+Status: 🟢 all 6 surveyed projects shipped as productionized gates (zlib,
+fmt, spdlog, nlohmann-json, Catch2, libpng). VTK / LLVM are the next tier
+(project-specific configure flags + tooling; see `ROADMAP.md` "A-B-C
+fidelity harness" entry).
 
 Manual harness for the initial survey: for each project, run
 `convert-element-cmake --cmake-build-dir <cmake-build>` to produce
