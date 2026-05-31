@@ -35,8 +35,61 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/bazeltoolchain"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmaketoolchain"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/hardeningprobe"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 )
+
+// resolveHardeningMode maps the --inherit-distro-hardening value to a
+// concrete enable/disable decision plus an operator-facing note.
+//
+//   - "off" / "false" / ""  → features disabled (the default; existing
+//     operators see no change).
+//   - "on" / "true"         → features enabled unconditionally.
+//   - "auto"                → run `probe` (the host-cc hardening probe)
+//     and enable the features iff the host cc actually applies distro
+//     hardening defaults. This is the toolchain-derive-time detection
+//     the fidelity story's "Toolchain-feature parity" item called for:
+//     when you derive a toolchain on the same host cmake built with,
+//     the emitted cc_toolchain matches that build's FORTIFY_SOURCE /
+//     stack-protector defaults without the operator having to know to
+//     pass the flag. `probe` returns (detected, descriptiveNote).
+//
+// auto stays opt-in (the operator types `=auto`) precisely because
+// default-on would change every existing operator's toolchain output;
+// detection only fires when explicitly requested.
+func resolveHardeningMode(mode string, probe func() (bool, string)) (bool, string, error) {
+	switch mode {
+	case "", "off", "false":
+		return false, "", nil
+	case "on", "true":
+		return true, "inherit-distro-hardening=on: emitting fortify_source + stack_protector features", nil
+	case "auto":
+		detected, note := probe()
+		if detected {
+			return true, "inherit-distro-hardening=auto: host cc applies distro hardening (" + note + ") — emitting fortify_source + stack_protector features", nil
+		}
+		return false, "inherit-distro-hardening=auto: host cc applies no distro hardening defaults — features left off", nil
+	default:
+		return false, "", fmt.Errorf("invalid --inherit-distro-hardening value %q (want off | on | auto)", mode)
+	}
+}
+
+// probeHostHardening adapts hardeningprobe to resolveHardeningMode's
+// probe signature: detected = the host cc emits hardening symbols; the
+// note names the detected flags for the operator log.
+func probeHostHardening() (bool, string) {
+	r := hardeningprobe.Probe("")
+	if r.Err != nil {
+		// A probe that can't run (no cc on PATH, etc.) is treated as
+		// "no hardening detected" — auto must not fail the derive over
+		// a missing diagnostic compiler. The note surfaces why.
+		return false, "probe unavailable: " + r.Err.Error()
+	}
+	if r.Empty() {
+		return false, "none"
+	}
+	return true, r.FlagSummary()
+}
 
 func main() {
 	fs := flag.NewFlagSet("derive-toolchain", flag.ContinueOnError)
@@ -47,7 +100,7 @@ func main() {
 	outDir := fs.String("out", "", "output directory; created if absent. BUILD.bazel + cc_toolchain_config.bzl + toolchain.cmake land here.")
 	pkgName := fs.String("package-name", "toolchain", "Bazel package name for the emitted rules (purely cosmetic; affects the toolchain identifier suffix).")
 	targetLibc := fs.String("target-libc", "", "target libc identifier (glibc, musl, macosx, ...). Auto-derived from CMAKE_SYSTEM_NAME when empty.")
-	hardeningFeatures := fs.Bool("inherit-distro-hardening", false, "emit fortify_source + stack_protector feature() blocks enabled-by-default in the cc_toolchain_config, mirroring the spec-file hardening Debian/Ubuntu cc applies. Closes the symbol-set delta the hardening probe surfaces. Operators opt out per-build with `--features=-fortify_source` or `--features=-stack_protector`.")
+	hardeningMode := fs.String("inherit-distro-hardening", "off", "off | on | auto. Emit fortify_source + stack_protector feature() blocks enabled-by-default in the cc_toolchain_config, mirroring the spec-file hardening Debian/Ubuntu cc applies; closes the symbol-set delta the hardening probe surfaces (operators opt out per-build with `--features=-fortify_source` / `--features=-stack_protector`). `auto` probes the host cc at derive time and enables the features only if it actually applies distro hardening defaults — so deriving a toolchain on the same host cmake built with reproduces that build's hardening without the operator having to know to pass the flag. Stays opt-in: `off` is the default so existing operators see no change.")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(64)
@@ -67,6 +120,15 @@ func main() {
 		os.Exit(64)
 	}
 
+	hardeningFeatures, note, err := resolveHardeningMode(*hardeningMode, probeHostHardening)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "derive-toolchain: %v\n", err)
+		os.Exit(64)
+	}
+	if note != "" {
+		fmt.Fprintf(os.Stderr, "derive-toolchain: %s\n", note)
+	}
+
 	// Two execution paths share the back half (emit + write):
 	//   replyDir -> Model              -> bazeltoolchain.Emit
 	//   probeSrc -> []ProbeResult      -> Observe -> bazeltoolchain.EmitResolved
@@ -76,12 +138,11 @@ func main() {
 	var (
 		bundle    *bazeltoolchain.Bundle
 		baseModel *toolchain.Model
-		err       error
 	)
 	if *replyDir != "" {
-		baseModel, bundle, err = fromReplyDir(*replyDir, *pkgName, *targetLibc, *hardeningFeatures)
+		baseModel, bundle, err = fromReplyDir(*replyDir, *pkgName, *targetLibc, hardeningFeatures)
 	} else {
-		baseModel, bundle, err = fromProbe(*probeSrc, *buildRoot, *pkgName, *targetLibc, *hardeningFeatures)
+		baseModel, bundle, err = fromProbe(*probeSrc, *buildRoot, *pkgName, *targetLibc, hardeningFeatures)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "derive-toolchain: %v\n", err)

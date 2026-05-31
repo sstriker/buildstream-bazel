@@ -571,27 +571,6 @@ transition cleanly.
   install root" entry under Done (high points). The repo-rule
   alternative stays rejected; this bullet is retained only as the
   record of why.
-- **Toolchain-feature parity vs. cmake's default Release
-  hardening flags.** Surfaced by the convert-and-build
-  artifact comparison of zlib (cmake `libz.a` vs. Bazel
-  `libzlibstatic.a` from the converted BUILD.bazel):
-  exported-symbol sets are identical (105/105), but cmake's
-  archive references `__snprintf_chk` / `__vsnprintf_chk` /
-  `__stack_chk_fail` (FORTIFY_SOURCE + stack-protector)
-  while Bazel's does not. cmake's distro defaults add
-  `-D_FORTIFY_SOURCE=2 -fstack-protector-strong` to Release
-  copts; Bazel's hermetic toolchain doesn't. The audit-time
-  feature-lift (raw flags → `features = ["pic", ...]`) only
-  fires when the cmake CMakeLists explicitly sets these
-  flags — distro-default copts arrive via CFLAGS-env and
-  the codemodel never records them. Closure path: either
-  detect distro-default hardening via a probe at toolchain-
-  derive time and emit `features = ["fortify_source",
-  "stack_protector"]` on the cc_toolchain (requires a real
-  Bazel cc_toolchain feature definition), or document the
-  delta as expected and surface it via the verify pass.
-  Same shape applies to other distro CFLAGS additions
-  (`-fasynchronous-unwind-tables`, `-grecord-gcc-switches`).
 
 ## Later (research / open questions)
 
@@ -648,6 +627,30 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Toolchain-feature parity vs. cmake's default Release hardening
+  flags.** The surfaced delta (cmake's distro `cc` adds
+  `-D_FORTIFY_SOURCE=2 -fstack-protector-strong` via the spec file, so
+  the cmake artifact references `__*_chk` / `__stack_chk_*` while
+  Bazel's hermetic toolchain doesn't) is closed three ways:
+  (1) the classifier auto-classifies the undefined-symbol deltas benign
+  (no allowlist entry needed); (2) `convert-element-cmake
+  --probe-distro-hardening` (default-on in `--diagnostics`) compiles a
+  stub with the host cc and emits a stderr warning naming the detected
+  flags + a remediation recipe; (3) `derive-toolchain
+  --inherit-distro-hardening` emits real `fortify_source` /
+  `stack_protector` cc_toolchain feature() blocks (default-enabled in
+  the config, opt-out per-build via `--features=-fortify_source`). The
+  flag's new **`auto`** value runs the host-cc hardening probe at
+  derive time and enables the features only if the host actually
+  applies distro defaults — so deriving a toolchain on the same host
+  cmake built with reproduces that build's hardening without the
+  operator having to know to pass the flag (`resolveHardeningMode` +
+  `probeHostHardening`, `hardeningprobe.Result.FlagSummary`). Stays
+  opt-in: `off` is the default so existing operators see no change.
+  The same probe/feature mechanism extends to other distro CFLAGS
+  additions (`-fasynchronous-unwind-tables`, `-grecord-gcc-switches`)
+  if a fixture ever demands them — none does today.
 
 - **`--cmake-script-bake` forwards positional output-name args.**
   The "one script, many outputs" shape

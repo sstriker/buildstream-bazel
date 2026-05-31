@@ -238,12 +238,15 @@ trivial stub with the host cc, inspects the resulting object file's undefined
 symbols, and emits a stderr warning naming the detected flags with a remediation
 recipe. Diagnostic-only — the probe doesn't change BUILD.bazel emit decisions.
 
-**Status**: partial — `bazeltoolchain` now emits opt-in `fortify_source` and
+**Status**: closed — `bazeltoolchain` emits opt-in `fortify_source` and
 `stack_protector` cc_toolchain feature definitions (shipped in the close-gaps
 campaign; toolchain feature template at `examples/sanitizer-features/
 toolchain/features.bzl`). Default-off so existing operators see no change;
-opt-in via `--features=fortify_source,stack_protector` at Bazel-build time
-once the toolchain template is wired in. The classifier auto-classifies these
-undefined-symbol deltas as benign (no allowlist entry needed). Tracked under
-`ROADMAP.md`'s "Toolchain-feature parity vs. cmake's default Release hardening
-flags" Next bullet for the remaining auto-enable closure.
+opt-in via `derive-toolchain --inherit-distro-hardening` (`on` forces the
+features; **`auto`** runs the host-cc hardening probe at derive time and
+enables them only if the host actually applies distro defaults — so deriving
+on the same host cmake built with reproduces that build's hardening without
+the operator having to pass anything explicitly). Opt out per-build with
+`--features=-fortify_source` / `--features=-stack_protector`. The classifier
+auto-classifies these undefined-symbol deltas as benign (no allowlist entry
+needed). See `ROADMAP.md`'s "Toolchain-feature parity" Done entry.
