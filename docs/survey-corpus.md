@@ -42,8 +42,9 @@ they have very different tooling support:
    real defect to drive to zero (this is what surfaced the eigen
    empty-srcs and VTK empty-cc-library work).
 
-3. **Did we lose intent vs. the CMakeLists?** — **not automated; this is
-   the adversarial lens.** Lenses 1 and 2 are *self-reported*: the
+3. **Did we lose intent vs. the CMakeLists?** — **the adversarial lens**,
+   now *partially* automated (dependency-coverage, below). Lenses 1 and 2
+   are *self-reported*: the
    converter flags its own refusals and its own known-bad shapes. Lens 3
    is the one thing it structurally *cannot* self-report, because silent
    intent loss is exactly the stuff it dropped without noticing. Measuring
@@ -81,14 +82,21 @@ they have very different tooling support:
    an honest rejection). Anything that vanished with no tag/rejection is a
    lens-3 bug.
 
-   **Candidate for automation:** the highest-signal, lowest-false-positive
-   deterministic lens-3 check is **dependency-coverage** — a
-   `target_link_libraries` entry that resolves to an in-codebase target
-   but lands in none of `deps` / `implementation_deps` / `data` and raises
-   no `unresolved-link-dep` is a silent dropped edge. That check would
-   have caught #302. It's scoped as a future addition; the broader
-   codemodel→BUILD differ is deliberately *not* pursued (false-positive
-   cost exceeds signal, per the relocation cases above).
+   **Dependency-coverage (implemented).** The one deterministic,
+   low-false-positive lens-3 check runs on every convert
+   (`converter/internal/coverage`): a trace `target_link_libraries` arm
+   naming an **in-codebase** target (matching an emitted
+   cc_library/cc_binary/cc_library-interface) that lands in none of
+   `deps` / `implementation_deps` / `data` is a silent dropped edge —
+   the exact class PR #302 fixed (INTERFACE-library arms). It surfaces on
+   stderr, as the `coverage` column in the survey summary, and as
+   `coverage.json` via `--audit-coverage-report`. Conservative by
+   construction (skips `::`-namespaced alias/imported arms and any name
+   that isn't an emitted target, so system libs and out-of-tree imports
+   don't false-positive); **0 is the healthy state** (the whole corpus
+   reads 0 — the fix holds). The broader codemodel→BUILD differ is
+   deliberately *not* pursued (false-positive cost exceeds signal, per the
+   relocation cases above).
 
 ## The corpus
 
@@ -263,7 +271,8 @@ SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
 SURVEY_BUILD_TYPES=auto SURVEY_SPLIT_PACKAGES=1 scripts/run-survey.sh
 ```
 
-Each project lands `rejections.json` + `bazel-idiom.json` under the out
-dir, with a `summary.txt` table. The survey passes `--diagnostics`
-(collect-and-continue) so one run enumerates the whole surface instead of
-aborting on the first refusal.
+Each project lands `rejections.json` + `bazel-idiom.json` +
+`coverage.json` under the out dir, with a `summary.txt` table (one column
+per lens: `rejections` / `idioms` / `coverage`). The survey passes
+`--diagnostics` (collect-and-continue) so one run enumerates the whole
+surface instead of aborting on the first refusal.

@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -219,6 +220,14 @@ type Options struct {
 	// UnsupportedExecuteProcessFallback implicitly when this
 	// field is non-nil).
 	Rejections *rejection.Collector
+
+	// Coverage, when non-nil, collects lens-3 ("did we lose intent
+	// vs the CMakeLists?") findings — losses the converter would
+	// otherwise not self-report. v1 records dependency-coverage gaps
+	// (a trace target_link_libraries arm naming an in-codebase target
+	// that didn't land in any dep bucket). Surfaced via
+	// --audit-coverage-report; see converter/internal/coverage.
+	Coverage *coverage.Collector
 
 	// CMakeScriptRunner, when non-empty, is the Bazel label of a
 	// target that the cmake-P lift will invoke at Bazel build
@@ -1127,6 +1136,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// makes the omission auditable so operators who care about
 	// install-time logic see what was lost.
 	surfaceInstallScriptInstallers(r, opts.Warnings)
+
+	// Lens-3 coverage audit: dependency-coverage over the final
+	// package. Runs after every target (codemodel-derived + trace-
+	// synthesized interface libs + aliases) is in pkg.Targets so each
+	// target's dep buckets are final, and uses traceLinkLibs (the
+	// recorded target_link_libraries arms) as the intent oracle. No-op
+	// when no trace was decoded (traceLinkLibs empty) or no collector
+	// was supplied.
+	if opts.Coverage != nil {
+		for _, f := range coverage.AuditLinkDeps(pkg, traceLinkLibs) {
+			opts.Coverage.Add(f)
+		}
+	}
 	return pkg, nil
 }
 
