@@ -52,26 +52,41 @@ func TestProbeGenex_DanglingLinkInterface_LiveCMake(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	buildDir := t.TempDir()
-	cmd := exec.CommandContext(context.Background(), "cmake",
-		"-S", src,
-		"-B", buildDir,
-		"-G", "Ninja",
-		"-DCMAKE_BUILD_TYPE=Release",
-		"-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+hook,
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("cmake configure+generate with probe-genex hook failed on the dangling-link fixture (the fix should skip the bad target, not abort): %v\n%s", err, out)
-	}
+	// Cover both generator modes: the probe's INTERFACE_LINK_LIBRARIES
+	// file(GENERATE) forces the dangling-`::`-dep evaluation regardless of
+	// config count (single-config Ninja emits one OUTPUT, Ninja
+	// Multi-Config emits one per $<CONFIG>) — both fatal-errored pre-fix.
+	// The skip lives in the per-target loop preamble, ahead of any
+	// per-config emit, so it must hold for both. The default survey path
+	// is single-config; --build-types switches to multi-config.
+	for _, tc := range []struct {
+		name      string
+		generator string
+		extraArgs []string
+	}{
+		{"single-config", "Ninja", []string{"-DCMAKE_BUILD_TYPE=Release"}},
+		{"multi-config", "Ninja Multi-Config", []string{"-DCMAKE_CONFIGURATION_TYPES=Release;Debug"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			buildDir := t.TempDir()
+			args := []string{"-S", src, "-B", buildDir, "-G", tc.generator}
+			args = append(args, tc.extraArgs...)
+			args = append(args, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+hook)
+			cmd := exec.CommandContext(context.Background(), "cmake", args...)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("cmake configure+generate with probe-genex hook failed on the dangling-link fixture (the fix should skip the bad target, not abort): %v\n%s", err, out)
+			}
 
-	// The real, buildable target must still be probed; the dangling
-	// consumer must be skipped (not present).
-	genexRoot := filepath.Join(buildDir, ProbeGenexDirname)
-	if _, err := os.Stat(filepath.Join(genexRoot, "real")); err != nil {
-		t.Errorf("expected the real STATIC_LIBRARY target to be probed, but its dir is missing: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(genexRoot, "dangling_consumer")); !os.IsNotExist(err) {
-		t.Errorf("expected dangling_consumer to be skipped (dir absent), but stat returned err=%v", err)
+			// The real, buildable target must still be probed; the
+			// dangling consumer must be skipped (not present).
+			genexRoot := filepath.Join(buildDir, ProbeGenexDirname)
+			if _, err := os.Stat(filepath.Join(genexRoot, "real")); err != nil {
+				t.Errorf("expected the real STATIC_LIBRARY target to be probed, but its dir is missing: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(genexRoot, "dangling_consumer")); !os.IsNotExist(err) {
+				t.Errorf("expected dangling_consumer to be skipped (dir absent), but stat returned err=%v", err)
+			}
+		})
 	}
 }
