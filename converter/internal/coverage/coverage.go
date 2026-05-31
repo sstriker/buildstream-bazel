@@ -100,14 +100,21 @@ func AuditLinkDeps(pkg *ir.Package, traceLinkLibs map[string][]string) []Finding
 		return nil
 	}
 
-	// The in-codebase oracle: every emitted cc target name. Aliases are
-	// excluded — an alias is indirection; the real link arm names the
-	// underlying cc target, which is what we match against.
+	// The in-codebase oracle: every emitted cc target name -> its own
+	// direct deps. The name set is the match oracle; the deps are used
+	// to see through alias / interface-library indirection (below).
 	inCodebase := make(map[string]bool, len(pkg.Targets))
+	ownDeps := make(map[string][]string, len(pkg.Targets))
 	for i := range pkg.Targets {
-		if isCCTarget(pkg.Targets[i].Kind) {
-			inCodebase[pkg.Targets[i].Name] = true
+		t := &pkg.Targets[i]
+		if !isCCTarget(t.Kind) {
+			continue
 		}
+		inCodebase[t.Name] = true
+		d := make([]string, 0, len(t.Deps)+len(t.ImplementationDeps))
+		d = append(d, t.Deps...)
+		d = append(d, t.ImplementationDeps...)
+		ownDeps[t.Name] = d
 	}
 
 	var findings []Finding
@@ -141,6 +148,27 @@ func AuditLinkDeps(pkg *ir.Package, traceLinkLibs map[string][]string) []Finding
 			}
 			seen[lib] = true
 			if emitted[":"+lib] {
+				continue
+			}
+			// Alias / interface-library indirection: cmake's link arm
+			// names `lib`, but the converter may resolve it to `lib`'s
+			// own concrete target(s) — e.g. libevent's `event_core` is a
+			// trace-synthesized interface cc_library whose only dep is
+			// `:event_core_shared`, and consumers get
+			// deps=[":event_core_shared"] directly. The edge IS present,
+			// just under the resolved label, so don't flag it. Accept
+			// when the consumer's deps include any of `lib`'s own direct
+			// deps. One hop is enough for the common alias/forwarder
+			// shape; deeper chains stay conservative (a false negative,
+			// which is the safe direction for this audit).
+			resolved := false
+			for _, rd := range ownDeps[lib] {
+				if emitted[rd] {
+					resolved = true
+					break
+				}
+			}
+			if resolved {
 				continue
 			}
 			findings = append(findings, Finding{

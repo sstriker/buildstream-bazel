@@ -71,6 +71,29 @@ func TestAuditLinkDeps_InterfaceLibConsumer(t *testing.T) {
 	}
 }
 
+// TestAuditLinkDeps_AliasResolvedDepNotFlagged is the libevent false-
+// positive guard: cmake's link arm names an interface-library / alias
+// target (event_core), but the converter resolves it to that target's
+// own concrete dep (:event_core_shared) and the consumer gets THAT in
+// deps. The edge is present under the resolved label, so it must NOT be
+// flagged. (Before the alias-resolution fix this produced 28 spurious
+// findings on libevent's sample programs.)
+func TestAuditLinkDeps_AliasResolvedDepNotFlagged(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		// Interface-library alias: event_core forwards to the concrete
+		// shared lib.
+		{Name: "event_core", Kind: ir.KindCCLibrary, Deps: []string{":event_core_shared"}},
+		{Name: "event_core_shared", Kind: ir.KindCCLibrary},
+		// Sample binary links `event_core` in cmake; converter gave it
+		// the resolved :event_core_shared.
+		{Name: "hello_world", Kind: ir.KindCCBinary, Deps: []string{":event_core_shared"}},
+	}}
+	tll := map[string][]string{"hello_world": {"event_core"}}
+	if got := AuditLinkDeps(pkg, tll); len(got) != 0 {
+		t.Errorf("findings = %+v, want none (event_core resolved to :event_core_shared)", got)
+	}
+}
+
 // TestAuditLinkDeps_NoTraceIsNoOp: with no trace link data the check
 // emits nothing (it's trace-derived, like the other recovery passes).
 func TestAuditLinkDeps_NoTraceIsNoOp(t *testing.T) {
