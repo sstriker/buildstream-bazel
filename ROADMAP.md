@@ -653,6 +653,60 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Remaining codemodel/trace consumption residue resolved.**
+  The lift-quality items left after the coverage-gap work (see
+  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md))
+  are now each either lifted or formally closed:
+  (1) **`CompileGroup.includes[].isSystem`** — *consumed*. A
+  `target_include_directories(... SYSTEM PRIVATE ...)` include now
+  routes to `-isystem<dir>` compile-only copts (plain PRIVATE stays
+  `-I<dir>`), gated on `CompileInclude.IsSystem` in `lower.go`;
+  PUBLIC system includes already ride `cc_library.includes`, which
+  Bazel emits as `-isystem` + transitive (the earlier "includes is
+  `-I`" framing was wrong), so the SYSTEM keyword is faithful there
+  without extra work. Pinned by hand-built fixtures
+  (`system_includes_test.go`) since the survey corpus uses no SYSTEM
+  includes. (2) **`CompileGroup.precompileHeaders`** — *closed,
+  won't lift*: kept tag-only (`cmake-codegen-pch`). A real PCH lift
+  needs the operator's cc_toolchain to define the `pch` feature (a
+  cross-boundary handshake), and PCH is a build-speed optimisation,
+  not correctness — the target compiles identically without it — so
+  the auditable tag is the terminal state. (3)
+  **`target_link_options` PUBLIC/INTERFACE** — *closed, won't-do*:
+  lossy in Bazel (no transitive linkopts) without a split-target
+  trick, low value, no survey demand. Everything else the audit
+  lists as "not wired" is redundant with the codemodel or
+  operator-side config — correctly unconsumed.
+
+- **cmake-spec coverage gaps closed.** With all five File API
+  object kinds already consumed, the field-level residue catalogued
+  in
+  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md)
+  is retired: (1) `cmakeFiles.globsDependent` (cmakeFiles-v1.1) is
+  parsed and its matched `paths` fold into the configure-inputs
+  oracle (`OutCMakeConfigureReads`), so a `file(GLOB …
+  CONFIGURE_DEPENDS)` match that picks up a new file invalidates the
+  converter's cache the way it re-triggers cmake — the ninja
+  RERUN_CMAKE edge only carries the glob stamp, so this object is the
+  authoritative record; (2) `Directory.installers[].targetInstallNamelink`
+  is parsed — the `.so` namelink symlink is intentionally not
+  reproduced (Bazel imports by artifact via `cc_import`, not SONAME),
+  now documented at the drop site; (3) `scriptFile` + `backtrace` on
+  script/code installers (plus the directory `backtraceGraph`) are
+  parsed, so the `install_script_surface.go` warning names the script
+  file and the cmake `file:line` declaration site; (4)
+  `Target.launchers` (codemodel-v2.7) is parsed and surfaced via
+  `surfaceLauncherTargets` — full routing to a cc_toolchain / test
+  wrapper stays fixture-gated (0 in the survey; Bazel has no
+  first-class per-target run-launcher). `globsDependent` and
+  `launchers` need cmake ≥ 3.29 (the 3.28 survey pin emits neither),
+  so their parsers are pinned by hand-built fixtures in
+  `fileapi/newfields_test.go`. The directory/project tree-topology
+  indices (`parentIndex` / `childIndexes`) stay unconsumed by design:
+  Bazel packages are path-keyed and each directory carries its
+  authoritative `source` path, so the flat `directoryIndex → source`
+  mapping `subPackageDir` uses is the right source of truth.
+
 - **Cross-project survey instrument (corpus + three lenses).**
   `scripts/run-survey.sh` + `docs/survey-corpus.md` run the cmake
   converter over a curated, complementary corpus and report, per

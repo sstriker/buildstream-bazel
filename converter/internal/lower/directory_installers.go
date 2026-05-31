@@ -97,6 +97,15 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 		}
 		for _, inst := range dir.Installers {
 			if inst.Type != "file" && inst.Type != "directory" {
+				// install(TARGETS) (Type=="target") rides through the
+				// per-target Install slot, not here — including the
+				// versioned-shared-lib namelink split cmake records as
+				// paired target installers (TargetInstallNamelink
+				// "skip" for the real SONAME files, "only" for the
+				// libfoo.so symlink). Bazel resolves shared-lib imports
+				// by artifact (cc_import), not by SONAME symlink, so the
+				// "only" namelink installer is intentionally not
+				// reproduced; dropping it here is correct, not lossy.
 				continue
 			}
 			if inst.Destination == "" {

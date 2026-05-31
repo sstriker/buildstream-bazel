@@ -1175,6 +1175,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// install-time logic see what was lost.
 	surfaceInstallScriptInstallers(r, opts.Warnings)
 
+	// Surface target launchers (CROSSCOMPILING_EMULATOR /
+	// TEST_LAUNCHER). Bazel has no per-target run-launcher; these
+	// aren't routed automatically, so name them rather than drop
+	// them silently. Empty across the survey corpus — fires only on
+	// cross builds.
+	surfaceLauncherTargets(r, opts.Warnings)
+
 	// Lens-3 coverage audit: dependency-coverage over the final
 	// package. Runs after every target (codemodel-derived + trace-
 	// synthesized interface libs + aliases) is in pkg.Targets so each
@@ -1850,7 +1857,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			seenInc[rel] = true
 			if privateIncludeDirs[inc.Path] {
 				// Compile-only — don't propagate to consumers.
-				irt.Copts = append(irt.Copts, "-I"+rel)
+				// target_include_directories(... SYSTEM PRIVATE ...)
+				// keeps its system flavour as -isystem so header
+				// warnings stay suppressed the way cmake suppresses
+				// them; plain PRIVATE stays -I. (PUBLIC includes ride
+				// irt.Includes / cc_library.includes, which Bazel
+				// already emits as -isystem + transitive, so the SYSTEM
+				// keyword is faithful there without extra handling.)
+				flag := "-I"
+				if inc.IsSystem {
+					flag = "-isystem"
+				}
+				irt.Copts = append(irt.Copts, flag+rel)
 				continue
 			}
 			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})

@@ -56,6 +56,11 @@ type Directory struct {
 		Build  string `json:"build"`
 	} `json:"paths"`
 	Installers []DirectoryInstaller `json:"installers"`
+	// BacktraceGraph is the deduplicated call-stack table that the
+	// installers' Backtrace indices reference — same shape and semantics
+	// as Target.BacktraceGraph. Lets callers resolve an install()
+	// invocation back to its cmake source file:line.
+	BacktraceGraph BacktraceGraph `json:"backtraceGraph"`
 }
 
 // DirectoryInstaller is one install() invocation. Type
@@ -103,6 +108,30 @@ type DirectoryInstaller struct {
 	// downstream consumers can't rely on the destination being
 	// populated.
 	IsOptional bool `json:"isOptional,omitempty"`
+	// ScriptFile is set on Type=="script" installers — the path to the
+	// cmake script install(SCRIPT) runs at install time (relative to
+	// the directory source). Empty for install(CODE) (Type=="code"),
+	// which carries inline code with no backing file, and for all other
+	// installer kinds. Surfaced (with the Backtrace site) by lower's
+	// install-script warning; not lifted — install-time cmake execution
+	// has no Bazel analogue.
+	ScriptFile string `json:"scriptFile,omitempty"`
+	// Backtrace indexes into the enclosing Directory.BacktraceGraph.Nodes,
+	// giving the cmake call site (file:line) of this install()
+	// invocation. Zero when the reply carries no backtrace for the
+	// installer.
+	Backtrace int `json:"backtrace,omitempty"`
+	// TargetInstallNamelink is set on Type=="target" installers for a
+	// versioned shared library, which cmake splits into two installers:
+	//   - "skip" — places the real SONAME files (libfoo.so.1.2.3,
+	//     libfoo.so.1) without the development symlink.
+	//   - "only" — the companion installer that places just the
+	//     libfoo.so namelink symlink.
+	// Empty for unversioned libraries and non-target installers. Bazel
+	// resolves shared-library imports by artifact (cc_import), not by
+	// SONAME symlink, so the "only" namelink installer is intentionally
+	// not reproduced — see lowerDirectoryInstallers.
+	TargetInstallNamelink string `json:"targetInstallNamelink,omitempty"`
 }
 
 // ExportTarget is one entry in DirectoryInstaller.ExportTargets for
@@ -155,6 +184,7 @@ type Target struct {
 	Dependencies   []TargetDependency `json:"dependencies,omitempty"`
 	Install        *TargetInstall     `json:"install,omitempty"`
 	FileSets       []TargetFileSet    `json:"fileSets,omitempty"`
+	Launchers      []TargetLauncher   `json:"launchers,omitempty"`
 	BacktraceGraph BacktraceGraph     `json:"backtraceGraph"`
 
 	// IsGeneratorProvided is true for cmake-internal helper targets
@@ -162,6 +192,25 @@ type Target struct {
 	// inserts. Lowering should skip these — they have no Bazel
 	// equivalent and aren't user-authored.
 	IsGeneratorProvided bool `json:"isGeneratorProvided,omitempty"`
+}
+
+// TargetLauncher is one entry in Target.Launchers[] (codemodel-v2
+// minor 7, cmake 3.29+). cmake records the command used to run an
+// executable target's artifact:
+//
+//   - Type=="emulator" — the CROSSCOMPILING_EMULATOR prefix (run the
+//     cross-built artifact under e.g. qemu during the build).
+//   - Type=="test" — the TEST_LAUNCHER prefix (wrap the artifact when
+//     invoked as a ctest test).
+//
+// Arguments are the launcher's fixed args, ahead of the target
+// artifact. Bazel has no first-class per-target run-launcher; lower
+// surfaces these (surfaceLauncherTargets) but does not yet route them
+// — empty in the survey corpus, so routing is fixture-gated.
+type TargetLauncher struct {
+	Command   string   `json:"command"`
+	Arguments []string `json:"arguments,omitempty"`
+	Type      string   `json:"type"`
 }
 
 // TargetFileSet is one entry in Target.FileSets[]. A file set is the

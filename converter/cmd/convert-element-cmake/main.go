@@ -878,7 +878,20 @@ func run(a cli.Args) error {
 			if buildDirForProj == "" {
 				buildDirForProj = r.Codemodel.Paths.Build
 			}
-			reads = ninja.ProjectToSourceTree(g.ReconfigureInputs(), a.SourceRoot, buildDirForProj)
+			inputs := g.ReconfigureInputs()
+			// Fold in file(GLOB ... CONFIGURE_DEPENDS) matches. cmake
+			// re-globs these at build time and reconfigures when the
+			// match set changes, but the ninja RERUN_CMAKE edge depends
+			// on the glob *stamp*, not the matched files, so
+			// ReconfigureInputs() alone misses them. cmakeFiles-v1.1
+			// records the resolved set authoritatively; without this a
+			// new file matching a CONFIGURE_DEPENDS glob wouldn't
+			// invalidate the converter's cache the way it re-triggers
+			// cmake. ProjectToSourceTree dedups, so the union is safe.
+			for _, gl := range r.CMakeFiles.GlobsDependent {
+				inputs = append(inputs, gl.Paths...)
+			}
+			reads = ninja.ProjectToSourceTree(inputs, a.SourceRoot, buildDirForProj)
 		}
 		if reads == nil {
 			reads = []string{}
