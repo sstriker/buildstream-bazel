@@ -29,6 +29,45 @@ the Makefile (`make fetch-*` clones each at its pinned tag).
 eigen). llvm and vtk are large, so fetch them explicitly with
 `make fetch-llvm` / `make fetch-vtk`.
 
+## Regression corpus
+
+These projects were each surveyed in past sessions; most surfaced a
+concrete converter bug (since fixed) and the rest are clean controls.
+They're kept fetchable (`make fetch-survey-regression`, or one
+`fetch-<name>` at a time) so a survey re-run guards against
+regressing the fix — that's the whole point of keeping them around.
+
+| Project | What it surfaced | Fixing PR | Source (pinned tag) | Fetch |
+| --- | --- | --- | --- | --- |
+| **Boost.Core** | Alias-target lift ordering | #300 (merged) | github.com/boostorg/core (`BOOSTCORE_VERSION`) | `make fetch-boost-core` |
+| **googletest** | install-path double-prefix | #301 (merged) | already in the default corpus (`GTEST_VERSION`) | `make fetch-googletest` |
+| **abseil-cpp** | INTERFACE deps not routed | #302 (merged) | already in the default corpus (`ABSEIL_VERSION`) | `make fetch-abseil` |
+| **zstd** | workspace-root umbrella picks `build/` | #303 | github.com/facebook/zstd (`ZSTD_VERSION`) | `make fetch-zstd` |
+| **libevent** | pre-committed generated sources refused | #304 | github.com/libevent/libevent (`LIBEVENT_VERSION`) | `make fetch-libevent` |
+| **mbedtls** | wrapped `ctest -D Experimental` dashboard target lifted instead of filtered | fixed (`isCMakeInternalCmd` dashboard filter) | github.com/Mbed-TLS/mbedtls (`MBEDTLS_VERSION`) | `make fetch-mbedtls` |
+| **libxml2** | clean — no converter bugs found | n/a | github.com/GNOME/libxml2 (`LIBXML2_VERSION`) | `make fetch-libxml2` |
+| **brotli** | clean — no converter bugs found | n/a | github.com/google/brotli (`BROTLI_VERSION`) | `make fetch-brotli` |
+| **cutlass** | NVIDIA CUDA project (header-heavy) | (prior session) | github.com/NVIDIA/cutlass (`CUTLASS_VERSION`) | `make fetch-cutlass` |
+| **cuda-samples** | NVIDIA CUDA sample suite | (prior session) | github.com/NVIDIA/cuda-samples (`CUDASAMPLES_VERSION`) | `make fetch-cuda-samples` |
+
+Per-project survey caveats (faithful-survey rules, same spirit as the
+llvm-subdir note below):
+
+- **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not
+  the repo root — survey `$(ZSTD_DIR)/build/cmake`. (This subdir-under-an-
+  umbrella layout is exactly what #303 fixed.)
+- **mbedtls:** 3.6.x pulls its test/build helpers from a `framework` git
+  **submodule**; `make fetch-mbedtls` recurses submodules, otherwise
+  configure fails with `framework/CMakeLists.txt not found`.
+- **cutlass / cuda-samples:** both need a **CUDA toolkit (`nvcc`) on
+  `PATH`** to configure. Without CUDA the survey stops at cmake configure
+  (itself a datapoint, but not the idiom/refusal surface). They're fetched
+  so the corpus is whole; survey them on a CUDA-equipped host.
+- **Boost.Core:** a modular Boost library — its `CMakeLists.txt`
+  configures for the standalone modular build; sibling-library
+  `find_package` deps surface as honest `find-package-dep-unresolved`
+  findings (resolved in a real element graph), like protobuf's ZLIB.
+
 ### Provenance / network notes
 
 - The CI / sandbox network policy allowlists most hosts but **not

@@ -6,7 +6,9 @@
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-survey-regression \
+        update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -48,6 +50,27 @@ LLVM_DIR          ?= /tmp/llvm-project
 # network allowlist; the github.com/Kitware/VTK mirror is allowlisted.
 VTK_VERSION       ?= v9.4.2
 VTK_DIR           ?= /tmp/vtk
+# Regression corpus (each surfaced a converter bug now fixed, or is a
+# clean control). See docs/survey-corpus.md for the per-project bug +
+# fixing-PR table and the faithful-survey caveats (zstd's build/cmake
+# subdir, mbedtls's framework submodule, cutlass/cuda needing a CUDA
+# toolkit to configure).
+BOOSTCORE_VERSION ?= boost-1.90.0
+BOOSTCORE_DIR     ?= /tmp/boost-core
+ZSTD_VERSION      ?= v1.5.7
+ZSTD_DIR          ?= /tmp/zstd
+LIBEVENT_VERSION  ?= release-2.1.12-stable
+LIBEVENT_DIR      ?= /tmp/libevent
+LIBXML2_VERSION   ?= v2.15.3
+LIBXML2_DIR       ?= /tmp/libxml2
+BROTLI_VERSION    ?= v1.2.0
+BROTLI_DIR        ?= /tmp/brotli
+MBEDTLS_VERSION   ?= v3.6.2
+MBEDTLS_DIR       ?= /tmp/mbedtls
+CUTLASS_VERSION   ?= v4.5.1
+CUTLASS_DIR       ?= /tmp/cutlass
+CUDASAMPLES_VERSION ?= v13.3
+CUDASAMPLES_DIR   ?= /tmp/cuda-samples
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1044,9 +1067,90 @@ fetch-vtk:
 		echo "vtk already at $(VTK_DIR); rm -rf to refetch"; \
 	fi
 
+# --- Regression corpus (docs/survey-corpus.md) ----------------------------
+# Each member surfaced a real converter bug (now fixed) or is a clean
+# control. Kept fetchable so a survey re-run guards against regressions.
+
+# Boost.Core: alias-target lift ordering (#300). Modular boost lib; its
+# CMakeLists configures standalone for the modular build.
+fetch-boost-core:
+	@if [ ! -d "$(BOOSTCORE_DIR)" ]; then \
+		git clone --depth 1 --branch $(BOOSTCORE_VERSION) https://github.com/boostorg/core.git "$(BOOSTCORE_DIR)"; \
+	else \
+		echo "boost-core already at $(BOOSTCORE_DIR); rm -rf to refetch"; \
+	fi
+
+# zstd: workspace-root umbrella detection (#303). NOTE: the CMake root is
+# the `build/cmake` SUBDIR, not the repo root — survey
+# $(ZSTD_DIR)/build/cmake.
+fetch-zstd:
+	@if [ ! -d "$(ZSTD_DIR)" ]; then \
+		git clone --depth 1 --branch $(ZSTD_VERSION) https://github.com/facebook/zstd.git "$(ZSTD_DIR)"; \
+	else \
+		echo "zstd already at $(ZSTD_DIR); rm -rf to refetch"; \
+	fi
+
+# libevent: pre-committed generated sources wrongly refused (#304).
+fetch-libevent:
+	@if [ ! -d "$(LIBEVENT_DIR)" ]; then \
+		git clone --depth 1 --branch $(LIBEVENT_VERSION) https://github.com/libevent/libevent.git "$(LIBEVENT_DIR)"; \
+	else \
+		echo "libevent already at $(LIBEVENT_DIR); rm -rf to refetch"; \
+	fi
+
+# libxml2: clean control (no converter bugs found). Fetched from the
+# github.com/GNOME/libxml2 mirror (canonical gitlab.gnome.org is fine too,
+# but the mirror matches the rest of the corpus on github).
+fetch-libxml2:
+	@if [ ! -d "$(LIBXML2_DIR)" ]; then \
+		git clone --depth 1 --branch $(LIBXML2_VERSION) https://github.com/GNOME/libxml2.git "$(LIBXML2_DIR)"; \
+	else \
+		echo "libxml2 already at $(LIBXML2_DIR); rm -rf to refetch"; \
+	fi
+
+# brotli: clean control (no converter bugs found).
+fetch-brotli:
+	@if [ ! -d "$(BROTLI_DIR)" ]; then \
+		git clone --depth 1 --branch $(BROTLI_VERSION) https://github.com/google/brotli.git "$(BROTLI_DIR)"; \
+	else \
+		echo "brotli already at $(BROTLI_DIR); rm -rf to refetch"; \
+	fi
+
+# mbedtls: wrapped `ctest -D Experimental` dashboard target wrongly lifted
+# (fixed — isCMakeInternalCmd dashboard filter). NOTE: 3.6.x needs its
+# `framework` git submodule, so this fetch recurses submodules.
+fetch-mbedtls:
+	@if [ ! -d "$(MBEDTLS_DIR)" ]; then \
+		git clone --depth 1 --branch $(MBEDTLS_VERSION) --recurse-submodules --shallow-submodules https://github.com/Mbed-TLS/mbedtls.git "$(MBEDTLS_DIR)"; \
+	else \
+		echo "mbedtls already at $(MBEDTLS_DIR); rm -rf to refetch"; \
+	fi
+
+# cutlass + cuda-samples: NVIDIA CMake projects. NOTE: both need a CUDA
+# toolkit (nvcc) on PATH to configure — without it the survey stops at
+# cmake configure. Kept fetchable for environments that have CUDA.
+fetch-cutlass:
+	@if [ ! -d "$(CUTLASS_DIR)" ]; then \
+		git clone --depth 1 --branch $(CUTLASS_VERSION) https://github.com/NVIDIA/cutlass.git "$(CUTLASS_DIR)"; \
+	else \
+		echo "cutlass already at $(CUTLASS_DIR); rm -rf to refetch"; \
+	fi
+
+fetch-cuda-samples:
+	@if [ ! -d "$(CUDASAMPLES_DIR)" ]; then \
+		git clone --depth 1 --branch $(CUDASAMPLES_VERSION) https://github.com/NVIDIA/cuda-samples.git "$(CUDASAMPLES_DIR)"; \
+	else \
+		echo "cuda-samples already at $(CUDASAMPLES_DIR); rm -rf to refetch"; \
+	fi
+
 # Convenience aggregate: fetch the default survey corpus (the cheap four;
 # llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
+
+# Convenience aggregate: fetch the regression corpus (the projects that
+# surfaced past bugs + the clean controls). cutlass / cuda-samples need a
+# CUDA toolkit to actually survey; they're fetched so the corpus is whole.
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
 update-golden:
