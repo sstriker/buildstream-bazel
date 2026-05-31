@@ -8,11 +8,15 @@ before that drift propagates down to the pinned-cmake path the
 production worker image (`deploy/buildbarn/runner/Dockerfile`)
 and the `e2e` job both ship.
 
-The matrix is **non-blocking** today: `continue-on-error: true`
-on the job header applies to each matrix instantiation so a red
-entry doesn't fail the workflow, and `strategy.fail-fast: false`
-keeps one entry's failure from cancelling the others. Promotion
-to blocking is queued — see "Promotion criteria" below.
+The matrix is **blocking**: a red entry fails the workflow.
+`strategy.fail-fast: false` stays so one entry's failure doesn't
+cancel the others' diagnostics. It was promoted from the
+non-blocking shakeout once the "Promotion criteria" below were met
+(all four entries green across three consecutive merges — #342 /
+#343 / #344 — with the known-notes resolved in-tree). If an
+upstream-cmake change makes an entry flaky for infra reasons,
+reverting to `continue-on-error: true` on the job header is the
+one-line escape valve.
 
 ## The matrix
 
@@ -21,7 +25,7 @@ to blocking is queued — see "Promotion criteria" below.
 | `3.22.6` | Ubuntu 22.04 LTS default; the operator floor we expect downstream BuildStream projects to still ship against. |
 | `3.28.6` | Ubuntu 24.04 LTS default; LLVM 23's floor; the modern stable reference. |
 | `4.0.7`  | The major-bump that dropped pre-3.5 `cmake_minimum_required` compat; most likely to surface drift in fixtures + File API consumers + the build.ninja parser. |
-| `4.3.3`  | Latest stable cmake release as of May 2026; catches new-release bugs before they hit distro defaults. **Now also the pinned production version** (Makefile `CMAKE_VERSION`), so its matrix entry overlaps the blocking gate — kept here for the `continue-on-error` early-warning framing and symmetry with the others. Also tracked by the monthly `upstream-drift` workflow against whatever is latest at run time. |
+| `4.3.3`  | Latest stable cmake release as of May 2026; catches new-release bugs before they hit distro defaults. **Also the pinned production version** (Makefile `CMAKE_VERSION`), so this entry overlaps the pinned `e2e` job — kept for symmetry with the others. Also tracked by the monthly `upstream-drift` workflow against whatever is latest at run time. |
 
 The pinned `e2e` job (Makefile `CMAKE_VERSION`, currently 4.3.3)
 remains the blocking gate — the matrix is the early-warning
@@ -59,6 +63,12 @@ move on (visibility is the win). Trivial one-line fixes can land
 opportunistically.
 
 ## Promotion criteria
+
+> **Met (May 2026): the matrix is now blocking.** All four entries
+> ran green across #342 / #343 / #344 (criterion 1) with the
+> known-notes resolved in-tree (criterion 2), and the job header's
+> `continue-on-error` was removed (criterion 3). The criteria are
+> retained below as the record of what the promotion required.
 
 The matrix promotes from non-blocking to blocking once:
 

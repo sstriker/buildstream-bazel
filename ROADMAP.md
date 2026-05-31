@@ -374,35 +374,6 @@ transition cleanly.
   / INTERFACE_* aggregation items currently under `Later`
   retire as Phase 3 lands.
 
-- **Promote the cmake-version matrix from soft to blocking.**
-  The four-version `e2e-cmake-matrix` shakeout (3.22 / 3.28 /
-  4.0 / 4.3) shipped — see Done. The pinned production gate
-  now runs cmake `4.3.3` too (see "Production cmake pin moved
-  to 4.x" in Done), so the matrix's `4.3.3` entry already has
-  a blocking sibling — strengthening the promotion case for
-  that row. Promotion criteria + tracker live in
-  `docs/cmake-version-matrix.md`: three consecutive green
-  merges across all four entries, any "Known per-version
-  notes" rows resolved or explicitly deferred, then flip
-  `continue-on-error: true` → `false` on the
-  `e2e-cmake-matrix` job header (one-line YAML change; the
-  `strategy.fail-fast: false` flag stays — it controls
-  intra-matrix isolation, not block / non-block). Whatever
-  real converter bugs the matrix surfaces in the meantime
-  get filed here (or as follow-up bullets) as they show up.
-- **`EventFindPackageFound` polymorphic-decode for cmake
-  4.3+** (surfaced by the matrix's 4.3.3 entry on PR #243's
-  first CI run — see `docs/cmake-version-matrix.md`'s
-  "Known per-version notes" row). **Shipped in PR #244.**
-  Cmake 4.3 reshaped the configureLog: a sibling `find-v1`
-  event records every `find_program` / `find_file` /
-  `find_library` call, and the `found` field is polymorphic
-  across both event kinds — string path / `false` bool /
-  `null` / legacy struct. Custom `UnmarshalYAML` on
-  `EventFindPackageFound` accepts all four shapes; a
-  captured cmake-4.3.3 configureLog fixture pins the
-  parser. With this landed, the matrix's 4.3.3 entry goes
-  green and one of the three promotion criteria clears.
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for
   environment reasons (cmake-config bundle staging on the CI
@@ -508,26 +479,13 @@ transition cleanly.
   multi-platform meson at scale (today the gate uses the
   meson-greet smoke fixture). Promote once a real consumer
   surfaces the need.
-- **Promote the narrowing-audit CI gate from soft to blocking.**
-  Soft launch shipped (see Done — `make e2e-audit-narrowing`
-  exits non-zero on drift; the CI step uses
-  `continue-on-error: true` to keep the build green). The
-  remaining work is policy plus fixture coverage: once a
-  representative set of meta-projects has stabilized
-  expected-drift allowlists (`srckey-expected-drift.txt` per
-  element), flipping `continue-on-error` to false on the CI
-  step promotes the gate to blocking. The flip is a real
-  one-line YAML change because the script's exit code
-  already differentiates clean vs drift — nothing else
-  needs to move. Until then, promotion is gated on
-  accumulated signal: operators need to see real drift hit
-  the gate without affecting their builds, decide which
-  entries deserve the allowlist vs which deserve a pattern
-  fix, and let the allowlist set converge. Trace-side
-  coverage (the build-tracer + trace.log oracle for round-2
-  trace-driven kinds) also needs a CI fixture:
-  `--trace-source-root` is wired but no e2e job exercises
-  it yet, so the gate today only covers the cmake oracle.
+- **Trace-side narrowing-audit coverage.** The narrowing-audit
+  gate is now blocking for the cmake oracle (see Done), but the
+  trace-side oracle (the build-tracer + trace.log path for round-2
+  trace-driven kinds) still needs a CI fixture: `--trace-source-root`
+  is wired but no e2e job exercises it yet, so the gate today only
+  covers the cmake oracle. Add a build-tracer-on-CI fixture so the
+  trace-driven sibling gate can run too.
 - **Repo-rule install for kind:cmake round-2 fallback.**
   Phase B's round-2 fallback (per
   `docs/design/rendezvous.md`)
@@ -652,6 +610,27 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **cmake-version matrix promoted to blocking.** The four-version
+  `e2e-cmake-matrix` shakeout (3.22.6 / 3.28.6 / 4.0.7 / 4.3.3) met its
+  promotion criteria (`docs/cmake-version-matrix.md`): all four entries
+  ran green across three consecutive merges (#342 / #343 / #344) — no
+  `continue-on-error` rescues — and the per-version known-notes were
+  resolved in-tree (4.3.3's `find-v1` polymorphic-decode bug fixed in
+  PR #244 + a captured configureLog fixture). Flipped
+  `continue-on-error: true` → removed on the job header; `strategy.fail-
+  fast: false` stays so a red surfaces all four entries' results. A red
+  matrix entry now blocks the PR (revertable one-liner if an
+  upstream-cmake change makes an entry infra-flaky).
+
+- **Narrowing-undercoverage audit promoted to blocking.** The
+  `e2e-audit-narrowing` gate's expected-drift allowlists stabilized (the
+  audit runs clean: 0 drift entries across the representative fixture
+  set). Removed the CI step's `continue-on-error: true`. The audit is
+  deterministic (cmake oracle vs the read-paths patterns; no network), so
+  a red is a real narrowing-undercoverage regression, not a flake. The
+  trace-side oracle stays uncovered until a build-tracer-on-CI fixture
+  lands (see Next).
 
 - **Remaining codemodel/trace consumption residue resolved.**
   The lift-quality items left after the coverage-gap work (see
