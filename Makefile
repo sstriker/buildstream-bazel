@@ -1,12 +1,12 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
-        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-nlohmann-json-consumer \
+        e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-nlohmann-json-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file e2e-meta-cmake-split-build e2e-meta-cmake-split-multiconfig e2e-meta-cmake-split-gazelle \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
         fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
@@ -25,6 +25,8 @@ SPDLOG_VERSION ?= v1.14.1
 SPDLOG_DIR     ?= /tmp/spdlog
 JSON_VERSION   ?= v3.11.3
 JSON_DIR       ?= /tmp/json
+CATCH2_VERSION ?= v3.5.3
+CATCH2_DIR     ?= /tmp/Catch2
 
 # Diagnostic-survey corpus (see docs/codemodel-consumption-audit.md).
 # Cloned out-of-band, then run through the converter in
@@ -828,6 +830,21 @@ e2e-fidelity-compare-nlohmann-json-consumer: check-cmake-toolchain converter fet
 		--consumer-bazel-dep :nlohmann_json \
 		--allowlist testdata/fidelity/nlohmann-json-consumer.allowlist.txt
 
+# Catch2 library-side fidelity. Needs --lift-configure-file (the lib
+# #includes the configure_file-generated catch2/catch_user_config.hpp);
+# run-fidelity.sh auto-stages //tools:cmake-configure-file when the
+# converted BUILD references it. The converter wires the genrule output's
+# generated-includes/ dir into the cc_library's includes so the angle-
+# bracket include resolves.
+e2e-fidelity-compare-catch2: check-cmake-toolchain converter fetch-catch2
+	scripts/run-fidelity.sh \
+		--project-name catch2 \
+		--source-root $(CATCH2_DIR) \
+		--target Catch2 \
+		--artifact-pattern libCatch2.a \
+		--convert-flags '--lift-configure-file=true' \
+		--allowlist testdata/fidelity/catch2.allowlist.txt
+
 # Real-Buildbarn validation. Brings up bb-storage via docker compose,
 # runs the cache-share keystone test against grpc://127.0.0.1:8980,
 # tears down. Replaces the in-process fake with actual Buildbarn code.
@@ -1017,6 +1034,14 @@ fetch-nlohmann-json:
 		git clone --depth 1 --branch $(JSON_VERSION) https://github.com/nlohmann/json.git "$(JSON_DIR)"; \
 	else \
 		echo "nlohmann/json already at $(JSON_DIR); rm -rf to refetch"; \
+	fi
+
+# Fetch Catch2 for the configure_file-lift fidelity gate. Idempotent.
+fetch-catch2:
+	@if [ ! -d "$(CATCH2_DIR)" ]; then \
+		git clone --depth 1 --branch $(CATCH2_VERSION) https://github.com/catchorg/Catch2.git "$(CATCH2_DIR)"; \
+	else \
+		echo "Catch2 already at $(CATCH2_DIR); rm -rf to refetch"; \
 	fi
 
 # --- Diagnostic-survey corpus (docs/codemodel-consumption-audit.md) ---

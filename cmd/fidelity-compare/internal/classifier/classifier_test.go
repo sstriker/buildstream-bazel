@@ -101,6 +101,47 @@ func TestClassifyExportedDeltas_TemplateInstantiationPairing(t *testing.T) {
 	}
 }
 
+func TestClassifyDeltas_StdlibInternalUnpaired(t *testing.T) {
+	// Catch2-shape: large template-heavy library where the two
+	// toolchains instantiate/inline DIFFERENT sets of std:: internals,
+	// so the std symbols are unpaired (no matching prefix on the other
+	// side). They must classify benign — the converter never controls
+	// which std:: templates the compiler emits. A project-own unpaired
+	// symbol (no std prefix) stays impactful.
+	cExported := map[string]bool{
+		"_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9push_backEc": true, // std::string::push_back
+		"_ZN5Catch9SomethingRealDropEv":                                     true, // project-own → impactful
+	}
+	bExported := map[string]bool{
+		"_ZNSt8__detail15_BracketMatcherINSt7__cxx1112regex_traitsIcEELb0ELb0EE13_M_make_rangeEcc": true, // std::__detail regex
+	}
+	rep := &Report{}
+	classifyExportedDeltas(rep, cExported, bExported, Allowlist{})
+
+	if len(rep.ImpactfulDeltas) != 1 || rep.ImpactfulDeltas[0].Detail != "_ZN5Catch9SomethingRealDropEv" {
+		t.Errorf("expected only the project-own symbol impactful; got %v", rep.ImpactfulDeltas)
+	}
+	var stdBenign int
+	for _, d := range rep.BenignDeltas {
+		if strings.Contains(d.Kind, "stdlib-template-instantiation") {
+			stdBenign++
+		}
+	}
+	if stdBenign != 2 {
+		t.Errorf("expected 2 stdlib-template-instantiation benign deltas; got %d (%v)", stdBenign, rep.BenignDeltas)
+	}
+
+	// Same for the undefined-set path (the Catch2 failure mode was
+	// undefined std::string method refs cmake had but bazel inlined).
+	repU := &Report{}
+	classifyUndefinedDeltas(repU,
+		map[string]bool{"_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE4findEcm": true},
+		map[string]bool{}, Allowlist{})
+	if len(repU.ImpactfulDeltas) != 0 {
+		t.Errorf("unpaired std:: undefined ref should be benign; got impactful %v", repU.ImpactfulDeltas)
+	}
+}
+
 func TestClassifyExportedDeltas_AllowlistSuppression(t *testing.T) {
 	c := map[string]bool{"shared": true, "cmake_only_known_benign": true}
 	b := map[string]bool{"shared": true}

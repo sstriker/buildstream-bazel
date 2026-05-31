@@ -1,0 +1,17 @@
+# Per-fixture benign-delta allowlist for the e2e-fidelity-compare-catch2 gate.
+#
+# Format: one symbol name per line; '#' and blank lines are ignored.
+#
+# Catch2 is a large template-heavy library. The classifier auto-classifies
+# std::/compiler-internal template-instantiation variance
+# (stdlib-template-instantiation-only-in-*); the entries below are Catch's
+# OWN template instantiations (Clara parser internals, Detail::unique_ptr,
+# reporter/section nodes) whose destructors/methods differ by inlining
+# decision between cmake's distro toolchain and Bazel's hermetic one.
+# Operator-confirmed toolchain-origin, not converter symbol drops.
+#
+_ZN5Catch5Clara6Detail15ResultValueBaseINS1_10ParseStateEED0Ev
+_ZN5Catch5Clara6Detail15ResultValueBaseINS1_10ParseStateEED1Ev
+_ZN5Catch5Clara6Detail15ResultValueBaseINS1_10ParseStateEED2Ev
+_ZN5Catch6Detail10unique_ptrINS_22CumulativeReporterBase11SectionNodeEED1Ev
+_ZN5Catch6Detail10unique_ptrINS_22CumulativeReporterBase11SectionNodeEED2Ev

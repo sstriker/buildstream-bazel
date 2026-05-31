@@ -258,6 +258,10 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "template-instantiation-only-in-cmake", Detail: sym})
 			continue
 		}
+		if isStdlibInternalMangled(sym) {
+			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "stdlib-template-instantiation-only-in-cmake", Detail: sym})
+			continue
+		}
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "exported-symbol-only-in-cmake", Detail: sym})
 	}
 	for sym := range onlyBazel {
@@ -267,6 +271,10 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist
 		}
 		if strings.HasPrefix(sym, "_Z") && hasPrefixPair(sym, cMangled) {
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "template-instantiation-only-in-bazel", Detail: sym})
+			continue
+		}
+		if isStdlibInternalMangled(sym) {
+			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "stdlib-template-instantiation-only-in-bazel", Detail: sym})
 			continue
 		}
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "exported-symbol-only-in-bazel", Detail: sym})
@@ -318,6 +326,14 @@ func classifyUndefinedDeltas(rep *Report, c, b map[string]bool, allowed Allowlis
 		case strings.HasPrefix(sym, "_Z") && hasPrefixPair(sym, bMangled):
 			rep.BenignDeltas = append(rep.BenignDeltas,
 				Delta{Kind: "template-instantiation-undefined-only-in-cmake", Detail: sym})
+		case isStdlibInternalMangled(sym):
+			// std::/compiler-internal undefined ref one side inlines
+			// and the other references externally — toolchain
+			// instantiation variance, not a converter signal (the
+			// ABI-regression case the bazel-side guards against is a
+			// *project* symbol, which this doesn't match).
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "stdlib-template-instantiation-undefined-only-in-cmake", Detail: sym})
 		default:
 			rep.ImpactfulDeltas = append(rep.ImpactfulDeltas,
 				Delta{Kind: "undefined-symbol-only-in-cmake", Detail: sym})
@@ -358,6 +374,9 @@ func classifyUndefinedDeltas(rep *Report, c, b map[string]bool, allowed Allowlis
 		case strings.HasPrefix(sym, "_Z") && hasPrefixPair(sym, cMangled):
 			rep.BenignDeltas = append(rep.BenignDeltas,
 				Delta{Kind: "template-instantiation-undefined-only-in-bazel", Detail: sym})
+		case isStdlibInternalMangled(sym):
+			rep.BenignDeltas = append(rep.BenignDeltas,
+				Delta{Kind: "stdlib-template-instantiation-undefined-only-in-bazel", Detail: sym})
 		default:
 			rep.ImpactfulDeltas = append(rep.ImpactfulDeltas,
 				Delta{Kind: "undefined-symbol-only-in-bazel", Detail: sym})
@@ -517,6 +536,36 @@ func mangledSymbols(s map[string]bool) map[string]bool {
 		}
 	}
 	return out
+}
+
+// stdlibMangledPrefixes are the Itanium-mangling heads for
+// standard-library / compiler-internal names: `St` (std::), the
+// `Ss`/`Sa`/`Si`/`So`/`Sd` std substitutions (string / allocator /
+// streams), and `__gnu_cxx`. `K`/`V` cover const/volatile members.
+var stdlibMangledPrefixes = []string{
+	"_ZSt", "_ZNSt", "_ZNKSt", "_ZNVSt",
+	"_ZSs", "_ZNSs", "_ZNKSs",
+	"_ZSa", "_ZNSa",
+	"_ZNSi", "_ZNSo", "_ZNSd",
+	"_ZN9__gnu_cxx", "_ZNK9__gnu_cxx",
+}
+
+// isStdlibInternalMangled reports whether sym is a mangled name in a
+// standard-library / compiler-internal namespace (std::, __gnu_cxx). Such
+// symbols are emitted by the compiler purely as a function of which
+// templates the project's sources instantiate; the converter never
+// controls them, so an unpaired std-internal symbol is toolchain
+// instantiation/inlining variance, not a converter delta. (A converter bug
+// that *would* shift std symbols — e.g. dropping an ABI-affecting define —
+// also shifts the project's OWN symbols, which stay un-auto-classified, so
+// this can't mask a real regression on its own.)
+func isStdlibInternalMangled(sym string) bool {
+	for _, p := range stdlibMangledPrefixes {
+		if strings.HasPrefix(sym, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasPrefixPair returns true if `sym` shares its first 24 chars

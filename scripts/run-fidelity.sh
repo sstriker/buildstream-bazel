@@ -45,6 +45,8 @@ cmake_artifact_pattern=""
 bazel_artifact_pattern=""
 allowlist=""
 cmake_flags=""
+convert_flags=""
+bazel_external=""
 bazel_target_label=""
 consumer_file=""
 consumer_bazel_dep=""
@@ -82,6 +84,8 @@ while [ $# -gt 0 ]; do
         --bazel-artifact-pattern) bazel_artifact_pattern="$2"; shift 2 ;;
         --allowlist) allowlist="$2"; shift 2 ;;
         --cmake-flags) cmake_flags="$2"; shift 2 ;;
+        --convert-flags) convert_flags="$2"; shift 2 ;;
+        --bazel-external) bazel_external="$2"; shift 2 ;;
         --bazel-target-label) bazel_target_label="$2"; shift 2 ;;
         --consumer-file) consumer_file="$2"; shift 2 ;;
         --consumer-bazel-dep) consumer_bazel_dep="$2"; shift 2 ;;
@@ -211,10 +215,15 @@ if [ -n "$consumer_file" ]; then
 fi
 
 # --- Step 2: convert.
+# --convert-flags passes project-specific converter opt-ins through
+# verbatim (e.g. Catch2 needs `--lift-configure-file=true` to recover
+# catch_user_config.hpp from its configure_file template).
 echo "fidelity[$project_name]: convert-element-cmake" >&2
+# shellcheck disable=SC2086 # convert_flags is intentionally word-split.
 "$bin_dir/convert-element-cmake" \
     --cmake-build-dir "$cmake_build" \
     --out-build "$bazel_ws/BUILD.bazel" \
+    $convert_flags \
     > "$work_dir/convert.log" 2>&1 || {
         echo "fidelity[$project_name]: convert FAILED — see $work_dir/convert.log" >&2
         exit 1
@@ -224,10 +233,26 @@ echo "fidelity[$project_name]: convert-element-cmake" >&2
 # Copy the project sources into the bazel workspace.
 cp -r "$source_root/." "$bazel_ws/"
 # Overwrite any pre-existing project BUILD.bazel with the converted one.
+# shellcheck disable=SC2086 # convert_flags is intentionally word-split.
 "$bin_dir/convert-element-cmake" \
     --cmake-build-dir "$cmake_build" \
     --out-build "$bazel_ws/BUILD.bazel" \
+    $convert_flags \
     >> "$work_dir/convert.log" 2>&1
+# Stage the cmake-configure-file build-time tool when the converted BUILD
+# references it (the --lift-configure-file genrules invoke
+# //tools:cmake-configure-file at Bazel build time to materialize the
+# configured header from the .h.in template). Auto-detected so no caller
+# has to remember to pair the convert flag with the tool — mirrors how
+# write-a stages it into project B's tools/.
+if grep -q "//tools:cmake-configure-file" "$bazel_ws/BUILD.bazel"; then
+    echo "fidelity[$project_name]: staging //tools:cmake-configure-file" >&2
+    CGO_ENABLED=0 go build -C "$repo_root" -o "$bin_dir/cmake-configure-file" ./cmd/cmake-configure-file
+    mkdir -p "$bazel_ws/tools"
+    cp "$bin_dir/cmake-configure-file" "$bazel_ws/tools/cmake-configure-file"
+    chmod 0755 "$bazel_ws/tools/cmake-configure-file"
+    echo 'exports_files(["cmake-configure-file"])' > "$bazel_ws/tools/BUILD.bazel"
+fi
 # bzlmod MODULE.bazel providing the converter's load() deps as bazel_deps
 # from BCR — rules_cc backs the cc_* rules, rules_pkg backs the install
 # pkg_files. We keep the converter's *real* output (no load-stripping):
@@ -235,11 +260,13 @@ cp -r "$source_root/." "$bazel_ws/"
 # resolve, and testing the actual emitted BUILD is more faithful than a
 # rewritten one. Versions track write-a's project B (cmd/write-a/main.go),
 # the proven-in-CI reference. Needs a reachable Bazel Central Registry,
-# same as the meta-* gates.
+# same as the meta-* gates. --bazel-external appends extra bzlmod lines
+# (e.g. a `bazel_dep(name = "zlib", …)` for libpng's find_package(ZLIB)).
 cat > "$bazel_ws/MODULE.bazel" <<EOF
 module(name = "${project_name}_fidelity", version = "0.0.0")
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
+${bazel_external}
 EOF
 
 if ! command -v bazel >/dev/null 2>&1; then
