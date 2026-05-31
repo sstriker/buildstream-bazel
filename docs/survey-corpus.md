@@ -40,9 +40,12 @@ they have very different tooling support:
    - **`bazel-idiom.json`** (`bazelidiom.Audit`, runs on every convert):
      the *semantic* idiom check — `empty-srcs`, `empty-cc-library`,
      `empty-cc-import`, `test-with-no-entry`, `raw-toolchain-feature-flag`,
-     `non-cc-language-source` (Fortran `.f` srcs in a cc_* rule — Bazel
-     can't compile them; OpenBLAS's LAPACK targets + eigen's bundled
-     reference BLAS/LAPACK), etc. Per-survey and fully automated; drive
+     `non-cc-language-source` (Fortran `.f` srcs that slipped into a cc_*
+     rule — Bazel can't compile them; the converter normally partitions
+     these out into a `<target>_fortran_srcs` filegroup and emits the
+     operator-action `fortran-target-needs-ruleset` finding instead, so a
+     raw `non-cc-language-source` now means the partition missed one),
+     etc. Per-survey and fully automated; drive
      any non-zero count to zero (this surfaced the eigen empty-srcs and
      VTK empty-cc-library work).
    - **`buildifier -mode=diff`**: the *syntactic* canonical-form check.

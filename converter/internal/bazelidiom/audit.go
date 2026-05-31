@@ -168,7 +168,7 @@ func auditNonCCLanguageSources(rule, target string, call *build.CallExpr) []Find
 		Target: target,
 		Code:   "non-cc-language-source",
 		Message: rule + " has Fortran source(s) in srcs (e.g. " + sample + more +
-			") — Bazel's cc rules compile by file extension and can't build these; the target is unbuildable as emitted. cmake drives a per-source Fortran compiler that Bazel cc rules have no equivalent for; route these through a Fortran ruleset (rules_fortran, CcInfo-interop) or a rules_foreign_cc build, or exclude the Fortran-only targets",
+			") — Bazel's cc rules compile by file extension and can't build these. The converter normally partitions Fortran sources out into a `<target>_fortran_srcs` filegroup (tag cmake-codegen-fortran-target) so the cc_* target stays buildable; a finding here means some Fortran source slipped through (or the partition was disabled). Point a Fortran ruleset (rules_fortran / CcInfo-interop / rules_foreign_cc) at the filegroup, or fix the partition",
 	}}
 }
 
@@ -208,6 +208,9 @@ func codegenTagToFinding(tag string) (code, msg string) {
 	case tag == "cmake-codegen-pch":
 		return "pch-toolchain-feature-needed",
 			"target declares target_precompile_headers — Bazel cc_library has no native PCH attribute; wire via cc_toolchain pch feature for the actual PCH effect"
+	case tag == "cmake-codegen-fortran-target":
+		return "fortran-target-needs-ruleset",
+			"target had Fortran sources the converter partitioned into a `<name>_fortran_srcs` filegroup (Bazel cc rules can't compile Fortran). The cc_* target builds without them; to actually compile the Fortran, point a Fortran ruleset (rules_fortran / CcInfo-interop / rules_foreign_cc) at the filegroup. No canonical BCR Fortran ruleset exists yet, so this stays operator-wired"
 	case tag == "cmake-codegen-qt-automoc":
 		return "qt-automoc-host-tool-needed",
 			"target has AUTOMOC=TRUE — cmake's generator runs moc as part of `cmake --build`; Bazel doesn't, so moc-generated sources are missing. Wrap moc as a host-tool genrule in a kind:bazel override or use a rules_qt module"
