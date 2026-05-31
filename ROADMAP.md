@@ -374,34 +374,6 @@ transition cleanly.
   / INTERFACE_* aggregation items currently under `Later`
   retire as Phase 3 lands.
 
-- **probe-genex hook breaks abseil's configure under cmake 4.**
-  Surfaced by the post-cmake-4-bump corpus resurvey (May 2026).
-  With the genex-probe hook on (the default), abseil
-  (`ABSEIL_VERSION` 20260107.1) fatal-errors at configure under
-  cmake 4.3.3: `target_link_libraries` on the
-  `heterogeneous_lookup_testing` test helper references
-  `absl::test_instance_tracker`, which isn't defined —
-  `AbseilHelpers.cmake:337`, reached from
-  `absl/container/CMakeLists.txt:1109`. Plain cmake 4.3.3 (with
-  or without `CMAKE_POLICY_VERSION_MINIMUM=3.5`) configures abseil
-  cleanly, and `convert-element-cmake --probe-genex=false`
-  converts it cleanly (0 rejections / 0 idioms) — so the trigger
-  is specifically the `probe-genex.cmake`
-  `CMAKE_PROJECT_TOP_LEVEL_INCLUDES` hook interacting with
-  abseil's test-helper gating under cmake 4. Bisecting the hook's
-  top-level statements (the `cmake_policy(SET CMP0112 NEW)`, the
-  `DEFER` registration, the function defs) in isolation does *not*
-  reproduce — only the full hook does — so it's a subtle
-  combination, likely cmake 4's stricter link-interface
-  validation tripping on a test target the hook's presence causes
-  abseil to define. Other corpus members survey fine with the
-  probe on (eigen, libevent, curl, OpenBLAS), so the hook isn't
-  globally broken. Fix: pin the exact interaction and either make
-  the hook inert w.r.t. abseil's gating or skip the probe emit for
-  targets whose link interface can't resolve. Workaround until
-  then: `--probe-genex=false` for abseil. See
-  `docs/survey-corpus.md` (abseil caveat).
-
 - **Promote the cmake-version matrix from soft to blocking.**
   The four-version `e2e-cmake-matrix` shakeout (3.22 / 3.28 /
   4.0 / 4.3) shipped — see Done. The pinned production gate
@@ -1159,6 +1131,30 @@ transition cleanly.
   hint still surfaces (that fixture declares 3.20, so the
   floor retry never engages). `docs/cmake-version-matrix.md`
   documents the reactive retry alongside the matrix-env knob.
+
+- **probe-genex tolerates dangling `::` link-interface deps.**
+  The cmake-4-pin corpus resurvey surfaced abseil
+  (`ABSEIL_VERSION` 20260107.1) fatal-erroring at configure with
+  the genex-probe hook on (the default): its non-TESTONLY
+  `heterogeneous_lookup_testing` INTERFACE library DEPS the
+  TESTONLY `absl::test_instance_tracker`, which abseil skips
+  creating when testing is off — leaving a dangling `::`
+  reference in the link interface. cmake tolerates that until
+  something forces evaluation; the probe's
+  `file(GENERATE $<TARGET_PROPERTY:t,INTERFACE_LINK_LIBRARIES>)`
+  forced it and aborted the whole generate step. (Not the
+  policy-floor rescue — it doesn't fire for abseil, top-level
+  floor 3.16; and plain cmake 4.3.3 configures abseil fine.) Fix:
+  `probe-genex.cmake` now skips probing any target whose
+  `LINK_LIBRARIES` / `INTERFACE_LINK_LIBRARIES` names a `::`
+  target that doesn't exist — `cmakerun.ReadGenexProbe` tolerates
+  a missing per-target dir and the lifter falls back to legacy
+  genex handling for it, so the skip is lossless for the residue.
+  Selective: normal targets are still fully probed (abseil: 235
+  targets probed, only the dangling consumer skipped). Pinned by
+  `TestProbeGenex_DanglingLinkInterface_LiveCMake` +
+  `testdata/sample-projects/probe-genex-dangling-link`. The
+  resurvey now has abseil green with the probe on (0/0/0).
 
 - **probe-genex composes with Ninja Multi-Config.**
   `probe-genex.cmake` now emits per-config OUTPUT paths

@@ -215,16 +215,17 @@ regressing the fix — that's the whole point of keeping them around.
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):
 
-- **abseil (cmake 4 + probe-genex):** under cmake 4.x, abseil
-  (`ABSEIL_VERSION` 20260107.1) fatal-errors at configure when the
-  genex-probe hook is on (the default) — `target_link_libraries` on the
-  `heterogeneous_lookup_testing` test helper can't resolve
-  `absl::test_instance_tracker`. Plain cmake 4.3.3 configures it fine; the
-  trigger is the `probe-genex.cmake` top-level-include hook interacting
-  with abseil's test-helper gating. Survey abseil with
-  `--probe-genex=false` until the interaction is fixed (tracked as a
-  `Now` bullet in `ROADMAP.md`). Other corpus members survey fine with the
-  probe on, so this is abseil-specific.
+- **abseil (cmake 4 + probe-genex) — fixed:** abseil
+  (`ABSEIL_VERSION` 20260107.1) used to fatal-error at configure under
+  cmake 4.x with the genex-probe hook on, because its non-TESTONLY
+  `heterogeneous_lookup_testing` INTERFACE library DEPS the TESTONLY
+  `absl::test_instance_tracker` (which abseil skips creating when testing
+  is off), and the probe's `INTERFACE_LINK_LIBRARIES` `file(GENERATE)`
+  forced evaluation of that dangling `::` reference. `probe-genex.cmake`
+  now skips probing any target with an unresolvable `::` link-interface
+  dep (see the ROADMAP Done entry +
+  `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil surveys
+  clean (0/0/0) with the probe on — no `--probe-genex=false` needed.
 - **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not
   the repo root — survey `$(ZSTD_DIR)/build/cmake`. (This subdir-under-an-
   umbrella layout is exactly what #303 fixed.)
