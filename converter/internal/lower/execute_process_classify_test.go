@@ -94,6 +94,62 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "ln",
 		},
 		{
+			// cmake -E copy_directory: recursive contents-copy,
+			// recognized as a supported cmake -E op.
+			name: "cmake -E copy_directory",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"cmake", "-E", "copy_directory", "src", "dst"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "copy_directory",
+		},
+		{
+			// cmake -E rename: lifted as a copy.
+			name: "cmake -E rename",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"cmake", "-E", "rename", "a", "b"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "rename",
+		},
+		{
+			// Raw `mv`: the POSIX analog of cmake -E rename.
+			name: "raw mv → cmake-e mv",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"mv", "/src/a.txt", "/build/b.txt"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "mv",
+		},
+		{
+			// cmake -E make_directory: benign no-op (recognized, not
+			// refused; the lifter skips it).
+			name: "cmake -E make_directory → no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"cmake", "-E", "make_directory", "/build/d"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "make_directory",
+		},
+		{
+			// Raw `mkdir`: benign no-op analog.
+			name: "raw mkdir → no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"mkdir", "-p", "/build/d"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "mkdir",
+		},
+		{
+			// Raw `rm`: benign no-op analog.
+			name: "raw rm → no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"rm", "-rf", "/build/stale"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "rm",
+		},
+		{
 			// A genuinely opaque copy-shaped driver (rsync) is NOT
 			// in copyDrivers, so it still refuses — the cp lift is
 			// scoped to drivers whose semantics the lifter can

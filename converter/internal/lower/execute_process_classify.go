@@ -98,11 +98,37 @@ type ClassifyResult struct {
 // allow-list only has to cover what real-world projects put in
 // their CMakeLists.txt.
 var supportedCMakeEOps = map[string]string{
-	"copy":              "copy a single file",
-	"copy_if_different": "copy a single file (no-op if dst is byte-identical)",
-	"create_symlink":    "create a symlink (lifted as a copy under Bazel's hermetic action model — same path semantics, no symlink/copy distinction at action time)",
-	"touch":             "create an empty file",
-	"configure_file":    "@VAR@/${VAR}/#cmakedefine substitution from input template",
+	"copy":                        "copy a single file",
+	"copy_if_different":           "copy a single file (no-op if dst is byte-identical)",
+	"copy_directory":              "copy a directory's contents recursively",
+	"copy_directory_if_different": "copy a directory's contents recursively (skip byte-identical files)",
+	"create_symlink":              "create a symlink (lifted as a copy under Bazel's hermetic action model — same path semantics, no symlink/copy distinction at action time)",
+	"rename":                      "rename a file/directory (lifted as a copy; the source-side removal has no hermetic analog)",
+	"touch":                       "create an empty file",
+	"configure_file":              "@VAR@/${VAR}/#cmakedefine substitution from input template",
+	"make_directory":              "create a directory (benign no-op — no Bazel output to anchor)",
+	"remove":                      "delete files (benign no-op — fresh sandbox per action)",
+	"remove_directory":            "delete a directory (benign no-op — fresh sandbox per action)",
+}
+
+// noopExecuteProcessOps names the CMakeEOp values that recover to a
+// benign no-op: a configure-time filesystem side-effect that produces
+// no consumable Bazel output to anchor a genrule on. `make_directory`
+// / `mkdir` create a directory, but a bare directory isn't a genrule
+// `out` — the files later written into it are recovered by their own
+// calls, each of which already `mkdir -p "$(dirname "$@")"`. `remove`
+// / `remove_directory` / `rm` / `rmdir` delete files, which has no
+// build-time analog (every Bazel action runs in a fresh sandbox). The
+// lifter skips these (no genrule, no refusal) rather than dropping the
+// whole element into the round-2 fallback over a side-effect that
+// can't lose a real compile input.
+var noopExecuteProcessOps = map[string]bool{
+	"make_directory":   true,
+	"remove":           true,
+	"remove_directory": true,
+	"mkdir":            true,
+	"rm":               true,
+	"rmdir":            true,
 }
 
 // supportedCMakeEOpsList renders the allow-list as a stable,
@@ -151,6 +177,27 @@ var touchDrivers = map[string]bool{
 // lifter (liftLn) reuses that same create_symlink copy path.
 var symlinkDrivers = map[string]bool{
 	"ln": true,
+}
+
+// renameDrivers names argv[0] basenames the lifter reproduces as a
+// copy genrule. Raw POSIX `mv` is the analog of `cmake -E rename`:
+// the destination ends up holding the source's bytes, and the
+// source-side removal is a configure-time side-effect with no hermetic
+// analog (so we copy rather than move). The lifter (liftRenameLike)
+// is shared with `cmake -E rename`.
+var renameDrivers = map[string]bool{
+	"mv": true,
+}
+
+// noopDrivers names argv[0] basenames whose raw form is a filesystem
+// side-effect with no consumable Bazel output — the raw analogs of the
+// no-op `cmake -E` ops (see noopExecuteProcessOps). Classified as
+// cmake-e so the lifter can skip them benignly instead of refusing and
+// dropping the element into the round-2 fallback.
+var noopDrivers = map[string]bool{
+	"mkdir": true,
+	"rm":    true,
+	"rmdir": true,
 }
 
 // stampDrivers names argv[0] basenames whose presence
@@ -330,6 +377,31 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 			Bucket:   BucketCMakeE,
 			Reason:   "ln (POSIX link)",
 			CMakeEOp: "ln",
+		}
+	}
+
+	// Raw `mv` is the POSIX analog of `cmake -E rename` (lifted as a
+	// copy). argv-only here; operand parsing + file-vs-directory is
+	// the lifter's job (liftRenameLike).
+	if renameDrivers[driver] {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "mv (POSIX rename)",
+			CMakeEOp: "mv",
+		}
+	}
+
+	// Raw `mkdir` / `rm` / `rmdir` are filesystem side-effects with no
+	// consumable Bazel output — the raw analogs of the no-op cmake -E
+	// ops. Classify as cmake-e so the lifter skips them benignly
+	// (no genrule, no refusal) rather than dropping the element into
+	// the round-2 fallback over a side-effect that can't lose a real
+	// compile input.
+	if noopDrivers[driver] {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   driver + " (POSIX filesystem side-effect with no Bazel output)",
+			CMakeEOp: driver,
 		}
 	}
 

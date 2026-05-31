@@ -885,27 +885,45 @@ transition cleanly.
   generated header is load-bearing, so reproducing the copy can't
   drop a real compile input.
 
-- **Raw `touch` / `ln` lifted via their `cmake -E` equivalents.**
-  Extends the raw-`cp` precedent to the other configure-time
-  `execute_process` shapes whose `cmake -E` op the lifter already
-  reproduces: raw POSIX `touch <marker>` routes to the existing
-  `liftCMakeETouch` empty-file genrule (the analog of `cmake -E
-  touch`), and raw `ln [-s] <target> <link>` routes to the
-  create_symlink copy path (the analog of `cmake -E
-  create_symlink`, lifted as a copy under Bazel's hermetic action
-  model). The classifier sends each to `BucketCMakeE` argv-only;
-  flag/operand parsing stays in the lifter (`liftTouch` refuses
-  semantics-changing touch flags like `-c`; `liftLn` ignores
-  link-mode flags and refuses the non-2-operand forms). The
-  create_symlink copy-emit core is shared between `liftCMakeECopy`
-  and `liftLn` (`emitCopyGenrule`), so anchor diagnostics name the
-  original call shape. Genrule tags carry the raw driver basename
-  (`cp` / `ln`, `touch` shared with the builtin) so audits can
-  split raw-command lifts from `cmake -E` lifts. Also hardened the
-  raw-command dispatch against a latent `argv[3:]` panic on
-  short argv (e.g. `touch marker`). Sound by construction, same as
-  raw `cp`: a touched marker or a symlinked tool/data path can be
-  load-bearing, so reproducing the op can't drop a real input.
+- **`execute_process` `cmake -E` lift parity — the file-op
+  family.** Extends the raw-`cp` precedent (issue #312) across the
+  remaining configure-time `execute_process` shapes whose `cmake -E`
+  op has a sound Bazel analog, on both the builtin and the raw-POSIX
+  spelling:
+    - *Copy family (produce outputs).* Raw `touch` → the existing
+      `liftCMakeETouch` empty-file genrule (analog of `cmake -E
+      touch`); raw `ln [-s]` and `cmake -E create_symlink` →
+      create_symlink-as-copy; `cmake -E copy_directory` /
+      `copy_directory_if_different` → recursive contents-copy genrule
+      (no source-basename insert, unlike `cp -R`); `cmake -E rename`
+      and raw `mv` → rename-as-copy (file or directory; the
+      source-side removal has no hermetic analog so only the
+      destination is reproduced).
+    - *No-op family (no output to anchor).* `cmake -E make_directory`
+      / `remove` / `remove_directory` and the raw `mkdir` / `rm` /
+      `rmdir` analogs are recognized as benign no-ops — skipped (no
+      genrule), not refused. A bare directory isn't a genrule output
+      (the files written into it are recovered by their own calls,
+      each of which `mkdir -p "$(dirname "$@")"`), and deletion has
+      no build-time analog (fresh sandbox per action); neither can
+      drop a real compile input, so falling into the round-2 fallback
+      over them would be wrong.
+  The classifier sends each to `BucketCMakeE` argv-only
+  (`touchDrivers` / `symlinkDrivers` / `renameDrivers` / `noopDrivers`
+  maps mirroring `copyDrivers`; the no-op ops also added to
+  `supportedCMakeEOps`); flag/operand parsing + file-vs-directory
+  decisions stay in the lifters. The copy / dir-copy emit cores are
+  shared (`emitCopyGenrule`, `emitDirCopyGenrule`) so `cmake -E`,
+  `cp -R`, `copy_directory`, `rename`, and `mv` all funnel through one
+  place and anchor diagnostics name the original call shape. Genrule
+  tags carry the raw driver basename (`cp` / `ln` / `mv`, `touch`
+  shared with the builtin) so audits can split raw-command lifts from
+  `cmake -E` lifts. The genrule-rewrite side
+  (`genrule_cmake_e_rewrite.go`, for `add_custom_command`-derived
+  cmd bytes) already translated this whole op set, so this slice
+  closes the gap on the `execute_process` side. Also hardened the
+  raw-command dispatch against a latent `argv[3:]` panic on short
+  argv (e.g. `touch marker`).
 
 - **Strip cross-target hdrs duplication
   (`stripDepOwnedHdrs`).** Real-world cmake projects

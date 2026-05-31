@@ -1,6 +1,9 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -201,5 +204,178 @@ func TestRecoverExecuteProcess_LiftLn_TargetOutsideTreeRefuses(t *testing.T) {
 	}
 	if !strings.Contains(refusals[0].Reason, "source root") {
 		t.Errorf("refusal reason should name the source-root anchor failure; got %q", refusals[0].Reason)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftCMakeECopyDirectory covers
+// `cmake -E copy_directory <src> <dst>`: cmake copies the CONTENTS of
+// src into dst (no source-basename insert, unlike cp -R), so a nested
+// file lands at <dst>/<rel> — NOT <dst>/<basename(src)>/<rel>. One
+// multi-output genrule under $(RULEDIR).
+func TestRecoverExecuteProcess_LiftCMakeECopyDirectory(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostSrc, "data", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, "data", "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, "data", "nested", "b.txt"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:     9,
+		Commands: [][]string{{"cmake", "-E", "copy_directory", filepath.Join(hostSrc, "data"), "/build/out"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("want 1 multi-out genrule; got %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	gotOuts := append([]string(nil), g.GenruleOuts...)
+	sort.Strings(gotOuts)
+	// Contents copied into out/ — no "data/" prefix.
+	want := []string{"out/a.txt", "out/nested/b.txt"}
+	if strings.Join(gotOuts, ",") != strings.Join(want, ",") {
+		t.Errorf("outs: %v want %v (copy_directory copies CONTENTS, no source basename)", gotOuts, want)
+	}
+	if !strings.Contains(g.GenruleCmd, "$(RULEDIR)") {
+		t.Errorf("multi-out cmd should use $(RULEDIR); got %q", g.GenruleCmd)
+	}
+	hasTag := false
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-execute-process-op=copy_directory" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Errorf("expected execute-process-op=copy_directory tag; got %v", g.Tags)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftRename_File covers `cmake -E rename
+// <file> <dst>`: lifted as a copy — src under the source root becomes
+// the genrule's srcs, dst under the build dir becomes outs.
+func TestRecoverExecuteProcess_LiftRename_File(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "old.h"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{"cmake", "-E", "rename", filepath.Join(hostSrc, "old.h"), "/build/new.h"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	g := cc.Genrules[0]
+	if len(g.Srcs) != 1 || g.Srcs[0] != "old.h" {
+		t.Errorf("srcs: %v want [old.h]", g.Srcs)
+	}
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "new.h" {
+		t.Errorf("outs: %v want [new.h]", g.GenruleOuts)
+	}
+	hasTag := false
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-execute-process-op=rename" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Errorf("expected execute-process-op=rename tag; got %v", g.Tags)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftMv_File covers raw `mv <file> <dst>`:
+// the POSIX analog of cmake -E rename, lifted as a copy with the raw
+// driver name "mv" in the op tag.
+func TestRecoverExecuteProcess_LiftMv_File(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "a.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{"mv", "-f", filepath.Join(hostSrc, "a.txt"), "/build/b.txt"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "b.txt" {
+		t.Errorf("outs: %v want [b.txt]", g.GenruleOuts)
+	}
+	hasTag := false
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-execute-process-op=mv" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Errorf("expected execute-process-op=mv tag; got %v", g.Tags)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftMv_BuildTempRefuses pins the
+// documented clean-refusal: `mv build/x.tmp build/x` (source in the
+// build dir, not the source tree) can't anchor its source as a Bazel
+// input, so it refuses rather than mis-lifting a temp file that
+// doesn't exist at convert time.
+func TestRecoverExecuteProcess_LiftMv_BuildTempRefuses(t *testing.T) {
+	hostSrc := t.TempDir()
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{"mv", "/build/x.tmp", "/build/x"}},
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc)
+	if len(refusals) != 1 {
+		t.Fatalf("want 1 refusal; got %+v", refusals)
+	}
+	if !strings.Contains(refusals[0].Reason, "source root") {
+		t.Errorf("refusal reason should name the source-root anchor failure; got %q", refusals[0].Reason)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("no genrule on refusal; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecoverExecuteProcess_NoopOps covers the benign no-op ops: cmake
+// -E make_directory / remove / remove_directory and the raw mkdir / rm
+// / rmdir analogs. Each is recognized (not refused) and produces no
+// genrule — there's no consumable Bazel output to anchor.
+func TestRecoverExecuteProcess_NoopOps(t *testing.T) {
+	cases := [][]string{
+		{"cmake", "-E", "make_directory", "/build/d"},
+		{"cmake", "-E", "remove", "/build/stale.o"},
+		{"cmake", "-E", "remove_directory", "/build/olddir"},
+		{"mkdir", "-p", "/build/d"},
+		{"rm", "-rf", "/build/stale"},
+		{"rmdir", "/build/d"},
+	}
+	for _, argv := range cases {
+		t.Run(strings.Join(argv, "_"), func(t *testing.T) {
+			calls := []shadow.ExecuteProcessCall{{
+				File:     "/src/CMakeLists.txt",
+				Commands: [][]string{argv},
+			}}
+			cc := newCodegenContext()
+			outs, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+			if len(refusals) != 0 {
+				t.Errorf("no-op should not refuse; got %+v", refusals)
+			}
+			if len(cc.Genrules) != 0 {
+				t.Errorf("no-op should emit no genrule; got %+v", cc.Genrules)
+			}
+			if len(outs) != 0 {
+				t.Errorf("no-op should produce no outs; got %+v", outs)
+			}
+		})
 	}
 }
