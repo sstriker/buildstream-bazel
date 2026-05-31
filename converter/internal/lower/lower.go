@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -219,6 +220,14 @@ type Options struct {
 	// UnsupportedExecuteProcessFallback implicitly when this
 	// field is non-nil).
 	Rejections *rejection.Collector
+
+	// Coverage, when non-nil, collects lens-3 ("did we lose intent
+	// vs the CMakeLists?") findings — losses the converter would
+	// otherwise not self-report. v1 records dependency-coverage gaps
+	// (a trace target_link_libraries arm naming an in-codebase target
+	// that didn't land in any dep bucket). Surfaced via
+	// --audit-coverage-report; see converter/internal/coverage.
+	Coverage *coverage.Collector
 
 	// CMakeScriptRunner, when non-empty, is the Bazel label of a
 	// target that the cmake-P lift will invoke at Bazel build
@@ -943,6 +952,22 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// Disambiguate cc_test names that collide with another emitted
+	// target. An EXECUTABLE registered via add_test() becomes a
+	// cc_test named after the TEST (reg.Name), which is usually the
+	// binary's own name but need not be: a malformed (or copy-pasted)
+	// add_test can register a test whose NAME equals a *different*
+	// target's name. OpenBLAS does exactly this —
+	// `add_test(openblas_utest_ext <openblas_utest binary>)` (utest/
+	// CMakeLists.txt: the _ext test points at the wrong binary), so the
+	// openblas_utest binary yields a cc_test named openblas_utest_ext
+	// that collides with the real add_executable(openblas_utest_ext).
+	// Bazel rejects duplicate names, so without this the whole convert
+	// hard-fails on an upstream cmake quirk. Rename the colliding
+	// cc_test (suffix `_test`, then numeric) — nothing references a
+	// test target, so the rename is safe; the authoritative
+	// codemodel-derived target keeps its name.
+	disambiguateTestNameCollisions(pkg)
 	// HEADER_FILE_ONLY reclassification — walk every target's
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked
@@ -1127,6 +1152,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// makes the omission auditable so operators who care about
 	// install-time logic see what was lost.
 	surfaceInstallScriptInstallers(r, opts.Warnings)
+
+	// Lens-3 coverage audit: dependency-coverage over the final
+	// package. Runs after every target (codemodel-derived + trace-
+	// synthesized interface libs + aliases) is in pkg.Targets so each
+	// target's dep buckets are final, and uses traceLinkLibs (the
+	// recorded target_link_libraries arms) as the intent oracle. No-op
+	// when no trace was decoded (traceLinkLibs empty) or no collector
+	// was supplied.
+	if opts.Coverage != nil {
+		for _, f := range coverage.AuditLinkDeps(pkg, traceLinkLibs) {
+			opts.Coverage.Add(f)
+		}
+	}
 	return pkg, nil
 }
 
@@ -3351,6 +3389,47 @@ func rewriteStdForExtensions(tgt *ir.Target, propName, propVal, strictPrefix, gn
 			continue
 		}
 		tgt.Copts[i] = "-std=" + gnuPrefix + version
+	}
+}
+
+// disambiguateTestNameCollisions renames any cc_test whose name
+// collides with an earlier-emitted target. cc_tests synthesized from
+// add_test() take the TEST name, which a malformed add_test can set
+// to a different target's name (see the call site for OpenBLAS's
+// openblas_utest_ext case). Bazel rejects duplicate target names, so
+// the collision would hard-fail the convert. Renaming the cc_test is
+// safe — no rule references a test target — so the authoritative
+// (codemodel-derived, first-seen) target keeps its name and the
+// cc_test gets a deterministic unique suffix. No-op when there are no
+// collisions.
+func disambiguateTestNameCollisions(pkg *ir.Package) {
+	if pkg == nil {
+		return
+	}
+	seen := make(map[string]bool, len(pkg.Targets))
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		name := t.Name
+		if !seen[name] {
+			seen[name] = true
+			continue
+		}
+		// Collision. Only rename cc_tests — renaming a library/binary
+		// could break a label reference, and a non-test duplicate is a
+		// real bug we still want to surface via the validate pass.
+		if t.Kind != ir.KindCCTest {
+			seen[name] = true
+			continue
+		}
+		candidate := name + "_test"
+		for n := 2; seen[candidate]; n++ {
+			candidate = fmt.Sprintf("%s_test%d", name, n)
+		}
+		if !stringSliceContains(t.Tags, "cmake-test-name-disambiguated") {
+			t.Tags = append(t.Tags, "cmake-test-name-disambiguated")
+		}
+		t.Name = candidate
+		seen[candidate] = true
 	}
 }
 

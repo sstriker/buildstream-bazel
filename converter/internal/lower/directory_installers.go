@@ -2,6 +2,7 @@ package lower
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -135,6 +136,17 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 	}
 	sort.Strings(keys)
 
+	// usedNames disambiguates target names that collide after
+	// sanitizeDestination. Buckets are keyed by the RAW destination
+	// (Type + dest), so two distinct destinations that sanitize to the
+	// same target-name-safe string — grpc installs into both
+	// `include/grpc` and `include/grpc++` (the `++` collapses to `_`),
+	// and `include/grpc` vs `include/grpc/` differ only by a trailing
+	// slash — would otherwise emit duplicate target names and Bazel
+	// rejects the package. Keep the buckets distinct (their PkgPrefix /
+	// files genuinely differ) but give the second-and-later collider a
+	// numeric suffix. Deterministic because `keys` is sorted.
+	usedNames := make(map[string]bool, len(keys))
 	out := make([]ir.Target, 0, len(keys)+len(exportTargets))
 	for _, key := range keys {
 		b := byKey[key]
@@ -150,8 +162,16 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 		if b.kind == "directory" {
 			prefix = "install_directory__"
 		}
+		name := prefix + sanitizeDestination(b.dest)
+		if usedNames[name] {
+			base := name
+			for n := 2; usedNames[name]; n++ {
+				name = fmt.Sprintf("%s_%d", base, n)
+			}
+		}
+		usedNames[name] = true
 		t := ir.Target{
-			Name: prefix + sanitizeDestination(b.dest),
+			Name: name,
 			Kind: ir.KindPkgFiles,
 			Srcs: files,
 			// PkgPrefix is the install DESTINATION verbatim (e.g.

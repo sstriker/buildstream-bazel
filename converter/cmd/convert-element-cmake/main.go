@@ -25,6 +25,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/configfold"
+	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
@@ -404,6 +405,11 @@ func run(a cli.Args) error {
 		rejections = rejection.New()
 		execFallback = true
 	}
+	// Lens-3 dependency-coverage collector. Always created so the
+	// audit runs on every convert (findings go to stderr; the JSON
+	// report is written only when --audit-coverage-report is set),
+	// mirroring the bazelidiom audit's always-on behaviour.
+	coverageCollector := coverage.New()
 	// runToIR lowers the reply with a given literal-probe sink and
 	// resolution map. Hoisted to a closure so the generalized-genex
 	// two-pass can run it twice: pass 1 with a collecting sink (no
@@ -429,6 +435,7 @@ func run(a cli.Args) error {
 			CMakeScriptBake:                   a.CMakeScriptBake,
 			BakeIn:                            convmode.BakeIn(a.BakeIn),
 			Rejections:                        rejections,
+			Coverage:                          coverageCollector,
 			Warnings:                          os.Stderr,
 			LiteralProbeSink:                  sink,
 			LiteralResolutions:                resolutions,
@@ -629,6 +636,29 @@ func run(a cli.Args) error {
 				return err
 			}
 			if err := os.WriteFile(a.AuditBazelIdiomReport, body, 0o644); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Lens-3 dependency-coverage findings (collected during ToIR).
+	// Surface on stderr always; write the JSON report when
+	// --audit-coverage-report is set. Same always-on/optional-report
+	// shape as the bazelidiom audit above.
+	{
+		findings := coverageCollector.Items()
+		for _, f := range findings {
+			fmt.Fprintf(os.Stderr, "coverage(%s): %s: %s\n", f.Target, f.Code, f.Message)
+		}
+		if a.AuditCoverageReport != "" {
+			if findings == nil {
+				findings = []coverage.Finding{}
+			}
+			body, _ := json.MarshalIndent(findings, "", "  ")
+			if err := os.MkdirAll(filepath.Dir(a.AuditCoverageReport), 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(a.AuditCoverageReport, body, 0o644); err != nil {
 				return err
 			}
 		}

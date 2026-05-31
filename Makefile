@@ -6,7 +6,9 @@
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
-        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-survey-regression \
+        survey-gazelle update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -48,6 +50,35 @@ LLVM_DIR          ?= /tmp/llvm-project
 # network allowlist; the github.com/Kitware/VTK mirror is allowlisted.
 VTK_VERSION       ?= v9.4.2
 VTK_DIR           ?= /tmp/vtk
+# Regression corpus (each surfaced a converter bug now fixed, or is a
+# clean control). See docs/survey-corpus.md for the per-project bug +
+# fixing-PR table and the faithful-survey caveats (zstd's build/cmake
+# subdir, mbedtls's framework submodule, cutlass/cuda needing a CUDA
+# toolkit to configure).
+BOOSTCORE_VERSION ?= boost-1.90.0
+BOOSTCORE_DIR     ?= /tmp/boost-core
+ZSTD_VERSION      ?= v1.5.7
+ZSTD_DIR          ?= /tmp/zstd
+LIBEVENT_VERSION  ?= release-2.1.12-stable
+LIBEVENT_DIR      ?= /tmp/libevent
+LIBXML2_VERSION   ?= v2.15.3
+LIBXML2_DIR       ?= /tmp/libxml2
+BROTLI_VERSION    ?= v1.2.0
+BROTLI_DIR        ?= /tmp/brotli
+MBEDTLS_VERSION   ?= v3.6.2
+MBEDTLS_DIR       ?= /tmp/mbedtls
+CUTLASS_VERSION   ?= v4.5.1
+CUTLASS_DIR       ?= /tmp/cutlass
+CUDASAMPLES_VERSION ?= v13.3
+CUDASAMPLES_DIR   ?= /tmp/cuda-samples
+OPENBLAS_VERSION  ?= v0.3.28
+OPENBLAS_DIR      ?= /tmp/OpenBLAS
+SDL_VERSION       ?= release-3.2.10
+SDL_DIR           ?= /tmp/SDL
+CURL_VERSION      ?= curl-8_11_1
+CURL_DIR          ?= /tmp/curl
+GRPC_VERSION      ?= v1.68.0
+GRPC_DIR          ?= /tmp/grpc
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1044,9 +1075,161 @@ fetch-vtk:
 		echo "vtk already at $(VTK_DIR); rm -rf to refetch"; \
 	fi
 
+# --- Regression corpus (docs/survey-corpus.md) ----------------------------
+# Each member surfaced a real converter bug (now fixed) or is a clean
+# control. Kept fetchable so a survey re-run guards against regressions.
+
+# Boost.Core: alias-target lift ordering (#300). Modular boost lib; its
+# CMakeLists configures standalone for the modular build.
+fetch-boost-core:
+	@if [ ! -d "$(BOOSTCORE_DIR)" ]; then \
+		git clone --depth 1 --branch $(BOOSTCORE_VERSION) https://github.com/boostorg/core.git "$(BOOSTCORE_DIR)"; \
+	else \
+		echo "boost-core already at $(BOOSTCORE_DIR); rm -rf to refetch"; \
+	fi
+
+# zstd: workspace-root umbrella detection (#303). NOTE: the CMake root is
+# the `build/cmake` SUBDIR, not the repo root — survey
+# $(ZSTD_DIR)/build/cmake.
+fetch-zstd:
+	@if [ ! -d "$(ZSTD_DIR)" ]; then \
+		git clone --depth 1 --branch $(ZSTD_VERSION) https://github.com/facebook/zstd.git "$(ZSTD_DIR)"; \
+	else \
+		echo "zstd already at $(ZSTD_DIR); rm -rf to refetch"; \
+	fi
+
+# libevent: pre-committed generated sources wrongly refused (#304).
+fetch-libevent:
+	@if [ ! -d "$(LIBEVENT_DIR)" ]; then \
+		git clone --depth 1 --branch $(LIBEVENT_VERSION) https://github.com/libevent/libevent.git "$(LIBEVENT_DIR)"; \
+	else \
+		echo "libevent already at $(LIBEVENT_DIR); rm -rf to refetch"; \
+	fi
+
+# libxml2: clean control (no converter bugs found). Fetched from the
+# github.com/GNOME/libxml2 mirror (canonical gitlab.gnome.org is fine too,
+# but the mirror matches the rest of the corpus on github).
+fetch-libxml2:
+	@if [ ! -d "$(LIBXML2_DIR)" ]; then \
+		git clone --depth 1 --branch $(LIBXML2_VERSION) https://github.com/GNOME/libxml2.git "$(LIBXML2_DIR)"; \
+	else \
+		echo "libxml2 already at $(LIBXML2_DIR); rm -rf to refetch"; \
+	fi
+
+# brotli: clean control (no converter bugs found).
+fetch-brotli:
+	@if [ ! -d "$(BROTLI_DIR)" ]; then \
+		git clone --depth 1 --branch $(BROTLI_VERSION) https://github.com/google/brotli.git "$(BROTLI_DIR)"; \
+	else \
+		echo "brotli already at $(BROTLI_DIR); rm -rf to refetch"; \
+	fi
+
+# mbedtls: wrapped `ctest -D Experimental` dashboard target wrongly lifted
+# (fixed — isCMakeInternalCmd dashboard filter). NOTE: 3.6.x needs its
+# `framework` git submodule, so this fetch recurses submodules.
+fetch-mbedtls:
+	@if [ ! -d "$(MBEDTLS_DIR)" ]; then \
+		git clone --depth 1 --branch $(MBEDTLS_VERSION) --recurse-submodules --shallow-submodules https://github.com/Mbed-TLS/mbedtls.git "$(MBEDTLS_DIR)"; \
+	else \
+		echo "mbedtls already at $(MBEDTLS_DIR); rm -rf to refetch"; \
+	fi
+
+# cutlass + cuda-samples: NVIDIA CMake projects. NOTE: both need a CUDA
+# toolkit (nvcc) on PATH to configure — without it the survey stops at
+# cmake configure. Kept fetchable for environments that have CUDA.
+fetch-cutlass:
+	@if [ ! -d "$(CUTLASS_DIR)" ]; then \
+		git clone --depth 1 --branch $(CUTLASS_VERSION) https://github.com/NVIDIA/cutlass.git "$(CUTLASS_DIR)"; \
+	else \
+		echo "cutlass already at $(CUTLASS_DIR); rm -rf to refetch"; \
+	fi
+
+fetch-cuda-samples:
+	@if [ ! -d "$(CUDASAMPLES_DIR)" ]; then \
+		git clone --depth 1 --branch $(CUDASAMPLES_VERSION) https://github.com/NVIDIA/cuda-samples.git "$(CUDASAMPLES_DIR)"; \
+	else \
+		echo "cuda-samples already at $(CUDASAMPLES_DIR); rm -rf to refetch"; \
+	fi
+
+# OpenBLAS: assembly kernels + Fortran/LAPACK + arch-conditional source
+# selection + ~2460 targets — shapes nothing else in the corpus has. It
+# surfaced the add_test/target name-collision robustness bug (an
+# upstream `add_test(openblas_utest_ext <wrong binary>)` made the
+# converter synthesize a cc_test colliding with the same-named
+# executable; fixed via disambiguateTestNameCollisions). NOTE: survey
+# with `-DNOFORTRAN=1 -DC_LAPACK=1` on hosts without gfortran (the
+# converter's default source-root configure picks a working path, but
+# the C_LAPACK route is the portable one); the asm/Fortran kernels
+# themselves aren't Bazel-modelable, so the value is the C surface +
+# codegen + scale.
+fetch-openblas:
+	@if [ ! -d "$(OPENBLAS_DIR)" ]; then \
+		git clone --depth 1 --branch $(OPENBLAS_VERSION) https://github.com/OpenMathLib/OpenBLAS.git "$(OPENBLAS_DIR)"; \
+	else \
+		echo "openblas already at $(OPENBLAS_DIR); rm -rf to refetch"; \
+	fi
+
+# SDL: heavy platform-conditional source selection (37 if(WIN32/APPLE/
+# LINUX/...) blocks) + Objective-C (.m) sources + target_precompile_headers.
+# A standalone survey resolves to the one configured platform (so the
+# platform-conditional select() arms come from the multi-platform fold,
+# not here); the value is the platform-source-partition path + the objc
+# language surface. Converts clean on Linux (1 benign execute_process
+# rejection for `cmake -E make_directory`, 1 pch operator-action idiom).
+fetch-sdl:
+	@if [ ! -d "$(SDL_DIR)" ]; then \
+		git clone --depth 1 --branch $(SDL_VERSION) https://github.com/libsdl-org/SDL.git "$(SDL_DIR)"; \
+	else \
+		echo "sdl already at $(SDL_DIR); rm -rf to refetch"; \
+	fi
+
+# curl: heavy find_package consumer (OpenSSL + ZLIB linked across
+# hundreds of targets). A standalone survey emits ~1248
+# find-package-dep-unresolved findings — all the "external / resolves in
+# a real element graph" class (like protobuf's ZLIB), inflated by the
+# same few libs re-linked everywhere. 0 rejections, 0 coverage — a
+# stress test of the find_package path, not a converter bug.
+fetch-curl:
+	@if [ ! -d "$(CURL_DIR)" ]; then \
+		git clone --depth 1 --branch $(CURL_VERSION) https://github.com/curl/curl.git "$(CURL_DIR)"; \
+	else \
+		echo "curl already at $(CURL_DIR); rm -rf to refetch"; \
+	fi
+
+# grpc: deep transitive deps + many install(FILES) directives + bundled
+# third_party (zlib submodule). Surfaced the install_files name-collision
+# bug (include/grpc vs include/grpc++ sanitize to the same target name;
+# fixed via the usedNames disambiguation in directory_installers.go).
+# NOTE: needs --recurse-submodules (third_party/zlib etc.) to configure.
+fetch-grpc:
+	@if [ ! -d "$(GRPC_DIR)" ]; then \
+		git clone --depth 1 --branch $(GRPC_VERSION) --recurse-submodules --shallow-submodules https://github.com/grpc/grpc.git "$(GRPC_DIR)"; \
+	else \
+		echo "grpc already at $(GRPC_DIR); rm -rf to refetch"; \
+	fi
+
 # Convenience aggregate: fetch the default survey corpus (the cheap four;
 # llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
+
+# Convenience aggregate: fetch the regression corpus (the projects that
+# surfaced past bugs + the clean controls). cutlass / cuda-samples need a
+# CUDA toolkit to actually survey; they're fetched so the corpus is whole.
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc
+
+# survey-gazelle: the strongest lens-2 (structural idiom) check — run the
+# gazelle_cc round-trip on wild corpus projects (see
+# scripts/survey-gazelle-roundtrip.sh and docs/survey-corpus.md). Hard-
+# fails only when the converted BUILDs don't load under gazelle_cc (a
+# non-idiomatic emission); reports first-pass drift and non-convergence
+# as idiom datapoints (SURVEY_GAZELLE_STRICT=1 escalates non-convergence
+# to a failure). Needs bazel>=9 + cmake + ninja (skips cleanly otherwise);
+# META_GAZELLE_USE_HOST_GO=1 uses the host Go toolchain when go.dev egress
+# is blocked. Defaults to the small/fast members; override
+# SURVEY_GAZELLE_PROJECTS for others.
+SURVEY_GAZELLE_PROJECTS ?= googletest=$(GTEST_DIR) brotli=$(BROTLI_DIR)
+survey-gazelle:
+	scripts/survey-gazelle-roundtrip.sh $(SURVEY_GAZELLE_PROJECTS)
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
 update-golden:

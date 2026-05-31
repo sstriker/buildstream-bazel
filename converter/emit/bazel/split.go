@@ -369,6 +369,22 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	if local {
 		var srcs []string
 		for _, s := range t.Srcs {
+			// PkgSrcsGlob srcs are glob PATTERNS (e.g.
+			// "c/include/brotli/**" from install(DIRECTORY)), not file
+			// paths. A glob can't be expressed as a cross-package label
+			// (`glob(["//c/include:brotli/**"])` is invalid — patterns
+			// must be package-relative, never absolute) and Bazel's glob
+			// doesn't cross package boundaries anyway, so once the
+			// globbed dir is its own package a root-level glob wouldn't
+			// match it. Same situation as the bare-packaged-directory
+			// case below: not expressible post-split; drop it — the
+			// install is served by the layout-independent install root,
+			// and EmitSplit skips the now-empty pkg_files. (The glob
+			// pattern itself contains no package boundary we can
+			// re-root against, so there's nothing to relativize.)
+			if t.PkgSrcsGlob {
+				continue
+			}
 			d := plan.deepestPkg(s)
 			if d == dir {
 				rel, _ := relUnder(dir, s)

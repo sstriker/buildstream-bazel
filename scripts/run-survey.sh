@@ -103,8 +103,8 @@ mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
 : > "$summary"
 
-printf '%-14s %10s %10s %s\n' project rejections idioms status | tee "$summary"
-printf '%-14s %10s %10s %s\n' ------- ---------- ------ ------ | tee -a "$summary"
+printf '%-14s %10s %10s %10s %s\n' project rejections idioms coverage status | tee "$summary"
+printf '%-14s %10s %10s %10s %s\n' ------- ---------- ------ -------- ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -119,6 +119,7 @@ for entry in $projects; do
 
     rej="$proj_out/rejections.json"
     idiom="$proj_out/bazel-idiom.json"
+    cov="$proj_out/coverage.json"
     status="ok"
 
     # The survey runs each project standalone, so out-of-tree
@@ -162,6 +163,7 @@ for entry in $projects; do
         $sp_args \
         --rejections-report "$rej" \
         --audit-bazel-idiom-report "$idiom" \
+        --audit-coverage-report "$cov" \
         --out-build "$proj_out/BUILD.bazel" \
         --out-failure "$proj_out/failure.json" \
         > "$proj_out/convert.log" 2>&1
@@ -169,14 +171,17 @@ for entry in $projects; do
         status="CONFIGURE/CONVERT FAILED — see $proj_out/convert.log"
     fi
 
-    # Count records. The rejections report is a JSON array of
-    # {code,...}; the bazel-idiom report is an array of {Code,...}
-    # (capitalised — distinct Go structs).
+    # Count records. rejections.json is a JSON array of {code,...};
+    # bazel-idiom.json and coverage.json are arrays of {Code,...}
+    # (capitalised — distinct Go structs). The coverage column is the
+    # lens-3 dependency-coverage count (silent dropped link edges); 0
+    # is the healthy state.
     rej_n=$( [ -f "$rej" ]   && grep -o '"code"' "$rej"  2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     idi_n=$( [ -f "$idiom" ] && grep -o '"Code"' "$idiom" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
+    cov_n=$( [ -f "$cov" ]   && grep -o '"Code"' "$cov"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
 
-    printf '%-14s %10s %10s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "$status" | tee -a "$summary"
+    printf '%-14s %10s %10s %10s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "$status" | tee -a "$summary"
 done
 
 echo ""
-echo "Reports under $out_dir/<project>/{rejections,bazel-idiom}.json; summary at $summary"
+echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage}.json; summary at $summary"
