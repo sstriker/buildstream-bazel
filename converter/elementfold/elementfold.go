@@ -247,6 +247,7 @@ func Fold(cells []Cell) (*ir.Package, error) {
 // agreement pressure, no per-attr arm.
 func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []string) (*ir.Target, error) {
 	first := variants[cells[0].Platform.Name]
+	artifactNameDiverged := false
 	// Scalar / boolean attrs must agree across cells.
 	for _, c := range cells[1:] {
 		v := variants[c.Platform.Name]
@@ -262,8 +263,22 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 		if v.InstallDest != first.InstallDest {
 			return nil, fmt.Errorf("InstallDest disagrees: cell %q has %q, cell %q has %q", firstName, first.InstallDest, vName, v.InstallDest)
 		}
+		// ArtifactName (the on-disk file name, e.g. libSDL3.so /
+		// SDL3.dll / libSDL3.dylib) LEGITIMATELY diverges across
+		// platforms — the OS dictates the prefix/suffix. Unlike the
+		// other scalars, a disagreement here is expected for any shared
+		// library in a real multi-platform fold, so it must NOT be a
+		// hard error. ArtifactName feeds only the synthesized
+		// <Pkg>Config.cmake bundle's install path
+		// (cmakecfg: InstallDest/ArtifactName); the emitted BUILD rules
+		// don't reference it. We keep the FIRST cell's value (the merged
+		// target's flat ArtifactName, deterministic by cell order) and
+		// tag the divergence so it's auditable. A fully per-platform
+		// config bundle is a separate follow-on; for now the bundle
+		// carries the primary platform's name and the tag records that
+		// the other platforms differ.
 		if v.ArtifactName != first.ArtifactName {
-			return nil, fmt.Errorf("ArtifactName disagrees: cell %q has %q, cell %q has %q", firstName, first.ArtifactName, vName, v.ArtifactName)
+			artifactNameDiverged = true
 		}
 		if v.LinkLanguage != first.LinkLanguage {
 			return nil, fmt.Errorf("LinkLanguage disagrees: cell %q has %q, cell %q has %q", firstName, first.LinkLanguage, vName, v.LinkLanguage)
@@ -302,6 +317,13 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 	// single cell's view.
 	merged.Visibility = sortedUnion(extractStringSlice(variants, cells, func(t ir.Target) []string { return t.Visibility }))
 	merged.Tags = sortedUnion(extractStringSlice(variants, cells, func(t ir.Target) []string { return t.Tags }))
+	// Record per-platform ArtifactName divergence (kept the first cell's
+	// value above). Tag so operators can grep for targets whose
+	// synthesized config-bundle install path is correct only for the
+	// primary platform — the full per-platform bundle is a follow-on.
+	if artifactNameDiverged {
+		merged.Tags = sortedUnion([][]string{merged.Tags, {"cmake-codegen-artifact-name-per-platform"}})
+	}
 
 	// Per-attribute fold. Order-insensitive attrs (srcs, hdrs,
 	// includes, defines, deps) decompose into a set-membership

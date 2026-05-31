@@ -407,3 +407,53 @@ Each project lands `rejections.json` + `bazel-idiom.json` +
 per lens: `rejections` / `idioms` / `coverage`). The survey passes
 `--diagnostics` (collect-and-continue) so one run enumerates the whole
 surface instead of aborting on the first refusal.
+
+## Multi-platform survey (platform/arch `select()`)
+
+A single cmake configure sees only the platform it ran on — an
+`if(WIN32) target_sources(... win32.c)` branch is invisible to a Linux
+configure. The lower-side #217 trace partition recovers *some* of the
+other arms from one configure's trace, but the authoritative way to
+capture every platform's intent is to **configure per platform and
+fold**. `scripts/survey-multiplatform.sh <name>=<src>` (also `make
+survey-multiplatform`) does this:
+
+```sh
+make survey-multiplatform                       # sdl + brotli by default
+scripts/survey-multiplatform.sh sdl=$SDL_DIR
+SURVEY_MP_PLATFORMS="linux windows" scripts/survey-multiplatform.sh ...
+```
+
+`SURVEY_MP_PLATFORMS` controls the matrix. The default, **`auto`**,
+derives each project's platform set from **its own `if()`/`elseif()`
+predicates**: cmake's `--trace-expand` records every predicate it
+*evaluates*, including the branches it didn't take, so a single native
+Linux configure still reveals that the project tests `if(WIN32)` /
+`elseif(APPLE)` (the same recognizer the converter's #217 partition
+uses). The survey then only spins up cross-toolchain configures for the
+platforms the project actually branches on — e.g. brotli auto-detects
+`linux windows` (it has WIN32 but no APPLE arms), skipping a wasted
+darwin configure. An explicit space-list (`SURVEY_MP_PLATFORMS="linux
+windows"`) forces that set for every project.
+
+For each resolved platform it runs `convert-element-cmake
+--out-ir-json`, then folds the cells with `fold-element` into one BUILD
+carrying real `+ select({@platforms//os:*})` arms. The non-native
+platforms use **synthetic toolchain files**
+(`scripts/survey-toolchains/<os>.cmake`) that set `CMAKE_SYSTEM_NAME` and
+force the compiler check, so cmake evaluates the platform `if()` branches
+and emits a codemodel **without a real cross-compiler** (nothing is
+built — only the File API reply + trace are consumed). A platform a
+project can't configure is dropped from the matrix; the fold runs over
+those that succeeded. The summary reports `platforms` (cells folded) and
+`select_targets` (rules that gained a platform `select()` — the
+multi-platform signal).
+
+Like the gazelle harness, this is heavier than the per-convert loop (N
+configures + a fold per project) and surfaces real fold limitations on
+divergent projects — e.g. it found that `ArtifactName` legitimately
+differs per OS (`.so`/`.dll`/`.dylib`; the fold now tags rather than
+errors), and that a per-OS `configure_file` produces a divergent
+`GenruleCmd` the fold can't yet merge (a genrule has one `cmd`; modeling
+a per-platform genrule is a follow-on). Those show up as `FOLD FAILED`
+datapoints rather than crashing the run.
