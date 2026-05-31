@@ -151,6 +151,12 @@ PCH attribute — Bazel-idiomatic PCH is a cc_toolchain feature
 operator-side cc_toolchain coordination; documented in
 [`operator-toolchain-features.md`](operator-toolchain-features.md).
 
+> These lift-quality items (§2 `isSystem`, §3 PCH) plus the one
+> non-redundant trace extractor (`target_link_options`
+> PUBLIC/INTERFACE) are tracked as a `ROADMAP.md` `Next` goal —
+> "Tackle the remaining codemodel/trace consumption residue" — to
+> drive each to a real lift or a formally-closed won't-do.
+
 ## The other File API object kinds
 
 The codemodel is the bulk of what we consume, but cmake's File API
