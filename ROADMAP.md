@@ -649,6 +649,45 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Cross-project survey instrument (corpus + three lenses).**
+  `scripts/run-survey.sh` + `docs/survey-corpus.md` run the cmake
+  converter over a curated, complementary corpus and report, per
+  project, what it can't yet lift natively — the prioritized gap list
+  this roadmap's cmake items draw from. The corpus spans the original
+  leaf libs (zlib, libpng, fmt, json, abseil, protobuf) plus
+  googletest / eigen / llvm / VTK and a fetchable **regression corpus**
+  (boost-core, zstd, libevent, libxml2, brotli, mbedtls, OpenBLAS,
+  SDL, curl, grpc, cutlass, cuda-samples), each tied in the doc to the
+  bug it surfaced + fixing PR. The survey is an explicit **three-lens
+  instrument**:
+  - **Lens 1 — liftable rejections** (`rejections.json`): self-reported
+    Tier-1 refusals plus a manual liftability classification
+    (lift-able / external-resolves-in-graph / genuinely-unsupportable).
+  - **Lens 2 — non-idiomatic emissions**: three oracles —
+    `bazel-idiom.json` (`bazelidiom.Audit`, semantic; includes the
+    `non-cc-language-source` check for Fortran `.f` srcs in a cc_*
+    rule), `buildifier -mode=diff` (syntactic, no-op by construction),
+    and the **gazelle round-trip** for wild corpus projects
+    (`scripts/survey-gazelle-roundtrip.sh` / `make survey-gazelle`:
+    load-error → hard fail, drift / non-convergence → reported
+    datapoints).
+  - **Lens 3 — intent loss vs the CMakeLists** (`coverage.json`,
+    `converter/internal/coverage`): the dependency-coverage audit flags
+    a trace `target_link_libraries` arm naming an in-codebase target
+    that landed in no dep bucket (the INTERFACE-deps class), seeing
+    through alias/interface-library indirection.
+    `--audit-coverage-report` + a `coverage` survey column.
+
+  Each run emits `rejections.json` + `bazel-idiom.json` +
+  `coverage.json` per project. The instrument earned its keep
+  immediately — it caught and drove fixes for the eigen empty-srcs
+  re-wire, the VTK empty-cc-library forwarding, the brotli split-glob,
+  OpenBLAS's add_test name-collision, grpc's install_files
+  name-collision, and the Fortran-in-cc gap. Optional toolchains
+  (gfortran, CUDA) are documented for members that need them. The audit
+  framing in `docs/codemodel-consumption-audit.md` turns the counts
+  into prioritized converter work.
+
 - **TreeArtifact install root (replaces the coarse
   `install_tree.tar` transport).** Project B's per-element install
   step is now the `pipeline_install` custom rule
