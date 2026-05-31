@@ -592,29 +592,7 @@ transition cleanly.
   delta as expected and surface it via the verify pass.
   Same shape applies to other distro CFLAGS additions
   (`-fasynchronous-unwind-tables`, `-grecord-gcc-switches`).
-- **Bake refinement: positional output-name args for
-  `cmake -P` scripts.** Surfaced by re-surveying libpng:
-  `add_custom_command(... cmake -P gensrc.cmake <output-name>
-  ...)` is the canonical "one script, many outputs" shape.
-  `--cmake-script-bake` currently passes the script path and
-  `-D var=val` args verbatim but drops post-script positional
-  args (the `<output-name>`), so cmake's argv[1+] indexing
-  inside the script sees nothing and the bake fails with
-  "Unsupported output:". Closure: pull positional args off
-  the recovered command (between the `-P <script>` and the
-  next cmake / shell metachar) and pass them to the
-  convert-time cmake invocation as `cmake -P <script>
-  <arg1> <arg2> ...`. Outputs would still bake one
-  invocation per declared OUTPUT; if the script's argv-
-  switched single invocation produces multiple outputs the
-  bake harness already loops over `b.Outputs` and re-runs
-  cmake per output. Each bake invocation needs its own
-  positional-arg selection — the first OUTPUT's positional
-  arg index would need to come from a `bake-args = [...]`
-  binding on the build statement, OR (simpler) we pass
-  ALL the build statement's recovered command tail and let
-  the script's own `if(${ARGV0} STREQUAL "x")` logic
-  dispatch.
+
 ## Later (research / open questions)
 
 
@@ -670,6 +648,24 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **`--cmake-script-bake` forwards positional output-name args.**
+  The "one script, many outputs" shape
+  (`add_custom_command(... cmake -P gensrc.cmake <output-name> ...)`,
+  libpng's `gensrc.cmake` reading `${CMAKE_ARGV3}` as a dispatch
+  switch) bakes correctly: `extractCmakePScriptPositionalArgs`
+  (`cmake_script_lift.go`) pulls the post-`-P <script>` positional
+  args off the recovered ninja command (excluding any trailing `-D`
+  pairs, which still flow through `extractCmakePDashArgs`) and the
+  bake invocation appends them after the script path in the correct
+  order (`-D` vars first, then `-P <script>`, then positionals — cmake
+  only sets `-D` vars when they precede `-P`). The bake harness loops
+  over `b.Outputs` re-running cmake per declared OUTPUT, so each
+  argv-switched invocation produces its own output. Tested by
+  `TestExtractCmakePScriptPositionalArgs` + a libpng dispatch-shape
+  bake test, and exercised end-to-end by the libpng fidelity gate
+  (`make e2e-fidelity-compare-libpng`, which bakes `pnglibconf.h` &
+  siblings). Landed in `a9d1c03`.
 
 - **cmake-version matrix promoted to blocking.** The four-version
   `e2e-cmake-matrix` shakeout (3.22.6 / 3.28.6 / 4.0.7 / 4.3.3) met its
