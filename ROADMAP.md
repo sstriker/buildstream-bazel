@@ -885,6 +885,28 @@ transition cleanly.
   generated header is load-bearing, so reproducing the copy can't
   drop a real compile input.
 
+- **Raw `touch` / `ln` lifted via their `cmake -E` equivalents.**
+  Extends the raw-`cp` precedent to the other configure-time
+  `execute_process` shapes whose `cmake -E` op the lifter already
+  reproduces: raw POSIX `touch <marker>` routes to the existing
+  `liftCMakeETouch` empty-file genrule (the analog of `cmake -E
+  touch`), and raw `ln [-s] <target> <link>` routes to the
+  create_symlink copy path (the analog of `cmake -E
+  create_symlink`, lifted as a copy under Bazel's hermetic action
+  model). The classifier sends each to `BucketCMakeE` argv-only;
+  flag/operand parsing stays in the lifter (`liftTouch` refuses
+  semantics-changing touch flags like `-c`; `liftLn` ignores
+  link-mode flags and refuses the non-2-operand forms). The
+  create_symlink copy-emit core is shared between `liftCMakeECopy`
+  and `liftLn` (`emitCopyGenrule`), so anchor diagnostics name the
+  original call shape. Genrule tags carry the raw driver basename
+  (`cp` / `ln`, `touch` shared with the builtin) so audits can
+  split raw-command lifts from `cmake -E` lifts. Also hardened the
+  raw-command dispatch against a latent `argv[3:]` panic on
+  short argv (e.g. `touch marker`). Sound by construction, same as
+  raw `cp`: a touched marker or a symlinked tool/data path can be
+  load-bearing, so reproducing the op can't drop a real input.
+
 - **Strip cross-target hdrs duplication
   (`stripDepOwnedHdrs`).** Real-world cmake projects
   surface every public header in every target's `hdrs`

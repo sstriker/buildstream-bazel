@@ -264,7 +264,7 @@ Multiple `COMMAND` form a **pipeline** (concurrent, shared stderr). Sequential c
 
 **Phase A — native lift.** Calls are sorted into five buckets by `converter/internal/lower/execute_process_classify.go`:
 
-- **`cmake-e`** — single-COMMAND `cmake -E touch / copy / copy_if_different` calls translate to native Bazel genrules (no runtime cmake dep on the executor).
+- **`cmake-e`** — single-COMMAND `cmake -E touch / copy / copy_if_different / create_symlink / configure_file` calls translate to native Bazel genrules (no runtime cmake dep on the executor). Raw POSIX commands that are the exact equivalent of a lifted cmake -E op route through the same lifters: `cp` (copy), `touch` (empty-file), `ln [-s]` (create_symlink-as-copy).
 - **`file-producing`** — calls with declared `OUTPUT_FILE` get hoisted to build-time genrules tagged `cmake-codegen-execute-process-hoisted`. The hoist moves work from configure-time to build-time, an auditable behaviour change.
 - **`stamp`** — `git/hg/svn` writing `OUTPUT_VARIABLE` looks like a version stamp. The textbook analog is a repo rule producing a generated `.bzl` table; refused with the typed `unsupported-execute-process` Tier-1 failure.
 - **`probe`** — `uname / gcc --version / pkg-config / python -c` writing `OUTPUT_VARIABLE` looks like a host/toolchain probe; should fold into `select()` over `@platforms` config_settings. Refused.

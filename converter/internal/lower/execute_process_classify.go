@@ -132,6 +132,27 @@ var copyDrivers = map[string]bool{
 	"cp": true,
 }
 
+// touchDrivers names argv[0] basenames the lifter reproduces as a
+// touch genrule. Raw POSIX `touch` is the exact analog of
+// `cmake -E touch`, which we already lift (liftCMakeETouch) — so a
+// configure-time `execute_process(COMMAND touch <marker>)` recovers
+// to the same empty-file genrule instead of hard-failing the element,
+// the same move the raw-`cp` lift makes for `cmake -E copy`. Kept a
+// map (like copyDrivers) so a sibling driver is a one-line addition.
+var touchDrivers = map[string]bool{
+	"touch": true,
+}
+
+// symlinkDrivers names argv[0] basenames the lifter reproduces as a
+// copy genrule. Raw POSIX `ln` (with or without -s) is the analog of
+// `cmake -E create_symlink`, which we already lift as a copy under
+// Bazel's hermetic action model — consumers read bytes by path, so
+// the link-vs-copy distinction is meaningless at action time. The
+// lifter (liftLn) reuses that same create_symlink copy path.
+var symlinkDrivers = map[string]bool{
+	"ln": true,
+}
+
 // stampDrivers names argv[0] basenames whose presence
 // classifies the call as Stamp regardless of how the output
 // is captured. VCS query tools have no legitimate
@@ -283,6 +304,32 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 			Bucket:   BucketCMakeE,
 			Reason:   "cp (POSIX copy)",
 			CMakeEOp: "cp",
+		}
+	}
+
+	// Raw `touch` is the POSIX analog of `cmake -E touch` (already
+	// lifted). A configure-time marker-file write recovers to the
+	// same empty-file genrule rather than refusing. argv-only here;
+	// refusing semantics-changing touch flags (`-c`, `-r`, ...) is
+	// the lifter's job (liftTouch).
+	if touchDrivers[driver] {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "touch (POSIX file touch)",
+			CMakeEOp: "touch_raw",
+		}
+	}
+
+	// Raw `ln` is the POSIX analog of `cmake -E create_symlink`
+	// (already lifted as a copy). Reproducing the link as a copy of
+	// the target's bytes at the link path is sound under Bazel's
+	// hermetic action model. argv-only here; flag/operand parsing is
+	// the lifter's job (liftLn).
+	if symlinkDrivers[driver] {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "ln (POSIX link)",
+			CMakeEOp: "ln",
 		}
 	}
 

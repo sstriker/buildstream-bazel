@@ -69,6 +69,31 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "cp",
 		},
 		{
+			// Raw `touch`: the POSIX analog of `cmake -E touch`
+			// (already lifted). Classified as cmake-e with the
+			// touch_raw sentinel op so the dispatcher re-slices argv
+			// from argv[1:] (no `-E <op>` prefix) and routes to
+			// liftTouch. Flag-handling is the lifter's job.
+			name: "raw touch → cmake-e touch_raw",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"touch", "/build/marker.stamp"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "touch_raw",
+		},
+		{
+			// Raw `ln -s`: the POSIX analog of `cmake -E
+			// create_symlink` (already lifted as a copy). Classified
+			// as cmake-e with op "ln"; the lifter reproduces the link
+			// as a copy of the target's bytes.
+			name: "raw ln -s → cmake-e ln",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"ln", "-s", "/src/bin/clang-18", "/build/bin/clang"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "ln",
+		},
+		{
 			// A genuinely opaque copy-shaped driver (rsync) is NOT
 			// in copyDrivers, so it still refuses — the cp lift is
 			// scoped to drivers whose semantics the lifter can

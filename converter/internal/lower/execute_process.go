@@ -263,8 +263,17 @@ func formatExecuteProcessFailure(refusals []executeProcessRefusal) error {
 // trace-vs-ninja paths to recover.
 func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
 	argv := call.Commands[0] // single-COMMAND guaranteed by Classify
-	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op
-	args := argv[3:]
+	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op.
+	// Guard the slice: the raw-command buckets (cp / touch_raw / ln)
+	// have no `-E <op>` prefix, so their argv can be shorter than 3
+	// (e.g. `touch marker` is len 2). Those cases re-slice from
+	// argv[1:] below; computing argv[3:] unconditionally would panic
+	// on them. cmake -E ops always have len >= 3 (Classify refuses
+	// `cmake -E` with no op), so args stays correct for them.
+	var args []string
+	if len(argv) >= 3 {
+		args = argv[3:]
+	}
 	switch v.CMakeEOp {
 	case "touch":
 		return liftCMakeETouch(args, recordedBuildDir, cc)
@@ -286,6 +295,17 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 		// <src> <dst>` (no `-E <op>` prefix), so the operands
 		// start at argv[1].
 		return liftCp(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "touch_raw":
+		// Raw POSIX `touch` — the analog of `cmake -E touch`, reusing
+		// liftCMakeETouch after flag-stripping. argv is `touch
+		// <flags...> <path...>`, operands start at argv[1].
+		return liftTouch(argv[1:], recordedBuildDir, cc)
+	case "ln":
+		// Raw POSIX `ln [-s]` — the analog of `cmake -E
+		// create_symlink`, reusing the create_symlink copy path.
+		// argv is `ln <flags...> <target> <linkname>`, operands
+		// start at argv[1].
+		return liftLn(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	}
 	return nil, "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
@@ -350,14 +370,33 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
-	src, dst := args[0], args[1]
+	return emitCopyGenrule("cmake -E "+op, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// emitCopyGenrule anchors a (src, dst) pair and appends a single
+// copy genrule. Shared by `cmake -E copy` / `copy_if_different` /
+// `create_symlink` (via liftCMakeECopy) and raw `ln` (via liftLn) so
+// the create_symlink-as-copy lift lives in exactly one place.
+//
+// `what` is the diagnostic prefix naming the original call shape
+// (e.g. "cmake -E copy" or "ln") so a refusal points at what the
+// operator actually wrote; `tagOp` is the op label that lands in the
+// genrule's cmake-codegen-execute-process-op tag (the cmake -E op
+// name for builtins, the raw driver basename for raw commands —
+// matching the raw-`cp` precedent).
+//
+// src must resolve under the source root (so it's a real Bazel input)
+// and dst under the build dir (so it's a real Bazel output). Either
+// anchor failure ends the lift with a descriptive reason so the
+// caller falls back to refusal naming the path that didn't resolve.
+func emitCopyGenrule(what, tagOp, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
 	if !ok {
-		return nil, fmt.Sprintf("cmake -E %s: source %q is not under the source root", op, src), false
+		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
 	}
 	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
 	if !ok {
-		return nil, fmt.Sprintf("cmake -E %s: destination %q is not under the build dir", op, dst), false
+		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true
@@ -369,11 +408,73 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 		Srcs:        []string{srcRel},
 		GenruleCmd:  fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && cp "$(location %s)" "$@"`, srcRel),
 		GenruleOuts: []string{dstRel},
-		Tags:        cmakeETags(op),
+		Tags:        cmakeETags(tagOp),
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, "", true
+}
+
+// liftTouch translates a raw POSIX `touch <path> ...` execute_process
+// call into one genrule per path, mirroring liftCMakeECopy's reuse of
+// the cmake -E lifter for raw `cp`: raw `touch` is the POSIX
+// equivalent of `cmake -E touch`, which we already lift, so after
+// flag-stripping it routes straight to liftCMakeETouch (and shares its
+// cmake-codegen-execute-process-op=touch tag — the operation is
+// genuinely identical).
+//
+// args is everything after `touch` (flags + operands). touch flags
+// change create / timestamp semantics — `-c` skips creating a missing
+// file, `-r`/`-t`/`-d` only stamp times on an existing file — none of
+// which map to "produce this file" under Bazel's hermetic action
+// model. Any flag therefore refuses with a precise diagnostic rather
+// than silently emitting a genrule whose output the original call
+// might not have created. The flagless `touch <path...>` form (the
+// overwhelming majority of configure-time marker writes) lifts.
+func liftTouch(args []string, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	paths := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			return nil, fmt.Sprintf("touch: flag %q changes create/timestamp semantics that don't map to a Bazel output; only the flagless `touch <path>` form lifts", a), false
+		}
+		paths = append(paths, a)
+	}
+	if len(paths) == 0 {
+		return nil, "touch: no path operands", false
+	}
+	return liftCMakeETouch(paths, recordedBuildDir, cc)
+}
+
+// liftLn translates a raw POSIX `ln [-s] <target> <linkname>`
+// execute_process call into a copy genrule, mirroring how
+// `cmake -E create_symlink` is already lifted. Under Bazel's hermetic
+// action model the link-vs-copy distinction is meaningless (consumers
+// read bytes by path), so a symlink and a hardlink alike reproduce as
+// a copy that materialises <linkname> with the target's bytes — the
+// same reasoning liftCMakeECopy applies to create_symlink.
+//
+// args is everything after `ln` (flags + operands). Flags (`-s`,
+// `-f`, `-n`, ...) are accepted and ignored: none of them change the
+// "linkname holds target's bytes by path" outcome the copy
+// reproduces. v1 supports exactly the 2-operand `<target> <linkname>`
+// form; the 1-operand form (`ln -s target`, linkname defaults to the
+// configure-time cwd basename — unanchorable) and the 3+-operand form
+// (multiple links into a dir) refuse with a precise diagnostic.
+func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	operands := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		operands = append(operands, a)
+	}
+	if len(operands) != 2 {
+		return nil, fmt.Sprintf("ln: v1 supports the 2-operand <target> <linkname> form only (got %d operands)", len(operands)), false
+	}
+	// op label "ln" tags the genrule with the raw driver name (the
+	// raw-`cp` precedent), keeping raw-ln lifts distinguishable from
+	// `cmake -E create_symlink` in audit queries.
+	return emitCopyGenrule("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // liftCp translates a raw POSIX `cp` execute_process call into
