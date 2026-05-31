@@ -437,16 +437,18 @@ transition cleanly.
     - **fmt 11.0.2** ✅ library + consumer both shipped — 146/146
       lib-side, 1/1 consumer-side; 3 lib-side + 4 consumer-side
       template-instantiation allowlist entries.
-    - **nlohmann-json 3.11.3** ⚠️ blocked on converter — consumer-side
-      gate is the right shape for this header-only INTERFACE library,
-      but the converter today emits only an `install_directory__include`
-      filegroup for json (no `cc_library`), so a consumer's
-      `cc_library(deps = [...])` can't depend on it. Unblocking work:
-      teach the converter to lower INTERFACE library targets to
-      `cc_library(hdrs = glob(...), strip_include_prefix = ...)` when
-      `target_include_directories(... INTERFACE ...)` is the only
-      surface — separate converter improvement, then this gate becomes
-      a clean addition.
+    - **nlohmann-json 3.11.3** ✅ consumer-side shipped — header-only
+      INTERFACE library (no static archive to diff). The earlier
+      "blocked on converter" note is stale: the converter now lowers the
+      `INTERFACE_LIBRARY` target to a `cc_library(hdrs = [...], includes
+      = ["include"])` (the `cmake-codegen-interface-library-from-trace`
+      synthesis, driven by `target_include_directories(... INTERFACE ...)`
+      in the trace), so a consumer's `cc_library(deps = [":nlohmann_json"])`
+      resolves the headers + include path. Verified: a consumer
+      `#include <nlohmann/json.hpp>` compiles against the converted
+      target, and `make e2e-fidelity-compare-nlohmann-json-consumer`
+      passes (0 impactful deltas, benign auto-classified). Wired into the
+      CI `fidelity` job.
     - **Catch2 3.5.3** ⚠️ deferred — needs the converter invoked with
       `--lift-configure-file` (to recover `catch_user_config.hpp` from
       the configure_file template) AND `//tools:cmake-configure-file`
@@ -463,8 +465,6 @@ transition cleanly.
       synthesized WORKSPACE.
 
   Remaining work:
-    - Converter improvement to emit `cc_library` for INTERFACE-only
-      targets — unblocks nlohmann-json's consumer-side gate.
     - Consumer-side gates for spdlog (the project's own static lib
       consumers also use header-side typedefs / templates; an extra
       signal beyond the lib-side 1404 match).
