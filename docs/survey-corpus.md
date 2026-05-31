@@ -261,9 +261,29 @@ install them when you want the deeper surface.
   CUDA-equipped host; they're fetched so the corpus is whole regardless.
 
 These are container/CI-environment provisioning notes: the ephemeral
-survey container ships neither by default, so a setup step (or a
-`SessionStart`-style hook) should `apt-get install gfortran` and stage
-the CUDA toolkit when those members are in scope for a run.
+survey container doesn't ship every toolchain by default. The repo's
+**SessionStart hook** (`.claude/hooks/session-start.sh`, registered in
+`.claude/settings.json`) handles this for Claude-Code-on-the-web
+sessions. It provisions:
+
+- **gfortran** (default) — the OpenBLAS/eigen Fortran path.
+- **buildifier** (default, via `go install`) — the lens-2
+  canonical-form check, so `survey-gazelle` / the split gate don't pay a
+  per-run install.
+- **CUDA toolkit** (`BSB_PROVISION_CUDA=1`) — cutlass / cuda-samples;
+  opt-in because it's multi-GB.
+- **gazelle_cc toolchain warm** (`BSB_WARM_GAZELLE=1`) — pre-builds the
+  `gazelle_cc` binary into the persistent survey cache
+  (`SURVEY_GAZELLE_BZL_CACHE`) so the first `make survey-gazelle` is
+  fast; opt-in because it's a ~2-minute cold build needing BCR egress.
+
+The hook deliberately **does not install bazelisk**: the base container
+already ships a working real `bazel`, and this sandbox blocks
+`releases.bazel.build` (bazelisk's fetch 403s), so a bazelisk on PATH
+would shadow + break the working bazel. The hook is web-only (gated on
+`$CLAUDE_CODE_REMOTE`), idempotent, and non-interactive; local dev and CI
+manage their own toolchains (CI via
+`.github/actions/install-cmake-toolchain` and friends).
 
 ### Provenance / network notes
 

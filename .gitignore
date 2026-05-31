@@ -17,8 +17,14 @@ coverage.html
 .DS_Store
 
 # Claude Code worktree dir — per-agent isolated working trees
-# spawned by the harness, never committed to history.
-.claude/
+# spawned by the harness, never committed to history. Exception: the
+# committed SessionStart provisioning hook + its registration (these are
+# repo config, not per-agent worktree state).
+.claude/*
+!.claude/hooks/
+.claude/hooks/*
+!.claude/hooks/session-start.sh
+!.claude/settings.json
 
 # Local convert-element outputs
 out/
