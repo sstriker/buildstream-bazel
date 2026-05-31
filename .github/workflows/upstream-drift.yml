@@ -1,0 +1,177 @@
+# Monthly upstream-tool drift check (scheduled, non-blocking).
+#
+# The regular CI matrix tests the converter against PINNED tool versions
+# (CMAKE_VERSION in the Makefile; the e2e-cmake-matrix job's
+# 3.22/3.28/4.0/4.3 set). That catches regressions WE introduce, but not
+# breakage from tools the upstream world ships AFTER our pins were set —
+# e.g. a new cmake release changing the File API codemodel, or a bazel
+# release the gates don't expect. This job runs monthly against the
+# LATEST available cmake (and the repo's bazelisk launcher) and re-runs a
+# small survey + the converter's own version-tripwire test, so version
+# drift surfaces proactively in a run summary instead of ambushing a
+# future pin bump.
+#
+# Non-blocking by construction: it's scheduled (no PR to block) and every
+# job is continue-on-error. The signal is the run summary + the optional
+# auto-filed issue, not a red required check.
+name: Upstream drift (monthly)
+
+on:
+  schedule:
+    # 06:00 UTC on the 1st of every month.
+    - cron: "0 6 1 * *"
+  # Allow on-demand runs from the Actions UI.
+  workflow_dispatch:
+    inputs:
+      cmake_version:
+        description: "Override cmake version (empty = query latest stable)."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  latest-cmake:
+    name: Converter + survey against latest cmake
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    env:
+      # cmake 4.x drops pre-3.5 policy compat; give old-floor projects a
+      # one-version bump so configure proceeds (matches the e2e-cmake-matrix
+      # job's defensive setting).
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve latest stable cmake
+        id: cmake
+        run: |
+          ver="${{ github.event.inputs.cmake_version }}"
+          if [ -z "$ver" ]; then
+            # Latest non-rc tag from the Kitware/CMake releases.
+            ver="$(git ls-remote --tags --refs https://github.com/Kitware/CMake.git \
+              | sed 's#.*/v##' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1)"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Resolved latest cmake: $ver"
+
+      - uses: ./.github/actions/install-cmake-toolchain
+        with:
+          cmake_version: ${{ steps.cmake.outputs.version }}
+
+      - name: Record tool versions
+        run: |
+          {
+            echo "## Upstream drift — tool versions"
+            echo ""
+            echo "| tool | version |"
+            echo "| --- | --- |"
+            echo "| cmake (latest) | $(cmake --version | head -1) |"
+            echo "| ninja | $(ninja --version) |"
+            echo "| go | $(go version) |"
+            echo "| Makefile CMAKE_VERSION pin | $(sed -n 's/^CMAKE_VERSION[[:space:]]*?=[[:space:]]*\([^[:space:]]*\).*/\1/p' Makefile | head -1) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build converter
+        run: make converter 2>&1 | tee -a /tmp/drift.log
+
+      - name: Converter version tripwire (codemodel/cache schema majors)
+        # The convert-element-cmake binary asserts the File API schema
+        # majors it understands; a new cmake bumping codemodel/cache/
+        # toolchains/cmakeFiles major fires here with a clear error.
+        run: |
+          tmpdir=$(mktemp -d)
+          ./build/bin/convert-element-cmake \
+            --source-root converter/testdata/sample-projects/hello-world \
+            --out-build "$tmpdir/BUILD.bazel" \
+            --allow-cmake-version-mismatch \
+            --verify \
+            2>&1 | tee -a /tmp/drift.log
+
+      - name: Survey smoke test (clean controls + a Fortran/scale member)
+        # fmt + brotli are clean controls (0/0/0 expected); eigen exercises
+        # the Fortran partition. A non-zero rejection/idiom count that the
+        # pinned-cmake survey doesn't show is a drift signal — surfaced in
+        # the summary, not failed.
+        run: |
+          set +e
+          make fetch-fmt fetch-eigen >/dev/null 2>&1
+          # brotli isn't a default fetch target's dep; pull it directly.
+          [ -d /tmp/brotli ] || git clone --depth 1 --branch v1.2.0 \
+            https://github.com/google/brotli.git /tmp/brotli >/dev/null 2>&1
+          SURVEY_OUT_DIR=/tmp/drift-survey scripts/run-survey.sh \
+            fmt="$FMT_DIR" eigen="$EIGEN_DIR" brotli=/tmp/brotli \
+            2>&1 | tee -a /tmp/drift.log
+          {
+            echo ""
+            echo "## Survey under latest cmake"
+            echo ""
+            echo '```'
+            cat /tmp/drift-survey/summary.txt 2>/dev/null || echo "(survey produced no summary — see logs)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          FMT_DIR: /tmp/fmt
+          EIGEN_DIR: /tmp/eigen
+
+      - name: Go unit suite against latest cmake
+        run: go test ./converter/... 2>&1 | tee -a /tmp/drift.log
+
+      - name: File a drift issue on failure
+        if: failure()
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            let tail = '';
+            try {
+              tail = fs.readFileSync('/tmp/drift.log', 'utf8').split('\n').slice(-120).join('\n');
+            } catch (e) {}
+            const ver = '${{ steps.cmake.outputs.version }}';
+            const title = `Upstream drift: converter breakage under cmake ${ver}`;
+            const body = [
+              `The monthly upstream-drift job failed against **cmake ${ver}** (latest stable).`,
+              ``,
+              `This means a newer cmake than our pin changed something the converter`,
+              `or survey relies on. Triage before the next cmake pin bump.`,
+              ``,
+              `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ``,
+              `<details><summary>Last 120 log lines</summary>`,
+              ``,
+              '```',
+              tail,
+              '```',
+              `</details>`,
+            ].join('\n');
+            // Avoid duplicate issues: reuse an open one with the same title.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'upstream-drift',
+            });
+            const match = existing.data.find(i => i.title === title);
+            if (match) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: match.number, body,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['upstream-drift'],
+              });
+            }
