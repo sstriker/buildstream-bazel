@@ -96,7 +96,7 @@ datapoints noted here.
 | `Directory.installers[type=file]` | 732 | ✓ | filegroup lift |
 | `Directory.installers[type=target]` | 419 | ✓ | install-target routing |
 | `Directory.installers[type=directory]` | 7 | ✓ | filegroup lift |
-| `Directory.installers[type=export]` | 5 | ✓ | export-config tag |
+| `Directory.installers[type=export]` | 5 | partial | `cmake_config_bundle` filegroup is consumed (cross-element staging); the sibling `cc_import` / `_hdrs` facade is **dormant** — see "Cross-element export facade" below |
 | `Directory.installers[type=script]` | 10 | surfaced | warned with script file + source site, not lifted (`install_script_surface.go`) |
 | `Directory.installers[type=code]` | 10 | surfaced | warned with source site, not lifted (`install_script_surface.go`) |
 | `Directory.installers[].targetInstallNamelink` | varies | ✓ | parsed; `.so` namelink symlink intentionally not reproduced (Bazel imports by artifact, not SONAME) |
@@ -105,6 +105,51 @@ datapoints noted here.
 | `Directory.installers[].{targetId,targetIndex,targetIsImportLibrary,isForAllComponents}` | varies | ✗ | `type==target` routed via `Target.install` instead; **not in the struct** |
 | `ConfigDirectory.{parentIndex,childIndexes}` | 541 | ✗ | directory-tree topology; redundant — see "Index cross-references" below; **not in the struct** |
 | `ConfigProject.{parentIndex,childIndexes}` | varies | ✗ | project-tree topology; same redundancy; **not in the struct** |
+
+## Cross-element export facade — dormant (don't extend; investigated 2026-05-31)
+
+The Phase 6 declarative `install(EXPORT)` projection
+(`internal/exportshape`) emits three things per producer element:
+
+- a **`cmake_config_bundle`** filegroup (the synthesized
+  `<Pkg>Config.cmake` / `<Pkg>Targets.cmake`),
+- one **`<name>_import` `cc_import`** per exported library, and
+- one **`<name>_hdrs`** headers target.
+
+**Only the bundle is consumed.** The live cross-element path is:
+`write-a` stages the producer's `cmake_config_bundle` into the
+consumer's convert genrule (`$PREFIX`), the consumer's cmake
+re-resolves `find_package(<Pkg> CONFIG)` against it, and the recovered
+dep edge points at the producer's **from-source `cc_library`**
+(`//elements/prod:prod`). `scripts/meta-cross-cmake.sh` is the gate.
+
+The **`cc_import` and `_hdrs` facades are emitted but consumed by
+nothing** (grep: no dep references; the manifest's `cmake_import_labels`
+field has no reader). The `cc_import` is moreover **latent**: it's
+`cc_import(static_library = "lib/libprod.a")` — a literal *install-tree*
+path that does **not** exist in the from-source Bazel build (the
+from-source `cc_library` produces `libprod.a` in `bazel-bin`, not
+`lib/libprod.a`, and nothing materializes it).
+
+**Why not extend it (a consumer resolving onto the facade):** a
+metadata-only facade can never be buildable — you can't have a linkable
+artifact without producing it. The only buildable prebuilt path is
+**round-2's `pipeline_install`** (runs `cmake --install` → a real
+TreeArtifact; `pick_file` `cc_import`s project actual files out of it).
+So:
+
+- **From-source producer + consumer** → the from-source dep is already
+  correct, buildable, idiomatic. The facade adds nothing.
+- **Prebuilt/fallback producer** → round-2's install facade is the
+  buildable answer (currently intra-element only).
+
+A consumer-side resolver onto the codemodel `cc_import` facade was built
+and reverted once this surfaced (PR #349 history). If cross-element
+consumption of a *prebuilt* producer is ever a real need, the work is to
+**expose round-2's `pipeline_install` facade cross-element** — not to
+rebuild a (non-buildable) facade from the codemodel. A future
+`bazelidiom` audit check could flag the dormant/latent `cc_import` as
+dead emission.
 
 ## Genuine gaps (with survey impact)
 
