@@ -79,6 +79,15 @@ var cmakeConfig struct {
 	// resolve — see writeConfigSettingsPackage. Empty (default) keeps the
 	// single-config render byte-stable.
 	buildTypes []string
+
+	// autoBuildTypes selects --build-types=auto: the converter genrule
+	// gets --build-types=auto (convert-element-cmake configures Ninja
+	// Multi-Config without forcing CMAKE_CONFIGURATION_TYPES, so the
+	// project's own declared configs stand — detection happens in A's
+	// conversion action at build time, never in write-a). write-a emits
+	// the //config package over cmake's standard config set. Mutually
+	// exclusive with an explicit buildTypes list.
+	autoBuildTypes bool
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
@@ -559,7 +568,10 @@ filegroup(
 	// project B (writeConfigSettingsPackage). Empty (default) elides the
 	// flag, keeping the single-config render byte-stable.
 	buildTypesFlag := ""
-	if len(cmakeConfig.buildTypes) > 0 {
+	if cmakeConfig.autoBuildTypes {
+		buildTypesFlag = ` \
+            --build-types=auto`
+	} else if len(cmakeConfig.buildTypes) > 0 {
 		buildTypesFlag = fmt.Sprintf(` \
             --build-types=%s`, strings.Join(cmakeConfig.buildTypes, ","))
 	}

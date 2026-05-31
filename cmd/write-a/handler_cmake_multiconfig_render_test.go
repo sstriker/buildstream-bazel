@@ -142,3 +142,34 @@ func TestWriter_BuildTypes_SplitPackages_ThreadsConverterArg(t *testing.T) {
 		t.Errorf("split-packages converter_args missing --build-types:\n%s", body)
 	}
 }
+
+// TestWriter_BuildTypes_Auto covers --build-types=auto: write-a threads the
+// literal --build-types=auto into the converter genrule (config detection
+// stays in project A's conversion action — write-a never runs cmake) and
+// emits the //config package over cmake's standard config set.
+func TestWriter_BuildTypes_Auto(t *testing.T) {
+	prev := cmakeConfig
+	cmakeConfig.autoBuildTypes = true
+	t.Cleanup(func() { cmakeConfig = prev })
+
+	body := renderCmakeProjectA(t)
+	if !strings.Contains(body, "--build-types=auto") {
+		t.Errorf("auto mode: converter genrule missing --build-types=auto:\n%s", body)
+	}
+
+	outB := renderCmakeProjectB(t)
+	cfg, err := os.ReadFile(filepath.Join(outB, "config", "BUILD.bazel"))
+	if err != nil {
+		t.Fatalf("auto mode: project B missing //config/BUILD.bazel: %v", err)
+	}
+	got := string(cfg)
+	// //config covers cmake's standard set (the per-project detected set is
+	// a subset, resolved at build time in A's conversion action).
+	for _, want := range []string{
+		`name = "debug"`, `name = "release"`, `name = "relwithdebinfo"`, `name = "minsizerel"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("auto //config missing %q\n%s", want, got)
+		}
+	}
+}

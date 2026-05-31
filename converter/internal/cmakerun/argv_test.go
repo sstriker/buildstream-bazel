@@ -222,6 +222,39 @@ func TestBuildCmakeArgv_MultiConfig(t *testing.T) {
 	}
 }
 
+// TestBuildCmakeArgv_MultiConfigAuto covers the BuildTypesAuto sentinel:
+// Ninja Multi-Config, but NO -DCMAKE_CONFIGURATION_TYPES override — the
+// project's own declared config types stand, so detection happens inside
+// the conversion action (no caller needs to run cmake to discover them).
+func TestBuildCmakeArgv_MultiConfigAuto(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildTypes: []string{BuildTypesAuto},
+	}, "", "", "", "")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	wantHead := []string{
+		"-S", "/src",
+		"-B", "/build",
+		"-G", "Ninja Multi-Config",
+		"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+	}
+	if !reflect.DeepEqual(got[:len(wantHead)], wantHead) {
+		t.Errorf("auto argv head mismatch\n got: %q\nwant: %q", got[:len(wantHead)], wantHead)
+	}
+	// No config-types override and no single-config build type.
+	for _, a := range got {
+		if strings.HasPrefix(a, "-DCMAKE_CONFIGURATION_TYPES=") {
+			t.Errorf("auto must not force -DCMAKE_CONFIGURATION_TYPES: %v", got)
+		}
+		if strings.HasPrefix(a, "-DCMAKE_BUILD_TYPE=") {
+			t.Errorf("unexpected -DCMAKE_BUILD_TYPE in auto argv: %v", got)
+		}
+	}
+}
+
 // TestBuildCmakeArgv_MultiConfigCustomTypes covers the sanitizer-
 // variant naming pattern: cmake doesn't care that names aren't from
 // the standard four, and the codemodel-v2 reply carries one

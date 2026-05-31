@@ -1197,9 +1197,26 @@ transition cleanly.
   `--//config:build_type=debug` — the select resolves against the
   rendered `//config` and the library compiles. Render tests pin the flag
   threading, the `//config` package content, the skylib dep, and
-  byte-stability when unset. Per-element `--build-types` (vs the current
-  project-wide flag) and `--split-packages` multi-config composition are
-  natural follow-ons if a project needs them.
+  byte-stability when unset.
+
+  `--build-types=auto` is the zero-config form: write-a threads
+  `--build-types=auto` into the converter genrule and emits `//config`
+  over cmake's standard set, but **does the cmake detection nowhere** —
+  the architecture is write-a renders, project A converts (cmake runs
+  *there*, in the genrule), project B builds, so config detection belongs
+  in A's conversion action. `convert-element-cmake --build-types=auto`
+  (the `cmakerun.BuildTypesAuto` sentinel) configures Ninja Multi-Config
+  *without* a `-DCMAKE_CONFIGURATION_TYPES` override, letting the
+  project's own declared config types stand; the codemodel reports them
+  and the fold + `--out-config-settings` follow from exactly those.
+  write-a's static `//config` carries cmake's standard set as a superset
+  (a project's detected configs are a subset for ~all projects; a custom
+  `set(CMAKE_CONFIGURATION_TYPES …)` config needs an explicit
+  `--build-types` list so its config_setting is emitted too). Verified:
+  `convert-element-cmake --build-types=auto` on eigen detected its own
+  `Debug,Release,RelWithDebInfo` (not a forced set) with matching select
+  arms + config_settings. `--split-packages` multi-config composition is
+  a natural follow-on.
 
 - **probe-genex tolerates dangling `::` link-interface deps.**
   The cmake-4-pin corpus resurvey surfaced abseil
