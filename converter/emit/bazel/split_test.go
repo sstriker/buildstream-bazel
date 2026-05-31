@@ -305,6 +305,56 @@ func TestEmit_Split_NestedIncludeRootHeaderLibForwards(t *testing.T) {
 	}
 }
 
+// TestEmit_Split_PkgFilesGlobNotLabelized guards the split-mode glob bug
+// the gazelle round-trip harness caught on brotli: a pkg_files from
+// install(DIRECTORY) carries a glob PATTERN in Srcs (e.g.
+// "c/include/brotli/**"), not a file path. The cross-package src rewrite
+// must NOT labelize it into `glob(["//c/include:brotli/**"])` — that's an
+// invalid glob (patterns are package-relative, never absolute) and breaks
+// the BUILD load. A glob can't cross package boundaries, so once the dir
+// is its own package the pattern isn't expressible; drop the src (and the
+// now-empty pkg_files) like the bare-packaged-directory case.
+func TestEmit_Split_PkgFilesGlobNotLabelized(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "globlike",
+		Targets: []ir.Target{
+			{
+				Name:        "install_dir_include",
+				Kind:        ir.KindPkgFiles,
+				Srcs:        []string{"c/include/brotli"},
+				PkgSrcsGlob: true,
+				Visibility:  []string{"//visibility:public"},
+			},
+			{
+				// A real lib under c/include so that dir becomes its own
+				// package (the condition that triggered the labelize bug).
+				Name:       "hdrlib",
+				Kind:       ir.KindCCLibrary,
+				Hdrs:       []string{"c/include/brotli/decode.h"},
+				Includes:   []string{"c/include"},
+				Visibility: []string{"//visibility:public"},
+			},
+		},
+		SubPackages: map[string]string{"hdrlib": "c/include"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/globlike"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	for dir, body := range tree {
+		if contains(string(body), `glob(["//`) {
+			t.Errorf("package %q emitted an absolute-label glob (invalid):\n%s", dir, body)
+		}
+	}
+	// The un-expressible pkg_files is dropped, not emitted with an empty
+	// or labelized srcs.
+	for dir, body := range tree {
+		if contains(string(body), "install_dir_include") {
+			t.Errorf("package %q kept the un-splittable glob pkg_files; want it dropped:\n%s", dir, body)
+		}
+	}
+}
+
 func keysOf(m map[string][]byte) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {

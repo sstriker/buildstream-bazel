@@ -48,18 +48,50 @@ they have very different tooling support:
      `scripts/meta-cmake-split-packages.sh` gate asserts `-mode=diff` is a
      no-op. (Not re-run per-survey: it would be redundant with the
      emit-time formatting, and is already guarded by the gate.)
-   - **gazelle round-trip / fixpoint**: the *structural* idiom check, and
-     the strongest — "is the output already what gazelle would generate?"
-     `scripts/meta-gazelle-roundtrip.sh` and
-     `scripts/meta-cmake-split-gazelle.sh` render with `--gazelle-cc`,
-     run `bazel run //:gazelle`, and assert the pass is a no-op and a
-     second pass reaches a fixpoint (gazelle_cc doesn't relocate or
-     rewrite our `cc_*` rules; whole-rule `# keep` survives). This lives
-     in the e2e gates rather than the per-project survey because it needs
-     a buildable module + the `gazelle_cc` binary — heavier than the
-     best-effort survey loop, whose output isn't guaranteed to build.
-     Pointing the gazelle round-trip at wild corpus projects (not just the
-     project-B fixture) is the natural next strengthening of this lens.
+   - **gazelle round-trip**: the *structural* idiom check, and the
+     strongest — "is the output already what gazelle would generate?"
+     Two flavours:
+       - **Fixture gates** (`scripts/meta-gazelle-roundtrip.sh`,
+         `scripts/meta-cmake-split-gazelle.sh`): render the project-B
+         fixture with `--gazelle-cc`, `bazel run //:gazelle`, assert the
+         layout is maintained and a second pass is a fixpoint (whole-rule
+         `# keep` survives). These are part of the e2e suite.
+       - **Wild corpus** (`scripts/survey-gazelle-roundtrip.sh
+         <name>=<src>`, also `make survey-gazelle`): same idea pointed at
+         arbitrary corpus projects, without the project-A/B orchestration.
+         It converts with `--split-packages`, overlays the emitted BUILDs
+         onto a scratch Bazel module wired with `gazelle_cc` (rules_cc +
+         rules_pkg + the gazelle stack, versions matching write-a's
+         `--gazelle-cc` emission), and runs `bazel run //:gazelle` twice.
+         Verdicts:
+           - **load error → hard FAIL**: the converted BUILDs don't even
+             load under gazelle/bazel — a non-idiomatic emission the
+             converter produced. (This is how the harness caught the
+             split-mode `pkg_files` glob-labelize bug —
+             `glob(["//c/include:brotli/**"])`, an invalid absolute glob
+             pattern — on brotli.)
+           - **drift (converges) → reported datapoint**: gazelle_cc
+             rewrote some `cc_*` rules on the first pass but a second pass
+             is a fixpoint. Measures how far the split output is from
+             gazelle's canonical per-source-dir layout; not a hard
+             failure, since the converter+gazelle_cc design has gazelle
+             own the layout going forward.
+           - **non-convergence → reported datapoint** (hard fail under
+             `SURVEY_GAZELLE_STRICT=1`): a second pass still changes the
+             BUILDs. On a wild *standalone* project this often reflects
+             gazelle_cc's own resolver limits (e.g. internal-header
+             includes it can't attribute without the project's real Bazel
+             config), so it's informational by default.
+
+     Each wild run is a real bazel build (heavier than the per-convert
+     survey loop), so run it on the small members routinely (`googletest`,
+     `brotli` — the `make survey-gazelle` default) and the large ones
+     (`vtk`, `llvm`) on demand via `SURVEY_GAZELLE_PROJECTS`. Needs
+     bazel ≥ 9 + cmake + ninja and a reachable Bazel Central Registry;
+     `META_GAZELLE_USE_HOST_GO=1` uses the host Go toolchain when go.dev
+     egress is blocked, and the Bazel cache is persistent
+     (`SURVEY_GAZELLE_BZL_CACHE`, default `~/.cache/survey-gazelle-bazel`)
+     so repeat runs reuse the fetched `gazelle_cc` toolchain.
 
 3. **Did we lose intent vs. the CMakeLists?** — **the adversarial lens**,
    now *partially* automated (dependency-coverage, below). Lenses 1 and 2

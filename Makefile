@@ -8,7 +8,7 @@
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
         fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-survey-regression \
-        update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        survey-gazelle update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -1151,6 +1151,20 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
 fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples
+
+# survey-gazelle: the strongest lens-2 (structural idiom) check — run the
+# gazelle_cc round-trip on wild corpus projects (see
+# scripts/survey-gazelle-roundtrip.sh and docs/survey-corpus.md). Hard-
+# fails only when the converted BUILDs don't load under gazelle_cc (a
+# non-idiomatic emission); reports first-pass drift and non-convergence
+# as idiom datapoints (SURVEY_GAZELLE_STRICT=1 escalates non-convergence
+# to a failure). Needs bazel>=9 + cmake + ninja (skips cleanly otherwise);
+# META_GAZELLE_USE_HOST_GO=1 uses the host Go toolchain when go.dev egress
+# is blocked. Defaults to the small/fast members; override
+# SURVEY_GAZELLE_PROJECTS for others.
+SURVEY_GAZELLE_PROJECTS ?= googletest=$(GTEST_DIR) brotli=$(BROTLI_DIR)
+survey-gazelle:
+	scripts/survey-gazelle-roundtrip.sh $(SURVEY_GAZELLE_PROJECTS)
 
 # Regenerate golden files. Re-runs the pipeline, overwrites *.golden.
 update-golden:
