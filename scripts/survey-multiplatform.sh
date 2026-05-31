@@ -44,7 +44,11 @@ fi
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-platforms="${SURVEY_MP_PLATFORMS:-linux windows darwin}"
+# "auto" (the default) derives each project's platform set from its own
+# if()/elseif() predicates via a native trace configure (detect_platforms);
+# an explicit space-list (e.g. "linux windows") forces that set for every
+# project.
+platforms="${SURVEY_MP_PLATFORMS:-auto}"
 out_dir="${SURVEY_MP_OUT_DIR:-/tmp/survey-mp-out}"
 toolchain_dir="$repo_root/scripts/survey-toolchains"
 
@@ -79,6 +83,62 @@ constraints_for() {
     esac
 }
 
+# detect_platforms <src> — derive the platform matrix from the project's
+# OWN platform if()/elseif() predicates, recovered from a single native
+# --trace-expand configure. cmake records every if/elseif predicate it
+# EVALUATES — including the branches it didn't take — so a Linux configure
+# still sees `if(WIN32)` / `elseif(APPLE)` etc. We parse the project-file
+# (non-cmake-module) predicates and map the recognized platform shorthands
+# to our matrix names; native `linux` is always included (it's the
+# configure host). Echoes a space-separated set; empty configure → just
+# "linux". Mirrors the converter's selectKeyFromIfArgs recognizer.
+detect_platforms() {
+    _dp_src="$1"
+    _dp_bld="$(mktemp -d)"
+    cmake -S "$_dp_src" -B "$_dp_bld" -G Ninja \
+        --trace-expand --trace-format=json-v1 \
+        --trace-redirect="$_dp_bld/trace.jsonl" >/dev/null 2>&1 || true
+    _dp_set="linux"
+    if [ -f "$_dp_bld/trace.jsonl" ] && command -v python3 >/dev/null 2>&1; then
+        _dp_extra="$(python3 - "$_dp_bld/trace.jsonl" <<'PY'
+import json, sys
+recog = {
+    "WIN32": "windows", "MSVC": "windows", "MINGW": "windows", "CYGWIN": "windows",
+    "APPLE": "darwin", "LINUX": "linux",
+}
+sysname = {"Windows": "windows", "Darwin": "darwin", "Linux": "linux"}
+out = set()
+for line in open(sys.argv[1], errors="ignore"):
+    try:
+        e = json.loads(line)
+    except Exception:
+        continue
+    if e.get("cmd") not in ("if", "elseif"):
+        continue
+    f = e.get("file", "")
+    # project files only — skip cmake's own modules (they probe the HOST,
+    # not the project's intended target platforms).
+    if "/Modules/" in f or "/share/cmake" in f or "/cmake-build" in f:
+        continue
+    args = e.get("args", [])
+    for a in args:
+        if a in recog:
+            out.add(recog[a])
+    if len(args) >= 3 and args[0] == "CMAKE_SYSTEM_NAME" and args[1] in ("STREQUAL", "MATCHES"):
+        nm = args[2].strip('"')
+        if nm in sysname:
+            out.add(sysname[nm])
+print(" ".join(sorted(out)))
+PY
+)"
+        for _p in $_dp_extra; do
+            case " $_dp_set " in *" $_p "*) ;; *) _dp_set="$_dp_set $_p" ;; esac
+        done
+    fi
+    rm -rf "$_dp_bld"
+    printf '%s' "$_dp_set"
+}
+
 for entry in "$@"; do
     name="${entry%%=*}"
     src="${entry#*=}"
@@ -93,13 +153,22 @@ for entry in "$@"; do
         continue
     fi
 
+    # Resolve this project's platform set: "auto" derives it from the
+    # project's own if()/elseif() predicates (one native trace configure);
+    # an explicit list is used verbatim.
+    proj_platforms="$platforms"
+    if [ "$platforms" = "auto" ]; then
+        proj_platforms="$(detect_platforms "$src")"
+        echo "  $name: platforms (auto-detected): $proj_platforms" >&2
+    fi
+
     # Convert one cell per platform. A platform whose configure fails
     # (e.g. a project that hard-requires a real cross-compiler) is
     # dropped from the matrix — the fold still runs over the platforms
     # that succeeded.
     cell_args=""
     ok_platforms=""
-    for p in $platforms; do
+    for p in $proj_platforms; do
         constraint="$(constraints_for "$p")"
         if [ -z "$constraint" ]; then
             echo "  $name: unknown platform '$p'; skipping" >&2
