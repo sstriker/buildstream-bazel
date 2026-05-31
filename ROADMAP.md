@@ -416,32 +416,6 @@ transition cleanly.
 
 ## Next
 
-- **Tackle the remaining codemodel/trace *consumption* residue.**
-  With the File API field-level coverage gaps closed (see Done), the
-  only not-fully-consumed items left in
-  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md)
-  are lift-quality ones — "Genuine gaps" §2–3 plus the one
-  non-redundant trace extractor. Drive each to either a real lift or
-  a formally-closed won't-do:
-  (1) **`CompileGroup.includes[].isSystem`** — route
-  `target_include_directories(SYSTEM ...)` to `-isystem` copts
-  (lossy: not transitive) or a wrapped header `cc_library` whose
-  includes are system-flagged via the cc_toolchain. Survey-empty
-  today, so fixture-gated — add a SYSTEM-includes fixture first.
-  (2) **`CompileGroup.precompileHeaders`** — currently tag-only
-  (`cmake-codegen-pch`); Bazel-idiomatic PCH is a cc_toolchain `pch`
-  feature wired operator-side
-  ([`docs/operator-toolchain-features.md`](docs/operator-toolchain-features.md)),
-  so the lift needs operator-toolchain coordination, not just
-  converter work — scope that handshake or keep tag-only by decision.
-  (3) **`target_link_options` PUBLIC/INTERFACE** — the one trace
-  extractor whose data the codemodel doesn't already fold in; lossy
-  in Bazel (no transitive linkopts) without a split-target trick.
-  Low value; close as won't-do unless a survey project demands it.
-  Everything else the audit lists as "not wired" is redundant with
-  the codemodel (folds through automatically) or operator-side
-  config — correctly unconsumed, not part of this goal.
-
 - **Thread `--build-types` through write-a's project rendering.**
   Multi-config conversion (the Phase 5 fold + `--out-config-settings`,
   see Done) is wired end-to-end in `convert-element-cmake` standalone,
@@ -690,6 +664,31 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Remaining codemodel/trace consumption residue resolved.**
+  The lift-quality items left after the coverage-gap work (see
+  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md))
+  are now each either lifted or formally closed:
+  (1) **`CompileGroup.includes[].isSystem`** — *consumed*. A
+  `target_include_directories(... SYSTEM PRIVATE ...)` include now
+  routes to `-isystem<dir>` compile-only copts (plain PRIVATE stays
+  `-I<dir>`), gated on `CompileInclude.IsSystem` in `lower.go`;
+  PUBLIC system includes already ride `cc_library.includes`, which
+  Bazel emits as `-isystem` + transitive (the earlier "includes is
+  `-I`" framing was wrong), so the SYSTEM keyword is faithful there
+  without extra work. Pinned by hand-built fixtures
+  (`system_includes_test.go`) since the survey corpus uses no SYSTEM
+  includes. (2) **`CompileGroup.precompileHeaders`** — *closed,
+  won't lift*: kept tag-only (`cmake-codegen-pch`). A real PCH lift
+  needs the operator's cc_toolchain to define the `pch` feature (a
+  cross-boundary handshake), and PCH is a build-speed optimisation,
+  not correctness — the target compiles identically without it — so
+  the auditable tag is the terminal state. (3)
+  **`target_link_options` PUBLIC/INTERFACE** — *closed, won't-do*:
+  lossy in Bazel (no transitive linkopts) without a split-target
+  trick, low value, no survey demand. Everything else the audit
+  lists as "not wired" is redundant with the codemodel or
+  operator-side config — correctly unconsumed.
 
 - **cmake-spec coverage gaps closed.** With all five File API
   object kinds already consumed, the field-level residue catalogued

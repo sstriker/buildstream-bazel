@@ -1857,7 +1857,18 @@ func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix st
 			seenInc[rel] = true
 			if privateIncludeDirs[inc.Path] {
 				// Compile-only — don't propagate to consumers.
-				irt.Copts = append(irt.Copts, "-I"+rel)
+				// target_include_directories(... SYSTEM PRIVATE ...)
+				// keeps its system flavour as -isystem so header
+				// warnings stay suppressed the way cmake suppresses
+				// them; plain PRIVATE stays -I. (PUBLIC includes ride
+				// irt.Includes / cc_library.includes, which Bazel
+				// already emits as -isystem + transitive, so the SYSTEM
+				// keyword is faithful there without extra handling.)
+				flag := "-I"
+				if inc.IsSystem {
+					flag = "-isystem"
+				}
+				irt.Copts = append(irt.Copts, flag+rel)
 				continue
 			}
 			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})

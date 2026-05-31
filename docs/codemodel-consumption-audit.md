@@ -72,8 +72,8 @@ datapoints noted here.
 | `Target.compileGroups[].language` | 576 | ✓ | language routing |
 | `Target.compileGroups[].languageStandard` | 493 | ✓ | `-std=` injection |
 | `Target.compileGroups[].sourceIndexes` | 576 | ✓ | per-group source split |
-| `Target.compileGroups[].includes[].isSystem` | 0 | partial | survey: 0 usage; `-isystem` route not implemented |
-| `Target.compileGroups[].precompileHeaders` | varies | tag-only | `cmake-codegen-pch` tag emitted; no PCH lift |
+| `Target.compileGroups[].includes[].isSystem` | 0 | ✓ | PRIVATE system include → `-isystem<dir>` copts; PUBLIC rides `cc_library.includes`, which Bazel already emits as `-isystem` + transitive |
+| `Target.compileGroups[].precompileHeaders` | varies | tag-only | `cmake-codegen-pch` tag; PCH lift kept tag-only by decision (operator cc_toolchain feature) |
 | `Target.dependencies` | 2151 | ✓ | `deps = [...]` |
 | `Target.dependencies[].backtrace` | 2151 | ✗ | per-dep call-site provenance; niche |
 | `Target.artifacts` | 558 | ✓ | tool-from-target lift |
@@ -129,33 +129,46 @@ omission is fully auditable. The remaining work is genuinely
 out of scope (no Bazel analogue for install-time cmake
 execution).
 
-### 2. `Target.compileGroups[].includes[].isSystem` — 0 in survey
+### 2. `Target.compileGroups[].includes[].isSystem` — consumed
 
-Bazel `cc_library.includes` is non-system (`-I<dir>`). cmake's
-`target_include_directories(t SYSTEM ...)` should ideally route
-to `copts = ["-isystem<dir>"]` (lossy: not transitive) or be
-handled via a wrapped `cc_library` whose own includes are
-`-isystem`-flagged via cc_toolchain.
+Earlier framing claimed Bazel's `cc_library.includes` emits `-I`;
+it actually emits **`-isystem` + transitive** (Bazel docs: "Each
+string is prepended with `-isystem` and added to COPTS … added for
+this rule and every rule that depends on it"). So a cmake
+`target_include_directories(t SYSTEM PUBLIC dir)` already maps
+faithfully onto `includes` — system flavour *and* transitive
+propagation both preserved — with no extra handling.
 
-**Survey is empty** — none of the 6 surveyed projects use SYSTEM
-includes. Defer until a fixture demands it.
+The one place the SYSTEM keyword changes the converter's output is
+the **PRIVATE** include path, which rides compile-only copts (cmake
+PRIVATE doesn't propagate to consumers, and Bazel's `includes` is
+consumer-visible, so PRIVATE has to go on copts). There the lift now
+chooses `-isystem<dir>` for `SYSTEM PRIVATE` and `-I<dir>` for plain
+PRIVATE (`lower.go`, gated on `CompileInclude.IsSystem`), so the
+warning-suppressing SYSTEM flavour survives. Tests:
+`system_includes_test.go`.
 
-### 3. `Target.compileGroups[].precompileHeaders` — tag-only
+**Status (closed)**: `isSystem` is consumed where it affects output
+(PRIVATE → `-isystem`) and faithful where Bazel already handles it
+(PUBLIC via `includes`). Survey remains empty, so the path is pinned
+by hand-built fixtures rather than a corpus project.
+
+### 3. `Target.compileGroups[].precompileHeaders` — tag-only, by decision
 
 The PCH header set is recorded in the codemodel; current handling
 emits a `cmake-codegen-pch` tag. Bazel `cc_library` has no native
 PCH attribute — Bazel-idiomatic PCH is a cc_toolchain feature
 (`pch` flag set wired by the operator's cc_toolchain config).
 
-**Recommended action**: keep tag-only. PCH lift requires
-operator-side cc_toolchain coordination; documented in
-[`operator-toolchain-features.md`](operator-toolchain-features.md).
-
-> These lift-quality items (§2 `isSystem`, §3 PCH) plus the one
-> non-redundant trace extractor (`target_link_options`
-> PUBLIC/INTERFACE) are tracked as a `ROADMAP.md` `Next` goal —
-> "Tackle the remaining codemodel/trace consumption residue" — to
-> drive each to a real lift or a formally-closed won't-do.
+**Status (closed — won't lift)**: kept tag-only by decision. A real
+PCH lift can't live in the converter alone: it needs the operator's
+cc_toolchain to define the `pch` feature, which is a cross-boundary
+handshake (the converter emits BUILD; the cc_toolchain is operator-
+owned). PCH is a build-speed optimisation, not a correctness
+requirement — the converted target compiles identically without it —
+so the tag (which keeps the omission auditable) is the right
+terminal state until an operator-toolchain contract exists. Tracked
+in [`operator-toolchain-features.md`](operator-toolchain-features.md).
 
 ## The other File API object kinds
 
@@ -275,7 +288,7 @@ Not yet wired (with rationale):
 
 | Trace command | Why not |
 |---|---|
-| `target_link_options` | Bazel `cc_library.linkopts` already PRIVATE-equivalent; PUBLIC/INTERFACE link_options lossy in Bazel (no transitive linkopts) — would require split-target trick. Low value. |
+| `target_link_options` | **Won't-do (decided).** Bazel `cc_library.linkopts` is already PRIVATE-equivalent; PUBLIC/INTERFACE link_options are lossy in Bazel (no transitive linkopts) without a split-target trick. Low value, no survey demand — closed unless a corpus project surfaces a need. |
 | `target_link_directories` | Codemodel folds into `Link.CommandFragments[role=libraryPath]` |
 | `target_sources` | Codemodel exposes sources directly |
 | `set_target_properties` | Probe-genex covers the properties Bazel cares about (POSITION_INDEPENDENT_CODE, VISIBILITY presets); the rest are IDE / debugger-only |
