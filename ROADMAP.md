@@ -498,17 +498,18 @@ transition cleanly.
   in PR #261) fails CI with a precise per-symbol diagnostic
   instead of being caught only when a downstream consumer breaks.
 
-- **Per-platform fold for round-2 trace-driven kinds —
-  kind:meson Phase B promotion.** The render gate for the
-  install fan-out shipped
-  (`scripts/meta-meson-round2-fallback-multiplatform.sh`,
-  `make e2e-meta-meson-round2-fallback-multiplatform`); the
-  sibling-kind contract is now uniformly green across kind:make
-  / autotools / cmake-fallback / meson-fallback. Production
-  promotion is gated on an FDSDK fixture that actually exercises
-  multi-platform meson at scale (today the gate uses the
-  meson-greet smoke fixture). Promote once a real consumer
-  surfaces the need.
+- **kind:meson Phase B multi-platform production promotion.** The
+  per-platform fold for round-2 trace-driven kinds is **done** — both
+  sides fan out (project-A converter genrules + fold-element; project-B
+  N per-platform install genrules each publishing their platform's
+  trace), and the sibling-kind contract is uniformly green across
+  kind:make / autotools / cmake-fallback / meson-fallback (render gates
+  `scripts/meta-{meson,cmake,autotools}-round2*-multiplatform.sh`). The
+  one thing left is *production* promotion of multi-platform meson,
+  gated on a real FDSDK consumer at scale (today's gate uses the
+  meson-greet smoke fixture). Externally gated — promote once a real
+  consumer surfaces the need; there's no converter/harness work
+  outstanding.
 - **Trace-side narrowing-audit coverage.** The narrowing-audit
   gate is now blocking for the cmake oracle (see Done), but the
   trace-side oracle (the build-tracer + trace.log path for round-2
@@ -2283,12 +2284,13 @@ transition cleanly.
   makemaker / modulebuild); kind:autotools and kind:cmake
   Phase B fallback share the same shape and ship in follow-up
   commits on the same branch. Project B's per-platform install
-  fan-out is queued under Next ("Per-platform fold for round-2
-  trace-driven kinds"); without it, multi-platform end-to-end
-  publishes only one platform's trace at runtime, so the
-  feature is render-shape complete but not yet runtime-
-  complete. Render gate:
-  `scripts/meta-trace-round2-fold.sh`.
+  fan-out subsequently shipped too — per-element render fans out
+  to N install genrules (one per platform, each baking
+  --platform=<name> so its trace publishes under <platform>/) +
+  a select()-filegroup, so multi-platform now publishes every
+  platform's trace at runtime (gated by
+  `scripts/meta-{meson,cmake,autotools}-round2*-multiplatform.sh`).
+  Render gate: `scripts/meta-trace-round2-fold.sh`.
 
 - **Platform-tagged synthetic AC key for trace publish/lookup.**
   `tracenorm.SyntheticActionDigest` takes a platform tag in
