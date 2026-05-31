@@ -419,6 +419,14 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 // lexicographic key order, then the optional --trace-* and
 // CMAKE_TOOLCHAIN_FILE / CMAKE_PROJECT_TOP_LEVEL_INCLUDES tail.
 // Stable across runs of the same Options.
+// BuildTypesAuto is the sentinel Options.BuildTypes value (surfaced to the
+// CLI as --build-types=auto) selecting "Ninja Multi-Config, but let the
+// project's own CMAKE_CONFIGURATION_TYPES stand" — buildCmakeArgv omits the
+// -DCMAKE_CONFIGURATION_TYPES override so cmake reports whatever configs the
+// project declares. Keeps multi-config detection inside the conversion
+// action; no caller has to run cmake to discover the config set.
+const BuildTypesAuto = "auto"
+
 func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath string) ([]string, error) {
 	if _, ok := opts.ExtraCacheVars["CMAKE_BUILD_TYPE"]; ok {
 		return nil, fmt.Errorf("cmakerun: CMAKE_BUILD_TYPE in ExtraCacheVars; use Options.BuildType instead")
@@ -434,7 +442,19 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 		"-S", opts.SourceRoot,
 		"-B", opts.BuildDir,
 	}
-	if len(opts.BuildTypes) > 0 {
+	if len(opts.BuildTypes) == 1 && opts.BuildTypes[0] == BuildTypesAuto {
+		// --build-types=auto: Ninja Multi-Config, but let the project's
+		// own CMAKE_CONFIGURATION_TYPES stand (don't force a set with
+		// -D). cmake reports whatever configs the project declares in the
+		// codemodel; the lower-side multi-config fold + config_settings
+		// emit follow from those. This is how multi-config detection
+		// stays in the conversion action — no caller (write-a) needs to
+		// run cmake to discover the config set.
+		argv = append(argv,
+			"-G", "Ninja Multi-Config",
+			"-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+		)
+	} else if len(opts.BuildTypes) > 0 {
 		// Multi-config: validate that entries are non-empty and
 		// reject duplicates so the codemodel-v2 reply doesn't end
 		// up with two same-named Configuration entries.

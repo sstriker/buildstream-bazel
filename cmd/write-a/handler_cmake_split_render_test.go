@@ -92,7 +92,7 @@ func TestWriter_SplitPackages_DepChannel(t *testing.T) {
 	elem := &element{Name: "consumer"}
 	deps := []cmakeDepBundleLabel{{DepName: "lib", Label: "//elements/lib:cmake_config_bundle"}}
 	depExports := []string{"//elements/lib:exports.json"}
-	block := cmakeSplitConvertBlock(elem, deps, depExports, "", "", "", "")
+	block := cmakeSplitConvertBlock(elem, deps, depExports, "", "", "", "", "")
 
 	for _, want := range []string{
 		`imports_manifest = "imports.json",`,
@@ -107,7 +107,7 @@ func TestWriter_SplitPackages_DepChannel(t *testing.T) {
 
 	// No-dep, no-diagnostics element: none of the dep-channel attrs.
 	cmakeConfig.diagnostics = false
-	bare := cmakeSplitConvertBlock(&element{Name: "solo"}, nil, nil, "", "", "", "")
+	bare := cmakeSplitConvertBlock(&element{Name: "solo"}, nil, nil, "", "", "", "", "")
 	for _, unwanted := range []string{"imports_manifest", "exports_in", "dep_bundles", "emit_rejections"} {
 		if strings.Contains(bare, unwanted) {
 			t.Errorf("no-dep split block unexpectedly contains %q\n%s", unwanted, bare)
