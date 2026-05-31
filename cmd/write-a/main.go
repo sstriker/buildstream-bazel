@@ -406,6 +406,7 @@ func main() {
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	gazelleCCFlag := flag.Bool("gazelle-cc", false, "optional: wire gazelle_cc into project B so `bazel run //:gazelle` maintains the converted BUILDs (the Phase-8b continuous-conversion flow: the converter bootstraps the per-directory split via --split-packages, then gazelle_cc canonicalizes / owns the layout — relocating cc_library targets to their source dirs, preferring implementation_deps; converter targets gazelle_cc can't regenerate carry rule-level # keep to survive). Adds bazel_dep(gazelle/gazelle_cc/rules_go) to project B's MODULE.bazel and a gazelle_binary(languages=[\"@gazelle_cc//language/cc\"]) + gazelle(name=\"gazelle\") pair to project B's root BUILD.bazel. No go_sdk extension is emitted — gazelle_cc's transitive go_sdk.download handles the toolchain in network-having environments; the sandbox e2e gate appends go_sdk.host() to overlay.MODULE.bazel. Off (the default) leaves project B's MODULE.bazel + root BUILD.bazel byte-identical to today. See docs/design/cmake-split-packages.md.")
 	splitPackages := flag.Bool("split-packages", false, "optional: render kind:cmake elements as one BUILD.bazel per CMake source directory (the gazelle per-directory model) instead of a single monolithic BUILD per element. The converter genrule threads --split-packages and emits a single build-packages.tar of the per-sub-package tree (a genrule can't declare the discovered-at-action-time sub-package set as static outs); stage-b unpacks it into project B's elements/<name>/. Off (the default) keeps the single-BUILD shape. See docs/design/cmake-split-packages.md.")
+	buildTypes := flag.String("build-types", "", "optional: comma-separated cmake configuration names (e.g. \"Debug,Release,RelWithDebInfo\"). Threads --build-types into every kind:cmake converter genrule so cmake runs under the Ninja Multi-Config generator and BUILD.bazel.out carries the per-config //config:<name> select() arms (Phase 5 multi-config fold). write-a renders the matching //config package (string_flag build_type + one config_setting per non-sanitizer config) into project B so the labels resolve; select a config at build time with --//config:build_type=<name>. Empty (default) keeps the single-config render byte-stable.")
 	cmakeRound2Fallback := flag.Bool("cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
 	mesonBin := flag.String("convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/architecture.md.")
 	mesonRound2Fallback := flag.Bool("meson-round2-fallback", false, "optional: enable kind:meson round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-target-fallback=true into convert-element-meson so native-lowering refusals (subproject, custom_target, generated_sources, cross-compile, unresolved-dependency, unknown target type) produce the install-plan-driven placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (meson setup + ninja + meson install --destdir + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --convert-element-meson + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-meson doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
@@ -489,6 +490,13 @@ func main() {
 	cmakeConfig.bakeIn = resolved.bakeIn
 	cmakeConfig.diagnostics = resolved.diagnostics
 	cmakeConfig.splitPackages = *splitPackages
+	if *buildTypes != "" {
+		for _, bt := range strings.Split(*buildTypes, ",") {
+			if bt = strings.TrimSpace(bt); bt != "" {
+				cmakeConfig.buildTypes = append(cmakeConfig.buildTypes, bt)
+			}
+		}
+	}
 	gazelleCC = *gazelleCCFlag
 	mesonConfig.fidelity = resolved.fidelity
 	mesonConfig.diagnostics = resolved.diagnostics
@@ -1826,6 +1834,14 @@ func writeProjectB(g *graph, outDir string) error {
 	if err := writeFile(filepath.Join(outDir, "BUILD.bazel"), projectBRootBUILD()); err != nil {
 		return err
 	}
+	// Multi-config: when --build-types is set, the staged
+	// BUILD.bazel.out files carry //config:<name> select() arms, so
+	// project B (where they're loaded) needs the matching //config
+	// package. Rendered once, statically, here — the config_settings are
+	// identical across every element. No-op when single-config.
+	if err := writeConfigSettingsPackage(outDir); err != nil {
+		return fmt.Errorf("render //config package: %w", err)
+	}
 
 	// Project B reads the same sources extension + JSON as project
 	// A so @src_<key>// repos resolve to the same CAS Directories
@@ -2099,6 +2115,16 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 	// not the rules package — but symmetric wiring keeps the
 	// staging step idempotent (the same MODULE.bazel works
 	// pre- and post-stage).
+	if len(cmakeConfig.buildTypes) > 0 {
+		// Multi-config (--build-types): the //config package this render
+		// emits uses bazel_skylib's string_flag to drive its
+		// config_settings, so project B's module graph needs skylib for
+		// the //config:build_type load() to resolve. Gated on
+		// --build-types so single-config B's MODULE.bazel stays
+		// byte-stable.
+		b.WriteString(`bazel_dep(name = "bazel_skylib", version = "1.8.2")
+`)
+	}
 	fmt.Fprintf(&b, `bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(
     module_name = "rules_buildstream_bazel",

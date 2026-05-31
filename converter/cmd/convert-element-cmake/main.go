@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
+	"github.com/sstriker/buildstream-bazel/converter/emit/configsettings"
 	"github.com/sstriker/buildstream-bazel/converter/internal/bazelidiom"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
@@ -28,7 +29,6 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
-	"github.com/sstriker/buildstream-bazel/converter/internal/emit/configsettings"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"

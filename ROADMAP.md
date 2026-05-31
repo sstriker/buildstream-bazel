@@ -416,18 +416,6 @@ transition cleanly.
 
 ## Next
 
-- **Thread `--build-types` through write-a's project rendering.**
-  Multi-config conversion (the Phase 5 fold + `--out-config-settings`,
-  see Done) is wired end-to-end in `convert-element-cmake` standalone,
-  but write-a's pipeline doesn't thread `--build-types` to its per-element
-  converter genrules — so a write-a-rendered project is always
-  single-config. To make multi-config reachable through the full
-  pipeline: thread the build-types list to each element's converter
-  genrule, and render the shared `//config` package once at project root
-  (the same place `renderPlatformsBuild` emits `//platforms`) by reusing
-  `internal/emit/configsettings.Emit`. Until then, multi-config is a
-  convert-element-cmake-direct / survey capability.
-
 - **A-B-C fidelity harness — productionize the ad-hoc convert+rebuild
   survey.** Foundation shipped — `cmd/fidelity-compare` Go tool
   + `scripts/run-fidelity.sh` driver + `make e2e-fidelity-compare-{zlib,
@@ -1188,7 +1176,30 @@ transition cleanly.
   `--//config:build_type=debug`, and rejects undeclared values. Pinned
   by `configsettings` unit tests + the
   `TestConfigLabel_MatchesConfigSettingsEmit` cross-package parity guard.
-  (write-a pipeline threading is the remaining reach — see Next.)
+  (write-a pipeline threading landed next — see below.)
+
+- **write-a threads `--build-types` — multi-config through the full
+  pipeline.** Completes the multi-config story: `write-a --build-types=
+  Debug,Release,RelWithDebInfo` threads `--build-types` into every
+  kind:cmake converter genrule (so each `BUILD.bazel.out` carries the
+  `//config:<name>` select() arms) and renders the shared `//config`
+  package once into project B — where the staged `.out` files load —
+  reusing `converter/emit/configsettings.Emit` (moved out of
+  `internal/` so write-a, rooted at the repo root, can import it past
+  Go's internal rule; the `convert-element-cmake --out-config-settings`
+  path emits byte-identically). project B's `MODULE.bazel` also gains a
+  `bazel_skylib` `bazel_dep` (the `//config` string_flag needs it) when
+  `--build-types` is set. Byte-stable when unset: no flag in the
+  converter cmd, no `//config` package, no skylib dep. Verified end-to-
+  end under cmake 4.3.3 + bazel 9: render A+B with `--build-types`, build
+  A's converted output (the `.out` carries the `//config:` arms), stage
+  into B, and `bazel build` B's converted `cc_library` with
+  `--//config:build_type=debug` — the select resolves against the
+  rendered `//config` and the library compiles. Render tests pin the flag
+  threading, the `//config` package content, the skylib dep, and
+  byte-stability when unset. Per-element `--build-types` (vs the current
+  project-wide flag) and `--split-packages` multi-config composition are
+  natural follow-ons if a project needs them.
 
 - **probe-genex tolerates dangling `::` link-interface deps.**
   The cmake-4-pin corpus resurvey surfaced abseil

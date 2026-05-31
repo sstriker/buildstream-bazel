@@ -69,6 +69,16 @@ var cmakeConfig struct {
 	// unpacks that tar into project B's elements/<name>/ tree.
 	// Off (default) keeps the single BUILD.bazel.out shape.
 	splitPackages bool
+
+	// buildTypes, when non-empty, threads --build-types=<a,b,c> into
+	// every kind:cmake converter genrule so cmake runs under the Ninja
+	// Multi-Config generator and BUILD.bazel.out carries the per-config
+	// //config:<name> select() arms (Phase 5 multi-config fold). write-a
+	// renders the matching //config package (string_flag + config_settings
+	// via emit/configsettings) into project B so the labels
+	// resolve — see writeConfigSettingsPackage. Empty (default) keeps the
+	// single-config render byte-stable.
+	buildTypes []string
 }
 
 // cmakeHandler renders a kind:cmake element. The project-A side is a
@@ -543,6 +553,16 @@ filegroup(
 		bakeInFlag = fmt.Sprintf(` \
             --bake-in=%s`, cmakeConfig.bakeIn)
 	}
+	// Multi-config: thread --build-types so cmake runs under Ninja
+	// Multi-Config and BUILD.bazel.out carries the //config:<name>
+	// select() arms. write-a renders the matching //config package into
+	// project B (writeConfigSettingsPackage). Empty (default) elides the
+	// flag, keeping the single-config render byte-stable.
+	buildTypesFlag := ""
+	if len(cmakeConfig.buildTypes) > 0 {
+		buildTypesFlag = fmt.Sprintf(` \
+            --build-types=%s`, strings.Join(cmakeConfig.buildTypes, ","))
+	}
 	// Diagnostics dial: thread --diagnostics + a per-element
 	// rejections.json output. The converter writes the file (empty
 	// when no rejections fired) so the declared output always
@@ -614,7 +634,7 @@ filegroup(
 	// B's elements/<name>/ tree by per-file content compare. Default
 	// (off) keeps the single-file genrule shape byte-for-byte.
 	if cmakeConfig.splitPackages {
-		b.WriteString(cmakeSplitConvertBlock(elem, cmakeDepLabels, depExportsLabels, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag))
+		b.WriteString(cmakeSplitConvertBlock(elem, cmakeDepLabels, depExportsLabels, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, buildTypesFlag))
 		return b.String()
 	}
 
@@ -665,7 +685,7 @@ genrule(
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
             --out-exports="$(location exports.json)" \\
-            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s%[16]s
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s%[16]s%[19]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .%[17]s
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -688,7 +708,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs)
+`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, buildTypesFlag)
 	return b.String()
 }
 
@@ -720,7 +740,7 @@ filegroup(
 // threaded into converter_args on the split path yet. dep_bundles
 // extraction (the prefix wiring) IS supported. See
 // docs/design/cmake-split-packages.md for the follow-on.
-func cmakeSplitConvertBlock(elem *element, cmakeDepLabels []cmakeDepBundleLabel, depExportsLabels []string, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag string) string {
+func cmakeSplitConvertBlock(elem *element, cmakeDepLabels []cmakeDepBundleLabel, depExportsLabels []string, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, buildTypesFlag string) string {
 	// srcs: real sources + (when narrowed) zero stubs only — the
 	// shadow source-root inputs. Dep bundles / aux ride separate attrs.
 	srcs := fmt.Sprintf(`":%s_real"`, elem.Name)
@@ -776,6 +796,7 @@ func cmakeSplitConvertBlock(elem *element, cmakeDepLabels []cmakeDepBundleLabel,
 		flagTokens(fallbackFlag),
 		flagTokens(fidelityFlag),
 		flagTokens(bakeInFlag),
+		flagTokens(buildTypesFlag),
 	}, " "))
 	converterArgs = strings.Join(strings.Fields(converterArgs), " ")
 

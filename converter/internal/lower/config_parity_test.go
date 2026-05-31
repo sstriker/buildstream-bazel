@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/converter/internal/emit/configsettings"
+	"github.com/sstriker/buildstream-bazel/converter/emit/configsettings"
 )
 
 // TestConfigLabel_MatchesConfigSettingsEmit is the cross-package guard that

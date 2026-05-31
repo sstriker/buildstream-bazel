@@ -272,7 +272,7 @@ func configOnlyTargetNames(configs []fileapi.Configuration) []string {
 // config_setting label the convention surfaces:
 // `//config:<name-lowercased>`. The backing config_settings are
 // emitted by convert-element-cmake --out-config-settings (the
-// internal/emit/configsettings package); the
+// emit/configsettings package); the
 // TestConfigLabel_MatchesConfigSettingsEmit parity test pins that
 // the two sides agree on naming.
 func configLabel(cellName string) string {
