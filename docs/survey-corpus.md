@@ -34,13 +34,32 @@ they have very different tooling support:
    subtract the *external* class before reading a number as "converter
    debt" (see pitfall 3 below).
 
-2. **Are we emitting non-idiomatic Bazel?** — the `bazel-idiom.json`
-   report (`bazelidiom.Audit`, runs on every convert). This is the one
-   lens that is **fully automated and per-run**: `empty-srcs`,
-   `empty-cc-library`, `empty-cc-import`, `test-with-no-entry`,
-   `raw-toolchain-feature-flag`, etc. Treat any non-zero count here as a
-   real defect to drive to zero (this is what surfaced the eigen
-   empty-srcs and VTK empty-cc-library work).
+2. **Are we emitting non-idiomatic Bazel?** — three complementary
+   oracles, weakest-to-strongest:
+
+   - **`bazel-idiom.json`** (`bazelidiom.Audit`, runs on every convert):
+     the *semantic* idiom check — `empty-srcs`, `empty-cc-library`,
+     `empty-cc-import`, `test-with-no-entry`, `raw-toolchain-feature-flag`,
+     etc. Per-survey and fully automated; drive any non-zero count to zero
+     (this surfaced the eigen empty-srcs and VTK empty-cc-library work).
+   - **`buildifier -mode=diff`**: the *syntactic* canonical-form check.
+     The emitter renders through buildifier's own formatter
+     (`build.Format`), so output is canonical by construction — the
+     `scripts/meta-cmake-split-packages.sh` gate asserts `-mode=diff` is a
+     no-op. (Not re-run per-survey: it would be redundant with the
+     emit-time formatting, and is already guarded by the gate.)
+   - **gazelle round-trip / fixpoint**: the *structural* idiom check, and
+     the strongest — "is the output already what gazelle would generate?"
+     `scripts/meta-gazelle-roundtrip.sh` and
+     `scripts/meta-cmake-split-gazelle.sh` render with `--gazelle-cc`,
+     run `bazel run //:gazelle`, and assert the pass is a no-op and a
+     second pass reaches a fixpoint (gazelle_cc doesn't relocate or
+     rewrite our `cc_*` rules; whole-rule `# keep` survives). This lives
+     in the e2e gates rather than the per-project survey because it needs
+     a buildable module + the `gazelle_cc` binary — heavier than the
+     best-effort survey loop, whose output isn't guaranteed to build.
+     Pointing the gazelle round-trip at wild corpus projects (not just the
+     project-B fixture) is the natural next strengthening of this lens.
 
 3. **Did we lose intent vs. the CMakeLists?** — **the adversarial lens**,
    now *partially* automated (dependency-coverage, below). Lenses 1 and 2
@@ -99,6 +118,17 @@ they have very different tooling support:
    relocation cases above).
 
 ## The corpus
+
+The corpus is curated for **complementary high-signal coverage**, not
+breadth for its own sake. Each project earns its place by exercising
+patterns the others *don't* — a new member should expose a converter gap
+(or guard a fixed one) that the existing set misses, so the "Why it's in
+the corpus" column reads as a distinct capability, not a duplicate. The
+full list is meant to be read together: between them they should cover
+the idiom + intent surface the converter has to handle. When expanding,
+prefer a codebase that stresses an unrepresented shape (a new codegen
+style, dependency idiom, install/export pattern, generator quirk) over
+one more project that looks like abseil.
 
 | Project | Why it's in the corpus | Source | Fetch |
 | --- | --- | --- | --- |
