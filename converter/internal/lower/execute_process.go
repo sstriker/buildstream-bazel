@@ -420,7 +420,40 @@ func liftCreateSymlinkLike(what, op string, args []string, hostSrcDir, recordedS
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("%s: v1 supports the 2-arg form only (got %d args)", what, len(args)), false
 	}
-	return emitCopyFileOrDir(what, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitSymlinkCopy(what, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// emitSymlinkCopy handles the symlink ops (cmake -E create_symlink /
+// raw ln). It reproduces the link as a copy of the target's bytes via
+// emitCopyFileOrDir — EXCEPT for the install-compat-alias shape, which
+// it skips benignly.
+//
+// The alias shape: a symlink whose source can't anchor under the
+// source root AND whose link can't anchor under the build dir. These
+// are versioned install-compat aliases over build-generated files —
+// libpng's `cmake -E create_symlink libpng16-config libpng-config` and
+// `libpng16.pc -> libpng.pc`, the canonical `.so.N -> .so` /
+// `-config` / `.pc` symlinks projects create at install time. With
+// nothing anchorable on either side there is nothing for Bazel to
+// track, the same "nothing to anchor" character as the make_directory
+// / remove no-op family — so skip (no genrule, no refusal) rather than
+// dropping the whole element into the round-2 fallback over a link with
+// zero effect on the built artifact.
+//
+// The narrowness: a link that DOES anchor under the build dir is a
+// potential real output (a build-generated header alias a later step
+// #includes), so it still flows to emitCopyFileOrDir — which refuses if
+// the source is unrecoverable. We don't silently drop a
+// possibly-load-bearing symlink; only the anchors-nowhere alias skips.
+func emitSymlinkCopy(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	if _, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir); !ok {
+		if _, ok := executeProcessAnchorOutput(dst, recordedBuildDir); !ok {
+			// Install-compat alias (build-generated source, link not a
+			// tracked build output): nothing to anchor — benign skip.
+			return nil, "", true
+		}
+	}
+	return emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // emitCopyGenrule anchors a (src, dst) pair and appends a single
@@ -523,10 +556,12 @@ func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	}
 	// op label "ln" tags the genrule with the raw driver name (the
 	// raw-`cp` precedent), keeping raw-ln lifts distinguishable from
-	// `cmake -E create_symlink` in audit queries. Routes through the
-	// file-or-dir dispatch: `ln -s` can target a directory, which
-	// must copy recursively rather than emit a broken `cp <dir>`.
-	return emitCopyFileOrDir("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	// `cmake -E create_symlink` in audit queries. Routes through
+	// emitSymlinkCopy: shares the create_symlink file-or-dir dispatch
+	// (`ln -s` can target a directory) AND the install-compat-alias
+	// benign skip (a versioned `.so.N` / `-config` alias over a
+	// build-generated file that anchors nowhere).
+	return emitSymlinkCopy("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // liftCp translates a raw POSIX `cp` execute_process call into

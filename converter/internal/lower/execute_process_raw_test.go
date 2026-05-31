@@ -487,3 +487,63 @@ func TestRecoverExecuteProcess_LiftLn_DirectoryTarget(t *testing.T) {
 		t.Errorf("expected execute-process-op=ln tag; got %v", g.Tags)
 	}
 }
+
+// TestRecoverExecuteProcess_CreateSymlink_InstallCompatAliasSkips is the
+// libpng regression: `cmake -E create_symlink libpng16-config
+// libpng-config` (and the `libpng16.pc -> libpng.pc` shape) is a
+// versioned install-compat alias over a BUILD-GENERATED file — the
+// source anchors nowhere under the source root and the link anchors
+// nowhere under the build dir. With nothing to track on either side it
+// must skip benignly (like the make_directory/remove no-ops), NOT
+// hard-fail the element with unsupported-execute-process.
+func TestRecoverExecuteProcess_CreateSymlink_InstallCompatAliasSkips(t *testing.T) {
+	cases := [][]string{
+		{"cmake", "-E", "create_symlink", "libpng16-config", "libpng-config"},
+		{"cmake", "-E", "create_symlink", "libpng16.pc", "libpng.pc"},
+		{"ln", "-s", "libpng16-config", "libpng-config"},
+	}
+	for _, argv := range cases {
+		t.Run(strings.Join(argv, "_"), func(t *testing.T) {
+			calls := []shadow.ExecuteProcessCall{{
+				File:     "/src/CMakeLists.txt",
+				Line:     993,
+				Commands: [][]string{argv},
+			}}
+			cc := newCodegenContext()
+			outs, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+			if len(refusals) != 0 {
+				t.Errorf("install-compat alias should skip, not refuse; got %+v", refusals)
+			}
+			if len(cc.Genrules) != 0 {
+				t.Errorf("install-compat alias should emit no genrule; got %+v", cc.Genrules)
+			}
+			if len(outs) != 0 {
+				t.Errorf("install-compat alias should produce no outs; got %+v", outs)
+			}
+		})
+	}
+}
+
+// TestRecoverExecuteProcess_CreateSymlink_BuildDirLinkStillRefuses pins
+// the narrowness of the skip: a link that DOES anchor under the build
+// dir is a potential real output (a build-generated header alias a later
+// step #includes), so an unrecoverable source must still REFUSE — we
+// only skip the anchors-nowhere alias, never a possibly-load-bearing
+// symlink.
+func TestRecoverExecuteProcess_CreateSymlink_BuildDirLinkStillRefuses(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:     "/src/CMakeLists.txt",
+		Commands: [][]string{{"cmake", "-E", "create_symlink", "/build/gen/real.h", "/build/gen/alias.h"}},
+	}}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 1 {
+		t.Fatalf("build-dir-anchored link with unrecoverable source should refuse; got %+v", refusals)
+	}
+	if !strings.Contains(refusals[0].Reason, "source root") {
+		t.Errorf("refusal should name the source-root anchor failure; got %q", refusals[0].Reason)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("no genrule on refusal; got %+v", cc.Genrules)
+	}
+}

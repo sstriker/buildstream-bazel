@@ -906,6 +906,18 @@ transition cleanly.
       no hermetic analog so only the destination is reproduced). The
       file-or-dir dispatch (`emitCopyFileOrDir`) is shared by the
       create_symlink / ln and rename / mv lifts.
+    - *Install-compat-alias symlinks (no output to anchor).* A
+      `create_symlink` / `ln` whose source anchors nowhere under the
+      source root AND whose link anchors nowhere under the build dir
+      is a versioned install-compat alias over a build-generated file
+      (libpng's `libpng16-config → libpng-config`, the canonical
+      `.so.N` / `-config` / `.pc` aliases) — nothing for Bazel to
+      track on either side, the same "nothing to anchor" character as
+      the no-op family below, so skipped (`emitSymlinkCopy`) rather
+      than refused. Narrowly: a link that DOES anchor under the build
+      dir is a potential real output (a generated-header alias a later
+      step `#include`s), so an unrecoverable source there still
+      refuses — only the anchors-nowhere alias skips.
     - *No-op family (no output to anchor).* `cmake -E make_directory`
       / `remove` / `remove_directory` and the raw `mkdir` / `rm` /
       `rmdir` analogs are recognized as benign no-ops — skipped (no
