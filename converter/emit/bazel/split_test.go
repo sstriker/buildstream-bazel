@@ -241,6 +241,70 @@ func TestEmit_Split_GenrulePlacedInOutputPackage(t *testing.T) {
 	}
 }
 
+// TestEmit_Split_NestedIncludeRootHeaderLibForwards pins the
+// nested-include-root forwarding fix: when include-roots nest (VTK's
+// vtk_module_third_party shape — an ancestor forwarder include-root
+// plus a deeper one that physically owns the headers), planSplit's
+// longest-match header assignment gives every header to the deepest
+// root, leaving the ancestor header lib empty. The ancestor lib must
+// then DEP on its descendant include-root's header lib so consumers
+// that had `-I<ancestor>` on their include path still resolve the
+// (recursively reachable) headers — and the otherwise-empty ancestor
+// cc_library stops tripping the empty-cc-library finding.
+func TestEmit_Split_NestedIncludeRootHeaderLibForwards(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "vtklike",
+		Targets: []ir.Target{
+			{
+				// Real lib in the deepest package; owns the header and
+				// declares its own dir as an include root.
+				Name:       "token",
+				Kind:       ir.KindCCLibrary,
+				Srcs:       []string{"tp/token/vt/token/Token.cxx"},
+				Hdrs:       []string{"tp/token/vt/token/Token.h"},
+				Includes:   []string{"tp/token/vt/token"},
+				Visibility: []string{"//visibility:public"},
+			},
+			{
+				// Consumer that had `-Itp/token` (the ancestor
+				// forwarder include-root) and #includes
+				// <vt/token/Token.h>.
+				Name:       "consumer",
+				Kind:       ir.KindCCLibrary,
+				Srcs:       []string{"app/use.cxx"},
+				Includes:   []string{"tp/token"},
+				Visibility: []string{"//visibility:public"},
+			},
+		},
+		SubPackages: map[string]string{
+			"token":    "tp/token/vt/token",
+			"consumer": "app",
+		},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/vtklike"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+
+	// The ancestor header lib lives in package tp/token; the deepest
+	// header lib (which owns Token.h) lives in tp/token/vt/token.
+	ancestor, ok := tree["tp/token"]
+	if !ok {
+		t.Fatalf("no tp/token package emitted; got dirs %v", keysOf(tree))
+	}
+	body := string(ancestor)
+	// The ancestor header lib must forward to the descendant header lib.
+	wantDep := "//elements/vtklike/tp/token/vt/token:tp_token_vt_token_headers"
+	if !contains(body, wantDep) {
+		t.Errorf("ancestor header lib missing forwarding dep %q; got:\n%s", wantDep, body)
+	}
+	// The descendant header lib owns Token.h.
+	deepest, ok := tree["tp/token/vt/token"]
+	if !ok || !contains(string(deepest), "Token.h") {
+		t.Errorf("descendant header lib should own Token.h; got:\n%s", deepest)
+	}
+}
+
 func keysOf(m map[string][]byte) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
