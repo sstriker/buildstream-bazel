@@ -968,6 +968,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// test target, so the rename is safe; the authoritative
 	// codemodel-derived target keeps its name.
 	disambiguateTestNameCollisions(pkg)
+	// Fortran partition — move Fortran (.f / .f90 / ...) sources out of
+	// cc_* targets (which can't compile them) into a sibling filegroup,
+	// keeping the cc_* target buildable and the Fortran intent labeled +
+	// operator-routable. See partitionFortranSources.
+	partitionFortranSources(pkg)
 	// HEADER_FILE_ONLY reclassification — walk every target's
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked
@@ -3431,6 +3436,102 @@ func disambiguateTestNameCollisions(pkg *ir.Package) {
 		t.Name = candidate
 		seen[candidate] = true
 	}
+}
+
+// fortranSrcExts are the source extensions Bazel's cc_* rules can't
+// compile (cmake drives a per-source Fortran compiler that Bazel cc
+// rules have no equivalent for). Mirrors the bazelidiom audit's list;
+// kept local so lower has no dependency on the audit package.
+var fortranSrcExts = map[string]bool{
+	".f": true, ".f90": true, ".f95": true, ".f03": true, ".f08": true,
+	".for": true, ".ftn": true, ".fpp": true,
+}
+
+func isFortranSrc(p string) bool {
+	if dot := strings.LastIndex(p, "."); dot >= 0 {
+		return fortranSrcExts[strings.ToLower(p[dot:])]
+	}
+	return false
+}
+
+// partitionFortranSources moves Fortran sources OUT of each cc_*
+// target's srcs into a sibling `filegroup` named `<target>_fortran_srcs`.
+//
+// Why: cmake routes a target's Fortran (.f / .f90 / ...) sources into
+// the same add_library/add_executable as its C/C++ sources, but Bazel's
+// cc rules dispatch by file extension and have NO Fortran compile action
+// — so a cc_library carrying `.f` srcs is unbuildable as emitted (the
+// non-cc-language-source idiom). There's no canonical Bazel Fortran
+// ruleset (rules_fortran is experimental + not in the BCR) and no
+// gazelle Fortran extension to hand off to, so the converter can't emit
+// a buildable Fortran rule. The honest, plain-Bazel increment:
+//
+//   - pull the Fortran sources out so the cc_* target keeps only its
+//     C/C++/ASM sources and BUILDS;
+//   - park them in a `filegroup` (global Bazel namespace, no MODULE
+//     deps) that's clearly labeled, so the intent is preserved and an
+//     operator can point a Fortran ruleset (rules_fortran / foreign_cc /
+//     hand-rolled) at `:<target>_fortran_srcs` when they wire one;
+//   - tag both the cc_* target and the filegroup
+//     `cmake-codegen-fortran-target` so the gap is grep-able and the
+//     bazelidiom audit's non-cc-language-source finding has a concrete
+//     home (the filegroup), not a broken cc_library.
+//
+// A cc_* target whose srcs become EMPTY after partitioning (a
+// Fortran-only library, e.g. OpenBLAS's reference-LAPACK targets) is
+// dropped — an srcs-less cc_library/cc_binary is Bazel-invalid, and the
+// filegroup carries the real content. The target's deps still resolve
+// via the filegroup label if needed; the all-sources-elided refusal
+// path (lowerTarget) doesn't fire here because partitioning runs as a
+// post-pass after emit-time target assembly.
+func partitionFortranSources(pkg *ir.Package) {
+	if pkg == nil {
+		return
+	}
+	var added []ir.Target
+	kept := pkg.Targets[:0]
+	for i := range pkg.Targets {
+		t := pkg.Targets[i]
+		isCC := t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCBinary ||
+			t.Kind == ir.KindCCInterface || t.Kind == ir.KindCCTest
+		if !isCC || len(t.Srcs) == 0 {
+			kept = append(kept, t)
+			continue
+		}
+		var ftn, rest []string
+		for _, s := range t.Srcs {
+			if isFortranSrc(s) {
+				ftn = append(ftn, s)
+			} else {
+				rest = append(rest, s)
+			}
+		}
+		if len(ftn) == 0 {
+			kept = append(kept, t)
+			continue
+		}
+		// Build the sibling filegroup carrying the Fortran sources.
+		fg := ir.Target{
+			Name:       t.Name + "_fortran_srcs",
+			Kind:       ir.KindFilegroup,
+			Srcs:       ftn,
+			Visibility: []string{"//visibility:public"},
+			Tags:       []string{"cmake-codegen-fortran-target"},
+		}
+		added = append(added, fg)
+
+		if len(rest) == 0 {
+			// Fortran-only target: the cc_* rule would be srcs-less
+			// (Bazel-invalid). Drop it; the filegroup holds the content.
+			continue
+		}
+		t.Srcs = rest
+		if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
+			t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
+		}
+		kept = append(kept, t)
+	}
+	pkg.Targets = append(kept, added...)
 }
 
 // reclassifyHeaderOnlySources walks every target in pkg.Targets
