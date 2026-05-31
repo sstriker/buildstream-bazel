@@ -261,9 +261,14 @@ install them when you want the deeper surface.
   CUDA-equipped host; they're fetched so the corpus is whole regardless.
 
 These are container/CI-environment provisioning notes: the ephemeral
-survey container ships neither by default, so a setup step (or a
-`SessionStart`-style hook) should `apt-get install gfortran` and stage
-the CUDA toolkit when those members are in scope for a run.
+survey container ships neither by default. The repo's **SessionStart
+hook** (`.claude/hooks/session-start.sh`, registered in
+`.claude/settings.json`) handles this for Claude-Code-on-the-web
+sessions: it installs **gfortran by default**, and the **CUDA toolkit
+when `BSB_PROVISION_CUDA=1`** is set (opt-in — the toolkit is multi-GB).
+The hook is web-only (gated on `$CLAUDE_CODE_REMOTE`), idempotent, and
+non-interactive; local dev and CI manage their own toolchains (CI via
+`.github/actions/install-cmake-toolchain` and friends).
 
 ### Provenance / network notes
 
