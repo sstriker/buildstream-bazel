@@ -375,3 +375,57 @@ func TestBuildCmakeArgv_AllThreeHooksOrder(t *testing.T) {
 		t.Errorf("missing arg %q in %q", want, got)
 	}
 }
+
+// TestConfigureEnv_ExtraEntriesAppend pins that configureEnv threads
+// caller-supplied extra entries (the policy-floor rescue uses this) after
+// its controlled set, and adds nothing extra when none are passed.
+func TestConfigureEnv_ExtraEntriesAppend(t *testing.T) {
+	const policyVar = "CMAKE_POLICY_VERSION_MINIMUM=3.5"
+
+	has := func(env []string, want string) bool {
+		for _, e := range env {
+			if e == want {
+				return true
+			}
+		}
+		return false
+	}
+
+	if has(configureEnv("/home", ""), policyVar) {
+		t.Errorf("configureEnv with no extras unexpectedly carries %q", policyVar)
+	}
+	withRescue := configureEnv("/home", "", policyVar)
+	if !has(withRescue, policyVar) {
+		t.Errorf("configureEnv(extra=%q) did not append it: %v", policyVar, withRescue)
+	}
+	if withRescue[len(withRescue)-1] != policyVar {
+		t.Errorf("extra entry should append last; got tail %q", withRescue[len(withRescue)-1])
+	}
+}
+
+// TestMatchPolicyFloorRemoved pins the sentinel that drives Configure's
+// automatic cmake-4 policy-floor retry.
+func TestMatchPolicyFloorRemoved(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		stderr string
+		want   bool
+	}{
+		{
+			name: "canonical cmake 4.x floor-removal fatal",
+			stderr: "CMake Error at CMakeLists.txt:1 (cmake_minimum_required):\n" +
+				"  Compatibility with CMake < 3.5 has been removed from CMake.\n" +
+				"  Or, add -DCMAKE_POLICY_VERSION_MINIMUM=3.5 to try configuring anyway.",
+			want: true,
+		},
+		{name: "unrelated configure error", stderr: "CMake Error: target foo not found", want: false},
+		{name: "CMP0026 fatal (different remediation)", stderr: "LOCATION property may not be read; CMP0026", want: false},
+		{name: "empty", stderr: "", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := matchPolicyFloorRemoved([]byte(tc.stderr)); got != tc.want {
+				t.Errorf("matchPolicyFloorRemoved() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

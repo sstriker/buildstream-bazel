@@ -376,11 +376,15 @@ transition cleanly.
 
 - **Promote the cmake-version matrix from soft to blocking.**
   The four-version `e2e-cmake-matrix` shakeout (3.22 / 3.28 /
-  4.0 / 4.3) shipped — see Done. Promotion criteria + tracker
-  live in `docs/cmake-version-matrix.md`: three consecutive
-  green merges across all four entries, any "Known
-  per-version notes" rows resolved or explicitly deferred,
-  then flip `continue-on-error: true` → `false` on the
+  4.0 / 4.3) shipped — see Done. The pinned production gate
+  now runs cmake `4.3.3` too (see "Production cmake pin moved
+  to 4.x" in Done), so the matrix's `4.3.3` entry already has
+  a blocking sibling — strengthening the promotion case for
+  that row. Promotion criteria + tracker live in
+  `docs/cmake-version-matrix.md`: three consecutive green
+  merges across all four entries, any "Known per-version
+  notes" rows resolved or explicitly deferred, then flip
+  `continue-on-error: true` → `false` on the
   `e2e-cmake-matrix` job header (one-line YAML change; the
   `strategy.fail-fast: false` flag stays — it controls
   intra-matrix isolation, not block / non-block). Whatever
@@ -1099,6 +1103,34 @@ transition cleanly.
   and a non-blocking `e2e-latest-cmake` CI job...") retires
   in favour of this Done entry; the schema-major validation
   it referenced already shipped pre-matrix and stays as is.
+
+- **Production cmake pin moved to 4.x.** The blocking
+  dev-loop + worker pin (`Makefile` `CMAKE_VERSION`,
+  `deploy/buildbarn/runner/Dockerfile` `ARG CMAKE_VERSION`)
+  moved `3.28.3` → `4.3.3`, making cmake 4 the version real
+  conversions run against (the matrix's 4.0.7/4.3.3 entries
+  had been green across the e2e surface, so the bump was
+  low-risk). The catch: cmake 4 fatal-errors at configure on
+  any project whose `cmake_minimum_required` floor is < 3.5
+  (the OpenBLAS class, plus the try_compile sub-projects
+  cmake generates internally), and the converter's hermetic
+  configure env (`cmakerun.configureEnv`) strips any
+  externally-set `CMAKE_POLICY_VERSION_MINIMUM`. So
+  `cmakerun.Configure` now retries **reactively**: when a
+  configure pass fatal-errors with cmake 4.x's floor-removal
+  message (`matchPolicyFloorRemoved`), it re-runs once with
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` — the bump cmake itself
+  suggests. Reactive rather than always-on so the first pass
+  stays pristine for projects that don't need it (the var
+  would otherwise flip a sub-3.5-floor project's old-policy
+  defaults to NEW) and the observed failure stays a visible
+  "leans on a pre-3.5 floor" signal. Verified under cmake
+  4.3.3: a sub-3.5-floor fixture
+  (`testdata/sample-projects/policy-floor-removed`) only
+  configures because the retry fires; the CMP0026 LOCATION-read
+  hint still surfaces (that fixture declares 3.20, so the
+  floor retry never engages). `docs/cmake-version-matrix.md`
+  documents the reactive retry alongside the matrix-env knob.
 
 - **probe-genex composes with Ninja Multi-Config.**
   `probe-genex.cmake` now emits per-config OUTPUT paths

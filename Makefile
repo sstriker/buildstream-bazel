@@ -12,7 +12,7 @@
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
-CMAKE_VERSION  ?= 3.28.3
+CMAKE_VERSION  ?= 4.3.3
 NINJA_VERSION  ?= 1.11.1
 
 # M2 acceptance-package version. Bumping requires a re-run of

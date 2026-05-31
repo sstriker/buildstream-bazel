@@ -91,10 +91,11 @@ route LOCATION queries to `$<TARGET_FILE:<tgt>>`.
    (`message(STATUS "${LOC}")`, `if("${LOC}" MATCHES …)`) sees the
    literal `$<TARGET_FILE:foo>` text and likely misbehaves.
 
-3. **Pin cmake to a 3.x release** (`CMAKE_VERSION=3.28.3` is the
-   default in `Makefile`). cmake 3.x emits a deprecation warning but
-   resolves LOCATION. In cmake 4.x the policy is gone entirely and
-   `-DCMAKE_POLICY_DEFAULT_CMP0026=OLD` is rejected.
+3. **Override cmake to a 3.x release** (the `Makefile` default now
+   tracks cmake 4.x; set `CMAKE_VERSION=3.28.3` to downgrade). cmake 3.x
+   emits a deprecation warning but resolves LOCATION. In cmake 4.x the
+   policy is gone entirely and `-DCMAKE_POLICY_DEFAULT_CMP0026=OLD` is
+   rejected.
 
 ## Resolved conversion deltas
 

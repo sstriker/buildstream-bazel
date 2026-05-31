@@ -202,7 +202,7 @@ build half locally.
   ```sh
   sudo apt-get install ninja-build
   # cmake: install the version pinned in `Makefile`'s
-  # CMAKE_VERSION (currently 3.28.3); apt's default is
+  # CMAKE_VERSION (currently 4.3.3); apt's default is
   # often older.
   ```
 

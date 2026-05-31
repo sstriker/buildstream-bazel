@@ -337,24 +337,51 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		return Reply{}, err
 	}
 
-	cmd := exec.CommandContext(ctx, "cmake", argv...)
-	// Tee cmake's stderr into a tail buffer so a failed run can
-	// be annotated with hints for well-known incompat patterns
-	// (cmake 4.x CMP0026, etc.) without breaking the live
-	// op-stderr passthrough. The buffer is bounded to keep
-	// memory usage predictable on projects whose configure
-	// emits thousands of lines.
-	stderrTail := &boundedBuffer{limit: 16 * 1024}
-	cmd.Stdout = opts.Stdout
-	if opts.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(opts.Stderr, stderrTail)
-	} else {
-		cmd.Stderr = stderrTail
+	// runOnce executes the staged cmake argv with the controlled env plus
+	// any extra entries (e.g. a policy-floor rescue), teeing cmake's
+	// stderr into a fresh bounded tail buffer so a failed run can be
+	// annotated with hints for well-known incompat patterns (cmake 4.x
+	// CMP0026, etc.) without breaking the live op-stderr passthrough. The
+	// buffer is bounded to keep memory predictable on projects whose
+	// configure emits thousands of lines.
+	runOnce := func(extraEnv ...string) (error, []byte) {
+		cmd := exec.CommandContext(ctx, "cmake", argv...)
+		stderrTail := &boundedBuffer{limit: 16 * 1024}
+		cmd.Stdout = opts.Stdout
+		if opts.Stderr != nil {
+			cmd.Stderr = io.MultiWriter(opts.Stderr, stderrTail)
+		} else {
+			cmd.Stderr = stderrTail
+		}
+		cmd.Env = configureEnv(homeDir, opts.PrefixDir, extraEnv...)
+		return cmd.Run(), stderrTail.Bytes()
 	}
-	cmd.Env = configureEnv(homeDir, opts.PrefixDir)
 
-	if err := cmd.Run(); err != nil {
-		return Reply{}, annotateConfigureFailure(err, stderrTail.Bytes())
+	runErr, stderrBytes := runOnce()
+	if runErr != nil && matchPolicyFloorRemoved(stderrBytes) {
+		// cmake 4.x removed compatibility with cmake_minimum_required
+		// floors below 3.5 and fatal-errors at configure on projects (and
+		// the try_compile sub-projects cmake generates internally) that
+		// still declare them — the OpenBLAS class. Retry once with the
+		// one-version policy bump cmake itself suggests
+		// (CMAKE_POLICY_VERSION_MINIMUM=3.5) so these projects configure.
+		//
+		// This is reactive — after observing the failure — rather than
+		// setting the var on every cmake-4 configure: it keeps the
+		// configure pristine for the projects that don't need it (the var
+		// would otherwise flip a sub-3.5-floor project's old-policy
+		// defaults to NEW), and the first-pass failure stays a visible
+		// signal that the project leans on a pre-3.5 floor. cmake re-runs
+		// configure cleanly in the same build dir — the floor check fires
+		// at cmake_minimum_required, before project() populates the cache.
+		if opts.Stderr != nil {
+			fmt.Fprintln(opts.Stderr,
+				"cmakerun: configure hit cmake 4.x's pre-3.5 policy-floor removal; retrying once with CMAKE_POLICY_VERSION_MINIMUM=3.5")
+		}
+		runErr, stderrBytes = runOnce("CMAKE_POLICY_VERSION_MINIMUM=3.5")
+	}
+	if runErr != nil {
+		return Reply{}, annotateConfigureFailure(runErr, stderrBytes)
 	}
 
 	// Best-effort read of the variable dump (only when we
@@ -698,8 +725,9 @@ func isVolatileVarName(name string) bool {
 // inherited so cmake/ninja resolve via whatever the host or worker
 // provides; the rest is fixed for cross-host determinism. The
 // CMAKE_FIND_USE_*_PATH cluster suppresses host-leak find_package paths
-// (see docs/cmake_analysis.md).
-func configureEnv(homeDir, prefixDir string) []string {
+// (see docs/cmake_analysis.md). extra entries (e.g. a policy-floor rescue)
+// append after the controlled set.
+func configureEnv(homeDir, prefixDir string, extra ...string) []string {
 	env := []string{
 		"PATH=" + os.Getenv("PATH"),
 		"HOME=" + homeDir,
@@ -718,5 +746,6 @@ func configureEnv(homeDir, prefixDir string) []string {
 	if prefixDir != "" {
 		env = append(env, "CMAKE_PREFIX_PATH="+prefixDir)
 	}
+	env = append(env, extra...)
 	return env
 }
