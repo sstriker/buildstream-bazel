@@ -899,6 +899,65 @@ transition cleanly.
   generated header is load-bearing, so reproducing the copy can't
   drop a real compile input.
 
+- **`execute_process` `cmake -E` lift parity — the file-op
+  family.** Extends the raw-`cp` precedent (issue #312) across the
+  remaining configure-time `execute_process` shapes whose `cmake -E`
+  op has a sound Bazel analog, on both the builtin and the raw-POSIX
+  spelling:
+    - *Copy family (produce outputs).* Raw `touch` → the existing
+      `liftCMakeETouch` empty-file genrule (analog of `cmake -E
+      touch`); raw `ln [-s]` and `cmake -E create_symlink` →
+      create_symlink-as-copy, **file-or-directory aware** (a symlink
+      whose target is a directory — LLVM/VTK staging an `include`
+      tree into the build dir — copies its contents recursively
+      rather than emitting a broken single-file `cp <dir>`; a
+      not-on-disk file target soft-falls-back to the single-file
+      copy shape, preserving the offline-conversion behaviour);
+      `cmake -E copy_directory` / `copy_directory_if_different` →
+      recursive contents-copy genrule (no source-basename insert,
+      unlike `cp -R`); `cmake -E rename` and raw `mv` →
+      rename-as-copy (file or directory; the source-side removal has
+      no hermetic analog so only the destination is reproduced). The
+      file-or-dir dispatch (`emitCopyFileOrDir`) is shared by the
+      create_symlink / ln and rename / mv lifts.
+    - *Install-compat-alias symlinks (no output to anchor).* A
+      `create_symlink` / `ln` whose source anchors nowhere under the
+      source root AND whose link anchors nowhere under the build dir
+      is a versioned install-compat alias over a build-generated file
+      (libpng's `libpng16-config → libpng-config`, the canonical
+      `.so.N` / `-config` / `.pc` aliases) — nothing for Bazel to
+      track on either side, the same "nothing to anchor" character as
+      the no-op family below, so skipped (`emitSymlinkCopy`) rather
+      than refused. Narrowly: a link that DOES anchor under the build
+      dir is a potential real output (a generated-header alias a later
+      step `#include`s), so an unrecoverable source there still
+      refuses — only the anchors-nowhere alias skips.
+    - *No-op family (no output to anchor).* `cmake -E make_directory`
+      / `remove` / `remove_directory` and the raw `mkdir` / `rm` /
+      `rmdir` analogs are recognized as benign no-ops — skipped (no
+      genrule), not refused. A bare directory isn't a genrule output
+      (the files written into it are recovered by their own calls,
+      each of which `mkdir -p "$(dirname "$@")"`), and deletion has
+      no build-time analog (fresh sandbox per action); neither can
+      drop a real compile input, so falling into the round-2 fallback
+      over them would be wrong.
+  The classifier sends each to `BucketCMakeE` argv-only
+  (`touchDrivers` / `symlinkDrivers` / `renameDrivers` / `noopDrivers`
+  maps mirroring `copyDrivers`; the no-op ops also added to
+  `supportedCMakeEOps`); flag/operand parsing + file-vs-directory
+  decisions stay in the lifters. The copy / dir-copy emit cores are
+  shared (`emitCopyGenrule`, `emitDirCopyGenrule`) so `cmake -E`,
+  `cp -R`, `copy_directory`, `rename`, and `mv` all funnel through one
+  place and anchor diagnostics name the original call shape. Genrule
+  tags carry the raw driver basename (`cp` / `ln` / `mv`, `touch`
+  shared with the builtin) so audits can split raw-command lifts from
+  `cmake -E` lifts. The genrule-rewrite side
+  (`genrule_cmake_e_rewrite.go`, for `add_custom_command`-derived
+  cmd bytes) already translated this whole op set, so this slice
+  closes the gap on the `execute_process` side. Also hardened the
+  raw-command dispatch against a latent `argv[3:]` panic on short
+  argv (e.g. `touch marker`).
+
 - **Strip cross-target hdrs duplication
   (`stripDepOwnedHdrs`).** Real-world cmake projects
   surface every public header in every target's `hdrs`

@@ -263,22 +263,67 @@ func formatExecuteProcessFailure(refusals []executeProcessRefusal) error {
 // trace-vs-ninja paths to recover.
 func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
 	argv := call.Commands[0] // single-COMMAND guaranteed by Classify
-	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op
-	args := argv[3:]
+	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op.
+	// Guard the slice: the raw-command buckets (cp / touch_raw / ln)
+	// have no `-E <op>` prefix, so their argv can be shorter than 3
+	// (e.g. `touch marker` is len 2). Those cases re-slice from
+	// argv[1:] below; computing argv[3:] unconditionally would panic
+	// on them. cmake -E ops always have len >= 3 (Classify refuses
+	// `cmake -E` with no op), so args stays correct for them.
+	var args []string
+	if len(argv) >= 3 {
+		args = argv[3:]
+	}
+	// Benign no-ops (cmake -E make_directory / remove / remove_directory
+	// and the raw mkdir / rm / rmdir analogs): a filesystem side-effect
+	// with no consumable Bazel output to anchor a genrule on. Skip
+	// without emitting anything and without refusing — dropping the
+	// element into the round-2 fallback over a side-effect that can't
+	// lose a real compile input would be wrong. Checked before the
+	// switch so both the cmake -E and raw spellings share one arm.
+	if noopExecuteProcessOps[v.CMakeEOp] {
+		return nil, "", true
+	}
 	switch v.CMakeEOp {
 	case "touch":
 		return liftCMakeETouch(args, recordedBuildDir, cc)
-	case "copy", "copy_if_different", "create_symlink":
-		// create_symlink shares the (src, dst) two-arg shape with
-		// copy / copy_if_different. Bazel actions run hermetically;
-		// the action's output is the file at <dst>. Whether the
-		// cmake-side path creates that file via cp or ln -sf is
-		// irrelevant to downstream consumers — they read bytes by
-		// path. Lifting symlink as copy preserves the dst-anchored
-		// path semantics and avoids the subtle issues genrule
-		// outputs have with symlinks (action-cache hashing,
-		// sandbox cleanup, cross-fs handling).
+	case "copy", "copy_if_different":
+		// cmake -E copy / copy_if_different copy a single FILE (the
+		// directory form is copy_directory, handled below). Bazel
+		// actions run hermetically; the action's output is the file
+		// at <dst>.
 		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "create_symlink":
+		// create_symlink shares the (src, dst) two-arg shape with
+		// copy, but its target can be a FILE or a DIRECTORY (e.g.
+		// `cmake -E create_symlink include build/include`). Bazel
+		// actions run hermetically; the action's output is the
+		// file(s) at <dst>. Whether the cmake-side path creates
+		// that via cp or ln -sf is irrelevant to downstream
+		// consumers — they read bytes by path. Lifting symlink as
+		// copy preserves the dst-anchored path semantics and avoids
+		// the subtle issues genrule outputs have with symlinks
+		// (action-cache hashing, sandbox cleanup, cross-fs
+		// handling). Routes through the file-or-dir dispatch so a
+		// directory target recursively copies its contents rather
+		// than emitting a broken `cp <dir>` on a single $(location).
+		return liftCreateSymlinkLike("cmake -E create_symlink", "create_symlink", args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "copy_directory", "copy_directory_if_different":
+		// cmake -E copy_directory <src> <dst> copies the CONTENTS of
+		// <src> into <dst> (no source-basename insertion, unlike
+		// `cp -R`), so the dir-copy emit runs with an empty
+		// sub-prefix. _if_different differs only in rerun-skip
+		// semantics, which Bazel's fresh-sandbox actions make moot.
+		return liftCMakeECopyDirectory(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "rename":
+		// cmake -E rename <src> <dst>: dst holds src's bytes; the
+		// source-side removal has no hermetic analog, so lift as a
+		// copy (file or directory). Shared with raw `mv`.
+		return liftRenameLike("cmake -E rename", "rename", args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "mv":
+		// Raw POSIX `mv` — the analog of `cmake -E rename`. argv is
+		// `mv <flags...> <src> <dst>`, operands start at argv[1].
+		return liftRenameLike("mv", "mv", argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	case "configure_file":
 		return liftCMakeEConfigureFile(args, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
 	case "cp":
@@ -286,6 +331,17 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 		// <src> <dst>` (no `-E <op>` prefix), so the operands
 		// start at argv[1].
 		return liftCp(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "touch_raw":
+		// Raw POSIX `touch` — the analog of `cmake -E touch`, reusing
+		// liftCMakeETouch after flag-stripping. argv is `touch
+		// <flags...> <path...>`, operands start at argv[1].
+		return liftTouch(argv[1:], recordedBuildDir, cc)
+	case "ln":
+		// Raw POSIX `ln [-s]` — the analog of `cmake -E
+		// create_symlink`, reusing the create_symlink copy path.
+		// argv is `ln <flags...> <target> <linkname>`, operands
+		// start at argv[1].
+		return liftLn(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	}
 	return nil, "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
@@ -350,14 +406,80 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
-	src, dst := args[0], args[1]
+	return emitCopyGenrule("cmake -E "+op, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// liftCreateSymlinkLike translates `cmake -E create_symlink <target>
+// <linkname>` (args already past the `-E op` prefix) into a copy
+// genrule, dispatching file-vs-directory on the on-disk target via
+// emitCopyFileOrDir. Distinct from liftCMakeECopy because a symlink
+// target — unlike `cmake -E copy`'s single-file contract — can be a
+// directory (e.g. LLVM/VTK symlinking an `include` tree into the build
+// dir), which must copy recursively.
+func liftCreateSymlinkLike(what, op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	if len(args) != 2 {
+		return nil, fmt.Sprintf("%s: v1 supports the 2-arg form only (got %d args)", what, len(args)), false
+	}
+	return emitSymlinkCopy(what, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// emitSymlinkCopy handles the symlink ops (cmake -E create_symlink /
+// raw ln). It reproduces the link as a copy of the target's bytes via
+// emitCopyFileOrDir — EXCEPT for the install-compat-alias shape, which
+// it skips benignly.
+//
+// The alias shape: a symlink whose source can't anchor under the
+// source root AND whose link can't anchor under the build dir. These
+// are versioned install-compat aliases over build-generated files —
+// libpng's `cmake -E create_symlink libpng16-config libpng-config` and
+// `libpng16.pc -> libpng.pc`, the canonical `.so.N -> .so` /
+// `-config` / `.pc` symlinks projects create at install time. With
+// nothing anchorable on either side there is nothing for Bazel to
+// track, the same "nothing to anchor" character as the make_directory
+// / remove no-op family — so skip (no genrule, no refusal) rather than
+// dropping the whole element into the round-2 fallback over a link with
+// zero effect on the built artifact.
+//
+// The narrowness: a link that DOES anchor under the build dir is a
+// potential real output (a build-generated header alias a later step
+// #includes), so it still flows to emitCopyFileOrDir — which refuses if
+// the source is unrecoverable. We don't silently drop a
+// possibly-load-bearing symlink; only the anchors-nowhere alias skips.
+func emitSymlinkCopy(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	if _, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir); !ok {
+		if _, ok := executeProcessAnchorOutput(dst, recordedBuildDir); !ok {
+			// Install-compat alias (build-generated source, link not a
+			// tracked build output): nothing to anchor — benign skip.
+			return nil, "", true
+		}
+	}
+	return emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// emitCopyGenrule anchors a (src, dst) pair and appends a single
+// copy genrule. Shared by `cmake -E copy` / `copy_if_different` /
+// `create_symlink` (via liftCMakeECopy) and raw `ln` (via liftLn) so
+// the create_symlink-as-copy lift lives in exactly one place.
+//
+// `what` is the diagnostic prefix naming the original call shape
+// (e.g. "cmake -E copy" or "ln") so a refusal points at what the
+// operator actually wrote; `tagOp` is the op label that lands in the
+// genrule's cmake-codegen-execute-process-op tag (the cmake -E op
+// name for builtins, the raw driver basename for raw commands —
+// matching the raw-`cp` precedent).
+//
+// src must resolve under the source root (so it's a real Bazel input)
+// and dst under the build dir (so it's a real Bazel output). Either
+// anchor failure ends the lift with a descriptive reason so the
+// caller falls back to refusal naming the path that didn't resolve.
+func emitCopyGenrule(what, tagOp, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
 	if !ok {
-		return nil, fmt.Sprintf("cmake -E %s: source %q is not under the source root", op, src), false
+		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
 	}
 	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
 	if !ok {
-		return nil, fmt.Sprintf("cmake -E %s: destination %q is not under the build dir", op, dst), false
+		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true
@@ -369,11 +491,77 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 		Srcs:        []string{srcRel},
 		GenruleCmd:  fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && cp "$(location %s)" "$@"`, srcRel),
 		GenruleOuts: []string{dstRel},
-		Tags:        cmakeETags(op),
+		Tags:        cmakeETags(tagOp),
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, "", true
+}
+
+// liftTouch translates a raw POSIX `touch <path> ...` execute_process
+// call into one genrule per path, mirroring liftCMakeECopy's reuse of
+// the cmake -E lifter for raw `cp`: raw `touch` is the POSIX
+// equivalent of `cmake -E touch`, which we already lift, so after
+// flag-stripping it routes straight to liftCMakeETouch (and shares its
+// cmake-codegen-execute-process-op=touch tag — the operation is
+// genuinely identical).
+//
+// args is everything after `touch` (flags + operands). touch flags
+// change create / timestamp semantics — `-c` skips creating a missing
+// file, `-r`/`-t`/`-d` only stamp times on an existing file — none of
+// which map to "produce this file" under Bazel's hermetic action
+// model. Any flag therefore refuses with a precise diagnostic rather
+// than silently emitting a genrule whose output the original call
+// might not have created. The flagless `touch <path...>` form (the
+// overwhelming majority of configure-time marker writes) lifts.
+func liftTouch(args []string, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	paths := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			return nil, fmt.Sprintf("touch: flag %q changes create/timestamp semantics that don't map to a Bazel output; only the flagless `touch <path>` form lifts", a), false
+		}
+		paths = append(paths, a)
+	}
+	if len(paths) == 0 {
+		return nil, "touch: no path operands", false
+	}
+	return liftCMakeETouch(paths, recordedBuildDir, cc)
+}
+
+// liftLn translates a raw POSIX `ln [-s] <target> <linkname>`
+// execute_process call into a copy genrule, mirroring how
+// `cmake -E create_symlink` is already lifted. Under Bazel's hermetic
+// action model the link-vs-copy distinction is meaningless (consumers
+// read bytes by path), so a symlink and a hardlink alike reproduce as
+// a copy that materialises <linkname> with the target's bytes — the
+// same reasoning liftCMakeECopy applies to create_symlink.
+//
+// args is everything after `ln` (flags + operands). Flags (`-s`,
+// `-f`, `-n`, ...) are accepted and ignored: none of them change the
+// "linkname holds target's bytes by path" outcome the copy
+// reproduces. v1 supports exactly the 2-operand `<target> <linkname>`
+// form; the 1-operand form (`ln -s target`, linkname defaults to the
+// configure-time cwd basename — unanchorable) and the 3+-operand form
+// (multiple links into a dir) refuse with a precise diagnostic.
+func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	operands := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		operands = append(operands, a)
+	}
+	if len(operands) != 2 {
+		return nil, fmt.Sprintf("ln: v1 supports the 2-operand <target> <linkname> form only (got %d operands)", len(operands)), false
+	}
+	// op label "ln" tags the genrule with the raw driver name (the
+	// raw-`cp` precedent), keeping raw-ln lifts distinguishable from
+	// `cmake -E create_symlink` in audit queries. Routes through
+	// emitSymlinkCopy: shares the create_symlink file-or-dir dispatch
+	// (`ln -s` can target a directory) AND the install-compat-alias
+	// benign skip (a versioned `.so.N` / `-config` alias over a
+	// build-generated file that anchors nowhere).
+	return emitSymlinkCopy("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // liftCp translates a raw POSIX `cp` execute_process call into
@@ -521,18 +709,42 @@ func liftCpFile(realSrcRel, dst, dstRel string, cc *codegenContext) ([]string, s
 // srcdir INTO dstdir, landing files at
 // dstdir/<basename(srcdir)>/<rel>. The basename used is the
 // ORIGINAL srcRel basename (e.g. `data`), NOT the deref'd target
-// name, matching what cp does with a symlinked source argument.
-//
-// One multi-output genrule is emitted covering every regular
-// file under the (deref'd) source dir. Multi-out genrules
-// reference $(RULEDIR) rather than $@ (which is single-output
-// only). Srcs/outs are sorted for determinism. An empty source
-// dir succeeds with no rels (an empty copy is a no-op — failing
-// conversion over it would be wrong).
+// name, matching what cp does with a symlinked source argument — so
+// the sub-prefix passed to emitDirCopyGenrule is filepath.Base(srcRel).
 func liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir string, cc *codegenContext) ([]string, string, bool) {
+	return emitDirCopyGenrule(real, realSrcRel, dstRel, filepath.Base(srcRel), "cp", hostSrcDir, recordedSrcDir, cc)
+}
+
+// dirCopyOutRel joins the destination-relative dir, an optional
+// sub-prefix, and the per-file path into the output rel, skipping
+// empty components so a build-dir-root destination (dstRel=="") or an
+// empty sub-prefix (copy_directory / rename, which don't insert the
+// source basename) don't produce leading-slash or double-slash rels.
+func dirCopyOutRel(dstRel, subPrefix, fileUnder string) string {
+	parts := make([]string, 0, 3)
+	if dstRel != "" {
+		parts = append(parts, dstRel)
+	}
+	if subPrefix != "" {
+		parts = append(parts, subPrefix)
+	}
+	parts = append(parts, fileUnder)
+	return strings.Join(parts, "/")
+}
+
+// emitDirCopyGenrule walks the (deref'd) source directory `real` and
+// emits ONE multi-output genrule copying every regular file under it
+// to <dstRel>/<subPrefix>/<fileUnder>. subPrefix is the source
+// argument's basename for `cp -R` (which copies srcdir INTO dstdir)
+// and empty for `cmake -E copy_directory` / `rename` / `mv` (which
+// copy the directory's CONTENTS). Multi-out genrules reference
+// $(RULEDIR) rather than $@ (single-output only). Srcs/outs are sorted
+// for determinism. An empty source dir succeeds with no rels (an empty
+// copy is a no-op — failing conversion over it would be wrong). `op`
+// is the audit op label for the genrule's execute-process-op tag.
+func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op, hostSrcDir, recordedSrcDir string, cc *codegenContext) ([]string, string, bool) {
 	type pair struct{ src, out string }
 	var pairs []pair
-	base := filepath.Base(srcRel)
 	err := filepath.WalkDir(real, func(p string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -552,10 +764,7 @@ func liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir stri
 		if !ok {
 			srcFileRel = realSrcRel + "/" + fileUnder
 		}
-		outRel := dstRel + "/" + base + "/" + fileUnder
-		if dstRel == "" {
-			outRel = base + "/" + fileUnder
-		}
+		outRel := dirCopyOutRel(dstRel, subPrefix, fileUnder)
 		if _, exists := cc.OutToGenrule[outRel]; exists {
 			return nil
 		}
@@ -563,7 +772,7 @@ func liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir stri
 		return nil
 	})
 	if err != nil {
-		return nil, fmt.Sprintf("cp -R: failed to walk source dir %q: %v", srcRel, err), false
+		return nil, fmt.Sprintf("%s: failed to walk source dir %q: %v", op, realSrcRel, err), false
 	}
 	if len(pairs) == 0 {
 		// Empty dir (or every file already recovered): no-op copy,
@@ -589,13 +798,130 @@ func liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir stri
 		Srcs:        srcs,
 		GenruleCmd:  strings.Join(cmds, " && "),
 		GenruleOuts: outs,
-		Tags:        cmakeETags("cp"),
+		Tags:        cmakeETags(op),
 		Visibility:  []string{"//visibility:private"},
 	})
 	for _, o := range outs {
 		cc.OutToGenrule[o] = name
 	}
 	return outs, "", true
+}
+
+// liftCMakeECopyDirectory translates `cmake -E copy_directory <src>
+// <dst>` (and the copy_directory_if_different form) into a recursive
+// copy genrule. cmake copies the CONTENTS of <src> into <dst> (no
+// source-basename insertion, unlike `cp -R`), so the emit runs with an
+// empty sub-prefix. The on-disk source is consulted to enumerate the
+// files and dereference symlinks — work the argv-only classifier
+// leaves to the lifter.
+func liftCMakeECopyDirectory(op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	if len(args) != 2 {
+		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
+	}
+	return liftDirCopyAnchored("cmake -E "+op, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// liftDirCopyAnchored anchors a (src, dst) directory pair and emits a
+// recursive contents-copy genrule (empty sub-prefix). src must resolve
+// under the source root and be a directory on disk; dst must resolve
+// under the build dir. Shared by `cmake -E copy_directory` and the
+// directory arm of `rename` / `mv`.
+func liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+	if !ok {
+		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
+	}
+	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	if !ok {
+		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
+	}
+	if dstRel == "." {
+		dstRel = ""
+	}
+	abs := filepath.Join(hostSrcDir, srcRel)
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		real = abs
+	}
+	info, err := os.Stat(real)
+	if err != nil {
+		return nil, fmt.Sprintf("%s: source %q does not exist on disk", what, src), false
+	}
+	if !info.IsDir() {
+		return nil, fmt.Sprintf("%s: source %q is not a directory", what, src), false
+	}
+	realSrcRel, ok := executeProcessAnchorSource(real, hostSrcDir, recordedSrcDir)
+	if !ok {
+		realSrcRel = srcRel
+	}
+	return emitDirCopyGenrule(real, realSrcRel, dstRel, "", op, hostSrcDir, recordedSrcDir, cc)
+}
+
+// liftRenameLike translates `cmake -E rename <src> <dst>` and raw
+// `mv <src> <dst>` into a copy genrule. Under Bazel's hermetic action
+// model a rename has no "remove the source" analog (the source bytes
+// stay), so the lift reproduces only the destination side — sound,
+// because a renamed file/dir that feeds a later build step is
+// load-bearing, while the source's post-rename absence isn't
+// modelable (and isn't a compile input). The on-disk source decides
+// file-vs-directory: a file routes to emitCopyGenrule, a directory to
+// liftDirCopyAnchored (contents copy).
+//
+// The common in-build-tree shape `mv build/x.tmp build/x` refuses
+// cleanly: the source isn't under the source root, so the anchor fails
+// and the call falls through to the round-2 fallback rather than
+// mis-lifting a non-existent-at-convert-time temp file.
+//
+// args is everything after the driver (rename: argv[3:]; mv: argv[1:]).
+// Leading-dash flags are ignored (mv's -f / -n / -T don't change the
+// "dst holds src's bytes by path" outcome); exactly 2 operands are
+// required.
+func liftRenameLike(what, op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	operands := make([]string, 0, len(args))
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		operands = append(operands, a)
+	}
+	if len(operands) != 2 {
+		return nil, fmt.Sprintf("%s: v1 supports the 2-operand <src> <dst> form only (got %d operands)", what, len(operands)), false
+	}
+	return emitCopyFileOrDir(what, op, operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// emitCopyFileOrDir anchors a (src, dst) pair and emits a copy genrule,
+// dispatching on the on-disk source: a regular file routes to
+// emitCopyGenrule (single-output copy), a directory to
+// liftDirCopyAnchored (recursive contents copy). Shared by the
+// rename / mv lift and the create_symlink / ln lift, both of which
+// reproduce "dst holds src's bytes by path" and so must handle a
+// directory source identically — a `$(location <dir>)` + plain `cp`
+// emit would fail at build time on a directory.
+//
+// src must resolve under the source root (a real Bazel input); dst is
+// anchored under the build dir by the file/dir emitter. The on-disk
+// source is stat'd (through symlinks) ONLY to decide file-vs-dir: when
+// it can't be stat'd (offline / synthetic-path conversions, broken
+// link, race) the lift falls back to the single-file copy shape — the
+// dominant case and the behaviour the create_symlink lift had before
+// it grew directory support — rather than refusing. A genuinely
+// missing source then surfaces as a clear "no such input" at Bazel
+// build time, the same as any other anchored src that isn't on disk.
+func emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+	if !ok {
+		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
+	}
+	abs := filepath.Join(hostSrcDir, srcRel)
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		real = abs
+	}
+	if info, err := os.Stat(real); err == nil && info.IsDir() {
+		return liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	}
+	return emitCopyGenrule(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // liftCMakeEConfigureFile translates `cmake -E configure_file
