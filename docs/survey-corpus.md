@@ -200,6 +200,7 @@ regressing the fix — that's the whole point of keeping them around.
 | **brotli** | clean — no converter bugs found | n/a | github.com/google/brotli (`BROTLI_VERSION`) | `make fetch-brotli` |
 | **cutlass** | NVIDIA CUDA project (header-heavy) | (prior session) | github.com/NVIDIA/cutlass (`CUTLASS_VERSION`) | `make fetch-cutlass` |
 | **cuda-samples** | NVIDIA CUDA sample suite | (prior session) | github.com/NVIDIA/cuda-samples (`CUDASAMPLES_VERSION`) | `make fetch-cuda-samples` |
+| **OpenBLAS** | assembly kernels + Fortran/LAPACK + arch-conditional source selection + ~2460 targets — scale + shapes nothing else has | name-collision robustness (add_test test-name == a different target's name) | github.com/OpenMathLib/OpenBLAS (`OPENBLAS_VERSION`) | `make fetch-openblas` |
 
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):
@@ -218,6 +219,18 @@ llvm-subdir note below):
   configures for the standalone modular build; sibling-library
   `find_package` deps surface as honest `find-package-dep-unresolved`
   findings (resolved in a real element graph), like protobuf's ZLIB.
+- **OpenBLAS:** survey with `-DNOFORTRAN=1 -DC_LAPACK=1` on hosts without
+  a Fortran compiler (the C_LAPACK route replaces the Fortran reference
+  LAPACK). The assembly + Fortran kernels aren't Bazel-modelable, so the
+  surveyed value is the large C surface, the codegen, and the scale
+  (~2460 targets). It surfaced an `add_test` whose test name equals a
+  *different* executable target's name (an upstream copy-paste:
+  `add_test(openblas_utest_ext <openblas_utest binary>)`), which made
+  the converter synthesize a cc_test colliding with the real
+  `openblas_utest_ext` executable; `disambiguateTestNameCollisions`
+  renames the cc_test so the convert no longer hard-fails. Its remaining
+  rejection is the `getarch` arch-detection `execute_process` (genuinely
+  not Bazel-modelable).
 
 ### Provenance / network notes
 

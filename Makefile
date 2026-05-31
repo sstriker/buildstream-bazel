@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-survey-regression \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-survey-regression \
         survey-gazelle update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -71,6 +71,8 @@ CUTLASS_VERSION   ?= v4.5.1
 CUTLASS_DIR       ?= /tmp/cutlass
 CUDASAMPLES_VERSION ?= v13.3
 CUDASAMPLES_DIR   ?= /tmp/cuda-samples
+OPENBLAS_VERSION  ?= v0.3.28
+OPENBLAS_DIR      ?= /tmp/OpenBLAS
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1143,6 +1145,24 @@ fetch-cuda-samples:
 		echo "cuda-samples already at $(CUDASAMPLES_DIR); rm -rf to refetch"; \
 	fi
 
+# OpenBLAS: assembly kernels + Fortran/LAPACK + arch-conditional source
+# selection + ~2460 targets — shapes nothing else in the corpus has. It
+# surfaced the add_test/target name-collision robustness bug (an
+# upstream `add_test(openblas_utest_ext <wrong binary>)` made the
+# converter synthesize a cc_test colliding with the same-named
+# executable; fixed via disambiguateTestNameCollisions). NOTE: survey
+# with `-DNOFORTRAN=1 -DC_LAPACK=1` on hosts without gfortran (the
+# converter's default source-root configure picks a working path, but
+# the C_LAPACK route is the portable one); the asm/Fortran kernels
+# themselves aren't Bazel-modelable, so the value is the C surface +
+# codegen + scale.
+fetch-openblas:
+	@if [ ! -d "$(OPENBLAS_DIR)" ]; then \
+		git clone --depth 1 --branch $(OPENBLAS_VERSION) https://github.com/OpenMathLib/OpenBLAS.git "$(OPENBLAS_DIR)"; \
+	else \
+		echo "openblas already at $(OPENBLAS_DIR); rm -rf to refetch"; \
+	fi
+
 # Convenience aggregate: fetch the default survey corpus (the cheap four;
 # llvm + vtk are fetched explicitly via fetch-llvm / fetch-vtk).
 fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
@@ -1150,7 +1170,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see
