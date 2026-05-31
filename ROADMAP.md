@@ -893,12 +893,19 @@ transition cleanly.
     - *Copy family (produce outputs).* Raw `touch` → the existing
       `liftCMakeETouch` empty-file genrule (analog of `cmake -E
       touch`); raw `ln [-s]` and `cmake -E create_symlink` →
-      create_symlink-as-copy; `cmake -E copy_directory` /
-      `copy_directory_if_different` → recursive contents-copy genrule
-      (no source-basename insert, unlike `cp -R`); `cmake -E rename`
-      and raw `mv` → rename-as-copy (file or directory; the
-      source-side removal has no hermetic analog so only the
-      destination is reproduced).
+      create_symlink-as-copy, **file-or-directory aware** (a symlink
+      whose target is a directory — LLVM/VTK staging an `include`
+      tree into the build dir — copies its contents recursively
+      rather than emitting a broken single-file `cp <dir>`; a
+      not-on-disk file target soft-falls-back to the single-file
+      copy shape, preserving the offline-conversion behaviour);
+      `cmake -E copy_directory` / `copy_directory_if_different` →
+      recursive contents-copy genrule (no source-basename insert,
+      unlike `cp -R`); `cmake -E rename` and raw `mv` →
+      rename-as-copy (file or directory; the source-side removal has
+      no hermetic analog so only the destination is reproduced). The
+      file-or-dir dispatch (`emitCopyFileOrDir`) is shared by the
+      create_symlink / ln and rename / mv lifts.
     - *No-op family (no output to anchor).* `cmake -E make_directory`
       / `remove` / `remove_directory` and the raw `mkdir` / `rm` /
       `rmdir` analogs are recognized as benign no-ops — skipped (no

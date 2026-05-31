@@ -379,3 +379,111 @@ func TestRecoverExecuteProcess_NoopOps(t *testing.T) {
 		})
 	}
 }
+
+// TestRecoverExecuteProcess_CreateSymlink_DirectoryTarget is the
+// regression for the directory-target gap: `cmake -E create_symlink
+// <dir> <link>` (LLVM/VTK symlink an include tree into the build dir)
+// must copy the directory's CONTENTS recursively, not emit a broken
+// single-file `cp <dir>`. One multi-output genrule under $(RULEDIR),
+// contents landing at <link>/<rel> (no source-basename insert).
+func TestRecoverExecuteProcess_CreateSymlink_DirectoryTarget(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostSrc, "include", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, "include", "a.h"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, "include", "sub", "b.h"), []byte("b\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:     14,
+		Commands: [][]string{{"cmake", "-E", "create_symlink", filepath.Join(hostSrc, "include"), "/build/staged_include"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("want 1 multi-out genrule; got %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	gotOuts := append([]string(nil), g.GenruleOuts...)
+	sort.Strings(gotOuts)
+	want := []string{"staged_include/a.h", "staged_include/sub/b.h"}
+	if strings.Join(gotOuts, ",") != strings.Join(want, ",") {
+		t.Errorf("outs: %v want %v (directory symlink copies CONTENTS recursively)", gotOuts, want)
+	}
+	if !strings.Contains(g.GenruleCmd, "$(RULEDIR)") {
+		t.Errorf("multi-out cmd should use $(RULEDIR); got %q", g.GenruleCmd)
+	}
+	hasTag := false
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-execute-process-op=create_symlink" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Errorf("expected execute-process-op=create_symlink tag; got %v", g.Tags)
+	}
+}
+
+// TestRecoverExecuteProcess_CreateSymlink_FileTargetOffline keeps the
+// pre-existing behaviour pinned: a file target whose path isn't on disk
+// (offline / synthetic conversion) still lifts as a single-file copy —
+// the file-vs-dir stat soft-falls-back to the file shape rather than
+// refusing.
+func TestRecoverExecuteProcess_CreateSymlink_FileTargetOffline(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:     "/src/CMakeLists.txt",
+		Line:     20,
+		Commands: [][]string{{"cmake", "-E", "create_symlink", "/src/bin/clang-18", "/build/bin/clang"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "bin/clang" {
+		t.Errorf("outs: %v want [bin/clang]", g.GenruleOuts)
+	}
+}
+
+// TestRecoverExecuteProcess_LiftLn_DirectoryTarget covers raw
+// `ln -s <dir> <link>`: same directory-aware copy as create_symlink,
+// with the raw "ln" op tag.
+func TestRecoverExecuteProcess_LiftLn_DirectoryTarget(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(hostSrc, "data"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, "data", "x.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{"ln", "-s", filepath.Join(hostSrc, "data"), "/build/linked"}},
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Fatalf("expected lift; got refusals %+v", refusals)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "linked/x.txt" {
+		t.Errorf("outs: %v want [linked/x.txt]", g.GenruleOuts)
+	}
+	hasTag := false
+	for _, tg := range g.Tags {
+		if tg == "cmake-codegen-execute-process-op=ln" {
+			hasTag = true
+		}
+	}
+	if !hasTag {
+		t.Errorf("expected execute-process-op=ln tag; got %v", g.Tags)
+	}
+}

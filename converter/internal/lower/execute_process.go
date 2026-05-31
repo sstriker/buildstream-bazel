@@ -287,17 +287,27 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 	switch v.CMakeEOp {
 	case "touch":
 		return liftCMakeETouch(args, recordedBuildDir, cc)
-	case "copy", "copy_if_different", "create_symlink":
-		// create_symlink shares the (src, dst) two-arg shape with
-		// copy / copy_if_different. Bazel actions run hermetically;
-		// the action's output is the file at <dst>. Whether the
-		// cmake-side path creates that file via cp or ln -sf is
-		// irrelevant to downstream consumers — they read bytes by
-		// path. Lifting symlink as copy preserves the dst-anchored
-		// path semantics and avoids the subtle issues genrule
-		// outputs have with symlinks (action-cache hashing,
-		// sandbox cleanup, cross-fs handling).
+	case "copy", "copy_if_different":
+		// cmake -E copy / copy_if_different copy a single FILE (the
+		// directory form is copy_directory, handled below). Bazel
+		// actions run hermetically; the action's output is the file
+		// at <dst>.
 		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	case "create_symlink":
+		// create_symlink shares the (src, dst) two-arg shape with
+		// copy, but its target can be a FILE or a DIRECTORY (e.g.
+		// `cmake -E create_symlink include build/include`). Bazel
+		// actions run hermetically; the action's output is the
+		// file(s) at <dst>. Whether the cmake-side path creates
+		// that via cp or ln -sf is irrelevant to downstream
+		// consumers — they read bytes by path. Lifting symlink as
+		// copy preserves the dst-anchored path semantics and avoids
+		// the subtle issues genrule outputs have with symlinks
+		// (action-cache hashing, sandbox cleanup, cross-fs
+		// handling). Routes through the file-or-dir dispatch so a
+		// directory target recursively copies its contents rather
+		// than emitting a broken `cp <dir>` on a single $(location).
+		return liftCreateSymlinkLike("cmake -E create_symlink", "create_symlink", args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	case "copy_directory", "copy_directory_if_different":
 		// cmake -E copy_directory <src> <dst> copies the CONTENTS of
 		// <src> into <dst> (no source-basename insertion, unlike
@@ -397,6 +407,20 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
 	return emitCopyGenrule("cmake -E "+op, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
+
+// liftCreateSymlinkLike translates `cmake -E create_symlink <target>
+// <linkname>` (args already past the `-E op` prefix) into a copy
+// genrule, dispatching file-vs-directory on the on-disk target via
+// emitCopyFileOrDir. Distinct from liftCMakeECopy because a symlink
+// target — unlike `cmake -E copy`'s single-file contract — can be a
+// directory (e.g. LLVM/VTK symlinking an `include` tree into the build
+// dir), which must copy recursively.
+func liftCreateSymlinkLike(what, op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+	if len(args) != 2 {
+		return nil, fmt.Sprintf("%s: v1 supports the 2-arg form only (got %d args)", what, len(args)), false
+	}
+	return emitCopyFileOrDir(what, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // emitCopyGenrule anchors a (src, dst) pair and appends a single
@@ -499,8 +523,10 @@ func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	}
 	// op label "ln" tags the genrule with the raw driver name (the
 	// raw-`cp` precedent), keeping raw-ln lifts distinguishable from
-	// `cmake -E create_symlink` in audit queries.
-	return emitCopyGenrule("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	// `cmake -E create_symlink` in audit queries. Routes through the
+	// file-or-dir dispatch: `ln -s` can target a directory, which
+	// must copy recursively rather than emit a broken `cp <dir>`.
+	return emitCopyFileOrDir("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 }
 
 // liftCp translates a raw POSIX `cp` execute_process call into
@@ -826,8 +852,28 @@ func liftRenameLike(what, op string, args []string, hostSrcDir, recordedSrcDir, 
 	if len(operands) != 2 {
 		return nil, fmt.Sprintf("%s: v1 supports the 2-operand <src> <dst> form only (got %d operands)", what, len(operands)), false
 	}
-	src, dst := operands[0], operands[1]
+	return emitCopyFileOrDir(what, op, operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+}
 
+// emitCopyFileOrDir anchors a (src, dst) pair and emits a copy genrule,
+// dispatching on the on-disk source: a regular file routes to
+// emitCopyGenrule (single-output copy), a directory to
+// liftDirCopyAnchored (recursive contents copy). Shared by the
+// rename / mv lift and the create_symlink / ln lift, both of which
+// reproduce "dst holds src's bytes by path" and so must handle a
+// directory source identically — a `$(location <dir>)` + plain `cp`
+// emit would fail at build time on a directory.
+//
+// src must resolve under the source root (a real Bazel input); dst is
+// anchored under the build dir by the file/dir emitter. The on-disk
+// source is stat'd (through symlinks) ONLY to decide file-vs-dir: when
+// it can't be stat'd (offline / synthetic-path conversions, broken
+// link, race) the lift falls back to the single-file copy shape — the
+// dominant case and the behaviour the create_symlink lift had before
+// it grew directory support — rather than refusing. A genuinely
+// missing source then surfaces as a clear "no such input" at Bazel
+// build time, the same as any other anchored src that isn't on disk.
+func emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
 	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
 	if !ok {
 		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
@@ -837,11 +883,7 @@ func liftRenameLike(what, op string, args []string, hostSrcDir, recordedSrcDir, 
 	if err != nil {
 		real = abs
 	}
-	info, err := os.Stat(real)
-	if err != nil {
-		return nil, fmt.Sprintf("%s: source %q does not exist on disk", what, src), false
-	}
-	if info.IsDir() {
+	if info, err := os.Stat(real); err == nil && info.IsDir() {
 		return liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
 	}
 	return emitCopyGenrule(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
