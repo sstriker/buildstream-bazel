@@ -91,16 +91,18 @@ datapoints noted here.
 | `Target.sourceGroups` | 2229 | ✗ | IDE-only; no Bazel analogue |
 | `Target.folder` | 1874 | ✗ | IDE folder name; no Bazel analogue |
 | `Target.fileSets` | varies | ✓ | `target_sources(... FILE_SET HEADERS ...)` |
-| `Target.launchers` | 0 | ✗ | cross-compile emulator / test launchers (codemodel-v2 minor 7, cmake 3.27); **not in the struct** |
+| `Target.launchers` | 0 | surfaced | cross-compile emulator / test launchers (codemodel-v2 minor 7, cmake 3.29+); parsed + warned (`surfaceLauncherTargets`); routing fixture-gated |
 | `Target.link.commandFragments[].backtrace` | 9483 | ✗ | per-fragment provenance; niche |
 | `Directory.installers[type=file]` | 732 | ✓ | filegroup lift |
 | `Directory.installers[type=target]` | 419 | ✓ | install-target routing |
 | `Directory.installers[type=directory]` | 7 | ✓ | filegroup lift |
 | `Directory.installers[type=export]` | 5 | ✓ | export-config tag |
-| `Directory.installers[type=script]` | 10 | tag-only | warned, not lifted (`install_script_surface.go`) |
-| `Directory.installers[type=code]` | 10 | tag-only | warned, not lifted (`install_script_surface.go`) |
-| `Directory.installers[].targetInstallNamelink` | varies | ✗ | `.so` / `.so.N` namelink split dropped; **not in the struct** |
-| `Directory.installers[].{targetId,targetIndex,targetIsImportLibrary,isForAllComponents,scriptFile,backtrace}` | varies | ✗ | `type==target` routed via `Target.install` instead; **not in the struct** |
+| `Directory.installers[type=script]` | 10 | surfaced | warned with script file + source site, not lifted (`install_script_surface.go`) |
+| `Directory.installers[type=code]` | 10 | surfaced | warned with source site, not lifted (`install_script_surface.go`) |
+| `Directory.installers[].targetInstallNamelink` | varies | ✓ | parsed; `.so` namelink symlink intentionally not reproduced (Bazel imports by artifact, not SONAME) |
+| `Directory.installers[].{scriptFile,backtrace}` | varies | ✓ | parsed; feed the install-script warning's site/script naming |
+| `Directory.{backtraceGraph}` | 541 | ✓ | parsed; resolves installer backtrace → file:line |
+| `Directory.installers[].{targetId,targetIndex,targetIsImportLibrary,isForAllComponents}` | varies | ✗ | `type==target` routed via `Target.install` instead; **not in the struct** |
 | `ConfigDirectory.{parentIndex,childIndexes}` | 541 | ✗ | directory-tree topology; redundant — see "Index cross-references" below; **not in the struct** |
 | `ConfigProject.{parentIndex,childIndexes}` | varies | ✗ | project-tree topology; same redundancy; **not in the struct** |
 
@@ -117,14 +119,15 @@ tokens, rewrite `<...>_DIR` paths), chmod adjustments, symlink
 creation. None of these have a clean Bazel translation — Bazel's
 install story is operator-side via `rules_pkg`.
 
-**Status**: `surfaceInstallScriptInstallers`
-(`internal/lower/install_script_surface.go`) now emits a stderr
-warning summarising the dropped SCRIPT / CODE count rather than
-dropping them silently. We still don't lift — the install logic
-isn't portable. Closing this gap fully means carrying the
-`scriptFile` path + backtrace onto the warning so operators can
-locate the declaration (the field isn't parsed yet; see the
-struct-gap list in "Goal" below).
+**Status (closed)**: `surfaceInstallScriptInstallers`
+(`internal/lower/install_script_surface.go`) emits a stderr
+warning naming each dropped directive with its `scriptFile`
+(for install(SCRIPT)) and its cmake source site (`file:line`,
+resolved through the directory's `backtraceGraph`). We still
+don't lift — the install logic isn't portable — but the
+omission is fully auditable. The remaining work is genuinely
+out of scope (no Bazel analogue for install-time cmake
+execution).
 
 ### 2. `Target.compileGroups[].includes[].isSystem` — 0 in survey
 
@@ -160,7 +163,7 @@ ignored wholesale. The field-level residue:
 |---|---|---|
 | `cache-v2` | **complete** | All entry fields (`name`/`value`/`type`/`properties`) parsed; only specific named entries (`CMAKE_<LANG>_COMPILER_ID`, `BUILD_SHARED_LIBS`, …) are read downstream via `Cache.Get`. No spec gap. |
 | `toolchains-v1` | **complete** | `language`, `sourceFileExtensions`, `compiler.{id,path,version,target,implicit.*}` all parsed and used for cc_toolchain shaping / implicit-dir filtering. No spec gap. |
-| `cmakeFiles-v1` | partial | Parses `paths` + `inputs[].{path,isGenerated,isExternal,isCMake}`. **Gap: the `globs` array (cmakeFiles-v1 minor 1) is not parsed.** It records `file(GLOB … CONFIGURE_DEPENDS)` expressions and their matched files. Since `cmakeFiles` feeds the configure-inputs cache fingerprint (M3), a `CONFIGURE_DEPENDS` glob that newly matches a file won't invalidate our cache the way it re-triggers cmake. Low-frequency, but a genuine correctness edge. |
+| `cmakeFiles-v1` | **complete** | Parses `paths` + `inputs[].{path,isGenerated,isExternal,isCMake}` + `globsDependent[]` (cmakeFiles-v1.1, cmake 3.29+). The `globsDependent` matched `paths` are folded into the configure-inputs oracle (`OutCMakeConfigureReads` in `convert-element-cmake`) so a `file(GLOB … CONFIGURE_DEPENDS)` match that picks up a new file invalidates the converter's cache the same way it re-triggers cmake — the ninja RERUN_CMAKE edge only carries the glob *stamp*, so this object is the authoritative match record. |
 | `configureLog-v1` | **complete** | Handles `try_compile-v1`, `try_run-v1`, `find_package-v1`, `find-v1` (4.3+ polymorphic `found`), `message-v1`, with the full YAML node retained in `Event.Raw` for forward-compat kinds. No known missing event kind. |
 | index file | partial | `objects` / `cmake.version` / `cmake.generator` consumed. `paths.ctest` / `paths.cpack` parsed but unused — there is no CTest/CPack consumption through the File API (CTest has its own parser at `internal/ctest/parse.go`; CPack has no Bazel analogue). Not a gap. |
 
@@ -196,24 +199,35 @@ Bazel can't honour when it diverges from on-disk layout anyway. So
 **the indices are the better source of truth, we use the ones that
 carry information, and the topology links are correctly skipped.**
 
-## Goal: close all spec-coverage gaps
+## Goal: close all spec-coverage gaps — **done**
 
-Tracked as a `ROADMAP.md` `Next` item. The concrete residue to
-retire, smallest-blast-radius first:
+The field-level residue identified in this audit has been retired
+(see `ROADMAP.md`'s Done list):
 
-1. **`cmakeFiles.globs`** (correctness) — add the `globs` field to the
-   `CMakeFiles` struct and fold matched paths into the configure-inputs
-   fingerprint so `CONFIGURE_DEPENDS` re-triggers our cache the way it
-   re-triggers cmake.
-2. **`targetInstallNamelink`** (fidelity) — parse it on
-   `DirectoryInstaller` and preserve the `.so` / `.so.N` namelink
-   split through the install lift instead of collapsing it.
-3. **`scriptFile` + `backtrace`** on script/code installers — parse so
-   the install-script warning can name the declaration site (closes
-   gap #1's remaining edge).
-4. **`Target.launchers`** (cross-compile) — parse and route the
-   emulator/test launcher to the cc_toolchain / test wrapper; currently
-   0 in the survey, so fixture-gated.
+1. **`cmakeFiles.globsDependent`** (correctness) — ✅ parsed into the
+   `CMakeFiles` struct; matched `paths` fold into the configure-inputs
+   oracle (`OutCMakeConfigureReads`) so `CONFIGURE_DEPENDS` re-triggers
+   the converter's cache the way it re-triggers cmake.
+2. **`targetInstallNamelink`** (fidelity) — ✅ parsed on
+   `DirectoryInstaller`. The `.so` namelink symlink is intentionally
+   **not** reproduced: Bazel resolves shared-library imports by
+   artifact (`cc_import`), not by SONAME symlink, so the paired
+   namelink-"only" installer is correctly dropped, not lossy. Now
+   documented at the drop site in `directory_installers.go`.
+3. **`scriptFile` + `backtrace`** on script/code installers — ✅ parsed
+   (plus the directory `backtraceGraph`); the install-script warning
+   now names the script file and the cmake `file:line` declaration
+   site.
+4. **`Target.launchers`** (cross-compile) — ✅ parsed; surfaced via
+   `surfaceLauncherTargets` (a stderr warning naming the
+   CROSSCOMPILING_EMULATOR / TEST_LAUNCHER per target). Full routing to
+   a cc_toolchain / test wrapper stays fixture-gated — 0 in the survey,
+   and Bazel has no first-class per-target run-launcher to route to.
+
+Schema note: `globsDependent` (cmakeFiles-v1.1) and `launchers`
+(codemodel-v2.7) both require cmake ≥ 3.29; the survey pin (3.28)
+emits neither, so their parsers are pinned by hand-built fixtures in
+`fileapi/newfields_test.go` rather than recorded replies.
 
 Not on the list (correctly unconsumed): the tree-topology indices,
 `paths.ctest`/`cpack`, per-fragment/per-source/per-dep backtraces, and
@@ -292,22 +306,22 @@ configure-time-only with no runtime effect.
 
 **No File API object kind is uncovered wholesale** — all five
 (`codemodel`, `cache`, `cmakeFiles`, `toolchains`, `configureLog`)
-are queried and parsed. The residue is field-level, captured in the
-"Goal" section above:
+are queried and parsed, and as of the gap-closure work above the
+field-level residue is retired too:
 
-- **One correctness gap**: `cmakeFiles.globs` (CONFIGURE_DEPENDS cache
-  invalidation).
-- **Three fidelity / cross-compile items not yet parsed**:
-  `targetInstallNamelink`, script/code `scriptFile`+`backtrace`,
-  `Target.launchers`.
-- Everything else is empty in the survey, has no clean Bazel
-  translation, or is correctly unconsumed (IDE metadata, tree-topology
-  indices, ctest/cpack paths, per-fragment backtraces).
+- The one **correctness gap**, `cmakeFiles.globsDependent`
+  (CONFIGURE_DEPENDS cache invalidation), is parsed and folded into
+  the configure-inputs oracle.
+- The **fidelity / cross-compile** items — `targetInstallNamelink`,
+  script/code `scriptFile`+`backtrace`, `Target.launchers` — are all
+  parsed and either consumed (namelink, script-site naming) or
+  surfaced with routing fixture-gated (launchers).
+- Everything still unconsumed is so by design: IDE metadata,
+  tree-topology indices, ctest/cpack paths, per-fragment backtraces.
 
-The goal is to drive that list to zero (tracked in `ROADMAP.md`'s
-`Next`). `cache-v2` and `toolchains-v1` are already complete; the
+`cache-v2` and `toolchains-v1` were already field-complete; the
 codemodel + trace coverage is comprehensive for the C/C++ subset
-Bazel can express. Beyond closing these gaps, the remaining converter
-work is lift-quality polish for fields already consumed (per-source
-defines via `splitCompileGroups`, alias-name sanitization, genrule
-cmd normalisation, etc., landed across PRs #285–#298).
+Bazel can express. The remaining converter work is lift-quality
+polish for fields already consumed (per-source defines via
+`splitCompileGroups`, alias-name sanitization, genrule cmd
+normalisation, etc., landed across PRs #285–#298).

@@ -416,28 +416,6 @@ transition cleanly.
 
 ## Next
 
-- **Close the cmake-spec coverage gaps.** All five File API
-  object kinds (`codemodel`, `cache`, `cmakeFiles`, `toolchains`,
-  `configureLog`) are consumed; the residue is field-level and
-  catalogued in
-  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md)
-  ("Goal" section). Drive the list to zero, smallest blast radius
-  first: (1) parse `cmakeFiles.globs` and fold matched paths into
-  the configure-inputs fingerprint so `CONFIGURE_DEPENDS` re-triggers
-  our cache the way it re-triggers cmake (the one correctness gap);
-  (2) parse `Directory.installers[].targetInstallNamelink` and
-  preserve the `.so` / `.so.N` namelink split through the install
-  lift; (3) parse `scriptFile` + `backtrace` on script/code
-  installers so the existing `install_script_surface.go` warning can
-  name the declaration site; (4) parse `Target.launchers`
-  (codemodel-v2 minor 7) and route the cross-compile emulator/test
-  launcher to the cc_toolchain / test wrapper — fixture-gated, 0 in
-  the current survey. The directory/project tree-topology indices
-  (`parentIndex` / `childIndexes`) stay unconsumed by design: Bazel
-  packages are path-keyed and each directory already carries its
-  authoritative `source` path, so the flat `directoryIndex → source`
-  mapping `subPackageDir` already uses is the right source of truth.
-
 - **Thread `--build-types` through write-a's project rendering.**
   Multi-config conversion (the Phase 5 fold + `--out-config-settings`,
   see Done) is wired end-to-end in `convert-element-cmake` standalone,
@@ -686,6 +664,35 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **cmake-spec coverage gaps closed.** With all five File API
+  object kinds already consumed, the field-level residue catalogued
+  in
+  [`docs/codemodel-consumption-audit.md`](docs/codemodel-consumption-audit.md)
+  is retired: (1) `cmakeFiles.globsDependent` (cmakeFiles-v1.1) is
+  parsed and its matched `paths` fold into the configure-inputs
+  oracle (`OutCMakeConfigureReads`), so a `file(GLOB …
+  CONFIGURE_DEPENDS)` match that picks up a new file invalidates the
+  converter's cache the way it re-triggers cmake — the ninja
+  RERUN_CMAKE edge only carries the glob stamp, so this object is the
+  authoritative record; (2) `Directory.installers[].targetInstallNamelink`
+  is parsed — the `.so` namelink symlink is intentionally not
+  reproduced (Bazel imports by artifact via `cc_import`, not SONAME),
+  now documented at the drop site; (3) `scriptFile` + `backtrace` on
+  script/code installers (plus the directory `backtraceGraph`) are
+  parsed, so the `install_script_surface.go` warning names the script
+  file and the cmake `file:line` declaration site; (4)
+  `Target.launchers` (codemodel-v2.7) is parsed and surfaced via
+  `surfaceLauncherTargets` — full routing to a cc_toolchain / test
+  wrapper stays fixture-gated (0 in the survey; Bazel has no
+  first-class per-target run-launcher). `globsDependent` and
+  `launchers` need cmake ≥ 3.29 (the 3.28 survey pin emits neither),
+  so their parsers are pinned by hand-built fixtures in
+  `fileapi/newfields_test.go`. The directory/project tree-topology
+  indices (`parentIndex` / `childIndexes`) stay unconsumed by design:
+  Bazel packages are path-keyed and each directory carries its
+  authoritative `source` path, so the flat `directoryIndex → source`
+  mapping `subPackageDir` uses is the right source of truth.
 
 - **Cross-project survey instrument (corpus + three lenses).**
   `scripts/run-survey.sh` + `docs/survey-corpus.md` run the cmake
