@@ -9,6 +9,87 @@ the analysis framing and `scripts/run-survey.sh` for the driver.
 This document is the single source of truth for **which projects are in the
 corpus** and **how to survey them faithfully** (so two runs are comparable).
 
+## What a survey is checking for (the three lenses)
+
+A survey isn't just "did it crash" — it's three distinct questions, and
+they have very different tooling support:
+
+1. **Are there rejections we could lift?** — the `rejections.json`
+   report. The converter self-reports every Tier-1 refusal with a typed
+   `code`. That captures the *surface*; the missing piece is a
+   *liftability* verdict, which is still a manual triage. Classify each
+   rejection into:
+   - **lift-able** — a tractable converter improvement (e.g. Eigen's
+     `unsupported-execute-process` for a `c++ --version | head` pipeline:
+     teach the execute_process classifier the multi-COMMAND shape);
+   - **external / resolves-in-graph** — *not* a converter bug, an artefact
+     of surveying a project standalone (e.g. protobuf's
+     `find-package-dep-unresolved` for `find_package(ZLIB)` — resolves
+     through the producer→consumer export channel in a real `.bst`
+     element graph);
+   - **genuinely-unsupportable** — no Bazel analogue (e.g. a host
+     toolchain probe writing a `RESULT_VARIABLE`).
+
+   When comparing runs, always break `rejections.json` down by `code` and
+   subtract the *external* class before reading a number as "converter
+   debt" (see pitfall 3 below).
+
+2. **Are we emitting non-idiomatic Bazel?** — the `bazel-idiom.json`
+   report (`bazelidiom.Audit`, runs on every convert). This is the one
+   lens that is **fully automated and per-run**: `empty-srcs`,
+   `empty-cc-library`, `empty-cc-import`, `test-with-no-entry`,
+   `raw-toolchain-feature-flag`, etc. Treat any non-zero count here as a
+   real defect to drive to zero (this is what surfaced the eigen
+   empty-srcs and VTK empty-cc-library work).
+
+3. **Did we lose intent vs. the CMakeLists?** — **not automated; this is
+   the adversarial lens.** Lenses 1 and 2 are *self-reported*: the
+   converter flags its own refusals and its own known-bad shapes. Lens 3
+   is the one thing it structurally *cannot* self-report, because silent
+   intent loss is exactly the stuff it dropped without noticing. Measuring
+   it needs an independent oracle (the codemodel / the CMakeLists) and a
+   diff against the emitted BUILD.
+
+   What we learned about how to spend effort here:
+
+   - **Target-level coverage is reliably complete** — don't over-invest in
+     a "did every target emit" census. Empirically (VTK: 289 codemodel
+     targets = 155 SHARED + 4 INTERFACE + 9 EXECUTABLE + 121 UTILITY) every
+     buildable target emits a rule (9 EXECUTABLE → 9 `cc_binary`; the 159
+     libraries → `cc_library` incl. object-lib splits; UTILITY correctly
+     skipped). A whole target rarely vanishes.
+   - **Intent loss is intra-target**, and that's where every past corpus
+     bug lived: dropped dependency edges (#302, abseil INTERFACE deps),
+     install-path prefixing (#301), alias-lift ordering (#300), refused
+     pre-committed generated sources (#304). The `empty-srcs` /
+     `empty-cc-library` idiom checks are *partial* proxies — they only
+     fire when the result is structurally empty, and miss partial loss (a
+     target that kept 3 of 4 sources, or dropped one of several deps).
+   - **Much of the deterministically-detectable loss is already
+     accounted** by existing self-reporting: `cmake-elided-*` source tags,
+     `unresolved-link-dep` rejections, and the idiom findings. A naive
+     codemodel→BUILD differ would mostly re-derive those *and* throw false
+     positives on legitimate relocation (object-library inlining,
+     generated-source re-wiring to a genrule edge, split-package header
+     libraries, the EXECUTABLE→`cc_test` rewrite).
+
+   So lens 3 is, for now, a **manual** comparison. A faithful pass:
+   pick a target in the emitted BUILD, open its declaring CMakeLists
+   stanza, and check each of — sources, PUBLIC/PRIVATE includes, defines,
+   compile options, `target_link_libraries` deps (incl. INTERFACE),
+   install destination — landed somewhere (a rule attr, a `# keep` tag, or
+   an honest rejection). Anything that vanished with no tag/rejection is a
+   lens-3 bug.
+
+   **Candidate for automation:** the highest-signal, lowest-false-positive
+   deterministic lens-3 check is **dependency-coverage** — a
+   `target_link_libraries` entry that resolves to an in-codebase target
+   but lands in none of `deps` / `implementation_deps` / `data` and raises
+   no `unresolved-link-dep` is a silent dropped edge. That check would
+   have caught #302. It's scoped as a future addition; the broader
+   codemodel→BUILD differ is deliberately *not* pursued (false-positive
+   cost exceeds signal, per the relocation cases above).
+
 ## The corpus
 
 | Project | Why it's in the corpus | Source | Fetch |
