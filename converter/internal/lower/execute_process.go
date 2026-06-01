@@ -253,9 +253,12 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				// HAVE_X-style variable is a deferred declaration ("does the
 				// host have X?"); the faithful Bazel shape is an
 				// operator-overridable bool_flag + a select()-able
-				// config_setting, not a refusal or a silent bake. Default off
-				// the captured value when dump-vars caught it, else false.
-				if varName := featureDeclarationProbeVar(call); varName != "" {
+				// config_setting, not a refusal or a silent bake. The default
+				// is derived per writeback channel (featureProbeDefault): a
+				// RESULT_VARIABLE "0" (exit success) and a truthy
+				// OUTPUT_VARIABLE stdout both mean "feature present" -> True,
+				// else False (including uncaptured).
+				if varName, fromResult := featureDeclarationProbeVar(call); varName != "" {
 					flag := sanitizeBuildSettingName(varName)
 					if prev, ok := seenProbeFlags[flag]; ok {
 						if prev == varName {
@@ -279,7 +282,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 						ir.Target{
 							Name:            flag,
 							Kind:            ir.KindBoolFlag,
-							BoolFlagDefault: cmakeTruthy(cmakeVars[varName]),
+							BoolFlagDefault: featureProbeDefault(cmakeVars[varName], fromResult),
 							Tags:            []string{"cmake-codegen-probe-option"},
 							Visibility:      []string{"//visibility:public"},
 						},

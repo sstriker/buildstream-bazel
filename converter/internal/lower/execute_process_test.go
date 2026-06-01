@@ -677,8 +677,11 @@ func TestRecoverExecuteProcess_NonCapabilityResultProbe(t *testing.T) {
 
 // TestRecoverExecuteProcess_FeatureProbeToBuildSetting covers the
 // probe-as-declaration lift: a probe writing a HAVE_X-style variable
-// becomes a bool_flag + config_setting (default off the captured value)
-// and skips the refusal, instead of being dropped or refused.
+// becomes a bool_flag + config_setting and skips the refusal, instead of
+// being dropped or refused. The probe writes RESULT_VARIABLE, whose
+// captured value is the command's exit status — "0" means `import zlib`
+// succeeded, i.e. zlib IS present — so the flag defaults True (exit
+// success inverts cmake's string-truthiness; see featureProbeDefault).
 func TestRecoverExecuteProcess_FeatureProbeToBuildSetting(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
@@ -687,7 +690,7 @@ func TestRecoverExecuteProcess_FeatureProbeToBuildSetting(t *testing.T) {
 		ResultVariable: "HAVE_ZLIB",
 	}}
 	cc := newCodegenContext()
-	captured := map[string]string{"HAVE_ZLIB": "1"}
+	captured := map[string]string{"HAVE_ZLIB": "0"} // exit 0 == success == zlib present
 	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("feature probe should lift, not refuse; got %v", refusals)
@@ -784,6 +787,35 @@ func TestRecoverExecuteProcess_FeatureProbeNameCollision(t *testing.T) {
 	}
 	if flags != 1 || settings != 1 {
 		t.Errorf("collision: first probe should still lift; got %d bool_flag + %d config_setting, want 1 + 1", flags, settings)
+	}
+}
+
+// TestFeatureProbeDefault locks in the channel-aware default: a
+// RESULT_VARIABLE is an exit status ("0" == success == feature present),
+// the INVERSE of an OUTPUT_VARIABLE stdout string (run through
+// cmakeTruthy). An uncaptured value ("") defaults False on both channels.
+func TestFeatureProbeDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		value      string
+		fromResult bool
+		want       bool
+	}{
+		{"result exit-0 success -> true", "0", true, true},
+		{"result exit-1 failure -> false", "1", true, false},
+		{"result exit-127 failure -> false", "127", true, false},
+		{"result uncaptured -> false", "", true, false},
+		{"output truthy ON -> true", "ON", false, true},
+		{"output truthy 1 -> true", "1", false, true},
+		{"output falsey 0 -> false", "0", false, false},
+		{"output numeric-zero 0.0 -> false", "0.0", false, false},
+		{"output uncaptured -> false", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := featureProbeDefault(tc.value, tc.fromResult); got != tc.want {
+				t.Errorf("featureProbeDefault(%q, %v) = %v, want %v", tc.value, tc.fromResult, got, tc.want)
+			}
+		})
 	}
 }
 
