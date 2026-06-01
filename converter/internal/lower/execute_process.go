@@ -219,9 +219,13 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		default:
-			// Configure-time probes that produce no Bazel build artifact
-			// are skipped, not refused: the call emits nothing and its
-			// build-affecting consequence is recovered independently.
+			// Configure-time probes produce no file artifact a consumer
+			// #includes, so none lifts to a genrule. They're skipped (their
+			// build-affecting consequence is recovered independently) or, in
+			// the feature-declaration sub-case below, lifted to an
+			// operator-overridable bool_flag + config_setting — Bazel
+			// targets, but still not a build-graph file input. Neither shape
+			// is refused.
 			//
 			//   - Toolchain-capability probe: a RESULT_VARIABLE-only check
 			//     (no OUTPUT_VARIABLE, no OUTPUT_FILE) on a known capability
