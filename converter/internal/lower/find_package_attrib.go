@@ -238,16 +238,3 @@ func (fa *findPackageAttrib) Lookup(path string) string {
 	}
 	return ""
 }
-
-// SortedFoundPackages returns the found-package names in a
-// deterministic order. Used by callers that emit
-// header-comment summaries; the lower's per-target attribution
-// uses Lookup directly.
-func (fa *findPackageAttrib) SortedFoundPackages() []string {
-	if fa == nil {
-		return nil
-	}
-	out := append([]string(nil), fa.foundPackages...)
-	sort.Strings(out)
-	return out
-}

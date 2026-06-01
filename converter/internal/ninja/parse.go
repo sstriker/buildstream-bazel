@@ -411,7 +411,6 @@ type lineScanner struct {
 	r       *bufio.Reader
 	line    int
 	pending *logicalLine
-	err     error
 }
 
 func newLineScanner(r io.Reader) *lineScanner {

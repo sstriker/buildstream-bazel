@@ -408,9 +408,7 @@ func looksLikeSanitizerConfig(label string) bool {
 	if i := strings.LastIndex(lc, "/"); i >= 0 {
 		lc = lc[i+1:]
 	}
-	if strings.HasSuffix(lc, "_enabled") {
-		lc = strings.TrimSuffix(lc, "_enabled")
-	}
+	lc = strings.TrimSuffix(lc, "_enabled")
 	switch lc {
 	case "asan", "tsan", "msan", "ubsan", "lsan", "coverage", "lto":
 		return true

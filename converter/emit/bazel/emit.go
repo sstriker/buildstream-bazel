@@ -1322,10 +1322,6 @@ func emitAlias(w *bytes.Buffer, t ir.Target) error {
 	})
 }
 
-func emitCCTarget(w *bytes.Buffer, t ir.Target) error {
-	return emitCCTargetWithOptions(w, t, Options{})
-}
-
 func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	// Compute the per-attribute baselines first (matching the
 	// existing single-platform sort/order conventions), then fold

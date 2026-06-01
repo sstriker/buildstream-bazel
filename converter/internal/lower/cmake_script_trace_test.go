@@ -2,7 +2,6 @@ package lower
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -106,15 +105,4 @@ func sliceContains(xs []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// stringContainsAll returns whether s contains every needle.
-// Helper for asserting structured-refusal-message contents.
-func stringContainsAll(s string, needles ...string) bool {
-	for _, n := range needles {
-		if !strings.Contains(s, n) {
-			return false
-		}
-	}
-	return true
 }

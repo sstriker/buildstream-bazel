@@ -376,7 +376,7 @@ func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext
 		cc.Genrules = append(cc.Genrules, ir.Target{
 			Name:        name,
 			Kind:        ir.KindGenrule,
-			GenruleCmd:  fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && touch "$@"`),
+			GenruleCmd:  `mkdir -p "$$(dirname "$@")" && touch "$@"`,
 			GenruleOuts: []string{rel},
 			Tags:        cmakeETags("touch"),
 			Visibility:  []string{"//visibility:private"},

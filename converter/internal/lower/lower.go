@@ -2828,13 +2828,6 @@ func shouldSplitCompileGroups(t *fileapi.Target) bool {
 	return false
 }
 
-// shouldSplitMultiLanguage is the legacy name for the gate;
-// preserved as a thin alias for any external test consumer that
-// still references it.
-func shouldSplitMultiLanguage(t *fileapi.Target) bool {
-	return shouldSplitCompileGroups(t)
-}
-
 // joinDefines / joinFragments produce a stable string signature
 // for a CompileGroup's Defines / CompileCommandFragments lists.
 // Used by the gate to compare two same-language CGs for
@@ -4548,9 +4541,7 @@ func replaceBareAnchorAtBoundary(cmd, anchor string) string {
 // layout is operator-significant.
 func stripToolPrefixAtBoundaries(cmd, prefix string) string {
 	// Cmd-start prefix.
-	if strings.HasPrefix(cmd, prefix) {
-		cmd = cmd[len(prefix):]
-	}
+	cmd = strings.TrimPrefix(cmd, prefix)
 	// Common shell separators followed by the prefix. Each separator
 	// is space-padded by cmake's emit.
 	for _, sep := range []string{
