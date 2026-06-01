@@ -712,6 +712,35 @@ func TestRecoverExecuteProcess_FeatureProbeToBuildSetting(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_FeatureProbeDedup confirms a feature probe
+// that recurs in the trace (configure re-evaluation) lifts to a single
+// bool_flag/config_setting pair — duplicate target names would break emit.
+func TestRecoverExecuteProcess_FeatureProbeDedup(t *testing.T) {
+	probe := shadow.ExecuteProcessCall{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"python3", "-c", "import zlib"}},
+		ResultVariable: "HAVE_ZLIB",
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{probe, probe}, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("unexpected refusals: %v", refusals)
+	}
+	var flags, settings int
+	for _, tgt := range cc.Genrules {
+		switch tgt.Kind {
+		case ir.KindBoolFlag:
+			flags++
+		case ir.KindConfigSetting:
+			settings++
+		}
+	}
+	if flags != 1 || settings != 1 {
+		t.Errorf("dedup: got %d bool_flag + %d config_setting, want 1 + 1", flags, settings)
+	}
+}
+
 func TestConfigureLogVars_TryCompileSuccess(t *testing.T) {
 	events := []fileapi.Event{
 		{

@@ -175,6 +175,10 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
+	// seenProbeFlags dedupes the bool_flag/config_setting pair a feature
+	// probe lifts to: the same HAVE_X probe can recur in the trace
+	// (configure re-evaluation), and duplicate target names break emit.
+	seenProbeFlags := map[string]bool{}
 	var unsupported []executeProcessRefusal
 	var outs []executeProcessOut
 	collect := func(rels []string) {
@@ -246,6 +250,10 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				// the captured value when dump-vars caught it, else false.
 				if varName := featureDeclarationProbeVar(call); varName != "" {
 					flag := sanitizeBuildSettingName(varName)
+					if seenProbeFlags[flag] {
+						continue
+					}
+					seenProbeFlags[flag] = true
 					cc.Genrules = append(cc.Genrules,
 						ir.Target{
 							Name:            flag,
