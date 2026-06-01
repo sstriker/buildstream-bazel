@@ -276,7 +276,11 @@ var capabilityProbeDrivers = map[string]bool{
 // shellDrivers names POSIX shell basenames, used to recognize a
 // host-detection script invoked as `sh .../config.guess`.
 var shellDrivers = map[string]bool{
-	"sh": true, "bash": true, "dash": true, "zsh": true, "ksh": true,
+	"sh":   true,
+	"bash": true,
+	"dash": true,
+	"zsh":  true,
+	"ksh":  true,
 }
 
 // hostDetectionScripts names GNU host-triple detection scripts. Their
