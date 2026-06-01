@@ -584,24 +584,29 @@ transition cleanly.
   install root" entry under Done (high points). The repo-rule
   alternative stays rejected; this bullet is retained only as the
   record of why.
-- **De-base64 the rest of the cmake-configure-file family.** The
-  file(GENERATE) **and configure_file** bake tiers now emit readable
-  skylib `write_file` (see Done — both route through the shared
-  `bakeFileTarget`). The remaining inline-base64 emitters are: (1) the
-  `cmake-codegen-cmake-script-bake` genrules; (2) the
-  `execute_process` bytes-embedded fallback (also calls
-  `configureFileLegacyCmd` — the same `bakeFileTarget` swap applies);
-  and (3) the genex-replay *lift* tier (file(GENERATE) tiers a/b/b′ +
-  the configure_file lift), which can't fully de-base64 because the
-  body is re-evaluated at Bazel time by `//tools:cmake-configure-file`
-  — but its `--values` / `--genex-values` JSON maps and
-  `--content-base64` template could move from inline
-  `echo <b64> | base64 -d` to readable **sidecar files** referenced via
-  `srcs` + `$(location)` (the tool already accepts file-path inputs).
-  That sidecar move needs a converter companion-file emission concept
-  routed through the split-package TreeArtifact → stage-b merge — the
-  bigger piece. Decided approach + tradeoffs captured during the
-  file(GENERATE) prove-it pass.
+- **De-base64 the cmake-configure-file family — lift tier (bake tier
+  done).** The **bake tier is fully de-base64'd** across all four
+  emitters — file(GENERATE), configure_file, `execute_process` bytes
+  fallback, and `cmake-codegen-cmake-script-bake` — all routing through
+  the shared `bakeFileTarget` (readable skylib `write_file` for \n-text,
+  byte-exact base64 genrule for binary; see Done). The sole remainder is
+  the **genex-replay lift tier** (file(GENERATE) tiers a/b/b′ + the
+  configure_file lift), which can't drop base64 entirely because the
+  body is re-evaluated at Bazel time by `//tools:cmake-configure-file`.
+  Its inline `echo <b64> | base64 -d` materializations of the `--values`
+  / `--genex-values` JSON maps and the `--content-base64` CONTENT
+  template could instead be **`write_file` sidecar targets** referenced
+  via `srcs` + `$(location)` — and crucially this needs NO new
+  companion-file/stage-b machinery (write_file is a normal rule, already
+  routed through split-package + stage-b). Open design fork: the CONTENT
+  template is human-authored and clearly benefits from a readable
+  sidecar; the `--values` map for configure_file is the full cmake
+  variable namespace (hundreds of machine-generated entries), so a
+  sidecar there is large and only marginally more readable than base64.
+  Likely scope: sidecar the template (+ small genex-values map), leave
+  the full-namespace values map inline. High golden/gate churn (rewrites
+  the lift cmd builders + the `--content-base64` / `--values` gate
+  assertions).
 
 ## Later (research / open questions)
 
