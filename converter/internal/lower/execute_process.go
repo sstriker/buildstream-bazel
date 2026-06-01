@@ -241,9 +241,11 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			// cmakeVars (captured by the dump-vars hook) has its value
 			// available to downstream configure_file / file(GENERATE) lifts
 			// via Reply.Vars — no Bazel-side emission needed; skip. An
-			// uncaptured OUTPUT_VARIABLE probe/stamp still refuses so the
-			// operator sees the gap (a stamp's value would otherwise bake
-			// into srckey; operators opt into round-2 for non-baked stamps).
+			// uncaptured OUTPUT_VARIABLE probe/stamp not already skipped
+			// above (i.e. neither a capability nor a host-detection probe)
+			// still refuses so the operator sees the gap (a stamp's value
+			// would otherwise bake into srckey; operators opt into round-2
+			// for non-baked stamps).
 			if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 				if call.OutputVariable != "" {
 					if _, ok := cmakeVars[call.OutputVariable]; ok {
