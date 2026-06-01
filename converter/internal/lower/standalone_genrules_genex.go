@@ -116,16 +116,6 @@ func buildOutputToCustomCommandGenex(commands []shadow.AddCustomCommandCall) map
 // a single space-joined blob for genex scanning. A trailing space per token is
 // harmless — the genex scanners match on the `$<...>` substrings, not argv
 // boundaries.
-// containsAnyPrefix reports whether blob contains any of the given substrings.
-func containsAnyPrefix(blob []byte, prefixes []string) bool {
-	for _, p := range prefixes {
-		if bytes.Contains(blob, []byte(p)) {
-			return true
-		}
-	}
-	return false
-}
-
 func joinCommandArgv(cmds [][]string) []byte {
 	var b strings.Builder
 	for _, argv := range cmds {
@@ -135,6 +125,16 @@ func joinCommandArgv(cmds [][]string) []byte {
 		}
 	}
 	return []byte(b.String())
+}
+
+// containsAnyPrefix reports whether blob contains any of the given substrings.
+func containsAnyPrefix(blob []byte, prefixes []string) bool {
+	for _, p := range prefixes {
+		if bytes.Contains(blob, []byte(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // customCommandGenexTag classifies the genex-resolution outcome for an emitted
