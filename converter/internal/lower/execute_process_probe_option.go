@@ -69,14 +69,7 @@ func sanitizeBuildSettingName(name string) string {
 	return b.String()
 }
 
-// isTruthyCMakeValue maps a cmake variable value to a bool the way if()
-// does: 1 / ON / YES / TRUE / a non-empty, non-zero, non-NOTFOUND value
-// is true.
-func isTruthyCMakeValue(v string) bool {
-	u := strings.ToUpper(strings.TrimSpace(v))
-	switch u {
-	case "", "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND":
-		return false
-	}
-	return !strings.HasSuffix(u, "-NOTFOUND")
-}
+// The bool_flag's build_setting_default comes from cmakeTruthy (lower.go),
+// the package's shared cmake-boolean predicate — an allowlist of the
+// true constants (1/ON/YES/TRUE/Y), so numeric-zero strings like "0.0"
+// resolve false, matching cmake.

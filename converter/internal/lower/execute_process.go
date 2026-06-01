@@ -250,7 +250,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 						ir.Target{
 							Name:            flag,
 							Kind:            ir.KindBoolFlag,
-							BoolFlagDefault: isTruthyCMakeValue(cmakeVars[varName]),
+							BoolFlagDefault: cmakeTruthy(cmakeVars[varName]),
 							Tags:            []string{"cmake-codegen-probe-option"},
 							Visibility:      []string{"//visibility:public"},
 						},
