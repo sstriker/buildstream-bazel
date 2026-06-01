@@ -52,7 +52,7 @@ out_build="$work_dir/BUILD.bazel.out"
 # Slice the fscl (compiled lib) rule block.
 blk="$(awk '/name = "fscl"/{f=1} f{print} f&&/^\)/{exit}' "$out_build")"
 if [ -z "$blk" ]; then
-    echo "FAIL: fscl rule missing from BUILD.bazel"
+    echo "FAIL: fscl rule missing from the converted BUILD ($out_build)"
     sed 's/^/   /' "$out_build"
     exit 1
 fi

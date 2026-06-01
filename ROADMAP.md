@@ -443,12 +443,16 @@ transition cleanly.
     compiled lib's `includes` come from CompileGroups and can be
     arbitrary `-I` roots, so it lifts only the include dir that is
     demonstrably a single FILE_SET HEADERS base dir with every header
-    under it, keeping other `-I`s. A real bazel-9 build
+    under it, keeping other `-I`s. The lift's regression guard runs in CI
+    via the Go unit test + the `interface-library` golden (`go test`); a
+    supplementary local render+build check
     (`scripts/meta-cmake-fileset-compiled-lib.sh`, `fileset-compiled-lib`
-    sample) confirms the lib's OWN sources and a consumer both still
-    resolve `#include <pkg/hdr.h>` via the virtual include root — the
-    risk that strip_include_prefix on a srcs-bearing target breaks its
-    own compilation does not materialize.
+    sample — a standalone render gate like `meta-cmake-genex-probe.sh`,
+    not wired into the `e2e-meta-*` CI list) does a real bazel-9 build
+    confirming the lib's OWN sources and a consumer both still resolve
+    `#include <pkg/hdr.h>` via the virtual include root — the risk that
+    strip_include_prefix on a srcs-bearing target breaks its own
+    compilation does not materialize.
 
     **Sanitizer `select` → `--features` — already done (no slice).**
     Investigated and confirmed implemented across earlier phases:
