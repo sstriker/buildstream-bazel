@@ -234,15 +234,29 @@ transition cleanly.
     (`standalone_genrules_genex.go`) cross-reference each genrule back to
     its trace call and make that resolution visible — `-unresolved` flags
     the residue where a path-bearing genex baked a non-portable literal.
-    **Residue (queued):** `$<TARGET_OBJECTS:t>` substitution (object lists
-    aren't in the artifact map — needs the probe's per-target object list
-    threaded into the standalone lowering) and cross-element
-    `$<TARGET_FILE:t>`; both surface as `-unresolved` today. **Still
-    queued:** wiring the probe into install destinations, and a
-    `select()`-capable consumer for per-config-divergent literals (tier b′
-    drops those to legacy today — a single literal-replace map can't
-    represent them). The `UnsupportedError` / legacy-bake surface keeps
-    shrinking as each consumer lands.
+    **Per-config-divergent literals — done.** A file(GENERATE) genex
+    literal that resolves to DIFFERENT bytes per build config (Ninja
+    Multi-Config) no longer drops to legacy: `probeGenexValuesForBody`'s
+    select()-capable sibling `probeGenexValuesPerConfigForBody` reads the
+    probe's `LiteralResolution.PerConfig` and lowers the divergence to
+    `CMakeConfigureFileSpec.GenexValuesPerConfig`, which the emitter
+    renders as `genex_values = select({"//config:<name>": {...}, ...})`
+    over the multi-config `//config` package (the rule's `string_dict`
+    attr is configurable, so Bazel resolves the active config's map — no
+    `.bzl` change). **Install destinations — N/A:** the File API codemodel
+    is generated after cmake's generation phase, so `DirectoryInstaller`
+    destinations are already resolved per-config — no `$<...>` reaches the
+    converter; per-config destination divergence is the multi-config fold's
+    job (Phase 5), not a genex-probe consumer. **Accepted residue:**
+    `$<TARGET_OBJECTS:t>` substitution in custom-command argv (object lists
+    aren't in the artifact map; the resolved-`.o`-sequence reverse-mapping
+    is fragile and the pattern is rare) and cross-element
+    `$<TARGET_FILE:t>` stay `-unresolved` — honestly audit-tagged rather
+    than silently baked; revisit if a real project needs them. With these,
+    the remaining-consumer surface is closed: every file(GENERATE) /
+    custom-command genex is resolved, lowered to a `select()`, or
+    audit-tagged, and the `UnsupportedError` / legacy-bake surface has
+    stopped silently swallowing genex spend.
 
   - **Phase 4 — build.ninja custom-command walk.** Promote
     `converter/internal/ninja/` from its current

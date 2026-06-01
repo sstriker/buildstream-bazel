@@ -660,6 +660,17 @@ type CMakeConfigureFileSpec struct {
 	// Mutually exclusive with GenexContext.
 	GenexValues map[string]string
 
+	// GenexValuesPerConfig carries per-config genex literal -> value maps when
+	// the (b′) two-pass probe found a top-level literal resolves to DIFFERENT
+	// bytes per build config (Ninja Multi-Config). Keyed by the Bazel config
+	// label (`//config:<name>`); each value is that config's literal -> value
+	// map. When non-empty it supersedes GenexValues and the emitter renders
+	// the `genex_values` attribute as a `select()` over the config labels (the
+	// rule's string_dict attr is configurable, so Bazel resolves the active
+	// config's map before the rule impl runs — no rule change needed). Empty
+	// for the config-uniform case (GenexValues carries the flat map).
+	GenexValuesPerConfig map[string]map[string]string
+
 	// GenexContext is the cmake configure-time context JSON the Go-side
 	// genex evaluator consults for the (a)-evaluator lift (the tool's
 	// --genex-context). Rides as a readable JSON string attribute (not

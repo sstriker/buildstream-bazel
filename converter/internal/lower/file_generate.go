@@ -442,6 +442,17 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
 			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
 		}
+		// Per-config divergence: the flat probe declined because a top-level
+		// literal resolves to different bytes per build config (Multi-Config).
+		// Lower it to a select() over //config:<name> via GenexValuesPerConfig
+		// rather than dropping to legacy.
+		if perConfig, ok := probeGenexValuesPerConfigForBody(cc, templateBody); ok {
+			spec := newConfigureFileSpec(outRel, opts)
+			spec.Values = map[string]string{}
+			spec.GenexValuesPerConfig = perConfig
+			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
+		}
 		genexLegacy := bake
 		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 		return genexLegacy

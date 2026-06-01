@@ -89,8 +89,8 @@ func TestProbeGenexValuesForBody(t *testing.T) {
 			hash(lit2): {PerConfig: map[string]string{"Release": "BB", "Debug": "CC"}},
 		}
 		// Divergent literal has no single value for a flat literal-
-		// replace map — that's the future select()-capable consumer's
-		// job, not this one.
+		// replace map — that's probeGenexValuesPerConfigForBody's job
+		// (it lowers the divergence to a select()), not this one.
 		if _, ok := probeGenexValuesForBody(cc, body); ok {
 			t.Fatal("per-config-divergent literal should drop")
 		}
@@ -104,6 +104,85 @@ func TestProbeGenexValuesForBody(t *testing.T) {
 		}
 		if _, ok := probeGenexValuesForBody(cc, body); ok {
 			t.Fatal("a resolved value that still carries a genex can't be a literal replacement")
+		}
+	})
+}
+
+// TestProbeGenexValuesPerConfigForBody exercises the select()-capable
+// counterpart: top-level genex literals that resolve to DIFFERENT bytes per
+// build config (Ninja Multi-Config) lower to a per-config map keyed by the
+// //config:<name> label, instead of dropping to legacy.
+func TestProbeGenexValuesPerConfigForBody(t *testing.T) {
+	body := []byte("$<TARGET_PROPERTY:app,P1>$<TARGET_PROPERTY:app,P2>\n")
+	lit1 := "$<TARGET_PROPERTY:app,P1>"
+	lit2 := "$<TARGET_PROPERTY:app,P2>"
+	hash := func(lit string) string {
+		return cmakerun.LiteralProbeRequest{Literal: lit}.Hash()
+	}
+
+	t.Run("nil cc is inert", func(t *testing.T) {
+		if _, ok := probeGenexValuesPerConfigForBody(nil, body); ok {
+			t.Fatal("nil cc should return false")
+		}
+	})
+
+	t.Run("divergent literals lower to per-config arms", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.LiteralResolutions = map[string]cmakerun.LiteralResolution{
+			hash(lit1): {PerConfig: map[string]string{"Debug": "AAd", "Release": "AAr"}},
+			hash(lit2): {PerConfig: map[string]string{"Debug": "BBd", "Release": "BBr"}},
+		}
+		perConfig, ok := probeGenexValuesPerConfigForBody(cc, body)
+		if !ok {
+			t.Fatal("divergent literals should lower to a per-config map")
+		}
+		dbg, rel := perConfig["//config:debug"], perConfig["//config:release"]
+		if dbg[lit1] != "AAd" || dbg[lit2] != "BBd" {
+			t.Errorf("debug arm = %+v, want %s->AAd %s->BBd", dbg, lit1, lit2)
+		}
+		if rel[lit1] != "AAr" || rel[lit2] != "BBr" {
+			t.Errorf("release arm = %+v, want %s->AAr %s->BBr", rel, lit1, lit2)
+		}
+	})
+
+	t.Run("config-uniform declines (flat path owns it)", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.LiteralResolutions = map[string]cmakerun.LiteralResolution{
+			hash(lit1): {PerConfig: map[string]string{"": "AA"}},
+			hash(lit2): {PerConfig: map[string]string{"": "BB"}},
+		}
+		if _, ok := probeGenexValuesPerConfigForBody(cc, body); ok {
+			t.Fatal("single-arm (config-uniform) should decline; the flat path handles it")
+		}
+	})
+
+	t.Run("pass 1 (no resolutions) declines", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.LiteralProbeSink = &LiteralProbeSink{}
+		if _, ok := probeGenexValuesPerConfigForBody(cc, body); ok {
+			t.Fatal("pass 1 should decline (resolutions not in hand yet)")
+		}
+	})
+
+	t.Run("ragged config coverage declines", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.LiteralResolutions = map[string]cmakerun.LiteralResolution{
+			hash(lit1): {PerConfig: map[string]string{"Debug": "AAd", "Release": "AAr"}},
+			hash(lit2): {PerConfig: map[string]string{"Debug": "BBd"}}, // missing Release
+		}
+		if _, ok := probeGenexValuesPerConfigForBody(cc, body); ok {
+			t.Fatal("a literal absent from some config arm should decline (would drop a substitution)")
+		}
+	})
+
+	t.Run("resolved value still carrying a genex drops", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.LiteralResolutions = map[string]cmakerun.LiteralResolution{
+			hash(lit1): {PerConfig: map[string]string{"Debug": "AAd", "Release": "AAr"}},
+			hash(lit2): {PerConfig: map[string]string{"Debug": "$<CONFIG>", "Release": "BBr"}},
+		}
+		if _, ok := probeGenexValuesPerConfigForBody(cc, body); ok {
+			t.Fatal("a per-config value still carrying a genex can't be a literal replacement")
 		}
 	})
 }

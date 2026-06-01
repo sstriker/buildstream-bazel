@@ -196,6 +196,65 @@ func probeGenexValuesForBody(cc *codegenContext, body []byte) (map[string]string
 	return values, true
 }
 
+// probeGenexValuesPerConfigForBody is the select()-capable counterpart of
+// probeGenexValuesForBody: when a top-level genex literal resolves to DIFFERENT
+// bytes per build config (Ninja Multi-Config), it can't ride a single flat
+// literal->value map, so this builds a per-config map (config label -> literal
+// -> value) the lift lowers to a `select()` over `//config:<name>`. Tried only
+// after the flat path declines. Succeeds only when EVERY top-level literal
+// resolves in EVERY config (no nested genex) and the values genuinely diverge
+// (>1 config arm); returns (nil, false) otherwise so the caller falls back to
+// legacy. The per-config arms are kept consistent — every arm carries the full
+// literal set — so a ragged probe (a literal missing from some config) declines
+// rather than emit a select() arm that silently skips a substitution.
+func probeGenexValuesPerConfigForBody(cc *codegenContext, body []byte) (map[string]map[string]string, bool) {
+	if cc == nil {
+		return nil, false
+	}
+	ranges := genexeval.TopLevelGenexes(body)
+	if len(ranges) == 0 {
+		return nil, false
+	}
+	perConfig := map[string]map[string]string{} // config label -> literal -> value
+	seen := map[string]bool{}
+	for _, r := range ranges {
+		literal := string(body[r.Start:r.End])
+		if seen[literal] {
+			continue
+		}
+		seen[literal] = true
+		byConfig, ok := cc.resolveLiteralPerConfig(literal, "")
+		if !ok {
+			return nil, false
+		}
+		for cfg, v := range byConfig {
+			if hasGenex([]byte(v)) {
+				return nil, false
+			}
+			label := configLabel(cfg)
+			if perConfig[label] == nil {
+				perConfig[label] = map[string]string{}
+			}
+			perConfig[label][literal] = v
+		}
+	}
+	// Require a genuine multi-config divergence: a single arm means the values
+	// are config-uniform and the flat probeGenexValuesForBody path owns it (a
+	// one-arm select() would be dishonest noise).
+	if len(perConfig) < 2 {
+		return nil, false
+	}
+	// Consistency: every config arm must carry every distinct literal, else the
+	// probe was ragged (a literal absent from some config) and a select() arm
+	// would silently drop a substitution. Decline rather than emit a partial map.
+	for _, arm := range perConfig {
+		if len(arm) != len(seen) {
+			return nil, false
+		}
+	}
+	return perConfig, true
+}
+
 // truncForErr keeps error messages from dumping multi-KB
 // templates wholesale. 40 bytes is enough to identify the
 // offending span without overwhelming the diagnostic.
