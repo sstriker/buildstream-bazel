@@ -85,6 +85,22 @@ func (r *Result) FormatForOperator() string {
 	return b.String()
 }
 
+// FlagSummary renders the detected hardening flags as a compact,
+// stable-ordered comma-joined string (e.g.
+// "-D_FORTIFY_SOURCE=2, -fstack-protector-strong") for a one-line
+// operator note. Empty result → "none".
+func (r *Result) FlagSummary() string {
+	if r.Empty() {
+		return "none"
+	}
+	keys := make([]string, 0, len(r.Flags))
+	for k := range r.Flags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
+}
+
 // Probe compiles a tiny C stub with the given cc and infers
 // distro hardening defaults from the resulting object file's
 // undefined-symbol set. ccPath defaults to "cc" when empty.

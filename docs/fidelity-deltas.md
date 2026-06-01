@@ -9,7 +9,7 @@ Surfaced by the productionized fidelity harness:
 
 - `make e2e-fidelity-compare-{zlib,spdlog,fmt}` — library-side gates
   (cmake-built `.a` vs Bazel-built `.a`).
-- `make e2e-fidelity-compare-{zlib,fmt}-consumer` — consumer-side
+- `make e2e-fidelity-compare-{zlib,fmt,spdlog}-consumer` — consumer-side
   gates (a small consumer .c/.cpp compiled twice; diff the resulting
   `.o`s).
 
@@ -42,9 +42,21 @@ hermetic toolchain).
 
 ### spdlog (`make fetch-spdlog`, `SPDLOG_VERSION = v1.14.1`)
 
-Status: ✅ shipped — `make e2e-fidelity-compare-spdlog` gate passes
-with allowlist suppressing 5 template-instantiation deltas from
-spdlog's vendored fmt headers.
+Status: ✅ library + consumer both shipped. `make
+e2e-fidelity-compare-spdlog` passes with an allowlist suppressing 5
+template-instantiation deltas from spdlog's vendored fmt headers.
+`make e2e-fidelity-compare-spdlog-consumer` passes with an empty
+allowlist (63/63 exported symbols match, 0 impactful). spdlog is a
+*compiled* library — its CMake sets `target_compile_definitions(spdlog
+PUBLIC SPDLOG_COMPILED_LIB)`, so a consumer of the converted target
+compiles in compiled-lib mode (out-of-line refs into `libspdlog.a`).
+The harness replays that PUBLIC define on the cmake-side consumer
+compile (`--consumer-cmake-cflags '-DSPDLOG_COMPILED_LIB'`, since the
+bare `-I<install>/include` compile wouldn't otherwise carry it) and
+compiles both sides at `-O2` so the template-instantiation symbol sets
+are comparable — without the matched opt level the Bazel side's default
+`-O0` fastbuild emits every instantiation as an unpaired weak symbol.
+Both are harness-methodology fixes, not converter deltas.
 
 ### zlib (`make fetch-zlib`, `ZLIB_VERSION = v1.3.1`)
 
@@ -226,12 +238,15 @@ trivial stub with the host cc, inspects the resulting object file's undefined
 symbols, and emits a stderr warning naming the detected flags with a remediation
 recipe. Diagnostic-only — the probe doesn't change BUILD.bazel emit decisions.
 
-**Status**: partial — `bazeltoolchain` now emits opt-in `fortify_source` and
+**Status**: closed — `bazeltoolchain` emits opt-in `fortify_source` and
 `stack_protector` cc_toolchain feature definitions (shipped in the close-gaps
 campaign; toolchain feature template at `examples/sanitizer-features/
 toolchain/features.bzl`). Default-off so existing operators see no change;
-opt-in via `--features=fortify_source,stack_protector` at Bazel-build time
-once the toolchain template is wired in. The classifier auto-classifies these
-undefined-symbol deltas as benign (no allowlist entry needed). Tracked under
-`ROADMAP.md`'s "Toolchain-feature parity vs. cmake's default Release hardening
-flags" Next bullet for the remaining auto-enable closure.
+opt-in via `derive-toolchain --inherit-distro-hardening` (`on` forces the
+features; **`auto`** runs the host-cc hardening probe at derive time and
+enables them only if the host actually applies distro defaults — so deriving
+on the same host cmake built with reproduces that build's hardening without
+the operator having to pass anything explicitly). Opt out per-build with
+`--features=-fortify_source` / `--features=-stack_protector`. The classifier
+auto-classifies these undefined-symbol deltas as benign (no allowlist entry
+needed). See `ROADMAP.md`'s "Toolchain-feature parity" Done entry.

@@ -282,6 +282,16 @@ jobs:
         continue-on-error: true
         run: make e2e-fidelity-compare-spdlog 2>&1 | tee -a /tmp/cijob.log
 
+      - name: fidelity — spdlog (consumer)
+        # spdlog is a compiled library (PUBLIC SPDLOG_COMPILED_LIB), so the
+        # consumer compiles in compiled-lib mode against the converted target.
+        # run-fidelity.sh replays the define on the cmake side
+        # (--consumer-cmake-cflags) and matches the -O2 opt level on both
+        # sides so the .o symbol sets are comparable. 63/63 exported match,
+        # 0 impactful deltas.
+        continue-on-error: true
+        run: make e2e-fidelity-compare-spdlog-consumer 2>&1 | tee -a /tmp/cijob.log
+
       - name: fidelity — nlohmann-json (consumer)
         # Header-only INTERFACE library: no static archive to diff, so
         # this is consumer-side only. Unblocked now that the converter

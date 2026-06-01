@@ -456,8 +456,16 @@ transition cleanly.
   Per-project gate status:
     - **zlib v1.3.1** ✅ library + consumer both shipped — 105/105
       lib-side exact, 1/1 consumer-side exact (empty allowlists).
-    - **spdlog v1.14.1** ✅ library shipped — 1404/1404, 5
-      template-instantiation entries.
+    - **spdlog v1.14.1** ✅ library + consumer both shipped — 1404/1404
+      lib-side (5 template-instantiation allowlist entries); 63/63
+      consumer-side exact, 0 impactful, empty allowlist. spdlog is a
+      compiled library (`PUBLIC SPDLOG_COMPILED_LIB`), so the consumer
+      compiles in compiled-lib mode against the converted target;
+      `run-fidelity.sh` replays the define on the cmake side
+      (`--consumer-cmake-cflags`) and compiles both sides at `-O2` so the
+      template-instantiation symbol sets are comparable (the `-O0`
+      fastbuild default otherwise floods the diff with unpaired weak
+      symbols — a harness artifact, not a converter delta).
     - **fmt 11.0.2** ✅ library + consumer both shipped — 146/146
       lib-side, 1/1 consumer-side; 3 lib-side + 4 consumer-side
       template-instantiation allowlist entries.
@@ -504,9 +512,6 @@ transition cleanly.
       the host for `find_package(ZLIB)`.
 
   Remaining work:
-    - Consumer-side gates for spdlog (the project's own static lib
-      consumers also use header-side typedefs / templates; an extra
-      signal beyond the lib-side 1404 match).
     - VTK / LLVM gates — need the project's specific configure flags +
       tooling and may need larger allowlists (the std::/libm-builtin
       classifier rules + the configure_file / cmake-P / imports-manifest /
@@ -566,50 +571,7 @@ transition cleanly.
   install root" entry under Done (high points). The repo-rule
   alternative stays rejected; this bullet is retained only as the
   record of why.
-- **Toolchain-feature parity vs. cmake's default Release
-  hardening flags.** Surfaced by the convert-and-build
-  artifact comparison of zlib (cmake `libz.a` vs. Bazel
-  `libzlibstatic.a` from the converted BUILD.bazel):
-  exported-symbol sets are identical (105/105), but cmake's
-  archive references `__snprintf_chk` / `__vsnprintf_chk` /
-  `__stack_chk_fail` (FORTIFY_SOURCE + stack-protector)
-  while Bazel's does not. cmake's distro defaults add
-  `-D_FORTIFY_SOURCE=2 -fstack-protector-strong` to Release
-  copts; Bazel's hermetic toolchain doesn't. The audit-time
-  feature-lift (raw flags → `features = ["pic", ...]`) only
-  fires when the cmake CMakeLists explicitly sets these
-  flags — distro-default copts arrive via CFLAGS-env and
-  the codemodel never records them. Closure path: either
-  detect distro-default hardening via a probe at toolchain-
-  derive time and emit `features = ["fortify_source",
-  "stack_protector"]` on the cc_toolchain (requires a real
-  Bazel cc_toolchain feature definition), or document the
-  delta as expected and surface it via the verify pass.
-  Same shape applies to other distro CFLAGS additions
-  (`-fasynchronous-unwind-tables`, `-grecord-gcc-switches`).
-- **Bake refinement: positional output-name args for
-  `cmake -P` scripts.** Surfaced by re-surveying libpng:
-  `add_custom_command(... cmake -P gensrc.cmake <output-name>
-  ...)` is the canonical "one script, many outputs" shape.
-  `--cmake-script-bake` currently passes the script path and
-  `-D var=val` args verbatim but drops post-script positional
-  args (the `<output-name>`), so cmake's argv[1+] indexing
-  inside the script sees nothing and the bake fails with
-  "Unsupported output:". Closure: pull positional args off
-  the recovered command (between the `-P <script>` and the
-  next cmake / shell metachar) and pass them to the
-  convert-time cmake invocation as `cmake -P <script>
-  <arg1> <arg2> ...`. Outputs would still bake one
-  invocation per declared OUTPUT; if the script's argv-
-  switched single invocation produces multiple outputs the
-  bake harness already loops over `b.Outputs` and re-runs
-  cmake per output. Each bake invocation needs its own
-  positional-arg selection — the first OUTPUT's positional
-  arg index would need to come from a `bake-args = [...]`
-  binding on the build statement, OR (simpler) we pass
-  ALL the build statement's recovered command tail and let
-  the script's own `if(${ARGV0} STREQUAL "x")` logic
-  dispatch.
+
 ## Later (research / open questions)
 
 
@@ -665,6 +627,48 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Toolchain-feature parity vs. cmake's default Release hardening
+  flags.** The surfaced delta (cmake's distro `cc` adds
+  `-D_FORTIFY_SOURCE=2 -fstack-protector-strong` via the spec file, so
+  the cmake artifact references `__*_chk` / `__stack_chk_*` while
+  Bazel's hermetic toolchain doesn't) is closed three ways:
+  (1) the classifier auto-classifies the undefined-symbol deltas benign
+  (no allowlist entry needed); (2) `convert-element-cmake
+  --probe-distro-hardening` (default-on in `--diagnostics`) compiles a
+  stub with the host cc and emits a stderr warning naming the detected
+  flags + a remediation recipe; (3) `derive-toolchain
+  --inherit-distro-hardening` emits real `fortify_source` /
+  `stack_protector` cc_toolchain feature() blocks (default-enabled in
+  the config, opt-out per-build via `--features=-fortify_source`). The
+  flag's new **`auto`** value runs the host-cc hardening probe at
+  derive time and enables the features only if the host actually
+  applies distro defaults — so deriving a toolchain on the same host
+  cmake built with reproduces that build's hardening without the
+  operator having to know to pass the flag (`resolveHardeningMode` +
+  `probeHostHardening`, `hardeningprobe.Result.FlagSummary`). Stays
+  opt-in: `off` is the default so existing operators see no change.
+  The same probe/feature mechanism extends to other distro CFLAGS
+  additions (`-fasynchronous-unwind-tables`, `-grecord-gcc-switches`)
+  if a fixture ever demands them — none does today.
+
+- **`--cmake-script-bake` forwards positional output-name args.**
+  The "one script, many outputs" shape
+  (`add_custom_command(... cmake -P gensrc.cmake <output-name> ...)`,
+  libpng's `gensrc.cmake` reading `${CMAKE_ARGV3}` as a dispatch
+  switch) bakes correctly: `extractCmakePScriptPositionalArgs`
+  (`cmake_script_lift.go`) pulls the post-`-P <script>` positional
+  args off the recovered ninja command (excluding any trailing `-D`
+  pairs, which still flow through `extractCmakePDashArgs`) and the
+  bake invocation appends them after the script path in the correct
+  order (`-D` vars first, then `-P <script>`, then positionals — cmake
+  only sets `-D` vars when they precede `-P`). The bake harness loops
+  over `b.Outputs` re-running cmake per declared OUTPUT, so each
+  argv-switched invocation produces its own output. Tested by
+  `TestExtractCmakePScriptPositionalArgs` + a libpng dispatch-shape
+  bake test, and exercised end-to-end by the libpng fidelity gate
+  (`make e2e-fidelity-compare-libpng`, which bakes `pnglibconf.h` &
+  siblings). Landed in `a9d1c03`.
 
 - **cmake-version matrix promoted to blocking.** The four-version
   `e2e-cmake-matrix` shakeout (3.22.6 / 3.28.6 / 4.0.7 / 4.3.3) met its
