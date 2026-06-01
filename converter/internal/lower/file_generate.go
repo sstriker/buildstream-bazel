@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -164,9 +165,10 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 }
 
 // buildFileGenerateGenrule decides between the lifted shape
-// (template body decoupled from BUILD.bazel content) and the
-// legacy shape (rendered bytes base64-embedded in cmd). Lift
-// requires:
+// (template body decoupled from BUILD.bazel content) and the bake
+// shape (rendered bytes emitted via the shared bakeFileTarget —
+// readable skylib write_file for \n-text, byte-exact base64 genrule
+// for binary). Lift requires:
 //
 //   - liftEnabled, AND
 //   - The template-source keyword is present (HasInput → INPUT
@@ -178,24 +180,17 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 //     rendered for some values map (the verify-pass — caught
 //     by pickValues).
 //
-// Falls back to legacy otherwise. The genex short-circuit
+// Falls back to the bake shape otherwise. The genex short-circuit
 // happens before pickValues so the audit tag tells the operator
 // which exit fired.
 func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
-	legacy := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
-		GenruleOuts: []string{outRel},
-		Tags:        fileGenerateTags(fileGenerateTagSet{}),
-		Visibility:  []string{"//visibility:private"},
-	}
+	bake := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
 	if optErr != nil {
-		return legacy
+		return bake
 	}
 	if !liftEnabled {
-		return legacy
+		return bake
 	}
 
 	// Soundness gate: if any `$<TARGET_FILE*:t>` reference in
@@ -268,7 +263,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		if hasGenex([]byte(call.Input)) {
 			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
-				genexLegacy := legacy
+				genexLegacy := bake
 				genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 				return genexLegacy
 			}
@@ -276,11 +271,11 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		}
 		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 		if !ok {
-			return legacy
+			return bake
 		}
 		body, err := os.ReadFile(templatePath)
 		if err != nil {
-			return legacy
+			return bake
 		}
 		templateBody = body
 		inRel = rel
@@ -288,7 +283,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		templateBody = []byte(call.Content)
 		isContentForm = true
 	default:
-		return legacy
+		return bake
 	}
 
 	// Generator expression in the template body → try the
@@ -476,7 +471,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 				return target
 			}
 		}
-		genexLegacy := legacy
+		genexLegacy := bake
 		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 		return genexLegacy
 	}
@@ -497,13 +492,13 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// NEWLINE_STYLE rewrite or some other surface cmake
 		// applied that we haven't captured. Soundness:
 		// fall back to legacy bytes-embedded shape.
-		return legacy
+		return bake
 	}
 	values := map[string]string{}
 
 	cmd, err := fileGenerateLiftedCmd(inRel, templateBody, values, nil, opts, isContentForm)
 	if err != nil {
-		return legacy
+		return bake
 	}
 	target := ir.Target{
 		Name:         name,
@@ -694,6 +689,72 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues ma
 // (some combos are nonsensical — e.g. Lifted + GenexCrossPackage
 // shouldn't co-occur — but the tag emission is independent per
 // facet so the type doesn't enforce exclusivity).
+// bakeFileTarget builds a "bake" target — a fully-resolved body whose
+// exact bytes are known at convert time and need no Bazel-time
+// re-evaluation. Shared by the file(GENERATE) and configure_file
+// lowerings (both fall back here when their lift tiers decline). It
+// prefers skylib write_file (the content carried as a human-readable
+// list of lines) over the legacy `echo <base64> | base64 -d > $@`
+// genrule, falling back to the genrule only for bodies write_file
+// can't represent readably + round-trip exactly (binary / control
+// bytes / CRLF — see writeFileLines). The base64 genrule is byte-exact
+// regardless, so it's the safe fallback; write_file is the
+// maintainability win for the common \n-only-text case (config
+// headers, manifests).
+//
+// tags is the already-rendered tag list (callers pass their own
+// driver's bake / genex-fallback tag set). Both kinds carry the same
+// tags; only the mechanism differs.
+func bakeFileTarget(name, outRel string, rendered []byte, tags []string) ir.Target {
+	base := ir.Target{
+		Name:       name,
+		Tags:       tags,
+		Visibility: []string{"//visibility:private"},
+	}
+	if lines, ok := writeFileLines(rendered); ok {
+		base.Kind = ir.KindWriteFile
+		base.WriteFileOut = outRel
+		base.WriteFileContent = lines
+		base.WriteFileNewline = "unix"
+		return base
+	}
+	base.Kind = ir.KindGenrule
+	base.GenruleCmd = configureFileLegacyCmd(outRel, rendered)
+	base.GenruleOuts = []string{outRel}
+	return base
+}
+
+// writeFileLines splits a readable, exactly-reproducible body into the
+// line list skylib write_file (newline="unix") joins back to the
+// original bytes. Eligible iff the body is valid UTF-8 carrying no
+// control bytes other than newline (\n) and tab (\t): then
+// strings.Split(body, "\n") joined by "\n" equals body exactly
+// (Split/Join are inverses; a trailing "" element reproduces a
+// trailing newline, e.g. "a\n" -> ["a", ""] -> "a\n").
+//
+// The control-byte rejection is deliberate and twofold: (1) CR (\r)
+// wouldn't round-trip through write_file's unix-newline join, and
+// (2) NUL / other control bytes are valid UTF-8 but would render as
+// unreadable \x00-style escapes in the BUILD string literal — which
+// defeats the whole point (readability) and isn't what "text" means
+// here. Such bodies stay on the byte-exact base64 genrule. (Non-ASCII
+// printable UTF-8 — accented chars, etc. — has all bytes >= 0x80 and
+// passes; only the C0 controls + DEL are rejected.)
+func writeFileLines(body []byte) ([]string, bool) {
+	if !utf8.Valid(body) {
+		return nil, false
+	}
+	for _, b := range body {
+		if b == '\n' || b == '\t' {
+			continue
+		}
+		if b < 0x20 || b == 0x7f {
+			return nil, false
+		}
+	}
+	return strings.Split(string(body), "\n"), true
+}
+
 type fileGenerateTagSet struct {
 	// Lifted: the genrule uses the cmake-configure-file tool
 	// (template body decoupled from BUILD.bazel content) vs.

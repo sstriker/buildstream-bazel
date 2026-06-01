@@ -145,11 +145,27 @@ if ! grep -qF 'cmake-codegen-genex-unresolved' "$out_off"; then
     sed 's/^/   /' "$out_off"
     exit 1
 fi
-if ! grep -qF 'YWxwaGFiZXRhCg==' "$out_off"; then
-    echo "FAIL: --two-pass-genex=false should embed the rendered \"alphabeta\" bytes"
+# The bake lowers to skylib write_file with a HUMAN-READABLE content
+# line list (the base64 -> write_file maintainability change), not the
+# legacy `echo <base64> | base64 -d`. Assert the readable shape: a
+# write_file carrying the literal "alphabeta" line and NO base64 blob.
+if ! grep -qF 'write_file(' "$out_off"; then
+    echo "FAIL: --two-pass-genex=false should bake content_adjacent via skylib write_file"
+    echo "--- generated BUILD (two-pass off) ---"
+    sed 's/^/   /' "$out_off"
+    exit 1
+fi
+if ! grep -qF '"alphabeta"' "$out_off"; then
+    echo "FAIL: the write_file bake should carry the readable 'alphabeta' content line"
+    echo "--- generated BUILD (two-pass off) ---"
+    sed 's/^/   /' "$out_off"
+    exit 1
+fi
+if grep -qF 'YWxwaGFiZXRhCg==' "$out_off"; then
+    echo "FAIL: the bake should be readable write_file content, not a base64 blob"
     echo "--- generated BUILD (two-pass off) ---"
     sed 's/^/   /' "$out_off"
     exit 1
 fi
 
-echo "ok  meta-cmake-genex-literal-twopass: \$<TARGET_PROPERTY:app,APP_GENDIR> in a file(GENERATE) OUTPUT resolved via the warm second configure pass (outs = gen_out/manifest.txt); CONTENT-body adjacent genexes resolved via per-literal probe (tier b′, cmake-codegen-genex-resolved); both load-bearing under --two-pass-genex=false"
+echo "ok  meta-cmake-genex-literal-twopass: \$<TARGET_PROPERTY:app,APP_GENDIR> in a file(GENERATE) OUTPUT resolved via the warm second configure pass (outs = gen_out/manifest.txt); CONTENT-body adjacent genexes resolved via per-literal probe (tier b′, cmake-codegen-genex-resolved); the bake path lowers to readable skylib write_file; all load-bearing under --two-pass-genex=false"

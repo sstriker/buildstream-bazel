@@ -2010,6 +2010,12 @@ try-import %workspace%/.bazelrc.operator
 `
 }
 
+// bazelSkylibVersion is the single bazel_skylib BCR pin shared by both
+// generated workspaces (project A's //options string_flag and project
+// B's //config string_flag + the file(GENERATE)/configure_file
+// write_file bake). One constant avoids version skew between A and B.
+const bazelSkylibVersion = "1.8.2"
+
 func moduleBazelA(g *graph) string {
 	var b strings.Builder
 	b.WriteString(`module(name = "meta_project_a", version = "0.0.0")
@@ -2022,8 +2028,8 @@ func moduleBazelA(g *graph) string {
 		b.WriteString(`#   - bazel_skylib for the string_flag rule the //options
 #     package declares (one rule per project.conf options:
 #     entry).
-bazel_dep(name = "bazel_skylib", version = "1.7.1")
 `)
+		fmt.Fprintf(&b, "bazel_dep(name = \"bazel_skylib\", version = %q)\n", bazelSkylibVersion)
 	}
 	// rules_buildstream_bazel is THIS converter's in-repo ruleset
 	// (zero_files, sources extension, trace_load). Not published
@@ -2122,15 +2128,24 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 	// not the rules package — but symmetric wiring keeps the
 	// staging step idempotent (the same MODULE.bazel works
 	// pre- and post-stage).
-	if multiConfigEnabled() {
-		// Multi-config (--build-types / =auto): the //config package this
-		// render emits uses bazel_skylib's string_flag to drive its
-		// config_settings, so project B's module graph needs skylib for
-		// the //config:build_type load() to resolve. Gated to match the
-		// //config emission (multiConfigEnabled) so single-config B's
-		// MODULE.bazel stays byte-stable.
-		b.WriteString(`bazel_dep(name = "bazel_skylib", version = "1.8.2")
-`)
+	if multiConfigEnabled() || hasKind(g, "cmake") {
+		// bazel_skylib is needed in project B for two converter-emitted
+		// shapes:
+		//   - Multi-config (--build-types / =auto): the //config package
+		//     uses skylib's string_flag to drive its config_settings.
+		//   - kind:cmake file(GENERATE) bake: convert-element-cmake lowers
+		//     a fully-resolved body to skylib's write_file
+		//     (load("@bazel_skylib//rules:write_file.bzl", "write_file"))
+		//     instead of the legacy echo|base64 genrule. Coarse gate (any
+		//     kind:cmake element), same rationale as the rules_pkg gate
+		//     below: write-a renders MODULE.bazel before the per-element
+		//     converter runs, so it can't know whether a given element
+		//     actually emits a write_file — only that the kind is present.
+		//     An element with no bake emits no write_file load, so the
+		//     per-element BUILD stays byte-stable; only MODULE.bazel gains
+		//     the dep. Emitted once (the || guard) so multi-config +
+		//     kind:cmake doesn't duplicate the bazel_dep.
+		fmt.Fprintf(&b, "bazel_dep(name = \"bazel_skylib\", version = %q)\n", bazelSkylibVersion)
 	}
 	fmt.Fprintf(&b, `bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(

@@ -403,6 +403,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitLoad(&buf, pkg)
 	emitInstallLoad(&buf, pkg)
 	emitPkgFilesLoad(&buf, pkg)
+	emitWriteFileLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -450,6 +451,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindAlias {
 			if err := emitAlias(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindWriteFile {
+			if err := emitWriteFile(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -541,7 +548,7 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files":
+		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
 			markAttrsKeep(call, ccKeepAttrs(kind))
@@ -814,6 +821,28 @@ var pkgFilesTmpl = template.Must(template.New("pkg_files").Funcs(template.FuncMa
 )
 `))
 
+// writeFileTmpl renders bazel_skylib's
+// `write_file(name=, out=, content=[...], newline="unix")`. Used by
+// the file(GENERATE) bake tier to carry fully-resolved bodies as a
+// human-readable line list instead of the legacy
+// `echo <base64> | base64 -d` genrule. Needs the
+// @bazel_skylib//rules:write_file.bzl load (emitWriteFileLoad).
+var writeFileTmpl = template.Must(template.New("write_file").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`write_file(
+    name = "{{.Name}}",
+    out = "{{.Out}}",
+    content = {{strList .Content}},
+    newline = "{{.Newline}}",
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
 // pickFileTmpl renders the rules_buildstream_bazel `pick_file()`
 // rule. Projects one file out of a pipeline_install install-root
 // TreeArtifact (the round-2 fallback's per-artefact / per-header
@@ -1032,6 +1061,52 @@ func emitPkgFiles(w *bytes.Buffer, t ir.Target) error {
 		StripPrefixExpr: stripExpr,
 		Tags:            sortedCopy(t.Tags),
 		Visibility:      nonDefaultVisibility(t.Visibility),
+	})
+}
+
+// emitWriteFileLoad writes the
+// `load("@bazel_skylib//rules:write_file.bzl", "write_file")` line
+// when pkg emits any KindWriteFile target. No-op otherwise so output
+// for elements without a write_file bake stays byte-stable and the
+// consuming MODULE.bazel needs no bazel_skylib dep on its account.
+// The corresponding write-a-side dep wiring lives in moduleBazelB
+// (mirrors emitPkgFilesLoad / rules_pkg).
+func emitWriteFileLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindWriteFile {
+			buf.WriteString(`load("@bazel_skylib//rules:write_file.bzl", "write_file")` + "\n\n")
+			return
+		}
+	}
+}
+
+// writeFileView projects ir.Target into the write_file template.
+type writeFileView struct {
+	Name       string
+	Out        string
+	Content    []string
+	Newline    string
+	Tags       []string
+	Visibility []string
+}
+
+func emitWriteFile(w *bytes.Buffer, t ir.Target) error {
+	newline := t.WriteFileNewline
+	if newline == "" {
+		newline = "unix"
+	}
+	return writeFileTmpl.Execute(w, writeFileView{
+		Name: t.Name,
+		Out:  t.WriteFileOut,
+		// Content is intentionally NOT sorted — it's an ordered file
+		// body, not a set. The template renders it via strList, whose
+		// %q-quoting escapes each line into a valid Starlark string
+		// literal; buildifier preserves the order (content is not a
+		// sortable-list attribute).
+		Content:    t.WriteFileContent,
+		Newline:    newline,
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
 	})
 }
 

@@ -86,14 +86,18 @@ func TestWriter_BuildTypes_NoConfigPackageWhenUnset(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outB, "config", "BUILD.bazel")); !os.IsNotExist(err) {
 		t.Errorf("single-config render unexpectedly emitted //config (err=%v)", err)
 	}
-	// Byte-stability: B's MODULE.bazel must not gain the skylib dep when
-	// single-config.
+	// skylib IS expected even single-config now: kind:cmake elements may
+	// emit the file(GENERATE) write_file bake, which loads
+	// @bazel_skylib//rules:write_file.bzl (gated on hasKind cmake,
+	// independent of multi-config). The invariant that must hold is that
+	// the multi-config path and the write_file path don't BOTH emit it —
+	// the `||` guard collapses to exactly one bazel_dep line.
 	mod, err := os.ReadFile(filepath.Join(outB, "MODULE.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(mod), "bazel_skylib") {
-		t.Errorf("single-config B MODULE.bazel unexpectedly carries bazel_skylib:\n%s", mod)
+	if n := strings.Count(string(mod), `bazel_dep(name = "bazel_skylib"`); n != 1 {
+		t.Errorf("expected exactly one bazel_skylib bazel_dep (no duplicate), got %d:\n%s", n, mod)
 	}
 }
 

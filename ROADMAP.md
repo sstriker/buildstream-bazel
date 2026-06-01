@@ -584,6 +584,44 @@ transition cleanly.
   install root" entry under Done (high points). The repo-rule
   alternative stays rejected; this bullet is retained only as the
   record of why.
+- **De-base64 the cmake-configure-file family — lift tier (bake tier
+  done).** The **bake tier is fully de-base64'd** across all four
+  emitters — file(GENERATE), configure_file, `execute_process` bytes
+  fallback, and `cmake-codegen-cmake-script-bake` — all routing through
+  the shared `bakeFileTarget` (readable skylib `write_file` for \n-text,
+  byte-exact base64 genrule for binary; see Done). The sole remainder is
+  the **genex-replay lift tier** (file(GENERATE) tiers a/b/b′ + the
+  configure_file lift), which can't drop base64 entirely because the
+  body is re-evaluated at Bazel time by `//tools:cmake-configure-file`.
+  Its inline `echo <b64> | base64 -d` materializations of the `--values`
+  / `--genex-values` JSON maps and the `--content-base64` CONTENT
+  template are base64-in-shell only because the lift emits a **genrule**,
+  whose `cmd` is a raw shell string. The fix is to stop emitting a
+  genrule and emit a small **custom rule** — `cmake_configure_file` in
+  `rules_buildstream_bazel`, the `expand_template` pattern — that wraps
+  the existing tool. That moves the work to the action layer, where Bazel
+  has the facilities a shell `cmd` lacks:
+  - `values` / `genex_values` ride as **readable Starlark `string_dict`
+    attributes** in the BUILD (better than JSON sidecar *or* base64, at
+    any size); the rule's impl `ctx.actions.write(json.encode(...))`s
+    them to build-time JSON files — so the full-namespace map never lands
+    in the source tree as base64 or a checked-in sidecar.
+  - `ctx.actions.run(arguments = [...])` passes an **argv array straight
+    to `execve`** — no shell, so no quoting/escaping surface at all.
+  - `ctx.actions.args().use_param_file()` natively spills a long arg list
+    to a params file (`ARG_MAX`), Bazel-managed.
+  This **dissolves the small-inline-vs-large-sidecar size threshold**: a
+  dict attribute is readable regardless of entry count, so there's
+  nothing to route. The CONTENT template rides as a `template` label
+  (real file) or inline content. The tool (`//tools:cmake-configure-file`)
+  already takes file-path args, so its interface barely changes — it just
+  gets a rule wrapper instead of a hand-built shell line. Scope is meatier
+  than a genrule-cmd swap: new rule in the ruleset + a new IR kind +
+  emitter wiring + the write-a dep (mirrors how `pick_file` / `pkg_files`
+  were added), and high golden/gate churn (the lift cmd builders and the
+  `--content-base64` / `--values` gate assertions are rewritten). End
+  state: zero base64 anywhere in the configure-file family. Sequenced as
+  its own PR off `main` after the bake-tier PR (#356) merges.
 
 ## Later (research / open questions)
 
@@ -640,6 +678,30 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Readable `write_file` bake for file(GENERATE) + configure_file
+  (de-base64).** The bake tier — a fully-resolved / COPYONLY body whose
+  exact bytes are known at convert time — no longer emits the opaque
+  `echo <base64> | base64 -d > $@` genrule. It lowers to bazel_skylib's
+  `write_file(out=, content=[...], newline="unix")`, carrying the body
+  as a human-readable, diffable list of lines (`KindWriteFile`). Both
+  the file(GENERATE) and configure_file lowerings route through the
+  shared `bakeFileTarget` chooser. Byte-exact for \n-only UTF-8 text:
+  `content = strings.Split(body, "\n")` round-trips through skylib's
+  join (Split/Join inverses; a trailing `""` element reproduces the
+  trailing newline — empirically pinned against a real
+  `bazel build`). Binary / control-byte / CRLF bodies stay on the
+  byte-exact base64 genrule (the `writeFileLines` guard rejects any C0
+  control byte but \n/\t). The emitter writes the
+  `@bazel_skylib//rules:write_file.bzl` load (`emitWriteFileLoad`) and
+  write-a adds the bazel_skylib bazel_dep on any kind:cmake element
+  (coarse gate, same precedent as rules_pkg; `||`-folded with the
+  multi-config skylib dep so there's no duplicate). buildifier leaves
+  the `content` list order intact (it's a file body, not a sortable
+  set). Advances Phase 7's human-maintainable-emission goal. Follow-up
+  queued under Next (the genex-replay lift tier moves to a
+  `cmake_configure_file` custom rule with readable `string_dict`
+  attributes, finishing the de-base64).
 
 - **Toolchain-feature parity vs. cmake's default Release hardening
   flags.** The surfaced delta (cmake's distro `cc` adds

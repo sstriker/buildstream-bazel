@@ -280,6 +280,7 @@ cat > "$bazel_ws/MODULE.bazel" <<EOF
 module(name = "${project_name}_fidelity", version = "0.0.0")
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
 ${bazel_external}
 EOF
 

@@ -8,7 +8,28 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// assertBakedBody checks a baked target reproduces wantBody, whether it
+// lowered to a readable skylib write_file (\n-only text) or the
+// byte-exact base64 genrule fallback (binary / control-byte / CRLF).
+func assertBakedBody(t *testing.T, tgt ir.Target, wantBody string) {
+	t.Helper()
+	switch tgt.Kind {
+	case ir.KindWriteFile:
+		if got := strings.Join(tgt.WriteFileContent, "\n"); got != wantBody {
+			t.Errorf("write_file content round-trip = %q, want %q", got, wantBody)
+		}
+	case ir.KindGenrule:
+		want := base64.StdEncoding.EncodeToString([]byte(wantBody))
+		if !strings.Contains(tgt.GenruleCmd, want) {
+			t.Errorf("genrule cmd doesn't carry base64 payload; got %q want substr %q", tgt.GenruleCmd, want)
+		}
+	default:
+		t.Errorf("unexpected bake kind %v", tgt.Kind)
+	}
+}
 
 // TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput pins the
 // convert-time bake contract: cmake -P runs, declared outputs
@@ -84,11 +105,7 @@ func TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput(t *testing.T) {
 		t.Errorf("missing cmake-codegen-cmake-script-bake tag; got %v", gen.Tags)
 	}
 	// The genrule cmd should base64-decode the literal "hello\n".
-	wantBase64 := base64.StdEncoding.EncodeToString([]byte("hello\n"))
-	if !strings.Contains(gen.GenruleCmd, wantBase64) {
-		t.Errorf("cmd doesn't carry base64-encoded payload; got %q want substring %q",
-			gen.GenruleCmd, wantBase64)
-	}
+	assertBakedBody(t, gen, "hello\n")
 }
 
 // TestBakeCmakeScriptGenrule_ForwardsPositionalArgs covers the
@@ -158,11 +175,7 @@ endif()
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
 	}
-	wantBase64 := base64.StdEncoding.EncodeToString([]byte("alpha\n"))
-	if !strings.Contains(cc.Genrules[0].GenruleCmd, wantBase64) {
-		t.Errorf("cmd doesn't carry expected payload; got %q want substring %q",
-			cc.Genrules[0].GenruleCmd, wantBase64)
-	}
+	assertBakedBody(t, cc.Genrules[0], "alpha\n")
 }
 
 // TestBakeCmakeScriptGenrule_ForwardsDashDArgsBeforeScript covers
@@ -233,11 +246,7 @@ endif()
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
 	}
-	wantBase64 := base64.StdEncoding.EncodeToString([]byte("alpha\n"))
-	if !strings.Contains(cc.Genrules[0].GenruleCmd, wantBase64) {
-		t.Errorf("cmd doesn't carry expected payload; got %q want substring %q",
-			cc.Genrules[0].GenruleCmd, wantBase64)
-	}
+	assertBakedBody(t, cc.Genrules[0], "alpha\n")
 }
 
 // TestBakeCmakeScriptGenrule_TopologicalChain pins the producer-
@@ -313,12 +322,7 @@ file(WRITE "step2.txt" "${STEP1}step2\n")
 		t.Errorf("Genrules len = %d, want 2 (producer + consumer)", len(cc.Genrules))
 	}
 	// Consumer's cmd should carry the chained payload "step1\nstep2\n".
-	wantBase64 := base64.StdEncoding.EncodeToString([]byte("step1\nstep2\n"))
-	consumerCmd := cc.Genrules[len(cc.Genrules)-1].GenruleCmd
-	if !strings.Contains(consumerCmd, wantBase64) {
-		t.Errorf("consumer cmd doesn't carry the chained payload; got %q want substring %q",
-			consumerCmd, wantBase64)
-	}
+	assertBakedBody(t, cc.Genrules[len(cc.Genrules)-1], "step1\nstep2\n")
 }
 
 func TestBakeCmakeScriptGenrule_NoCmakeRefuses(t *testing.T) {

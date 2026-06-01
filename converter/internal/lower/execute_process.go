@@ -1014,24 +1014,17 @@ func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuil
 // file(GENERATE) lifter.
 func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rendered []byte, liftEnabled bool, cmakeVars map[string]string) ir.Target {
 	opts := configurefile.Options{}
-	// Legacy shape intentionally omits Srcs: the cmd is just
-	// `echo <base64> | base64 -d > $@`, so the template isn't
-	// consumed at action time. Staging it as Srcs would create
-	// confusing rebuild semantics — template edits would
-	// invalidate the genrule via Bazel's source graph but the
-	// re-run would just re-emit the same baked-in bytes. The
-	// configure_file / file(GENERATE) legacy shapes follow the
-	// same rule; this branch matches them. Lifted branch below
-	// sets Srcs because the lifted cmd references it via
-	// $(location srcRel).
-	legacy := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  configureFileLegacyCmd(dstRel, rendered),
-		GenruleOuts: []string{dstRel},
-		Tags:        cmakeEConfigureFileTags(false),
-		Visibility:  []string{"//visibility:private"},
-	}
+	// Bake the resolved bytes via the shared bakeFileTarget chooser:
+	// readable skylib write_file for \n-only text, byte-exact base64
+	// genrule for binary / control-byte / CRLF bodies. Same de-base64
+	// maintainability win as the configure_file / file(GENERATE) bakes.
+	// Either shape intentionally omits Srcs: the template isn't consumed
+	// at action time (the bytes are already resolved), so staging it as
+	// Srcs would create confusing rebuild semantics — template edits
+	// would invalidate the rule via Bazel's source graph but the re-run
+	// would just re-emit the same baked bytes. The lifted branch below
+	// sets Srcs because the lifted cmd references it via $(location).
+	legacy := bakeFileTarget(name, dstRel, rendered, cmakeEConfigureFileTags(false))
 	if !liftEnabled {
 		return legacy
 	}

@@ -121,8 +121,9 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 
 // buildConfigureFileGenrule decides between the lifted shape
 // (.h.in as a real srcs + cmake-configure-file tool + values
-// JSON in cmd) and the legacy shape (rendered output base64-
-// embedded in cmd). Picks the lifted shape when:
+// JSON in cmd) and the bake shape (rendered output emitted via the
+// shared bakeFileTarget — readable skylib write_file for \n-text,
+// byte-exact base64 genrule for binary). Picks the lifted shape when:
 //
 //   - The template input path resolves to a readable file
 //     inside the source root, AND
@@ -136,7 +137,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 //     gate against future cmake additions we haven't taught
 //     Substitute about).
 //
-// Falls back to the legacy shape otherwise — soundness is
+// Falls back to the bake shape otherwise — soundness is
 // preserved (the .h.in stays load-bearing in srckey via the
 // existing read-paths.txt narrowing); the audit tool's
 // undercoverage report continues to flag those .h.in paths
@@ -151,37 +152,34 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 // resolves correctly through the Bazel-time tool — closing
 // the soundness gap PR #94 review identified.
 func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string) ir.Target {
-	legacy := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
-		GenruleOuts: []string{outRel},
-		Tags:        configureFileTags(configureFileTagSet{}),
-		Visibility:  []string{"//visibility:private"},
-	}
+	// Bake the fully-resolved bytes via the shared bakeFileTarget chooser:
+	// readable skylib write_file for \n-only text, byte-exact base64
+	// genrule for binary / control-byte / CRLF bodies. Same de-base64
+	// maintainability win as the file(GENERATE) bake.
+	bake := bakeFileTarget(name, outRel, rendered, configureFileTags(configureFileTagSet{}))
 
 	if !liftEnabled || hostSrcDir == "" || recordedSrcDir == "" {
-		return legacy
+		return bake
 	}
 	opts, optErr := configureFileOptionsFromCall(call.Options)
 	if optErr != nil {
-		return legacy
+		return bake
 	}
 	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 	if !ok {
-		return legacy
+		return bake
 	}
 	templateBody, err := os.ReadFile(templatePath)
 	if err != nil {
-		return legacy
+		return bake
 	}
 	values, ok := pickValues(templateBody, rendered, opts, cmakeVars)
 	if !ok {
-		return legacy
+		return bake
 	}
 	cmd, err := configureFileLiftedCmd(inRel, outRel, values, opts)
 	if err != nil {
-		return legacy
+		return bake
 	}
 	return ir.Target{
 		Name:         name,
