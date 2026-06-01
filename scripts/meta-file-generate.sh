@@ -41,9 +41,14 @@ set -eu
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
-# Live --source-root mode runs cmake; skip cleanly when it's absent.
+# Live --source-root mode runs cmake (which selects the Ninja generator);
+# skip cleanly when either tool is absent.
 if ! command -v cmake >/dev/null 2>&1; then
     echo "skip: cmake not on PATH"
+    exit 0
+fi
+if ! command -v ninja >/dev/null 2>&1; then
+    echo "skip: ninja not on PATH (--source-root mode uses the Ninja generator)"
     exit 0
 fi
 
