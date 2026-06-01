@@ -184,7 +184,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // which exit fired.
 func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
-	legacy := fileGenerateBakeTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
+	legacy := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
 	if optErr != nil {
 		return legacy
 	}
@@ -688,20 +688,23 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues ma
 // (some combos are nonsensical — e.g. Lifted + GenexCrossPackage
 // shouldn't co-occur — but the tag emission is independent per
 // facet so the type doesn't enforce exclusivity).
-// fileGenerateBakeTarget builds the file(GENERATE) "bake" target — a
-// fully-resolved body whose exact bytes are known at convert time and
-// need no Bazel-time re-evaluation. It prefers skylib write_file (the
-// content carried as a human-readable list of lines) over the legacy
-// `echo <base64> | base64 -d > $@` genrule, falling back to the
-// genrule only for bodies write_file can't round-trip exactly (binary,
-// CRLF). The base64 genrule is byte-exact regardless, so it's the
-// safe fallback; write_file is the maintainability win for the common
-// \n-only-text case (config headers, manifests).
+// bakeFileTarget builds a "bake" target — a fully-resolved body whose
+// exact bytes are known at convert time and need no Bazel-time
+// re-evaluation. Shared by the file(GENERATE) and configure_file
+// lowerings (both fall back here when their lift tiers decline). It
+// prefers skylib write_file (the content carried as a human-readable
+// list of lines) over the legacy `echo <base64> | base64 -d > $@`
+// genrule, falling back to the genrule only for bodies write_file
+// can't represent readably + round-trip exactly (binary / control
+// bytes / CRLF — see writeFileLines). The base64 genrule is byte-exact
+// regardless, so it's the safe fallback; write_file is the
+// maintainability win for the common \n-only-text case (config
+// headers, manifests).
 //
-// tags is the already-rendered tag list (callers pass the plain bake
-// tag set or the genex-fallback set). Both kinds carry the same tags;
-// only the mechanism differs.
-func fileGenerateBakeTarget(name, outRel string, rendered []byte, tags []string) ir.Target {
+// tags is the already-rendered tag list (callers pass their own
+// driver's bake / genex-fallback tag set). Both kinds carry the same
+// tags; only the mechanism differs.
+func bakeFileTarget(name, outRel string, rendered []byte, tags []string) ir.Target {
 	base := ir.Target{
 		Name:       name,
 		Tags:       tags,
