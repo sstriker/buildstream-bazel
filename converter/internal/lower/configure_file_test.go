@@ -402,7 +402,7 @@ func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 // TestBuildConfigureFileGenrule_StampValues covers the VCS-stamp lift: a
 // template referencing a stamp-sourced var (@GIT_SHA@) gets a stamp_values
 // entry so the rule re-reads the live revision from the workspace status,
-// while the baked value stays in values as the no---stamp fallback. A
+// while the baked value stays in values as the non-stamped fallback. A
 // stamp var the template does NOT reference is excluded (no spurious
 // status dependency).
 func TestBuildConfigureFileGenrule_StampValues(t *testing.T) {
@@ -436,7 +436,7 @@ func TestBuildConfigureFileGenrule_StampValues(t *testing.T) {
 	if len(sv) != 1 || sv["GIT_SHA"] != "STABLE_GIT_SHA" {
 		t.Errorf("stamp_values = %v, want {GIT_SHA: STABLE_GIT_SHA} (UNUSED_STAMP not referenced, must be excluded)", sv)
 	}
-	// The baked value stays in values as the no---stamp fallback.
+	// The baked value stays in values as the non-stamped fallback.
 	if got.CMakeConfigureFile.Values["GIT_SHA"] != "abc123" {
 		t.Errorf("values[GIT_SHA] = %q, want the baked fallback abc123", got.CMakeConfigureFile.Values["GIT_SHA"])
 	}

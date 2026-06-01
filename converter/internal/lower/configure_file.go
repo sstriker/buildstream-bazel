@@ -184,7 +184,7 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	// build time instead of baking the convert-time revision. Only vars the
 	// template actually references are wired (others would couple this rule
 	// to the stamp status for nothing); the baked value stays in `values`
-	// as the no---stamp fallback.
+	// as the non-stamped fallback.
 	spec.StampValues = stampValuesForTemplate(templateBody, opts, stampVars)
 	return cmakeConfigureFileTarget(name, spec, configureFileTags(configureFileTagSet{Lifted: true}))
 }
