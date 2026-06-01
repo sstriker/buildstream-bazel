@@ -548,7 +548,7 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files":
+		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
 			markAttrsKeep(call, ccKeepAttrs(kind))

@@ -2010,6 +2010,12 @@ try-import %workspace%/.bazelrc.operator
 `
 }
 
+// bazelSkylibVersion is the single bazel_skylib BCR pin shared by both
+// generated workspaces (project A's //options string_flag and project
+// B's //config string_flag + the file(GENERATE)/configure_file
+// write_file bake). One constant avoids version skew between A and B.
+const bazelSkylibVersion = "1.8.2"
+
 func moduleBazelA(g *graph) string {
 	var b strings.Builder
 	b.WriteString(`module(name = "meta_project_a", version = "0.0.0")
@@ -2022,8 +2028,8 @@ func moduleBazelA(g *graph) string {
 		b.WriteString(`#   - bazel_skylib for the string_flag rule the //options
 #     package declares (one rule per project.conf options:
 #     entry).
-bazel_dep(name = "bazel_skylib", version = "1.7.1")
 `)
+		fmt.Fprintf(&b, "bazel_dep(name = \"bazel_skylib\", version = %q)\n", bazelSkylibVersion)
 	}
 	// rules_buildstream_bazel is THIS converter's in-repo ruleset
 	// (zero_files, sources extension, trace_load). Not published
@@ -2139,8 +2145,7 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 		//     per-element BUILD stays byte-stable; only MODULE.bazel gains
 		//     the dep. Emitted once (the || guard) so multi-config +
 		//     kind:cmake doesn't duplicate the bazel_dep.
-		b.WriteString(`bazel_dep(name = "bazel_skylib", version = "1.8.2")
-`)
+		fmt.Fprintf(&b, "bazel_dep(name = \"bazel_skylib\", version = %q)\n", bazelSkylibVersion)
 	}
 	fmt.Fprintf(&b, `bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(

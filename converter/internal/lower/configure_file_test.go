@@ -283,11 +283,13 @@ func TestPickValues(t *testing.T) {
 // buildConfigureFileGenrule
 // ---------------------------------------------------------------------------
 
-// TestBuildConfigureFileGenrule_LegacyShape locks the
-// "rendered bytes embedded in cmd" shape. The lift-disabled
-// flag forces legacy; the cmd must carry the base64-encoded
-// rendered bytes and the tags must NOT include cmake-codegen-lifted.
-func TestBuildConfigureFileGenrule_LegacyShape(t *testing.T) {
+// TestBuildConfigureFileGenrule_BakeShape locks the bake (non-lifted)
+// shape. The lift-disabled flag forces the bake; for \n-only-text
+// rendered bytes that's the readable skylib write_file (content
+// round-trips the bytes), and the tags must NOT include
+// cmake-codegen-lifted. (The binary base64-genrule fallback is pinned
+// separately by TestBuildConfigureFileGenrule_BinaryBakeStaysBase64.)
+func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 	rendered := []byte("#define VER \"1.2.3\"\n")
 	call := shadow.ConfigureFileCall{
 		Input:  "/src/project/cfg.h.in",

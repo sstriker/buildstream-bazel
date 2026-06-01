@@ -165,9 +165,10 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 }
 
 // buildFileGenerateGenrule decides between the lifted shape
-// (template body decoupled from BUILD.bazel content) and the
-// legacy shape (rendered bytes base64-embedded in cmd). Lift
-// requires:
+// (template body decoupled from BUILD.bazel content) and the bake
+// shape (rendered bytes emitted via the shared bakeFileTarget —
+// readable skylib write_file for \n-text, byte-exact base64 genrule
+// for binary). Lift requires:
 //
 //   - liftEnabled, AND
 //   - The template-source keyword is present (HasInput → INPUT
@@ -179,17 +180,17 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 //     rendered for some values map (the verify-pass — caught
 //     by pickValues).
 //
-// Falls back to legacy otherwise. The genex short-circuit
+// Falls back to the bake shape otherwise. The genex short-circuit
 // happens before pickValues so the audit tag tells the operator
 // which exit fired.
 func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
-	legacy := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
+	bake := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
 	if optErr != nil {
-		return legacy
+		return bake
 	}
 	if !liftEnabled {
-		return legacy
+		return bake
 	}
 
 	// Soundness gate: if any `$<TARGET_FILE*:t>` reference in
@@ -262,7 +263,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		if hasGenex([]byte(call.Input)) {
 			resolved, ok := resolveGenexInPath(call.Input, buildGenexContext(cmakeVars, genexTargets))
 			if !ok {
-				genexLegacy := legacy
+				genexLegacy := bake
 				genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 				return genexLegacy
 			}
@@ -270,11 +271,11 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		}
 		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
 		if !ok {
-			return legacy
+			return bake
 		}
 		body, err := os.ReadFile(templatePath)
 		if err != nil {
-			return legacy
+			return bake
 		}
 		templateBody = body
 		inRel = rel
@@ -282,7 +283,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		templateBody = []byte(call.Content)
 		isContentForm = true
 	default:
-		return legacy
+		return bake
 	}
 
 	// Generator expression in the template body → try the
@@ -470,7 +471,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 				return target
 			}
 		}
-		genexLegacy := legacy
+		genexLegacy := bake
 		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 		return genexLegacy
 	}
@@ -491,13 +492,13 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// NEWLINE_STYLE rewrite or some other surface cmake
 		// applied that we haven't captured. Soundness:
 		// fall back to legacy bytes-embedded shape.
-		return legacy
+		return bake
 	}
 	values := map[string]string{}
 
 	cmd, err := fileGenerateLiftedCmd(inRel, templateBody, values, nil, opts, isContentForm)
 	if err != nil {
-		return legacy
+		return bake
 	}
 	target := ir.Target{
 		Name:         name,
