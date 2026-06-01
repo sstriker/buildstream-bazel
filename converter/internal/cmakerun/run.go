@@ -354,7 +354,14 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 			cmd.Stderr = stderrTail
 		}
 		cmd.Env = configureEnv(homeDir, opts.PrefixDir, extraEnv...)
-		return stderrTail.Bytes(), cmd.Run()
+		// Run cmake first (it populates stderrTail through cmd.Stderr),
+		// THEN snapshot the tail. Don't fold these into
+		// `return stderrTail.Bytes(), cmd.Run()`: Go evaluates return
+		// operands left-to-right, so that form snapshots the buffer
+		// before cmake runs and hands annotateConfigureFailure an empty
+		// tail — dropping the CMP0026 hint the matrix asserts.
+		runErr := cmd.Run()
+		return stderrTail.Bytes(), runErr
 	}
 
 	stderrBytes, runErr := runOnce()
