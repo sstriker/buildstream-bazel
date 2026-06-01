@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -400,10 +401,16 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback(t *t
 		t.Errorf("liftEnabled=false should not stage tools; got %v", g.GenruleTools)
 	}
 	if len(g.Srcs) != 0 {
-		t.Errorf("liftEnabled=false should not stage srcs (legacy cmd doesn't use the template); got %v", g.Srcs)
+		t.Errorf("liftEnabled=false should not stage srcs (bake doesn't use the template); got %v", g.Srcs)
 	}
-	if !strings.Contains(g.GenruleCmd, "base64 -d") {
-		t.Errorf("legacy cmd should base64-decode rendered bytes; got %q", g.GenruleCmd)
+	// The rendered bytes are \n-only text, so the bake lowers to the
+	// readable skylib write_file (shared bakeFileTarget) rather than the
+	// legacy base64 genrule.
+	if g.Kind != ir.KindWriteFile {
+		t.Errorf("text bake should use write_file; got kind %v cmd %q", g.Kind, g.GenruleCmd)
+	}
+	if join := strings.Join(g.WriteFileContent, "\n"); join != "v=1\n" {
+		t.Errorf("write_file content round-trip = %q, want %q", join, "v=1\n")
 	}
 	for _, tg := range g.Tags {
 		if tg == "cmake-codegen-lifted" {
