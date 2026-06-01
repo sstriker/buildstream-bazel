@@ -52,6 +52,16 @@ type standaloneTraceContext struct {
 	// genrule needs at least `:__pkg__` visibility for T to
 	// reference it.
 	AddDependencies []shadow.AddDependenciesCall
+
+	// AliasToActual maps each add_library(<alias> ALIAS <actual>) alias name
+	// to its actual producing target (namespaced aliases like Foo::Bar
+	// included). Used by the genex audit: cmake allows $<TARGET_FILE:alias>,
+	// but rewriteToolFromTarget lifts the resolved artifact path to the ACTUAL
+	// target, so the genrule's tools carries `:actual`, not `:alias` — the
+	// classifier normalizes a referenced genex target name through this map
+	// before checking tools so an aliased reference isn't mis-tagged
+	// -unresolved. Empty / nil when the project declares no aliases.
+	AliasToActual map[string]string
 }
 
 // lowerStandaloneCustomCommands walks every CUSTOM_COMMAND edge in
@@ -122,6 +132,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 	// path stays intact on the offline-replay-no-trace path.
 	outputToTargetName := buildOutputToCustomTargetIndex(traceCtx.CustomCommands, traceCtx.CustomTargets)
 	consumedOutputs := buildConsumedOutputIndex(traceCtx.CustomCommands, traceCtx.CustomTargets, traceCtx.AddDependencies)
+	// Generator-expression audit index: maps each genex-bearing
+	// add_custom_command's outputs to its $<...> footprint, so the
+	// emitted genrule can be tagged resolved/unresolved depending on
+	// whether its path-bearing genexes (TARGET_FILE / TARGET_OBJECTS)
+	// were lifted to $(location) labels. nil when the trace has no
+	// genex-bearing commands (the audit tag is then never added).
+	genexIndex := buildOutputToCustomCommandGenex(traceCtx.CustomCommands)
 
 	var out []ir.Target
 	seenNames := map[string]int{}
@@ -234,6 +251,16 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// lookup.
 		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
 		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName)
+		// Audit: when the trace shows this command carried generator
+		// expressions, tag whether its path-bearing genexes resolved to
+		// $(location) labels (portable) or baked a machine-specific
+		// literal (the rewriteToolFromTarget lift covers single-artifact
+		// $<TARGET_FILE:t>; $<TARGET_OBJECTS:t> / cross-element refs are
+		// the known residue and surface as -unresolved).
+		tags := []string{"cmake-codegen-standalone-custom-command"}
+		if genexTag := customCommandGenexTag(outs, genexIndex, tools, traceCtx.AliasToActual); genexTag != "" {
+			tags = append(tags, genexTag)
+		}
 		out = append(out, ir.Target{
 			Name:         name,
 			Kind:         ir.KindGenrule,
@@ -242,7 +269,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			GenruleCmd:   rewrittenCmd,
 			GenruleTools: tools,
 			Visibility:   visibility,
-			Tags:         []string{"cmake-codegen-standalone-custom-command"},
+			Tags:         tags,
 		})
 	}
 	return out

@@ -223,12 +223,26 @@ transition cleanly.
     (`cmake-codegen-genex-unresolved`). The same gate pins it
     end-to-end (adjacent `$<TARGET_PROPERTY:app,GEN_PART_{A,B}>` →
     resolved, tag flips to `-unresolved` under `--two-pass-genex=false`).
-    **Remaining consumers:** wiring the same probe into
-    add_custom_command argv / install destinations, and a
-    `select()`-capable consumer for per-config-divergent literals
-    (tier b′ drops those to legacy today — a single literal-replace
-    map can't represent them). The `UnsupportedError` /
-    legacy-bake surface keeps shrinking as each consumer lands.
+    **add_custom_command argv — audit + portability landed.** Genexes
+    are resolved away in `build.ninja`, so the unresolved `$<...>` only
+    survives in the trace (`AddCustomCommandCall.Commands`); the genrule
+    cmd is built from the resolved ninja command. `rewriteToolFromTarget`
+    already lifts a `$<TARGET_FILE:t>`-derived build-dir-relative artifact
+    path to a portable `$(location :t)` label + tools dep (now pinned by
+    `standalone_genrules_genex_test.go`); the new
+    `cmake-codegen-cmd-genex-{resolved,unresolved}` tags
+    (`standalone_genrules_genex.go`) cross-reference each genrule back to
+    its trace call and make that resolution visible — `-unresolved` flags
+    the residue where a path-bearing genex baked a non-portable literal.
+    **Residue (queued):** `$<TARGET_OBJECTS:t>` substitution (object lists
+    aren't in the artifact map — needs the probe's per-target object list
+    threaded into the standalone lowering) and cross-element
+    `$<TARGET_FILE:t>`; both surface as `-unresolved` today. **Still
+    queued:** wiring the probe into install destinations, and a
+    `select()`-capable consumer for per-config-divergent literals (tier b′
+    drops those to legacy today — a single literal-replace map can't
+    represent them). The `UnsupportedError` / legacy-bake surface keeps
+    shrinking as each consumer lands.
 
   - **Phase 4 — build.ninja custom-command walk.** Promote
     `converter/internal/ninja/` from its current
