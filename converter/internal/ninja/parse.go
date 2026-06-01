@@ -417,8 +417,9 @@ func newLineScanner(r io.Reader) *lineScanner {
 	return &lineScanner{r: bufio.NewReader(r)}
 }
 
-// next returns the next non-comment logical line, or (zero, false, nil) at
-// EOF. Errors are sticky.
+// next returns the next non-comment logical line, (zero, false, nil) at
+// EOF, or (zero, false, err) on a read error from the underlying reader
+// (propagated directly; every caller stops on the first non-nil err).
 func (s *lineScanner) next() (logicalLine, bool, error) {
 	if s.pending != nil {
 		ll := *s.pending
