@@ -63,18 +63,20 @@ func shapeHeaderOnlyStripIncludePrefix(pkg *ir.Package) {
 		}
 		// Normalize the include dir before matching: trace-derived dirs
 		// can carry a leading "./", a trailing "/", or surrounding
-		// whitespace that filepath.Clean folds away (Bazel treats
-		// "include" and "include/" equivalently). Compare headers in the
-		// same normalized space so a harmless variant doesn't block the
-		// lift, and store the cleaned form on the attribute.
-		d := filepath.Clean(strings.TrimSpace(t.Includes[0]))
+		// whitespace that Clean folds away (Bazel treats "include" and
+		// "include/" equivalently). ToSlash keeps the result
+		// forward-slash on Windows (filepath.Clean would emit "\", which
+		// is invalid in a Bazel strip_include_prefix and wouldn't match
+		// the "/"-anchored prefix below). Compare headers in the same
+		// normalized space, and store the cleaned slash form.
+		d := filepath.ToSlash(filepath.Clean(strings.TrimSpace(t.Includes[0])))
 		if d == "" || d == "." || pathHasDotDotSegment(d) {
 			continue
 		}
 		prefix := d + "/"
 		covered := true
 		for _, h := range t.Hdrs {
-			if !strings.HasPrefix(filepath.Clean(strings.TrimSpace(h)), prefix) {
+			if !strings.HasPrefix(filepath.ToSlash(filepath.Clean(strings.TrimSpace(h))), prefix) {
 				covered = false
 				break
 			}
