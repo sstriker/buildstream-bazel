@@ -175,10 +175,13 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
-	// seenProbeFlags dedupes the bool_flag/config_setting pair a feature
-	// probe lifts to: the same HAVE_X probe can recur in the trace
-	// (configure re-evaluation), and duplicate target names break emit.
-	seenProbeFlags := map[string]bool{}
+	// seenProbeFlags maps a lifted build-setting name to the cmake
+	// variable that produced it. The same feature probe can recur in the
+	// trace (configure re-evaluation) — the same variable lifts once.
+	// Two DISTINCT variables that sanitize to the same Bazel name (a
+	// case-only HAVE_ZLIB vs have_zlib) collide and refuse below, rather
+	// than silently dropping a knob.
+	seenProbeFlags := map[string]string{}
 	var unsupported []executeProcessRefusal
 	var outs []executeProcessOut
 	collect := func(rels []string) {
@@ -250,10 +253,24 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				// the captured value when dump-vars caught it, else false.
 				if varName := featureDeclarationProbeVar(call); varName != "" {
 					flag := sanitizeBuildSettingName(varName)
-					if seenProbeFlags[flag] {
+					if prev, ok := seenProbeFlags[flag]; ok {
+						if prev == varName {
+							continue // same probe recurred in the trace
+						}
+						// Distinct cmake variables collide on one Bazel target
+						// name (e.g. case-only HAVE_ZLIB vs have_zlib). Refuse so
+						// the operator disambiguates rather than silently losing
+						// the second knob.
+						unsupported = append(unsupported, executeProcessRefusal{
+							File:   call.File,
+							Line:   call.Line,
+							Bucket: v.Bucket,
+							Reason: fmt.Sprintf("feature probes %q and %q both lift to build setting %q", prev, varName, flag),
+							Argv:   formatExecuteProcessArgv(call),
+						})
 						continue
 					}
-					seenProbeFlags[flag] = true
+					seenProbeFlags[flag] = varName
 					cc.Genrules = append(cc.Genrules,
 						ir.Target{
 							Name:            flag,

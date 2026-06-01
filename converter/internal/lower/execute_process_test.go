@@ -741,6 +741,52 @@ func TestRecoverExecuteProcess_FeatureProbeDedup(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_FeatureProbeNameCollision confirms two
+// DISTINCT cmake variables that sanitize to the same Bazel build-setting
+// name (here a case-only HAVE_ZLIB vs have_zlib) refuse rather than
+// silently dropping the second knob onto the first's target. The first
+// lifts; the second surfaces a refusal naming both variables.
+func TestRecoverExecuteProcess_FeatureProbeNameCollision(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{
+			File:           "/src/CMakeLists.txt",
+			Line:           7,
+			Commands:       [][]string{{"python3", "-c", "import zlib"}},
+			ResultVariable: "HAVE_ZLIB",
+		},
+		{
+			File:           "/src/CMakeLists.txt",
+			Line:           9,
+			Commands:       [][]string{{"python3", "-c", "import zlib"}},
+			ResultVariable: "have_zlib",
+		},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 1 {
+		t.Fatalf("collision should surface exactly one refusal; got %d: %v", len(refusals), refusals)
+	}
+	// The refusal names both colliding variables and the shared target.
+	for _, want := range []string{`"HAVE_ZLIB"`, `"have_zlib"`} {
+		if !strings.Contains(refusals[0].Reason, want) {
+			t.Errorf("refusal reason %q missing %s", refusals[0].Reason, want)
+		}
+	}
+	// The first probe still lifts to a single pair.
+	var flags, settings int
+	for _, tgt := range cc.Genrules {
+		switch tgt.Kind {
+		case ir.KindBoolFlag:
+			flags++
+		case ir.KindConfigSetting:
+			settings++
+		}
+	}
+	if flags != 1 || settings != 1 {
+		t.Errorf("collision: first probe should still lift; got %d bool_flag + %d config_setting, want 1 + 1", flags, settings)
+	}
+}
+
 func TestConfigureLogVars_TryCompileSuccess(t *testing.T) {
 	events := []fileapi.Event{
 		{
