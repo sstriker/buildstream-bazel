@@ -595,18 +595,33 @@ transition cleanly.
   body is re-evaluated at Bazel time by `//tools:cmake-configure-file`.
   Its inline `echo <b64> | base64 -d` materializations of the `--values`
   / `--genex-values` JSON maps and the `--content-base64` CONTENT
-  template could instead be **`write_file` sidecar targets** referenced
-  via `srcs` + `$(location)` — and crucially this needs NO new
-  companion-file/stage-b machinery (write_file is a normal rule, already
-  routed through split-package + stage-b). Open design fork: the CONTENT
-  template is human-authored and clearly benefits from a readable
-  sidecar; the `--values` map for configure_file is the full cmake
-  variable namespace (hundreds of machine-generated entries), so a
-  sidecar there is large and only marginally more readable than base64.
-  Likely scope: sidecar the template (+ small genex-values map), leave
-  the full-namespace values map inline. High golden/gate churn (rewrites
-  the lift cmd builders + the `--content-base64` / `--values` gate
-  assertions).
+  template are base64-in-shell only because the lift emits a **genrule**,
+  whose `cmd` is a raw shell string. The fix is to stop emitting a
+  genrule and emit a small **custom rule** — `cmake_configure_file` in
+  `rules_buildstream_bazel`, the `expand_template` pattern — that wraps
+  the existing tool. That moves the work to the action layer, where Bazel
+  has the facilities a shell `cmd` lacks:
+  - `values` / `genex_values` ride as **readable Starlark `string_dict`
+    attributes** in the BUILD (better than JSON sidecar *or* base64, at
+    any size); the rule's impl `ctx.actions.write(json.encode(...))`s
+    them to build-time JSON files — so the full-namespace map never lands
+    in the source tree as base64 or a checked-in sidecar.
+  - `ctx.actions.run(arguments = [...])` passes an **argv array straight
+    to `execve`** — no shell, so no quoting/escaping surface at all.
+  - `ctx.actions.args().use_param_file()` natively spills a long arg list
+    to a params file (`ARG_MAX`), Bazel-managed.
+  This **dissolves the small-inline-vs-large-sidecar size threshold**: a
+  dict attribute is readable regardless of entry count, so there's
+  nothing to route. The CONTENT template rides as a `template` label
+  (real file) or inline content. The tool (`//tools:cmake-configure-file`)
+  already takes file-path args, so its interface barely changes — it just
+  gets a rule wrapper instead of a hand-built shell line. Scope is meatier
+  than a genrule-cmd swap: new rule in the ruleset + a new IR kind +
+  emitter wiring + the write-a dep (mirrors how `pick_file` / `pkg_files`
+  were added), and high golden/gate churn (the lift cmd builders and the
+  `--content-base64` / `--values` gate assertions are rewritten). End
+  state: zero base64 anywhere in the configure-file family. Sequenced as
+  its own PR off `main` after the bake-tier PR (#356) merges.
 
 ## Later (research / open questions)
 
@@ -684,8 +699,9 @@ transition cleanly.
   multi-config skylib dep so there's no duplicate). buildifier leaves
   the `content` list order intact (it's a file body, not a sortable
   set). Advances Phase 7's human-maintainable-emission goal. Follow-up
-  queued under Next (the rest of the cmake-configure-file family +
-  sidecar-file inputs for the genex-replay lift tier).
+  queued under Next (the genex-replay lift tier moves to a
+  `cmake_configure_file` custom rule with readable `string_dict`
+  attributes, finishing the de-base64).
 
 - **Toolchain-feature parity vs. cmake's default Release hardening
   flags.** The surfaced delta (cmake's distro `cc` adds
