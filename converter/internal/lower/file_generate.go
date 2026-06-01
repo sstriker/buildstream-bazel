@@ -368,6 +368,16 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// `$(locations :t)` plural-substitution).
 		targetFileRefs := extractTargetFileRefs(templateBody)
 		targetObjectsRefs := extractTargetObjectsRefs(templateBody)
+		// $<TARGET_OBJECTS:t> soundness gate: t must be a same-element
+		// OBJECT_LIBRARY for the converter to expose its objects as an
+		// addressable label (a compilation_outputs filegroup over the
+		// cc_library). Cross-element / imported / non-object-library refs
+		// have no such label — refuse rather than ship a wrong wire (the
+		// pre-fix shape pointed target_objects at the cc_library, whose
+		// DefaultInfo is the archive, not the .o files).
+		if unresolved := unresolvableObjectLibs(targetObjectsRefs, genexTargets); len(unresolved) > 0 {
+			return targetObjectsRefusalStub(name, outRel, unresolved)
+		}
 		// PR 2: resolve each TARGET_FILE reference to a Bazel
 		// label, branching per-target on resolution:
 		//
@@ -406,7 +416,12 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 					spec.Values = map[string]string{}
 					spec.GenexContext = string(ctxJSON)
 					spec.TargetFiles = invertTargetFileLabels(targetFileLabels)
-					spec.TargetObjects = targetObjectsLabelMap(targetObjectsRefs)
+					// Emit a compilation_outputs filegroup per OBJECT library
+					// and wire target_objects at it (gate above guaranteed each
+					// ref is a same-element OBJECT_LIBRARY). Only on the (a)-eval
+					// success path so no orphan filegroups are emitted when the
+					// lift falls through.
+					spec.TargetObjects = emitObjectFilegroups(targetObjectsRefs, cc)
 					setTemplateOrContent(spec, inRel, templateBody, isContentForm)
 					return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexEvaluated: true}))
 				}
@@ -417,6 +432,16 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			// (b). Other errors (parse internals, byte-mismatch)
 			// also fall through — soundness preserved by the
 			// downstream lift choice.
+		}
+
+		// The (a)-eval did not resolve. If the template embeds
+		// $<TARGET_OBJECTS:t>, the downstream (b)/(b′)/legacy shapes would
+		// bake cmake's rendered output — the recording-machine object paths,
+		// which don't exist on the executor. Refuse instead of baking. (The
+		// gate above already rejected unresolvable t; reaching here means the
+		// template as a whole was too complex for the evaluator.)
+		if len(targetObjectsRefs) > 0 {
+			return targetObjectsRefusalStub(name, outRel, targetObjectsRefs)
 		}
 
 		genexValues, err := extractGenexValues(templateBody, rendered)
@@ -509,19 +534,76 @@ func invertTargetFileLabels(byName map[string]string) map[string]string {
 	return out
 }
 
-// targetObjectsLabelMap builds the `target_objects` label-keyed dict from
-// the same-package object-library names the lifter extracted: each name's
-// label is `:name` (the genrule shape used `$(locations :name)`). Returns
-// nil for an empty input so the emitter omits the attribute.
-func targetObjectsLabelMap(names []string) map[string]string {
-	if len(names) == 0 {
+// unresolvableObjectLibs returns the $<TARGET_OBJECTS:t> reference names the
+// converter can't expose as an addressable Bazel object-file label. A name is
+// resolvable only when it's a same-element OBJECT_LIBRARY (genexTargets[t]
+// exists with Type=="OBJECT_LIBRARY"), which lowers to a cc_library whose
+// compiled objects we surface via a `compilation_outputs` filegroup. Cross-
+// element / imported / non-object-library refs have no such label, so they
+// drive a refusal stub rather than a wrong wire.
+func unresolvableObjectLibs(refs []string, genexTargets map[string]genexeval.TargetInfo) []string {
+	var bad []string
+	for _, t := range refs {
+		ti, ok := genexTargets[t]
+		if !ok || ti.Type != "OBJECT_LIBRARY" {
+			bad = append(bad, t)
+		}
+	}
+	return bad
+}
+
+// emitObjectFilegroups emits one filegroup per $<TARGET_OBJECTS:t> reference
+// that gathers the OBJECT library's compiled objects from its cc_library's
+// `compilation_outputs` output group (deduped across calls), and returns the
+// `target_objects` label-keyed dict ({":t_objects": "t"}) for the
+// cmake_configure_file spec. The filegroup's DefaultInfo.files is the .o set,
+// so the rule's `dep[DefaultInfo].files` → `--target-objects` carries Bazel's
+// real object paths at action time. Callers must have already rejected
+// unresolvable refs via unresolvableObjectLibs. Returns nil for empty input.
+func emitObjectFilegroups(refs []string, cc *codegenContext) map[string]string {
+	if len(refs) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(names))
-	for _, name := range names {
-		out[":"+name] = name
+	out := make(map[string]string, len(refs))
+	for _, t := range refs {
+		fg := t + "_objects"
+		out[":"+fg] = t
+		if cc.hasSynthesizedTarget(fg) {
+			continue // dedup: another file(GENERATE) already emitted it
+		}
+		cc.Genrules = append(cc.Genrules, ir.Target{
+			Name:                 fg,
+			Kind:                 ir.KindFilegroup,
+			Srcs:                 []string{":" + t},
+			FilegroupOutputGroup: "compilation_outputs",
+			Tags:                 []string{"cmake-codegen", "cmake-codegen-target-objects"},
+			Visibility:           []string{"//visibility:private"},
+		})
 	}
 	return out
+}
+
+// targetObjectsRefusalStub builds the audit-tagged refusal genrule for a
+// file(GENERATE) whose $<TARGET_OBJECTS:t> references can't be soundly lowered.
+// It fails the bazel build with a clear diagnostic instead of baking cmake's
+// recording-machine object paths (which don't exist on the executor).
+func targetObjectsRefusalStub(name, outRel string, refs []string) ir.Target {
+	return ir.Target{
+		Name: name,
+		Kind: ir.KindGenrule,
+		GenruleCmd: fmt.Sprintf(
+			`echo 'file(GENERATE) lift refused for output %q: template references `+
+				`$<TARGET_OBJECTS:...> for target(s) %v that are not a same-element OBJECT_LIBRARY `+
+				`(or the template could not be resolved offline). Bazel exposes a target'"'"'s object `+
+				`files only for an OBJECT library this element builds (via a compilation_outputs `+
+				`filegroup); cross-element / imported object lists have no addressable label. Baking `+
+				`cmake'"'"'s rendered object paths would embed recording-machine paths that do not `+
+				`exist on the executor.' >&2; exit 1`,
+			outRel, refs),
+		GenruleOuts: []string{outRel},
+		Tags:        fileGenerateTags(fileGenerateTagSet{GenexFallback: true, GenexTargetObjectsRefused: true}),
+		Visibility:  []string{"//visibility:private"},
+	}
 }
 
 // fileGenerateOptions translates the call's NewlineStyle into
@@ -719,6 +801,13 @@ type fileGenerateTagSet struct {
 	// at bazel-build time. See
 	// ROADMAP.md.
 	GenexCrossPackage bool
+	// GenexTargetObjectsRefused: $<TARGET_OBJECTS:t> soundness
+	// gate fired — t is not a same-element OBJECT_LIBRARY (so its
+	// objects have no addressable Bazel label), or the (a)-eval
+	// couldn't resolve the template (so a fallback would bake
+	// cmake's recording-machine object paths). The genrule is a
+	// refusal stub that fails at bazel-build time. See ROADMAP.md.
+	GenexTargetObjectsRefused bool
 }
 
 // fileGenerateTags returns the cmake-codegen tag set for a
@@ -771,6 +860,9 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 	}
 	if s.GenexCrossPackage {
 		tags = append(tags, "cmake-codegen-genex-cross-package")
+	}
+	if s.GenexTargetObjectsRefused {
+		tags = append(tags, "cmake-codegen-genex-target-objects-refused")
 	}
 	sort.Strings(tags)
 	return tags

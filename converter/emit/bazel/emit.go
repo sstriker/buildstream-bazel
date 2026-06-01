@@ -789,6 +789,9 @@ var filegroupTmpl = template.Must(template.New("filegroup").Funcs(template.FuncM
 }).Parse(`filegroup(
     name = "{{.Name}}",
     srcs = {{.SrcsExpr}},
+{{- if .OutputGroup}}
+    output_group = "{{.OutputGroup}}",
+{{- end}}
 {{- if .Tags}}
     tags = {{strList .Tags}},
 {{- end}}
@@ -1151,10 +1154,11 @@ func emitShBinary(w *bytes.Buffer, t ir.Target) error {
 
 // filegroupView projects ir.Target into the filegroup template.
 type filegroupView struct {
-	Name       string
-	SrcsExpr   string
-	Tags       []string
-	Visibility []string
+	Name        string
+	SrcsExpr    string
+	OutputGroup string
+	Tags        []string
+	Visibility  []string
 }
 
 // pickFileView projects ir.Target into the pick_file template.
@@ -1178,10 +1182,11 @@ func emitPickFile(w *bytes.Buffer, t ir.Target) error {
 
 func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 	return filegroupTmpl.Execute(w, filegroupView{
-		Name:       t.Name,
-		SrcsExpr:   attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
-		Tags:       sortedCopy(t.Tags),
-		Visibility: nonDefaultVisibility(t.Visibility),
+		Name:        t.Name,
+		SrcsExpr:    attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
+		OutputGroup: t.FilegroupOutputGroup,
+		Tags:        sortedCopy(t.Tags),
+		Visibility:  nonDefaultVisibility(t.Visibility),
 	})
 }
 

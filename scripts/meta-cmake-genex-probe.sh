@@ -24,10 +24,18 @@
 #   2. It does NOT carry cmake-codegen-genex-unresolved — no
 #      Tier-1 refusal / legacy bytes-embedded fallback.
 #   3. It carries genex_context = (the (a) evaluator path the probe
-#      feeds) and target_objects = {":obj": "obj"} (the Bazel-time
-#      object-list wire), and the template body —
-#      $<TARGET_OBJECTS:obj> — rides as the readable inline content
-#      attribute, NOT the rendered .o path list.
+#      feeds) and target_objects = {":obj_objects": "obj"} pointing at
+#      a sibling `compilation_outputs` filegroup over the OBJECT
+#      library (the Bazel-time object-list wire — the filegroup's
+#      DefaultInfo is the .o set, NOT the cc_library archive), and the
+#      template body — $<TARGET_OBJECTS:obj> — rides as the readable
+#      inline content attribute, NOT the rendered .o path list.
+#
+# The bazel-build half (bazel >= 9) then proves the load-bearing
+# claim empirically: a `compilation_outputs` filegroup over an
+# OBJECT-library cc_library yields object files (.o), not the
+# archive (.a/.lo) — the latent bug this path fixes was invisible
+# precisely because the build half never ran.
 #
 # This is the live counterpart of the Go-side round-trip pinned by
 # TestReadGenexProbe_EmptyConfig (reader) and
@@ -101,8 +109,15 @@ printf '%s\n' "$blk" | grep -q '"cmake-codegen-genex-unresolved"' \
 # no $(locations) shell wire).
 printf '%s\n' "$blk" | grep -q -- 'genex_context =' \
     || fail "gen_obj_manifest_txt missing genex_context = ((a) evaluator wire)"
-printf '%s\n' "$blk" | grep -q -- '":obj": "obj"' \
-    || fail "gen_obj_manifest_txt missing target_objects {\":obj\": \"obj\"} (Bazel-time object-list wire)"
+printf '%s\n' "$blk" | grep -q -- '":obj_objects": "obj"' \
+    || fail "gen_obj_manifest_txt missing target_objects {\":obj_objects\": \"obj\"} (Bazel-time object-list wire → compilation_outputs filegroup)"
+
+# 3a. The sibling compilation_outputs filegroup is emitted over the
+# OBJECT library, exposing its .o files as an addressable label.
+grep -q 'name = "obj_objects"' "$out_build" \
+    || { echo "FAIL: obj_objects filegroup missing from BUILD.bazel"; sed 's/^/   /' "$out_build"; exit 1; }
+grep -q 'output_group = "compilation_outputs"' "$out_build" \
+    || { echo "FAIL: obj_objects filegroup missing output_group = compilation_outputs"; sed 's/^/   /' "$out_build"; exit 1; }
 
 # 3b. The template body (the literal genex) rides as the readable inline
 # `content` attribute, NOT cmake's rendered .o path. The body is emitted
@@ -113,4 +128,73 @@ printf '%s\n' "$blk" | grep -q -- 'content =' \
 printf '%s\n' "$blk" | grep -qF -- '$<TARGET_OBJECTS:obj>' \
     || fail "content should carry the literal \$<TARGET_OBJECTS:obj> template, not the rendered object path (which would mean a bytes-baked fallback)"
 
-echo "ok  meta-cmake-genex-probe: \$<TARGET_OBJECTS:obj> in file(GENERATE) resolved via --probe-genex (cmake-codegen-genex-resolved, no Tier-1 refusal)"
+echo "ok  meta-cmake-genex-probe: render OK — \$<TARGET_OBJECTS:obj> resolved via --probe-genex to a compilation_outputs filegroup"
+
+# --- Bazel-build half: prove compilation_outputs yields objects, not the archive ---
+# Bazel >= 9 is the floor (bzlmod + load() for cc_*). Skip cleanly otherwise so
+# the render contract still gates everywhere.
+if command -v bazel >/dev/null; then
+    BZL=bazel
+elif command -v bazelisk >/dev/null; then
+    BZL=bazelisk
+else
+    echo "ok  meta-cmake-genex-probe: bazel not on PATH, skipping build half"
+    exit 0
+fi
+bazel_major=$("$BZL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
+case "$bazel_major" in
+    [0-9]*) ;;
+    *) bazel_major=0 ;;
+esac
+if [ "$bazel_major" -lt 9 ]; then
+    echo "ok  meta-cmake-genex-probe: bazel < 9, skipping build half"
+    exit 0
+fi
+
+ws="$work_dir/objws"
+mkdir -p "$ws"
+cat > "$ws/MODULE.bazel" <<'EOF'
+module(name = "objprobe", version = "0.0.1")
+bazel_dep(name = "rules_cc", version = "0.0.17")
+EOF
+printf 'int a_fn(){return 1;}\n' > "$ws/a.cc"
+printf 'int b_fn(){return 2;}\n' > "$ws/b.cc"
+cat > "$ws/BUILD.bazel" <<'EOF'
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# Mirrors the converter's OBJECT_LIBRARY lowering (cc_library + alwayslink)
+# and the compilation_outputs filegroup it now emits for $<TARGET_OBJECTS:t>.
+cc_library(name = "obj", srcs = ["a.cc", "b.cc"], alwayslink = True)
+
+filegroup(name = "obj_objects", srcs = [":obj"], output_group = "compilation_outputs")
+
+genrule(
+    name = "manifest",
+    srcs = [":obj_objects"],
+    outs = ["manifest.txt"],
+    cmd = "for f in $(locations :obj_objects); do echo $$f; done > $@",
+)
+EOF
+
+bzl_cache="$work_dir/.bazel"
+# shellcheck disable=SC2086
+if ! (cd "$ws" && "$BZL" --output_user_root="$bzl_cache" ${META_BAZEL_STARTUP_ARGS:-} \
+        build ${META_BAZEL_BUILD_ARGS:-} //:manifest) >"$work_dir/bazel.log" 2>&1; then
+    echo "FAIL: bazel build of the compilation_outputs filegroup failed"
+    sed 's/^/   /' "$work_dir/bazel.log"
+    exit 1
+fi
+
+man="$ws/bazel-bin/manifest.txt"
+if ! grep -q '\.o$' "$man"; then
+    echo "FAIL: \$(locations) over compilation_outputs listed no .o object files:"
+    sed 's/^/   /' "$man"
+    exit 1
+fi
+if grep -Eq '\.(a|lo|so)$' "$man"; then
+    echo "FAIL: compilation_outputs listed an archive/library, not objects (the latent bug):"
+    sed 's/^/   /' "$man"
+    exit 1
+fi
+
+echo "ok  meta-cmake-genex-probe: compilation_outputs filegroup yields object files (.o), not the archive"

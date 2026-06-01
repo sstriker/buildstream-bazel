@@ -1285,34 +1285,41 @@ transition cleanly.
   manifest-side INTERFACE export surface; queued as
   separate work) and INTERFACE_LINK_OPTIONS (no clean
   trace-side decoder; rides via the probe-genex hook only).
-- **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets.** The (a)
-  Go-side evaluator now resolves `$<TARGET_OBJECTS:t>` against
-  `Context.Targets[t].Objects` — populated at convert time from
-  the probe-genex hook's per-target `objects.txt` emission
-  (gated on `_CMTB_TYPE STREQUAL "OBJECT_LIBRARY"`, since
-  OBJECT_LIBRARY targets are the only type cmake's
-  `$<TARGET_OBJECTS:>` resolves non-trivially for). The lifter's
-  `file_generate.go` extracts TARGET_OBJECTS references and
-  emits one `--target-objects=<name>="$(echo $(locations :<name>) | tr ' ' ':')"`
-  flag per referenced target alongside the existing
-  `--target-file=` flags — the colon-delimited wire shape
-  sidesteps shell quoting hazards around cmake's native `;`
-  separator. `cmake-configure-file` parses the flag, rewrites
-  colons back to semicolons (cmake's native list shape), and
-  populates `Context.Targets[name].Objects` so the genex
-  evaluator at Bazel time sees the executor's actual on-disk
-  paths. The cross-package soundness gate
-  (`unresolvedCrossPackageTargetFiles`) extends to TARGET_OBJECTS
-  for the same reason it covers TARGET_FILE — an unresolved
-  cross-package reference would otherwise embed the recording-
-  machine absolute path. Probe-genex.cmake fixed in the same
-  change: OBJECT_LIBRARY was previously in the TARGET_FILE
-  emission gate, which cmake rejects ("Target … is not an
-  executable or library"); it now only emits `objects.txt`,
-  not `file.txt` / `file_dir.txt` / `file_name.txt`. New
-  render gate `scripts/meta-cmake-probe-genex-object-library.sh`
-  exercises the end-to-end flow against the existing
-  `object-library` sample project.
+- **`$<TARGET_OBJECTS:t>` for OBJECT_LIBRARY targets — via a
+  `compilation_outputs` filegroup.** The (a) Go-side evaluator
+  resolves `$<TARGET_OBJECTS:t>` against `Context.Targets[t].Objects`
+  (the probe-genex hook's per-target `objects.txt`) for the
+  convert-time byte-equal check. The **Bazel-time** wire is the
+  load-bearing part, and the original shape was latently wrong: it
+  pointed `target_objects` at `:t` (the OBJECT library's cc_library),
+  whose `DefaultInfo.files` / `$(locations)` is the **archive**
+  (`.a`/`.lo`), not the individual `.o` files cmake's
+  `$<TARGET_OBJECTS>` means — so a real `bazel build` rendered the
+  archive path, silently diverging from cmake (invisible because the
+  gate skipped its build half). Fixed by emitting a built-in
+  `filegroup(name = "t_objects", srcs = [":t"], output_group =
+  "compilation_outputs")` over the OBJECT library and pointing
+  `target_objects` at `:t_objects`; the `compilation_outputs` output
+  group is exactly the per-source object set (verified under a real
+  bazel-9 build — see the new build half of
+  `scripts/meta-cmake-genex-probe.sh`). `TargetInfo.Objects` is now
+  `json:"-"` (like `FileLocation`): cmake's recording-machine `.o`
+  paths drive only the in-memory byte-check and never enter the
+  marshaled wire; `--target-objects` (→ the filegroup) is the sole
+  Bazel-time source. Soundness gate: a `$<TARGET_OBJECTS:t>` whose
+  `t` isn't a **same-element OBJECT_LIBRARY** (cross-element /
+  imported / wrong type), or whose template the (a)-eval can't
+  resolve, drives a refusal stub
+  (`cmake-codegen-genex-target-objects-refused`, or the pre-existing
+  cross-package refusal for cross-element `t`) rather than baking
+  cmake's object paths. Probe-genex.cmake's OBJECT_LIBRARY branch
+  emits only `objects.txt` (not the `file*.txt` cmake rejects for
+  object libraries). `scripts/meta-cmake-probe-genex-object-library.sh`
+  exercises the end-to-end converter flow; the build half of
+  `meta-cmake-genex-probe.sh` proves the filegroup yields objects,
+  not the archive. **Follow-on:** `$<TARGET_OBJECTS>` in
+  `add_custom_command` argv (the #358 audit's `-unresolved` residue)
+  reuses the same filegroup mechanism.
 
 - **Multi-version cmake compatibility shakeout.** The single
   `e2e-latest-cmake` job (cmake `4.0.3` only) expanded into a
