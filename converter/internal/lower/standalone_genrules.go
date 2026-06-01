@@ -402,12 +402,13 @@ func buildConsumedOutputIndex(commands []shadow.AddCustomCommandCall, targets []
 // output-producing target already declares. Used to dedup
 // standalone-edge emission against the recoverGenrule / bake paths.
 // Must cover every rule kind that produces a file at a known path:
-// genrules (GenruleOuts) AND write_file bakes (WriteFileOut) — the
-// latter is what the file(GENERATE) / configure_file / cmake-script
-// bakes emit for \n-text bodies, and a baked output (e.g. libpng's
-// pnglibconf.c) is frequently also a ninja CUSTOM_COMMAND edge, so
-// missing it here would re-emit a second producer and Bazel rejects
-// the duplicate generated file.
+// genrules (GenruleOuts), write_file bakes (WriteFileOut), AND
+// cmake_configure_file lifts (CMakeConfigureFile.Out) — the bakes are
+// what the file(GENERATE) / configure_file / cmake-script paths emit for
+// \n-text bodies and the lifts are their re-rendering counterpart, and a
+// produced output (e.g. libpng's pnglibconf.c) is frequently also a ninja
+// CUSTOM_COMMAND edge, so missing any of them here would re-emit a second
+// producer and Bazel rejects the duplicate generated file.
 func coveredOuts(existing []ir.Target) map[string]bool {
 	covered := map[string]bool{}
 	for _, t := range existing {
@@ -419,6 +420,16 @@ func coveredOuts(existing []ir.Target) map[string]bool {
 		case ir.KindWriteFile:
 			if t.WriteFileOut != "" {
 				covered[t.WriteFileOut] = true
+			}
+		case ir.KindCMakeConfigureFile:
+			// The lift tier (configure_file / file(GENERATE) /
+			// cmake -E configure_file re-render) produces its output via
+			// CMakeConfigureFile.Out, not GenruleOuts / WriteFileOut. A
+			// lifted output can also be a ninja CUSTOM_COMMAND edge, so —
+			// exactly as for the write_file bake — missing it here would
+			// re-emit a second producer and Bazel rejects the duplicate.
+			if t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
+				covered[t.CMakeConfigureFile.Out] = true
 			}
 		}
 	}

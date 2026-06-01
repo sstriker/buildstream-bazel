@@ -2,7 +2,6 @@ package lower
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -392,30 +391,24 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// at action time. Same-package `:t` labels resolve
 		// without an explicit srcs entry (Bazel's per-package
 		// lookup picks them up); cross-package labels do not.
-		targetFileLabels, crossPackageSrcs := resolveTargetFileLabels(targetFileRefs, ctxTargets, imports)
+		// target_files is a label-keyed attribute on the
+		// cmake_configure_file rule, so Bazel tracks each referenced
+		// target as a dependency and resolves its path at action time —
+		// no explicit srcs entry needed for cross-package labels (the
+		// genrule shape required threading those through srcs for
+		// `$(location //pkg:t)`).
+		targetFileLabels, _ := resolveTargetFileLabels(targetFileRefs, ctxTargets, imports)
 		ctx := buildGenexContext(cmakeVars, ctxTargets)
 		if nodes, err := genexeval.Parse(templateBody); err == nil {
 			if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
-				cmd, cmdErr := fileGenerateEvaluatorCmd(inRel, templateBody, ctx, targetFileLabels, targetObjectsRefs, opts, isContentForm)
-				if cmdErr == nil {
-					target := ir.Target{
-						Name:         name,
-						Kind:         ir.KindGenrule,
-						GenruleCmd:   cmd,
-						GenruleOuts:  []string{outRel},
-						GenruleTools: []string{"//tools:cmake-configure-file"},
-						Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexEvaluated: true}),
-						Visibility:   []string{"//visibility:private"},
-					}
-					if !isContentForm {
-						target.Srcs = []string{inRel}
-					}
-					// Append cross-package labels (sorted) so
-					// `$(location //pkg:t)` resolves at Bazel
-					// time. Same-package `:t` labels are
-					// resolved by Bazel without explicit srcs.
-					target.Srcs = append(target.Srcs, crossPackageSrcs...)
-					return target
+				if ctxJSON, mErr := marshalGenexContext(ctx); mErr == nil {
+					spec := newConfigureFileSpec(outRel, opts)
+					spec.Values = map[string]string{}
+					spec.GenexContext = string(ctxJSON)
+					spec.TargetFiles = invertTargetFileLabels(targetFileLabels)
+					spec.TargetObjects = targetObjectsLabelMap(targetObjectsRefs)
+					setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+					return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexEvaluated: true}))
 				}
 			}
 			// evalErr being UnsupportedError or a Context-
@@ -428,22 +421,11 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 
 		genexValues, err := extractGenexValues(templateBody, rendered)
 		if err == nil {
-			cmd, cmdErr := fileGenerateLiftedCmd(inRel, templateBody, map[string]string{}, genexValues, opts, isContentForm)
-			if cmdErr == nil {
-				target := ir.Target{
-					Name:         name,
-					Kind:         ir.KindGenrule,
-					GenruleCmd:   cmd,
-					GenruleOuts:  []string{outRel},
-					GenruleTools: []string{"//tools:cmake-configure-file"},
-					Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexCaptured: true}),
-					Visibility:   []string{"//visibility:private"},
-				}
-				if !isContentForm {
-					target.Srcs = []string{inRel}
-				}
-				return target
-			}
+			spec := newConfigureFileSpec(outRel, opts)
+			spec.Values = map[string]string{}
+			spec.GenexValues = genexValues
+			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexCaptured: true}))
 		}
 
 		// (b′) Two-pass per-literal probe. (b)'s positional anchoring
@@ -454,22 +436,11 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// requests and returns false, so we fall to legacy this round;
 		// the orchestrator runs the second pass and re-lifts.
 		if probed, ok := probeGenexValuesForBody(cc, templateBody); ok {
-			cmd, cmdErr := fileGenerateLiftedCmd(inRel, templateBody, map[string]string{}, probed, opts, isContentForm)
-			if cmdErr == nil {
-				target := ir.Target{
-					Name:         name,
-					Kind:         ir.KindGenrule,
-					GenruleCmd:   cmd,
-					GenruleOuts:  []string{outRel},
-					GenruleTools: []string{"//tools:cmake-configure-file"},
-					Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}),
-					Visibility:   []string{"//visibility:private"},
-				}
-				if !isContentForm {
-					target.Srcs = []string{inRel}
-				}
-				return target
-			}
+			spec := newConfigureFileSpec(outRel, opts)
+			spec.Values = map[string]string{}
+			spec.GenexValues = probed
+			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
 		}
 		genexLegacy := bake
 		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
@@ -494,25 +465,52 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 		// fall back to legacy bytes-embedded shape.
 		return bake
 	}
-	values := map[string]string{}
+	spec := newConfigureFileSpec(outRel, opts)
+	spec.Values = map[string]string{}
+	setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+	return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true}))
+}
 
-	cmd, err := fileGenerateLiftedCmd(inRel, templateBody, values, nil, opts, isContentForm)
-	if err != nil {
-		return bake
+// setTemplateOrContent points a cmake_configure_file spec at its template
+// source: the INPUT form references the on-disk file via the `template`
+// label; the CONTENT form carries the body inline (the rule writes it to a
+// file and feeds it to the tool — no --content-base64).
+func setTemplateOrContent(spec *ir.CMakeConfigureFileSpec, inRel string, templateBody []byte, isContentForm bool) {
+	if isContentForm {
+		spec.Content = string(templateBody)
+	} else {
+		spec.Template = inRel
 	}
-	target := ir.Target{
-		Name:         name,
-		Kind:         ir.KindGenrule,
-		GenruleCmd:   cmd,
-		GenruleOuts:  []string{outRel},
-		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true}),
-		Visibility:   []string{"//visibility:private"},
+}
+
+// invertTargetFileLabels flips the lifter's cmake-name -> bazel-label map
+// into the label -> cmake-name shape the cmake_configure_file rule's
+// `target_files` label-keyed dict expects. Returns nil for an empty input
+// so the emitter omits the attribute.
+func invertTargetFileLabels(byName map[string]string) map[string]string {
+	if len(byName) == 0 {
+		return nil
 	}
-	if !isContentForm {
-		target.Srcs = []string{inRel}
+	out := make(map[string]string, len(byName))
+	for name, label := range byName {
+		out[label] = name
 	}
-	return target
+	return out
+}
+
+// targetObjectsLabelMap builds the `target_objects` label-keyed dict from
+// the same-package object-library names the lifter extracted: each name's
+// label is `:name` (the genrule shape used `$(locations :name)`). Returns
+// nil for an empty input so the emitter omits the attribute.
+func targetObjectsLabelMap(names []string) map[string]string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(names))
+	for _, name := range names {
+		out[":"+name] = name
+	}
+	return out
 }
 
 // fileGenerateOptions translates the call's NewlineStyle into
@@ -570,78 +568,6 @@ func fileGenerateOptions(call shadow.FileGenerateCall) (configurefile.Options, e
 // than the soundness gate.
 func hasGenex(template []byte) bool {
 	return bytes.Contains(template, []byte("$<"))
-}
-
-// fileGenerateLiftedCmd builds the lifted shell command. For
-// the INPUT form (isContentForm=false), the template lives in
-// srcs via $(location inRel) — same shape as
-// configureFileLiftedCmd. For the CONTENT form
-// (isContentForm=true), the template body rides inline in the
-// cmd as --content-base64 — no srcs entry, but the body itself
-// (not the rendered output) is what appears in BUILD.bazel,
-// so edits to values still re-render without a BUILD.bazel
-// edit.
-//
-// genexValues is the "structured base64" (b) lift's payload:
-// a map of each top-level `$<...>` literal in template to the
-// cmake-resolved bytes. Empty or nil means no genex replay
-// (the non-genex code path). Non-empty stages a second sidecar
-// JSON file alongside VALUES and threads `--genex-values=` at
-// the tool. Same mktemp + trap cleanup pattern keeps the
-// sidecar in the action's sandbox.
-//
-// VALUES staging mirrors configureFileLiftedCmd's portable
-// mktemp + trap-style cleanup; ensures the values JSON lives
-// in the action's sandbox, not /tmp.
-func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues map[string]string, opts configurefile.Options, isContentForm bool) (string, error) {
-	body, err := json.Marshal(values)
-	if err != nil {
-		return "", fmt.Errorf("marshal values: %w", err)
-	}
-	valuesEnc := base64.StdEncoding.EncodeToString(body)
-	flags := configureFileToolFlags(opts)
-
-	// Stage GENEX_VALUES only when there's a payload — keeps the
-	// non-genex cmd shape byte-stable with the pre-(b)-lift cmd
-	// so the existing file(GENERATE) goldens don't rewrite.
-	genexPrep, genexFlag, genexCleanup := "", "", ""
-	if len(genexValues) > 0 {
-		genexBody, err := json.Marshal(genexValues)
-		if err != nil {
-			return "", fmt.Errorf("marshal genex values: %w", err)
-		}
-		genexEnc := base64.StdEncoding.EncodeToString(genexBody)
-		genexPrep = fmt.Sprintf(
-			`GENEX_VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.genex.XXXXXX")" && `+
-				`echo %s | base64 -d > "$$GENEX_VALUES" && `,
-			genexEnc,
-		)
-		genexFlag = `--genex-values="$$GENEX_VALUES" `
-		genexCleanup = ` [ -n "$${GENEX_VALUES:-}" ] && rm -f "$$GENEX_VALUES";`
-	}
-
-	if isContentForm {
-		contentEnc := base64.StdEncoding.EncodeToString(template)
-		return fmt.Sprintf(
-			`mkdir -p "$$(dirname "$@")" && `+
-				`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
-				`echo %s | base64 -d > "$$VALUES" && `+
-				`%s`+
-				`$(location //tools:cmake-configure-file) %s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
-				`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-			valuesEnc, genexPrep, flags, genexFlag, contentEnc, genexCleanup,
-		), nil
-	}
-
-	return fmt.Sprintf(
-		`mkdir -p "$$(dirname "$@")" && `+
-			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
-			`echo %s | base64 -d > "$$VALUES" && `+
-			`%s`+
-			`$(location //tools:cmake-configure-file) %s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
-			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-		valuesEnc, genexPrep, flags, genexFlag, inRel, genexCleanup,
-	), nil
 }
 
 // fileGenerateTags returns the cmake-codegen tag set for a
@@ -1708,123 +1634,6 @@ func buildGenexContext(cmakeVars map[string]string, targets map[string]genexeval
 		ctx.CompilerID[lang] = v
 	}
 	return ctx
-}
-
-// fileGenerateEvaluatorCmd is the (a)-shape companion to
-// fileGenerateLiftedCmd. The shape is identical except for the
-// genex payload: instead of a literal-replace map staged at
-// $GENEX_VALUES, the Context lands at $GENEX_CONTEXT and
-// cmake-configure-file receives --genex-context=. The
-// genexeval evaluator does the substitution at Bazel time
-// against that Context.
-//
-// targetFileLabels is a map of cmake target name → Bazel label
-// the lifter resolved for `$<TARGET_FILE:name>` (and the six
-// on-disk-path variants) references in the template. Each
-// entry becomes a `--target-file=<name>="$(location <label>)" `
-// flag at action time, overriding the marshaled Context's
-// FileLocation (which is always wire-omitted to keep the
-// lifted cmd byte-stable across recording machines). Labels
-// take two shapes:
-//
-//   - same-package: `:<name>` — Bazel resolves via package-
-//     internal lookup; no explicit genrule.srcs entry needed.
-//   - cross-package: `//elements/foo:bar` — comes from the
-//     imports.json manifest's resolver; the lifter MUST also
-//     add this label to genrule.srcs so `$(location)` resolves
-//     at action time. The caller (buildFileGenerateGenrule)
-//     handles the srcs wiring.
-//
-// Flags emit in sorted target-name order for byte-stable cmd
-// output across runs.
-//
-// targetObjectsRefs is the sorted set of target names the
-// template references via `$<TARGET_OBJECTS:name>`. The wire
-// shape is list-valued: cmake's TARGET_OBJECTS resolves to a
-// semicolon-separated list of .o paths (one per source in an
-// OBJECT_LIBRARY). The lifter emits each as
-// `--target-objects=name="$(echo $(locations :name) | tr ' ' ':')"`
-// — Bazel expands `$(locations :name)` to a space-separated list
-// at action time, then the inline `tr` rewrite produces the
-// colon-delimited wire form cmake-configure-file expects. The
-// colon delimiter (not cmake's native semicolon) sidesteps shell
-// quoting hazards around `;`.
-//
-// Like fileGenerateLiftedCmd, --values stays empty for
-// file(GENERATE) (no @VAR@/${VAR}/#cmakedefine surface).
-func fileGenerateEvaluatorCmd(inRel string, template []byte, ctx genexeval.Context, targetFileLabels map[string]string, targetObjectsRefs []string, opts configurefile.Options, isContentForm bool) (string, error) {
-	emptyValues, err := json.Marshal(map[string]string{})
-	if err != nil {
-		return "", fmt.Errorf("marshal values: %w", err)
-	}
-	valuesEnc := base64.StdEncoding.EncodeToString(emptyValues)
-	flags := configureFileToolFlags(opts)
-
-	ctxJSON, err := marshalGenexContext(ctx)
-	if err != nil {
-		return "", fmt.Errorf("marshal genex context: %w", err)
-	}
-	ctxEnc := base64.StdEncoding.EncodeToString(ctxJSON)
-
-	ctxPrep := fmt.Sprintf(
-		`GENEX_CONTEXT="$$(mktemp "$$(dirname "$@")/cmake-configure-file.ctx.XXXXXX")" && `+
-			`echo %s | base64 -d > "$$GENEX_CONTEXT" && `,
-		ctxEnc,
-	)
-	ctxFlag := `--genex-context="$$GENEX_CONTEXT" `
-	// --target-file flags for each $<TARGET_FILE:t> reference.
-	// PR 2 branches per-target on resolution: same-package
-	// targets render as `:name`, cross-package targets render
-	// as the imports.json-resolved full Bazel label. Names that
-	// resolve to neither were intercepted upstream by the
-	// cross-package refusal stub gate — they don't reach here.
-	// Sorted iteration so the cmd is stable across runs.
-	names := make([]string, 0, len(targetFileLabels))
-	for n := range targetFileLabels {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	var targetFileFlags strings.Builder
-	for _, n := range names {
-		fmt.Fprintf(&targetFileFlags, `--target-file=%s="$(location %s)" `, n, targetFileLabels[n])
-	}
-	// --target-objects flags for each $<TARGET_OBJECTS:t> reference.
-	// Bazel's `$(locations :t)` (plural) expands to a space-separated
-	// path list; the inline `tr ' ' ':'` rewrite converts to the
-	// colon-delimited wire shape cmake-configure-file expects (cmake's
-	// native `;` is both list separator AND statement terminator,
-	// so a different shell-safe character keeps round-trip clean).
-	// The `$$(...)` double-dollar escapes the shell command-
-	// substitution from Bazel's own `$(...)` variable substitution.
-	// Sorted iteration so the cmd is stable across runs.
-	var targetObjectsFlags strings.Builder
-	for _, name := range targetObjectsRefs {
-		fmt.Fprintf(&targetObjectsFlags, `--target-objects=%s="$$(echo $(locations :%s) | tr ' ' ':')" `, name, name)
-	}
-	ctxCleanup := ` [ -n "$${GENEX_CONTEXT:-}" ] && rm -f "$$GENEX_CONTEXT";`
-
-	if isContentForm {
-		contentEnc := base64.StdEncoding.EncodeToString(template)
-		return fmt.Sprintf(
-			`mkdir -p "$$(dirname "$@")" && `+
-				`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
-				`echo %s | base64 -d > "$$VALUES" && `+
-				`%s`+
-				`$(location //tools:cmake-configure-file) %s%s%s%s--values="$$VALUES" --content-base64=%s "$@" ; `+
-				`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-			valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), targetObjectsFlags.String(), contentEnc, ctxCleanup,
-		), nil
-	}
-
-	return fmt.Sprintf(
-		`mkdir -p "$$(dirname "$@")" && `+
-			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
-			`echo %s | base64 -d > "$$VALUES" && `+
-			`%s`+
-			`$(location //tools:cmake-configure-file) %s%s%s%s--values="$$VALUES" "$(location %s)" "$@" ; `+
-			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES";%s exit $$rc`,
-		valuesEnc, ctxPrep, flags, ctxFlag, targetFileFlags.String(), targetObjectsFlags.String(), inRel, ctxCleanup,
-	), nil
 }
 
 // marshalGenexContext emits ctx in the wire shape both sides

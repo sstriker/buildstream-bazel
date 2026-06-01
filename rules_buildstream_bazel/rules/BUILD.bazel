@@ -1,4 +1,5 @@
 # rules/ holds the starlark utilities every write-a-rendered
 # project loads via `bazel_dep(name = "rules_buildstream_bazel")`.
 # See //rules:zero_files.bzl, //rules:sources.bzl, //rules:traces.bzl,
-# //rules:cmake_packages.bzl, //rules:install.bzl.
+# //rules:cmake_packages.bzl, //rules:install.bzl,
+# //rules:cmake_configure_file.bzl.

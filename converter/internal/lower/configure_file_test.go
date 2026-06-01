@@ -346,10 +346,11 @@ func TestBuildConfigureFileGenrule_BinaryBakeStaysBase64(t *testing.T) {
 }
 
 // TestBuildConfigureFileGenrule_LiftedShape covers the lifted
-// shape on a recoverable template: the cmd references the
-// template via $(location), the tool is in tools, and the
-// rendered bytes do NOT appear in the cmd. Cleanly matches the
-// file(GENERATE) lifted-shape test's symmetry the plan calls
+// shape on a recoverable template: the spec references the
+// template via its `template` field, the tool is set, and the
+// rendered bytes are never carried structurally (the spec holds
+// the template + values, not the output bytes). Cleanly matches
+// the file(GENERATE) lifted-shape test's symmetry the plan calls
 // out as overdue.
 func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 	template := "#define VER \"@VERSION@\"\n"
@@ -375,20 +376,24 @@ func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 		true, // liftEnabled
 		map[string]string{"VERSION": "1.2.3"},
 	)
-	if got.Srcs == nil || got.Srcs[0] != templateRel {
-		t.Errorf("lifted srcs = %v, want [%q]", got.Srcs, templateRel)
+	if got.Kind != ir.KindCMakeConfigureFile || got.CMakeConfigureFile == nil {
+		t.Fatalf("lifted kind = %v (spec nil? %v); want KindCMakeConfigureFile", got.Kind, got.CMakeConfigureFile == nil)
 	}
-	if got.GenruleTools == nil || got.GenruleTools[0] != "//tools:cmake-configure-file" {
-		t.Errorf("lifted tools = %v, want [//tools:cmake-configure-file]", got.GenruleTools)
+	if got.CMakeConfigureFile.Template != templateRel {
+		t.Errorf("lifted template = %q, want %q", got.CMakeConfigureFile.Template, templateRel)
+	}
+	if got.CMakeConfigureFile.Tool != "//tools:cmake-configure-file" {
+		t.Errorf("lifted tool = %q, want //tools:cmake-configure-file", got.CMakeConfigureFile.Tool)
 	}
 	if !hasTag(got.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted shape missing cmake-codegen-lifted tag: %v", got.Tags)
 	}
-	if strings.Contains(got.GenruleCmd, base64.StdEncoding.EncodeToString(rendered)) {
-		t.Errorf("lifted cmd must not carry rendered bytes; cmd=%q", got.GenruleCmd)
-	}
-	if !strings.Contains(got.GenruleCmd, "$(location "+templateRel+")") {
-		t.Errorf("lifted cmd missing $(location) for template; cmd=%q", got.GenruleCmd)
+	// Soundness: the rendered output bytes are never carried in the
+	// spec — the lift holds the template + values map and re-renders
+	// at Bazel time. (No structured field holds the output bytes, so
+	// there's nothing to assert their absence against.)
+	if got.CMakeConfigureFile.Content != "" {
+		t.Errorf("INPUT-form lift must not carry inline Content; got %q", got.CMakeConfigureFile.Content)
 	}
 }
 

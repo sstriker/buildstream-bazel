@@ -4,21 +4,21 @@
 #
 # Runs convert-element-cmake against the captured file-generate
 # fixture and asserts the rendered BUILD.bazel contains the
-# expected genrule shapes for all three lift modes:
+# expected cmake_configure_file rule shapes for all three lift modes:
 #
-#   - INPUT form, genex-free → lifted with srcs + cmake-
-#     configure-file invocation, cmake-codegen-lifted tag.
-#   - CONTENT form, genex-free → lifted with --content-base64,
+#   - INPUT form, genex-free → lifted with a `template` label +
+#     cmake-configure-file `tool`, cmake-codegen-lifted tag.
+#   - CONTENT form, genex-free → lifted with inline `content`,
 #     cmake-codegen-lifted tag.
 #   - CONTENT form with `$<CONFIG>` (a configure-time-resolvable
 #     genex whose static surround uniquely anchors the resolved
-#     value in cmake's rendered output) → lifted via the (b)
-#     "structured base64" path: cmake-configure-file gets a
-#     --genex-values=<sidecar> JSON dict mapping each top-level
-#     `$<...>` literal to the bytes cmake emitted at generate-
-#     time. Both cmake-codegen-lifted and
+#     value in cmake's rendered output) → lifted via the (a)
+#     evaluator or (b) structured-replay path: the rule carries a
+#     readable `genex_context` JSON (a) or `genex_values` dict (b)
+#     mapping each top-level `$<...>` literal to the bytes cmake
+#     emitted at generate-time. Both cmake-codegen-lifted and
 #     cmake-codegen-genex-resolved (Phase 3 tag collapse) ride on
-#     the genrule's tags. Templates whose genex value can't be
+#     the rule's tags. Templates whose genex value can't be
 #     anchored (extractor failure modes — see
 #     converter/internal/lower/genex_extract.go) still fall
 #     back to the legacy bytes-embedded shape, audit-tagged
@@ -70,13 +70,13 @@ fi
 # lifted genrules"). With the fixture's cmake-to-bazel.vars.dump
 # now carrying CMAKE_BUILD_TYPE=Release, the (a) evaluator
 # fires first: the captured Context (config + compiler_id +
-# platform_id) ships as a --genex-context sidecar and
+# platform_id) rides as a readable `genex_context` attribute and
 # cmake-configure-file re-evaluates $<CONFIG> at Bazel time.
-# The genrule carries BOTH cmake-codegen-lifted AND
+# The rule carries BOTH cmake-codegen-lifted AND
 # cmake-codegen-genex-resolved (Phase 3 tag collapse: the (a)
 # evaluator and (b) capture share one -resolved tag; the
-# (a)-vs-(b) split now lives only in the cmd wire — --genex-context=
-# for (a), --genex-values= for (b)). Templates whose ops (a)
+# (a)-vs-(b) split now lives only in the attribute set — genex_context
+# for (a), genex_values for (b)). Templates whose ops (a)
 # can't resolve fall through to (b); templates whose static
 # surround can't anchor (b) extraction fall back to the legacy
 # cmake-codegen-genex-unresolved shape — covered by the unit
@@ -87,10 +87,10 @@ name = "gen_version_h"
 "//tools:cmake-configure-file"
 "cmake-codegen-lifted"
 name = "gen_banner_h"
---content-base64=
+content =
 name = "gen_config_tag_h"
 "cmake-codegen-genex-resolved"
---genex-context=
+genex_context =
 EOF
 )
 

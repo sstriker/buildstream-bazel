@@ -584,45 +584,6 @@ transition cleanly.
   install root" entry under Done (high points). The repo-rule
   alternative stays rejected; this bullet is retained only as the
   record of why.
-- **De-base64 the cmake-configure-file family — lift tier (bake tier
-  done).** The **bake tier is fully de-base64'd** across all four
-  emitters — file(GENERATE), configure_file, `execute_process` bytes
-  fallback, and `cmake-codegen-cmake-script-bake` — all routing through
-  the shared `bakeFileTarget` (readable skylib `write_file` for \n-text,
-  byte-exact base64 genrule for binary; see Done). The sole remainder is
-  the **genex-replay lift tier** (file(GENERATE) tiers a/b/b′ + the
-  configure_file lift), which can't drop base64 entirely because the
-  body is re-evaluated at Bazel time by `//tools:cmake-configure-file`.
-  Its inline `echo <b64> | base64 -d` materializations of the `--values`
-  / `--genex-values` JSON maps and the `--content-base64` CONTENT
-  template are base64-in-shell only because the lift emits a **genrule**,
-  whose `cmd` is a raw shell string. The fix is to stop emitting a
-  genrule and emit a small **custom rule** — `cmake_configure_file` in
-  `rules_buildstream_bazel`, the `expand_template` pattern — that wraps
-  the existing tool. That moves the work to the action layer, where Bazel
-  has the facilities a shell `cmd` lacks:
-  - `values` / `genex_values` ride as **readable Starlark `string_dict`
-    attributes** in the BUILD (better than JSON sidecar *or* base64, at
-    any size); the rule's impl `ctx.actions.write(json.encode(...))`s
-    them to build-time JSON files — so the full-namespace map never lands
-    in the source tree as base64 or a checked-in sidecar.
-  - `ctx.actions.run(arguments = [...])` passes an **argv array straight
-    to `execve`** — no shell, so no quoting/escaping surface at all.
-  - `ctx.actions.args().use_param_file()` natively spills a long arg list
-    to a params file (`ARG_MAX`), Bazel-managed.
-  This **dissolves the small-inline-vs-large-sidecar size threshold**: a
-  dict attribute is readable regardless of entry count, so there's
-  nothing to route. The CONTENT template rides as a `template` label
-  (real file) or inline content. The tool (`//tools:cmake-configure-file`)
-  already takes file-path args, so its interface barely changes — it just
-  gets a rule wrapper instead of a hand-built shell line. Scope is meatier
-  than a genrule-cmd swap: new rule in the ruleset + a new IR kind +
-  emitter wiring + the write-a dep (mirrors how `pick_file` / `pkg_files`
-  were added), and high golden/gate churn (the lift cmd builders and the
-  `--content-base64` / `--values` gate assertions are rewritten). End
-  state: zero base64 anywhere in the configure-file family. Sequenced as
-  its own PR off `main` after the bake-tier PR (#356) merges.
-
 ## Later (research / open questions)
 
 
@@ -678,6 +639,29 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **`cmake_configure_file` custom rule for the lift tier (de-base64
+  complete).** The genex-replay **lift tier** — the configure_file lift,
+  the `cmake -E configure_file` lift, and the file(GENERATE) a/b/b′ tiers
+  — no longer emits a genrule with `echo <b64> | base64 -d` materializations
+  of `--values` / `--genex-values` / `--genex-context` / `--content-base64`.
+  It emits a new `cmake_configure_file` rule
+  (`@rules_buildstream_bazel//rules:cmake_configure_file.bzl`, IR kind
+  `KindCMakeConfigureFile`) that re-renders at build time via
+  `ctx.actions.run` against the original tool. The substitution inputs ride
+  as **readable Starlark attributes**: `values` / `genex_values` string
+  dicts (the rule `ctx.actions.write(json.encode(...))`s them to build-time
+  JSON, so the full cmake namespace never lands in the source tree as base64
+  or a checked-in sidecar), `genex_context` as a JSON string, the CONTENT
+  body as inline `content` (written to a file, fed positionally — no
+  `--content-base64`), and `$<TARGET_FILE>` / `$<TARGET_OBJECTS>` references
+  as label-keyed `target_files` / `target_objects` dicts (Bazel tracks the
+  deps and resolves paths in the action — no genrule `$(location)` shell
+  wire, no cross-package `srcs` threading). An argv array via
+  `ctx.actions.run` means no shell-quoting surface; the size-threshold
+  question is moot since a dict is readable at any length. This completes
+  the de-base64 of the whole configure-file family (the bake tier landed in
+  #356). The cmake-configure-file tool's flag interface is unchanged.
 
 - **Readable `write_file` bake for file(GENERATE) + configure_file
   (de-base64).** The bake tier — a fully-resolved / COPYONLY body whose

@@ -1018,12 +1018,13 @@ func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rend
 	// readable skylib write_file for \n-only text, byte-exact base64
 	// genrule for binary / control-byte / CRLF bodies. Same de-base64
 	// maintainability win as the configure_file / file(GENERATE) bakes.
-	// Either shape intentionally omits Srcs: the template isn't consumed
-	// at action time (the bytes are already resolved), so staging it as
-	// Srcs would create confusing rebuild semantics — template edits
-	// would invalidate the rule via Bazel's source graph but the re-run
-	// would just re-emit the same baked bytes. The lifted branch below
-	// sets Srcs because the lifted cmd references it via $(location).
+	// The bake shape intentionally references no template input: the
+	// bytes are already resolved, so staging the template would create
+	// confusing rebuild semantics — template edits would invalidate the
+	// rule via Bazel's source graph but the re-run would just re-emit the
+	// same baked bytes. The lifted branch below points a cmake_configure_file
+	// rule at the template (via its `template` label) because it re-renders
+	// at Bazel time.
 	legacy := bakeFileTarget(name, dstRel, rendered, cmakeEConfigureFileTags(false))
 	if !liftEnabled {
 		return legacy
@@ -1035,20 +1036,10 @@ func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rend
 	if !ok {
 		return legacy
 	}
-	cmd, err := configureFileLiftedCmd(srcRel, dstRel, values, opts)
-	if err != nil {
-		return legacy
-	}
-	return ir.Target{
-		Name:         name,
-		Kind:         ir.KindGenrule,
-		Srcs:         []string{srcRel},
-		GenruleCmd:   cmd,
-		GenruleOuts:  []string{dstRel},
-		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         cmakeEConfigureFileTags(true),
-		Visibility:   []string{"//visibility:private"},
-	}
+	spec := newConfigureFileSpec(dstRel, opts)
+	spec.Template = srcRel
+	spec.Values = values
+	return cmakeConfigureFileTarget(name, spec, cmakeEConfigureFileTags(true))
 }
 
 // cmakeEConfigureFileTags returns the cmake-codegen tag set for

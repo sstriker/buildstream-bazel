@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -67,8 +68,8 @@ func TestRecoverFileGenerate_LiteralProbe_TwoPass(t *testing.T) {
 	if len(cc2.Genrules) != 1 {
 		t.Fatalf("pass 2 Genrules: %+v", cc2.Genrules)
 	}
-	if g := cc2.Genrules[0]; len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "generated/x.h" {
-		t.Fatalf("pass 2 genrule outs = %v, want [generated/x.h]", g.GenruleOuts)
+	if g := cc2.Genrules[0]; g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil || g.CMakeConfigureFile.Out != "generated/x.h" {
+		t.Fatalf("pass 2 lifted out = %+v (kind %v), want Out=generated/x.h", g.CMakeConfigureFile, g.Kind)
 	}
 }
 
