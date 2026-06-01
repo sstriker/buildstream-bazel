@@ -259,6 +259,20 @@ var dualUseProbeDrivers = map[string]bool{
 	"node":       true,
 }
 
+// capabilityProbeDrivers names drivers whose RESULT_VARIABLE-only
+// execute_process shape is a pure toolchain-capability check ("does this
+// tool support flag X") whose result lands in the recovered compile
+// flags, never a build input. The recoverExecuteProcess rescue skips
+// these unconditionally; every other RESULT_VARIABLE-only probe (whose
+// exit status could feed a configure_file via @VAR@) is skipped only
+// when its value was captured by the dump-vars hook. A subset of
+// dualUseProbeDrivers, kept separate because the predicate is the
+// rescue policy, not the classification.
+var capabilityProbeDrivers = map[string]bool{
+	"ar":     true,
+	"ranlib": true,
+}
+
 // shellDrivers names POSIX shell basenames, used to recognize a
 // host-detection script invoked as `sh .../config.guess`.
 var shellDrivers = map[string]bool{

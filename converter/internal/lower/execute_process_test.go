@@ -650,6 +650,29 @@ func TestRecoverExecuteProcess_RescueHostDetectionScript(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_NonCapabilityResultProbe confirms the
+// RESULT_VARIABLE-only rescue is restricted to capability drivers: a
+// python3 import check (whose exit status could feed a configure_file)
+// refuses when uncaptured, and rescues only when its RESULT_VARIABLE is
+// in cmakeVars (dump-vars). Guards against over-broad silent drops.
+func TestRecoverExecuteProcess_NonCapabilityResultProbe(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           13,
+		Commands:       [][]string{{"python3", "-c", "import pygments"}},
+		ResultVariable: "HAVE_PYGMENTS",
+	}}
+	cc := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) == 0 {
+		t.Error("uncaptured non-capability RESULT_VARIABLE probe should refuse")
+	}
+	cc = newCodegenContext()
+	captured := map[string]string{"HAVE_PYGMENTS": "1"}
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc); len(refusals) != 0 {
+		t.Errorf("captured RESULT_VARIABLE probe should rescue; got %v", refusals)
+	}
+}
+
 func TestConfigureLogVars_TryCompileSuccess(t *testing.T) {
 	events := []fileapi.Event{
 		{
