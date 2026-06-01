@@ -432,10 +432,20 @@ func TestLowerTarget_GeneratedSourceNotElided(t *testing.T) {
 	cc := &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}}
 	generated := map[string]bool{"gen.c": true}
 
-	irt, err := lowerTarget(tgt, hostSrc, "/build", hostSrc, "", true, nil, cc,
-		map[string]string{}, map[string]bool{}, nil, nil,
-		map[string]bool{}, nil, nil, nil, nil, nil,
-		map[string]string{}, map[string][]string{}, nil, "", generated, nil)
+	irt, err := lowerTarget(tgt, targetTrace{
+		privateIncludeDirs:           map[string]bool{},
+		platformConditionalSrcs:      map[string]string{},
+		platformConditionalSrcsToAdd: map[string][]string{},
+	}, targetLowerCtx{
+		cmakeSrc:         hostSrc,
+		cmakeBuild:       "/build",
+		hostSrc:          hostSrc,
+		hostSrcOnDisk:    true,
+		cc:               cc,
+		idToName:         map[string]string{},
+		utilityIDs:       map[string]bool{},
+		generatedSources: generated,
+	})
 	if err != nil {
 		t.Fatalf("lowerTarget: %v", err)
 	}

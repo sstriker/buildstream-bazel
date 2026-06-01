@@ -15,10 +15,17 @@ import (
 func callLowerTargetIface(t *testing.T, tgt *fileapi.Target, cmakeSrc string) *ir.Target {
 	t.Helper()
 	cc := &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}}
-	irt, err := lowerTarget(tgt, cmakeSrc, "/build", "", "", false, nil, cc,
-		map[string]string{}, map[string]bool{}, nil, nil,
-		map[string]bool{}, nil, nil, nil, nil, nil,
-		map[string]string{}, map[string][]string{}, nil, "", nil, nil)
+	irt, err := lowerTarget(tgt, targetTrace{
+		privateIncludeDirs:           map[string]bool{},
+		platformConditionalSrcs:      map[string]string{},
+		platformConditionalSrcsToAdd: map[string][]string{},
+	}, targetLowerCtx{
+		cmakeSrc:   cmakeSrc,
+		cmakeBuild: "/build",
+		cc:         cc,
+		idToName:   map[string]string{},
+		utilityIDs: map[string]bool{},
+	})
 	if err != nil {
 		t.Fatalf("lowerTarget: %v", err)
 	}

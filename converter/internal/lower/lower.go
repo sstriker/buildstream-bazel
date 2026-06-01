@@ -921,6 +921,27 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// receives the map as a parameter.
 	cc.ArtifactToName = artifactToName
 
+	lc := targetLowerCtx{
+		cmakeSrc:         cmakeSrc,
+		cmakeBuild:       cmakeBuild,
+		hostSrc:          hostSrc,
+		hostPrefix:       opts.HostPrefixDir,
+		hostSrcOnDisk:    hostSrcOnDisk,
+		g:                g,
+		cc:               cc,
+		idToName:         idToName,
+		utilityIDs:       utilityIDs,
+		imports:          opts.Imports,
+		tests:            opts.CTest,
+		configureFiles:   configureFiles,
+		fileGenerates:    fileGenerates,
+		executeProcesses: executeProcesses,
+		findPkgAttrib:    findPkgAttrib,
+		workspaceRoot:    workspaceRoot,
+		generatedSources: generatedSources,
+		rejections:       opts.Rejections,
+	}
+
 	for _, tref := range cfg.Targets {
 		t, ok := r.Targets[tref.Id]
 		if !ok {
@@ -933,7 +954,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			return nil, failure.New(failure.FileAPIMalformed,
 				"target id %q in codemodel but not loaded", tref.Id)
 		}
-		irt, err := lowerTarget(&t, cmakeSrc, cmakeBuild, hostSrc, opts.HostPrefixDir, hostSrcOnDisk, g, cc, idToName, utilityIDs, opts.Imports, opts.CTest, privateIncludeDirs[tref.Name], traceLinkLibs[tref.Name], traceLinkScope[tref.Name], configureFiles, fileGenerates, executeProcesses, platformConditionalSrcs[tref.Name], platformConditionalSrcsToAdd[tref.Name], findPkgAttrib, workspaceRoot, generatedSources, opts.Rejections)
+		irt, err := lowerTarget(&t, targetTrace{
+			privateIncludeDirs:           privateIncludeDirs[tref.Name],
+			traceLinkLibs:                traceLinkLibs[tref.Name],
+			traceLinkScope:               traceLinkScope[tref.Name],
+			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
+			platformConditionalSrcsToAdd: platformConditionalSrcsToAdd[tref.Name],
+		}, lc)
 		if err != nil {
 			return nil, err
 		}
@@ -1209,7 +1236,55 @@ func projectName(r *fileapi.Reply) string {
 	return ""
 }
 
-func lowerTarget(t *fileapi.Target, cmakeSrc, cmakeBuild, hostSrc, hostPrefix string, hostSrcOnDisk bool, g *ninja.Graph, cc *codegenContext, idToName map[string]string, utilityIDs map[string]bool, imports *manifest.Resolver, tests *ctest.Registry, privateIncludeDirs map[string]bool, traceLinkLibs []string, traceLinkScope map[string]string, configureFiles []configureFileOut, fileGenerates []fileGenerateOut, executeProcesses []executeProcessOut, platformConditionalSrcs map[string]string, platformConditionalSrcsToAdd map[string][]string, findPkgAttrib *findPackageAttrib, workspaceRoot string, generatedSources map[string]bool, rejections *rejection.Collector) (*ir.Target, error) {
+// targetLowerCtx bundles the inputs to lowerTarget that don't vary
+// across ToIR's per-target loop — the source/build roots, codemodel
+// id maps, shared recovery results, and sinks. Built once before the
+// loop so each call carries only its target plus that target's trace.
+type targetLowerCtx struct {
+	cmakeSrc         string
+	cmakeBuild       string
+	hostSrc          string
+	hostPrefix       string
+	hostSrcOnDisk    bool
+	g                *ninja.Graph
+	cc               *codegenContext
+	idToName         map[string]string
+	utilityIDs       map[string]bool
+	imports          *manifest.Resolver
+	tests            *ctest.Registry
+	configureFiles   []configureFileOut
+	fileGenerates    []fileGenerateOut
+	executeProcesses []executeProcessOut
+	findPkgAttrib    *findPackageAttrib
+	workspaceRoot    string
+	generatedSources map[string]bool
+	rejections       *rejection.Collector
+}
+
+// targetTrace bundles the per-target trace-derived inputs to
+// lowerTarget, looked up by target name at the call site.
+type targetTrace struct {
+	privateIncludeDirs           map[string]bool
+	traceLinkLibs                []string
+	traceLinkScope               map[string]string
+	platformConditionalSrcs      map[string]string
+	platformConditionalSrcsToAdd map[string][]string
+}
+
+func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
+	// Unpack the bundled inputs into the locals the body uses: lc is
+	// invariant across the per-target loop, tt is this target's trace.
+	cmakeSrc, cmakeBuild, hostSrc, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc, lc.hostPrefix
+	hostSrcOnDisk := lc.hostSrcOnDisk
+	g, cc := lc.g, lc.cc
+	idToName, utilityIDs := lc.idToName, lc.utilityIDs
+	imports, tests := lc.imports, lc.tests
+	configureFiles, fileGenerates, executeProcesses := lc.configureFiles, lc.fileGenerates, lc.executeProcesses
+	findPkgAttrib, workspaceRoot := lc.findPkgAttrib, lc.workspaceRoot
+	generatedSources, rejections := lc.generatedSources, lc.rejections
+	privateIncludeDirs, traceLinkLibs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkLibs, tt.traceLinkScope
+	platformConditionalSrcs, platformConditionalSrcsToAdd := tt.platformConditionalSrcs, tt.platformConditionalSrcsToAdd
+
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
 	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
 	// integration and have no Bazel equivalent. Skip them silently.
