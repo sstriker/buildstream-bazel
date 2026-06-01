@@ -19,6 +19,6 @@ cc_binary(
 cc_library(
     name = "iflib",
     hdrs = ["include/iflib/iflib.hpp"],
-    includes = ["include"],  # keep
+    strip_include_prefix = "include",  # keep
     tags = ["cmake-codegen-interface-library-from-trace"],  # keep
 )
