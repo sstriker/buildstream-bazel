@@ -613,6 +613,28 @@ func TestRecoverExecuteProcess_RescueStamp(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_StampRecordsStampVar confirms a VCS-stamp call
+// records its OUTPUT_VARIABLE -> workspace-status key in cc.StampVars (for
+// the downstream configure_file stamp lift), independent of the capture
+// gate. Captured here so the call itself skips without a refusal.
+func TestRecoverExecuteProcess_StampRecordsStampVar(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           5,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	}}
+	cc := newCodegenContext()
+	cmakeVars := map[string]string{"GIT_SHA": "abc123"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("captured stamp should skip; got refusals: %v", refusals)
+	}
+	if cc.StampVars["GIT_SHA"] != "STABLE_GIT_SHA" {
+		t.Errorf("StampVars[GIT_SHA] = %q, want STABLE_GIT_SHA", cc.StampVars["GIT_SHA"])
+	}
+}
+
 // TestRecoverExecuteProcess_RescueCapabilityProbe covers an `ar` /
 // `ranlib` "does this tool support flag X" check: a RESULT_VARIABLE-only
 // probe whose exit status's effect lands in the recovered compile flags,

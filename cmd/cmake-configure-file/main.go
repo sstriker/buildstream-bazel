@@ -144,6 +144,9 @@ func main() {
 	flag.Var(&targetFiles, "target-file", "repeatable: `<name>=<path>`. Overrides genexeval.Context.Targets[<name>].FileLocation for the (a)-shape `$<TARGET_FILE:<name>>` evaluation. The lifter typically passes the path as `$(location //pkg:<name>)`; Bazel substitutes at action time so cmake-configure-file receives the resolved Bazel-time path. Multiple flags accumulate. Requires --genex-context to also be set (no-op otherwise).")
 	var targetObjects targetObjectsFlag
 	flag.Var(&targetObjects, "target-objects", "repeatable: `<name>=<path1>:<path2>:...`. Overrides genexeval.Context.Targets[<name>].Objects for the (a)-shape `$<TARGET_OBJECTS:<name>>` evaluation. The cmake_configure_file rule supplies the paths from the `target_objects` label dict, whose label is a `filegroup(output_group=\"compilation_outputs\")` over the OBJECT library (its DefaultInfo.files is the .o set — NOT the cc_library archive); the rule joins those file paths with `:` before passing them here. Colon-delimited (not the cmake-native semicolon) because cmake uses `;` as its list separator AND its statement terminator — a single shell-safe character keeps the flag round-trip clean. The colon is rewritten to a semicolon internally before populating Context.Targets[name].Objects so the evaluator sees cmake's native list shape. Multiple flags accumulate (one per OBJECT_LIBRARY referenced); duplicate names overwrite (last-wins). Requires --genex-context to also be set (no-op otherwise).")
+	statusFile := flag.String("status-file", "", "optional: path to a Bazel workspace status file (the rule passes ctx.info_file / stable-status.txt). With --stamp-value, each named status key overrides the corresponding --values entry at build time — the mechanism that re-reads a VCS revision under --stamp instead of baking it. A key absent from the file (a non-stamped build, or no --workspace_status_command) leaves the --values fallback untouched.")
+	var stampValues stampValueFlag
+	flag.Var(&stampValues, "stamp-value", "repeatable: `<template-var>=<STATUS_KEY>`. At build time, look up STATUS_KEY in --status-file and, when present, override --values[<template-var>] with it. Used to re-read a VCS-stamp value (git rev-parse, etc.) from the workspace status under --stamp; when STATUS_KEY is absent the baked --values fallback is kept.")
 	atOnly := flag.Bool("at-only", false, "skip ${VAR} substitution; only @VAR@ markers are replaced. Mirrors configure_file's @ONLY flag.")
 	copyOnly := flag.Bool("copy-only", false, "skip ALL substitution (@VAR@, ${VAR}, #cmakedefine*) and emit the template verbatim. Mirrors configure_file's COPYONLY flag.")
 	escapeQuotes := flag.Bool("escape-quotes", false, "backslash-escape `\"` (and `\\\\`) in expanded values. Mirrors configure_file's ESCAPE_QUOTES flag.")
@@ -198,7 +201,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cmake-configure-file: --genex-values and --genex-context are mutually exclusive (pick one genex shape per call site)")
 		os.Exit(2)
 	}
-	if err := run(*valuesPath, *genexValuesPath, *genexContextPath, targetFiles.byName, targetObjects.byName, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
+	if err := run(*valuesPath, *statusFile, stampValues.byName, *genexValuesPath, *genexContextPath, targetFiles.byName, targetObjects.byName, inPath, contentBase64.set, contentBase64.val, outPath, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "cmake-configure-file: %v\n", err)
 		os.Exit(1)
 	}
@@ -288,6 +291,68 @@ func (f *targetObjectsFlag) Set(s string) error {
 	return nil
 }
 
+// stampValueFlag accumulates --stamp-value=<template-var>=<STATUS_KEY>
+// entries into a template-var→status-key map. Mirrors targetFileFlag's
+// shape: repeated flags accumulate, duplicate vars overwrite (last-wins).
+// Empty status key is rejected at Set-time so `--stamp-value=var=` can't
+// silently map to a nonexistent key.
+type stampValueFlag struct {
+	byName map[string]string
+}
+
+func (f *stampValueFlag) String() string {
+	if f == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d entries", len(f.byName))
+}
+
+func (f *stampValueFlag) Set(s string) error {
+	eq := strings.IndexByte(s, '=')
+	if eq < 0 {
+		return fmt.Errorf("expected <template-var>=<STATUS_KEY>, got %q", s)
+	}
+	name := s[:eq]
+	key := s[eq+1:]
+	if name == "" {
+		return fmt.Errorf("--stamp-value: empty template variable in %q", s)
+	}
+	if key == "" {
+		return fmt.Errorf("--stamp-value: empty status key for %q", name)
+	}
+	if f.byName == nil {
+		f.byName = map[string]string{}
+	}
+	f.byName[name] = key
+	return nil
+}
+
+// loadStatusFile parses a Bazel workspace status file (stable-status.txt
+// / volatile-status.txt): one "KEY VALUE" entry per line, the key being
+// everything up to the first space and the value the remainder. Blank
+// lines are skipped; a line with no space is a key with an empty value.
+// Returns a non-nil (possibly empty) map, so lookups against a
+// stamp-less file simply miss and the --values fallback stands.
+func loadStatusFile(path string) (map[string]string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if line == "" {
+			continue
+		}
+		if sp := strings.IndexByte(line, ' '); sp >= 0 {
+			out[line[:sp]] = line[sp+1:]
+		} else {
+			out[line] = ""
+		}
+	}
+	return out, nil
+}
+
 // parseNewlineStyle accepts cmake's NEWLINE_STYLE token set
 // (case-insensitive). Empty string maps to NewlineDefault
 // (preserve the template's original line terminator).
@@ -317,7 +382,7 @@ func parseNewlineStyle(s string) (configurefile.NewlineStyle, error) {
 // suspiciously well-formed output that masks the bug) or
 // both set (which is ambiguous about which template source
 // wins).
-func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles, targetObjects map[string]string, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
+func run(valuesPath, statusFile string, stampValues map[string]string, genexValuesPath, genexContextPath string, targetFiles, targetObjects map[string]string, inPath string, hasContent bool, content, outPath string, opts configurefile.Options) error {
 	switch {
 	case inPath == "" && !hasContent:
 		return fmt.Errorf("internal: neither inPath nor hasContent set; main's CLI gate should have rejected this argv")
@@ -327,6 +392,23 @@ func run(valuesPath, genexValuesPath, genexContextPath string, targetFiles, targ
 	values, err := loadValues(valuesPath)
 	if err != nil {
 		return fmt.Errorf("load values %s: %w", valuesPath, err)
+	}
+	// Stamp overrides: re-read VCS-stamp values from the workspace status
+	// file at build time (the --stamp mechanism) so a baked convert-time
+	// revision doesn't pin the output. Each --stamp-value <var>=<KEY>
+	// overrides values[<var>] when KEY is present in --status-file; an
+	// absent key (non-stamped build, or no --workspace_status_command)
+	// leaves the --values fallback in place.
+	if len(stampValues) > 0 {
+		status, err := loadStatusFile(statusFile)
+		if err != nil {
+			return fmt.Errorf("load status file %s: %w", statusFile, err)
+		}
+		for tmplVar, statusKey := range stampValues {
+			if v, ok := status[statusKey]; ok {
+				values[tmplVar] = v
+			}
+		}
 	}
 	var tmpl []byte
 	if inPath != "" {

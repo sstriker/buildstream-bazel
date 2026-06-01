@@ -701,6 +701,17 @@ type CMakeConfigureFileSpec struct {
 	// --values). Rendered as a readable Starlark string_dict.
 	Values map[string]string
 
+	// StampValues maps a template variable -> Bazel workspace-status key
+	// (the rule's `stamp_values`; e.g. GIT_SHA -> STABLE_GIT_SHA). For a
+	// var written by a VCS-stamp execute_process (git/hg/svn rev-parse),
+	// the rule reads the live value from the stable workspace status at
+	// build time (under --stamp + --workspace_status_command) and
+	// overrides the Values entry — so a `@GIT_SHA@` header re-reads the
+	// current revision instead of the convert-time one baked into Values
+	// (which stays as the non-stamped fallback). Empty for the common
+	// configure_file with no stamp-sourced variable.
+	StampValues map[string]string
+
 	// GenexValues is the captured `$<...>` literal -> resolved bytes map
 	// for the structured-replay (b)/(b′) lift (the tool's --genex-values).
 	// Mutually exclusive with GenexContext.

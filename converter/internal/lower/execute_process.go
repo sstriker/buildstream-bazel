@@ -289,6 +289,16 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				// a Bazel build input, so emitting nothing is faithful.
 				continue
 			}
+			// Record a VCS-stamp output variable for the configure_file lift:
+			// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision) re-reads from
+			// the Bazel workspace status at build time, so a `@GIT_SHA@`
+			// header stays live instead of baking the convert-time value.
+			// Recorded regardless of the capture gate below — the lift (which
+			// runs later over the same cc) consults cc.StampVars; the stamp
+			// call itself still skips (captured) or refuses (not) here.
+			if v.Bucket == BucketStamp && call.OutputVariable != "" {
+				cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable)
+			}
 			// Stamp capture gate. A stamp's value (a VCS revision) WOULD bake
 			// into the srckey of any configure_file that consumed it —
 			// silently pinning the build to one commit — so unlike a probe a
@@ -322,6 +332,29 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 	}
 	sort.Slice(outs, func(i, j int) bool { return outs[i].RelOutput < outs[j].RelOutput })
 	return outs, unsupported
+}
+
+// stampStatusKey derives the Bazel workspace-status key a VCS-stamp cmake
+// variable reads from at build time. The STABLE_ prefix routes the key
+// into stable-status.txt (ctx.info_file) — cache-keyed, so a revision
+// change correctly re-renders the consuming configure_file — and the
+// remainder is the upper-cased variable name with any non-[A-Z0-9_] run
+// folded to '_' so the key is a valid status identifier (GIT_SHA ->
+// STABLE_GIT_SHA). The operator's --workspace_status_command emits this
+// key; predictable derivation from the cmake var name keeps that contract
+// self-documenting.
+func stampStatusKey(varName string) string {
+	var b strings.Builder
+	b.WriteString("STABLE_")
+	for _, r := range strings.ToUpper(varName) {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // formatExecuteProcessFailure converts a non-empty refusal

@@ -300,6 +300,7 @@ func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 		"/src/project", "/src/project",
 		false, // liftEnabled = false → legacy
 		nil,
+		nil, // stampVars
 	)
 	// The rendered bytes are \n-only text, so the non-lifted bake now
 	// lowers to the readable skylib write_file (shared bakeFileTarget)
@@ -336,7 +337,7 @@ func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 func TestBuildConfigureFileGenrule_BinaryBakeStaysBase64(t *testing.T) {
 	rendered := []byte("a\x00b\n")
 	call := shadow.ConfigureFileCall{Input: "/src/project/cfg.h.in", Output: "/tmp/build/cfg.h"}
-	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", false, nil)
+	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", false, nil, nil)
 	if got.Kind != ir.KindGenrule {
 		t.Fatalf("binary bake should stay on the base64 genrule; got kind %v", got.Kind)
 	}
@@ -375,6 +376,7 @@ func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 		hostSrc, hostSrc,
 		true, // liftEnabled
 		map[string]string{"VERSION": "1.2.3"},
+		nil, // stampVars
 	)
 	if got.Kind != ir.KindCMakeConfigureFile || got.CMakeConfigureFile == nil {
 		t.Fatalf("lifted kind = %v (spec nil? %v); want KindCMakeConfigureFile", got.Kind, got.CMakeConfigureFile == nil)
@@ -397,6 +399,49 @@ func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 	}
 }
 
+// TestBuildConfigureFileGenrule_StampValues covers the VCS-stamp lift: a
+// template referencing a stamp-sourced var (@GIT_SHA@) gets a stamp_values
+// entry so the rule re-reads the live revision from the workspace status,
+// while the baked value stays in values as the no---stamp fallback. A
+// stamp var the template does NOT reference is excluded (no spurious
+// status dependency).
+func TestBuildConfigureFileGenrule_StampValues(t *testing.T) {
+	template := "#define REV \"@GIT_SHA@\"\n#define VER \"@VERSION@\"\n"
+	rendered := []byte("#define REV \"abc123\"\n#define VER \"1.2.3\"\n")
+
+	hostSrc := t.TempDir()
+	templateRel := "src/version.h.in"
+	if err := os.MkdirAll(filepath.Join(hostSrc, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostSrc, templateRel), []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := shadow.ConfigureFileCall{
+		Input:   filepath.Join(hostSrc, templateRel),
+		Output:  "/tmp/build/version.h",
+		Options: []string{"@ONLY"},
+	}
+	got := buildConfigureFileGenrule(
+		"gen_version_h", "version.h", rendered, call,
+		hostSrc, hostSrc,
+		true, // liftEnabled
+		map[string]string{"GIT_SHA": "abc123", "VERSION": "1.2.3"},
+		map[string]string{"GIT_SHA": "STABLE_GIT_SHA", "UNUSED_STAMP": "STABLE_UNUSED_STAMP"},
+	)
+	if got.Kind != ir.KindCMakeConfigureFile || got.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want lifted KindCMakeConfigureFile", got.Kind, got.CMakeConfigureFile == nil)
+	}
+	sv := got.CMakeConfigureFile.StampValues
+	if len(sv) != 1 || sv["GIT_SHA"] != "STABLE_GIT_SHA" {
+		t.Errorf("stamp_values = %v, want {GIT_SHA: STABLE_GIT_SHA} (UNUSED_STAMP not referenced, must be excluded)", sv)
+	}
+	// The baked value stays in values as the no---stamp fallback.
+	if got.CMakeConfigureFile.Values["GIT_SHA"] != "abc123" {
+		t.Errorf("values[GIT_SHA] = %q, want the baked fallback abc123", got.CMakeConfigureFile.Values["GIT_SHA"])
+	}
+}
+
 // TestBuildConfigureFileGenrule_FallsBackOnMissingTemplate
 // covers the "lift-eligible but template not readable" branch:
 // the template path resolves under recordedSrcDir but the file
@@ -414,6 +459,7 @@ func TestBuildConfigureFileGenrule_FallsBackOnMissingTemplate(t *testing.T) {
 		hostSrc, hostSrc,
 		true, // liftEnabled, but template ReadFile fails
 		map[string]string{"VAR": "v"},
+		nil, // stampVars
 	)
 	if got.Srcs != nil || got.GenruleTools != nil {
 		t.Errorf("expected legacy fallback; got srcs=%v tools=%v", got.Srcs, got.GenruleTools)
