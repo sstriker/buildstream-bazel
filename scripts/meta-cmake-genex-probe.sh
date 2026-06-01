@@ -17,16 +17,17 @@
 # `obj`, a consumer STATIC_LIBRARY, and a file(GENERATE) whose
 # CONTENT embeds $<TARGET_OBJECTS:obj>).
 #
-# Asserts on the emitted genrule for the file(GENERATE) output:
+# Asserts on the emitted cmake_configure_file rule for the
+# file(GENERATE) output:
 #   1. It carries cmake-codegen-genex-resolved (Phase 3 collapsed
 #      tag) — the genex was resolved, not baked.
 #   2. It does NOT carry cmake-codegen-genex-unresolved — no
 #      Tier-1 refusal / legacy bytes-embedded fallback.
-#   3. The cmd wires --genex-context= (the (a) evaluator path the
-#      probe feeds) and --target-objects=obj= (the Bazel-time
+#   3. It carries genex_context = (the (a) evaluator path the probe
+#      feeds) and target_objects = {":obj": "obj"} (the Bazel-time
 #      object-list wire), and the template body —
-#      $<TARGET_OBJECTS:obj> — rides as --content-base64, NOT the
-#      rendered .o path list.
+#      $<TARGET_OBJECTS:obj> — rides as the readable inline content
+#      attribute, NOT the rendered .o path list.
 #
 # This is the live counterpart of the Go-side round-trip pinned by
 # TestReadGenexProbe_EmptyConfig (reader) and
@@ -94,26 +95,22 @@ printf '%s\n' "$blk" | grep -q '"cmake-codegen-genex-resolved"' \
 printf '%s\n' "$blk" | grep -q '"cmake-codegen-genex-unresolved"' \
     && fail "gen_obj_manifest_txt carries cmake-codegen-genex-unresolved — genex fell back to legacy bytes instead of resolving via the probe"
 
-# 3. (a) evaluator + TARGET_OBJECTS Bazel-time wire present.
-printf '%s\n' "$blk" | grep -q -- '--genex-context=' \
-    || fail "gen_obj_manifest_txt cmd missing --genex-context= ((a) evaluator wire)"
-printf '%s\n' "$blk" | grep -q -- '--target-objects=obj=' \
-    || fail "gen_obj_manifest_txt cmd missing --target-objects=obj= (Bazel-time object-list wire)"
+# 3. (a) evaluator + TARGET_OBJECTS Bazel-time wire present, as readable
+# rule attributes (the cmake_configure_file lift carries genex_context as
+# a JSON string and target_objects as a label-keyed dict — no base64,
+# no $(locations) shell wire).
+printf '%s\n' "$blk" | grep -q -- 'genex_context =' \
+    || fail "gen_obj_manifest_txt missing genex_context = ((a) evaluator wire)"
+printf '%s\n' "$blk" | grep -q -- '":obj": "obj"' \
+    || fail "gen_obj_manifest_txt missing target_objects {\":obj\": \"obj\"} (Bazel-time object-list wire)"
 
-# 3b. The template body (the literal genex) rides as content-base64,
-# NOT cmake's rendered .o path. Decode the --content-base64 blob and
-# assert it still contains the literal $<TARGET_OBJECTS:obj>.
-content_b64="$(printf '%s\n' "$blk" | grep -o -- '--content-base64=[A-Za-z0-9+/=]*' | head -n1 | sed 's/--content-base64=//')"
-if [ -z "$content_b64" ]; then
-    fail "gen_obj_manifest_txt cmd missing --content-base64= blob"
-fi
-decoded="$(printf '%s' "$content_b64" | base64 -d 2>/dev/null || true)"
-case "$decoded" in
-    *'$<TARGET_OBJECTS:obj>'*)
-        ;;
-    *)
-        fail "content-base64 decoded to '$decoded' — expected the literal \$<TARGET_OBJECTS:obj> template, not the rendered object path (which would mean a bytes-baked fallback)"
-        ;;
-esac
+# 3b. The template body (the literal genex) rides as the readable inline
+# `content` attribute, NOT cmake's rendered .o path. The body is emitted
+# verbatim (Go %q does not escape $ < >), so assert it still contains the
+# literal $<TARGET_OBJECTS:obj>.
+printf '%s\n' "$blk" | grep -q -- 'content =' \
+    || fail "gen_obj_manifest_txt missing inline content ="
+printf '%s\n' "$blk" | grep -qF -- '$<TARGET_OBJECTS:obj>' \
+    || fail "content should carry the literal \$<TARGET_OBJECTS:obj> template, not the rendered object path (which would mean a bytes-baked fallback)"
 
 echo "ok  meta-cmake-genex-probe: \$<TARGET_OBJECTS:obj> in file(GENERATE) resolved via --probe-genex (cmake-codegen-genex-resolved, no Tier-1 refusal)"

@@ -20,12 +20,12 @@
 #
 # This gate proves the rescue value genuinely re-renders at Bazel
 # time (not just that conversion stops refusing): the recovered
-# configure_file genrule is the LIFTED shape (srcs = the .h.in,
-# //tools:cmake-configure-file invoked at build time, a base64
-# values JSON in the cmd). PROBE_RESULT rides in that values JSON,
-# so re-running the substitution tool over the template + values
-# materializes `probe-value-42` into config.h — the contract the
-# rescue owes its downstream consumer.
+# configure_file is the LIFTED cmake_configure_file shape (a
+# `template` label on the .h.in, //tools:cmake-configure-file as the
+# `tool` invoked at build time, a readable `values` dict). PROBE_RESULT
+# rides in that values dict, so re-running the substitution tool over
+# the template + values materializes `probe-value-42` into config.h —
+# the contract the rescue owes its downstream consumer.
 #
 # Asserts:
 #   1. convert-element-cmake exits 0.
@@ -34,7 +34,7 @@
 #   3. The recovered configure_file is the lifted re-rendering
 #      shape (//tools:cmake-configure-file + cmake-codegen-lifted),
 #      and re-running cmake-configure-file over the template + the
-#      genrule's captured values JSON materializes `probe-value-42`
+#      rule's captured values dict materializes `probe-value-42`
 #      — i.e. the probe value reaches a real Bazel-time re-render.
 #   4. Negative: with --dump-vars=false the probe value is NOT
 #      captured, so the rescue can't fire and convert exits Tier-1
@@ -101,8 +101,8 @@ if grep -q 'unsupported-execute-process' "$work_dir/convert.stderr"; then
 fi
 
 # Assertion (3a): the recovered configure_file is the lifted
-# re-rendering shape — srcs the template, invokes
-# //tools:cmake-configure-file, carries cmake-codegen-lifted.
+# re-rendering shape — a cmake_configure_file rule with the template
+# label, //tools:cmake-configure-file as its tool, cmake-codegen-lifted.
 for marker in \
     'name = "gen_config_h"' \
     '"src/config.h.in"' \
@@ -118,20 +118,39 @@ for marker in \
     fi
 done
 
-# Assertion (3b): the probe value rides in the genrule's captured
-# values JSON, and re-running cmake-configure-file over the
-# template + those values materializes `probe-value-42`. This is
-# the live contract — extract the base64 values blob from the
-# genrule cmd, decode it, and re-render exactly as the Bazel action
-# would (the @ONLY template lifts with --at-only).
+# Assertion (3b): the probe value rides in the cmake_configure_file
+# rule's readable `values` dict, and re-running cmake-configure-file
+# over the template + those values materializes `probe-value-42`. This
+# is the live contract — extract the `values = {...}` Starlark dict from
+# the gen_config_h rule (a Starlark string-dict literal parses as a
+# Python dict), write it as JSON, and re-render exactly as the Bazel
+# action would (the @ONLY template lifts with --at-only).
 python3 - "$out_build" "$work_dir/values.json" <<'PYEOF'
-import sys, re, base64
+import sys, json, ast
 txt = open(sys.argv[1]).read()
-m = re.search(r'echo ([A-Za-z0-9+/=]{40,}) \| base64', txt)
-if not m:
-    sys.stderr.write("could not locate the base64 values blob in gen_config_h cmd\n")
+start = txt.find('name = "gen_config_h"')
+if start < 0:
+    sys.stderr.write("could not locate the gen_config_h rule\n")
     sys.exit(1)
-open(sys.argv[2], "wb").write(base64.b64decode(m.group(1)))
+vi = txt.find('values = {', start)
+if vi < 0:
+    sys.stderr.write("could not locate the values dict in the gen_config_h rule\n")
+    sys.exit(1)
+brace = txt.index('{', vi)
+depth, end = 0, None
+for i in range(brace, len(txt)):
+    if txt[i] == '{':
+        depth += 1
+    elif txt[i] == '}':
+        depth -= 1
+        if depth == 0:
+            end = i + 1
+            break
+if end is None:
+    sys.stderr.write("unbalanced braces in the gen_config_h values dict\n")
+    sys.exit(1)
+values = ast.literal_eval(txt[brace:end])
+json.dump(values, open(sys.argv[2], "w"))
 PYEOF
 
 rendered="$work_dir/config.h.rendered"

@@ -57,17 +57,18 @@ func hasTag(tags []string, want string) bool {
 
 // TestRecoverFileGenerate_InputForm_Lifted exercises the INPUT
 // shape on a genex-free template with a recoverable values
-// dict: the lifter emits a genrule with srcs=<template>,
-// tools=//tools:cmake-configure-file, cmake-codegen-lifted
-// tag, and a cmd that references the template via $(location).
+// dict: the lifter emits a cmake_configure_file target with
+// Template=<template>, Tool=//tools:cmake-configure-file,
+// CopyOnly=true, an empty Values dict, and the
+// cmake-codegen-lifted tag.
 func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 	// file(GENERATE) is verbatim emit (CopyOnly=true on the
 	// Bazel-time tool); template == rendered is the verify-pass
 	// for genex-free shapes. cmakeVars must not bloat the
-	// resulting cmd — the lift always passes an empty values
+	// resulting spec — the lift always passes an empty values
 	// dict regardless of what the operator's namespace looks
 	// like, so we can pass a populated cmakeVars here and still
-	// expect the cmd to carry `{}`.
+	// expect an empty Values map.
 	template := "#define BANNER \"hi\"\n"
 	rendered := []byte("#define BANNER \"hi\"\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/banner.h.in", template, "banner.h", rendered)
@@ -92,23 +93,22 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 	if g.Name != "gen_banner_h" {
 		t.Errorf("name: %q want gen_banner_h", g.Name)
 	}
-	if len(g.Srcs) != 1 || g.Srcs[0] != "src/banner.h.in" {
-		t.Errorf("srcs: %v want [src/banner.h.in]", g.Srcs)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if len(g.GenruleTools) != 1 || g.GenruleTools[0] != "//tools:cmake-configure-file" {
-		t.Errorf("tools: %v", g.GenruleTools)
+	if g.CMakeConfigureFile.Template != "src/banner.h.in" {
+		t.Errorf("template: %q want src/banner.h.in", g.CMakeConfigureFile.Template)
 	}
-	if !strings.Contains(g.GenruleCmd, "$(location src/banner.h.in)") {
-		t.Errorf("cmd should reference $(location src/banner.h.in); got %q", g.GenruleCmd)
+	if g.CMakeConfigureFile.Tool != "//tools:cmake-configure-file" {
+		t.Errorf("tool: %q", g.CMakeConfigureFile.Tool)
 	}
-	// file(GENERATE) lifts always pass --copy-only + empty
-	// values JSON — cmakeVars don't ride into the cmd.
-	if !strings.Contains(g.GenruleCmd, "--copy-only") {
-		t.Errorf("file(GENERATE) lifted cmd should carry --copy-only; got %q", g.GenruleCmd)
+	// file(GENERATE) lifts always set CopyOnly + an empty
+	// values map — cmakeVars don't ride into the spec.
+	if !g.CMakeConfigureFile.CopyOnly {
+		t.Errorf("file(GENERATE) lifted spec should set CopyOnly")
 	}
-	// base64("{}") == "e30=" — the empty values dict.
-	if !strings.Contains(g.GenruleCmd, "echo e30= | base64 -d") {
-		t.Errorf("file(GENERATE) lifted cmd should embed an empty values dict (base64 \"{}\" == \"e30=\"); got %q", g.GenruleCmd)
+	if len(g.CMakeConfigureFile.Values) != 0 {
+		t.Errorf("file(GENERATE) lifted spec should carry an empty values dict; got %v", g.CMakeConfigureFile.Values)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted tag missing: %v", g.Tags)
@@ -123,9 +123,9 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 
 // TestRecoverFileGenerate_ContentForm_Lifted exercises the
 // CONTENT shape: no template on disk, the body comes from the
-// call's Content field. Lifted shape uses --content-base64 in
-// the cmd (instead of a srcs+$(location) reference) and emits
-// the same cmake-codegen-lifted tag.
+// call's Content field. The lifted cmake_configure_file spec
+// carries the body inline via Content (Template empty) and
+// emits the same cmake-codegen-lifted tag.
 func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 	// file(GENERATE CONTENT) is verbatim emit — the Content
 	// string and rendered bytes match by construction (cmake's
@@ -149,15 +149,17 @@ func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 		t.Fatalf("outs: %+v", out)
 	}
 	g := cc.Genrules[0]
-	if len(g.Srcs) != 0 {
-		t.Errorf("srcs should be empty for CONTENT form; got %v", g.Srcs)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	wantBlob := "--content-base64=" + base64.StdEncoding.EncodeToString([]byte(template))
-	if !strings.Contains(g.GenruleCmd, wantBlob) {
-		t.Errorf("cmd should embed --content-base64 of the template; got %q", g.GenruleCmd)
+	if g.CMakeConfigureFile.Template != "" {
+		t.Errorf("CONTENT form should leave Template empty; got %q", g.CMakeConfigureFile.Template)
 	}
-	if !strings.Contains(g.GenruleCmd, "--copy-only") {
-		t.Errorf("file(GENERATE) CONTENT-form lifted cmd should carry --copy-only; got %q", g.GenruleCmd)
+	if g.CMakeConfigureFile.Content != template {
+		t.Errorf("CONTENT form should carry the body inline; got %q want %q", g.CMakeConfigureFile.Content, template)
+	}
+	if !g.CMakeConfigureFile.CopyOnly {
+		t.Errorf("file(GENERATE) CONTENT-form lifted spec should set CopyOnly")
 	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted tag missing: %v", g.Tags)
@@ -261,9 +263,10 @@ func TestRecoverFileGenerate_BinaryBodyStaysBase64(t *testing.T) {
 // tag set carries BOTH cmake-codegen-lifted AND
 // cmake-codegen-genex-resolved so the audit can
 // distinguish "lifted via the (b) capture" from "lifted via
-// plain non-genex emit". The rendered bytes do NOT appear in
-// the cmd (the (b) shape's whole point: rendered output is
-// no longer content-load-bearing in srckey).
+// plain non-genex emit". The rendered bytes are never carried
+// structurally (the (b) shape's whole point: rendered output is
+// no longer content-load-bearing in srckey); the captured
+// literal -> resolved-bytes map rides on the spec's GenexValues.
 func TestRecoverFileGenerate_GenexLiftedViaStructuredBase64(t *testing.T) {
 	template := "// config: $<CONFIG:Release>\n#define IS_LINUX $<PLATFORM_ID:Linux>\n"
 	rendered := []byte("// config: 1\n#define IS_LINUX 1\n")
@@ -293,86 +296,37 @@ func TestRecoverFileGenerate_GenexLiftedViaStructuredBase64(t *testing.T) {
 	if hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("(b)-lifted shape should NOT carry the legacy-fallback genex tag; got %v", g.Tags)
 	}
-	if len(g.Srcs) != 1 || g.Srcs[0] != "src/g.in" {
-		t.Errorf("INPUT-form lift should stage the template as srcs; got %v", g.Srcs)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if !strings.Contains(g.GenruleCmd, "--genex-values=") {
-		t.Errorf("cmd should pass --genex-values=; got %q", g.GenruleCmd)
+	spec := g.CMakeConfigureFile
+	if spec.Template != "src/g.in" {
+		t.Errorf("INPUT-form lift should reference the template; got %q", spec.Template)
 	}
-	// Decode the staged values + genex-values blobs from the cmd
-	// to verify the lift's captured payload is the right shape.
-	for _, marker := range []string{
-		"GENEX_VALUES=",
-		"cmake-configure-file.genex.XXXXXX",
-		"//tools:cmake-configure-file",
-	} {
-		if !strings.Contains(g.GenruleCmd, marker) {
-			t.Errorf("cmd missing marker %q; got %q", marker, g.GenruleCmd)
-		}
+	if spec.Tool != "//tools:cmake-configure-file" {
+		t.Errorf("tool: %q", spec.Tool)
 	}
-	// Soundness: rendered bytes must NOT appear in the cmd.
-	// The (b) lift's whole win is that rendered output is no
-	// longer carried byte-for-byte in BUILD.bazel.
-	rendEnc := base64.StdEncoding.EncodeToString(rendered)
-	if strings.Contains(g.GenruleCmd, rendEnc) {
-		t.Errorf("rendered bytes appear in cmd as base64 (%s); the (b) lift should NOT embed them", rendEnc)
+	if len(spec.GenexValues) == 0 {
+		t.Errorf("(b) lift should populate GenexValues; got %v", spec.GenexValues)
 	}
-	// The captured genex-values payload must round-trip.
-	values, ok := extractGenexValuesFromCmd(t, g.GenruleCmd)
-	if !ok {
-		return // extractor already failed the test
+	// The (b) lift uses GenexValues, not the (a) evaluator's
+	// GenexContext — they're mutually exclusive.
+	if spec.GenexContext != "" {
+		t.Errorf("(b) lift should NOT set GenexContext; got %q", spec.GenexContext)
 	}
+	// The captured genex-values payload must round-trip on the spec.
 	want := map[string]string{
 		"$<CONFIG:Release>":    "1",
 		"$<PLATFORM_ID:Linux>": "1",
 	}
-	if len(values) != len(want) {
-		t.Errorf("captured genex values: got %d entries, want %d (%#v)", len(values), len(want), values)
+	if len(spec.GenexValues) != len(want) {
+		t.Errorf("captured genex values: got %d entries, want %d (%#v)", len(spec.GenexValues), len(want), spec.GenexValues)
 	}
 	for k, v := range want {
-		if got := values[k]; got != v {
+		if got := spec.GenexValues[k]; got != v {
 			t.Errorf("genex value for %q: got %q, want %q", k, got, v)
 		}
 	}
-}
-
-// extractGenexValuesFromCmd decodes the base64 blob the lifted
-// shell command stages into the GENEX_VALUES sidecar. The blob
-// sits between `echo ` and ` | base64 -d > "$$GENEX_VALUES"`
-// in the cmd — same pattern the lifter uses for the regular
-// VALUES sidecar. Returns the decoded map plus a sentinel for
-// extractor-level failures so the calling test can short-
-// circuit cleanly.
-func extractGenexValuesFromCmd(t *testing.T, cmd string) (map[string]string, bool) {
-	t.Helper()
-	const before = `echo `
-	const after = ` | base64 -d > "$$GENEX_VALUES"`
-	a := strings.Index(cmd, after)
-	if a < 0 {
-		t.Errorf("cmd missing GENEX_VALUES base64-decode pattern")
-		return nil, false
-	}
-	// Walk backward from `a` to find the matching `echo ` prefix.
-	// Multiple `echo ... | base64 -d` blocks coexist (VALUES +
-	// GENEX_VALUES); pair the GENEX_VALUES output redirect with
-	// the nearest preceding `echo `.
-	b := strings.LastIndex(cmd[:a], before)
-	if b < 0 {
-		t.Errorf("cmd's GENEX_VALUES decode pattern has no echo prefix")
-		return nil, false
-	}
-	enc := cmd[b+len(before) : a]
-	raw, err := base64.StdEncoding.DecodeString(enc)
-	if err != nil {
-		t.Errorf("decode genex base64 blob %q: %v", enc, err)
-		return nil, false
-	}
-	var values map[string]string
-	if err := json.Unmarshal(raw, &values); err != nil {
-		t.Errorf("parse genex JSON %s: %v", raw, err)
-		return nil, false
-	}
-	return values, true
 }
 
 // TestRecoverFileGenerate_GenexExtractionFailureFallsBackToLegacy
@@ -465,20 +419,19 @@ func TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator(t *testing.T) {
 	if hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("unexpected legacy-fallback tag in %v", g.Tags)
 	}
-	if !strings.Contains(g.GenruleCmd, "--genex-context=") {
-		t.Errorf("cmd should pass --genex-context=; got %q", g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if strings.Contains(g.GenruleCmd, "--genex-values=") {
-		t.Errorf("(a) lift should NOT pass --genex-values=; got %q", g.GenruleCmd)
+	spec := g.CMakeConfigureFile
+	if spec.GenexContext == "" {
+		t.Errorf("(a) lift should set GenexContext; got empty")
 	}
-	// Soundness: rendered bytes must NOT appear in the cmd.
-	rendEnc := base64.StdEncoding.EncodeToString(rendered)
-	if strings.Contains(g.GenruleCmd, rendEnc) {
-		t.Errorf("rendered bytes appear in cmd as base64 (%s); (a) lift should NOT embed them", rendEnc)
+	if len(spec.GenexValues) != 0 {
+		t.Errorf("(a) lift should NOT set GenexValues; got %v", spec.GenexValues)
 	}
 	// The Context payload should be small (typical: <100 bytes).
-	// Decode it and verify the captured fields.
-	ctx := extractGenexContextFromCmd(t, g.GenruleCmd)
+	// Parse it and verify the captured fields.
+	ctx := parseGenexContext(t, spec.GenexContext)
 	if ctx.Config != "Release" {
 		t.Errorf("captured Context.Config = %q want Release", ctx.Config)
 	}
@@ -490,46 +443,27 @@ func TestRecoverFileGenerate_GenexEvaluatedViaGoSideEvaluator(t *testing.T) {
 	}
 }
 
-// extractGenexContextFromCmd decodes the base64 blob the (a)
-// lifted shell command stages into the GENEX_CONTEXT sidecar.
-// Mirrors extractGenexValuesFromCmd's anchor walk but for the
-// genex-context blob.
-func extractGenexContextFromCmd(t *testing.T, cmd string) struct {
+// genexContextJSON mirrors the wire shape of the (a) lift's
+// cmake_configure_file `genex_context` JSON attribute
+// (spec.GenexContext), so tests can assert the captured fields.
+type genexContextJSON struct {
 	Config           string            `json:"config,omitempty"`
 	CompilerID       map[string]string `json:"compiler_id,omitempty"`
 	PlatformID       string            `json:"platform_id,omitempty"`
 	CompilerLanguage string            `json:"compiler_language,omitempty"`
-} {
+}
+
+// parseGenexContext unmarshals the (a) lift's GenexContext JSON
+// string from the cmake_configure_file spec.
+func parseGenexContext(t *testing.T, genexContext string) genexContextJSON {
 	t.Helper()
-	type ctxJSON struct {
-		Config           string            `json:"config,omitempty"`
-		CompilerID       map[string]string `json:"compiler_id,omitempty"`
-		PlatformID       string            `json:"platform_id,omitempty"`
-		CompilerLanguage string            `json:"compiler_language,omitempty"`
+	var ctx genexContextJSON
+	if genexContext == "" {
+		t.Errorf("GenexContext is empty")
+		return ctx
 	}
-	var empty ctxJSON
-	const before = `echo `
-	const after = ` | base64 -d > "$$GENEX_CONTEXT"`
-	a := strings.Index(cmd, after)
-	if a < 0 {
-		t.Errorf("cmd missing GENEX_CONTEXT base64-decode pattern")
-		return empty
-	}
-	b := strings.LastIndex(cmd[:a], before)
-	if b < 0 {
-		t.Errorf("cmd's GENEX_CONTEXT decode pattern has no echo prefix")
-		return empty
-	}
-	enc := cmd[b+len(before) : a]
-	raw, err := base64.StdEncoding.DecodeString(enc)
-	if err != nil {
-		t.Errorf("decode genex-context base64 blob %q: %v", enc, err)
-		return empty
-	}
-	var ctx ctxJSON
-	if err := json.Unmarshal(raw, &ctx); err != nil {
-		t.Errorf("parse genex-context JSON %s: %v", raw, err)
-		return empty
+	if err := json.Unmarshal([]byte(genexContext), &ctx); err != nil {
+		t.Errorf("parse genex-context JSON %s: %v", genexContext, err)
 	}
 	return ctx
 }
@@ -576,17 +510,20 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 	g := cc.Genrules[0]
 	// Post Phase-3 collapse the (a) evaluator and (b) capture
 	// share cmake-codegen-genex-resolved; the (a)-refused-but-(b)-
-	// succeeded shape is verified via the cmd wire below
-	// (--genex-values= is the (b) capture, --genex-context= the
-	// (a) evaluator).
+	// succeeded shape is verified via the spec fields below
+	// (GenexValues is the (b) capture, GenexContext the (a)
+	// evaluator — they're mutually exclusive).
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (b) capture to resolve the genex; got %v", g.Tags)
 	}
-	if strings.Contains(g.GenruleCmd, "--genex-context=") {
-		t.Errorf("(a) evaluator should have refused $<TARGET_OBJECTS:> with empty Objects; got %q", g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if !strings.Contains(g.GenruleCmd, "--genex-values=") {
-		t.Errorf("expected (b) capture wire --genex-values=; got %q", g.GenruleCmd)
+	if g.CMakeConfigureFile.GenexContext != "" {
+		t.Errorf("(a) evaluator should have refused $<TARGET_OBJECTS:> with empty Objects; got GenexContext %q", g.CMakeConfigureFile.GenexContext)
+	}
+	if len(g.CMakeConfigureFile.GenexValues) == 0 {
+		t.Errorf("expected (b) capture to populate GenexValues; got %v", g.CMakeConfigureFile.GenexValues)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("(b) fallback should still carry cmake-codegen-lifted; got %v", g.Tags)
@@ -617,16 +554,19 @@ func TestRecoverFileGenerate_GenexEvaluatedSkippedWhenCMakeVarsEmpty(t *testing.
 	g := cc.Genrules[0]
 	// Post Phase-3 collapse, (a) and (b) share the single
 	// cmake-codegen-genex-resolved tag. The "(a) refused, (b)
-	// succeeded" shape shows in the cmd wire: (b) uses
-	// --genex-values=, (a) uses --genex-context=.
+	// succeeded" shape shows in the spec fields: (b) uses
+	// GenexValues, (a) uses GenexContext (mutually exclusive).
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (b) capture to resolve the genex; got %v", g.Tags)
 	}
-	if strings.Contains(g.GenruleCmd, "--genex-context=") {
-		t.Errorf("empty cmakeVars should make (a) refuse; got %q", g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if !strings.Contains(g.GenruleCmd, "--genex-values=") {
-		t.Errorf("expected (b) capture wire --genex-values=; got %q", g.GenruleCmd)
+	if g.CMakeConfigureFile.GenexContext != "" {
+		t.Errorf("empty cmakeVars should make (a) refuse; got GenexContext %q", g.CMakeConfigureFile.GenexContext)
+	}
+	if len(g.CMakeConfigureFile.GenexValues) == 0 {
+		t.Errorf("expected (b) capture to populate GenexValues; got %v", g.CMakeConfigureFile.GenexValues)
 	}
 }
 
@@ -665,8 +605,11 @@ func TestRecoverFileGenerate_OutputSideGenexResolved(t *testing.T) {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
 	}
 	g := cc.Genrules[0]
-	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "Release/banner.h" {
-		t.Errorf("genrule outs: %v want [Release/banner.h]", g.GenruleOuts)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	if g.CMakeConfigureFile.Out != "Release/banner.h" {
+		t.Errorf("lifted out: %q want Release/banner.h", g.CMakeConfigureFile.Out)
 	}
 }
 
@@ -751,8 +694,11 @@ func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
 	}
 	g := cc.Genrules[0]
-	if len(g.Srcs) != 1 || g.Srcs[0] != "Release/banner.h.in" {
-		t.Errorf("srcs: %v want [Release/banner.h.in]", g.Srcs)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	if g.CMakeConfigureFile.Template != "Release/banner.h.in" {
+		t.Errorf("template: %q want Release/banner.h.in", g.CMakeConfigureFile.Template)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("lifted tag missing: %v", g.Tags)
@@ -818,13 +764,12 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetProperty(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	rendEnc := base64.StdEncoding.EncodeToString(rendered)
-	if strings.Contains(g.GenruleCmd, rendEnc) {
-		t.Errorf("(a) lift should NOT embed rendered bytes")
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	// Targets dict must be present in the marshaled payload
-	// since the template references TARGET_PROPERTY.
-	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	// Targets dict must be present in the marshaled Context
+	// payload since the template references TARGET_PROPERTY.
+	blob := g.CMakeConfigureFile.GenexContext
 	if !strings.Contains(blob, `"targets"`) || !strings.Contains(blob, `"fglib"`) || !strings.Contains(blob, `STATIC_LIBRARY`) {
 		t.Errorf("Targets dump missing from marshaled Context payload: %s", blob)
 	}
@@ -857,32 +802,13 @@ func TestRecoverFileGenerate_GenexEvaluatedPrunesTargetsWhenUnused(t *testing.T)
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	blob := g.CMakeConfigureFile.GenexContext
 	if strings.Contains(blob, `"targets"`) {
-		t.Errorf("unused Targets should be pruned; cmd carries the dict: %s", blob)
+		t.Errorf("unused Targets should be pruned; payload carries the dict: %s", blob)
 	}
-}
-
-// mustDecodeGenexContextBlob extracts and base64-decodes the
-// GENEX_CONTEXT payload from the lifted cmd. Helper for the
-// payload-shape tests.
-func mustDecodeGenexContextBlob(t *testing.T, cmd string) []byte {
-	t.Helper()
-	const before = `echo `
-	const after = ` | base64 -d > "$$GENEX_CONTEXT"`
-	a := strings.Index(cmd, after)
-	if a < 0 {
-		t.Fatalf("cmd missing GENEX_CONTEXT decode pattern: %q", cmd)
-	}
-	b := strings.LastIndex(cmd[:a], before)
-	if b < 0 {
-		t.Fatalf("cmd's GENEX_CONTEXT pattern has no echo prefix: %q", cmd)
-	}
-	raw, err := base64.StdEncoding.DecodeString(cmd[b+len(before) : a])
-	if err != nil {
-		t.Fatalf("decode genex-context blob: %v", err)
-	}
-	return raw
 }
 
 // TestRecoverFileGenerate_GenexEvaluatedWithTargetFile
@@ -916,14 +842,17 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFile(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	// cmd must carry the --target-file flag for foo.
-	wantFlag := `--target-file=foo="$(location :foo)"`
-	if !strings.Contains(g.GenruleCmd, wantFlag) {
-		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	spec := g.CMakeConfigureFile
+	// TargetFiles must carry the same-package label-keyed entry for foo.
+	if got := spec.TargetFiles[":foo"]; got != "foo" {
+		t.Errorf("TargetFiles[:foo] = %q, want foo; map=%v", got, spec.TargetFiles)
 	}
 	// The marshaled Context payload must NOT contain the
 	// recording-machine path (wire struct omits FileLocation).
-	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	blob := spec.GenexContext
 	if strings.Contains(blob, "/recording/build/libfoo.a") {
 		t.Errorf("FileLocation leaked into marshaled Context: %s", blob)
 	}
@@ -968,21 +897,31 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetFileVariants(t *testing.T) 
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	// Exactly one --target-file flag for foo (not one per op form).
-	count := strings.Count(g.GenruleCmd, "--target-file=foo=")
-	if count != 1 {
-		t.Errorf("expected exactly 1 --target-file=foo= flag (three op forms collapse to one wire), got %d in %q", count, g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	wantFlag := `--target-file=foo="$(location :foo)"`
-	if !strings.Contains(g.GenruleCmd, wantFlag) {
-		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	// Exactly one TargetFiles entry for foo (the three op forms
+	// collapse to one label-keyed entry, not one per op-form).
+	count := 0
+	for _, name := range g.CMakeConfigureFile.TargetFiles {
+		if name == "foo" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 TargetFiles entry for foo (three op forms collapse to one wire), got %d in %v", count, g.CMakeConfigureFile.TargetFiles)
+	}
+	if got := g.CMakeConfigureFile.TargetFiles[":foo"]; got != "foo" {
+		t.Errorf("TargetFiles[:foo] = %q, want foo; map=%v", got, g.CMakeConfigureFile.TargetFiles)
 	}
 }
 
 // TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted
-// asserts the --target-file flags emit in sorted order for
-// stable lifted-cmd bytes across runs (vs. Go's randomized map
-// iteration).
+// asserts every referenced target lands in the spec's
+// TargetFiles label-keyed map. Order no longer applies — the
+// genrule-cmd-ordering contract is gone now that the references
+// ride as a Starlark dict the emitter sorts; this test pins set
+// membership instead.
 func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
 	template := "$<TARGET_FILE:zeta> $<TARGET_FILE:alpha> $<TARGET_FILE:mu>\n"
 	rendered := []byte("/z /a /m\n")
@@ -1002,16 +941,15 @@ func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	cmd := cc.Genrules[0].GenruleCmd
-	// The flags must appear in alphabetical order: alpha, mu, zeta.
-	aIdx := strings.Index(cmd, "--target-file=alpha")
-	mIdx := strings.Index(cmd, "--target-file=mu")
-	zIdx := strings.Index(cmd, "--target-file=zeta")
-	if aIdx < 0 || mIdx < 0 || zIdx < 0 {
-		t.Fatalf("missing --target-file flags in cmd %q", cmd)
+	g := cc.Genrules[0]
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if !(aIdx < mIdx && mIdx < zIdx) {
-		t.Errorf("--target-file flags not sorted: alpha=%d mu=%d zeta=%d", aIdx, mIdx, zIdx)
+	tf := g.CMakeConfigureFile.TargetFiles
+	for name, label := range map[string]string{"alpha": ":alpha", "mu": ":mu", "zeta": ":zeta"} {
+		if got := tf[label]; got != name {
+			t.Errorf("TargetFiles[%q] = %q, want %q; map=%v", label, got, name, tf)
+		}
 	}
 }
 
@@ -1019,13 +957,13 @@ func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
 // exercises the (a) lift's TARGET_OBJECTS path end-to-end at the
 // lifter: a template with $<TARGET_OBJECTS:objlib> + a captured
 // OBJECT_LIBRARY carrying Objects (the probe-genex hook's
-// recorded .o list) produces a genrule whose cmd passes
-// --target-objects=objlib="$(echo $(locations :objlib) | tr ' ' ':')"
-// for Bazel-time substitution. The marshaled Context payload
-// carries Objects (no wire-omit, unlike FileLocation) because the
-// authoritative value comes from the probe at convert time; the
-// Bazel-time --target-objects flag is what the cross-machine
-// executor actually consumes.
+// recorded .o list) produces a cmake_configure_file spec whose
+// TargetObjects label-keyed map carries the :objlib -> objlib
+// entry for Bazel-time substitution. The marshaled Context
+// payload carries Objects (no wire-omit, unlike FileLocation)
+// because the authoritative value comes from the probe at
+// convert time; the Bazel-time target_objects attr is what the
+// cross-machine executor actually consumes.
 func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
 	template := "// objs: $<TARGET_OBJECTS:objlib>\n"
 	objectsList := "/recording/build/CMakeFiles/objlib.dir/a.c.o;/recording/build/CMakeFiles/objlib.dir/b.c.o"
@@ -1053,20 +991,21 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	// cmd must carry the --target-objects flag for objlib with the
-	// $(locations :t) | tr ' ' ':' shell rewrite. The exact shape
-	// is load-bearing — operators reading the lifted BUILD file
-	// shouldn't need to dig to figure out which paths get expanded.
-	wantFlag := `--target-objects=objlib="$$(echo $(locations :objlib) | tr ' ' ':')"`
-	if !strings.Contains(g.GenruleCmd, wantFlag) {
-		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	// TargetObjects must carry the label-keyed entry for objlib;
+	// the rule's impl emits the $(locations :t)|tr-join wire.
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	if got := g.CMakeConfigureFile.TargetObjects[":objlib"]; got != "objlib" {
+		t.Errorf("TargetObjects[:objlib] = %q, want objlib; map=%v", got, g.CMakeConfigureFile.TargetObjects)
 	}
 }
 
 // TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Sorted
-// asserts the --target-objects flags emit in sorted order for
-// stable lifted-cmd bytes across runs (vs. Go's randomized map
-// iteration).
+// asserts every referenced object library lands in the spec's
+// TargetObjects label-keyed map. Order no longer applies — the
+// references ride as a Starlark dict the emitter sorts; this
+// test pins set membership instead.
 func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Sorted(t *testing.T) {
 	template := "$<TARGET_OBJECTS:zeta> $<TARGET_OBJECTS:alpha> $<TARGET_OBJECTS:mu>\n"
 	rendered := []byte("/z.o /a.o /m.o\n")
@@ -1086,27 +1025,26 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Sorted(t *testing.T
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	cmd := cc.Genrules[0].GenruleCmd
-	// The flags must appear in alphabetical order: alpha, mu, zeta.
-	aIdx := strings.Index(cmd, "--target-objects=alpha")
-	mIdx := strings.Index(cmd, "--target-objects=mu")
-	zIdx := strings.Index(cmd, "--target-objects=zeta")
-	if aIdx < 0 || mIdx < 0 || zIdx < 0 {
-		t.Fatalf("missing --target-objects flags in cmd %q", cmd)
+	g := cc.Genrules[0]
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if !(aIdx < mIdx && mIdx < zIdx) {
-		t.Errorf("--target-objects flags not sorted: alpha=%d mu=%d zeta=%d", aIdx, mIdx, zIdx)
+	to := g.CMakeConfigureFile.TargetObjects
+	for name, label := range map[string]string{"alpha": ":alpha", "mu": ":mu", "zeta": ":zeta"} {
+		if got := to[label]; got != name {
+			t.Errorf("TargetObjects[%q] = %q, want %q; map=%v", label, got, name, to)
+		}
 	}
 }
 
 // TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped
 // asserts that one target referenced via N TARGET_OBJECTS
-// occurrences collapses to ONE --target-objects flag (vs N flags).
+// occurrences collapses to ONE TargetObjects entry (vs N).
 // The Bazel-time expansion is the same path list regardless of
-// how many references the template carries, so emitting one flag
-// per occurrence would waste bytes and break the "stable cmd"
-// contract on edits that change reference count without changing
-// the target set.
+// how many references the template carries, so emitting one
+// entry per occurrence would waste bytes and break the "stable
+// spec" contract on edits that change reference count without
+// changing the target set.
 func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped(t *testing.T) {
 	template := "// a: $<TARGET_OBJECTS:objlib>\n// b: $<TARGET_OBJECTS:objlib>\n"
 	rendered := []byte("// a: /o.o\n// b: /o.o\n")
@@ -1124,9 +1062,18 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped(t *testing.
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	count := strings.Count(cc.Genrules[0].GenruleCmd, "--target-objects=objlib=")
+	g := cc.Genrules[0]
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	count := 0
+	for _, name := range g.CMakeConfigureFile.TargetObjects {
+		if name == "objlib" {
+			count++
+		}
+	}
 	if count != 1 {
-		t.Errorf("expected exactly 1 --target-objects=objlib= flag (N occurrences collapse to one wire), got %d in %q", count, cc.Genrules[0].GenruleCmd)
+		t.Errorf("expected exactly 1 TargetObjects entry for objlib (N occurrences collapse to one), got %d in %v", count, g.CMakeConfigureFile.TargetObjects)
 	}
 }
 
@@ -1254,8 +1201,8 @@ func TestRecoverFileGenerate_DedupesDuplicateOutputs(t *testing.T) {
 // all" — string-emptiness as the discriminator would collapse
 // the two and force a legacy fallback (or worse, skip the
 // call). HasContent=true + Content="" should route through
-// the CONTENT-form lift with --content-base64= carrying the
-// empty body.
+// the CONTENT-form lift with an empty inline Content body
+// (Template also empty — the legitimate empty-template case).
 func TestRecoverFileGenerate_ContentEmpty_Lifted(t *testing.T) {
 	rendered := []byte{} // cmake writes an empty file
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "", "", "empty.txt", rendered)
@@ -1277,10 +1224,16 @@ func TestRecoverFileGenerate_ContentEmpty_Lifted(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-lifted") {
 		t.Errorf("CONTENT \"\" should still lift; tags: %v", g.Tags)
 	}
-	// --content-base64= followed by a non-blob (space, then
-	// "$@") confirms the empty body rode through.
-	if !strings.Contains(g.GenruleCmd, "--content-base64= ") {
-		t.Errorf("cmd should carry --content-base64= (empty blob); got %q", g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	// Empty inline Content with an empty Template is the
+	// legitimate empty-template emission (CONTENT form).
+	if g.CMakeConfigureFile.Content != "" {
+		t.Errorf("empty CONTENT should carry empty Content; got %q", g.CMakeConfigureFile.Content)
+	}
+	if g.CMakeConfigureFile.Template != "" {
+		t.Errorf("CONTENT form should leave Template empty; got %q", g.CMakeConfigureFile.Template)
 	}
 }
 
@@ -1812,10 +1765,12 @@ func TestBuildGenexTargets_ImportsOnly_NoLocalCodemodel(t *testing.T) {
 // `$<TARGET_FILE:Foo::bar>` for a target NOT in the local
 // codemodel BUT in the imports.json manifest with LinkPaths
 // matching cmake's rendered output lifts via (a). The lifted
-// cmd carries `--target-file=Foo::bar="$(location //elements/foo:bar)"`
-// (the manifest-resolved full Bazel label, NOT `:Foo::bar`)
-// and the genrule's srcs picks up the cross-package label so
-// Bazel resolves $(location) at action time.
+// spec's TargetFiles map keys the manifest-resolved full Bazel
+// label (`//elements/components/foo:bar`, NOT `:Foo::bar`) to
+// the cmake target name. The label-keyed dict is itself the
+// dependency edge Bazel tracks — no separate srcs entry needed
+// (the genrule shape required threading the label through srcs
+// for `$(location //pkg:t)`).
 func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 	template := "// tool=$<TARGET_FILE:Foo::bar>\n"
 	rendered := []byte("// tool=/prefix/lib/libbar.a\n")
@@ -1868,22 +1823,20 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 	if hasTag(g.Tags, "cmake-codegen-genex-cross-package") {
 		t.Errorf("refusal-stub tag should NOT fire for manifest-resolved: %v", g.Tags)
 	}
-	// cmd carries the manifest-resolved label, NOT `:Foo::bar`.
-	wantFlag := `--target-file=Foo::bar="$(location //elements/components/foo:bar)"`
-	if !strings.Contains(g.GenruleCmd, wantFlag) {
-		t.Errorf("cmd should pass %q; got %q", wantFlag, g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if strings.Contains(g.GenruleCmd, `--target-file=Foo::bar="$(location :Foo::bar)"`) {
-		t.Errorf("cmd should NOT carry same-package label for cross-package target; got %q", g.GenruleCmd)
+	spec := g.CMakeConfigureFile
+	// TargetFiles keys the manifest-resolved label, NOT `:Foo::bar`.
+	if got := spec.TargetFiles["//elements/components/foo:bar"]; got != "Foo::bar" {
+		t.Errorf("TargetFiles[//elements/components/foo:bar] = %q, want Foo::bar; map=%v", got, spec.TargetFiles)
 	}
-	// The cross-package label rides in srcs so Bazel's
-	// $(location //pkg:t) substitution resolves at action time.
-	if !containsString(g.Srcs, "//elements/components/foo:bar") {
-		t.Errorf("genrule.srcs should carry the cross-package label; got %v", g.Srcs)
+	if _, ok := spec.TargetFiles[":Foo::bar"]; ok {
+		t.Errorf("spec should NOT carry same-package label key for cross-package target; map=%v", spec.TargetFiles)
 	}
 	// FileLocation must NOT leak into the marshaled Context
 	// payload (wire-omitted per the json:"-" tag).
-	blob := string(mustDecodeGenexContextBlob(t, g.GenruleCmd))
+	blob := spec.GenexContext
 	if strings.Contains(blob, "/prefix/lib/libbar.a") {
 		t.Errorf("FileLocation leaked into marshaled Context: %s", blob)
 	}
@@ -1891,10 +1844,10 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 
 // TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage
 // covers a template referencing BOTH a same-package target
-// AND a manifest-resolved target. The lifter emits two
-// `--target-file` flags — one with the `:name` shorthand, one
-// with the full cross-package label — and the cross-package
-// label rides in srcs while the same-package one does not.
+// AND a manifest-resolved target. The lifter's TargetFiles map
+// carries two entries — one keyed by the `:name` shorthand, one
+// by the full cross-package label — both tracked as dependency
+// edges by the label-keyed dict (no separate srcs threading).
 func TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage(t *testing.T) {
 	template := "// local=$<TARGET_FILE:foo> remote=$<TARGET_FILE:Foo::bar>\n"
 	rendered := []byte("// local=/recording/build/libfoo.a remote=/prefix/lib/libbar.a\n")
@@ -1933,20 +1886,15 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage(t *
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	if !strings.Contains(g.GenruleCmd, `--target-file=foo="$(location :foo)"`) {
-		t.Errorf("missing same-package flag; cmd=%q", g.GenruleCmd)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if !strings.Contains(g.GenruleCmd, `--target-file=Foo::bar="$(location //elements/components/foo:bar)"`) {
-		t.Errorf("missing cross-package flag; cmd=%q", g.GenruleCmd)
+	tf := g.CMakeConfigureFile.TargetFiles
+	if got := tf[":foo"]; got != "foo" {
+		t.Errorf("missing same-package entry; TargetFiles[:foo]=%q map=%v", got, tf)
 	}
-	// srcs carries the cross-package label but NOT the
-	// same-package one (Bazel finds `:foo` via package-internal
-	// lookup; cross-package needs the explicit srcs entry).
-	if !containsString(g.Srcs, "//elements/components/foo:bar") {
-		t.Errorf("srcs missing cross-package label; got %v", g.Srcs)
-	}
-	if containsString(g.Srcs, ":foo") {
-		t.Errorf("srcs should NOT carry same-package label `:foo`; got %v", g.Srcs)
+	if got := tf["//elements/components/foo:bar"]; got != "Foo::bar" {
+		t.Errorf("missing cross-package entry; TargetFiles[//elements/components/foo:bar]=%q map=%v", got, tf)
 	}
 }
 
@@ -1985,17 +1933,6 @@ func TestResolveTargetFileLabels(t *testing.T) {
 	if len(crossPackage) != 1 || crossPackage[0] != "//elements/components/foo:bar" {
 		t.Errorf("crossPackage = %v, want [//elements/components/foo:bar]", crossPackage)
 	}
-}
-
-// containsString reports whether haystack contains needle. Used
-// in the cross-package srcs assertions above.
-func containsString(haystack []string, needle string) bool {
-	for _, h := range haystack {
-		if h == needle {
-			return true
-		}
-	}
-	return false
 }
 
 // TestAggregateInterface_SingleDep is the simplest case: a

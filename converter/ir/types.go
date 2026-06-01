@@ -98,6 +98,26 @@ const (
 	// MODULE.bazel — the emitter writes the load and write-a adds the
 	// bazel_dep (mirrors the KindPkgFiles / rules_pkg precedent).
 	KindWriteFile
+	// KindCMakeConfigureFile renders as the rules_buildstream_bazel
+	// `cmake_configure_file(...)` rule: the configure_file /
+	// file(GENERATE) **lift tier**. Unlike the bake tier (KindWriteFile),
+	// the rendered bytes are NOT known-final at convert time — the
+	// template is re-rendered at Bazel build time by
+	// //tools:cmake-configure-file against the captured cmake variable
+	// namespace, so edits to the template re-render through Bazel
+	// without re-running the converter.
+	//
+	// It replaces the previous genrule-with-base64-in-shell lift shape:
+	// the substitution inputs (values / genex_values dicts, genex_context
+	// JSON, the CONTENT body) ride as readable Starlark attributes; the
+	// rule's impl materializes the JSON sidecars via ctx.actions.write
+	// and passes an argv array to the tool via ctx.actions.run — so there
+	// is no shell-quoting surface and no base64 anywhere. Attributes live
+	// on Target.CMakeConfigureFile. Comes from
+	// @rules_buildstream_bazel//rules:cmake_configure_file.bzl (the
+	// emitter writes the load; the rules module is already a dep wherever
+	// the lift's BUILDs land, same precedent as pick_file).
+	KindCMakeConfigureFile
 )
 
 func (k Kind) String() string {
@@ -126,6 +146,8 @@ func (k Kind) String() string {
 		return "alias"
 	case KindWriteFile:
 		return "write_file"
+	case KindCMakeConfigureFile:
+		return "cmake_configure_file"
 	}
 	return "unknown"
 }
@@ -530,6 +552,10 @@ type Target struct {
 	// stay on the base64 genrule.
 	WriteFileNewline string
 
+	// CMakeConfigureFile carries the cmake_configure_file rule's
+	// attributes. Non-nil only when Kind == KindCMakeConfigureFile.
+	CMakeConfigureFile *CMakeConfigureFileSpec
+
 	// AliasActual is the Bazel label the alias resolves to.
 	// Populated only when Kind == KindAlias; renders as
 	// `actual = "<label>"` on the alias rule. Typically a
@@ -603,4 +629,68 @@ type Target struct {
 	// field and PerPlatformScalar stays empty so single-platform
 	// emission stays byte-identical.
 	PerPlatformScalar map[string]map[string]string
+}
+
+// CMakeConfigureFileSpec carries the attributes for a
+// KindCMakeConfigureFile target — the configure_file / file(GENERATE)
+// lift tier's cmake_configure_file rule. The emitter projects these
+// directly onto the rule's attributes; the rule's impl re-renders the
+// template at Bazel build time via //tools:cmake-configure-file.
+type CMakeConfigureFileSpec struct {
+	// Out is the package-relative output path (the rule's `out`).
+	Out string
+
+	// Template is the package-relative template label/path (the rule's
+	// `template`, INPUT form). Empty selects the CONTENT form, where
+	// Content carries the inline body instead.
+	Template string
+
+	// Content is the inline template body (CONTENT form). Used only when
+	// Template is empty; the rule writes it to a file and feeds it to the
+	// tool as the template input (no --content-base64). An empty Content
+	// with an empty Template is a legitimate empty-template emission.
+	Content string
+
+	// Values is the cmake variable -> value substitution map (the tool's
+	// --values). Rendered as a readable Starlark string_dict.
+	Values map[string]string
+
+	// GenexValues is the captured `$<...>` literal -> resolved bytes map
+	// for the structured-replay (b)/(b′) lift (the tool's --genex-values).
+	// Mutually exclusive with GenexContext.
+	GenexValues map[string]string
+
+	// GenexContext is the cmake configure-time context JSON the Go-side
+	// genex evaluator consults for the (a)-evaluator lift (the tool's
+	// --genex-context). Rides as a readable JSON string attribute (not
+	// base64). Mutually exclusive with GenexValues.
+	GenexContext string
+
+	// TargetFiles maps a Bazel label -> cmake target name for
+	// `$<TARGET_FILE:name>` resolution (the rule's `target_files`
+	// label-keyed dict; the impl emits one --target-file name=<path>).
+	// Label-keyed so Bazel tracks the dependency and resolves the path
+	// at action time — no separate srcs entry needed for cross-package
+	// labels (which the genrule shape required).
+	TargetFiles map[string]string
+
+	// TargetObjects maps a Bazel label -> cmake object-library name for
+	// `$<TARGET_OBJECTS:name>` resolution (the rule's `target_objects`
+	// label-keyed dict; the impl emits --target-objects name=<colon-joined
+	// object paths>).
+	TargetObjects map[string]string
+
+	// Tool is the Bazel label of the cmake-configure-file binary (the
+	// rule's `tool`), e.g. "//tools:cmake-configure-file". Resolves in
+	// whichever repo the BUILD lands, same as the genrule shape's
+	// tools=[...] entry.
+	Tool string
+
+	// AtOnly / CopyOnly / EscapeQuotes / NewlineStyle mirror cmake's
+	// configure_file options, passed through to the tool. NewlineStyle is
+	// "" (preserve), "lf", or "crlf".
+	AtOnly       bool
+	CopyOnly     bool
+	EscapeQuotes bool
+	NewlineStyle string
 }

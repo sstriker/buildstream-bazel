@@ -3,7 +3,6 @@ package lower
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,12 +26,11 @@ type configureFileOut struct {
 }
 
 // recoverConfigureFiles walks the trace's configure_file events
-// and emits one Bazel genrule per call. The genrule's cmd
-// base64-encodes the rendered output bytes (configure-time
-// substitution already done by cmake) and decodes them at Bazel
-// build time — sidesteps the need to re-run cmake or implement
-// @VAR@ expansion. Returns the list of recovered outputs so
-// lowerTarget can attach them to consuming targets.
+// and emits one Bazel target per call: a cmake_configure_file lift
+// (re-renders the .h.in template at Bazel time) when the template +
+// values resolve, else a bake target (the rendered bytes via
+// write_file / base64 genrule). Returns the list of recovered outputs
+// so lowerTarget can attach them to consuming targets.
 //
 // hostBuildDir is the host-real path of the cmake build dir
 // (where configured outputs live on this machine);
@@ -119,11 +117,12 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 	return out, nil
 }
 
-// buildConfigureFileGenrule decides between the lifted shape
-// (.h.in as a real srcs + cmake-configure-file tool + values
-// JSON in cmd) and the bake shape (rendered output emitted via the
-// shared bakeFileTarget — readable skylib write_file for \n-text,
-// byte-exact base64 genrule for binary). Picks the lifted shape when:
+// buildConfigureFileGenrule decides between the lifted shape (a
+// cmake_configure_file rule carrying the .h.in template + the captured
+// values dict, re-rendered at Bazel time by //tools:cmake-configure-file)
+// and the bake shape (rendered output emitted via the shared
+// bakeFileTarget — readable skylib write_file for \n-text, byte-exact
+// base64 genrule for binary). Picks the lifted shape when:
 //
 //   - The template input path resolves to a readable file
 //     inside the source root, AND
@@ -177,19 +176,56 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if !ok {
 		return bake
 	}
-	cmd, err := configureFileLiftedCmd(inRel, outRel, values, opts)
-	if err != nil {
-		return bake
+	spec := newConfigureFileSpec(outRel, opts)
+	spec.Template = inRel
+	spec.Values = values
+	return cmakeConfigureFileTarget(name, spec, configureFileTags(configureFileTagSet{Lifted: true}))
+}
+
+// cmakeConfigureFileToolLabel is the Bazel label of the
+// cmake-configure-file binary write-a stages into each project's tools/.
+// Resolves in whichever repo the lift's BUILD lands (project A or B),
+// same as the legacy genrule shape's tools=[...] entry.
+const cmakeConfigureFileToolLabel = "//tools:cmake-configure-file"
+
+// newConfigureFileSpec builds the shared base of a cmake_configure_file
+// rule spec from the configure_file option set (tool label + the
+// option-mirror attributes). Callers set Template / Content / Values /
+// Genex* per lift shape.
+func newConfigureFileSpec(outRel string, opts configurefile.Options) *ir.CMakeConfigureFileSpec {
+	return &ir.CMakeConfigureFileSpec{
+		Out:          outRel,
+		Tool:         cmakeConfigureFileToolLabel,
+		AtOnly:       opts.AtOnly,
+		CopyOnly:     opts.CopyOnly,
+		EscapeQuotes: opts.EscapeQuotes,
+		NewlineStyle: newlineStyleFlag(opts),
 	}
+}
+
+// newlineStyleFlag maps configurefile.NewlineStyle to the
+// cmake_configure_file rule's newline_style attribute value ("" preserves
+// the template's style).
+func newlineStyleFlag(opts configurefile.Options) string {
+	switch opts.NewlineStyle {
+	case configurefile.NewlineLF:
+		return "lf"
+	case configurefile.NewlineCRLF:
+		return "crlf"
+	}
+	return ""
+}
+
+// cmakeConfigureFileTarget wraps a spec into the KindCMakeConfigureFile
+// ir.Target shared by the configure_file, file(GENERATE), and cmake -E
+// configure_file lifts.
+func cmakeConfigureFileTarget(name string, spec *ir.CMakeConfigureFileSpec, tags []string) ir.Target {
 	return ir.Target{
-		Name:         name,
-		Kind:         ir.KindGenrule,
-		Srcs:         []string{inRel},
-		GenruleCmd:   cmd,
-		GenruleOuts:  []string{outRel},
-		GenruleTools: []string{"//tools:cmake-configure-file"},
-		Tags:         configureFileTags(configureFileTagSet{Lifted: true}),
-		Visibility:   []string{"//visibility:private"},
+		Name:               name,
+		Kind:               ir.KindCMakeConfigureFile,
+		CMakeConfigureFile: spec,
+		Tags:               tags,
+		Visibility:         []string{"//visibility:private"},
 	}
 }
 
@@ -359,87 +395,6 @@ func configureFileGenruleName(rel string) string {
 func configureFileLegacyCmd(rel string, body []byte) string {
 	encoded := base64.StdEncoding.EncodeToString(body)
 	return fmt.Sprintf("mkdir -p $$(dirname $@) && echo %s | base64 -d > $@", encoded)
-}
-
-// configureFileLiftedCmd builds the lifted shell command:
-// stage the values JSON to a tmpfile, then run the
-// cmake-configure-file tool with the .h.in template (resolved
-// via $(location <inRel>)) and the captured values. The
-// rendered output bytes do NOT appear in the cmd; only the
-// values dict does. Edits to .h.in invalidate the genrule
-// through srcs, not through BUILD.bazel content.
-//
-// Values are base64'd JSON to avoid shell-quoting concerns;
-// when the cmakeVars-fed full-namespace path is used the JSON
-// is roughly the size of `cmake -E environment` output (a few
-// KB to tens of KB depending on project breadth). The size
-// vs. the legacy base64-of-rendered shape isn't a guaranteed
-// win — for tiny templates that reference one or two cmake
-// variables the values JSON can be larger than what config.h
-// would have been — but the cache-key shape IS the win:
-// BUILD.bazel content is decoupled from .h.in content (only
-// the cmake-variable namespace shows up here), so editing
-// .h.in cache-hits convert-element-cmake instead of rerunning it.
-// That's the lift's whole point; size is incidental.
-func configureFileLiftedCmd(inRel, outRel string, values map[string]string, opts configurefile.Options) (string, error) {
-	body, err := json.Marshal(values)
-	if err != nil {
-		return "", fmt.Errorf("marshal values: %w", err)
-	}
-	encoded := base64.StdEncoding.EncodeToString(body)
-	flags := configureFileToolFlags(opts)
-	// $(location ...) resolves srcs and tools labels (matches
-	// the existing genrule cmds elsewhere in the repo). $@ is
-	// the genrule output. The values tmpfile is created under
-	// the genrule's output dir (via a portable mktemp template
-	// — `mktemp -p` is GNU-only and BSD/macOS mktemp doesn't
-	// accept it), so it lives in the action's sandbox rather
-	// than /tmp — keeps shared executors clean and lets
-	// Bazel's per-action sandbox cleanup pick it up if the
-	// trap doesn't fire (e.g. SIGKILL). All `$@` expansions
-	// are double-quoted to handle output paths containing
-	// spaces. Cleanup `rm` runs only when VALUES is non-empty:
-	// if mkdir or mktemp failed earlier (`set -e`-like
-	// short-circuit via `&&`), VALUES is unset and `rm -f ""`
-	// would emit a noise diagnostic on some shells, obscuring
-	// the real failure.
-	return fmt.Sprintf(
-		`mkdir -p "$$(dirname "$@")" && `+
-			`VALUES="$$(mktemp "$$(dirname "$@")/cmake-configure-file.values.XXXXXX")" && `+
-			`echo %s | base64 -d > "$$VALUES" && `+
-			`$(location //tools:cmake-configure-file) %s--values="$$VALUES" "$(location %s)" "$@" ; `+
-			`rc=$$?; [ -n "$${VALUES:-}" ] && rm -f "$$VALUES"; exit $$rc`,
-		encoded, flags, inRel,
-	), nil
-}
-
-// configureFileToolFlags builds the cmake-configure-file CLI
-// flag string corresponding to opts. Each set field becomes a
-// `--flag` token (or `--flag=value` for the newline style),
-// joined with trailing spaces so the cmd template can
-// concatenate them before --values without extra plumbing.
-// Returns "" when no flags are set.
-func configureFileToolFlags(opts configurefile.Options) string {
-	var flags []string
-	if opts.AtOnly {
-		flags = append(flags, "--at-only")
-	}
-	if opts.CopyOnly {
-		flags = append(flags, "--copy-only")
-	}
-	if opts.EscapeQuotes {
-		flags = append(flags, "--escape-quotes")
-	}
-	switch opts.NewlineStyle {
-	case configurefile.NewlineLF:
-		flags = append(flags, "--newline-style=lf")
-	case configurefile.NewlineCRLF:
-		flags = append(flags, "--newline-style=crlf")
-	}
-	if len(flags) == 0 {
-		return ""
-	}
-	return strings.Join(flags, " ") + " "
 }
 
 // configureFileTagSet names each tag-emit facet for a

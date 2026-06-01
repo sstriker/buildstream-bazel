@@ -305,9 +305,10 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 // TestRecoverExecuteProcess_LiftCMakeEConfigureFile covers the
 // cmake -E configure_file lift. Verify-pass succeeds when the
 // template + rendered bytes have a recoverable values dict;
-// emit a genrule whose cmd invokes //tools:cmake-configure-file
-// (no cmake on the executor) with srcs anchoring the template
-// and the cmake-codegen-lifted tag set.
+// emit a cmake_configure_file target whose tool is
+// //tools:cmake-configure-file (no cmake on the executor) with
+// the template anchored on the spec and the cmake-codegen-lifted
+// tag set.
 func TestRecoverExecuteProcess_LiftCMakeEConfigureFile(t *testing.T) {
 	hostSrc := t.TempDir()
 	hostBuild := t.TempDir()
@@ -343,11 +344,14 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile(t *testing.T) {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
 	}
 	g := cc.Genrules[0]
-	if len(g.Srcs) != 1 || g.Srcs[0] != "inc/v.h.in" {
-		t.Errorf("srcs: %v want [inc/v.h.in]", g.Srcs)
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
-	if len(g.GenruleTools) != 1 || g.GenruleTools[0] != "//tools:cmake-configure-file" {
-		t.Errorf("tools: %v", g.GenruleTools)
+	if g.CMakeConfigureFile.Template != "inc/v.h.in" {
+		t.Errorf("template: %q want inc/v.h.in", g.CMakeConfigureFile.Template)
+	}
+	if g.CMakeConfigureFile.Tool != "//tools:cmake-configure-file" {
+		t.Errorf("tool: %q", g.CMakeConfigureFile.Tool)
 	}
 	wantTags := map[string]bool{
 		"cmake-codegen":                                   true,

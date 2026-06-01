@@ -404,6 +404,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitInstallLoad(&buf, pkg)
 	emitPkgFilesLoad(&buf, pkg)
 	emitWriteFileLoad(&buf, pkg)
+	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -457,6 +458,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindWriteFile {
 			if err := emitWriteFile(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindCMakeConfigureFile {
+			if err := emitCMakeConfigureFile(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -548,7 +555,7 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file":
+		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
 			markAttrsKeep(call, ccKeepAttrs(kind))
@@ -901,6 +908,119 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 )
 `))
 
+// cmakeConfigureFileTmpl renders the rules_buildstream_bazel
+// `cmake_configure_file()` rule — the configure_file / file(GENERATE)
+// lift tier. Needs the cmake_configure_file.bzl load
+// (emitCMakeConfigureFileLoad). The substitution inputs ride as readable
+// attributes (values / genex_values dicts, genex_context JSON, inline
+// content) rather than base64-in-shell. canonicalize() reformats the
+// emitted dict / string literals, so this template only has to get the
+// attribute set and omission rules right.
+var cmakeConfigureFileTmpl = template.Must(template.New("cmake_configure_file").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`cmake_configure_file(
+    name = "{{.Name}}",
+    out = "{{.Out}}",
+{{- if .Template}}
+    template = "{{.Template}}",
+{{- else}}
+    content = {{.ContentLiteral}},
+{{- end}}
+    values = {{.Values}},
+{{- if .GenexValues}}
+    genex_values = {{.GenexValues}},
+{{- end}}
+{{- if .GenexContext}}
+    genex_context = {{.GenexContextLiteral}},
+{{- end}}
+{{- if .TargetFiles}}
+    target_files = {{.TargetFiles}},
+{{- end}}
+{{- if .TargetObjects}}
+    target_objects = {{.TargetObjects}},
+{{- end}}
+    tool = "{{.Tool}}",
+{{- if .AtOnly}}
+    at_only = True,
+{{- end}}
+{{- if .CopyOnly}}
+    copy_only = True,
+{{- end}}
+{{- if .EscapeQuotes}}
+    escape_quotes = True,
+{{- end}}
+{{- if .NewlineStyle}}
+    newline_style = "{{.NewlineStyle}}",
+{{- end}}
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+// cmakeConfigureFileView projects ir.Target / CMakeConfigureFileSpec into
+// the cmake_configure_file template. The dict-valued attributes are
+// pre-rendered Starlark literals; the optional ones carry "" to signal
+// omission (the template's `{{- if }}` guards). values is always emitted
+// (even "{}") since the empty map is a meaningful COPYONLY lift.
+type cmakeConfigureFileView struct {
+	Name                string
+	Out                 string
+	Template            string
+	ContentLiteral      string
+	Values              string
+	GenexValues         string
+	GenexContext        string // truthiness guard
+	GenexContextLiteral string
+	TargetFiles         string
+	TargetObjects       string
+	Tool                string
+	AtOnly              bool
+	CopyOnly            bool
+	EscapeQuotes        bool
+	NewlineStyle        string
+	Tags                []string
+	Visibility          []string
+}
+
+func emitCMakeConfigureFile(w *bytes.Buffer, t ir.Target) error {
+	s := t.CMakeConfigureFile
+	if s == nil {
+		return fmt.Errorf("emit cmake_configure_file %q: nil CMakeConfigureFile spec", t.Name)
+	}
+	v := cmakeConfigureFileView{
+		Name:           t.Name,
+		Out:            s.Out,
+		Template:       s.Template,
+		ContentLiteral: fmt.Sprintf("%q", s.Content),
+		Values:         strDict(s.Values),
+		Tool:           s.Tool,
+		AtOnly:         s.AtOnly,
+		CopyOnly:       s.CopyOnly,
+		EscapeQuotes:   s.EscapeQuotes,
+		NewlineStyle:   s.NewlineStyle,
+		Tags:           sortedCopy(t.Tags),
+		Visibility:     nonDefaultVisibility(t.Visibility),
+	}
+	if len(s.GenexValues) > 0 {
+		v.GenexValues = strDict(s.GenexValues)
+	}
+	if s.GenexContext != "" {
+		v.GenexContext = s.GenexContext
+		v.GenexContextLiteral = fmt.Sprintf("%q", s.GenexContext)
+	}
+	if len(s.TargetFiles) > 0 {
+		v.TargetFiles = strDict(s.TargetFiles)
+	}
+	if len(s.TargetObjects) > 0 {
+		v.TargetObjects = strDict(s.TargetObjects)
+	}
+	return cmakeConfigureFileTmpl.Execute(w, v)
+}
+
 // ccView projects ir.Target into the cc-rule template. The
 // *Expr fields are pre-rendered attribute values: each carries
 // either a flat Starlark list literal (when the IR target has
@@ -1075,6 +1195,19 @@ func emitWriteFileLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	for _, t := range pkg.Targets {
 		if t.Kind == ir.KindWriteFile {
 			buf.WriteString(`load("@bazel_skylib//rules:write_file.bzl", "write_file")` + "\n\n")
+			return
+		}
+	}
+}
+
+// emitCMakeConfigureFileLoad emits the
+// `load("@rules_buildstream_bazel//rules:cmake_configure_file.bzl", "cmake_configure_file")`
+// line when pkg emits any KindCMakeConfigureFile target (the lift tier).
+// No-op otherwise so output for packages without a lift stays byte-stable.
+func emitCMakeConfigureFileLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindCMakeConfigureFile {
+			buf.WriteString(`load("@rules_buildstream_bazel//rules:cmake_configure_file.bzl", "cmake_configure_file")` + "\n\n")
 			return
 		}
 	}
