@@ -161,12 +161,21 @@ func probeGenexValuesForBody(cc *codegenContext, body []byte) (map[string]string
 		return nil, false
 	}
 	values := map[string]string{}
+	// Dedupe by literal across BOTH passes. The values map only
+	// populates on successful resolution (pass 2), so on pass 1 — where
+	// resolveLiteral intentionally returns false — a values-keyed guard
+	// wouldn't fire and repeated identical literals would re-call
+	// Want() (harmless, the sink dedupes by hash, but wasteful locking).
+	// A separate seen set attempts each distinct literal exactly once
+	// regardless of pass.
+	seen := map[string]bool{}
 	allResolved := true
 	for _, r := range ranges {
 		literal := string(body[r.Start:r.End])
-		if _, done := values[literal]; done {
+		if seen[literal] {
 			continue
 		}
+		seen[literal] = true
 		// file(GENERATE) genexes evaluate in project scope; any
 		// target reference (e.g. $<TARGET_PROPERTY:app,P>) is
 		// self-contained in the literal, which the probe hook
