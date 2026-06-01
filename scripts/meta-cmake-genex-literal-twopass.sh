@@ -18,8 +18,9 @@
 # records the unresolved literal, runs a second cmake configure
 # against the SAME (warm) build dir injecting a file(GENERATE)
 # literal-probe hook, reads cmake's own resolved value back
-# ("gen_out"), and re-lifts — so the call now lands as a genrule
-# whose outs is the resolved path "gen_out/manifest.txt".
+# ("gen_out"), and re-lifts — so the call now lands as a
+# cmake_configure_file whose out is the resolved path
+# "gen_out/manifest.txt".
 #
 # Drives convert-element-cmake against
 # converter/testdata/sample-projects/genex-literal-twopass (a
@@ -29,8 +30,8 @@
 # Asserts:
 #   1. With --two-pass-genex (default), convert exits 0, the stderr
 #      announces the warm second pass, and the emitted BUILD carries
-#      a genrule with outs = ["gen_out/manifest.txt"] — the OUTPUT
-#      genex resolved to the static path.
+#      a cmake_configure_file with out = "gen_out/manifest.txt" —
+#      the OUTPUT genex resolved to the static path.
 #   2. Negative / load-bearing: with --two-pass-genex=false the same
 #      file(GENERATE) is DROPPED (no gen_out/manifest.txt genrule),
 #      pinning the second pass as the thing that resolves it — so
@@ -78,8 +79,8 @@ if ! grep -q 'warm second configure pass' "$work_dir/on.stderr"; then
     exit 1
 fi
 
-if ! grep -qF 'outs = ["gen_out/manifest.txt"]' "$out_on"; then
-    echo "FAIL: emitted BUILD missing the resolved genrule outs = [\"gen_out/manifest.txt\"]"
+if ! grep -qF 'out = "gen_out/manifest.txt"' "$out_on"; then
+    echo "FAIL: emitted BUILD missing the resolved cmake_configure_file out = \"gen_out/manifest.txt\""
     echo "   the warm second pass should have resolved the OUTPUT genex to gen_out/"
     echo "--- generated BUILD ---"
     sed 's/^/   /' "$out_on"
@@ -168,4 +169,4 @@ if grep -qF 'YWxwaGFiZXRhCg==' "$out_off"; then
     exit 1
 fi
 
-echo "ok  meta-cmake-genex-literal-twopass: \$<TARGET_PROPERTY:app,APP_GENDIR> in a file(GENERATE) OUTPUT resolved via the warm second configure pass (outs = gen_out/manifest.txt); CONTENT-body adjacent genexes resolved via per-literal probe (tier b′, cmake-codegen-genex-resolved); the bake path lowers to readable skylib write_file; all load-bearing under --two-pass-genex=false"
+echo "ok  meta-cmake-genex-literal-twopass: \$<TARGET_PROPERTY:app,APP_GENDIR> in a file(GENERATE) OUTPUT resolved via the warm second configure pass (out = gen_out/manifest.txt); CONTENT-body adjacent genexes resolved via per-literal probe (tier b′, cmake-codegen-genex-resolved); the bake path lowers to readable skylib write_file; all load-bearing under --two-pass-genex=false"

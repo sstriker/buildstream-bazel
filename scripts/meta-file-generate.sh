@@ -47,12 +47,15 @@ CGO_ENABLED=0 go build -o "$bin_dir/convert-element-cmake" ./converter/cmd/conve
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
-src="$repo_root/converter/testdata/sample-projects/file-generate"
+# Offline replay against the captured File API reply. --source-root is
+# mutually exclusive with --reply-dir (run cmake OR reuse a recorded build,
+# not both); the reply's codemodel carries the recording-time source paths,
+# which resolve in-repo, so the captured template files (src/version.h.in,
+# CONTENT bodies) are read without a live cmake run.
 reply="$repo_root/converter/testdata/fileapi/file-generate"
 out_build="$work_dir/BUILD.bazel"
 
 "$bin_dir/convert-element-cmake" \
-    --source-root "$src" \
     --reply-dir "$reply" \
     --lift-configure-file=true \
     --out-build "$out_build"
@@ -124,7 +127,6 @@ fi
 # Determinism: re-run, byte-diff outputs.
 out_build_2="$work_dir/BUILD.bazel.2"
 "$bin_dir/convert-element-cmake" \
-    --source-root "$src" \
     --reply-dir "$reply" \
     --lift-configure-file=true \
     --out-build "$out_build_2"
