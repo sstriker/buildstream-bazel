@@ -628,3 +628,24 @@ func TestRun_StampValueOverride(t *testing.T) {
 		t.Errorf("absent stamp key: got %q, want the baked fallback", got)
 	}
 }
+
+// TestRun_StampValueWithoutStatusFile asserts the fail-fast guard: a
+// --stamp-value with no --status-file is operator misuse and must error
+// clearly rather than try to read an empty path (a confusing filesystem
+// error).
+func TestRun_StampValueWithoutStatusFile(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "v.h.in")
+	if err := os.WriteFile(tmplPath, []byte("@GIT_SHA@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte(`{"GIT_SHA":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := run(valuesPath, "", map[string]string{"GIT_SHA": "STABLE_GIT_SHA"},
+		"", "", nil, nil, tmplPath, false, "", filepath.Join(tmp, "out.h"), configurefile.Options{})
+	if err == nil {
+		t.Fatal("expected error: --stamp-value without --status-file")
+	}
+}

@@ -400,6 +400,9 @@ func run(valuesPath, statusFile string, stampValues map[string]string, genexValu
 	// absent key (non-stamped build, or no --workspace_status_command)
 	// leaves the --values fallback in place.
 	if len(stampValues) > 0 {
+		if statusFile == "" {
+			return fmt.Errorf("--stamp-value requires --status-file (the workspace status file the keys are read from)")
+		}
 		status, err := loadStatusFile(statusFile)
 		if err != nil {
 			return fmt.Errorf("load status file %s: %w", statusFile, err)

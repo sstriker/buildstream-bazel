@@ -59,8 +59,13 @@ def _impl(ctx):
     if ctx.attr.stamp_values:
         inputs.append(ctx.info_file)
         args.add("--status-file", ctx.info_file.path)
-        for tmpl_var, status_key in ctx.attr.stamp_values.items():
-            args.add("--stamp-value", "%s=%s" % (tmpl_var, status_key))
+
+        # Sorted keys → a stable action command line. A dict's iteration
+        # order shouldn't leak into the argv (it would risk gratuitous
+        # action-cache misses); sorting makes the --stamp-value sequence
+        # deterministic regardless of how the attr dict was constructed.
+        for tmpl_var in sorted(ctx.attr.stamp_values):
+            args.add("--stamp-value", "%s=%s" % (tmpl_var, ctx.attr.stamp_values[tmpl_var]))
 
     if ctx.attr.at_only:
         args.add("--at-only")
