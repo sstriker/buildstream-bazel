@@ -423,6 +423,16 @@ type Target struct {
 	// every non-pkg_files target.
 	PkgPrefix string
 
+	// FilegroupOutputGroup, when non-empty on a KindFilegroup target,
+	// renders the filegroup's `output_group = "<name>"` attribute so the
+	// filegroup gathers the named output group of its srcs dependency
+	// instead of that dependency's default outputs. The cmake converter
+	// emits `output_group = "compilation_outputs"` filegroups over an
+	// OBJECT_LIBRARY's cc_library to expose its compiled .o files as an
+	// addressable label for `$<TARGET_OBJECTS:t>` resolution (file_generate
+	// lowering). Empty on every other filegroup.
+	FilegroupOutputGroup string
+
 	// PkgSrcsGlob, when true on a KindPkgFiles target, makes the
 	// emitter render `srcs = glob(["<dir>/**"])` (one glob per Srcs
 	// entry) instead of the literal `srcs = [...]` list. This is the

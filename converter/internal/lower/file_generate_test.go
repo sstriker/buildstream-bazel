@@ -475,18 +475,18 @@ func parseGenexContext(t *testing.T, genexContext string) genexContextJSON {
 // surround can anchor the value; tag set carries the (b) facet,
 // not (a)'s.
 //
-// Uses $<TARGET_OBJECTS:foo> with `foo` IN the local codemodel
-// (passes the cross-package gate) but Objects EMPTY in the
-// captured TargetInfo (so the (a) evaluator's evalTargetObjects
-// returns UnsupportedError — typical pre-probe-genex offline
-// state). The lifter falls through to (b) capture. Earlier this
-// test used $<TARGET_FILE:foo> without genexTargets; the
-// cross-package soundness gate now catches that shape, so the
-// canonical "(a) refuses → (b) lifts" path is best demonstrated
-// with TARGET_OBJECTS on a known-but-objects-empty target.
+// Uses $<INSTALL_PREFIX> — an op the (a) evaluator explicitly does
+// NOT model (genexeval returns UnsupportedError) but which is NOT a
+// path-bearing TARGET_FILE/TARGET_OBJECTS op (so no soundness gate
+// fires). The lifter falls through to (b) capture. Earlier this test
+// used $<TARGET_FILE:foo> (now caught by the cross-package gate) and
+// then $<TARGET_OBJECTS:foo> (now caught by the TARGET_OBJECTS gate,
+// which refuses rather than baking cmake's recording-machine .o paths),
+// so the canonical "(a) refuses → (b) lifts" path is demonstrated with
+// a non-path unsupported op.
 func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t *testing.T) {
-	template := "// objs: $<TARGET_OBJECTS:foo>\n"
-	rendered := []byte("// objs: /opt/build/foo.dir/a.c.o;/opt/build/foo.dir/b.c.o\n")
+	template := "prefix=$<INSTALL_PREFIX>\n"
+	rendered := []byte("prefix=/opt/install\n")
 	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
 	calls := []shadow.FileGenerateCall{{
 		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
@@ -495,14 +495,7 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 		HasInput: true,
 	}}
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
-	// `foo` is locally known but its Objects field is empty —
-	// matches the no-probe-genex offline state where the
-	// codemodel surfaces the target but the OBJECT_LIBRARY's
-	// .o list is unavailable. evalTargetObjects returns
-	// UnsupportedError on empty Objects.
-	genexTargets := map[string]genexeval.TargetInfo{
-		"foo": {Type: "OBJECT_LIBRARY"},
-	}
+	genexTargets := map[string]genexeval.TargetInfo(nil)
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, cmakeVars, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
@@ -520,7 +513,7 @@ func TestRecoverFileGenerate_GenexEvaluatedFallsBackToCapturedOnUnsupportedOp(t 
 		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
 	}
 	if g.CMakeConfigureFile.GenexContext != "" {
-		t.Errorf("(a) evaluator should have refused $<TARGET_OBJECTS:> with empty Objects; got GenexContext %q", g.CMakeConfigureFile.GenexContext)
+		t.Errorf("(a) evaluator should have refused $<INSTALL_PREFIX>; got GenexContext %q", g.CMakeConfigureFile.GenexContext)
 	}
 	if len(g.CMakeConfigureFile.GenexValues) == 0 {
 		t.Errorf("expected (b) capture to populate GenexValues; got %v", g.CMakeConfigureFile.GenexValues)
@@ -953,17 +946,44 @@ func TestRecoverFileGenerate_GenexEvaluated_TargetFileRefsSorted(t *testing.T) {
 	}
 }
 
+// findConfigureFileTarget returns the single KindCMakeConfigureFile target
+// among cc's synthesized targets. TARGET_OBJECTS lifts also append
+// compilation_outputs filegroup siblings, so the configure-file target is no
+// longer cc.Genrules[0].
+func findConfigureFileTarget(t *testing.T, cc *codegenContext) ir.Target {
+	t.Helper()
+	for _, g := range cc.Genrules {
+		if g.Kind == ir.KindCMakeConfigureFile {
+			return g
+		}
+	}
+	t.Fatalf("no KindCMakeConfigureFile target among %d synthesized targets", len(cc.Genrules))
+	return ir.Target{}
+}
+
+// findObjectFilegroup returns the compilation_outputs filegroup named
+// <objlib>_objects, if emitted.
+func findObjectFilegroup(cc *codegenContext, objlib string) (ir.Target, bool) {
+	for _, g := range cc.Genrules {
+		if g.Kind == ir.KindFilegroup && g.Name == objlib+"_objects" {
+			return g, true
+		}
+	}
+	return ir.Target{}, false
+}
+
 // TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects
 // exercises the (a) lift's TARGET_OBJECTS path end-to-end at the
 // lifter: a template with $<TARGET_OBJECTS:objlib> + a captured
-// OBJECT_LIBRARY carrying Objects (the probe-genex hook's
-// recorded .o list) produces a cmake_configure_file spec whose
-// TargetObjects label-keyed map carries the :objlib -> objlib
-// entry for Bazel-time substitution. The marshaled Context
-// payload carries Objects (no wire-omit, unlike FileLocation)
-// because the authoritative value comes from the probe at
-// convert time; the Bazel-time target_objects attr is what the
-// cross-machine executor actually consumes.
+// OBJECT_LIBRARY carrying Objects (the probe-genex hook's recorded
+// .o list) produces a cmake_configure_file spec whose TargetObjects
+// label-keyed map carries the :objlib_objects -> objlib entry, plus
+// a sibling filegroup over objlib's compilation_outputs output group.
+// The marshaled Context payload OMITS Objects (json:"-", like
+// FileLocation): the convert-time value is cmake's recording-machine
+// .o paths used only for the byte-equal check; the Bazel-time
+// target_objects attr (→ the filegroup's real objects) is what the
+// executor consumes.
 func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
 	template := "// objs: $<TARGET_OBJECTS:objlib>\n"
 	objectsList := "/recording/build/CMakeFiles/objlib.dir/a.c.o;/recording/build/CMakeFiles/objlib.dir/b.c.o"
@@ -978,8 +998,8 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
 	// Objects is populated (matches what buildGenexTargets does
 	// when probes carry a TARGET_OBJECTS:objlib entry). The (a)
 	// evaluator consults this for the convert-time byte-equal
-	// check; the lifted cmd's --target-objects flag is what
-	// overrides at Bazel time.
+	// check; the lifted cmd's --target-objects flag (→ filegroup)
+	// is what overrides at Bazel time.
 	genexTargets := map[string]genexeval.TargetInfo{
 		"objlib": {Type: "OBJECT_LIBRARY", Objects: objectsList},
 	}
@@ -987,17 +1007,28 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects(t *testing.T) {
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	g := cc.Genrules[0]
+	g := findConfigureFileTarget(t, cc)
 	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
 		t.Errorf("expected (a) tag in %v", g.Tags)
 	}
-	// TargetObjects must carry the label-keyed entry for objlib;
-	// the rule's impl emits the $(locations :t)|tr-join wire.
-	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
-		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	if g.CMakeConfigureFile == nil {
+		t.Fatalf("spec nil")
 	}
-	if got := g.CMakeConfigureFile.TargetObjects[":objlib"]; got != "objlib" {
-		t.Errorf("TargetObjects[:objlib] = %q, want objlib; map=%v", got, g.CMakeConfigureFile.TargetObjects)
+	// target_objects points at the compilation_outputs filegroup, not
+	// the bare cc_library (whose DefaultInfo is the archive).
+	if got := g.CMakeConfigureFile.TargetObjects[":objlib_objects"]; got != "objlib" {
+		t.Errorf("TargetObjects[:objlib_objects] = %q, want objlib; map=%v", got, g.CMakeConfigureFile.TargetObjects)
+	}
+	// The sibling filegroup gathers objlib's compilation_outputs.
+	fg, ok := findObjectFilegroup(cc, "objlib")
+	if !ok {
+		t.Fatalf("expected objlib_objects filegroup sibling; synthesized=%v", cc.Genrules)
+	}
+	if fg.FilegroupOutputGroup != "compilation_outputs" {
+		t.Errorf("filegroup output_group = %q, want compilation_outputs", fg.FilegroupOutputGroup)
+	}
+	if len(fg.Srcs) != 1 || fg.Srcs[0] != ":objlib" {
+		t.Errorf("filegroup srcs = %v, want [:objlib]", fg.Srcs)
 	}
 }
 
@@ -1025,14 +1056,17 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Sorted(t *testing.T
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	g := cc.Genrules[0]
-	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
-		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	g := findConfigureFileTarget(t, cc)
+	if g.CMakeConfigureFile == nil {
+		t.Fatalf("spec nil")
 	}
 	to := g.CMakeConfigureFile.TargetObjects
-	for name, label := range map[string]string{"alpha": ":alpha", "mu": ":mu", "zeta": ":zeta"} {
+	for name, label := range map[string]string{"alpha": ":alpha_objects", "mu": ":mu_objects", "zeta": ":zeta_objects"} {
 		if got := to[label]; got != name {
 			t.Errorf("TargetObjects[%q] = %q, want %q; map=%v", label, got, name, to)
+		}
+		if _, ok := findObjectFilegroup(cc, name); !ok {
+			t.Errorf("expected %s_objects filegroup sibling", name)
 		}
 	}
 }
@@ -1062,9 +1096,9 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped(t *testing.
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, genexTargets, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
-	g := cc.Genrules[0]
-	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
-		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	g := findConfigureFileTarget(t, cc)
+	if g.CMakeConfigureFile == nil {
+		t.Fatalf("spec nil")
 	}
 	count := 0
 	for _, name := range g.CMakeConfigureFile.TargetObjects {
@@ -1074,6 +1108,70 @@ func TestRecoverFileGenerate_GenexEvaluatedWithTargetObjects_Deduped(t *testing.
 	}
 	if count != 1 {
 		t.Errorf("expected exactly 1 TargetObjects entry for objlib (N occurrences collapse to one), got %d in %v", count, g.CMakeConfigureFile.TargetObjects)
+	}
+	// The filegroup sibling is deduped too: exactly one objlib_objects.
+	fgCount := 0
+	for _, x := range cc.Genrules {
+		if x.Kind == ir.KindFilegroup && x.Name == "objlib_objects" {
+			fgCount++
+		}
+	}
+	if fgCount != 1 {
+		t.Errorf("expected exactly 1 objlib_objects filegroup, got %d", fgCount)
+	}
+}
+
+// TestRecoverFileGenerate_TargetObjectsUnresolvedRefuses asserts the
+// $<TARGET_OBJECTS:t> soundness gate: a ref that isn't a same-element
+// OBJECT_LIBRARY (cross-element / imported / wrong type), or one whose
+// (a)-eval can't resolve (empty Objects), produces a refusal stub that fails
+// the bazel build — NOT a silent bytes-bake of cmake's recording-machine .o
+// paths (the latent bug this fixes).
+func TestRecoverFileGenerate_TargetObjectsUnresolvedRefuses(t *testing.T) {
+	cases := []struct {
+		name         string
+		genexTargets map[string]genexeval.TargetInfo
+		wantTag      string // the precise refusal tag expected
+	}{
+		// Cross-element (objlib not in the codemodel) is caught by the
+		// pre-existing cross-package TARGET_FILE/OBJECTS soundness gate.
+		{"cross-element (not in codemodel)", nil, "cmake-codegen-genex-cross-package"},
+		// In-codemodel-but-unusable cases reach the dedicated TARGET_OBJECTS gate.
+		{"wrong type (not OBJECT_LIBRARY)", map[string]genexeval.TargetInfo{"objlib": {Type: "STATIC_LIBRARY", Objects: "/o.o"}}, "cmake-codegen-genex-target-objects-refused"},
+		{"empty Objects (a-eval cannot resolve)", map[string]genexeval.TargetInfo{"objlib": {Type: "OBJECT_LIBRARY"}}, "cmake-codegen-genex-target-objects-refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			template := "// objs: $<TARGET_OBJECTS:objlib>\n"
+			rendered := []byte("// objs: /recording/build/CMakeFiles/objlib.dir/a.c.o\n")
+			hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+			calls := []shadow.FileGenerateCall{{
+				File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+				Output:   filepath.Join(hostBuild, "g.out"),
+				Input:    filepath.Join(hostSrc, "src/g.in"),
+				HasInput: true,
+			}}
+			cc := newCodegenContext()
+			if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, tc.genexTargets, nil, cc); err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			g := cc.Genrules[0]
+			if g.Kind != ir.KindGenrule {
+				t.Fatalf("kind = %v, want refusal genrule", g.Kind)
+			}
+			if !hasTag(g.Tags, tc.wantTag) {
+				t.Errorf("want refusal tag %q; got %v", tc.wantTag, g.Tags)
+			}
+			if !strings.Contains(g.GenruleCmd, "exit 1") {
+				t.Errorf("refusal stub should fail the build; cmd=%q", g.GenruleCmd)
+			}
+			// No filegroup, no cmake_configure_file should be emitted.
+			for _, x := range cc.Genrules {
+				if x.Kind == ir.KindFilegroup || x.Kind == ir.KindCMakeConfigureFile {
+					t.Errorf("refusal should emit no filegroup/configure_file; got %v", x.Kind)
+				}
+			}
+		})
 	}
 }
 

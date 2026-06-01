@@ -189,6 +189,19 @@ func (cc *codegenContext) resolveLiteralPerConfig(literal, target string) (map[s
 	return nil, false
 }
 
+// hasSynthesizedTarget reports whether a target with the given name was
+// already appended to cc.Genrules (the synthesized-target list). Used to dedup
+// sibling targets — e.g. compilation_outputs filegroups multiple file(GENERATE)
+// calls may each reference for the same OBJECT library.
+func (cc *codegenContext) hasSynthesizedTarget(name string) bool {
+	for _, g := range cc.Genrules {
+		if g.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:       map[string]string{},

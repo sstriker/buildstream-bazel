@@ -110,7 +110,20 @@ type TargetInfo struct {
 	// OBJECT_LIBRARY targets; TARGET_OBJECTS resolution surfaces
 	// an UnsupportedError when the field is empty so the lifter
 	// can fall back to legacy bytes.
-	Objects string `json:"objects,omitempty"`
+	//
+	// Marshaled OUT of the wire (json:"-") for the same reason as
+	// FileLocation: the convert-time value is the recording
+	// machine's cmake object paths (`CMakeFiles/t.dir/a.cc.o`),
+	// used only for the in-memory (a)-eval byte-equal check
+	// against cmake's rendered output. At Bazel time the
+	// cmake-configure-file tool overrides it via `--target-objects`,
+	// whose paths come from a `$(locations :t_objects)` filegroup
+	// over the OBJECT library's `compilation_outputs` output group —
+	// Bazel's real object files, which never match cmake's paths.
+	// Baking the cmake paths into the wire would both break byte-
+	// stability across recording machines and ship paths that don't
+	// exist on the executor.
+	Objects string `json:"-"`
 
 	// InterfaceIncludeDirectories / InterfaceCompileDefinitions /
 	// InterfaceCompileOptions / InterfaceLinkLibraries /
