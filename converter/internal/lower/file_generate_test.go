@@ -208,37 +208,47 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 }
 
 // TestRecoverFileGenerate_BinaryBodyStaysBase64 pins the fidelity
-// guard: a body that isn't \n-only UTF-8 text (here, an embedded NUL
-// + a CRLF) can't round-trip through write_file's join-with-newline
-// shape, so the bake stays on the byte-exact base64 genrule.
+// guard for bodies that aren't readable \n-text. It table-tests the
+// two rejection reasons: a bare NUL (valid UTF-8, no CR — would render
+// as an unreadable \x00 escape) and a CRLF (wouldn't round-trip
+// through write_file's unix-newline join). Both must stay on the
+// byte-exact base64 genrule.
 func TestRecoverFileGenerate_BinaryBodyStaysBase64(t *testing.T) {
-	template := "x\n"
-	rendered := []byte("a\x00b\r\nc\n") // NUL + CRLF → not write_file-able
-	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", template, "b.out", rendered)
-	calls := []shadow.FileGenerateCall{{
-		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
-		Output:   filepath.Join(hostBuild, "b.out"),
-		Input:    filepath.Join(hostSrc, "src/b.in"),
-		HasInput: true,
-	}}
-	cc := newCodegenContext()
-	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
-		t.Fatalf("recover: %v", err)
+	cases := map[string][]byte{
+		"bare NUL, no CR": []byte("a\x00b\nc\n"),
+		"CRLF":            []byte("a\r\nb\n"),
+		"NUL and CRLF":    []byte("a\x00b\r\nc\n"),
 	}
-	g := cc.Genrules[0]
-	if g.Kind != ir.KindGenrule {
-		t.Fatalf("binary body should stay on the base64 genrule; got kind %v", g.Kind)
+	for name, rendered := range cases {
+		t.Run(name, func(t *testing.T) {
+			template := "x\n"
+			hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", template, "b.out", rendered)
+			calls := []shadow.FileGenerateCall{{
+				File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+				Output:   filepath.Join(hostBuild, "b.out"),
+				Input:    filepath.Join(hostSrc, "src/b.in"),
+				HasInput: true,
+			}}
+			cc := newCodegenContext()
+			if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
+				t.Fatalf("recover: %v", err)
+			}
+			g := cc.Genrules[0]
+			if g.Kind != ir.KindGenrule {
+				t.Fatalf("non-text body should stay on the base64 genrule; got kind %v", g.Kind)
+			}
+			if !strings.Contains(g.GenruleCmd, "base64 -d") {
+				t.Errorf("fallback cmd should base64-decode; got %q", g.GenruleCmd)
+			}
+			// The base64 blob must round-trip the exact bytes.
+			for _, tok := range strings.Fields(g.GenruleCmd) {
+				if dec, err := base64.StdEncoding.DecodeString(tok); err == nil && string(dec) == string(rendered) {
+					return
+				}
+			}
+			t.Errorf("base64 blob in cmd doesn't decode to the exact rendered bytes; cmd=%q", g.GenruleCmd)
+		})
 	}
-	if !strings.Contains(g.GenruleCmd, "base64 -d") {
-		t.Errorf("binary-body fallback cmd should base64-decode; got %q", g.GenruleCmd)
-	}
-	// Verify the base64 blob round-trips the exact bytes (NUL + CRLF).
-	for _, tok := range strings.Fields(g.GenruleCmd) {
-		if dec, err := base64.StdEncoding.DecodeString(tok); err == nil && string(dec) == string(rendered) {
-			return
-		}
-	}
-	t.Errorf("base64 blob in cmd doesn't decode to the exact rendered bytes; cmd=%q", g.GenruleCmd)
 }
 
 // TestRecoverFileGenerate_GenexLiftedViaStructuredBase64

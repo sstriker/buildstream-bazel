@@ -1099,7 +1099,10 @@ func emitWriteFile(w *bytes.Buffer, t ir.Target) error {
 		Name: t.Name,
 		Out:  t.WriteFileOut,
 		// Content is intentionally NOT sorted — it's an ordered file
-		// body, not a set; strData round-trips each line verbatim.
+		// body, not a set. The template renders it via strList, whose
+		// %q-quoting escapes each line into a valid Starlark string
+		// literal; buildifier preserves the order (content is not a
+		// sortable-list attribute).
 		Content:    t.WriteFileContent,
 		Newline:    newline,
 		Tags:       sortedCopy(t.Tags),

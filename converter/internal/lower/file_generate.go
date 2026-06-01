@@ -720,20 +720,33 @@ func fileGenerateBakeTarget(name, outRel string, rendered []byte, tags []string)
 	return base
 }
 
-// writeFileLines splits an exactly-reproducible body into the line
-// list skylib write_file (newline="unix") joins back to the original
-// bytes. Reproducible iff the body is valid UTF-8 with no CR: then
+// writeFileLines splits a readable, exactly-reproducible body into the
+// line list skylib write_file (newline="unix") joins back to the
+// original bytes. Eligible iff the body is valid UTF-8 carrying no
+// control bytes other than newline (\n) and tab (\t): then
 // strings.Split(body, "\n") joined by "\n" equals body exactly
 // (Split/Join are inverses; a trailing "" element reproduces a
-// trailing newline, e.g. "a\n" -> ["a", ""] -> "a\n"). Returns
-// (nil, false) for binary / CRLF bodies, which stay on the byte-exact
-// base64 genrule.
+// trailing newline, e.g. "a\n" -> ["a", ""] -> "a\n").
+//
+// The control-byte rejection is deliberate and twofold: (1) CR (\r)
+// wouldn't round-trip through write_file's unix-newline join, and
+// (2) NUL / other control bytes are valid UTF-8 but would render as
+// unreadable \x00-style escapes in the BUILD string literal — which
+// defeats the whole point (readability) and isn't what "text" means
+// here. Such bodies stay on the byte-exact base64 genrule. (Non-ASCII
+// printable UTF-8 — accented chars, etc. — has all bytes >= 0x80 and
+// passes; only the C0 controls + DEL are rejected.)
 func writeFileLines(body []byte) ([]string, bool) {
 	if !utf8.Valid(body) {
 		return nil, false
 	}
-	if bytes.IndexByte(body, '\r') >= 0 {
-		return nil, false
+	for _, b := range body {
+		if b == '\n' || b == '\t' {
+			continue
+		}
+		if b < 0x20 || b == 0x7f {
+			return nil, false
+		}
 	}
 	return strings.Split(string(body), "\n"), true
 }
