@@ -8,7 +8,7 @@
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
         fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-survey-regression \
-        survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt check-cmake-toolchain clean
+        survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
 # enforced softly here for dev-loop visibility.
@@ -1331,7 +1331,7 @@ update-golden:
 record-fixtures: check-cmake-toolchain
 	./tools/fixtures/record-fileapi.sh
 
-lint: vet fmt
+lint: vet fmt staticcheck
 
 vet:
 	$(GO) vet ./...
@@ -1341,6 +1341,15 @@ fmt:
 		echo "gofmt diffs in:"; echo "$$out"; \
 		echo "run 'gofmt -w .'"; exit 1; \
 	fi
+
+# staticcheck catches what `go vet` doesn't: unused code (U1000 —
+# how the dead emitCCTarget / fakecas executor surfaced), small
+# simplifications (S1xxx), and deprecations (SA1019). Pinned for
+# reproducibility — bump deliberately. Run via `go run` so there's no
+# separate install/PATH step; setup-go's module cache memoizes it.
+STATICCHECK_VERSION ?= 2026.1
+staticcheck:
+	$(GO) run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
 
 # Per-toolchain check targets. Only the gates that actually exec
 # the corresponding tool gate on the matching check target; render-
