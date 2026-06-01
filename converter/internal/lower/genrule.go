@@ -166,12 +166,27 @@ func (cc *codegenContext) resolveLiteral(literal, target string) (string, bool) 
 			return v, true
 		}
 		// Per-config divergence: no single static value the
-		// OUTPUT-path consumer can use. A future consumer in a
-		// select()-capable position can read res.PerConfig
-		// directly; here we fall through to the drop path.
+		// OUTPUT-path consumer can use. A select()-capable
+		// consumer reads res.PerConfig directly via
+		// resolveLiteralPerConfig; here we fall through to the
+		// drop path.
 		return "", false
 	}
 	return "", false
+}
+
+// resolveLiteralPerConfig is the select()-capable sibling of resolveLiteral:
+// it records the probe request (pass 1) and, on pass 2, returns the literal's
+// per-config resolved values (cmakerun.LiteralResolution.PerConfig) even when
+// they diverge across build configs — the caller lowers divergence to a
+// select() rather than dropping to legacy. Returns (nil, false) when no
+// resolution is available yet (pass 1) or the literal wasn't probed.
+func (cc *codegenContext) resolveLiteralPerConfig(literal, target string) (map[string]string, bool) {
+	h := cc.LiteralProbeSink.Want(literal, target)
+	if res, ok := cc.LiteralResolutions[h]; ok && len(res.PerConfig) > 0 {
+		return res.PerConfig, true
+	}
+	return nil, false
 }
 
 func newCodegenContext() *codegenContext {

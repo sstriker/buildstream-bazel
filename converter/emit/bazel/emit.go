@@ -1005,7 +1005,13 @@ func emitCMakeConfigureFile(w *bytes.Buffer, t ir.Target) error {
 		Tags:           sortedCopy(t.Tags),
 		Visibility:     nonDefaultVisibility(t.Visibility),
 	}
-	if len(s.GenexValues) > 0 {
+	if len(s.GenexValuesPerConfig) > 0 {
+		// Per-config divergence → render the genex_values attr as a select()
+		// over the //config:<name> arms. The rule's string_dict attr is
+		// configurable, so Bazel resolves the active config's map before the
+		// rule impl runs (no rule change needed).
+		v.GenexValues = renderConfigDictSelect(s.GenexValuesPerConfig)
+	} else if len(s.GenexValues) > 0 {
 		v.GenexValues = strDict(s.GenexValues)
 	}
 	if s.GenexContext != "" {
@@ -1019,6 +1025,27 @@ func emitCMakeConfigureFile(w *bytes.Buffer, t ir.Target) error {
 		v.TargetObjects = strDict(s.TargetObjects)
 	}
 	return cmakeConfigureFileTmpl.Execute(w, v)
+}
+
+// renderConfigDictSelect renders a per-config map (config label -> string dict)
+// as a Starlark `select({...})` expression for the genex_values attribute. Keys
+// are the `//config:<name>` labels the multi-config //config package backs;
+// build_type's string_flag default always resolves to one of them, so no
+// `//conditions:default` arm is needed. canonicalize() reformats the result, so
+// this only has to emit a valid select() with sorted, byte-stable arms.
+func renderConfigDictSelect(perConfig map[string]map[string]string) string {
+	labels := make([]string, 0, len(perConfig))
+	for l := range perConfig {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
+	var b bytes.Buffer
+	b.WriteString("select({\n")
+	for _, l := range labels {
+		fmt.Fprintf(&b, "        %q: %s,\n", l, strDict(perConfig[l]))
+	}
+	b.WriteString("    })")
+	return b.String()
 }
 
 // ccView projects ir.Target into the cc-rule template. The
