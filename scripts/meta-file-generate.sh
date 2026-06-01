@@ -49,9 +49,13 @@ trap 'rm -rf "$work_dir"' EXIT
 
 # Offline replay against the captured File API reply. --source-root is
 # mutually exclusive with --reply-dir (run cmake OR reuse a recorded build,
-# not both); the reply's codemodel carries the recording-time source paths,
-# which resolve in-repo, so the captured template files (src/version.h.in,
-# CONTENT bodies) are read without a live cmake run.
+# not both), so the template files (src/version.h.in, CONTENT bodies) are
+# read from the path the reply's codemodel recorded in paths.source — an
+# ABSOLUTE recording-machine path
+# (/home/user/buildstream-bazel/.../sample-projects/file-generate). It
+# resolves here only because that path matches the standard in-repo checkout
+# root; like the other --reply-dir gates, the fixture is not portable to an
+# arbitrary checkout root without re-recording the reply.
 reply="$repo_root/converter/testdata/fileapi/file-generate"
 out_build="$work_dir/BUILD.bazel"
 

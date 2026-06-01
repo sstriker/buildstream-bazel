@@ -33,9 +33,9 @@
 #      a cmake_configure_file with out = "gen_out/manifest.txt" —
 #      the OUTPUT genex resolved to the static path.
 #   2. Negative / load-bearing: with --two-pass-genex=false the same
-#      file(GENERATE) is DROPPED (no gen_out/manifest.txt genrule),
-#      pinning the second pass as the thing that resolves it — so
-#      assertion 1 can't pass vacuously.
+#      file(GENERATE) is DROPPED (no gen_out/manifest.txt
+#      cmake_configure_file), pinning the second pass as the thing
+#      that resolves it — so assertion 1 can't pass vacuously.
 #
 # cmake 3.24+ is required for the CMAKE_PROJECT_TOP_LEVEL_INCLUDES
 # hook the probe rides; the gate skips cleanly when cmake isn't on
