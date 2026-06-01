@@ -127,6 +127,25 @@ func joinCommandArgv(cmds [][]string) []byte {
 	return []byte(b.String())
 }
 
+// buildAliasToActual maps each add_library(<alias> ALIAS <actual>) alias name
+// to its actual producing target, for customCommandGenexTag's name
+// normalization. Namespaced aliases (Foo::Bar) are keyed as-is. cmake requires
+// an ALIAS to reference a non-ALIAS target, so one hop suffices. Returns nil
+// when the project declares no aliases.
+func buildAliasToActual(libs []shadow.AddLibraryCall) map[string]string {
+	var m map[string]string
+	for _, c := range libs {
+		if c.Type != "ALIAS" || c.Name == "" || len(c.Aliases) == 0 || c.Aliases[0] == "" {
+			continue
+		}
+		if m == nil {
+			m = map[string]string{}
+		}
+		m[c.Name] = c.Aliases[0]
+	}
+	return m
+}
+
 // containsAnyPrefix reports whether blob contains any of the given substrings.
 func containsAnyPrefix(blob []byte, prefixes []string) bool {
 	for _, p := range prefixes {
@@ -147,7 +166,12 @@ func containsAnyPrefix(blob []byte, prefixes []string) bool {
 // (i.e. its build-dir-relative path was lifted to `$(location :t)`). A call
 // carrying only value genexes ($<CONFIG> and the like) has no path-portability
 // hazard for a single configure, so it classifies as resolved.
-func customCommandGenexTag(outs []string, idx map[string]customCommandGenex, tools []string) string {
+//
+// aliasToActual normalizes a genex's target name before the tools check:
+// cmake allows $<TARGET_FILE:alias> for an add_library(ALIAS) target, but
+// rewriteToolFromTarget lifts the resolved artifact path to the ACTUAL
+// producing target, so tools carries `:actual` not `:alias`.
+func customCommandGenexTag(outs []string, idx map[string]customCommandGenex, tools []string, aliasToActual map[string]string) string {
 	if len(idx) == 0 {
 		return ""
 	}
@@ -172,13 +196,24 @@ func customCommandGenexTag(outs []string, idx map[string]customCommandGenex, too
 	for _, t := range tools {
 		mapped[strings.TrimPrefix(t, ":")] = true
 	}
+	// lifted reports whether a genex's target name resolved to a tools entry,
+	// resolving an add_library(ALIAS) name to its actual producing target first.
+	lifted := func(name string) bool {
+		if mapped[name] {
+			return true
+		}
+		if actual, ok := aliasToActual[name]; ok && mapped[actual] {
+			return true
+		}
+		return false
+	}
 	for _, name := range info.targetFileRefs {
-		if !mapped[name] {
+		if !lifted(name) {
 			return cmdGenexUnresolvedTag
 		}
 	}
 	for _, name := range info.targetObjects {
-		if !mapped[name] {
+		if !lifted(name) {
 			return cmdGenexUnresolvedTag
 		}
 	}

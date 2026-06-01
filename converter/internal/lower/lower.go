@@ -1117,10 +1117,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// existing genrules keeps the recoverGenrule path's output
 	// intact even when this fires.
 	if opts.EmitStandaloneCustomCommands {
+		var aliasLibs []shadow.AddLibraryCall
+		if decodedTrace != nil {
+			aliasLibs = decodedTrace.AddLibraries
+		}
 		traceCtx := standaloneTraceContext{
 			CustomCommands:  decodedAddCustomCommands,
 			CustomTargets:   decodedAddCustomTargets,
 			AddDependencies: decodedAddDependencies,
+			AliasToActual:   buildAliasToActual(aliasLibs),
 		}
 		pkg.Targets = append(pkg.Targets,
 			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, artifactToName, traceCtx)...)

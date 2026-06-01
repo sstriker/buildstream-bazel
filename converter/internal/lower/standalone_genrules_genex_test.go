@@ -155,6 +155,41 @@ build gen.h: CUSTOM_COMMAND
 	}
 }
 
+// $<TARGET_FILE:Foo::Bar> where Foo::Bar is an add_library(ALIAS) for `actual`:
+// cmake resolves it to actual's artifact path, which rewriteToolFromTarget lifts
+// to $(location :actual) (tools carries :actual, not :Foo::Bar). The classifier
+// must normalize the alias through AliasToActual so it's not mis-tagged
+// unresolved.
+func TestLowerStandaloneCustomCommands_GenexAliasResolved(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build gen.h: CUSTOM_COMMAND
+  COMMAND = bin/actual --emit gen.h
+`)
+	artifactToName := map[string]string{"bin/actual": "actual"}
+	ctx := standaloneTraceContext{
+		CustomCommands: []shadow.AddCustomCommandCall{{
+			Outputs:  []string{"gen.h"},
+			Commands: [][]string{{"$<TARGET_FILE:Foo::Bar>", "--emit", "gen.h"}},
+		}},
+		AliasToActual: map[string]string{"Foo::Bar": "actual"},
+	}
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", artifactToName, ctx)
+	if len(got) != 1 {
+		t.Fatalf("want 1 genrule; got %d", len(got))
+	}
+	if !containsTool(got[0].GenruleTools, ":actual") {
+		t.Errorf("alias should lift to the actual target :actual; got %v", got[0].GenruleTools)
+	}
+	if !hasTag(got[0].Tags, cmdGenexResolvedTag) {
+		t.Errorf("aliased TARGET_FILE that lifted to :actual should be %s; got %v", cmdGenexResolvedTag, got[0].Tags)
+	}
+	if hasTag(got[0].Tags, cmdGenexUnresolvedTag) {
+		t.Errorf("must not be %s when the alias normalized to a lifted actual; got %v", cmdGenexUnresolvedTag, got[0].Tags)
+	}
+}
+
 func containsTool(tools []string, want string) bool {
 	for _, t := range tools {
 		if t == want {

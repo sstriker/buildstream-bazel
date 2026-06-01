@@ -52,6 +52,16 @@ type standaloneTraceContext struct {
 	// genrule needs at least `:__pkg__` visibility for T to
 	// reference it.
 	AddDependencies []shadow.AddDependenciesCall
+
+	// AliasToActual maps each add_library(<alias> ALIAS <actual>) alias name
+	// to its actual producing target (namespaced aliases like Foo::Bar
+	// included). Used by the genex audit: cmake allows $<TARGET_FILE:alias>,
+	// but rewriteToolFromTarget lifts the resolved artifact path to the ACTUAL
+	// target, so the genrule's tools carries `:actual`, not `:alias` — the
+	// classifier normalizes a referenced genex target name through this map
+	// before checking tools so an aliased reference isn't mis-tagged
+	// -unresolved. Empty / nil when the project declares no aliases.
+	AliasToActual map[string]string
 }
 
 // lowerStandaloneCustomCommands walks every CUSTOM_COMMAND edge in
@@ -248,7 +258,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// $<TARGET_FILE:t>; $<TARGET_OBJECTS:t> / cross-element refs are
 		// the known residue and surface as -unresolved).
 		tags := []string{"cmake-codegen-standalone-custom-command"}
-		if genexTag := customCommandGenexTag(outs, genexIndex, tools); genexTag != "" {
+		if genexTag := customCommandGenexTag(outs, genexIndex, tools, traceCtx.AliasToActual); genexTag != "" {
 			tags = append(tags, genexTag)
 		}
 		out = append(out, ir.Target{
