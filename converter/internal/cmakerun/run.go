@@ -344,7 +344,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	// CMP0026, etc.) without breaking the live op-stderr passthrough. The
 	// buffer is bounded to keep memory predictable on projects whose
 	// configure emits thousands of lines.
-	runOnce := func(extraEnv ...string) (error, []byte) {
+	runOnce := func(extraEnv ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "cmake", argv...)
 		stderrTail := &boundedBuffer{limit: 16 * 1024}
 		cmd.Stdout = opts.Stdout
@@ -354,10 +354,17 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 			cmd.Stderr = stderrTail
 		}
 		cmd.Env = configureEnv(homeDir, opts.PrefixDir, extraEnv...)
-		return cmd.Run(), stderrTail.Bytes()
+		// Run cmake first (it populates stderrTail through cmd.Stderr),
+		// THEN snapshot the tail. Don't fold these into
+		// `return stderrTail.Bytes(), cmd.Run()`: Go evaluates return
+		// operands left-to-right, so that form snapshots the buffer
+		// before cmake runs and hands annotateConfigureFailure an empty
+		// tail — dropping the CMP0026 hint the matrix asserts.
+		runErr := cmd.Run()
+		return stderrTail.Bytes(), runErr
 	}
 
-	runErr, stderrBytes := runOnce()
+	stderrBytes, runErr := runOnce()
 	if runErr != nil && matchPolicyFloorRemoved(stderrBytes) {
 		// cmake 4.x removed compatibility with cmake_minimum_required
 		// floors below 3.5 and fatal-errors at configure on projects (and
@@ -378,7 +385,7 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 			fmt.Fprintln(opts.Stderr,
 				"cmakerun: configure hit cmake 4.x's pre-3.5 policy-floor removal; retrying once with CMAKE_POLICY_VERSION_MINIMUM=3.5")
 		}
-		runErr, stderrBytes = runOnce("CMAKE_POLICY_VERSION_MINIMUM=3.5")
+		stderrBytes, runErr = runOnce("CMAKE_POLICY_VERSION_MINIMUM=3.5")
 	}
 	if runErr != nil {
 		return Reply{}, annotateConfigureFailure(runErr, stderrBytes)

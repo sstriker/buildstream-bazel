@@ -95,13 +95,6 @@ func ReadCall(path string, line int, command string) (*Call, error) {
 	return call, nil
 }
 
-// Tokenize is the byte-level lexer ReadCall delegates to; exposed
-// for callers that already have the file body in memory (avoids
-// the open/read round trip for batched recovery passes).
-func Tokenize(body, command string) (*Call, error) {
-	return tokenizeCall(body, command)
-}
-
 func tokenizeCall(body, command string) (*Call, error) {
 	i := 0
 	// Skip leading whitespace and `#` comment lines until we find

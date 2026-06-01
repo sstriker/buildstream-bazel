@@ -59,14 +59,6 @@ func (c *Collector) Items() []Finding {
 	return out
 }
 
-// Len reports how many findings were recorded.
-func (c *Collector) Len() int {
-	if c == nil {
-		return 0
-	}
-	return len(c.items)
-}
-
 // AuditLinkDeps is the dependency-coverage check. For each emitted cc
 // target it compares the trace-recorded target_link_libraries arms
 // against what actually landed in deps / implementation_deps / data,

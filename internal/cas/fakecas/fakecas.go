@@ -231,15 +231,7 @@ func (e *Endpoint) Close() { e.teardown() }
 type Option func(*startConfig)
 
 type startConfig struct {
-	exec  *ExecutionServer
 	asset *AssetServer
-}
-
-// WithExecution registers an ExecutionServer alongside the standard
-// CAS/AC/ByteStream services. Tests that exercise the M3b remote
-// execution path must enable this.
-func WithExecution(exec *ExecutionServer) Option {
-	return func(c *startConfig) { c.exec = exec }
 }
 
 // WithAsset registers an AssetServer (Fetch + Push) alongside the
@@ -262,9 +254,6 @@ func Start(t testing.TB, srv *Server, opts ...Option) *Endpoint {
 	repb.RegisterContentAddressableStorageServer(gs, srv)
 	repb.RegisterActionCacheServer(gs, srv)
 	bytestream.RegisterByteStreamServer(gs, srv)
-	if cfg.exec != nil {
-		repb.RegisterExecutionServer(gs, cfg.exec)
-	}
 	if cfg.asset != nil {
 		raa.RegisterFetchServer(gs, cfg.asset)
 		raa.RegisterPushServer(gs, cfg.asset)

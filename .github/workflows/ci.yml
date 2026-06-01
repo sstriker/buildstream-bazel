@@ -55,6 +55,9 @@ jobs:
       - name: gofmt
         run: make fmt 2>&1 | tee -a /tmp/cijob.log
 
+      - name: staticcheck
+        run: make staticcheck 2>&1 | tee -a /tmp/cijob.log
+
       - name: Unit tests
         run: make test 2>&1 | tee -a /tmp/cijob.log
 

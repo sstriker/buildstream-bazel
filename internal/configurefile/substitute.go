@@ -464,8 +464,5 @@ func isTruthy(value string) bool {
 	case "0", "OFF", "NO", "FALSE", "N", "IGNORE", "NOTFOUND":
 		return false
 	}
-	if strings.HasSuffix(upper, "-NOTFOUND") {
-		return false
-	}
-	return true
+	return !strings.HasSuffix(upper, "-NOTFOUND")
 }

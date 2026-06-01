@@ -47,20 +47,6 @@ const (
 	ClassUnknown
 )
 
-// String renders the class as a one-word label for diagnostics.
-func (c PathClass) String() string {
-	switch c {
-	case ClassSource:
-		return "source"
-	case ClassBuild:
-		return "build"
-	case ClassSysroot:
-		return "sysroot"
-	default:
-		return "unknown"
-	}
-}
-
 // sysrootPrefixes is the broader allow-list (vs systemLibPrefixes
 // which is link-time only) of host directories whose contents are
 // universally available at Bazel build time on the operator's

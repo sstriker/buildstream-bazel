@@ -1,15 +1,13 @@
-package cmakeargv_test
+package cmakeargv
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/sstriker/buildstream-bazel/converter/internal/cmakeargv"
 )
 
 func TestTokenize_SimpleCall(t *testing.T) {
-	call, err := cmakeargv.Tokenize(`add_library(foo STATIC src/a.c src/b.c)`, "add_library")
+	call, err := tokenizeCall(`add_library(foo STATIC src/a.c src/b.c)`, "add_library")
 	if err != nil {
 		t.Fatalf("Tokenize: %v", err)
 	}
@@ -25,7 +23,7 @@ func TestTokenize_SimpleCall(t *testing.T) {
 }
 
 func TestTokenize_KeywordsInTargetLinkLibraries(t *testing.T) {
-	call, err := cmakeargv.Tokenize(
+	call, err := tokenizeCall(
 		`target_link_libraries(foo PUBLIC zlib openssl PRIVATE jsoncpp INTERFACE iface)`,
 		"target_link_libraries")
 	if err != nil {
@@ -40,7 +38,7 @@ func TestTokenize_KeywordsInTargetLinkLibraries(t *testing.T) {
 }
 
 func TestTokenize_QuotedArgs(t *testing.T) {
-	call, err := cmakeargv.Tokenize(
+	call, err := tokenizeCall(
 		`add_definitions("-DFOO=1" "-DBAR=\"baz\"")`,
 		"add_definitions")
 	if err != nil {
@@ -55,7 +53,7 @@ func TestTokenize_QuotedArgs(t *testing.T) {
 }
 
 func TestTokenize_BracketArg(t *testing.T) {
-	call, err := cmakeargv.Tokenize(
+	call, err := tokenizeCall(
 		`set(CONTENT [=[verbatim "string" with ${vars} and ;semis]=])`,
 		"set")
 	if err != nil {
@@ -81,7 +79,7 @@ func TestTokenize_MultilineCall(t *testing.T) {
     PRIVATE
         jsoncpp
 )`
-	call, err := cmakeargv.Tokenize(body, "target_link_libraries")
+	call, err := tokenizeCall(body, "target_link_libraries")
 	if err != nil {
 		t.Fatalf("Tokenize: %v", err)
 	}
@@ -103,7 +101,7 @@ func TestTokenize_CommentsBetweenArgs(t *testing.T) {
     # Private deps:
     PRIVATE jsoncpp
 )`
-	call, err := cmakeargv.Tokenize(body, "target_link_libraries")
+	call, err := tokenizeCall(body, "target_link_libraries")
 	if err != nil {
 		t.Fatalf("Tokenize: %v", err)
 	}
@@ -119,7 +117,7 @@ func TestTokenize_VariableRefPreservedAsLiteral(t *testing.T) {
 	// We don't expand ${VAR}; the caller decides whether the
 	// literal can be matched (used for keyword recovery; the
 	// keywords themselves are never inside ${...}).
-	call, err := cmakeargv.Tokenize(
+	call, err := tokenizeCall(
 		`target_link_libraries(foo PUBLIC ${SOME_DEP_VAR})`,
 		"target_link_libraries")
 	if err != nil {
@@ -131,7 +129,7 @@ func TestTokenize_VariableRefPreservedAsLiteral(t *testing.T) {
 }
 
 func TestTokenize_CaseInsensitiveCommand(t *testing.T) {
-	call, err := cmakeargv.Tokenize(
+	call, err := tokenizeCall(
 		`ADD_LIBRARY(foo STATIC src/a.c)`,
 		"add_library")
 	if err != nil {
@@ -146,7 +144,7 @@ func TestTokenize_CaseInsensitiveCommand(t *testing.T) {
 }
 
 func TestTokenize_MismatchedCommandErrors(t *testing.T) {
-	_, err := cmakeargv.Tokenize(
+	_, err := tokenizeCall(
 		`add_library(foo)`,
 		"target_link_libraries")
 	if err == nil {
@@ -155,7 +153,7 @@ func TestTokenize_MismatchedCommandErrors(t *testing.T) {
 }
 
 func TestTokenize_UnterminatedParen(t *testing.T) {
-	_, err := cmakeargv.Tokenize(`add_library(foo STATIC src/a.c`, "add_library")
+	_, err := tokenizeCall(`add_library(foo STATIC src/a.c`, "add_library")
 	if err == nil {
 		t.Fatal("expected unterminated error")
 	}
@@ -176,7 +174,7 @@ target_link_libraries(foo
 		t.Fatal(err)
 	}
 	// Line 4 is `target_link_libraries(foo`.
-	call, err := cmakeargv.ReadCall(path, 4, "target_link_libraries")
+	call, err := ReadCall(path, 4, "target_link_libraries")
 	if err != nil {
 		t.Fatalf("ReadCall: %v", err)
 	}
@@ -194,27 +192,27 @@ func TestReadCall_LineOutOfRange(t *testing.T) {
 	if err := os.WriteFile(path, []byte("add_library(foo)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := cmakeargv.ReadCall(path, 99, "add_library")
+	_, err := ReadCall(path, 99, "add_library")
 	if err == nil {
 		t.Fatal("expected error for out-of-range line")
 	}
 }
 
 func TestReadCall_MissingFile(t *testing.T) {
-	_, err := cmakeargv.ReadCall("/nonexistent/path.cmake", 1, "add_library")
+	_, err := ReadCall("/nonexistent/path.cmake", 1, "add_library")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
-	var ce *cmakeargv.Error
+	var ce *Error
 	if !errorsAs(err, &ce) {
-		t.Errorf("expected *cmakeargv.Error wrapping; got %T", err)
+		t.Errorf("expected *Error wrapping; got %T", err)
 	}
 }
 
 // tiny errors.As shim to avoid an import dance with the test stdlib.
-func errorsAs(err error, target **cmakeargv.Error) bool {
+func errorsAs(err error, target **Error) bool {
 	for err != nil {
-		if e, ok := err.(*cmakeargv.Error); ok {
+		if e, ok := err.(*Error); ok {
 			*target = e
 			return true
 		}

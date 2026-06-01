@@ -86,21 +86,6 @@ func TestShouldSplitCompileGroups_SameLangDifferentFlags(t *testing.T) {
 	}
 }
 
-// TestShouldSplitCompileGroups_LegacyAlias confirms the
-// shouldSplitMultiLanguage backward-compat alias forwards
-// to the new gate.
-func TestShouldSplitCompileGroups_LegacyAlias(t *testing.T) {
-	tgt := &fileapi.Target{
-		CompileGroups: []fileapi.CompileGroup{
-			{Language: "C", Defines: []fileapi.CompileDefine{{Define: "FOO=1"}}},
-			{Language: "C", Defines: []fileapi.CompileDefine{{Define: "BAR=2"}}},
-		},
-	}
-	if !shouldSplitMultiLanguage(tgt) {
-		t.Errorf("legacy alias should defer to shouldSplitCompileGroups")
-	}
-}
-
 func TestIntSuffix(t *testing.T) {
 	cases := []struct {
 		in   int

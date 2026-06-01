@@ -292,67 +292,6 @@ build foo.o: CXX_COMPILER foo.cc
 	}
 }
 
-func TestDepfileFor_RuleAndBuild(t *testing.T) {
-	g := mustParse(t, `rule CUSTOM_COMMAND
-  command = $COMMAND
-  depfile = $DEPFILE_DEFAULT
-
-build out.h: CUSTOM_COMMAND in
-  COMMAND = gen $in $out
-  DEPFILE_DEFAULT = $out.d
-
-build other.h: CUSTOM_COMMAND in2
-  COMMAND = gen2 $in $out
-  depfile = explicit.d
-`)
-	// First build: depfile binding comes from the rule, $DEPFILE_DEFAULT
-	// resolves via the build's bindings.
-	df, ok := ninja.DepfileFor(g, g.Builds[0])
-	if !ok {
-		t.Fatal("DepfileFor build[0] returned !ok")
-	}
-	if df != "out.h.d" {
-		t.Errorf("build[0] depfile: %q", df)
-	}
-	// Second build: explicit depfile on the build overrides the rule's.
-	df, ok = ninja.DepfileFor(g, g.Builds[1])
-	if !ok {
-		t.Fatal("DepfileFor build[1] returned !ok")
-	}
-	if df != "explicit.d" {
-		t.Errorf("build[1] depfile: %q", df)
-	}
-}
-
-func TestDepfileFor_None(t *testing.T) {
-	g := mustParse(t, `rule CUSTOM_COMMAND
-  command = $COMMAND
-
-build out.h: CUSTOM_COMMAND in
-  COMMAND = gen $in $out
-`)
-	if _, ok := ninja.DepfileFor(g, g.Builds[0]); ok {
-		t.Errorf("DepfileFor: expected !ok for build with no depfile")
-	}
-}
-
-func TestDescriptionFor(t *testing.T) {
-	g := mustParse(t, `rule CUSTOM_COMMAND
-  command = $COMMAND
-  description = Generating $out
-
-build hdr.h: CUSTOM_COMMAND tmpl
-  COMMAND = gen $in $out
-`)
-	desc, ok := ninja.DescriptionFor(g, g.Builds[0])
-	if !ok {
-		t.Fatal("DescriptionFor returned !ok")
-	}
-	if desc != "Generating hdr.h" {
-		t.Errorf("description: %q", desc)
-	}
-}
-
 func TestParseFile_HelloWorld(t *testing.T) {
 	// The recorded build.ninja `include CMakeFiles/rules.ninja`. That file
 	// isn't checked in; rules are regenerated per build dir. Use a custom

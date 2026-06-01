@@ -100,11 +100,7 @@ func tokenizeCacheFlags(c fileapi.Cache, name string) []string {
 	if v == "" {
 		return nil
 	}
-	out := []string{}
-	for _, tok := range strings.Fields(v) {
-		out = append(out, tok)
-	}
-	return out
+	return strings.Fields(v)
 }
 
 // mergeFlags concatenates two slices and dedupes preserving order.

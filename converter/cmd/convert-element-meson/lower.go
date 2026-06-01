@@ -575,10 +575,7 @@ func isMesonInjectedLinkFlag(p string) bool {
 		"-fPIC":
 		return true
 	}
-	if strings.HasPrefix(p, "-Wl,-soname,") {
-		return true
-	}
-	return false
+	return strings.HasPrefix(p, "-Wl,-soname,")
 }
 
 // fillDeps walks the in-project `depends` list and the external
@@ -641,9 +638,7 @@ func fillDeps(out *ir.Target, t Target, byID, byName map[string]string, deps map
 			for _, a := range d.CompileArgs {
 				out.Copts = appendUnique(out.Copts, a)
 			}
-			for _, a := range d.LinkArgs {
-				out.LinkOpts = append(out.LinkOpts, a)
-			}
+			out.LinkOpts = append(out.LinkOpts, d.LinkArgs...)
 			continue
 		}
 		return newFailure(unresolvedMesonDependency,

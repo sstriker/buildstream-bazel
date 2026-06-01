@@ -228,26 +228,4 @@ func TestFindPackageAttrib_NilSafe(t *testing.T) {
 	if got := fa.Lookup("/anything"); got != "" {
 		t.Errorf("nil Lookup: got %q want empty", got)
 	}
-	if got := fa.SortedFoundPackages(); got != nil {
-		t.Errorf("nil SortedFoundPackages: got %v want nil", got)
-	}
-}
-
-func TestFindPackageAttrib_SortedFoundPackages(t *testing.T) {
-	events := []fileapi.Event{
-		{Kind: "find_package-v1", Found: &fileapi.EventFindPackageFound{IsFound: true, Package: "ZLIB"}},
-		{Kind: "find_package-v1", Found: &fileapi.EventFindPackageFound{IsFound: true, Package: "BZip2"}},
-		{Kind: "find_package-v1", Found: &fileapi.EventFindPackageFound{IsFound: true, Package: "LibLZMA"}},
-	}
-	fa := buildFindPackageAttrib(events, nil)
-	got := fa.SortedFoundPackages()
-	want := []string{"BZip2", "LibLZMA", "ZLIB"}
-	if len(got) != len(want) {
-		t.Fatalf("got %v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("got[%d]=%q want %q", i, got[i], want[i])
-		}
-	}
 }
