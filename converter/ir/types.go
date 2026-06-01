@@ -80,6 +80,24 @@ const (
 	// `::` in target names, so the namespaced form has no
 	// usable alias label anyway.
 	KindAlias
+	// KindWriteFile renders as bazel_skylib's
+	// `write_file(name=, out=, content=[...], newline="unix")` rule.
+	// The cmake converter uses it for the file(GENERATE) "bake" tier
+	// — a fully-resolved (or COPYONLY) body whose exact bytes are
+	// known at convert time and need no Bazel-time re-evaluation.
+	// Instead of the legacy `echo <base64> | base64 -d > $@` genrule
+	// (opaque, unmaintainable), write_file carries the content as a
+	// human-readable list of lines: WriteFileContent =
+	// strings.Split(body, "\n"), which skylib joins with "\n" — an
+	// exact round-trip for any \n-only UTF-8 text (Split/Join are
+	// inverses; a trailing "" element reproduces a trailing newline).
+	// Bodies that aren't \n-only UTF-8 text (binary, CRLF) stay on
+	// the base64 genrule, which is byte-exact regardless. write_file
+	// comes from @bazel_skylib//rules:write_file.bzl, so a BUILD that
+	// emits one needs bazel_skylib on the consuming project's
+	// MODULE.bazel — the emitter writes the load and write-a adds the
+	// bazel_dep (mirrors the KindPkgFiles / rules_pkg precedent).
+	KindWriteFile
 )
 
 func (k Kind) String() string {
@@ -106,6 +124,8 @@ func (k Kind) String() string {
 		return "pkg_files"
 	case KindAlias:
 		return "alias"
+	case KindWriteFile:
+		return "write_file"
 	}
 	return "unknown"
 }
@@ -490,6 +510,25 @@ type Target struct {
 	// substitution tool with the .h.in template as a real srcs
 	// input — see lower/configure_file.go.
 	GenruleTools []string
+
+	// write_file-specific fields. Populated only when Kind ==
+	// KindWriteFile.
+
+	// WriteFileOut is the package-relative output path (the rule's
+	// `out` attribute).
+	WriteFileOut string
+
+	// WriteFileContent is the file body as a list of lines, which
+	// skylib's write_file joins with WriteFileNewline. Built as
+	// strings.Split(body, "\n") so the join round-trips the original
+	// bytes exactly.
+	WriteFileContent []string
+
+	// WriteFileNewline is the skylib `newline` attribute ("unix" for
+	// "\n", "windows" for "\r\n"). The converter emits "unix" — it
+	// only routes \n-only bodies to write_file; CRLF / binary bodies
+	// stay on the base64 genrule.
+	WriteFileNewline string
 
 	// AliasActual is the Bazel label the alias resolves to.
 	// Populated only when Kind == KindAlias; renders as

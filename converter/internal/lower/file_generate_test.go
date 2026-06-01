@@ -11,6 +11,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -192,9 +193,52 @@ func TestRecoverFileGenerate_GenexFallsBackToLegacy(t *testing.T) {
 	if !hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("genex audit tag missing: %v", g.Tags)
 	}
-	if !strings.Contains(g.GenruleCmd, "base64 -d") {
-		t.Errorf("legacy cmd should base64-decode rendered bytes; got %q", g.GenruleCmd)
+	// The rendered bytes are \n-only UTF-8 text, so the bake now lowers
+	// to skylib write_file (human-readable line list) rather than the
+	// legacy base64 genrule. Content must round-trip the bytes exactly.
+	if g.Kind != ir.KindWriteFile {
+		t.Errorf("text body should bake via write_file; got kind %v cmd %q", g.Kind, g.GenruleCmd)
 	}
+	if g.WriteFileNewline != "unix" {
+		t.Errorf("write_file newline = %q, want unix", g.WriteFileNewline)
+	}
+	if got := strings.Join(g.WriteFileContent, "\n"); got != string(rendered) {
+		t.Errorf("write_file content round-trip = %q, want %q", got, string(rendered))
+	}
+}
+
+// TestRecoverFileGenerate_BinaryBodyStaysBase64 pins the fidelity
+// guard: a body that isn't \n-only UTF-8 text (here, an embedded NUL
+// + a CRLF) can't round-trip through write_file's join-with-newline
+// shape, so the bake stays on the byte-exact base64 genrule.
+func TestRecoverFileGenerate_BinaryBodyStaysBase64(t *testing.T) {
+	template := "x\n"
+	rendered := []byte("a\x00b\r\nc\n") // NUL + CRLF → not write_file-able
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/b.in", template, "b.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "b.out"),
+		Input:    filepath.Join(hostSrc, "src/b.in"),
+		HasInput: true,
+	}}
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	g := cc.Genrules[0]
+	if g.Kind != ir.KindGenrule {
+		t.Fatalf("binary body should stay on the base64 genrule; got kind %v", g.Kind)
+	}
+	if !strings.Contains(g.GenruleCmd, "base64 -d") {
+		t.Errorf("binary-body fallback cmd should base64-decode; got %q", g.GenruleCmd)
+	}
+	// Verify the base64 blob round-trips the exact bytes (NUL + CRLF).
+	for _, tok := range strings.Fields(g.GenruleCmd) {
+		if dec, err := base64.StdEncoding.DecodeString(tok); err == nil && string(dec) == string(rendered) {
+			return
+		}
+	}
+	t.Errorf("base64 blob in cmd doesn't decode to the exact rendered bytes; cmd=%q", g.GenruleCmd)
 }
 
 // TestRecoverFileGenerate_GenexLiftedViaStructuredBase64

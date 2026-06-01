@@ -584,6 +584,22 @@ transition cleanly.
   install root" entry under Done (high points). The repo-rule
   alternative stays rejected; this bullet is retained only as the
   record of why.
+- **De-base64 the rest of the cmake-configure-file family.** The
+  file(GENERATE) bake tier now emits readable skylib `write_file`
+  (see Done). The remaining inline-base64 emitters are: (1)
+  `configure_file`'s legacy bake (shares `configureFileLegacyCmd`) —
+  the same `KindWriteFile` lowering applies directly; (2) the
+  `cmake-codegen-cmake-script-bake` genrules; and (3) the genex-replay
+  *lift* tier (file(GENERATE) tiers a/b/b′ + the configure_file lift),
+  which can't fully de-base64 because the body is re-evaluated at
+  Bazel time by `//tools:cmake-configure-file` — but its `--values` /
+  `--genex-values` JSON maps and `--content-base64` template could
+  move from inline `echo <b64> | base64 -d` to readable **sidecar
+  files** referenced via `srcs` + `$(location)` (the tool already
+  accepts file-path inputs). That sidecar move needs a converter
+  companion-file emission concept routed through the split-package
+  TreeArtifact → stage-b merge — the bigger piece. Decided approach +
+  tradeoffs captured during the file(GENERATE) prove-it pass.
 
 ## Later (research / open questions)
 
@@ -640,6 +656,27 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Readable `write_file` bake for file(GENERATE) (de-base64).** The
+  file(GENERATE) "bake" tier — a fully-resolved / COPYONLY body whose
+  exact bytes are known at convert time — no longer emits the opaque
+  `echo <base64> | base64 -d > $@` genrule. It lowers to bazel_skylib's
+  `write_file(out=, content=[...], newline="unix")`, carrying the body
+  as a human-readable, diffable list of lines (`KindWriteFile`,
+  `fileGenerateBakeTarget`). Byte-exact for \n-only UTF-8 text:
+  `content = strings.Split(body, "\n")` round-trips through skylib's
+  join (Split/Join inverses; a trailing `""` element reproduces the
+  trailing newline — empirically pinned against a real
+  `bazel build`). Binary / CRLF bodies stay on the byte-exact base64
+  genrule (the `writeFileLines` guard). The emitter writes the
+  `@bazel_skylib//rules:write_file.bzl` load (`emitWriteFileLoad`) and
+  write-a adds the bazel_skylib bazel_dep on any kind:cmake element
+  (coarse gate, same precedent as rules_pkg; `||`-folded with the
+  multi-config skylib dep so there's no duplicate). buildifier leaves
+  the `content` list order intact (it's a file body, not a sortable
+  set). Advances Phase 7's human-maintainable-emission goal. Follow-up
+  queued under Next (the rest of the cmake-configure-file family +
+  sidecar-file inputs for the genex-replay lift tier).
 
 - **Toolchain-feature parity vs. cmake's default Release hardening
   flags.** The surfaced delta (cmake's distro `cc` adds

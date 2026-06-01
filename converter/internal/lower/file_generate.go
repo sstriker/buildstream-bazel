@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -183,14 +184,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // which exit fired.
 func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
-	legacy := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
-		GenruleOuts: []string{outRel},
-		Tags:        fileGenerateTags(fileGenerateTagSet{}),
-		Visibility:  []string{"//visibility:private"},
-	}
+	legacy := fileGenerateBakeTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
 	if optErr != nil {
 		return legacy
 	}
@@ -694,6 +688,56 @@ func fileGenerateLiftedCmd(inRel string, template []byte, values, genexValues ma
 // (some combos are nonsensical — e.g. Lifted + GenexCrossPackage
 // shouldn't co-occur — but the tag emission is independent per
 // facet so the type doesn't enforce exclusivity).
+// fileGenerateBakeTarget builds the file(GENERATE) "bake" target — a
+// fully-resolved body whose exact bytes are known at convert time and
+// need no Bazel-time re-evaluation. It prefers skylib write_file (the
+// content carried as a human-readable list of lines) over the legacy
+// `echo <base64> | base64 -d > $@` genrule, falling back to the
+// genrule only for bodies write_file can't round-trip exactly (binary,
+// CRLF). The base64 genrule is byte-exact regardless, so it's the
+// safe fallback; write_file is the maintainability win for the common
+// \n-only-text case (config headers, manifests).
+//
+// tags is the already-rendered tag list (callers pass the plain bake
+// tag set or the genex-fallback set). Both kinds carry the same tags;
+// only the mechanism differs.
+func fileGenerateBakeTarget(name, outRel string, rendered []byte, tags []string) ir.Target {
+	base := ir.Target{
+		Name:       name,
+		Tags:       tags,
+		Visibility: []string{"//visibility:private"},
+	}
+	if lines, ok := writeFileLines(rendered); ok {
+		base.Kind = ir.KindWriteFile
+		base.WriteFileOut = outRel
+		base.WriteFileContent = lines
+		base.WriteFileNewline = "unix"
+		return base
+	}
+	base.Kind = ir.KindGenrule
+	base.GenruleCmd = configureFileLegacyCmd(outRel, rendered)
+	base.GenruleOuts = []string{outRel}
+	return base
+}
+
+// writeFileLines splits an exactly-reproducible body into the line
+// list skylib write_file (newline="unix") joins back to the original
+// bytes. Reproducible iff the body is valid UTF-8 with no CR: then
+// strings.Split(body, "\n") joined by "\n" equals body exactly
+// (Split/Join are inverses; a trailing "" element reproduces a
+// trailing newline, e.g. "a\n" -> ["a", ""] -> "a\n"). Returns
+// (nil, false) for binary / CRLF bodies, which stay on the byte-exact
+// base64 genrule.
+func writeFileLines(body []byte) ([]string, bool) {
+	if !utf8.Valid(body) {
+		return nil, false
+	}
+	if bytes.IndexByte(body, '\r') >= 0 {
+		return nil, false
+	}
+	return strings.Split(string(body), "\n"), true
+}
+
 type fileGenerateTagSet struct {
 	// Lifted: the genrule uses the cmake-configure-file tool
 	// (template body decoupled from BUILD.bazel content) vs.
