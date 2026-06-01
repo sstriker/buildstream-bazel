@@ -394,9 +394,11 @@ transition cleanly.
     pick_file-over-install-root fallback. Consumer-side
     resolver — evaluated, declined: the manifest's
     `cmake_config_bundle_label` / `cmake_import_labels` are
-    populated for external / future resolvers, but the
-    converter intentionally does **not** read them.
-    Cross-element `find_package(<Pkg> CONFIG)` already
+    populated for external / future resolvers and the manifest
+    loader parses them (they round-trip in
+    `internal/manifest/imports_test.go`), but the converter's
+    cross-element resolution intentionally does **not** consult
+    them. Cross-element `find_package(<Pkg> CONFIG)` already
     resolves correctly via the build-tree `BazelLabel` dep +
     the synth-prefix bundle (see `scripts/meta-cross-cmake.sh`);
     re-pointing consumers at the `<target>_import` facade is a
