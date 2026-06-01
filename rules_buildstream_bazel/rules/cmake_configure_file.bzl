@@ -20,6 +20,18 @@ at any size; nothing is routed by length.
 """
 
 def _impl(ctx):
+    # Fail fast on the mutually-exclusive attribute pairs the docstrings
+    # describe, rather than letting the tool reject genex_values+genex_context
+    # later with a less direct error or silently preferring template over a
+    # meaningful content. The emitter only ever sets one of each, so these
+    # guard hand-written / future callers. (content == "" is the default and
+    # indistinguishable from unset, so only a non-empty content clashes with
+    # a template label — that's the genuinely ambiguous case.)
+    if ctx.attr.genex_values and ctx.attr.genex_context:
+        fail("cmake_configure_file %s: genex_values and genex_context are mutually exclusive; set at most one" % ctx.label)
+    if ctx.file.template and ctx.attr.content:
+        fail("cmake_configure_file %s: template and content are mutually exclusive; set exactly one" % ctx.label)
+
     out = ctx.actions.declare_file(ctx.attr.out)
     args = ctx.actions.args()
     inputs = []
