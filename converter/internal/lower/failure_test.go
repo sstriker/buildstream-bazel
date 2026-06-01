@@ -162,9 +162,9 @@ func TestFailure_UnsupportedExecuteProcess_Aggregates(t *testing.T) {
 	}
 	traceRaw := []byte(
 		`{"args":["COMMAND","git","describe","--tags","OUTPUT_VARIABLE","V12"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":12}` + "\n" +
-			`{"args":["COMMAND","uname","-m","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n" +
+			`{"args":["COMMAND","someprog","--info","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n" +
 			`{"args":["COMMAND","git","rev-parse","HEAD","OUTPUT_VARIABLE","GIT_SHA"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":2}` + "\n" +
-			`{"args":["COMMAND","hostname","OUTPUT_VARIABLE","H"],"cmd":"execute_process","file":"/src/sub/CMakeLists.txt","line":5}` + "\n",
+			`{"args":["COMMAND","othertool","OUTPUT_VARIABLE","H"],"cmd":"execute_process","file":"/src/sub/CMakeLists.txt","line":5}` + "\n",
 	)
 	_, err := lower.ToIR(r, nil, lower.Options{TraceRaw: traceRaw})
 	if err == nil {
@@ -195,7 +195,7 @@ func TestFailure_UnsupportedExecuteProcess_Aggregates(t *testing.T) {
 		}
 		prev = idx
 	}
-	if !strings.Contains(msg, "[stamp]") || !strings.Contains(msg, "[probe]") {
+	if !strings.Contains(msg, "[stamp]") || !strings.Contains(msg, "[unknown]") {
 		t.Errorf("expected both bucket labels in failure message; got: %s", msg)
 	}
 }
@@ -266,7 +266,7 @@ func TestFallback_UnsupportedExecuteProcess_EnumeratesPerTargetStubs(t *testing.
 		},
 	}
 	traceRaw := []byte(
-		`{"args":["COMMAND","uname","-m","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n",
+		`{"args":["COMMAND","git","rev-parse","HEAD","OUTPUT_VARIABLE","GIT_SHA"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n",
 	)
 	pkg, err := lower.ToIR(r, nil, lower.Options{
 		TraceRaw:                          traceRaw,
@@ -439,7 +439,7 @@ func TestFallback_PopulatesHdrsFromFileSets(t *testing.T) {
 		},
 	}
 	traceRaw := []byte(
-		`{"args":["COMMAND","uname","-m","OUTPUT_VARIABLE","ARCH"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n",
+		`{"args":["COMMAND","git","rev-parse","HEAD","OUTPUT_VARIABLE","GIT_SHA"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}` + "\n",
 	)
 	pkg, err := lower.ToIR(r, nil, lower.Options{
 		TraceRaw:                          traceRaw,

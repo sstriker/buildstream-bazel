@@ -10,13 +10,13 @@
 #
 # The probe call (`python3 -c "print('probe-value-42')"`,
 # OUTPUT_VARIABLE, no OUTPUT_FILE) classifies as BucketProbe in
-# the converter's Classify(). Without the rescue, a BucketProbe
-# call exits Tier-1 `unsupported-execute-process`. The Phase 4
-# rescue in recoverExecuteProcess skips that refusal when the
-# probe's OUTPUT_VARIABLE is present in cmakeVars — captured by the
-# dump-vars hook at end-of-configure — because the value flows
-# through to the downstream configure_file lift via the values
-# namespace.
+# the converter's Classify(). recoverExecuteProcess SKIPS a
+# BucketProbe call that produces no file artifact — a host/toolchain
+# probe is never a build input, so emitting nothing is faithful (the
+# broadened stance). The probe's captured value still reaches the
+# downstream configure_file independently: from cmakeVars when the
+# dump-vars hook caught it, else byte-reverse-engineered from the
+# (template, rendered) pair by the configure_file lift.
 #
 # This gate proves the rescue value genuinely re-renders at Bazel
 # time (not just that conversion stops refusing): the recovered
@@ -30,17 +30,18 @@
 # Asserts:
 #   1. convert-element-cmake exits 0.
 #   2. NO `unsupported-execute-process` appears in stderr (the
-#      rescue fired instead of refusing the BucketProbe call).
+#      BucketProbe call skipped instead of refusing).
 #   3. The recovered configure_file is the lifted re-rendering
 #      shape (//tools:cmake-configure-file + cmake-codegen-lifted),
 #      and re-running cmake-configure-file over the template + the
 #      rule's captured values dict materializes `probe-value-42`
 #      — i.e. the probe value reaches a real Bazel-time re-render.
-#   4. Negative: with --dump-vars=false the probe value is NOT
-#      captured, so the rescue can't fire and convert exits Tier-1
-#      `unsupported-execute-process`. This pins the rescue as
-#      load-bearing — the gate would pass vacuously if conversion
-#      succeeded regardless of the dump.
+#   4. The broadened skip holds without the dump-vars capture too:
+#      with --dump-vars=false the probe still SKIPS (convert exits 0,
+#      no Tier-1 refusal) and `probe-value-42` still materializes —
+#      the configure_file recovers PROBE_RESULT by byte-reverse-
+#      engineering the (template, rendered) pair. Pins the broaden:
+#      an uncaptured host/toolchain probe is benign, not a refusal.
 #
 # cmake-availability gating: skips cleanly when no cmake >= 3.24
 # is on PATH (the architectural floor for the dump-vars hook the
@@ -187,29 +188,40 @@ if ! grep -q 'probe-value-42' "$rendered"; then
     exit 1
 fi
 
-# Assertion (4): the rescue is load-bearing. With --dump-vars=false
-# the probe value is never captured into cmakeVars, so the rescue
-# can't fire and the BucketProbe call refuses Tier-1. If this run
-# unexpectedly succeeded, assertion (1) would be passing vacuously.
+# Assertion (4): the broadened skip holds without the dump-vars
+# capture too. With --dump-vars=false PROBE_RESULT is never captured
+# into cmakeVars, yet the BucketProbe call still SKIPS (a
+# host/toolchain probe is never a build input) — convert exits 0 with
+# no Tier-1 refusal — and `probe-value-42` still materializes,
+# recovered by the configure_file lift's byte-reverse-engineering of
+# the (template, rendered) pair. Pins the broaden: an uncaptured probe
+# is benign, not a refusal.
 out_build_nodump="$work_dir/BUILD.bazel.nodump"
-if "$bin_dir/convert-element-cmake" \
+"$bin_dir/convert-element-cmake" \
     --source-root "$fixture" \
     --lift-configure-file \
     --dump-vars=false \
     --out-build "$out_build_nodump" \
-    >"$work_dir/convert.nodump.stdout" 2>"$work_dir/convert.nodump.stderr"; then
-    echo "FAIL: convert-element-cmake (--dump-vars=false) exited 0"
-    echo "   without the dump-vars capture the BucketProbe call has no"
-    echo "   rescue path and should refuse Tier-1 — assertion (1) would"
-    echo "   otherwise be passing vacuously"
+    >"$work_dir/convert.nodump.stdout" 2>"$work_dir/convert.nodump.stderr" || {
+    echo "FAIL: convert-element-cmake (--dump-vars=false) exited non-zero"
+    echo "   under the broaden an uncaptured host/toolchain probe should"
+    echo "   SKIP (benign), not refuse Tier-1"
+    sed 's/^/   stderr: /' "$work_dir/convert.nodump.stderr"
+    exit 1
+}
+if grep -q 'unsupported-execute-process' "$work_dir/convert.nodump.stderr"; then
+    echo "FAIL: unsupported-execute-process surfaced under --dump-vars=false"
+    echo "   the broadened stance skips an uncaptured BucketProbe instead"
+    echo "   of refusing it"
     sed 's/^/   stderr: /' "$work_dir/convert.nodump.stderr"
     exit 1
 fi
-if ! grep -q 'unsupported-execute-process' "$work_dir/convert.nodump.stderr"; then
-    echo "FAIL: --dump-vars=false run failed for an unexpected reason"
-    echo "   expected the unsupported-execute-process Tier-1 refusal"
-    sed 's/^/   stderr: /' "$work_dir/convert.nodump.stderr"
+if ! grep -q 'probe-value-42' "$out_build_nodump"; then
+    echo "FAIL: probe-value-42 missing from the --dump-vars=false BUILD"
+    echo "   the configure_file lift should byte-recover PROBE_RESULT from"
+    echo "   the (template, rendered) pair even without the dump-vars capture"
+    sed 's/^/   /' "$out_build_nodump"
     exit 1
 fi
 
-echo "ok  meta-cmake-execute-process-rescue: dump-vars rescue carries the BucketProbe value through the lifted configure_file re-render (probe-value-42 materialized); load-bearing under --dump-vars=false"
+echo "ok  meta-cmake-execute-process-rescue: BucketProbe skips and the lifted configure_file re-renders probe-value-42 (via dump-vars capture, and under --dump-vars=false via byte-recovery)"

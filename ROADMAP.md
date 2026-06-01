@@ -284,16 +284,28 @@ transition cleanly.
     recognized lift pattern" string. The bucket constant
     keeps the historical `unknown` value for failure.json
     triage continuity; the new `BucketRefuse` alias
-    documents the role. The OUTPUT_VARIABLE probe/stamp
-    rescue shipped earlier (`recoverExecuteProcess` skips
-    the BucketProbe/BucketStamp refusal when the captured
-    value is present in `cmakeVars` from the dump-vars
-    hook) is now a guarded contract:
-    `scripts/meta-cmake-execute-process-rescue.sh` drives
-    a top-level `execute_process` probe whose value re-renders
-    through a lifted `configure_file` at Bazel time and pins
-    the rescue load-bearing with a `--dump-vars=false`
-    negative arm. The originally-queued *sibling
+    documents the role. The probe/stamp handling has since broadened
+    from "rescue when captured" into a faithful split
+    (`recoverExecuteProcess`): a recognized host/toolchain
+    **probe** that produces no file artifact is SKIPPED
+    unconditionally — it is never a build input, and its
+    consequence (a captured value feeding a configure_file, a
+    host triple landing in config.h, a tool capability landing
+    in the recovered compile flags) is recovered independently —
+    while a **stamp** still gates on the dump-vars capture (its
+    VCS revision would otherwise bake into srckey). A feature-
+    declaration probe (`HAVE_*` / `USE_*` / `*_FOUND` / …) instead
+    lifts to an operator-overridable `bool_flag` +
+    `config_setting` — the Bazel idiom for "does the host have
+    X?" — defaulting per writeback channel (`featureProbeDefault`:
+    a RESULT_VARIABLE exit-0 means present; an OUTPUT_VARIABLE
+    stdout goes through `cmakeTruthy`).
+    `scripts/meta-cmake-execute-process-rescue.sh` drives a
+    top-level `execute_process` probe whose value re-renders
+    through a lifted `configure_file` at Bazel time, and its
+    `--dump-vars=false` arm now pins the broadened skip — the
+    uncaptured probe is benign (convert still exits 0), and the
+    value still byte-recovers into the re-render. The originally-queued *sibling
     `file(GENERATE)` OUTPUT_VARIABLE hook* is resolved as
     follows: for the common top-level config-invariant probe
     it is **redundant** — dump-vars already DEFER-dumps every

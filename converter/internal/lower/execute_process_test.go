@@ -577,20 +577,22 @@ func TestRecoverExecuteProcess_RescueProbeViaDumpVars(t *testing.T) {
 }
 
 // TestRecoverExecuteProcess_NoRescueWhenVarMissing confirms the
-// rescue is gated on the variable actually being in cmakeVars —
-// e.g. when dump-vars hook wasn't enabled, the refusal still
-// fires.
+// capture gate still bites for a STAMP: an uncaptured VCS-revision
+// stamp refuses (its value would otherwise bake into srckey, silently
+// pinning the build to one commit). Probes broadened to skip-when-
+// uncaptured (see _GenericProbeSkips); the gate now meaningfully
+// applies only to stamps.
 func TestRecoverExecuteProcess_NoRescueWhenVarMissing(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
 		Line:           7,
-		Commands:       [][]string{{"gcc", "-dumpversion"}},
-		OutputVariable: "GCC_VERSION",
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
 	}}
 	cc := newCodegenContext()
 	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
 	if len(refusals) == 0 {
-		t.Error("expected refusal when dump-vars data absent")
+		t.Error("expected refusal for an uncaptured stamp")
 	}
 }
 
@@ -611,12 +613,12 @@ func TestRecoverExecuteProcess_RescueStamp(t *testing.T) {
 	}
 }
 
-// TestRecoverExecuteProcess_RescueCapabilityProbe covers the
-// RESULT_VARIABLE-only capability probe: `ar` / `ranlib` "does this tool
-// support flag X" checks write only an exit status — no OUTPUT_VARIABLE,
-// no OUTPUT_FILE. There's no value to consume (the capability's effect
-// lands in the recovered compile flags), so the call produces no Bazel
-// artifact and is rescued even without a dump-vars capture.
+// TestRecoverExecuteProcess_RescueCapabilityProbe covers an `ar` /
+// `ranlib` "does this tool support flag X" check: a RESULT_VARIABLE-only
+// probe whose exit status's effect lands in the recovered compile flags,
+// never a build input. It skips as a recognized probe (the broaden skips
+// any non-feature probe regardless of capture), producing no Bazel
+// artifact and no refusal.
 func TestRecoverExecuteProcess_RescueCapabilityProbe(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
@@ -650,28 +652,30 @@ func TestRecoverExecuteProcess_RescueHostDetectionScript(t *testing.T) {
 	}
 }
 
-// TestRecoverExecuteProcess_NonCapabilityResultProbe confirms the
-// RESULT_VARIABLE-only rescue is restricted to capability drivers: a
-// probe with a generic (non-feature-declaration) result var, whose exit
-// status could feed a configure_file, refuses when uncaptured and
-// rescues only when its RESULT_VARIABLE is in cmakeVars (dump-vars).
-// Guards against over-broad silent drops. (A HAVE_X-style result var
-// instead lifts to a build setting — see _FeatureProbeToBuildSetting.)
-func TestRecoverExecuteProcess_NonCapabilityResultProbe(t *testing.T) {
+// TestRecoverExecuteProcess_GenericProbeSkips confirms the broadened
+// stance: a recognized host/toolchain probe with a generic (non-feature-
+// declaration) result var skips whether or not the dump-vars hook
+// captured its value — the probe is never a build input, so emitting
+// nothing is faithful. (A HAVE_X-style result var instead lifts to a
+// build setting — see _FeatureProbeToBuildSetting; a stamp still gates on
+// capture — see _NoRescueWhenVarMissing.)
+func TestRecoverExecuteProcess_GenericProbeSkips(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
 		Line:           13,
 		Commands:       [][]string{{"python3", "-c", "import pygments"}},
 		ResultVariable: "PYGMENTS_STATUS",
 	}}
+	// Uncaptured: skips (no refusal) under the broaden.
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) == 0 {
-		t.Error("uncaptured non-capability RESULT_VARIABLE probe should refuse")
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+		t.Errorf("uncaptured generic probe should skip; got %v", refusals)
 	}
+	// Captured: also skips (the value is recovered via Reply.Vars).
 	cc = newCodegenContext()
 	captured := map[string]string{"PYGMENTS_STATUS": "0"}
 	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc); len(refusals) != 0 {
-		t.Errorf("captured RESULT_VARIABLE probe should rescue; got %v", refusals)
+		t.Errorf("captured generic probe should skip; got %v", refusals)
 	}
 }
 
