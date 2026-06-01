@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -60,14 +61,20 @@ func shapeHeaderOnlyStripIncludePrefix(pkg *ir.Package) {
 		if len(t.Hdrs) == 0 || len(t.Includes) != 1 {
 			continue
 		}
-		d := t.Includes[0]
+		// Normalize the include dir before matching: trace-derived dirs
+		// can carry a leading "./", a trailing "/", or surrounding
+		// whitespace that filepath.Clean folds away (Bazel treats
+		// "include" and "include/" equivalently). Compare headers in the
+		// same normalized space so a harmless variant doesn't block the
+		// lift, and store the cleaned form on the attribute.
+		d := filepath.Clean(strings.TrimSpace(t.Includes[0]))
 		if d == "" || d == "." || pathHasDotDotSegment(d) {
 			continue
 		}
 		prefix := d + "/"
 		covered := true
 		for _, h := range t.Hdrs {
-			if !strings.HasPrefix(h, prefix) {
+			if !strings.HasPrefix(filepath.Clean(strings.TrimSpace(h)), prefix) {
 				covered = false
 				break
 			}

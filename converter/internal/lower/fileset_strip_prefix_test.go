@@ -34,6 +34,13 @@ func TestShapeHeaderOnlyStripIncludePrefix(t *testing.T) {
 			wantStrip: "", wantInc: []string{"include"},
 		},
 		{
+			// Trace-derived variants ("./include", trailing "/") normalize
+			// to "include" and still lift.
+			name:      "leading ./ and trailing slash normalize and lift",
+			in:        ir.Target{Kind: ir.KindCCInterface, Hdrs: []string{"include/foo/bar.h"}, Includes: []string{"./include/"}},
+			wantStrip: "include", wantInc: nil,
+		},
+		{
 			name:      "multiple include dirs not lifted",
 			in:        ir.Target{Kind: ir.KindCCInterface, Hdrs: []string{"include/a.h"}, Includes: []string{"include", "api"}},
 			wantStrip: "", wantInc: []string{"include", "api"},
