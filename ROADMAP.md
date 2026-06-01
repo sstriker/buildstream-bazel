@@ -210,12 +210,25 @@ transition cleanly.
     dropping the call); `scripts/meta-cmake-genex-literal-twopass.sh`
     pins it end-to-end (`$<TARGET_PROPERTY:app,APP_GENDIR>` in an
     OUTPUT → `gen_out/manifest.txt`, load-bearing under
-    `--two-pass-genex=false`). **Remaining consumers:** wiring the
-    same probe into add_custom_command argv / install destinations
-    / `file(GENERATE)` CONTENT bodies that hit `UnsupportedError`
-    today, and a `select()`-capable consumer for per-config-
-    divergent literals. The `UnsupportedError` surface keeps
-    shrinking as each consumer lands.
+    `--two-pass-genex=false`). The second consumer wired is the
+    `file(GENERATE)` **CONTENT-body** site (tier b′ in
+    `buildFileGenerateGenrule`): when the (a) Go evaluator refuses
+    and the (b) structured-capture extractor can't anchor the
+    per-genex values positionally — adjacent genexes with no static
+    separator, ambiguous static chunks — `probeGenexValuesForBody`
+    resolves each top-level `$<…>` literal individually via the warm
+    second pass and replays them as a `--genex-values` literal-replace
+    map, so the body lifts (`cmake-codegen-genex-resolved`) instead of
+    baking the rendered bytes into srckey
+    (`cmake-codegen-genex-unresolved`). The same gate pins it
+    end-to-end (adjacent `$<TARGET_PROPERTY:app,GEN_PART_{A,B}>` →
+    resolved, tag flips to `-unresolved` under `--two-pass-genex=false`).
+    **Remaining consumers:** wiring the same probe into
+    add_custom_command argv / install destinations, and a
+    `select()`-capable consumer for per-config-divergent literals
+    (tier b′ drops those to legacy today — a single literal-replace
+    map can't represent them). The `UnsupportedError` /
+    legacy-bake surface keeps shrinking as each consumer lands.
 
   - **Phase 4 — build.ninja custom-command walk.** Promote
     `converter/internal/ninja/` from its current

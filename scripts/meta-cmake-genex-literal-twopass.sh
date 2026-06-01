@@ -86,6 +86,29 @@ if ! grep -qF 'outs = ["gen_out/manifest.txt"]' "$out_on"; then
     exit 1
 fi
 
+# --- Assertion 1b (tier b′): two-pass ON resolves the CONTENT-body
+# adjacent genexes the structured-capture extractor can't anchor. The
+# content_adjacent.txt genrule must lift (cmake-codegen-genex-resolved)
+# rather than bake the rendered "alphabeta\n" bytes. ---
+if ! grep -qF 'cmake-codegen-genex-resolved' "$out_on"; then
+    echo "FAIL: two-pass ON did not resolve the adjacent CONTENT-body genexes"
+    echo "   expected gen_content_adjacent_txt to carry cmake-codegen-genex-resolved"
+    echo "--- generated BUILD ---"
+    sed 's/^/   /' "$out_on"
+    exit 1
+fi
+# YWxwaGFiZXRhCg== is base64("alphabeta\n") — the rendered bytes the
+# legacy bake would embed. Their ABSENCE proves the body lifted to a
+# literal-replace map (template + per-genex values) instead of baking.
+if grep -qF 'YWxwaGFiZXRhCg==' "$out_on"; then
+    echo "FAIL: two-pass ON baked the rendered CONTENT bytes instead of lifting"
+    echo "   the per-literal probe should have produced a --genex-values map,"
+    echo "   keeping the rendered \"alphabeta\" bytes out of srckey"
+    echo "--- generated BUILD ---"
+    sed 's/^/   /' "$out_on"
+    exit 1
+fi
+
 # --- Assertion 2 (load-bearing): two-pass OFF drops the call. ---
 out_off="$work_dir/BUILD.off"
 "$bin_dir/convert-element-cmake" \
@@ -108,4 +131,25 @@ if grep -qF 'gen_out/manifest.txt' "$out_off"; then
     exit 1
 fi
 
-echo "ok  meta-cmake-genex-literal-twopass: \$<TARGET_PROPERTY:app,APP_GENDIR> in a file(GENERATE) OUTPUT resolved via the warm second configure pass (outs = gen_out/manifest.txt); load-bearing under --two-pass-genex=false"
+# --- Assertion 2b (load-bearing for tier b′): with two-pass OFF the
+# content_adjacent.txt body falls to the legacy bake — the genex tag
+# flips to cmake-codegen-genex-unresolved and the rendered bytes are
+# embedded. This proves the second pass is what flips it to resolved
+# in assertion 1b (not some other always-on path). The OUTPUT here is
+# static, so the genrule is still emitted (only the body shape flips),
+# unlike the manifest.txt OUTPUT case which drops entirely. ---
+if ! grep -qF 'cmake-codegen-genex-unresolved' "$out_off"; then
+    echo "FAIL: --two-pass-genex=false should bake the adjacent CONTENT genexes"
+    echo "   (cmake-codegen-genex-unresolved) — assertion 1b would otherwise pass vacuously"
+    echo "--- generated BUILD (two-pass off) ---"
+    sed 's/^/   /' "$out_off"
+    exit 1
+fi
+if ! grep -qF 'YWxwaGFiZXRhCg==' "$out_off"; then
+    echo "FAIL: --two-pass-genex=false should embed the rendered \"alphabeta\" bytes"
+    echo "--- generated BUILD (two-pass off) ---"
+    sed 's/^/   /' "$out_off"
+    exit 1
+fi
+
+echo "ok  meta-cmake-genex-literal-twopass: \$<TARGET_PROPERTY:app,APP_GENDIR> in a file(GENERATE) OUTPUT resolved via the warm second configure pass (outs = gen_out/manifest.txt); CONTENT-body adjacent genexes resolved via per-literal probe (tier b′, cmake-codegen-genex-resolved); both load-bearing under --two-pass-genex=false"

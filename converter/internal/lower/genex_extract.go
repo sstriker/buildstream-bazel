@@ -120,6 +120,73 @@ func extractGenexValues(template, rendered []byte) (map[string]string, error) {
 	return values, nil
 }
 
+// probeGenexValuesForBody resolves each top-level genex in a
+// file(GENERATE) body individually via the two-pass literal probe,
+// returning a literal→value map suitable for fileGenerateLiftedCmd's
+// genexValues arg.
+//
+// This is tier (b′), between (b) extractGenexValues and the legacy
+// bytes-embedded fallback. It fires only when (b) cannot recover the
+// per-genex values by positional anchoring — adjacent genexes with
+// no static separator, ambiguous static chunks. Where (b) trusts
+// cmake's single rendered output and stitches it back together
+// positionally, (b′) asks cmake to evaluate each genex literal in
+// isolation (the warm second configure pass via cc.resolveLiteral),
+// sidestepping the anchoring problem entirely. The acceptance metric
+// is the shrinking UnsupportedError / legacy-fallback surface
+// (ROADMAP.md Phase 3).
+//
+// Returns (nil, false) when:
+//   - cc has no probe wiring (single-pass callers) or the body has no
+//     top-level genex — nothing to do;
+//   - pass 1 (sink recording): every literal is recorded as a probe
+//     request and false is returned so the caller drops to legacy
+//     this round; the orchestrator then runs the warm second pass and
+//     re-lifts;
+//   - any literal stays unresolved, or diverged per config, on pass 2
+//     (the divergent case is a future select()-capable consumer — a
+//     single literal-replace map can't represent it), or cmake's
+//     resolved value itself still carries a genex (can't replay as a
+//     literal substitution).
+//
+// On pass 1 it deliberately keeps recording the remaining literals
+// after the first miss so the single warm second pass probes them all
+// at once rather than one reconfigure per literal.
+func probeGenexValuesForBody(cc *codegenContext, body []byte) (map[string]string, bool) {
+	if cc == nil {
+		return nil, false
+	}
+	ranges := genexeval.TopLevelGenexes(body)
+	if len(ranges) == 0 {
+		return nil, false
+	}
+	values := map[string]string{}
+	allResolved := true
+	for _, r := range ranges {
+		literal := string(body[r.Start:r.End])
+		if _, done := values[literal]; done {
+			continue
+		}
+		// file(GENERATE) genexes evaluate in project scope; any
+		// target reference (e.g. $<TARGET_PROPERTY:app,P>) is
+		// self-contained in the literal, which the probe hook
+		// evaluates with full target knowledge.
+		v, ok := cc.resolveLiteral(literal, "")
+		if !ok {
+			allResolved = false
+			continue
+		}
+		if hasGenex([]byte(v)) {
+			return nil, false
+		}
+		values[literal] = v
+	}
+	if !allResolved {
+		return nil, false
+	}
+	return values, true
+}
+
 // truncForErr keeps error messages from dumping multi-KB
 // templates wholesale. 40 bytes is enough to identify the
 // offending span without overwhelming the diagnostic.

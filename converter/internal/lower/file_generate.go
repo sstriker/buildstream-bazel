@@ -150,7 +150,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 		}
 
 		name := configureFileGenruleName(rel) // reuse the gen_<path> namer
-		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets, imports)
+		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets, imports, cc)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -181,7 +181,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // Falls back to legacy otherwise. The genex short-circuit
 // happens before pickValues so the audit tag tells the operator
 // which exit fired.
-func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver) ir.Target {
+func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
 	legacy := ir.Target{
 		Name:        name,
@@ -450,6 +450,32 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 				return target
 			}
 		}
+
+		// (b′) Two-pass per-literal probe. (b)'s positional anchoring
+		// failed (adjacent genexes / ambiguous static chunks); resolve
+		// each top-level genex literal individually via cmake's own
+		// evaluator (the warm second configure pass) and replay as a
+		// literal-replace map. On pass 1 this records the probe
+		// requests and returns false, so we fall to legacy this round;
+		// the orchestrator runs the second pass and re-lifts.
+		if probed, ok := probeGenexValuesForBody(cc, templateBody); ok {
+			cmd, cmdErr := fileGenerateLiftedCmd(inRel, templateBody, map[string]string{}, probed, opts, isContentForm)
+			if cmdErr == nil {
+				target := ir.Target{
+					Name:         name,
+					Kind:         ir.KindGenrule,
+					GenruleCmd:   cmd,
+					GenruleOuts:  []string{outRel},
+					GenruleTools: []string{"//tools:cmake-configure-file"},
+					Tags:         fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}),
+					Visibility:   []string{"//visibility:private"},
+				}
+				if !isContentForm {
+					target.Srcs = []string{inRel}
+				}
+				return target
+			}
+		}
 		genexLegacy := legacy
 		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
 		return genexLegacy
@@ -682,6 +708,14 @@ type fileGenerateTagSet struct {
 	// GenexEvaluated: the (a) Go-side evaluator lift succeeded
 	// — the most-faithful shape.
 	GenexEvaluated bool
+	// GenexProbed: the (b′) two-pass literal-probe lift succeeded
+	// — each top-level genex was resolved individually by cmake's
+	// own evaluator (the warm second configure pass), so the
+	// literal-replace map is sound even where (b)'s positional
+	// anchoring couldn't recover the per-genex values (adjacent
+	// genexes, ambiguous static chunks). Still "resolved" for
+	// audit purposes — rendered bytes no longer in srckey.
+	GenexProbed bool
 	// GenexCrossPackage: cross-package TARGET_FILE soundness
 	// gate fired — the genrule is a refusal stub that fails
 	// at bazel-build time. See
@@ -734,7 +768,7 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 	if s.GenexFallback {
 		tags = append(tags, "cmake-codegen-genex-unresolved")
 	}
-	if s.GenexCaptured || s.GenexEvaluated {
+	if s.GenexCaptured || s.GenexEvaluated || s.GenexProbed {
 		tags = append(tags, "cmake-codegen-genex-resolved")
 	}
 	if s.GenexCrossPackage {
