@@ -332,6 +332,22 @@ func TestClassify_Buckets(t *testing.T) {
 			},
 			bucket: BucketProbe,
 		},
+		{
+			name: "sh config.guess → probe (host-triple detection script)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"/bin/sh", "/llvm/cmake/config.guess"}},
+				OutputVariable: "TT_OUT",
+			},
+			bucket: BucketProbe,
+		},
+		{
+			name: "direct ./config.sub → probe (host-triple detection script)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"./config.sub", "x86_64-pc-linux-gnu"}},
+				OutputVariable: "CANON",
+			},
+			bucket: BucketProbe,
+		},
 	}
 
 	for _, c := range cases {
@@ -345,6 +361,32 @@ func TestClassify_Buckets(t *testing.T) {
 			}
 			if got.Reason == "" {
 				t.Errorf("reason: empty (every classification should carry one)")
+			}
+		})
+	}
+}
+
+// TestExecuteProcessRunsHostDetectionScript guards the host-triple
+// detection recognition: a shell-run or direct config.guess/config.sub
+// matches, but a script named only as a data argument (cp config.guess)
+// or an unrelated tool does not.
+func TestExecuteProcessRunsHostDetectionScript(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+		want bool
+	}{
+		{"sh config.guess", []string{"/bin/sh", "/llvm/cmake/config.guess"}, true},
+		{"bash config.sub", []string{"bash", "config.sub", "x86_64"}, true},
+		{"direct ./config.guess", []string{"./config.guess"}, true},
+		{"cp names script as data arg", []string{"cp", "config.guess", "/tmp/x"}, false},
+		{"unrelated tool", []string{"gcc", "-c", "foo.c"}, false},
+		{"empty argv", nil, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := executeProcessRunsHostDetectionScript(c.argv); got != c.want {
+				t.Errorf("got %v want %v", got, c.want)
 			}
 		})
 	}
