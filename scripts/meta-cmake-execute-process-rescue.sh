@@ -137,15 +137,28 @@ if vi < 0:
     sys.stderr.write("could not locate the values dict in the gen_config_h rule\n")
     sys.exit(1)
 brace = txt.index('{', vi)
-depth, end = 0, None
-for i in range(brace, len(txt)):
-    if txt[i] == '{':
+# Brace-match to the dict close, but skip braces inside string literals
+# (a cmake variable value can legitimately contain { or }), honoring
+# backslash escapes, so the count tracks only structural braces.
+depth, end, in_str, i = 0, None, None, brace
+while i < len(txt):
+    c = txt[i]
+    if in_str is not None:
+        if c == "\\":
+            i += 2
+            continue
+        if c == in_str:
+            in_str = None
+    elif c == '"' or c == "'":
+        in_str = c
+    elif c == "{":
         depth += 1
-    elif txt[i] == '}':
+    elif c == "}":
         depth -= 1
         if depth == 0:
             end = i + 1
             break
+    i += 1
 if end is None:
     sys.stderr.write("unbalanced braces in the gen_config_h values dict\n")
     sys.exit(1)

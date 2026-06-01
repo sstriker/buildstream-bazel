@@ -30,7 +30,7 @@ def _impl(ctx):
     if ctx.attr.genex_values and ctx.attr.genex_context:
         fail("cmake_configure_file %s: genex_values and genex_context are mutually exclusive; set at most one" % ctx.label)
     if ctx.file.template and ctx.attr.content:
-        fail("cmake_configure_file %s: template and content are mutually exclusive; set exactly one" % ctx.label)
+        fail("cmake_configure_file %s: template and content are mutually exclusive; set at most one" % ctx.label)
 
     out = ctx.actions.declare_file(ctx.attr.out)
     args = ctx.actions.args()
@@ -102,8 +102,7 @@ def _impl(ctx):
     args.add(out)
 
     ctx.actions.run(
-        executable = ctx.file.tool,
-        tools = [ctx.file.tool],
+        executable = ctx.executable.tool,
         arguments = [args],
         inputs = inputs,
         outputs = [out],
@@ -147,9 +146,11 @@ cmake_configure_file = rule(
         ),
         "tool": attr.label(
             mandatory = True,
-            allow_single_file = True,
+            executable = True,
             cfg = "exec",
-            doc = "The cmake-configure-file binary (e.g. //tools:cmake-configure-file).",
+            doc = "The cmake-configure-file binary (e.g. //tools:cmake-configure-file). " +
+                  "Declared executable so Bazel validates the label is runnable, mirroring " +
+                  "trace_load's trace_lookup attr.",
         ),
         "at_only": attr.bool(doc = "Mirror configure_file's @ONLY."),
         "copy_only": attr.bool(doc = "Mirror configure_file's COPYONLY."),
