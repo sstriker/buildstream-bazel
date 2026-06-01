@@ -118,6 +118,43 @@ build out.txt: CUSTOM_COMMAND
 	}
 }
 
+// A command mixing a liftable full-path op ($<TARGET_FILE:tool> → bin/tool →
+// $(location :tool)) with a derived op for the SAME target ($<TARGET_FILE_DIR:
+// tool> → bare `bin`, never lifted) must NOT be classified resolved just
+// because "tool" landed in tools via the full-path op — the _DIR occurrence
+// baked a non-portable literal.
+func TestLowerStandaloneCustomCommands_GenexMixedFamilyOpsUnresolved(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build gen.h: CUSTOM_COMMAND
+  COMMAND = bin/tool --out-dir bin --emit gen.h
+`)
+	artifactToName := map[string]string{"bin/tool": "tool"}
+	ctx := standaloneTraceContext{
+		CustomCommands: []shadow.AddCustomCommandCall{{
+			Outputs:  []string{"gen.h"},
+			Commands: [][]string{{"$<TARGET_FILE:tool>", "--out-dir", "$<TARGET_FILE_DIR:tool>", "--emit", "gen.h"}},
+		}},
+	}
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", artifactToName, ctx)
+	if len(got) != 1 {
+		t.Fatalf("want 1 genrule; got %d", len(got))
+	}
+	// The full-path op still lifts (so :tool is in tools)...
+	if !containsTool(got[0].GenruleTools, ":tool") {
+		t.Errorf("full-path TARGET_FILE should still lift to :tool; got %v", got[0].GenruleTools)
+	}
+	// ...but the $<TARGET_FILE_DIR:tool> occurrence baked a bare `bin`, so the
+	// command must classify unresolved, not resolved.
+	if !hasTag(got[0].Tags, cmdGenexUnresolvedTag) {
+		t.Errorf("mixed full-path + derived op should be %s; got %v", cmdGenexUnresolvedTag, got[0].Tags)
+	}
+	if hasTag(got[0].Tags, cmdGenexResolvedTag) {
+		t.Errorf("must not be %s when a derived op baked; got %v", cmdGenexResolvedTag, got[0].Tags)
+	}
+}
+
 func containsTool(tools []string, want string) bool {
 	for _, t := range tools {
 		if t == want {

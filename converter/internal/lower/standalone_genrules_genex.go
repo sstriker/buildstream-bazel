@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"bytes"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -36,6 +37,22 @@ const (
 	cmdGenexUnresolvedTag = "cmake-codegen-cmd-genex-unresolved"
 )
 
+// derivedTargetFileOpPrefixes are the TARGET_FILE-family ops that resolve to a
+// bare directory or basename rather than a full artifact path. cmake renders
+// e.g. `$<TARGET_FILE_DIR:t>` → `bin`, `$<TARGET_FILE_NAME:t>` → `t.so` — neither
+// is an artifact-path key, so rewriteToolFromTarget never lifts them to a
+// `$(location :t)` label; their resolved value bakes verbatim. Their presence
+// therefore forces an -unresolved classification regardless of whether the
+// target's *name* also appears in `tools` via a sibling full-path
+// `$<TARGET_FILE:t>` (the name-based check alone can't see that the derived
+// occurrence didn't lift).
+var derivedTargetFileOpPrefixes = []string{
+	"$<TARGET_FILE_DIR:",
+	"$<TARGET_FILE_NAME:",
+	"$<TARGET_LINKER_FILE_DIR:",
+	"$<TARGET_LINKER_FILE_NAME:",
+}
+
 // customCommandGenex captures the generator-expression footprint of a
 // trace-recorded add_custom_command's COMMAND argv.
 type customCommandGenex struct {
@@ -48,6 +65,12 @@ type customCommandGenex struct {
 	// whose resolution must become a Bazel label to stay portable.
 	targetFileRefs []string
 	targetObjects  []string
+	// hasDerivedPathOp is set when the argv used any derived TARGET_FILE-family
+	// op (the _DIR / _NAME variants in derivedTargetFileOpPrefixes). Those bake
+	// a bare dir/basename literal that is never lifted to a label, so the
+	// command classifies -unresolved even if a sibling full-path op for the
+	// same target name did lift.
+	hasDerivedPathOp bool
 }
 
 // buildOutputToCustomCommandGenex indexes each add_custom_command OUTPUT /
@@ -67,9 +90,10 @@ func buildOutputToCustomCommandGenex(commands []shadow.AddCustomCommandCall) map
 			continue
 		}
 		info := customCommandGenex{
-			hasGenex:       true,
-			targetFileRefs: extractTargetFileRefs(blob),
-			targetObjects:  extractTargetObjectsRefs(blob),
+			hasGenex:         true,
+			targetFileRefs:   extractTargetFileRefs(blob),
+			targetObjects:    extractTargetObjectsRefs(blob),
+			hasDerivedPathOp: containsAnyPrefix(blob, derivedTargetFileOpPrefixes),
 		}
 		for _, o := range c.Outputs {
 			if _, used := idx[o]; !used && o != "" {
@@ -92,6 +116,16 @@ func buildOutputToCustomCommandGenex(commands []shadow.AddCustomCommandCall) map
 // a single space-joined blob for genex scanning. A trailing space per token is
 // harmless — the genex scanners match on the `$<...>` substrings, not argv
 // boundaries.
+// containsAnyPrefix reports whether blob contains any of the given substrings.
+func containsAnyPrefix(blob []byte, prefixes []string) bool {
+	for _, p := range prefixes {
+		if bytes.Contains(blob, []byte(p)) {
+			return true
+		}
+	}
+	return false
+}
+
 func joinCommandArgv(cmds [][]string) []byte {
 	var b strings.Builder
 	for _, argv := range cmds {
@@ -126,6 +160,13 @@ func customCommandGenexTag(outs []string, idx map[string]customCommandGenex, too
 	}
 	if !found || !info.hasGenex {
 		return ""
+	}
+	// Derived TARGET_FILE-family ops ($<TARGET_FILE_DIR:t>, _NAME, the LINKER
+	// variants) resolve to a bare dir/basename that rewriteToolFromTarget never
+	// lifts, so their value baked verbatim — unresolved regardless of whether
+	// the target's name also appears in tools via a full-path op.
+	if info.hasDerivedPathOp {
+		return cmdGenexUnresolvedTag
 	}
 	mapped := make(map[string]bool, len(tools))
 	for _, t := range tools {
