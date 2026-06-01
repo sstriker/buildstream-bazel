@@ -4,8 +4,112 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// liftCompiledLibFileSetStripIncludePrefix is Phase 7 slice 2: the
+// compiled-library counterpart to shapeHeaderOnlyStripIncludePrefix. A
+// modern-cmake library that compiles sources AND exports public headers via
+// `target_sources(<t> PUBLIC FILE_SET HEADERS BASE_DIRS <d> ...)` currently
+// emits `includes = ["<d>"]` (the FILE_SET base dir reaches the codemodel
+// CompileGroups), a broad `-I<d>`. This lifts that public-header export dir
+// to `strip_include_prefix = "<d>"` — the precise form — while leaving any
+// OTHER (genuine compile-time) includes intact.
+//
+// Unlike the header-only IR pass, this runs inside lowerTarget because it
+// MUST key on FileSet metadata: a compiled lib's `includes` come from
+// CompileGroups and can be arbitrary `-I` roots, so it only lifts the include
+// dir that is demonstrably a FILE_SET HEADERS base dir (not a guess from
+// includes+hdrs alone).
+//
+// Conservative — lifts only when:
+//   - the target is a compiled cc_library (KindCCLibrary with srcs) without
+//     an existing strip_include_prefix;
+//   - its HEADERS FileSets resolve to EXACTLY ONE base dir (relativized,
+//     slash-normalized, not the package root / outside the tree / with ".."),
+//     which is ALSO present in `includes` (the broad `-I` being replaced); and
+//   - EVERY header is under that dir (strip_include_prefix must cover the
+//     whole hdrs set; a mixed set keeps the includes form).
+//
+// On success it sets StripIncludePrefix and drops that one dir from Includes,
+// keeping the rest. The lib's own sources still resolve their public
+// `#include <d-relative>` via the virtual include root strip_include_prefix
+// establishes (validated by the meta-cmake-fileset-compiled-lib build gate).
+func liftCompiledLibFileSetStripIncludePrefix(irt *ir.Target, t *fileapi.Target, cmakeSrc string) {
+	if irt == nil || t == nil {
+		return
+	}
+	if irt.Kind != ir.KindCCLibrary || len(irt.Srcs) == 0 || irt.StripIncludePrefix != "" {
+		return
+	}
+	if len(irt.Hdrs) == 0 || len(irt.Includes) == 0 {
+		return
+	}
+
+	// The single FILE_SET HEADERS base dir, relativized + slash-normalized.
+	dirs := map[string]bool{}
+	for _, fs := range t.FileSets {
+		if fs.Type != "HEADERS" {
+			continue
+		}
+		for _, bd := range fs.BaseDirectories {
+			rel := bd
+			if filepath.IsAbs(rel) {
+				r, inside := relativeIfInside(cmakeSrc, rel)
+				if !inside {
+					return
+				}
+				rel = r
+			}
+			rel = filepath.ToSlash(filepath.Clean(strings.TrimSpace(rel)))
+			if rel == "" || rel == "." || pathHasDotDotSegment(rel) {
+				return
+			}
+			dirs[rel] = true
+		}
+	}
+	if len(dirs) != 1 {
+		return
+	}
+	var d string
+	for k := range dirs {
+		d = k
+	}
+
+	// d must be the broad include we're replacing.
+	inIncludes := false
+	for _, inc := range irt.Includes {
+		if filepath.ToSlash(filepath.Clean(inc)) == d {
+			inIncludes = true
+			break
+		}
+	}
+	if !inIncludes {
+		return
+	}
+
+	// Every header must live under d for strip_include_prefix to cover it.
+	prefix := d + "/"
+	for _, h := range irt.Hdrs {
+		if !strings.HasPrefix(filepath.ToSlash(filepath.Clean(strings.TrimSpace(h))), prefix) {
+			return
+		}
+	}
+
+	irt.StripIncludePrefix = d
+	kept := make([]string, 0, len(irt.Includes))
+	for _, inc := range irt.Includes {
+		if filepath.ToSlash(filepath.Clean(inc)) != d {
+			kept = append(kept, inc)
+		}
+	}
+	if len(kept) == 0 {
+		irt.Includes = nil
+	} else {
+		irt.Includes = kept
+	}
+}
 
 // shapeHeaderOnlyStripIncludePrefix is a final-emission idiom-shaping pass
 // (Phase 7 — Bazel-idiom shaping audit) that lifts a header-only library's
