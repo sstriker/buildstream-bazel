@@ -32,7 +32,11 @@ def _impl(ctx):
     if ctx.file.template and ctx.attr.content:
         fail("cmake_configure_file %s: template and content are mutually exclusive; set at most one" % ctx.label)
 
-    out = ctx.actions.declare_file(ctx.attr.out)
+    # out is a predeclared output (attr.output), so the generated file is
+    # addressable by its filename label (e.g. //pkg:config.h) — which is how
+    # the emitted cc_library references it (hdrs = ["config.h"]), matching the
+    # genrule outs=[...] shape this replaces.
+    out = ctx.outputs.out
     args = ctx.actions.args()
     inputs = []
 
@@ -114,9 +118,11 @@ def _impl(ctx):
 cmake_configure_file = rule(
     implementation = _impl,
     attrs = {
-        "out": attr.string(
+        "out": attr.output(
             mandatory = True,
-            doc = "Package-relative output path the rule produces.",
+            doc = "Output file the rule produces. A predeclared output so the " +
+                  "generated file is referenceable by its filename label " +
+                  "(e.g. //pkg:config.h) from downstream cc_library hdrs/srcs.",
         ),
         "template": attr.label(
             allow_single_file = True,
