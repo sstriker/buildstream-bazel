@@ -13,12 +13,18 @@ import (
 // — it carries the already-resolved (recording-machine-specific) value. The
 // unresolved genex only survives in the `--trace-expand` record of the
 // add_custom_command call (shadow.AddCustomCommandCall.Commands). The existing
-// rewriteToolFromTarget pass already lifts a `$<TARGET_FILE:t>`-derived
+// rewriteToolFromTarget pass already lifts a TARGET_FILE-family-derived
 // build-dir-relative artifact path (e.g. `bin/t`) into a portable
 // `$(location :t)` label + tools dep. What was missing is *visibility*: an
 // operator couldn't tell a genex-bearing custom command from a plain one, nor
-// whether a path-bearing genex (TARGET_FILE / TARGET_OBJECTS) was lifted to a
-// label or left as a baked, non-portable literal.
+// whether a path-bearing genex was lifted to a label or left as a baked,
+// non-portable literal.
+//
+// "Path-bearing" means the whole TARGET_FILE family extractTargetFileRefs
+// scans — `$<TARGET_FILE[_DIR|_NAME]:t>`, `$<TARGET_LINKER_FILE[_DIR|_NAME]:t>`,
+// `$<TARGET_SONAME_FILE:t>` — plus `$<TARGET_OBJECTS:t>`; all resolve to a path
+// that must become a Bazel label to stay portable. Value-only genexes
+// ($<CONFIG> and the like) carry no path and bake correctly for one configure.
 //
 // These helpers cross-reference each emitted genrule back to its trace call
 // and emit an audit tag — cmake-codegen-cmd-genex-resolved when every
@@ -35,8 +41,10 @@ const (
 type customCommandGenex struct {
 	// hasGenex is true when the argv contained any `$<...>`.
 	hasGenex bool
-	// targetFileRefs / targetObjects are the cmake target names referenced by
-	// `$<TARGET_FILE*:t>` / `$<TARGET_OBJECTS:t>` — the path-bearing genexes
+	// targetFileRefs is the cmake target names referenced by the TARGET_FILE
+	// family (extractTargetFileRefs: TARGET_FILE[_DIR/_NAME],
+	// TARGET_LINKER_FILE[_DIR/_NAME], TARGET_SONAME_FILE); targetObjects is
+	// the names from $<TARGET_OBJECTS:t>. Both are the path-bearing genexes
 	// whose resolution must become a Bazel label to stay portable.
 	targetFileRefs []string
 	targetObjects  []string
@@ -100,8 +108,8 @@ func joinCommandArgv(cmds [][]string) []byte {
 // audit tag (or "" when no genex-bearing call matched the edge's outputs).
 //
 // tools is the genrule's tools list (`:name` entries) produced by
-// rewriteToolFromTarget: a path-bearing genex `$<TARGET_FILE:t>` /
-// `$<TARGET_OBJECTS:t>` counts as resolved iff its target name ended up there
+// rewriteToolFromTarget: a path-bearing genex (any TARGET_FILE-family op or
+// `$<TARGET_OBJECTS:t>`) counts as resolved iff its target name ended up there
 // (i.e. its build-dir-relative path was lifted to `$(location :t)`). A call
 // carrying only value genexes ($<CONFIG> and the like) has no path-portability
 // hazard for a single configure, so it classifies as resolved.
