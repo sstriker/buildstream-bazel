@@ -2,9 +2,10 @@
 # meta-file-generate.sh — render gate for the file(GENERATE)
 # lifter (Commit 3/4/5 of the lift-GENERATED PR).
 #
-# Runs convert-element-cmake against the captured file-generate
-# fixture and asserts the rendered BUILD.bazel contains the
-# expected cmake_configure_file rule shapes for all three lift modes:
+# Runs convert-element-cmake (live, --source-root) against the
+# file-generate sample project and asserts the rendered BUILD.bazel
+# contains the expected cmake_configure_file rule shapes for all three
+# lift modes:
 #
 #   - INPUT form, genex-free → lifted with a `template` label +
 #     cmake-configure-file `tool`, cmake-codegen-lifted tag.
@@ -40,6 +41,17 @@ set -eu
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
+# Live --source-root mode runs cmake (which selects the Ninja generator);
+# skip cleanly when either tool is absent.
+if ! command -v cmake >/dev/null 2>&1; then
+    echo "skip: cmake not on PATH"
+    exit 0
+fi
+if ! command -v ninja >/dev/null 2>&1; then
+    echo "skip: ninja not on PATH (--source-root mode uses the Ninja generator)"
+    exit 0
+fi
+
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/convert-element-cmake" ./converter/cmd/convert-element-cmake
@@ -47,13 +59,19 @@ CGO_ENABLED=0 go build -o "$bin_dir/convert-element-cmake" ./converter/cmd/conve
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 
+# Live --source-root mode (runs cmake against the in-repo sample project).
+# --source-root is mutually exclusive with --reply-dir, and only --source-root
+# sets HostSourceRoot — the root the INPUT-form file(GENERATE) template
+# (src/version.h.in) is read from. The captured-reply fixture can't be used
+# here: its codemodel records an ABSOLUTE recording-machine source path, so an
+# offline --reply-dir run would read templates from that path and silently
+# fall back to the legacy bake on any checkout root that doesn't match it
+# (e.g. CI's /home/runner/...). Running live keeps the gate portable.
 src="$repo_root/converter/testdata/sample-projects/file-generate"
-reply="$repo_root/converter/testdata/fileapi/file-generate"
 out_build="$work_dir/BUILD.bazel"
 
 "$bin_dir/convert-element-cmake" \
     --source-root "$src" \
-    --reply-dir "$reply" \
     --lift-configure-file=true \
     --out-build "$out_build"
 
@@ -125,7 +143,6 @@ fi
 out_build_2="$work_dir/BUILD.bazel.2"
 "$bin_dir/convert-element-cmake" \
     --source-root "$src" \
-    --reply-dir "$reply" \
     --lift-configure-file=true \
     --out-build "$out_build_2"
 
