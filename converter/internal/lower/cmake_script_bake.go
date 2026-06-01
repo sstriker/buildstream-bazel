@@ -2,7 +2,6 @@ package lower
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
-	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // bakeCmakeScriptGenrule executes `cmake -P <script>` at convert
@@ -198,21 +196,17 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 		})
 	}
 
-	// One genrule per declared output; cmd materializes the
-	// baked bytes via base64-decode.
+	// One target per declared output; the shared bakeFileTarget chooser
+	// materializes the baked bytes as a readable skylib write_file for
+	// \n-only text (the common case — generated headers like
+	// pnglibconf.h) and falls back to the byte-exact base64 genrule for
+	// binary / control-byte / CRLF outputs.
+	bakeTags := []string{
+		"cmake-codegen-cmake-script-bake",
+		"cmake-codegen-cmake-script-lift", // for the existing bake-warning shape
+	}
 	for i, e := range entries {
-		encoded := base64.StdEncoding.EncodeToString(e.body)
-		gen := ir.Target{
-			Name:        e.name,
-			Kind:        ir.KindGenrule,
-			GenruleCmd:  fmt.Sprintf(`echo %q | base64 -d > $@`, encoded),
-			GenruleOuts: []string{e.out},
-			Tags: []string{
-				"cmake-codegen-cmake-script-bake",
-				"cmake-codegen-cmake-script-lift", // for the existing bake-warning shape
-			},
-			Visibility: []string{"//visibility:private"},
-		}
+		gen := bakeFileTarget(e.name, e.out, e.body, bakeTags)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[e.out] = e.name
 		if i == 0 {

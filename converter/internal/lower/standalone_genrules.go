@@ -399,16 +399,27 @@ func buildConsumedOutputIndex(commands []shadow.AddCustomCommandCall, targets []
 }
 
 // coveredOuts collects every output path that an existing IR
-// genrule already declares. Used to dedup standalone-edge emission
-// against the recoverGenrule path.
+// output-producing target already declares. Used to dedup
+// standalone-edge emission against the recoverGenrule / bake paths.
+// Must cover every rule kind that produces a file at a known path:
+// genrules (GenruleOuts) AND write_file bakes (WriteFileOut) — the
+// latter is what the file(GENERATE) / configure_file / cmake-script
+// bakes emit for \n-text bodies, and a baked output (e.g. libpng's
+// pnglibconf.c) is frequently also a ninja CUSTOM_COMMAND edge, so
+// missing it here would re-emit a second producer and Bazel rejects
+// the duplicate generated file.
 func coveredOuts(existing []ir.Target) map[string]bool {
 	covered := map[string]bool{}
 	for _, t := range existing {
-		if t.Kind != ir.KindGenrule {
-			continue
-		}
-		for _, o := range t.GenruleOuts {
-			covered[o] = true
+		switch t.Kind {
+		case ir.KindGenrule:
+			for _, o := range t.GenruleOuts {
+				covered[o] = true
+			}
+		case ir.KindWriteFile:
+			if t.WriteFileOut != "" {
+				covered[t.WriteFileOut] = true
+			}
 		}
 	}
 	return covered
