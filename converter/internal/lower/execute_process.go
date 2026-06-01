@@ -155,10 +155,26 @@ func configureLogVars(events []fileapi.Event) map[string]string {
 	return out
 }
 
+// execAnchors carries the four directory roots the execute_process
+// lift relativizes cmake -E / cp / ln operands against. The "host"
+// roots are the live trees on the convert host (where templates and
+// produced files exist at convert time); the "recorded" roots are
+// the trees as the File API reply captured them — equal to the host
+// roots in production (recorder and converter run on one machine),
+// distinct only for offline fixtures. A source operand resolves
+// under a source root; a destination under a build root.
+type execAnchors struct {
+	hostSrcDir       string
+	recordedSrcDir   string
+	hostBuildDir     string
+	recordedBuildDir string
+}
+
 func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
+	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
 	var unsupported []executeProcessRefusal
 	var outs []executeProcessOut
 	collect := func(rels []string) {
@@ -170,7 +186,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
-			rels, reason, ok := liftCMakeE(call, v, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
+			rels, reason, ok := liftCMakeE(call, v, anc, liftEnabled, cmakeVars, cc)
 			if !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
 					File:   call.File,
@@ -183,7 +199,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		case BucketFileProducing:
-			rels, reason, ok := liftFileProducing(call, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+			rels, reason, ok := liftFileProducing(call, anc, cc)
 			if !ok {
 				unsupported = append(unsupported, executeProcessRefusal{
 					File:   call.File,
@@ -261,7 +277,7 @@ func formatExecuteProcessFailure(refusals []executeProcessRefusal) error {
 // existing add_custom_command lifter so audit queries can
 // split the two cleanly even though they take different
 // trace-vs-ninja paths to recover.
-func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
+func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, anc execAnchors, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
 	argv := call.Commands[0] // single-COMMAND guaranteed by Classify
 	// cmake -E <op> <args...>; argv[0]=cmake, argv[1]=-E, argv[2]=op.
 	// Guard the slice: the raw-command buckets (cp / touch_raw / ln)
@@ -286,13 +302,13 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 	}
 	switch v.CMakeEOp {
 	case "touch":
-		return liftCMakeETouch(args, recordedBuildDir, cc)
+		return liftCMakeETouch(args, anc, cc)
 	case "copy", "copy_if_different":
 		// cmake -E copy / copy_if_different copy a single FILE (the
 		// directory form is copy_directory, handled below). Bazel
 		// actions run hermetically; the action's output is the file
 		// at <dst>.
-		return liftCMakeECopy(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftCMakeECopy(v.CMakeEOp, args, anc, cc)
 	case "create_symlink":
 		// create_symlink shares the (src, dst) two-arg shape with
 		// copy, but its target can be a FILE or a DIRECTORY (e.g.
@@ -307,41 +323,41 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 		// handling). Routes through the file-or-dir dispatch so a
 		// directory target recursively copies its contents rather
 		// than emitting a broken `cp <dir>` on a single $(location).
-		return liftCreateSymlinkLike("cmake -E create_symlink", "create_symlink", args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftCreateSymlinkLike("cmake -E create_symlink", "create_symlink", args, anc, cc)
 	case "copy_directory", "copy_directory_if_different":
 		// cmake -E copy_directory <src> <dst> copies the CONTENTS of
 		// <src> into <dst> (no source-basename insertion, unlike
 		// `cp -R`), so the dir-copy emit runs with an empty
 		// sub-prefix. _if_different differs only in rerun-skip
 		// semantics, which Bazel's fresh-sandbox actions make moot.
-		return liftCMakeECopyDirectory(v.CMakeEOp, args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftCMakeECopyDirectory(v.CMakeEOp, args, anc, cc)
 	case "rename":
 		// cmake -E rename <src> <dst>: dst holds src's bytes; the
 		// source-side removal has no hermetic analog, so lift as a
 		// copy (file or directory). Shared with raw `mv`.
-		return liftRenameLike("cmake -E rename", "rename", args, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftRenameLike("cmake -E rename", "rename", args, anc, cc)
 	case "mv":
 		// Raw POSIX `mv` — the analog of `cmake -E rename`. argv is
 		// `mv <flags...> <src> <dst>`, operands start at argv[1].
-		return liftRenameLike("mv", "mv", argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftRenameLike("mv", "mv", argv[1:], anc, cc)
 	case "configure_file":
-		return liftCMakeEConfigureFile(args, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
+		return liftCMakeEConfigureFile(args, anc, liftEnabled, cmakeVars, cc)
 	case "cp":
 		// Raw POSIX `cp` (issue #312). argv is `cp <flags...>
 		// <src> <dst>` (no `-E <op>` prefix), so the operands
 		// start at argv[1].
-		return liftCp(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftCp(argv[1:], anc, cc)
 	case "touch_raw":
 		// Raw POSIX `touch` — the analog of `cmake -E touch`, reusing
 		// liftCMakeETouch after flag-stripping. argv is `touch
 		// <flags...> <path...>`, operands start at argv[1].
-		return liftTouch(argv[1:], recordedBuildDir, cc)
+		return liftTouch(argv[1:], anc, cc)
 	case "ln":
 		// Raw POSIX `ln [-s]` — the analog of `cmake -E
 		// create_symlink`, reusing the create_symlink copy path.
 		// argv is `ln <flags...> <target> <linkname>`, operands
 		// start at argv[1].
-		return liftLn(argv[1:], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftLn(argv[1:], anc, cc)
 	}
 	return nil, "internal: classified as cmake-e " + v.CMakeEOp + " but no lifter wired", false
 }
@@ -356,13 +372,13 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, hostSrcDir, re
 // touch with no args is rejected (refused with a diagnostic);
 // a path outside the build dir is also refused — the converter
 // can't anchor it as a Bazel output.
-func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftCMakeETouch(paths []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	if len(paths) == 0 {
 		return nil, "cmake -E touch with no arguments", false
 	}
 	rels := make([]string, 0, len(paths))
 	for _, p := range paths {
-		rel, ok := executeProcessAnchorOutput(p, recordedBuildDir)
+		rel, ok := executeProcessAnchorOutput(p, anc)
 		if !ok {
 			return nil, fmt.Sprintf("cmake -E touch path %q is not under the build dir", p), false
 		}
@@ -402,11 +418,11 @@ func liftCMakeETouch(paths []string, recordedBuildDir string, cc *codegenContext
 // the lift with a descriptive reason — the caller falls back to
 // refusal so the operator sees exactly which path didn't
 // resolve.
-func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftCMakeECopy(op string, args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
-	return emitCopyGenrule("cmake -E "+op, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitCopyGenrule("cmake -E "+op, op, args[0], args[1], anc, cc)
 }
 
 // liftCreateSymlinkLike translates `cmake -E create_symlink <target>
@@ -416,11 +432,11 @@ func liftCMakeECopy(op string, args []string, hostSrcDir, recordedSrcDir, record
 // target — unlike `cmake -E copy`'s single-file contract — can be a
 // directory (e.g. LLVM/VTK symlinking an `include` tree into the build
 // dir), which must copy recursively.
-func liftCreateSymlinkLike(what, op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftCreateSymlinkLike(what, op string, args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("%s: v1 supports the 2-arg form only (got %d args)", what, len(args)), false
 	}
-	return emitSymlinkCopy(what, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitSymlinkCopy(what, op, args[0], args[1], anc, cc)
 }
 
 // emitSymlinkCopy handles the symlink ops (cmake -E create_symlink /
@@ -445,15 +461,15 @@ func liftCreateSymlinkLike(what, op string, args []string, hostSrcDir, recordedS
 // #includes), so it still flows to emitCopyFileOrDir — which refuses if
 // the source is unrecoverable. We don't silently drop a
 // possibly-load-bearing symlink; only the anchors-nowhere alias skips.
-func emitSymlinkCopy(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
-	if _, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir); !ok {
-		if _, ok := executeProcessAnchorOutput(dst, recordedBuildDir); !ok {
+func emitSymlinkCopy(what, op, src, dst string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	if _, ok := executeProcessAnchorSource(src, anc); !ok {
+		if _, ok := executeProcessAnchorOutput(dst, anc); !ok {
 			// Install-compat alias (build-generated source, link not a
 			// tracked build output): nothing to anchor — benign skip.
 			return nil, "", true
 		}
 	}
-	return emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitCopyFileOrDir(what, op, src, dst, anc, cc)
 }
 
 // emitCopyGenrule anchors a (src, dst) pair and appends a single
@@ -472,12 +488,12 @@ func emitSymlinkCopy(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBui
 // and dst under the build dir (so it's a real Bazel output). Either
 // anchor failure ends the lift with a descriptive reason so the
 // caller falls back to refusal naming the path that didn't resolve.
-func emitCopyGenrule(what, tagOp, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
-	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	srcRel, ok := executeProcessAnchorSource(src, anc)
 	if !ok {
 		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
 	}
-	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	dstRel, ok := executeProcessAnchorOutput(dst, anc)
 	if !ok {
 		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
 	}
@@ -514,7 +530,7 @@ func emitCopyGenrule(what, tagOp, src, dst, hostSrcDir, recordedSrcDir, recorded
 // than silently emitting a genrule whose output the original call
 // might not have created. The flagless `touch <path...>` form (the
 // overwhelming majority of configure-time marker writes) lifts.
-func liftTouch(args []string, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftTouch(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	paths := make([]string, 0, len(args))
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") && a != "-" {
@@ -525,7 +541,7 @@ func liftTouch(args []string, recordedBuildDir string, cc *codegenContext) ([]st
 	if len(paths) == 0 {
 		return nil, "touch: no path operands", false
 	}
-	return liftCMakeETouch(paths, recordedBuildDir, cc)
+	return liftCMakeETouch(paths, anc, cc)
 }
 
 // liftLn translates a raw POSIX `ln [-s] <target> <linkname>`
@@ -543,7 +559,7 @@ func liftTouch(args []string, recordedBuildDir string, cc *codegenContext) ([]st
 // form; the 1-operand form (`ln -s target`, linkname defaults to the
 // configure-time cwd basename — unanchorable) and the 3+-operand form
 // (multiple links into a dir) refuse with a precise diagnostic.
-func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftLn(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	operands := make([]string, 0, len(args))
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") && a != "-" {
@@ -561,7 +577,7 @@ func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	// (`ln -s` can target a directory) AND the install-compat-alias
 	// benign skip (a versioned `.so.N` / `-config` alias over a
 	// build-generated file that anchors nowhere).
-	return emitSymlinkCopy("ln", "ln", operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitSymlinkCopy("ln", "ln", operands[0], operands[1], anc, cc)
 }
 
 // liftCp translates a raw POSIX `cp` execute_process call into
@@ -586,7 +602,7 @@ func liftLn(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 //
 // Returns (rels, "", true) on success; (nil, reason, false) on
 // any refusal.
-func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftCp(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	// Split flags (tokens starting with '-') from operands.
 	var operands []string
 	recursive := false
@@ -608,11 +624,11 @@ func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	}
 	src, dst := operands[0], operands[1]
 
-	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+	srcRel, ok := executeProcessAnchorSource(src, anc)
 	if !ok {
 		return nil, fmt.Sprintf("cp: source %q is not under the source root", src), false
 	}
-	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	dstRel, ok := executeProcessAnchorOutput(dst, anc)
 	if !ok {
 		return nil, fmt.Sprintf("cp: destination %q is not under the build dir", dst), false
 	}
@@ -627,7 +643,7 @@ func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	// to dereference symlinks. EvalSymlinks failure (broken link,
 	// race) falls back to the raw abs path so the os.Stat below
 	// produces the authoritative refusal.
-	abs := filepath.Join(hostSrcDir, srcRel)
+	abs := filepath.Join(anc.hostSrcDir, srcRel)
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		real = abs
@@ -641,7 +657,7 @@ func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	// so emitted Srcs point at the real files, not through the
 	// symlink. Fall back to srcRel when the real path escapes the
 	// root (defensive — a symlink pointing outside the tree).
-	realSrcRel, ok := executeProcessAnchorSource(real, hostSrcDir, recordedSrcDir)
+	realSrcRel, ok := executeProcessAnchorSource(real, anc)
 	if !ok {
 		realSrcRel = srcRel
 	}
@@ -656,7 +672,7 @@ func liftCp(args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, 
 	if !recursive {
 		return nil, fmt.Sprintf("cp: source %q is a directory but no recursive flag (-R/-r/-a) was given", src), false
 	}
-	return liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir, cc)
+	return liftCpDir(real, srcRel, realSrcRel, dstRel, anc, cc)
 }
 
 // liftCpFile handles `cp <file> <dst>`. When dst names a
@@ -711,8 +727,8 @@ func liftCpFile(realSrcRel, dst, dstRel string, cc *codegenContext) ([]string, s
 // ORIGINAL srcRel basename (e.g. `data`), NOT the deref'd target
 // name, matching what cp does with a symlinked source argument — so
 // the sub-prefix passed to emitDirCopyGenrule is filepath.Base(srcRel).
-func liftCpDir(real, srcRel, realSrcRel, dstRel, hostSrcDir, recordedSrcDir string, cc *codegenContext) ([]string, string, bool) {
-	return emitDirCopyGenrule(real, realSrcRel, dstRel, filepath.Base(srcRel), "cp", hostSrcDir, recordedSrcDir, cc)
+func liftCpDir(real, srcRel, realSrcRel, dstRel string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	return emitDirCopyGenrule(real, realSrcRel, dstRel, filepath.Base(srcRel), "cp", anc, cc)
 }
 
 // dirCopyOutRel joins the destination-relative dir, an optional
@@ -742,7 +758,7 @@ func dirCopyOutRel(dstRel, subPrefix, fileUnder string) string {
 // for determinism. An empty source dir succeeds with no rels (an empty
 // copy is a no-op — failing conversion over it would be wrong). `op`
 // is the audit op label for the genrule's execute-process-op tag.
-func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op, hostSrcDir, recordedSrcDir string, cc *codegenContext) ([]string, string, bool) {
+func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	type pair struct{ src, out string }
 	var pairs []pair
 	err := filepath.WalkDir(real, func(p string, d os.DirEntry, walkErr error) error {
@@ -760,7 +776,7 @@ func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op, hostSrcDir, rec
 		// Re-anchor each file against the source root (robust to
 		// nested symlinks); fall back to joining the deref'd
 		// dir's source-root rel with the walked sub-path.
-		srcFileRel, ok := executeProcessAnchorSource(p, hostSrcDir, recordedSrcDir)
+		srcFileRel, ok := executeProcessAnchorSource(p, anc)
 		if !ok {
 			srcFileRel = realSrcRel + "/" + fileUnder
 		}
@@ -814,11 +830,11 @@ func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op, hostSrcDir, rec
 // empty sub-prefix. The on-disk source is consulted to enumerate the
 // files and dereference symlinks — work the argv-only classifier
 // leaves to the lifter.
-func liftCMakeECopyDirectory(op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftCMakeECopyDirectory(op string, args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
-	return liftDirCopyAnchored("cmake -E "+op, op, args[0], args[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return liftDirCopyAnchored("cmake -E "+op, op, args[0], args[1], anc, cc)
 }
 
 // liftDirCopyAnchored anchors a (src, dst) directory pair and emits a
@@ -826,19 +842,19 @@ func liftCMakeECopyDirectory(op string, args []string, hostSrcDir, recordedSrcDi
 // under the source root and be a directory on disk; dst must resolve
 // under the build dir. Shared by `cmake -E copy_directory` and the
 // directory arm of `rename` / `mv`.
-func liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
-	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+func liftDirCopyAnchored(what, op, src, dst string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	srcRel, ok := executeProcessAnchorSource(src, anc)
 	if !ok {
 		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
 	}
-	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	dstRel, ok := executeProcessAnchorOutput(dst, anc)
 	if !ok {
 		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
 	}
 	if dstRel == "." {
 		dstRel = ""
 	}
-	abs := filepath.Join(hostSrcDir, srcRel)
+	abs := filepath.Join(anc.hostSrcDir, srcRel)
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		real = abs
@@ -850,11 +866,11 @@ func liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recorde
 	if !info.IsDir() {
 		return nil, fmt.Sprintf("%s: source %q is not a directory", what, src), false
 	}
-	realSrcRel, ok := executeProcessAnchorSource(real, hostSrcDir, recordedSrcDir)
+	realSrcRel, ok := executeProcessAnchorSource(real, anc)
 	if !ok {
 		realSrcRel = srcRel
 	}
-	return emitDirCopyGenrule(real, realSrcRel, dstRel, "", op, hostSrcDir, recordedSrcDir, cc)
+	return emitDirCopyGenrule(real, realSrcRel, dstRel, "", op, anc, cc)
 }
 
 // liftRenameLike translates `cmake -E rename <src> <dst>` and raw
@@ -876,7 +892,7 @@ func liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recorde
 // Leading-dash flags are ignored (mv's -f / -n / -T don't change the
 // "dst holds src's bytes by path" outcome); exactly 2 operands are
 // required.
-func liftRenameLike(what, op string, args []string, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftRenameLike(what, op string, args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	operands := make([]string, 0, len(args))
 	for _, a := range args {
 		if strings.HasPrefix(a, "-") && a != "-" {
@@ -887,7 +903,7 @@ func liftRenameLike(what, op string, args []string, hostSrcDir, recordedSrcDir, 
 	if len(operands) != 2 {
 		return nil, fmt.Sprintf("%s: v1 supports the 2-operand <src> <dst> form only (got %d operands)", what, len(operands)), false
 	}
-	return emitCopyFileOrDir(what, op, operands[0], operands[1], hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitCopyFileOrDir(what, op, operands[0], operands[1], anc, cc)
 }
 
 // emitCopyFileOrDir anchors a (src, dst) pair and emits a copy genrule,
@@ -908,20 +924,20 @@ func liftRenameLike(what, op string, args []string, hostSrcDir, recordedSrcDir, 
 // it grew directory support — rather than refusing. A genuinely
 // missing source then surfaces as a clear "no such input" at Bazel
 // build time, the same as any other anchored src that isn't on disk.
-func emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
-	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+func emitCopyFileOrDir(what, op, src, dst string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	srcRel, ok := executeProcessAnchorSource(src, anc)
 	if !ok {
 		return nil, fmt.Sprintf("%s: source %q is not under the source root", what, src), false
 	}
-	abs := filepath.Join(hostSrcDir, srcRel)
+	abs := filepath.Join(anc.hostSrcDir, srcRel)
 	real, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		real = abs
 	}
 	if info, err := os.Stat(real); err == nil && info.IsDir() {
-		return liftDirCopyAnchored(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+		return liftDirCopyAnchored(what, op, src, dst, anc, cc)
 	}
-	return emitCopyGenrule(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedBuildDir, cc)
+	return emitCopyGenrule(what, op, src, dst, anc, cc)
 }
 
 // liftCMakeEConfigureFile translates `cmake -E configure_file
@@ -954,11 +970,11 @@ func emitCopyFileOrDir(what, op, src, dst, hostSrcDir, recordedSrcDir, recordedB
 // configureFileLegacyCmd for the bytes-embedded fallback and
 // configureFileLiftedCmd for the lifted shape so the recovered
 // genrule looks structurally like a configure_file lift.
-func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
+func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]string, string, bool) {
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E configure_file: v1 supports the 2-arg form only (got %d args)", len(args)), false
 	}
-	if hostBuildDir == "" {
+	if anc.hostBuildDir == "" {
 		// Trace-only / offline path with no build-dir stash:
 		// we can't read the rendered bytes, so skip the call
 		// gracefully. Matches recoverConfigureFiles's and
@@ -970,11 +986,11 @@ func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuil
 		return nil, "", true
 	}
 	src, dst := args[0], args[1]
-	srcRel, ok := executeProcessAnchorSource(src, hostSrcDir, recordedSrcDir)
+	srcRel, ok := executeProcessAnchorSource(src, anc)
 	if !ok {
 		return nil, fmt.Sprintf("cmake -E configure_file: source %q is not under the source root", src), false
 	}
-	dstRel, ok := executeProcessAnchorOutput(dst, recordedBuildDir)
+	dstRel, ok := executeProcessAnchorOutput(dst, anc)
 	if !ok {
 		return nil, fmt.Sprintf("cmake -E configure_file: destination %q is not under the build dir", dst), false
 	}
@@ -989,12 +1005,12 @@ func liftCMakeEConfigureFile(args []string, hostSrcDir, recordedSrcDir, hostBuil
 	// missing means the offline fixture / live tree is
 	// incomplete; soft-skip rather than refusing, parity with
 	// recoverConfigureFiles's read-error treatment.
-	templatePath := filepath.Join(hostSrcDir, srcRel)
+	templatePath := filepath.Join(anc.hostSrcDir, srcRel)
 	template, terr := os.ReadFile(templatePath)
 	if terr != nil {
 		return nil, "", true
 	}
-	rendered, rerr := os.ReadFile(filepath.Join(hostBuildDir, dstRel))
+	rendered, rerr := os.ReadFile(filepath.Join(anc.hostBuildDir, dstRel))
 	if rerr != nil {
 		return nil, "", true
 	}
@@ -1083,7 +1099,7 @@ func cmakeEConfigureFileTags(lifted bool) []string {
 // Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
 // the genrule.go custom-command recovery so existing audit
 // queries that filter on driver= pick up hoisted rules.
-func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, recordedBuildDir string, cc *codegenContext) ([]string, string, bool) {
+func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	if call.WorkingDirectory != "" {
 		return nil, "WORKING_DIRECTORY is not yet modeled by the file-producing lifter", false
 	}
@@ -1097,7 +1113,7 @@ func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDi
 		return nil, "INPUT_FILE / ERROR_FILE are not yet modeled by the file-producing lifter", false
 	}
 
-	dstRel, ok := executeProcessAnchorOutput(call.OutputFile, recordedBuildDir)
+	dstRel, ok := executeProcessAnchorOutput(call.OutputFile, anc)
 	if !ok {
 		return nil, fmt.Sprintf("OUTPUT_FILE %q is not under the build dir", call.OutputFile), false
 	}
@@ -1133,7 +1149,7 @@ func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDi
 	srcSet := map[string]bool{}
 	rewritten := make([]string, 0, len(argv))
 	for i, a := range argv {
-		if rel, ok := executeProcessAnchorSource(a, hostSrcDir, recordedSrcDir); ok {
+		if rel, ok := executeProcessAnchorSource(a, anc); ok {
 			// relativeIfInside maps the source root itself
 			// to "" (empty relative path). For an argv
 			// element that points AT the source root
@@ -1149,7 +1165,7 @@ func liftFileProducing(call shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDi
 			// regardless of the isExistingDir filesystem
 			// probe (which can fail on offline tests where
 			// hostSrcDir is synthetic).
-			isDir := rel == "" || isExistingDir(filepath.Join(hostSrcDir, rel))
+			isDir := rel == "" || isExistingDir(filepath.Join(anc.hostSrcDir, rel))
 			if rel == "" {
 				rel = "."
 			}
@@ -1250,11 +1266,11 @@ func shellQuoteArg(a string) string {
 // absolute path as a build-dir-relative slash path. Returns
 // ("", false) when the path is relative (no anchor context) or
 // resolves outside the build dir.
-func executeProcessAnchorOutput(p, recordedBuildDir string) (string, bool) {
+func executeProcessAnchorOutput(p string, anc execAnchors) (string, bool) {
 	if !filepath.IsAbs(p) {
 		return "", false
 	}
-	return relativeIfInsideRelaxed(recordedBuildDir, p)
+	return relativeIfInsideRelaxed(anc.recordedBuildDir, p)
 }
 
 // executeProcessAnchorSource tries to resolve a recorded
@@ -1265,15 +1281,15 @@ func executeProcessAnchorOutput(p, recordedBuildDir string) (string, bool) {
 // — offline fixtures keep both consistent, but production runs
 // the recorder and the converter on the same machine so
 // recordedSrcDir == hostSrcDir.
-func executeProcessAnchorSource(p, hostSrcDir, recordedSrcDir string) (string, bool) {
+func executeProcessAnchorSource(p string, anc execAnchors) (string, bool) {
 	if !filepath.IsAbs(p) {
 		return "", false
 	}
-	if rel, ok := relativeIfInside(recordedSrcDir, p); ok {
+	if rel, ok := relativeIfInside(anc.recordedSrcDir, p); ok {
 		return rel, true
 	}
-	if hostSrcDir != "" && hostSrcDir != recordedSrcDir {
-		if rel, ok := relativeIfInside(hostSrcDir, p); ok {
+	if anc.hostSrcDir != "" && anc.hostSrcDir != anc.recordedSrcDir {
+		if rel, ok := relativeIfInside(anc.hostSrcDir, p); ok {
 			return rel, true
 		}
 	}
