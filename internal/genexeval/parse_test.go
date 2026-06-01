@@ -160,7 +160,7 @@ func TestParse_EmptyArg(t *testing.T) {
 	if len(g.Args) != 3 {
 		t.Fatalf("want 3 args, got %d", len(g.Args))
 	}
-	if g.Args[1] != nil && len(g.Args[1]) != 0 {
+	if len(g.Args[1]) != 0 {
 		t.Errorf("arg[1] should be empty, got %#v", g.Args[1])
 	}
 }

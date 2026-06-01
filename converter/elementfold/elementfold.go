@@ -252,11 +252,11 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 	for _, c := range cells[1:] {
 		v := variants[c.Platform.Name]
 		if v.Linkstatic != first.Linkstatic {
-			return nil, fmt.Errorf("Linkstatic disagrees: cell %q has %v, cell %q has %v",
+			return nil, fmt.Errorf("attribute Linkstatic disagrees: cell %q has %v, cell %q has %v",
 				cells[0].Platform.Name, first.Linkstatic, c.Platform.Name, v.Linkstatic)
 		}
 		if v.Alwayslink != first.Alwayslink {
-			return nil, fmt.Errorf("Alwayslink disagrees: cell %q has %v, cell %q has %v",
+			return nil, fmt.Errorf("attribute Alwayslink disagrees: cell %q has %v, cell %q has %v",
 				cells[0].Platform.Name, first.Alwayslink, c.Platform.Name, v.Alwayslink)
 		}
 		firstName, vName := cells[0].Platform.Name, c.Platform.Name
