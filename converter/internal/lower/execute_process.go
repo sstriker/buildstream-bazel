@@ -238,6 +238,32 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				if len(call.Commands) > 0 && executeProcessRunsHostDetectionScript(call.Commands[0]) {
 					continue
 				}
+				// Feature probe -> declared build setting. A probe writing a
+				// HAVE_X-style variable is a deferred declaration ("does the
+				// host have X?"); the faithful Bazel shape is an
+				// operator-overridable bool_flag + a select()-able
+				// config_setting, not a refusal or a silent bake. Default off
+				// the captured value when dump-vars caught it, else false.
+				if varName := featureDeclarationProbeVar(call); varName != "" {
+					flag := sanitizeBuildSettingName(varName)
+					cc.Genrules = append(cc.Genrules,
+						ir.Target{
+							Name:            flag,
+							Kind:            ir.KindBoolFlag,
+							BoolFlagDefault: isTruthyCMakeValue(cmakeVars[varName]),
+							Tags:            []string{"cmake-codegen-probe-option"},
+							Visibility:      []string{"//visibility:public"},
+						},
+						ir.Target{
+							Name:               flag + "_enabled",
+							Kind:               ir.KindConfigSetting,
+							ConfigSettingFlag:  ":" + flag,
+							ConfigSettingValue: "True",
+							Visibility:         []string{"//visibility:public"},
+						},
+					)
+					continue
+				}
 			}
 			// Phase 4 rescue: a probe/stamp whose captured value (OUTPUT_ or
 			// RESULT_VARIABLE) is in cmakeVars (the dump-vars hook) has that

@@ -652,24 +652,63 @@ func TestRecoverExecuteProcess_RescueHostDetectionScript(t *testing.T) {
 
 // TestRecoverExecuteProcess_NonCapabilityResultProbe confirms the
 // RESULT_VARIABLE-only rescue is restricted to capability drivers: a
-// python3 import check (whose exit status could feed a configure_file)
-// refuses when uncaptured, and rescues only when its RESULT_VARIABLE is
-// in cmakeVars (dump-vars). Guards against over-broad silent drops.
+// probe with a generic (non-feature-declaration) result var, whose exit
+// status could feed a configure_file, refuses when uncaptured and
+// rescues only when its RESULT_VARIABLE is in cmakeVars (dump-vars).
+// Guards against over-broad silent drops. (A HAVE_X-style result var
+// instead lifts to a build setting — see _FeatureProbeToBuildSetting.)
 func TestRecoverExecuteProcess_NonCapabilityResultProbe(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
 		Line:           13,
 		Commands:       [][]string{{"python3", "-c", "import pygments"}},
-		ResultVariable: "HAVE_PYGMENTS",
+		ResultVariable: "PYGMENTS_STATUS",
 	}}
 	cc := newCodegenContext()
 	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) == 0 {
 		t.Error("uncaptured non-capability RESULT_VARIABLE probe should refuse")
 	}
 	cc = newCodegenContext()
-	captured := map[string]string{"HAVE_PYGMENTS": "1"}
+	captured := map[string]string{"PYGMENTS_STATUS": "0"}
 	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc); len(refusals) != 0 {
 		t.Errorf("captured RESULT_VARIABLE probe should rescue; got %v", refusals)
+	}
+}
+
+// TestRecoverExecuteProcess_FeatureProbeToBuildSetting covers the
+// probe-as-declaration lift: a probe writing a HAVE_X-style variable
+// becomes a bool_flag + config_setting (default off the captured value)
+// and skips the refusal, instead of being dropped or refused.
+func TestRecoverExecuteProcess_FeatureProbeToBuildSetting(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"python3", "-c", "import zlib"}},
+		ResultVariable: "HAVE_ZLIB",
+	}}
+	cc := newCodegenContext()
+	captured := map[string]string{"HAVE_ZLIB": "1"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("feature probe should lift, not refuse; got %v", refusals)
+	}
+	var bf, cs *ir.Target
+	for i := range cc.Genrules {
+		switch cc.Genrules[i].Kind {
+		case ir.KindBoolFlag:
+			bf = &cc.Genrules[i]
+		case ir.KindConfigSetting:
+			cs = &cc.Genrules[i]
+		}
+	}
+	if bf == nil || cs == nil {
+		t.Fatalf("expected bool_flag + config_setting; got %+v", cc.Genrules)
+	}
+	if bf.Name != "have_zlib" || !bf.BoolFlagDefault {
+		t.Errorf("bool_flag: got name=%q default=%v, want have_zlib/true", bf.Name, bf.BoolFlagDefault)
+	}
+	if cs.Name != "have_zlib_enabled" || cs.ConfigSettingFlag != ":have_zlib" || cs.ConfigSettingValue != "True" {
+		t.Errorf("config_setting: got %+v", *cs)
 	}
 }
 

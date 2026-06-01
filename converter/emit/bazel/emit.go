@@ -404,6 +404,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitInstallLoad(&buf, pkg)
 	emitPkgFilesLoad(&buf, pkg)
 	emitWriteFileLoad(&buf, pkg)
+	emitBoolFlagLoad(&buf, pkg)
 	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
@@ -464,6 +465,18 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindCMakeConfigureFile {
 			if err := emitCMakeConfigureFile(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindBoolFlag {
+			if err := emitBoolFlag(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindConfigSetting {
+			if err := emitConfigSetting(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -1320,6 +1333,81 @@ func emitAlias(w *bytes.Buffer, t ir.Target) error {
 		Tags:       sortedCopy(t.Tags),
 		Visibility: nonDefaultVisibility(t.Visibility),
 	})
+}
+
+var boolFlagTmpl = template.Must(template.New("bool_flag").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`bool_flag(
+    name = "{{.Name}}",
+    build_setting_default = {{.Default}},
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+type boolFlagView struct {
+	Name       string
+	Default    string
+	Tags       []string
+	Visibility []string
+}
+
+func emitBoolFlag(w *bytes.Buffer, t ir.Target) error {
+	def := "False"
+	if t.BoolFlagDefault {
+		def = "True"
+	}
+	return boolFlagTmpl.Execute(w, boolFlagView{
+		Name:       t.Name,
+		Default:    def,
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
+}
+
+var configSettingTmpl = template.Must(template.New("config_setting").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`config_setting(
+    name = "{{.Name}}",
+    flag_values = {
+        "{{.Flag}}": "{{.Value}}",
+    },
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+type configSettingView struct {
+	Name       string
+	Flag       string
+	Value      string
+	Visibility []string
+}
+
+func emitConfigSetting(w *bytes.Buffer, t ir.Target) error {
+	return configSettingTmpl.Execute(w, configSettingView{
+		Name:       t.Name,
+		Flag:       t.ConfigSettingFlag,
+		Value:      t.ConfigSettingValue,
+		Visibility: nonDefaultVisibility(t.Visibility),
+	})
+}
+
+// emitBoolFlagLoad writes the bazel_skylib common_settings load when any
+// KindBoolFlag is present (config_setting is a built-in rule and needs
+// no load). Mirrors emitWriteFileLoad's skylib precedent.
+func emitBoolFlagLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindBoolFlag {
+			buf.WriteString(`load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")` + "\n\n")
+			return
+		}
+	}
 }
 
 func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
