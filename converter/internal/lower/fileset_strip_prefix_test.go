@@ -41,6 +41,14 @@ func TestShapeHeaderOnlyStripIncludePrefix(t *testing.T) {
 			wantStrip: "include", wantInc: nil,
 		},
 		{
+			// cmake allows target_sources on INTERFACE targets; an
+			// interface lib carrying compiled srcs is not header-only, so
+			// its includes (compile-time -I) must not be re-rooted.
+			name:      "interface lib with srcs not lifted",
+			in:        ir.Target{Kind: ir.KindCCInterface, Hdrs: []string{"include/a.h"}, Includes: []string{"include"}, Srcs: []string{"a.c"}},
+			wantStrip: "", wantInc: []string{"include"},
+		},
+		{
 			name:      "multiple include dirs not lifted",
 			in:        ir.Target{Kind: ir.KindCCInterface, Hdrs: []string{"include/a.h"}, Includes: []string{"include", "api"}},
 			wantStrip: "", wantInc: []string{"include", "api"},

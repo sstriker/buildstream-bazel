@@ -58,7 +58,13 @@ func shapeHeaderOnlyStripIncludePrefix(pkg *ir.Package) {
 		if !isHeaderOnlyInterfaceLib(t) || t.StripIncludePrefix != "" {
 			continue
 		}
-		if len(t.Hdrs) == 0 || len(t.Includes) != 1 {
+		// Header-only contract: no compiled sources. cmake permits
+		// `target_sources` on INTERFACE targets, so an interface lib could
+		// surface with srcs whose compilation relies on the `includes`
+		// `-I` — re-rooting those to strip_include_prefix could change
+		// their include behavior. Skip such targets (true to the
+		// "header-only" contract).
+		if len(t.Hdrs) == 0 || len(t.Srcs) != 0 || len(t.Includes) != 1 {
 			continue
 		}
 		// Normalize the include dir before matching: trace-derived dirs
