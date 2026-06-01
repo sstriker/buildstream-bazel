@@ -391,14 +391,19 @@ transition cleanly.
     have changed the project's runtime model from
     sandboxable-and-cheap to "build farms"). The
     non-declarative residue stays on the round-2
-    pick_file-over-install-root fallback. Queued follow-on:
-    the consumer side does not yet *read* these manifest
-    fields — cross-element resolution still flows through
-    the synth-prefix bundle + Bazel dep edges (see
-    `scripts/meta-cross-cmake.sh`); a resolver that lifts
-    `find_package(<Pkg> CONFIG)` straight onto
-    `cmake_config_bundle_label`/`cmake_import_labels` is
-    the remaining slice.
+    pick_file-over-install-root fallback. Consumer-side
+    resolver — evaluated, declined: the manifest's
+    `cmake_config_bundle_label` / `cmake_import_labels` are
+    populated for external / future resolvers, but the
+    converter intentionally does **not** read them.
+    Cross-element `find_package(<Pkg> CONFIG)` already
+    resolves correctly via the build-tree `BazelLabel` dep +
+    the synth-prefix bundle (see `scripts/meta-cross-cmake.sh`);
+    re-pointing consumers at the `<target>_import` facade is a
+    lateral form-change (installed-export vs build-tree, both
+    valid in Bazel), not a correctness gain, and adds
+    target→label mapping fragility (the flat, unkeyed
+    `cmake_import_labels` list). Phase 6 is complete.
 
   - **Phase 7 — Bazel-idiom shaping audit.** A final-
     emission pass that audits the converter's IR against a
