@@ -151,14 +151,11 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 // resolves correctly through the Bazel-time tool — closing
 // the soundness gap PR #94 review identified.
 func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string) ir.Target {
-	legacy := ir.Target{
-		Name:        name,
-		Kind:        ir.KindGenrule,
-		GenruleCmd:  configureFileLegacyCmd(outRel, rendered),
-		GenruleOuts: []string{outRel},
-		Tags:        configureFileTags(configureFileTagSet{}),
-		Visibility:  []string{"//visibility:private"},
-	}
+	// Bake the fully-resolved bytes via the shared bakeFileTarget chooser:
+	// readable skylib write_file for \n-only text, byte-exact base64
+	// genrule for binary / control-byte / CRLF bodies. Same de-base64
+	// maintainability win as the file(GENERATE) bake.
+	legacy := bakeFileTarget(name, outRel, rendered, configureFileTags(configureFileTagSet{}))
 
 	if !liftEnabled || hostSrcDir == "" || recordedSrcDir == "" {
 		return legacy

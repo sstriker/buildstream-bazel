@@ -299,27 +299,47 @@ func TestBuildConfigureFileGenrule_LegacyShape(t *testing.T) {
 		false, // liftEnabled = false → legacy
 		nil,
 	)
-	if got.Kind != ir.KindGenrule {
-		t.Errorf("kind = %v, want KindGenrule", got.Kind)
+	// The rendered bytes are \n-only text, so the non-lifted bake now
+	// lowers to the readable skylib write_file (shared bakeFileTarget)
+	// rather than the legacy base64 genrule.
+	if got.Kind != ir.KindWriteFile {
+		t.Errorf("kind = %v, want KindWriteFile", got.Kind)
 	}
-	if got.GenruleOuts == nil || got.GenruleOuts[0] != "cfg.h" {
-		t.Errorf("outs = %v, want [cfg.h]", got.GenruleOuts)
+	if got.WriteFileOut != "cfg.h" {
+		t.Errorf("write_file out = %q, want cfg.h", got.WriteFileOut)
+	}
+	if got.WriteFileNewline != "unix" {
+		t.Errorf("write_file newline = %q, want unix", got.WriteFileNewline)
+	}
+	if join := strings.Join(got.WriteFileContent, "\n"); join != string(rendered) {
+		t.Errorf("write_file content round-trip = %q, want %q", join, string(rendered))
 	}
 	if got.Srcs != nil {
-		t.Errorf("legacy shape must not declare srcs; got %v", got.Srcs)
+		t.Errorf("bake shape must not declare srcs; got %v", got.Srcs)
 	}
 	if got.GenruleTools != nil {
-		t.Errorf("legacy shape must not declare tools; got %v", got.GenruleTools)
-	}
-	wantEnc := base64.StdEncoding.EncodeToString(rendered)
-	if !strings.Contains(got.GenruleCmd, wantEnc) {
-		t.Errorf("legacy cmd missing rendered-bytes base64; cmd=%q want substr %q", got.GenruleCmd, wantEnc)
+		t.Errorf("bake shape must not declare tools; got %v", got.GenruleTools)
 	}
 	if hasTag(got.Tags, "cmake-codegen-lifted") {
-		t.Errorf("legacy shape carries cmake-codegen-lifted tag: %v", got.Tags)
+		t.Errorf("bake shape carries cmake-codegen-lifted tag: %v", got.Tags)
 	}
 	if !hasTag(got.Tags, "cmake-codegen-driver=configure_file") {
 		t.Errorf("driver tag missing: %v", got.Tags)
+	}
+}
+
+// TestBuildConfigureFileGenrule_BinaryBakeStaysBase64 pins the
+// byte-exact fallback for the configure_file bake too: a body with a
+// NUL control byte stays on the base64 genrule rather than write_file.
+func TestBuildConfigureFileGenrule_BinaryBakeStaysBase64(t *testing.T) {
+	rendered := []byte("a\x00b\n")
+	call := shadow.ConfigureFileCall{Input: "/src/project/cfg.h.in", Output: "/tmp/build/cfg.h"}
+	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", false, nil)
+	if got.Kind != ir.KindGenrule {
+		t.Fatalf("binary bake should stay on the base64 genrule; got kind %v", got.Kind)
+	}
+	if want := base64.StdEncoding.EncodeToString(rendered); !strings.Contains(got.GenruleCmd, want) {
+		t.Errorf("base64 cmd missing exact rendered bytes; cmd=%q want substr %q", got.GenruleCmd, want)
 	}
 }
 

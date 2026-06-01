@@ -585,21 +585,23 @@ transition cleanly.
   alternative stays rejected; this bullet is retained only as the
   record of why.
 - **De-base64 the rest of the cmake-configure-file family.** The
-  file(GENERATE) bake tier now emits readable skylib `write_file`
-  (see Done). The remaining inline-base64 emitters are: (1)
-  `configure_file`'s legacy bake (shares `configureFileLegacyCmd`) —
-  the same `KindWriteFile` lowering applies directly; (2) the
-  `cmake-codegen-cmake-script-bake` genrules; and (3) the genex-replay
-  *lift* tier (file(GENERATE) tiers a/b/b′ + the configure_file lift),
-  which can't fully de-base64 because the body is re-evaluated at
-  Bazel time by `//tools:cmake-configure-file` — but its `--values` /
-  `--genex-values` JSON maps and `--content-base64` template could
-  move from inline `echo <b64> | base64 -d` to readable **sidecar
-  files** referenced via `srcs` + `$(location)` (the tool already
-  accepts file-path inputs). That sidecar move needs a converter
-  companion-file emission concept routed through the split-package
-  TreeArtifact → stage-b merge — the bigger piece. Decided approach +
-  tradeoffs captured during the file(GENERATE) prove-it pass.
+  file(GENERATE) **and configure_file** bake tiers now emit readable
+  skylib `write_file` (see Done — both route through the shared
+  `bakeFileTarget`). The remaining inline-base64 emitters are: (1) the
+  `cmake-codegen-cmake-script-bake` genrules; (2) the
+  `execute_process` bytes-embedded fallback (also calls
+  `configureFileLegacyCmd` — the same `bakeFileTarget` swap applies);
+  and (3) the genex-replay *lift* tier (file(GENERATE) tiers a/b/b′ +
+  the configure_file lift), which can't fully de-base64 because the
+  body is re-evaluated at Bazel time by `//tools:cmake-configure-file`
+  — but its `--values` / `--genex-values` JSON maps and
+  `--content-base64` template could move from inline
+  `echo <b64> | base64 -d` to readable **sidecar files** referenced via
+  `srcs` + `$(location)` (the tool already accepts file-path inputs).
+  That sidecar move needs a converter companion-file emission concept
+  routed through the split-package TreeArtifact → stage-b merge — the
+  bigger piece. Decided approach + tradeoffs captured during the
+  file(GENERATE) prove-it pass.
 
 ## Later (research / open questions)
 
@@ -657,18 +659,20 @@ transition cleanly.
 
 ## Done (high points)
 
-- **Readable `write_file` bake for file(GENERATE) (de-base64).** The
-  file(GENERATE) "bake" tier — a fully-resolved / COPYONLY body whose
+- **Readable `write_file` bake for file(GENERATE) + configure_file
+  (de-base64).** The bake tier — a fully-resolved / COPYONLY body whose
   exact bytes are known at convert time — no longer emits the opaque
   `echo <base64> | base64 -d > $@` genrule. It lowers to bazel_skylib's
   `write_file(out=, content=[...], newline="unix")`, carrying the body
-  as a human-readable, diffable list of lines (`KindWriteFile`,
-  `fileGenerateBakeTarget`). Byte-exact for \n-only UTF-8 text:
+  as a human-readable, diffable list of lines (`KindWriteFile`). Both
+  the file(GENERATE) and configure_file lowerings route through the
+  shared `bakeFileTarget` chooser. Byte-exact for \n-only UTF-8 text:
   `content = strings.Split(body, "\n")` round-trips through skylib's
   join (Split/Join inverses; a trailing `""` element reproduces the
   trailing newline — empirically pinned against a real
-  `bazel build`). Binary / CRLF bodies stay on the byte-exact base64
-  genrule (the `writeFileLines` guard). The emitter writes the
+  `bazel build`). Binary / control-byte / CRLF bodies stay on the
+  byte-exact base64 genrule (the `writeFileLines` guard rejects any C0
+  control byte but \n/\t). The emitter writes the
   `@bazel_skylib//rules:write_file.bzl` load (`emitWriteFileLoad`) and
   write-a adds the bazel_skylib bazel_dep on any kind:cmake element
   (coarse gate, same precedent as rules_pkg; `||`-folded with the
