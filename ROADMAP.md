@@ -605,11 +605,18 @@ transition cleanly.
 
 ## Next
 
-- **A-B-C fidelity harness — productionized (CI-wired, soft launch).**
-  Now runs in CI as the non-blocking `fidelity` job (one
-  `continue-on-error: true` step per fixture; promote each to blocking
-  after three consecutive green merges, same policy as the cmake-matrix /
-  narrowing-audit gates). Wiring it surfaced + fixed a rot: the harness
+- **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
+  Runs in CI as the `fidelity` job, now **blocking** — the
+  `continue-on-error` soft-launch was dropped from every fixture step after
+  the soft-launch period (all six run green, 0 impactful deltas), so a red
+  is a real fidelity regression. The bazel half fetches BCR deps
+  (rules_cc / rules_pkg / zlib), so to keep a blocking gate off the
+  transient GitHub-releases 502 / TLS-timeout noise, `run-fidelity.sh`
+  builds against a persistent `--repository_cache` (persisted across CI
+  runs via `actions/cache`) — archives fetch once and are reused, so only
+  the first cold populate touches the network, ridden out by a raised
+  `--experimental_repository_downloader_retries`. Wiring it originally
+  surfaced + fixed a rot: the harness
   staged a WORKSPACE-mode workspace and *stripped* the converter's
   `load("@rules_cc//…")` to use Bazel's native cc rules, but (a) the
   converter's `load()` symbol list had drifted (`+cc_test`, `+@rules_pkg`)

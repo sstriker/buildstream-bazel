@@ -162,6 +162,25 @@ jobs:
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
+      # Persist bazel's repository cache for the go-test fidelity harness
+      # (e2e-fidelity / e2e-fidelity-fmt), which drives `bazel build` +
+      # `bazel cquery` directly. Same rationale as the `fidelity` job's cache:
+      # after the first cold populate the BCR archives (rules_cc / rules_pkg)
+      # are reused with no re-download, so the blocking hello-world fidelity
+      # gate stops flaking on the transient GitHub-releases 502s that fail the
+      # fetch. fidelity_e2e_test.go reads BSB_BAZEL_REPO_CACHE and threads
+      # --repository_cache into its bazel invocations.
+      - name: Set bazel repo-cache path for fidelity go-test
+        run: echo "BSB_BAZEL_REPO_CACHE=$HOME/.cache/bazel-e2e-repo" >> "$GITHUB_ENV"
+
+      - name: Cache bazel repository cache (bazel-e2e)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-e2e-repo
+          key: bazel-e2e-repo-${{ hashFiles('converter/cmd/convert-element-cmake/fidelity_e2e_test.go', 'go.mod') }}
+          restore-keys: |
+            bazel-e2e-repo-
+
       - name: meta-project acceptance gate (hello-world round-trip + narrowing)
         # The Phase-1 acceptance gate: render project A + B for the
         # hello-world fixture, bazel-build A, stage into B, link + run
@@ -272,35 +291,51 @@ jobs:
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
+      # Persist bazel's repository cache (the BCR archives the fidelity
+      # gates fetch: rules_cc / rules_pkg / zlib) across CI runs. run-
+      # fidelity.sh points --repository_cache here; after the first cold
+      # populate the archives are reused with no re-download, so the now-
+      # blocking gates don't flake on transient GitHub-releases 502s. The
+      # cache is content-addressed, so a stale restore is always safe (bazel
+      # re-verifies hashes); restore-keys seed any prior cache.
+      - name: Cache fidelity bazel repository cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-fidelity-repo
+          key: bazel-fidelity-repo-${{ hashFiles('scripts/run-fidelity.sh', 'Makefile') }}
+          restore-keys: |
+            bazel-fidelity-repo-
+
       # A-B-C fidelity: cmake build → convert-element-cmake → bazel build →
       # cmd/fidelity-compare symbol-diff of the two artifacts. Each gate
       # exits non-zero only on impactful deltas (unexplained symbol drops,
       # hermeticity leaks); benign categories auto-classify, the rest sit
       # in per-project allowlists (testdata/fidelity/*.allowlist.txt).
       #
-      # Soft launch (continue-on-error: true), one step per fixture so the
-      # promotion tracker sees exactly which are green. Promote each to
-      # blocking by dropping its continue-on-error after three consecutive
-      # green merges (same policy as the cmake-matrix / narrowing-audit
-      # gates). The bazel half needs a reachable BCR (rules_cc / rules_pkg).
+      # BLOCKING (productionized) — promoted from the soft-launch
+      # continue-on-error after the soft-launch period: all fixtures run
+      # green (0 impactful deltas) across merges, so a red here is now a
+      # real fidelity regression (an unexplained symbol drop / hermeticity
+      # leak), not a tracker signal. One step per fixture so a failure names
+      # the offending project. The bazel half fetches BCR deps (rules_cc /
+      # rules_pkg, + zlib for libpng); the persistent --repository_cache
+      # (cached above) means those archives fetch once and are reused across
+      # runs, so a transient GitHub-releases 502 only risks the first cold
+      # populate — which run-fidelity.sh also rides out with a raised
+      # --experimental_repository_downloader_retries.
       - name: fidelity — zlib (library)
-        continue-on-error: true
         run: make e2e-fidelity-compare-zlib 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — zlib (consumer)
-        continue-on-error: true
         run: make e2e-fidelity-compare-zlib-consumer 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — fmt (library)
-        continue-on-error: true
         run: make e2e-fidelity-compare-fmt 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — fmt (consumer)
-        continue-on-error: true
         run: make e2e-fidelity-compare-fmt-consumer 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — spdlog (library)
-        continue-on-error: true
         run: make e2e-fidelity-compare-spdlog 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — spdlog (consumer)
@@ -310,7 +345,6 @@ jobs:
         # (--consumer-cmake-cflags) and matches the -O2 opt level on both
         # sides so the .o symbol sets are comparable. 63/63 exported match,
         # 0 impactful deltas.
-        continue-on-error: true
         run: make e2e-fidelity-compare-spdlog-consumer 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — nlohmann-json (consumer)
@@ -319,7 +353,6 @@ jobs:
         # lowers the INTERFACE_LIBRARY target to a cc_library(hdrs=...,
         # includes=...) a consumer can depend on (the
         # cmake-codegen-interface-library-from-trace synthesis).
-        continue-on-error: true
         run: make e2e-fidelity-compare-nlohmann-json-consumer 2>&1 | tee -a /tmp/cijob.log
 
       - name: fidelity — Catch2 (library)
@@ -330,16 +363,37 @@ jobs:
         # the cc_library's includes. Large template-heavy lib — the
         # classifier auto-classifies std:: instantiation variance, a small
         # allowlist covers Catch's own template dtors.
-        continue-on-error: true
         run: make e2e-fidelity-compare-catch2 2>&1 | tee -a /tmp/cijob.log
+
+      - name: Install zlib 1.3.1 (match the BCR @zlib pin for the libpng gate)
+        # libpng bakes PNG_ZLIB_VERNUM into pnglibconf.h from whatever zlib
+        # cmake's find_package(ZLIB) resolves at configure time, then asserts
+        # ZLIB_VERNUM == PNG_ZLIB_VERNUM at compile. ubuntu-24.04 ships zlib
+        # 1.3 (0x12a0), but the Bazel build compiles libpng against the pinned
+        # BCR @zlib 1.3.1.bcr.5 (0x12b1) — so the host vs. BCR skew trips the
+        # assert. Build & install upstream zlib 1.3.1 to /usr/local (searched
+        # ahead of /usr by find_package), so the cmake reference resolves the
+        # same 1.3.1 the Bazel side links and the two versions agree.
+        run: |
+          set -euo pipefail
+          cd /tmp
+          curl -fsSL -o zlib-1.3.1.tar.gz \
+            https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+          tar xzf zlib-1.3.1.tar.gz
+          cd zlib-1.3.1
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
 
       - name: fidelity — libpng (library)
         # The deferred-blocker fixture, now wired: install-compat symlinks
         # skip (PR #350), cmake -P script headers bake (--cmake-script-bake),
         # find_package(ZLIB) → @zlib via --imports-manifest, and
-        # --bazel-external adds the zlib BCR module. Needs zlib dev headers
-        # on the runner for the cmake-side find_package(ZLIB).
-        continue-on-error: true
+        # --bazel-external adds the zlib BCR module. The cmake-side
+        # find_package(ZLIB) resolves the zlib 1.3.1 installed above so its
+        # baked PNG_ZLIB_VERNUM matches the BCR @zlib the Bazel side compiles
+        # against (see the install step's note).
         run: make e2e-fidelity-compare-libpng 2>&1 | tee -a /tmp/cijob.log
 
       - uses: ./.github/actions/post-failure-tail

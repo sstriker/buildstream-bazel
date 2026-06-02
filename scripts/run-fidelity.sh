@@ -148,6 +148,16 @@ work_dir="$(mktemp -d)"
 trap "rm -rf '$work_dir'" EXIT
 cmake_build="$work_dir/cmake-build"
 bazel_ws="$work_dir/bazel-ws"
+# Staging prefix for the consumer-mode `cmake --install`. Defined up front
+# (not just where consumer mode uses it) because it has to be baked into the
+# cmake configure below via -DCMAKE_INSTALL_PREFIX: projects like zlib compute
+# their install destinations as ABSOLUTE paths at configure time (e.g.
+# INSTALL_LIB_DIR = ${CMAKE_INSTALL_PREFIX}/lib defaulting to /usr/local/lib),
+# and a later `cmake --install --prefix` can only redirect *relative*
+# destinations — it cannot override a destination already baked absolute. So
+# point the prefix at the scratch tree at configure time; the CI runner can't
+# write /usr/local. Harmless for library-only fixtures that never install.
+install_stage="$work_dir/cmake-install"
 mkdir -p "$cmake_build"
 
 # --- Step 1: cmake configure + build (project C, the oracle).
@@ -164,7 +174,9 @@ done
 # recovery, PRIVATE/PUBLIC visibility on
 # target_include_directories, etc.). The converter auto-
 # detects trace.jsonl at <build>/trace.jsonl when present.
-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -B "$cmake_build" -S "$source_root" \
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$install_stage" \
+    -B "$cmake_build" -S "$source_root" \
     --trace-expand --trace-format=json-v1 \
     --trace-redirect="$cmake_build/trace.jsonl" \
     $cmake_flags > "$work_dir/cmake-configure.log" 2>&1
@@ -192,7 +204,10 @@ fi
 # package consuming the project via find_package() would see.
 consumer_cmake_o=""
 if [ -n "$consumer_file" ]; then
-    install_stage="$work_dir/cmake-install"
+    # install_stage is defined up front (and baked into the cmake configure via
+    # -DCMAKE_INSTALL_PREFIX) so absolute install destinations land in the
+    # scratch tree, not /usr/local. The --prefix below stays as belt-and-
+    # suspenders for fixtures whose install destinations are relative.
     # cmake's install target may depend on artifacts the single
     # --target build didn't produce (e.g. zlib's install lists
     # both the static and shared libs, but we only built static).
@@ -263,9 +278,38 @@ if grep -q "//tools:cmake-configure-file" "$bazel_ws/BUILD.bazel"; then
     echo "fidelity[$project_name]: staging //tools:cmake-configure-file" >&2
     CGO_ENABLED=0 go build -C "$repo_root" -o "$bin_dir/cmake-configure-file" ./cmd/cmake-configure-file
     mkdir -p "$bazel_ws/tools"
-    cp "$bin_dir/cmake-configure-file" "$bazel_ws/tools/cmake-configure-file"
-    chmod 0755 "$bazel_ws/tools/cmake-configure-file"
-    echo 'exports_files(["cmake-configure-file"])' > "$bazel_ws/tools/BUILD.bazel"
+    # The cmake_configure_file rule's `tool` attr is executable=True, so the
+    # label has to resolve to an executable TARGET, not a raw source file —
+    # a plain exports_files() trips "source file is misplaced here (expected
+    # no files)" at analysis. Wrap the binary in bazel_skylib's native_binary,
+    # exactly as write-a (project B) and the meta-* gates stage it. (Staged as
+    # .bin so native_binary's `out` can reuse the bare tool name.)
+    cp "$bin_dir/cmake-configure-file" "$bazel_ws/tools/cmake-configure-file.bin"
+    chmod 0755 "$bazel_ws/tools/cmake-configure-file.bin"
+    cat > "$bazel_ws/tools/BUILD.bazel" <<'EOF'
+load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
+
+native_binary(
+    name = "cmake-configure-file",
+    src = "cmake-configure-file.bin",
+    out = "cmake-configure-file",
+    visibility = ["//visibility:public"],
+)
+EOF
+fi
+# When the converted BUILD loads from @rules_buildstream_bazel — the converter's
+# in-repo ruleset (cmake_configure_file from --lift-configure-file, pick_file
+# from the install lift) — provide it via bazel_dep + local_path_override
+# pointing at this repo's rules_buildstream_bazel/ subdir. That's exactly how
+# write-a (project B) and the meta-* gates wire the ruleset; it's intentionally
+# NOT on BCR (see rules_buildstream_bazel/MODULE.bazel), so a bazel_dep alone
+# can't resolve it. Auto-detected so callers don't have to remember to pair the
+# convert flag with the override.
+rules_bsb_module=""
+if grep -q "@rules_buildstream_bazel" "$bazel_ws/BUILD.bazel"; then
+    echo "fidelity[$project_name]: wiring @rules_buildstream_bazel local_path_override" >&2
+    rules_bsb_module="bazel_dep(name = \"rules_buildstream_bazel\", version = \"0.0.0\")
+local_path_override(module_name = \"rules_buildstream_bazel\", path = \"$repo_root/rules_buildstream_bazel\")"
 fi
 # bzlmod MODULE.bazel providing the converter's load() deps as bazel_deps
 # from BCR — rules_cc backs the cc_* rules, rules_pkg backs the install
@@ -281,6 +325,7 @@ module(name = "${project_name}_fidelity", version = "0.0.0")
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
+${rules_bsb_module}
 ${bazel_external}
 EOF
 
@@ -296,11 +341,32 @@ if [ -f /etc/ssl/certs/java/cacerts ]; then
     # the JVM at the system store.
     bazel_jvm_args="--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit"
 fi
+
+# The bazel half fetches BCR deps (rules_cc / rules_pkg, + zlib for libpng)
+# from GitHub releases, which intermittently 502 / TLS-timeout in CI. Two
+# defenses so a blocking fidelity gate doesn't flake on that infra noise:
+#
+#   1. A persistent --repository_cache: bazel's repository cache is content-
+#      addressed, so once an archive is fetched it's reused with no further
+#      download. The path is STABLE (outside the per-run scratch tree) so it
+#      survives across the run's fixtures AND, when CI restores it via
+#      actions/cache, across CI runs — after the first cold populate there's
+#      no re-download, hence no 502 exposure. Override with
+#      FIDELITY_BAZEL_REPO_CACHE.
+#   2. --experimental_repository_downloader_retries above bazel's default (5)
+#      to ride out a transient burst during that first cold populate.
+fidelity_repo_cache="${FIDELITY_BAZEL_REPO_CACHE:-$HOME/.cache/bazel-fidelity-repo}"
+mkdir -p "$fidelity_repo_cache"
+# The repo-cache flag carries a path (which may contain spaces), so it's passed
+# as its own quoted argument at each build invocation below — NOT folded into
+# the word-split $bazel_build_flags bag. $bazel_build_flags holds only
+# space-free flags that are intentionally word-split.
+bazel_build_flags="--experimental_repository_downloader_retries=10"
 bazel_artifact=""
 if [ "$no_library" = false ]; then
     echo "fidelity[$project_name]: bazel build $bazel_target_label" >&2
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build "--repository_cache=$fidelity_repo_cache" $bazel_build_flags "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
         echo "fidelity[$project_name]: bazel build FAILED — see $work_dir/bazel.log" >&2
         tail -20 "$work_dir/bazel.log" >&2
         exit 1
@@ -346,7 +412,7 @@ EOF
     # unpaired weak symbols on template-heavy consumers (spdlog), not a
     # converter delta. Both sides at -O2 makes the symbol sets comparable.
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build --copt=-O2 :_fidelity_consumer) \
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build "--repository_cache=$fidelity_repo_cache" $bazel_build_flags --copt=-O2 :_fidelity_consumer) \
         > "$work_dir/bazel-consumer.log" 2>&1 || {
             echo "fidelity[$project_name]: consumer bazel-side build FAILED — see $work_dir/bazel-consumer.log" >&2
             tail -20 "$work_dir/bazel-consumer.log" >&2
