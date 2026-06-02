@@ -1,0 +1,4 @@
+#ifndef VCSSTAMP_VERSION_H
+#define VCSSTAMP_VERSION_H
+#define VCSSTAMP_GIT_SHA "@GIT_SHA@"
+#endif
