@@ -1197,11 +1197,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		if decodedTrace != nil {
 			aliasLibs = decodedTrace.AddLibraries
 		}
+		var fileGlobs []shadow.FileGlobCall
+		if decodedTrace != nil {
+			fileGlobs = decodedTrace.FileGlobs
+		}
 		traceCtx := standaloneTraceContext{
 			CustomCommands:  decodedAddCustomCommands,
 			CustomTargets:   decodedAddCustomTargets,
 			AddDependencies: decodedAddDependencies,
 			AliasToActual:   buildAliasToActual(aliasLibs),
+			FileGlobs:       fileGlobs,
 		}
 		// umbrellaPrefix is cmakeSrc-relative-to-labelRoot when the
 		// workspace-root umbrella promoted labelRoot above cmakeSrc
@@ -1221,6 +1226,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
 		// labelRoot the genrules' anchored `-I` paths resolve against.
 		recordCodegenIncludeClosure(stand, hostSrc)
+		// Fold cmake file(GLOB)/file(GLOB_RECURSE)-sourced genrule inputs
+		// back into build-time glob() filegroups (split-synthesized), so a
+		// globbing genrule's deps re-evaluate in project B. No-op when the
+		// project uses no file(GLOB) (e.g. tablegen under Ninja).
+		threadFileGlobs(stand, traceCtx.FileGlobs, hostSrc)
 		pkg.Targets = append(pkg.Targets, stand...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries

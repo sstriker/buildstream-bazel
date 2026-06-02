@@ -768,6 +768,17 @@ transition cleanly.
           their own `-I` roots (the include-resolving-codegen signal); an
           include that doesn't resolve on the source FS (a generated `.td`)
           terminates that branch.
+        - **generic `file(GLOB)` threading** — the sibling capability for
+          *any* globbing genrule (not just tablegen). `ExtractFileGlobs`
+          (shadow) recovers each `file(GLOB)`/`file(GLOB_RECURSE)` call from
+          the `--trace-expand` stream; `threadFileGlobs` (lower) computes the
+          glob's match set on the source FS and, when a genrule depends on
+          the *whole* set (subset guard — no false positives), folds those
+          srcs into a build-time `glob()` filegroup split synthesizes in the
+          glob's owning package: `GLOB` → `glob(["*.x"])`, `GLOB_RECURSE` →
+          `glob(["**/*.x"])`, so it re-evaluates in project B. A no-op for
+          tablegen (DEPFILE under Ninja, no `file(GLOB)` in the trace), it's
+          ready for the first project that genuinely globs into a genrule.
       Remaining for a *green* tablegen **consumer** (`LLVMTargetParser`):
         - **(e) per-consumer** generated-header dependency wiring. The
           consumer fails `fatal error: llvm/TargetParser/AArch64TargetParserDef.inc:

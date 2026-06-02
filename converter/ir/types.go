@@ -574,6 +574,17 @@ type Target struct {
 	// input — see lower/configure_file.go.
 	GenruleTools []string
 
+	// GlobSrcGroups, on a KindGenrule, records source-file groups whose
+	// members came from a cmake file(GLOB)/file(GLOB_RECURSE) call — the
+	// generic globbing-genrule shape, where a genrule's inputs are a glob
+	// result rather than an explicit list. Lower removes the matched files
+	// from Srcs and records one group per glob; split synthesizes a
+	// filegroup(srcs = glob([<pattern>])) in the group's owning package
+	// and splices its label back into the genrule's srcs, so the glob lives
+	// in project B and re-evaluates every build. Empty for ordinary
+	// genrules.
+	GlobSrcGroups []GlobSrcGroup
+
 	// write_file-specific fields. Populated only when Kind ==
 	// KindWriteFile.
 
@@ -685,6 +696,16 @@ type Target struct {
 	// field and PerPlatformScalar stays empty so single-platform
 	// emission stays byte-identical.
 	PerPlatformScalar map[string]map[string]string
+}
+
+// GlobSrcGroup names one cmake file(GLOB)-derived source group: Dir is the
+// element-root-relative directory the glob is anchored at, and Pattern is
+// the Bazel glob pattern relative to Dir ("*.txt" for GLOB, "**/*.txt" for
+// GLOB_RECURSE). split turns each into a build-time glob() filegroup in
+// Dir's owning package.
+type GlobSrcGroup struct {
+	Dir     string
+	Pattern string
 }
 
 // CMakeConfigureFileSpec carries the attributes for a

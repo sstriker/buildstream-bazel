@@ -62,6 +62,10 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		}
 	}
 
+	// Synthesized build-time glob() filegroups backing file(GLOB)-sourced
+	// genrules, plus the labels to splice into each producing genrule's srcs.
+	globFilegroups, globLabels := plan.globSrcFilegroups(pkg)
+
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
 		// Synthesized output-producing rules (genrule custom-command
@@ -91,6 +95,14 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		}
 		ensure(dir)
 		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
+		// Splice the synthesized file(GLOB) glob-filegroup labels into this
+		// genrule's srcs (full labels, so no further rewriting), and drop
+		// the now-consumed metadata.
+		if labels := globLabels[t.Name]; len(labels) > 0 {
+			rt.Srcs = append(append([]string(nil), rt.Srcs...), labels...)
+			sort.Strings(rt.Srcs)
+			rt.GlobSrcGroups = nil
+		}
 		// A filegroup / pkg_files whose only srcs were bare packaged
 		// directories (dropped above) would render as an empty, useless
 		// rule — and pkg_files/filegroup both require a non-empty srcs
@@ -110,6 +122,13 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	for inc, name := range plan.headerLibs {
 		ensure(inc)
 		groups[inc] = append(groups[inc], plan.headerLibTarget(inc, name))
+	}
+
+	// Add the synthesized file(GLOB) glob() filegroups to their owning
+	// packages (referenced by the globbing genrules above).
+	for d, fgs := range globFilegroups {
+		ensure(d)
+		groups[d] = append(groups[d], fgs...)
 	}
 
 	// 3. Render each package group via the shared EmitWithOptions.
@@ -249,6 +268,73 @@ func (p *splitPlan) headerLibTarget(inc, name string) ir.Target {
 		Deps:       deps,
 		Visibility: []string{"//visibility:public"},
 	}
+}
+
+// globSrcFilegroups synthesizes the build-time glob() filegroups that back
+// file(GLOB)-derived genrule sources. For each GlobSrcGroup{Dir, Pattern}
+// on a genrule it locates Dir's owning package and emits — deduped per
+// (package, name) — a filegroup(srcs = glob(["<rel>/<pattern>"])), then
+// records the filegroup's label so EmitSplit can splice it into the
+// genrule's srcs. Keeping the glob in project B (rather than the frozen
+// convert-time match set) is what re-evaluates the genrule's deps when a
+// matching file is added post-conversion.
+//
+// byDir maps owning-package dir → the filegroups to inject there;
+// labelsFor maps genrule name → the filegroup labels to add to its srcs.
+func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string) {
+	byDir = map[string][]ir.Target{}
+	labelsFor = map[string][]string{}
+	seen := map[string]bool{} // owningDir + "\x00" + name → already synthesized
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindGenrule || len(t.GlobSrcGroups) == 0 {
+			continue
+		}
+		var labels []string
+		seenLabel := map[string]bool{}
+		for _, g := range t.GlobSrcGroups {
+			owningDir := p.deepestPkg(g.Dir)
+			rel, _ := relUnder(owningDir, g.Dir)
+			pattern := g.Pattern
+			if rel != "" {
+				pattern = rel + "/" + pattern
+			}
+			name := globSrcName(rel, g.Pattern)
+			label := headerLibLabel(p, owningDir, name)
+			if !seenLabel[label] {
+				seenLabel[label] = true
+				labels = append(labels, label)
+			}
+			if key := owningDir + "\x00" + name; !seen[key] {
+				seen[key] = true
+				byDir[owningDir] = append(byDir[owningDir], ir.Target{
+					Name:          name,
+					Kind:          ir.KindFilegroup,
+					FilegroupGlob: []string{pattern},
+					Visibility:    []string{"//visibility:public"},
+				})
+			}
+		}
+		sort.Strings(labels)
+		labelsFor[t.Name] = labels
+	}
+	return byDir, labelsFor
+}
+
+// globSrcName derives a deterministic, package-unique filegroup name for a
+// file(GLOB)-derived source group: "glob_<ext>_srcs" at a package root, or
+// "<rel>_glob_<ext>_srcs" for a subdir glob (rel + ext sanitized to a legal
+// identifier). The extension is taken from the pattern's trailing "*.<ext>";
+// patterns without one fall back to "files".
+func globSrcName(relInPkg, pattern string) string {
+	san := strings.NewReplacer("/", "_", ".", "_", "-", "_", "*", "_").Replace
+	ext := "files"
+	if i := strings.LastIndex(pattern, "*."); i >= 0 {
+		ext = san(pattern[i+2:])
+	}
+	if relInPkg == "" {
+		return "glob_" + ext + "_srcs"
+	}
+	return san(relInPkg) + "_glob_" + ext + "_srcs"
 }
 
 // planSplit computes the split layout from a lowered package.

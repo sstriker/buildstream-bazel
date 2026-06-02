@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -54,6 +55,14 @@ type standaloneTraceContext struct {
 	// genrule needs at least `:__pkg__` visibility for T to
 	// reference it.
 	AddDependencies []shadow.AddDependenciesCall
+
+	// FileGlobs carries the user's source-level file(GLOB)/file(GLOB_RECURSE)
+	// calls. threadFileGlobs matches each glob's result set against the
+	// standalone genrules' srcs: when a genrule depends on exactly a glob's
+	// output, those srcs are folded into a build-time glob() filegroup
+	// (split-synthesized) so the glob is preserved in project B. Empty when
+	// the project uses no file(GLOB).
+	FileGlobs []shadow.FileGlobCall
 
 	// AliasToActual maps each add_library(<alias> ALIAS <actual>) alias name
 	// to its actual producing target (namespaced aliases like Foo::Bar
@@ -471,6 +480,136 @@ func resolveTdInclude(inc string, roots []string, labelRoot string) string {
 		}
 	}
 	return ""
+}
+
+// threadFileGlobs folds cmake file(GLOB)/file(GLOB_RECURSE) results back
+// into build-time glob() filegroups. cmake --trace-expand expands ${glob}
+// to its matched files wherever it's used (e.g. a genrule's DEPENDS), so a
+// lowered genrule sourced from a glob lists the frozen match set rather
+// than the glob. We recover the glob: for each file(GLOB) call we compute
+// its match set on the source FS, and when that whole set is a subset of a
+// genrule's srcs (the genrule depends on exactly the glob's output) we drop
+// those files from srcs and record a GlobSrcGroup. split then emits one
+// filegroup(srcs = glob([<pattern>])) per group and splices its label into
+// the genrule — so a file added post-conversion is picked up.
+//
+// The subset test avoids false positives: a genrule with an explicit dep
+// that merely overlaps a glob (without covering the whole match set) is
+// left untouched. RELATIVE globs are skipped — their results are relative
+// to a base dir, not matchable against the absolute-anchored srcs.
+//
+// labelRoot is the absolute path srcs resolve against; "" disables the
+// pass (offline replay without a source tree).
+func threadFileGlobs(targets []ir.Target, globs []shadow.FileGlobCall, labelRoot string) {
+	if labelRoot == "" || len(globs) == 0 {
+		return
+	}
+	type group struct {
+		dir, pattern string
+		files        []string
+	}
+	var groups []group
+	for _, gc := range globs {
+		if gc.Relative {
+			continue
+		}
+		for _, pat := range gc.Patterns {
+			if files, dir, bpat, ok := fileGlobMatchSet(pat, gc.Recurse, labelRoot); ok {
+				groups = append(groups, group{dir, bpat, files})
+			}
+		}
+	}
+	for i := range targets {
+		t := &targets[i]
+		if t.Kind != ir.KindGenrule || len(t.Srcs) == 0 {
+			continue
+		}
+		srcSet := make(map[string]bool, len(t.Srcs))
+		for _, s := range t.Srcs {
+			srcSet[s] = true
+		}
+		remove := map[string]bool{}
+		var specs []ir.GlobSrcGroup
+		seenSpec := map[string]bool{}
+		for _, g := range groups {
+			if !allIn(g.files, srcSet) {
+				continue
+			}
+			if key := g.dir + "\x00" + g.pattern; !seenSpec[key] {
+				seenSpec[key] = true
+				specs = append(specs, ir.GlobSrcGroup{Dir: g.dir, Pattern: g.pattern})
+			}
+			for _, f := range g.files {
+				remove[f] = true
+			}
+		}
+		if len(specs) == 0 {
+			continue
+		}
+		var kept []string
+		for _, s := range t.Srcs {
+			if !remove[s] {
+				kept = append(kept, s)
+			}
+		}
+		t.Srcs = kept
+		t.GlobSrcGroups = append(t.GlobSrcGroups, specs...)
+	}
+}
+
+// fileGlobMatchSet evaluates one file(GLOB) pattern on the source FS,
+// returning the matched files (labelRoot-relative, sorted), the labelRoot-
+// relative directory the glob is anchored at, and the Bazel glob pattern
+// relative to that dir ("*.x" for GLOB, "**/*.x" for GLOB_RECURSE). ok is
+// false when the pattern's directory falls outside labelRoot (not
+// expressible as a project-local glob) or nothing matches.
+func fileGlobMatchSet(pattern string, recurse bool, labelRoot string) (files []string, anchorDir, bazelPat string, ok bool) {
+	pattern = filepath.FromSlash(pattern)
+	dir, base := filepath.Dir(pattern), filepath.Base(pattern)
+	relDir, err := filepath.Rel(labelRoot, dir)
+	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) {
+		return nil, "", "", false
+	}
+	anchorDir = filepath.ToSlash(relDir)
+	if anchorDir == "." {
+		anchorDir = ""
+	}
+	bazelPat = base
+	if recurse {
+		bazelPat = "**/" + base
+	}
+	var matches []string
+	if recurse {
+		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() {
+				return nil
+			}
+			if m, _ := filepath.Match(base, filepath.Base(p)); m {
+				matches = append(matches, p)
+			}
+			return nil
+		})
+	} else {
+		matches, _ = filepath.Glob(pattern)
+	}
+	for _, m := range matches {
+		if rel, err := filepath.Rel(labelRoot, m); err == nil {
+			files = append(files, filepath.ToSlash(rel))
+		}
+	}
+	sort.Strings(files)
+	return files, anchorDir, bazelPat, len(files) > 0
+}
+
+// allIn reports whether every file is present in set (and the list is
+// non-empty) — the "genrule depends on the whole glob" subset test.
+func allIn(files []string, set map[string]bool) bool {
+	for _, f := range files {
+		if !set[f] {
+			return false
+		}
+	}
+	return len(files) > 0
 }
 
 // genruleIncludeRoots extracts the `-I` include roots from a genrule cmd,
