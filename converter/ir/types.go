@@ -221,7 +221,7 @@ type Package struct {
 	// UTILITY (tablegen / add_custom_target) dependencies whose
 	// add_custom_command outputs are generated headers (a tablegen `.inc`).
 	// The --split-packages emit transform consumes this to synthesize a
-	// per-producing-package `generated_headers` cc_library (textual_hdrs +
+	// per-producing-package `generated_includes` cc_library (textual_hdrs +
 	// includes) and wire each consumer to depend on it, so a consumer that
 	// `#include`s a generated `.inc` resolves it under Bazel's sandbox.
 	//

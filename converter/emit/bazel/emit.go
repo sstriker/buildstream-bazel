@@ -662,7 +662,7 @@ func markAttrsKeep(call *build.CallExpr, attrNames map[string]bool) {
 
 // markGeneratedHeaderDeps tags each `deps` list item that references a
 // synthesized generated-header wrapper library (label suffix
-// `:generated_headers`, see split.go's generatedIncludesName) with a
+// `:generated_includes`, see split.go's generatedIncludesName) with a
 // per-item `# keep`. gazelle's cc extension resolves deps from #include
 // directives; it can't resolve a generated `.inc` to the wrapper (the file
 // isn't on disk at gazelle time), so without the marker a maintenance pass
