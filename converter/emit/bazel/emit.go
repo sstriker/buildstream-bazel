@@ -571,7 +571,7 @@ func addKeepMarkers(f *build.File) {
 		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
-			if kind == "cc_library" && callHasTag(call, generatedHeadersTag) {
+			if kind == "cc_library" && callHasTag(call, generatedIncludesTag) {
 				// The fully synthesized generated-header wrapper has no
 				// on-disk srcs for gazelle to reconcile it against — a
 				// maintenance pass would delete it. Whole-rule keep pins it.
@@ -662,7 +662,7 @@ func markAttrsKeep(call *build.CallExpr, attrNames map[string]bool) {
 
 // markGeneratedHeaderDeps tags each `deps` list item that references a
 // synthesized generated-header wrapper library (label suffix
-// `:generated_headers`, see split.go's generatedHeadersName) with a
+// `:generated_headers`, see split.go's generatedIncludesName) with a
 // per-item `# keep`. gazelle's cc extension resolves deps from #include
 // directives; it can't resolve a generated `.inc` to the wrapper (the file
 // isn't on disk at gazelle time), so without the marker a maintenance pass
@@ -678,23 +678,20 @@ func markGeneratedHeaderDeps(call *build.CallExpr) {
 		if !ok || ident.Name != "deps" {
 			continue
 		}
-		list, ok := assign.RHS.(*build.ListExpr)
-		if !ok {
-			continue
-		}
-		for _, item := range list.List {
-			str, ok := item.(*build.StringExpr)
-			if !ok {
-				continue
+		// deps may render as a plain list, a select(), or `[flat] +
+		// select({...})` (a *build.BinaryExpr) when the target carries
+		// per-platform deps. Walk the whole RHS so the wrapper dep is marked
+		// wherever the splice landed — the StringExpr match keys on the
+		// reserved label suffix, so dict keys inside a select() never match.
+		build.Walk(assign.RHS, func(e build.Expr, _ []build.Expr) {
+			str, ok := e.(*build.StringExpr)
+			if !ok || !strings.HasSuffix(str.Value, ":"+generatedIncludesName) {
+				return
 			}
-			if !strings.HasSuffix(str.Value, ":"+generatedHeadersName) {
-				continue
+			if !hasKeepSuffix(str.Comment().Suffix) {
+				str.Comment().Suffix = append(str.Comment().Suffix, build.Comment{Token: "# keep"})
 			}
-			if hasKeepSuffix(str.Comment().Suffix) {
-				continue
-			}
-			str.Comment().Suffix = append(str.Comment().Suffix, build.Comment{Token: "# keep"})
-		}
+		})
 	}
 }
 

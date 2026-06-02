@@ -10,7 +10,7 @@ import (
 
 // A cc_library consumer that needs a generated `.inc` (recorded on
 // CodegenHeaderConsumers) gets a # keep'd deps edge on a synthesized
-// generated_headers wrapper in the producing package; the wrapper carries
+// generated_includes wrapper in the producing package; the wrapper carries
 // the .inc in textual_hdrs with includes=["."] and a whole-rule keep.
 func TestEmitSplit_GeneratedHeaderWrapper(t *testing.T) {
 	pkg := &ir.Package{
@@ -33,10 +33,10 @@ func TestEmitSplit_GeneratedHeaderWrapper(t *testing.T) {
 	lib := string(tree["lib"])
 
 	for _, want := range []string{
-		`name = "generated_headers"`,
+		`name = "generated_includes"`,
 		`textual_hdrs = ["myproj/gen.inc"]`,
 		`includes = ["."]`,
-		`"cmake-codegen-generated-headers"`,
+		`"cmake-codegen-generated-includes"`,
 	} {
 		if !strings.Contains(gen, want) {
 			t.Errorf("gen/ package missing %q:\n%s", want, gen)
@@ -50,10 +50,10 @@ func TestEmitSplit_GeneratedHeaderWrapper(t *testing.T) {
 	// The consumer depends on the cross-package wrapper, with a per-item
 	// keep so a gazelle pass (which can't resolve the generated .inc)
 	// preserves the edge.
-	if !strings.Contains(lib, "/gen:generated_headers") {
+	if !strings.Contains(lib, "/gen:generated_includes") {
 		t.Errorf("consumer missing cross-package wrapper dep:\n%s", lib)
 	}
-	if !strings.Contains(lib, `:generated_headers",  # keep`) {
+	if !strings.Contains(lib, `:generated_includes",  # keep`) {
 		t.Errorf("consumer wrapper dep missing per-item # keep:\n%s", lib)
 	}
 }
@@ -68,13 +68,13 @@ func TestEmitSplit_GeneratedHeaderWrapper_NameCollision(t *testing.T) {
 			{Name: "genlib", Kind: ir.KindCCLibrary, Srcs: []string{"gen/genlib.cpp"}},
 			// A real project target colliding with the reserved name, in the
 			// same package the wrapper would be synthesized into.
-			{Name: "generated_headers", Kind: ir.KindCCLibrary, Srcs: []string{"gen/user.cpp"}},
+			{Name: "generated_includes", Kind: ir.KindCCLibrary, Srcs: []string{"gen/user.cpp"}},
 			{Name: "consumer", Kind: ir.KindCCLibrary, Srcs: []string{"lib/consumer.cpp"}},
 		},
 		SubPackages: map[string]string{
-			"genlib":            "gen",
-			"generated_headers": "gen",
-			"consumer":          "lib",
+			"genlib":             "gen",
+			"generated_includes": "gen",
+			"consumer":           "lib",
 		},
 		CodegenHeaderConsumers: map[string][]string{
 			"consumer": {"gen/myproj/gen.inc"},
@@ -82,7 +82,7 @@ func TestEmitSplit_GeneratedHeaderWrapper_NameCollision(t *testing.T) {
 	}
 	if _, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"}); err == nil {
 		t.Fatal("expected a reserved-name collision error, got nil")
-	} else if !strings.Contains(err.Error(), "generated_headers") {
+	} else if !strings.Contains(err.Error(), "generated_includes") {
 		t.Errorf("collision error should name the reserved target, got: %v", err)
 	}
 }
