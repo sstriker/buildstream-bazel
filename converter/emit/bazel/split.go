@@ -67,6 +67,14 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	// genrules, plus the labels to splice into each producing genrule's srcs.
 	globFilegroups, globLabels := plan.globSrcFilegroups(pkg)
 
+	// Per-producing-package generated-header wrapper libraries, plus the
+	// wrapper labels to splice into each consumer's deps (a consumer that
+	// #includes a tablegen .inc).
+	genHdrWrappers, genHdrLabels, err := plan.generatedHeaderWrappers(pkg)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
 		// Synthesized output-producing rules (genrule custom-command
@@ -112,6 +120,15 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 			sort.Strings(rt.Srcs)
 			rt.GlobSrcGroups = nil
 		}
+		// Splice the generated-header wrapper labels into this consumer's
+		// deps (full cross-package labels, so no further rewriting). The
+		// keep-marker pass tags them `# keep` so a gazelle maintenance pass
+		// — which can't resolve the generated .inc to a target — preserves
+		// the edge.
+		if labels := genHdrLabels[t.Name]; len(labels) > 0 {
+			rt.Deps = append(append([]string(nil), rt.Deps...), labels...)
+			sort.Strings(rt.Deps)
+		}
 		// A filegroup / pkg_files whose only srcs were bare packaged
 		// directories (dropped above) would render as an empty, useless
 		// rule — and pkg_files/filegroup both require a non-empty srcs
@@ -138,6 +155,13 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	for d, fgs := range globFilegroups {
 		ensure(d)
 		groups[d] = append(groups[d], fgs...)
+	}
+
+	// Add the synthesized generated-header wrapper libraries to their
+	// producing packages (depended on by the consumers spliced above).
+	for d, ws := range genHdrWrappers {
+		ensure(d)
+		groups[d] = append(groups[d], ws...)
 	}
 
 	// 3. Render each package group via the shared EmitWithOptions.
@@ -327,6 +351,110 @@ func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Ta
 		labelsFor[t.Name] = labels
 	}
 	return byDir, labelsFor
+}
+
+// generatedHeadersName is the name of the synthesized generated-header
+// wrapper cc_library in each producing package; generatedHeaderWrappers
+// fails fast if a real target in a producing package already claims it.
+// The consumer-side per-item keep marker recognizes a dep on the wrapper
+// by this label suffix.
+const generatedHeadersName = "generated_headers"
+
+// generatedHeadersTag marks the synthesized wrapper so addKeepMarkers can
+// whole-rule-keep it by tag — robust against a user rule that happens to
+// share generatedHeadersName in a non-producing package (which must NOT be
+// kept), and against any future rename.
+const generatedHeadersTag = "cmake-codegen-generated-headers"
+
+// generatedHeaderWrappers synthesizes, per producing package, a
+// `generated_headers` cc_library carrying that package's generated `.inc`
+// headers in textual_hdrs (with includes=["."] supplying the genfiles
+// include root), and returns the wrapper labels each consumer must depend
+// on. Producer and consumer are usually distinct packages — a tablegen
+// `.inc` is generated under //include but #included by a library in
+// //llvm/lib/... — so the consumer can't reach the genrule output as a
+// bare same-package input; it depends on the wrapper, whose textual_hdrs
+// declare the output as an input and whose includes put the package root
+// on the consumer's -I. byDir maps a producing-package dir → its wrapper;
+// labelsFor maps a consumer name → the sorted wrapper labels it needs.
+func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string, err error) {
+	byDir = map[string][]ir.Target{}
+	labelsFor = map[string][]string{}
+	if len(pkg.CodegenHeaderConsumers) == 0 {
+		return byDir, labelsFor, nil
+	}
+	// Accumulate the package-local header set per producing dir across all
+	// consumers: each producing package gets one wrapper that is the union
+	// of every generated header any consumer needs from it.
+	hdrsByDir := map[string]map[string]bool{}
+	for _, outs := range pkg.CodegenHeaderConsumers {
+		for _, o := range outs {
+			dir := p.deepestPkg(o)
+			rel, ok := relUnder(dir, o)
+			if !ok {
+				continue
+			}
+			if hdrsByDir[dir] == nil {
+				hdrsByDir[dir] = map[string]bool{}
+			}
+			hdrsByDir[dir][rel] = true
+		}
+	}
+	// Guard the reserved wrapper name: a real same-named target in a
+	// producing package would be a duplicate Bazel target (load error), and
+	// renaming isn't safe here (the consumer-side label and its per-item keep
+	// marker key off this exact name). Fail fast with a clear message rather
+	// than emit a BUILD that won't load.
+	for _, t := range pkg.Targets {
+		if t.Name != generatedHeadersName {
+			continue
+		}
+		if d := p.targetDir(t.Name); hdrsByDir[d] != nil {
+			return nil, nil, fmt.Errorf("split-packages: package %q already declares a target named %q, which the converter reserves for tablegen-consumer generated-header wiring — rename the project target", dirKey(d), generatedHeadersName)
+		}
+	}
+	for dir, set := range hdrsByDir {
+		hdrs := make([]string, 0, len(set))
+		for h := range set {
+			hdrs = append(hdrs, h)
+		}
+		sort.Strings(hdrs)
+		byDir[dir] = append(byDir[dir], ir.Target{
+			Name:        generatedHeadersName,
+			Kind:        ir.KindCCLibrary,
+			TextualHdrs: hdrs,
+			// includes=["."] supplies the genfiles include root so a consumer
+			// #includes the .inc by its package-relative path — matching
+			// headerLibTarget, which sets it for every include root. The
+			// package base makes "." the element package (e.g.
+			// elements/<name>), not the workspace root, so Bazel's
+			// root-include guard doesn't fire.
+			Includes:   []string{"."},
+			Visibility: []string{"//visibility:public"},
+			// Tag so addKeepMarkers whole-rule-keeps the synthesized wrapper
+			// by tag (gazelle would delete a cc_library with no on-disk srcs)
+			// without mistaking a user rule that shares the name.
+			Tags: []string{generatedHeadersTag},
+		})
+	}
+	for cons, outs := range pkg.CodegenHeaderConsumers {
+		seen := map[string]bool{}
+		var labels []string
+		for _, o := range outs {
+			dir := p.deepestPkg(o)
+			if _, ok := relUnder(dir, o); !ok {
+				continue
+			}
+			label := headerLibLabel(p, dir, generatedHeadersName)
+			if !seen[label] {
+				seen[label] = true
+				labels = append(labels, label)
+			}
+		}
+		sort.Strings(labels)
+		labelsFor[cons] = labels
+	}
+	return byDir, labelsFor, nil
 }
 
 // globSrcName derives a deterministic, package-unique filegroup name for a
@@ -602,6 +730,16 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 					// no rewrite.
 					if rel != o {
 						cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+o, "$(RULEDIR)/"+rel)
+						// Shrink the output's parent-dir tokens in lockstep
+						// (lower anchors multi-component parents for a
+						// make_directory/mkdir of the output's dir). Immediate
+						// parent first → longest-first, so a child dir is
+						// rewritten before its prefix.
+						for d := pathDir(o); strings.Contains(d, "/"); d = pathDir(d) {
+							if dRel, ok := relUnder(dir, d); ok && dRel != d {
+								cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+d, "$(RULEDIR)/"+dRel)
+							}
+						}
 					}
 					outs = append(outs, rel)
 				} else {
@@ -779,6 +917,17 @@ func normDir(d string) string {
 // relUnder returns (path-relative-to-dir, true) when p is at or below
 // dir, ("", false) otherwise. dir "" means the root, where every path is
 // already relative.
+// pathDir returns the parent directory of a slash-separated path, or "" when
+// it has no slash. String-based to match this file's path handling (normDir
+// / relUnder) and to avoid path.Dir's "." result for slash-less inputs,
+// which the callers' `strings.Contains(d, "/")` loop guard treats as "stop".
+func pathDir(p string) string {
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[:i]
+	}
+	return ""
+}
+
 func relUnder(dir, p string) (string, bool) {
 	dir = normDir(dir)
 	p = strings.TrimPrefix(p, "./")

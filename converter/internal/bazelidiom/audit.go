@@ -471,7 +471,8 @@ func collectSelectKeys(e build.Expr, match func(string) bool) []string {
 func auditCCLibrary(rule, target string, call *build.CallExpr) []Finding {
 	srcs := listAttrLen(call, "srcs")
 	hdrs := listAttrLen(call, "hdrs")
-	if srcs > 0 || hdrs > 0 {
+	textualHdrs := listAttrLen(call, "textual_hdrs")
+	if srcs > 0 || hdrs > 0 || textualHdrs > 0 {
 		return nil
 	}
 	// A deps-only cc_library is an idiomatic transparent

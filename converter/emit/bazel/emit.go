@@ -571,9 +571,45 @@ func addKeepMarkers(f *build.File) {
 		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
-			markAttrsKeep(call, ccKeepAttrs(kind))
+			if kind == "cc_library" && callHasTag(call, generatedHeadersTag) {
+				// The fully synthesized generated-header wrapper has no
+				// on-disk srcs for gazelle to reconcile it against — a
+				// maintenance pass would delete it. Whole-rule keep pins it.
+				// Keyed on the tag, not the name, so a user rule that shares
+				// the name is left for gazelle to manage.
+				markCallKeep(call)
+			} else {
+				markAttrsKeep(call, ccKeepAttrs(kind))
+				markGeneratedHeaderDeps(call)
+			}
 		}
 	}
+}
+
+// callHasTag reports whether a rule call's `tags` attribute (a plain list
+// literal) contains tag. Used to recognize converter-synthesized rules by
+// their tag rather than a collidable name.
+func callHasTag(call *build.CallExpr, tag string) bool {
+	for _, arg := range call.List {
+		assign, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := assign.LHS.(*build.Ident)
+		if !ok || ident.Name != "tags" {
+			continue
+		}
+		list, ok := assign.RHS.(*build.ListExpr)
+		if !ok {
+			continue
+		}
+		for _, item := range list.List {
+			if str, ok := item.(*build.StringExpr); ok && str.Value == tag {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // callRuleKind returns the rule kind for a CallExpr (e.g.
@@ -624,6 +660,44 @@ func markAttrsKeep(call *build.CallExpr, attrNames map[string]bool) {
 	}
 }
 
+// markGeneratedHeaderDeps tags each `deps` list item that references a
+// synthesized generated-header wrapper library (label suffix
+// `:generated_headers`, see split.go's generatedHeadersName) with a
+// per-item `# keep`. gazelle's cc extension resolves deps from #include
+// directives; it can't resolve a generated `.inc` to the wrapper (the file
+// isn't on disk at gazelle time), so without the marker a maintenance pass
+// would strip the edge. Per-item (not whole-attr) so gazelle still manages
+// the consumer's ordinary, resolvable deps.
+func markGeneratedHeaderDeps(call *build.CallExpr) {
+	for _, arg := range call.List {
+		assign, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		ident, ok := assign.LHS.(*build.Ident)
+		if !ok || ident.Name != "deps" {
+			continue
+		}
+		list, ok := assign.RHS.(*build.ListExpr)
+		if !ok {
+			continue
+		}
+		for _, item := range list.List {
+			str, ok := item.(*build.StringExpr)
+			if !ok {
+				continue
+			}
+			if !strings.HasSuffix(str.Value, ":"+generatedHeadersName) {
+				continue
+			}
+			if hasKeepSuffix(str.Comment().Suffix) {
+				continue
+			}
+			str.Comment().Suffix = append(str.Comment().Suffix, build.Comment{Token: "# keep"})
+		}
+	}
+}
+
 // hasKeepSuffix reports whether the comment slice already
 // contains a `# keep` marker. Used to make addKeepMarkers
 // idempotent — calling canonicalize twice on the same body
@@ -653,6 +727,11 @@ func ccKeepAttrs(kind string) map[string]bool {
 		"alwayslink":           true,
 		"include_prefix":       true,
 		"strip_include_prefix": true,
+		// textual_hdrs are x-macro / generated `.inc` fragments gazelle's
+		// cc extension can't resolve from disk (a tablegen output isn't
+		// present at gazelle time); keep them so a maintenance pass doesn't
+		// strip the generated-header wrapper's contents.
+		"textual_hdrs": true,
 	}
 	if kind == "cc_test" {
 		base["args"] = true
@@ -673,6 +752,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- end}}
 {{- if .HdrsExpr}}
     hdrs = {{.HdrsExpr}},
+{{- end}}
+{{- if .TextualHdrsExpr}}
+    textual_hdrs = {{.TextualHdrsExpr}},
 {{- end}}
 {{- if .IncludesExpr}}
     includes = {{.IncludesExpr}},
@@ -1091,6 +1173,7 @@ type ccView struct {
 	Name                       string
 	SrcsExpr                   string
 	HdrsExpr                   string
+	TextualHdrsExpr            string
 	IncludesExpr               string
 	IncludePrefix              string
 	StripIncludePrefix         string
@@ -1501,6 +1584,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		Name:                       t.Name,
 		SrcsExpr:                   attrExpr(srcs, srcsSel),
 		HdrsExpr:                   attrExpr(hdrs, hdrsSel),
+		TextualHdrsExpr:            attrExpr(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
 		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,

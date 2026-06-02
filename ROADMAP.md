@@ -804,27 +804,35 @@ transition cleanly.
           `glob(["**/*.x"])`, so it re-evaluates in project B. A no-op for
           tablegen (DEPFILE under Ninja, no `file(GLOB)` in the trace), it's
           ready for the first project that genuinely globs into a genrule.
-      Remaining for a *green* tablegen **consumer** (`LLVMTargetParser`):
-        - **(e) per-consumer** generated-header dependency wiring. The
-          consumer fails `fatal error: llvm/TargetParser/AArch64TargetParserDef.inc:
-          No such file` — it needs (1) a dep on the genrules producing the
-          `.inc`s it includes and (2) the genfiles include root on its `-I`.
-          A coarse "add every generated `.inc` to `//include:include_headers`"
-          would regress the clean libs (they'd transitively force all of
-          tablegen), so it must be per-consumer. **The signal is clean, not a
-          heuristic**: the codemodel records it directly — `LLVMTargetParser`'s
-          `dependencies` list names `ARMTargetParserTableGen`,
-          `AArch64TargetParserTableGen`, `RISCVTargetParserTableGen`. The work
-          is mapping those tablegen-target deps → the genrule(s) producing
-          their outputs, wiring the consumer to depend on them, and putting
-          the `//include` genfiles root on the consumer's include path
-          (likely a small generated-header cc_library per producing package
-          so the include path comes for free).
-      Net: tool builds, genrules run and emit headers; only the consumer-side
-      dep+include-path wiring (e) stands between here and a green
-      tablegen-dependent library, and the codemodel hands us the edges. Also
-      still
-      open: the source-tree-input == build-tree-output genrule aliasing
+      Tablegen **consumer** wiring (`LLVMTargetParser`-shaped) is
+      **shipped (e)**. Under Bazel a consumer fails `fatal error:
+      .../AArch64TargetParserDef.inc: No such file` because a generated
+      `.inc` must be a *declared input*, not just an `-I` path. The signal
+      is the codemodel's UTILITY (tablegen / `add_custom_target`)
+      dependencies — `LLVMTargetParser`'s `dependencies` name
+      `ARMTargetParserTableGen`, `AArch64TargetParserTableGen`,
+      `RISCVTargetParserTableGen`. lower walks each such dep's ninja phony
+      to the recovered genrule outputs it wraps (`collectCodegenHeaders`:
+      bounded, seeded from every output whose final path component matches
+      the target's unique name so sub-dir phonies like `gen/gen_inc`
+      resolve, stopping at sibling-target boundaries) and records them on
+      `pkg.CodegenHeaderConsumers`. The `--split-packages` transform then
+      synthesizes one `generated_headers` `cc_library` per producing
+      package (`textual_hdrs` = its `.inc`s, `includes=["."]` for the
+      genfiles include root, whole-rule `# keep`) and splices a dep on it
+      into each consumer with a per-item `# keep` (gazelle can't resolve a
+      generated `.inc` to a target). Per-consumer, so the clean libs don't
+      transitively force all of tablegen. Proven green end-to-end: a
+      `cc_library` `#include`-ing a generated `.inc`, split-converted,
+      builds under Bazel via the wrapper — fully automatic (no hand-edits):
+      a recovered genrule's `cmake -E make_directory` of an output's subdir
+      now anchors to `$(RULEDIR)/<subdir>` in lockstep with the output write
+      (`anchorGenruleOutputsToRuledir` covers each output's multi-component
+      parent dirs), so the genrule mkdir's the `.inc`'s parent where it
+      writes it. buildifier `-mode=diff` stays a no-op.
+      Net: tool builds, genrules run and emit headers, and consumers that
+      `#include` those headers now build green. Still open: the
+      source-tree-input == build-tree-output genrule aliasing
       (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
       re-anchoring.
     - Promote each CI `fidelity` gate from `continue-on-error: true`
