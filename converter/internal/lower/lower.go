@@ -4389,11 +4389,18 @@ func compileGroupMixesCAndCXX(cg fileapi.CompileGroup, srcs []fileapi.TargetSour
 
 // sourceCLanguage classifies a source path as "C", "CXX", or "" (neutral —
 // headers and non-C/C++ languages) by extension, for the mixed-language
-// `-std` guard.
+// `-std` guard. Extension case matters for one pair: a lowercase `.c` is C,
+// but an UPPERCASE `.C` is C++ (gcc/cmake convention) — so the `.c` check is
+// case-SENSITIVE and `.C` falls through to the C++ set. The remaining C++
+// extensions are matched case-insensitively.
 func sourceCLanguage(path string) string {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".c":
-		return "C"
+	ext := filepath.Ext(path)
+	if ext == ".c" {
+		return "C" // lowercase .c only
+	}
+	switch strings.ToLower(ext) {
+	case ".c": // reached only by uppercase ".C" → C++ by convention
+		return "CXX"
 	case ".cc", ".cpp", ".cxx", ".c++", ".cp", ".cppm", ".ixx":
 		return "CXX"
 	}

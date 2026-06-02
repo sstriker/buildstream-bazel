@@ -20,6 +20,7 @@ func TestCompileGroupMixesCAndCXX(t *testing.T) {
 		{Path: "gen/thing.cxx"}, // 4: CXX
 		{Path: "asm/boot.s"},    // 5: neutral (non-C/C++)
 		{Path: "legacy.c++"},    // 6: CXX
+		{Path: "upper.C"},       // 7: CXX (uppercase .C is C++ by convention)
 	}
 	cases := []struct {
 		name string
@@ -29,6 +30,8 @@ func TestCompileGroupMixesCAndCXX(t *testing.T) {
 		{"C + C++ → mixed", []int{0, 1}, true},
 		{"C + C++ with header → mixed", []int{0, 1, 2}, true},
 		{"C-only → not mixed", []int{0, 2}, false},
+		{"lowercase .c + uppercase .C → mixed (.C is C++)", []int{0, 7}, true},
+		{"uppercase .C only → not mixed (all C++)", []int{7}, false},
 		{"C++-only (several exts) → not mixed", []int{1, 3, 4, 6}, false},
 		{"header-only → not mixed", []int{2}, false},
 		{"C + asm (non-C/C++) → not mixed", []int{0, 5}, false},
