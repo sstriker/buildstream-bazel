@@ -123,20 +123,32 @@ if [ -n "$egress_cas" ]; then
       keytool -importcert -noprompt -trustcacerts -alias "bsb-$(basename "$ca")" \
         -file "$ca" -keystore "$bsb_trust" -storepass changeit >/dev/null 2>&1 || true
     done
+    # If every import failed, the keystore is missing/empty — don't point
+    # bazel at it (that fails fetches more confusingly than the JVM default);
+    # clear it so the "no usable truststore" path logs below.
+    keytool -list -keystore "$bsb_trust" -storepass changeit 2>/dev/null \
+      | grep -q trustedCertEntry || bsb_trust=""
   else
     bsb_trust=""
   fi
   if [ -n "$bsb_trust" ]; then
     bsb_rc="$HOME/.bazelrc"
     # Replace any prior managed block, preserving the rest of ~/.bazelrc.
-    [ -f "$bsb_rc" ] && sed -i '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc"
-    cat >> "$bsb_rc" <<RC
+    # Best-effort writes: a failure here (read-only HOME, full disk) must not
+    # abort the rest of the hook under `set -e`, and we only claim "configured"
+    # when the append actually landed.
+    [ -f "$bsb_rc" ] && { sed -i '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc" 2>/dev/null || true; }
+    if cat >> "$bsb_rc" <<RC
 # >>> bsb-egress >>>
 common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/
 startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit
 # <<< bsb-egress <<<
 RC
-    log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+    then
+      log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+    else
+      log "bazel egress: could not write $bsb_rc; left bazel at defaults"
+    fi
   else
     log "bazel egress: egress CAs present but no usable truststore (no system cacerts, no keytool)"
   fi
