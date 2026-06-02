@@ -1226,6 +1226,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			opts.Coverage.Add(f)
 		}
 	}
+
+	// Phase 7 idiom-shaping: lift header-only libraries' single include
+	// directory from the broad `includes = ["<d>"]` form to the precise
+	// `strip_include_prefix = "<d>"` form. Runs over the fully-lowered
+	// package so it catches header-only libs from BOTH the codemodel path
+	// (lowerTarget) and the trace-synth path (lowerInterfaceLibraries).
+	shapeHeaderOnlyStripIncludePrefix(pkg)
+
 	return pkg, nil
 }
 

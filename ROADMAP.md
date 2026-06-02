@@ -424,6 +424,29 @@ transition cleanly.
     gate guards the contract; `cmd/relax-keeps` learns the
     new shapes.
 
+    **Landed (slice 1) — header-only `strip_include_prefix`
+    shaping.** A final-emission IR pass
+    (`shapeHeaderOnlyStripIncludePrefix`,
+    `converter/internal/lower/fileset_strip_prefix.go`, run in
+    `ToIR`'s tail) lifts a header-only interface library's single
+    include directory from the broad `includes = ["<d>"]` (`-I<d>`)
+    form to the precise `strip_include_prefix = "<d>"` form when every
+    exported header lives under `<d>` — only the declared headers are
+    then visible, matching the FILE_SET HEADERS contract. Operating on
+    the lowered package (not inside `lowerTarget`) catches interface
+    libs from BOTH the codemodel path (`KindCCInterface`) and the
+    trace-synth path (`lowerInterfaceLibraries`, which emits
+    `cc_library` + the `cmake-codegen-interface-library-from-trace`
+    tag and is where a consumed `INTERFACE_LIBRARY` actually lands).
+    Conservative gates: genuine interface libs only (a plain
+    `cc_library` whose srcs were elided keeps its compile-time
+    `includes`); single include dir; all hdrs under it. The
+    `interface-library` golden + a direct pass unit test pin it.
+    **Remaining:** `strip_include_prefix` for FILE_SET HEADERS on
+    libraries that ALSO compile sources, and the `select_to_features`
+    rewrite of hand-rolled sanitizer `select`s (the audit already
+    flags both gaps; the lowering rewrites are the open work).
+
   Phase shape: overview / phase boundaries / acceptance criteria
   are tracked here. The hook protocols + fold semantics + classifier
   rules land as code comments on the implementation PRs rather than
