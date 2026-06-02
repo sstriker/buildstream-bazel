@@ -491,9 +491,11 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// it benignly (BucketCMakeE no-op) rather than refusing — refusing
 	// would drop every other target in the package into the round-2
 	// fallback over an inert call (issue #376). STRICT: only when every
-	// output channel is absent. A call that captures OUTPUT_VARIABLE /
-	// OUTPUT_FILE / RESULT_VARIABLE falls through to the normal classifier
-	// below (→ refuse) so no captured value is silently lost.
+	// output channel is absent. A call that captures OUTPUT_VARIABLE or
+	// RESULT_VARIABLE falls through to the normal classifier below
+	// (→ refuse); one with OUTPUT_FILE falls through to the file-producing
+	// arm (hoistable). Either way the captured channel is handled by the
+	// normal path, never silently dropped by this benign skip.
 	if benignNoOutputDrivers[driver] &&
 		call.OutputVariable == "" && call.OutputFile == "" && call.ResultVariable == "" {
 		return ClassifyResult{
