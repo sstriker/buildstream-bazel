@@ -1211,6 +1211,12 @@ func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 	// mechanism — it appends the resolved .td to the genrule's srcs, not a
 	// filegroup.)
 	if len(t.FilegroupGlob) > 0 {
+		// Srcs and FilegroupGlob are mutually exclusive by the IR contract;
+		// fail fast rather than silently dropping the explicit srcs if a
+		// producer ever sets both.
+		if len(t.Srcs) > 0 {
+			return fmt.Errorf("filegroup %q sets both explicit srcs and FilegroupGlob; they are mutually exclusive", t.Name)
+		}
 		srcsExpr = "glob(" + strList(sortedCopy(t.FilegroupGlob)) + ")"
 	}
 	return filegroupTmpl.Execute(w, filegroupView{

@@ -341,17 +341,34 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	if cmd == "" || len(outs) == 0 {
 		return cmd
 	}
+	const rp = "$(RULEDIR)/"
+	// Longest outs first so a path that is a prefix of another ("foo" vs
+	// "foo.d") is considered as the longer token before the shorter.
 	sorted := append([]string(nil), outs...)
 	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
 	for _, o := range sorted {
 		if o == "" {
 			continue
 		}
-		anchored := "$(RULEDIR)/" + o
-		if strings.Contains(cmd, anchored) {
-			continue
+		// Anchor each occurrence of o that isn't already prefixed by rp.
+		// A per-occurrence guard (vs a whole-cmd strings.Contains check)
+		// avoids a false "already anchored" skip when one out is a prefix
+		// of another — rp+"foo" is a substring of rp+"foo.d", so the old
+		// check skipped anchoring a still-literal "foo" — while the rp guard
+		// still blocks double-anchoring. Occurrences where o is a prefix of
+		// a longer path (e.g. a "<o>.d" depfile) stay anchored, as before.
+		var b strings.Builder
+		for i := 0; i < len(cmd); {
+			if strings.HasPrefix(cmd[i:], o) && !(i >= len(rp) && cmd[i-len(rp):i] == rp) {
+				b.WriteString(rp)
+				b.WriteString(o)
+				i += len(o)
+				continue
+			}
+			b.WriteByte(cmd[i])
+			i++
 		}
-		cmd = strings.ReplaceAll(cmd, o, anchored)
+		cmd = b.String()
 	}
 	return cmd
 }

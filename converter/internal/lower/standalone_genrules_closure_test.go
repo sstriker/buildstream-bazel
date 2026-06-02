@@ -195,6 +195,45 @@ func TestResolveTdInclude_NoTraversal(t *testing.T) {
 	}
 }
 
+func TestAnchorGenruleOutputsToRuledir(t *testing.T) {
+	tests := []struct {
+		name, cmd, want string
+		outs            []string
+	}{
+		{
+			// One out is a prefix of another: both must anchor. The old
+			// strings.Contains check skipped "foo" once "$(RULEDIR)/foo.d"
+			// existed (rp+"foo" is a substring of rp+"foo.d").
+			name: "prefix_outs_both_anchored",
+			cmd:  "tool -o foo -d foo.d",
+			outs: []string{"foo", "foo.d"},
+			want: "tool -o $(RULEDIR)/foo -d $(RULEDIR)/foo.d",
+		},
+		{
+			// A single out whose ".d" depfile is derived: anchoring the out
+			// also anchors the "<out>.d" side path (prefix match preserved).
+			name: "depfile_prefix_anchored_via_single_out",
+			cmd:  "tblgen -o x.inc -d x.inc.d",
+			outs: []string{"x.inc"},
+			want: "tblgen -o $(RULEDIR)/x.inc -d $(RULEDIR)/x.inc.d",
+		},
+		{
+			// Idempotent: an already-anchored cmd is unchanged (no double).
+			name: "already_anchored_idempotent",
+			cmd:  "tool -o $(RULEDIR)/foo -d $(RULEDIR)/foo.d",
+			outs: []string{"foo", "foo.d"},
+			want: "tool -o $(RULEDIR)/foo -d $(RULEDIR)/foo.d",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := anchorGenruleOutputsToRuledir(tt.cmd, tt.outs); got != tt.want {
+				t.Errorf("\n  got:  %s\n  want: %s", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGenruleIncludeRoots(t *testing.T) {
 	cmd := "$(location //t:tg) -gen-x -I inc -Ilib/Foo/ -I inc -Iinclude in.td -o out"
 	got := genruleIncludeRoots(cmd)
