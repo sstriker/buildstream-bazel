@@ -2998,34 +2998,6 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 // Each touched arm gets sorted post-add to keep emit's
 // verbatim arm rendering byte-stable, matching what
 // partitionPlatformConditionalSrcs does for Tier 1.
-// propagateOpenMPLinkFlag mirrors a `-fopenmp` (or `-fopenmp=<rt>`) compile
-// flag onto linkopts when it isn't already present. gcc/clang require it on
-// the link line to pull in the OpenMP runtime (libgomp / libomp); cmake
-// records it compile-side and threads the link side through the
-// OpenMP::OpenMP_* IMPORTED target, so when that import isn't resolved the
-// link flag would otherwise be dropped and consumers hit undefined
-// references (GOMP_parallel, __kmpc_fork_call, ...). The exact flag is
-// preserved so a clang `-fopenmp=libomp` links against the same runtime it
-// compiled with. (Issue #313.)
-func propagateOpenMPLinkFlag(t *ir.Target) {
-	var flag string
-	for _, c := range t.Copts {
-		if c == "-fopenmp" || strings.HasPrefix(c, "-fopenmp=") {
-			flag = c
-			break
-		}
-	}
-	if flag == "" {
-		return
-	}
-	for _, l := range t.LinkOpts {
-		if l == "-fopenmp" || strings.HasPrefix(l, "-fopenmp=") {
-			return // already linked with OpenMP
-		}
-	}
-	t.LinkOpts = append(t.LinkOpts, flag)
-}
-
 func addPlatformConditionalSrcs(t *ir.Target, srcsByKey map[string][]string) {
 	if len(srcsByKey) == 0 {
 		return
@@ -3050,6 +3022,35 @@ func addPlatformConditionalSrcs(t *ir.Target, srcsByKey map[string][]string) {
 		}
 		sort.Strings(t.PerPlatform["srcs"][key])
 	}
+}
+
+// propagateOpenMPLinkFlag mirrors a `-fopenmp` (or `-fopenmp=<rt>`) compile
+// flag onto linkopts when it isn't already present. gcc/clang require it on
+// the link line to pull in the OpenMP runtime (libgomp / libomp); cmake
+// records it compile-side and threads the link side through the
+// OpenMP::OpenMP_* IMPORTED target, so when that import isn't resolved the
+// link flag would otherwise be dropped and consumers hit undefined
+// references (GOMP_parallel, __kmpc_fork_call, ...). The exact flag is
+// preserved so a clang `-fopenmp=libomp` links against the same runtime it
+// compiled with. (Issue #313.) Called on both the wrapper target and each
+// split sub-library (a split clears the wrapper's copts onto the subs).
+func propagateOpenMPLinkFlag(t *ir.Target) {
+	var flag string
+	for _, c := range t.Copts {
+		if c == "-fopenmp" || strings.HasPrefix(c, "-fopenmp=") {
+			flag = c
+			break
+		}
+	}
+	if flag == "" {
+		return
+	}
+	for _, l := range t.LinkOpts {
+		if l == "-fopenmp" || strings.HasPrefix(l, "-fopenmp=") {
+			return // already linked with OpenMP
+		}
+	}
+	t.LinkOpts = append(t.LinkOpts, flag)
 }
 
 // partitionPlatformConditionalSrcs moves any src in t.Srcs
@@ -3308,6 +3309,11 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			Alwayslink: irt.Alwayslink,
 			Visibility: []string{"//visibility:private"},
 		}
+		// OpenMP (issue #313): a split sub-library carries the per-CG copts,
+		// so `-fopenmp` lives here — not on the now-cleared wrapper. Mirror
+		// it onto this sub's linkopts (the wrapper-level propagation in
+		// lowerTarget is a no-op once the split clears irt.Copts).
+		propagateOpenMPLinkFlag(&sub)
 		cc.Subs = append(cc.Subs, sub)
 		subDeps = append(subDeps, ":"+sub.Name)
 	}
