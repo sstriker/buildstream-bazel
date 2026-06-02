@@ -430,6 +430,7 @@ func TestNormalizeInput(t *testing.T) {
 		in       string
 		cmakeSrc string
 		buildDir string
+		umbrella string
 		want     string
 	}{
 		{
@@ -438,6 +439,26 @@ func TestNormalizeInput(t *testing.T) {
 			cmakeSrc: cmakeSrc,
 			buildDir: buildDir,
 			want:     "pkg/foo.h",
+		},
+		{
+			// Umbrella promotion (LLVM shape): labelRoot above
+			// cmakeSrc, so a source-tree input gets the cmakeSrc-
+			// relative-to-labelRoot prefix and a buildDir input
+			// does NOT — the two stay distinct.
+			name:     "umbrella prefix anchors source-tree input",
+			in:       "/src/project/lib/Target/RISCV/RISCV.td",
+			cmakeSrc: cmakeSrc,
+			buildDir: buildDir,
+			umbrella: "llvm",
+			want:     "llvm/lib/Target/RISCV/RISCV.td",
+		},
+		{
+			name:     "umbrella prefix does not touch buildDir input",
+			in:       "/tmp/build-1234/gen/Foo.inc",
+			cmakeSrc: cmakeSrc,
+			buildDir: buildDir,
+			umbrella: "llvm",
+			want:     "gen/Foo.inc",
 		},
 		{
 			name:     "absolute path under cmakeSrc returns cmakeSrc-relative",
@@ -486,10 +507,10 @@ func TestNormalizeInput(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := normalizeInput(tc.in, tc.cmakeSrc, tc.buildDir)
+			got := normalizeInput(tc.in, tc.cmakeSrc, tc.buildDir, tc.umbrella)
 			if got != tc.want {
-				t.Errorf("normalizeInput(%q, %q, %q) = %q, want %q",
-					tc.in, tc.cmakeSrc, tc.buildDir, got, tc.want)
+				t.Errorf("normalizeInput(%q, %q, %q, %q) = %q, want %q",
+					tc.in, tc.cmakeSrc, tc.buildDir, tc.umbrella, got, tc.want)
 			}
 		})
 	}

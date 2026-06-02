@@ -722,38 +722,49 @@ transition cleanly.
       builds green** — `bazel build //llvm/utils/TableGen:llvm-min-tblgen`
       is 197 actions across its whole dep chain (Support + TableGen +
       utils) and produces the binary, so the "build the generator" half is
-      done. What remains is making the **genrules that run it** hermetic —
-      the standalone-custom-command path emits a *verbatim cmake command*
-      (`rewriteGenruleCmd` only strips the `cmakeSrc`/`buildDir` prefixes),
-      which under umbrella+split is broken four ways, all visible on the
-      RISCV genrule:
-        - **input umbrella-anchoring**: `lib/Target/RISCV/RISCV.td` (and the
-          `-I` paths) need the `llvm/` prefix → `llvm/lib/Target/...`; the
-          cross-package src label is `//lib/Target:...` not
-          `//llvm/lib/Target:...`. Same root cause as the cc_library
-          re-anchor, not yet applied to the genrule path.
-        - **cross-package tool label**: `tools=[":llvm-min-tblgen"]` /
-          `$(location :llvm-min-tblgen)` dangle in `//include`; the target
-          is `//llvm/utils/TableGen:llvm-min-tblgen` (split.go rewrites
-          `deps` but not genrule tools / cmd `$(location)`).
-        - **leftover prebuilt src**: a stray `//:Debug/bin/llvm-min-tblgen`
-          (the multi-config `<cfg>/bin/` artifact path) survives in `srcs`
-          after the tool-from-target lift; it should be dropped.
-        - **output → `$(RULEDIR)`**: the cmd writes `-o
-          include/llvm/.../X.inc` (build-dir-relative), but a genrule must
-          land its declared out under bazel-out — needs `$(RULEDIR)`
-          rewriting (exists for the execute_process path, not this one).
-      Then (e) **per-consumer** generated-header dependency wiring — a
-      coarse "add every generated `.inc` to the include-root header lib"
-      would regress the green libraries above (they depend on
-      `//include:include_headers` and would then transitively force all of
-      tablegen). cmake tracks this at per-file depfile granularity; the
-      Bazel shape wants each consumer to depend only on the generated
-      headers it actually includes (an include-scan / depfile- or
-      codemodel-dependency-derived edge) — a design decision, not a
-      mechanical fix. Net: the verbatim-cmake-command →
-      hermetic-bazel-genrule transformation is the substantive remaining
-      lift; the tool build and the source-compile tier are done. Also still
+      done. **The genrules that run it are now hermetic too** — the
+      standalone-custom-command path was emitting a *verbatim cmake command*
+      broken four ways under umbrella+split; all four are fixed and the
+      RISCV genrule now *runs tblgen* under `bazel build
+      //include:custom_command_…_inc --//config:build_type=release`:
+        - **input umbrella-anchoring** — `normalizeInput` /
+          `rewriteGenruleCmd` take an `umbrellaPrefix`; source-tree srcs and
+          cmd `-I`/input paths get the `llvm/` prefix
+          (`//llvm/lib/Target:RISCV/RISCV.td`, `-I llvm/include`). Applied
+          *during* the prefix strip so `<cmakeSrc>/include` (→
+          `llvm/include`) stays distinct from `<buildDir>/include`.
+        - **cross-package tool label** — split.go rewrites genrule `tools`
+          (`:llvm-min-tblgen` → `//llvm/utils/TableGen:llvm-min-tblgen`) and
+          the matching `$(location :…)` cmd refs, mirroring the deps rewrite.
+        - **leftover prebuilt src** — `dropLiftedToolSrcs` removes the
+          `<cfg>/bin/<tool>` artifact the tool-from-target lift hoisted into
+          `tools`.
+        - **output → `$(RULEDIR)`** — `anchorGenruleOutputsToRuledir`
+          rewrites `-o include/…/X.inc` → `-o $(RULEDIR)/…/X.inc`; split.go
+          re-relativizes the `$(RULEDIR)`-relative path when the genrule
+          moves into its output's package.
+      Remaining for a *green* tablegen consumer:
+        - **(d) `.td` transitive-include closure** — tblgen now runs but
+          fails `could not find include file 'llvm/Target/Target.td'`: the
+          transitive `.td` includes are tracked by cmake's per-output
+          *depfile* (dynamic), not static ninja inputs, so a configure-only
+          reply only lists the explicit `RISCV.td`. Need to stage the `.td`
+          closure (the LLVM-overlay idiom is a `.td` `filegroup` the
+          tablegen rules depend on) — a depfile-parse or glob-derived input
+          set.
+        - **(e) per-consumer** generated-header dependency wiring — a
+          coarse "add every generated `.inc` to the include-root header lib"
+          would regress the green libraries above (they depend on
+          `//include:include_headers` and would then transitively force all
+          of tablegen). cmake tracks this at per-file depfile granularity;
+          the Bazel shape wants each consumer to depend only on the
+          generated headers it actually includes (an include-scan / depfile-
+          or codemodel-dependency-derived edge) — a design decision, not a
+          mechanical fix.
+      Net: the verbatim-cmake-command → hermetic-bazel-genrule transform is
+      done (tool builds, genrule runs); the `.td` closure + per-consumer
+      wiring are what stand between here and a green tablegen-dependent
+      library. Also still
       open: the source-tree-input == build-tree-output genrule aliasing
       (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
       re-anchoring.

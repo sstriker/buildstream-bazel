@@ -58,7 +58,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	if len(outs) == 0 {
 		return "", "", "", false
 	}
-	srcs := genruleSrcs(b, cmakeSrc, buildDir)
+	srcs := genruleSrcs(b, cmakeSrc, buildDir, "")
 	srcs = appendUnique(srcs, scriptRel)
 
 	// Trace-based dep discovery + path classification. Opt-in

@@ -364,10 +364,15 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	name = genruleNameFor(b, buildDir)
 
 	outs := genruleOuts(b, buildDir)
-	srcs := genruleSrcs(b, cmakeSrc, buildDir)
+	// recoverGenrule predates the umbrella promotion and has no
+	// labelRoot in scope; pass "" so its source-relative srcs/cmd
+	// shape is unchanged. The umbrella anchoring lives on the
+	// standalone-custom-command path (lowerStandaloneCustomCommands),
+	// which is where LLVM's tablegen genrules surface.
+	srcs := genruleSrcs(b, cmakeSrc, buildDir, "")
 	tags := genruleTags(cmd, b, g)
 
-	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
+	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "")
 	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName)
 	gen := ir.Target{
 		Name:         name,
@@ -453,14 +458,14 @@ func genruleOuts(b *ninja.Build, buildDir string) []string {
 // typically host-leak references the orchestrator's downstream layer
 // will re-anchor (or refuse). The fallback is rare and noisy on
 // purpose: anything resolving here points at a real concern.
-func genruleSrcs(b *ninja.Build, cmakeSrc, buildDir string) []string {
+func genruleSrcs(b *ninja.Build, cmakeSrc, buildDir, umbrellaPrefix string) []string {
 	all := append([]string{}, b.Inputs...)
 	all = append(all, b.ImplicitInputs...)
 
 	seen := map[string]struct{}{}
 	var out []string
 	for _, in := range all {
-		key := normalizeInput(in, cmakeSrc, buildDir)
+		key := normalizeInput(in, cmakeSrc, buildDir, umbrellaPrefix)
 		if key == "" {
 			continue
 		}
@@ -484,12 +489,21 @@ func genruleSrcs(b *ninja.Build, cmakeSrc, buildDir string) []string {
 //  3. Otherwise basename, with a comment in the emitted BUILD.bazel
 //     that flags the under-qualified entry. (Not implemented as a
 //     comment yet; M4.x adds the audit hook.)
-func normalizeInput(in, cmakeSrc, buildDir string) string {
+func normalizeInput(in, cmakeSrc, buildDir, umbrellaPrefix string) string {
 	if !filepath.IsAbs(in) {
 		return filepath.ToSlash(in)
 	}
 	if cmakeSrc != "" {
 		if rel, ok := relativeIfInside(cmakeSrc, in); ok {
+			// Under the workspace-root umbrella promotion (labelRoot
+			// above cmakeSrc, e.g. LLVM's llvm-project/ over
+			// llvm-project/llvm/), source-tree inputs must carry the
+			// cmakeSrc-relative-to-labelRoot prefix so a BUILD at
+			// labelRoot resolves them — consistent with the cc_library
+			// src/hdr re-anchor. Empty in the non-promoted case.
+			if umbrellaPrefix != "" && rel != "" {
+				return filepath.ToSlash(filepath.Join(umbrellaPrefix, rel))
+			}
 			return rel
 		}
 	}

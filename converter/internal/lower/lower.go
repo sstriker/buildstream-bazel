@@ -1203,8 +1203,20 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			AddDependencies: decodedAddDependencies,
 			AliasToActual:   buildAliasToActual(aliasLibs),
 		}
+		// umbrellaPrefix is cmakeSrc-relative-to-labelRoot when the
+		// workspace-root umbrella promoted labelRoot above cmakeSrc
+		// (LLVM: hostSrc=llvm-project/, cmakeSrc=llvm-project/llvm/ →
+		// "llvm"). Standalone genrules anchor their source-tree srcs
+		// and cmd paths with it, consistent with the cc_library
+		// re-anchor; empty in the common non-promoted case.
+		umbrellaPrefix := ""
+		if hostSrc != "" && hostSrc != cmakeSrc {
+			if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
+				umbrellaPrefix = rel
+			}
+		}
 		pkg.Targets = append(pkg.Targets,
-			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, artifactToName, traceCtx)...)
+			lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx)...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
@@ -4571,7 +4583,7 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 // All rewrites are conservative — paths only re-anchor when they
 // start with the canonical anchor prefix + "/", so partial-match
 // hazards (e.g. `<buildDir>` vs `<buildDir>_other`) are avoided.
-func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
+func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 	if cmd == "" {
 		return cmd
 	}
@@ -4621,12 +4633,24 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir string) string {
 	//     but continue with letters or digits (e.g. <buildDir>_other
 	//     stays intact; <buildDir> followed by space or quote
 	//     gets re-anchored).
-	for _, anchor := range []string{cmakeSrc, buildDir} {
-		if anchor == "" {
+	// cmakeSrc-prefixed paths re-anchor to the umbrella prefix
+	// (cmakeSrc-relative-to-labelRoot, e.g. "llvm" for LLVM); buildDir
+	// paths strip to "". Applying the umbrella here — during the strip,
+	// before the prefix is gone — is what keeps `<cmakeSrc>/include`
+	// (source, → llvm/include) distinct from `<buildDir>/include`
+	// (build, → include); a post-pass couldn't tell them apart. Empty
+	// umbrella (the non-promoted case) preserves the prior strip-to-""
+	// behavior exactly.
+	srcRepl := ""
+	if umbrellaPrefix != "" {
+		srcRepl = umbrellaPrefix + "/"
+	}
+	for _, a := range []struct{ anchor, repl string }{{cmakeSrc, srcRepl}, {buildDir, ""}} {
+		if a.anchor == "" {
 			continue
 		}
-		cmd = strings.ReplaceAll(cmd, anchor+"/", "")
-		cmd = replaceBareAnchorAtBoundary(cmd, anchor)
+		cmd = strings.ReplaceAll(cmd, a.anchor+"/", a.repl)
+		cmd = replaceBareAnchorAtBoundary(cmd, a.anchor)
 	}
 	// Strip well-known host-bin tool prefixes so the command relies
 	// on PATH (the operator's responsibility) instead of baking the

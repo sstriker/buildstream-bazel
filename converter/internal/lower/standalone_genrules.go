@@ -116,7 +116,7 @@ type standaloneTraceContext struct {
 // map into the lift so rewriteToolFromTarget can lift bare
 // `bin/<tool>` references in the cmd into `$(location :<name>)` +
 // tools attribute entries. Empty map disables tool rewriting.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, artifactToName map[string]string, traceCtx standaloneTraceContext) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -213,7 +213,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// relative form. The pre-genruleSrcs path appended the
 		// raw ninja inputs verbatim, leaking convert-time
 		// absolute paths into the rendered genrule.
-		srcs := genruleSrcs(b, cmakeSrc, buildDir)
+		srcs := genruleSrcs(b, cmakeSrc, buildDir, umbrellaPrefix)
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
@@ -249,8 +249,20 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// anchor pass strips buildDir prefixes from the cmd so
 		// the bare `bin/<tool>` form survives intact for the
 		// lookup.
-		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
+		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix)
 		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName)
+		// The tool-from-target lift hoisted the generator binary into
+		// `tools` and rewrote the cmd to $(location :tool); drop the
+		// now-redundant build artifact (e.g. the multi-config
+		// `<cfg>/bin/<tool>`) from srcs so it doesn't survive as a
+		// dangling file input with no producing package.
+		srcs = dropLiftedToolSrcs(srcs, tools, artifactToName)
+		// Re-anchor build-dir-relative output paths in the cmd to
+		// $(RULEDIR)/<out> so the genrule writes its declared outs
+		// under bazel-out rather than to a bare relative path (which
+		// bazel rejects as a missing output). split.go re-relativizes
+		// the $(RULEDIR)-relative path if the genrule moves packages.
+		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
 		// Audit: when the trace shows this command carried generator
 		// expressions, tag whether its path-bearing genexes resolved to
 		// $(location) labels (portable) or baked a machine-specific
@@ -273,6 +285,63 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		})
 	}
 	return out
+}
+
+// dropLiftedToolSrcs removes srcs that rewriteToolFromTarget already
+// hoisted into the genrule's `tools` attribute. The lift rewrites a
+// build-dir-relative artifact reference in the cmd (e.g.
+// `<cfg>/bin/llvm-min-tblgen`) to `$(location :<name>)` and adds
+// `:<name>` to tools; the same artifact path also lands in srcs (it's
+// a ninja input of the edge). Left there it renders as a dangling file
+// label (`//:<cfg>/bin/<tool>`) with no producing package. We match a
+// src by the same artifactToName key the cmd lift used, so the two
+// stay in lockstep.
+func dropLiftedToolSrcs(srcs, tools []string, artifactToName map[string]string) []string {
+	if len(tools) == 0 || len(srcs) == 0 || len(artifactToName) == 0 {
+		return srcs
+	}
+	lifted := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		lifted[t] = true // tools are ":<name>" labels
+	}
+	kept := make([]string, 0, len(srcs))
+	for _, s := range srcs {
+		if name, ok := artifactToName[s]; ok && lifted[":"+name] {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept
+}
+
+// anchorGenruleOutputsToRuledir rewrites each build-dir-relative output
+// path that appears literally in the cmd to $(RULEDIR)/<out>. cmake's
+// Ninja generator bakes the output path as a build-dir-relative literal
+// (e.g. `-o include/llvm/.../X.inc`); a Bazel genrule must instead write
+// its declared outs under $(RULEDIR) (the package's bin dir). Outputs
+// are rewritten longest-first so a shorter out that is a path-prefix of
+// a longer one doesn't rewrite the longer one's interior, and an out
+// already carrying the $(RULEDIR)/ prefix is skipped (idempotent).
+// Sibling paths derived from an out by suffix — e.g. the `<out>.d`
+// depfile tblgen emits — re-anchor for free since the out substring
+// they contain is rewritten in place.
+func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
+	if cmd == "" || len(outs) == 0 {
+		return cmd
+	}
+	sorted := append([]string(nil), outs...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, o := range sorted {
+		if o == "" {
+			continue
+		}
+		anchored := "$(RULEDIR)/" + o
+		if strings.Contains(cmd, anchored) {
+			continue
+		}
+		cmd = strings.ReplaceAll(cmd, o, anchored)
+	}
+	return cmd
 }
 
 // pickStandaloneName returns the source-level add_custom_target

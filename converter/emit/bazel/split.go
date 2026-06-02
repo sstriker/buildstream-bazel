@@ -448,21 +448,56 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// $@ / $(location), which stay correct regardless of the literal
 	// out path, so this is purely a label re-rooting. Only the local
 	// regime; the SourceKey regime keeps element-root-relative paths.
-	if local && t.Kind == ir.KindGenrule && len(t.GenruleOuts) > 0 {
-		outs := make([]string, 0, len(t.GenruleOuts))
-		for _, o := range t.GenruleOuts {
-			if rel, ok := relUnder(dir, o); ok {
-				outs = append(outs, rel)
-			} else {
-				// Out sits outside this genrule's package (a
-				// multi-output genrule spanning packages — rare and
-				// not expressible as-is in Bazel). Leave it
-				// element-root-relative so the breakage is visible
-				// rather than silently mis-rooted.
-				outs = append(outs, o)
+	if t.Kind == ir.KindGenrule {
+		if local && len(t.GenruleOuts) > 0 {
+			cmd := rt.GenruleCmd
+			outs := make([]string, 0, len(t.GenruleOuts))
+			for _, o := range t.GenruleOuts {
+				if rel, ok := relUnder(dir, o); ok {
+					// The standalone-custom-command cmd references
+					// each out as $(RULEDIR)/<out> (the lower-side
+					// anchorGenruleOutputsToRuledir); moving the
+					// genrule into its output's package shrinks the
+					// out, so the cmd's $(RULEDIR)/<old> must shrink
+					// in lockstep. $@ / $(location <out>) forms need
+					// no rewrite.
+					if rel != o {
+						cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+o, "$(RULEDIR)/"+rel)
+					}
+					outs = append(outs, rel)
+				} else {
+					// Out sits outside this genrule's package (a
+					// multi-output genrule spanning packages — rare and
+					// not expressible as-is in Bazel). Leave it
+					// element-root-relative so the breakage is visible
+					// rather than silently mis-rooted.
+					outs = append(outs, o)
+				}
 			}
+			rt.GenruleOuts = outs
+			rt.GenruleCmd = cmd
 		}
-		rt.GenruleOuts = outs
+		// Rewrite intra-element genrule tool labels (":x") and their
+		// matching $(location :x) cmd references to cross-package form —
+		// e.g. a tablegen genrule placed in //include whose generator
+		// binary (llvm-min-tblgen) lives in //llvm/utils/TableGen.
+		// Mirrors the deps rewrite below; runs in both regimes since a
+		// tool label is package-location-dependent either way.
+		if len(t.GenruleTools) > 0 {
+			tools := make([]string, 0, len(t.GenruleTools))
+			cmd := rt.GenruleCmd
+			for _, tool := range t.GenruleTools {
+				if strings.HasPrefix(tool, ":") {
+					label := targetLabel(plan, strings.TrimPrefix(tool, ":"))
+					tools = append(tools, label)
+					cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
+					continue
+				}
+				tools = append(tools, tool)
+			}
+			rt.GenruleTools = tools
+			rt.GenruleCmd = cmd
+		}
 	}
 
 	// write_file (configure_file / file(GENERATE) bake tier) and
