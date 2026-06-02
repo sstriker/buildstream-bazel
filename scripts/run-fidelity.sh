@@ -296,11 +296,28 @@ if [ -f /etc/ssl/certs/java/cacerts ]; then
     # the JVM at the system store.
     bazel_jvm_args="--host_jvm_args=-Djavax.net.ssl.trustStore=/etc/ssl/certs/java/cacerts --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit"
 fi
+
+# The bazel half fetches BCR deps (rules_cc / rules_pkg, + zlib for libpng)
+# from GitHub releases, which intermittently 502 / TLS-timeout in CI. Two
+# defenses so a blocking fidelity gate doesn't flake on that infra noise:
+#
+#   1. A persistent --repository_cache: bazel's repository cache is content-
+#      addressed, so once an archive is fetched it's reused with no further
+#      download. The path is STABLE (outside the per-run scratch tree) so it
+#      survives across the run's fixtures AND, when CI restores it via
+#      actions/cache, across CI runs — after the first cold populate there's
+#      no re-download, hence no 502 exposure. Override with
+#      FIDELITY_BAZEL_REPO_CACHE.
+#   2. --experimental_repository_downloader_retries above bazel's default (5)
+#      to ride out a transient burst during that first cold populate.
+fidelity_repo_cache="${FIDELITY_BAZEL_REPO_CACHE:-$HOME/.cache/bazel-fidelity-repo}"
+mkdir -p "$fidelity_repo_cache"
+bazel_build_flags="--repository_cache=$fidelity_repo_cache --experimental_repository_downloader_retries=10"
 bazel_artifact=""
 if [ "$no_library" = false ]; then
     echo "fidelity[$project_name]: bazel build $bazel_target_label" >&2
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build $bazel_build_flags "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
         echo "fidelity[$project_name]: bazel build FAILED — see $work_dir/bazel.log" >&2
         tail -20 "$work_dir/bazel.log" >&2
         exit 1
@@ -346,7 +363,7 @@ EOF
     # unpaired weak symbols on template-heavy consumers (spdlog), not a
     # converter delta. Both sides at -O2 makes the symbol sets comparable.
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build --copt=-O2 :_fidelity_consumer) \
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build $bazel_build_flags --copt=-O2 :_fidelity_consumer) \
         > "$work_dir/bazel-consumer.log" 2>&1 || {
             echo "fidelity[$project_name]: consumer bazel-side build FAILED — see $work_dir/bazel-consumer.log" >&2
             tail -20 "$work_dir/bazel-consumer.log" >&2
