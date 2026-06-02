@@ -353,30 +353,35 @@ func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Ta
 	return byDir, labelsFor
 }
 
-// generatedHeadersName is the name of the synthesized generated-header
-// wrapper cc_library in each producing package; generatedHeaderWrappers
-// fails fast if a real target in a producing package already claims it.
-// The consumer-side per-item keep marker recognizes a dep on the wrapper
-// by this label suffix.
-const generatedHeadersName = "generated_headers"
+// generatedIncludesName is the name of the synthesized generated-header
+// wrapper cc_library in each producing package. It deliberately does NOT end
+// in "_headers" (nor "_srcs"): split's other synthesized rules use those
+// suffixes — headerLibName(dir) is `<dir>_headers`, globSrcName is
+// `..._srcs` — so a bare "generated_headers" would collide with the header
+// lib of an include root literally named "generated". The "_includes" form
+// sits outside every synthesized-name scheme; generatedHeaderWrappers still
+// fails fast if a real project target claims it. The consumer-side per-item
+// keep marker recognizes a dep on the wrapper by this label suffix.
+const generatedIncludesName = "generated_includes"
 
-// generatedHeadersTag marks the synthesized wrapper so addKeepMarkers can
+// generatedIncludesTag marks the synthesized wrapper so addKeepMarkers can
 // whole-rule-keep it by tag — robust against a user rule that happens to
-// share generatedHeadersName in a non-producing package (which must NOT be
+// share generatedIncludesName in a non-producing package (which must NOT be
 // kept), and against any future rename.
-const generatedHeadersTag = "cmake-codegen-generated-headers"
+const generatedIncludesTag = "cmake-codegen-generated-includes"
 
 // generatedHeaderWrappers synthesizes, per producing package, a
-// `generated_headers` cc_library carrying that package's generated `.inc`
-// headers in textual_hdrs (with includes=["."] supplying the genfiles
-// include root), and returns the wrapper labels each consumer must depend
-// on. Producer and consumer are usually distinct packages — a tablegen
-// `.inc` is generated under //include but #included by a library in
-// //llvm/lib/... — so the consumer can't reach the genrule output as a
-// bare same-package input; it depends on the wrapper, whose textual_hdrs
-// declare the output as an input and whose includes put the package root
-// on the consumer's -I. byDir maps a producing-package dir → its wrapper;
-// labelsFor maps a consumer name → the sorted wrapper labels it needs.
+// generated-header wrapper cc_library (named generatedIncludesName) carrying
+// that package's generated `.inc` headers in textual_hdrs (with
+// includes=["."] supplying the genfiles include root), and returns the
+// wrapper labels each consumer must depend on. Producer and consumer are
+// usually distinct packages — a tablegen `.inc` is generated under //include
+// but #included by a library in //llvm/lib/... — so the consumer can't reach
+// the genrule output as a bare same-package input; it depends on the
+// wrapper, whose textual_hdrs declare the output as an input and whose
+// includes put the package root on the consumer's -I. byDir maps a
+// producing-package dir → its wrapper; labelsFor maps a consumer name → the
+// sorted wrapper labels it needs.
 func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string, err error) {
 	byDir = map[string][]ir.Target{}
 	labelsFor = map[string][]string{}
@@ -406,11 +411,11 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 	// marker key off this exact name). Fail fast with a clear message rather
 	// than emit a BUILD that won't load.
 	for _, t := range pkg.Targets {
-		if t.Name != generatedHeadersName {
+		if t.Name != generatedIncludesName {
 			continue
 		}
 		if d := p.targetDir(t.Name); hdrsByDir[d] != nil {
-			return nil, nil, fmt.Errorf("split-packages: package %q already declares a target named %q, which the converter reserves for tablegen-consumer generated-header wiring — rename the project target", dirKey(d), generatedHeadersName)
+			return nil, nil, fmt.Errorf("split-packages: package %q already declares a target named %q, which the converter reserves for tablegen-consumer generated-header wiring — rename the project target", dirKey(d), generatedIncludesName)
 		}
 	}
 	for dir, set := range hdrsByDir {
@@ -420,7 +425,7 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 		}
 		sort.Strings(hdrs)
 		byDir[dir] = append(byDir[dir], ir.Target{
-			Name:        generatedHeadersName,
+			Name:        generatedIncludesName,
 			Kind:        ir.KindCCLibrary,
 			TextualHdrs: hdrs,
 			// includes=["."] supplies the genfiles include root so a consumer
@@ -434,7 +439,7 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 			// Tag so addKeepMarkers whole-rule-keeps the synthesized wrapper
 			// by tag (gazelle would delete a cc_library with no on-disk srcs)
 			// without mistaking a user rule that shares the name.
-			Tags: []string{generatedHeadersTag},
+			Tags: []string{generatedIncludesTag},
 		})
 	}
 	for cons, outs := range pkg.CodegenHeaderConsumers {
@@ -445,7 +450,7 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 			if _, ok := relUnder(dir, o); !ok {
 				continue
 			}
-			label := headerLibLabel(p, dir, generatedHeadersName)
+			label := headerLibLabel(p, dir, generatedIncludesName)
 			if !seen[label] {
 				seen[label] = true
 				labels = append(labels, label)
