@@ -220,6 +220,7 @@ regressing the fix — that's the whole point of keeping them around.
 | **cutlass** | NVIDIA CUDA project (header-heavy) | (prior session) | github.com/NVIDIA/cutlass (`CUTLASS_VERSION`) | `make fetch-cutlass` |
 | **cuda-samples** | NVIDIA CUDA sample suite | (prior session) | github.com/NVIDIA/cuda-samples (`CUDASAMPLES_VERSION`) | `make fetch-cuda-samples` |
 | **OpenBLAS** | assembly kernels + Fortran/LAPACK + arch-conditional source selection + ~2460 targets — scale + shapes nothing else has | name-collision robustness (add_test test-name == a different target's name) | github.com/OpenMathLib/OpenBLAS (`OPENBLAS_VERSION`) | `make fetch-openblas` |
+| **glog** | unresolved-genex include dir (`$<TARGET_PROPERTY:glog,INCLUDE_DIRECTORIES>` on the trace-synthesized `glog_test` INTERFACE library) aborted `--split-packages` — it became a header-lib root whose name `$<…>_headers` is not a valid Bazel identifier | fixed (`dropGenexIncludeDirs` in ToIR + a `planSplit` genex-root backstop) | github.com/google/glog (`GLOG_VERSION`) | `make fetch-glog` |
 
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):

@@ -542,6 +542,14 @@ func planSplit(pkg *ir.Package) *splitPlan {
 	for _, t := range pkg.Targets {
 		realNames[t.Name] = struct{}{}
 		for _, inc := range t.Includes {
+			// An unresolved generator expression ("$<…>") is never a real
+			// include root — synthesizing a header lib for it produces an
+			// invalid Bazel target name ("$<…>_headers") that aborts the
+			// emit. ToIR's dropGenexIncludeDirs strips these upstream; this
+			// is a backstop so emit can't be aborted by one that slips past.
+			if strings.Contains(inc, "$<") {
+				continue
+			}
 			incRoots[normDir(inc)] = struct{}{}
 		}
 		for _, h := range t.Hdrs {
