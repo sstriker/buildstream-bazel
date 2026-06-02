@@ -1203,9 +1203,17 @@ func emitPickFile(w *bytes.Buffer, t ir.Target) error {
 }
 
 func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
+	srcsExpr := attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs"))
+	// Build-time glob shape (synthesized codegen include-closure
+	// filegroups): srcs = glob(["<pat>", ...]). Mirrors the pkg_files
+	// install(DIRECTORY) glob rendering; keeps project B maintainable
+	// rather than freezing a convert-time file list.
+	if len(t.FilegroupGlob) > 0 {
+		srcsExpr = "glob(" + strList(sortedCopy(t.FilegroupGlob)) + ")"
+	}
 	return filegroupTmpl.Execute(w, filegroupView{
 		Name:        t.Name,
-		SrcsExpr:    attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")),
+		SrcsExpr:    srcsExpr,
 		OutputGroup: t.FilegroupOutputGroup,
 		Tags:        sortedCopy(t.Tags),
 		Visibility:  nonDefaultVisibility(t.Visibility),

@@ -454,6 +454,16 @@ type Target struct {
 	// lowering). Empty on every other filegroup.
 	FilegroupOutputGroup string
 
+	// FilegroupGlob, when non-empty on a KindFilegroup target, renders the
+	// filegroup's srcs as `glob([<patterns>])` (package-relative) instead
+	// of an explicit file list. Used for the synthesized codegen include-
+	// closure filegroups (tablegen `.td` sets): the exact closure lives
+	// only in cmake's dynamic depfile, so a build-time glob() is the
+	// honest, maintainable representation — project B picks up newly added
+	// files instead of carrying a frozen convert-time snapshot. Mutually
+	// exclusive with an explicit Srcs list on the same target.
+	FilegroupGlob []string
+
 	// PkgSrcsGlob, when true on a KindPkgFiles target, makes the
 	// emitter render `srcs = glob(["<dir>/**"])` (one glob per Srcs
 	// entry) instead of the literal `srcs = [...]` list. This is the
@@ -563,6 +573,16 @@ type Target struct {
 	// substitution tool with the .h.in template as a real srcs
 	// input — see lower/configure_file.go.
 	GenruleTools []string
+
+	// CodegenIncludeGlobs, on a KindGenrule, names source-tree include
+	// roots whose files (of the given extension) this codegen tool
+	// resolves at action time via `-I` — the tablegen shape, where a
+	// rule reads `include "x.td"` against its `-I` roots. The exact set
+	// is tracked only by cmake's dynamic per-output depfile, so split
+	// materializes a build-time glob() filegroup per owning package and
+	// rewrites these into the genrule's srcs (keeping project B
+	// maintainable). Empty for ordinary genrules.
+	CodegenIncludeGlobs []CodegenIncludeGlob
 
 	// write_file-specific fields. Populated only when Kind ==
 	// KindWriteFile.
@@ -675,6 +695,15 @@ type Target struct {
 	// field and PerPlatformScalar stays empty so single-platform
 	// emission stays byte-identical.
 	PerPlatformScalar map[string]map[string]string
+}
+
+// CodegenIncludeGlob names one source-tree include root (element-root-
+// relative, e.g. "llvm/include") plus the file extension (incl. dot, e.g.
+// ".td") whose closure a codegen genrule resolves via `-I`. Split turns
+// each into a build-time glob() filegroup in the root's owning package.
+type CodegenIncludeGlob struct {
+	Root string
+	Ext  string
 }
 
 // CMakeConfigureFileSpec carries the attributes for a

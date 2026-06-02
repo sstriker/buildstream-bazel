@@ -747,17 +747,25 @@ transition cleanly.
       //include:custom_command_…_RISCVTargetParserDef_inc` is green (RISCV,
       ARM, AArch64 TargetParserDef.inc all build); the four clean libs are
       unregressed. The last piece was:
-        - **(d) `.td` transitive-include closure** — DONE.
-          `augmentCodegenIncludeClosure` (a lower-side post-pass) stages it:
-          tblgen failed `could not find include file 'llvm/Target/Target.td'`
-          because the transitive `.td` includes live only in cmake's dynamic
-          per-output DEPFILE (the `tablegen()` macro defers to `DEPFILE`),
-          absent from a configure-only reply's static ninja inputs and the
-          trace. We recover them the way LLVM's own Bazel overlay does — glob
-          the primary input's extension under each source `-I` root (FS walk,
-          consistent with discoverHeaders), scoped to genrules whose primary
-          input sits inside one of their own `-I` roots (the include-
-          resolving-codegen signal).
+        - **(d) `.td` transitive-include closure** — DONE, via build-time
+          `glob()` filegroups (the maintainable shape). tblgen failed
+          `could not find include file 'llvm/Target/Target.td'` because the
+          transitive `.td` includes aren't static ninja inputs. **This is
+          exactly what cmake's `TableGen.cmake` does** — `file(GLOB local_tds
+          "*.td")` + `file(GLOB_RECURSE global_tds ".../llvm/*.td")`, with
+          the per-output DEPFILE being only a Ninja optimization to skip the
+          glob (the macro's own comment: "Use depfile instead of globbing
+          … for Ninja"). So we emit the same recursive `.td` glob, as a Bazel
+          `glob()` filegroup: `recordCodegenIncludeGlobs` (lower) marks each
+          source `-I` root + ext on the genrule (FS consulted only to skip
+          roots with no source `.td`); split's `codegenGlobFilegroups`
+          synthesizes one `filegroup(srcs = glob(["<rel>/**/*.td"]))` per
+          owning package and splices its label into the genrule's srcs.
+          Crucially the glob lives **in project B** and re-evaluates every
+          build — a `.td` added post-conversion is picked up, where a frozen
+          convert-time list (the first cut) would have rotted. Scoped to
+          genrules whose primary input sits inside one of their own `-I`
+          roots (the include-resolving-codegen signal).
       Remaining for a *green* tablegen **consumer** (`LLVMTargetParser`):
         - **(e) per-consumer** generated-header dependency wiring. The
           consumer fails `fatal error: llvm/TargetParser/AArch64TargetParserDef.inc:

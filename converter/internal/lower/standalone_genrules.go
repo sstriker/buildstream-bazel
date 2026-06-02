@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -346,32 +347,39 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	return cmd
 }
 
-// augmentCodegenIncludeClosure stages the transitive include closure for
-// include-resolving codegen genrules — the tablegen shape: a tool that
-// reads `-I <dir>` roots and resolves `include "x"` directives against
-// them. cmake tracks those transitive includes via a per-output DEPFILE,
-// which is dynamic: absent from a configure-only reply's static ninja
-// inputs AND from the trace (the tablegen() macro defers to DEPFILE). So
-// the lowered genrule lists only the explicit primary input (RISCV.td);
-// without the rest of the `.td` closure the tool fails at action time
-// with "could not find include file ...".
+// recordCodegenIncludeGlobs marks the include-closure roots for include-
+// resolving codegen genrules — the tablegen shape: a tool that reads
+// `-I <dir>` roots and resolves `include "x"` directives against them.
+// cmake tracks those transitive includes via a per-output DEPFILE, which
+// is dynamic: absent from a configure-only reply's static ninja inputs AND
+// from the trace (the tablegen() macro defers to DEPFILE). So the lowered
+// genrule lists only the explicit primary input (RISCV.td); without the
+// rest of the `.td` closure the tool fails at action time with "could not
+// find include file ...".
 //
-// We recover the closure the way LLVM's own Bazel overlay does: glob the
-// primary input's extension under each source-tree `-I` root. This walks
-// the convert-host filesystem, consistent with discoverHeaders.
+// We do NOT bake the closure: that's an over-approximation (the precise
+// set is depfile-only) and a frozen convert-time list would rot in the
+// owned project B when a `.td` is added. Instead we record each source
+// `-I` root + the codegen extension on the genrule; split materializes a
+// build-time glob() filegroup per owning package, so the glob lives in
+// project B and re-evaluates every build — the LLVM-overlay idiom.
+//
 // labelRoot is the absolute path the genrule's (umbrella-anchored) srcs
 // and `-I` paths are relative to; "" disables the pass (unit tests,
-// non-promoted offline replays without a source tree on disk).
+// non-promoted offline replays without a source tree on disk). The FS is
+// consulted only to skip build-dir-only roots (e.g. a bare `include` that
+// holds no source `.td`), keeping empty filegroups out of the output —
+// the recorded glob itself stays authoritative.
 //
 // Scope guard: only genrules whose primary explicit source sits inside
 // one of their own `-I` roots count as include-resolving codegen. A plain
 // genrule that passes `-I` for a compiler invocation doesn't match — its
-// input isn't resolved via the include path — so its srcs are untouched.
-func augmentCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
+// input isn't resolved via the include path — so it's left untouched.
+func recordCodegenIncludeGlobs(targets []ir.Target, labelRoot string) {
 	if labelRoot == "" {
 		return
 	}
-	cache := map[string][]string{} // root+"\x00"+ext → labelRoot-relative files
+	cache := map[string]bool{} // root+"\x00"+ext → root holds ≥1 file of ext
 	for i := range targets {
 		t := &targets[i]
 		if t.Kind != ir.KindGenrule || t.GenruleCmd == "" {
@@ -385,15 +393,48 @@ func augmentCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 		if ext == "" {
 			continue
 		}
-		var extra []string
+		var globs []ir.CodegenIncludeGlob
 		for _, r := range roots {
-			extra = append(extra, globExtUnderRoot(cache, labelRoot, r, ext)...)
+			if rootHasExt(cache, labelRoot, r, ext) {
+				globs = append(globs, ir.CodegenIncludeGlob{Root: r, Ext: ext})
+			}
 		}
-		if len(extra) > 0 {
-			t.Srcs = mergeSortedUnique(t.Srcs, extra)
+		if len(globs) > 0 {
+			t.CodegenIncludeGlobs = globs
 		}
 	}
 }
+
+// rootHasExt reports whether the source-tree dir root (labelRoot-relative)
+// exists and holds at least one file with extension ext anywhere beneath
+// it. Memoized per (root, ext); roots that don't exist on the source FS
+// (e.g. a build-dir-only `include`) report false so no empty filegroup is
+// synthesized for them.
+func rootHasExt(cache map[string]bool, labelRoot, root, ext string) bool {
+	key := root + "\x00" + ext
+	if hit, ok := cache[key]; ok {
+		return hit
+	}
+	found := false
+	abs := filepath.Join(labelRoot, filepath.FromSlash(root))
+	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return nil
+			}
+			if filepath.Ext(p) == ext {
+				found = true
+				return errStopWalk
+			}
+			return nil
+		})
+	}
+	cache[key] = found
+	return found
+}
+
+// errStopWalk short-circuits a filepath.WalkDir once the answer is known.
+var errStopWalk = errors.New("stop walk")
 
 // genruleIncludeRoots extracts the `-I` include roots from a genrule cmd,
 // handling both `-I dir` (separate token) and `-Idir` (joined) forms.
@@ -445,51 +486,6 @@ func primaryCodegenInput(srcs, roots []string) (string, string) {
 		}
 	}
 	return "", ""
-}
-
-// globExtUnderRoot returns every file with extension ext beneath the
-// source-tree include root (recursively, since `include "a/b.td"` resolves
-// against `-I` roots at arbitrary depth), as labelRoot-relative slash
-// paths. Roots that don't exist on the source FS (e.g. a build-dir-only
-// `include`) yield nothing. Memoized per (root, ext) because many tablegen
-// genrules share the same roots (notably llvm/include).
-func globExtUnderRoot(cache map[string][]string, labelRoot, root, ext string) []string {
-	key := root + "\x00" + ext
-	if hit, ok := cache[key]; ok {
-		return hit
-	}
-	var out []string
-	abs := filepath.Join(labelRoot, filepath.FromSlash(root))
-	if info, err := os.Stat(abs); err == nil && info.IsDir() {
-		_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() || filepath.Ext(p) != ext {
-				return nil
-			}
-			if rel, rerr := filepath.Rel(labelRoot, p); rerr == nil {
-				out = append(out, filepath.ToSlash(rel))
-			}
-			return nil
-		})
-	}
-	sort.Strings(out)
-	cache[key] = out
-	return out
-}
-
-// mergeSortedUnique returns the union of a and b, sorted and deduped.
-func mergeSortedUnique(a, b []string) []string {
-	seen := make(map[string]bool, len(a)+len(b))
-	out := make([]string, 0, len(a)+len(b))
-	for _, group := range [][]string{a, b} {
-		for _, x := range group {
-			if !seen[x] {
-				seen[x] = true
-				out = append(out, x)
-			}
-		}
-	}
-	sort.Strings(out)
-	return out
 }
 
 // pickStandaloneName returns the source-level add_custom_target
