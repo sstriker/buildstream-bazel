@@ -540,7 +540,8 @@ transition cleanly.
   under `scripts/` — `scripts/meta-cmake-genex-probe.sh`,
   `scripts/meta-file-generate.sh`,
   `scripts/meta-cmake-genex-literal-twopass.sh`,
-  `scripts/meta-cmake-fileset-compiled-lib.sh` — run
+  `scripts/meta-cmake-fileset-compiled-lib.sh`,
+  `scripts/meta-cmake-stamp-volatile.sh` — run
   `convert-element-cmake`
   and assert on the rendered BUILD, and several carry a live
   `bazel build` half (the load-bearing check that the emitted shape
@@ -591,7 +592,12 @@ transition cleanly.
   converter's job is only to route `date` → the volatile key.
   (`whoami`/`id`/`hostid` need no volatile alternative — Bazel has no
   native identity key, and identity is correctly stable.) Surfaced while
-  verifying the #371 vcs-stamp lift.
+  verifying the #371 vcs-stamp lift. `scripts/meta-cmake-stamp-volatile.sh`
+  proves it end to end: a fixture stamping BOTH a git revision (STABLE_)
+  and a build date (VOLATILE_) into one configure_file, converted and
+  `bazel build --stamp`-ed with a workspace_status_command, re-reads both
+  live values from stable- and volatile-status — and a no-stamp build
+  drops the volatile value without leaking it.
 
 ## Next
 

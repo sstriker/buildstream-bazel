@@ -1,0 +1,2 @@
+#define GIT_SHA "@GIT_SHA@"
+#define BUILD_DATE "@BUILD_DATE@"
