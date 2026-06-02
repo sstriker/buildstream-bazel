@@ -77,8 +77,16 @@ done
 echo "ok  meta-cmake-vcs-stamp: convert lifts the git stamp to stamp_values = {GIT_SHA: STABLE_GIT_SHA}"
 
 # --- bazel-build half (bazel >= 9) ---------------------------------------
-BZL="${BAZEL:-bazel}"
-command -v "$BZL" >/dev/null 2>&1 || { echo "ok  meta-cmake-vcs-stamp: bazel not on PATH, skipping build half"; exit 0; }
+# Prefer bazel, fall back to bazelisk (the launcher the repo's gates expect),
+# mirroring scripts/meta-cmake-split-build.sh / meta-cmake-genex-probe.sh.
+if command -v bazel >/dev/null 2>&1; then
+  BZL=bazel
+elif command -v bazelisk >/dev/null 2>&1; then
+  BZL=bazelisk
+else
+  echo "ok  meta-cmake-vcs-stamp: bazel/bazelisk not on PATH, skipping build half"
+  exit 0
+fi
 bzlmajor="$("$BZL" --version 2>/dev/null | sed -n 's/^bazel \([0-9]*\).*/\1/p')"
 { [ -n "$bzlmajor" ] && [ "$bzlmajor" -ge 9 ] 2>/dev/null; } || { echo "ok  meta-cmake-vcs-stamp: bazel < 9, skipping build half"; exit 0; }
 
@@ -120,6 +128,7 @@ chmod 0755 "$status_cmd"
 bzlcache="$work_dir/.bazel"
 rendered="$ws/bazel-bin/version.h"
 build_version_h() { # args: extra build flags
+  # shellcheck disable=SC2086  # intentional word-split of META_BAZEL_*_ARGS
   ( cd "$ws" && "$BZL" --output_user_root="$bzlcache" ${META_BAZEL_STARTUP_ARGS:-} \
     build ${META_BAZEL_BUILD_ARGS:-} "$@" //:version.h ) >"$work_dir/bazel.log" 2>&1
 }
