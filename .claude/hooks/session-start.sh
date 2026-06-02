@@ -94,6 +94,94 @@ else
   log "WARNING: tools/install-bazelisk.sh not found; skipping bazelisk"
 fi
 
+# --- bazel egress: BCR via GitHub mirror + JVM truststore (default) -------
+# bzlmod can't reach the default registry out of the box in this sandbox:
+#   - the egress proxy 403s bcr.bazel.build (and every *.bazel.build host),
+#     while github.com is allowlisted — and BCR is mirrored on GitHub; and
+#   - the proxy TLS-intercepts all HTTPS with an Anthropic egress CA that
+#     bazel's bundled JVM doesn't trust, so its downloader PKIX-fails on
+#     every fetch (curl/Go are fine — they use the system CA bundle).
+# Both are fixed in ~/.bazelrc (home rc applies to every `bazel`, including
+# the gates' staged workspaces and their --noworkspace_rc runs): point the
+# registry at the GitHub BCR mirror and hand bazel's JVM a truststore that
+# trusts the egress CA. Idempotent (managed block). No-op on
+# a host without the egress CAs — i.e. one that can reach bcr.bazel.build
+# directly — so this never degrades a normal environment.
+egress_cas=$(ls /usr/local/share/ca-certificates/egress-gateway-ca-*.crt \
+                /usr/local/share/ca-certificates/swp-ca-*.crt 2>/dev/null || true)
+if [ -n "$egress_cas" ]; then
+  # Truststore: prefer the system Java store. Debian's ca-certificates-java
+  # folds the egress CAs into it while keeping the public roots, and it's the
+  # same store scripts/run-fidelity.sh already points bazel at. Fall back to a
+  # minimal store built from the egress CA files via keytool.
+  if [ -r /etc/ssl/certs/java/cacerts ]; then
+    bsb_trust="/etc/ssl/certs/java/cacerts"
+  elif command -v keytool >/dev/null 2>&1; then
+    # Build into a temp keystore (same dir as the target, so the publish is an
+    # atomic rename) and mv into place only after verifying it has cert
+    # entries. So an interrupted/failed build never leaves a partial keystore
+    # at the published path, and we don't delete a pre-existing file up front
+    # for a build that might fail.
+    bsb_trust="$HOME/.bazel-egress-trust.jks"
+    bsb_tmp="$(mktemp "$HOME/.bsb-trust.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$bsb_tmp" ]; then
+      rm -f "$bsb_tmp"  # keytool creates the keystore fresh at this name
+      for ca in $egress_cas; do
+        keytool -importcert -noprompt -trustcacerts -alias "bsb-$(basename "$ca")" \
+          -file "$ca" -keystore "$bsb_tmp" -storepass changeit >/dev/null 2>&1 || true
+      done
+      # Publish only a keystore that actually has cert entries; otherwise drop
+      # it and clear bsb_trust so the "no usable truststore" path logs below.
+      if keytool -list -keystore "$bsb_tmp" -storepass changeit 2>/dev/null | grep -q trustedCertEntry; then
+        mv -f "$bsb_tmp" "$bsb_trust" 2>/dev/null || { rm -f "$bsb_tmp"; bsb_trust=""; }
+      else
+        rm -f "$bsb_tmp"; bsb_trust=""
+      fi
+    else
+      bsb_trust=""
+    fi
+  else
+    bsb_trust=""
+  fi
+  if [ -n "$bsb_trust" ]; then
+    bsb_rc="$HOME/.bazelrc"
+    # Update ~/.bazelrc atomically. Build the new contents in a temp file in
+    # the same dir (so publishing is an atomic rename): the current rc minus
+    # any prior managed block, a trailing newline so the marker starts on its
+    # own line, then a fresh managed block — and mv into place only after the
+    # append succeeds. A failure (read-only HOME, full disk) thus leaves the
+    # previous working ~/.bazelrc intact rather than a half-written one, and
+    # never aborts the rest of the hook under `set -e`.
+    bsb_rc_tmp="$(mktemp "$HOME/.bazelrc.XXXXXX" 2>/dev/null || true)"
+    bsb_rc_ok=0
+    if [ -n "$bsb_rc_tmp" ]; then
+      bsb_rc_ok=1
+      if [ -f "$bsb_rc" ]; then
+        sed '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc" > "$bsb_rc_tmp" 2>/dev/null || bsb_rc_ok=0
+      fi
+      if [ "$bsb_rc_ok" = 1 ]; then
+        { [ -s "$bsb_rc_tmp" ] && [ -n "$(tail -c1 "$bsb_rc_tmp" 2>/dev/null)" ] && printf '\n' >> "$bsb_rc_tmp"; } || true
+        cat >> "$bsb_rc_tmp" <<RC && mv -f "$bsb_rc_tmp" "$bsb_rc" || bsb_rc_ok=0
+# >>> bsb-egress >>>
+common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main
+startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit
+# <<< bsb-egress <<<
+RC
+      fi
+    fi
+    if [ "$bsb_rc_ok" = 1 ]; then
+      log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+    else
+      rm -f "$bsb_rc_tmp" 2>/dev/null || true
+      log "bazel egress: could not update $bsb_rc; left it unchanged"
+    fi
+  else
+    log "bazel egress: egress CAs present but no usable truststore (no system cacerts, no keytool)"
+  fi
+else
+  log "bazel egress: egress CAs absent; leaving bazel at defaults (direct bcr.bazel.build assumed)"
+fi
+
 # --- buildifier (default) ------------------------------------------------
 if command -v buildifier >/dev/null 2>&1; then
   log "buildifier already present; skipping"
