@@ -19,8 +19,9 @@
 #      revision (the cmake-configured git HEAD), so the header still builds.
 #
 # Gating: skips cleanly when cmake / git / go are absent, and self-skips the
-# bazel half when bazel >= 9 isn't on PATH — the convert + lift assertion is
-# the always-on contract.
+# bazel half when neither bazel nor bazelisk is on PATH, or the detected
+# bazel is older than 9 — the convert + lift assertion is the always-on
+# contract.
 set -eu
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
