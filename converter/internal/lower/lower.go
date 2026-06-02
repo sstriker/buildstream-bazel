@@ -1079,6 +1079,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// Make every cc_test name a valid Bazel identifier before anything
+	// else looks at it: CTest registers tests with hierarchical names
+	// like `Suite::Case::Sub` (the Catch2 / GoogleTest convention) and the
+	// add_test() → cc_test synthesis copies the TEST name verbatim, so the
+	// `:` separators would otherwise hard-fail the whole convert in the
+	// validate pass (issue #368). Runs before the collision pass so any
+	// names the rewrite folds together get disambiguated.
+	sanitizeTestNames(pkg)
 	// Disambiguate cc_test names that collide with another emitted
 	// target. An EXECUTABLE registered via add_test() becomes a
 	// cc_test named after the TEST (reg.Name), which is usually the
@@ -3772,6 +3780,69 @@ func rewriteStdForExtensions(tgt *ir.Target, propName, propVal, strictPrefix, gn
 		}
 		tgt.Copts[i] = "-std=" + gnuPrefix + version
 	}
+}
+
+// sanitizeTestNames rewrites cc_test names that aren't valid Bazel
+// identifiers into ones that are. CTest registers tests with
+// hierarchical names like `Suite::Case::Sub` (the Catch2 / GoogleTest
+// convention), and the add_test() → cc_test synthesis copies the TEST
+// name verbatim; the `:` separators make it an invalid Bazel target
+// name, which would hard-fail the whole convert in the bazelconstraints
+// validate pass — even though the library targets the operator actually
+// wants are fine (issue #368, surfaced by Catch2 v3.7.1's 142 add_test
+// registrations). Renaming a cc_test is safe — nothing references a test
+// target — so we sanitize in place and tag the rule. Only cc_tests are
+// touched: a codemodel library/binary name can't contain `:` (cmake
+// rejects it at declaration), and namespaced aliases are sanitized at
+// alias synthesis. Any collisions the rewrite folds together are
+// resolved by disambiguateTestNameCollisions, which runs next.
+func sanitizeTestNames(pkg *ir.Package) {
+	if pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindCCTest {
+			continue
+		}
+		san := sanitizeTestName(t.Name)
+		if san == t.Name {
+			continue
+		}
+		t.Name = san
+		if !stringSliceContains(t.Tags, "cmake-test-name-sanitized") {
+			t.Tags = append(t.Tags, "cmake-test-name-sanitized")
+		}
+	}
+}
+
+// sanitizeTestName maps an arbitrary CTest test name to the conservative
+// Bazel identifier subset bazelconstraints.validNameRe enforces
+// (`[a-zA-Z0-9_][a-zA-Z0-9_.+-]*`): every character that regex disallows
+// becomes `_` (so `:` does; letters, digits, `_`, `.`, `+`, and `-` are
+// kept), and a leading `.`/`+`/`-` — legal only after the first char — is
+// also mapped to `_`. `Suite::Case::Sub` → `Suite__Case__Sub`.
+// The empty string maps to a placeholder — validNameRe also rejects ""
+// and ctest.Parse doesn't guard a malformed add_test() with an empty
+// NAME — so the helper always returns a valid identifier; any resulting
+// collisions are split by disambiguateTestNameCollisions.
+func sanitizeTestName(name string) string {
+	if name == "" {
+		return "unnamed_test"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		case (r == '.' || r == '+' || r == '-') && i > 0:
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
 }
 
 // disambiguateTestNameCollisions renames any cc_test whose name
