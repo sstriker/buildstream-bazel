@@ -1614,7 +1614,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		merged = append(merged, t.TestData...)
 		v.Data = sortedDedup(merged)
 		if t.TestTimeout > 0 {
-			v.Timeout = formatBazelDuration(t.TestTimeout)
+			v.Timeout = formatBazelTimeout(t.TestTimeout)
 		}
 		if len(t.TestEnv) > 0 {
 			v.Env = make(map[string]string, len(t.TestEnv))
@@ -1754,17 +1754,23 @@ func prefixWithSourceLabel(paths []string, key string) []string {
 	return out
 }
 
-// formatBazelDuration renders a Go time.Duration as a Bazel-accepted
-// timeout string. Bazel accepts "Ns", "Nm", "Nh"; we round to the
-// largest unit that doesn't lose precision.
-func formatBazelDuration(d time.Duration) string {
-	switch {
-	case d%time.Hour == 0:
-		return fmt.Sprintf("%dh", d/time.Hour)
-	case d%time.Minute == 0:
-		return fmt.Sprintf("%dm", d/time.Minute)
+// formatBazelTimeout maps a CTest TIMEOUT (a duration in seconds) to the
+// Bazel test-rule `timeout` attribute, which is a fixed ENUM — "short"
+// (≤60s), "moderate" (≤300s), "long" (≤900s), "eternal" (>900s) — NOT a
+// duration string. Bazel rejects a duration like "120s" on a test rule's
+// `timeout` at load time ("must be short, moderate, long, or eternal"), so
+// CTest's integer seconds is bucketed into the smallest enum whose default
+// budget covers it. (Issue #314.)
+func formatBazelTimeout(d time.Duration) string {
+	switch secs := d.Seconds(); {
+	case secs <= 60:
+		return "short"
+	case secs <= 300:
+		return "moderate"
+	case secs <= 900:
+		return "long"
 	default:
-		return fmt.Sprintf("%ds", d/time.Second)
+		return "eternal"
 	}
 }
 

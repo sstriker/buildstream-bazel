@@ -219,7 +219,7 @@ func TestEmit_CCTest(t *testing.T) {
 		`args = ["--gtest_filter=*"]`,
 		`"BAR": "2"`,
 		`"FOO": "1"`,
-		`timeout = "30s"`,
+		`timeout = "short"`, // CTest TIMEOUT 30 -> Bazel enum (issue #314)
 		`data = ["data.txt"]`,
 		`tags = ["exclusive"]`,
 		`deps = [":lib"]`,
