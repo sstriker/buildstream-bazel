@@ -211,6 +211,15 @@ jobs:
         # genex probe/two-pass, file(GENERATE), FILE_SET strip_include_prefix,
         # and the VCS / volatile stamp lifts under --stamp). Each gate skips
         # cleanly when its toolchain is absent.
+        #
+        # Soft-launch (non-blocking) per the repo's new-CI-gate policy (same
+        # as the fidelity gates): each gate runs its own fresh bazel build
+        # that fetches deps from GitHub releases, which intermittently 502 in
+        # this environment (the "CI baseline" flakiness in ROADMAP.md). The
+        # gates still RUN and report; promote this step to blocking (drop
+        # continue-on-error) once the dep-fetch flakiness is addressed, after
+        # the usual three-consecutive-green policy.
+        continue-on-error: true
         run: make e2e-meta-cmake-render-gates 2>&1 | tee -a /tmp/cijob.log
 
       - name: run-vs-run regression e2e
