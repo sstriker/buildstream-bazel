@@ -36,6 +36,7 @@ func TestEmitSplit_GeneratedHeaderWrapper(t *testing.T) {
 		`name = "generated_headers"`,
 		`textual_hdrs = ["myproj/gen.inc"]`,
 		`includes = ["."]`,
+		`"cmake-codegen-generated-headers"`,
 	} {
 		if !strings.Contains(gen, want) {
 			t.Errorf("gen/ package missing %q:\n%s", want, gen)
@@ -54,5 +55,34 @@ func TestEmitSplit_GeneratedHeaderWrapper(t *testing.T) {
 	}
 	if !strings.Contains(lib, `:generated_headers",  # keep`) {
 		t.Errorf("consumer wrapper dep missing per-item # keep:\n%s", lib)
+	}
+}
+
+// When a producing package already declares a real target with the reserved
+// wrapper name, EmitSplit fails fast with a clear error rather than emit a
+// duplicate Bazel target (load error).
+func TestEmitSplit_GeneratedHeaderWrapper_NameCollision(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{
+			{Name: "genlib", Kind: ir.KindCCLibrary, Srcs: []string{"gen/genlib.cpp"}},
+			// A real project target colliding with the reserved name, in the
+			// same package the wrapper would be synthesized into.
+			{Name: "generated_headers", Kind: ir.KindCCLibrary, Srcs: []string{"gen/user.cpp"}},
+			{Name: "consumer", Kind: ir.KindCCLibrary, Srcs: []string{"lib/consumer.cpp"}},
+		},
+		SubPackages: map[string]string{
+			"genlib":            "gen",
+			"generated_headers": "gen",
+			"consumer":          "lib",
+		},
+		CodegenHeaderConsumers: map[string][]string{
+			"consumer": {"gen/myproj/gen.inc"},
+		},
+	}
+	if _, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"}); err == nil {
+		t.Fatal("expected a reserved-name collision error, got nil")
+	} else if !strings.Contains(err.Error(), "generated_headers") {
+		t.Errorf("collision error should name the reserved target, got: %v", err)
 	}
 }

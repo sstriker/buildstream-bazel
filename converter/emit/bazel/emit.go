@@ -571,10 +571,12 @@ func addKeepMarkers(f *build.File) {
 		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test":
-			if kind == "cc_library" && callName(call) == generatedHeadersName {
+			if kind == "cc_library" && callHasTag(call, generatedHeadersTag) {
 				// The fully synthesized generated-header wrapper has no
 				// on-disk srcs for gazelle to reconcile it against — a
 				// maintenance pass would delete it. Whole-rule keep pins it.
+				// Keyed on the tag, not the name, so a user rule that shares
+				// the name is left for gazelle to manage.
 				markCallKeep(call)
 			} else {
 				markAttrsKeep(call, ccKeepAttrs(kind))
@@ -584,21 +586,30 @@ func addKeepMarkers(f *build.File) {
 	}
 }
 
-// callName returns a rule call's `name` attribute string value,
-// or "" when absent / not a plain string literal.
-func callName(call *build.CallExpr) string {
+// callHasTag reports whether a rule call's `tags` attribute (a plain list
+// literal) contains tag. Used to recognize converter-synthesized rules by
+// their tag rather than a collidable name.
+func callHasTag(call *build.CallExpr, tag string) bool {
 	for _, arg := range call.List {
 		assign, ok := arg.(*build.AssignExpr)
 		if !ok {
 			continue
 		}
-		if ident, ok := assign.LHS.(*build.Ident); ok && ident.Name == "name" {
-			if str, ok := assign.RHS.(*build.StringExpr); ok {
-				return str.Value
+		ident, ok := assign.LHS.(*build.Ident)
+		if !ok || ident.Name != "tags" {
+			continue
+		}
+		list, ok := assign.RHS.(*build.ListExpr)
+		if !ok {
+			continue
+		}
+		for _, item := range list.List {
+			if str, ok := item.(*build.StringExpr); ok && str.Value == tag {
+				return true
 			}
 		}
 	}
-	return ""
+	return false
 }
 
 // callRuleKind returns the rule kind for a CallExpr (e.g.

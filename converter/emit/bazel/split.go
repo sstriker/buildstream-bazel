@@ -70,7 +70,10 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	// Per-producing-package generated-header wrapper libraries, plus the
 	// wrapper labels to splice into each consumer's deps (a consumer that
 	// #includes a tablegen .inc).
-	genHdrWrappers, genHdrLabels := plan.generatedHeaderWrappers(pkg)
+	genHdrWrappers, genHdrLabels, err := plan.generatedHeaderWrappers(pkg)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
@@ -350,11 +353,18 @@ func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Ta
 	return byDir, labelsFor
 }
 
-// generatedHeadersName is the package-unique name of the synthesized
-// generated-header wrapper cc_library in each producing package. The
-// gazelle keep-marker pass recognizes a consumer's dep on it by this
-// label suffix.
+// generatedHeadersName is the name of the synthesized generated-header
+// wrapper cc_library in each producing package; generatedHeaderWrappers
+// fails fast if a real target in a producing package already claims it.
+// The consumer-side per-item keep marker recognizes a dep on the wrapper
+// by this label suffix.
 const generatedHeadersName = "generated_headers"
+
+// generatedHeadersTag marks the synthesized wrapper so addKeepMarkers can
+// whole-rule-keep it by tag — robust against a user rule that happens to
+// share generatedHeadersName in a non-producing package (which must NOT be
+// kept), and against any future rename.
+const generatedHeadersTag = "cmake-codegen-generated-headers"
 
 // generatedHeaderWrappers synthesizes, per producing package, a
 // `generated_headers` cc_library carrying that package's generated `.inc`
@@ -367,11 +377,11 @@ const generatedHeadersName = "generated_headers"
 // declare the output as an input and whose includes put the package root
 // on the consumer's -I. byDir maps a producing-package dir → its wrapper;
 // labelsFor maps a consumer name → the sorted wrapper labels it needs.
-func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string) {
+func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string, err error) {
 	byDir = map[string][]ir.Target{}
 	labelsFor = map[string][]string{}
 	if len(pkg.CodegenHeaderConsumers) == 0 {
-		return byDir, labelsFor
+		return byDir, labelsFor, nil
 	}
 	// Accumulate the package-local header set per producing dir across all
 	// consumers: each producing package gets one wrapper that is the union
@@ -390,27 +400,42 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 			hdrsByDir[dir][rel] = true
 		}
 	}
+	// Guard the reserved wrapper name: a real same-named target in a
+	// producing package would be a duplicate Bazel target (load error), and
+	// renaming isn't safe here (the consumer-side label and its per-item keep
+	// marker key off this exact name). Fail fast with a clear message rather
+	// than emit a BUILD that won't load.
+	for _, t := range pkg.Targets {
+		if t.Name != generatedHeadersName {
+			continue
+		}
+		if d := p.targetDir(t.Name); hdrsByDir[d] != nil {
+			return nil, nil, fmt.Errorf("split-packages: package %q already declares a target named %q, which the converter reserves for tablegen-consumer generated-header wiring — rename the project target", dirKey(d), generatedHeadersName)
+		}
+	}
 	for dir, set := range hdrsByDir {
 		hdrs := make([]string, 0, len(set))
 		for h := range set {
 			hdrs = append(hdrs, h)
 		}
 		sort.Strings(hdrs)
-		w := ir.Target{
+		byDir[dir] = append(byDir[dir], ir.Target{
 			Name:        generatedHeadersName,
 			Kind:        ir.KindCCLibrary,
 			TextualHdrs: hdrs,
-			Visibility:  []string{"//visibility:public"},
-		}
-		// includes=["."] supplies the genfiles include root so a consumer
-		// #includes the .inc by its package-relative path. Bazel rejects
-		// includes="." at the workspace root (it would expose the whole
-		// tree), so a root-package producer omits it — a root consumer
-		// resolves the bare same-package output via -iquote instead.
-		if dir != "" {
-			w.Includes = []string{"."}
-		}
-		byDir[dir] = append(byDir[dir], w)
+			// includes=["."] supplies the genfiles include root so a consumer
+			// #includes the .inc by its package-relative path — matching
+			// headerLibTarget, which sets it for every include root. The
+			// package base makes "." the element package (e.g.
+			// elements/<name>), not the workspace root, so Bazel's
+			// root-include guard doesn't fire.
+			Includes:   []string{"."},
+			Visibility: []string{"//visibility:public"},
+			// Tag so addKeepMarkers whole-rule-keeps the synthesized wrapper
+			// by tag (gazelle would delete a cc_library with no on-disk srcs)
+			// without mistaking a user rule that shares the name.
+			Tags: []string{generatedHeadersTag},
+		})
 	}
 	for cons, outs := range pkg.CodegenHeaderConsumers {
 		seen := map[string]bool{}
@@ -429,7 +454,7 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 		sort.Strings(labels)
 		labelsFor[cons] = labels
 	}
-	return byDir, labelsFor
+	return byDir, labelsFor, nil
 }
 
 // globSrcName derives a deterministic, package-unique filegroup name for a
