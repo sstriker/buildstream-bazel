@@ -818,6 +818,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// the optional sink for the driver's second-pass gate.
 	propagateStampVars(cc.StampVars, opts.SetAssignments)
 	if opts.StampVarSink != nil {
+		// Reset first: the driver reuses one sink across passes, and a
+		// stale key from an earlier pass would misreport the set (and
+		// could mis-gate the stamp second pass).
+		for k := range opts.StampVarSink {
+			delete(opts.StampVarSink, k)
+		}
 		for k, v := range cc.StampVars {
 			opts.StampVarSink[k] = v
 		}

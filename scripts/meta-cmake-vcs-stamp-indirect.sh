@@ -51,6 +51,7 @@ make converter >/dev/null
 "$bin_dir/convert-element-cmake" \
   --source-root "$ws" \
   --lift-configure-file \
+  --two-pass-genex \
   --out-build "$ws/BUILD.bazel" \
   >"$work_dir/convert.stdout" 2>"$work_dir/convert.stderr" || {
   echo "FAIL: convert-element-cmake exited non-zero"
