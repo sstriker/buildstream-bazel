@@ -3818,9 +3818,10 @@ func sanitizeTestNames(pkg *ir.Package) {
 
 // sanitizeTestName maps an arbitrary CTest test name to the conservative
 // Bazel identifier subset bazelconstraints.validNameRe enforces
-// (`[a-zA-Z0-9_][a-zA-Z0-9_.+-]*`): any char outside [A-Za-z0-9_.+-]
-// becomes `_`, and a leading `.`/`+`/`-` (legal only after the first
-// char) is also mapped to `_`. `Suite::Case::Sub` → `Suite__Case__Sub`.
+// (`[a-zA-Z0-9_][a-zA-Z0-9_.+-]*`): every character that regex disallows
+// becomes `_` (so `:` does; letters, digits, `_`, `.`, `+`, and `-` are
+// kept), and a leading `.`/`+`/`-` — legal only after the first char — is
+// also mapped to `_`. `Suite::Case::Sub` → `Suite__Case__Sub`.
 // The empty string maps to a placeholder — validNameRe also rejects ""
 // and ctest.Parse doesn't guard a malformed add_test() with an empty
 // NAME — so the helper always returns a valid identifier; any resulting

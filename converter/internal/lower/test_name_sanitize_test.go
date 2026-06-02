@@ -9,9 +9,9 @@ import (
 )
 
 // TestSanitizeTestName covers the char-level mapping into the
-// bazelconstraints identifier subset: `:` (and anything else outside
-// [A-Za-z0-9_.+-]) becomes `_`, mid-name `.`/`+`/`-` survive, and a
-// leading `.`/`+`/`-` (legal only after the first char) is mapped to `_`.
+// bazelconstraints identifier subset: `:` (and every other char
+// validNameRe disallows) becomes `_`, while letters, digits, `_`, and
+// mid-name `.`/`+`/`-` survive; a leading `.`/`+`/`-` is mapped to `_`.
 func TestSanitizeTestName(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"Benchmarking::FailureReporting::FailMacro", "Benchmarking__FailureReporting__FailMacro"},
