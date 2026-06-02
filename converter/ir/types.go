@@ -269,6 +269,13 @@ type Target struct {
 	// Hdrs are exported headers reachable via Includes/StripIncludePrefix.
 	Hdrs []string
 
+	// TextualHdrs are headers that are textually #included but not
+	// standalone-compilable (the x-macro / `.inc` / `.def` idiom, and
+	// generated tablegen `.inc` fragments). They render as the cc_library
+	// `textual_hdrs` attribute, so Bazel makes them available to dependents
+	// without trying to compile them as modular headers.
+	TextualHdrs []string
+
 	// Includes corresponds to the BUILD attribute of the same name: each
 	// entry is a directory (package-relative) added to the include search
 	// path of dependents.

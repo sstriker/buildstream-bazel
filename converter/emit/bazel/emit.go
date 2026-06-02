@@ -674,6 +674,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .HdrsExpr}}
     hdrs = {{.HdrsExpr}},
 {{- end}}
+{{- if .TextualHdrsExpr}}
+    textual_hdrs = {{.TextualHdrsExpr}},
+{{- end}}
 {{- if .IncludesExpr}}
     includes = {{.IncludesExpr}},
 {{- end}}
@@ -1091,6 +1094,7 @@ type ccView struct {
 	Name                       string
 	SrcsExpr                   string
 	HdrsExpr                   string
+	TextualHdrsExpr            string
 	IncludesExpr               string
 	IncludePrefix              string
 	StripIncludePrefix         string
@@ -1501,6 +1505,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		Name:                       t.Name,
 		SrcsExpr:                   attrExpr(srcs, srcsSel),
 		HdrsExpr:                   attrExpr(hdrs, hdrsSel),
+		TextualHdrsExpr:            attrExpr(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
 		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,
