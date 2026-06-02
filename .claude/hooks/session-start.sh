@@ -145,24 +145,35 @@ if [ -n "$egress_cas" ]; then
   fi
   if [ -n "$bsb_trust" ]; then
     bsb_rc="$HOME/.bazelrc"
-    # Replace any prior managed block, preserving the rest of ~/.bazelrc.
-    # Best-effort writes: a failure here (read-only HOME, full disk) must not
-    # abort the rest of the hook under `set -e`, and we only claim "configured"
-    # when the append actually landed.
-    [ -f "$bsb_rc" ] && { sed -i '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc" 2>/dev/null || true; }
-    # Ensure the file ends with a newline so the marker starts on its own line
-    # (a pre-existing rc without a trailing newline would otherwise glue to it).
-    [ -s "$bsb_rc" ] && [ -n "$(tail -c1 "$bsb_rc" 2>/dev/null)" ] && printf '\n' >> "$bsb_rc" 2>/dev/null || true
-    if cat >> "$bsb_rc" <<RC
+    # Update ~/.bazelrc atomically. Build the new contents in a temp file in
+    # the same dir (so publishing is an atomic rename): the current rc minus
+    # any prior managed block, a trailing newline so the marker starts on its
+    # own line, then a fresh managed block — and mv into place only after the
+    # append succeeds. A failure (read-only HOME, full disk) thus leaves the
+    # previous working ~/.bazelrc intact rather than a half-written one, and
+    # never aborts the rest of the hook under `set -e`.
+    bsb_rc_tmp="$(mktemp "$HOME/.bazelrc.XXXXXX" 2>/dev/null || true)"
+    bsb_rc_ok=0
+    if [ -n "$bsb_rc_tmp" ]; then
+      bsb_rc_ok=1
+      if [ -f "$bsb_rc" ]; then
+        sed '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc" > "$bsb_rc_tmp" 2>/dev/null || bsb_rc_ok=0
+      fi
+      if [ "$bsb_rc_ok" = 1 ]; then
+        { [ -s "$bsb_rc_tmp" ] && [ -n "$(tail -c1 "$bsb_rc_tmp" 2>/dev/null)" ] && printf '\n' >> "$bsb_rc_tmp"; } || true
+        cat >> "$bsb_rc_tmp" <<RC && mv -f "$bsb_rc_tmp" "$bsb_rc" || bsb_rc_ok=0
 # >>> bsb-egress >>>
 common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/
 startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit
 # <<< bsb-egress <<<
 RC
-    then
+      fi
+    fi
+    if [ "$bsb_rc_ok" = 1 ]; then
       log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
     else
-      log "bazel egress: could not write $bsb_rc; left bazel at defaults"
+      rm -f "$bsb_rc_tmp" 2>/dev/null || true
+      log "bazel egress: could not update $bsb_rc; left it unchanged"
     fi
   else
     log "bazel egress: egress CAs present but no usable truststore (no system cacerts, no keytool)"
