@@ -129,12 +129,12 @@ var noopExecuteProcessOps = map[string]bool{
 	"mkdir":            true,
 	"rm":               true,
 	"rmdir":            true,
-	// Raw filesystem-utility side effects (issue #376), classified only
+	// Raw filesystem-metadata side effects (issue #376), classified only
 	// in their no-output form by the benignNoOutputDrivers arm in Classify.
-	"chmod":   true,
-	"install": true,
-	"chown":   true,
-	"chgrp":   true,
+	// (install is excluded — it copies files; see benignNoOutputDrivers.)
+	"chmod": true,
+	"chown": true,
+	"chgrp": true,
 }
 
 // supportedCMakeEOpsList renders the allow-list as a stable,
@@ -207,21 +207,43 @@ var noopDrivers = map[string]bool{
 }
 
 // benignNoOutputDrivers names argv[0] basenames that are pure
-// configure-time filesystem side effects — adjusting permissions
-// (chmod/chown/chgrp) or staging files (install) — with no cmake -E
-// equivalent and no consumable Bazel output. Unlike noopDrivers (whose
-// raw form maps to a cmake -E no-op), these classify as a benign no-op
-// ONLY when every output channel is absent (see Classify): a chmod/install
-// that captures OUTPUT_VARIABLE / OUTPUT_FILE / RESULT_VARIABLE falls
-// through to the normal classifier so a captured value is never silently
-// dropped. Skipping the no-output form (rather than refusing it) keeps a
-// single inert side-effect call from dropping the entire package into the
-// round-2 fallback — the failure mode reported in issue #376.
+// configure-time filesystem METADATA side effects — adjusting permissions
+// or ownership (chmod/chown/chgrp) — with no cmake -E equivalent and no
+// consumable Bazel output. They never create or copy files, so skipping
+// them can't drop a build artifact. Unlike noopDrivers (whose raw form
+// maps to a cmake -E no-op), these classify as a benign no-op ONLY when
+// every output channel is absent (see Classify): a call that captures any
+// writeback variable or stdio redirect falls through to the normal
+// classifier so a captured value is never silently dropped. Skipping the
+// no-output form (rather than refusing it) keeps a single inert side-effect
+// call from dropping the entire package into the round-2 fallback — the
+// failure mode reported in issue #376.
+//
+// `install` is deliberately NOT here: it commonly creates/copies files
+// (`install -m755 src dst`), so a blanket skip could silently drop a
+// build-tree artifact. Handling install safely needs a copy-aware lifter
+// (argv/destination parsing, like liftCp) — a separate follow-up; for now
+// install keeps its prior classification.
 var benignNoOutputDrivers = map[string]bool{
-	"chmod":   true,
-	"install": true,
-	"chown":   true,
-	"chgrp":   true,
+	"chmod": true,
+	"chown": true,
+	"chgrp": true,
+}
+
+// executeProcessCapturesOutput reports whether the call captures ANY output
+// channel cmake's execute_process supports: every writeback variable
+// (OUTPUT_VARIABLE / RESULT_VARIABLE / RESULTS_VARIABLE / ERROR_VARIABLE)
+// and every stdout/stderr redirect (OUTPUT_FILE / ERROR_FILE). InputFile is
+// a stdin SOURCE, not an output, so it doesn't count. Used to gate the
+// benign-no-output skip strictly — if any channel is set, a value could be
+// observed downstream and the call must not be silently dropped.
+func executeProcessCapturesOutput(call shadow.ExecuteProcessCall) bool {
+	return call.OutputVariable != "" ||
+		call.ResultVariable != "" ||
+		call.ResultsVariable != "" ||
+		call.ErrorVariable != "" ||
+		call.OutputFile != "" ||
+		call.ErrorFile != ""
 }
 
 // stampDrivers names argv[0] basenames whose presence
@@ -485,19 +507,21 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		}
 	}
 
-	// Raw chmod / install / chown / chgrp with NO captured output: a pure
-	// configure-time filesystem side effect (permissions, staging) that
-	// produces no Bazel artifact and feeds no value into the graph. Skip
-	// it benignly (BucketCMakeE no-op) rather than refusing — refusing
-	// would drop every other target in the package into the round-2
-	// fallback over an inert call (issue #376). STRICT: only when every
-	// output channel is absent. A call that captures OUTPUT_VARIABLE or
-	// RESULT_VARIABLE falls through to the normal classifier below
-	// (→ refuse); one with OUTPUT_FILE falls through to the file-producing
-	// arm (hoistable). Either way the captured channel is handled by the
-	// normal path, never silently dropped by this benign skip.
-	if benignNoOutputDrivers[driver] &&
-		call.OutputVariable == "" && call.OutputFile == "" && call.ResultVariable == "" {
+	// Raw chmod / chown / chgrp with NO captured output: a pure
+	// configure-time filesystem metadata side effect (permissions /
+	// ownership) that produces no Bazel artifact and feeds no value into
+	// the graph. Skip it benignly (BucketCMakeE no-op) rather than refusing
+	// — refusing would drop every other target in the package into the
+	// round-2 fallback over an inert call (issue #376). STRICT: only when
+	// EVERY output channel is absent (executeProcessCapturesOutput covers
+	// all writeback variables + stdio redirects). A call that captures a
+	// writeback variable falls through to the normal classifier below
+	// (→ refuse); one with OUTPUT_FILE / ERROR_FILE falls through to the
+	// file-producing arm (hoistable). Either way the captured channel is
+	// handled by the normal path, never silently dropped by this benign
+	// skip. (`install` is excluded from benignNoOutputDrivers — it copies
+	// files; see that map's doc.)
+	if benignNoOutputDrivers[driver] && !executeProcessCapturesOutput(call) {
 		return ClassifyResult{
 			Bucket:   BucketCMakeE,
 			Reason:   driver + " (configure-time filesystem side-effect, no captured output)",

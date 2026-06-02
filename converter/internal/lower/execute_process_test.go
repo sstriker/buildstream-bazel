@@ -59,22 +59,38 @@ func TestRecoverExecuteProcess_LiftCMakeETouch(t *testing.T) {
 }
 
 // TestRecoverExecuteProcess_BenignFilesystemUtils pins issue #376: a
-// configure-time chmod / install with no output channel is skipped benignly
-// (no genrule, no refusal), so a single inert side-effect call doesn't drop
-// the whole package into the round-2 fallback.
+// configure-time chmod / chown / chgrp with no output channel is skipped
+// benignly (no genrule, no refusal), so a single inert metadata side-effect
+// call doesn't drop the whole package into the round-2 fallback. (install is
+// excluded — it copies files — and is covered separately below.)
 func TestRecoverExecuteProcess_BenignFilesystemUtils(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{
 		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"chmod", "+x", "/build/run_tests.sh"}}},
-		{File: "/src/CMakeLists.txt", Line: 4, Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}}},
-		{File: "/src/CMakeLists.txt", Line: 5, Commands: [][]string{{"chown", "root:root", "/build/x"}}},
+		{File: "/src/CMakeLists.txt", Line: 4, Commands: [][]string{{"chown", "root:root", "/build/x"}}},
+		{File: "/src/CMakeLists.txt", Line: 5, Commands: [][]string{{"chgrp", "staff", "/build/x"}}},
 	}
 	cc := newCodegenContext()
 	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
 	if len(refusals) != 0 {
-		t.Fatalf("benign chmod/install/chown must not refuse; got %v", refusals)
+		t.Fatalf("benign chmod/chown/chgrp must not refuse; got %v", refusals)
 	}
 	if len(cc.Genrules) != 0 {
-		t.Errorf("benign chmod/install/chown must emit no genrule; got %+v", cc.Genrules)
+		t.Errorf("benign chmod/chown/chgrp must emit no genrule; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecoverExecuteProcess_InstallNotBenign pins that install is NOT skipped
+// benignly (it copies files; a blanket skip could drop a build artifact) —
+// it refuses, keeping the safe round-2 fallback until a copy-aware lifter
+// handles it.
+func TestRecoverExecuteProcess_InstallNotBenign(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}}},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) == 0 {
+		t.Fatal("install must not be skipped benignly (it copies files); expected a refusal")
 	}
 }
 

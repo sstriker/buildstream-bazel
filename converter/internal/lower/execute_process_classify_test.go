@@ -161,20 +161,22 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "chmod",
 		},
 		{
-			name: "install (no output) → benign no-op",
-			call: shadow.ExecuteProcessCall{
-				Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}},
-			},
-			bucket: BucketCMakeE,
-			op:     "install",
-		},
-		{
 			name: "chown (no output) → benign no-op",
 			call: shadow.ExecuteProcessCall{
 				Commands: [][]string{{"chown", "root:root", "/build/x"}},
 			},
 			bucket: BucketCMakeE,
 			op:     "chown",
+		},
+		{
+			// install is NOT benign: it copies files, so a blanket skip
+			// could drop a build-tree artifact. It keeps refusing (→ safe
+			// round-2 fallback) until a copy-aware lifter handles it.
+			name: "install (no output) → refuse (file-producer, not benign)",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}},
+			},
+			bucket: BucketRefuse,
 		},
 		{
 			// STRICT invariant: a chmod that CAPTURES output is NOT benign —
@@ -184,6 +186,25 @@ func TestClassify_Buckets(t *testing.T) {
 			call: shadow.ExecuteProcessCall{
 				Commands:       [][]string{{"chmod", "+x", "/build/x"}},
 				ResultVariable: "RV",
+			},
+			bucket: BucketRefuse,
+		},
+		{
+			// Channel-completeness: ERROR_VARIABLE is an output channel too,
+			// so a chmod capturing it must NOT be skipped benignly.
+			name: "chmod + ERROR_VARIABLE → not benign (all channels gated)",
+			call: shadow.ExecuteProcessCall{
+				Commands:      [][]string{{"chmod", "+x", "/build/x"}},
+				ErrorVariable: "ERR",
+			},
+			bucket: BucketRefuse,
+		},
+		{
+			// RESULTS_VARIABLE (plural) is likewise gated.
+			name: "chmod + RESULTS_VARIABLE → not benign",
+			call: shadow.ExecuteProcessCall{
+				Commands:        [][]string{{"chmod", "+x", "/build/x"}},
+				ResultsVariable: "RVS",
 			},
 			bucket: BucketRefuse,
 		},
