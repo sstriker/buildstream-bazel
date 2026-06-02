@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.20)
 project(vcsstamp C)
 
 # Configure-time VCS stamp: capture the git revision into a header a

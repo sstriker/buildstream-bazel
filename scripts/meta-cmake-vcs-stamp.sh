@@ -28,6 +28,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_root"
 
 command -v cmake >/dev/null 2>&1 || { echo "skip: cmake not on PATH"; exit 0; }
+command -v ninja >/dev/null 2>&1 || { echo "skip: ninja not on PATH (convert --source-root drives the Ninja generator)"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "skip: git not on PATH"; exit 0; }
 command -v go >/dev/null 2>&1 || { echo "skip: go not on PATH"; exit 0; }
 
@@ -88,8 +89,15 @@ else
   echo "ok  meta-cmake-vcs-stamp: bazel/bazelisk not on PATH, skipping build half"
   exit 0
 fi
-bzlmajor="$("$BZL" --version 2>/dev/null | sed -n 's/^bazel \([0-9]*\).*/\1/p')"
-{ [ -n "$bzlmajor" ] && [ "$bzlmajor" -ge 9 ] 2>/dev/null; } || { echo "ok  meta-cmake-vcs-stamp: bazel < 9, skipping build half"; exit 0; }
+bzlmajor=$("$BZL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
+case "$bzlmajor" in
+  [0-9]*) ;;
+  *) bzlmajor=0 ;;
+esac
+if [ "$bzlmajor" -lt 9 ]; then
+  echo "ok  meta-cmake-vcs-stamp: bazel < 9, skipping build half"
+  exit 0
+fi
 
 # Stage the bazel workspace: the converted BUILD + sources are already in
 # $ws. Add the bzlmod MODULE (rules_buildstream_bazel via local_path_override
