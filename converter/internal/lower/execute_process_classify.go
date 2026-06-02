@@ -210,10 +210,15 @@ var noopDrivers = map[string]bool{
 // non-hermeticity the refusal is meant to prevent. Driver name is
 // the gate, not OutputVariable / OutputFile presence.
 //
-// How a stamp var's VALUE is sourced differs by driver and is
-// handled downstream (stampStatusKey + the configure_file lift):
-// identity/revision values are cache-keyed STABLE_ status keys; a
-// timestamp wants VOLATILE_ semantics (see stampStatusKey).
+// How a stamp var's VALUE is sourced differs by driver. The
+// identity/revision drivers (git/hg/svn/whoami/id/hostid) record
+// a cache-keyed STABLE_ workspace-status key (stampStatusKey), so a
+// `@GIT_SHA@` header re-reads live at build time. `date` is the
+// exception: a wall-clock timestamp would cache-bust as a STABLE_
+// key, and a cache-safe VOLATILE_ key needs the configure_file rule
+// to read volatile-status — so in THIS pass date's value bakes at
+// convert time (it does not record a live stamp var). The live
+// volatile-date stamp is the stacked follow-up.
 var stampDrivers = map[string]bool{
 	"git":    true,
 	"hg":     true,
@@ -467,7 +472,7 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	if stampDrivers[driver] {
 		return ClassifyResult{
 			Bucket: BucketStamp,
-			Reason: driver + " is a version-control driver" + outputContext(call),
+			Reason: driver + " is a stamp / non-hermetic driver" + outputContext(call),
 		}
 	}
 	if strongProbeDrivers[driver] {
@@ -596,7 +601,7 @@ func unliftableShapeReason(driver string, call shadow.ExecuteProcessCall) string
 // (OutputVariable, OutputFile) as a leading-space suffix for
 // classifier reason messages — e.g. ` writing OUTPUT_VARIABLE
 // GIT_SHA`, concatenated onto the bucket label so the final
-// reason reads `git is a version-control driver writing
+// reason reads `git is a stamp / non-hermetic driver writing
 // OUTPUT_VARIABLE GIT_SHA`. Empty when neither channel is set.
 // Threads diagnostic context into stamp / strong-probe refusal
 // reasons without re-implementing the formatting at each call
