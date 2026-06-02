@@ -183,6 +183,49 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			t.Error("install with an unrecognized flag must refuse rather than guess operands")
 		}
 	})
+
+	t.Run("existing-dir dest (no trailing slash) copies into it", func(t *testing.T) {
+		// `install -m644 /src/cfg.h <dir>` where <dir> exists on disk as a
+		// directory → install copies to <dir>/cfg.h, not to a file <dir>.
+		build := t.TempDir()
+		incDir := filepath.Join(build, "include")
+		if err := os.MkdirAll(incDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m", "644", "/src/cfg.h", incDir}},
+		}}, "/src", "/src", build, build, false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("got refusals: %v", refusals)
+		}
+		if len(cc.Genrules) != 1 || cc.Genrules[0].GenruleOuts[0] != "include/cfg.h" {
+			t.Errorf("outs: %+v want [include/cfg.h] (existing dir → copy into it)", cc.Genrules)
+		}
+	})
+
+	t.Run("relative dest refuses", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "/src/foo", "include/"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("relative dest must refuse (can't anchor), not benign-skip")
+		}
+	})
+
+	t.Run("value flag without a value refuses", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("trailing value-taking flag (-m with no value) must refuse")
+		}
+	})
 }
 
 // TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses pins the

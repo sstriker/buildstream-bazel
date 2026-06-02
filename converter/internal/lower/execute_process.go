@@ -925,10 +925,15 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 							targetDir, hasTargetDir = rest, true
 						}
 					} else {
+						// Value is the next argv element — required for EVERY
+						// value-taking short flag (-m/-o/-g/-t/-S), not just
+						// -t. Validate it exists so a malformed trailing flag
+						// (`install -m`) refuses with a clear diagnostic
+						// instead of mis-counting operands.
+						if i+1 >= len(args) {
+							return nil, fmt.Sprintf("install: -%c given without a value", c), false
+						}
 						if c == 't' {
-							if i+1 >= len(args) {
-								return nil, "install: -t without a target directory", false
-							}
 							targetDir, hasTargetDir = args[i+1], true
 						}
 						consumedNext = true
@@ -981,9 +986,26 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 	case len(operands) >= 2:
 		dest = operands[len(operands)-1]
 		sources = operands[:len(operands)-1]
-		destIsDir = len(sources) > 1 || strings.HasSuffix(dest, "/")
+		// dest is a directory when: multiple sources, a trailing slash, or
+		// it exists on disk as a directory — the `install foo /build/include`
+		// form where /build/include is an existing dir, in which case install
+		// copies to /build/include/foo (not to a file named include). The
+		// on-disk check resolves the otherwise-ambiguous single-source,
+		// no-trailing-slash case; it fires only for live runs whose recorded
+		// paths exist on this host (reply-dir paths won't, falling back to
+		// the syntactic signals).
+		destIsDir = len(sources) > 1 || strings.HasSuffix(dest, "/") || isExistingDir(dest)
 	default:
 		return nil, fmt.Sprintf("install: expected SRC... DEST (got %d operand(s))", len(operands)), false
+	}
+
+	// install needs an absolute destination to resolve. A RELATIVE dest
+	// (e.g. `install foo include/`) can't be anchored —
+	// executeProcessAnchorOutput rejects relative paths the same as
+	// outside-the-tree ones, so treating it as a benign skip would silently
+	// drop a copy that may land under the build tree. Refuse instead.
+	if !filepath.IsAbs(dest) {
+		return nil, fmt.Sprintf("install: destination %q is relative; can't anchor it (refusing rather than risk dropping a build-tree copy)", dest), false
 	}
 
 	// The directory the file(s) land in decides build-tree vs install-prefix.
@@ -992,7 +1014,8 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 		destDir = filepath.Dir(dest)
 	}
 	if _, ok := executeProcessAnchorOutput(destDir, anc); !ok {
-		// Outside the build tree → install-prefix staging → benign skip.
+		// Absolute but outside the build tree → install-prefix staging →
+		// benign skip (the dest isn't a Bazel-tracked output).
 		return nil, "", true
 	}
 
