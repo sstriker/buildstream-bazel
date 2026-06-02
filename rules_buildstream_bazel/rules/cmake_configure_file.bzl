@@ -48,17 +48,27 @@ def _impl(ctx):
     inputs.append(values_json)
     args.add("--values", values_json)
 
-    # Stamp values: re-read VCS-stamp template vars from the workspace
-    # status at build time, overriding the baked `values` fallback. The
-    # stable status file (ctx.info_file / stable-status.txt) is the source
-    # — it is cache-keyed, so a revision change correctly re-renders. Under
+    # Stamp values: re-read stamp template vars from the workspace status at
+    # build time, overriding the baked `values` fallback. The stable status
+    # file (ctx.info_file / stable-status.txt) is cache-keyed, so a change to
+    # a STABLE_ key (VCS revision, build identity) correctly re-renders. Under
     # `--stamp` + `--workspace_status_command` it carries the operator's
-    # STABLE_* keys; otherwise it holds only the defaults and the tool
-    # keeps the `values` fallback (a key the tool doesn't find is left
-    # alone). One --stamp-value flag per (template var, status key) entry.
+    # STABLE_* keys; otherwise it holds only the defaults and the tool keeps
+    # the `values` fallback (a key the tool doesn't find is left alone). One
+    # --stamp-value flag per (template var, status key) entry.
     if ctx.attr.stamp_values:
         inputs.append(ctx.info_file)
         args.add("--status-file", ctx.info_file.path)
+
+        # A VOLATILE_ stamp key (e.g. a build timestamp) lives in
+        # volatile-status.txt (ctx.version_file), which — unlike
+        # stable-status — Bazel does NOT cache-key, so the value can change
+        # every build without busting the action cache. Only wire it when a
+        # volatile key is actually present, so VCS / identity (STABLE_) stamps
+        # stay info_file-only (byte-identical to before this change).
+        if [k for k in ctx.attr.stamp_values.values() if k.startswith("VOLATILE_")]:
+            inputs.append(ctx.version_file)
+            args.add("--status-file", ctx.version_file.path)
 
         # Sorted keys → a stable action command line. A dict's iteration
         # order shouldn't leak into the argv (it would risk gratuitous

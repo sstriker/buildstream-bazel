@@ -31,7 +31,7 @@ func TestRun_FixtureMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "config.h")
-	if err := run(valuesPath, "", nil, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -60,7 +60,7 @@ func TestRun_AtOnlyFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", nil, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{AtOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -84,7 +84,7 @@ func TestRun_NullValuesIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", nil, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, _ := os.ReadFile(outPath)
@@ -100,7 +100,7 @@ func TestRun_MissingValuesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := run(filepath.Join(tmp, "no-such-values.json"),
-		"",
+		nil,
 		nil,
 		"",
 		"",
@@ -129,7 +129,7 @@ func TestRun_ContentBase64Mode(t *testing.T) {
 	tmpl := "#define BANNER \"@BANNER@\"\n"
 	blob := base64.StdEncoding.EncodeToString([]byte(tmpl))
 	outPath := filepath.Join(tmp, "out.h")
-	if err := run(valuesPath, "", nil, "", "", nil, nil, "", true, blob, outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, "", true, blob, outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -158,7 +158,7 @@ func TestRun_ContentBase64Empty(t *testing.T) {
 	}
 	outPath := filepath.Join(tmp, "out.txt")
 	// Empty body: base64 of "" is the empty string.
-	if err := run(valuesPath, "", nil, "", "", nil, nil, "", true, "", outPath, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, "", true, "", outPath, configurefile.Options{}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -185,7 +185,7 @@ func TestRun_RejectsInvariantViolations(t *testing.T) {
 	outPath := filepath.Join(tmp, "out.txt")
 
 	// Neither set.
-	if err := run(valuesPath, "", nil, "", "", nil, nil, "", false, "", outPath, configurefile.Options{}); err == nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, "", false, "", outPath, configurefile.Options{}); err == nil {
 		t.Errorf("neither inPath nor hasContent: expected error")
 	}
 	// Both set.
@@ -193,7 +193,7 @@ func TestRun_RejectsInvariantViolations(t *testing.T) {
 	if err := os.WriteFile(tmplPath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := run(valuesPath, "", nil, "", "", nil, nil, tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
+	if err := run(valuesPath, nil, nil, "", "", nil, nil, tmplPath, true, "", outPath, configurefile.Options{}); err == nil {
 		t.Errorf("both inPath and hasContent: expected error")
 	}
 }
@@ -207,7 +207,7 @@ func TestRun_ContentBase64Malformed(t *testing.T) {
 	if err := os.WriteFile(valuesPath, []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(valuesPath, "", nil, "", "", nil, nil, "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
+	err := run(valuesPath, nil, nil, "", "", nil, nil, "", true, "not!!!valid?base64", filepath.Join(tmp, "out.h"), configurefile.Options{})
 	if err == nil {
 		t.Fatal("expected error on malformed --content-base64")
 	}
@@ -238,7 +238,7 @@ func TestRun_GenexValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", nil, genexValuesPath, "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, nil, nil, genexValuesPath, "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -272,7 +272,7 @@ func TestRun_GenexValues_MissingKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	err := run(valuesPath, "", nil, genexValuesPath, "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
+	err := run(valuesPath, nil, nil, genexValuesPath, "", nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
 	if err == nil {
 		t.Fatal("expected error when genex values dict is missing a literal the template carries")
 	}
@@ -302,7 +302,7 @@ func TestRun_GenexContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, nil, nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -338,7 +338,7 @@ func TestRun_GenexContext_TargetProperty(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	if err := run(valuesPath, "", nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, nil, nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -384,7 +384,7 @@ func TestRun_GenexContext_TargetFile(t *testing.T) {
 		"foo": "/build/libfoo.a",
 		"bar": "bazel-bin/pkg/libbar.so",
 	}
-	if err := run(valuesPath, "", nil, "", genexContextPath, targetFiles, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, nil, nil, "", genexContextPath, targetFiles, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -419,7 +419,7 @@ func TestRun_GenexContext_TargetFile_MissingFlagErrors(t *testing.T) {
 	}
 	outPath := filepath.Join(tmp, "out.txt")
 	// Pass nil targetFiles → no override happens → eval refuses.
-	if err := run(valuesPath, "", nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
+	if err := run(valuesPath, nil, nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
 		t.Fatal("expected error when --target-file flag missing")
 	}
 }
@@ -462,7 +462,7 @@ func TestRun_GenexContext_TargetObjects(t *testing.T) {
 	targetObjects := map[string]string{
 		"objlib": "/build/CMakeFiles/objlib.dir/a.c.o:/build/CMakeFiles/objlib.dir/b.c.o:/build/CMakeFiles/objlib.dir/c.c.o",
 	}
-	if err := run(valuesPath, "", nil, "", genexContextPath, nil, targetObjects, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
+	if err := run(valuesPath, nil, nil, "", genexContextPath, nil, targetObjects, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	body, err := os.ReadFile(outPath)
@@ -502,7 +502,7 @@ func TestRun_GenexContext_TargetObjects_MissingFlagErrors(t *testing.T) {
 	outPath := filepath.Join(tmp, "out.txt")
 	// Pass nil targetObjects → no override happens → eval refuses
 	// because Objects field is empty.
-	if err := run(valuesPath, "", nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
+	if err := run(valuesPath, nil, nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true}); err == nil {
 		t.Fatal("expected error when --target-objects flag missing")
 	}
 }
@@ -577,7 +577,7 @@ func TestRun_GenexContext_UnsupportedOpErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	outPath := filepath.Join(tmp, "out.txt")
-	err := run(valuesPath, "", nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
+	err := run(valuesPath, nil, nil, "", genexContextPath, nil, nil, tmplPath, false, "", outPath, configurefile.Options{CopyOnly: true})
 	if err == nil {
 		t.Fatal("expected error on $<TARGET_FILE:...>")
 	}
@@ -607,7 +607,7 @@ func TestRun_StampValueOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	outLive := filepath.Join(tmp, "live.h")
-	if err := run(valuesPath, statusLive, stamp, "", "", nil, nil, tmplPath, false, "", outLive, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, []string{statusLive}, stamp, "", "", nil, nil, tmplPath, false, "", outLive, configurefile.Options{}); err != nil {
 		t.Fatalf("run (live): %v", err)
 	}
 	if got, _ := os.ReadFile(outLive); string(got) != "#define REV \"live123\"\n" {
@@ -621,11 +621,45 @@ func TestRun_StampValueOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	outBare := filepath.Join(tmp, "bare.h")
-	if err := run(valuesPath, statusBare, stamp, "", "", nil, nil, tmplPath, false, "", outBare, configurefile.Options{}); err != nil {
+	if err := run(valuesPath, []string{statusBare}, stamp, "", "", nil, nil, tmplPath, false, "", outBare, configurefile.Options{}); err != nil {
 		t.Fatalf("run (bare): %v", err)
 	}
 	if got, _ := os.ReadFile(outBare); string(got) != "#define REV \"baked0000\"\n" {
 		t.Errorf("absent stamp key: got %q, want the baked fallback", got)
+	}
+}
+
+// TestRun_StampValueMergesStableAndVolatile pins the multi-status-file
+// merge: the rule passes BOTH stable-status.txt (STABLE_ keys) and
+// volatile-status.txt (VOLATILE_ keys) when a volatile stamp is present;
+// the tool merges them into one namespace so a STABLE_ revision and a
+// VOLATILE_ build date both resolve in a single render.
+func TestRun_StampValueMergesStableAndVolatile(t *testing.T) {
+	tmp := t.TempDir()
+	tmplPath := filepath.Join(tmp, "v.h.in")
+	if err := os.WriteFile(tmplPath, []byte("rev=@GIT_SHA@ date=@BUILD_DATE@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	valuesPath := filepath.Join(tmp, "values.json")
+	if err := os.WriteFile(valuesPath, []byte(`{"GIT_SHA":"baked","BUILD_DATE":"baked-date"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stamp := map[string]string{"GIT_SHA": "STABLE_GIT_SHA", "BUILD_DATE": "VOLATILE_BUILD_DATE"}
+
+	stable := filepath.Join(tmp, "stable-status.txt")
+	if err := os.WriteFile(stable, []byte("STABLE_GIT_SHA live123\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	volatile := filepath.Join(tmp, "volatile-status.txt")
+	if err := os.WriteFile(volatile, []byte("VOLATILE_BUILD_DATE 2026-06-02\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(tmp, "out.h")
+	if err := run(valuesPath, []string{stable, volatile}, stamp, "", "", nil, nil, tmplPath, false, "", out, configurefile.Options{}); err != nil {
+		t.Fatalf("run (merge): %v", err)
+	}
+	if got, _ := os.ReadFile(out); string(got) != "rev=live123 date=2026-06-02\n" {
+		t.Errorf("merge: got %q, want both the stable revision and volatile date resolved", got)
 	}
 }
 
@@ -643,7 +677,7 @@ func TestRun_StampValueWithoutStatusFile(t *testing.T) {
 	if err := os.WriteFile(valuesPath, []byte(`{"GIT_SHA":"x"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err := run(valuesPath, "", map[string]string{"GIT_SHA": "STABLE_GIT_SHA"},
+	err := run(valuesPath, nil, map[string]string{"GIT_SHA": "STABLE_GIT_SHA"},
 		"", "", nil, nil, tmplPath, false, "", filepath.Join(tmp, "out.h"), configurefile.Options{})
 	if err == nil {
 		t.Fatal("expected error: --stamp-value without --status-file")

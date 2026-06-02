@@ -574,20 +574,24 @@ transition cleanly.
   build), so in PR 1 its captured value *bakes* at convert time (stable,
   non-cache-busting) rather than lifting to a live stamp.
 
-  **PR 2 (stacked) — live volatile `date`.** Make `stampStatusKey`
-  driver-aware (`date` → a `VOLATILE_` key) AND teach the shipped
-  `cmake_configure_file` rule + `cmd/cmake-configure-file` to read
-  `ctx.version_file` (volatile-status.txt) — today they read only
-  `ctx.info_file` (stable-status), so a `VOLATILE_` key never resolves.
-  Then `date` becomes a live, cache-safe build-date stamp. Value source:
-  operator-supplied via `--workspace_status_command` (like VCS), just
-  emitted as a volatile key — that script is where `SOURCE_DATE_EPOCH`
-  belongs for reproducibility. Bazel's native `BUILD_TIMESTAMP` is
-  volatile but epoch-millis, so a formatted `date +%F` template still
-  wants the operator-level value; the converter's job is only to route
-  `date` → the volatile key. (`whoami`/`id`/`hostid` need no volatile
-  alternative — Bazel has no native identity key, and identity is
-  correctly stable.) Surfaced while verifying the #371 vcs-stamp lift.
+  **PR 2 (stacked, this) — live volatile `date`.** `stampStatusKey`
+  is now driver-aware (`date` → a `VOLATILE_` key), and the shipped
+  `cmake_configure_file` rule + `cmd/cmake-configure-file` read
+  `ctx.version_file` (volatile-status.txt) IN ADDITION to
+  `ctx.info_file` (stable-status) — but only when a `VOLATILE_` stamp
+  key is present, so VCS/identity (`STABLE_`) stamps stay
+  byte-identical. `--status-file` is now repeatable; the tool merges the
+  two files' disjoint `STABLE_`/`VOLATILE_` namespaces. `date` is thus a
+  live, cache-safe build-date stamp: its value changes per build without
+  busting the action cache. Value source: operator-supplied via
+  `--workspace_status_command` (like VCS), emitted as a volatile key —
+  that script is where `SOURCE_DATE_EPOCH` belongs for reproducibility.
+  Bazel's native `BUILD_TIMESTAMP` is volatile but epoch-millis, so a
+  formatted `date +%F` template still wants the operator-level value; the
+  converter's job is only to route `date` → the volatile key.
+  (`whoami`/`id`/`hostid` need no volatile alternative — Bazel has no
+  native identity key, and identity is correctly stable.) Surfaced while
+  verifying the #371 vcs-stamp lift.
 
 ## Next
 

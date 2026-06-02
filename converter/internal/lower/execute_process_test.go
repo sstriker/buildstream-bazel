@@ -676,13 +676,12 @@ func TestRecoverExecuteProcess_StampNonGitDrivers(t *testing.T) {
 	}
 }
 
-// TestRecoverExecuteProcess_DateBakesNotStamped pins the date driver's PR-1
-// behavior: date IS a stamp driver (so its OUTPUT_FILE form doesn't hoist),
-// but a wall-clock timestamp needs VOLATILE_ status semantics the rule can't
-// yet read — so date does NOT record a live StampVar (cache-busting STABLE_
-// would be wrong). Its captured value bakes at convert time instead. The live
-// volatile-date stamp is the stacked follow-up.
-func TestRecoverExecuteProcess_DateBakesNotStamped(t *testing.T) {
+// TestRecoverExecuteProcess_DateRecordsVolatile pins the date driver's
+// value semantics: unlike the STABLE_ identity/revision drivers, a date
+// timestamp records a VOLATILE_ status key — routing it into
+// volatile-status.txt (which Bazel reads but doesn't cache-key) so the
+// build date changes per build without busting the action cache.
+func TestRecoverExecuteProcess_DateRecordsVolatile(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
 		Line:           5,
@@ -695,8 +694,8 @@ func TestRecoverExecuteProcess_DateBakesNotStamped(t *testing.T) {
 	if len(refusals) != 0 {
 		t.Fatalf("captured date stamp should skip; got refusals: %v", refusals)
 	}
-	if _, recorded := cc.StampVars["BUILD_DATE"]; recorded {
-		t.Errorf("date must NOT record a live StampVar in PR 1 (bakes pending the volatile follow-up); got StampVars[BUILD_DATE]=%q", cc.StampVars["BUILD_DATE"])
+	if got := cc.StampVars["BUILD_DATE"]; got != "VOLATILE_BUILD_DATE" {
+		t.Errorf("StampVars[BUILD_DATE] = %q, want VOLATILE_BUILD_DATE (a timestamp must be volatile, not cache-keyed)", got)
 	}
 }
 
