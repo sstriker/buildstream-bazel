@@ -335,7 +335,19 @@ func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Ta
 // identifier). The extension is taken from the pattern's trailing "*.<ext>";
 // patterns without one fall back to "files".
 func globSrcName(relInPkg, pattern string) string {
-	san := strings.NewReplacer("/", "_", ".", "_", "-", "_", "*", "_").Replace
+	// Map every char that isn't legal in a Bazel target name to "_", so an
+	// extension carrying glob syntax ("*.[ch]", "*.?pp") can't leak '[' /
+	// '?' / ']' into the name.
+	san := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+				return r
+			default:
+				return '_'
+			}
+		}, s)
+	}
 	ext := "files"
 	if i := strings.LastIndex(pattern, "*."); i >= 0 {
 		ext = san(pattern[i+2:])

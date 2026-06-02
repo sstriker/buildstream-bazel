@@ -3,6 +3,7 @@ package lower
 import (
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -478,7 +479,14 @@ func parseTdIncludes(data []byte) []string {
 func resolveTdInclude(inc string, roots []string, labelRoot string) string {
 	inc = strings.TrimLeft(filepath.ToSlash(inc), "/")
 	for _, r := range roots {
-		cand := strings.TrimRight(r, "/") + "/" + inc
+		cand := path.Clean(strings.TrimRight(r, "/") + "/" + inc)
+		// Reject includes that escape labelRoot (e.g. "../../etc/passwd"):
+		// path.Clean would resolve the "..", letting os.Stat read host
+		// files outside the workspace and yielding a label containing ".."
+		// that Bazel can't represent. Only files within labelRoot fold in.
+		if cand == ".." || strings.HasPrefix(cand, "../") || path.IsAbs(cand) {
+			continue
+		}
 		if fi, err := os.Stat(filepath.Join(labelRoot, filepath.FromSlash(cand))); err == nil && !fi.IsDir() {
 			return cand
 		}
@@ -492,10 +500,12 @@ func resolveTdInclude(inc string, roots []string, labelRoot string) string {
 // lowered genrule sourced from a glob lists the frozen match set rather
 // than the glob. We recover the glob: for each file(GLOB) call we compute
 // its match set on the source FS, and when that whole set is a subset of a
-// genrule's srcs (the genrule depends on exactly the glob's output) we drop
-// those files from srcs and record a GlobSrcGroup. split then emits one
-// filegroup(srcs = glob([<pattern>])) per group and splices its label into
-// the genrule — so a file added post-conversion is picked up.
+// genrule's srcs (the genrule depends on exactly the glob's output) we
+// record a GlobSrcGroup — keeping the explicit srcs in place. split then
+// drops the covered files, emits one filegroup(srcs = glob([<pattern>]))
+// per group, and splices its label into the genrule (so a file added post-
+// conversion is picked up); the monolithic emitter keeps the explicit srcs,
+// so neither path loses inputs.
 //
 // The subset test avoids false positives: a genrule with an explicit dep
 // that merely overlaps a glob (without covering the whole match set) is

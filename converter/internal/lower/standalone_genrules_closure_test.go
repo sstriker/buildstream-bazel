@@ -132,6 +132,34 @@ func TestRecordCodegenIncludeClosure_NonTdSkipped(t *testing.T) {
 	}
 }
 
+// resolveTdInclude must reject includes that escape labelRoot (path
+// traversal) — no host-file read outside the workspace, no "..".-bearing
+// label — while still resolving normal in-tree includes.
+func TestResolveTdInclude_NoTraversal(t *testing.T) {
+	root := t.TempDir()
+	// A real file OUTSIDE root (in its parent).
+	outside := filepath.Join(filepath.Dir(root), "escape.td")
+	if err := os.WriteFile(outside, []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(outside)
+	// "gen" is an -I root; "../../escape.td" cleans to "../escape.td", which
+	// points at the outside file — must be rejected.
+	if got := resolveTdInclude("../../escape.td", []string{"gen"}, root); got != "" {
+		t.Errorf("traversal include must not resolve, got %q", got)
+	}
+	// A normal in-tree include still resolves.
+	if err := os.MkdirAll(filepath.Join(root, "gen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "gen", "ok.td"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolveTdInclude("ok.td", []string{"gen"}, root); got != "gen/ok.td" {
+		t.Errorf("in-tree include should resolve to gen/ok.td, got %q", got)
+	}
+}
+
 func TestGenruleIncludeRoots(t *testing.T) {
 	cmd := "$(location //t:tg) -gen-x -I inc -Ilib/Foo/ -I inc -Iinclude in.td -o out"
 	got := genruleIncludeRoots(cmd)
