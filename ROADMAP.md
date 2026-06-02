@@ -536,10 +536,12 @@ transition cleanly.
   `cmd/cas-fuse` itself; bb_clientd is the production
   CAS-aware mount story now.
 
-- **Wire the cmake render gates into CI.** The `meta-cmake-*.sh`
-  render gates — `meta-cmake-genex-probe.sh`,
-  `meta-file-generate.sh`, `meta-cmake-genex-literal-twopass.sh`,
-  `meta-cmake-fileset-compiled-lib.sh` — run `convert-element-cmake`
+- **Wire the cmake render gates into CI.** The cmake render gates
+  under `scripts/` — `scripts/meta-cmake-genex-probe.sh`,
+  `scripts/meta-file-generate.sh`,
+  `scripts/meta-cmake-genex-literal-twopass.sh`,
+  `scripts/meta-cmake-fileset-compiled-lib.sh` — run
+  `convert-element-cmake`
   and assert on the rendered BUILD, and several carry a live
   `bazel build` half (the load-bearing check that the emitted shape
   actually compiles). Unlike the `e2e-meta-*` targets they are NOT
@@ -554,25 +556,38 @@ transition cleanly.
   already skip cleanly when cmake / ninja / bazel≥9 aren't present,
   so they're CI-safe as-is. Surfaced in #366 review.
 
-- **`date` should be a stamp driver (latent non-hermeticity).**
-  `stampDrivers` (`converter/internal/lower/execute_process_classify.go`)
-  is `{git, hg, svn}` — `date` is absent. Consequence:
-  `execute_process(COMMAND date … OUTPUT_FILE x)` classifies as
-  *file-producing* and gets HOISTED to a build-time genrule — running
-  `date` on the executor and baking a non-hermetic timestamp, the exact
-  non-determinism the stamp bucket prevents for VCS tools (whose
-  OUTPUT_FILE form is driver-first stamp, "can't hoist"). The
-  OUTPUT_VARIABLE form refuses (`unsupported-execute-process`). Fix:
-  add `date` to `stampDrivers` — but unlike a VCS revision (which wants
-  a `STABLE_` key: cache-keyed so a revision change re-renders), a build
-  timestamp wants VOLATILE semantics, so it should map to Bazel's native
-  `BUILD_TIMESTAMP` / a volatile-status key rather than a `STABLE_` one
-  (a per-second timestamp must not bust the cache every build). That
-  means `stampStatusKey` becomes driver-aware (stable for VCS, volatile
-  for `date`). Candidate companions to weigh: `whoami` / `id` / `hostid`
-  (build-identity, also non-hermetic). Surfaced while verifying the #371
-  vcs-stamp lift; classification of `hg`/`svn`/other git subcommands was
-  confirmed (command-agnostic, driver-keyed) and given test coverage.
+- **Volatile execute_process drivers (`date` + build identity).**
+  Extends the #371 stamp lift beyond `{git, hg, svn}` to the other
+  clearly-volatile / non-hermetic value sources, in two stacked PRs.
+
+  **PR 1 (landed/in review) — close the hole + identity drivers.**
+  Adds `date`, `whoami`, `id`, `hostid` to `stampDrivers`
+  (`converter/internal/lower/execute_process_classify.go`), so their
+  OUTPUT_FILE form no longer slips through to *file-producing* and gets
+  HOISTED to a build-time genrule — running the tool on the executor and
+  baking a non-hermetic value, the exact non-determinism the stamp bucket
+  prevents for VCS (whose OUTPUT_FILE form is driver-first stamp, "can't
+  hoist"). Build-identity values (`whoami`/`id`/`hostid`) are stable like
+  a VCS revision → live `STABLE_` workspace-status keys (cache-keyed: a
+  change re-renders). `date` is the exception: a wall-clock timestamp
+  must NOT be a `STABLE_` key (it would bust the action cache every
+  build), so in PR 1 its captured value *bakes* at convert time (stable,
+  non-cache-busting) rather than lifting to a live stamp.
+
+  **PR 2 (stacked) — live volatile `date`.** Make `stampStatusKey`
+  driver-aware (`date` → a `VOLATILE_` key) AND teach the shipped
+  `cmake_configure_file` rule + `cmd/cmake-configure-file` to read
+  `ctx.version_file` (volatile-status.txt) — today they read only
+  `ctx.info_file` (stable-status), so a `VOLATILE_` key never resolves.
+  Then `date` becomes a live, cache-safe build-date stamp. Value source:
+  operator-supplied via `--workspace_status_command` (like VCS), just
+  emitted as a volatile key — that script is where `SOURCE_DATE_EPOCH`
+  belongs for reproducibility. Bazel's native `BUILD_TIMESTAMP` is
+  volatile but epoch-millis, so a formatted `date +%F` template still
+  wants the operator-level value; the converter's job is only to route
+  `date` → the volatile key. (`whoami`/`id`/`hostid` need no volatile
+  alternative — Bazel has no native identity key, and identity is
+  correctly stable.) Surfaced while verifying the #371 vcs-stamp lift.
 
 ## Next
 

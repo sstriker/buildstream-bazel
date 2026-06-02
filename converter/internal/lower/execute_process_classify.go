@@ -202,16 +202,26 @@ var noopDrivers = map[string]bool{
 
 // stampDrivers names argv[0] basenames whose presence
 // classifies the call as Stamp regardless of how the output
-// is captured. VCS query tools have no legitimate
-// code-generation use; hoisting them to a build-time genrule
-// would run the VCS tool on the executor and re-introduce
-// the same non-hermeticity the refusal is meant to prevent.
-// Driver name is the gate, not OutputVariable / OutputFile
-// presence.
+// is captured. These tools emit a VOLATILE / non-hermetic value
+// — a VCS revision (git/hg/svn), a wall-clock timestamp (date),
+// or build-machine identity (whoami/id/hostid) — with no
+// legitimate code-generation use; hoisting one to a build-time
+// genrule would run it on the executor and re-introduce the same
+// non-hermeticity the refusal is meant to prevent. Driver name is
+// the gate, not OutputVariable / OutputFile presence.
+//
+// How a stamp var's VALUE is sourced differs by driver and is
+// handled downstream (stampStatusKey + the configure_file lift):
+// identity/revision values are cache-keyed STABLE_ status keys; a
+// timestamp wants VOLATILE_ semantics (see stampStatusKey).
 var stampDrivers = map[string]bool{
-	"git": true,
-	"hg":  true,
-	"svn": true,
+	"git":    true,
+	"hg":     true,
+	"svn":    true,
+	"date":   true, // wall-clock timestamp (volatile)
+	"whoami": true, // current user (build-machine identity)
+	"id":     true, // user / group identity
+	"hostid": true, // host identity
 }
 
 // strongProbeDrivers names argv[0] basenames whose presence
