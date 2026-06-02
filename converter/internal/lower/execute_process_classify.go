@@ -129,6 +129,12 @@ var noopExecuteProcessOps = map[string]bool{
 	"mkdir":            true,
 	"rm":               true,
 	"rmdir":            true,
+	// Raw filesystem-utility side effects (issue #376), classified only
+	// in their no-output form by the benignNoOutputDrivers arm in Classify.
+	"chmod":   true,
+	"install": true,
+	"chown":   true,
+	"chgrp":   true,
 }
 
 // supportedCMakeEOpsList renders the allow-list as a stable,
@@ -198,6 +204,24 @@ var noopDrivers = map[string]bool{
 	"mkdir": true,
 	"rm":    true,
 	"rmdir": true,
+}
+
+// benignNoOutputDrivers names argv[0] basenames that are pure
+// configure-time filesystem side effects — adjusting permissions
+// (chmod/chown/chgrp) or staging files (install) — with no cmake -E
+// equivalent and no consumable Bazel output. Unlike noopDrivers (whose
+// raw form maps to a cmake -E no-op), these classify as a benign no-op
+// ONLY when every output channel is absent (see Classify): a chmod/install
+// that captures OUTPUT_VARIABLE / OUTPUT_FILE / RESULT_VARIABLE falls
+// through to the normal classifier so a captured value is never silently
+// dropped. Skipping the no-output form (rather than refusing it) keeps a
+// single inert side-effect call from dropping the entire package into the
+// round-2 fallback — the failure mode reported in issue #376.
+var benignNoOutputDrivers = map[string]bool{
+	"chmod":   true,
+	"install": true,
+	"chown":   true,
+	"chgrp":   true,
 }
 
 // stampDrivers names argv[0] basenames whose presence
@@ -457,6 +481,24 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		return ClassifyResult{
 			Bucket:   BucketCMakeE,
 			Reason:   driver + " (POSIX filesystem side-effect with no Bazel output)",
+			CMakeEOp: driver,
+		}
+	}
+
+	// Raw chmod / install / chown / chgrp with NO captured output: a pure
+	// configure-time filesystem side effect (permissions, staging) that
+	// produces no Bazel artifact and feeds no value into the graph. Skip
+	// it benignly (BucketCMakeE no-op) rather than refusing — refusing
+	// would drop every other target in the package into the round-2
+	// fallback over an inert call (issue #376). STRICT: only when every
+	// output channel is absent. A call that captures OUTPUT_VARIABLE /
+	// OUTPUT_FILE / RESULT_VARIABLE falls through to the normal classifier
+	// below (→ refuse) so no captured value is silently lost.
+	if benignNoOutputDrivers[driver] &&
+		call.OutputVariable == "" && call.OutputFile == "" && call.ResultVariable == "" {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   driver + " (configure-time filesystem side-effect, no captured output)",
 			CMakeEOp: driver,
 		}
 	}

@@ -58,6 +58,40 @@ func TestRecoverExecuteProcess_LiftCMakeETouch(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_BenignFilesystemUtils pins issue #376: a
+// configure-time chmod / install with no output channel is skipped benignly
+// (no genrule, no refusal), so a single inert side-effect call doesn't drop
+// the whole package into the round-2 fallback.
+func TestRecoverExecuteProcess_BenignFilesystemUtils(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"chmod", "+x", "/build/run_tests.sh"}}},
+		{File: "/src/CMakeLists.txt", Line: 4, Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}}},
+		{File: "/src/CMakeLists.txt", Line: 5, Commands: [][]string{{"chown", "root:root", "/build/x"}}},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("benign chmod/install/chown must not refuse; got %v", refusals)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("benign chmod/install/chown must emit no genrule; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses pins the
+// strict invariant: a chmod that captures RESULT_VARIABLE is NOT benign — it
+// refuses (rather than skip) so a captured value is never silently dropped.
+func TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"chmod", "+x", "/build/x"}}, ResultVariable: "RV"},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) == 0 {
+		t.Fatal("chmod capturing RESULT_VARIABLE must refuse (not silently skip)")
+	}
+}
+
 // TestRecoverExecuteProcess_LiftCMakeECopy asserts the 2-arg
 // cmake -E copy lift: src must resolve under the source root
 // (becomes the genrule's srcs), dst must resolve under the

@@ -150,6 +150,44 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "rm",
 		},
 		{
+			// Issue #376: chmod with no output channel is a pure
+			// configure-time side effect → benign no-op (skipped), not a
+			// fatal refusal that drops the whole package.
+			name: "chmod (no output) → benign no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"chmod", "+x", "/build/run_tests.sh"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "chmod",
+		},
+		{
+			name: "install (no output) → benign no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "install",
+		},
+		{
+			name: "chown (no output) → benign no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"chown", "root:root", "/build/x"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "chown",
+		},
+		{
+			// STRICT invariant: a chmod that CAPTURES output is NOT benign —
+			// it falls through to the normal classifier (→ refuse) so a
+			// captured value is never silently dropped.
+			name: "chmod + RESULT_VARIABLE → not benign (falls through to refuse)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"chmod", "+x", "/build/x"}},
+				ResultVariable: "RV",
+			},
+			bucket: BucketRefuse,
+		},
+		{
 			// A genuinely opaque copy-shaped driver (rsync) is NOT
 			// in copyDrivers, so it still refuses — the cp lift is
 			// scoped to drivers whose semantics the lifter can
