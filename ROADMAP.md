@@ -529,6 +529,44 @@ transition cleanly.
   `cmd/cas-fuse` itself; bb_clientd is the production
   CAS-aware mount story now.
 
+- **Wire the cmake render gates into CI.** The `meta-cmake-*.sh`
+  render gates — `meta-cmake-genex-probe.sh`,
+  `meta-file-generate.sh`, `meta-cmake-genex-literal-twopass.sh`,
+  `meta-cmake-fileset-compiled-lib.sh` — run `convert-element-cmake`
+  and assert on the rendered BUILD, and several carry a live
+  `bazel build` half (the load-bearing check that the emitted shape
+  actually compiles). Unlike the `e2e-meta-*` targets they are NOT
+  in the Makefile `.PHONY` aggregate (lines 3-4) or invoked from
+  `.github/workflows/ci.yml`, so they're local-only: their
+  build-halves don't guard regressions in CI (the Go-level unit
+  tests + goldens already guard the *lowering* logic; what's
+  unguarded is the convert→render→bazel-build contract end to end).
+  Add an `e2e-meta-cmake-render-gates` aggregate target (or per-gate
+  `e2e-meta-*` targets) listing them and invoke it from the CI cmake
+  job so the render+build contracts run on every PR. The gates
+  already skip cleanly when cmake / ninja / bazel≥9 aren't present,
+  so they're CI-safe as-is. Surfaced in #366 review.
+
+- **`date` should be a stamp driver (latent non-hermeticity).**
+  `stampDrivers` (`converter/internal/lower/execute_process_classify.go`)
+  is `{git, hg, svn}` — `date` is absent. Consequence:
+  `execute_process(COMMAND date … OUTPUT_FILE x)` classifies as
+  *file-producing* and gets HOISTED to a build-time genrule — running
+  `date` on the executor and baking a non-hermetic timestamp, the exact
+  non-determinism the stamp bucket prevents for VCS tools (whose
+  OUTPUT_FILE form is driver-first stamp, "can't hoist"). The
+  OUTPUT_VARIABLE form refuses (`unsupported-execute-process`). Fix:
+  add `date` to `stampDrivers` — but unlike a VCS revision (which wants
+  a `STABLE_` key: cache-keyed so a revision change re-renders), a build
+  timestamp wants VOLATILE semantics, so it should map to Bazel's native
+  `BUILD_TIMESTAMP` / a volatile-status key rather than a `STABLE_` one
+  (a per-second timestamp must not bust the cache every build). That
+  means `stampStatusKey` becomes driver-aware (stable for VCS, volatile
+  for `date`). Candidate companions to weigh: `whoami` / `id` / `hostid`
+  (build-identity, also non-hermetic). Surfaced while verifying the #371
+  vcs-stamp lift; classification of `hg`/`svn`/other git subcommands was
+  confirmed (command-agnostic, driver-keyed) and given test coverage.
+
 ## Next
 
 - **A-B-C fidelity harness — productionized (CI-wired, soft launch).**

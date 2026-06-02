@@ -635,6 +635,43 @@ func TestRecoverExecuteProcess_StampRecordsStampVar(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_StampNonGitDrivers confirms the stamp lift is
+// driver-keyed and command-agnostic: hg / svn (the other stampDrivers) and
+// a non-rev-parse git subcommand all record their OUTPUT_VARIABLE -> status
+// key in cc.StampVars, identically to `git rev-parse`. (Verifies the #371
+// lift covers all stampDrivers, not just the tested git rev-parse path.)
+func TestRecoverExecuteProcess_StampNonGitDrivers(t *testing.T) {
+	cases := []struct {
+		name    string
+		command []string
+		outVar  string
+		wantKey string
+	}{
+		{"hg id", []string{"hg", "id", "-i"}, "HG_ID", "STABLE_HG_ID"},
+		{"svn info", []string{"svn", "info", "--show-item", "revision"}, "SVN_REV", "STABLE_SVN_REV"},
+		{"git describe", []string{"git", "describe", "--tags"}, "GIT_VERSION", "STABLE_GIT_VERSION"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := []shadow.ExecuteProcessCall{{
+				File:           "/src/CMakeLists.txt",
+				Line:           5,
+				Commands:       [][]string{tc.command},
+				OutputVariable: tc.outVar,
+			}}
+			cc := newCodegenContext()
+			cmakeVars := map[string]string{tc.outVar: "captured-value"}
+			_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+			if len(refusals) != 0 {
+				t.Fatalf("captured stamp should skip; got refusals: %v", refusals)
+			}
+			if cc.StampVars[tc.outVar] != tc.wantKey {
+				t.Errorf("StampVars[%s] = %q, want %q", tc.outVar, cc.StampVars[tc.outVar], tc.wantKey)
+			}
+		})
+	}
+}
+
 // TestRecoverExecuteProcess_RescueCapabilityProbe covers an `ar` /
 // `ranlib` "does this tool support flag X" check: a RESULT_VARIABLE-only
 // probe whose exit status's effect lands in the recovered compile flags,

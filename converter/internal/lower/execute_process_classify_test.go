@@ -253,7 +253,39 @@ func TestClassify_Buckets(t *testing.T) {
 			bucket: BucketStamp,
 		},
 		{
-			name: "uname + OUTPUT_FILE → probe (strong probe driver, driver-first)",
+			// hg (Mercurial) is a stampDriver alongside git —
+			// `hg id -i` captured to a variable is a VCS revision
+			// stamp, classified driver-first exactly like git.
+			name: "hg id + OUTPUT_VARIABLE → stamp",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"hg", "id", "-i"}},
+				OutputVariable: "HG_ID",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			// svn is a stampDriver — `svn info` / `svnversion`
+			// output is a VCS revision stamp.
+			name: "svn info + OUTPUT_VARIABLE → stamp",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"svn", "info", "--show-item", "revision"}},
+				OutputVariable: "SVN_REV",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			// Subcommand-agnostic: classification keys on the
+			// driver, not the git subcommand. `git log -1 --format`
+			// is a stamp just like rev-parse / describe.
+			name: "git log + OUTPUT_VARIABLE → stamp (subcommand-agnostic)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"git", "log", "-1", "--format=%H"}},
+				OutputVariable: "GIT_COMMIT",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			name: "uname -m + OUTPUT_FILE → probe (strong probe driver, driver-first)",
 			call: shadow.ExecuteProcessCall{
 				Commands:   [][]string{{"uname", "-m"}},
 				OutputFile: "arch.txt",
