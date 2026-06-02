@@ -10,12 +10,13 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
-// threadFileGlobs folds a genrule's srcs into build-time glob() filegroups
+// threadFileGlobs records a build-time glob() GlobSrcGroup for a genrule
 // when (and only when) the genrule depends on the *whole* result set of a
 // cmake file(GLOB). It must: distinguish GLOB (flat "*.x") from
 // GLOB_RECURSE ("**/*.x"); leave a genrule that only partially overlaps a
-// glob untouched (the subset guard); skip RELATIVE globs; and remove the
-// folded files from srcs while keeping unrelated explicit srcs.
+// glob untouched (the subset guard); skip RELATIVE globs; and keep all
+// explicit srcs intact (split drops the covered files when it synthesizes
+// the filegroup; the monolithic emitter keeps them).
 func TestThreadFileGlobs(t *testing.T) {
 	root := t.TempDir()
 	write := func(rel string) {

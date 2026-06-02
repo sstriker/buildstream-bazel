@@ -132,6 +132,41 @@ func TestRecordCodegenIncludeClosure_NonTdSkipped(t *testing.T) {
 	}
 }
 
+// An -I root that is an ANCESTOR of the primary's directory (not its
+// immediate dir) still triggers closure recording: "-I gen" with primary
+// "gen/sub/main.td" must pull in the resolvable include "leaf.td" -> the
+// shape primaryCodegenInput's at-or-under match handles.
+func TestRecordCodegenIncludeClosure_AncestorRoot(t *testing.T) {
+	root := t.TempDir()
+	w := func(rel, body string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w("gen/sub/main.td", "include \"leaf.td\"\n")
+	w("gen/leaf.td", "// leaf\n")
+	targets := []ir.Target{{
+		Name:       "gen_x",
+		Kind:       ir.KindGenrule,
+		Srcs:       []string{"gen/sub/main.td"},
+		GenruleCmd: "tblgen -I gen gen/sub/main.td -o $(RULEDIR)/out.inc",
+	}}
+	recordCodegenIncludeClosure(targets, root)
+	found := false
+	for _, s := range targets[0].Srcs {
+		if s == "gen/leaf.td" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ancestor -I root: closure must include gen/leaf.td, got %v", targets[0].Srcs)
+	}
+}
+
 // resolveTdInclude must reject includes that escape labelRoot (path
 // traversal) — no host-file read outside the workspace, no "..".-bearing
 // label — while still resolving normal in-tree includes.

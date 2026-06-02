@@ -675,24 +675,28 @@ func genruleIncludeRoots(cmd string) []string {
 	return roots
 }
 
-// primaryCodegenInput returns the first src whose directory is one of the
+// primaryCodegenInput returns the first src that sits at or under one of the
 // genrule's own `-I` roots, plus that src's extension. That coincidence —
 // the input lives under an include root the same tool searches — is the
 // signal that the genrule resolves includes (tablegen-shaped) rather than
-// merely passing `-I` to a compiler. srcs are still relative (umbrella-
-// anchored) at this lower-time stage; cross-package labels come later.
+// merely passing `-I` to a compiler. The root may be the src's immediate
+// directory or an ancestor of it (e.g. `-I llvm/lib/Target` with a primary
+// in `llvm/lib/Target/RISCV/`). srcs are still relative (umbrella-anchored)
+// at this lower-time stage; cross-package labels come later.
 func primaryCodegenInput(srcs, roots []string) (string, string) {
-	rootSet := make(map[string]bool, len(roots))
+	clean := make([]string, 0, len(roots))
 	for _, r := range roots {
-		rootSet[r] = true
+		clean = append(clean, strings.TrimRight(filepath.ToSlash(r), "/"))
 	}
 	for _, s := range srcs {
 		if strings.HasPrefix(s, "//") || strings.HasPrefix(s, "@") || strings.HasPrefix(s, "$") {
 			continue // external / label / make-var srcs aren't FS inputs
 		}
 		dir := strings.TrimRight(filepath.ToSlash(filepath.Dir(s)), "/")
-		if rootSet[dir] {
-			return s, filepath.Ext(s)
+		for _, r := range clean {
+			if r == "." || dir == r || (r != "" && strings.HasPrefix(dir, r+"/")) {
+				return s, filepath.Ext(s)
+			}
 		}
 	}
 	return "", ""
