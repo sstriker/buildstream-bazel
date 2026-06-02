@@ -1977,8 +1977,13 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// records the standard but the fragment didn't pick it
 		// up — covers projects using target_compile_features
 		// without an explicit -std fragment. Idempotent guard:
-		// skip when copts already names a -std=… flag.
-		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		// skip when copts already names a -std=… flag. Also skip
+		// when this CG folds C and C++ sources together (issue
+		// #315): a single language's -std would leak onto the
+		// other's sources, which gcc/clang reject.
+		if !compileGroupMixesCAndCXX(cg, t.Sources) {
+			copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		}
 		// Apple framework search paths: CompileGroup.Frameworks
 		// records -F directives cmake emits for `#include
 		// <Foo/Bar.h>` framework header lookup. Empty on
@@ -3224,8 +3229,11 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// Pick up per-CG LanguageStandard so sub-libraries
 		// inherit the cmake-recorded -std=c++17 / -std=c11
 		// (idempotent if the CG's CompileCommandFragments
-		// already inlined a -std flag).
-		copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		// already inlined a -std flag; skipped for a C+C++ mixed
+		// CG so the flag doesn't leak across languages — #315).
+		if !compileGroupMixesCAndCXX(cg, t.Sources) {
+			copts = prependLanguageStandardCopt(cg.Language, cg.LanguageStandard, copts)
+		}
 		// Sub-library defines: same bake-first / reanchor-fallback
 		// dispatch as the main target loop. Bake mutates a local
 		// subHdrs / subTags pair (not sub yet — sub is built
@@ -4351,6 +4359,43 @@ func stdFlagFor(lang, version string) string {
 		return "-std=c" + version
 	case "OBJCXX":
 		return "-std=c++" + version
+	}
+	return ""
+}
+
+// compileGroupMixesCAndCXX reports whether a single CompileGroup's compiled
+// sources include BOTH a C source and a C++ source (by file extension) —
+// the case cmake sometimes produces by folding a mixed-language target into
+// one CompileGroup with a single Language. Prepending that group's
+// language-standard `-std=` flag then leaks it onto the other language's
+// sources (gcc rejects `-std=c11` on a .cpp and `-std=c++17` on a .c), so
+// prependLanguageStandardCopt is skipped when this is true. (Issue #315.)
+// Headers and non-C/C++ extensions are language-neutral and don't count.
+func compileGroupMixesCAndCXX(cg fileapi.CompileGroup, srcs []fileapi.TargetSource) bool {
+	hasC, hasCXX := false, false
+	for _, idx := range cg.SourceIndexes {
+		if idx < 0 || idx >= len(srcs) {
+			continue
+		}
+		switch sourceCLanguage(srcs[idx].Path) {
+		case "C":
+			hasC = true
+		case "CXX":
+			hasCXX = true
+		}
+	}
+	return hasC && hasCXX
+}
+
+// sourceCLanguage classifies a source path as "C", "CXX", or "" (neutral —
+// headers and non-C/C++ languages) by extension, for the mixed-language
+// `-std` guard.
+func sourceCLanguage(path string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".c":
+		return "C"
+	case ".cc", ".cpp", ".cxx", ".c++", ".cp", ".cppm", ".ixx":
+		return "CXX"
 	}
 	return ""
 }
