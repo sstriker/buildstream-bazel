@@ -446,7 +446,11 @@ func run(a cli.Args) error {
 	// two-pass can run it twice: pass 1 with a collecting sink (no
 	// resolutions), pass 2 with the warm-reconfigure resolutions in
 	// hand. Every other field is identical between passes.
-	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution) (*ir.Package, error) {
+	// stampSink gathers the recovered VCS-stamp variables from pass 1 so
+	// the orchestration can decide whether a non-expanded-trace second
+	// pass (to recover set()-copy stamp indirection) is worth running.
+	stampSink := map[string]string{}
+	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment) (*ir.Package, error) {
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
 			HostPrefixDir:                     prefixAbs,
@@ -470,6 +474,8 @@ func run(a cli.Args) error {
 			Warnings:                          os.Stderr,
 			LiteralProbeSink:                  sink,
 			LiteralResolutions:                resolutions,
+			SetAssignments:                    setAssignments,
+			StampVarSink:                      stampSink,
 		})
 	}
 
@@ -477,10 +483,14 @@ func run(a cli.Args) error {
 	// the Go-side evaluator + structural probe can't resolve land in
 	// the sink instead of being dropped.
 	literalSink := &lower.LiteralProbeSink{}
-	pkg, err := runToIR(literalSink, nil)
+	pkg, err := runToIR(literalSink, nil, nil)
 	if err != nil {
 		return err
 	}
+	// genexResolutions carries the genex two-pass result forward to the
+	// stamp set()-indirection pass below, so a project that needs BOTH
+	// re-lifts keeps the genex resolutions in the final result.
+	var genexResolutions map[string]cmakerun.LiteralResolution
 
 	// Pass 2 (conditional, warm): if the first pass left unresolved
 	// literals AND we have a live build dir to reconfigure, run a
@@ -518,11 +528,58 @@ func run(a cli.Args) error {
 		} else if resolutions, readErr := cmakerun.ReadLiteralProbe(hostBuildDir); readErr != nil {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); keeping pass-1 result.\n", readErr)
 		} else if len(resolutions) > 0 {
-			pkg2, err2 := runToIR(nil, resolutions)
+			genexResolutions = resolutions
+			pkg2, err2 := runToIR(nil, resolutions, nil)
 			if err2 != nil {
 				return err2
 			}
 			pkg = pkg2
+		}
+	}
+
+	// Stamp set()-indirection second pass (conditional, warm): if pass 1
+	// found VCS-stamp variables and we have a live build dir, run a second
+	// cmake configure capturing the NON-EXPANDED trace, recover its
+	// `set(X ${Y})` verbatim copies, and re-lift. That lets a
+	// configure_file referencing a COPY of a stamp var — `set(VERSION
+	// ${GIT_SHA})` then `@VERSION@`, the Google-Benchmark shape — re-read
+	// the live revision instead of baking it; the direct-reference case
+	// already lifts in pass 1 without this. Skipped with no stamp vars
+	// (the common case → zero overhead), when opted out, or offline (no
+	// live build dir). A failed pass is non-fatal: keep the pass-1 result
+	// (direct stamp vars only).
+	if a.TwoPassGenex && hostBuildDir != "" && len(stampSink) > 0 {
+		plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: %d VCS-stamp var(s) after pass 1; running warm second configure (non-expanded trace) to recover set()-copy indirection.\n", len(stampSink))
+		if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
+			SourceRoot:         a.SourceRoot,
+			BuildDir:           hostBuildDir,
+			PrefixDir:          a.PrefixDir,
+			ToolchainCMakeFile: a.ToolchainCMakeFile,
+			BuildType:          a.BuildType,
+			BuildTypes:         a.BuildTypes,
+			// We add NO new hooks or cache vars here — only the
+			// non-expanded trace. (The dump-vars / probe hooks staged in
+			// pass 1 may still re-run via the cached
+			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES, but their build-dir output
+			// paths are filtered out of ExtractSetAssignments by the
+			// sourceRoot gate, so they don't perturb the recovered copies.)
+			// Reusing hostBuildDir keeps try_compile / find_package cached,
+			// so this costs a fraction of the first configure.
+			TracePath:        plainTrace,
+			TraceNonExpanded: true,
+			Stdout:           os.Stderr,
+			Stderr:           os.Stderr,
+		}); cfgErr != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure (stamp set-trace) failed (%v); keeping pass-1 result with direct stamp vars only.\n", cfgErr)
+		} else if raw, readErr := os.ReadFile(plainTrace); readErr != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading non-expanded trace failed (%v); keeping pass-1 result.\n", readErr)
+		} else if sets := shadow.ExtractSetAssignments(raw, a.SourceRoot); len(sets) > 0 {
+			pkg3, err3 := runToIR(nil, genexResolutions, sets)
+			if err3 != nil {
+				return err3
+			}
+			pkg = pkg3
 		}
 	}
 	// Always materialize the rejections report when its path is
