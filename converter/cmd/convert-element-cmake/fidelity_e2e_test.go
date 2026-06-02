@@ -164,7 +164,9 @@ func runSymbolFidelityCase(t *testing.T, c fidelityCase) {
 	}
 	mustWriteString(t, filepath.Join(ws, "MODULE.bazel"), module)
 
-	cmd := exec.CommandContext(context.Background(), bazel, "build", "//:"+c.LibName)
+	buildArgs := append([]string{"build"}, bazelRepoCacheArgs()...)
+	buildArgs = append(buildArgs, "//:"+c.LibName)
+	cmd := exec.CommandContext(context.Background(), bazel, buildArgs...)
 	cmd.Dir = ws
 	cmd.Stdout = testLog{t}
 	cmd.Stderr = testLog{t}
@@ -172,9 +174,9 @@ func runSymbolFidelityCase(t *testing.T, c fidelityCase) {
 		t.Fatalf("%s: bazel build //:%s: %v", c.Name, c.LibName, err)
 	}
 
-	queryCmd := exec.CommandContext(context.Background(), bazel,
-		"cquery", "--output=files", "//:"+c.LibName,
-	)
+	queryArgs := append([]string{"cquery", "--output=files"}, bazelRepoCacheArgs()...)
+	queryArgs = append(queryArgs, "//:"+c.LibName)
+	queryCmd := exec.CommandContext(context.Background(), bazel, queryArgs...)
 	queryCmd.Dir = ws
 	out, err := queryCmd.Output()
 	if err != nil {
@@ -331,6 +333,24 @@ type testLog struct{ t *testing.T }
 func (l testLog) Write(p []byte) (int, error) {
 	l.t.Logf("%s", strings.TrimRight(string(p), "\n"))
 	return len(p), nil
+}
+
+// bazelRepoCacheArgs returns the flags that point bazel at a persistent,
+// content-addressed repository cache when BSB_BAZEL_REPO_CACHE is set (CI wires
+// it to a path restored via actions/cache). The repository cache means a BCR
+// archive (rules_cc, rules_pkg, …) is downloaded once and reused thereafter, so
+// the gate stops flaking on the transient GitHub-releases 502s that otherwise
+// fail the fetch. The retries flag rides out a burst during the first cold
+// populate. Empty when the env var is unset, so local runs are unchanged.
+func bazelRepoCacheArgs() []string {
+	cache := os.Getenv("BSB_BAZEL_REPO_CACHE")
+	if cache == "" {
+		return nil
+	}
+	return []string{
+		"--repository_cache=" + cache,
+		"--experimental_repository_downloader_retries=10",
+	}
 }
 
 // lookupBazel returns the bazelisk / bazel binary, or skips.

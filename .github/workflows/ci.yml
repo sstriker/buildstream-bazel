@@ -162,6 +162,25 @@ jobs:
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
+      # Persist bazel's repository cache for the go-test fidelity harness
+      # (e2e-fidelity / e2e-fidelity-fmt), which drives `bazel build` +
+      # `bazel cquery` directly. Same rationale as the `fidelity` job's cache:
+      # after the first cold populate the BCR archives (rules_cc / rules_pkg)
+      # are reused with no re-download, so the blocking hello-world fidelity
+      # gate stops flaking on the transient GitHub-releases 502s that fail the
+      # fetch. fidelity_e2e_test.go reads BSB_BAZEL_REPO_CACHE and threads
+      # --repository_cache into its bazel invocations.
+      - name: Set bazel repo-cache path for fidelity go-test
+        run: echo "BSB_BAZEL_REPO_CACHE=$HOME/.cache/bazel-e2e-repo" >> "$GITHUB_ENV"
+
+      - name: Cache bazel repository cache (bazel-e2e)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-e2e-repo
+          key: bazel-e2e-repo-${{ hashFiles('converter/cmd/convert-element-cmake/fidelity_e2e_test.go', 'go.mod') }}
+          restore-keys: |
+            bazel-e2e-repo-
+
       - name: meta-project acceptance gate (hello-world round-trip + narrowing)
         # The Phase-1 acceptance gate: render project A + B for the
         # hello-world fixture, bazel-build A, stage into B, link + run

@@ -148,6 +148,16 @@ work_dir="$(mktemp -d)"
 trap "rm -rf '$work_dir'" EXIT
 cmake_build="$work_dir/cmake-build"
 bazel_ws="$work_dir/bazel-ws"
+# Staging prefix for the consumer-mode `cmake --install`. Defined up front
+# (not just where consumer mode uses it) because it has to be baked into the
+# cmake configure below via -DCMAKE_INSTALL_PREFIX: projects like zlib compute
+# their install destinations as ABSOLUTE paths at configure time (e.g.
+# INSTALL_LIB_DIR = ${CMAKE_INSTALL_PREFIX}/lib defaulting to /usr/local/lib),
+# and a later `cmake --install --prefix` can only redirect *relative*
+# destinations — it cannot override a destination already baked absolute. So
+# point the prefix at the scratch tree at configure time; the CI runner can't
+# write /usr/local. Harmless for library-only fixtures that never install.
+install_stage="$work_dir/cmake-install"
 mkdir -p "$cmake_build"
 
 # --- Step 1: cmake configure + build (project C, the oracle).
@@ -164,7 +174,9 @@ done
 # recovery, PRIVATE/PUBLIC visibility on
 # target_include_directories, etc.). The converter auto-
 # detects trace.jsonl at <build>/trace.jsonl when present.
-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -B "$cmake_build" -S "$source_root" \
+cmake -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$install_stage" \
+    -B "$cmake_build" -S "$source_root" \
     --trace-expand --trace-format=json-v1 \
     --trace-redirect="$cmake_build/trace.jsonl" \
     $cmake_flags > "$work_dir/cmake-configure.log" 2>&1
@@ -192,7 +204,10 @@ fi
 # package consuming the project via find_package() would see.
 consumer_cmake_o=""
 if [ -n "$consumer_file" ]; then
-    install_stage="$work_dir/cmake-install"
+    # install_stage is defined up front (and baked into the cmake configure via
+    # -DCMAKE_INSTALL_PREFIX) so absolute install destinations land in the
+    # scratch tree, not /usr/local. The --prefix below stays as belt-and-
+    # suspenders for fixtures whose install destinations are relative.
     # cmake's install target may depend on artifacts the single
     # --target build didn't produce (e.g. zlib's install lists
     # both the static and shared libs, but we only built static).
@@ -312,12 +327,16 @@ fi
 #      to ride out a transient burst during that first cold populate.
 fidelity_repo_cache="${FIDELITY_BAZEL_REPO_CACHE:-$HOME/.cache/bazel-fidelity-repo}"
 mkdir -p "$fidelity_repo_cache"
-bazel_build_flags="--repository_cache=$fidelity_repo_cache --experimental_repository_downloader_retries=10"
+# The repo-cache flag carries a path (which may contain spaces), so it's passed
+# as its own quoted argument at each build invocation below — NOT folded into
+# the word-split $bazel_build_flags bag. $bazel_build_flags holds only
+# space-free flags that are intentionally word-split.
+bazel_build_flags="--experimental_repository_downloader_retries=10"
 bazel_artifact=""
 if [ "$no_library" = false ]; then
     echo "fidelity[$project_name]: bazel build $bazel_target_label" >&2
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build $bazel_build_flags "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build "--repository_cache=$fidelity_repo_cache" $bazel_build_flags "$bazel_target_label") > "$work_dir/bazel.log" 2>&1 || {
         echo "fidelity[$project_name]: bazel build FAILED — see $work_dir/bazel.log" >&2
         tail -20 "$work_dir/bazel.log" >&2
         exit 1
@@ -363,7 +382,7 @@ EOF
     # unpaired weak symbols on template-heavy consumers (spdlog), not a
     # converter delta. Both sides at -O2 makes the symbol sets comparable.
     # shellcheck disable=SC2086
-    (cd "$bazel_ws" && bazel $bazel_jvm_args build $bazel_build_flags --copt=-O2 :_fidelity_consumer) \
+    (cd "$bazel_ws" && bazel $bazel_jvm_args build "--repository_cache=$fidelity_repo_cache" $bazel_build_flags --copt=-O2 :_fidelity_consumer) \
         > "$work_dir/bazel-consumer.log" 2>&1 || {
             echo "fidelity[$project_name]: consumer bazel-side build FAILED — see $work_dir/bazel-consumer.log" >&2
             tail -20 "$work_dir/bazel-consumer.log" >&2
