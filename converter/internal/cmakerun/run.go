@@ -148,6 +148,14 @@ type Options struct {
 	// --trace-format=json-v1 --trace-redirect=<TracePath>`.
 	TracePath string
 
+	// TraceNonExpanded swaps the trace to `--trace` (variable
+	// references kept verbatim) instead of `--trace-expand`
+	// (references substituted to values). The set()-copy extractor
+	// for the VCS-stamp indirection second pass needs the verbatim
+	// form to see `set(VERSION ${GIT_SHA})`; every other extractor
+	// needs the expanded form, so this is opt-in per Configure call.
+	TraceNonExpanded bool
+
 	// DumpVars enables the post-configure variable-namespace
 	// capture. When true, Configure stages dump-vars.cmake into
 	// the build dir and passes
@@ -552,8 +560,17 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 		argv = append(argv, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+strings.Join(topLevelIncludes, ";"))
 	}
 	if opts.TracePath != "" {
+		// --trace-expand substitutes ${VAR} to its value before logging
+		// (what every extractor needing resolved paths/argv wants);
+		// --trace keeps the references verbatim, which the set()-copy
+		// extractor needs to see `set(VERSION ${GIT_SHA})` rather than
+		// `set(VERSION <value>)`. TraceNonExpanded selects the latter.
+		traceFlag := "--trace-expand"
+		if opts.TraceNonExpanded {
+			traceFlag = "--trace"
+		}
 		argv = append(argv,
-			"--trace-expand",
+			traceFlag,
 			"--trace-format=json-v1",
 			"--trace-redirect="+opts.TracePath,
 		)

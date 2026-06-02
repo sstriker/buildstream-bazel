@@ -91,6 +91,23 @@ type Options struct {
 	// codemodel-only behavior matches pre-trace lower output.
 	TraceRaw []byte
 
+	// SetAssignments carries verbatim `set(X ${Y})` variable copies
+	// recovered from a NON-EXPANDED trace (shadow.ExtractSetAssignments),
+	// supplied by the driver's warm second-configure pass. ToIR walks
+	// them after recoverExecuteProcess so a variable copied from a
+	// VCS-stamp var inherits its workspace-status key — letting a
+	// configure_file referencing the copy (`set(VERSION ${GIT_SHA})`;
+	// `@VERSION@`) lift to stamp_values. Empty (the single-pass default)
+	// leaves only the direct stamp vars.
+	SetAssignments []shadow.SetAssignment
+
+	// StampVarSink, when non-nil, receives a copy of the recovered
+	// stamp-variable set (var -> workspace-status key) after
+	// recoverExecuteProcess + propagation. The driver reads it after
+	// pass 1 to decide whether a stamp set()-indirection second pass is
+	// worth running (non-empty => the project has VCS-stamp vars).
+	StampVarSink map[string]string
+
 	// UnsupportedExecuteProcessFallback toggles
 	// recoverExecuteProcess's refusal handling. When false
 	// (the default — preserves Phase A behaviour),
@@ -794,6 +811,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		rescueVars = merged
 	}
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
+	// Expand the stamp-var set through verbatim set(X ${Y}) copies the
+	// driver recovered from a non-expanded trace (empty in the single-pass
+	// default), so a configure_file referencing a copy of a VCS-stamp var
+	// lifts to stamp_values. Then surface the (direct + propagated) set to
+	// the optional sink for the driver's second-pass gate.
+	propagateStampVars(cc.StampVars, opts.SetAssignments)
+	if opts.StampVarSink != nil {
+		for k, v := range cc.StampVars {
+			opts.StampVarSink[k] = v
+		}
+	}
 	if len(executeProcessRefusals) > 0 {
 		if opts.Rejections != nil {
 			// Diagnostic mode: record the refusal and fall
