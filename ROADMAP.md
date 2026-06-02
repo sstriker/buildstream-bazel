@@ -688,22 +688,33 @@ transition cleanly.
       classifier rules + the configure_file / cmake-P / imports-manifest /
       --bazel-external harness machinery the zlib…libpng fixtures built up
       should carry most of the way). **LLVM bazel-build lift progressing
-      (manual):** `--split-packages` converts the LLVM monorepo (375
-      per-directory BUILDs) and real libraries now compile + archive under
-      a staged bzlmod workspace — `bazel build` green on
+      (manual):** the converter renders the LLVM monorepo in the **faithful
+      end-state shape — multi-config + split-packages** (376 per-directory
+      BUILDs + a `//config` package with `debug`/`release`
+      `config_setting`s), and real libraries compile + archive under a
+      staged bzlmod workspace **under BOTH configs** — `bazel build
+      --//config:build_type={debug,release}` green on
       `//llvm/lib/Demangle:LLVMDemangle` (leaf, 123 syms),
-      `//llvm/lib/Support:LLVMSupport` (foundational, 170 compile actions,
+      `//llvm/lib/Support:LLVMSupport` (foundational, ~165 compile actions,
       2328 syms), `//llvm/lib/Bitstream/Reader:LLVMBitstreamReader`, and
-      `//llvm/lib/Remarks:LLVMRemarks` (13 actions; notable because it
-      sidesteps the broken `tools/remarks-shlib` package — proof the split
-      isolates per-package breakage). Gaps overcome: (1) umbrella
-      src/hdr/include re-anchoring under the workspace-root promotion; (2)
-      split-packages relocating `write_file`/`cmake_configure_file` outputs
-      into their owning package (not just genrules); (3) `.def`/`.inc`
-      added to the header-discovery extension set (LLVM's x-macro /
-      textual-include idiom — `ItaniumNodes.def`, `regengine.inc`). Split
-      mode is what makes per-leaf builds tractable: one malformed rule is a
-      per-package loading error, not a whole-monorepo block.
+      `//llvm/lib/Remarks:LLVMRemarks` (notable because it sidesteps the
+      broken `tools/remarks-shlib` package — proof the split isolates
+      per-package breakage). The multi-config fold produced real per-config
+      `select()` deltas (`-g` for debug, `-DNDEBUG -O3` for release) and
+      composed with split-packages with **zero new converter code** — the
+      existing fold + the split fixes below just work together. Gaps
+      overcome to get the sources compiling: (1) umbrella src/hdr/include
+      re-anchoring under the workspace-root promotion; (2) split-packages
+      relocating `write_file`/`cmake_configure_file` outputs into their
+      owning package (not just genrules); (3) `.def`/`.inc` added to the
+      header-discovery extension set (LLVM's x-macro / textual-include
+      idiom — `ItaniumNodes.def`, `regengine.inc`). Split mode is what
+      makes per-leaf builds tractable: one malformed rule is a per-package
+      loading error, not a whole-monorepo block. (On harness shape:
+      **survey runs this faithful multi-config + split shape; fidelity
+      deliberately runs single-config + single-BUILD** as a sharper symbol
+      oracle — they're complementary, see
+      `docs/fidelity-deltas.md` "Fidelity vs. survey".)
 
       Next frontier — the **tablegen generated-header tier**
       (`LLVMTargetParser` up): targets that `#include` a tablegen-generated
