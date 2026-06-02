@@ -21,6 +21,7 @@ func TestSanitizeTestName(t *testing.T) {
 		{"-leading-dash", "_leading-dash"},
 		{".dotfirst", "_dotfirst"},
 		{"plain", "plain"},
+		{"", "unnamed_test"},
 	}
 	for _, c := range cases {
 		if got := sanitizeTestName(c.in); got != c.want {
@@ -93,5 +94,25 @@ func TestSanitizeTestNames_ThenDisambiguate(t *testing.T) {
 	}
 	if pkg.Targets[1].Name != "A_B_test" {
 		t.Errorf("collided cc_test should be disambiguated to A_B_test; got %q", pkg.Targets[1].Name)
+	}
+}
+
+// TestSanitizeTestNames_EmptyNames guards the empty-NAME edge: ctest.Parse
+// doesn't reject an add_test() with an empty NAME, and validNameRe rejects
+// "" — so the sanitizer maps it to a placeholder and the duplicate is
+// split by the disambiguate pass, leaving a valid package.
+func TestSanitizeTestNames_EmptyNames(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "", Kind: ir.KindCCTest},
+		{Name: "", Kind: ir.KindCCTest},
+	}}
+	sanitizeTestNames(pkg)
+	disambiguateTestNameCollisions(pkg)
+
+	if err := bazelconstraints.ValidatePackage(pkg); err != nil {
+		t.Errorf("empty-named cc_tests still invalid after sanitize+disambiguate: %v", err)
+	}
+	if pkg.Targets[0].Name != "unnamed_test" || pkg.Targets[1].Name != "unnamed_test_test" {
+		t.Errorf("empty names not handled: %q, %q", pkg.Targets[0].Name, pkg.Targets[1].Name)
 	}
 }

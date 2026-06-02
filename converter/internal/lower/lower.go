@@ -3821,7 +3821,14 @@ func sanitizeTestNames(pkg *ir.Package) {
 // (`[a-zA-Z0-9_][a-zA-Z0-9_.+-]*`): any char outside [A-Za-z0-9_.+-]
 // becomes `_`, and a leading `.`/`+`/`-` (legal only after the first
 // char) is also mapped to `_`. `Suite::Case::Sub` → `Suite__Case__Sub`.
+// The empty string maps to a placeholder — validNameRe also rejects ""
+// and ctest.Parse doesn't guard a malformed add_test() with an empty
+// NAME — so the helper always returns a valid identifier; any resulting
+// collisions are split by disambiguateTestNameCollisions.
 func sanitizeTestName(name string) string {
+	if name == "" {
+		return "unnamed_test"
+	}
 	var b strings.Builder
 	b.Grow(len(name))
 	for i, r := range name {
