@@ -327,13 +327,15 @@ func dropLiftedToolSrcs(srcs, tools []string, artifactToName map[string]string) 
 }
 
 // anchorGenruleOutputsToRuledir rewrites each build-dir-relative output
-// path that appears literally in the cmd to $(RULEDIR)/<out>. cmake's
-// Ninja generator bakes the output path as a build-dir-relative literal
-// (e.g. `-o include/llvm/.../X.inc`); a Bazel genrule must instead write
-// its declared outs under $(RULEDIR) (the package's bin dir). Outputs
-// are rewritten longest-first so a shorter out that is a path-prefix of
-// a longer one doesn't rewrite the longer one's interior, and an out
-// already carrying the $(RULEDIR)/ prefix is skipped (idempotent).
+// path (and each output's multi-component parent dir) that appears
+// literally in the cmd to $(RULEDIR)/<path>. cmake's Ninja generator bakes
+// the output path as a build-dir-relative literal (e.g. `-o
+// include/llvm/.../X.inc`, and a `make_directory include/llvm/...` for its
+// parent); a Bazel genrule must instead write its declared outs — and mkdir
+// their parents — under $(RULEDIR) (the package's bin dir). Tokens are
+// rewritten longest-first so a shorter path that is a prefix of a longer
+// one doesn't rewrite the longer one's interior, and a token already
+// carrying the $(RULEDIR)/ prefix is skipped (idempotent).
 // Sibling paths derived from an out by suffix — e.g. the `<out>.d`
 // depfile tblgen emits — re-anchor for free since the out substring
 // they contain is rewritten in place.
@@ -342,9 +344,33 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 		return cmd
 	}
 	const rp = "$(RULEDIR)/"
-	// Longest outs first so a path that is a prefix of another ("foo" vs
-	// "foo.d") is considered as the longer token before the shorter.
-	sorted := append([]string(nil), outs...)
+	// Anchor the declared outputs AND each output's multi-component parent
+	// directories. A `cmake -E make_directory <outdir>` / `mkdir -p <outdir>`
+	// that creates an output's parent in cmake's build tree must target
+	// $(RULEDIR)/<outdir> too — otherwise the genrule mkdir's a stray dir in
+	// the sandbox cwd while the write to $(RULEDIR)/<outdir>/<file> fails on
+	// the missing parent. Only parents containing a "/" are anchored: a
+	// single-component parent ("gen") maps to the package's $(RULEDIR) root
+	// post-split (no subdir, no mkdir needed) and is too short to substring-
+	// match safely (it would corrupt a sibling like "gen.inc.in").
+	tokenSet := map[string]bool{}
+	for _, o := range outs {
+		if o == "" {
+			continue
+		}
+		tokenSet[o] = true
+		for d := path.Dir(o); strings.Contains(d, "/"); d = path.Dir(d) {
+			tokenSet[d] = true
+		}
+	}
+	sorted := make([]string, 0, len(tokenSet))
+	for tkn := range tokenSet {
+		sorted = append(sorted, tkn)
+	}
+	// Longest first so a path that is a prefix of another ("foo/bar" vs
+	// "foo/bar.d", or "foo/bar" vs "foo/bar/x") is anchored before its
+	// prefix; the rp-guard below then skips the prefix's now-anchored
+	// occurrences.
 	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
 	for _, o := range sorted {
 		if o == "" {

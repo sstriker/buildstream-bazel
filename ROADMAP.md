@@ -824,17 +824,17 @@ transition cleanly.
       generated `.inc` to a target). Per-consumer, so the clean libs don't
       transitively force all of tablegen. Proven green end-to-end: a
       `cc_library` `#include`-ing a generated `.inc`, split-converted,
-      builds under Bazel via the wrapper; buildifier `-mode=diff` stays a
-      no-op.
+      builds under Bazel via the wrapper — fully automatic (no hand-edits):
+      a recovered genrule's `cmake -E make_directory` of an output's subdir
+      now anchors to `$(RULEDIR)/<subdir>` in lockstep with the output write
+      (`anchorGenruleOutputsToRuledir` covers each output's multi-component
+      parent dirs), so the genrule mkdir's the `.inc`'s parent where it
+      writes it. buildifier `-mode=diff` stays a no-op.
       Net: tool builds, genrules run and emit headers, and consumers that
       `#include` those headers now build green. Still open: the
       source-tree-input == build-tree-output genrule aliasing
-      (`Remarks.exports` in-place rewrite), the `pkg_files` install-glob
-      re-anchoring, and `cmake -E make_directory` cmd anchoring under split
-      (a recovered genrule `mkdir`s an element-root-relative dir, e.g.
-      `gen/myproj`, instead of `$(RULEDIR)/myproj`, so a `.inc` written
-      into a freshly-created subdir of the output tree needs the dir
-      re-anchored to `$(RULEDIR)`).
+      (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
+      re-anchoring.
     - Promote each CI `fidelity` gate from `continue-on-error: true`
       to blocking after three consecutive green merges (the wiring +
       soft launch shipped — see the entry head).

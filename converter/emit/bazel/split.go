@@ -705,6 +705,16 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 					// no rewrite.
 					if rel != o {
 						cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+o, "$(RULEDIR)/"+rel)
+						// Shrink the output's parent-dir tokens in lockstep
+						// (lower anchors multi-component parents for a
+						// make_directory/mkdir of the output's dir). Immediate
+						// parent first → longest-first, so a child dir is
+						// rewritten before its prefix.
+						for d := pathDir(o); strings.Contains(d, "/"); d = pathDir(d) {
+							if dRel, ok := relUnder(dir, d); ok && dRel != d {
+								cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+d, "$(RULEDIR)/"+dRel)
+							}
+						}
 					}
 					outs = append(outs, rel)
 				} else {
@@ -882,6 +892,17 @@ func normDir(d string) string {
 // relUnder returns (path-relative-to-dir, true) when p is at or below
 // dir, ("", false) otherwise. dir "" means the root, where every path is
 // already relative.
+// pathDir returns the parent directory of a slash-separated path, or "" when
+// it has no slash. String-based to match this file's path handling (normDir
+// / relUnder) and to avoid path.Dir's "." result for slash-less inputs,
+// which the callers' `strings.Contains(d, "/")` loop guard treats as "stop".
+func pathDir(p string) string {
+	if i := strings.LastIndex(p, "/"); i >= 0 {
+		return p[:i]
+	}
+	return ""
+}
+
 func relUnder(dir, p string) (string, bool) {
 	dir = normDir(dir)
 	p = strings.TrimPrefix(p, "./")
