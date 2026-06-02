@@ -470,6 +470,11 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, anc execAnchor
 		// <src> <dst>` (no `-E <op>` prefix), so the operands
 		// start at argv[1].
 		return liftCp(argv[1:], anc, cc)
+	case "install":
+		// Raw POSIX `install` (issue #376): copy-with-attributes,
+		// or a directory create with -d. argv is `install <flags...>
+		// <src...> <dst>`, operands start at argv[1].
+		return liftInstall(argv[1:], anc, cc)
 	case "touch_raw":
 		// Raw POSIX `touch` — the analog of `cmake -E touch`, reusing
 		// liftCMakeETouch after flag-stripping. argv is `touch
@@ -796,6 +801,262 @@ func liftCp(args []string, anc execAnchors, cc *codegenContext) ([]string, strin
 		return nil, fmt.Sprintf("cp: source %q is a directory but no recursive flag (-R/-r/-a) was given", src), false
 	}
 	return liftCpDir(real, srcRel, realSrcRel, dstRel, anc, cc)
+}
+
+// liftInstall reproduces a POSIX `install` call (issue #376). `install` is a
+// copy-with-attributes — and, with -d, a directory create. Forms:
+//
+//	install -d   [opts] DIR...        directory creation (benign no-op)
+//	install      [opts] SRC DST       copy SRC -> DST (a file)
+//	install      [opts] SRC... DIR    copy each SRC into DIR
+//	install -t DIR [opts] SRC...      copy each SRC into DIR
+//
+// The DESTINATION decides whether the copy is load-bearing: a destination
+// under the build dir lifts to a copy genrule (a real Bazel artifact); a
+// destination outside it — the common `${CMAKE_INSTALL_PREFIX}/bin` staging
+// — is a benign skip, since install-prefix output is not a Bazel-tracked
+// input and a genrule for it would only dangle. A source that can't be
+// anchored under the source root refuses (the input can't be named).
+// Mode/ownership flags (-m/-o/-g, -p, ...) are dropped — permissions don't
+// affect the bytes a Bazel consumer reads. `-s`/`--strip`/`--strip-program`
+// rewrite the bytes (a stripped binary != the source), so they refuse; and
+// any unrecognized flag refuses rather than risk mis-splitting SRC/DEST
+// (safe round-2 fallback).
+func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	var operands []string
+	dirMode := false
+	targetDir := ""
+	hasTargetDir := false
+	forceFile := false // -T / --no-target-directory: DEST is always a file
+
+	strip := false
+
+	// install's option model (GNU coreutils + the common BSD subset).
+	// Short value-taking flags (joined `-m755` or next-arg `-m 755`):
+	//   -m MODE, -o OWNER, -g GROUP, -t DIR, -S SUFFIX.
+	// Short boolean flags: -d (dir), -s (strip), -D/-p/-v/-b/-c/-C/-T/-Z/-P.
+	const valueShort = "mogtS"
+	const boolShort = "dsDpvbcCTZP"
+	// Long value-taking options: --opt VALUE or --opt=VALUE.
+	longValue := map[string]bool{
+		"--mode": true, "--owner": true, "--group": true,
+		"--suffix": true, "--target-directory": true, "--strip-program": true,
+	}
+	// Long boolean options.
+	longBool := map[string]bool{
+		"--directory": true, "--compare": true, "--preserve-timestamps": true,
+		"--strip": true, "--verbose": true,
+		"--backup": true, "--context": true, "--debug": true,
+		"--help": true, "--version": true,
+	}
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--":
+			operands = append(operands, args[i+1:]...)
+			i = len(args)
+		case strings.HasPrefix(a, "--"):
+			name, val := a, ""
+			hasEq := false
+			if eq := strings.IndexByte(a, '='); eq >= 0 {
+				name, val, hasEq = a[:eq], a[eq+1:], true
+			}
+			switch {
+			case name == "--directory":
+				dirMode = true
+				i++
+			case name == "--no-target-directory":
+				forceFile = true
+				i++
+			case name == "--strip":
+				strip = true
+				i++
+			case name == "--strip-program":
+				strip = true
+				if hasEq {
+					i++
+				} else {
+					i += 2 // consume the program-path value
+				}
+			case name == "--target-directory":
+				if hasEq {
+					targetDir, hasTargetDir = val, true
+					i++
+				} else {
+					if i+1 >= len(args) {
+						return nil, "install: --target-directory without a value", false
+					}
+					targetDir, hasTargetDir = args[i+1], true
+					i += 2
+				}
+			case longValue[name]:
+				if hasEq {
+					i++
+				} else {
+					if i+1 >= len(args) {
+						return nil, fmt.Sprintf("install: %s without a value", name), false
+					}
+					i += 2 // flag + its separate value
+				}
+			case longBool[name]:
+				i++
+			default:
+				return nil, fmt.Sprintf("install: unrecognized option %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
+			}
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			// Short cluster. A value-taking flag (mogtS) swallows the rest of
+			// the cluster as its value, or — when it's the last char — the
+			// next argv element. Unknown chars refuse (don't guess whether
+			// they consume a value and shift the operands).
+			body := a[1:]
+			consumedNext := false
+			recognized := true
+			for j := 0; j < len(body); j++ {
+				c := body[j]
+				if c == 'd' {
+					dirMode = true
+					continue
+				}
+				if c == 's' {
+					strip = true
+					continue
+				}
+				if c == 'T' {
+					forceFile = true // DEST is always a file, never a dir
+					continue
+				}
+				if strings.IndexByte(valueShort, c) >= 0 {
+					rest := body[j+1:]
+					if rest != "" {
+						if c == 't' {
+							targetDir, hasTargetDir = rest, true
+						}
+					} else {
+						// Value is the next argv element — required for EVERY
+						// value-taking short flag (-m/-o/-g/-t/-S), not just
+						// -t. Validate it exists so a malformed trailing flag
+						// (`install -m`) refuses with a clear diagnostic
+						// instead of mis-counting operands.
+						if i+1 >= len(args) {
+							return nil, fmt.Sprintf("install: -%c given without a value", c), false
+						}
+						if c == 't' {
+							targetDir, hasTargetDir = args[i+1], true
+						}
+						consumedNext = true
+					}
+					break // value-taking flag swallows the cluster remainder
+				}
+				if strings.IndexByte(boolShort, c) < 0 {
+					recognized = false
+					break
+				}
+			}
+			if !recognized {
+				return nil, fmt.Sprintf("install: unrecognized short option in %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
+			}
+			if consumedNext {
+				i += 2
+			} else {
+				i++
+			}
+		default:
+			operands = append(operands, args[i:]...)
+			i = len(args)
+		}
+	}
+
+	// -s / --strip / --strip-program rewrite the copied bytes (a stripped
+	// binary differs from the source), so the call can't be reproduced as a
+	// plain byte copy. Refuse → round-2 fallback rather than emit a wrong
+	// artifact.
+	if strip {
+		return nil, "install: -s/--strip(-program) modifies the copied bytes; can't reproduce as a plain copy", false
+	}
+
+	// `install -d DIR...`: directory creation. No Bazel artifact (fresh
+	// sandbox per action), so skip benignly — same as mkdir / cmake -E
+	// make_directory.
+	if dirMode {
+		return nil, "", true
+	}
+
+	// -T / --no-target-directory forces DEST to be a file and is mutually
+	// exclusive with -t / --target-directory (which forces a directory).
+	if forceFile && hasTargetDir {
+		return nil, "install: -T/--no-target-directory and -t are mutually exclusive", false
+	}
+
+	var sources []string
+	var dest string
+	destIsDir := false
+	switch {
+	case hasTargetDir:
+		if len(operands) == 0 {
+			return nil, "install: -t given but no source operands", false
+		}
+		sources, dest, destIsDir = operands, targetDir, true
+	case len(operands) >= 2:
+		dest = operands[len(operands)-1]
+		sources = operands[:len(operands)-1]
+		// dest is a directory when: multiple sources, a trailing slash, or
+		// it exists on disk as a directory — the `install foo /build/include`
+		// form where /build/include is an existing dir, in which case install
+		// copies to /build/include/foo (not to a file named include). The
+		// on-disk check resolves the otherwise-ambiguous single-source,
+		// no-trailing-slash case; it fires only for live runs whose recorded
+		// paths exist on this host (reply-dir paths won't, falling back to
+		// the syntactic signals). -T/--no-target-directory overrides ALL of
+		// these: DEST is then always the file path.
+		destIsDir = !forceFile &&
+			(len(sources) > 1 || strings.HasSuffix(dest, "/") || isExistingDir(dest))
+	default:
+		return nil, fmt.Sprintf("install: expected SRC... DEST (got %d operand(s))", len(operands)), false
+	}
+
+	// install needs an absolute destination to resolve. A RELATIVE dest
+	// (e.g. `install foo include/`) can't be anchored —
+	// executeProcessAnchorOutput rejects relative paths the same as
+	// outside-the-tree ones, so treating it as a benign skip would silently
+	// drop a copy that may land under the build tree. Refuse instead.
+	if !filepath.IsAbs(dest) {
+		return nil, fmt.Sprintf("install: destination %q is relative; can't anchor it (refusing rather than risk dropping a build-tree copy)", dest), false
+	}
+
+	// The directory the file(s) land in decides build-tree vs install-prefix.
+	destDir := dest
+	if !destIsDir {
+		destDir = filepath.Dir(dest)
+	}
+	if _, ok := executeProcessAnchorOutput(destDir, anc); !ok {
+		// Not under the build tree. A dest under the SOURCE tree (e.g.
+		// `install foo /src/include/foo.h`) can be a real, load-bearing
+		// compile input — silently skipping it would drop a file Bazel
+		// needs, so refuse. Only a dest outside BOTH trees is the
+		// install-prefix staging form that's a safe benign skip.
+		if _, underSrc := executeProcessAnchorSource(destDir, anc); underSrc {
+			return nil, fmt.Sprintf("install: destination %q is under the source tree (a potential build input); refusing rather than silently dropping it", dest), false
+		}
+		return nil, "", true
+	}
+
+	// Under the build tree: reproduce each copy. emitCopyGenrule anchors the
+	// source (refuses if not under the source root) and the destination
+	// (under build, checked above) and emits one cp genrule per file.
+	var outs []string
+	for _, s := range sources {
+		dstPath := dest
+		if destIsDir {
+			dstPath = filepath.Join(dest, filepath.Base(s))
+		}
+		o, reason, ok := emitCopyGenrule("install", "install", s, dstPath, anc, cc)
+		if !ok {
+			return nil, reason, false
+		}
+		outs = append(outs, o...)
+	}
+	return outs, "", true
 }
 
 // liftCpFile handles `cp <file> <dst>`. When dst names a

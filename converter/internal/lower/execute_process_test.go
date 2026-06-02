@@ -58,6 +58,223 @@ func TestRecoverExecuteProcess_LiftCMakeETouch(t *testing.T) {
 	}
 }
 
+// TestRecoverExecuteProcess_BenignFilesystemUtils pins issue #376: a
+// configure-time chmod / chown / chgrp with no output channel is skipped
+// benignly (no genrule, no refusal), so a single inert metadata side-effect
+// call doesn't drop the whole package into the round-2 fallback. (install is
+// excluded — it copies files — and is covered separately below.)
+func TestRecoverExecuteProcess_BenignFilesystemUtils(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"chmod", "+x", "/build/run_tests.sh"}}},
+		{File: "/src/CMakeLists.txt", Line: 4, Commands: [][]string{{"chown", "root:root", "/build/x"}}},
+		{File: "/src/CMakeLists.txt", Line: 5, Commands: [][]string{{"chgrp", "staff", "/build/x"}}},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("benign chmod/chown/chgrp must not refuse; got %v", refusals)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("benign chmod/chown/chgrp must emit no genrule; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecoverExecuteProcess_Install covers the install copy-lift (issue
+// #376), keyed on the destination:
+//   - install into the build tree → a copy genrule (a real Bazel artifact);
+//   - install into an install-prefix path (outside the build tree) → benign
+//     skip (staging output isn't a Bazel-tracked input);
+//   - install -d → directory create → benign skip.
+func TestRecoverExecuteProcess_Install(t *testing.T) {
+	t.Run("into build tree → copy genrule", func(t *testing.T) {
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m", "644", "/src/gen/cfg.h", "/build/include/"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install into build tree should lift, not refuse; got %v", refusals)
+		}
+		if len(cc.Genrules) != 1 {
+			t.Fatalf("expected 1 copy genrule; got %+v", cc.Genrules)
+		}
+		if g := cc.Genrules[0]; len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "include/cfg.h" {
+			t.Errorf("outs: %v want [include/cfg.h]", g.GenruleOuts)
+		}
+	})
+
+	t.Run("install-prefix dest → benign skip", func(t *testing.T) {
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m", "755", "/build/tool", "/usr/local/bin/"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install to an install-prefix must skip benignly; got %v", refusals)
+		}
+		if len(cc.Genrules) != 0 {
+			t.Errorf("install-prefix staging must emit no genrule; got %+v", cc.Genrules)
+		}
+	})
+
+	t.Run("install -d → benign skip", func(t *testing.T) {
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-d", "-m", "755", "/build/staging/lib"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install -d (dir create) must skip benignly; got %v", refusals)
+		}
+		if len(cc.Genrules) != 0 {
+			t.Errorf("install -d must emit no genrule; got %+v", cc.Genrules)
+		}
+	})
+
+	// -s / --strip / --strip-program rewrite the copied bytes, so install
+	// can't be reproduced as a plain copy → refuse (not a wrong artifact).
+	for _, strip := range [][]string{
+		{"install", "-s", "/src/tool", "/build/bin/tool"},
+		{"install", "--strip", "/src/tool", "/build/bin/tool"},
+		{"install", "--strip-program", "/usr/bin/strip", "/src/tool", "/build/bin/tool"},
+	} {
+		t.Run("strip refuses: "+strings.Join(strip[1:], " "), func(t *testing.T) {
+			cc := newCodegenContext()
+			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+				File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{strip},
+			}}, "/src", "/src", "/build", "/build", false, nil, cc)
+			if len(refusals) == 0 {
+				t.Errorf("install with strip must refuse (bytes differ); got none")
+			}
+			if len(cc.Genrules) != 0 {
+				t.Errorf("install with strip must emit no genrule; got %+v", cc.Genrules)
+			}
+		})
+	}
+
+	t.Run("long value-option (--mode VALUE) not mis-split into operands", func(t *testing.T) {
+		// `--mode 644` carries a SEPARATE value; a naive parser would read
+		// 644 as a source operand and shift SRC/DEST. The dest must remain
+		// /build/include/ and the copy must land at include/cfg.h.
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "--owner", "root", "--mode", "644", "/src/cfg.h", "/build/include/"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install with long value-options should lift; got %v", refusals)
+		}
+		if len(cc.Genrules) != 1 || cc.Genrules[0].GenruleOuts[0] != "include/cfg.h" {
+			t.Errorf("outs: %+v want [include/cfg.h] (long-option values must not shift operands)", cc.Genrules)
+		}
+	})
+
+	t.Run("unrecognized flag refuses (no operand mis-split)", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "--frobnicate", "/src/x", "/build/x"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("install with an unrecognized flag must refuse rather than guess operands")
+		}
+	})
+
+	t.Run("existing-dir dest (no trailing slash) copies into it", func(t *testing.T) {
+		// `install -m644 /src/cfg.h <dir>` where <dir> exists on disk as a
+		// directory → install copies to <dir>/cfg.h, not to a file <dir>.
+		build := t.TempDir()
+		incDir := filepath.Join(build, "include")
+		if err := os.MkdirAll(incDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m", "644", "/src/cfg.h", incDir}},
+		}}, "/src", "/src", build, build, false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("got refusals: %v", refusals)
+		}
+		if len(cc.Genrules) != 1 || cc.Genrules[0].GenruleOuts[0] != "include/cfg.h" {
+			t.Errorf("outs: %+v want [include/cfg.h] (existing dir → copy into it)", cc.Genrules)
+		}
+	})
+
+	t.Run("relative dest refuses", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "/src/foo", "include/"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("relative dest must refuse (can't anchor), not benign-skip")
+		}
+	})
+
+	t.Run("value flag without a value refuses", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("trailing value-taking flag (-m with no value) must refuse")
+		}
+	})
+
+	t.Run("-T forces DEST to a file even when a dir exists", func(t *testing.T) {
+		// `install -T foo <dir>` targets the file <dir>, NOT <dir>/foo, even
+		// though <dir> exists as a directory (which would otherwise trigger
+		// the existing-dir → copy-into-it path).
+		build := t.TempDir()
+		out := filepath.Join(build, "out")
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-T", "/src/foo", out}},
+		}}, "/src", "/src", build, build, false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("got refusals: %v", refusals)
+		}
+		if len(cc.Genrules) != 1 || cc.Genrules[0].GenruleOuts[0] != "out" {
+			t.Errorf("outs: %+v want [out] (-T forces file, not out/foo)", cc.Genrules)
+		}
+	})
+
+	t.Run("dest under source tree refuses (potential build input)", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "/src/gen/foo.h", "/src/include/foo.h"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("install into the source tree must refuse, not benign-skip (could drop a build input)")
+		}
+	})
+}
+
+// TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses pins the
+// strict invariant: a chmod that captures RESULT_VARIABLE is NOT benign — it
+// refuses (rather than skip) so a captured value is never silently dropped.
+func TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"chmod", "+x", "/build/x"}}, ResultVariable: "RV"},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) == 0 {
+		t.Fatal("chmod capturing RESULT_VARIABLE must refuse (not silently skip)")
+	}
+}
+
 // TestRecoverExecuteProcess_LiftCMakeECopy asserts the 2-arg
 // cmake -E copy lift: src must resolve under the source root
 // (becomes the genrule's srcs), dst must resolve under the

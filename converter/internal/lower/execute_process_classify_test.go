@@ -150,6 +150,67 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "rm",
 		},
 		{
+			// Issue #376: chmod with no output channel is a pure
+			// configure-time side effect → benign no-op (skipped), not a
+			// fatal refusal that drops the whole package.
+			name: "chmod (no output) → benign no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"chmod", "+x", "/build/run_tests.sh"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "chmod",
+		},
+		{
+			name: "chown (no output) → benign no-op",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"chown", "root:root", "/build/x"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "chown",
+		},
+		{
+			// install copies files, so it classifies as a copy-like cmake-e
+			// op (liftInstall reproduces or skips it) rather than a benign
+			// metadata no-op. The build-tree-vs-prefix decision is the
+			// lifter's; classification is driver-first.
+			name: "install → cmake-e (copy-with-attributes)",
+			call: shadow.ExecuteProcessCall{
+				Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}},
+			},
+			bucket: BucketCMakeE,
+			op:     "install",
+		},
+		{
+			// STRICT invariant: a chmod that CAPTURES output is NOT benign —
+			// it falls through to the normal classifier (→ refuse) so a
+			// captured value is never silently dropped.
+			name: "chmod + RESULT_VARIABLE → not benign (falls through to refuse)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"chmod", "+x", "/build/x"}},
+				ResultVariable: "RV",
+			},
+			bucket: BucketRefuse,
+		},
+		{
+			// Channel-completeness: ERROR_VARIABLE is an output channel too,
+			// so a chmod capturing it must NOT be skipped benignly.
+			name: "chmod + ERROR_VARIABLE → not benign (all channels gated)",
+			call: shadow.ExecuteProcessCall{
+				Commands:      [][]string{{"chmod", "+x", "/build/x"}},
+				ErrorVariable: "ERR",
+			},
+			bucket: BucketRefuse,
+		},
+		{
+			// RESULTS_VARIABLE (plural) is likewise gated.
+			name: "chmod + RESULTS_VARIABLE → not benign",
+			call: shadow.ExecuteProcessCall{
+				Commands:        [][]string{{"chmod", "+x", "/build/x"}},
+				ResultsVariable: "RVS",
+			},
+			bucket: BucketRefuse,
+		},
+		{
 			// A genuinely opaque copy-shaped driver (rsync) is NOT
 			// in copyDrivers, so it still refuses — the cp lift is
 			// scoped to drivers whose semantics the lifter can

@@ -129,6 +129,12 @@ var noopExecuteProcessOps = map[string]bool{
 	"mkdir":            true,
 	"rm":               true,
 	"rmdir":            true,
+	// Raw filesystem-metadata side effects (issue #376), classified only
+	// in their no-output form by the benignNoOutputDrivers arm in Classify.
+	// (install copies files and is handled by liftInstall, not here.)
+	"chmod": true,
+	"chown": true,
+	"chgrp": true,
 }
 
 // supportedCMakeEOpsList renders the allow-list as a stable,
@@ -198,6 +204,46 @@ var noopDrivers = map[string]bool{
 	"mkdir": true,
 	"rm":    true,
 	"rmdir": true,
+}
+
+// benignNoOutputDrivers names argv[0] basenames that are pure
+// configure-time filesystem METADATA side effects — adjusting permissions
+// or ownership (chmod/chown/chgrp) — with no cmake -E equivalent and no
+// consumable Bazel output. They never create or copy files, so skipping
+// them can't drop a build artifact. Unlike noopDrivers (whose raw form
+// maps to a cmake -E no-op), these classify as a benign no-op ONLY when
+// every output channel is absent (see Classify): a call that captures any
+// writeback variable or stdio redirect falls through to the normal
+// classifier so a captured value is never silently dropped. Skipping the
+// no-output form (rather than refusing it) keeps a single inert side-effect
+// call from dropping the entire package into the round-2 fallback — the
+// failure mode reported in issue #376.
+//
+// `install` is deliberately NOT here: it commonly creates/copies files
+// (`install -m755 src dst`), so it can't be a blanket metadata skip. It has
+// its own classifier arm + liftInstall, which reproduces the copy when the
+// destination is under the build tree and skips only the install-prefix
+// staging form (see liftInstall).
+var benignNoOutputDrivers = map[string]bool{
+	"chmod": true,
+	"chown": true,
+	"chgrp": true,
+}
+
+// executeProcessCapturesOutput reports whether the call captures ANY output
+// channel cmake's execute_process supports: every writeback variable
+// (OUTPUT_VARIABLE / RESULT_VARIABLE / RESULTS_VARIABLE / ERROR_VARIABLE)
+// and every stdout/stderr redirect (OUTPUT_FILE / ERROR_FILE). InputFile is
+// a stdin SOURCE, not an output, so it doesn't count. Used to gate the
+// benign-no-output skip strictly — if any channel is set, a value could be
+// observed downstream and the call must not be silently dropped.
+func executeProcessCapturesOutput(call shadow.ExecuteProcessCall) bool {
+	return call.OutputVariable != "" ||
+		call.ResultVariable != "" ||
+		call.ResultsVariable != "" ||
+		call.ErrorVariable != "" ||
+		call.OutputFile != "" ||
+		call.ErrorFile != ""
 }
 
 // stampDrivers names argv[0] basenames whose presence
@@ -410,6 +456,19 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		}
 	}
 
+	// Raw `install` (issue #376): a copy-with-attributes (and, with -d, a
+	// directory create). Classify as cmake-e; liftInstall reproduces the
+	// copy when the destination is under the build tree, skips benignly
+	// when it's an install-prefix staging path, and treats -d as a no-op.
+	// argv-only here — flag/operand parsing is the lifter's job.
+	if driver == "install" {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "install (POSIX install — copy-with-attributes / -d dir-create)",
+			CMakeEOp: "install",
+		}
+	}
+
 	// Raw `touch` is the POSIX analog of `cmake -E touch` (already
 	// lifted). A configure-time marker-file write recovers to the
 	// same empty-file genrule rather than refusing. argv-only here;
@@ -457,6 +516,29 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		return ClassifyResult{
 			Bucket:   BucketCMakeE,
 			Reason:   driver + " (POSIX filesystem side-effect with no Bazel output)",
+			CMakeEOp: driver,
+		}
+	}
+
+	// Raw chmod / chown / chgrp with NO captured output: a pure
+	// configure-time filesystem metadata side effect (permissions /
+	// ownership) that produces no Bazel artifact and feeds no value into
+	// the graph. Skip it benignly (BucketCMakeE no-op) rather than refusing
+	// — refusing would drop every other target in the package into the
+	// round-2 fallback over an inert call (issue #376). STRICT: only when
+	// EVERY output channel is absent (executeProcessCapturesOutput covers
+	// all writeback variables + stdio redirects). A call that captures a
+	// writeback variable falls through to the normal classifier below
+	// (→ refuse); one with OUTPUT_FILE falls through to the file-producing
+	// arm (hoistable). An ERROR_FILE-only call has no OUTPUT_FILE to anchor,
+	// so it falls through to refusal. Either way the captured channel is
+	// handled by the normal path, never silently dropped by this benign
+	// skip. (`install` copies files and is handled by liftInstall, not
+	// here; see benignNoOutputDrivers' doc.)
+	if benignNoOutputDrivers[driver] && !executeProcessCapturesOutput(call) {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   driver + " (configure-time filesystem side-effect, no captured output)",
 			CMakeEOp: driver,
 		}
 	}
