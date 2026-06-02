@@ -54,14 +54,20 @@ transition cleanly.
   exclusive with `--out-ir-json` (the multi-platform fold path);
   install-derived / synthesized targets (filegroups, `cc_import`,
   `cmake_config_bundle`, aliases, interface libs) stay in the root
-  package. Synthesized **genrules** are the exception: a genrule
-  whose recovered output lands in a sub-package is placed in that
-  package (with `outs` re-relativized package-local), because Bazel
-  requires a genrule's `outs` to live in the genrule's own package —
-  a root genrule declaring `outs = ["sub/x.cpp"]` collides with the
-  `sub/` package. This is what lets a generated compiled source
-  (e.g. eigen's `configure_file`-produced `compile_<snippet>.cpp`)
-  feed a cc_binary that moved to its own sub-package. Wired
+  package. Synthesized **output-producing rules** are the exception:
+  a genrule, `write_file` bake, or `cmake_configure_file` lift whose
+  recovered output lands in a sub-package is placed in that package
+  (with the output path re-relativized package-local), because Bazel
+  requires a rule's output to live in the rule's own package — a root
+  rule declaring `outs = ["sub/x.cpp"]` (or `out =
+  "include/llvm/Config/config.h"`) both collides with the deeper
+  package's boundary and is unreachable from a consumer there that
+  lists the file as a generated `hdr`. This is what lets a generated
+  compiled source (e.g. eigen's `configure_file`-produced
+  `compile_<snippet>.cpp`) feed a cc_binary that moved to its own
+  sub-package, and a `write_file`-baked `llvm/Config/config.h` satisfy
+  the `//include` header library LLVM's per-directory libraries depend
+  on. Wired
   end-to-end through the
   orchestrator: `cmd/write-a --split-packages` converts the
   element with the `cmake_split_convert` custom rule
@@ -681,7 +687,23 @@ transition cleanly.
       tooling and may need larger allowlists (the std::/libm-builtin
       classifier rules + the configure_file / cmake-P / imports-manifest /
       --bazel-external harness machinery the zlib…libpng fixtures built up
-      should carry most of the way).
+      should carry most of the way). **LLVM bazel-build lift progressing
+      (manual):** `--split-packages` converts the LLVM monorepo (375
+      per-directory BUILDs) and real libraries now compile + archive under
+      a staged bzlmod workspace — `//llvm/lib/Demangle:LLVMDemangle` (leaf,
+      123 syms) and `//llvm/lib/Support:LLVMSupport` (foundational, 170
+      compile actions, 2328 syms) both `bazel build` green. Gaps overcome:
+      (1) umbrella src/hdr/include re-anchoring under the workspace-root
+      promotion; (2) split-packages relocating `write_file`/
+      `cmake_configure_file` outputs into their owning package (not just
+      genrules); (3) `.def`/`.inc` added to the header-discovery extension
+      set (LLVM's x-macro / textual-include idiom — `ItaniumNodes.def`,
+      `regengine.inc`). Split mode is what makes per-leaf builds tractable:
+      one malformed rule is a per-package loading error, not a
+      whole-monorepo block. Remaining before a full LLVM gate: the
+      source-tree-input == build-tree-output genrule aliasing
+      (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
+      re-anchoring.
     - Promote each CI `fidelity` gate from `continue-on-error: true`
       to blocking after three consecutive green merges (the wiring +
       soft launch shipped — see the entry head).

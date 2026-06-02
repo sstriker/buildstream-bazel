@@ -64,23 +64,29 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
-		// Synthesized genrules (configure_file / file(GENERATE) /
-		// execute_process / custom-command recovery) carry no
-		// SubPackages entry, so targetDir defaults them to root. But
-		// a genrule's `outs` must live in the genrule's OWN Bazel
-		// package — a root genrule declaring outs =
-		// ["doc/snippets/x.cpp"] collides with the doc/snippets
-		// package ("output file conflicts with another package").
-		// Place the genrule in the package that owns its (first)
-		// output so the out is package-local and a consumer in that
-		// package resolves the bare-name srcs/hdrs reference (e.g.
-		// eigen's compile_<snippet> cc_binaries, whose generated
-		// source is produced by a configure_file genrule). Only the
-		// local regime re-relativizes outs (rewriteTarget below);
-		// the SourceKey regime keeps element-root-relative paths.
-		if local && t.Kind == ir.KindGenrule && len(t.GenruleOuts) > 0 {
-			if od := plan.deepestPkg(t.GenruleOuts[0]); od != "" {
-				dir = od
+		// Synthesized output-producing rules (genrule custom-command
+		// recovery, write_file configure_file/file(GENERATE) bakes,
+		// cmake_configure_file lifts) carry no SubPackages entry, so
+		// targetDir defaults them to root. But a rule's output must
+		// live in the rule's OWN Bazel package — a root rule whose
+		// out is "include/llvm/Config/config.h" both collides with
+		// the //include package's boundary ("output file conflicts
+		// with another package") and is unreachable from a consumer
+		// in //include that lists the file as a generated hdr
+		// ("missing input file '//include:llvm/Config/config.h'").
+		// Place the rule in the package that owns its (first / sole)
+		// output so the out is package-local and a same-package
+		// consumer resolves the bare-name srcs/hdrs reference (e.g.
+		// eigen's compile_<snippet> cc_binaries off a configure_file
+		// genrule; LLVM's per-package header libs off the config.h
+		// write_file bakes). Only the local regime re-relativizes the
+		// out (rewriteTarget below); the SourceKey regime keeps
+		// element-root-relative paths.
+		if local {
+			if out := primaryGeneratedOutput(t); out != "" {
+				if od := plan.deepestPkg(out); od != "" {
+					dir = od
+				}
 			}
 		}
 		ensure(dir)
@@ -136,6 +142,27 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		out[dir] = body
 	}
 	return out, nil
+}
+
+// primaryGeneratedOutput returns the element-root-relative output path
+// EmitSplit uses to decide which package a synthesized output-producing
+// rule belongs in: the first genrule out, the write_file out, or the
+// cmake_configure_file out. Empty for non-producing kinds (real
+// cc_library / cc_binary targets, whose package comes from SubPackages).
+func primaryGeneratedOutput(t ir.Target) string {
+	switch t.Kind {
+	case ir.KindGenrule:
+		if len(t.GenruleOuts) > 0 {
+			return t.GenruleOuts[0]
+		}
+	case ir.KindWriteFile:
+		return t.WriteFileOut
+	case ir.KindCMakeConfigureFile:
+		if t.CMakeConfigureFile != nil {
+			return t.CMakeConfigureFile.Out
+		}
+	}
+	return ""
 }
 
 // splitPlan is the precomputed split layout: per-target declaring dir,
@@ -436,6 +463,28 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			}
 		}
 		rt.GenruleOuts = outs
+	}
+
+	// write_file (configure_file / file(GENERATE) bake tier) and
+	// cmake_configure_file (lift tier) carry a single element-root-
+	// relative output path; once the rule is placed in its output's
+	// package (EmitSplit's partition loop above), re-relativize the out
+	// to that package dir so Bazel sees a package-local generated file
+	// (out = "llvm/Config/config.h", not "include/llvm/Config/config.h").
+	// CMakeConfigureFile is a pointer into the shared IR target, so copy
+	// the spec before mutating to avoid corrupting the source package.
+	if local && t.Kind == ir.KindWriteFile && t.WriteFileOut != "" {
+		if rel, ok := relUnder(dir, t.WriteFileOut); ok {
+			rt.WriteFileOut = rel
+		}
+	}
+	if local && t.Kind == ir.KindCMakeConfigureFile &&
+		t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
+		if rel, ok := relUnder(dir, t.CMakeConfigureFile.Out); ok {
+			specCopy := *t.CMakeConfigureFile
+			specCopy.Out = rel
+			rt.CMakeConfigureFile = &specCopy
+		}
 	}
 
 	// Rewrite intra-element deps (":x") to cross-package labels.

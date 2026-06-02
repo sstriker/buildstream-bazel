@@ -343,12 +343,27 @@ const ManifestPrefixAnchor = "/opt/prefix/"
 
 // Header file extensions we treat as `hdrs` candidates when walking include
 // directories. Lowercase comparison.
+//
+// `.def` and `.inc` cover the x-macro / textual-include idioms (a file of
+// `HANDLE_FOO(...)` macro calls #included multiple times with different macro
+// definitions, or a checked-in code fragment pulled in via quote-include)
+// that LLVM and many C/C++ projects use pervasively — e.g. Demangle's
+// `#include "ItaniumNodes.def"` and Support's regex engine
+// `#include "regengine.inc"`. These are never compiled directly (so they
+// belong in hdrs, not srcs) but must be staged as inputs or the quote-include
+// misses in Bazel's sandbox. discoverHeaders only walks source-tree include
+// roots, so the *generated* `.def`/`.inc` files (tablegen / write_file output
+// into the build dir, e.g. Config/config.def or IR/Attributes.inc) aren't
+// double-claimed here — their producing genrule/write_file owns them, and
+// checked-in vs generated paths are disjoint in practice.
 var headerExts = map[string]bool{
 	".h":   true,
 	".hh":  true,
 	".hpp": true,
 	".hxx": true,
 	".inl": true,
+	".def": true,
+	".inc": true,
 }
 
 // ToIR lowers a parsed reply into a Package. The optional ninja graph
@@ -1318,6 +1333,25 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// invariant across the per-target loop, tt is this target's trace.
 	cmakeSrc, cmakeBuild, hostSrc, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc, lc.hostPrefix
 	hostSrcOnDisk := lc.hostSrcOnDisk
+	// umbrellaPrefix is the cmakeSrc-relative-to-labelRoot segment when the
+	// workspace-root umbrella promoted labelRoot above cmakeSrc (LLVM:
+	// labelRoot=llvm-project/, cmakeSrc=llvm-project/llvm/ → "llvm"). srcs
+	// are already re-anchored to labelRoot in the source loop; hdrs and
+	// source-tree includes must get the same prefix so a BUILD at labelRoot
+	// resolves them consistently. Empty in the common (non-promoted) case —
+	// where hostSrc == cmakeSrc — so behavior there is unchanged.
+	umbrellaPrefix := ""
+	if hostSrc != "" && hostSrc != cmakeSrc {
+		if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
+			umbrellaPrefix = rel
+		}
+	}
+	reanchor := func(rel string) string {
+		if umbrellaPrefix != "" && rel != "" {
+			return filepath.Join(umbrellaPrefix, rel)
+		}
+		return rel
+	}
 	g, cc := lc.g, lc.cc
 	idToName, utilityIDs := lc.idToName, lc.utilityIDs
 	imports, tests := lc.imports, lc.tests
@@ -1555,7 +1589,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 			ext := strings.ToLower(filepath.Ext(srcPath))
 			if headerExts[ext] {
-				irt.Hdrs = append(irt.Hdrs, srcPath)
+				irt.Hdrs = append(irt.Hdrs, reanchor(srcPath))
 			}
 			continue
 		}
@@ -1923,6 +1957,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// attribution below; don't surface in
 				// irt.Includes (source-tree-relative only).
 				targetBuildIncs[rel] = true
+				// Under the umbrella promotion the source-tree includes are
+				// re-anchored (e.g. "llvm/include"), so they no longer cover
+				// the generated headers, which land at the build-dir-relative
+				// path ("include/..."). Surface that build-dir include so
+				// `-Iinclude` finds the generated headers' bazel-out tree.
+				if umbrellaPrefix != "" && !seenInc[rel] {
+					seenInc[rel] = true
+					irt.Includes = append(irt.Includes, rel)
+				}
 				continue
 			}
 			rel, ok := relativeIfInside(cmakeSrc, inc.Path)
@@ -1973,10 +2016,16 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				continue
 			}
-			if seenInc[rel] {
+			// Re-anchor source-tree includes to labelRoot under the
+			// umbrella promotion (consistent with srcs/hdrs); no-op
+			// otherwise. Dedup on the emitted value so a build-dir include
+			// surfaced above (e.g. "include") and a re-anchored source
+			// include (e.g. "llvm/include") don't collide.
+			emit := reanchor(rel)
+			if seenInc[emit] {
 				continue
 			}
-			seenInc[rel] = true
+			seenInc[emit] = true
 			if privateIncludeDirs[inc.Path] {
 				// Compile-only — don't propagate to consumers.
 				// target_include_directories(... SYSTEM PRIVATE ...)
@@ -1990,7 +2039,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				if inc.IsSystem {
 					flag = "-isystem"
 				}
-				irt.Copts = append(irt.Copts, flag+rel)
+				irt.Copts = append(irt.Copts, flag+emit)
 				continue
 			}
 			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
@@ -2012,7 +2061,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				walkPkgRootForHdrs = true
 				continue
 			}
-			irt.Includes = append(irt.Includes, rel)
+			irt.Includes = append(irt.Includes, emit)
 		}
 	}
 
