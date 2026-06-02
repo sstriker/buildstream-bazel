@@ -220,35 +220,23 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			collect(rels)
 		default:
 			// Configure-time probes produce no file artifact a consumer
-			// #includes, so none lifts to a genrule. They're skipped (their
-			// build-affecting consequence is recovered independently) or, in
-			// the feature-declaration sub-case below, lifted to an
-			// operator-overridable bool_flag + config_setting — Bazel
-			// targets, but still not a build-graph file input. Neither shape
-			// is refused.
-			//
-			//   - Toolchain-capability probe: a RESULT_VARIABLE-only check
-			//     (no OUTPUT_VARIABLE, no OUTPUT_FILE) on a known capability
-			//     driver — the `ar rD` / `ranlib -D` "does this tool support
-			//     the deterministic flag" checks LLVM's HandleLLVMOptions
-			//     runs. The capability lands in the recovered compile flags,
-			//     never a build input. Restricted to capabilityProbeDrivers:
-			//     a RESULT_VARIABLE exit status from an arbitrary driver can
-			//     feed a configure_file (`@HAVE_X@`), so those rescue only
-			//     when captured (the dump-vars gate below), not here.
-			//   - Host-triple detection script (config.guess / config.sub):
-			//     its stdout is the build host's triple, which lands in
-			//     generated config headers (config.h, llvm-config.h) the
-			//     converter recovers directly.
+			// #includes, so none lifts to a genrule — and a recognized
+			// host/toolchain probe (BucketProbe) is never a build INPUT.
+			// Its build-affecting consequence is recovered independently:
+			//   - a captured OUTPUT_/RESULT_VARIABLE value feeds a
+			//     configure_file (@VAR@) / file(GENERATE) lift via Reply.Vars;
+			//   - a host triple (uname, config.guess) lands in a generated
+			//     config header (config.h, llvm-config.h) the converter
+			//     recovers directly;
+			//   - a tool capability (ar/ranlib -D) lands in the recovered
+			//     compile flags.
+			// So a probe is SKIPPED whether or not the dump-vars hook caught
+			// its value — the operator endorsed host/toolchain probes as
+			// benign-skippable. The lone probe shape that emits is a
+			// feature-declaration probe: it lifts to an operator-overridable
+			// bool_flag + config_setting (Bazel targets, still not a file
+			// input). A STAMP differs and gates on capture below.
 			if v.Bucket == BucketProbe && call.OutputFile == "" {
-				if call.OutputVariable == "" && call.ResultVariable != "" &&
-					len(call.Commands) > 0 && len(call.Commands[0]) > 0 &&
-					capabilityProbeDrivers[executeProcessDriverBasename(call.Commands[0][0])] {
-					continue
-				}
-				if len(call.Commands) > 0 && executeProcessRunsHostDetectionScript(call.Commands[0]) {
-					continue
-				}
 				// Feature probe -> declared build setting. A probe writing a
 				// HAVE_X-style variable is a deferred declaration ("does the
 				// host have X?"); the faithful Bazel shape is an
@@ -296,15 +284,21 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					)
 					continue
 				}
+				// Any other recognized probe with no file output: skip. Its
+				// result is recovered independently (see above) and is never
+				// a Bazel build input, so emitting nothing is faithful.
+				continue
 			}
-			// Phase 4 rescue: a probe/stamp whose captured value (OUTPUT_ or
-			// RESULT_VARIABLE) is in cmakeVars (the dump-vars hook) has that
-			// value available to downstream configure_file / file(GENERATE)
-			// lifts via Reply.Vars — no Bazel-side emission needed; skip. An
-			// uncaptured probe/stamp not already skipped above (neither a
-			// capability nor a host-detection probe) still refuses so the
-			// operator sees the gap (a stamp's value would otherwise bake
-			// into srckey; operators opt into round-2 for non-baked stamps).
+			// Stamp capture gate. A stamp's value (a VCS revision) WOULD bake
+			// into the srckey of any configure_file that consumed it —
+			// silently pinning the build to one commit — so unlike a probe a
+			// stamp isn't skipped blindly. It rescues when the dump-vars hook
+			// captured its value (downstream configure_file / file(GENERATE)
+			// lifts then read it via Reply.Vars); otherwise it refuses so the
+			// operator opts into round-2 for the non-baked stamp. A
+			// BucketProbe reaches here only when it set OUTPUT_FILE (a
+			// strong-probe/host-detection driver redirecting to a file); it
+			// follows the same gate.
 			if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 				if call.OutputVariable != "" {
 					if _, ok := cmakeVars[call.OutputVariable]; ok {
