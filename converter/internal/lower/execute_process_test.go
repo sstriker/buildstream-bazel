@@ -652,24 +652,170 @@ func TestRecoverExecuteProcess_RescueHostDetectionScript(t *testing.T) {
 
 // TestRecoverExecuteProcess_NonCapabilityResultProbe confirms the
 // RESULT_VARIABLE-only rescue is restricted to capability drivers: a
-// python3 import check (whose exit status could feed a configure_file)
-// refuses when uncaptured, and rescues only when its RESULT_VARIABLE is
-// in cmakeVars (dump-vars). Guards against over-broad silent drops.
+// probe with a generic (non-feature-declaration) result var, whose exit
+// status could feed a configure_file, refuses when uncaptured and
+// rescues only when its RESULT_VARIABLE is in cmakeVars (dump-vars).
+// Guards against over-broad silent drops. (A HAVE_X-style result var
+// instead lifts to a build setting — see _FeatureProbeToBuildSetting.)
 func TestRecoverExecuteProcess_NonCapabilityResultProbe(t *testing.T) {
 	calls := []shadow.ExecuteProcessCall{{
 		File:           "/src/CMakeLists.txt",
 		Line:           13,
 		Commands:       [][]string{{"python3", "-c", "import pygments"}},
-		ResultVariable: "HAVE_PYGMENTS",
+		ResultVariable: "PYGMENTS_STATUS",
 	}}
 	cc := newCodegenContext()
 	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) == 0 {
 		t.Error("uncaptured non-capability RESULT_VARIABLE probe should refuse")
 	}
 	cc = newCodegenContext()
-	captured := map[string]string{"HAVE_PYGMENTS": "1"}
+	captured := map[string]string{"PYGMENTS_STATUS": "0"}
 	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc); len(refusals) != 0 {
 		t.Errorf("captured RESULT_VARIABLE probe should rescue; got %v", refusals)
+	}
+}
+
+// TestRecoverExecuteProcess_FeatureProbeToBuildSetting covers the
+// probe-as-declaration lift: a probe writing a HAVE_X-style variable
+// becomes a bool_flag + config_setting and skips the refusal, instead of
+// being dropped or refused. The probe writes RESULT_VARIABLE, whose
+// captured value is the command's exit status — "0" means `import zlib`
+// succeeded, i.e. zlib IS present — so the flag defaults True (exit
+// success inverts cmake's string-truthiness; see featureProbeDefault).
+func TestRecoverExecuteProcess_FeatureProbeToBuildSetting(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"python3", "-c", "import zlib"}},
+		ResultVariable: "HAVE_ZLIB",
+	}}
+	cc := newCodegenContext()
+	captured := map[string]string{"HAVE_ZLIB": "0"} // exit 0 == success == zlib present
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("feature probe should lift, not refuse; got %v", refusals)
+	}
+	var bf, cs *ir.Target
+	for i := range cc.Genrules {
+		switch cc.Genrules[i].Kind {
+		case ir.KindBoolFlag:
+			bf = &cc.Genrules[i]
+		case ir.KindConfigSetting:
+			cs = &cc.Genrules[i]
+		}
+	}
+	if bf == nil || cs == nil {
+		t.Fatalf("expected bool_flag + config_setting; got %+v", cc.Genrules)
+	}
+	if bf.Name != "have_zlib" || !bf.BoolFlagDefault {
+		t.Errorf("bool_flag: got name=%q default=%v, want have_zlib/true", bf.Name, bf.BoolFlagDefault)
+	}
+	if cs.Name != "have_zlib_enabled" || cs.ConfigSettingFlag != ":have_zlib" || cs.ConfigSettingValue != "True" {
+		t.Errorf("config_setting: got %+v", *cs)
+	}
+}
+
+// TestRecoverExecuteProcess_FeatureProbeDedup confirms a feature probe
+// that recurs in the trace (configure re-evaluation) lifts to a single
+// bool_flag/config_setting pair — duplicate target names would break emit.
+func TestRecoverExecuteProcess_FeatureProbeDedup(t *testing.T) {
+	probe := shadow.ExecuteProcessCall{
+		File:           "/src/CMakeLists.txt",
+		Line:           7,
+		Commands:       [][]string{{"python3", "-c", "import zlib"}},
+		ResultVariable: "HAVE_ZLIB",
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{probe, probe}, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("unexpected refusals: %v", refusals)
+	}
+	var flags, settings int
+	for _, tgt := range cc.Genrules {
+		switch tgt.Kind {
+		case ir.KindBoolFlag:
+			flags++
+		case ir.KindConfigSetting:
+			settings++
+		}
+	}
+	if flags != 1 || settings != 1 {
+		t.Errorf("dedup: got %d bool_flag + %d config_setting, want 1 + 1", flags, settings)
+	}
+}
+
+// TestRecoverExecuteProcess_FeatureProbeNameCollision confirms two
+// DISTINCT cmake variables that sanitize to the same Bazel build-setting
+// name (here a case-only HAVE_ZLIB vs have_zlib) refuse rather than
+// silently dropping the second knob onto the first's target. The first
+// lifts; the second surfaces a refusal naming both variables.
+func TestRecoverExecuteProcess_FeatureProbeNameCollision(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{
+		{
+			File:           "/src/CMakeLists.txt",
+			Line:           7,
+			Commands:       [][]string{{"python3", "-c", "import zlib"}},
+			ResultVariable: "HAVE_ZLIB",
+		},
+		{
+			File:           "/src/CMakeLists.txt",
+			Line:           9,
+			Commands:       [][]string{{"python3", "-c", "import zlib"}},
+			ResultVariable: "have_zlib",
+		},
+	}
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	if len(refusals) != 1 {
+		t.Fatalf("collision should surface exactly one refusal; got %d: %v", len(refusals), refusals)
+	}
+	// The refusal names both colliding variables and the shared target.
+	for _, want := range []string{`"HAVE_ZLIB"`, `"have_zlib"`} {
+		if !strings.Contains(refusals[0].Reason, want) {
+			t.Errorf("refusal reason %q missing %s", refusals[0].Reason, want)
+		}
+	}
+	// The first probe still lifts to a single pair.
+	var flags, settings int
+	for _, tgt := range cc.Genrules {
+		switch tgt.Kind {
+		case ir.KindBoolFlag:
+			flags++
+		case ir.KindConfigSetting:
+			settings++
+		}
+	}
+	if flags != 1 || settings != 1 {
+		t.Errorf("collision: first probe should still lift; got %d bool_flag + %d config_setting, want 1 + 1", flags, settings)
+	}
+}
+
+// TestFeatureProbeDefault locks in the channel-aware default: a
+// RESULT_VARIABLE is an exit status ("0" == success == feature present),
+// the INVERSE of an OUTPUT_VARIABLE stdout string (run through
+// cmakeTruthy). An uncaptured value ("") defaults False on both channels.
+func TestFeatureProbeDefault(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		value      string
+		fromResult bool
+		want       bool
+	}{
+		{"result exit-0 success -> true", "0", true, true},
+		{"result exit-1 failure -> false", "1", true, false},
+		{"result exit-127 failure -> false", "127", true, false},
+		{"result uncaptured -> false", "", true, false},
+		{"output truthy ON -> true", "ON", false, true},
+		{"output truthy 1 -> true", "1", false, true},
+		{"output falsey 0 -> false", "0", false, false},
+		{"output numeric-zero 0.0 -> false", "0.0", false, false},
+		{"output uncaptured -> false", "", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := featureProbeDefault(tc.value, tc.fromResult); got != tc.want {
+				t.Errorf("featureProbeDefault(%q, %v) = %v, want %v", tc.value, tc.fromResult, got, tc.want)
+			}
+		})
 	}
 }
 

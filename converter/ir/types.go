@@ -118,6 +118,23 @@ const (
 	// emitter writes the load; the rules module is already a dep wherever
 	// the lift's BUILDs land, same precedent as pick_file).
 	KindCMakeConfigureFile
+	// KindBoolFlag renders as bazel_skylib's
+	// `bool_flag(name=, build_setting_default=)` (from
+	// @bazel_skylib//rules:common_settings.bzl). The cmake converter
+	// emits one when it lifts a configure-time feature probe
+	// (execute_process / check_* writing a HAVE_X-style variable) into
+	// an explicit, operator-overridable Bazel build setting instead of
+	// refusing the probe or silently baking its result: a probe is a
+	// deferred declaration, and the faithful Bazel shape is a declared
+	// flag the operator can flip (`--//pkg:have_x=False`). Default is
+	// BoolFlagDefault (the value cmake probed, when captured).
+	KindBoolFlag
+	// KindConfigSetting renders as a `config_setting(name=,
+	// flag_values={<ConfigSettingFlag>: <ConfigSettingValue>})` — the
+	// select()-able condition paired with a KindBoolFlag so consumers
+	// of the lifted probe can `select()` on whether the feature is
+	// enabled. Built-in rule, no load needed.
+	KindConfigSetting
 )
 
 func (k Kind) String() string {
@@ -148,6 +165,10 @@ func (k Kind) String() string {
 		return "write_file"
 	case KindCMakeConfigureFile:
 		return "cmake_configure_file"
+	case KindBoolFlag:
+		return "bool_flag"
+	case KindConfigSetting:
+		return "config_setting"
 	}
 	return "unknown"
 }
@@ -571,6 +592,21 @@ type Target struct {
 	// `actual = "<label>"` on the alias rule. Typically a
 	// package-relative `:<target>` form for in-tree aliases.
 	AliasActual string
+
+	// Build-setting fields, populated only for the lifted-feature-probe
+	// pair (KindBoolFlag / KindConfigSetting).
+
+	// BoolFlagDefault is the bool_flag's build_setting_default — the
+	// value cmake's probe produced (false when the probe's value
+	// wasn't captured). KindBoolFlag only.
+	BoolFlagDefault bool
+
+	// ConfigSettingFlag / ConfigSettingValue render the config_setting's
+	// flag_values = {<ConfigSettingFlag>: <ConfigSettingValue>}: the
+	// label of the paired bool_flag (e.g. ":have_x") and the value that
+	// selects it ("True"). KindConfigSetting only.
+	ConfigSettingFlag  string
+	ConfigSettingValue string
 
 	// cc_test-specific fields. Populated only when Kind == KindCCTest;
 	// recovered from set_tests_properties() in CTestTestfile.cmake.

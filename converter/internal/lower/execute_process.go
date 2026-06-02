@@ -175,6 +175,13 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
+	// seenProbeFlags maps a lifted build-setting name to the cmake
+	// variable that produced it. The same feature probe can recur in the
+	// trace (configure re-evaluation) — the same variable lifts once.
+	// Two DISTINCT variables that sanitize to the same Bazel name (a
+	// case-only HAVE_ZLIB vs have_zlib) collide and refuse below, rather
+	// than silently dropping a knob.
+	seenProbeFlags := map[string]string{}
 	var unsupported []executeProcessRefusal
 	var outs []executeProcessOut
 	collect := func(rels []string) {
@@ -212,9 +219,13 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		default:
-			// Configure-time probes that produce no Bazel build artifact
-			// are skipped, not refused: the call emits nothing and its
-			// build-affecting consequence is recovered independently.
+			// Configure-time probes produce no file artifact a consumer
+			// #includes, so none lifts to a genrule. They're skipped (their
+			// build-affecting consequence is recovered independently) or, in
+			// the feature-declaration sub-case below, lifted to an
+			// operator-overridable bool_flag + config_setting — Bazel
+			// targets, but still not a build-graph file input. Neither shape
+			// is refused.
 			//
 			//   - Toolchain-capability probe: a RESULT_VARIABLE-only check
 			//     (no OUTPUT_VARIABLE, no OUTPUT_FILE) on a known capability
@@ -236,6 +247,53 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					continue
 				}
 				if len(call.Commands) > 0 && executeProcessRunsHostDetectionScript(call.Commands[0]) {
+					continue
+				}
+				// Feature probe -> declared build setting. A probe writing a
+				// HAVE_X-style variable is a deferred declaration ("does the
+				// host have X?"); the faithful Bazel shape is an
+				// operator-overridable bool_flag + a select()-able
+				// config_setting, not a refusal or a silent bake. The default
+				// is derived per writeback channel (featureProbeDefault): a
+				// RESULT_VARIABLE "0" (exit success) and a truthy
+				// OUTPUT_VARIABLE stdout both mean "feature present" -> True,
+				// else False (including uncaptured).
+				if varName, fromResult := featureDeclarationProbeVar(call); varName != "" {
+					flag := sanitizeBuildSettingName(varName)
+					if prev, ok := seenProbeFlags[flag]; ok {
+						if prev == varName {
+							continue // same probe recurred in the trace
+						}
+						// Distinct cmake variables collide on one Bazel target
+						// name (e.g. case-only HAVE_ZLIB vs have_zlib). Refuse so
+						// the operator disambiguates rather than silently losing
+						// the second knob.
+						unsupported = append(unsupported, executeProcessRefusal{
+							File:   call.File,
+							Line:   call.Line,
+							Bucket: v.Bucket,
+							Reason: fmt.Sprintf("feature probes %q and %q both lift to build setting %q", prev, varName, flag),
+							Argv:   formatExecuteProcessArgv(call),
+						})
+						continue
+					}
+					seenProbeFlags[flag] = varName
+					cc.Genrules = append(cc.Genrules,
+						ir.Target{
+							Name:            flag,
+							Kind:            ir.KindBoolFlag,
+							BoolFlagDefault: featureProbeDefault(cmakeVars[varName], fromResult),
+							Tags:            []string{"cmake-codegen-probe-option"},
+							Visibility:      []string{"//visibility:public"},
+						},
+						ir.Target{
+							Name:               flag + "_enabled",
+							Kind:               ir.KindConfigSetting,
+							ConfigSettingFlag:  ":" + flag,
+							ConfigSettingValue: "True",
+							Visibility:         []string{"//visibility:public"},
+						},
+					)
 					continue
 				}
 			}

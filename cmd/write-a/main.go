@@ -2136,7 +2136,9 @@ bazel_dep(name = "rules_cc", version = "0.0.17")
 		//   - kind:cmake file(GENERATE) bake: convert-element-cmake lowers
 		//     a fully-resolved body to skylib's write_file
 		//     (load("@bazel_skylib//rules:write_file.bzl", "write_file"))
-		//     instead of the legacy echo|base64 genrule. Coarse gate (any
+		//     instead of the legacy echo|base64 genrule; feature probes
+		//     (a configure HAVE_X check) likewise lift to skylib's
+		//     bool_flag + a config_setting. Coarse gate (any
 		//     kind:cmake element), same rationale as the rules_pkg gate
 		//     below: write-a renders MODULE.bazel before the per-element
 		//     converter runs, so it can't know whether a given element
