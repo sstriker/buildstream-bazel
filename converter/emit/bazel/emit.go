@@ -1204,10 +1204,12 @@ func emitPickFile(w *bytes.Buffer, t ir.Target) error {
 
 func emitFilegroup(w *bytes.Buffer, t ir.Target) error {
 	srcsExpr := attrExpr(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs"))
-	// Build-time glob shape (synthesized codegen include-closure
-	// filegroups): srcs = glob(["<pat>", ...]). Mirrors the pkg_files
-	// install(DIRECTORY) glob rendering; keeps project B maintainable
-	// rather than freezing a convert-time file list.
+	// Build-time glob shape (synthesized file(GLOB)-derived filegroups):
+	// srcs = glob(["<pat>", ...]). Mirrors the pkg_files install(DIRECTORY)
+	// glob rendering; keeps project B maintainable rather than freezing a
+	// convert-time file list. (The tablegen include-closure is a separate
+	// mechanism — it appends the resolved .td to the genrule's srcs, not a
+	// filegroup.)
 	if len(t.FilegroupGlob) > 0 {
 		srcsExpr = "glob(" + strList(sortedCopy(t.FilegroupGlob)) + ")"
 	}

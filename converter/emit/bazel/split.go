@@ -3,6 +3,7 @@ package bazel
 import (
 	"bytes"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 
@@ -339,10 +340,17 @@ func globSrcName(relInPkg, pattern string) string {
 	if i := strings.LastIndex(pattern, "*."); i >= 0 {
 		ext = san(pattern[i+2:])
 	}
+	// Disambiguate by a stable hash of the full (rel, pattern): distinct
+	// globs that share rel+ext — "*.td" vs "**/*.td", "*.txt" vs
+	// "foo*.txt" — must not collide into (and be wrongly deduped to) one
+	// filegroup, which would point some genrules at the wrong glob.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(relInPkg + "\x00" + pattern))
+	disc := fmt.Sprintf("%08x", h.Sum32())
 	if relInPkg == "" {
-		return "glob_" + ext + "_srcs"
+		return "glob_" + ext + "_" + disc + "_srcs"
 	}
-	return san(relInPkg) + "_glob_" + ext + "_srcs"
+	return san(relInPkg) + "_glob_" + ext + "_" + disc + "_srcs"
 }
 
 // dropGlobSrcFiles returns a copy of t with the file(GLOB)-covered sources

@@ -577,12 +577,14 @@ type Target struct {
 	// GlobSrcGroups, on a KindGenrule, records source-file groups whose
 	// members came from a cmake file(GLOB)/file(GLOB_RECURSE) call — the
 	// generic globbing-genrule shape, where a genrule's inputs are a glob
-	// result rather than an explicit list. Lower removes the matched files
-	// from Srcs and records one group per glob; split synthesizes a
-	// filegroup(srcs = glob([<pattern>])) in the group's owning package
-	// and splices its label back into the genrule's srcs, so the glob lives
-	// in project B and re-evaluates every build. Empty for ordinary
-	// genrules.
+	// result rather than an explicit list. Lower records one group per glob
+	// but KEEPS the matched files in Srcs (each group's Files names them);
+	// split then drops those files and synthesizes a
+	// filegroup(srcs = glob([<pattern>])) in the group's owning package,
+	// splicing its label into the genrule's srcs so the glob re-evaluates
+	// in project B. The monolithic emitter keeps the explicit Srcs (it
+	// synthesizes no filegroup), so neither path loses inputs. Empty for
+	// ordinary genrules.
 	GlobSrcGroups []GlobSrcGroup
 
 	// write_file-specific fields. Populated only when Kind ==
