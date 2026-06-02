@@ -1193,7 +1193,7 @@ type ccView struct {
 	// cc_test-only.
 	Args    []string
 	Env     map[string]string
-	Timeout string // pre-formatted Bazel duration ("30s", "5m"), empty = unset
+	Timeout string // Bazel test-rule timeout enum (short/moderate/long/eternal), empty = unset
 	Data    []string
 }
 
