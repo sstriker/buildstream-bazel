@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -342,6 +344,152 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 		cmd = strings.ReplaceAll(cmd, o, anchored)
 	}
 	return cmd
+}
+
+// augmentCodegenIncludeClosure stages the transitive include closure for
+// include-resolving codegen genrules — the tablegen shape: a tool that
+// reads `-I <dir>` roots and resolves `include "x"` directives against
+// them. cmake tracks those transitive includes via a per-output DEPFILE,
+// which is dynamic: absent from a configure-only reply's static ninja
+// inputs AND from the trace (the tablegen() macro defers to DEPFILE). So
+// the lowered genrule lists only the explicit primary input (RISCV.td);
+// without the rest of the `.td` closure the tool fails at action time
+// with "could not find include file ...".
+//
+// We recover the closure the way LLVM's own Bazel overlay does: glob the
+// primary input's extension under each source-tree `-I` root. This walks
+// the convert-host filesystem, consistent with discoverHeaders.
+// labelRoot is the absolute path the genrule's (umbrella-anchored) srcs
+// and `-I` paths are relative to; "" disables the pass (unit tests,
+// non-promoted offline replays without a source tree on disk).
+//
+// Scope guard: only genrules whose primary explicit source sits inside
+// one of their own `-I` roots count as include-resolving codegen. A plain
+// genrule that passes `-I` for a compiler invocation doesn't match — its
+// input isn't resolved via the include path — so its srcs are untouched.
+func augmentCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
+	if labelRoot == "" {
+		return
+	}
+	cache := map[string][]string{} // root+"\x00"+ext → labelRoot-relative files
+	for i := range targets {
+		t := &targets[i]
+		if t.Kind != ir.KindGenrule || t.GenruleCmd == "" {
+			continue
+		}
+		roots := genruleIncludeRoots(t.GenruleCmd)
+		if len(roots) == 0 {
+			continue
+		}
+		_, ext := primaryCodegenInput(t.Srcs, roots)
+		if ext == "" {
+			continue
+		}
+		var extra []string
+		for _, r := range roots {
+			extra = append(extra, globExtUnderRoot(cache, labelRoot, r, ext)...)
+		}
+		if len(extra) > 0 {
+			t.Srcs = mergeSortedUnique(t.Srcs, extra)
+		}
+	}
+}
+
+// genruleIncludeRoots extracts the `-I` include roots from a genrule cmd,
+// handling both `-I dir` (separate token) and `-Idir` (joined) forms.
+// Roots are returned slash-form with surrounding quotes and trailing
+// slashes trimmed, deduped in first-seen order.
+func genruleIncludeRoots(cmd string) []string {
+	fields := strings.Fields(cmd)
+	var roots []string
+	seen := map[string]bool{}
+	add := func(r string) {
+		r = strings.TrimRight(filepath.ToSlash(strings.Trim(r, `"'`)), "/")
+		if r == "" || seen[r] {
+			return
+		}
+		seen[r] = true
+		roots = append(roots, r)
+	}
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		switch {
+		case f == "-I" && i+1 < len(fields):
+			add(fields[i+1])
+			i++
+		case strings.HasPrefix(f, "-I") && len(f) > 2:
+			add(f[2:])
+		}
+	}
+	return roots
+}
+
+// primaryCodegenInput returns the first src whose directory is one of the
+// genrule's own `-I` roots, plus that src's extension. That coincidence —
+// the input lives under an include root the same tool searches — is the
+// signal that the genrule resolves includes (tablegen-shaped) rather than
+// merely passing `-I` to a compiler. srcs are still relative (umbrella-
+// anchored) at this lower-time stage; cross-package labels come later.
+func primaryCodegenInput(srcs, roots []string) (string, string) {
+	rootSet := make(map[string]bool, len(roots))
+	for _, r := range roots {
+		rootSet[r] = true
+	}
+	for _, s := range srcs {
+		if strings.HasPrefix(s, "//") || strings.HasPrefix(s, "@") || strings.HasPrefix(s, "$") {
+			continue // external / label / make-var srcs aren't FS inputs
+		}
+		dir := strings.TrimRight(filepath.ToSlash(filepath.Dir(s)), "/")
+		if rootSet[dir] {
+			return s, filepath.Ext(s)
+		}
+	}
+	return "", ""
+}
+
+// globExtUnderRoot returns every file with extension ext beneath the
+// source-tree include root (recursively, since `include "a/b.td"` resolves
+// against `-I` roots at arbitrary depth), as labelRoot-relative slash
+// paths. Roots that don't exist on the source FS (e.g. a build-dir-only
+// `include`) yield nothing. Memoized per (root, ext) because many tablegen
+// genrules share the same roots (notably llvm/include).
+func globExtUnderRoot(cache map[string][]string, labelRoot, root, ext string) []string {
+	key := root + "\x00" + ext
+	if hit, ok := cache[key]; ok {
+		return hit
+	}
+	var out []string
+	abs := filepath.Join(labelRoot, filepath.FromSlash(root))
+	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || filepath.Ext(p) != ext {
+				return nil
+			}
+			if rel, rerr := filepath.Rel(labelRoot, p); rerr == nil {
+				out = append(out, filepath.ToSlash(rel))
+			}
+			return nil
+		})
+	}
+	sort.Strings(out)
+	cache[key] = out
+	return out
+}
+
+// mergeSortedUnique returns the union of a and b, sorted and deduped.
+func mergeSortedUnique(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, group := range [][]string{a, b} {
+		for _, x := range group {
+			if !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // pickStandaloneName returns the source-level add_custom_target

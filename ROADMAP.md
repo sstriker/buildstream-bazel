@@ -743,28 +743,41 @@ transition cleanly.
           rewrites `-o include/…/X.inc` → `-o $(RULEDIR)/…/X.inc`; split.go
           re-relativizes the `$(RULEDIR)`-relative path when the genrule
           moves into its output's package.
-      Remaining for a *green* tablegen consumer:
-        - **(d) `.td` transitive-include closure** — tblgen now runs but
-          fails `could not find include file 'llvm/Target/Target.td'`: the
-          transitive `.td` includes are tracked by cmake's per-output
-          *depfile* (dynamic), not static ninja inputs, so a configure-only
-          reply only lists the explicit `RISCV.td`. Need to stage the `.td`
-          closure (the LLVM-overlay idiom is a `.td` `filegroup` the
-          tablegen rules depend on) — a depfile-parse or glob-derived input
-          set.
-        - **(e) per-consumer** generated-header dependency wiring — a
-          coarse "add every generated `.inc` to the include-root header lib"
-          would regress the green libraries above (they depend on
-          `//include:include_headers` and would then transitively force all
-          of tablegen). cmake tracks this at per-file depfile granularity;
-          the Bazel shape wants each consumer to depend only on the
-          generated headers it actually includes (an include-scan / depfile-
-          or codemodel-dependency-derived edge) — a design decision, not a
-          mechanical fix.
-      Net: the verbatim-cmake-command → hermetic-bazel-genrule transform is
-      done (tool builds, genrule runs); the `.td` closure + per-consumer
-      wiring are what stand between here and a green tablegen-dependent
-      library. Also still
+      **The tablegen genrules now produce their headers** — `bazel build
+      //include:custom_command_…_RISCVTargetParserDef_inc` is green (RISCV,
+      ARM, AArch64 TargetParserDef.inc all build); the four clean libs are
+      unregressed. The last piece was:
+        - **(d) `.td` transitive-include closure** — DONE.
+          `augmentCodegenIncludeClosure` (a lower-side post-pass) stages it:
+          tblgen failed `could not find include file 'llvm/Target/Target.td'`
+          because the transitive `.td` includes live only in cmake's dynamic
+          per-output DEPFILE (the `tablegen()` macro defers to `DEPFILE`),
+          absent from a configure-only reply's static ninja inputs and the
+          trace. We recover them the way LLVM's own Bazel overlay does — glob
+          the primary input's extension under each source `-I` root (FS walk,
+          consistent with discoverHeaders), scoped to genrules whose primary
+          input sits inside one of their own `-I` roots (the include-
+          resolving-codegen signal).
+      Remaining for a *green* tablegen **consumer** (`LLVMTargetParser`):
+        - **(e) per-consumer** generated-header dependency wiring. The
+          consumer fails `fatal error: llvm/TargetParser/AArch64TargetParserDef.inc:
+          No such file` — it needs (1) a dep on the genrules producing the
+          `.inc`s it includes and (2) the genfiles include root on its `-I`.
+          A coarse "add every generated `.inc` to `//include:include_headers`"
+          would regress the clean libs (they'd transitively force all of
+          tablegen), so it must be per-consumer. **The signal is clean, not a
+          heuristic**: the codemodel records it directly — `LLVMTargetParser`'s
+          `dependencies` list names `ARMTargetParserTableGen`,
+          `AArch64TargetParserTableGen`, `RISCVTargetParserTableGen`. The work
+          is mapping those tablegen-target deps → the genrule(s) producing
+          their outputs, wiring the consumer to depend on them, and putting
+          the `//include` genfiles root on the consumer's include path
+          (likely a small generated-header cc_library per producing package
+          so the include path comes for free).
+      Net: tool builds, genrules run and emit headers; only the consumer-side
+      dep+include-path wiring (e) stands between here and a green
+      tablegen-dependent library, and the codemodel hands us the edges. Also
+      still
       open: the source-tree-input == build-tree-output genrule aliasing
       (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
       re-anchoring.
