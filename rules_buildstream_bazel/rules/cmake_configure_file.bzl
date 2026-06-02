@@ -48,6 +48,25 @@ def _impl(ctx):
     inputs.append(values_json)
     args.add("--values", values_json)
 
+    # Stamp values: re-read VCS-stamp template vars from the workspace
+    # status at build time, overriding the baked `values` fallback. The
+    # stable status file (ctx.info_file / stable-status.txt) is the source
+    # — it is cache-keyed, so a revision change correctly re-renders. Under
+    # `--stamp` + `--workspace_status_command` it carries the operator's
+    # STABLE_* keys; otherwise it holds only the defaults and the tool
+    # keeps the `values` fallback (a key the tool doesn't find is left
+    # alone). One --stamp-value flag per (template var, status key) entry.
+    if ctx.attr.stamp_values:
+        inputs.append(ctx.info_file)
+        args.add("--status-file", ctx.info_file.path)
+
+        # Sorted keys → a stable action command line. A dict's iteration
+        # order shouldn't leak into the argv (it would risk gratuitous
+        # action-cache misses); sorting makes the --stamp-value sequence
+        # deterministic regardless of how the attr dict was constructed.
+        for tmpl_var in sorted(ctx.attr.stamp_values):
+            args.add("--stamp-value", "%s=%s" % (tmpl_var, ctx.attr.stamp_values[tmpl_var]))
+
     if ctx.attr.at_only:
         args.add("--at-only")
     if ctx.attr.copy_only:
@@ -133,6 +152,15 @@ cmake_configure_file = rule(
         ),
         "values": attr.string_dict(
             doc = "cmake variable -> value substitution map.",
+        ),
+        "stamp_values": attr.string_dict(
+            doc = "template var -> Bazel workspace-status key (e.g. GIT_SHA -> " +
+                  "STABLE_GIT_SHA). At build time the value is read from the stable " +
+                  "workspace status (ctx.info_file) and overrides the baked `values` " +
+                  "entry — the VCS-stamp lift, so a `@GIT_SHA@` header re-reads the " +
+                  "live revision rather than the convert-time one. Populate the keys " +
+                  "with --workspace_status_command and build with --stamp; an absent " +
+                  "key keeps the `values` fallback. Empty for non-stamp configure_files.",
         ),
         "genex_values": attr.string_dict(
             doc = "Captured `$<...>` literal -> resolved bytes (structured-replay lift). " +

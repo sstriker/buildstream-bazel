@@ -292,8 +292,15 @@ transition cleanly.
     consequence (a captured value feeding a configure_file, a
     host triple landing in config.h, a tool capability landing
     in the recovered compile flags) is recovered independently —
-    while a **stamp** still gates on the dump-vars capture (its
-    VCS revision would otherwise bake into srckey). A feature-
+    while a **stamp** still gates on the dump-vars capture. A
+    stamp value that feeds a `configure_file`, though, no longer
+    bakes its revision into srckey: it lifts to the
+    `cmake_configure_file` rule's `stamp_values`, re-reading the
+    live revision from the Bazel workspace status (`STABLE_<var>`
+    in `ctx.info_file`, cache-keyed so a revision change
+    re-renders) at build time under `--stamp` +
+    `--workspace_status_command`, with the convert-time value kept
+    as the no-`--stamp` fallback. A feature-
     declaration probe (`HAVE_*` / `USE_*` / `*_FOUND` / …) instead
     lifts to an operator-overridable `bool_flag` +
     `config_setting` — the Bazel idiom for "does the host have

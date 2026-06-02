@@ -60,3 +60,67 @@ func TestEmitCMakeConfigureFile_GenexValuesPerConfigSelect(t *testing.T) {
 		t.Errorf("expected exactly one genex_values attribute; got:\n%s", s)
 	}
 }
+
+// TestEmitCMakeConfigureFile_StampValues renders the VCS-stamp lift: the
+// stamp_values attribute (template var -> workspace-status key) appears as
+// a readable string_dict, alongside the baked values fallback.
+func TestEmitCMakeConfigureFile_StampValues(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{{
+			Name:       "gen_version_h",
+			Kind:       ir.KindCMakeConfigureFile,
+			Tags:       []string{"cmake-codegen"},
+			Visibility: []string{"//visibility:private"},
+			CMakeConfigureFile: &ir.CMakeConfigureFileSpec{
+				Out:         "version.h",
+				Template:    "src/version.h.in",
+				Values:      map[string]string{"GIT_SHA": "abc123"},
+				StampValues: map[string]string{"GIT_SHA": "STABLE_GIT_SHA"},
+				Tool:        "//tools:cmake-configure-file",
+				AtOnly:      true,
+			},
+		}},
+	}
+	out, err := Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	s := string(out)
+	for _, want := range []string{
+		`stamp_values = {`,
+		`"GIT_SHA": "STABLE_GIT_SHA"`,
+		`values = {`,
+		`"GIT_SHA": "abc123"`, // baked fallback stays
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("emit missing %q; got:\n%s", want, s)
+		}
+	}
+}
+
+// TestEmitCMakeConfigureFile_NoStampValues confirms the stamp_values attr
+// is omitted entirely for the common configure_file with no stamp var.
+func TestEmitCMakeConfigureFile_NoStampValues(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{{
+			Name:       "gen_cfg_h",
+			Kind:       ir.KindCMakeConfigureFile,
+			Visibility: []string{"//visibility:private"},
+			CMakeConfigureFile: &ir.CMakeConfigureFileSpec{
+				Out:      "cfg.h",
+				Template: "cfg.h.in",
+				Values:   map[string]string{"X": "1"},
+				Tool:     "//tools:cmake-configure-file",
+			},
+		}},
+	}
+	out, err := Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	if strings.Contains(string(out), "stamp_values") {
+		t.Errorf("stamp_values should be omitted when empty; got:\n%s", out)
+	}
+}

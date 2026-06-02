@@ -42,6 +42,18 @@ type codegenContext struct {
 	// has-cmake-codegen and to reference outputs by label.
 	OutToGenrule map[string]string
 
+	// StampVars maps a cmake variable written by a VCS-stamp
+	// execute_process (BucketStamp: git/hg/svn rev-parse / describe,
+	// OUTPUT_VARIABLE) to the Bazel workspace-status key a downstream
+	// configure_file should read it from at build time (STABLE_<var>,
+	// stable-status.txt, populated by --workspace_status_command under
+	// --stamp). recoverExecuteProcess populates it; the configure_file
+	// lift (which runs later over the same cc) consults it so a
+	// `@GIT_SHA@` template marker re-reads the live revision instead of
+	// baking the convert-time value into srckey. Empty when the project
+	// has no VCS-stamp probe.
+	StampVars map[string]string
+
 	// SeenBuilds dedupes recovered builds when multiple targets reference
 	// the same generated source.
 	SeenBuilds map[*ninja.Build]string
@@ -205,6 +217,7 @@ func (cc *codegenContext) hasSynthesizedTarget(name string) bool {
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:       map[string]string{},
+		StampVars:          map[string]string{},
 		SeenBuilds:         map[*ninja.Build]string{},
 		HeaderWalkCache:    map[string][]string{},
 		MissingIncludeDirs: map[string]bool{},

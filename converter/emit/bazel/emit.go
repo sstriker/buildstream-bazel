@@ -943,6 +943,9 @@ var cmakeConfigureFileTmpl = template.Must(template.New("cmake_configure_file").
     content = {{.ContentLiteral}},
 {{- end}}
     values = {{.Values}},
+{{- if .StampValues}}
+    stamp_values = {{.StampValues}},
+{{- end}}
 {{- if .GenexValues}}
     genex_values = {{.GenexValues}},
 {{- end}}
@@ -988,6 +991,7 @@ type cmakeConfigureFileView struct {
 	Template            string
 	ContentLiteral      string
 	Values              string
+	StampValues         string
 	GenexValues         string
 	GenexContext        string // truthiness guard
 	GenexContextLiteral string
@@ -1020,6 +1024,11 @@ func emitCMakeConfigureFile(w *bytes.Buffer, t ir.Target) error {
 		NewlineStyle:   s.NewlineStyle,
 		Tags:           sortedCopy(t.Tags),
 		Visibility:     nonDefaultVisibility(t.Visibility),
+	}
+	// stamp_values omitted (left "") for the common non-stamp configure_file;
+	// rendered as a readable string_dict when a VCS-stamp var feeds it.
+	if len(s.StampValues) > 0 {
+		v.StampValues = strDict(s.StampValues)
 	}
 	if len(s.GenexValuesPerConfig) > 0 {
 		// Per-config divergence → render the genex_values attr as a select()

@@ -104,7 +104,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		}
 
 		name := configureFileGenruleName(rel)
-		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars)
+		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, cc.StampVars)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -150,7 +150,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 // at configure time, so any marker the user later adds
 // resolves correctly through the Bazel-time tool — closing
 // the soundness gap PR #94 review identified.
-func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string) ir.Target {
+func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars, stampVars map[string]string) ir.Target {
 	// Bake the fully-resolved bytes via the shared bakeFileTarget chooser:
 	// readable skylib write_file for \n-only text, byte-exact base64
 	// genrule for binary / control-byte / CRLF bodies. Same de-base64
@@ -179,6 +179,13 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	spec := newConfigureFileSpec(outRel, opts)
 	spec.Template = inRel
 	spec.Values = values
+	// VCS-stamp lift: a template var written by a stamp execute_process
+	// (cc.StampVars) re-reads its value from the Bazel workspace status at
+	// build time instead of baking the convert-time revision. Only vars the
+	// template actually references are wired (others would couple this rule
+	// to the stamp status for nothing); the baked value stays in `values`
+	// as the non-stamped fallback.
+	spec.StampValues = stampValuesForTemplate(templateBody, opts, stampVars)
 	return cmakeConfigureFileTarget(name, spec, configureFileTags(configureFileTagSet{Lifted: true}))
 }
 
@@ -259,6 +266,44 @@ func pickValues(templateBody, rendered []byte, opts configurefile.Options, cmake
 		return nil, false
 	}
 	return values, true
+}
+
+// stampValuesForTemplate returns the subset of stampVars (cmake var ->
+// workspace-status key) the template actually references, as the
+// cmake_configure_file rule's stamp_values map. Filtering to referenced
+// vars keeps unrelated configure_files from gaining a spurious dependency
+// on the stamp status (and the rebuild a revision change would otherwise
+// trigger on them). Returns nil when nothing matches — the common
+// no-stamp configure_file — so the emitter omits the attribute.
+func stampValuesForTemplate(templateBody []byte, opts configurefile.Options, stampVars map[string]string) map[string]string {
+	if len(stampVars) == 0 {
+		return nil
+	}
+	var out map[string]string
+	for varName, statusKey := range stampVars {
+		if templateMentionsVar(templateBody, varName, opts) {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[varName] = statusKey
+		}
+	}
+	return out
+}
+
+// templateMentionsVar reports whether a configure_file template references
+// varName via cmake's substitution markers: @VAR@ always, or ${VAR} unless
+// @ONLY (opts.AtOnly) restricts substitution to the @-form. A conservative
+// substring test — an exotic reference shape we miss simply keeps the
+// baked value rather than the build-time stamp read.
+func templateMentionsVar(templateBody []byte, varName string, opts configurefile.Options) bool {
+	if bytes.Contains(templateBody, []byte("@"+varName+"@")) {
+		return true
+	}
+	if !opts.AtOnly && bytes.Contains(templateBody, []byte("${"+varName+"}")) {
+		return true
+	}
+	return false
 }
 
 // resolveTemplatePath converts the trace's recorded template
