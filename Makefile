@@ -1254,9 +1254,10 @@ fetch-brotli:
 		echo "brotli already at $(BROTLI_DIR); rm -rf to refetch"; \
 	fi
 
-# glog: unresolved-genex include dir ($<TARGET_PROPERTY:glog,INCLUDE_DIRECTORIES>
-# on the glog_test INTERFACE library) aborted --split-packages (invalid
-# header-lib name) — fixed (dropGenexIncludeDirs + planSplit backstop).
+# glog: an unresolved-genex include dir — the literal
+# `$<TARGET_PROPERTY:glog,INCLUDE_DIRECTORIES>` on the glog_test INTERFACE
+# library — aborted --split-packages with an invalid header-lib name; fixed
+# (dropGenexIncludeDirs + planSplit backstop).
 fetch-glog:
 	@if [ ! -d "$(GLOG_DIR)" ]; then \
 		git clone --depth 1 --branch $(GLOG_VERSION) https://github.com/google/glog.git "$(GLOG_DIR)"; \
