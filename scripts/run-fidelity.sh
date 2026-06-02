@@ -278,9 +278,38 @@ if grep -q "//tools:cmake-configure-file" "$bazel_ws/BUILD.bazel"; then
     echo "fidelity[$project_name]: staging //tools:cmake-configure-file" >&2
     CGO_ENABLED=0 go build -C "$repo_root" -o "$bin_dir/cmake-configure-file" ./cmd/cmake-configure-file
     mkdir -p "$bazel_ws/tools"
-    cp "$bin_dir/cmake-configure-file" "$bazel_ws/tools/cmake-configure-file"
-    chmod 0755 "$bazel_ws/tools/cmake-configure-file"
-    echo 'exports_files(["cmake-configure-file"])' > "$bazel_ws/tools/BUILD.bazel"
+    # The cmake_configure_file rule's `tool` attr is executable=True, so the
+    # label has to resolve to an executable TARGET, not a raw source file —
+    # a plain exports_files() trips "source file is misplaced here (expected
+    # no files)" at analysis. Wrap the binary in bazel_skylib's native_binary,
+    # exactly as write-a (project B) and the meta-* gates stage it. (Staged as
+    # .bin so native_binary's `out` can reuse the bare tool name.)
+    cp "$bin_dir/cmake-configure-file" "$bazel_ws/tools/cmake-configure-file.bin"
+    chmod 0755 "$bazel_ws/tools/cmake-configure-file.bin"
+    cat > "$bazel_ws/tools/BUILD.bazel" <<'EOF'
+load("@bazel_skylib//rules:native_binary.bzl", "native_binary")
+
+native_binary(
+    name = "cmake-configure-file",
+    src = "cmake-configure-file.bin",
+    out = "cmake-configure-file",
+    visibility = ["//visibility:public"],
+)
+EOF
+fi
+# When the converted BUILD loads from @rules_buildstream_bazel — the converter's
+# in-repo ruleset (cmake_configure_file from --lift-configure-file, pick_file
+# from the install lift) — provide it via bazel_dep + local_path_override
+# pointing at this repo's rules_buildstream_bazel/ subdir. That's exactly how
+# write-a (project B) and the meta-* gates wire the ruleset; it's intentionally
+# NOT on BCR (see rules_buildstream_bazel/MODULE.bazel), so a bazel_dep alone
+# can't resolve it. Auto-detected so callers don't have to remember to pair the
+# convert flag with the override.
+rules_bsb_module=""
+if grep -q "@rules_buildstream_bazel" "$bazel_ws/BUILD.bazel"; then
+    echo "fidelity[$project_name]: wiring @rules_buildstream_bazel local_path_override" >&2
+    rules_bsb_module="bazel_dep(name = \"rules_buildstream_bazel\", version = \"0.0.0\")
+local_path_override(module_name = \"rules_buildstream_bazel\", path = \"$repo_root/rules_buildstream_bazel\")"
 fi
 # bzlmod MODULE.bazel providing the converter's load() deps as bazel_deps
 # from BCR — rules_cc backs the cc_* rules, rules_pkg backs the install
@@ -296,6 +325,7 @@ module(name = "${project_name}_fidelity", version = "0.0.0")
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
+${rules_bsb_module}
 ${bazel_external}
 EOF
 
