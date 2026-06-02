@@ -22,6 +22,42 @@ For cmake → converter modelling differences (independent of any
 Bazel build) see
 [`docs/cmake-conversion-deltas.md`](cmake-conversion-deltas.md).
 
+## Fidelity vs. survey: two complementary oracles (read this first)
+
+A recurring confusion — worth pinning so future sessions don't relitigate
+it: **fidelity and survey are different harnesses measuring orthogonal
+things, and neither subsumes the other.**
+
+- **Survey** (`scripts/run-survey.sh`, `docs/survey-corpus.md`) runs in the
+  **faithful** shape: **multi-config + split-packages by default**
+  (`SURVEY_BUILD_TYPES=auto`, `SURVEY_SPLIT_PACKAGES=1`). That shape is the
+  Bazel-idiomatic **end-state** we're converging on — one BUILD per
+  directory, every declared config folded into `//config:<name>`
+  `select()` arms. Survey's job is to catch **intent loss**: did the
+  converter silently drop a config, a target, an include edge? Intent loss
+  only becomes visible *in* the faithful shape, so survey maximizes shape
+  fidelity.
+
+- **Fidelity** (`scripts/run-fidelity.sh`, this doc) deliberately runs the
+  **opposite** shape: **single-config Release + single monolithic BUILD**.
+  Its job is symbol equivalence — diff the cmake-built `.a` against the
+  Bazel-built `.a`, expecting matching exported symbols. That diff is
+  *cleanest* on one config + one archive: multi-config raises "which
+  config's archive do I diff?" and split raises "which package's archive?".
+  Collapsing to single/single isn't a weakness — **it's what makes the
+  symbol oracle sharp**: with no `select()` arms or package boundaries to
+  confound the `nm` diff, a single dropped/renamed/miscompiled symbol
+  surfaces immediately, divergence the faithful-shape survey would never
+  even attempt to detect.
+
+So yes — survey is "stronger" on **shape faithfulness** (it builds the
+end-state), and fidelity is "stronger" on **symbol precision** (it isolates
+artifact divergence). A clean survey can pass while fidelity catches a
+miscompile; a clean fidelity can pass while survey catches intent lost only
+under multi-config/split. Run **both**. If you ever extend fidelity to the
+faithful shape, do it as an *addition* (per-config symbol diffs), not a
+replacement — don't give up the single/single sharpness.
+
 ## Open per-project deltas
 
 Catalog of observed differences for each productionized fixture.

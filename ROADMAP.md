@@ -54,14 +54,20 @@ transition cleanly.
   exclusive with `--out-ir-json` (the multi-platform fold path);
   install-derived / synthesized targets (filegroups, `cc_import`,
   `cmake_config_bundle`, aliases, interface libs) stay in the root
-  package. Synthesized **genrules** are the exception: a genrule
-  whose recovered output lands in a sub-package is placed in that
-  package (with `outs` re-relativized package-local), because Bazel
-  requires a genrule's `outs` to live in the genrule's own package —
-  a root genrule declaring `outs = ["sub/x.cpp"]` collides with the
-  `sub/` package. This is what lets a generated compiled source
-  (e.g. eigen's `configure_file`-produced `compile_<snippet>.cpp`)
-  feed a cc_binary that moved to its own sub-package. Wired
+  package. Synthesized **output-producing rules** are the exception:
+  a genrule, `write_file` bake, or `cmake_configure_file` lift whose
+  recovered output lands in a sub-package is placed in that package
+  (with the output path re-relativized package-local), because Bazel
+  requires a rule's output to live in the rule's own package — a root
+  rule declaring `outs = ["sub/x.cpp"]` (or `out =
+  "include/llvm/Config/config.h"`) both collides with the deeper
+  package's boundary and is unreachable from a consumer there that
+  lists the file as a generated `hdr`. This is what lets a generated
+  compiled source (e.g. eigen's `configure_file`-produced
+  `compile_<snippet>.cpp`) feed a cc_binary that moved to its own
+  sub-package, and a `write_file`-baked `llvm/Config/config.h` satisfy
+  the `//include` header library LLVM's per-directory libraries depend
+  on. Wired
   end-to-end through the
   orchestrator: `cmd/write-a --split-packages` converts the
   element with the `cmake_split_convert` custom rule
@@ -681,7 +687,121 @@ transition cleanly.
       tooling and may need larger allowlists (the std::/libm-builtin
       classifier rules + the configure_file / cmake-P / imports-manifest /
       --bazel-external harness machinery the zlib…libpng fixtures built up
-      should carry most of the way).
+      should carry most of the way). **LLVM bazel-build lift progressing
+      (manual):** the converter renders the LLVM monorepo in the **faithful
+      end-state shape — multi-config + split-packages** (376 per-directory
+      BUILDs + a `//config` package with `debug`/`release`
+      `config_setting`s), and real libraries compile + archive under a
+      staged bzlmod workspace **under BOTH configs** — `bazel build
+      --//config:build_type={debug,release}` green on
+      `//llvm/lib/Demangle:LLVMDemangle` (leaf, 123 syms),
+      `//llvm/lib/Support:LLVMSupport` (foundational, ~165 compile actions,
+      2328 syms), `//llvm/lib/Bitstream/Reader:LLVMBitstreamReader`, and
+      `//llvm/lib/Remarks:LLVMRemarks` (notable because it sidesteps the
+      broken `tools/remarks-shlib` package — proof the split isolates
+      per-package breakage). The multi-config fold produced real per-config
+      `select()` deltas (`-g` for debug, `-DNDEBUG -O3` for release) and
+      composed with split-packages with **zero new converter code** — the
+      existing fold + the split fixes below just work together. Gaps
+      overcome to get the sources compiling: (1) umbrella src/hdr/include
+      re-anchoring under the workspace-root promotion; (2) split-packages
+      relocating `write_file`/`cmake_configure_file` outputs into their
+      owning package (not just genrules); (3) `.def`/`.inc` added to the
+      header-discovery extension set (LLVM's x-macro / textual-include
+      idiom — `ItaniumNodes.def`, `regengine.inc`). Split mode is what
+      makes per-leaf builds tractable: one malformed rule is a per-package
+      loading error, not a whole-monorepo block. (On harness shape:
+      **survey runs this faithful multi-config + split shape; fidelity
+      deliberately runs single-config + single-BUILD** as a sharper symbol
+      oracle — they're complementary, see
+      `docs/fidelity-deltas.md` "Fidelity vs. survey".)
+
+      Next frontier — the **tablegen generated-header tier**
+      (`LLVMTargetParser` up): targets that `#include` a tablegen-generated
+      `.inc` (e.g. `RISCVTargetParserDef.inc`). **The tablegen tool itself
+      builds green** — `bazel build //llvm/utils/TableGen:llvm-min-tblgen`
+      is 197 actions across its whole dep chain (Support + TableGen +
+      utils) and produces the binary, so the "build the generator" half is
+      done. **The genrules that run it are now hermetic too** — the
+      standalone-custom-command path was emitting a *verbatim cmake command*
+      broken four ways under umbrella+split; all four are fixed and the
+      RISCV genrule now *runs tblgen* under `bazel build
+      //include:custom_command_…_inc --//config:build_type=release`:
+        - **input umbrella-anchoring** — `normalizeInput` /
+          `rewriteGenruleCmd` take an `umbrellaPrefix`; source-tree srcs and
+          cmd `-I`/input paths get the `llvm/` prefix
+          (`//llvm/lib/Target:RISCV/RISCV.td`, `-I llvm/include`). Applied
+          *during* the prefix strip so `<cmakeSrc>/include` (→
+          `llvm/include`) stays distinct from `<buildDir>/include`.
+        - **cross-package tool label** — split.go rewrites genrule `tools`
+          (`:llvm-min-tblgen` → `//llvm/utils/TableGen:llvm-min-tblgen`) and
+          the matching `$(location :…)` cmd refs, mirroring the deps rewrite.
+        - **leftover prebuilt src** — `dropLiftedToolSrcs` removes the
+          `<cfg>/bin/<tool>` artifact the tool-from-target lift hoisted into
+          `tools`.
+        - **output → `$(RULEDIR)`** — `anchorGenruleOutputsToRuledir`
+          rewrites `-o include/…/X.inc` → `-o $(RULEDIR)/…/X.inc`; split.go
+          re-relativizes the `$(RULEDIR)`-relative path when the genrule
+          moves into its output's package.
+      **The tablegen genrules now produce their headers** — `bazel build
+      //include:custom_command_…_RISCVTargetParserDef_inc` is green (RISCV,
+      ARM, AArch64 TargetParserDef.inc all build); the four clean libs are
+      unregressed. The last piece was:
+        - **(d) `.td` transitive-include closure** — DONE, as the precise
+          per-genrule closure (replacing the first cut's `glob()` filegroups).
+          tblgen failed `could not find include file 'llvm/Target/Target.td'`
+          because the transitive `.td` includes aren't static ninja inputs.
+          The faithful set is **cmake's per-output DEPFILE** — under Ninja
+          (what the converter configures) `TableGen.cmake` tracks deps via the
+          `.inc.d` depfile and sets the glob vars *empty*; `file(GLOB)` is only
+          the **non-Ninja fallback** (the macro's own comment: "Use depfile
+          instead of globbing … for Ninja"), so it never runs and a `glob()`
+          over-declares (GenVT pulls in all 45 `.td` when it needs 1). We
+          replicate the depfile **statically**: `recordCodegenIncludeClosure`
+          (lower) follows `include "..."` directives from the genrule's primary
+          input, resolving each against its own `-I` roots, and appends the
+          reachable source files to srcs; split's existing cross-package src
+          handling relabels each to its owning package and raises the
+          `exports_files()` need. Result is minimal + transitive — GenVT.inc →
+          `[ValueTypes.td]`, IntrinsicEnums.inc → the 25-`.td` Intrinsics
+          closure. Scoped to genrules whose primary input sits inside one of
+          their own `-I` roots (the include-resolving-codegen signal); an
+          include that doesn't resolve on the source FS (a generated `.td`)
+          terminates that branch.
+        - **generic `file(GLOB)` threading** — the sibling capability for
+          *any* globbing genrule (not just tablegen). `ExtractFileGlobs`
+          (shadow) recovers each `file(GLOB)`/`file(GLOB_RECURSE)` call from
+          the `--trace-expand` stream; `threadFileGlobs` (lower) computes the
+          glob's match set on the source FS and, when a genrule depends on
+          the *whole* set (subset guard — no false positives), folds those
+          srcs into a build-time `glob()` filegroup split synthesizes in the
+          glob's owning package: `GLOB` → `glob(["*.x"])`, `GLOB_RECURSE` →
+          `glob(["**/*.x"])`, so it re-evaluates in project B. A no-op for
+          tablegen (DEPFILE under Ninja, no `file(GLOB)` in the trace), it's
+          ready for the first project that genuinely globs into a genrule.
+      Remaining for a *green* tablegen **consumer** (`LLVMTargetParser`):
+        - **(e) per-consumer** generated-header dependency wiring. The
+          consumer fails `fatal error: llvm/TargetParser/AArch64TargetParserDef.inc:
+          No such file` — it needs (1) a dep on the genrules producing the
+          `.inc`s it includes and (2) the genfiles include root on its `-I`.
+          A coarse "add every generated `.inc` to `//include:include_headers`"
+          would regress the clean libs (they'd transitively force all of
+          tablegen), so it must be per-consumer. **The signal is clean, not a
+          heuristic**: the codemodel records it directly — `LLVMTargetParser`'s
+          `dependencies` list names `ARMTargetParserTableGen`,
+          `AArch64TargetParserTableGen`, `RISCVTargetParserTableGen`. The work
+          is mapping those tablegen-target deps → the genrule(s) producing
+          their outputs, wiring the consumer to depend on them, and putting
+          the `//include` genfiles root on the consumer's include path
+          (likely a small generated-header cc_library per producing package
+          so the include path comes for free).
+      Net: tool builds, genrules run and emit headers; only the consumer-side
+      dep+include-path wiring (e) stands between here and a green
+      tablegen-dependent library, and the codemodel hands us the edges. Also
+      still
+      open: the source-tree-input == build-tree-output genrule aliasing
+      (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
+      re-anchoring.
     - Promote each CI `fidelity` gate from `continue-on-error: true`
       to blocking after three consecutive green merges (the wiring +
       soft launch shipped — see the entry head).

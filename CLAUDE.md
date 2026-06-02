@@ -42,6 +42,32 @@ description, a commit message, or your own design notes — show that you
 ran these and what they printed. A green `go test ./...` plus the
 relevant render gate's `ok` line is usually enough.
 
+## Environment toolchain (Claude Code on the web)
+
+The `SessionStart` hook (`.claude/hooks/session-start.sh`) provisions the
+toolchain the gates + survey corpus need. On web sessions assume these are
+on `$PATH` — don't burn a turn rediscovering them with `which`:
+
+- `bazel` / `bazelisk` (repo-pinned launcher; `BAZELISK_BASE_URL` points at
+  GitHub releases because `releases.bazel.build` 403s here), `buildifier`,
+  `cmake`, `ninja`, `go` (host SDK), `gofmt`, `gfortran`.
+- BCR modules resolve: `~/.bazelrc` repoints `--registry` at the GitHub BCR
+  mirror (`bcr.bazel.build` — and every `*.bazel.build` host — 403s in this
+  sandbox) and hands bazel's JVM a truststore for the egress CA. So
+  `bazel_dep`s (rules_go, gazelle, gazelle_cc, …) fetch fine.
+
+Two network caveats worth not rediscovering:
+
+- **The Go SDK download from `go.dev` is blocked (403).** gazelle_cc needs a
+  Go SDK, so use the **host Go** via `go_sdk.host()` in the MODULE — for the
+  gazelle gate that's `META_GAZELLE_USE_HOST_GO=1 sh
+  scripts/meta-cmake-split-gazelle.sh`. Without it, `bazel run //:gazelle`
+  dies fetching the SDK (`go_sdk.download` → 403).
+- Heavy/optional toolchains are opt-in env flags the hook honors:
+  `BSB_PROVISION_CUDA=1` (CUDA toolkit), `BSB_WARM_GAZELLE=1` (pre-build
+  gazelle_cc into the persistent survey cache so the first gazelle run is
+  fast).
+
 ## When to open a PR
 
 Open a PR proactively — no separate "should I open a PR?" check-in —

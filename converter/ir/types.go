@@ -454,6 +454,16 @@ type Target struct {
 	// lowering). Empty on every other filegroup.
 	FilegroupOutputGroup string
 
+	// FilegroupGlob, when non-empty on a KindFilegroup target, renders the
+	// filegroup's srcs as `glob([<patterns>])` (package-relative) instead
+	// of an explicit file list. Used for filegroups synthesized from a
+	// cmake `file(GLOB ...)` call: the glob is the source of truth in the
+	// original build, so a build-time glob() is the honest representation —
+	// project B picks up newly added matches instead of carrying a frozen
+	// convert-time snapshot. Mutually exclusive with an explicit Srcs list
+	// on the same target.
+	FilegroupGlob []string
+
 	// PkgSrcsGlob, when true on a KindPkgFiles target, makes the
 	// emitter render `srcs = glob(["<dir>/**"])` (one glob per Srcs
 	// entry) instead of the literal `srcs = [...]` list. This is the
@@ -563,6 +573,19 @@ type Target struct {
 	// substitution tool with the .h.in template as a real srcs
 	// input — see lower/configure_file.go.
 	GenruleTools []string
+
+	// GlobSrcGroups, on a KindGenrule, records source-file groups whose
+	// members came from a cmake file(GLOB)/file(GLOB_RECURSE) call — the
+	// generic globbing-genrule shape, where a genrule's inputs are a glob
+	// result rather than an explicit list. Lower records one group per glob
+	// but KEEPS the matched files in Srcs (each group's Files names them);
+	// split then drops those files and synthesizes a
+	// filegroup(srcs = glob([<pattern>])) in the group's owning package,
+	// splicing its label into the genrule's srcs so the glob re-evaluates
+	// in project B. The monolithic emitter keeps the explicit Srcs (it
+	// synthesizes no filegroup), so neither path loses inputs. Empty for
+	// ordinary genrules.
+	GlobSrcGroups []GlobSrcGroup
 
 	// write_file-specific fields. Populated only when Kind ==
 	// KindWriteFile.
@@ -675,6 +698,22 @@ type Target struct {
 	// field and PerPlatformScalar stays empty so single-platform
 	// emission stays byte-identical.
 	PerPlatformScalar map[string]map[string]string
+}
+
+// GlobSrcGroup names one cmake file(GLOB)-derived source group: Dir is the
+// element-root-relative directory the glob is anchored at, Pattern is the
+// Bazel glob pattern relative to Dir ("*.txt" for GLOB, "**/*.txt" for
+// GLOB_RECURSE), and Files is the element-root-relative match set that
+// seeded the group. split turns each into a build-time glob() filegroup in
+// Dir's owning package and drops Files from the genrule's explicit srcs
+// (served by the filegroup instead). The monolithic emitter, which doesn't
+// synthesize the filegroups, leaves the explicit srcs in place — so lower
+// keeps Files in Srcs and only split removes them, keeping both emitters
+// correct.
+type GlobSrcGroup struct {
+	Dir     string
+	Pattern string
+	Files   []string
 }
 
 // CMakeConfigureFileSpec carries the attributes for a

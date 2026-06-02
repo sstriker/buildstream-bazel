@@ -99,7 +99,7 @@ func TestRewriteGenruleCmd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := rewriteGenruleCmd(tc.in, cmakeSrc, buildDir)
+			got := rewriteGenruleCmd(tc.in, cmakeSrc, buildDir, "")
 			if got != tc.want {
 				t.Errorf("rewriteGenruleCmd:\n  in:   %q\n  got:  %q\n  want: %q", tc.in, got, tc.want)
 			}

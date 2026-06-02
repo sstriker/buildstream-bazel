@@ -3,6 +3,7 @@ package bazel
 import (
 	"bytes"
 	"fmt"
+	"hash/fnv"
 	"sort"
 	"strings"
 
@@ -62,29 +63,55 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		}
 	}
 
+	// Synthesized build-time glob() filegroups backing file(GLOB)-sourced
+	// genrules, plus the labels to splice into each producing genrule's srcs.
+	globFilegroups, globLabels := plan.globSrcFilegroups(pkg)
+
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
-		// Synthesized genrules (configure_file / file(GENERATE) /
-		// execute_process / custom-command recovery) carry no
-		// SubPackages entry, so targetDir defaults them to root. But
-		// a genrule's `outs` must live in the genrule's OWN Bazel
-		// package — a root genrule declaring outs =
-		// ["doc/snippets/x.cpp"] collides with the doc/snippets
-		// package ("output file conflicts with another package").
-		// Place the genrule in the package that owns its (first)
-		// output so the out is package-local and a consumer in that
-		// package resolves the bare-name srcs/hdrs reference (e.g.
-		// eigen's compile_<snippet> cc_binaries, whose generated
-		// source is produced by a configure_file genrule). Only the
-		// local regime re-relativizes outs (rewriteTarget below);
-		// the SourceKey regime keeps element-root-relative paths.
-		if local && t.Kind == ir.KindGenrule && len(t.GenruleOuts) > 0 {
-			if od := plan.deepestPkg(t.GenruleOuts[0]); od != "" {
-				dir = od
+		// Synthesized output-producing rules (genrule custom-command
+		// recovery, write_file configure_file/file(GENERATE) bakes,
+		// cmake_configure_file lifts) carry no SubPackages entry, so
+		// targetDir defaults them to root. But a rule's output must
+		// live in the rule's OWN Bazel package — a root rule whose
+		// out is "include/llvm/Config/config.h" both collides with
+		// the //include package's boundary ("output file conflicts
+		// with another package") and is unreachable from a consumer
+		// in //include that lists the file as a generated hdr
+		// ("missing input file '//include:llvm/Config/config.h'").
+		// Place the rule in the package that owns its (first / sole)
+		// output so the out is package-local and a same-package
+		// consumer resolves the bare-name srcs/hdrs reference (e.g.
+		// eigen's compile_<snippet> cc_binaries off a configure_file
+		// genrule; LLVM's per-package header libs off the config.h
+		// write_file bakes). Only the local regime re-relativizes the
+		// out (rewriteTarget below); the SourceKey regime keeps
+		// element-root-relative paths.
+		if local {
+			if out := primaryGeneratedOutput(t); out != "" {
+				if od := plan.deepestPkg(out); od != "" {
+					dir = od
+				}
 			}
 		}
 		ensure(dir)
-		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
+		// Drop file(GLOB)-covered srcs before rewriting: split serves them
+		// via the synthesized glob() filegroup, so listing them explicitly
+		// (relativized + exported) would be redundant. Guarded on the labels
+		// actually existing, so the inputs are never silently lost.
+		src := t
+		if len(t.GlobSrcGroups) > 0 && len(globLabels[t.Name]) > 0 {
+			src = dropGlobSrcFiles(t)
+		}
+		rt := rewriteTarget(src, dir, plan, local, exportsByDir)
+		// Splice the synthesized file(GLOB) glob-filegroup labels into this
+		// genrule's srcs (full labels, so no further rewriting), and drop
+		// the now-consumed metadata.
+		if labels := globLabels[t.Name]; len(labels) > 0 {
+			rt.Srcs = append(append([]string(nil), rt.Srcs...), labels...)
+			sort.Strings(rt.Srcs)
+			rt.GlobSrcGroups = nil
+		}
 		// A filegroup / pkg_files whose only srcs were bare packaged
 		// directories (dropped above) would render as an empty, useless
 		// rule — and pkg_files/filegroup both require a non-empty srcs
@@ -104,6 +131,13 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	for inc, name := range plan.headerLibs {
 		ensure(inc)
 		groups[inc] = append(groups[inc], plan.headerLibTarget(inc, name))
+	}
+
+	// Add the synthesized file(GLOB) glob() filegroups to their owning
+	// packages (referenced by the globbing genrules above).
+	for d, fgs := range globFilegroups {
+		ensure(d)
+		groups[d] = append(groups[d], fgs...)
 	}
 
 	// 3. Render each package group via the shared EmitWithOptions.
@@ -136,6 +170,27 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		out[dir] = body
 	}
 	return out, nil
+}
+
+// primaryGeneratedOutput returns the element-root-relative output path
+// EmitSplit uses to decide which package a synthesized output-producing
+// rule belongs in: the first genrule out, the write_file out, or the
+// cmake_configure_file out. Empty for non-producing kinds (real
+// cc_library / cc_binary targets, whose package comes from SubPackages).
+func primaryGeneratedOutput(t ir.Target) string {
+	switch t.Kind {
+	case ir.KindGenrule:
+		if len(t.GenruleOuts) > 0 {
+			return t.GenruleOuts[0]
+		}
+	case ir.KindWriteFile:
+		return t.WriteFileOut
+	case ir.KindCMakeConfigureFile:
+		if t.CMakeConfigureFile != nil {
+			return t.CMakeConfigureFile.Out
+		}
+	}
+	return ""
 }
 
 // splitPlan is the precomputed split layout: per-target declaring dir,
@@ -222,6 +277,117 @@ func (p *splitPlan) headerLibTarget(inc, name string) ir.Target {
 		Deps:       deps,
 		Visibility: []string{"//visibility:public"},
 	}
+}
+
+// globSrcFilegroups synthesizes the build-time glob() filegroups that back
+// file(GLOB)-derived genrule sources. For each GlobSrcGroup{Dir, Pattern}
+// on a genrule it locates Dir's owning package and emits — deduped per
+// (package, name) — a filegroup(srcs = glob(["<rel>/<pattern>"])), then
+// records the filegroup's label so EmitSplit can splice it into the
+// genrule's srcs. Keeping the glob in project B (rather than the frozen
+// convert-time match set) is what re-evaluates the genrule's deps when a
+// matching file is added post-conversion.
+//
+// byDir maps owning-package dir → the filegroups to inject there;
+// labelsFor maps genrule name → the filegroup labels to add to its srcs.
+func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string) {
+	byDir = map[string][]ir.Target{}
+	labelsFor = map[string][]string{}
+	seen := map[string]bool{} // owningDir + "\x00" + name → already synthesized
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindGenrule || len(t.GlobSrcGroups) == 0 {
+			continue
+		}
+		var labels []string
+		seenLabel := map[string]bool{}
+		for _, g := range t.GlobSrcGroups {
+			owningDir := p.deepestPkg(g.Dir)
+			rel, _ := relUnder(owningDir, g.Dir)
+			pattern := g.Pattern
+			if rel != "" {
+				pattern = rel + "/" + pattern
+			}
+			name := globSrcName(rel, g.Pattern)
+			label := headerLibLabel(p, owningDir, name)
+			if !seenLabel[label] {
+				seenLabel[label] = true
+				labels = append(labels, label)
+			}
+			if key := owningDir + "\x00" + name; !seen[key] {
+				seen[key] = true
+				byDir[owningDir] = append(byDir[owningDir], ir.Target{
+					Name:          name,
+					Kind:          ir.KindFilegroup,
+					FilegroupGlob: []string{pattern},
+					Visibility:    []string{"//visibility:public"},
+				})
+			}
+		}
+		sort.Strings(labels)
+		labelsFor[t.Name] = labels
+	}
+	return byDir, labelsFor
+}
+
+// globSrcName derives a deterministic, package-unique filegroup name for a
+// file(GLOB)-derived source group: "glob_<ext>_srcs" at a package root, or
+// "<rel>_glob_<ext>_srcs" for a subdir glob (rel + ext sanitized to a legal
+// identifier). The extension is taken from the pattern's trailing "*.<ext>";
+// patterns without one fall back to "files".
+func globSrcName(relInPkg, pattern string) string {
+	// Map every char that isn't legal in a Bazel target name to "_", so an
+	// extension carrying glob syntax ("*.[ch]", "*.?pp") can't leak '[' /
+	// '?' / ']' into the name.
+	san := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+				return r
+			default:
+				return '_'
+			}
+		}, s)
+	}
+	ext := "files"
+	if i := strings.LastIndex(pattern, "*."); i >= 0 {
+		ext = san(pattern[i+2:])
+	}
+	// Disambiguate by a stable hash of the full (rel, pattern): distinct
+	// globs that share rel+ext — "*.td" vs "**/*.td", "*.txt" vs
+	// "foo*.txt" — must not collide into (and be wrongly deduped to) one
+	// filegroup, which would point some genrules at the wrong glob.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(relInPkg + "\x00" + pattern))
+	disc := fmt.Sprintf("%08x", h.Sum32())
+	if relInPkg == "" {
+		return "glob_" + ext + "_" + disc + "_srcs"
+	}
+	return san(relInPkg) + "_glob_" + ext + "_" + disc + "_srcs"
+}
+
+// dropGlobSrcFiles returns a copy of t with the file(GLOB)-covered sources
+// (recorded on its GlobSrcGroups.Files) removed from Srcs. split serves
+// those via the synthesized glob() filegroups, so the explicit entries
+// would be redundant; lower keeps them in Srcs so the monolithic emitter —
+// which synthesizes no filegroup — still sees the inputs.
+func dropGlobSrcFiles(t ir.Target) ir.Target {
+	drop := map[string]bool{}
+	for _, g := range t.GlobSrcGroups {
+		for _, f := range g.Files {
+			drop[f] = true
+		}
+	}
+	if len(drop) == 0 {
+		return t
+	}
+	kept := make([]string, 0, len(t.Srcs))
+	for _, s := range t.Srcs {
+		if !drop[s] {
+			kept = append(kept, s)
+		}
+	}
+	t.Srcs = kept
+	return t
 }
 
 // planSplit computes the split layout from a lowered package.
@@ -421,21 +587,78 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// $@ / $(location), which stay correct regardless of the literal
 	// out path, so this is purely a label re-rooting. Only the local
 	// regime; the SourceKey regime keeps element-root-relative paths.
-	if local && t.Kind == ir.KindGenrule && len(t.GenruleOuts) > 0 {
-		outs := make([]string, 0, len(t.GenruleOuts))
-		for _, o := range t.GenruleOuts {
-			if rel, ok := relUnder(dir, o); ok {
-				outs = append(outs, rel)
-			} else {
-				// Out sits outside this genrule's package (a
-				// multi-output genrule spanning packages — rare and
-				// not expressible as-is in Bazel). Leave it
-				// element-root-relative so the breakage is visible
-				// rather than silently mis-rooted.
-				outs = append(outs, o)
+	if t.Kind == ir.KindGenrule {
+		if local && len(t.GenruleOuts) > 0 {
+			cmd := rt.GenruleCmd
+			outs := make([]string, 0, len(t.GenruleOuts))
+			for _, o := range t.GenruleOuts {
+				if rel, ok := relUnder(dir, o); ok {
+					// The standalone-custom-command cmd references
+					// each out as $(RULEDIR)/<out> (the lower-side
+					// anchorGenruleOutputsToRuledir); moving the
+					// genrule into its output's package shrinks the
+					// out, so the cmd's $(RULEDIR)/<old> must shrink
+					// in lockstep. $@ / $(location <out>) forms need
+					// no rewrite.
+					if rel != o {
+						cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+o, "$(RULEDIR)/"+rel)
+					}
+					outs = append(outs, rel)
+				} else {
+					// Out sits outside this genrule's package (a
+					// multi-output genrule spanning packages — rare and
+					// not expressible as-is in Bazel). Leave it
+					// element-root-relative so the breakage is visible
+					// rather than silently mis-rooted.
+					outs = append(outs, o)
+				}
 			}
+			rt.GenruleOuts = outs
+			rt.GenruleCmd = cmd
 		}
-		rt.GenruleOuts = outs
+		// Rewrite intra-element genrule tool labels (":x") and their
+		// matching $(location :x) cmd references to cross-package form —
+		// e.g. a tablegen genrule placed in //include whose generator
+		// binary (llvm-min-tblgen) lives in //llvm/utils/TableGen.
+		// Mirrors the deps rewrite below; runs in both regimes since a
+		// tool label is package-location-dependent either way.
+		if len(t.GenruleTools) > 0 {
+			tools := make([]string, 0, len(t.GenruleTools))
+			cmd := rt.GenruleCmd
+			for _, tool := range t.GenruleTools {
+				if strings.HasPrefix(tool, ":") {
+					label := targetLabel(plan, strings.TrimPrefix(tool, ":"))
+					tools = append(tools, label)
+					cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
+					continue
+				}
+				tools = append(tools, tool)
+			}
+			rt.GenruleTools = tools
+			rt.GenruleCmd = cmd
+		}
+	}
+
+	// write_file (configure_file / file(GENERATE) bake tier) and
+	// cmake_configure_file (lift tier) carry a single element-root-
+	// relative output path; once the rule is placed in its output's
+	// package (EmitSplit's partition loop above), re-relativize the out
+	// to that package dir so Bazel sees a package-local generated file
+	// (out = "llvm/Config/config.h", not "include/llvm/Config/config.h").
+	// CMakeConfigureFile is a pointer into the shared IR target, so copy
+	// the spec before mutating to avoid corrupting the source package.
+	if local && t.Kind == ir.KindWriteFile && t.WriteFileOut != "" {
+		if rel, ok := relUnder(dir, t.WriteFileOut); ok {
+			rt.WriteFileOut = rel
+		}
+	}
+	if local && t.Kind == ir.KindCMakeConfigureFile &&
+		t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
+		if rel, ok := relUnder(dir, t.CMakeConfigureFile.Out); ok {
+			specCopy := *t.CMakeConfigureFile
+			specCopy.Out = rel
+			rt.CMakeConfigureFile = &specCopy
+		}
 	}
 
 	// Rewrite intra-element deps (":x") to cross-package labels.

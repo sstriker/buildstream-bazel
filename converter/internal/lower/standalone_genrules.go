@@ -1,7 +1,11 @@
 package lower
 
 import (
+	"io/fs"
+	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -52,6 +56,14 @@ type standaloneTraceContext struct {
 	// genrule needs at least `:__pkg__` visibility for T to
 	// reference it.
 	AddDependencies []shadow.AddDependenciesCall
+
+	// FileGlobs carries the user's source-level file(GLOB)/file(GLOB_RECURSE)
+	// calls. threadFileGlobs matches each glob's result set against the
+	// standalone genrules' srcs: when a genrule depends on exactly a glob's
+	// output, those srcs are folded into a build-time glob() filegroup
+	// (split-synthesized) so the glob is preserved in project B. Empty when
+	// the project uses no file(GLOB).
+	FileGlobs []shadow.FileGlobCall
 
 	// AliasToActual maps each add_library(<alias> ALIAS <actual>) alias name
 	// to its actual producing target (namespaced aliases like Foo::Bar
@@ -116,7 +128,7 @@ type standaloneTraceContext struct {
 // map into the lift so rewriteToolFromTarget can lift bare
 // `bin/<tool>` references in the cmd into `$(location :<name>)` +
 // tools attribute entries. Empty map disables tool rewriting.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir string, artifactToName map[string]string, traceCtx standaloneTraceContext) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -213,7 +225,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// relative form. The pre-genruleSrcs path appended the
 		// raw ninja inputs verbatim, leaking convert-time
 		// absolute paths into the rendered genrule.
-		srcs := genruleSrcs(b, cmakeSrc, buildDir)
+		srcs := genruleSrcs(b, cmakeSrc, buildDir, umbrellaPrefix)
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
@@ -249,8 +261,20 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// anchor pass strips buildDir prefixes from the cmd so
 		// the bare `bin/<tool>` form survives intact for the
 		// lookup.
-		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir)
+		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix)
 		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName)
+		// The tool-from-target lift hoisted the generator binary into
+		// `tools` and rewrote the cmd to $(location :tool); drop the
+		// now-redundant build artifact (e.g. the multi-config
+		// `<cfg>/bin/<tool>`) from srcs so it doesn't survive as a
+		// dangling file input with no producing package.
+		srcs = dropLiftedToolSrcs(srcs, tools, artifactToName)
+		// Re-anchor build-dir-relative output paths in the cmd to
+		// $(RULEDIR)/<out> so the genrule writes its declared outs
+		// under bazel-out rather than to a bare relative path (which
+		// bazel rejects as a missing output). split.go re-relativizes
+		// the $(RULEDIR)-relative path if the genrule moves packages.
+		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
 		// Audit: when the trace shows this command carried generator
 		// expressions, tag whether its path-bearing genexes resolved to
 		// $(location) labels (portable) or baked a machine-specific
@@ -273,6 +297,426 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		})
 	}
 	return out
+}
+
+// dropLiftedToolSrcs removes srcs that rewriteToolFromTarget already
+// hoisted into the genrule's `tools` attribute. The lift rewrites a
+// build-dir-relative artifact reference in the cmd (e.g.
+// `<cfg>/bin/llvm-min-tblgen`) to `$(location :<name>)` and adds
+// `:<name>` to tools; the same artifact path also lands in srcs (it's
+// a ninja input of the edge). Left there it renders as a dangling file
+// label (`//:<cfg>/bin/<tool>`) with no producing package. We match a
+// src by the same artifactToName key the cmd lift used, so the two
+// stay in lockstep.
+func dropLiftedToolSrcs(srcs, tools []string, artifactToName map[string]string) []string {
+	if len(tools) == 0 || len(srcs) == 0 || len(artifactToName) == 0 {
+		return srcs
+	}
+	lifted := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		lifted[t] = true // tools are ":<name>" labels
+	}
+	kept := make([]string, 0, len(srcs))
+	for _, s := range srcs {
+		if name, ok := artifactToName[s]; ok && lifted[":"+name] {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	return kept
+}
+
+// anchorGenruleOutputsToRuledir rewrites each build-dir-relative output
+// path that appears literally in the cmd to $(RULEDIR)/<out>. cmake's
+// Ninja generator bakes the output path as a build-dir-relative literal
+// (e.g. `-o include/llvm/.../X.inc`); a Bazel genrule must instead write
+// its declared outs under $(RULEDIR) (the package's bin dir). Outputs
+// are rewritten longest-first so a shorter out that is a path-prefix of
+// a longer one doesn't rewrite the longer one's interior, and an out
+// already carrying the $(RULEDIR)/ prefix is skipped (idempotent).
+// Sibling paths derived from an out by suffix — e.g. the `<out>.d`
+// depfile tblgen emits — re-anchor for free since the out substring
+// they contain is rewritten in place.
+func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
+	if cmd == "" || len(outs) == 0 {
+		return cmd
+	}
+	const rp = "$(RULEDIR)/"
+	// Longest outs first so a path that is a prefix of another ("foo" vs
+	// "foo.d") is considered as the longer token before the shorter.
+	sorted := append([]string(nil), outs...)
+	sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+	for _, o := range sorted {
+		if o == "" {
+			continue
+		}
+		// Anchor each occurrence of o that isn't already prefixed by rp.
+		// A per-occurrence guard (vs a whole-cmd strings.Contains check)
+		// avoids a false "already anchored" skip when one out is a prefix
+		// of another — rp+"foo" is a substring of rp+"foo.d", so the old
+		// check skipped anchoring a still-literal "foo" — while the rp guard
+		// still blocks double-anchoring. Occurrences where o is a prefix of
+		// a longer path (e.g. a "<o>.d" depfile) stay anchored, as before.
+		var b strings.Builder
+		for i := 0; i < len(cmd); {
+			if strings.HasPrefix(cmd[i:], o) && !(i >= len(rp) && cmd[i-len(rp):i] == rp) {
+				b.WriteString(rp)
+				b.WriteString(o)
+				i += len(o)
+				continue
+			}
+			b.WriteByte(cmd[i])
+			i++
+		}
+		cmd = b.String()
+	}
+	return cmd
+}
+
+// recordCodegenIncludeClosure appends the transitive `include "..."`
+// closure of each include-resolving codegen genrule's primary input to
+// its srcs — the tablegen shape: a tool that reads `-I <dir>` roots and
+// resolves `include "x.td"` directives against them.
+//
+// cmake tracks that transitive closure via a per-output DEPFILE, which is
+// dynamic: absent from a configure-only reply's static ninja inputs AND
+// from the trace. (LLVM's tablegen() macro uses the depfile under Ninja —
+// "Use depfile instead of globbing arbitrary *.td(s) for Ninja" — and only
+// falls back to `file(GLOB)` for non-depfile generators, so neither the
+// precise set nor a glob call ever reaches us.) So the lowered genrule
+// lists only the explicit primary input (RISCV.td); without the rest of
+// the `.td` closure the tool fails at action time with "could not find
+// include file ...".
+//
+// We replicate the depfile statically: from the primary input, follow
+// `include "..."` directives, resolving each against the genrule's own
+// `-I` roots (in order, first existing match wins), and add every
+// reachable source file to srcs. This is the precise set the depfile would
+// list — minimal and faithful, not the coarse `glob(**/*.td)` over-
+// approximation cmake falls back to for non-Ninja generators. split's
+// cross-package src handling relabels each closure file to its owning
+// package and raises the exports_files() need automatically.
+//
+// labelRoot is the absolute path the genrule's (umbrella-anchored) srcs
+// and `-I` paths are relative to; "" disables the pass (unit tests,
+// non-promoted offline replays without a source tree on disk). An include
+// that doesn't resolve to a file on the source FS (e.g. a generated `.td`)
+// contributes no further edges — the same blind spot cmake's glob fallback
+// has.
+//
+// Scope guard: only genrules whose primary explicit source sits inside
+// one of their own `-I` roots count as include-resolving codegen. A plain
+// genrule that passes `-I` for a compiler invocation doesn't match — its
+// input isn't resolved via the include path — so it's left untouched.
+func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
+	if labelRoot == "" {
+		return
+	}
+	for i := range targets {
+		t := &targets[i]
+		if t.Kind != ir.KindGenrule || t.GenruleCmd == "" {
+			continue
+		}
+		roots := genruleIncludeRoots(t.GenruleCmd)
+		if len(roots) == 0 {
+			continue
+		}
+		primary, ext := primaryCodegenInput(t.Srcs, roots)
+		// Gate to tablegen .td: the include scanner recognizes tablegen's
+		// `include "..."` syntax, so restrict to .td primaries rather than
+		// reading unrelated codegen inputs. (Another include-syntax codegen
+		// tool would be a one-line extension to this check.)
+		if ext != ".td" {
+			continue
+		}
+		existing := make(map[string]bool, len(t.Srcs))
+		for _, s := range t.Srcs {
+			existing[s] = true
+		}
+		var add []string
+		for _, c := range tdIncludeClosure(primary, roots, labelRoot) {
+			if !existing[c] {
+				existing[c] = true
+				add = append(add, c)
+			}
+		}
+		sort.Strings(add)
+		t.Srcs = append(t.Srcs, add...)
+	}
+}
+
+// tdIncludeClosure returns the set of labelRoot-relative source files
+// reachable from primary by transitively following `include "..."`
+// directives, resolving each path against roots (first existing match
+// wins). primary is always the first element. A file that can't be read
+// (generated / off-tree) terminates that branch; cycles are bounded by the
+// visited set.
+func tdIncludeClosure(primary string, roots []string, labelRoot string) []string {
+	seen := map[string]bool{}
+	var order []string
+	var visit func(rel string)
+	visit = func(rel string) {
+		if seen[rel] {
+			return
+		}
+		seen[rel] = true
+		order = append(order, rel)
+		data, err := os.ReadFile(filepath.Join(labelRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			return
+		}
+		for _, inc := range parseTdIncludes(data) {
+			if r := resolveTdInclude(inc, roots, labelRoot); r != "" {
+				visit(r)
+			}
+		}
+	}
+	visit(primary)
+	return order
+}
+
+// tdIncludeRe matches a tablegen `include "path"` directive at the start
+// of a line (after optional leading whitespace) — the uniform form across
+// LLVM's `.td` tree.
+var tdIncludeRe = regexp.MustCompile(`(?m)^[ \t]*include[ \t]+"([^"]+)"`)
+
+// parseTdIncludes extracts the include paths from a `.td` file body.
+func parseTdIncludes(data []byte) []string {
+	ms := tdIncludeRe.FindAllSubmatch(data, -1)
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, string(m[1]))
+	}
+	return out
+}
+
+// resolveTdInclude resolves an include path against the `-I` roots in
+// order, returning the first labelRoot-relative path that names an
+// existing file, or "" if none do.
+func resolveTdInclude(inc string, roots []string, labelRoot string) string {
+	inc = strings.TrimLeft(filepath.ToSlash(inc), "/")
+	for _, r := range roots {
+		cand := path.Clean(strings.TrimRight(r, "/") + "/" + inc)
+		// Reject includes that escape labelRoot (e.g. "../../etc/passwd"):
+		// path.Clean would resolve the "..", letting os.Stat read host
+		// files outside the workspace and yielding a label containing ".."
+		// that Bazel can't represent. Only files within labelRoot fold in.
+		if cand == ".." || strings.HasPrefix(cand, "../") || path.IsAbs(cand) {
+			continue
+		}
+		if fi, err := os.Stat(filepath.Join(labelRoot, filepath.FromSlash(cand))); err == nil && !fi.IsDir() {
+			return cand
+		}
+	}
+	return ""
+}
+
+// threadFileGlobs folds cmake file(GLOB)/file(GLOB_RECURSE) results back
+// into build-time glob() filegroups. cmake --trace-expand expands ${glob}
+// to its matched files wherever it's used (e.g. a genrule's DEPENDS), so a
+// lowered genrule sourced from a glob lists the frozen match set rather
+// than the glob. We recover the glob: for each file(GLOB) call we compute
+// its match set on the source FS, and when that whole set is a subset of a
+// genrule's srcs (the genrule depends on exactly the glob's output) we
+// record a GlobSrcGroup — keeping the explicit srcs in place. split then
+// drops the covered files, emits one filegroup(srcs = glob([<pattern>]))
+// per group, and splices its label into the genrule (so a file added post-
+// conversion is picked up); the monolithic emitter keeps the explicit srcs,
+// so neither path loses inputs.
+//
+// The subset test avoids false positives: a genrule with an explicit dep
+// that merely overlaps a glob (without covering the whole match set) is
+// left untouched. RELATIVE globs are skipped — their results are relative
+// to a base dir, not matchable against the absolute-anchored srcs.
+//
+// labelRoot is the absolute path srcs resolve against; "" disables the
+// pass (offline replay without a source tree).
+func threadFileGlobs(targets []ir.Target, globs []shadow.FileGlobCall, labelRoot string) {
+	if labelRoot == "" || len(globs) == 0 {
+		return
+	}
+	type group struct {
+		dir, pattern string
+		files        []string
+	}
+	var groups []group
+	for _, gc := range globs {
+		if gc.Relative {
+			continue
+		}
+		for _, pat := range gc.Patterns {
+			if files, dir, bpat, ok := fileGlobMatchSet(pat, gc.File, gc.Recurse, labelRoot); ok {
+				groups = append(groups, group{dir, bpat, files})
+			}
+		}
+	}
+	for i := range targets {
+		t := &targets[i]
+		if t.Kind != ir.KindGenrule || len(t.Srcs) == 0 {
+			continue
+		}
+		srcSet := make(map[string]bool, len(t.Srcs))
+		for _, s := range t.Srcs {
+			srcSet[s] = true
+		}
+		var specs []ir.GlobSrcGroup
+		seenSpec := map[string]bool{}
+		for _, g := range groups {
+			if !allIn(g.files, srcSet) {
+				continue
+			}
+			if key := g.dir + "\x00" + g.pattern; !seenSpec[key] {
+				seenSpec[key] = true
+				specs = append(specs, ir.GlobSrcGroup{
+					Dir:     g.dir,
+					Pattern: g.pattern,
+					Files:   append([]string(nil), g.files...),
+				})
+			}
+		}
+		if len(specs) == 0 {
+			continue
+		}
+		// Keep the explicit srcs in place: split drops them in favor of the
+		// synthesized glob() filegroup, but the monolithic emitter doesn't
+		// synthesize one, so dropping here would silently lose the inputs.
+		t.GlobSrcGroups = append(t.GlobSrcGroups, specs...)
+	}
+}
+
+// fileGlobMatchSet evaluates one file(GLOB) pattern on the source FS,
+// returning the matched files (labelRoot-relative, sorted), the labelRoot-
+// relative directory the glob is anchored at, and the Bazel glob pattern
+// relative to that dir ("*.x" for GLOB, "**/*.x" for GLOB_RECURSE). ok is
+// false when the pattern's directory falls outside labelRoot (not
+// expressible as a project-local glob) or nothing matches.
+func fileGlobMatchSet(pattern, callFile string, recurse bool, labelRoot string) (files []string, anchorDir, bazelPat string, ok bool) {
+	pattern = filepath.FromSlash(pattern)
+	if !filepath.IsAbs(pattern) {
+		// cmake evaluates a relative globbing expression against the calling
+		// list file's directory (CMAKE_CURRENT_SOURCE_DIR) — so "src/*.cpp"
+		// anchors at dir(callFile). For a glob written inside a macro,
+		// callFile is the macro itself, whose dir typically holds no matches;
+		// that yields an empty match set and the call is safely skipped
+		// rather than mis-anchored.
+		pattern = filepath.Join(filepath.Dir(callFile), pattern)
+	}
+	dir, base := filepath.Dir(pattern), filepath.Base(pattern)
+	if strings.ContainsAny(dir, "*?[") {
+		// A wildcard in the directory portion (e.g. "data/*/*.txt") means
+		// the anchor dir isn't a real package, so we can't root a valid
+		// glob() filegroup there. Skip folding — the genrule keeps its
+		// explicit srcs — until directory-wildcard anchoring is supported.
+		return nil, "", "", false
+	}
+	relDir, err := filepath.Rel(labelRoot, dir)
+	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) {
+		return nil, "", "", false
+	}
+	anchorDir = filepath.ToSlash(relDir)
+	if anchorDir == "." {
+		anchorDir = ""
+	}
+	bazelPat = base
+	if recurse {
+		bazelPat = "**/" + base
+	}
+	var matches []string
+	if recurse {
+		_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil || d.IsDir() {
+				return nil
+			}
+			if m, _ := filepath.Match(base, filepath.Base(p)); m {
+				matches = append(matches, p)
+			}
+			return nil
+		})
+	} else {
+		// filepath.Glob can match directories (e.g. "data/*"); Bazel glob()
+		// excludes dirs and genrule srcs expect files, so drop them — same
+		// as the recurse path's d.IsDir() skip.
+		all, _ := filepath.Glob(pattern)
+		for _, m := range all {
+			if fi, err := os.Stat(m); err == nil && !fi.IsDir() {
+				matches = append(matches, m)
+			}
+		}
+	}
+	for _, m := range matches {
+		if rel, err := filepath.Rel(labelRoot, m); err == nil {
+			files = append(files, filepath.ToSlash(rel))
+		}
+	}
+	sort.Strings(files)
+	return files, anchorDir, bazelPat, len(files) > 0
+}
+
+// allIn reports whether every file is present in set (and the list is
+// non-empty) — the "genrule depends on the whole glob" subset test.
+func allIn(files []string, set map[string]bool) bool {
+	for _, f := range files {
+		if !set[f] {
+			return false
+		}
+	}
+	return len(files) > 0
+}
+
+// genruleIncludeRoots extracts the `-I` include roots from a genrule cmd,
+// handling both `-I dir` (separate token) and `-Idir` (joined) forms.
+// Roots are returned slash-form with surrounding quotes and trailing
+// slashes trimmed, deduped in first-seen order.
+func genruleIncludeRoots(cmd string) []string {
+	fields := strings.Fields(cmd)
+	var roots []string
+	seen := map[string]bool{}
+	add := func(r string) {
+		r = strings.TrimRight(filepath.ToSlash(strings.Trim(r, `"'`)), "/")
+		if r == "" || seen[r] {
+			return
+		}
+		seen[r] = true
+		roots = append(roots, r)
+	}
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		switch {
+		case f == "-I" && i+1 < len(fields):
+			add(fields[i+1])
+			i++
+		case strings.HasPrefix(f, "-I") && len(f) > 2:
+			add(f[2:])
+		}
+	}
+	return roots
+}
+
+// primaryCodegenInput returns the first src that sits at or under one of the
+// genrule's own `-I` roots, plus that src's extension. That coincidence —
+// the input lives under an include root the same tool searches — is the
+// signal that the genrule resolves includes (tablegen-shaped) rather than
+// merely passing `-I` to a compiler. The root may be the src's immediate
+// directory or an ancestor of it (e.g. `-I llvm/lib/Target` with a primary
+// in `llvm/lib/Target/RISCV/`). srcs are still relative (umbrella-anchored)
+// at this lower-time stage; cross-package labels come later.
+func primaryCodegenInput(srcs, roots []string) (string, string) {
+	clean := make([]string, 0, len(roots))
+	for _, r := range roots {
+		clean = append(clean, strings.TrimRight(filepath.ToSlash(r), "/"))
+	}
+	for _, s := range srcs {
+		if strings.HasPrefix(s, "//") || strings.HasPrefix(s, "@") || strings.HasPrefix(s, "$") {
+			continue // external / label / make-var srcs aren't FS inputs
+		}
+		dir := strings.TrimRight(filepath.ToSlash(filepath.Dir(s)), "/")
+		for _, r := range clean {
+			if r == "." || dir == r || (r != "" && strings.HasPrefix(dir, r+"/")) {
+				return s, filepath.Ext(s)
+			}
+		}
+	}
+	return "", ""
 }
 
 // pickStandaloneName returns the source-level add_custom_target

@@ -45,6 +45,7 @@ type Decoded struct {
 	AddDependencies            []AddDependenciesCall
 	AddLibraries               []AddLibraryCall
 	InstallExports             []InstallExportCall
+	FileGlobs                  []FileGlobCall
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -101,6 +102,9 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyFileGenerate(ev, traceSourceRoot); ok {
 			d.FileGenerates = append(d.FileGenerates, call)
+		}
+		if call, ok := classifyFileGlob(ev, traceSourceRoot); ok {
+			d.FileGlobs = append(d.FileGlobs, call)
 		}
 		if call, ok := classifyExecuteProcess(ev, traceSourceRoot); ok {
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
@@ -801,6 +805,92 @@ type ExecuteProcessCall struct {
 	ErrorFile        string
 	Environment      []string
 	RawArgs          []string
+}
+
+// FileGlobCall records one user-written file(GLOB <var> ...) or
+// file(GLOB_RECURSE <var> ...) call. Under cmake --trace-expand the
+// globbing expressions arrive already expanded to absolute, wildcarded
+// paths (e.g. "/src/data/*.txt"); the matched file list is NOT in the
+// trace (it's assigned to <var> internally and only surfaces, expanded,
+// where ${var} is later used). Recurse distinguishes GLOB_RECURSE (matches
+// beneath the pattern dir) from GLOB (the pattern dir only). Relative is
+// set when the RELATIVE option is present — results are then relative to a
+// base dir, which the standalone-genrule threader can't match against
+// absolute srcs, so those calls are recorded but skipped downstream.
+type FileGlobCall struct {
+	File     string
+	Line     int
+	Var      string
+	Patterns []string
+	Recurse  bool
+	Relative bool
+	RawArgs  []string
+}
+
+// ExtractFileGlobs returns one entry per user-written file(GLOB ...) /
+// file(GLOB_RECURSE ...) call whose `file` is inside sourceRoot. cmake's
+// own bundled modules glob constantly during project()/compiler probing;
+// inSourceTree drops those so only the project's own globs remain.
+func ExtractFileGlobs(traceRaw []byte, sourceRoot string) []FileGlobCall {
+	var out []FileGlobCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyFileGlob(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyFileGlob parses one trace event into a FileGlobCall, or returns
+// (_, false) when it isn't an in-source-tree file(GLOB|GLOB_RECURSE ...).
+// Argument shape (cmake docs):
+//
+//	file(GLOB <var> [LIST_DIRECTORIES true|false] [RELATIVE <path>]
+//	     [CONFIGURE_DEPENDS] <globbing-expressions>...)
+//
+// Option keywords are consumed (RELATIVE/LIST_DIRECTORIES each take a
+// value; CONFIGURE_DEPENDS/FOLLOW_SYMLINKS are flags); every remaining
+// token is a globbing expression. Unknown keywords fall through to the
+// pattern list — harmless, since the threader only acts when a pattern's
+// match set actually coincides with a genrule's srcs.
+func classifyFileGlob(ev TraceEvent, sourceRoot string) (FileGlobCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "file") {
+		return FileGlobCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return FileGlobCall{}, false
+	}
+	if len(ev.Args) < 3 {
+		return FileGlobCall{}, false
+	}
+	recurse := strings.EqualFold(ev.Args[0], "GLOB_RECURSE")
+	if !recurse && !strings.EqualFold(ev.Args[0], "GLOB") {
+		return FileGlobCall{}, false
+	}
+	call := FileGlobCall{
+		File:    ev.File,
+		Line:    ev.Line,
+		Var:     ev.Args[1],
+		Recurse: recurse,
+		RawArgs: append([]string(nil), ev.Args...),
+	}
+	for i := 2; i < len(ev.Args); i++ {
+		switch strings.ToUpper(ev.Args[i]) {
+		case "LIST_DIRECTORIES":
+			i++ // skip the true/false value
+		case "RELATIVE":
+			call.Relative = true
+			i++ // skip the base path
+		case "CONFIGURE_DEPENDS", "FOLLOW_SYMLINKS":
+			// flag-only
+		default:
+			call.Patterns = append(call.Patterns, ev.Args[i])
+		}
+	}
+	if len(call.Patterns) == 0 {
+		return FileGlobCall{}, false
+	}
+	return call, true
 }
 
 // ExtractExecuteProcess returns one entry per user-written

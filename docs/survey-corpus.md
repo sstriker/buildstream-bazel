@@ -6,6 +6,15 @@ instrument we use to answer "is the converter getting better, and where is
 intent still being lost?" — see `docs/codemodel-consumption-audit.md` for
 the analysis framing and `scripts/run-survey.sh` for the driver.
 
+> **Survey is not fidelity.** The survey runs the *faithful* shape
+> (multi-config + split-packages, see below) to catch **intent loss**; the
+> fidelity harness (`scripts/run-fidelity.sh`) runs the *opposite* shape
+> (single-config + single monolithic BUILD) to catch **symbol divergence**
+> in a built artifact. They're complementary oracles — neither subsumes the
+> other. The full framing lives in
+> [`docs/fidelity-deltas.md`](fidelity-deltas.md) under "Fidelity vs.
+> survey: two complementary oracles".
+
 This document is the single source of truth for **which projects are in the
 corpus** and **how to survey them faithfully** (so two runs are comparable).
 
