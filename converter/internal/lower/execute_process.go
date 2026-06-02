@@ -470,6 +470,11 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, anc execAnchor
 		// <src> <dst>` (no `-E <op>` prefix), so the operands
 		// start at argv[1].
 		return liftCp(argv[1:], anc, cc)
+	case "install":
+		// Raw POSIX `install` (issue #376): copy-with-attributes,
+		// or a directory create with -d. argv is `install <flags...>
+		// <src...> <dst>`, operands start at argv[1].
+		return liftInstall(argv[1:], anc, cc)
 	case "touch_raw":
 		// Raw POSIX `touch` — the analog of `cmake -E touch`, reusing
 		// liftCMakeETouch after flag-stripping. argv is `touch
@@ -796,6 +801,140 @@ func liftCp(args []string, anc execAnchors, cc *codegenContext) ([]string, strin
 		return nil, fmt.Sprintf("cp: source %q is a directory but no recursive flag (-R/-r/-a) was given", src), false
 	}
 	return liftCpDir(real, srcRel, realSrcRel, dstRel, anc, cc)
+}
+
+// liftInstall reproduces a POSIX `install` call (issue #376). `install` is a
+// copy-with-attributes — and, with -d, a directory create. Forms:
+//
+//	install -d   [opts] DIR...        directory creation (benign no-op)
+//	install      [opts] SRC DST       copy SRC -> DST (a file)
+//	install      [opts] SRC... DIR    copy each SRC into DIR
+//	install -t DIR [opts] SRC...      copy each SRC into DIR
+//
+// The DESTINATION decides whether the copy is load-bearing: a destination
+// under the build dir lifts to a copy genrule (a real Bazel artifact); a
+// destination outside it — the common `${CMAKE_INSTALL_PREFIX}/bin` staging
+// — is a benign skip, since install-prefix output is not a Bazel-tracked
+// input and a genrule for it would only dangle. A source that can't be
+// anchored under the source root refuses (the input can't be named).
+// Attribute flags (-m/-o/-g, -s, -p, ...) are dropped: permissions and
+// ownership don't affect the bytes a Bazel consumer reads. Genuinely
+// ambiguous argv refuses (safe round-2 fallback).
+func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	var operands []string
+	dirMode := false
+	targetDir := ""
+	hasTargetDir := false
+
+	// Short flags that take a value: -m MODE, -o OWNER, -g GROUP, -t DIR,
+	// -S SUFFIX. Everything else short is boolean (-d/-D/-s/-p/-v/-b/-c/-C
+	// /-T/-Z/-P). Options precede operands in cmake-generated install calls.
+	const valueShort = "mogtS"
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch {
+		case a == "--":
+			operands = append(operands, args[i+1:]...)
+			i = len(args)
+		case a == "-d" || a == "--directory":
+			dirMode = true
+			i++
+		case a == "-t" || a == "--target-directory":
+			if i+1 >= len(args) {
+				return nil, "install: -t given without a target directory", false
+			}
+			targetDir, hasTargetDir = args[i+1], true
+			i += 2
+		case strings.HasPrefix(a, "--target-directory="):
+			targetDir, hasTargetDir = strings.TrimPrefix(a, "--target-directory="), true
+			i++
+		case strings.HasPrefix(a, "--"):
+			// Other long option (--mode=, --strip, --preserve-timestamps,
+			// ...). `--x=y` is self-contained; a bare `--x` is boolean.
+			// None shift operand positions, so drop.
+			i++
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			body := a[1:]
+			if strings.IndexByte(body, 'd') >= 0 {
+				dirMode = true
+			}
+			last := body[len(body)-1]
+			if strings.IndexByte(valueShort, last) >= 0 {
+				// Value-taking flag with no joined value: the next arg is
+				// its value (e.g. `-m 755`, `-t dir`).
+				if last == 't' {
+					if i+1 >= len(args) {
+						return nil, "install: -t given without a target directory", false
+					}
+					targetDir, hasTargetDir = args[i+1], true
+				}
+				i += 2
+			} else {
+				// Joined value (`-m755`, `-tdir`) or an all-boolean cluster
+				// (`-ps`). A `-t` not in last position carries its dir as
+				// the cluster remainder.
+				if ti := strings.IndexByte(body, 't'); ti >= 0 && ti < len(body)-1 {
+					targetDir, hasTargetDir = body[ti+1:], true
+				}
+				i++
+			}
+		default:
+			operands = append(operands, args[i:]...)
+			i = len(args)
+		}
+	}
+
+	// `install -d DIR...`: directory creation. No Bazel artifact (fresh
+	// sandbox per action), so skip benignly — same as mkdir / cmake -E
+	// make_directory.
+	if dirMode {
+		return nil, "", true
+	}
+
+	var sources []string
+	var dest string
+	destIsDir := false
+	switch {
+	case hasTargetDir:
+		if len(operands) == 0 {
+			return nil, "install: -t given but no source operands", false
+		}
+		sources, dest, destIsDir = operands, targetDir, true
+	case len(operands) >= 2:
+		dest = operands[len(operands)-1]
+		sources = operands[:len(operands)-1]
+		destIsDir = len(sources) > 1 || strings.HasSuffix(dest, "/")
+	default:
+		return nil, fmt.Sprintf("install: expected SRC... DEST (got %d operand(s))", len(operands)), false
+	}
+
+	// The directory the file(s) land in decides build-tree vs install-prefix.
+	destDir := dest
+	if !destIsDir {
+		destDir = filepath.Dir(dest)
+	}
+	if _, ok := executeProcessAnchorOutput(destDir, anc); !ok {
+		// Outside the build tree → install-prefix staging → benign skip.
+		return nil, "", true
+	}
+
+	// Under the build tree: reproduce each copy. emitCopyGenrule anchors the
+	// source (refuses if not under the source root) and the destination
+	// (under build, checked above) and emits one cp genrule per file.
+	var outs []string
+	for _, s := range sources {
+		dstPath := dest
+		if destIsDir {
+			dstPath = filepath.Join(dest, filepath.Base(s))
+		}
+		o, reason, ok := emitCopyGenrule("install", "install", s, dstPath, anc, cc)
+		if !ok {
+			return nil, reason, false
+		}
+		outs = append(outs, o...)
+	}
+	return outs, "", true
 }
 
 // liftCpFile handles `cp <file> <dst>`. When dst names a

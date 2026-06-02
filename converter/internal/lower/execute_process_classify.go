@@ -131,7 +131,7 @@ var noopExecuteProcessOps = map[string]bool{
 	"rmdir":            true,
 	// Raw filesystem-metadata side effects (issue #376), classified only
 	// in their no-output form by the benignNoOutputDrivers arm in Classify.
-	// (install is excluded — it copies files; see benignNoOutputDrivers.)
+	// (install copies files and is handled by liftInstall, not here.)
 	"chmod": true,
 	"chown": true,
 	"chgrp": true,
@@ -220,10 +220,10 @@ var noopDrivers = map[string]bool{
 // failure mode reported in issue #376.
 //
 // `install` is deliberately NOT here: it commonly creates/copies files
-// (`install -m755 src dst`), so a blanket skip could silently drop a
-// build-tree artifact. Handling install safely needs a copy-aware lifter
-// (argv/destination parsing, like liftCp) — a separate follow-up; for now
-// install keeps its prior classification.
+// (`install -m755 src dst`), so it can't be a blanket metadata skip. It has
+// its own classifier arm + liftInstall, which reproduces the copy when the
+// destination is under the build tree and skips only the install-prefix
+// staging form (see liftInstall).
 var benignNoOutputDrivers = map[string]bool{
 	"chmod": true,
 	"chown": true,
@@ -456,6 +456,19 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		}
 	}
 
+	// Raw `install` (issue #376): a copy-with-attributes (and, with -d, a
+	// directory create). Classify as cmake-e; liftInstall reproduces the
+	// copy when the destination is under the build tree, skips benignly
+	// when it's an install-prefix staging path, and treats -d as a no-op.
+	// argv-only here — flag/operand parsing is the lifter's job.
+	if driver == "install" {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "install (POSIX install — copy-with-attributes / -d dir-create)",
+			CMakeEOp: "install",
+		}
+	}
+
 	// Raw `touch` is the POSIX analog of `cmake -E touch` (already
 	// lifted). A configure-time marker-file write recovers to the
 	// same empty-file genrule rather than refusing. argv-only here;
@@ -516,11 +529,12 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// EVERY output channel is absent (executeProcessCapturesOutput covers
 	// all writeback variables + stdio redirects). A call that captures a
 	// writeback variable falls through to the normal classifier below
-	// (→ refuse); one with OUTPUT_FILE / ERROR_FILE falls through to the
-	// file-producing arm (hoistable). Either way the captured channel is
+	// (→ refuse); one with OUTPUT_FILE falls through to the file-producing
+	// arm (hoistable). An ERROR_FILE-only call has no OUTPUT_FILE to anchor,
+	// so it falls through to refusal. Either way the captured channel is
 	// handled by the normal path, never silently dropped by this benign
-	// skip. (`install` is excluded from benignNoOutputDrivers — it copies
-	// files; see that map's doc.)
+	// skip. (`install` copies files and is handled by liftInstall, not
+	// here; see benignNoOutputDrivers' doc.)
 	if benignNoOutputDrivers[driver] && !executeProcessCapturesOutput(call) {
 		return ClassifyResult{
 			Bucket:   BucketCMakeE,

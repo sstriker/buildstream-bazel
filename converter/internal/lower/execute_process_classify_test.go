@@ -169,14 +169,16 @@ func TestClassify_Buckets(t *testing.T) {
 			op:     "chown",
 		},
 		{
-			// install is NOT benign: it copies files, so a blanket skip
-			// could drop a build-tree artifact. It keeps refusing (→ safe
-			// round-2 fallback) until a copy-aware lifter handles it.
-			name: "install (no output) → refuse (file-producer, not benign)",
+			// install copies files, so it classifies as a copy-like cmake-e
+			// op (liftInstall reproduces or skips it) rather than a benign
+			// metadata no-op. The build-tree-vs-prefix decision is the
+			// lifter's; classification is driver-first.
+			name: "install → cmake-e (copy-with-attributes)",
 			call: shadow.ExecuteProcessCall{
 				Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}},
 			},
-			bucket: BucketRefuse,
+			bucket: BucketCMakeE,
+			op:     "install",
 		},
 		{
 			// STRICT invariant: a chmod that CAPTURES output is NOT benign —

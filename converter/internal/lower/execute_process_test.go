@@ -79,19 +79,60 @@ func TestRecoverExecuteProcess_BenignFilesystemUtils(t *testing.T) {
 	}
 }
 
-// TestRecoverExecuteProcess_InstallNotBenign pins that install is NOT skipped
-// benignly (it copies files; a blanket skip could drop a build artifact) —
-// it refuses, keeping the safe round-2 fallback until a copy-aware lifter
-// handles it.
-func TestRecoverExecuteProcess_InstallNotBenign(t *testing.T) {
-	calls := []shadow.ExecuteProcessCall{
-		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"install", "-m", "755", "/build/x", "/usr/bin/"}}},
-	}
-	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
-	if len(refusals) == 0 {
-		t.Fatal("install must not be skipped benignly (it copies files); expected a refusal")
-	}
+// TestRecoverExecuteProcess_Install covers the install copy-lift (issue
+// #376), keyed on the destination:
+//   - install into the build tree → a copy genrule (a real Bazel artifact);
+//   - install into an install-prefix path (outside the build tree) → benign
+//     skip (staging output isn't a Bazel-tracked input);
+//   - install -d → directory create → benign skip.
+func TestRecoverExecuteProcess_Install(t *testing.T) {
+	t.Run("into build tree → copy genrule", func(t *testing.T) {
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m", "644", "/src/gen/cfg.h", "/build/include/"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install into build tree should lift, not refuse; got %v", refusals)
+		}
+		if len(cc.Genrules) != 1 {
+			t.Fatalf("expected 1 copy genrule; got %+v", cc.Genrules)
+		}
+		if g := cc.Genrules[0]; len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "include/cfg.h" {
+			t.Errorf("outs: %v want [include/cfg.h]", g.GenruleOuts)
+		}
+	})
+
+	t.Run("install-prefix dest → benign skip", func(t *testing.T) {
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-m", "755", "/build/tool", "/usr/local/bin/"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install to an install-prefix must skip benignly; got %v", refusals)
+		}
+		if len(cc.Genrules) != 0 {
+			t.Errorf("install-prefix staging must emit no genrule; got %+v", cc.Genrules)
+		}
+	})
+
+	t.Run("install -d → benign skip", func(t *testing.T) {
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-d", "-m", "755", "/build/staging/lib"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install -d (dir create) must skip benignly; got %v", refusals)
+		}
+		if len(cc.Genrules) != 0 {
+			t.Errorf("install -d must emit no genrule; got %+v", cc.Genrules)
+		}
+	})
 }
 
 // TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses pins the
