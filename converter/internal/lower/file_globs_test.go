@@ -34,11 +34,13 @@ func TestThreadFileGlobs(t *testing.T) {
 	write("other/keep.c")
 
 	globs := []shadow.FileGlobCall{
-		{Var: "inputs", Patterns: []string{filepath.Join(root, "data", "*.txt")}, Recurse: false},
+		// Relative pattern — anchored to the calling list file's dir (root).
+		{File: filepath.Join(root, "CMakeLists.txt"), Var: "inputs", Patterns: []string{"data/*.txt"}, Recurse: false},
+		// Absolute pattern (callFile irrelevant).
 		{Var: "deep", Patterns: []string{filepath.Join(root, "src", "*.in")}, Recurse: true},
-		// A RELATIVE glob that WOULD match other/keep.c — must be skipped,
-		// so keep.c survives in gen_full's srcs below.
-		{Var: "rel", Patterns: []string{filepath.Join(root, "other", "*.c")}, Recurse: false, Relative: true},
+		// A RELATIVE option glob that WOULD match other/keep.c — must be
+		// skipped, so keep.c survives in gen_full's srcs below.
+		{File: filepath.Join(root, "CMakeLists.txt"), Var: "rel", Patterns: []string{"other/*.c"}, Recurse: false, Relative: true},
 	}
 
 	// gen_full depends on the entire result of both non-relative globs (plus

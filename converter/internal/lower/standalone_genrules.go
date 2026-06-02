@@ -514,7 +514,7 @@ func threadFileGlobs(targets []ir.Target, globs []shadow.FileGlobCall, labelRoot
 			continue
 		}
 		for _, pat := range gc.Patterns {
-			if files, dir, bpat, ok := fileGlobMatchSet(pat, gc.Recurse, labelRoot); ok {
+			if files, dir, bpat, ok := fileGlobMatchSet(pat, gc.File, gc.Recurse, labelRoot); ok {
 				groups = append(groups, group{dir, bpat, files})
 			}
 		}
@@ -563,8 +563,17 @@ func threadFileGlobs(targets []ir.Target, globs []shadow.FileGlobCall, labelRoot
 // relative to that dir ("*.x" for GLOB, "**/*.x" for GLOB_RECURSE). ok is
 // false when the pattern's directory falls outside labelRoot (not
 // expressible as a project-local glob) or nothing matches.
-func fileGlobMatchSet(pattern string, recurse bool, labelRoot string) (files []string, anchorDir, bazelPat string, ok bool) {
+func fileGlobMatchSet(pattern, callFile string, recurse bool, labelRoot string) (files []string, anchorDir, bazelPat string, ok bool) {
 	pattern = filepath.FromSlash(pattern)
+	if !filepath.IsAbs(pattern) {
+		// cmake evaluates a relative globbing expression against the calling
+		// list file's directory (CMAKE_CURRENT_SOURCE_DIR) — so "src/*.cpp"
+		// anchors at dir(callFile). For a glob written inside a macro,
+		// callFile is the macro itself, whose dir typically holds no matches;
+		// that yields an empty match set and the call is safely skipped
+		// rather than mis-anchored.
+		pattern = filepath.Join(filepath.Dir(callFile), pattern)
+	}
 	dir, base := filepath.Dir(pattern), filepath.Base(pattern)
 	relDir, err := filepath.Rel(labelRoot, dir)
 	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) {
