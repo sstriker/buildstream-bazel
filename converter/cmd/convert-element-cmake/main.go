@@ -558,10 +558,14 @@ func run(a cli.Args) error {
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
 			BuildType:          a.BuildType,
 			BuildTypes:         a.BuildTypes,
-			// Non-expanded trace ONLY — no dump-vars / probe / cache vars
-			// (those ran in pass 1; adding them would disturb the warm
-			// cache). Reusing hostBuildDir keeps try_compile / find_package
-			// cached, so this costs a fraction of the first configure.
+			// We add NO new hooks or cache vars here — only the
+			// non-expanded trace. (The dump-vars / probe hooks staged in
+			// pass 1 may still re-run via the cached
+			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES, but their build-dir output
+			// paths are filtered out of ExtractSetAssignments by the
+			// sourceRoot gate, so they don't perturb the recovered copies.)
+			// Reusing hostBuildDir keeps try_compile / find_package cached,
+			// so this costs a fraction of the first configure.
 			TracePath:        plainTrace,
 			TraceNonExpanded: true,
 			Stdout:           os.Stderr,

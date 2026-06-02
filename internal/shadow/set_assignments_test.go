@@ -43,6 +43,17 @@ func TestExtractSetAssignments(t *testing.T) {
 	}
 }
 
+// TestExtractSetAssignments_TrailingSlashSourceRoot guards the CLI
+// --source-root-with-trailing-slash case: inSourceTree would otherwise
+// treat `/src/` as outside-tree and drop every in-tree copy.
+func TestExtractSetAssignments_TrailingSlashSourceRoot(t *testing.T) {
+	trace := `{"cmd":"set","args":["VERSION","${GIT_SHA}"],"file":"/src/CMakeLists.txt","line":10}`
+	got := ExtractSetAssignments([]byte(trace), "/src/")
+	if len(got) != 1 || got[0].Dst != "VERSION" || got[0].SrcVar != "GIT_SHA" {
+		t.Errorf("trailing-slash sourceRoot dropped the in-tree copy: got %+v", got)
+	}
+}
+
 func TestSoleVarRef(t *testing.T) {
 	cases := []struct {
 		in   string

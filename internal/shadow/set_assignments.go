@@ -1,6 +1,9 @@
 package shadow
 
-import "strings"
+import (
+	"path/filepath"
+	"strings"
+)
 
 // SetAssignment is one `set(<Dst> ${<SrcVar>})` verbatim variable copy
 // recovered from a NON-EXPANDED cmake trace (`cmake --trace`, not
@@ -35,6 +38,13 @@ type SetAssignment struct {
 // own tree (cmake's modules set thousands of internal variables); pass ""
 // to take all events.
 func ExtractSetAssignments(traceRaw []byte, sourceRoot string) []SetAssignment {
+	// inSourceTree treats a trailing separator as outside-tree (it
+	// requires the next char to be a separator), and sourceRoot can
+	// arrive from CLI --source-root with one — normalize so a
+	// `/path/to/src/` doesn't silently drop every in-tree set() copy.
+	if sourceRoot != "" {
+		sourceRoot = filepath.Clean(sourceRoot)
+	}
 	var out []SetAssignment
 	for _, ev := range ParseTrace(traceRaw) {
 		if !strings.EqualFold(ev.Cmd, "set") {
