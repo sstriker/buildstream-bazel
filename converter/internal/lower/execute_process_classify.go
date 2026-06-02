@@ -202,16 +202,31 @@ var noopDrivers = map[string]bool{
 
 // stampDrivers names argv[0] basenames whose presence
 // classifies the call as Stamp regardless of how the output
-// is captured. VCS query tools have no legitimate
-// code-generation use; hoisting them to a build-time genrule
-// would run the VCS tool on the executor and re-introduce
-// the same non-hermeticity the refusal is meant to prevent.
-// Driver name is the gate, not OutputVariable / OutputFile
-// presence.
+// is captured. These tools emit a VOLATILE / non-hermetic value
+// — a VCS revision (git/hg/svn), a wall-clock timestamp (date),
+// or build-machine identity (whoami/id/hostid) — with no
+// legitimate code-generation use; hoisting one to a build-time
+// genrule would run it on the executor and re-introduce the same
+// non-hermeticity the refusal is meant to prevent. Driver name is
+// the gate, not OutputVariable / OutputFile presence.
+//
+// How a stamp var's VALUE is sourced differs by driver. The
+// identity/revision drivers (git/hg/svn/whoami/id/hostid) record
+// a cache-keyed STABLE_ workspace-status key (stampStatusKey), so a
+// `@GIT_SHA@` header re-reads live at build time. `date` is the
+// exception: a wall-clock timestamp would cache-bust as a STABLE_
+// key, and a cache-safe VOLATILE_ key needs the configure_file rule
+// to read volatile-status — so in THIS pass date's value bakes at
+// convert time (it does not record a live stamp var). The live
+// volatile-date stamp is the stacked follow-up.
 var stampDrivers = map[string]bool{
-	"git": true,
-	"hg":  true,
-	"svn": true,
+	"git":    true,
+	"hg":     true,
+	"svn":    true,
+	"date":   true, // wall-clock timestamp (volatile)
+	"whoami": true, // current user (build-machine identity)
+	"id":     true, // user / group identity
+	"hostid": true, // host identity
 }
 
 // strongProbeDrivers names argv[0] basenames whose presence
@@ -457,7 +472,7 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	if stampDrivers[driver] {
 		return ClassifyResult{
 			Bucket: BucketStamp,
-			Reason: driver + " is a version-control driver" + outputContext(call),
+			Reason: driver + " is a stamp / non-hermetic driver" + outputContext(call),
 		}
 	}
 	if strongProbeDrivers[driver] {
@@ -586,7 +601,7 @@ func unliftableShapeReason(driver string, call shadow.ExecuteProcessCall) string
 // (OutputVariable, OutputFile) as a leading-space suffix for
 // classifier reason messages — e.g. ` writing OUTPUT_VARIABLE
 // GIT_SHA`, concatenated onto the bucket label so the final
-// reason reads `git is a version-control driver writing
+// reason reads `git is a stamp / non-hermetic driver writing
 // OUTPUT_VARIABLE GIT_SHA`. Empty when neither channel is set.
 // Threads diagnostic context into stamp / strong-probe refusal
 // reasons without re-implementing the formatting at each call

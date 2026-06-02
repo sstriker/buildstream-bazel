@@ -289,15 +289,26 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				// a Bazel build input, so emitting nothing is faithful.
 				continue
 			}
-			// Record a VCS-stamp output variable for the configure_file lift:
-			// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision) re-reads from
-			// the Bazel workspace status at build time, so a `@GIT_SHA@`
-			// header stays live instead of baking the convert-time value.
-			// Recorded regardless of the capture gate below — the lift (which
-			// runs later over the same cc) consults cc.StampVars; the stamp
-			// call itself still skips (captured) or refuses (not) here.
+			// Record a stamp output variable for the configure_file lift:
+			// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision, or a
+			// whoami/id/hostid identity) re-reads from the Bazel workspace
+			// status at build time, so a `@GIT_SHA@` header stays live
+			// instead of baking the convert-time value. Recorded regardless
+			// of the capture gate below — the lift (which runs later over the
+			// same cc) consults cc.StampVars; the stamp call itself still
+			// skips (captured) or refuses (not) here.
+			//
+			// `date` is the exception: it's a stamp driver (so its
+			// OUTPUT_FILE form doesn't hoist) but a wall-clock timestamp
+			// needs VOLATILE_ status semantics — not the cache-busting
+			// STABLE_ key the identity drivers use — which requires the
+			// cmake_configure_file rule to read volatile-status. Until that
+			// stacked follow-up lands, date's value bakes at convert time
+			// (stable, non-cache-busting) rather than lifting to a live stamp.
 			if v.Bucket == BucketStamp && call.OutputVariable != "" {
-				cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable)
+				if executeProcessDriverBasename(call.Commands[0][0]) != "date" {
+					cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable)
+				}
 			}
 			// Stamp capture gate. A stamp's value (a VCS revision) WOULD bake
 			// into the srckey of any configure_file that consumed it —

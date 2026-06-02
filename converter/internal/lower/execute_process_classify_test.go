@@ -285,6 +285,50 @@ func TestClassify_Buckets(t *testing.T) {
 			bucket: BucketStamp,
 		},
 		{
+			// date is a stamp driver: a wall-clock timestamp is a
+			// volatile/non-hermetic value. The OUTPUT_FILE form must
+			// NOT hoist (the hole this closes) — driver-first stamp.
+			name: "date + OUTPUT_FILE → stamp (volatile, driver-first; must not hoist)",
+			call: shadow.ExecuteProcessCall{
+				Commands:   [][]string{{"date", "+%Y-%m-%d"}},
+				OutputFile: "build_date.txt",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			name: "date + OUTPUT_VARIABLE → stamp",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"date", "+%s"}},
+				OutputVariable: "BUILD_DATE",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			// whoami / id / hostid: build-machine identity, non-hermetic.
+			name: "whoami + OUTPUT_VARIABLE → stamp (build identity)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"whoami"}},
+				OutputVariable: "BUILD_USER",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			name: "id -u + OUTPUT_VARIABLE → stamp (build identity)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"id", "-u"}},
+				OutputVariable: "BUILD_UID",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			name: "hostid + OUTPUT_VARIABLE → stamp (host identity)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"hostid"}},
+				OutputVariable: "BUILD_HOSTID",
+			},
+			bucket: BucketStamp,
+		},
+		{
 			name: "uname -m + OUTPUT_FILE → probe (strong probe driver, driver-first)",
 			call: shadow.ExecuteProcessCall{
 				Commands:   [][]string{{"uname", "-m"}},

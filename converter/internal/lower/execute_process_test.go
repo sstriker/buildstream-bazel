@@ -650,6 +650,10 @@ func TestRecoverExecuteProcess_StampNonGitDrivers(t *testing.T) {
 		{"hg id", []string{"hg", "id", "-i"}, "HG_ID", "STABLE_HG_ID"},
 		{"svn info", []string{"svn", "info", "--show-item", "revision"}, "SVN_REV", "STABLE_SVN_REV"},
 		{"git describe", []string{"git", "describe", "--tags"}, "GIT_VERSION", "STABLE_GIT_VERSION"},
+		// Build-machine identity drivers are stable (cache-keyed) like VCS.
+		{"whoami", []string{"whoami"}, "BUILD_USER", "STABLE_BUILD_USER"},
+		{"id -u", []string{"id", "-u"}, "BUILD_UID", "STABLE_BUILD_UID"},
+		{"hostid", []string{"hostid"}, "BUILD_HOSTID", "STABLE_BUILD_HOSTID"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -669,6 +673,30 @@ func TestRecoverExecuteProcess_StampNonGitDrivers(t *testing.T) {
 				t.Errorf("StampVars[%s] = %q, want %q", tc.outVar, cc.StampVars[tc.outVar], tc.wantKey)
 			}
 		})
+	}
+}
+
+// TestRecoverExecuteProcess_DateBakesNotStamped pins the date driver's PR-1
+// behavior: date IS a stamp driver (so its OUTPUT_FILE form doesn't hoist),
+// but a wall-clock timestamp needs VOLATILE_ status semantics the rule can't
+// yet read — so date does NOT record a live StampVar (cache-busting STABLE_
+// would be wrong). Its captured value bakes at convert time instead. The live
+// volatile-date stamp is the stacked follow-up.
+func TestRecoverExecuteProcess_DateBakesNotStamped(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           5,
+		Commands:       [][]string{{"date", "+%Y-%m-%d"}},
+		OutputVariable: "BUILD_DATE",
+	}}
+	cc := newCodegenContext()
+	cmakeVars := map[string]string{"BUILD_DATE": "2026-06-02"}
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("captured date stamp should skip; got refusals: %v", refusals)
+	}
+	if _, recorded := cc.StampVars["BUILD_DATE"]; recorded {
+		t.Errorf("date must NOT record a live StampVar in PR 1 (bakes pending the volatile follow-up); got StampVars[BUILD_DATE]=%q", cc.StampVars["BUILD_DATE"])
 	}
 }
 
