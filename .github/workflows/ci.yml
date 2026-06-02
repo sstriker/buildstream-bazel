@@ -204,6 +204,15 @@ jobs:
         # (META_GAZELLE_USE_HOST_GO unset).
         run: make e2e-meta-cmake-split-gazelle 2>&1 | tee -a /tmp/cijob.log
 
+      - name: cmake render gates (convert + render-assert + bazel-build halves)
+        # The meta-cmake-*.sh render gates: each converts a sample project
+        # and asserts the rendered BUILD, and several bazel-build the result
+        # (the load-bearing half the Go unit tests + goldens don't cover —
+        # genex probe/two-pass, file(GENERATE), FILE_SET strip_include_prefix,
+        # and the VCS / volatile stamp lifts under --stamp). Each gate skips
+        # cleanly when its toolchain is absent.
+        run: make e2e-meta-cmake-render-gates 2>&1 | tee -a /tmp/cijob.log
+
       - name: run-vs-run regression e2e
         # cmd/run-manifest snapshots a built project A; orchestrate-diff
         # diffs two runs. Asserts the no-drift invariant + drift

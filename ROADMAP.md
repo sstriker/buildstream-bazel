@@ -542,26 +542,22 @@ transition cleanly.
   `cmd/cas-fuse` itself; bb_clientd is the production
   CAS-aware mount story now.
 
-- **Wire the cmake render gates into CI.** The cmake render gates
-  under `scripts/` — `scripts/meta-cmake-genex-probe.sh`,
-  `scripts/meta-file-generate.sh`,
-  `scripts/meta-cmake-genex-literal-twopass.sh`,
-  `scripts/meta-cmake-fileset-compiled-lib.sh`,
-  `scripts/meta-cmake-stamp-volatile.sh` — run
-  `convert-element-cmake`
-  and assert on the rendered BUILD, and several carry a live
-  `bazel build` half (the load-bearing check that the emitted shape
-  actually compiles). Unlike the `e2e-meta-*` targets they are NOT
-  in the Makefile `.PHONY` aggregate (lines 3-4) or invoked from
-  `.github/workflows/ci.yml`, so they're local-only: their
-  build-halves don't guard regressions in CI (the Go-level unit
-  tests + goldens already guard the *lowering* logic; what's
-  unguarded is the convert→render→bazel-build contract end to end).
-  Add an `e2e-meta-cmake-render-gates` aggregate target (or per-gate
-  `e2e-meta-*` targets) listing them and invoke it from the CI cmake
-  job so the render+build contracts run on every PR. The gates
-  already skip cleanly when cmake / ninja / bazel≥9 aren't present,
-  so they're CI-safe as-is. Surfaced in #366 review.
+- **Wire the cmake render gates into CI — partly landed.** The
+  `e2e-meta-cmake-render-gates` aggregate target (Makefile `RENDER_GATES`)
+  now runs the core render gates in the CI `bazel-e2e` job —
+  `meta-cmake-genex-probe`, `meta-file-generate`,
+  `meta-cmake-genex-literal-twopass`, `meta-cmake-fileset-compiled-lib`,
+  `meta-cmake-stamp-volatile`, and the two `meta-cmake-vcs-stamp{,-indirect}`
+  gates (previously Makefile-targeted but never CI-invoked) — so their
+  convert→render→`bazel build` contracts (the load-bearing halves the
+  Go-level unit tests + goldens don't cover) guard regressions on every PR.
+  Each skips cleanly when cmake / ninja / bazel≥9 are absent. **Follow-up:**
+  the broader `meta-cmake-*.sh` render-gate family (install-export
+  declarative, sanitizer-features, interface-genex-defines,
+  probe-genex-object/utility, platform-partition-tier2, …) is still
+  local-only; add each to `RENDER_GATES` once verified CI-safe (skip-clean +
+  no heavy/special-toolchain or flaky-fetch dependence). Surfaced in #366
+  review.
 
 - **Volatile execute_process drivers (`date` + build identity).**
   Extends the #371 stamp lift beyond `{git, hg, svn}` to the other

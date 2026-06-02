@@ -1,7 +1,7 @@
 .PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-libpng e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-spdlog-consumer e2e-fidelity-compare-nlohmann-json-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains \
-        e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file e2e-meta-cmake-split-build e2e-meta-cmake-split-multiconfig e2e-meta-cmake-split-gazelle e2e-meta-cmake-vcs-stamp e2e-meta-cmake-vcs-stamp-indirect \
+        e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file e2e-meta-cmake-split-build e2e-meta-cmake-split-multiconfig e2e-meta-cmake-split-gazelle e2e-meta-cmake-vcs-stamp e2e-meta-cmake-vcs-stamp-indirect e2e-meta-cmake-render-gates \
         e2e-meta-bazel-passthrough e2e-meta-bazel-override \
         e2e-meta-autotools-native e2e-meta-autotools-round2 e2e-meta-autotools-round2-live e2e-meta-autotools-multitarget e2e-meta-autotools-tu-optflags e2e-meta-autotools-libtool-pic e2e-meta-autotools-libtool-shared e2e-meta-autotools-determinism e2e-meta-autotools-subdirs e2e-meta-autotools-config-h e2e-meta-autotools-asm \
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
@@ -295,6 +295,25 @@ e2e-meta-cmake-vcs-stamp: converter
 # the extractor + propagation on synthetic input).
 e2e-meta-cmake-vcs-stamp-indirect: converter
 	scripts/meta-cmake-vcs-stamp-indirect.sh
+
+# Cmake render gates — each converts a sample project and asserts the
+# rendered BUILD; several also bazel-build the result (the load-bearing
+# half the Go-level unit tests + goldens don't cover). They run locally via
+# `make`; this aggregate promotes them into CI so their
+# convert -> render -> bazel-build contracts guard regressions on every PR.
+# Each gate skips cleanly when cmake / ninja / bazel are absent, so the
+# aggregate is safe to invoke unconditionally.
+RENDER_GATES = \
+	scripts/meta-cmake-genex-probe.sh \
+	scripts/meta-file-generate.sh \
+	scripts/meta-cmake-genex-literal-twopass.sh \
+	scripts/meta-cmake-fileset-compiled-lib.sh \
+	scripts/meta-cmake-stamp-volatile.sh \
+	scripts/meta-cmake-vcs-stamp.sh \
+	scripts/meta-cmake-vcs-stamp-indirect.sh
+
+e2e-meta-cmake-render-gates: converter
+	@set -e; for g in $(RENDER_GATES); do echo "=== $$g ==="; sh "$$g"; done
 
 # Cross-package $<TARGET_FILE:t> resolved-lift gate. Renders a
 # producer + consumer kind:cmake pair where the consumer's
