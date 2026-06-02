@@ -1762,12 +1762,12 @@ func prefixWithSourceLabel(paths []string, key string) []string {
 // CTest's integer seconds is bucketed into the smallest enum whose default
 // budget covers it. (Issue #314.)
 func formatBazelTimeout(d time.Duration) string {
-	switch secs := d.Seconds(); {
-	case secs <= 60:
+	switch {
+	case d <= 60*time.Second:
 		return "short"
-	case secs <= 300:
+	case d <= 300*time.Second:
 		return "moderate"
-	case secs <= 900:
+	case d <= 900*time.Second:
 		return "long"
 	default:
 		return "eternal"
