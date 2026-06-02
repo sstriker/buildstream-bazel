@@ -690,17 +690,36 @@ transition cleanly.
       should carry most of the way). **LLVM bazel-build lift progressing
       (manual):** `--split-packages` converts the LLVM monorepo (375
       per-directory BUILDs) and real libraries now compile + archive under
-      a staged bzlmod workspace — `//llvm/lib/Demangle:LLVMDemangle` (leaf,
-      123 syms) and `//llvm/lib/Support:LLVMSupport` (foundational, 170
-      compile actions, 2328 syms) both `bazel build` green. Gaps overcome:
-      (1) umbrella src/hdr/include re-anchoring under the workspace-root
-      promotion; (2) split-packages relocating `write_file`/
-      `cmake_configure_file` outputs into their owning package (not just
-      genrules); (3) `.def`/`.inc` added to the header-discovery extension
-      set (LLVM's x-macro / textual-include idiom — `ItaniumNodes.def`,
-      `regengine.inc`). Split mode is what makes per-leaf builds tractable:
-      one malformed rule is a per-package loading error, not a
-      whole-monorepo block. Remaining before a full LLVM gate: the
+      a staged bzlmod workspace — `bazel build` green on
+      `//llvm/lib/Demangle:LLVMDemangle` (leaf, 123 syms),
+      `//llvm/lib/Support:LLVMSupport` (foundational, 170 compile actions,
+      2328 syms), `//llvm/lib/Bitstream/Reader:LLVMBitstreamReader`, and
+      `//llvm/lib/Remarks:LLVMRemarks` (13 actions; notable because it
+      sidesteps the broken `tools/remarks-shlib` package — proof the split
+      isolates per-package breakage). Gaps overcome: (1) umbrella
+      src/hdr/include re-anchoring under the workspace-root promotion; (2)
+      split-packages relocating `write_file`/`cmake_configure_file` outputs
+      into their owning package (not just genrules); (3) `.def`/`.inc`
+      added to the header-discovery extension set (LLVM's x-macro /
+      textual-include idiom — `ItaniumNodes.def`, `regengine.inc`). Split
+      mode is what makes per-leaf builds tractable: one malformed rule is a
+      per-package loading error, not a whole-monorepo block.
+
+      Next frontier — the **tablegen generated-header tier**
+      (`LLVMTargetParser` up): targets that `#include` a tablegen-generated
+      `.inc` (e.g. `RISCVTargetParserDef.inc`) need three things the
+      source-compile tier didn't: (a) the generating genrule's `tools` /
+      `$(location)` cross-package label rewritten under split (the
+      `llvm-min-tblgen` reference currently dangles in `//include`); (b)
+      `llvm-min-tblgen` itself built (a cc_binary with its own dep chain);
+      (c) **per-consumer** generated-header dependency wiring — a coarse
+      "add every generated `.inc` to the include-root header lib" would
+      regress the green libraries above, since they depend on
+      `//include:include_headers` and would then transitively force all of
+      tablegen. cmake tracks this at per-file depfile granularity; the
+      Bazel shape wants each consumer to depend only on the generated
+      headers it actually includes (an include-scan / depfile-derived dep
+      edge) — a design decision, not a mechanical fix. Also still open: the
       source-tree-input == build-tree-output genrule aliasing
       (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
       re-anchoring.
