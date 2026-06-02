@@ -2973,6 +2973,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		addPlatformConditionalSrcs(irt, platformConditionalSrcsToAdd)
 	}
 
+	// OpenMP (issue #313): `-fopenmp` is both a compile AND a link flag —
+	// gcc/clang need it at link time to pull in the OpenMP runtime
+	// (libgomp / libomp), or consumers hit undefined references
+	// (GOMP_parallel, __kmpc_fork_call, ...). cmake records it in the
+	// compile group's flags (→ copts) but threads the link side through the
+	// OpenMP::OpenMP_CXX IMPORTED target; when that import isn't resolved
+	// (no manifest entry) the link flag is lost. Mirror it onto linkopts.
+	propagateOpenMPLinkFlag(irt)
+
 	return irt, nil
 }
 
@@ -2989,6 +2998,34 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 // Each touched arm gets sorted post-add to keep emit's
 // verbatim arm rendering byte-stable, matching what
 // partitionPlatformConditionalSrcs does for Tier 1.
+// propagateOpenMPLinkFlag mirrors a `-fopenmp` (or `-fopenmp=<rt>`) compile
+// flag onto linkopts when it isn't already present. gcc/clang require it on
+// the link line to pull in the OpenMP runtime (libgomp / libomp); cmake
+// records it compile-side and threads the link side through the
+// OpenMP::OpenMP_* IMPORTED target, so when that import isn't resolved the
+// link flag would otherwise be dropped and consumers hit undefined
+// references (GOMP_parallel, __kmpc_fork_call, ...). The exact flag is
+// preserved so a clang `-fopenmp=libomp` links against the same runtime it
+// compiled with. (Issue #313.)
+func propagateOpenMPLinkFlag(t *ir.Target) {
+	var flag string
+	for _, c := range t.Copts {
+		if c == "-fopenmp" || strings.HasPrefix(c, "-fopenmp=") {
+			flag = c
+			break
+		}
+	}
+	if flag == "" {
+		return
+	}
+	for _, l := range t.LinkOpts {
+		if l == "-fopenmp" || strings.HasPrefix(l, "-fopenmp=") {
+			return // already linked with OpenMP
+		}
+	}
+	t.LinkOpts = append(t.LinkOpts, flag)
+}
+
 func addPlatformConditionalSrcs(t *ir.Target, srcsByKey map[string][]string) {
 	if len(srcsByKey) == 0 {
 		return
