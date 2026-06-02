@@ -67,6 +67,11 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	// genrules, plus the labels to splice into each producing genrule's srcs.
 	globFilegroups, globLabels := plan.globSrcFilegroups(pkg)
 
+	// Per-producing-package generated-header wrapper libraries, plus the
+	// wrapper labels to splice into each consumer's deps (a consumer that
+	// #includes a tablegen .inc).
+	genHdrWrappers, genHdrLabels := plan.generatedHeaderWrappers(pkg)
+
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
 		// Synthesized output-producing rules (genrule custom-command
@@ -112,6 +117,15 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 			sort.Strings(rt.Srcs)
 			rt.GlobSrcGroups = nil
 		}
+		// Splice the generated-header wrapper labels into this consumer's
+		// deps (full cross-package labels, so no further rewriting). The
+		// keep-marker pass tags them `# keep` so a gazelle maintenance pass
+		// — which can't resolve the generated .inc to a target — preserves
+		// the edge.
+		if labels := genHdrLabels[t.Name]; len(labels) > 0 {
+			rt.Deps = append(append([]string(nil), rt.Deps...), labels...)
+			sort.Strings(rt.Deps)
+		}
 		// A filegroup / pkg_files whose only srcs were bare packaged
 		// directories (dropped above) would render as an empty, useless
 		// rule — and pkg_files/filegroup both require a non-empty srcs
@@ -138,6 +152,13 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	for d, fgs := range globFilegroups {
 		ensure(d)
 		groups[d] = append(groups[d], fgs...)
+	}
+
+	// Add the synthesized generated-header wrapper libraries to their
+	// producing packages (depended on by the consumers spliced above).
+	for d, ws := range genHdrWrappers {
+		ensure(d)
+		groups[d] = append(groups[d], ws...)
 	}
 
 	// 3. Render each package group via the shared EmitWithOptions.
@@ -325,6 +346,88 @@ func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Ta
 		}
 		sort.Strings(labels)
 		labelsFor[t.Name] = labels
+	}
+	return byDir, labelsFor
+}
+
+// generatedHeadersName is the package-unique name of the synthesized
+// generated-header wrapper cc_library in each producing package. The
+// gazelle keep-marker pass recognizes a consumer's dep on it by this
+// label suffix.
+const generatedHeadersName = "generated_headers"
+
+// generatedHeaderWrappers synthesizes, per producing package, a
+// `generated_headers` cc_library carrying that package's generated `.inc`
+// headers in textual_hdrs (with includes=["."] supplying the genfiles
+// include root), and returns the wrapper labels each consumer must depend
+// on. Producer and consumer are usually distinct packages — a tablegen
+// `.inc` is generated under //include but #included by a library in
+// //llvm/lib/... — so the consumer can't reach the genrule output as a
+// bare same-package input; it depends on the wrapper, whose textual_hdrs
+// declare the output as an input and whose includes put the package root
+// on the consumer's -I. byDir maps a producing-package dir → its wrapper;
+// labelsFor maps a consumer name → the sorted wrapper labels it needs.
+func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string) {
+	byDir = map[string][]ir.Target{}
+	labelsFor = map[string][]string{}
+	if len(pkg.CodegenHeaderConsumers) == 0 {
+		return byDir, labelsFor
+	}
+	// Accumulate the package-local header set per producing dir across all
+	// consumers: each producing package gets one wrapper that is the union
+	// of every generated header any consumer needs from it.
+	hdrsByDir := map[string]map[string]bool{}
+	for _, outs := range pkg.CodegenHeaderConsumers {
+		for _, o := range outs {
+			dir := p.deepestPkg(o)
+			rel, ok := relUnder(dir, o)
+			if !ok {
+				continue
+			}
+			if hdrsByDir[dir] == nil {
+				hdrsByDir[dir] = map[string]bool{}
+			}
+			hdrsByDir[dir][rel] = true
+		}
+	}
+	for dir, set := range hdrsByDir {
+		hdrs := make([]string, 0, len(set))
+		for h := range set {
+			hdrs = append(hdrs, h)
+		}
+		sort.Strings(hdrs)
+		w := ir.Target{
+			Name:        generatedHeadersName,
+			Kind:        ir.KindCCLibrary,
+			TextualHdrs: hdrs,
+			Visibility:  []string{"//visibility:public"},
+		}
+		// includes=["."] supplies the genfiles include root so a consumer
+		// #includes the .inc by its package-relative path. Bazel rejects
+		// includes="." at the workspace root (it would expose the whole
+		// tree), so a root-package producer omits it — a root consumer
+		// resolves the bare same-package output via -iquote instead.
+		if dir != "" {
+			w.Includes = []string{"."}
+		}
+		byDir[dir] = append(byDir[dir], w)
+	}
+	for cons, outs := range pkg.CodegenHeaderConsumers {
+		seen := map[string]bool{}
+		var labels []string
+		for _, o := range outs {
+			dir := p.deepestPkg(o)
+			if _, ok := relUnder(dir, o); !ok {
+				continue
+			}
+			label := headerLibLabel(p, dir, generatedHeadersName)
+			if !seen[label] {
+				seen[label] = true
+				labels = append(labels, label)
+			}
+		}
+		sort.Strings(labels)
+		labelsFor[cons] = labels
 	}
 	return byDir, labelsFor
 }

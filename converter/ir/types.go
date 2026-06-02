@@ -214,6 +214,22 @@ type Package struct {
 	// have no declaring CMakeLists dir and resolve to the root
 	// package; the split transform treats a missing key as "".
 	SubPackages map[string]string `json:"-"`
+
+	// CodegenHeaderConsumers maps a (codemodel-derived) consuming target
+	// Name to the element-root-relative generated-header output paths it
+	// needs on its include path — recovered from the consumer's codemodel
+	// UTILITY (tablegen / add_custom_target) dependencies whose
+	// add_custom_command outputs are generated headers (a tablegen `.inc`).
+	// The --split-packages emit transform consumes this to synthesize a
+	// per-producing-package `generated_headers` cc_library (textual_hdrs +
+	// includes) and wire each consumer to depend on it, so a consumer that
+	// `#include`s a generated `.inc` resolves it under Bazel's sandbox.
+	//
+	// Like SubPackages this is out-of-band (`json:"-"`): it never
+	// serializes into --out-ir-json (mutually exclusive with the split
+	// transform that reads it). Empty when no consumer references a
+	// generated header.
+	CodegenHeaderConsumers map[string][]string `json:"-"`
 }
 
 // Provenance records the originating source location of a Target.

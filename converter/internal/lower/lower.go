@@ -943,6 +943,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// resolution can distinguish "skip utility" from "unresolved".
 	idToName := map[string]string{}
 	utilityIDs := map[string]bool{}
+	// utilityIDToName records the name of each UTILITY (add_custom_target)
+	// target — excluded from idToName because depending on one is a Bazel
+	// no-op, but the consumer-side codegen-header wiring needs the name to
+	// resolve the target's ninja phony to the generated `.inc` outputs it
+	// wraps (a tablegen `*TableGen` target).
+	utilityIDToName := map[string]string{}
 	// artifactToName maps each codemodel target's artifact paths
 	// (build-dir-relative, e.g. `bin/llvm-min-tblgen`) to the
 	// target's name. Used by rewriteToolFromTarget to lift bare
@@ -952,6 +958,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	for _, tref := range cfg.Targets {
 		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
 			utilityIDs[tref.Id] = true
+			utilityIDToName[tref.Id] = tref.Name
 			continue
 		}
 		idToName[tref.Id] = tref.Name
@@ -969,6 +976,24 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// genrule cmds — same shape lowerStandaloneCustomCommands
 	// receives the map as a parameter.
 	cc.ArtifactToName = artifactToName
+
+	// isTargetName is the set of every codemodel target name (real +
+	// UTILITY). The codegen-header walk uses it to stop at sibling-target
+	// boundaries when tracing a UTILITY tablegen target's ninja phony to
+	// the `.inc` outputs it wraps — so it collects that target's own
+	// generated headers without pulling a depended-on tool's or library's
+	// outputs.
+	isTargetName := make(map[string]bool, len(idToName)+len(utilityIDToName))
+	for _, n := range idToName {
+		isTargetName[n] = true
+	}
+	for _, n := range utilityIDToName {
+		isTargetName[n] = true
+	}
+	// codegenConsumerDeps maps a cc_library target Name → its codemodel
+	// dependencies, captured in the target loop and resolved to consumed
+	// generated `.inc` headers after standalone-genrule recovery completes.
+	codegenConsumerDeps := map[string][]fileapi.TargetDependency{}
 
 	lc := targetLowerCtx{
 		cmakeSrc:         cmakeSrc,
@@ -1036,6 +1061,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			pkg.SubPackages = map[string]string{}
 		}
 		pkg.SubPackages[irt.Name] = subPackageDir(cfg, tref.DirectoryIndex, cmakeSrc, workspaceRoot)
+
+		// Record this cc_library's codemodel UTILITY dependencies so a pass
+		// AFTER standalone-genrule recovery (which is what fills the genrule
+		// output set the walk filters on) can resolve them to the generated
+		// `.inc` headers it consumes. Only cc_library carries the wrapper
+		// dep cleanly via the consumer's deps; cc_binary/cc_test are skipped.
+		if irt.Kind == ir.KindCCLibrary && len(t.Dependencies) > 0 {
+			codegenConsumerDeps[irt.Name] = t.Dependencies
+		}
 	}
 
 	// Append recovered genrules then per-language sub-libraries
@@ -1232,6 +1266,51 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// project uses no file(GLOB) (e.g. tablegen under Ninja).
 		threadFileGlobs(stand, traceCtx.FileGlobs, hostSrc)
 		pkg.Targets = append(pkg.Targets, stand...)
+
+		// Resolve each cc_library consumer's UTILITY (tablegen) dependencies
+		// to the generated `.inc` headers it #includes, now that the
+		// standalone genrules producing them have been recovered. The
+		// combined output set — per-target codegen outputs (cc.OutToGenrule)
+		// plus this standalone recovery — is what the ninja walk filters on;
+		// matches land on pkg.CodegenHeaderConsumers for the split transform
+		// to synthesize the wrapper library and wire the consumer's dep.
+		if len(codegenConsumerDeps) > 0 {
+			genOut := make(map[string]string, len(cc.OutToGenrule))
+			for o, n := range cc.OutToGenrule {
+				genOut[o] = n
+			}
+			for _, gt := range stand {
+				for _, o := range gt.GenruleOuts {
+					genOut[o] = gt.Name
+				}
+			}
+			// Index ninja outputs by final path component so the codegen
+			// walk can seed from a sub-directory custom target's prefixed
+			// phony (cmake names it `<dir>/<target>`).
+			phonyByName := map[string][]string{}
+			if g != nil {
+				if g.OutputIndex == nil {
+					g.Index()
+				}
+				for o := range g.OutputIndex {
+					base := o
+					if i := strings.LastIndex(o, "/"); i >= 0 {
+						base = o[i+1:]
+					}
+					phonyByName[base] = append(phonyByName[base], o)
+				}
+			}
+			for name, deps := range codegenConsumerDeps {
+				hdrs := collectCodegenHeaders(g, deps, utilityIDs, utilityIDToName, genOut, isTargetName, phonyByName)
+				if len(hdrs) == 0 {
+					continue
+				}
+				if pkg.CodegenHeaderConsumers == nil {
+					pkg.CodegenHeaderConsumers = map[string][]string{}
+				}
+				pkg.CodegenHeaderConsumers[name] = hdrs
+			}
+		}
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
@@ -5026,6 +5105,95 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 // label base is the workspace root above cmakeSrc, prepend the cmakeSrc-
 // under-workspaceRoot prefix so the recorded dir lines up with the
 // re-anchored source labels.
+// isGeneratedHeaderPath reports whether p has an extension that marks it a
+// generated header a consumer #includes — the tablegen / x-macro `.inc` /
+// `.def` idioms plus ordinary header extensions. Generated compiled
+// sources (.cpp/.c/.S) are deliberately excluded: those flow through the
+// direct-source genrule-output path in lowerTarget, not the consumer
+// textual_hdrs wiring.
+func isGeneratedHeaderPath(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".inc", ".def", ".h", ".hh", ".hpp", ".hxx", ".ipp", ".gen":
+		return true
+	}
+	return false
+}
+
+// collectCodegenHeaders returns the element-root-relative generated-header
+// output paths a consumer needs on its include path. For each codemodel
+// UTILITY (add_custom_target) dependency of the consumer it walks that
+// target's ninja phony — bounded by a visited set, stopping at any sibling
+// target's node so it never pulls a depended-on tool's or library's
+// outputs — and keeps every reached node that is a recovered genrule
+// output (cc.OutToGenrule) with a header extension. The returned paths key
+// the same way as the genrule outs the split transform places, so the
+// caller can group them by producing package. Returns nil when the
+// consumer has no UTILITY deps or no ninja graph is available.
+func collectCodegenHeaders(g *ninja.Graph, deps []fileapi.TargetDependency, utilityIDs map[string]bool, utilityIDToName map[string]string, outToGenrule map[string]string, isTargetName map[string]bool, phonyByName map[string][]string) []string {
+	if g == nil || len(deps) == 0 {
+		return nil
+	}
+	if g.OutputIndex == nil {
+		g.Index()
+	}
+	var headers []string
+	seen := map[string]bool{}
+	for _, dep := range deps {
+		if !utilityIDs[dep.Id] {
+			continue
+		}
+		name := utilityIDToName[dep.Id]
+		if name == "" {
+			continue
+		}
+		// cmake's Ninja generator names a sub-directory custom target's
+		// phony with its build-relative dir prefix (`gen/gen_inc`), while
+		// the codemodel records the bare unique name (`gen_inc`). Seed the
+		// walk from every ninja output whose final path component is the
+		// target name — covering the prefixed phony and its CMakeFiles
+		// intermediate. Falls back to the bare name (root-dir target).
+		seeds := phonyByName[name]
+		if len(seeds) == 0 {
+			seeds = []string{name}
+		}
+		visited := map[string]bool{}
+		stack := append([]string(nil), seeds...)
+		for len(stack) > 0 {
+			cur := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if visited[cur] {
+				continue
+			}
+			visited[cur] = true
+			if _, ok := outToGenrule[cur]; ok && isGeneratedHeaderPath(cur) {
+				if !seen[cur] {
+					seen[cur] = true
+					headers = append(headers, cur)
+				}
+				continue
+			}
+			b := g.BuildFor(cur)
+			if b == nil {
+				continue
+			}
+			for _, ins := range [][]string{b.Inputs, b.ImplicitInputs, b.OrderOnly} {
+				for _, in := range ins {
+					// Don't cross into another named target's node: that
+					// would pull a sibling's outputs (the tablegen tool, a
+					// dependent lib). The target's own `.inc` outputs are
+					// not target names, so they're still reached.
+					if isTargetName[in] {
+						continue
+					}
+					stack = append(stack, in)
+				}
+			}
+		}
+	}
+	sort.Strings(headers)
+	return headers
+}
+
 func subPackageDir(cfg fileapi.Configuration, dirIndex int, cmakeSrc, workspaceRoot string) string {
 	if dirIndex < 0 || dirIndex >= len(cfg.Directories) {
 		return ""
