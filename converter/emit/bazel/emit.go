@@ -1760,7 +1760,10 @@ func prefixWithSourceLabel(paths []string, key string) []string {
 // duration string. Bazel rejects a duration like "120s" on a test rule's
 // `timeout` at load time ("must be short, moderate, long, or eternal"), so
 // CTest's integer seconds is bucketed into the smallest enum whose default
-// budget covers it. (Issue #314.)
+// budget covers it — except that "eternal" is the ceiling: a TIMEOUT beyond
+// eternal's default (commonly 3600s) still maps to "eternal" as the largest
+// available bucket (best effort; an operator can raise it with
+// --test_timeout if a test genuinely needs longer). (Issue #314.)
 func formatBazelTimeout(d time.Duration) string {
 	switch {
 	case d <= 60*time.Second:
