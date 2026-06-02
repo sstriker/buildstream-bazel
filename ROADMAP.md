@@ -300,7 +300,14 @@ transition cleanly.
     in `ctx.info_file`, cache-keyed so a revision change
     re-renders) at build time under `--stamp` +
     `--workspace_status_command`, with the convert-time value kept
-    as the no-`--stamp` fallback. A feature-
+    as the no-`--stamp` fallback. Indirection through verbatim
+    copies (`set(VERSION ${GIT_SHA})` then `@VERSION@`, the Google-
+    Benchmark shape) lifts too: when pass 1 finds VCS-stamp vars,
+    a warm second cmake configure captures the NON-EXPANDED trace
+    (`--trace`, which keeps `${GIT_SHA}` verbatim where
+    `--trace-expand` would substitute it), `ExtractSetAssignments`
+    recovers the copies, and the stamp key propagates to the copy
+    so the `@VERSION@` consumer lifts. A feature-
     declaration probe (`HAVE_*` / `USE_*` / `*_FOUND` / …) instead
     lifts to an operator-overridable `bool_flag` +
     `config_setting` — the Bazel idiom for "does the host have
