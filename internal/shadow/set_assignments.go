@@ -22,11 +22,14 @@ type SetAssignment struct {
 // `set(<Dst> ${<SrcVar>})` verbatim variable copy. It matches only the
 // pure-copy shape: the value argument must be exactly one `${VAR}`
 // reference (no surrounding text, no second value token), optionally
-// followed by scope/cache keywords (PARENT_SCOPE / CACHE … / INTERNAL …).
+// followed by `PARENT_SCOPE` or the `CACHE` keyword (whose own trailing
+// type/docstring/FORCE tokens are then cache metadata, not values).
 // Anything richer — concatenation (`v${X}`), multiple refs (`${X}${Y}`),
-// list building (`set(X ${Y} Z)`) — does not forward a single value
-// verbatim and is skipped, so the recovered relation stays a clean
-// value-forwarding edge.
+// or a bare extra value (`set(X ${Y} Z)`, including `set(X ${Y} FORCE)` /
+// `set(X ${Y} INTERNAL)` where the trailing token is a plain list element
+// without a preceding `CACHE`) — does not forward a single value verbatim
+// and is skipped, so the recovered relation stays a clean value-forwarding
+// edge.
 //
 // sourceRoot, when non-empty, restricts to set() calls in the project's
 // own tree (cmake's modules set thousands of internal variables); pass ""
@@ -79,13 +82,17 @@ func soleVarRef(s string) (string, bool) {
 	return name, true
 }
 
-// isSetScopeTail reports whether a trailing set() token is a scope/cache
-// keyword (so it doesn't make the call a list-builder). The value tokens
-// of a CACHE entry (type, docstring) follow the CACHE keyword, so once we
-// see CACHE the call is still a single-value copy with cache semantics.
+// isSetScopeTail reports whether the token immediately after the value is
+// a keyword that keeps the call a single-value copy rather than a
+// list-builder. Only PARENT_SCOPE and CACHE qualify: PARENT_SCOPE writes
+// the same value to the parent scope, and CACHE introduces cache metadata
+// (type, docstring, FORCE) that follows it — all non-value tokens. A bare
+// INTERNAL or FORCE in this position (no preceding CACHE) is just a plain
+// list element, so `set(X ${Y} FORCE)` / `set(X ${Y} INTERNAL)` are NOT
+// verbatim copies and must not match here.
 func isSetScopeTail(tok string) bool {
 	switch strings.ToUpper(tok) {
-	case "PARENT_SCOPE", "CACHE", "INTERNAL", "FORCE":
+	case "PARENT_SCOPE", "CACHE":
 		return true
 	}
 	return false

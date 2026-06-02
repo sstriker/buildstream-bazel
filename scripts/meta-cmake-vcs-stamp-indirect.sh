@@ -16,7 +16,7 @@
 # meta-cmake-vcs-stamp.sh's direct case; the rule treats a direct and an
 # indirected entry identically, so it isn't re-proven here.
 #
-# Gating: skips cleanly when cmake / ninja / git / go are absent.
+# Gating: skips cleanly when cmake / ninja / git / go / make are absent.
 set -eu
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -26,6 +26,7 @@ command -v cmake >/dev/null 2>&1 || { echo "skip: cmake not on PATH"; exit 0; }
 command -v ninja >/dev/null 2>&1 || { echo "skip: ninja not on PATH (convert --source-root drives the Ninja generator)"; exit 0; }
 command -v git >/dev/null 2>&1 || { echo "skip: git not on PATH"; exit 0; }
 command -v go >/dev/null 2>&1 || { echo "skip: go not on PATH"; exit 0; }
+command -v make >/dev/null 2>&1 || { echo "skip: make not on PATH (needed to build the converter)"; exit 0; }
 
 fixture_src="$repo_root/converter/testdata/sample-projects/vcs-stamp-indirect"
 work_dir="$(mktemp -d)"

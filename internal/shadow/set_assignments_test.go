@@ -16,6 +16,11 @@ func TestExtractSetAssignments(t *testing.T) {
 		`{"cmd":"set","args":["CONCAT","v${GIT_SHA}"],"file":"/src/CMakeLists.txt","line":14}`,
 		`{"cmd":"set","args":["LIST","${GIT_SHA}","extra"],"file":"/src/CMakeLists.txt","line":15}`,
 		`{"cmd":"set","args":["TWO","${A}${B}"],"file":"/src/CMakeLists.txt","line":16}`,
+		// FORCE / INTERNAL without a preceding CACHE are plain list
+		// elements, not copy tails — set(X ${Y} FORCE) sets X to the list
+		// "${Y};FORCE", so these must NOT match as verbatim copies.
+		`{"cmd":"set","args":["FORCED","${GIT_SHA}","FORCE"],"file":"/src/CMakeLists.txt","line":18}`,
+		`{"cmd":"set","args":["INT","${GIT_SHA}","INTERNAL"],"file":"/src/CMakeLists.txt","line":19}`,
 		// out of the project tree (skipped when sourceRoot is set):
 		`{"cmd":"set","args":["INTERNAL_X","${GIT_SHA}"],"file":"/usr/share/cmake/Modules/Foo.cmake","line":1}`,
 		// not a set():
