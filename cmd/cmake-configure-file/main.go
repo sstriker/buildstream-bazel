@@ -292,9 +292,6 @@ func (f *targetObjectsFlag) Set(s string) error {
 	return nil
 }
 
-// stampValueFlag accumulates --stamp-value=<template-var>=<STATUS_KEY>
-// entries into a template-var→status-key map. Mirrors targetFileFlag's
-// shape: repeated flags accumulate, duplicate vars overwrite (last-wins).
 // stringListFlag accumulates a repeatable string flag (here --status-file:
 // the rule may pass both stable-status.txt and volatile-status.txt).
 type stringListFlag struct {
@@ -316,6 +313,9 @@ func (f *stringListFlag) Set(v string) error {
 	return nil
 }
 
+// stampValueFlag accumulates --stamp-value=<template-var>=<STATUS_KEY>
+// entries into a template-var→status-key map. Mirrors targetFileFlag's
+// shape: repeated flags accumulate, duplicate vars overwrite (last-wins).
 // Empty status key is rejected at Set-time so `--stamp-value=var=` can't
 // silently map to a nonexistent key.
 type stampValueFlag struct {
