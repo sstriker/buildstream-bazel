@@ -77,6 +77,38 @@ func TestThreadFileGlobs(t *testing.T) {
 	}
 }
 
+// A glob whose wildcard is in the directory portion ("data/*/*.txt") can't
+// be rooted at a real package, so it's skipped — the genrule keeps its
+// explicit srcs rather than getting a bogus glob filegroup.
+func TestThreadFileGlobs_DirWildcardSkipped(t *testing.T) {
+	root := t.TempDir()
+	w := func(rel string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w("data/a/x.txt")
+	w("data/b/y.txt")
+	globs := []shadow.FileGlobCall{
+		{Var: "v", Patterns: []string{filepath.Join(root, "data", "*", "*.txt")}, Recurse: false},
+	}
+	targets := []ir.Target{{
+		Name: "gen", Kind: ir.KindGenrule, GenruleCmd: "touch $@",
+		Srcs: []string{"data/a/x.txt", "data/b/y.txt"},
+	}}
+	threadFileGlobs(targets, globs, root)
+	if targets[0].GlobSrcGroups != nil {
+		t.Errorf("dir-wildcard glob must be skipped, got %+v", targets[0].GlobSrcGroups)
+	}
+	if got := targets[0].Srcs; len(got) != 2 {
+		t.Errorf("srcs must be untouched when the glob is skipped, got %v", got)
+	}
+}
+
 // Empty labelRoot (offline replay, no source tree) disables the pass.
 func TestThreadFileGlobs_NoLabelRoot(t *testing.T) {
 	targets := []ir.Target{{

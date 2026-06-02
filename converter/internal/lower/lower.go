@@ -4640,8 +4640,10 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 	//   - <anchor>/<rel> → <rel>      (the typical embedded-path
 	//     case; trailing slash ensures partial-match safety
 	//     against e.g. <buildDir>_other).
-	//   - bare <anchor> at an argv boundary → "." (Bazel's
-	//     genrule cwd / workspace root, depending on direction).
+	//   - bare <anchor> at an argv boundary → its re-anchor repl
+	//     (buildDir → "."; cmakeSrc → the umbrella prefix, or "."
+	//     when not promoted) — so -DLLVM_SOURCE_DIR=<src> becomes
+	//     =llvm, not =. under umbrella promotion.
 	//     The boundary requirement (whitespace / quote / argv
 	//     separator on the right side) avoids mangling argv
 	//     values that happen to start with the anchor prefix
@@ -4656,16 +4658,20 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 	// (build, → include); a post-pass couldn't tell them apart. Empty
 	// umbrella (the non-promoted case) preserves the prior strip-to-""
 	// behavior exactly.
-	srcRepl := ""
+	srcRepl, srcBareRepl := "", "."
 	if umbrellaPrefix != "" {
 		srcRepl = umbrellaPrefix + "/"
+		srcBareRepl = umbrellaPrefix
 	}
-	for _, a := range []struct{ anchor, repl string }{{cmakeSrc, srcRepl}, {buildDir, ""}} {
+	for _, a := range []struct{ anchor, repl, bareRepl string }{
+		{cmakeSrc, srcRepl, srcBareRepl},
+		{buildDir, "", "."},
+	} {
 		if a.anchor == "" {
 			continue
 		}
 		cmd = strings.ReplaceAll(cmd, a.anchor+"/", a.repl)
-		cmd = replaceBareAnchorAtBoundary(cmd, a.anchor)
+		cmd = replaceBareAnchorAtBoundary(cmd, a.anchor, a.bareRepl)
 	}
 	// Strip well-known host-bin tool prefixes so the command relies
 	// on PATH (the operator's responsibility) instead of baking the
@@ -4708,10 +4714,16 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 }
 
 // replaceBareAnchorAtBoundary replaces `anchor` (no trailing slash)
-// with `.` whenever it sits at an argv-token boundary in `cmd`.
+// with `repl` whenever it sits at an argv-token boundary in `cmd`.
 // "Boundary" = the character immediately after `anchor` is one of:
 // whitespace, double-quote, single-quote, `=` (DKEY=VALUE shape),
 // shell command-separator (`&`, `|`, `;`), or end-of-string.
+//
+// `repl` mirrors the `<anchor>/<rel>` strip's replacement so a bare
+// anchor re-anchors consistently: buildDir → "." (Bazel's genrule cwd),
+// cmakeSrc → the umbrella prefix in the promoted case (e.g. "llvm", so
+// -DLLVM_SOURCE_DIR=<abs-src> becomes =llvm, not =.) or "." when not
+// promoted.
 //
 // The argv-boundary requirement avoids mangling argv values that
 // happen to start with the anchor prefix but continue with letters
@@ -4719,7 +4731,7 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 // purpose — the cmake-emitted shapes that surface this (LLVM's
 // -DLLVM_SOURCE_DIR=<abs-src>, VTK's -DCMAKE_BINARY_DIR=<abs-build>)
 // all hit a clean argv boundary.
-func replaceBareAnchorAtBoundary(cmd, anchor string) string {
+func replaceBareAnchorAtBoundary(cmd, anchor, repl string) string {
 	if anchor == "" {
 		return cmd
 	}
@@ -4736,7 +4748,7 @@ func replaceBareAnchorAtBoundary(cmd, anchor string) string {
 				endByte == '"' || endByte == '\'' ||
 				endByte == '=' || endByte == '&' || endByte == '|' || endByte == ';'
 			if isBoundary {
-				b.WriteByte('.')
+				b.WriteString(repl)
 				i += len(anchor)
 				continue
 			}

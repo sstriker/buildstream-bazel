@@ -404,7 +404,11 @@ func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 			continue
 		}
 		primary, ext := primaryCodegenInput(t.Srcs, roots)
-		if ext == "" {
+		// Gate to tablegen .td: the include scanner recognizes tablegen's
+		// `include "..."` syntax, so restrict to .td primaries rather than
+		// reading unrelated codegen inputs. (Another include-syntax codegen
+		// tool would be a one-line extension to this check.)
+		if ext != ".td" {
 			continue
 		}
 		existing := make(map[string]bool, len(t.Srcs))
@@ -575,6 +579,13 @@ func fileGlobMatchSet(pattern, callFile string, recurse bool, labelRoot string) 
 		pattern = filepath.Join(filepath.Dir(callFile), pattern)
 	}
 	dir, base := filepath.Dir(pattern), filepath.Base(pattern)
+	if strings.ContainsAny(dir, "*?[") {
+		// A wildcard in the directory portion (e.g. "data/*/*.txt") means
+		// the anchor dir isn't a real package, so we can't root a valid
+		// glob() filegroup there. Skip folding — the genrule keeps its
+		// explicit srcs — until directory-wildcard anchoring is supported.
+		return nil, "", "", false
+	}
 	relDir, err := filepath.Rel(labelRoot, dir)
 	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) {
 		return nil, "", "", false

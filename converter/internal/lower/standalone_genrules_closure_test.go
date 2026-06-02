@@ -104,6 +104,34 @@ func TestRecordCodegenIncludeClosure_NoLabelRoot(t *testing.T) {
 	}
 }
 
+// A primary input under an -I root but NOT .td must be left untouched —
+// the include scanner is tablegen-specific, so the pass gates on .td even
+// when a non-.td file happens to carry `include "..."` syntax.
+func TestRecordCodegenIncludeClosure_NonTdSkipped(t *testing.T) {
+	root := t.TempDir()
+	w := func(rel, body string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w("gen/input.x", "include \"other.x\"\n")
+	w("gen/other.x", "// leaf\n")
+	targets := []ir.Target{{
+		Name:       "gen_x",
+		Kind:       ir.KindGenrule,
+		Srcs:       []string{"gen/input.x"},
+		GenruleCmd: "tool -I gen gen/input.x -o $(RULEDIR)/out.inc",
+	}}
+	recordCodegenIncludeClosure(targets, root)
+	if got := targets[0].Srcs; !reflect.DeepEqual(got, []string{"gen/input.x"}) {
+		t.Errorf("non-.td primary must add no closure, got %v", got)
+	}
+}
+
 func TestGenruleIncludeRoots(t *testing.T) {
 	cmd := "$(location //t:tg) -gen-x -I inc -Ilib/Foo/ -I inc -Iinclude in.td -o out"
 	got := genruleIncludeRoots(cmd)
