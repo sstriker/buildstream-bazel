@@ -133,6 +133,56 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			t.Errorf("install -d must emit no genrule; got %+v", cc.Genrules)
 		}
 	})
+
+	// -s / --strip / --strip-program rewrite the copied bytes, so install
+	// can't be reproduced as a plain copy → refuse (not a wrong artifact).
+	for _, strip := range [][]string{
+		{"install", "-s", "/src/tool", "/build/bin/tool"},
+		{"install", "--strip", "/src/tool", "/build/bin/tool"},
+		{"install", "--strip-program", "/usr/bin/strip", "/src/tool", "/build/bin/tool"},
+	} {
+		t.Run("strip refuses: "+strings.Join(strip[1:], " "), func(t *testing.T) {
+			cc := newCodegenContext()
+			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+				File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{strip},
+			}}, "/src", "/src", "/build", "/build", false, nil, cc)
+			if len(refusals) == 0 {
+				t.Errorf("install with strip must refuse (bytes differ); got none")
+			}
+			if len(cc.Genrules) != 0 {
+				t.Errorf("install with strip must emit no genrule; got %+v", cc.Genrules)
+			}
+		})
+	}
+
+	t.Run("long value-option (--mode VALUE) not mis-split into operands", func(t *testing.T) {
+		// `--mode 644` carries a SEPARATE value; a naive parser would read
+		// 644 as a source operand and shift SRC/DEST. The dest must remain
+		// /build/include/ and the copy must land at include/cfg.h.
+		calls := []shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "--owner", "root", "--mode", "644", "/src/cfg.h", "/build/include/"}},
+		}}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("install with long value-options should lift; got %v", refusals)
+		}
+		if len(cc.Genrules) != 1 || cc.Genrules[0].GenruleOuts[0] != "include/cfg.h" {
+			t.Errorf("outs: %+v want [include/cfg.h] (long-option values must not shift operands)", cc.Genrules)
+		}
+	})
+
+	t.Run("unrecognized flag refuses (no operand mis-split)", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "--frobnicate", "/src/x", "/build/x"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("install with an unrecognized flag must refuse rather than guess operands")
+		}
+	})
 }
 
 // TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses pins the

@@ -817,19 +817,37 @@ func liftCp(args []string, anc execAnchors, cc *codegenContext) ([]string, strin
 // — is a benign skip, since install-prefix output is not a Bazel-tracked
 // input and a genrule for it would only dangle. A source that can't be
 // anchored under the source root refuses (the input can't be named).
-// Attribute flags (-m/-o/-g, -s, -p, ...) are dropped: permissions and
-// ownership don't affect the bytes a Bazel consumer reads. Genuinely
-// ambiguous argv refuses (safe round-2 fallback).
+// Mode/ownership flags (-m/-o/-g, -p, ...) are dropped — permissions don't
+// affect the bytes a Bazel consumer reads. `-s`/`--strip`/`--strip-program`
+// rewrite the bytes (a stripped binary != the source), so they refuse; and
+// any unrecognized flag refuses rather than risk mis-splitting SRC/DEST
+// (safe round-2 fallback).
 func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
 	var operands []string
 	dirMode := false
 	targetDir := ""
 	hasTargetDir := false
 
-	// Short flags that take a value: -m MODE, -o OWNER, -g GROUP, -t DIR,
-	// -S SUFFIX. Everything else short is boolean (-d/-D/-s/-p/-v/-b/-c/-C
-	// /-T/-Z/-P). Options precede operands in cmake-generated install calls.
+	strip := false
+
+	// install's option model (GNU coreutils + the common BSD subset).
+	// Short value-taking flags (joined `-m755` or next-arg `-m 755`):
+	//   -m MODE, -o OWNER, -g GROUP, -t DIR, -S SUFFIX.
+	// Short boolean flags: -d (dir), -s (strip), -D/-p/-v/-b/-c/-C/-T/-Z/-P.
 	const valueShort = "mogtS"
+	const boolShort = "dsDpvbcCTZP"
+	// Long value-taking options: --opt VALUE or --opt=VALUE.
+	longValue := map[string]bool{
+		"--mode": true, "--owner": true, "--group": true,
+		"--suffix": true, "--target-directory": true, "--strip-program": true,
+	}
+	// Long boolean options.
+	longBool := map[string]bool{
+		"--directory": true, "--compare": true, "--preserve-timestamps": true,
+		"--strip": true, "--no-target-directory": true, "--verbose": true,
+		"--backup": true, "--context": true, "--debug": true,
+		"--help": true, "--version": true,
+	}
 	i := 0
 	for i < len(args) {
 		a := args[i]
@@ -837,52 +855,111 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 		case a == "--":
 			operands = append(operands, args[i+1:]...)
 			i = len(args)
-		case a == "-d" || a == "--directory":
-			dirMode = true
-			i++
-		case a == "-t" || a == "--target-directory":
-			if i+1 >= len(args) {
-				return nil, "install: -t given without a target directory", false
-			}
-			targetDir, hasTargetDir = args[i+1], true
-			i += 2
-		case strings.HasPrefix(a, "--target-directory="):
-			targetDir, hasTargetDir = strings.TrimPrefix(a, "--target-directory="), true
-			i++
 		case strings.HasPrefix(a, "--"):
-			// Other long option (--mode=, --strip, --preserve-timestamps,
-			// ...). `--x=y` is self-contained; a bare `--x` is boolean.
-			// None shift operand positions, so drop.
-			i++
-		case strings.HasPrefix(a, "-") && len(a) > 1:
-			body := a[1:]
-			if strings.IndexByte(body, 'd') >= 0 {
-				dirMode = true
+			name, val := a, ""
+			hasEq := false
+			if eq := strings.IndexByte(a, '='); eq >= 0 {
+				name, val, hasEq = a[:eq], a[eq+1:], true
 			}
-			last := body[len(body)-1]
-			if strings.IndexByte(valueShort, last) >= 0 {
-				// Value-taking flag with no joined value: the next arg is
-				// its value (e.g. `-m 755`, `-t dir`).
-				if last == 't' {
+			switch {
+			case name == "--directory":
+				dirMode = true
+				i++
+			case name == "--strip":
+				strip = true
+				i++
+			case name == "--strip-program":
+				strip = true
+				if hasEq {
+					i++
+				} else {
+					i += 2 // consume the program-path value
+				}
+			case name == "--target-directory":
+				if hasEq {
+					targetDir, hasTargetDir = val, true
+					i++
+				} else {
 					if i+1 >= len(args) {
-						return nil, "install: -t given without a target directory", false
+						return nil, "install: --target-directory without a value", false
 					}
 					targetDir, hasTargetDir = args[i+1], true
+					i += 2
 				}
+			case longValue[name]:
+				if hasEq {
+					i++
+				} else {
+					if i+1 >= len(args) {
+						return nil, fmt.Sprintf("install: %s without a value", name), false
+					}
+					i += 2 // flag + its separate value
+				}
+			case longBool[name]:
+				i++
+			default:
+				return nil, fmt.Sprintf("install: unrecognized option %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
+			}
+		case strings.HasPrefix(a, "-") && len(a) > 1:
+			// Short cluster. A value-taking flag (mogtS) swallows the rest of
+			// the cluster as its value, or — when it's the last char — the
+			// next argv element. Unknown chars refuse (don't guess whether
+			// they consume a value and shift the operands).
+			body := a[1:]
+			consumedNext := false
+			recognized := true
+			for j := 0; j < len(body); j++ {
+				c := body[j]
+				if c == 'd' {
+					dirMode = true
+					continue
+				}
+				if c == 's' {
+					strip = true
+					continue
+				}
+				if strings.IndexByte(valueShort, c) >= 0 {
+					rest := body[j+1:]
+					if rest != "" {
+						if c == 't' {
+							targetDir, hasTargetDir = rest, true
+						}
+					} else {
+						if c == 't' {
+							if i+1 >= len(args) {
+								return nil, "install: -t without a target directory", false
+							}
+							targetDir, hasTargetDir = args[i+1], true
+						}
+						consumedNext = true
+					}
+					break // value-taking flag swallows the cluster remainder
+				}
+				if strings.IndexByte(boolShort, c) < 0 {
+					recognized = false
+					break
+				}
+			}
+			if !recognized {
+				return nil, fmt.Sprintf("install: unrecognized short option in %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
+			}
+			if consumedNext {
 				i += 2
 			} else {
-				// Joined value (`-m755`, `-tdir`) or an all-boolean cluster
-				// (`-ps`). A `-t` not in last position carries its dir as
-				// the cluster remainder.
-				if ti := strings.IndexByte(body, 't'); ti >= 0 && ti < len(body)-1 {
-					targetDir, hasTargetDir = body[ti+1:], true
-				}
 				i++
 			}
 		default:
 			operands = append(operands, args[i:]...)
 			i = len(args)
 		}
+	}
+
+	// -s / --strip / --strip-program rewrite the copied bytes (a stripped
+	// binary differs from the source), so the call can't be reproduced as a
+	// plain byte copy. Refuse → round-2 fallback rather than emit a wrong
+	// artifact.
+	if strip {
+		return nil, "install: -s/--strip(-program) modifies the copied bytes; can't reproduce as a plain copy", false
 	}
 
 	// `install -d DIR...`: directory creation. No Bazel artifact (fresh
