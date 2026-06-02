@@ -699,13 +699,19 @@ type Target struct {
 }
 
 // GlobSrcGroup names one cmake file(GLOB)-derived source group: Dir is the
-// element-root-relative directory the glob is anchored at, and Pattern is
-// the Bazel glob pattern relative to Dir ("*.txt" for GLOB, "**/*.txt" for
-// GLOB_RECURSE). split turns each into a build-time glob() filegroup in
-// Dir's owning package.
+// element-root-relative directory the glob is anchored at, Pattern is the
+// Bazel glob pattern relative to Dir ("*.txt" for GLOB, "**/*.txt" for
+// GLOB_RECURSE), and Files is the element-root-relative match set that
+// seeded the group. split turns each into a build-time glob() filegroup in
+// Dir's owning package and drops Files from the genrule's explicit srcs
+// (served by the filegroup instead). The monolithic emitter, which doesn't
+// synthesize the filegroups, leaves the explicit srcs in place — so lower
+// keeps Files in Srcs and only split removes them, keeping both emitters
+// correct.
 type GlobSrcGroup struct {
 	Dir     string
 	Pattern string
+	Files   []string
 }
 
 // CMakeConfigureFileSpec carries the attributes for a

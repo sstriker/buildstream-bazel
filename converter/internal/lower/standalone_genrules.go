@@ -532,7 +532,6 @@ func threadFileGlobs(targets []ir.Target, globs []shadow.FileGlobCall, labelRoot
 		for _, s := range t.Srcs {
 			srcSet[s] = true
 		}
-		remove := map[string]bool{}
 		var specs []ir.GlobSrcGroup
 		seenSpec := map[string]bool{}
 		for _, g := range groups {
@@ -541,22 +540,19 @@ func threadFileGlobs(targets []ir.Target, globs []shadow.FileGlobCall, labelRoot
 			}
 			if key := g.dir + "\x00" + g.pattern; !seenSpec[key] {
 				seenSpec[key] = true
-				specs = append(specs, ir.GlobSrcGroup{Dir: g.dir, Pattern: g.pattern})
-			}
-			for _, f := range g.files {
-				remove[f] = true
+				specs = append(specs, ir.GlobSrcGroup{
+					Dir:     g.dir,
+					Pattern: g.pattern,
+					Files:   append([]string(nil), g.files...),
+				})
 			}
 		}
 		if len(specs) == 0 {
 			continue
 		}
-		var kept []string
-		for _, s := range t.Srcs {
-			if !remove[s] {
-				kept = append(kept, s)
-			}
-		}
-		t.Srcs = kept
+		// Keep the explicit srcs in place: split drops them in favor of the
+		// synthesized glob() filegroup, but the monolithic emitter doesn't
+		// synthesize one, so dropping here would silently lose the inputs.
 		t.GlobSrcGroups = append(t.GlobSrcGroups, specs...)
 	}
 }
@@ -610,7 +606,15 @@ func fileGlobMatchSet(pattern, callFile string, recurse bool, labelRoot string) 
 			return nil
 		})
 	} else {
-		matches, _ = filepath.Glob(pattern)
+		// filepath.Glob can match directories (e.g. "data/*"); Bazel glob()
+		// excludes dirs and genrule srcs expect files, so drop them — same
+		// as the recurse path's d.IsDir() skip.
+		all, _ := filepath.Glob(pattern)
+		for _, m := range all {
+			if fi, err := os.Stat(m); err == nil && !fi.IsDir() {
+				matches = append(matches, m)
+			}
+		}
 	}
 	for _, m := range matches {
 		if rel, err := filepath.Rel(labelRoot, m); err == nil {

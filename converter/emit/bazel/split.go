@@ -94,7 +94,15 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 			}
 		}
 		ensure(dir)
-		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
+		// Drop file(GLOB)-covered srcs before rewriting: split serves them
+		// via the synthesized glob() filegroup, so listing them explicitly
+		// (relativized + exported) would be redundant. Guarded on the labels
+		// actually existing, so the inputs are never silently lost.
+		src := t
+		if len(t.GlobSrcGroups) > 0 && len(globLabels[t.Name]) > 0 {
+			src = dropGlobSrcFiles(t)
+		}
+		rt := rewriteTarget(src, dir, plan, local, exportsByDir)
 		// Splice the synthesized file(GLOB) glob-filegroup labels into this
 		// genrule's srcs (full labels, so no further rewriting), and drop
 		// the now-consumed metadata.
@@ -335,6 +343,31 @@ func globSrcName(relInPkg, pattern string) string {
 		return "glob_" + ext + "_srcs"
 	}
 	return san(relInPkg) + "_glob_" + ext + "_srcs"
+}
+
+// dropGlobSrcFiles returns a copy of t with the file(GLOB)-covered sources
+// (recorded on its GlobSrcGroups.Files) removed from Srcs. split serves
+// those via the synthesized glob() filegroups, so the explicit entries
+// would be redundant; lower keeps them in Srcs so the monolithic emitter —
+// which synthesizes no filegroup — still sees the inputs.
+func dropGlobSrcFiles(t ir.Target) ir.Target {
+	drop := map[string]bool{}
+	for _, g := range t.GlobSrcGroups {
+		for _, f := range g.Files {
+			drop[f] = true
+		}
+	}
+	if len(drop) == 0 {
+		return t
+	}
+	kept := make([]string, 0, len(t.Srcs))
+	for _, s := range t.Srcs {
+		if !drop[s] {
+			kept = append(kept, s)
+		}
+	}
+	t.Srcs = kept
+	return t
 }
 
 // planSplit computes the split layout from a lowered package.

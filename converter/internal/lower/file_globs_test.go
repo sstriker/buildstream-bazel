@@ -44,7 +44,8 @@ func TestThreadFileGlobs(t *testing.T) {
 	}
 
 	// gen_full depends on the entire result of both non-relative globs (plus
-	// one unrelated explicit src) → both fold; keep.c stays.
+	// one unrelated explicit src) → both groups are recorded; srcs are kept
+	// intact (split drops the covered ones, the monolithic emitter keeps).
 	full := ir.Target{
 		Name: "gen_full", Kind: ir.KindGenrule, GenruleCmd: "touch $@",
 		Srcs: []string{"data/a.txt", "data/b.txt", "src/x.in", "src/sub/y.in", "other/keep.c"},
@@ -59,12 +60,13 @@ func TestThreadFileGlobs(t *testing.T) {
 
 	threadFileGlobs(targets, globs, root)
 
-	if got := targets[0].Srcs; !reflect.DeepEqual(got, []string{"other/keep.c"}) {
-		t.Errorf("gen_full srcs after fold:\n  got:  %v\n  want: [other/keep.c]", got)
+	wantSrcs := []string{"data/a.txt", "data/b.txt", "src/x.in", "src/sub/y.in", "other/keep.c"}
+	if got := targets[0].Srcs; !reflect.DeepEqual(got, wantSrcs) {
+		t.Errorf("gen_full srcs must be kept intact:\n  got:  %v\n  want: %v", got, wantSrcs)
 	}
 	wantGroups := []ir.GlobSrcGroup{
-		{Dir: "data", Pattern: "*.txt"},
-		{Dir: "src", Pattern: "**/*.in"},
+		{Dir: "data", Pattern: "*.txt", Files: []string{"data/a.txt", "data/b.txt"}},
+		{Dir: "src", Pattern: "**/*.in", Files: []string{"src/sub/y.in", "src/x.in"}},
 	}
 	if got := targets[0].GlobSrcGroups; !reflect.DeepEqual(got, wantGroups) {
 		t.Errorf("gen_full GlobSrcGroups:\n  got:  %+v\n  want: %+v", got, wantGroups)
@@ -106,6 +108,33 @@ func TestThreadFileGlobs_DirWildcardSkipped(t *testing.T) {
 	}
 	if got := targets[0].Srcs; len(got) != 2 {
 		t.Errorf("srcs must be untouched when the glob is skipped, got %v", got)
+	}
+}
+
+// fileGlobMatchSet's non-recurse path must drop directory matches
+// (filepath.Glob returns them) — consistent with the recurse path's
+// d.IsDir() skip, and matching Bazel glob()'s files-only default. Here
+// "data/*" matches both a.txt and the sub/ directory; only the file may
+// enter the match set, so the genrule (which depends on just a.txt) folds.
+func TestThreadFileGlobs_NonRecurseDropsDirs(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "data", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "data", "a.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	globs := []shadow.FileGlobCall{
+		{Var: "v", Patterns: []string{filepath.Join(root, "data", "*")}, Recurse: false},
+	}
+	targets := []ir.Target{{
+		Name: "gen", Kind: ir.KindGenrule, GenruleCmd: "touch $@",
+		Srcs: []string{"data/a.txt"},
+	}}
+	threadFileGlobs(targets, globs, root)
+	want := []ir.GlobSrcGroup{{Dir: "data", Pattern: "*", Files: []string{"data/a.txt"}}}
+	if got := targets[0].GlobSrcGroups; !reflect.DeepEqual(got, want) {
+		t.Errorf("directory match must be filtered from the set:\n  got:  %+v\n  want: %+v", got, want)
 	}
 }
 
