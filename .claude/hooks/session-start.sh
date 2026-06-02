@@ -163,7 +163,7 @@ if [ -n "$egress_cas" ]; then
         { [ -s "$bsb_rc_tmp" ] && [ -n "$(tail -c1 "$bsb_rc_tmp" 2>/dev/null)" ] && printf '\n' >> "$bsb_rc_tmp"; } || true
         cat >> "$bsb_rc_tmp" <<RC && mv -f "$bsb_rc_tmp" "$bsb_rc" || bsb_rc_ok=0
 # >>> bsb-egress >>>
-common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/
+common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main
 startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit
 # <<< bsb-egress <<<
 RC
