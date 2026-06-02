@@ -551,7 +551,9 @@ transition cleanly.
   gates (previously Makefile-targeted but never CI-invoked) — so their
   convert→render→`bazel build` contracts (the load-bearing halves the
   Go-level unit tests + goldens don't cover) guard regressions on every PR.
-  Each skips cleanly when cmake / ninja / bazel≥9 are absent. **Follow-up:**
+  The aggregate guards on cmake + ninja up front (each gate self-skips its
+  bazel≥9 build half), so it no-ops cleanly without the toolchain.
+  **Follow-up:**
   the broader `meta-cmake-*.sh` render-gate family (install-export
   declarative, sanitizer-features, interface-genex-defines,
   probe-genex-object/utility, platform-partition-tier2, …) is still

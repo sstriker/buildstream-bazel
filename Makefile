@@ -301,8 +301,8 @@ e2e-meta-cmake-vcs-stamp-indirect: converter
 # half the Go-level unit tests + goldens don't cover). They run locally via
 # `make`; this aggregate promotes them into CI so their
 # convert -> render -> bazel-build contracts guard regressions on every PR.
-# Each gate skips cleanly when cmake / ninja / bazel are absent, so the
-# aggregate is safe to invoke unconditionally.
+# The aggregate target guards on cmake + ninja up front (and each gate
+# self-skips its bazel-build half), so it's safe to invoke unconditionally.
 RENDER_GATES = \
 	scripts/meta-cmake-genex-probe.sh \
 	scripts/meta-file-generate.sh \
@@ -312,8 +312,21 @@ RENDER_GATES = \
 	scripts/meta-cmake-vcs-stamp.sh \
 	scripts/meta-cmake-vcs-stamp-indirect.sh
 
-e2e-meta-cmake-render-gates: converter
-	@set -e; for g in $(RENDER_GATES); do echo "=== $$g ==="; sh "$$g"; done
+# No `converter` prerequisite: each gate builds convert-element-cmake itself,
+# so the skip branches below truly skip (no forced converter build). Some
+# gates only guard on cmake, but every gate runs `--source-root` which
+# configures with -G Ninja (converter/internal/cmakerun/run.go), so guard the
+# aggregate on BOTH cmake and ninja up front. (bazel absence is handled
+# per-gate, which self-skip just their build halves.) One recipe shell so the
+# skip `else` reaches the whole loop.
+e2e-meta-cmake-render-gates:
+	@if ! command -v cmake >/dev/null 2>&1; then \
+		echo "skip: cmake not on PATH (cmake render gates)"; \
+	elif ! command -v ninja >/dev/null 2>&1; then \
+		echo "skip: ninja not on PATH (render gates configure with -G Ninja)"; \
+	else \
+		set -e; for g in $(RENDER_GATES); do echo "=== $$g ==="; sh "$$g"; done; \
+	fi
 
 # Cross-package $<TARGET_FILE:t> resolved-lift gate. Renders a
 # producer + consumer kind:cmake pair where the consumer's
