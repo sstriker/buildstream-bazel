@@ -117,17 +117,29 @@ if [ -n "$egress_cas" ]; then
   if [ -r /etc/ssl/certs/java/cacerts ]; then
     bsb_trust="/etc/ssl/certs/java/cacerts"
   elif command -v keytool >/dev/null 2>&1; then
+    # Build into a temp keystore (same dir as the target, so the publish is an
+    # atomic rename) and mv into place only after verifying it has cert
+    # entries. So an interrupted/failed build never leaves a partial keystore
+    # at the published path, and we don't delete a pre-existing file up front
+    # for a build that might fail.
     bsb_trust="$HOME/.bazel-egress-trust.jks"
-    rm -f "$bsb_trust"
-    for ca in $egress_cas; do
-      keytool -importcert -noprompt -trustcacerts -alias "bsb-$(basename "$ca")" \
-        -file "$ca" -keystore "$bsb_trust" -storepass changeit >/dev/null 2>&1 || true
-    done
-    # If every import failed, the keystore is missing/empty — don't point
-    # bazel at it (that fails fetches more confusingly than the JVM default);
-    # clear it so the "no usable truststore" path logs below.
-    keytool -list -keystore "$bsb_trust" -storepass changeit 2>/dev/null \
-      | grep -q trustedCertEntry || bsb_trust=""
+    bsb_tmp="$(mktemp "$HOME/.bsb-trust.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$bsb_tmp" ]; then
+      rm -f "$bsb_tmp"  # keytool creates the keystore fresh at this name
+      for ca in $egress_cas; do
+        keytool -importcert -noprompt -trustcacerts -alias "bsb-$(basename "$ca")" \
+          -file "$ca" -keystore "$bsb_tmp" -storepass changeit >/dev/null 2>&1 || true
+      done
+      # Publish only a keystore that actually has cert entries; otherwise drop
+      # it and clear bsb_trust so the "no usable truststore" path logs below.
+      if keytool -list -keystore "$bsb_tmp" -storepass changeit 2>/dev/null | grep -q trustedCertEntry; then
+        mv -f "$bsb_tmp" "$bsb_trust" 2>/dev/null || { rm -f "$bsb_tmp"; bsb_trust=""; }
+      else
+        rm -f "$bsb_tmp"; bsb_trust=""
+      fi
+    else
+      bsb_trust=""
+    fi
   else
     bsb_trust=""
   fi
@@ -138,6 +150,9 @@ if [ -n "$egress_cas" ]; then
     # abort the rest of the hook under `set -e`, and we only claim "configured"
     # when the append actually landed.
     [ -f "$bsb_rc" ] && { sed -i '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc" 2>/dev/null || true; }
+    # Ensure the file ends with a newline so the marker starts on its own line
+    # (a pre-existing rc without a trailing newline would otherwise glue to it).
+    [ -s "$bsb_rc" ] && [ -n "$(tail -c1 "$bsb_rc" 2>/dev/null)" ] && printf '\n' >> "$bsb_rc" 2>/dev/null || true
     if cat >> "$bsb_rc" <<RC
 # >>> bsb-egress >>>
 common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/
