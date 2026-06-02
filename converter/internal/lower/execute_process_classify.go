@@ -259,6 +259,61 @@ var dualUseProbeDrivers = map[string]bool{
 	"node":       true,
 }
 
+// capabilityProbeDrivers names drivers whose RESULT_VARIABLE-only
+// execute_process shape is a pure toolchain-capability check ("does this
+// tool support flag X") whose result lands in the recovered compile
+// flags, never a build input. The recoverExecuteProcess rescue skips
+// these unconditionally; every other RESULT_VARIABLE-only probe (whose
+// exit status could feed a configure_file via @VAR@) is skipped only
+// when its value was captured by the dump-vars hook. A subset of
+// dualUseProbeDrivers, kept separate because the predicate is the
+// rescue policy, not the classification.
+var capabilityProbeDrivers = map[string]bool{
+	"ar":     true,
+	"ranlib": true,
+}
+
+// shellDrivers names POSIX shell basenames, used to recognize a
+// host-detection script invoked as `sh .../config.guess`.
+var shellDrivers = map[string]bool{
+	"sh":   true,
+	"bash": true,
+	"dash": true,
+	"zsh":  true,
+	"ksh":  true,
+}
+
+// hostDetectionScripts names GNU host-triple detection scripts. Their
+// stdout is the build host's triple — a configure-time host probe that
+// produces no build artifact (the triple lands in generated config
+// headers, which the converter recovers independently).
+var hostDetectionScripts = map[string]bool{
+	"config.guess": true,
+	"config.sub":   true,
+}
+
+// executeProcessRunsHostDetectionScript reports whether argv invokes a
+// known host-triple detection script, directly (`./config.guess`) or via
+// a shell (`sh .../config.guess`). The indirect case is gated on a shell
+// driver so an unrelated call that merely names the script as a data
+// argument (e.g. `cp config.guess dst`) doesn't false-match.
+func executeProcessRunsHostDetectionScript(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	if hostDetectionScripts[executeProcessDriverBasename(argv[0])] {
+		return true
+	}
+	if shellDrivers[executeProcessDriverBasename(argv[0])] {
+		for _, a := range argv[1:] {
+			if hostDetectionScripts[executeProcessDriverBasename(a)] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Classify maps one execute_process call to a Bucket using
 // argv-only heuristics — no subprocess execution, no
 // filesystem access. Order of checks:
@@ -423,6 +478,19 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 		return ClassifyResult{
 			Bucket: BucketProbe,
 			Reason: driver + " is a host probe driver" + outputContext(call),
+		}
+	}
+	// Host-triple detection scripts (GNU config.guess / config.sub),
+	// usually run as `sh .../config.guess`. The driver is the shell, so
+	// the driver-name gates above miss them; recognize the script. Its
+	// stdout is the host triple — a configure-time probe with no build
+	// artifact, so it classifies as Probe and the no-OUTPUT_FILE rescue
+	// skips it (the triple's consequence — generated config headers — is
+	// recovered independently).
+	if executeProcessRunsHostDetectionScript(argv) {
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: "host-triple detection script (config.guess/config.sub)" + outputContext(call),
 		}
 	}
 	// Dual-use probe drivers: classify as Probe only when the

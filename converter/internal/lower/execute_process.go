@@ -212,26 +212,49 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		default:
-			// Phase 4 rescue: when a BucketProbe call writes an
-			// OUTPUT_VARIABLE that's already in cmakeVars (captured
-			// by the dump-vars hook at end-of-configure), the probe's
-			// value flows through to downstream configure_file /
-			// file(GENERATE) lifts via Reply.Vars — no Bazel-side
-			// emission needed for the probe call itself. The probe
-			// IS rescued; nothing fails.
+			// Configure-time probes that produce no Bazel build artifact
+			// are skipped, not refused: the call emits nothing and its
+			// build-affecting consequence is recovered independently.
 			//
-			// Same logic for BucketStamp: a version-stamp probe
-			// (`git rev-parse HEAD`) sets OUTPUT_VARIABLE; if cmake
-			// captured the value, downstream consumers see it via
-			// cmakeVars. The downside is that the stamp value bakes
-			// into srckey (which is the round-2 fallback's
-			// per-build-tree trade-off); operators who need a
-			// non-baked stamp opt into the round-2 path.
+			//   - Toolchain-capability probe: a RESULT_VARIABLE-only check
+			//     (no OUTPUT_VARIABLE, no OUTPUT_FILE) on a known capability
+			//     driver — the `ar rD` / `ranlib -D` "does this tool support
+			//     the deterministic flag" checks LLVM's HandleLLVMOptions
+			//     runs. The capability lands in the recovered compile flags,
+			//     never a build input. Restricted to capabilityProbeDrivers:
+			//     a RESULT_VARIABLE exit status from an arbitrary driver can
+			//     feed a configure_file (`@HAVE_X@`), so those rescue only
+			//     when captured (the dump-vars gate below), not here.
+			//   - Host-triple detection script (config.guess / config.sub):
+			//     its stdout is the build host's triple, which lands in
+			//     generated config headers (config.h, llvm-config.h) the
+			//     converter recovers directly.
+			if v.Bucket == BucketProbe && call.OutputFile == "" {
+				if call.OutputVariable == "" && call.ResultVariable != "" &&
+					len(call.Commands) > 0 && len(call.Commands[0]) > 0 &&
+					capabilityProbeDrivers[executeProcessDriverBasename(call.Commands[0][0])] {
+					continue
+				}
+				if len(call.Commands) > 0 && executeProcessRunsHostDetectionScript(call.Commands[0]) {
+					continue
+				}
+			}
+			// Phase 4 rescue: a probe/stamp whose captured value (OUTPUT_ or
+			// RESULT_VARIABLE) is in cmakeVars (the dump-vars hook) has that
+			// value available to downstream configure_file / file(GENERATE)
+			// lifts via Reply.Vars — no Bazel-side emission needed; skip. An
+			// uncaptured probe/stamp not already skipped above (neither a
+			// capability nor a host-detection probe) still refuses so the
+			// operator sees the gap (a stamp's value would otherwise bake
+			// into srckey; operators opt into round-2 for non-baked stamps).
 			if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 				if call.OutputVariable != "" {
 					if _, ok := cmakeVars[call.OutputVariable]; ok {
-						// Captured via dump-vars; consumer reads
-						// through cmakeVars. Skip the refusal.
+						continue
+					}
+				}
+				if call.ResultVariable != "" {
+					if _, ok := cmakeVars[call.ResultVariable]; ok {
 						continue
 					}
 				}
