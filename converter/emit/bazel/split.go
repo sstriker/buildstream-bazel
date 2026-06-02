@@ -62,11 +62,6 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		}
 	}
 
-	// Synthesized build-time glob() filegroups backing tablegen-shaped
-	// genrules' include closures (the maintainable `.td` set), plus the
-	// labels to splice into each producing genrule's srcs.
-	globFilegroups, globLabels := plan.codegenGlobFilegroups(pkg)
-
 	for _, t := range pkg.Targets {
 		dir := plan.targetDir(t.Name)
 		// Synthesized output-producing rules (genrule custom-command
@@ -96,14 +91,6 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		}
 		ensure(dir)
 		rt := rewriteTarget(t, dir, plan, local, exportsByDir)
-		// Splice the synthesized codegen glob-filegroup labels into this
-		// genrule's srcs (full labels, so no further rewriting), and drop
-		// the now-consumed metadata.
-		if labels := globLabels[t.Name]; len(labels) > 0 {
-			rt.Srcs = append(append([]string(nil), rt.Srcs...), labels...)
-			sort.Strings(rt.Srcs)
-			rt.CodegenIncludeGlobs = nil
-		}
 		// A filegroup / pkg_files whose only srcs were bare packaged
 		// directories (dropped above) would render as an empty, useless
 		// rule — and pkg_files/filegroup both require a non-empty srcs
@@ -123,14 +110,6 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	for inc, name := range plan.headerLibs {
 		ensure(inc)
 		groups[inc] = append(groups[inc], plan.headerLibTarget(inc, name))
-	}
-
-	// Add the synthesized codegen glob() filegroups to their owning
-	// packages (the .td include-closure sets referenced by tablegen
-	// genrules above).
-	for d, fgs := range globFilegroups {
-		ensure(d)
-		groups[d] = append(groups[d], fgs...)
 	}
 
 	// 3. Render each package group via the shared EmitWithOptions.
@@ -270,70 +249,6 @@ func (p *splitPlan) headerLibTarget(inc, name string) ir.Target {
 		Deps:       deps,
 		Visibility: []string{"//visibility:public"},
 	}
-}
-
-// codegenGlobFilegroups synthesizes the build-time glob() filegroups that
-// back tablegen-shaped genrules' include closures. For each
-// CodegenIncludeGlob{Root, Ext} on a genrule it locates Root's owning
-// package and emits — deduped per (package, name) — a
-// filegroup(srcs = glob(["<rel>/**/*<ext>"])), then records the
-// filegroup's label so EmitSplit can append it to the genrule's srcs.
-// Keeping the glob in project B (rather than a frozen convert-time file
-// list) is what makes the deliverable maintainable: a newly added .td is
-// picked up at the next build.
-//
-// byDir maps owning-package dir → the filegroups to inject there;
-// labelsFor maps genrule name → the filegroup labels to add to its srcs.
-func (p *splitPlan) codegenGlobFilegroups(pkg *ir.Package) (byDir map[string][]ir.Target, labelsFor map[string][]string) {
-	byDir = map[string][]ir.Target{}
-	labelsFor = map[string][]string{}
-	seen := map[string]bool{} // owningDir + "\x00" + name → already synthesized
-	for _, t := range pkg.Targets {
-		if t.Kind != ir.KindGenrule || len(t.CodegenIncludeGlobs) == 0 {
-			continue
-		}
-		var labels []string
-		seenLabel := map[string]bool{}
-		for _, g := range t.CodegenIncludeGlobs {
-			owningDir := p.deepestPkg(g.Root)
-			rel, _ := relUnder(owningDir, g.Root)
-			pattern := "**/*" + g.Ext
-			if rel != "" {
-				pattern = rel + "/" + pattern
-			}
-			name := codegenGlobName(rel, g.Ext)
-			label := headerLibLabel(p, owningDir, name)
-			if !seenLabel[label] {
-				seenLabel[label] = true
-				labels = append(labels, label)
-			}
-			if key := owningDir + "\x00" + name; !seen[key] {
-				seen[key] = true
-				byDir[owningDir] = append(byDir[owningDir], ir.Target{
-					Name:          name,
-					Kind:          ir.KindFilegroup,
-					FilegroupGlob: []string{pattern},
-					Visibility:    []string{"//visibility:public"},
-				})
-			}
-		}
-		sort.Strings(labels)
-		labelsFor[t.Name] = labels
-	}
-	return byDir, labelsFor
-}
-
-// codegenGlobName derives a deterministic, package-unique filegroup name
-// for a codegen include-closure glob: "codegen_<ext>_srcs" at a package
-// root, or "<rel>_codegen_<ext>_srcs" for a subdir glob (rel sanitized to
-// a legal identifier).
-func codegenGlobName(relInPkg, ext string) string {
-	e := strings.TrimPrefix(ext, ".")
-	if relInPkg == "" {
-		return "codegen_" + e + "_srcs"
-	}
-	san := strings.NewReplacer("/", "_", ".", "_", "-", "_").Replace(relInPkg)
-	return san + "_codegen_" + e + "_srcs"
 }
 
 // planSplit computes the split layout from a lowered package.

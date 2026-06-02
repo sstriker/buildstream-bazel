@@ -747,25 +747,27 @@ transition cleanly.
       //include:custom_command_…_RISCVTargetParserDef_inc` is green (RISCV,
       ARM, AArch64 TargetParserDef.inc all build); the four clean libs are
       unregressed. The last piece was:
-        - **(d) `.td` transitive-include closure** — DONE, via build-time
-          `glob()` filegroups (the maintainable shape). tblgen failed
-          `could not find include file 'llvm/Target/Target.td'` because the
-          transitive `.td` includes aren't static ninja inputs. **This is
-          exactly what cmake's `TableGen.cmake` does** — `file(GLOB local_tds
-          "*.td")` + `file(GLOB_RECURSE global_tds ".../llvm/*.td")`, with
-          the per-output DEPFILE being only a Ninja optimization to skip the
-          glob (the macro's own comment: "Use depfile instead of globbing
-          … for Ninja"). So we emit the same recursive `.td` glob, as a Bazel
-          `glob()` filegroup: `recordCodegenIncludeGlobs` (lower) marks each
-          source `-I` root + ext on the genrule (FS consulted only to skip
-          roots with no source `.td`); split's `codegenGlobFilegroups`
-          synthesizes one `filegroup(srcs = glob(["<rel>/**/*.td"]))` per
-          owning package and splices its label into the genrule's srcs.
-          Crucially the glob lives **in project B** and re-evaluates every
-          build — a `.td` added post-conversion is picked up, where a frozen
-          convert-time list (the first cut) would have rotted. Scoped to
-          genrules whose primary input sits inside one of their own `-I`
-          roots (the include-resolving-codegen signal).
+        - **(d) `.td` transitive-include closure** — DONE, as the precise
+          per-genrule closure (replacing the first cut's `glob()` filegroups).
+          tblgen failed `could not find include file 'llvm/Target/Target.td'`
+          because the transitive `.td` includes aren't static ninja inputs.
+          The faithful set is **cmake's per-output DEPFILE** — under Ninja
+          (what the converter configures) `TableGen.cmake` tracks deps via the
+          `.inc.d` depfile and sets the glob vars *empty*; `file(GLOB)` is only
+          the **non-Ninja fallback** (the macro's own comment: "Use depfile
+          instead of globbing … for Ninja"), so it never runs and a `glob()`
+          over-declares (GenVT pulls in all 45 `.td` when it needs 1). We
+          replicate the depfile **statically**: `recordCodegenIncludeClosure`
+          (lower) follows `include "..."` directives from the genrule's primary
+          input, resolving each against its own `-I` roots, and appends the
+          reachable source files to srcs; split's existing cross-package src
+          handling relabels each to its owning package and raises the
+          `exports_files()` need. Result is minimal + transitive — GenVT.inc →
+          `[ValueTypes.td]`, IntrinsicEnums.inc → the 25-`.td` Intrinsics
+          closure. Scoped to genrules whose primary input sits inside one of
+          their own `-I` roots (the include-resolving-codegen signal); an
+          include that doesn't resolve on the source FS (a generated `.td`)
+          terminates that branch.
       Remaining for a *green* tablegen **consumer** (`LLVMTargetParser`):
         - **(e) per-consumer** generated-header dependency wiring. The
           consumer fails `fatal error: llvm/TargetParser/AArch64TargetParserDef.inc:

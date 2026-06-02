@@ -1,10 +1,9 @@
 package lower
 
 import (
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -347,39 +346,45 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	return cmd
 }
 
-// recordCodegenIncludeGlobs marks the include-closure roots for include-
-// resolving codegen genrules — the tablegen shape: a tool that reads
-// `-I <dir>` roots and resolves `include "x"` directives against them.
-// cmake tracks those transitive includes via a per-output DEPFILE, which
-// is dynamic: absent from a configure-only reply's static ninja inputs AND
-// from the trace (the tablegen() macro defers to DEPFILE). So the lowered
-// genrule lists only the explicit primary input (RISCV.td); without the
-// rest of the `.td` closure the tool fails at action time with "could not
-// find include file ...".
+// recordCodegenIncludeClosure appends the transitive `include "..."`
+// closure of each include-resolving codegen genrule's primary input to
+// its srcs — the tablegen shape: a tool that reads `-I <dir>` roots and
+// resolves `include "x.td"` directives against them.
 //
-// We do NOT bake the closure: that's an over-approximation (the precise
-// set is depfile-only) and a frozen convert-time list would rot in the
-// owned project B when a `.td` is added. Instead we record each source
-// `-I` root + the codegen extension on the genrule; split materializes a
-// build-time glob() filegroup per owning package, so the glob lives in
-// project B and re-evaluates every build — the LLVM-overlay idiom.
+// cmake tracks that transitive closure via a per-output DEPFILE, which is
+// dynamic: absent from a configure-only reply's static ninja inputs AND
+// from the trace. (LLVM's tablegen() macro uses the depfile under Ninja —
+// "Use depfile instead of globbing arbitrary *.td(s) for Ninja" — and only
+// falls back to `file(GLOB)` for non-depfile generators, so neither the
+// precise set nor a glob call ever reaches us.) So the lowered genrule
+// lists only the explicit primary input (RISCV.td); without the rest of
+// the `.td` closure the tool fails at action time with "could not find
+// include file ...".
+//
+// We replicate the depfile statically: from the primary input, follow
+// `include "..."` directives, resolving each against the genrule's own
+// `-I` roots (in order, first existing match wins), and add every
+// reachable source file to srcs. This is the precise set the depfile would
+// list — minimal and faithful, not the coarse `glob(**/*.td)` over-
+// approximation cmake falls back to for non-Ninja generators. split's
+// cross-package src handling relabels each closure file to its owning
+// package and raises the exports_files() need automatically.
 //
 // labelRoot is the absolute path the genrule's (umbrella-anchored) srcs
 // and `-I` paths are relative to; "" disables the pass (unit tests,
-// non-promoted offline replays without a source tree on disk). The FS is
-// consulted only to skip build-dir-only roots (e.g. a bare `include` that
-// holds no source `.td`), keeping empty filegroups out of the output —
-// the recorded glob itself stays authoritative.
+// non-promoted offline replays without a source tree on disk). An include
+// that doesn't resolve to a file on the source FS (e.g. a generated `.td`)
+// contributes no further edges — the same blind spot cmake's glob fallback
+// has.
 //
 // Scope guard: only genrules whose primary explicit source sits inside
 // one of their own `-I` roots count as include-resolving codegen. A plain
 // genrule that passes `-I` for a compiler invocation doesn't match — its
 // input isn't resolved via the include path — so it's left untouched.
-func recordCodegenIncludeGlobs(targets []ir.Target, labelRoot string) {
+func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 	if labelRoot == "" {
 		return
 	}
-	cache := map[string]bool{} // root+"\x00"+ext → root holds ≥1 file of ext
 	for i := range targets {
 		t := &targets[i]
 		if t.Kind != ir.KindGenrule || t.GenruleCmd == "" {
@@ -389,52 +394,84 @@ func recordCodegenIncludeGlobs(targets []ir.Target, labelRoot string) {
 		if len(roots) == 0 {
 			continue
 		}
-		_, ext := primaryCodegenInput(t.Srcs, roots)
+		primary, ext := primaryCodegenInput(t.Srcs, roots)
 		if ext == "" {
 			continue
 		}
-		var globs []ir.CodegenIncludeGlob
-		for _, r := range roots {
-			if rootHasExt(cache, labelRoot, r, ext) {
-				globs = append(globs, ir.CodegenIncludeGlob{Root: r, Ext: ext})
+		existing := make(map[string]bool, len(t.Srcs))
+		for _, s := range t.Srcs {
+			existing[s] = true
+		}
+		var add []string
+		for _, c := range tdIncludeClosure(primary, roots, labelRoot) {
+			if !existing[c] {
+				existing[c] = true
+				add = append(add, c)
 			}
 		}
-		if len(globs) > 0 {
-			t.CodegenIncludeGlobs = globs
-		}
+		sort.Strings(add)
+		t.Srcs = append(t.Srcs, add...)
 	}
 }
 
-// rootHasExt reports whether the source-tree dir root (labelRoot-relative)
-// exists and holds at least one file with extension ext anywhere beneath
-// it. Memoized per (root, ext); roots that don't exist on the source FS
-// (e.g. a build-dir-only `include`) report false so no empty filegroup is
-// synthesized for them.
-func rootHasExt(cache map[string]bool, labelRoot, root, ext string) bool {
-	key := root + "\x00" + ext
-	if hit, ok := cache[key]; ok {
-		return hit
-	}
-	found := false
-	abs := filepath.Join(labelRoot, filepath.FromSlash(root))
-	if info, err := os.Stat(abs); err == nil && info.IsDir() {
-		_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
-				return nil
+// tdIncludeClosure returns the set of labelRoot-relative source files
+// reachable from primary by transitively following `include "..."`
+// directives, resolving each path against roots (first existing match
+// wins). primary is always the first element. A file that can't be read
+// (generated / off-tree) terminates that branch; cycles are bounded by the
+// visited set.
+func tdIncludeClosure(primary string, roots []string, labelRoot string) []string {
+	seen := map[string]bool{}
+	var order []string
+	var visit func(rel string)
+	visit = func(rel string) {
+		if seen[rel] {
+			return
+		}
+		seen[rel] = true
+		order = append(order, rel)
+		data, err := os.ReadFile(filepath.Join(labelRoot, filepath.FromSlash(rel)))
+		if err != nil {
+			return
+		}
+		for _, inc := range parseTdIncludes(data) {
+			if r := resolveTdInclude(inc, roots, labelRoot); r != "" {
+				visit(r)
 			}
-			if filepath.Ext(p) == ext {
-				found = true
-				return errStopWalk
-			}
-			return nil
-		})
+		}
 	}
-	cache[key] = found
-	return found
+	visit(primary)
+	return order
 }
 
-// errStopWalk short-circuits a filepath.WalkDir once the answer is known.
-var errStopWalk = errors.New("stop walk")
+// tdIncludeRe matches a tablegen `include "path"` directive at the start
+// of a line (after optional leading whitespace) — the uniform form across
+// LLVM's `.td` tree.
+var tdIncludeRe = regexp.MustCompile(`(?m)^[ \t]*include[ \t]+"([^"]+)"`)
+
+// parseTdIncludes extracts the include paths from a `.td` file body.
+func parseTdIncludes(data []byte) []string {
+	ms := tdIncludeRe.FindAllSubmatch(data, -1)
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, string(m[1]))
+	}
+	return out
+}
+
+// resolveTdInclude resolves an include path against the `-I` roots in
+// order, returning the first labelRoot-relative path that names an
+// existing file, or "" if none do.
+func resolveTdInclude(inc string, roots []string, labelRoot string) string {
+	inc = strings.TrimLeft(filepath.ToSlash(inc), "/")
+	for _, r := range roots {
+		cand := strings.TrimRight(r, "/") + "/" + inc
+		if fi, err := os.Stat(filepath.Join(labelRoot, filepath.FromSlash(cand))); err == nil && !fi.IsDir() {
+			return cand
+		}
+	}
+	return ""
+}
 
 // genruleIncludeRoots extracts the `-I` include roots from a genrule cmd,
 // handling both `-I dir` (separate token) and `-Idir` (joined) forms.

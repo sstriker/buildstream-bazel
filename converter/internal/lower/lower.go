@@ -1216,11 +1216,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx)
-		// Mark tablegen-shaped codegen genrules with the include-closure
-		// roots split should glob() (their `.td` deps live only in
+		// Add the transitive `include "..."` closure of tablegen-shaped
+		// codegen genrules to their srcs (their `.td` deps live only in
 		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
 		// labelRoot the genrules' anchored `-I` paths resolve against.
-		recordCodegenIncludeGlobs(stand, hostSrc)
+		recordCodegenIncludeClosure(stand, hostSrc)
 		pkg.Targets = append(pkg.Targets, stand...)
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
