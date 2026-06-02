@@ -226,6 +226,39 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			t.Error("trailing value-taking flag (-m with no value) must refuse")
 		}
 	})
+
+	t.Run("-T forces DEST to a file even when a dir exists", func(t *testing.T) {
+		// `install -T foo <dir>` targets the file <dir>, NOT <dir>/foo, even
+		// though <dir> exists as a directory (which would otherwise trigger
+		// the existing-dir → copy-into-it path).
+		build := t.TempDir()
+		out := filepath.Join(build, "out")
+		if err := os.MkdirAll(out, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "-T", "/src/foo", out}},
+		}}, "/src", "/src", build, build, false, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("got refusals: %v", refusals)
+		}
+		if len(cc.Genrules) != 1 || cc.Genrules[0].GenruleOuts[0] != "out" {
+			t.Errorf("outs: %+v want [out] (-T forces file, not out/foo)", cc.Genrules)
+		}
+	})
+
+	t.Run("dest under source tree refuses (potential build input)", func(t *testing.T) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands: [][]string{{"install", "/src/gen/foo.h", "/src/include/foo.h"}},
+		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		if len(refusals) == 0 {
+			t.Error("install into the source tree must refuse, not benign-skip (could drop a build input)")
+		}
+	})
 }
 
 // TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses pins the

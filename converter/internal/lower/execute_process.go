@@ -827,6 +827,7 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 	dirMode := false
 	targetDir := ""
 	hasTargetDir := false
+	forceFile := false // -T / --no-target-directory: DEST is always a file
 
 	strip := false
 
@@ -844,7 +845,7 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 	// Long boolean options.
 	longBool := map[string]bool{
 		"--directory": true, "--compare": true, "--preserve-timestamps": true,
-		"--strip": true, "--no-target-directory": true, "--verbose": true,
+		"--strip": true, "--verbose": true,
 		"--backup": true, "--context": true, "--debug": true,
 		"--help": true, "--version": true,
 	}
@@ -864,6 +865,9 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 			switch {
 			case name == "--directory":
 				dirMode = true
+				i++
+			case name == "--no-target-directory":
+				forceFile = true
 				i++
 			case name == "--strip":
 				strip = true
@@ -916,6 +920,10 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 				}
 				if c == 's' {
 					strip = true
+					continue
+				}
+				if c == 'T' {
+					forceFile = true // DEST is always a file, never a dir
 					continue
 				}
 				if strings.IndexByte(valueShort, c) >= 0 {
@@ -974,6 +982,12 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 		return nil, "", true
 	}
 
+	// -T / --no-target-directory forces DEST to be a file and is mutually
+	// exclusive with -t / --target-directory (which forces a directory).
+	if forceFile && hasTargetDir {
+		return nil, "install: -T/--no-target-directory and -t are mutually exclusive", false
+	}
+
 	var sources []string
 	var dest string
 	destIsDir := false
@@ -993,8 +1007,10 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 		// on-disk check resolves the otherwise-ambiguous single-source,
 		// no-trailing-slash case; it fires only for live runs whose recorded
 		// paths exist on this host (reply-dir paths won't, falling back to
-		// the syntactic signals).
-		destIsDir = len(sources) > 1 || strings.HasSuffix(dest, "/") || isExistingDir(dest)
+		// the syntactic signals). -T/--no-target-directory overrides ALL of
+		// these: DEST is then always the file path.
+		destIsDir = !forceFile &&
+			(len(sources) > 1 || strings.HasSuffix(dest, "/") || isExistingDir(dest))
 	default:
 		return nil, fmt.Sprintf("install: expected SRC... DEST (got %d operand(s))", len(operands)), false
 	}
@@ -1014,8 +1030,14 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 		destDir = filepath.Dir(dest)
 	}
 	if _, ok := executeProcessAnchorOutput(destDir, anc); !ok {
-		// Absolute but outside the build tree → install-prefix staging →
-		// benign skip (the dest isn't a Bazel-tracked output).
+		// Not under the build tree. A dest under the SOURCE tree (e.g.
+		// `install foo /src/include/foo.h`) can be a real, load-bearing
+		// compile input — silently skipping it would drop a file Bazel
+		// needs, so refuse. Only a dest outside BOTH trees is the
+		// install-prefix staging form that's a safe benign skip.
+		if _, underSrc := executeProcessAnchorSource(destDir, anc); underSrc {
+			return nil, fmt.Sprintf("install: destination %q is under the source tree (a potential build input); refusing rather than silently dropping it", dest), false
+		}
 		return nil, "", true
 	}
 
