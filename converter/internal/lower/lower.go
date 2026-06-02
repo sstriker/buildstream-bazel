@@ -2221,6 +2221,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	sort.Strings(merged)
 	irt.Hdrs = dedupeStrings(merged)
 
+	// Phase 7 idiom-shaping (slice 2): a compiled library that exports
+	// public headers via FILE_SET HEADERS lifts that base dir from the
+	// broad `includes = ["<d>"]` to the precise `strip_include_prefix`.
+	// Keyed on FileSet metadata (compiled-lib includes are arbitrary -I
+	// roots, so includes+hdrs alone can't tell a header-export dir from a
+	// compile -I). Runs after Hdrs/Includes are finalized; header-only
+	// libs are handled separately by shapeHeaderOnlyStripIncludePrefix.
+	liftCompiledLibFileSetStripIncludePrefix(irt, t, cmakeSrc)
+
 	// Refuse a srcs-less binary/test whose sources were all elided.
 	// When every compiled source of a cc_binary / cc_test got
 	// dropped by the elision branches above — a build-dir-only

@@ -442,10 +442,40 @@ transition cleanly.
     `cc_library` whose srcs were elided keeps its compile-time
     `includes`); single include dir; all hdrs under it. The
     `interface-library` golden + a direct pass unit test pin it.
-    **Remaining:** `strip_include_prefix` for FILE_SET HEADERS on
-    libraries that ALSO compile sources, and the `select_to_features`
-    rewrite of hand-rolled sanitizer `select`s (the audit already
-    flags both gaps; the lowering rewrites are the open work).
+    **Landed (slice 2) — compiled-lib `strip_include_prefix`.** The
+    companion `liftCompiledLibFileSetStripIncludePrefix` (run in
+    `lowerTarget`) lifts the same FILE_SET HEADERS export dir to
+    `strip_include_prefix` for libraries that ALSO compile sources.
+    Unlike the header-only IR pass it MUST key on FileSet metadata — a
+    compiled lib's `includes` come from CompileGroups and can be
+    arbitrary `-I` roots, so it lifts only the include dir that is
+    demonstrably a single FILE_SET HEADERS base dir with every header
+    under it, keeping other `-I`s. The lift's regression guard runs in CI
+    via the Go unit test + the `interface-library` golden (`go test`); a
+    supplementary local render+build check
+    (`scripts/meta-cmake-fileset-compiled-lib.sh`, `fileset-compiled-lib`
+    sample — a standalone render gate like `meta-cmake-genex-probe.sh`,
+    not wired into the `e2e-meta-*` CI list) does a real bazel-9 build
+    confirming the lib's OWN sources and a consumer both still resolve
+    `#include <pkg/hdr.h>` via the virtual include root — the risk that
+    strip_include_prefix on a srcs-bearing target breaks its own
+    compilation does not materialize.
+
+    **Sanitizer `select` → `--features` — already done (no slice).**
+    Investigated and confirmed implemented across earlier phases:
+    multi-config sanitizer-shaped configs are filtered out of the
+    `PerPlatform` select emission (`multiconfig.go` `nonFeatureConfigNames`)
+    so no hand-rolled `select` is emitted, and single-config raw
+    `-fsanitize=*` (with `-fPIC`/`-flto`/`-fvisibility=*`) in copts/linkopts
+    are lifted to `features` by `liftRawFeatureFlags`. The `bazelidiom`
+    `auditSanitizerSelects` is a backstop for operator-hand-rolled BUILD
+    edits, not a converter gap.
+
+    With both, **Phase 7's checklist is complete**: `select`→features,
+    install→`pkg_files`, IMPORTED→`cc_import`, FILE_SET HEADERS→
+    `strip_include_prefix` (header-only + compiled), and `# keep`
+    placement all ship, guarded by the `bazelidiom` audit + the
+    gazelle-roundtrip gate.
 
   Phase shape: overview / phase boundaries / acceptance criteria
   are tracked here. The hook protocols + fold semantics + classifier

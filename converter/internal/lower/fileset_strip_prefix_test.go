@@ -4,8 +4,62 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+func TestLiftCompiledLibFileSetStripIncludePrefix(t *testing.T) {
+	const cmakeSrc = "/src"
+	run := func(irt ir.Target, baseDirs ...string) ir.Target {
+		tgt := &fileapi.Target{
+			Paths:    fileapi.TargetPaths{Source: cmakeSrc},
+			FileSets: []fileapi.TargetFileSet{{Name: "HEADERS", Type: "HEADERS", BaseDirectories: baseDirs}},
+		}
+		liftCompiledLibFileSetStripIncludePrefix(&irt, tgt, cmakeSrc)
+		return irt
+	}
+
+	t.Run("compiled lib lifts FILE_SET base dir, keeps other includes", func(t *testing.T) {
+		got := run(ir.Target{
+			Kind: ir.KindCCLibrary, Srcs: []string{"src/a.cc"},
+			Hdrs: []string{"include/fscl/a.hpp"}, Includes: []string{"include", "src"},
+		}, "/src/include")
+		if got.StripIncludePrefix != "include" {
+			t.Errorf("StripIncludePrefix = %q; want include", got.StripIncludePrefix)
+		}
+		if !reflect.DeepEqual(got.Includes, []string{"src"}) {
+			t.Errorf("Includes = %v; want [src] (FILE_SET dir lifted, other -I kept)", got.Includes)
+		}
+	})
+
+	t.Run("FILE_SET base dir not in includes: not lifted", func(t *testing.T) {
+		got := run(ir.Target{Kind: ir.KindCCLibrary, Srcs: []string{"a.cc"}, Hdrs: []string{"include/a.h"}, Includes: []string{"other"}}, "/src/include")
+		if got.StripIncludePrefix != "" {
+			t.Errorf("StripIncludePrefix = %q; want empty", got.StripIncludePrefix)
+		}
+	})
+
+	t.Run("header outside base dir: not lifted", func(t *testing.T) {
+		got := run(ir.Target{Kind: ir.KindCCLibrary, Srcs: []string{"a.cc"}, Hdrs: []string{"include/a.h", "x/b.h"}, Includes: []string{"include"}}, "/src/include")
+		if got.StripIncludePrefix != "" {
+			t.Errorf("StripIncludePrefix = %q; want empty (header outside prefix)", got.StripIncludePrefix)
+		}
+	})
+
+	t.Run("two FILE_SET base dirs: not lifted", func(t *testing.T) {
+		got := run(ir.Target{Kind: ir.KindCCLibrary, Srcs: []string{"a.cc"}, Hdrs: []string{"include/a.h"}, Includes: []string{"include"}}, "/src/include", "/src/api")
+		if got.StripIncludePrefix != "" {
+			t.Errorf("StripIncludePrefix = %q; want empty (multiple base dirs)", got.StripIncludePrefix)
+		}
+	})
+
+	t.Run("header-only (no srcs): left for the IR pass", func(t *testing.T) {
+		got := run(ir.Target{Kind: ir.KindCCLibrary, Hdrs: []string{"include/a.h"}, Includes: []string{"include"}}, "/src/include")
+		if got.StripIncludePrefix != "" {
+			t.Errorf("StripIncludePrefix = %q; want empty (no srcs → header-only IR pass owns it)", got.StripIncludePrefix)
+		}
+	})
+}
 
 func TestShapeHeaderOnlyStripIncludePrefix(t *testing.T) {
 	const traceTag = "cmake-codegen-interface-library-from-trace"
