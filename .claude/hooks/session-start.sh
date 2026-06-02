@@ -94,6 +94,56 @@ else
   log "WARNING: tools/install-bazelisk.sh not found; skipping bazelisk"
 fi
 
+# --- bazel egress: BCR via GitHub mirror + JVM truststore (default) -------
+# bzlmod can't reach the default registry out of the box in this sandbox:
+#   - the egress proxy 403s bcr.bazel.build (and every *.bazel.build host),
+#     while github.com is allowlisted — and BCR is mirrored on GitHub; and
+#   - the proxy TLS-intercepts all HTTPS with an Anthropic egress CA that
+#     bazel's bundled JVM doesn't trust, so its downloader PKIX-fails on
+#     every fetch (curl/Go are fine — they use the system CA bundle).
+# Both are fixed in ~/.bazelrc (home rc applies to every `bazel`, including
+# the gates' staged workspaces and their --noworkspace_rc runs): point the
+# registry at the GitHub BCR mirror and hand bazel's JVM a truststore that
+# trusts the egress CA. Idempotent (managed block). No-op on
+# a host without the egress CAs — i.e. one that can reach bcr.bazel.build
+# directly — so this never degrades a normal environment.
+egress_cas=$(ls /usr/local/share/ca-certificates/egress-gateway-ca-*.crt \
+                /usr/local/share/ca-certificates/swp-ca-*.crt 2>/dev/null || true)
+if [ -n "$egress_cas" ]; then
+  # Truststore: prefer the system Java store. Debian's ca-certificates-java
+  # folds the egress CAs into it while keeping the public roots, and it's the
+  # same store scripts/run-fidelity.sh already points bazel at. Fall back to a
+  # minimal store built from the egress CA files via keytool.
+  if [ -r /etc/ssl/certs/java/cacerts ]; then
+    bsb_trust="/etc/ssl/certs/java/cacerts"
+  elif command -v keytool >/dev/null 2>&1; then
+    bsb_trust="$HOME/.bazel-egress-trust.jks"
+    rm -f "$bsb_trust"
+    for ca in $egress_cas; do
+      keytool -importcert -noprompt -trustcacerts -alias "bsb-$(basename "$ca")" \
+        -file "$ca" -keystore "$bsb_trust" -storepass changeit >/dev/null 2>&1 || true
+    done
+  else
+    bsb_trust=""
+  fi
+  if [ -n "$bsb_trust" ]; then
+    bsb_rc="$HOME/.bazelrc"
+    # Replace any prior managed block, preserving the rest of ~/.bazelrc.
+    [ -f "$bsb_rc" ] && sed -i '/# >>> bsb-egress >>>/,/# <<< bsb-egress <<</d' "$bsb_rc"
+    cat >> "$bsb_rc" <<RC
+# >>> bsb-egress >>>
+common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/
+startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit
+# <<< bsb-egress <<<
+RC
+    log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+  else
+    log "bazel egress: egress CAs present but no usable truststore (no system cacerts, no keytool)"
+  fi
+else
+  log "bazel egress: egress CAs absent; leaving bazel at defaults (direct bcr.bazel.build assumed)"
+fi
+
 # --- buildifier (default) ------------------------------------------------
 if command -v buildifier >/dev/null 2>&1; then
   log "buildifier already present; skipping"
