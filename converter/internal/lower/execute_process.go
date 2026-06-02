@@ -290,25 +290,18 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				continue
 			}
 			// Record a stamp output variable for the configure_file lift:
-			// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision, or a
-			// whoami/id/hostid identity) re-reads from the Bazel workspace
-			// status at build time, so a `@GIT_SHA@` header stays live
-			// instead of baking the convert-time value. Recorded regardless
-			// of the capture gate below — the lift (which runs later over the
-			// same cc) consults cc.StampVars; the stamp call itself still
-			// skips (captured) or refuses (not) here.
-			//
-			// `date` is the exception: it's a stamp driver (so its
-			// OUTPUT_FILE form doesn't hoist) but a wall-clock timestamp
-			// needs VOLATILE_ status semantics — not the cache-busting
-			// STABLE_ key the identity drivers use — which requires the
-			// cmake_configure_file rule to read volatile-status. Until that
-			// stacked follow-up lands, date's value bakes at convert time
-			// (stable, non-cache-busting) rather than lifting to a live stamp.
+			// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision, a
+			// whoami/id/hostid identity, or a `date` timestamp) re-reads from
+			// the Bazel workspace status at build time, so a `@GIT_SHA@` /
+			// `@BUILD_DATE@` header stays live instead of baking the
+			// convert-time value. The key's prefix is driver-aware
+			// (stampStatusKey): STABLE_ for identity/revision, VOLATILE_ for
+			// `date`. Recorded regardless of the capture gate below — the lift
+			// (which runs later over the same cc) consults cc.StampVars; the
+			// stamp call itself still skips (captured) or refuses (not) here.
 			if v.Bucket == BucketStamp && call.OutputVariable != "" {
-				if executeProcessDriverBasename(call.Commands[0][0]) != "date" {
-					cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable)
-				}
+				driver := executeProcessDriverBasename(call.Commands[0][0])
+				cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
 			}
 			// Stamp capture gate. A stamp's value (a VCS revision) WOULD bake
 			// into the srckey of any configure_file that consumed it —
@@ -345,18 +338,29 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 	return outs, unsupported
 }
 
-// stampStatusKey derives the Bazel workspace-status key a VCS-stamp cmake
-// variable reads from at build time. The STABLE_ prefix routes the key
-// into stable-status.txt (ctx.info_file) — cache-keyed, so a revision
-// change correctly re-renders the consuming configure_file — and the
-// remainder is the upper-cased variable name with any non-[A-Z0-9_] run
-// folded to '_' so the key is a valid status identifier (GIT_SHA ->
-// STABLE_GIT_SHA). The operator's --workspace_status_command emits this
-// key; predictable derivation from the cmake var name keeps that contract
-// self-documenting.
-func stampStatusKey(varName string) string {
+// stampStatusKey derives the Bazel workspace-status key a stamp cmake
+// variable reads from at build time. The remainder is the upper-cased
+// variable name with any non-[A-Z0-9_] run folded to '_' so the key is a
+// valid status identifier (GIT_SHA -> STABLE_GIT_SHA). The operator's
+// --workspace_status_command emits this key; predictable derivation from
+// the cmake var name keeps that contract self-documenting.
+//
+// The prefix is driver-aware:
+//   - identity / revision drivers (git/hg/svn/whoami/id/hostid) -> STABLE_,
+//     routing the key into stable-status.txt (ctx.info_file) — cache-keyed,
+//     so a change correctly re-renders the consuming configure_file.
+//   - `date` -> VOLATILE_, routing into volatile-status.txt
+//     (ctx.version_file). A wall-clock timestamp must NOT be cache-keyed: a
+//     STABLE_ key would bust the action cache every build. Bazel reads
+//     volatile-status but doesn't cache-key it, so the timestamp changes per
+//     build without forcing rebuilds.
+func stampStatusKey(varName, driver string) string {
+	prefix := "STABLE_"
+	if driver == "date" {
+		prefix = "VOLATILE_"
+	}
 	var b strings.Builder
-	b.WriteString("STABLE_")
+	b.WriteString(prefix)
 	for _, r := range strings.ToUpper(varName) {
 		switch {
 		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':

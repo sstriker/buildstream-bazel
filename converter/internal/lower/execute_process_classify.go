@@ -210,15 +210,15 @@ var noopDrivers = map[string]bool{
 // non-hermeticity the refusal is meant to prevent. Driver name is
 // the gate, not OutputVariable / OutputFile presence.
 //
-// How a stamp var's VALUE is sourced differs by driver. The
-// identity/revision drivers (git/hg/svn/whoami/id/hostid) record
-// a cache-keyed STABLE_ workspace-status key (stampStatusKey), so a
-// `@GIT_SHA@` header re-reads live at build time. `date` is the
-// exception: a wall-clock timestamp would cache-bust as a STABLE_
-// key, and a cache-safe VOLATILE_ key needs the configure_file rule
-// to read volatile-status — so in THIS pass date's value bakes at
-// convert time (it does not record a live stamp var). The live
-// volatile-date stamp is the stacked follow-up.
+// How a stamp var's VALUE is sourced differs by driver (see
+// stampStatusKey's driver-aware prefix). The identity/revision
+// drivers (git/hg/svn/whoami/id/hostid) record a cache-keyed
+// STABLE_ workspace-status key, so a `@GIT_SHA@` header re-reads
+// live at build time. `date` records a VOLATILE_ key instead: a
+// wall-clock timestamp must not cache-bust, so it routes into
+// volatile-status.txt (which Bazel reads but doesn't cache-key) —
+// the cmake_configure_file rule reads ctx.version_file when a
+// VOLATILE_ key is present.
 var stampDrivers = map[string]bool{
 	"git":    true,
 	"hg":     true,
