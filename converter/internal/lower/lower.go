@@ -268,6 +268,11 @@ type Options struct {
 	// inventory. Off by default.
 	CMakeScriptBake bool
 
+	// LiftCCEmbed recognizes a known file-embedding cmake -P encoder
+	// (vtkEncodeString) and lowers it to the native cc_embed rule. Off by
+	// default; see codegenContext.LiftCCEmbed.
+	LiftCCEmbed bool
+
 	// CMakeScriptTrace, when true (and a runner is set), runs
 	// the cmake -P script under `cmake --trace -P` at convert
 	// time. The trace's read paths drive auto-augmentation of
@@ -759,6 +764,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
 	cc.CMakeScriptBake = opts.CMakeScriptBake
+	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.CMakeBinary = lookupCmakeBinary()
 	cc.Warnings = opts.Warnings
 	cc.LiteralProbeSink = opts.LiteralProbeSink

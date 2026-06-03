@@ -468,6 +468,7 @@ func run(a cli.Args) error {
 			CMakeScriptRunner:                 a.CMakeScriptRunner,
 			CMakeScriptTrace:                  a.CMakeScriptTrace,
 			CMakeScriptBake:                   a.CMakeScriptBake,
+			LiftCCEmbed:                       a.LiftCCEmbed,
 			BakeIn:                            convmode.BakeIn(a.BakeIn),
 			Rejections:                        rejections,
 			Coverage:                          coverageCollector,
