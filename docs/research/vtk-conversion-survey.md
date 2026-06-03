@@ -35,16 +35,35 @@ VTK runs two `cmake -P` generators as custom commands:
 - `vtkHashSource.cmake` — **3** call sites.
 
 These are refused by default (the converter doesn't execute arbitrary
-`cmake -P` at convert time without opt-in). Re-converting with
-`--cmake-script-bake=true` (bake the script's output bytes at convert
-time) resolves **all 705** — verified: residual rejection count drops to
-the 3 git-stamp items.
+`cmake -P` at convert time without opt-in). Opting into the lift
+resolves **all 705** — verified by re-converting with
+`--cmake-script-bake=true`: residual rejection count drops to the 3
+git-stamp items.
 
-Implication for a VTK gate: it needs `--cmake-script-bake=true` (or
-`--cmake-script-runner=<label>` for build-time regeneration). Same flag
-the libpng gate already uses. The caveat is the documented one — baked
-output doesn't auto-refresh if a `.glsl` input changes (acceptable for a
-fidelity gate; a runner tool is the alternative if live regen matters).
+Implication for a VTK gate — and which lift to use. The converter's
+documented preference order for `cmake -P` is **runner → trace → bake**
+(see the refusal message in `genrule.go` and the flag help):
+
+- **`--cmake-script-runner=<label>` (preferred).** Lifts each call to a
+  genrule that runs the staged runner (cmake) at **build time**, so the
+  generated `.h`/`.cxx` auto-refresh when a `.glsl`/template input
+  changes. All 705 are liftable this way: both `vtkEncodeString` and
+  `vtkHashSource` are pure, hermetic, deterministic functions of a
+  single declared `INPUT` (+ literal `-D` args), with explicit
+  `DEPENDS`, no hardcoded host paths — i.e. exactly the
+  "parameter-driven scripts work cleanly" case the runner flag targets.
+  VTK's natural fit, since the buildbarn runner image already ships
+  cmake.
+- **`--cmake-script-bake=true` (fallback).** Freezes the output bytes at
+  convert time; the `warnConvertTimeBaking` post-pass flags them as
+  not-auto-refreshing. Use only when there's no cmake on the build
+  executor. (Same flag the libpng `cmake -P` headers use.)
+
+Implementation note before committing a VTK gate to the *automatic*
+runner lift: confirm the `--cmake-script-runner` path re-anchors
+vtkEncodeString's `-Dsource_file=<abs>` / `-Dbinary_dir=<abs>` args to
+`$(location …)` / `$(RULEDIR)` (the same arg re-anchoring the standalone-
+genrule path does).
 
 ### 2. `vtk_module_third_party` forwarders — the REAL converter gap
 
@@ -84,14 +103,17 @@ pass flags; cosmetic.
 1. **Cheap win first:** a VTK *survey* corpus entry already works
    (`make fetch-vtk` + `run-survey.sh`); wire it as a tracked survey
    target so the rejection surface is watched.
-2. **Fidelity/build gate** needs `--cmake-script-bake=true`. With that,
-   conversion is clean to 3 expected fallbacks — but a real `bazel
-   build` of a VTK module that depends on a bundled third-party
+2. **Fidelity/build gate** opts into the `cmake -P` lift —
+   `--cmake-script-runner=<label>` preferred (build-time, auto-
+   refreshing; the buildbarn runner image already ships cmake), with
+   `--cmake-script-bake=true` only as the no-cmake-on-executor fallback.
+   With either, conversion is clean to 3 expected fallbacks — but a real
+   `bazel build` of a VTK module that depends on a bundled third-party
    (hdf5-consuming modules) will fail until the
-   **`vtk_module_third_party` forwarder gap (§2)** is fixed. A
-   first VTK build gate should therefore target a module that does NOT
-   pull a bundled third-party (a pure VTK::CommonCore-tier leaf), which
-   should build once `--cmake-script-bake` is set.
+   **`vtk_module_third_party` forwarder gap (§2)** is fixed. A first VTK
+   build gate should therefore target a module that does NOT pull a
+   bundled third-party (a pure VTK::CommonCore-tier leaf), which should
+   build once the script lift is enabled.
 3. **The forwarder fix (§2)** is the converter PR VTK uniquely
    motivates — route the third-party module wrapper's
    `target_link_libraries(<inner>_src …)` arms into the wrapper's
