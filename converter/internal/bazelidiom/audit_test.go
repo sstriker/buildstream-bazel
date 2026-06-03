@@ -156,6 +156,150 @@ func TestAudit_CCBinaryNoSrcs(t *testing.T) {
 	}
 }
 
+func TestAudit_MultiLangSplitWrapperNotEmpty(t *testing.T) {
+	// A cc_binary with no srcs but deps on its own "<name>_<lang>" split
+	// sub-libraries is the multi-language-split wrapper (lower.go's
+	// splitCompileGroups) — its sources live in the sub-libs, so it links
+	// + builds and empty-srcs must NOT fire (assimp's `unit` shape).
+	body := []byte(`cc_binary(
+    name = "unit",
+    deps = [
+        "//:unit_c",
+        "//:unit_cxx",
+        "//code:assimp",
+    ],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "empty-srcs" {
+			t.Errorf("multi-language-split wrapper should not flag empty-srcs; got %v", findings)
+		}
+	}
+}
+
+func TestAudit_NoSrcsNonSplitDepsStillFlags(t *testing.T) {
+	// A no-srcs cc_binary whose deps are ordinary libraries — not
+	// "<name>_<lang>" split siblings (note "tool_runtime" shares the
+	// "tool_" prefix but "runtime" isn't a language suffix) — genuinely
+	// lost its sources, so empty-srcs must still fire.
+	body := []byte(`cc_binary(
+    name = "tool",
+    deps = [
+        "//lib:helpers",
+        "//lib:tool_runtime",
+    ],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "empty-srcs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("non-split deps-only binary should still flag empty-srcs; got %v", findings)
+	}
+}
+
+func TestAudit_MultiLangSplitWrapperConcatDeps(t *testing.T) {
+	// deps rendered as a concat ([flat] + select({...})) when per-platform
+	// deps exist — the unconditional split sibling lives in the flat list, so
+	// the wrapper must still be exempt from empty-srcs (regression guard for
+	// depsContainLanguageSplitLib's concat handling).
+	body := []byte(`cc_binary(
+    name = "unit",
+    deps = ["//:unit_c", "//:unit_cxx"] + select({
+        "//cpu:x86_64": ["//platform:x86_extra"],
+        "//conditions:default": [],
+    }),
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "empty-srcs" {
+			t.Errorf("split wrapper with concat deps should not flag empty-srcs; got %v", findings)
+		}
+	}
+}
+
+func TestAudit_LangSuffixNumericMultiCGExempt(t *testing.T) {
+	// "<name>_<lang>_<n>" (multi-compile-group-per-language sub-lib, n all
+	// digits) is a split sibling, so the wrapper stays exempt.
+	body := []byte(`cc_binary(
+    name = "unit",
+    deps = ["//:unit_cxx_2"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	for _, f := range findings {
+		if f.Code == "empty-srcs" {
+			t.Errorf("unit_cxx_2 is a split sibling (digit multi-CG suffix); should not flag; got %v", findings)
+		}
+	}
+}
+
+func TestAudit_LangSuffixNonNumericTailStillFlags(t *testing.T) {
+	// "<name>_<lang>_<word>" (e.g. unit_cxx_runtime) is NOT a split sibling —
+	// the multi-CG tail must be all digits — so a srcs-less binary deps-only
+	// on it genuinely lost its sources and still flags.
+	body := []byte(`cc_binary(
+    name = "unit",
+    deps = ["//lib:unit_cxx_runtime"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "empty-srcs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unit_cxx_runtime is not a split sibling; empty-srcs should still flag; got %v", findings)
+	}
+}
+
+func TestAudit_SplitSiblingOtherPackageStillFlags(t *testing.T) {
+	// A dep in an unrelated package that merely shares the "<name>_<lang>"
+	// name (//other:unit_cxx) is not the wrapper's own split sub-lib, so a
+	// srcs-less binary deps-only on it still flags empty-srcs.
+	body := []byte(`cc_binary(
+    name = "unit",
+    deps = ["//other:unit_cxx"],
+)
+`)
+	findings, err := bazelidiom.Audit(body)
+	if err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	found := false
+	for _, f := range findings {
+		if f.Code == "empty-srcs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("//other:unit_cxx is a different package, not a split sibling; empty-srcs should still flag; got %v", findings)
+	}
+}
+
 func TestAudit_SelectArmsCountAsSrcs(t *testing.T) {
 	// A cc_library whose srcs come from a select() with
 	// non-empty arms should NOT be flagged empty.
