@@ -39,6 +39,7 @@ func run() error {
 	var (
 		cmakeSource = flag.String("cmake-source", "", "cmake source root")
 		variantName = flag.String("variant", "", "variant name (recorded in the output's Variant.Name)")
+		kitName     = flag.String("kit", "", "compiler kit name (recorded in Variant.Kit; empty for the single-toolchain-per-platform path)")
 		outPath     = flag.String("out", "", "output JSON path")
 		buildDirArg = flag.String("build-dir", "", "build dir to use; created if absent. Empty → tmp dir cleaned up after.")
 	)
@@ -61,6 +62,13 @@ func run() error {
 		// --variant=baseline explicitly.
 		return fmt.Errorf("--variant is required")
 	}
+	// A non-empty kit becomes part of a Bazel target slug
+	// (<platform>_<kit>) downstream, and unify-toolchains rejects an
+	// unsafe one at decode time. Validate here too so a bad --kit fails
+	// fast instead of producing a probe.json that can never be unified.
+	if err := checkKitNameSafe(*kitName); err != nil {
+		return err
+	}
 
 	cv := map[string]string{}
 	for _, kv := range cacheVars {
@@ -70,7 +78,7 @@ func run() error {
 		}
 		cv[k] = v
 	}
-	variant := toolchain.Variant{Name: *variantName, CacheVars: cv}
+	variant := toolchain.Variant{Name: *variantName, Kit: *kitName, CacheVars: cv}
 
 	buildDir := *buildDirArg
 	if buildDir == "" {
@@ -125,6 +133,24 @@ func run() error {
 	}
 	if err := os.WriteFile(*outPath, body, 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", *outPath, err)
+	}
+	return nil
+}
+
+// checkKitNameSafe rejects a kit name that wouldn't survive as a Bazel
+// target slug. Mirrors unify-toolchains' checkBazelTargetSafeName (the
+// authoritative decode-time guard) so the failure surfaces at probe time
+// — before an un-unifiable probe.json is written — rather than later. An
+// empty kit is the single-toolchain-per-platform path and is allowed.
+func checkKitNameSafe(kit string) error {
+	for _, r := range kit {
+		ok := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '_' || r == '-'
+		if !ok {
+			return fmt.Errorf("--kit %q contains %q; allowed: [a-zA-Z0-9_-] (kit names become Bazel target slugs)", kit, r)
+		}
 	}
 	return nil
 }

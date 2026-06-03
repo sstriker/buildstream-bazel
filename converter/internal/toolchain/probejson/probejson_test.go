@@ -33,7 +33,7 @@ func TestMarshalUnmarshal_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(string(body), `"schemaVersion": 1`) {
+	if !strings.Contains(string(body), `"schemaVersion": 2`) {
 		t.Errorf("schemaVersion not embedded: %s", body)
 	}
 

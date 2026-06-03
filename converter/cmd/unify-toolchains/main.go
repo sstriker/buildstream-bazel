@@ -95,10 +95,14 @@ func run(args []string) error {
 		return fmt.Errorf("group probe cells: %w", err)
 	}
 
-	// Per platform, fold the variant cells through Observe to get
-	// a ResolvedToolchain. Drop platforms that produced zero cells
-	// (with a diagnostic) — they'd render an empty cc_toolchain that
-	// wouldn't compile anything.
+	// Per (platform, kit), fold the build-variant cells through Observe
+	// to get a ResolvedToolchain. The kit (compiler axis) sub-groups
+	// each platform: a kit pins CMAKE_C/CXX_COMPILER, so distinct kits
+	// can't share one cc_toolchain. A kit-less probe set (every cell's
+	// Variant.Kit == "") yields exactly one group per platform — the
+	// pre-kits single-toolchain-per-platform behavior. Drop groups that
+	// produced zero cells (with a diagnostic) — they'd render an empty
+	// cc_toolchain that wouldn't compile anything.
 	var ptcs []bazeltoolchain.PlatformToolchain
 	for _, p := range plats {
 		results := cellsByPlatform[p.Name]
@@ -106,16 +110,28 @@ func run(args []string) error {
 			fmt.Fprintf(os.Stderr, "unify-toolchains: warning: no probe cells found for platform %q; skipping\n", p.Name)
 			continue
 		}
-		rt := toolchain.Observe(results)
-		if rt == nil {
-			fmt.Fprintf(os.Stderr, "unify-toolchains: warning: Observe returned nil for platform %q\n", p.Name)
-			continue
+		byKit := map[string][]toolchain.ProbeResult{}
+		var kitOrder []string
+		for _, r := range results {
+			if _, seen := byKit[r.Variant.Kit]; !seen {
+				kitOrder = append(kitOrder, r.Variant.Kit)
+			}
+			byKit[r.Variant.Kit] = append(byKit[r.Variant.Kit], r)
 		}
-		ptcs = append(ptcs, bazeltoolchain.PlatformToolchain{
-			Name:        p.Name,
-			Constraints: p.Constraints,
-			Resolved:    rt,
-		})
+		sort.Strings(kitOrder)
+		for _, kit := range kitOrder {
+			rt := toolchain.Observe(byKit[kit])
+			if rt == nil {
+				fmt.Fprintf(os.Stderr, "unify-toolchains: warning: Observe returned nil for platform %q kit %q\n", p.Name, kit)
+				continue
+			}
+			ptcs = append(ptcs, bazeltoolchain.PlatformToolchain{
+				Name:        p.Name,
+				Kit:         kit,
+				Constraints: p.Constraints,
+				Resolved:    rt,
+			})
+		}
 	}
 	if len(ptcs) == 0 {
 		return fmt.Errorf("no platforms produced probe cells; aborting")
@@ -262,6 +278,17 @@ func groupProbeCells(dir string, plats []platformSpec) (map[string][]toolchain.P
 		variant, reply, err := probejson.Unmarshal(body)
 		if err != nil {
 			return nil, fmt.Errorf("decode %s: %w", name, err)
+		}
+		// Variant.Kit becomes part of emitted Bazel target names (the
+		// <platform>_<kit> slug), so reject an unsafe kit here — at the
+		// decode boundary, with the cell name for context — rather than
+		// letting it produce an unparsable platforms/ or toolchains/
+		// BUILD file far downstream. kits.go already sanitizes names from
+		// cmake-kits.json; this guards hand-crafted / future cell sources.
+		if variant.Kit != "" {
+			if err := checkBazelTargetSafeName(variant.Kit); err != nil {
+				return nil, fmt.Errorf("probe cell %q has invalid kit %q: %w", name, variant.Kit, err)
+			}
 		}
 		m, err := toolchain.FromReply(reply)
 		if err != nil {

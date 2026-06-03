@@ -22,6 +22,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/kits"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/presets"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain/projecta"
 )
@@ -37,7 +39,8 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("render-project-a", flag.ContinueOnError)
 	var (
 		out             = fs.String("out", "", "output directory; BUILD.bazel lands here. Created if absent.")
-		variantsFrom    = fs.String("variants-from", "", "CMakePresets.json whose configurePresets become the variant axis")
+		variantsFrom    = fs.String("variants-from", "", "CMakePresets.json whose configurePresets become the build (variant) axis")
+		kitsFrom        = fs.String("kits-from", "", "optional cmake-kits.json whose kits become the compiler axis; cross-producted with the variant axis")
 		platformsJSON   = fs.String("platforms-json", "", "JSON file with target platforms: [{name,constraints[]}, ...]")
 		cmakeSrcLabel   = fs.String("cmake-source-label", "//probe:source", "Bazel label of the cmake source filegroup")
 		cmakeListsLabel = fs.String("cmake-lists-label", "//probe:CMakeLists.txt", "Bazel label of the CMakeLists.txt file")
@@ -72,6 +75,26 @@ func run(args []string) error {
 	if len(variants) == 0 {
 		return fmt.Errorf("no configurePresets in %s", *variantsFrom)
 	}
+
+	// Optional compiler axis: cmake-kits.json. When provided, the probe
+	// matrix becomes the cross-product (kit × variant), and each cell
+	// records its kit so unify-toolchains emits one toolchain per
+	// (platform, kit). When absent, VariantMatrix returns the variants
+	// unchanged — the single-toolchain-per-platform path.
+	var kitVariants []toolchain.Variant
+	if *kitsFrom != "" {
+		if _, err := os.Stat(*kitsFrom); err != nil {
+			return fmt.Errorf("--kits-from %s: %w", *kitsFrom, err)
+		}
+		kitVariants, err = kits.LoadFile(*kitsFrom)
+		if err != nil {
+			return fmt.Errorf("load kits: %w", err)
+		}
+		if len(kitVariants) == 0 {
+			return fmt.Errorf("no kits in %s", *kitsFrom)
+		}
+	}
+	variants = toolchain.VariantMatrix(kitVariants, variants)
 
 	platforms, err := loadPlatforms(*platformsJSON)
 	if err != nil {
