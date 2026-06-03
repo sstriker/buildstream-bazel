@@ -231,6 +231,7 @@ func cloneAsBaseline(src *Model) *Model {
 		HostPlatform:   src.HostPlatform,
 		TargetPlatform: src.TargetPlatform,
 		BuildType:      "",
+		Sysroot:        src.Sysroot,
 		Tools:          src.Tools,
 		Languages:      map[string]Language{},
 	}

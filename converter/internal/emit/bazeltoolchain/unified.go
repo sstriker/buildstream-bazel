@@ -288,6 +288,15 @@ func emitToolchainsBuild(plats []PlatformToolchain, cfg UnifiedConfig) ([]byte, 
 		fmt.Fprintf(&b, "    target_libc = %q,\n", libc)
 		fmt.Fprintf(&b, "    abi_version = %q,\n", "local")
 		fmt.Fprintf(&b, "    abi_libc_version = %q,\n", "local")
+		// Only emit builtin_sysroot when the probe saw a CMAKE_SYSROOT
+		// (cross toolchains). Omitting it for host builds keeps THIS file
+		// (toolchains/BUILD.bazel) byte-identical to the pre-sysroot
+		// layout. The cc_toolchain_config.bzl rule always gains the attr +
+		// threading, but with no instance value it defaults to "" → None,
+		// so host toolchains resolve exactly as before.
+		if base.Sysroot != "" {
+			fmt.Fprintf(&b, "    builtin_sysroot = %q,\n", base.Sysroot)
+		}
 		emitListAttr(&b, "cxx_builtin_include_directories", unionStrings(cMost.BuiltinIncludeDirs, cxx.BuiltinIncludeDirs))
 		emitDictAttr(&b, "tool_paths", tools)
 		emitListAttr(&b, "compile_flags", cMost.BaseFlags)
@@ -436,6 +445,7 @@ def _impl(ctx):
         compiler = ctx.attr.compiler,
         abi_version = ctx.attr.abi_version,
         abi_libc_version = ctx.attr.abi_libc_version,
+        builtin_sysroot = ctx.attr.builtin_sysroot or None,
         tool_paths = [tool_path(name = name, path = path) for name, path in ctx.attr.tool_paths.items()],
         cxx_builtin_include_directories = ctx.attr.cxx_builtin_include_directories,
         features = features,
@@ -452,6 +462,7 @@ cc_toolchain_config = rule(
         "target_libc": attr.string(default = "unknown"),
         "abi_version": attr.string(default = "local"),
         "abi_libc_version": attr.string(default = "local"),
+        "builtin_sysroot": attr.string(default = ""),
         "cxx_builtin_include_directories": attr.string_list(default = []),
         "tool_paths": attr.string_dict(default = {}),
         "compile_flags": attr.string_list(default = []),

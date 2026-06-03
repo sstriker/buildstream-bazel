@@ -617,23 +617,18 @@ transition cleanly.
   features instead — lifting a flag when (and only when) the selected
   kit actually backs it, and keeping it raw otherwise.
 
-- **Probe + emit `builtin_sysroot` (and probed libc / target triple)
-  per (platform, kit).** Bazel models the sysroot at the *toolchain*
-  level (`cc_common.create_cc_toolchain_config_info(builtin_sysroot=…)`
-  → `--sysroot=` on compile + link), not on `platform` — the platform
-  only selects it via toolchain resolution, exactly like the `kit`
-  dimension. The probe already runs cmake per (variant, platform) cell,
-  so `CMAKE_SYSROOT` / the compiler's `-print-sysroot` are in hand, but
-  `toolchain.Model` (`types.go`) drops them and the emit sets no
-  `builtin_sysroot`. Lift the sysroot into `Model` and emit it per
-  (platform, kit); derive `target_libc` + `*_system_name` from it
-  instead of the OS-name heuristic (`defaultLibcFor`) and the hardcoded
-  `abi_version = "local"` placeholders — these baked values are really
-  "what the sysroot would tell us." Closes the cross-compile gap where a
-  kit's `CMAKE_TOOLCHAIN_FILE` pins a non-host sysroot. (Also worth
+- **Derive `target_libc` / target triple from the probed sysroot.**
+  `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
+  `toolchain.Model` and the emit sets `cc_toolchain_config`'s
+  `builtin_sysroot` per (platform, kit), so Bazel passes `--sysroot=` to
+  compile + link (host builds emit no `builtin_sysroot`, leaving their
+  `toolchains/BUILD.bazel` unchanged).
+  Still baked, though, are `target_libc` (the `defaultLibcFor` OS-name
+  heuristic) and the `abi_version = "local"` / `*_system_name`
+  placeholders — these are really "what the sysroot would tell us." Next:
+  derive them from the probed sysroot/compiler triple instead. (Also worth
   pairing: `toolchain()` emits only `target_compatible_with`, never
   `exec_compatible_with`, so cross exec≠target resolution is unconstrained.)
-  Near-term, stackable on the kits PR.
 
 - **Hermetic sysroot-as-toolchain-inputs.** `builtin_sysroot` tells the
   compiler *where* the sysroot is; for a sandboxed / RBE action to

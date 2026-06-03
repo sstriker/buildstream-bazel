@@ -31,6 +31,7 @@ func FromReply(r *fileapi.Reply) (*Model, error) {
 			CPU: cacheValueOr(r.Cache, "CMAKE_SYSTEM_PROCESSOR", cacheValue(r.Cache, "CMAKE_HOST_SYSTEM_PROCESSOR")),
 		},
 		BuildType: cacheValue(r.Cache, "CMAKE_BUILD_TYPE"),
+		Sysroot:   cacheValue(r.Cache, "CMAKE_SYSROOT"),
 		Languages: map[string]Language{},
 		Tools: Tools{
 			AR:      cacheValue(r.Cache, "CMAKE_AR"),

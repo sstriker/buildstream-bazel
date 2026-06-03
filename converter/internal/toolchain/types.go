@@ -30,6 +30,12 @@ type Model struct {
 	// "MinSizeRel", or "" when not set.
 	BuildType string
 
+	// Sysroot is CMAKE_SYSROOT — the compile-time sysroot a (cross)
+	// toolchain file pins. "" for a host build that takes the compiler's
+	// default sysroot. Emitted as the cc_toolchain_config builtin_sysroot
+	// so Bazel passes --sysroot= to compile + link actions.
+	Sysroot string
+
 	// Languages is keyed by CMake language name ("C", "CXX", ...).
 	// We populate at minimum C + CXX when the probe project exercises
 	// both.
