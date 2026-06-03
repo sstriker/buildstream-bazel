@@ -40,30 +40,71 @@ resolves **all 705** — verified by re-converting with
 `--cmake-script-bake=true`: residual rejection count drops to the 3
 git-stamp items.
 
-Implication for a VTK gate — and which lift to use. The converter's
+Which lift to use — and the transition-tool tension. The converter's
 documented preference order for `cmake -P` is **runner → trace → bake**
-(see the refusal message in `genrule.go` and the flag help):
+(refusal message in `genrule.go` + flag help). That order optimizes
+faithfulness-and-least-effort-to-a-green-build. But this converter is a
+**transition tool** — success is "downstream is plain Bazel, you don't
+need this (or cmake) anymore" (`ROADMAP.md` preamble) — and against
+*that* axis the order partly inverts:
 
-- **`--cmake-script-runner=<label>` (preferred).** Lifts each call to a
-  genrule that runs the staged runner (cmake) at **build time**, so the
-  generated `.h`/`.cxx` auto-refresh when a `.glsl`/template input
-  changes. All 705 are liftable this way: both `vtkEncodeString` and
-  `vtkHashSource` are pure, hermetic, deterministic functions of a
-  single declared `INPUT` (+ literal `-D` args), with explicit
-  `DEPENDS`, no hardcoded host paths — i.e. exactly the
-  "parameter-driven scripts work cleanly" case the runner flag targets.
-  VTK's natural fit, since the buildbarn runner image already ships
-  cmake.
-- **`--cmake-script-bake=true` (fallback).** Freezes the output bytes at
-  convert time; the `warnConvertTimeBaking` post-pass flags them as
-  not-auto-refreshing. Use only when there's no cmake on the build
-  executor. (Same flag the libpng `cmake -P` headers use.)
+- **`--cmake-script-runner=<label>`** runs cmake at **build time**, so
+  the converted project keeps a permanent cmake dependency. Most
+  faithful + auto-refreshing, but it **never finishes the transition**
+  (cmake forever in the build graph). Convenient for a quick gate;
+  wrong as an end-state.
+- **`--cmake-script-bake=true`** removes cmake from the build, but
+  freezes the output bytes (`warnConvertTimeBaking` flags them) and
+  keeps the *converter* in the loop (re-bake on input change).
+- **Native Bazel rule (best end-state — see §1b).** No cmake, no
+  converter, auto-refreshing, pure Bazel.
 
-Implementation note before committing a VTK gate to the *automatic*
-runner lift: confirm the `--cmake-script-runner` path re-anchors
-vtkEncodeString's `-Dsource_file=<abs>` / `-Dbinary_dir=<abs>` args to
-`$(location …)` / `$(RULEDIR)` (the same arg re-anchoring the standalone-
-genrule path does).
+All 705 are liftable any of these ways: both `vtkEncodeString` and
+`vtkHashSource` are pure, hermetic, deterministic functions of a single
+declared `INPUT` (+ literal `-D` args), explicit `DEPENDS`, no hardcoded
+host paths.
+
+### 1b. Native conversion of the embed/hash codegen (the transition end-state)
+
+For these two scripts specifically, a **Bazel-native rule is achievable
+and beats both runner and bake** for a transition tool:
+
+- `vtkEncodeString` is the universal "embed a file as a C array" idiom.
+  A native `cc_embed`-style rule (a Starlark rule + a tiny hermetic
+  Go/C++ tool shipped in `rules_buildstream_bazel`) reproduces it with
+  **no cmake**. It is *faithful* where it matters: the symbol name comes
+  straight from `-Doutput_name=`, and the runtime string value is just
+  the input file's bytes — any correct escaping yields the same nm
+  symbol set (passes the fidelity gate) and the same runtime value.
+  Byte-identical generated-source *text* is irrelevant.
+- `vtkHashSource` → a trivial native hash rule (hashlib); no cmake.
+
+Why it's feasible:
+
+1. **The parameters are already on the wire.** The `add_custom_command`
+   passes everything as `-D` flags (`-Dsource_file`, `-Doutput_name`,
+   `-Dexport_symbol`, `-Dexport_header`, `-Dbinary`, `-Dnul_terminate`,
+   the ABI-mangle args). The converter pattern-matches
+   `cmake -P <known-encoder>.cmake` + extracts the `-D` args → emits the
+   native rule fully parameterized; it need not understand the cmake
+   function at all.
+2. **Precedent.** The converter already does idiom→native lowering
+   (`install(EXPORT)`→`cc_import`/`pkg_files`, sanitizer→`--features`,
+   the `install-compat-alias` rule #350, the `cmake_configure_file`
+   rule). "Embed/hash codegen → native `cc_embed`/`cc_hash`" is the same
+   move.
+3. **It generalizes.** Embed-as-C-array and hash-to-header are not
+   VTK-specific (LLVM, Qt, many projects do this), so a repo-provided
+   `cc_embed` rule + recognizer is reusable leverage, not a special-case.
+
+Cost / caveats: the native tool must cover the encoder *modes* the
+project uses (string vs `BINARY`/hex, `NUL_TERMINATE`, export macros,
+ABI mangling) — bounded (~50 lines of script to mirror) but real;
+recognition keyed on the encoder script basename is a per-encoder list
+(a shape-based detector — "cmake -P that reads one input and writes a C
+source embedding it" — generalizes further but is harder). Pragmatic
+path: recognize the known encoders → native rule; fall back to **bake**
+(not runner, for the transition reason above) for unrecognized scripts.
 
 ### 2. `vtk_module_third_party` forwarders — the REAL converter gap
 
@@ -103,18 +144,19 @@ pass flags; cosmetic.
 1. **Cheap win first:** a VTK *survey* corpus entry already works
    (`make fetch-vtk` + `run-survey.sh`); wire it as a tracked survey
    target so the rejection surface is watched.
-2. **Fidelity/build gate** opts into the `cmake -P` lift —
-   `--cmake-script-runner=<label>` preferred (build-time, auto-
-   refreshing; the buildbarn runner image already ships cmake), with
-   `--cmake-script-bake=true` only as the no-cmake-on-executor fallback.
-   With either, conversion is clean to 3 expected fallbacks — but a real
-   `bazel build` of a VTK module that depends on a bundled third-party
-   (hdf5-consuming modules) will fail until the
-   **`vtk_module_third_party` forwarder gap (§2)** is fixed. A first VTK
-   build gate should therefore target a module that does NOT pull a
-   bundled third-party (a pure VTK::CommonCore-tier leaf), which should
-   build once the script lift is enabled.
-3. **The forwarder fix (§2)** is the converter PR VTK uniquely
+2. **First build gate (interim):** enable the `cmake -P` lift with
+   `--cmake-script-bake=true` — NOT `--cmake-script-runner`. Both get
+   conversion clean to 3 expected fallbacks, but the runner leaves a
+   permanent cmake dependency in the converted build, which defeats the
+   transition goal; bake removes cmake from the build. Target a module
+   that does NOT pull a bundled third-party (a pure VTK::CommonCore-tier
+   leaf) so the build is green before the §2 forwarder fix.
+3. **Native `cc_embed` / `cc_hash` lowering (§1b) — the strategic
+   target.** Convert `vtkEncodeString` / `vtkHashSource` to a repo
+   `cc_embed`-style rule + tiny hermetic tool so the converted project
+   needs neither cmake nor the converter at build time — the actual
+   transition end-state, and reusable beyond VTK.
+4. **The forwarder fix (§2)** is the converter change VTK uniquely
    motivates — route the third-party module wrapper's
    `target_link_libraries(<inner>_src …)` arms into the wrapper's
    `deps` so the wrapper is non-empty and links its bundled sources.
