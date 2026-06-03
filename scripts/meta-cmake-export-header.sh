@@ -69,9 +69,11 @@ grep -qF 'out = "mylib_export.h"' "$sub_build" \
 # 2. The subdir is an include-root header lib carrying the export header.
 grep -qF '"mylib_export.h"' "$sub_build" || fail "export header not wired into lib/sub header lib"
 grep -qF 'includes = ["."]' "$sub_build" || fail "lib/sub header lib missing includes=[\".\"]"
-# 3. No refusal of the generate_export_header configure_file.
-grep -q "unsupported" "$work_dir/convert.stderr" \
-    && fail "converter refused something (export header should recover cleanly)"
+# 3. No refusal of the generate_export_header configure_file. Match the typed
+# refusal-code prefix ("unsupported-…") rather than the bare word, so an
+# unrelated message that happens to contain "unsupported" can't trip the gate.
+grep -q "unsupported-" "$work_dir/convert.stderr" \
+    && fail "converter emitted a typed refusal (export header should recover cleanly)"
 
 echo "ok  meta-cmake-export-header: generate_export_header recovered + wired into a split-packages include-root"
 
