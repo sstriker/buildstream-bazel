@@ -111,8 +111,20 @@ ABI mangling) — bounded (~50 lines of script to mirror) but real;
 recognition keyed on the encoder script basename is a per-encoder list
 (a shape-based detector — "cmake -P that reads one input and writes a C
 source embedding it" — generalizes further but is harder). Pragmatic
-path: recognize the known encoders → native rule; fall back to **bake**
-(not runner, for the transition reason above) for unrecognized scripts.
+path: recognize the known encoders → native rule; **runner** for the
+rest (the cheap, faithful early-transition route), reserving **bake**
+for the long-tail script not worth either.
+
+**Bounded by the North Star.** Native idiom recognizers are worth
+building only for the highest-frequency idioms (embed/hash qualify — they
+recur across VTK / LLVM / Qt). They are NOT an open-ended mandate: the
+repo's strategic North Star is the `cmake -G Bazel` / cmake-as-oracle
+posture (`ROADMAP.md` "Now"; `cmake_analysis.md` option (c)-on-(b)),
+under which cmake's own generation pass emits these codegen edges
+faithfully *by construction* — no per-idiom recognizer needed. So the
+runner stays the cheap bridge, a few high-value native rules are the
+interim burn-down, and a sprawling bespoke-recognizer library is
+explicitly the wrong investment (the North Star subsumes it).
 
 ### 2. `vtk_module_third_party` forwarders — the REAL converter gap
 
