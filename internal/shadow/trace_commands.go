@@ -498,10 +498,23 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 	if !strings.EqualFold(ev.Cmd, "configure_file") {
 		return ConfigureFileCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
+	if len(ev.Args) < 2 {
 		return ConfigureFileCall{}, false
 	}
-	if len(ev.Args) < 2 {
+	// Normally a configure_file is only interesting when its CALL SITE is
+	// inside the project tree — that filters out cmake's own internal
+	// configure_file calls (try_compile scratch, package-config helpers,
+	// etc.) whose outputs aren't project compile inputs.
+	//
+	// The one universal exception is generate_export_header (CMake's
+	// GenerateExportHeader module): it calls configure_file from cmake's
+	// own module dir against the fixed template "exportheader.cmake.in",
+	// but its output <name>_export.h is a per-target compile header every
+	// consumer #includes. Recognizing it by that stable template basename
+	// recovers the (baked) header instead of dropping it, while keeping
+	// every other out-of-tree configure_file filtered — the same
+	// recognize-a-known-idiom move as the cc_embed encoder list.
+	if !inSourceTree(ev.File, sourceRoot) && !isGenerateExportHeaderTemplate(ev.Args[0]) {
 		return ConfigureFileCall{}, false
 	}
 	return ConfigureFileCall{
@@ -509,6 +522,14 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 		Output:  ev.Args[1],
 		Options: append([]string(nil), ev.Args[2:]...),
 	}, true
+}
+
+// isGenerateExportHeaderTemplate reports whether the configure_file input is
+// CMake's GenerateExportHeader template (exportheader.cmake.in). cmake always
+// passes it as an absolute, module-dir-prefixed path, so a "/"-anchored suffix
+// match is precise without pulling in a path import.
+func isGenerateExportHeaderTemplate(input string) bool {
+	return strings.HasSuffix(input, "/exportheader.cmake.in")
 }
 
 // FileGenerateCall records one user-written

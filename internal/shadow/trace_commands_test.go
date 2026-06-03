@@ -158,6 +158,37 @@ func TestExtractConfigureFiles_FiltersCmakeInternal(t *testing.T) {
 	}
 }
 
+// traceExportHeader holds one generate_export_header configure_file call: its
+// call SITE is cmake's own GenerateExportHeader.cmake (outside the source
+// tree), but its template is exportheader.cmake.in and its output is a
+// per-target compile header consumers #include — so it must be recovered, not
+// filtered like other cmake-internal configure_file calls.
+const traceExportHeader = `{"args":["in.h.in","out.h","@ONLY"],"cmd":"configure_file","file":"/src/CMakeLists.txt","line":7}
+{"args":["/usr/share/cmake-3.28/Modules/exportheader.cmake.in","/build/mylib/mylib_export.h","@ONLY"],"cmd":"configure_file","file":"/usr/share/cmake-3.28/Modules/GenerateExportHeader.cmake","line":406}
+{"args":["/usr/share/cmake-3.28/Modules/CMakeSystem.cmake.in","/build/CMakeFiles/3.28.3/CMakeSystem.cmake","@ONLY"],"cmd":"configure_file","file":"/usr/share/cmake-3.28/Modules/CMakeDetermineSystem.cmake","line":246}
+`
+
+func TestExtractConfigureFiles_GenerateExportHeader(t *testing.T) {
+	got := ExtractConfigureFiles([]byte(traceExportHeader), "/src")
+	// The in-tree user call AND the export-header call are kept; the
+	// CMakeSystem cmake-internal call is filtered.
+	if len(got) != 2 {
+		t.Fatalf("want 2 (in-tree user + generate_export_header; CMakeSystem filtered); got %d (%+v)", len(got), got)
+	}
+	var sawExport bool
+	for _, c := range got {
+		if c.Output == "/build/mylib/mylib_export.h" {
+			sawExport = true
+			if !strings.HasSuffix(c.Input, "/exportheader.cmake.in") {
+				t.Errorf("export-header call input: %q", c.Input)
+			}
+		}
+	}
+	if !sawExport {
+		t.Errorf("generate_export_header configure_file was filtered (call-site outside source tree); want recovered: %+v", got)
+	}
+}
+
 func TestExtractTargetIncludes_SystemAndOrder(t *testing.T) {
 	// SYSTEM + BEFORE + visibility — the order keywords prefix
 	// the visibility group.

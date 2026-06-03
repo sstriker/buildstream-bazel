@@ -2320,6 +2320,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				if isPathPrefix(inc, cfgOut.RelOutput) {
 					addedHdrs = append(addedHdrs, cfgOut.RelOutput)
 					hostingIncs[inc] = true
+					// A generate_export_header output is #included by BARE
+					// name, so its OWN directory (cmake's
+					// CMAKE_CURRENT_BINARY_DIR) must be on the include path —
+					// the prefix match above can settle on a shallower parent
+					// dir (the package), which leaves `#include
+					// "<name>_export.h"` unresolved. Surface the output's dir
+					// directly. Harmless for subdir-qualified consumers (an
+					// extra search path), required for the bare ones.
+					if cfgOut.ExportHeader {
+						if d := filepath.ToSlash(filepath.Dir(cfgOut.RelOutput)); d != "." && d != "" {
+							hostingIncs[d] = true
+						}
+					}
 					break
 				}
 			}
