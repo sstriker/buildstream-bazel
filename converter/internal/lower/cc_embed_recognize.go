@@ -31,8 +31,11 @@ var knownCcEmbedEncoders = map[string]bool{
 // registered in cc.OutToGenrule; the second is served by recoverGenrule's
 // SeenBuilds reuse). Returns ("", false) to fall through to the
 // runner/bake/refuse path when the flag is off, the script isn't a known
-// encoder, the args don't parse into a complete embed spec, or the spec
-// would violate the cc_embed rule's own constraints.
+// encoder, the args don't parse into a complete embed spec, the spec
+// would violate the cc_embed rule's own constraints, or the encoder
+// applies a transform the cc-embed tool can't reproduce (ABI symbol
+// mangling) — declining keeps the lift faithful rather than emitting a
+// wrong-symbol cc_embed.
 func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (name string, ok bool) {
 	if !cc.LiftCCEmbed {
 		return "", false
@@ -54,6 +57,19 @@ func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeS
 		return "", false
 	}
 	if nulTerminate && !binary {
+		return "", false
+	}
+	// ABI symbol mangling (vtkEncodeString's ABI_MANGLE_SYMBOL_BEGIN /
+	// _END / _HEADER) rewrites the emitted symbol — the cc-embed tool
+	// can't reproduce it, so emitting a cc_embed here would silently
+	// drop the mangling and define the WRONG symbol. Decline (fall
+	// through to runner/bake, which run the real encoder and mangle
+	// correctly) whenever any mangle arg is non-empty. Empty values are
+	// the common case — vtkEncodeString always passes the -D keys, set
+	// to "" when the caller omits ABI_MANGLE_* — so key the decline on a
+	// non-empty value, not mere presence. Real VTK v9.4.2: 4 of ~700
+	// sites mangle.
+	if d["abi_mangle_symbol_begin"] != "" || d["abi_mangle_symbol_end"] != "" || d["abi_mangle_header"] != "" {
 		return "", false
 	}
 	src, inSrc := relativeIfInside(cmakeSrc, srcAbs)
