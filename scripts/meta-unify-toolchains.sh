@@ -112,7 +112,7 @@ def _impl(ctx):
 cc_toolchain_config = rule(
 "cpu": attr.string(mandatory = True)
 "asan_compile_flags": attr.string_list(default = [])
-provides = [CcToolchainConfigInfo]
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 EOF
 )
 while IFS= read -r line; do
@@ -127,6 +127,7 @@ EOF
 
 # 4. toolchains/BUILD.bazel has the per-platform trios + filegroup all.
 required_tc=$(cat <<'EOF'
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 name = "linux_x86_64_config"
 name = "linux_x86_64_toolchain"
 name = "linux_aarch64_toolchain"

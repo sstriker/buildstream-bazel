@@ -44,6 +44,7 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 
 	// Structural assertions on BUILD.bazel.
 	for _, want := range []string{
+		`load("@rules_cc//cc:defs.bzl", "cc_toolchain")`,
 		`cc_toolchain(`,
 		`platform(`,
 		`toolchain(`,
@@ -61,6 +62,7 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 	// cc_toolchain_config_lib.bzl primitives — the load + identity
 	// constants + feature() blocks are the durable contract.
 	for _, want := range []string{
+		`load("@rules_cc//cc/common:cc_common.bzl", "cc_common")`,
 		`@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl`,
 		`"feature", "flag_group", "flag_set", "tool_path"`,
 		`_TARGET_CPU = "x86_64"`,

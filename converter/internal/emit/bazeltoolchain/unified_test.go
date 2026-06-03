@@ -123,6 +123,7 @@ func TestEmitUnified_TwoPlatformsFullShape(t *testing.T) {
 	// + toolchain() trio plus the aggregating filegroup.
 	tcB := string(bundle.Files["toolchains/BUILD.bazel"])
 	for _, want := range []string{
+		`load("@rules_cc//cc:defs.bzl", "cc_toolchain")`,
 		`load(":cc_toolchain_config.bzl", "cc_toolchain_config")`,
 		`name = "linux_x86_64_config"`,
 		`name = "linux_x86_64_cc"`,
@@ -154,7 +155,7 @@ func TestEmitUnified_TwoPlatformsFullShape(t *testing.T) {
 		`"asan_link_flags": attr.string_list(default = [])`,
 		`"tsan_compile_flags": attr.string_list(default = [])`,
 		`"coverage_compile_flags": attr.string_list(default = [])`,
-		`provides = [CcToolchainConfigInfo]`,
+		`load("@rules_cc//cc/common:cc_common.bzl", "cc_common")`,
 		`_feature_with_flags("asan", False, ctx.attr.asan_compile_flags, ctx.attr.asan_link_flags)`,
 	} {
 		if !strings.Contains(cfg, want) {
