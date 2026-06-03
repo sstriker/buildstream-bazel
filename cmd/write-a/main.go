@@ -404,6 +404,7 @@ func main() {
 	round1 := flag.Bool("trace-round1", false, "opt out of round-2 (the default trace-driven path). Round-1 is the legacy single-genrule shape: project A is a marker filegroup; project B's install genrule runs configure / build / install + build-tracer + the converter inline, installing into the install-root TreeArtifact + emitting BUILD.bazel.out as a sibling output of one action. Use when --trace-publish-bin / --trace-lookup-bin aren't on hand or when the round-2 rendezvous infra (REAPI AC + cas-fuse / bb_clientd mount) isn't available. Previously named with an autotools- prefix; the trace-driven path now serves multiple kinds (autotools / make / manual / script / makemaker / modulebuild), so the prefix dropped the kind specificity.")
 	traceSourceRoot := flag.Bool("trace-source-root", false, "optional: thread --source-root=$$BUILD_ROOT into every build-tracer invocation emitted by wrapAutotoolsPipelineCmds — both the round-2 install genrule for trace-driven kinds and the round-1 single-genrule shape, since both go through the same wrapper. Required to populate the narrowing-undercoverage audit's trace oracle (without it, build-tracer drops openat events entirely — preserves the legacy AC byte schema for trace-driven kinds at the cost of an empty trace oracle). Flipping the flag invalidates existing AC entries for any trace-driven element rendered by this build (one-shot rebake; the round-2 wire-half AC keyspace and the round-1 single-action cache both shift). Off (the default) keeps existing AC entries valid; CI / e2e fixtures opt in to exercise the audit gate. See docs/design/narrowing-audit.md.")
 	cmakeConfigureFileBin := flag.String("cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
+	ccEmbedBin := flag.String("cc-embed-bin", "", "optional: path to cmd/cc-embed. When set, kind:cmake elements opt into the cc_embed lift: convert-element-cmake recognizes a known file-embedding cmake -P encoder (VTK's vtkEncodeString) and lowers it to the native cc_embed rule (//tools:cc-embed) — so the converted project needs no cmake at build time for the embed-file-as-C-array idiom. The binary is staged into project A and project B tools/ so the rule's tool label resolves. Off (the default) leaves the encoder edge on the runner/bake/refuse path. See docs/research/codegen-idiom-coverage.md.")
 	gazelleCCFlag := flag.Bool("gazelle-cc", false, "optional: wire gazelle_cc into project B so `bazel run //:gazelle` maintains the converted BUILDs (the Phase-8b continuous-conversion flow: the converter bootstraps the per-directory split via --split-packages, then gazelle_cc canonicalizes / owns the layout — relocating cc_library targets to their source dirs, preferring implementation_deps; converter targets gazelle_cc can't regenerate carry rule-level # keep to survive). Adds bazel_dep(gazelle/gazelle_cc/rules_go) to project B's MODULE.bazel and a gazelle_binary(languages=[\"@gazelle_cc//language/cc\"]) + gazelle(name=\"gazelle\") pair to project B's root BUILD.bazel. No go_sdk extension is emitted — gazelle_cc's transitive go_sdk.download handles the toolchain in network-having environments; the sandbox e2e gate appends go_sdk.host() to overlay.MODULE.bazel. Off (the default) leaves project B's MODULE.bazel + root BUILD.bazel byte-identical to today. See docs/design/cmake-split-packages.md.")
 	splitPackages := flag.Bool("split-packages", false, "optional: render kind:cmake elements as one BUILD.bazel per CMake source directory (the gazelle per-directory model) instead of a single monolithic BUILD per element. The converter genrule threads --split-packages and emits a single build-packages.tar of the per-sub-package tree (a genrule can't declare the discovered-at-action-time sub-package set as static outs); stage-b unpacks it into project B's elements/<name>/. Off (the default) keeps the single-BUILD shape. See docs/design/cmake-split-packages.md.")
 	buildTypes := flag.String("build-types", "", "optional: \"auto\" or a comma-separated list of cmake configuration names (e.g. \"Debug,Release,RelWithDebInfo\"). \"auto\" detects each kind:cmake element's own CMAKE_CONFIGURATION_TYPES via a throwaway Ninja Multi-Config configure at render time (falling back to cmake's standard set when cmake is absent or an element's configure fails) and uses their union. Either form threads --build-types into every kind:cmake converter genrule so cmake runs under the Ninja Multi-Config generator and BUILD.bazel.out carries the per-config //config:<name> select() arms (Phase 5 multi-config fold). write-a renders the matching //config package (string_flag build_type + one config_setting per config) into project B so the labels resolve; select a config at build time with --//config:build_type=<name>. Empty (default) keeps the single-config render byte-stable.")
@@ -447,6 +448,7 @@ func main() {
 		platformsJSON:         *platformsJSON,
 		useFuseSources:        *useFuseSources,
 		cmakeConfigureFileBin: *cmakeConfigureFileBin,
+		ccEmbedBin:            *ccEmbedBin,
 		explicit:              flagExplicit(),
 	}
 	resolved, err := deriveModes(modeFlagsIn)
@@ -588,6 +590,13 @@ func main() {
 			log.Fatalf("resolve cmake-configure-file path: %v", err)
 		}
 		cmakeConfig.configureFileBin = abs
+	}
+	if *ccEmbedBin != "" {
+		abs, err := filepath.Abs(*ccEmbedBin)
+		if err != nil {
+			log.Fatalf("resolve cc-embed path: %v", err)
+		}
+		cmakeConfig.ccEmbedBin = abs
 	}
 	if *mesonBin != "" {
 		abs, err := filepath.Abs(*mesonBin)
@@ -886,6 +895,7 @@ func printBanner(g *graph, r resolvedModes, m modeFlags, outA, outB string) {
 		{"trace-lookup", m.traceLookup},
 		{"fold-element", traceConfig.foldBin},
 		{"cmake-configure-file", m.cmakeConfigureFileBin},
+		{"cc-embed", m.ccEmbedBin},
 	}
 	var wired, missing []string
 	for _, t := range tools {
@@ -1554,6 +1564,13 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if cmakeFileExport != "" {
 		exports = append(exports, cmakeFileExport)
 	}
+	ccEmbedExport, err := stageCCEmbedTool(outDir)
+	if err != nil {
+		return err
+	}
+	if ccEmbedExport != "" {
+		exports = append(exports, ccEmbedExport)
+	}
 	mesonExport, err := stageMesonConverter(outDir)
 	if err != nil {
 		return err
@@ -1630,6 +1647,34 @@ func stageCmakeConfigureFileTool(outDir string) (string, error) {
 		return "", err
 	}
 	return "cmake-configure-file", nil
+}
+
+// stageCCEmbedTool copies cc-embed into outDir/tools/ when
+// --cc-embed-bin was set, returning the exports_files entry the caller
+// adds to tools/BUILD.bazel. Empty + nil when the lift is disabled
+// (the cc_embed recognizer stays off; nothing to stage).
+//
+// Mirrors stageCmakeConfigureFileTool: staged symmetrically into
+// project A + project B so the per-element BUILD.bazel.out's
+// `//tools:cc-embed` rule tool label resolves regardless of which
+// project hosts the cc_embed target. The convert-element-cmake action
+// in project A doesn't invoke this binary — only project B's
+// downstream Bazel build does — but both projects keep a staged copy.
+func stageCCEmbedTool(outDir string) (string, error) {
+	if cmakeConfig.ccEmbedBin == "" {
+		return "", nil
+	}
+	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
+		return "", err
+	}
+	stagedAt := filepath.Join(outDir, "tools", "cc-embed")
+	if err := copyFile(cmakeConfig.ccEmbedBin, stagedAt); err != nil {
+		return "", fmt.Errorf("stage cc-embed: %w", err)
+	}
+	if err := os.Chmod(stagedAt, 0o755); err != nil {
+		return "", err
+	}
+	return "cc-embed", nil
 }
 
 // stageMesonConverter copies convert-element-meson into outDir/tools/
@@ -1920,6 +1965,13 @@ func writeProjectB(g *graph, outDir string) error {
 	}
 	if cmakeFileExport != "" {
 		exports = append(exports, cmakeFileExport)
+	}
+	ccEmbedExport, err := stageCCEmbedTool(outDir)
+	if err != nil {
+		return err
+	}
+	if ccEmbedExport != "" {
+		exports = append(exports, ccEmbedExport)
 	}
 	mesonExport, err := stageMesonConverter(outDir)
 	if err != nil {
