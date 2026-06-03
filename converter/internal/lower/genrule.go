@@ -111,6 +111,14 @@ type codegenContext struct {
 	// closures of the cmake-P gap).
 	CMakeScriptBake bool
 
+	// LiftCCEmbed, when true, recognizes a custom command running a known
+	// file-embedding cmake -P encoder (VTK's vtkEncodeString) and lowers
+	// it to the native cc_embed rule (//tools:cc-embed) instead of the
+	// runner/bake/refuse path — so the converted project needs no cmake at
+	// build time. Off by default (the consuming project must stage
+	// //tools:cc-embed, like the runner); the operator opts in.
+	LiftCCEmbed bool
+
 	// CMakeScriptTrace, when true, asks the cmake -P lift to
 	// actually run the script under `cmake --trace --trace-format=
 	// json-v1 -P <script>` at convert time. The trace's read
@@ -320,6 +328,13 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// docs/design/generator-parity-gaps.md's "cmake -P
 		// lift" entry for the limitation details.
 		script := extractCmakeScriptPath(cmd)
+		// Native cc_embed recognizer (opt-in via --lift-cc-embed): a known
+		// file-embedding encoder (vtkEncodeString) lowers to the cc_embed
+		// rule, so the converted project needs no cmake at build time. Runs
+		// before the runner/bake/refuse path; falls through when it declines.
+		if rel, name, ok := recognizeCcEmbed(cc, b, cmd, script, cmakeSrc, buildDir); ok {
+			return rel, name, nil
+		}
 		var liftReason string
 		// Bake mode (convert-time execution + bytes capture)
 		// runs first when opted in: it solves the

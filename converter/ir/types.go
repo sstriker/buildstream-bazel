@@ -135,6 +135,18 @@ const (
 	// of the lifted probe can `select()` on whether the feature is
 	// enabled. Built-in rule, no load needed.
 	KindConfigSetting
+	// KindCCEmbed renders as the rules_buildstream_bazel
+	// `cc_embed(...)` rule: the Bazel-native lowering of the "embed a
+	// file as a C array" cmake -P codegen idiom (VTK's vtkEncodeString).
+	// Instead of running cmake at build time (the --cmake-script-runner
+	// bridge) or freezing bytes at convert time (--cmake-script-bake),
+	// the rule runs the hermetic //tools:cc-embed tool to turn the input
+	// file into a .h + .cxx exposing its bytes as a named symbol — so the
+	// converted project needs neither cmake nor the converter at build
+	// time. Attributes live on Target.CCEmbed. Comes from
+	// @rules_buildstream_bazel//rules:cc_embed.bzl (the emitter writes the
+	// load, mirroring KindCMakeConfigureFile).
+	KindCCEmbed
 )
 
 func (k Kind) String() string {
@@ -165,6 +177,8 @@ func (k Kind) String() string {
 		return "write_file"
 	case KindCMakeConfigureFile:
 		return "cmake_configure_file"
+	case KindCCEmbed:
+		return "cc_embed"
 	case KindBoolFlag:
 		return "bool_flag"
 	case KindConfigSetting:
@@ -644,6 +658,10 @@ type Target struct {
 	// attributes. Non-nil only when Kind == KindCMakeConfigureFile.
 	CMakeConfigureFile *CMakeConfigureFileSpec
 
+	// CCEmbed carries the cc_embed rule's attributes. Non-nil only when
+	// Kind == KindCCEmbed.
+	CCEmbed *CCEmbedSpec
+
 	// AliasActual is the Bazel label the alias resolves to.
 	// Populated only when Kind == KindAlias; renders as
 	// `actual = "<label>"` on the alias rule. Typically a
@@ -834,4 +852,32 @@ type CMakeConfigureFileSpec struct {
 	CopyOnly     bool
 	EscapeQuotes bool
 	NewlineStyle string
+}
+
+// CCEmbedSpec carries the attributes for a KindCCEmbed target — the
+// cc_embed rule that embeds a file's bytes as a named C symbol (the
+// native lowering of vtkEncodeString-shaped cmake -P codegen). The
+// emitter projects these onto the rule's attributes; the rule runs
+// //tools:cc-embed at build time.
+type CCEmbedSpec struct {
+	// Src is the package-relative path of the file whose bytes are
+	// embedded (the rule's `src`).
+	Src string
+	// Symbol is the C symbol name for the embedded data (the rule's
+	// `symbol`; the consumer references it).
+	Symbol string
+	// OutHeader / OutSource are the package-relative predeclared outputs
+	// (the rule's `out_header` / `out_source`), e.g. "<name>.h" / "<name>.cxx".
+	OutHeader string
+	OutSource string
+	// Binary emits an unsigned char[] byte array instead of a C string;
+	// NulTerminate appends a trailing NUL (binary only). Mirror
+	// vtk_encode_string's BINARY / NUL_TERMINATE.
+	Binary       bool
+	NulTerminate bool
+	// ExportSymbol / ExportHeader mirror vtk_encode_string's EXPORT_SYMBOL
+	// / EXPORT_HEADER (a visibility macro + the header providing it). Both
+	// empty for the common case.
+	ExportSymbol string
+	ExportHeader string
 }

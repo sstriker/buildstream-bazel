@@ -1048,6 +1048,16 @@ func coveredOuts(existing []ir.Target) map[string]bool {
 			if t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
 				covered[t.CMakeConfigureFile.Out] = true
 			}
+		case ir.KindCCEmbed:
+			// The cc_embed lift produces its .h + .cxx via CCEmbed.OutHeader
+			// / OutSource (not GenruleOuts). The recognized vtkEncodeString
+			// edge is a ninja CUSTOM_COMMAND, so — as for write_file /
+			// cmake_configure_file — missing it here would re-emit a second
+			// producer for the same outputs and Bazel rejects the duplicate.
+			if t.CCEmbed != nil {
+				covered[t.CCEmbed.OutHeader] = true
+				covered[t.CCEmbed.OutSource] = true
+			}
 		}
 	}
 	return covered

@@ -406,6 +406,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitWriteFileLoad(&buf, pkg)
 	emitBoolFlagLoad(&buf, pkg)
 	emitCMakeConfigureFileLoad(&buf, pkg)
+	emitCCEmbedLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -465,6 +466,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindCMakeConfigureFile {
 			if err := emitCMakeConfigureFile(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindCCEmbed {
+			if err := emitCCEmbed(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -1391,6 +1398,90 @@ func emitCMakeConfigureFileLoad(buf *bytes.Buffer, pkg *ir.Package) {
 			return
 		}
 	}
+}
+
+// emitCCEmbedLoad emits the
+// `load("@rules_buildstream_bazel//rules:cc_embed.bzl", "cc_embed")` line
+// when pkg emits any KindCCEmbed target. No-op otherwise so output for
+// packages without an embed lift stays byte-stable.
+func emitCCEmbedLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindCCEmbed {
+			buf.WriteString(`load("@rules_buildstream_bazel//rules:cc_embed.bzl", "cc_embed")` + "\n\n")
+			return
+		}
+	}
+}
+
+// ccEmbedTmpl renders the rules_buildstream_bazel `cc_embed(...)` rule —
+// the native lowering of vtkEncodeString-shaped cmake -P codegen. The
+// tool is fixed to //tools:cc-embed (auto-staged like
+// //tools:cmake-configure-file). Optional attributes are omitted when at
+// their defaults; canonicalize() reformats, so this only has to get the
+// attribute set + omission right.
+var ccEmbedTmpl = template.Must(template.New("cc_embed").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`cc_embed(
+    name = "{{.Name}}",
+    src = "{{.Src}}",
+    symbol = "{{.Symbol}}",
+    out_header = "{{.OutHeader}}",
+    out_source = "{{.OutSource}}",
+{{- if .Binary}}
+    binary = True,
+{{- end}}
+{{- if .NulTerminate}}
+    nul_terminate = True,
+{{- end}}
+{{- if .ExportSymbol}}
+    export_symbol = "{{.ExportSymbol}}",
+{{- end}}
+{{- if .ExportHeader}}
+    export_header = "{{.ExportHeader}}",
+{{- end}}
+    tool = "//tools:cc-embed",
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+// ccEmbedView projects ir.Target into the cc_embed template.
+type ccEmbedView struct {
+	Name         string
+	Src          string
+	Symbol       string
+	OutHeader    string
+	OutSource    string
+	Binary       bool
+	NulTerminate bool
+	ExportSymbol string
+	ExportHeader string
+	Tags         []string
+	Visibility   []string
+}
+
+func emitCCEmbed(w *bytes.Buffer, t ir.Target) error {
+	s := t.CCEmbed
+	if s == nil {
+		return fmt.Errorf("emit cc_embed %q: nil CCEmbed spec", t.Name)
+	}
+	return ccEmbedTmpl.Execute(w, ccEmbedView{
+		Name:         t.Name,
+		Src:          s.Src,
+		Symbol:       s.Symbol,
+		OutHeader:    s.OutHeader,
+		OutSource:    s.OutSource,
+		Binary:       s.Binary,
+		NulTerminate: s.NulTerminate,
+		ExportSymbol: s.ExportSymbol,
+		ExportHeader: s.ExportHeader,
+		Tags:         sortedCopy(t.Tags),
+		Visibility:   nonDefaultVisibility(t.Visibility),
+	})
 }
 
 // writeFileView projects ir.Target into the write_file template.
