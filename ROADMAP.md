@@ -108,20 +108,23 @@ transition cleanly.
     the source directory's contents, not a bare directory in
     `srcs` (a bare dir doesn't package its files; a consuming
     `pkg_tar` fails with `IsADirectoryError`). install(FILES)
-    keeps the literal `srcs` list. *Limitations:* (a) per-file
-    destination renames (cmake `install(FILES ... RENAME ...)`)
-    are not modeled — the File API `DirectoryInstaller` doesn't
-    surface the rename target cleanly; a follow-up can map it
-    onto `pkg_files` `renames`. (b) install(DIRECTORY) assumes
-    the trailing-slash "contents of `<dir>/` into DESTINATION"
-    semantic (the overwhelmingly common shape). cmake's
-    no-trailing-slash form (`install(DIRECTORY include
-    DESTINATION include)` → `include/include/...`) is
-    distinguishable in the codemodel (recorded as a plain-string
-    path vs. the trailing-slash `{"from","to":"."}` object) but
-    is treated identically; a follow-up can carry the distinction
-    through the `to` field. Render gate
-    `scripts/meta-cmake-install-files-pkg.sh`.
+    keeps the literal `srcs` list. **Install granularity — done:**
+    (a) per-file destination renames (cmake
+    `install(FILES ... RENAME ...)`) now lift onto `pkg_files`
+    `renames`. The File API records a renamed FILES installer as a
+    `{"from","to"}` object (vs. the plain string of an un-renamed one),
+    with `to` the destination name under DESTINATION; previously the
+    object form was only decoded for *directory* installers, so a
+    renamed file was silently dropped — it's now a `renames` entry
+    (`{"<src>": "<rename>"}`, dest relative to the prefix). (b)
+    install(DIRECTORY)'s two shapes are distinguished: trailing-slash
+    "contents of `<dir>/` into DESTINATION" (`{"from","to":"."}` object)
+    strips the whole source dir, while the no-trailing-slash form
+    (`install(DIRECTORY include DESTINATION include)` →
+    `include/include/...`, recorded as a plain string) strips only the
+    dir's *parent* so the dir name survives under the prefix. Render
+    gate `scripts/meta-cmake-install-files-pkg.sh` covers both (RENAME +
+    no-slash directory).
     `shadow.ExtractSourceFileProperties` decodes per-file
     `set_source_files_properties` and lowering now consumes it
     — **shipped (1c)**: `HEADER_FILE_ONLY` → hdrs reclassify;

@@ -110,6 +110,35 @@ if ! grep -q 'strip_prefix = strip_prefix.from_pkg("docs")' "$out_build"; then
     fail "install(DIRECTORY) docs/ should strip the source dir (strip_prefix.from_pkg(\"docs\"))"
 fi
 
+# Assert 3d: install(FILES data/greeting.txt RENAME GREETING DESTINATION
+# share/renamed). The File API records this as a {"from","to"} object on
+# a Type=="file" installer; the lowering lifts "to" onto the pkg_files
+# `renames` map. Without it the renamed file was dropped entirely.
+if ! grep -q 'name = "install_files__share_renamed"' "$out_build"; then
+    fail "pkg_files for share/renamed (RENAME) destination missing — renamed FILES installer dropped?"
+fi
+if ! grep -q '"data/greeting.txt": "GREETING"' "$out_build"; then
+    fail "install(FILES ... RENAME GREETING) should emit renames = {\"data/greeting.txt\": \"GREETING\"}"
+fi
+
+# Assert 3e: install(DIRECTORY include DESTINATION include-tree) — the
+# NO-trailing-slash form (dir itself into dest). Globs the dir but
+# preserves the dir name: strips only the parent (here "include" sits at
+# the package root, so NO strip_prefix at all), landing files at
+# include-tree/include/<rel> rather than include-tree/<rel>.
+if ! grep -q 'name = "install_directory__include_tree"' "$out_build"; then
+    fail "pkg_files for include-tree (no-trailing-slash DIRECTORY) missing"
+fi
+# The include-tree target must glob include/** and carry NO strip_prefix
+# (the dir name is preserved under the prefix). Check the rule block.
+include_tree_block="$(awk '/name = "install_directory__include_tree"/{f=1} f{print} f&&/^\)/{exit}' "$out_build")"
+if ! printf '%s\n' "$include_tree_block" | grep -q 'srcs = glob(\["include/\*\*"\])'; then
+    fail "install(DIRECTORY include) should glob include/** (got: $include_tree_block)"
+fi
+if printf '%s\n' "$include_tree_block" | grep -q 'strip_prefix'; then
+    fail "install(DIRECTORY include) (no trailing slash) must NOT strip the dir — name is preserved (got: $include_tree_block)"
+fi
+
 # Assert 4: no bare install filegroup shape (the old lowering).
 if grep -E 'filegroup\(\s*$' "$out_build" | grep -q . && \
    grep -B1 'name = "install_files__' "$out_build" | grep -q 'filegroup('; then

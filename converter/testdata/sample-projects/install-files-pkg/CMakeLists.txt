@@ -21,5 +21,19 @@ install(FILES data/greeting.txt data/farewell.txt
 # install(FILES) — a public header lands under include.
 install(FILES include/greeter.h DESTINATION include)
 
-# install(DIRECTORY) — the docs tree lands under share/doc.
+# install(FILES ... RENAME ...) — the File API records the renamed file
+# as a {"from","to"} object; the lowering lifts "to" onto the pkg_files
+# `renames` map so the file lands at share/renamed/GREETING (not
+# share/renamed/greeting.txt). Before this was modeled the object-form
+# entry was dropped and the file silently vanished from the package.
+install(FILES data/greeting.txt RENAME GREETING DESTINATION share/renamed)
+
+# install(DIRECTORY) trailing slash — CONTENTS of docs/ land directly
+# under share/doc (share/doc/README.txt). Recorded as the
+# {"from":"docs","to":"."} object; strips the whole dir.
 install(DIRECTORY docs/ DESTINATION share/doc)
+
+# install(DIRECTORY) NO trailing slash — the include DIR ITSELF lands
+# under include-tree (include-tree/include/greeter.h). Recorded as a
+# plain string; strips only the dir's parent so the dir name survives.
+install(DIRECTORY include DESTINATION include-tree)
