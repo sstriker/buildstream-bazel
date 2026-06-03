@@ -608,28 +608,6 @@ transition cleanly.
 
 ## Next
 
-- **Toolkit-aware feature lift — per-kit vocabulary.**
-  `toolchainfeature.RewriteFeature` now sources its backed-feature set
-  from the generated toolchain's declared vocabulary
-  (`toolchain.GeneratedFeatures` — the same set bazeltoolchain emits
-  feature() blocks for) plus the built-in `pic`, instead of a
-  hand-maintained static allowlist. So the lift and the emitted toolchain
-  can't drift, and adding a generated feature auto-enables lifting its
-  flag. But this gates on the toolchain the converter *ships alongside*
-  the BUILD files — a safe default for that matched set, not the toolchain
-  that ultimately resolves.
-
-  **Next (separate PR): gate on the operator's *real* toolchain.** An
-  operator can hand-edit, extend, or swap the Bazel toolchain after
-  conversion (and the resolved one is a build-time `--platforms` choice),
-  all invisible at convert time. Removing/swapping a targeted feature
-  silently drops the lifted flag (Bazel ignores unknown features). Let the
-  operator optionally pass in their real `cc_toolchain` (or a
-  `--backed-features` list) so the lift gates on its actual vocabulary;
-  for multiple targetable kits that's the *intersection* of their
-  vocabularies. Needs the toolchain/kit vocabularies threaded into
-  conversion.
-
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
   `toolchain.Model` and the emit sets `cc_toolchain_config`'s
@@ -1001,6 +979,23 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **Toolkit-aware feature lift — gates on the toolchain's real vocabulary.**
+  Two steps. First, `toolchainfeature.RewriteFeature` sources its
+  backed-feature set from the generated toolchain's declared vocabulary
+  (`toolchain.GeneratedFeatures` — the same set bazeltoolchain emits
+  feature() blocks for) + the built-in `pic`, not a hand-maintained list, so
+  the lift and the emitted toolchain can't drift. Second,
+  `--toolchain-features-from` points the converter at the operator's *real*
+  toolchain: `converter/internal/toolchainscan` statically parses their
+  `cc_toolchain_config.bzl` (via buildtools), enumerates the `feature()`
+  names it declares, and gates the lift on those instead — so a flag is
+  lifted only onto a feature the resolved toolchain actually defines (e.g.
+  `visibility_hidden` lifts when declared; `asan` stays raw when absent).
+  Supported `feature()` syntax (literal names) + the parse-not-eval limits
+  are documented in `docs/operator-toolchain-features.md`. Remaining nicety:
+  auto-discovering + intersecting multiple kits' vocabularies rather than the
+  operator pointing at the intended one.
 
 - **`register_toolchains("//toolchains:all")` no longer shadowed.**
   unify-toolchains used to emit `filegroup(name = "all", ...)` in

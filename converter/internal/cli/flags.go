@@ -190,6 +190,18 @@ type Args struct {
 	// package doc for the cache-key analysis.
 	LiftConfigureFile bool
 
+	// ToolchainFeaturesFrom points the raw-flag → feature lift at the
+	// operator's REAL Bazel toolchain: a path to a cc_toolchain_config.bzl
+	// (or a toolchains/ dir of *.bzl) whose declared feature() names are
+	// enumerated (toolchainscan.ParseDeclared) and used as the lift's gate
+	// instead of the converter's generated default. So the lift only
+	// rewrites a flag onto a feature the operator's toolchain actually
+	// defines. Unset (empty path) keeps the generated-toolchain default; when
+	// set, the parsed vocabulary gates the lift even if it's empty (a
+	// toolchain whose features the parser can't read lifts only the built-in
+	// `pic`, not the generated default).
+	ToolchainFeaturesFrom string
+
 	// DumpVars toggles the post-configure variable-namespace
 	// capture (cmakerun stages dump-vars.cmake into
 	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES; on success cmake writes
@@ -575,6 +587,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutToolchainSignalDir, "out-toolchain-signal-dir", "", "directory; on success, copy the cmake File API reply contents here so the unifier can fold per-element toolchain signal into the platform's ResolvedToolchain.Base")
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
+	fs.StringVar(&a.ToolchainFeaturesFrom, "toolchain-features-from", "", "path to the operator's cc_toolchain_config.bzl (or a toolchains/ dir of *.bzl); its declared feature() names gate the raw-flag → cc_toolchain feature lift instead of the converter's generated default, so the lift matches the real toolchain. Unset keeps the generated default; when set, only features the toolchain literally declares lift (a wrapper/computed-name toolchain the parser can't read → only the built-in pic lifts, with a warning).")
 	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly, and an explicit value here overrides the dial-derived default.")
 	fs.StringVar(&a.Fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:cmake, an enumeration of cc_library/cc_binary stubs over the install-root TreeArtifact (via pick_file)). Implicitly enables --unsupported-execute-process-fallback. Threaded verbatim from cmd/write-a; the same vocabulary applies to convert-element-meson / -pyproject so a higher-level operator dial reads consistently across kinds.")
