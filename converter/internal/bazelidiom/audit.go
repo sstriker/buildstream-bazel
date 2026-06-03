@@ -524,17 +524,22 @@ func auditCCImport(rule, target string, call *build.CallExpr) []Finding {
 	return nil
 }
 
-// auditCCBinaryOrTest fires on cc_binary / cc_test with no srcs —
-// Bazel rejects these at build time, so it's worth catching at
-// emit-audit time with a clearer message.
+// auditCCBinaryOrTest fires on cc_binary / cc_test with no srcs. In this
+// repo's emitted output that usually means the converter didn't recover the
+// target's sources (compileGroups[].sourceIndexes) — it is not a Bazel hard
+// error, since a deps-only binary builds fine when a dep supplies the entry
+// point. The multi-language structural-split *wrapper* (lower.go's
+// splitCompileGroups) is exactly that valid case — deps-only by design, its
+// sources in the sibling "<name>_<lang>" sub-libraries it deps on — so it is
+// exempted; a srcs-less target with no split-sibling dep still fires.
 func auditCCBinaryOrTest(rule, target string, call *build.CallExpr) []Finding {
 	var findings []Finding
-	if listAttrLen(call, "srcs") == 0 {
+	if listAttrLen(call, "srcs") == 0 && !depsContainLanguageSplitLib(target, call) {
 		findings = append(findings, Finding{
 			Rule:    rule,
 			Target:  target,
 			Code:    "empty-srcs",
-			Message: rule + " has no srcs — Bazel will reject at build time; check whether the converter recovered every source for this target's compileGroups[].sourceIndexes",
+			Message: rule + " has no srcs — likely the converter didn't recover this target's sources (compileGroups[].sourceIndexes); a deps-only binary builds only when a dep supplies the entry point (e.g. a multi-language split wrapper, which this audit exempts)",
 		})
 	}
 	// cc_test with no srcs AND no deps that could provide a
@@ -552,6 +557,80 @@ func auditCCBinaryOrTest(rule, target string, call *build.CallExpr) []Finding {
 		}
 	}
 	return findings
+}
+
+// languageSplitSuffixes are the per-language sub-library name suffixes the
+// multi-language structural split synthesizes (lower.go's langSuffix): its
+// explicit cases (c, cxx, objc, objcxx, fortran, asm) plus common languages
+// it lowercases via the strings.ToLower(lang) fallback (cuda). Not exhaustive
+// — keep in sync with langSuffix and extend it when a new language's split
+// wrapper surfaces as an empty-srcs false positive.
+var languageSplitSuffixes = []string{"c", "cxx", "objc", "objcxx", "fortran", "asm", "cuda"}
+
+// depsContainLanguageSplitLib reports whether the rule's deps include a
+// sibling sub-library named "<target>_<lang>" — i.e. this is the deps-only
+// wrapper of a multi-language structural split, not a target that lost its
+// sources. Uses the concat-aware flatListContains so a `[flat] + select({...})`
+// deps shape (per-platform deps) is handled too: the unconditional
+// split-sibling deps live in the flat list.
+func depsContainLanguageSplitLib(target string, call *build.CallExpr) bool {
+	return len(flatListContains(call, "deps", func(label string) bool {
+		return isLanguageSplitSibling(target, label)
+	})) > 0
+}
+
+// isLanguageSplitSibling reports whether label names the wrapper's own split
+// sub-library "<target>_<lang>" (optionally "_<n>" for the multi-compile-
+// group-per-language case). Only a package-relative (":name") or root-package
+// ("//:name") label qualifies — the split emits the sub-libs in the wrapper's
+// package or hoisted to root, so a "//other:<target>_<lang>" in an unrelated
+// package is a name coincidence, not a split sibling, and must not exempt.
+func isLanguageSplitSibling(target, label string) bool {
+	name, ok := splitSiblingLocalName(label)
+	if !ok || !strings.HasPrefix(name, target+"_") {
+		return false
+	}
+	rest := name[len(target)+1:]
+	for _, s := range languageSplitSuffixes {
+		if rest == s {
+			return true
+		}
+		// "<lang>_<n>" for the multi-compile-group-per-language case: the
+		// tail after the language must be all digits, so an ordinary dep
+		// like ":foo_cxx_runtime" is not treated as a split sibling.
+		if strings.HasPrefix(rest, s+"_") && isAllDigits(rest[len(s)+1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitSiblingLocalName returns the target name of a dep label only when the
+// label is package-relative (":name" or bare "name") or in the root package
+// ("//:name") — the only places splitCompileGroups puts a wrapper's own split
+// sub-libs. Returns ok=false for another package ("//pkg:name") or an external
+// repo ("@repo//..."), so a name coincidence there can't exempt.
+func splitSiblingLocalName(label string) (string, bool) {
+	if strings.HasPrefix(label, "//:") {
+		return label[len("//:"):], true
+	}
+	if strings.HasPrefix(label, "//") || strings.HasPrefix(label, "@") {
+		return "", false
+	}
+	return strings.TrimPrefix(label, ":"), true
+}
+
+// isAllDigits reports whether s is non-empty and entirely ASCII digits.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // callName returns the function-call identifier name (the rule
