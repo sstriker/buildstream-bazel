@@ -8,7 +8,7 @@ import (
 )
 
 func TestEncode_StringMode(t *testing.T) {
-	h, s := encode([]byte("hello"), "greet", false, false, "", "")
+	h, s := encode([]byte("hello"), "greet", "greet.h", false, false, "", "")
 	if !strings.Contains(h, "extern const char *greet;") {
 		t.Errorf("header missing string decl:\n%s", h)
 	}
@@ -46,9 +46,12 @@ func TestEscapeCString(t *testing.T) {
 // reversing the escaping the same way a C compiler concatenating adjacent
 // literals would.
 func TestStringMode_RoundTrips(t *testing.T) {
-	inputs := []string{"hello", "a\\b\"c", "multi\nline\ntext", "tab\tand\rcr", ""}
+	inputs := []string{
+		"hello", "a\\b\"c", "multi\nline\ntext", "tab\tand\rcr", "",
+		"ctrl\x00\x01\x1f\x7fbytes", // control bytes -> \NNN octal, must round-trip
+	}
 	for _, in := range inputs {
-		_, s := encode([]byte(in), "x", false, false, "", "")
+		_, s := encode([]byte(in), "x", "x.h", false, false, "", "")
 		lit := extractStringLiteral(t, s)
 		if got := unescapeC(lit); got != in {
 			t.Errorf("round-trip failed for %q: got %q", in, got)
@@ -57,7 +60,7 @@ func TestStringMode_RoundTrips(t *testing.T) {
 }
 
 func TestEncode_BinaryMode(t *testing.T) {
-	h, s := encode([]byte{0x01, 0x02, 0xff}, "blob", true, false, "", "")
+	h, s := encode([]byte{0x01, 0x02, 0xff}, "blob", "blob.h", true, false, "", "")
 	if !strings.Contains(h, "extern const unsigned char blob[3];") {
 		t.Errorf("header missing binary decl:\n%s", h)
 	}
@@ -72,7 +75,7 @@ func TestEncode_BinaryMode(t *testing.T) {
 }
 
 func TestEncode_BinaryNulTerminate(t *testing.T) {
-	h, s := encode([]byte{0x41}, "blob", true, true, "", "")
+	h, s := encode([]byte{0x41}, "blob", "blob.h", true, true, "", "")
 	if !strings.Contains(h, "extern const unsigned char blob[2];") {
 		t.Errorf("nul-terminate should bump size to 2:\n%s", h)
 	}
@@ -82,8 +85,21 @@ func TestEncode_BinaryNulTerminate(t *testing.T) {
 	}
 }
 
+// TestEncode_HeaderIncludeDecoupledFromSymbol confirms the generated
+// source self-includes the actual header basename, not "<symbol>.h" — so
+// the output filename isn't constrained by the symbol name.
+func TestEncode_HeaderIncludeDecoupledFromSymbol(t *testing.T) {
+	_, s := encode([]byte("x"), "my_symbol", "custom_name.h", false, false, "", "")
+	if !strings.Contains(s, `#include "custom_name.h"`) {
+		t.Errorf("source should #include the actual header basename:\n%s", s)
+	}
+	if strings.Contains(s, `#include "my_symbol.h"`) {
+		t.Errorf("source should not hardcode <symbol>.h:\n%s", s)
+	}
+}
+
 func TestEncode_ExportSymbolAndHeader(t *testing.T) {
-	h, _ := encode([]byte("x"), "sym", false, false, "MYLIB_EXPORT", "mylib/export.h")
+	h, _ := encode([]byte("x"), "sym", "sym.h", false, false, "MYLIB_EXPORT", "mylib/export.h")
 	if !strings.Contains(h, `#include "mylib/export.h"`) {
 		t.Errorf("header missing export include:\n%s", h)
 	}
@@ -106,6 +122,12 @@ func TestRun_Validation(t *testing.T) {
 	}
 	if err := run(in, "n", ho, so, false, true, "", ""); err == nil {
 		t.Error("--nul-terminate without --binary should error")
+	}
+	if err := run(in, "n", ho, so, false, false, "SYM", ""); err == nil {
+		t.Error("--export-symbol without --export-header should error")
+	}
+	if err := run(in, "n", ho, so, false, false, "", "hdr.h"); err == nil {
+		t.Error("--export-header without --export-symbol should error")
 	}
 	if err := run(in, "n", ho, so, false, false, "", ""); err != nil {
 		t.Errorf("valid invocation errored: %v", err)
@@ -140,12 +162,25 @@ func extractStringLiteral(t *testing.T, source string) string {
 	return strings.ReplaceAll(body, "\"\n\"", "")
 }
 
-// unescapeC interprets the C escapes the tool emits (\\, \", \n, \r, \t).
+// unescapeC interprets the C escapes the tool emits (\\, \", \n, \r, \t,
+// and \NNN octal for control bytes).
 func unescapeC(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		if s[i] == '\\' && i+1 < len(s) {
-			switch s[i+1] {
+			c := s[i+1]
+			if c >= '0' && c <= '7' {
+				// Octal escape: up to 3 digits (matches the tool's \%03o).
+				val, j := 0, i+1
+				for j < len(s) && j < i+4 && s[j] >= '0' && s[j] <= '7' {
+					val = val*8 + int(s[j]-'0')
+					j++
+				}
+				b.WriteByte(byte(val))
+				i = j - 1
+				continue
+			}
+			switch c {
 			case '\\':
 				b.WriteByte('\\')
 			case '"':
@@ -157,7 +192,7 @@ func unescapeC(s string) string {
 			case 't':
 				b.WriteByte('\t')
 			default:
-				b.WriteByte(s[i+1])
+				b.WriteByte(c)
 			}
 			i++
 			continue

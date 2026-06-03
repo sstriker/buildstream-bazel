@@ -37,6 +37,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -66,12 +67,18 @@ func run(input, name, headerOut, sourceOut string, binary, nulTerminate bool, ex
 	if nulTerminate && !binary {
 		return fmt.Errorf("--nul-terminate only makes sense with --binary")
 	}
+	if (exportSymbol == "") != (exportHeader == "") {
+		return fmt.Errorf("--export-symbol and --export-header must be set together")
+	}
 	data, err := os.ReadFile(input)
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
 	}
 
-	header, source := encode(data, name, binary, nulTerminate, exportSymbol, exportHeader)
+	// The generated source self-includes the header by its actual basename
+	// (not "<name>.h"), so the symbol name and the output filename are
+	// decoupled — any out_header name compiles.
+	header, source := encode(data, name, filepath.Base(headerOut), binary, nulTerminate, exportSymbol, exportHeader)
 
 	if err := os.WriteFile(headerOut, []byte(header), 0o644); err != nil {
 		return fmt.Errorf("write header: %w", err)
@@ -84,8 +91,10 @@ func run(input, name, headerOut, sourceOut string, binary, nulTerminate bool, ex
 
 // encode renders the header + source for the embedded data. The symbol
 // name and the data's value are the load-bearing contract; the formatting
-// is the tool's own (valid C, deterministic).
-func encode(data []byte, name string, binary, nulTerminate bool, exportSymbol, exportHeader string) (header, source string) {
+// is the tool's own (valid C, deterministic). headerInclude is the path
+// the source `#include`s (the header's basename) — kept separate from the
+// symbol so the output filename isn't constrained by the symbol name.
+func encode(data []byte, name, headerInclude string, binary, nulTerminate bool, exportSymbol, exportHeader string) (header, source string) {
 	var h strings.Builder
 	guard := name + "_h"
 	fmt.Fprintf(&h, "#ifndef %s\n#define %s\n\n", guard, guard)
@@ -94,7 +103,7 @@ func encode(data []byte, name string, binary, nulTerminate bool, exportSymbol, e
 	}
 
 	var s strings.Builder
-	fmt.Fprintf(&s, "#include \"%s.h\"\n\n", name)
+	fmt.Fprintf(&s, "#include \"%s\"\n\n", headerInclude)
 
 	decl := ""
 	if exportSymbol != "" {
@@ -121,8 +130,14 @@ func encode(data []byte, name string, binary, nulTerminate bool, exportSymbol, e
 // newlines become an escaped \n plus a physical line break with a
 // re-opened string literal (concatenated adjacent literals — keeps the
 // generated source readable and within line-length sanity); carriage
-// returns and tabs get their C escapes; other bytes pass through (text
-// input — use --binary for arbitrary bytes / NULs).
+// returns and tabs get their C escapes. Other NON-PRINTABLE bytes
+// (control chars < 0x20 and DEL 0x7f) are emitted as fixed-width 3-digit
+// octal escapes (\NNN) so the generated .cxx is always valid C — a raw
+// NUL or control byte written literally would corrupt the source and
+// many toolchains would mangle it. Printable ASCII and high bytes
+// (UTF-8 text) pass through. (A NUL in string mode still truncates the
+// C-string runtime value — use --binary to embed arbitrary bytes
+// including NULs faithfully.)
 func escapeCString(data []byte) string {
 	var b strings.Builder
 	for _, c := range data {
@@ -138,7 +153,13 @@ func escapeCString(data []byte) string {
 		case '\t':
 			b.WriteString(`\t`)
 		default:
-			b.WriteByte(c)
+			if c < 0x20 || c == 0x7f {
+				// Fixed 3 octal digits: a C octal escape consumes at most
+				// 3 digits, so \NNN never swallows a following literal digit.
+				fmt.Fprintf(&b, "\\%03o", c)
+			} else {
+				b.WriteByte(c)
+			}
 		}
 	}
 	return b.String()

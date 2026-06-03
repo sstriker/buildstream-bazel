@@ -25,13 +25,18 @@ else
     echo "skip: bazel not on PATH"
     exit 0
 fi
-bazel_major=$("$BZL" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 | cut -d. -f1)
+# `$BZL --version` can report the Bazelisk wrapper's own version (a date)
+# rather than the underlying bazel; parse the `Build label:` line from
+# `$BZL version` instead, which is the real bazel version for both bazel
+# and bazelisk (same approach as scripts/meta-pyproject.sh).
+bazel_version_label=$("$BZL" version 2>&1 | awk -F': ' '/^Build label:/{print $2; exit}')
+bazel_major=$(printf '%s\n' "$bazel_version_label" | cut -d. -f1)
 case "$bazel_major" in
     [0-9]*) ;;
     *) bazel_major=0 ;;
 esac
 if [ "$bazel_major" -lt 9 ]; then
-    echo "skip: bazel < 9"
+    echo "skip: bazel ${bazel_version_label:-unknown} < 9 (Bazel 9 floor: bzlmod + load() for cc_*)"
     exit 0
 fi
 
