@@ -29,6 +29,19 @@ type Variant struct {
 	// emit time.
 	Name string
 
+	// Kit, when non-empty, names the compiler kit (from
+	// cmake-kits.json) this variant belongs to — the compiler axis of
+	// the matrix. Variants sharing a Kit probe the same compiler and
+	// fold into ONE cc_toolchain; distinct Kits become DISTINCT
+	// toolchains, because a kit changes CMAKE_C/CXX_COMPILER (and
+	// hence the cc_toolchain's tool_paths), which a single toolchain
+	// can't represent. Downstream (unify-toolchains) groups cells by
+	// (platform, Kit) and emits one toolchain per group, selected by
+	// Bazel via a per-kit constraint_value. Empty Kit = the
+	// single-toolchain-per-platform path (build-type / sanitizer
+	// variants only), unchanged from before kits existed.
+	Kit string
+
 	// CacheVars are passed to cmake as -D<name>=<value>. Empty map
 	// = baseline (no overrides). Common entries:
 	//

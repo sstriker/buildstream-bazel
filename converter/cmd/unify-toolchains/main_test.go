@@ -335,6 +335,47 @@ func TestGroupProbeCells_RejectsMalformedFilenames(t *testing.T) {
 	}
 }
 
+// TestGroupProbeCells_RejectsUnsafeKit: Variant.Kit flows into emitted
+// Bazel target names (the <platform>_<kit> slug), so a kit carrying
+// label-unsafe characters must be rejected at the decode boundary — with
+// the offending cell named — rather than producing an unparsable
+// platforms/ or toolchains/ BUILD file downstream.
+func TestGroupProbeCells_RejectsUnsafeKit(t *testing.T) {
+	r, err := fileapi.Load("../../testdata/fileapi/hello-world")
+	if err != nil {
+		t.Fatalf("Load fileapi fixture: %v", err)
+	}
+	plats := []platformSpec{
+		{Name: "linux_x86_64", Constraints: []string{"@platforms//os:linux"}},
+	}
+	for label, kit := range map[string]string{
+		"with space": "gcc 13",
+		"with colon": "gcc:13",
+		"with slash": "gcc/13",
+		"with dot":   "gcc.13",
+	} {
+		t.Run(label, func(t *testing.T) {
+			tmp := t.TempDir()
+			body, err := probejson.Marshal(toolchain.Variant{Name: "baseline", Kit: kit}, r)
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			// Filename uses a safe variant half; the unsafe identity is
+			// inside the cell's Variant.Kit, which only surfaces on decode.
+			if err := os.WriteFile(filepath.Join(tmp, "linux_x86_64.baseline.probe.json"), body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err = groupProbeCells(tmp, plats)
+			if err == nil {
+				t.Fatalf("expected error for kit %q; got nil", kit)
+			}
+			if !strings.Contains(err.Error(), "invalid kit") {
+				t.Errorf("error %q should mention the invalid kit", err)
+			}
+		})
+	}
+}
+
 // TestRun_NoCellsForPlatform demonstrates the "skip-with-warning"
 // behaviour: a platform listed in --platforms-json with no probe
 // cells in --probe-cells is dropped from the output (with a

@@ -27,7 +27,13 @@ import (
 
 // SchemaVersion is the on-disk format version. Bump when the
 // embedded fileapi.Reply / Variant shape changes incompatibly.
-const SchemaVersion = 1
+//
+// v2 added Variant.Kit (the compiler axis). Go's JSON decoder ignores
+// unknown fields, so a v1-era unifier reading a v2 cell would silently
+// drop `kit` and fold distinct compiler kits into one cc_toolchain. The
+// strict-equality check in Unmarshal turns that into an explicit
+// rejection instead — exactly what SchemaVersion exists for.
+const SchemaVersion = 2
 
 // ProbeJSON is the top-level document. SchemaVersion validation is
 // done explicitly by Unmarshal so callers don't need to inspect it.

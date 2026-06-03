@@ -186,6 +186,11 @@ func TestEmitUnified_TwoPlatformsFullShape(t *testing.T) {
 			t.Errorf(".bazelrc should not alias %q (Bazel handles it via --compilation_mode)", unwant)
 		}
 	}
+	// Kit-less .bazelrc must not carry the kit-alias comment — it would
+	// break byte-for-byte parity with the pre-kits output.
+	if strings.Contains(rc, "# With kits") {
+		t.Errorf("kit-less .bazelrc must not carry the kit-alias comment line\n%s", rc)
+	}
 }
 
 // TestEmitUnified_CXXFlagsRouteToCXXOnlyActions: the unified
@@ -322,5 +327,182 @@ func TestEmitUnified_Deterministic(t *testing.T) {
 		if string(body) != string(b.Files[path]) {
 			t.Errorf("%s not deterministic\n--- a ---\n%s\n--- b ---\n%s", path, body, b.Files[path])
 		}
+	}
+}
+
+func TestEmitUnified_KitDimension(t *testing.T) {
+	// Two kits on one platform → two toolchains disambiguated by a
+	// `kit` constraint_value, named with the <platform>_<kit> slug.
+	mk := func(kit, cc string) PlatformToolchain {
+		return PlatformToolchain{
+			Name: "linux_x86_64",
+			Kit:  kit,
+			Constraints: []string{
+				"@platforms//os:linux",
+				"@platforms//cpu:x86_64",
+			},
+			Resolved: &toolchain.ResolvedToolchain{
+				Base: &toolchain.Model{
+					HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+					TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+					Languages: map[string]toolchain.Language{
+						"C": {
+							CompilerID:         "GNU",
+							CompilerPath:       cc,
+							BuiltinIncludeDirs: []string{"/usr/include"},
+						},
+					},
+				},
+				Variants: map[string]*toolchain.VariantDelta{},
+			},
+		}
+	}
+	plats := []PlatformToolchain{mk("gcc-13", "/usr/bin/gcc-13"), mk("clang-15", "/usr/bin/clang-15")}
+
+	bundle, err := EmitUnified(plats, UnifiedConfig{})
+	if err != nil {
+		t.Fatalf("EmitUnified: %v", err)
+	}
+
+	platsB := string(bundle.Files["platforms/BUILD.bazel"])
+	for _, want := range []string{
+		`constraint_setting(name = "kit")`,
+		`constraint_value(`,
+		`name = "gcc-13"`,
+		`name = "clang-15"`,
+		`constraint_setting = ":kit"`,
+		`name = "linux_x86_64_gcc-13"`,   // platform() slug
+		`name = "linux_x86_64_clang-15"`, // platform() slug
+		`"//platforms:gcc-13"`,           // kit constraint in constraint_values
+		`"//platforms:clang-15"`,
+	} {
+		if !strings.Contains(platsB, want) {
+			t.Errorf("platforms/BUILD.bazel missing %q\n%s", want, platsB)
+		}
+	}
+
+	tcB := string(bundle.Files["toolchains/BUILD.bazel"])
+	for _, want := range []string{
+		`name = "linux_x86_64_gcc-13_config"`,
+		`name = "linux_x86_64_gcc-13_cc"`,
+		`name = "linux_x86_64_gcc-13_toolchain"`,
+		`name = "linux_x86_64_clang-15_toolchain"`,
+		`toolchain_identifier = "linux_x86_64_gcc-13"`,
+		`"//platforms:gcc-13"`, // kit constraint in target_compatible_with
+		`"//platforms:clang-15"`,
+		`":linux_x86_64_gcc-13_toolchain"`, // filegroup all
+		`":linux_x86_64_clang-15_toolchain"`,
+	} {
+		if !strings.Contains(tcB, want) {
+			t.Errorf("toolchains/BUILD.bazel missing %q\n%s", want, tcB)
+		}
+	}
+
+	rc := string(bundle.Files[".bazelrc"])
+	for _, want := range []string{
+		"# With kits, the alias is per (platform, kit)",
+		"build:linux_x86_64_gcc-13 --platforms=//platforms:linux_x86_64_gcc-13",
+		"build:linux_x86_64_clang-15 --platforms=//platforms:linux_x86_64_clang-15",
+	} {
+		if !strings.Contains(rc, want) {
+			t.Errorf(".bazelrc missing %q\n%s", want, rc)
+		}
+	}
+}
+
+func TestEmitUnified_NoKitOmitsConstraintSetting(t *testing.T) {
+	// Backward-compat: a kit-less platform emits NO kit constraint
+	// dimension (the pre-kits layout).
+	p := PlatformToolchain{
+		Name:        "linux_x86_64",
+		Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"},
+		Resolved: &toolchain.ResolvedToolchain{
+			Base: &toolchain.Model{
+				TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+				Languages:      map[string]toolchain.Language{"C": {CompilerID: "GNU", CompilerPath: "/usr/bin/gcc"}},
+			},
+			Variants: map[string]*toolchain.VariantDelta{},
+		},
+	}
+	bundle, err := EmitUnified([]PlatformToolchain{p}, UnifiedConfig{})
+	if err != nil {
+		t.Fatalf("EmitUnified: %v", err)
+	}
+	platsB := string(bundle.Files["platforms/BUILD.bazel"])
+	// Check the rule CALLS (constraint_setting(...) / constraint_value(...)),
+	// not the always-present `constraint_values = [` platform() attr.
+	if strings.Contains(platsB, "constraint_setting(") || strings.Contains(platsB, "constraint_value(") {
+		t.Errorf("kit-less run emitted a kit constraint dimension:\n%s", platsB)
+	}
+	if !strings.Contains(platsB, `name = "linux_x86_64"`) {
+		t.Errorf("kit-less platform should keep its bare slug name\n%s", platsB)
+	}
+}
+
+func TestEmitUnified_RejectsDuplicateSlug(t *testing.T) {
+	mk := func() PlatformToolchain {
+		return PlatformToolchain{
+			Name:        "linux_x86_64",
+			Kit:         "gcc-13",
+			Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"},
+			Resolved: &toolchain.ResolvedToolchain{
+				Base: &toolchain.Model{
+					TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+					Languages:      map[string]toolchain.Language{"C": {CompilerID: "GNU", CompilerPath: "/usr/bin/gcc-13"}},
+				},
+				Variants: map[string]*toolchain.VariantDelta{},
+			},
+		}
+	}
+	if _, err := EmitUnified([]PlatformToolchain{mk(), mk()}, UnifiedConfig{}); err == nil {
+		t.Fatal("EmitUnified accepted duplicate (Name, Kit) slug; want error")
+	}
+}
+
+func TestEmitUnified_RejectsReservedKitName(t *testing.T) {
+	// A kit literally named "kit" collides with the generated
+	// constraint_setting(name = "kit") in platforms/BUILD.bazel.
+	p := PlatformToolchain{
+		Name:        "linux_x86_64",
+		Kit:         "kit",
+		Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"},
+		Resolved: &toolchain.ResolvedToolchain{
+			Base: &toolchain.Model{
+				TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+				Languages:      map[string]toolchain.Language{"C": {CompilerID: "GNU", CompilerPath: "/usr/bin/gcc"}},
+			},
+			Variants: map[string]*toolchain.VariantDelta{},
+		},
+	}
+	if _, err := EmitUnified([]PlatformToolchain{p}, UnifiedConfig{}); err == nil {
+		t.Fatal(`EmitUnified accepted reserved kit name "kit"; want error`)
+	}
+}
+
+func TestEmitUnified_RejectsKitVsPlatformNameCollision(t *testing.T) {
+	// Mixed probe set: one kit-less platform named "linux_x86_64" and a
+	// second platform carrying a kit *named* "linux_x86_64". In
+	// platforms/BUILD.bazel the kit-less platform() and the kit's
+	// constraint_value() would both claim the target name "linux_x86_64".
+	mk := func(name, kit string) PlatformToolchain {
+		return PlatformToolchain{
+			Name:        name,
+			Kit:         kit,
+			Constraints: []string{"@platforms//os:linux", "@platforms//cpu:x86_64"},
+			Resolved: &toolchain.ResolvedToolchain{
+				Base: &toolchain.Model{
+					TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+					Languages:      map[string]toolchain.Language{"C": {CompilerID: "GNU", CompilerPath: "/usr/bin/gcc"}},
+				},
+				Variants: map[string]*toolchain.VariantDelta{},
+			},
+		}
+	}
+	plats := []PlatformToolchain{
+		mk("linux_x86_64", ""),    // kit-less → platform slug "linux_x86_64"
+		mk("foo", "linux_x86_64"), // kit constraint_value "linux_x86_64"
+	}
+	if _, err := EmitUnified(plats, UnifiedConfig{}); err == nil {
+		t.Fatal("EmitUnified accepted a kit name equal to a platform name; want collision error")
 	}
 }

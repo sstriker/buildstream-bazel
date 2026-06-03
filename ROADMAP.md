@@ -605,6 +605,61 @@ transition cleanly.
 
 ## Next
 
+- **`register_toolchains("//toolchains:all")` is shadowed by the
+  aggregating filegroup.** unify-toolchains emits `filegroup(name =
+  "all", ...)` in `toolchains/BUILD.bazel` *and* its setup banner tells
+  the operator to add `register_toolchains("//toolchains:all")`. But
+  `:all` is then ambiguous — Bazel resolves the explicit filegroup over
+  the `:all` target wildcard, and a filegroup provides no
+  `DeclaredToolchainInfo`, so registration fails at analysis (`target
+  does not provide the DeclaredToolchainInfo provider`). The render-only
+  gates never built, so they missed it; `meta-kits-build.sh` (the first
+  gate to register + build) surfaced it and works around it with
+  `--extra_toolchains`. Fix: rename/drop the `all` filegroup so the
+  banner's `//toolchains:all` resolves as the toolchain wildcard (touches
+  the emit contract + `meta-unify-toolchains.sh` assertion + the banner).
+
+- **Toolkit-aware feature lift.** `toolchainfeature.RewriteFeature` is a
+  static allowlist of toolchain-backed features
+  (pic/lto/asan/tsan/msan/ubsan); the visibility presets and lsan stay
+  raw because no default/generated toolchain backs them. Now that kits
+  emit one toolchain per (platform, kit) with a known feature
+  vocabulary, the lift can consult the *target toolkit's* declared
+  features instead — lifting a flag when (and only when) the selected
+  kit actually backs it, and keeping it raw otherwise.
+
+- **Probe + emit `builtin_sysroot` (and probed libc / target triple)
+  per (platform, kit).** Bazel models the sysroot at the *toolchain*
+  level (`cc_common.create_cc_toolchain_config_info(builtin_sysroot=…)`
+  → `--sysroot=` on compile + link), not on `platform` — the platform
+  only selects it via toolchain resolution, exactly like the `kit`
+  dimension. The probe already runs cmake per (variant, platform) cell,
+  so `CMAKE_SYSROOT` / the compiler's `-print-sysroot` are in hand, but
+  `toolchain.Model` (`types.go`) drops them and the emit sets no
+  `builtin_sysroot`. Lift the sysroot into `Model` and emit it per
+  (platform, kit); derive `target_libc` + `*_system_name` from it
+  instead of the OS-name heuristic (`defaultLibcFor`) and the hardcoded
+  `abi_version = "local"` placeholders — these baked values are really
+  "what the sysroot would tell us." Closes the cross-compile gap where a
+  kit's `CMAKE_TOOLCHAIN_FILE` pins a non-host sysroot. (Also worth
+  pairing: `toolchain()` emits only `target_compatible_with`, never
+  `exec_compatible_with`, so cross exec≠target resolution is unconstrained.)
+  Near-term, stackable on the kits PR.
+
+- **Hermetic sysroot-as-toolchain-inputs.** `builtin_sysroot` tells the
+  compiler *where* the sysroot is; for a sandboxed / RBE action to
+  actually *contain* it the sysroot's files must be declared as toolchain
+  inputs (`cc_toolchain.all_files` / `compiler_files` / `linker_files` /
+  `libc_top`). The emit currently sets `all_files = ":empty"`
+  (`unified.go`), i.e. a deliberately non-hermetic toolchain that leans
+  on absolute host paths (`/usr/include`, `/usr/bin/gcc`) being present
+  in the action — fine under local/host-mounted sandboxes, wrong for
+  hermetic RBE. Materialize the sysroot tree as a Bazel repo
+  (`new_local_repository` / `http_archive`) and wire `libc_top` /
+  `all_files` so actions ship the sysroot. The jump from "references host
+  paths" to "ships the sysroot"; larger, follows the `builtin_sysroot`
+  item.
+
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
   `continue-on-error` soft-launch was dropped from every fixture step after
@@ -2973,8 +3028,13 @@ transition cleanly.
     add `feature("asan")`/`feature("tsan")`/etc. blocks fed by the
     cmake-derived flag bundles.
   - `internal/toolchain/presets` and `internal/toolchain/kits`
-    (Stage 3) parse `CMakePresets.json` and VSCode `cmake-kits.json`
-    into `[]Variant` for `VariantMatrix` consumption.
+    (Stage 3) parse `CMakePresets.json` (the build axis) and VSCode
+    `cmake-kits.json` (the compiler axis) into `[]Variant`.
+    `toolchain.VariantMatrix` cross-products them — one cell per
+    (kit, variant) with the kit's compiler cache vars merged in and
+    `Variant.Kit` stamped; with no kits it passes the build variants
+    through unchanged (the pre-kits single-toolchain-per-platform path).
+    `render-project-a --kits-from` wires the compiler axis in.
     `converter/testdata/toolchain-probe/CMakePresets.json` is the
     canonical catalog cross-checked against `SanitizerVariants` by
     a unit test.
@@ -2985,8 +3045,14 @@ transition cleanly.
     invoking `cmd/probe-cell` with the variant's `--cache-var` flags.
     Cell artifacts serialize via `internal/toolchain/probejson`.
   - `cmd/unify-toolchains` (Stage 5) reads probe.json artifacts
-    grouped by platform, folds each platform's cells through
-    `Observe`, and writes `platforms/BUILD.bazel`,
+    grouped by (platform, kit) — a kit pins a different compiler, so
+    each becomes its own cc_toolchain disambiguated by a `kit`
+    `constraint_value` (emitted into `platforms/BUILD.bazel`); the
+    `<platform>_<kit>` slug names the trio + the platform alias, and
+    `target_compatible_with` carries the kit constraint. Kit-less probe
+    sets collapse to one toolchain per platform with no kit dimension
+    (byte-identical to the pre-kits layout). It folds each group's cells
+    through `Observe`, and writes `platforms/BUILD.bazel`,
     `toolchains/BUILD.bazel`, `toolchains/cc_toolchain_config.bzl`,
     and `.bazelrc` into the operator's repo. `cc_toolchain_config.bzl`
     is one attr-driven rule shared across all platforms (per-platform
@@ -3004,6 +3070,11 @@ transition cleanly.
     unifier's `--element-signal` fold — see the **Element-signal
     consumption in the unifier** entry).
   - Render gates: `meta-render-project-a.sh` + `meta-unify-toolchains.sh`.
+    Build gates (probe → emit → real `bazel build`):
+    `meta-toolchain-build.sh` (one derived toolchain) and
+    `meta-kits-build.sh` (two compiler kits → kit-dimensioned toolchains,
+    each selected via `--platforms` and confirmed via aquery to drive its
+    own compiler).
 - **Configure_file lift.** Per-element `*.h.in` templates are
   no longer load-bearing inputs of convert-element-cmake's cache key
   for elements whose templates lift. Convert-element captures

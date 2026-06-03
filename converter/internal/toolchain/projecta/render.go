@@ -206,6 +206,13 @@ func renderCellGenrule(b *bytes.Buffer, args ToolchainProbeArgs, p Platform, v t
 	fmt.Fprintf(b, "        $(location %s) \\\n", args.ProbeCellLabel)
 	fmt.Fprintf(b, "            --cmake-source $$(dirname $(execpath %s)) \\\n", args.CmakeListsLabel)
 	fmt.Fprintf(b, "            --variant %s \\\n", shellQuote(v.Name))
+	if v.Kit != "" {
+		// The compiler-axis identity (cmake-kits.json kit) so the cell's
+		// probe.json records which toolchain it belongs to; unify groups
+		// cells by (platform, Kit). Omitted entirely for kit-less cells so
+		// the rendered cmd is byte-identical to the pre-kits shape.
+		fmt.Fprintf(b, "            --kit %s \\\n", shellQuote(v.Kit))
+	}
 	for _, k := range sortedCacheVarKeys(v) {
 		fmt.Fprintf(b, "            --cache-var %s \\\n", shellQuote(k+"="+v.CacheVars[k]))
 	}
