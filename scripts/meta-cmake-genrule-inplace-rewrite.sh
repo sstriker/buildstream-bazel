@@ -111,7 +111,12 @@ else
     echo "ok  meta-cmake-genrule-inplace-rewrite: bazel not on PATH, skipping build half"
     exit 0
 fi
-bazel_major=$("$BZL" --version 2>&1 | head -1 | awk '{print $2}' | cut -d. -f1)
+# Extract the first semver anywhere in the version output rather than the
+# positional 2nd field: bazelisk's `--version` line isn't always
+# `bazel <n>` (it can prefix its own wrapper banner), so awk '{print $2}'
+# could read the wrong token and wrongly self-skip the build half. The
+# semver grep is launcher-agnostic.
+bazel_major=$("$BZL" --version 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 | cut -d. -f1)
 case "$bazel_major" in
     [0-9]*) ;;
     *) bazel_major=0 ;;
