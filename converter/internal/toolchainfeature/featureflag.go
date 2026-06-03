@@ -55,50 +55,60 @@ func Feature(flag string) string {
 	return ""
 }
 
-// backedFeatures is the set of feature NAMES the lift may safely rewrite a
-// raw flag to: the generated cc_toolchain's declared vocabulary
-// (toolchain.GeneratedFeatures) plus "pic" — a built-in feature every
-// cc_toolchain, including bazel's autodetected default, defines.
+// BackedFeatures builds a lift gate set from a toolchain's declared feature
+// vocabulary: the given feature names plus the built-in `pic` (which every
+// cc_toolchain, including bazel's autodetected default, defines — so it's
+// always liftable even when a toolchain's feature() list doesn't name it).
 //
-// Sourcing it from toolchain.GeneratedFeatures (the same set bazeltoolchain
-// emits feature() blocks for) rather than a hand-kept list is what makes the
-// lift toolkit-aware for the generated toolkit: add a feature to the
-// generated toolchain and the lift rewrites its flag automatically — the two
-// sides can't drift. Names Feature() yields that AREN'T backed (the
-// visibility presets, -fsanitize=leak) fall through to "" and stay raw, so
-// the lift can never drop a flag onto a no-op feature.
-var backedFeatures = func() map[string]bool {
-	// pic is a built-in cc feature, not a generated feature() block.
+// Operators get their toolchain's vocabulary from toolchainscan.ParseDeclared
+// (parsing their cc_toolchain_config.bzl) and pass it here; the converter's own
+// generated vocabulary feeds defaultBackedFeatures below.
+func BackedFeatures(featureNames []string) map[string]bool {
 	m := map[string]bool{"pic": true}
-	for _, f := range toolchain.GeneratedFeatures() {
-		m[string(f)] = true
+	for _, n := range featureNames {
+		m[n] = true
 	}
 	return m
-}()
+}
 
-// RewriteFeature returns the cc_toolchain feature name the lift may safely
-// rewrite the given raw flag to, or "" to leave it as a raw copt/linkopt.
-// It gates Feature() through backedFeatures so the lift only targets
-// features the generated toolchain actually implements.
-//
-// IMPORTANT — this gates on the vocabulary of the cc_toolchain the converter
-// SHIPS ALONGSIDE these BUILD files (toolchain + lifted features are a coupled
-// matched set). It is NOT a universal truth about whatever toolchain
-// ultimately resolves: an operator can hand-edit, extend, or swap the Bazel
-// toolchain after conversion, and that's invisible here. The failure modes:
-//   - operator keeps the generated toolchain → correct.
-//   - operator ADDS features → the lift was conservative (flag stayed a raw
-//     copt), so it still compiles, just unlifted. Safe.
-//   - operator REMOVES/renames a targeted feature, or swaps in a toolchain
-//     that doesn't back it → features=[…] is a no-op Bazel silently ignores
-//     and the flag is dropped. The operator owns that divergence.
-//
-// Likewise the resolved toolchain is a build-time (--platforms) choice, so a
-// per-kit lift would gate on the INTERSECTION of every targetable kit's
-// vocabulary. Letting the operator pass in their real toolchain to drive this
-// gate is a planned follow-up (separate PR); see ROADMAP.
+// defaultBackedFeatures gates the lift when the operator doesn't point it at
+// their own toolchain: the converter's generated cc_toolchain vocabulary
+// (toolchain.GeneratedFeatures — the same set bazeltoolchain emits feature()
+// blocks for, so the lift and the emitted toolchain can't drift) plus pic.
+var defaultBackedFeatures = BackedFeatures(generatedFeatureNames())
+
+func generatedFeatureNames() []string {
+	g := toolchain.GeneratedFeatures()
+	out := make([]string, len(g))
+	for i, f := range g {
+		out[i] = string(f)
+	}
+	return out
+}
+
+// RewriteFeature returns the feature name the lift may safely rewrite the given
+// raw flag to under the converter's GENERATED toolchain vocabulary, or "" to
+// leave it a raw copt/linkopt. Equivalent to RewriteFeatureWith(flag, nil).
 func RewriteFeature(flag string) string {
-	if f := Feature(flag); backedFeatures[f] {
+	return RewriteFeatureWith(flag, nil)
+}
+
+// RewriteFeatureWith is RewriteFeature gated on a caller-supplied backed-feature
+// set (build it with BackedFeatures) — typically the operator's REAL toolchain
+// vocabulary, enumerated from their Starlark by toolchainscan. A nil set falls
+// back to defaultBackedFeatures (the generated toolchain).
+//
+// Why a gate at all: a target's `features` attr is static, and Bazel silently
+// ignores a feature its resolved cc_toolchain doesn't define — so rewriting a
+// flag onto an unbacked feature drops it. Gating on the actual toolchain's
+// vocabulary keeps the rewrite faithful. (Across multiple targetable
+// toolchains the safe set is their INTERSECTION, since any of them may resolve;
+// the caller is responsible for intersecting before calling.)
+func RewriteFeatureWith(flag string, backed map[string]bool) string {
+	if backed == nil {
+		backed = defaultBackedFeatures
+	}
+	if f := Feature(flag); backed[f] {
 		return f
 	}
 	return ""

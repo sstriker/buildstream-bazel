@@ -48,12 +48,13 @@ func TestLooksLikeFeatureFlag_ForwardCompatSanitize(t *testing.T) {
 }
 
 func TestRewriteFeature(t *testing.T) {
-	// RewriteFeature is the toolchain-backed subset of Feature: it declines
-	// features the toolchains converted projects target by default don't back
-	// (the visibility presets, which no toolchain defines; and lsan, which only
-	// the example sanitizer-features template defines, not the generated or
-	// default toolchain) so the lift keeps those raw instead of silently
-	// dropping them onto a no-op feature.
+	// RewriteFeature gates on the DEFAULT (generated-toolchain) vocabulary: it
+	// declines features that default doesn't back — the visibility presets
+	// (neither the generated nor bazel's default toolchain defines them) and
+	// lsan (only the example sanitizer-features template defines it) — so the
+	// lift keeps those raw instead of silently dropping them onto a no-op
+	// feature. (An operator whose toolchain DOES declare them re-enables
+	// lifting via RewriteFeatureWith — see the lower package's tests.)
 	cases := []struct{ flag, want string }{
 		// Toolchain-backed → rewritten.
 		{"-fPIC", "pic"},

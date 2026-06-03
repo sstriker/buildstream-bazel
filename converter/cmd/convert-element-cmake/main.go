@@ -36,6 +36,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchainscan"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
@@ -450,9 +451,26 @@ func run(a cli.Args) error {
 	// the orchestration can decide whether a non-expanded-trace second
 	// pass (to recover set()-copy stamp indirection) is worth running.
 	stampSink := map[string]string{}
+	// Operator's real toolchain vocabulary for the feature lift, if pointed
+	// at one (--toolchain-features-from). Enumerated once from their Starlark.
+	var backedFeatures []string
+	if a.ToolchainFeaturesFrom != "" {
+		backedFeatures, err = toolchainscan.ParseDeclared(a.ToolchainFeaturesFrom)
+		if err != nil {
+			return fmt.Errorf("--toolchain-features-from %s: %w", a.ToolchainFeaturesFrom, err)
+		}
+		// Non-nil (operator opted in) gates the lift even when empty — but an
+		// empty scan usually means the parser couldn't read the toolchain's
+		// features (wrapper/computed names), so only `pic` will lift. Surface
+		// that rather than letting it look like the toolchain backs nothing.
+		if len(backedFeatures) == 0 {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --toolchain-features-from %s declared no literal feature() names; only the built-in `pic` will lift (the toolchain may build features via wrappers/computed names the parser can't read — see docs/operator-toolchain-features.md)\n", a.ToolchainFeaturesFrom)
+		}
+	}
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment) (*ir.Package, error) {
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
+			BackedFeatures:                    backedFeatures,
 			HostPrefixDir:                     prefixAbs,
 			BuildDir:                          hostBuildOrReply,
 			Imports:                           imports,

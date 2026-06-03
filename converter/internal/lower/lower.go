@@ -181,6 +181,17 @@ type Options struct {
 	// Phase 3 of the generator-parity uplift in ROADMAP.md.
 	GenexProbes []cmakerun.GenexProbe
 
+	// BackedFeatures is the operator's real cc_toolchain feature vocabulary
+	// (feature names enumerated from their toolchain Starlark by
+	// toolchainscan.ParseDeclared). The nil-vs-empty distinction is load-
+	// bearing: NON-NIL (operator supplied --toolchain-features-from) gates the
+	// raw-flag → feature lift on exactly this vocabulary — even when empty (a
+	// toolchain whose features the parser couldn't read lifts only the
+	// built-in `pic`, never falling back to the generated default and dropping
+	// flags onto features the real toolchain lacks). NIL (no operator
+	// toolchain) keeps the generated-toolchain default vocabulary.
+	BackedFeatures []string
+
 	// EmitStandaloneCustomCommands toggles Phase 4 of the
 	// generator-parity uplift: emit genrules for CUSTOM_COMMAND
 	// edges in build.ninja that aren't already covered by the
@@ -1149,7 +1160,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// immediately move to features here. Closes the
 	// `raw-toolchain-feature-flag` audit gap (~785 findings
 	// across the 9-project survey on PR #247).
-	liftRawFeatureFlags(pkg)
+	liftRawFeatureFlags(pkg, opts.BackedFeatures)
 	// Strip cross-target hdrs duplication: when target C declares
 	// a header H also owned by sibling S that's already in C's
 	// deps, drop H from C.hdrs — Bazel propagates hdrs through

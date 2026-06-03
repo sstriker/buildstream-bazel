@@ -60,14 +60,29 @@ import (
 // would add (e.g. POSITION_INDEPENDENT_CODE-set targets already
 // have "pic" added by applyProbeGenexProperties). The lift
 // merges, dedupes, and sorts so the final list is byte-stable.
-func liftRawFeatureFlags(pkg *ir.Package) {
+// backedNames gates which flags may be lifted. The nil-vs-empty distinction
+// matters and is deliberate:
+//   - nil (no operator toolchain supplied) → the converter's generated
+//     toolchain vocabulary (toolchainfeature default).
+//   - non-nil (operator pointed at their real toolchain via
+//     toolchainscan.ParseDeclared) → exactly that vocabulary — EVEN WHEN
+//     EMPTY. An empty scan (the toolchain builds features via wrappers /
+//     computed names the parser can't see) must NOT fall back to the
+//     generated default: that would lift onto features the real toolchain may
+//     not define — the silent-drop this whole path exists to prevent. Empty
+//     therefore lifts only the built-in `pic` (conservative).
+func liftRawFeatureFlags(pkg *ir.Package, backedNames []string) {
 	if pkg == nil {
 		return
 	}
+	var backed map[string]bool // nil → toolchainfeature's generated default
+	if backedNames != nil {
+		backed = toolchainfeature.BackedFeatures(backedNames)
+	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
-		t.Copts = extractFeatures(t.Copts, &t.Features)
-		t.LinkOpts = extractFeatures(t.LinkOpts, &t.Features)
+		t.Copts = extractFeatures(t.Copts, &t.Features, backed)
+		t.LinkOpts = extractFeatures(t.LinkOpts, &t.Features, backed)
 		// Dedup + sort Features so multiple sources (probe-genex
 		// + this lift + LTO from codemodel) compose into a
 		// stable list.
@@ -79,13 +94,13 @@ func liftRawFeatureFlags(pkg *ir.Package) {
 // known toolchain-feature flag while appending the matching feature
 // name (one per flag) to *features. The order of non-matching
 // entries in flags is preserved; copts ordering matters to compilers.
-func extractFeatures(flags []string, features *[]string) []string {
+func extractFeatures(flags []string, features *[]string, backed map[string]bool) []string {
 	if len(flags) == 0 {
 		return flags
 	}
 	kept := make([]string, 0, len(flags))
 	for _, f := range flags {
-		if feat := toolchainfeature.RewriteFeature(f); feat != "" {
+		if feat := toolchainfeature.RewriteFeatureWith(f, backed); feat != "" {
 			*features = append(*features, feat)
 			continue
 		}
