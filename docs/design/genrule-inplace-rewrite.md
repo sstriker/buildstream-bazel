@@ -83,6 +83,47 @@ Cover both the standalone (`lowerStandaloneCustomCommands`) and recovered
 (`recoverGenrule`) genrule paths via a shared helper. Guard against
 regressions with the existing genrule golden/unit tests.
 
+## Seam-level plan (code-grounded — turnkey for implementation)
+
+Traced to the exact seam:
+
+- `rewriteGenruleCmd` (`lower.go:4997`) strips the cmakeSrc-rooted
+  **input** path and the buildDir-rooted **output** path *separately*
+  (loop at `lower.go:5062`: anchors `{cmakeSrc → umbrella/rel}` and
+  `{buildDir → rel}`), distinguishable there by absolute prefix. In the
+  no-umbrella case both collapse to the same rel token (`version.txt`) —
+  which is why this bites single-package projects hardest; under umbrella
+  they already differ (`llvm/…` vs `…`).
+- `anchorGenruleOutputsToRuledir` (`standalone_genrules.go:342`) then
+  anchors *every* occurrence of each out token to `$(RULEDIR)/<out>`,
+  including the input occurrence when it shares the token.
+
+**Cleanest fix — rename the output first; the strip then disambiguates
+itself.** Rename the colliding output (`version.txt` → `version.txt.gen`)
+and have the buildDir-strip emit the renamed token: the cmd naturally
+becomes `cp version.txt version.txt.gen`, then
+`anchorGenruleOutputsToRuledir([version.txt.gen])` anchors only the
+output → `cp version.txt $(RULEDIR)/version.txt.gen`. Input reads the
+source (a srcs entry staged at its package-relative path), output writes
+the renamed file. No `$(location)` wrapper or anchor-guard needed (which
+the step-3 "$(location)" idea above would have required — superseded by
+this approach).
+
+Steps:
+1. Detect: an out whose rel — modulo the umbrella prefix — equals a
+   cmakeSrc-derived src rel (compare umbrella-normalized).
+2. Build a `buildDir-rel → renamed` map; update `outs` to the renamed
+   names.
+3. Thread that map into `rewriteGenruleCmd` so only the **buildDir**
+   strip emits the renamed token (cmakeSrc strip untouched → source token
+   stays distinct). New optional param; both callers pass it (empty map =
+   today's behavior, byte-identical → keeps all existing goldens stable).
+4. `anchorGenruleOutputsToRuledir` runs on the renamed outs unchanged.
+5. Relabel same-package consumers of the original output path to the
+   renamed label (skip for outputs no converted target consumes, e.g.
+   `Remarks.exports`).
+6. Audit tag `cmake-codegen-genrule-inplace-rewrite`.
+
 ## Verification plan
 
 Promote the fixture above to a render gate
