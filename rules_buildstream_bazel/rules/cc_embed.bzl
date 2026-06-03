@@ -67,6 +67,12 @@ def _impl(ctx):
 
 cc_embed = rule(
     implementation = _impl,
+    doc = "Embeds a file's bytes into a generated C source + header (.cxx + .h) " +
+          "exposing them as a named symbol, via a hermetic tool — the Bazel-native " +
+          "lowering of the \"embed a file as a C array\" cmake -P idiom " +
+          "(vtkEncodeString). The predeclared out_header / out_source outputs feed a " +
+          "downstream cc_library's hdrs / srcs. See the module docstring for the full " +
+          "contract and an example.",
     attrs = {
         "src": attr.label(
             mandatory = True,

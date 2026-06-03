@@ -106,6 +106,13 @@ func run(input, name, headerOut, sourceOut string, binary, nulTerminate bool, ex
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
 	}
+	if binary && len(data) == 0 && !nulTerminate {
+		// An empty input in binary mode would emit `const unsigned char x[0]`,
+		// which is non-standard C++ (zero-length array); reject it with a clear
+		// message. --nul-terminate makes it a 1-element array, and string mode
+		// handles empty input fine (`const char *x = ""`).
+		return fmt.Errorf("--binary on an empty input would emit a zero-length array (non-standard C++); use --nul-terminate or a non-empty input")
+	}
 
 	header, source := encode(data, name, headerInclude, binary, nulTerminate, exportSymbol, exportHeader)
 

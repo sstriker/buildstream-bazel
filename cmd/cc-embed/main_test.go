@@ -159,6 +159,17 @@ func TestRun_Validation(t *testing.T) {
 	if err := run(in, "n", ho, so, false, false, "SYM", "bad\"hdr.h"); err == nil {
 		t.Error("--export-header with a quote should error")
 	}
+	// Empty input in binary mode would emit a zero-length array.
+	empty := filepath.Join(dir, "empty.txt")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(empty, "n", ho, so, true, false, "", ""); err == nil {
+		t.Error("--binary on empty input should error (zero-length array)")
+	}
+	if err := run(empty, "n", ho, so, true, true, "", ""); err != nil {
+		t.Errorf("--binary --nul-terminate on empty input should be OK: %v", err)
+	}
 	if err := run(in, "n", ho, so, false, false, "", ""); err != nil {
 		t.Errorf("valid invocation errored: %v", err)
 	}
