@@ -1055,8 +1055,12 @@ func coveredOuts(existing []ir.Target) map[string]bool {
 			// cmake_configure_file — missing it here would re-emit a second
 			// producer for the same outputs and Bazel rejects the duplicate.
 			if t.CCEmbed != nil {
-				covered[t.CCEmbed.OutHeader] = true
-				covered[t.CCEmbed.OutSource] = true
+				if t.CCEmbed.OutHeader != "" {
+					covered[t.CCEmbed.OutHeader] = true
+				}
+				if t.CCEmbed.OutSource != "" {
+					covered[t.CCEmbed.OutSource] = true
+				}
 			}
 		}
 	}

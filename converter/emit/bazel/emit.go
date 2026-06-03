@@ -1415,10 +1415,10 @@ func emitCCEmbedLoad(buf *bytes.Buffer, pkg *ir.Package) {
 
 // ccEmbedTmpl renders the rules_buildstream_bazel `cc_embed(...)` rule —
 // the native lowering of vtkEncodeString-shaped cmake -P codegen. The
-// tool is fixed to //tools:cc-embed (auto-staged like
-// //tools:cmake-configure-file). Optional attributes are omitted when at
-// their defaults; canonicalize() reformats, so this only has to get the
-// attribute set + omission right.
+// tool is fixed to //tools:cc-embed, which the consuming project must
+// stage (like the cmake -P runner; write-a auto-staging is a follow-up).
+// Optional attributes are omitted when at their defaults; canonicalize()
+// reformats, so this only has to get the attribute set + omission right.
 var ccEmbedTmpl = template.Must(template.New("cc_embed").Funcs(template.FuncMap{
 	"strList": strList,
 }).Parse(`cc_embed(

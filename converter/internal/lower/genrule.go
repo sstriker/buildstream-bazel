@@ -332,8 +332,11 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// file-embedding encoder (vtkEncodeString) lowers to the cc_embed
 		// rule, so the converted project needs no cmake at build time. Runs
 		// before the runner/bake/refuse path; falls through when it declines.
-		if rel, name, ok := recognizeCcEmbed(cc, b, cmd, script, cmakeSrc, buildDir); ok {
-			return rel, name, nil
+		// Returns relOut (the build-rel form of THIS consumed source —
+		// header or source) so the consumer maps to the output it actually
+		// referenced; the sibling output reuses via the SeenBuilds check above.
+		if name, ok := recognizeCcEmbed(cc, b, cmd, script, cmakeSrc, buildDir); ok {
+			return relOut, name, nil
 		}
 		var liftReason string
 		// Bake mode (convert-time execution + bytes capture)

@@ -25,36 +25,49 @@ var knownCcEmbedEncoders = map[string]bool{
 // name and the embedded bytes are preserved) and deterministic (no
 // convert-time execution).
 //
-// Returns (relOut, name, true) on success; (.., false) to fall through to
-// the runner/bake/refuse path when the flag is off, the script isn't a
-// known encoder, or the arguments don't parse into a complete embed spec.
-func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (relOut, name string, ok bool) {
+// Returns (name, true) on success — the caller (recoverGenrule) returns
+// its own per-source relOut, so a consumer referencing the .cxx maps to
+// the .cxx and one referencing the .h maps to the .h (both outputs are
+// registered in cc.OutToGenrule; the second is served by recoverGenrule's
+// SeenBuilds reuse). Returns ("", false) to fall through to the
+// runner/bake/refuse path when the flag is off, the script isn't a known
+// encoder, the args don't parse into a complete embed spec, or the spec
+// would violate the cc_embed rule's own constraints.
+func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (name string, ok bool) {
 	if !cc.LiftCCEmbed {
-		return "", "", false
+		return "", false
 	}
 	if !knownCcEmbedEncoders[filepath.Base(scriptArg)] {
-		return "", "", false
+		return "", false
 	}
 	d := parseCmakeDashDMap(cmd)
 	srcAbs, symbol := d["source_file"], d["output_name"]
 	if srcAbs == "" || symbol == "" {
-		return "", "", false
+		return "", false
 	}
-	// The export args land verbatim in the generated source; the cc-embed
-	// tool also validates, but reject the obviously-broken ones here so we
-	// don't emit a cc_embed that fails the rule's own checks.
+	// Decline rather than emit a cc_embed that deterministically fails the
+	// rule's own fail() checks: export_symbol/header must be set together,
+	// nul_terminate only with binary, and out_header/out_source must share
+	// a directory (the rule self-includes the header by basename).
+	binary, nulTerminate := cmakeTruthy(d["binary"]), cmakeTruthy(d["nul_terminate"])
 	if (d["export_symbol"] == "") != (d["export_header"] == "") {
-		return "", "", false
+		return "", false
+	}
+	if nulTerminate && !binary {
+		return "", false
 	}
 	src, inSrc := relativeIfInside(cmakeSrc, srcAbs)
 	if !inSrc {
 		// A source_file outside the source tree (generated, or an absolute
 		// path that won't survive the sandbox) — leave it to the fallback.
-		return "", "", false
+		return "", false
 	}
 	header, source := pickHeaderSource(genruleOuts(b, buildDir))
 	if header == "" || source == "" {
-		return "", "", false
+		return "", false
+	}
+	if path.Dir(header) != path.Dir(source) {
+		return "", false
 	}
 
 	name = genruleNameFor(b, buildDir)
@@ -66,8 +79,8 @@ func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeS
 			Symbol:       symbol,
 			OutHeader:    header,
 			OutSource:    source,
-			Binary:       cmakeTruthy(d["binary"]),
-			NulTerminate: cmakeTruthy(d["nul_terminate"]),
+			Binary:       binary,
+			NulTerminate: nulTerminate,
 			ExportSymbol: d["export_symbol"],
 			ExportHeader: d["export_header"],
 		},
@@ -79,7 +92,7 @@ func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeS
 	for _, o := range genruleOuts(b, buildDir) {
 		cc.OutToGenrule[o] = name
 	}
-	return header, name, true
+	return name, true
 }
 
 // parseCmakeDashDMap parses the `-D <var>=<val>` / `-D<var>=<val>`

@@ -72,6 +72,14 @@ grep -q "unsupported-custom-command-script" "$work_dir/convert.stderr" \
 grep -q 'custom_command_shader' "$out_build" \
     && fail "duplicate genrule for the encoder edge (dedup miss)"
 
+# 3. Consumer wiring: the library that compiles the generated source maps to
+# the .cxx (the compilable source that defines the symbol), NOT the header —
+# recoverGenrule must return the per-consumed-source output, so a regression
+# that returns the .h here would silently drop the symbol at link.
+lib_blk="$(awk '/name = "ccembedvtk"/{f=1} f{print} f&&/^\)/{exit}' "$out_build")"
+printf '%s\n' "$lib_blk" | grep -qF '"shader_glsl.cxx"' \
+    || fail "consuming library srcs must carry the generated shader_glsl.cxx (not the header) — recoverGenrule returned the wrong output"
+
 echo "ok  meta-cc-embed-recognize: vtkEncodeString cmake -P lowered to a native cc_embed rule"
 
 # --- Bazel-build half ---
