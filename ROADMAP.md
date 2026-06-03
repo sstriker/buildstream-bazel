@@ -713,6 +713,29 @@ transition cleanly.
       the host for `find_package(ZLIB)`.
 
   Remaining work:
+    - **VTK gate — surveyed, scoped, QUEUED**
+      (`docs/research/vtk-conversion-survey.md`, branch
+      `claude/vtk-research`). Empirical: 708 Tier-1 rejections, but
+      705 are `cmake -P` codegen (`vtkEncodeString` ×702 +
+      `vtkHashSource` ×3) that `--cmake-script-runner` (or, interim,
+      `--cmake-script-bake`) closes — verified residual drops to 3
+      (the expected git-stamp round-2 fallback). The one VTK-unique
+      converter gap is the **`vtk_module_third_party` forwarder**:
+      bundled modules (`hdf5`, `nlohmannjson`) emit empty `cc_library`
+      wrappers with their `target_link_libraries(<inner>_src …)` arms
+      dropped (cf. #302). Queue: (1) first build gate via the runner on
+      a no-bundled-third-party leaf module; (2) the forwarder fix.
+    - **Common codegen idioms → native rules — QUEUED**
+      (`docs/research/codegen-idiom-coverage.md`, branch
+      `claude/codegen-idiom-coverage`). The runner-burn-down's
+      highest-leverage targets: a repo **`cc_embed` + `cc_hash`** rule
+      pair (Starlark + a tiny hermetic tool) natively lowers the
+      embed-file-as-C-array / hash-file-to-header idioms — the single
+      biggest dent (VTK: 705 codegen sites off the runner) and reusable
+      across LLVM/Qt/games. Bounded by the cmake-as-oracle North Star:
+      cover the *common* set, runner the tail, don't gold-plate. A
+      corpus-wide `cmake-codegen-*` tag census picks the next idiom by
+      data (also the runner-served burn-down metric).
     - VTK / LLVM gates — need the project's specific configure flags +
       tooling and may need larger allowlists (the std::/libm-builtin
       classifier rules + the configure_file / cmake-P / imports-manifest /
@@ -840,6 +863,17 @@ transition cleanly.
       source-tree-input == build-tree-output genrule aliasing
       (`Remarks.exports` in-place rewrite) and the `pkg_files` install-glob
       re-anchoring.
+
+      **Queued (researched + reproduced):**
+      - **In-place-rewrite genrule fix — QUEUED, design + repro landed**
+        (`docs/design/genrule-inplace-rewrite.md`, branch
+        `claude/llvm-inplace-rewrite`). Confirmed open: the converter emits
+        a genrule with the same file as both `srcs` and `outs` (Bazel
+        rejects it) AND mis-anchors the input to `$(RULEDIR)`. Fix
+        designed (detect collision while src/build paths are still
+        distinguishable; rename output; disambiguate input=`$(location)`
+        vs output=`$(RULEDIR)`; relabel consumers; audit tag). Implement
+        after the install-granularity PR lands.
     - Promote each CI `fidelity` gate from `continue-on-error: true`
       to blocking after three consecutive green merges (the wiring +
       soft launch shipped — see the entry head).
