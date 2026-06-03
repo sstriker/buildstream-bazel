@@ -221,6 +221,7 @@ regressing the fix — that's the whole point of keeping them around.
 | **cuda-samples** | NVIDIA CUDA sample suite | (prior session) | github.com/NVIDIA/cuda-samples (`CUDASAMPLES_VERSION`) | `make fetch-cuda-samples` |
 | **OpenBLAS** | assembly kernels + Fortran/LAPACK + arch-conditional source selection + ~2460 targets — scale + shapes nothing else has | name-collision robustness (add_test test-name == a different target's name) | github.com/OpenMathLib/OpenBLAS (`OPENBLAS_VERSION`) | `make fetch-openblas` |
 | **glog** | unresolved-genex include dir (`$<TARGET_PROPERTY:glog,INCLUDE_DIRECTORIES>` on the trace-synthesized `glog_test` INTERFACE library) aborted `--split-packages` — it became a header-lib root whose name `$<…>_headers` is not a valid Bazel identifier | fixed (`dropGenexIncludeDirs` in ToIR + a `planSplit` genex-root backstop) | github.com/google/glog (`GLOG_VERSION`) | `make fetch-glog` |
+| **glm** | a header-only INTERFACE lib (`glm-header-only`) whose include path is the source root (`$<BUILD_INTERFACE:${SOURCE_DIR}>`) emitted **empty** (the root include was skipped) and the `glm → glm-header-only` PUBLIC link edge was dropped (the codemodel omits it; cmake bakes the usage requirements in) | fixed (`lowerInterfaceLibraries` root-walk so the INTERFACE lib owns its headers + `routeTraceInterfaceLibDeps` routes the trace edge) | github.com/g-truc/glm (`GLM_VERSION`) | `make fetch-glm` |
 
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):

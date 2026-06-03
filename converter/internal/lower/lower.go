@@ -1377,6 +1377,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// cross builds.
 	surfaceLauncherTargets(r, opts.Warnings)
 
+	// Route trace target_link_libraries arms to in-codebase trace-synth
+	// INTERFACE libraries into deps. cmake bakes an INTERFACE lib's usage
+	// requirements (include dirs, defines) into the consumer's compile
+	// flags, so a STATIC/SHARED target that links one carries no codemodel
+	// dependency edge to it — the edge survives only in the trace. Routing
+	// it makes the consumer re-export the INTERFACE lib's headers/defines
+	// to ITS consumers (the cmake intent). Runs after every target is in
+	// pkg.Targets and before the lens-3 audit so routed edges aren't
+	// reported as dropped.
+	routeTraceInterfaceLibDeps(pkg, traceLinkLibs, traceLinkScope)
+
 	// Lens-3 coverage audit: dependency-coverage over the final
 	// package. Runs after every target (codemodel-derived + trace-
 	// synthesized interface libs + aliases) is in pkg.Targets so each
@@ -2497,15 +2508,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// safe (PUBLIC default forwards headers, which is the cmake
 	// default for non-keyword target_link_libraries usage).
 	//
-	// Rule-kind gating: only cc_library supports
-	// `implementation_deps` in stock rules_cc. cc_binary /
-	// cc_test / cc_import don't accept the attribute, and bazel
-	// rejects it at analysis time. For non-library kinds the
-	// scope distinction is moot — a binary has no consumers
-	// (it's a leaf), and a cc_import wraps a pre-built archive
-	// whose link interface is fixed at build time — so fold
-	// PRIVATE deps into `irt.Deps` for those kinds.
-	allowsImplementationDeps := irt.Kind == ir.KindCCLibrary
+	// Rule-kind gating: only kinds that emit as cc_library accept
+	// `implementation_deps` in stock rules_cc — see
+	// kindAllowsImplementationDeps. cc_binary / cc_test / cc_import
+	// don't accept the attribute (bazel rejects it at analysis), and
+	// for those leaf/prebuilt kinds the scope distinction is moot
+	// (a binary has no consumers; a cc_import's link interface is
+	// fixed at build time) — so fold PRIVATE deps into `irt.Deps`.
+	allowsImplementationDeps := kindAllowsImplementationDeps(irt.Kind)
 	// Issue #194: cmake's codemodel can report the same
 	// dependency twice — e.g. a target referenced by
 	// target_link_libraries with both INTERFACE and PRIVATE
@@ -3856,6 +3866,89 @@ func sanitizeTestName(name string) string {
 		}
 	}
 	return b.String()
+}
+
+// kindAllowsImplementationDeps reports whether a target of this kind emits as
+// a cc_library that accepts the implementation_deps attribute. Both
+// ir.KindCCLibrary and ir.KindCCInterface render as cc_library (see
+// emit.go's ccRuleLoads), so a PRIVATE link dep on either must route to
+// implementation_deps to avoid re-exporting it. cc_binary / cc_test /
+// cc_import don't accept the attribute (bazel rejects it at analysis), and for
+// those leaf/prebuilt kinds the scope distinction is moot.
+func kindAllowsImplementationDeps(k ir.Kind) bool {
+	return k == ir.KindCCLibrary || k == ir.KindCCInterface
+}
+
+// routeTraceInterfaceLibDeps adds dependency edges that cmake records via
+// target_link_libraries but the codemodel omits. cmake bakes an INTERFACE
+// library's usage requirements (include dirs, defines) straight into a
+// consuming STATIC/SHARED target's compile flags, so the codemodel carries
+// no dependency edge to the INTERFACE lib (glm's
+// `target_link_libraries(glm PUBLIC glm-header-only)`, glog's unit tests
+// linking glog_test). The trace still records the arm. Without the edge the
+// emitted consumer doesn't re-export the INTERFACE lib's headers/defines to
+// ITS consumers — a lens-3 intent loss, and an external consumer of the
+// INTERFACE lib gets nothing.
+//
+// Scope: only arms naming an in-codebase trace-synthesised INTERFACE library
+// (the `cmake-codegen-interface-library-from-trace` targets) are routed —
+// those are exactly the libs the codemodel legitimately omits, so we never
+// fabricate a link edge that was dropped for some other reason. The arm's
+// recorded visibility is honoured: a PRIVATE arm on a cc_library goes to
+// implementation_deps (no re-export), while every other arm — PUBLIC/INTERFACE,
+// or any arm on a binary/test that has no implementation_deps bucket — goes to
+// deps. This mirrors the codemodel dep-routing convention elsewhere in lowering
+// (allowsImplementationDeps + the traceLinkScope PRIVATE check).
+func routeTraceInterfaceLibDeps(pkg *ir.Package, traceLinkLibs map[string][]string, traceLinkScope map[string]map[string]string) {
+	if pkg == nil || len(traceLinkLibs) == 0 {
+		return
+	}
+	ifaceLibs := map[string]bool{}
+	for _, t := range pkg.Targets {
+		for _, tag := range t.Tags {
+			if tag == "cmake-codegen-interface-library-from-trace" {
+				ifaceLibs[t.Name] = true
+				break
+			}
+		}
+	}
+	if len(ifaceLibs) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		arms := traceLinkLibs[t.Name]
+		if len(arms) == 0 {
+			continue
+		}
+		have := map[string]bool{}
+		for _, d := range t.Deps {
+			have[d] = true
+		}
+		for _, d := range t.ImplementationDeps {
+			have[d] = true
+		}
+		// Kinds that emit as cc_library (cc_library, cc_interface) have an
+		// implementation_deps bucket; a PRIVATE arm there must not re-export.
+		// Binaries/tests have no such bucket, so everything goes to deps.
+		allowsImplementationDeps := kindAllowsImplementationDeps(t.Kind)
+		scopes := traceLinkScope[t.Name]
+		for _, lib := range arms {
+			if lib == t.Name || !ifaceLibs[lib] {
+				continue
+			}
+			label := ":" + lib
+			if have[label] {
+				continue
+			}
+			if allowsImplementationDeps && scopes != nil && scopeForLabelLib(scopes, lib) == "PRIVATE" {
+				t.ImplementationDeps = append(t.ImplementationDeps, label)
+			} else {
+				t.Deps = append(t.Deps, label)
+			}
+			have[label] = true
+		}
+	}
 }
 
 // dropGenexIncludeDirs removes include directories that are unresolved
