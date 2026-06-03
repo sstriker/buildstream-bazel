@@ -227,6 +227,33 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// absolute paths into the rendered genrule.
 		srcs := genruleSrcs(b, cmakeSrc, buildDir, umbrellaPrefix)
 
+		// In-place rewrite remediation: a custom command that reads a
+		// source-tree file and writes the SAME relative path into the
+		// build tree (LLVM's Remarks.exports shape) produces a genrule
+		// with that path as BOTH an srcs entry and an outs entry — which
+		// Bazel rejects ("file X as both an input and an output"). Detect
+		// the collision (an output whose source-tree form is also a src)
+		// and rename the colliding OUTPUT to a non-shadowing sibling. The
+		// rename is applied to the build-output occurrence in the RAW cmd
+		// (still carrying its absolute buildDir prefix, so it stays
+		// distinct from the source-tree input occurrence) BEFORE
+		// rewriteGenruleCmd strips prefixes — that's what disambiguates
+		// input (→ source token) from output (→ renamed token), so the
+		// later anchorGenruleOutputsToRuledir anchors only the output.
+		inPlaceRenames := detectInPlaceOutputRenames(outs, srcs, umbrellaPrefix)
+		if len(inPlaceRenames) > 0 {
+			cmd = renameRawCmdBuildOutputs(cmd, buildDir, inPlaceRenames)
+			renamed := make([]string, len(outs))
+			for i, o := range outs {
+				if r, ok := inPlaceRenames[o]; ok {
+					renamed[i] = r
+				} else {
+					renamed[i] = o
+				}
+			}
+			outs = renamed
+		}
+
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
 		// the legacy `custom_command_<sanitized first output>`
@@ -285,6 +312,9 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		if genexTag := customCommandGenexTag(outs, genexIndex, tools, traceCtx.AliasToActual); genexTag != "" {
 			tags = append(tags, genexTag)
 		}
+		if len(inPlaceRenames) > 0 {
+			tags = append(tags, "cmake-codegen-genrule-inplace-rewrite")
+		}
 		out = append(out, ir.Target{
 			Name:         name,
 			Kind:         ir.KindGenrule,
@@ -339,6 +369,96 @@ func dropLiftedToolSrcs(srcs, tools []string, artifactToName map[string]string) 
 // Sibling paths derived from an out by suffix — e.g. the `<out>.d`
 // depfile tblgen emits — re-anchor for free since the out substring
 // they contain is rewritten in place.
+// detectInPlaceOutputRenames returns a map of build-dir-relative output
+// path → renamed output path for each output that collides with a source
+// (the in-place-rewrite shape: a custom command whose output path equals
+// one of its source-tree inputs). outs are build-dir-relative; srcs are
+// workspace-relative (umbrella-anchored), so an output `o` collides when
+// its source-tree form — `o` itself, or `<umbrellaPrefix>/o` under
+// umbrella promotion — appears in srcs. Returns nil when there's no
+// collision (the overwhelming common case), so non-in-place genrules are
+// untouched and byte-identical.
+func detectInPlaceOutputRenames(outs, srcs []string, umbrellaPrefix string) map[string]string {
+	if len(outs) == 0 || len(srcs) == 0 {
+		return nil
+	}
+	srcSet := make(map[string]bool, len(srcs))
+	for _, s := range srcs {
+		srcSet[s] = true
+	}
+	var renames map[string]string
+	for _, o := range outs {
+		if o == "" {
+			continue
+		}
+		srcForm := o
+		if umbrellaPrefix != "" {
+			srcForm = umbrellaPrefix + "/" + o
+		}
+		if srcSet[srcForm] {
+			if renames == nil {
+				renames = map[string]string{}
+			}
+			renames[o] = inPlaceRenamedOutput(o)
+		}
+	}
+	return renames
+}
+
+// inPlaceRenamedOutput returns a non-shadowing sibling name for an
+// in-place-rewrite output: the original path with a stable `.gen` suffix
+// (`Remarks.exports` → `Remarks.exports.gen`). The output no longer
+// collides with the same-named source, while the suffix keeps the name
+// recognizable and deterministic across rebuilds.
+func inPlaceRenamedOutput(o string) string {
+	return o + ".gen"
+}
+
+// renameRawCmdBuildOutputs rewrites each `<buildDir>/<o>` occurrence in
+// the RAW (pre-strip) cmd to `<buildDir>/<renamed>`, keeping the absolute
+// buildDir prefix so rewriteGenruleCmd's later prefix-strip yields the
+// renamed token while the source-tree input occurrence (a `<cmakeSrc>/…`
+// path) is untouched — which is what separates the input and output
+// tokens that would otherwise collapse to the same string. Only the
+// build-output occurrence is renamed; the source read stays as-is.
+func renameRawCmdBuildOutputs(cmd, buildDir string, renames map[string]string) string {
+	if cmd == "" || buildDir == "" || len(renames) == 0 {
+		return cmd
+	}
+	// Build (search → replacement) pairs and apply them in a single
+	// left-to-right pass, trying the LONGEST search first at each position.
+	// This is deterministic regardless of Go's randomized map iteration AND
+	// correct under overlap: when one output path is a textual prefix of
+	// another (`gen/x` vs `gen/x.inc`) the longer match wins, and advancing
+	// past each emitted replacement means neither overlapping keys nor the
+	// search-is-a-prefix-of-its-own-replacement case (`<bd>/x` →
+	// `<bd>/x.gen`) can re-match. A naive `strings.ReplaceAll` per key would
+	// be both order-dependent and self-re-matching.
+	type repl struct{ search, with string }
+	pairs := make([]repl, 0, len(renames))
+	for o, renamed := range renames {
+		pairs = append(pairs, repl{buildDir + "/" + o, buildDir + "/" + renamed})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].search) > len(pairs[j].search) })
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		matched := false
+		for _, p := range pairs {
+			if strings.HasPrefix(cmd[i:], p.search) {
+				b.WriteString(p.with)
+				i += len(p.search)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			b.WriteByte(cmd[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
 func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	if cmd == "" || len(outs) == 0 {
 		return cmd
