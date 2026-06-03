@@ -425,10 +425,38 @@ func renameRawCmdBuildOutputs(cmd, buildDir string, renames map[string]string) s
 	if cmd == "" || buildDir == "" || len(renames) == 0 {
 		return cmd
 	}
+	// Build (search → replacement) pairs and apply them in a single
+	// left-to-right pass, trying the LONGEST search first at each position.
+	// This is deterministic regardless of Go's randomized map iteration AND
+	// correct under overlap: when one output path is a textual prefix of
+	// another (`gen/x` vs `gen/x.inc`) the longer match wins, and advancing
+	// past each emitted replacement means neither overlapping keys nor the
+	// search-is-a-prefix-of-its-own-replacement case (`<bd>/x` →
+	// `<bd>/x.gen`) can re-match. A naive `strings.ReplaceAll` per key would
+	// be both order-dependent and self-re-matching.
+	type repl struct{ search, with string }
+	pairs := make([]repl, 0, len(renames))
 	for o, renamed := range renames {
-		cmd = strings.ReplaceAll(cmd, buildDir+"/"+o, buildDir+"/"+renamed)
+		pairs = append(pairs, repl{buildDir + "/" + o, buildDir + "/" + renamed})
 	}
-	return cmd
+	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].search) > len(pairs[j].search) })
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		matched := false
+		for _, p := range pairs {
+			if strings.HasPrefix(cmd[i:], p.search) {
+				b.WriteString(p.with)
+				i += len(p.search)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			b.WriteByte(cmd[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {

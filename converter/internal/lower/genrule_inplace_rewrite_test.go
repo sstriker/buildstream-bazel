@@ -50,6 +50,18 @@ func TestDetectInPlaceOutputRenames(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := detectInPlaceOutputRenames(tc.outs, tc.srcs, tc.umbrella)
+			// The contract is a nil map (not empty-non-nil) when there's
+			// no collision — assert nilness explicitly so an empty map
+			// can't silently satisfy the no-collision cases.
+			if tc.want == nil {
+				if got != nil {
+					t.Fatalf("want nil map (no collision), got %v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("want %v, got nil", tc.want)
+			}
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
