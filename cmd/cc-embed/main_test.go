@@ -48,7 +48,8 @@ func TestEscapeCString(t *testing.T) {
 func TestStringMode_RoundTrips(t *testing.T) {
 	inputs := []string{
 		"hello", "a\\b\"c", "multi\nline\ntext", "tab\tand\rcr", "",
-		"ctrl\x00\x01\x1f\x7fbytes", // control bytes -> \NNN octal, must round-trip
+		"ctrl\x00\x01\x1f\x7fbytes",     // control bytes -> \NNN octal, must round-trip
+		"caf\xc3\xa9 \xe2\x9c\x93 high", // >= 0x80 bytes (UTF-8) -> octal, byte-faithful
 	}
 	for _, in := range inputs {
 		_, s := encode([]byte(in), "x", "x.h", false, false, "", "")
@@ -128,6 +129,11 @@ func TestRun_Validation(t *testing.T) {
 	}
 	if err := run(in, "n", ho, so, false, false, "", "hdr.h"); err == nil {
 		t.Error("--export-header without --export-symbol should error")
+	}
+	for _, bad := range []string{"has space", "has-dash", "1leading", "semi;colon"} {
+		if err := run(in, bad, ho, so, false, false, "", ""); err == nil {
+			t.Errorf("invalid C identifier --name %q should error", bad)
+		}
 	}
 	if err := run(in, "n", ho, so, false, false, "", ""); err != nil {
 		t.Errorf("valid invocation errored: %v", err)

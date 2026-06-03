@@ -35,6 +35,13 @@ def _impl(ctx):
     if bool(ctx.attr.export_symbol) != bool(ctx.attr.export_header):
         fail("cc_embed %s: export_symbol and export_header must be set together" % ctx.label)
 
+    # The generated source self-includes the header by basename, so the two
+    # outputs must live in the same directory; fail fast here rather than as a
+    # confusing missing-include compile error downstream.
+    if ctx.outputs.out_header.dirname != ctx.outputs.out_source.dirname:
+        fail("cc_embed %s: out_header (%s) and out_source (%s) must be in the same directory" %
+             (ctx.label, ctx.outputs.out_header.short_path, ctx.outputs.out_source.short_path))
+
     args = ctx.actions.args()
     args.add("--input", ctx.file.src)
     args.add("--name", ctx.attr.symbol)

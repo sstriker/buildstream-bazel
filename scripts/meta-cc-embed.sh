@@ -28,8 +28,16 @@ fi
 # `$BZL --version` can report the Bazelisk wrapper's own version (a date)
 # rather than the underlying bazel; parse the `Build label:` line from
 # `$BZL version` instead, which is the real bazel version for both bazel
-# and bazelisk (same approach as scripts/meta-pyproject.sh).
-bazel_version_label=$("$BZL" version 2>&1 | awk -F': ' '/^Build label:/{print $2; exit}')
+# and bazelisk (same approach as scripts/meta-pyproject.sh). Capture the
+# output and check `$BZL version`'s exit status FIRST — doing the parse in a
+# `$(... | awk)` pipeline would mask a real bazel failure as awk's success
+# (-> bazel_major=0 -> a misleading skip).
+if ! bazel_version_out=$("$BZL" version 2>&1); then
+    echo "FAIL: '$BZL version' failed:"
+    printf '%s\n' "$bazel_version_out" | sed 's/^/   /'
+    exit 1
+fi
+bazel_version_label=$(printf '%s\n' "$bazel_version_out" | awk -F': ' '/^Build label:/{print $2; exit}')
 bazel_major=$(printf '%s\n' "$bazel_version_label" | cut -d. -f1)
 case "$bazel_major" in
     [0-9]*) ;;

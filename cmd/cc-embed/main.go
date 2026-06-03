@@ -38,8 +38,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// cIdentifierRe matches a valid C identifier (the form --name must take,
+// since it's emitted verbatim as both a symbol and an include-guard macro).
+var cIdentifierRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func main() {
 	var (
@@ -63,6 +68,13 @@ func main() {
 func run(input, name, headerOut, sourceOut string, binary, nulTerminate bool, exportSymbol, exportHeader string) error {
 	if input == "" || name == "" || headerOut == "" || sourceOut == "" {
 		return fmt.Errorf("--input, --name, --header-out and --source-out are all required")
+	}
+	if !cIdentifierRe.MatchString(name) {
+		// name is injected verbatim as a C identifier and an include-guard
+		// macro fragment — reject anything that isn't a valid identifier so
+		// the failure is a clear error here, not invalid generated C later
+		// (and so a hostile value can't inject into the generated source).
+		return fmt.Errorf("--name %q is not a valid C identifier ([A-Za-z_][A-Za-z0-9_]*)", name)
 	}
 	if nulTerminate && !binary {
 		return fmt.Errorf("--nul-terminate only makes sense with --binary")
@@ -130,14 +142,15 @@ func encode(data []byte, name, headerInclude string, binary, nulTerminate bool, 
 // newlines become an escaped \n plus a physical line break with a
 // re-opened string literal (concatenated adjacent literals — keeps the
 // generated source readable and within line-length sanity); carriage
-// returns and tabs get their C escapes. Other NON-PRINTABLE bytes
-// (control chars < 0x20 and DEL 0x7f) are emitted as fixed-width 3-digit
-// octal escapes (\NNN) so the generated .cxx is always valid C — a raw
-// NUL or control byte written literally would corrupt the source and
-// many toolchains would mangle it. Printable ASCII and high bytes
-// (UTF-8 text) pass through. (A NUL in string mode still truncates the
-// C-string runtime value — use --binary to embed arbitrary bytes
-// including NULs faithfully.)
+// returns and tabs get their C escapes. Every other non-printable-ASCII
+// byte — control chars < 0x20 and the 0x7f-0xff range — is emitted as a
+// fixed-width 3-digit octal escape (\NNN): control bytes so the generated
+// .cxx is valid C (a raw NUL/control byte would corrupt it), and high
+// bytes so the runtime value is byte-for-byte faithful regardless of the
+// compiler's source/execution charset (a raw >= 0x80 byte is otherwise
+// subject to locale-dependent re-encoding). Only printable ASCII passes
+// through. (A NUL in string mode still truncates the C-string runtime
+// value — use --binary to embed arbitrary bytes including NULs.)
 func escapeCString(data []byte) string {
 	var b strings.Builder
 	for _, c := range data {
@@ -153,9 +166,15 @@ func escapeCString(data []byte) string {
 		case '\t':
 			b.WriteString(`\t`)
 		default:
-			if c < 0x20 || c == 0x7f {
-				// Fixed 3 octal digits: a C octal escape consumes at most
-				// 3 digits, so \NNN never swallows a following literal digit.
+			// Escape every non-printable-ASCII byte as fixed 3-digit octal:
+			// control bytes (< 0x20) AND 0x7f-0xff. The high range matters for
+			// byte-for-byte faithfulness — a raw >= 0x80 byte in the source is
+			// subject to the compiler's source/execution charset (locale-
+			// dependent re-encoding); \NNN pins the exact byte regardless of
+			// toolchain. Only printable ASCII (0x20-0x7e) passes through.
+			// Fixed 3 octal digits: a C octal escape consumes at most 3
+			// digits, so \NNN never swallows a following literal digit.
+			if c < 0x20 || c >= 0x7f {
 				fmt.Fprintf(&b, "\\%03o", c)
 			} else {
 				b.WriteByte(c)
