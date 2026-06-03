@@ -608,20 +608,6 @@ transition cleanly.
 
 ## Next
 
-- **`register_toolchains("//toolchains:all")` is shadowed by the
-  aggregating filegroup.** unify-toolchains emits `filegroup(name =
-  "all", ...)` in `toolchains/BUILD.bazel` *and* its setup banner tells
-  the operator to add `register_toolchains("//toolchains:all")`. But
-  `:all` is then ambiguous — Bazel resolves the explicit filegroup over
-  the `:all` target wildcard, and a filegroup provides no
-  `DeclaredToolchainInfo`, so registration fails at analysis (`target
-  does not provide the DeclaredToolchainInfo provider`). The render-only
-  gates never built, so they missed it; `meta-kits-build.sh` (the first
-  gate to register + build) surfaced it and works around it with
-  `--extra_toolchains`. Fix: rename/drop the `all` filegroup so the
-  banner's `//toolchains:all` resolves as the toolchain wildcard (touches
-  the emit contract + `meta-unify-toolchains.sh` assertion + the banner).
-
 - **Toolkit-aware feature lift.** `toolchainfeature.RewriteFeature` is a
   static allowlist of toolchain-backed features
   (pic/lto/asan/tsan/msan/ubsan); the visibility presets and lsan stay
@@ -1007,6 +993,19 @@ transition cleanly.
   when the cmake-configure step runs on a remote node.
 
 ## Done (high points)
+
+- **`register_toolchains("//toolchains:all")` no longer shadowed.**
+  unify-toolchains used to emit `filegroup(name = "all", ...)` in
+  `toolchains/BUILD.bazel`, which shadowed the `:all` package wildcard the
+  setup banner tells operators to register — Bazel bound the label to the
+  filegroup (no `DeclaredToolchainInfo`) and registration failed at
+  analysis. The emit now defines **no** target named `all`, so
+  `register_toolchains("//toolchains:all")` resolves as the wildcard over
+  every `toolchain()` in the package. `meta-kits-build.sh` dropped its
+  `--extra_toolchains` workaround and now registers + builds via the real
+  banner path (aquery still confirms gcc→`/usr/bin/gcc`,
+  clang→`/usr/bin/clang`); `meta-unify-toolchains.sh` asserts the absence
+  of an `all` target.
 
 - **`cmake_configure_file` custom rule for the lift tier (de-base64
   complete).** The genex-replay **lift tier** — the configure_file lift,

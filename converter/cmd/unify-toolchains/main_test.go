@@ -100,8 +100,9 @@ func TestRun_EndToEnd(t *testing.T) {
 		}
 	}
 
-	// toolchains/BUILD.bazel: per-platform toolchain instances + the
-	// register_toolchains("//toolchains:all") target.
+	// toolchains/BUILD.bazel: per-platform toolchain() instances, which
+	// register_toolchains("//toolchains:all") activates via the ":all"
+	// package wildcard (no target named "all" — that would shadow it).
 	tcB, err := os.ReadFile(filepath.Join(repoRoot, "toolchains/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
@@ -109,13 +110,16 @@ func TestRun_EndToEnd(t *testing.T) {
 	for _, want := range []string{
 		`name = "linux_x86_64_toolchain"`,
 		`name = "linux_aarch64_toolchain"`,
-		`name = "all"`,
-		`":linux_x86_64_toolchain"`,
-		`":linux_aarch64_toolchain"`,
 	} {
 		if !strings.Contains(string(tcB), want) {
 			t.Errorf("toolchains/BUILD.bazel missing %q", want)
 		}
+	}
+	// The emitted package must NOT contain a target named "all": it would
+	// shadow the register_toolchains("//toolchains:all") package wildcard
+	// and break registration at analysis.
+	if strings.Contains(string(tcB), `name = "all"`) {
+		t.Errorf("toolchains/BUILD.bazel must not define a target named \"all\"\n%s", tcB)
 	}
 }
 

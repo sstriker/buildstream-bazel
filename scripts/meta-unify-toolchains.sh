@@ -11,8 +11,8 @@
 #   - cc_toolchain_config.bzl is one attr-driven rule (not the Stage 2
 #     module-constants shape).
 #   - toolchains/BUILD.bazel has per-platform cc_toolchain_config +
-#     cc_toolchain + toolchain() trios plus the aggregating
-#     filegroup `all`.
+#     cc_toolchain + toolchain() trios, and NO target named `all`
+#     (which would shadow the register_toolchains :all wildcard).
 #   - MODULE.bazel is NOT touched.
 #   - The first-run setup banner appears when MODULE.bazel lacks
 #     `register_toolchains("//toolchains:all")`.
@@ -125,15 +125,12 @@ done <<EOF
 $required_cfg
 EOF
 
-# 4. toolchains/BUILD.bazel has the per-platform trios + filegroup all.
+# 4. toolchains/BUILD.bazel has the per-platform trios.
 required_tc=$(cat <<'EOF'
 load("@rules_cc//cc:defs.bzl", "cc_toolchain")
 name = "linux_x86_64_config"
 name = "linux_x86_64_toolchain"
 name = "linux_aarch64_toolchain"
-name = "all"
-":linux_x86_64_toolchain"
-":linux_aarch64_toolchain"
 EOF
 )
 while IFS= read -r line; do
@@ -145,6 +142,14 @@ while IFS= read -r line; do
 done <<EOF
 $required_tc
 EOF
+
+# 4b. No target literally named "all": register_toolchains("//toolchains:all")
+# relies on ":all" being Bazel's package wildcard over the toolchain() targets,
+# so a target named "all" would shadow it and break registration at analysis.
+if grep -qF -- 'name = "all"' "$operator_repo/toolchains/BUILD.bazel"; then
+    echo 'toolchains/BUILD.bazel must not define a target named "all" (shadows the :all wildcard)' >&2
+    exit 1
+fi
 
 # 5. MODULE.bazel was NOT modified.
 if ! grep -qE '^module\(name = "operator"' "$operator_repo/MODULE.bazel"; then
