@@ -1,9 +1,13 @@
 #!/bin/bash
 # SessionStart hook — provision the toolchains the survey corpus + gates
 # need that the base Claude-Code-on-the-web container doesn't ship. The
-# base image already has go / cmake / ninja / bazel / git.
+# base image already has go / ninja / bazel / git, plus an older system
+# cmake that the cmake step bumps to the repo's CMAKE_VERSION pin.
 #
 # Provisions:
+#   - cmake (default)               — bump to the Makefile CMAKE_VERSION pin
+#                                     (cmake 4.x); the base image's system
+#                                     cmake is older than production's.
 #   - gfortran (default)            — OpenBLAS/eigen real Fortran path.
 #   - buildifier (default)          — lens-2 canonical-form check.
 #   - bazelisk (default)            — the repo-pinned bazel launcher the
@@ -28,6 +32,12 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 log() { echo "session-start: $*" >&2; }
+
+# CLAUDE_PROJECT_DIR is normally exported by Claude Code for hooks; default it
+# from this script's own location if unset, so `set -u` can't abort the whole
+# hook (this cmake step + the bazelisk step both reference it) on a stray
+# missing var — provisioning should degrade gracefully, not hard-fail.
+CLAUDE_PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 
 # Bazel releases are served from GitHub here (releases.bazel.build 403s in
 # this sandbox; github.com/bazelbuild/bazel/releases is reachable). The
@@ -68,6 +78,28 @@ elif command -v apt-get >/dev/null 2>&1; then
   fi
 else
   log "WARNING: no apt-get; cannot install gfortran"
+fi
+
+# --- cmake (default) — match the production pin --------------------------
+# The base image ships an older system cmake (3.28.x in /usr/bin), but
+# production + CI run the Makefile's CMAKE_VERSION (cmake 4.x) via this same
+# installer, and the converter's reactive CMAKE_POLICY_VERSION_MINIMUM=3.5
+# retry (cmakerun) covers sub-3.5-floor projects under cmake 4. Without this a
+# web session would survey on a *different* cmake than production, and modern
+# projects (>=3.29 floors — e.g. double-conversion's `3.29...4.0.1`) fatal-
+# error at configure before the converter even runs. PREFIX=/usr/local lands
+# the pin in /usr/local/bin, shadowing /usr/bin. Idempotent (the installer
+# stamps + version-checks, so re-runs are a no-op).
+if [ -x "$CLAUDE_PROJECT_DIR/tools/install-pinned-cmake.sh" ]; then
+  log "provisioning pinned cmake (Makefile CMAKE_VERSION; matches production/CI)"
+  if PREFIX=/usr/local "$CLAUDE_PROJECT_DIR/tools/install-pinned-cmake.sh" >&2; then
+    hash -r 2>/dev/null || true
+    log "cmake provisioned: $(cmake --version 2>/dev/null | head -1)"
+  else
+    log "WARNING: pinned cmake install failed — staying on system $(cmake --version 2>/dev/null | head -1); >=3.29-floor projects (double-conversion) will fail configure"
+  fi
+else
+  log "WARNING: tools/install-pinned-cmake.sh not found; web session stays on the older base-image cmake"
 fi
 
 # --- bazelisk (default) --------------------------------------------------
