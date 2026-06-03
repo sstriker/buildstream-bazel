@@ -42,6 +42,14 @@ type codegenContext struct {
 	// has-cmake-codegen and to reference outputs by label.
 	OutToGenrule map[string]string
 
+	// CcEmbedSourceToHeader maps a cc_embed lift's generated SOURCE output
+	// (the .cxx, which lands in the consuming target's srcs) to its sibling
+	// generated HEADER output (the .h). A target that compiles the source
+	// also needs the header as a declared hdr — they're a pair and the
+	// generated .cxx #includes the .h. Populated by recognizeCcEmbed,
+	// consumed in lowerTarget's per-source wiring.
+	CcEmbedSourceToHeader map[string]string
+
 	// StampVars maps a cmake variable written by a VCS-stamp
 	// execute_process (BucketStamp: git/hg/svn rev-parse / describe,
 	// OUTPUT_VARIABLE) to the Bazel workspace-status key a downstream
@@ -224,11 +232,12 @@ func (cc *codegenContext) hasSynthesizedTarget(name string) bool {
 
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
-		OutToGenrule:       map[string]string{},
-		StampVars:          map[string]string{},
-		SeenBuilds:         map[*ninja.Build]string{},
-		HeaderWalkCache:    map[string][]string{},
-		MissingIncludeDirs: map[string]bool{},
+		OutToGenrule:          map[string]string{},
+		CcEmbedSourceToHeader: map[string]string{},
+		StampVars:             map[string]string{},
+		SeenBuilds:            map[*ninja.Build]string{},
+		HeaderWalkCache:       map[string][]string{},
+		MissingIncludeDirs:    map[string]bool{},
 	}
 }
 

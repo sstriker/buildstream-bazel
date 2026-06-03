@@ -1693,6 +1693,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			switch {
 			case inCompileGroup[i]:
 				irt.Srcs = append(irt.Srcs, relOut)
+				// A cc_embed lift's generated .cxx #includes its sibling .h;
+				// a target compiling the source needs the header as a
+				// declared hdr (an -I path isn't enough — Bazel needs the
+				// file as a declared input), which also lets any same-package
+				// source that #includes it resolve.
+				if hdr := cc.CcEmbedSourceToHeader[relOut]; hdr != "" {
+					irt.Hdrs = append(irt.Hdrs, hdr)
+				}
 			case headerExts[ext]:
 				irt.Hdrs = append(irt.Hdrs, relOut)
 			default:
@@ -1775,6 +1783,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					ext := strings.ToLower(filepath.Ext(rel))
 					if inCompileGroup[i] && !headerExts[ext] {
 						irt.Srcs = append(irt.Srcs, rel)
+						// A cc_embed lift's generated .cxx #includes its
+						// sibling .h; a target compiling the source needs the
+						// header as a declared hdr (an -I path isn't enough —
+						// Bazel needs the file as a declared input). Add it so
+						// this library — and any same-package source that
+						// #includes the header — resolves it.
+						if hdr := cc.CcEmbedSourceToHeader[rel]; hdr != "" {
+							irt.Hdrs = append(irt.Hdrs, hdr)
+						}
 					} else if headerExts[ext] {
 						irt.Hdrs = append(irt.Hdrs, rel)
 					} else {
