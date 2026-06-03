@@ -82,15 +82,32 @@ func run(input, name, headerOut, sourceOut string, binary, nulTerminate bool, ex
 	if (exportSymbol == "") != (exportHeader == "") {
 		return fmt.Errorf("--export-symbol and --export-header must be set together")
 	}
+	// The generated source self-includes the header by its actual basename
+	// (not "<name>.h"), so the symbol name and the output filename are
+	// decoupled — any out_header name compiles.
+	headerInclude := filepath.Base(headerOut)
+	// These three land verbatim inside `#include "..."` / before `extern`.
+	// They're trusted (BUILD-file) inputs, but reject the characters that
+	// would produce invalid C or inject extra lines, so misuse fails here
+	// with a clear message rather than as an obscure compiler error.
+	for _, v := range []struct {
+		what, val, bad string
+	}{
+		{"--header-out basename", headerInclude, "\"\n\r"},
+		{"--export-header", exportHeader, "\"\n\r"},
+		{"--export-symbol", exportSymbol, "\n\r"},
+	} {
+		if strings.ContainsAny(v.val, v.bad) {
+			return fmt.Errorf("%s %q contains a character that would break the generated source", v.what, v.val)
+		}
+	}
+
 	data, err := os.ReadFile(input)
 	if err != nil {
 		return fmt.Errorf("read input: %w", err)
 	}
 
-	// The generated source self-includes the header by its actual basename
-	// (not "<name>.h"), so the symbol name and the output filename are
-	// decoupled — any out_header name compiles.
-	header, source := encode(data, name, filepath.Base(headerOut), binary, nulTerminate, exportSymbol, exportHeader)
+	header, source := encode(data, name, headerInclude, binary, nulTerminate, exportSymbol, exportHeader)
 
 	if err := os.WriteFile(headerOut, []byte(header), 0o644); err != nil {
 		return fmt.Errorf("write header: %w", err)
@@ -109,6 +126,13 @@ func run(input, name, headerOut, sourceOut string, binary, nulTerminate bool, ex
 func encode(data []byte, name, headerInclude string, binary, nulTerminate bool, exportSymbol, exportHeader string) (header, source string) {
 	var h strings.Builder
 	guard := name + "_h"
+	if strings.HasPrefix(guard, "_") {
+		// A guard starting with "_" is in C/C++'s implementation-reserved
+		// identifier space (leading underscore at file scope); prefix it so
+		// it never begins with an underscore. Guards for normal (non-leading-
+		// underscore) names are unchanged.
+		guard = "CCEMBED" + guard
+	}
 	fmt.Fprintf(&h, "#ifndef %s\n#define %s\n\n", guard, guard)
 	if exportHeader != "" {
 		fmt.Fprintf(&h, "#include \"%s\"\n\n", exportHeader)

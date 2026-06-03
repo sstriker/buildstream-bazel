@@ -6,9 +6,11 @@
 # idiom (vtkEncodeString). This gate stages a workspace that:
 #   - wraps the cc-embed Go binary as //tools:cc-embed (native_binary),
 #   - runs cc_embed over a data file to produce a .h + .cxx,
-#   - links them into a C++ binary that prints the embedded symbol,
-# then bazel-runs it and asserts the embedded symbol's RUNTIME VALUE equals
-# the input file's bytes (the faithfulness contract — no cmake involved).
+#   - links them into a C++ binary that compares the embedded symbol's
+#     value against the expected bytes and returns nonzero on mismatch,
+# then bazel-RUNs it: a clean run proves the embedded symbol's RUNTIME
+# VALUE equals the input file's bytes (the faithfulness contract — no
+# cmake involved).
 #
 # Pure Bazel rule (no cmake): the gate guards only on bazel >= 9.
 

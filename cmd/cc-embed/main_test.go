@@ -99,6 +99,23 @@ func TestEncode_HeaderIncludeDecoupledFromSymbol(t *testing.T) {
 	}
 }
 
+// TestEncode_GuardAvoidsLeadingUnderscore confirms a leading-underscore
+// symbol doesn't produce a reserved-identifier include guard, while normal
+// names keep their stable `<name>_h` guard.
+func TestEncode_GuardAvoidsLeadingUnderscore(t *testing.T) {
+	h, _ := encode([]byte("x"), "_foo", "_foo.h", false, false, "", "")
+	if strings.Contains(h, "#ifndef _foo_h") {
+		t.Errorf("guard should not begin with underscore (reserved):\n%s", h)
+	}
+	if !strings.Contains(h, "#ifndef CCEMBED_foo_h") {
+		t.Errorf("leading-underscore name should get a prefixed guard:\n%s", h)
+	}
+	h2, _ := encode([]byte("x"), "foo", "foo.h", false, false, "", "")
+	if !strings.Contains(h2, "#ifndef foo_h") {
+		t.Errorf("normal-name guard should stay stable:\n%s", h2)
+	}
+}
+
 func TestEncode_ExportSymbolAndHeader(t *testing.T) {
 	h, _ := encode([]byte("x"), "sym", "sym.h", false, false, "MYLIB_EXPORT", "mylib/export.h")
 	if !strings.Contains(h, `#include "mylib/export.h"`) {
@@ -134,6 +151,13 @@ func TestRun_Validation(t *testing.T) {
 		if err := run(in, bad, ho, so, false, false, "", ""); err == nil {
 			t.Errorf("invalid C identifier --name %q should error", bad)
 		}
+	}
+	// Injection guards on the verbatim-emitted export args.
+	if err := run(in, "n", ho, so, false, false, "BAD\nSYM", "h.h"); err == nil {
+		t.Error("--export-symbol with a newline should error")
+	}
+	if err := run(in, "n", ho, so, false, false, "SYM", "bad\"hdr.h"); err == nil {
+		t.Error("--export-header with a quote should error")
 	}
 	if err := run(in, "n", ho, so, false, false, "", ""); err != nil {
 		t.Errorf("valid invocation errored: %v", err)
