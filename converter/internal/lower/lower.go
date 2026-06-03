@@ -1390,6 +1390,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 	}
 
+	// Drop include dirs that are unresolved generator expressions (any entry
+	// containing "$<"): the genex evaluator can't reduce a shape like
+	// `target_include_directories(t $<TARGET_PROPERTY:other,INCLUDE_DIRECTORIES>)`
+	// to a path, so it survives as a literal include dir — useless as a
+	// monolithic `includes = ["$<…>"]` and, in --split-packages, a header-lib
+	// root whose synthesized name is an invalid Bazel identifier that aborts
+	// the whole convert (glog's glog_test INTERFACE-library shape). Runs over
+	// the fully-lowered package — after lowerInterfaceLibraries, which is
+	// where the trace-synth interface libs (and their genex includes) land —
+	// and before idiom-shaping/emit. The dirs are already surfaced via the
+	// missing-include-dir notice; this just stops a genex reaching emit.
+	dropGenexIncludeDirs(pkg)
+
 	// Phase 7 idiom-shaping: lift header-only libraries' single include
 	// directory from the broad `includes = ["<d>"]` form to the precise
 	// `strip_include_prefix = "<d>"` form. Runs over the fully-lowered
@@ -3843,6 +3856,51 @@ func sanitizeTestName(name string) string {
 		}
 	}
 	return b.String()
+}
+
+// dropGenexIncludeDirs removes include directories that are unresolved
+// generator expressions (any entry containing "$<") from every target's
+// Includes. cmake records shapes like
+// `target_include_directories(glog_test INTERFACE $<TARGET_PROPERTY:glog,INCLUDE_DIRECTORIES>)`,
+// and the converter's genex evaluator can't reduce a TARGET_PROPERTY genex
+// to a concrete path, so it survives as a literal include dir (here on the
+// trace-synthesized glog_test INTERFACE library). Such an entry is never a
+// real directory: in the monolithic emit it renders as a useless
+// `includes = ["$<…>"]`, and in --split-packages it becomes a header-library
+// root whose synthesized name ("$<…>_headers") fails Bazel's identifier
+// rule, aborting the whole convert. The dirs are already surfaced via the
+// missing-include-dir notice (they don't exist on disk); dropping them here
+// keeps a genex from reaching emit. Forward-declared *real* include paths
+// (no "$<") are left untouched — cmake legitimately permits those (the LLVM
+// llvm-mca shape). Returns the number dropped.
+func dropGenexIncludeDirs(pkg *ir.Package) int {
+	if pkg == nil {
+		return 0
+	}
+	dropped := 0
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if len(t.Includes) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(t.Includes))
+		for _, inc := range t.Includes {
+			if strings.Contains(inc, "$<") {
+				dropped++
+				continue
+			}
+			kept = append(kept, inc)
+		}
+		if len(kept) == len(t.Includes) {
+			continue
+		}
+		if len(kept) == 0 {
+			t.Includes = nil
+		} else {
+			t.Includes = kept
+		}
+	}
+	return dropped
 }
 
 // disambiguateTestNameCollisions renames any cc_test whose name
