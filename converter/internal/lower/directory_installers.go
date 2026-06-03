@@ -3,6 +3,7 @@ package lower
 import (
 	"encoding/json"
 	"fmt"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -53,12 +54,19 @@ import (
 // target-name rules.
 //
 // Per-file destination renames (cmake install(FILES ... RENAME ...))
-// are NOT modeled: the File API codemodel's DirectoryInstaller does
-// not expose the rename target cleanly (the rename is folded into the
-// installer's already-resolved destination path bookkeeping, not
-// surfaced as a separate field). Documented as a follow-up in
-// ROADMAP.md; a future revision can map RENAME onto pkg_files'
-// `renames` dict once the codemodel surface is confirmed.
+// ARE modeled: the File API records a renamed file installer as a
+// {"from","to"} object path (vs. the plain string of an un-renamed
+// FILES installer), with "to" the destination name under DESTINATION.
+// decodeInstallerPath surfaces it as instFile.rename and the lowering
+// lifts it onto the pkg_files `renames` dict (dest relative to the
+// prefix). Before this the object-form file entry was dropped entirely
+// — the renamed file silently vanished from the package.
+//
+// The two install(DIRECTORY) shapes are also distinguished (see the
+// PkgStripPrefix block below): trailing-slash "contents into dest"
+// ({"from","to":"."} object) strips the whole source dir; no-trailing-
+// slash "dir itself into dest" (plain string) strips only the dir's
+// parent so the dir name survives under the prefix.
 //
 // Returns IR targets in deterministic order (sorted by target name)
 // so downstream emit produces byte-stable BUILD output.
@@ -80,11 +88,14 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 	// Per-(type, destination) accumulators. Files / directories
 	// stored in a map to dedupe (the same path can appear in
 	// multiple installer entries under the same destination); the
-	// map is then sorted on emit.
+	// map is then sorted on emit. The instFile value carries the
+	// per-path metadata the File API surfaces beyond the source path:
+	// a rename target (install(FILES ... RENAME ...)) and, for
+	// directory installers, the contents-vs-tree mode.
 	type bucket struct {
 		kind  string // "file" or "directory"
 		dest  string
-		files map[string]bool
+		files map[string]instFile
 	}
 	byKey := map[string]*bucket{}
 
@@ -120,15 +131,15 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			key := inst.Type + "\x00" + inst.Destination
 			b, ok := byKey[key]
 			if !ok {
-				b = &bucket{kind: inst.Type, dest: inst.Destination, files: map[string]bool{}}
+				b = &bucket{kind: inst.Type, dest: inst.Destination, files: map[string]instFile{}}
 				byKey[key] = b
 			}
 			for _, raw := range inst.Paths {
-				rel := decodeInstallerPath(raw, dirSrc, cmakeSrc, inst.Type)
-				if rel == "" {
+				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, inst.Type)
+				if !ok {
 					continue
 				}
-				b.files[rel] = true
+				b.files[rel] = info
 			}
 		}
 	}
@@ -190,6 +201,25 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			PkgPrefix:  b.dest,
 			Visibility: []string{"//visibility:public"},
 		}
+		if b.kind == "file" {
+			// install(FILES ... RENAME <to>): the File API records the
+			// renamed entry as a {"from","to"} object, decoded into
+			// instFile.rename (the destination name under DESTINATION).
+			// Carry each as a rules_pkg `renames` entry (dest relative to
+			// the prefix) so the file lands at "<dest>/<rename>" instead
+			// of "<dest>/<basename>". Without this the object-form entry
+			// used to be dropped entirely (the file silently vanished
+			// from the package).
+			renames := map[string]string{}
+			for f, info := range b.files {
+				if info.rename != "" {
+					renames[f] = info.rename
+				}
+			}
+			if len(renames) > 0 {
+				t.PkgRenames = renames
+			}
+		}
 		if b.kind == "directory" {
 			// install(DIRECTORY <dir>/ DESTINATION <dest>) names a
 			// SOURCE DIRECTORY whose whole tree is packaged. A bare
@@ -218,18 +248,33 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 			// strip_prefix so files keep their dir-qualified paths
 			// under the prefix (the conservative, never-wrong shape).
 			//
-			// Known limitation: cmake's NO-trailing-slash form
-			// (install(DIRECTORY include DESTINATION include),
-			// "the include dir itself into DESTINATION" →
-			// include/include/foo.h) is distinguishable in the File API
-			// (recorded as a plain-string path rather than the
-			// trailing-slash {"from","to":"."} object) but is NOT
-			// separately modeled — every directory installer is treated
-			// as the overwhelmingly common contents-into-dest shape.
-			// Documented in ROADMAP.md.
+			// cmake's two install(DIRECTORY) shapes are distinguished
+			// by the File API path encoding and modeled separately:
+			//   - trailing slash (install(DIRECTORY inc/ DESTINATION d))
+			//     = "contents of inc/ into d" → recorded as the
+			//     {"from":"inc","to":"."} object (instFile.dirTree
+			//     false). Strip the whole dir so files land at
+			//     "d/<rel>".
+			//   - no trailing slash (install(DIRECTORY inc DESTINATION d))
+			//     = "the inc dir itself into d" → recorded as a plain
+			//     string (instFile.dirTree true). Strip the dir's PARENT
+			//     so the dir name survives: files land at "d/inc/<rel>".
+			//     A parentless dir (sits at the package root) keeps its
+			//     name with no strip at all.
+			// A single strip_prefix can only flatten one source dir, so
+			// when a DESTINATION bucket aggregates more than one source
+			// directory (rare) we emit no strip_prefix (files keep their
+			// dir-qualified paths under the prefix — the never-wrong
+			// conservative shape).
 			t.PkgSrcsGlob = true
 			if len(files) == 1 {
-				t.PkgStripPrefix = files[0]
+				if b.files[files[0]].dirTree {
+					if parent := path.Dir(files[0]); parent != "." && parent != "/" {
+						t.PkgStripPrefix = parent
+					}
+				} else {
+					t.PkgStripPrefix = files[0]
+				}
 			}
 		}
 		out = append(out, t)
@@ -371,47 +416,80 @@ func lowerExportInstallers(r *fileapi.Reply) []ir.Target {
 	return out
 }
 
+// instFile is the per-path install metadata the File API surfaces
+// beyond the bare source path.
+type instFile struct {
+	// rename is the destination name under the install DESTINATION for
+	// a renamed install(FILES ... RENAME ...) entry (the File API's
+	// {"from","to"} object "to" field), relative to the pkg_files
+	// prefix. Empty for un-renamed files and for directory installers.
+	rename string
+	// dirTree distinguishes the two install(DIRECTORY) shapes:
+	//   - false (the {"from","to":"."} object) = trailing-slash
+	//     "contents of <dir>/ into DESTINATION".
+	//   - true (the plain-string form) = no-trailing-slash "the <dir>
+	//     itself into DESTINATION" (dir name preserved under dest).
+	// Meaningless for file installers.
+	dirTree bool
+}
+
 // decodeInstallerPath decodes one DirectoryInstaller.Paths entry
-// according to the installer type's expected schema:
+// according to the installer type's path encoding, returning the
+// source-tree-relative path plus its instFile metadata. The File API
+// uses two encodings:
 //
-//   - Type=="file" — plain JSON string. Resolved against dirSrc /
-//     cmakeSrc the same way as before.
+//   - plain JSON string — an un-renamed install(FILES) file, or the
+//     no-trailing-slash install(DIRECTORY) "dir itself into dest"
+//     shape (instFile.dirTree set for directory type).
 //
-//   - Type=="directory" — JSON object {"from": "...", "to": "..."}.
-//     We record the "from" path as the filegroup src (the source
-//     directory whose contents install copies). cmake's
-//     install(DIRECTORY) also accepts the plain-string short form
-//     when "to" is empty / DESTINATION-implicit; the function
-//     handles both forms via json.RawMessage probing.
+//   - JSON object {"from": "...", "to": "..."} — a renamed
+//     install(FILES ... RENAME ...) file (instFile.rename = "to"), or
+//     the trailing-slash install(DIRECTORY) "contents into dest" shape
+//     ("to":".", instFile.dirTree false).
 //
-// Returns "" when the entry can't be decoded or resolves outside
-// the source tree.
-func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string) string {
-	// Try plain string first (file installer's only shape, and
-	// directory installer's short form).
+// ok is false when the entry can't be decoded or resolves outside the
+// source tree.
+func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string) (rel string, info instFile, ok bool) {
+	// Try plain string first (un-renamed file installer; directory
+	// installer's no-trailing-slash short form).
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
 		if s == "" {
-			return ""
+			return "", instFile{}, false
 		}
-		return projectToSourceRoot(s, dirSrc, cmakeSrc)
-	}
-	if instType != "directory" {
-		// File installer can't carry an object-shape path.
-		return ""
+		rel = projectToSourceRoot(s, dirSrc, cmakeSrc)
+		if rel == "" {
+			return "", instFile{}, false
+		}
+		if instType == "directory" {
+			// Plain string for a directory installer = the
+			// no-trailing-slash "dir itself into DESTINATION" shape.
+			info.dirTree = true
+		}
+		return rel, info, true
 	}
 	// Object form: {"from": "...", "to": "..."}.
 	var obj struct {
 		From string `json:"from"`
 		To   string `json:"to"`
 	}
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return ""
+	if err := json.Unmarshal(raw, &obj); err != nil || obj.From == "" {
+		return "", instFile{}, false
 	}
-	if obj.From == "" {
-		return ""
+	rel = projectToSourceRoot(obj.From, dirSrc, cmakeSrc)
+	if rel == "" {
+		return "", instFile{}, false
 	}
-	return projectToSourceRoot(obj.From, dirSrc, cmakeSrc)
+	if instType == "file" {
+		// File object form only appears for install(FILES ... RENAME
+		// <to>): "to" is the destination name under DESTINATION.
+		// (Without this the entry was previously dropped — the renamed
+		// file silently vanished from the package.)
+		info.rename = obj.To
+	}
+	// For directory installers the object form ("to":".") is the
+	// trailing-slash contents-into-dest shape: dirTree stays false.
+	return rel, info, true
 }
 
 // projectToSourceRoot returns the source-tree-relative form of p.

@@ -512,16 +512,27 @@ type Target struct {
 	// glob(["include/**"]) + strip_prefix.from_pkg("include") +
 	// prefix="include" packages include/foo.h at include/foo.h.
 	//
-	// Known limitation: cmake's no-trailing-slash form
-	// (install(DIRECTORY include DESTINATION include) — "the include
-	// dir itself into DESTINATION", yielding include/include/foo.h)
-	// is recoverable from the File API (the codemodel records it as a
-	// plain-string path rather than the trailing-slash form's
-	// {"from","to":"."} object) but is NOT separately modeled here —
-	// the lowering treats every directory installer as the
-	// contents-into-dest shape. See lowerDirectoryInstallers and
-	// ROADMAP.md.
+	// cmake's no-trailing-slash form (install(DIRECTORY include
+	// DESTINATION include) — "the include dir itself into DESTINATION",
+	// yielding include/include/foo.h) IS modeled: the File API records
+	// it as a plain-string path (vs. the trailing-slash form's
+	// {"from","to":"."} object), and the lowering then sets
+	// PkgStripPrefix to the dir's PARENT (so the dir name is preserved
+	// under the prefix) rather than the dir itself. See
+	// lowerDirectoryInstallers.
 	PkgStripPrefix string
+
+	// PkgRenames, when non-empty on a KindPkgFiles target, renders as
+	// `renames = {"<src>": "<dest>", ...}` on the pkg_files rule — the
+	// rules_pkg per-file destination override (dest is relative to
+	// PkgPrefix). It carries cmake's install(FILES ... RENAME ...): the
+	// File API records a renamed file installer as a {"from","to"}
+	// object path (vs. the plain string of an un-renamed FILES
+	// installer), where "to" is the destination name under the
+	// DESTINATION. Each entry maps the source file (as it appears in
+	// Srcs) to its renamed destination. Empty for installers with no
+	// RENAME. Keys are a subset of Srcs.
+	PkgRenames map[string]string
 
 	// InstallDest is the relative path under the install prefix where the
 	// CMake install(TARGETS) rule places this target's artifact (e.g. "lib"

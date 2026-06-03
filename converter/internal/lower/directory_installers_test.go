@@ -218,9 +218,12 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath(t *testing.T) {
 }
 
 // TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm
-// covers install(DIRECTORY) where cmake recorded the path as a
-// plain string (DESTINATION-implicit "to"). Same fallback path
-// the file installer uses.
+// covers install(DIRECTORY) where cmake recorded the path as a plain
+// string — the no-trailing-slash "the <dir> itself into DESTINATION"
+// shape. Unlike the {"from","to":"."} object (contents-into-dest, which
+// strips the whole dir), this strips only the dir's PARENT so the dir
+// name survives under the prefix: include/foo/** + strip "include" +
+// prefix "include" packages files at include/foo/<rel>.
 func TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm(t *testing.T) {
 	r := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
@@ -242,6 +245,88 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm(t *testing.
 	}
 	if got[0].Srcs[0] != "include/foo" {
 		t.Errorf("Srcs: %v", got[0].Srcs)
+	}
+	if !got[0].PkgSrcsGlob {
+		t.Errorf("PkgSrcsGlob: got false, want true (directory installer)")
+	}
+	// No-trailing-slash: strip the PARENT ("include"), not the dir
+	// itself, so the "foo" dir name is preserved under the prefix.
+	if got[0].PkgStripPrefix != "include" {
+		t.Errorf("PkgStripPrefix: got %q want %q (tree-mode strips parent)", got[0].PkgStripPrefix, "include")
+	}
+}
+
+// TestLowerDirectoryInstallers_DirectoryTree_RootDir covers the
+// no-trailing-slash form where the source dir sits at the package root
+// (no parent): there's nothing to strip, so the dir name is preserved
+// by emitting no strip_prefix at all.
+func TestLowerDirectoryInstallers_DirectoryTree_RootDir(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{
+					{Type: "directory", Destination: "include", Paths: rawJSONStrings("/src/inc")},
+				},
+			},
+		},
+	}
+	got := lowerDirectoryInstallers(r)
+	if len(got) != 1 {
+		t.Fatalf("want 1 target; got %d", len(got))
+	}
+	if got[0].Srcs[0] != "inc" {
+		t.Errorf("Srcs: %v", got[0].Srcs)
+	}
+	if got[0].PkgStripPrefix != "" {
+		t.Errorf("PkgStripPrefix: got %q want empty (root dir, name preserved)", got[0].PkgStripPrefix)
+	}
+}
+
+// TestLowerDirectoryInstallers_FileRename covers install(FILES ...
+// RENAME ...), which the File API records as a {"from","to"} object on
+// a Type=="file" installer. Previously the object form was only decoded
+// for directory installers, so a renamed file was silently dropped from
+// the package. It now lifts to a rules_pkg `renames` entry (dest
+// relative to the prefix).
+func TestLowerDirectoryInstallers_FileRename(t *testing.T) {
+	renameObj := []byte(`{"from":"orig.txt","to":"renamed.txt"}`)
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{Paths: fileapi.CodemodelPaths{Source: "/src"}},
+		Directories: map[string]fileapi.Directory{
+			"dir.json": {
+				Paths: struct {
+					Source string `json:"source"`
+					Build  string `json:"build"`
+				}{Source: "/src"},
+				Installers: []fileapi.DirectoryInstaller{
+					{Type: "file", Destination: "share/foo", Paths: []json.RawMessage{renameObj}},
+				},
+			},
+		},
+	}
+	got := lowerDirectoryInstallers(r)
+	if len(got) != 1 {
+		t.Fatalf("want 1 target; got %d", len(got))
+	}
+	if got[0].Kind != ir.KindPkgFiles {
+		t.Errorf("Kind: got %v want KindPkgFiles", got[0].Kind)
+	}
+	if len(got[0].Srcs) != 1 || got[0].Srcs[0] != "orig.txt" {
+		t.Fatalf("Srcs: got %v want [orig.txt]", got[0].Srcs)
+	}
+	if got[0].PkgPrefix != "share/foo" {
+		t.Errorf("PkgPrefix: got %q want share/foo", got[0].PkgPrefix)
+	}
+	if got[0].PkgSrcsGlob {
+		t.Errorf("PkgSrcsGlob: got true, want false (file installer)")
+	}
+	if got[0].PkgRenames["orig.txt"] != "renamed.txt" {
+		t.Errorf("PkgRenames: got %v want {orig.txt: renamed.txt}", got[0].PkgRenames)
 	}
 }
 

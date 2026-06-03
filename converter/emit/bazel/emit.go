@@ -911,6 +911,9 @@ var pkgFilesTmpl = template.Must(template.New("pkg_files").Funcs(template.FuncMa
 {{- if .Prefix}}
     prefix = "{{.Prefix}}",
 {{- end}}
+{{- if .RenamesExpr}}
+    renames = {{.RenamesExpr}},
+{{- end}}
 {{- if .StripPrefixExpr}}
     strip_prefix = {{.StripPrefixExpr}},
 {{- end}}
@@ -1313,6 +1316,10 @@ type pkgFilesView struct {
 	Name     string
 	SrcsExpr string
 	Prefix   string
+	// RenamesExpr is the pre-rendered `renames = {...}` dict value
+	// (rules_pkg per-file destination overrides for cmake's
+	// install(FILES ... RENAME ...)), or "" to omit the attribute.
+	RenamesExpr string
 	// StripPrefixExpr is the pre-rendered `strip_prefix = ...`
 	// value (a `strip_prefix.from_pkg("<dir>")` call) for the
 	// install(DIRECTORY) glob shape, or "" to omit the attribute
@@ -1328,10 +1335,33 @@ func emitPkgFiles(w *bytes.Buffer, t ir.Target) error {
 		Name:            t.Name,
 		SrcsExpr:        srcsExpr,
 		Prefix:          t.PkgPrefix,
+		RenamesExpr:     pkgFilesRenamesExpr(t.PkgRenames),
 		StripPrefixExpr: stripExpr,
 		Tags:            sortedCopy(t.Tags),
 		Visibility:      nonDefaultVisibility(t.Visibility),
 	})
+}
+
+// pkgFilesRenamesExpr renders a KindPkgFiles target's PkgRenames as a
+// Starlark dict literal `{"<src>": "<dest>", ...}` with keys sorted for
+// byte-stable output, or "" when there are no renames (so the attribute
+// is omitted). dest is relative to the pkg_files prefix.
+func pkgFilesRenamesExpr(renames map[string]string) string {
+	if len(renames) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(renames))
+	for k := range renames {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	for _, k := range keys {
+		fmt.Fprintf(&sb, "        %q: %q,\n", k, renames[k])
+	}
+	sb.WriteString("    }")
+	return sb.String()
 }
 
 // emitWriteFileLoad writes the
