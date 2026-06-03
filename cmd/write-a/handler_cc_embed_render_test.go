@@ -7,11 +7,22 @@ import (
 	"testing"
 )
 
+// ccEmbedRender holds the rendered artifacts both projects produce, so
+// a test can assert the SYMMETRIC tools/ staging contract (the binary +
+// its exports_files entry must land in project A AND project B, since
+// either side can host the cc_embed rule whose //tools:cc-embed tool
+// label must resolve).
+type ccEmbedRender struct {
+	genrule    string // project A's element converter genrule BUILD
+	toolsA     string // project A's tools/BUILD.bazel
+	toolsB     string // project B's tools/BUILD.bazel
+	outA, outB string // project out dirs, for staged-binary checks
+}
+
 // renderCmakeProjectWithCCEmbed renders BOTH projects for a trivial
-// kind:cmake element with --cc-embed-bin wired (a fake staged binary),
-// returning the element's project-A genrule BUILD, project A's
-// tools/BUILD.bazel, and project A's out dir (for staged-binary checks).
-func renderCmakeProjectWithCCEmbed(t *testing.T) (genrule, toolsBuild, outA string) {
+// kind:cmake element (honoring whatever cmakeConfig.ccEmbedBin the
+// caller set) and returns their artifacts.
+func renderCmakeProjectWithCCEmbed(t *testing.T) ccEmbedRender {
 	t.Helper()
 	tmp := t.TempDir()
 	srcDir := filepath.Join(tmp, "src")
@@ -33,19 +44,33 @@ func renderCmakeProjectWithCCEmbed(t *testing.T) (genrule, toolsBuild, outA stri
 	if err != nil {
 		t.Fatalf("loadGraph: %v", err)
 	}
-	outA = filepath.Join(tmp, "A")
+	outA := filepath.Join(tmp, "A")
 	if err := writeProjectA(g, outA, fakeConvertBin(t, tmp)); err != nil {
 		t.Fatalf("writeProjectA: %v", err)
+	}
+	outB := filepath.Join(tmp, "B")
+	if err := writeProjectB(g, outB); err != nil {
+		t.Fatalf("writeProjectB: %v", err)
 	}
 	gr, err := os.ReadFile(filepath.Join(outA, "elements/demo/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	tb, err := os.ReadFile(filepath.Join(outA, "tools/BUILD.bazel"))
+	tbA, err := os.ReadFile(filepath.Join(outA, "tools/BUILD.bazel"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(gr), string(tb), outA
+	tbB, err := os.ReadFile(filepath.Join(outB, "tools/BUILD.bazel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ccEmbedRender{
+		genrule: string(gr),
+		toolsA:  string(tbA),
+		toolsB:  string(tbB),
+		outA:    outA,
+		outB:    outB,
+	}
 }
 
 // fakeCCEmbedBin stages a fake cc-embed binary and returns its path,
@@ -68,21 +93,30 @@ func TestWriter_CCEmbed_LiftWired(t *testing.T) {
 	cmakeConfig.ccEmbedBin = fakeCCEmbedBin(t)
 	t.Cleanup(func() { cmakeConfig = prev })
 
-	genrule, toolsBuild, outA := renderCmakeProjectWithCCEmbed(t)
+	r := renderCmakeProjectWithCCEmbed(t)
 
-	if !strings.Contains(genrule, "--lift-cc-embed=true") {
-		t.Errorf("converter genrule missing --lift-cc-embed=true:\n%s", genrule)
+	if !strings.Contains(r.genrule, "--lift-cc-embed=true") {
+		t.Errorf("converter genrule missing --lift-cc-embed=true:\n%s", r.genrule)
 	}
-	if !strings.Contains(toolsBuild, `"cc-embed"`) {
-		t.Errorf("tools/BUILD.bazel missing cc-embed export:\n%s", toolsBuild)
-	}
-	staged := filepath.Join(outA, "tools", "cc-embed")
-	info, err := os.Stat(staged)
-	if err != nil {
-		t.Fatalf("cc-embed not staged into tools/: %v", err)
-	}
-	if info.Mode().Perm()&0o111 == 0 {
-		t.Errorf("staged cc-embed is not executable: mode %v", info.Mode())
+	// The staging is symmetric: the binary + its exports_files entry
+	// must land in BOTH projects so //tools:cc-embed resolves wherever
+	// the cc_embed rule ends up.
+	for _, p := range []struct {
+		side, tools, out string
+	}{
+		{"A", r.toolsA, r.outA},
+		{"B", r.toolsB, r.outB},
+	} {
+		if !strings.Contains(p.tools, `"cc-embed"`) {
+			t.Errorf("project %s tools/BUILD.bazel missing cc-embed export:\n%s", p.side, p.tools)
+		}
+		info, err := os.Stat(filepath.Join(p.out, "tools", "cc-embed"))
+		if err != nil {
+			t.Fatalf("cc-embed not staged into project %s tools/: %v", p.side, err)
+		}
+		if info.Mode().Perm()&0o111 == 0 {
+			t.Errorf("staged cc-embed in project %s is not executable: mode %v", p.side, info.Mode())
+		}
 	}
 }
 
@@ -94,15 +128,22 @@ func TestWriter_CCEmbed_OffShapeUnchanged(t *testing.T) {
 	cmakeConfig.ccEmbedBin = ""
 	t.Cleanup(func() { cmakeConfig = prev })
 
-	genrule, toolsBuild, outA := renderCmakeProjectWithCCEmbed(t)
+	r := renderCmakeProjectWithCCEmbed(t)
 
-	if strings.Contains(genrule, "lift-cc-embed") {
-		t.Errorf("flag-off genrule unexpectedly mentions lift-cc-embed:\n%s", genrule)
+	if strings.Contains(r.genrule, "lift-cc-embed") {
+		t.Errorf("flag-off genrule unexpectedly mentions lift-cc-embed:\n%s", r.genrule)
 	}
-	if strings.Contains(toolsBuild, "cc-embed") {
-		t.Errorf("flag-off tools/BUILD.bazel unexpectedly exports cc-embed:\n%s", toolsBuild)
-	}
-	if _, err := os.Stat(filepath.Join(outA, "tools", "cc-embed")); !os.IsNotExist(err) {
-		t.Errorf("flag-off run unexpectedly staged a cc-embed binary (err=%v)", err)
+	for _, p := range []struct {
+		side, tools, out string
+	}{
+		{"A", r.toolsA, r.outA},
+		{"B", r.toolsB, r.outB},
+	} {
+		if strings.Contains(p.tools, "cc-embed") {
+			t.Errorf("flag-off project %s tools/BUILD.bazel unexpectedly exports cc-embed:\n%s", p.side, p.tools)
+		}
+		if _, err := os.Stat(filepath.Join(p.out, "tools", "cc-embed")); !os.IsNotExist(err) {
+			t.Errorf("flag-off project %s unexpectedly staged a cc-embed binary (err=%v)", p.side, err)
+		}
 	}
 }
