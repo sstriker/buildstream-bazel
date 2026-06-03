@@ -1,7 +1,16 @@
 # Genrule in-place rewrite (source-tree-input == build-tree-output)
 
-Status: **design + reproduction landed; implementation queued** (the
-remaining LLVM-frontier converter gap in `ROADMAP.md`).
+Status: **implemented for the standalone-genrule path** (the LLVM-frontier
+gap in `ROADMAP.md`). Detection + output-rename + cmd disambiguation +
+audit tag land in `lowerStandaloneCustomCommands`
+(`converter/internal/lower/standalone_genrules.go`), guarded by
+`genrule_inplace_rewrite_test.go` and the render gate
+`scripts/meta-cmake-genrule-inplace-rewrite.sh` (wired into CI's
+`RENDER_GATES`). **Follow-up:** the recovered-genrule path
+(`recoverGenrule`, for in-place outputs that ARE consumed by a converted
+target) needs the same remediation plus consumer relabeling — deferred to
+a stacked PR; the standalone path covers the reproduced case and the
+common shape.
 
 ## The shape
 
