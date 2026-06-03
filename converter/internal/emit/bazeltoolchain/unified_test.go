@@ -120,7 +120,7 @@ func TestEmitUnified_TwoPlatformsFullShape(t *testing.T) {
 	}
 
 	// toolchains/BUILD.bazel: per-platform cc_toolchain_config + cc_toolchain
-	// + toolchain() trio plus the aggregating filegroup.
+	// + toolchain() trio.
 	tcB := string(bundle.Files["toolchains/BUILD.bazel"])
 	for _, want := range []string{
 		`load("@rules_cc//cc:defs.bzl", "cc_toolchain")`,
@@ -131,15 +131,17 @@ func TestEmitUnified_TwoPlatformsFullShape(t *testing.T) {
 		`name = "linux_aarch64_toolchain"`,
 		`target_compatible_with = [`,
 		`@bazel_tools//tools/cpp:toolchain_type`,
-		`name = "all"`,
-		`":linux_x86_64_toolchain"`,
-		`":linux_aarch64_toolchain"`,
 		`asan_compile_flags = [`,
 		`"-fsanitize=address"`,
 	} {
 		if !strings.Contains(tcB, want) {
 			t.Errorf("toolchains/BUILD.bazel missing %q", want)
 		}
+	}
+	// No target literally named "all" — it would shadow the
+	// register_toolchains("//toolchains:all") package wildcard.
+	if strings.Contains(tcB, `name = "all"`) {
+		t.Errorf("toolchains/BUILD.bazel must not define a target named \"all\" (shadows the :all wildcard)\n%s", tcB)
 	}
 
 	// cc_toolchain_config.bzl: ONE rule definition; no module
@@ -390,8 +392,6 @@ func TestEmitUnified_KitDimension(t *testing.T) {
 		`toolchain_identifier = "linux_x86_64_gcc-13"`,
 		`"//platforms:gcc-13"`, // kit constraint in target_compatible_with
 		`"//platforms:clang-15"`,
-		`":linux_x86_64_gcc-13_toolchain"`, // filegroup all
-		`":linux_x86_64_clang-15_toolchain"`,
 	} {
 		if !strings.Contains(tcB, want) {
 			t.Errorf("toolchains/BUILD.bazel missing %q\n%s", want, tcB)

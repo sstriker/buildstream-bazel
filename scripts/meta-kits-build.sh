@@ -81,17 +81,17 @@ EOF
 
 ws="$work_dir/repo"
 mkdir -p "$ws"
-# NB: select the kit toolchains via --extra_toolchains below rather than
-# register_toolchains("//toolchains:all"): the emitted layout names its
-# aggregating filegroup "all", which shadows the ':all' target wildcard, so
-# register_toolchains("//toolchains:all") resolves the filegroup (no
-# DeclaredToolchainInfo) instead of the toolchain() targets. That's a separate
-# pre-existing defect in the generated layout; this gate isolates the kit
-# dimension and so registers the specific kit toolchains explicitly.
+# Register the emitted toolchains the documented way:
+# register_toolchains("//toolchains:all"), where ":all" is Bazel's package
+# wildcard over every toolchain() in //toolchains. Both kit toolchains get
+# registered; the --platforms kit constraint disambiguates which resolves.
+# (This exercises the real registration path — the emit deliberately defines
+# no target named "all", which would otherwise shadow the wildcard.)
 cat >"$ws/MODULE.bazel" <<'EOF'
 module(name = "kits_build_gate", version = "0.0.1")
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "platforms", version = "0.0.11")
+register_toolchains("//toolchains:all")
 EOF
 
 "$bin_dir/unify-toolchains" \
@@ -158,18 +158,17 @@ printf '#include <cstdio>\nint main() { std::puts("kits-build-ok"); return 0; }\
 
 META_BAZEL_STARTUP_ARGS=${META_BAZEL_STARTUP_ARGS:-}
 META_BAZEL_BUILD_ARGS=${META_BAZEL_BUILD_ARGS:-}
-extra_tc="//toolchains:${plat}_gcc_toolchain,//toolchains:${plat}_clang_toolchain"
 
 # Build under each kit's platform; a broken kit toolchain (or a kit constraint
 # that fails to disambiguate) fails analysis/build here instead of silently
-# resolving to the wrong compiler. Both kit toolchains are offered via
-# --extra_toolchains; the --platforms kit constraint picks the right one.
+# resolving to the wrong compiler. Both kit toolchains are registered via
+# register_toolchains("//toolchains:all") in MODULE.bazel; the --platforms kit
+# constraint picks the right one.
 for kit in gcc clang; do
 	# shellcheck disable=SC2086 # META_BAZEL_*_ARGS is intentionally word-split.
 	( cd "$ws" && "$BZL" --output_user_root="$work_dir/.bazel" \
 		$META_BAZEL_STARTUP_ARGS \
 		build //:probe_bin \
-		--extra_toolchains="$extra_tc" \
 		--platforms="//platforms:${plat}_${kit}" $META_BAZEL_BUILD_ARGS )
 	echo "meta-kits-build: built //:probe_bin under kit '$kit' (--platforms=//platforms:${plat}_${kit})"
 done
@@ -177,10 +176,10 @@ done
 # Confirm the two kits actually drove DIFFERENT compilers (the whole point of
 # the kit dimension). aquery the compile action's argv per platform and diff.
 gcc_argv="$(cd "$ws" && "$BZL" --output_user_root="$work_dir/.bazel" $META_BAZEL_STARTUP_ARGS \
-	aquery "mnemonic(CppCompile, //:probe_bin)" --extra_toolchains="$extra_tc" --platforms="//platforms:${plat}_gcc" 2>/dev/null |
+	aquery "mnemonic(CppCompile, //:probe_bin)" --platforms="//platforms:${plat}_gcc" 2>/dev/null |
 	grep -E 'Command Line|gcc|clang' | head -40 || true)"
 clang_argv="$(cd "$ws" && "$BZL" --output_user_root="$work_dir/.bazel" $META_BAZEL_STARTUP_ARGS \
-	aquery "mnemonic(CppCompile, //:probe_bin)" --extra_toolchains="$extra_tc" --platforms="//platforms:${plat}_clang" 2>/dev/null |
+	aquery "mnemonic(CppCompile, //:probe_bin)" --platforms="//platforms:${plat}_clang" 2>/dev/null |
 	grep -E 'Command Line|gcc|clang' | head -40 || true)"
 if echo "$gcc_argv" | grep -qF "$gcc_bin" && echo "$clang_argv" | grep -qF "$clang_bin"; then
 	echo "meta-kits-build: confirmed — gcc kit drives $gcc_bin, clang kit drives $clang_bin"
