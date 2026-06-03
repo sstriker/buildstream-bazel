@@ -40,31 +40,39 @@ resolves **all 705** — verified by re-converting with
 `--cmake-script-bake=true`: residual rejection count drops to the 3
 git-stamp items.
 
-Which lift to use — and the transition-tool tension. The converter's
-documented preference order for `cmake -P` is **runner → trace → bake**
-(refusal message in `genrule.go` + flag help). That order optimizes
-faithfulness-and-least-effort-to-a-green-build. But this converter is a
-**transition tool** — success is "downstream is plain Bazel, you don't
-need this (or cmake) anymore" (`ROADMAP.md` preamble) — and against
-*that* axis the order partly inverts:
+Which lift to use — a transition trajectory, not a static ranking. The
+converter's documented preference order for `cmake -P` is
+**runner → trace → bake** (refusal message in `genrule.go` + flag help),
+optimizing faithfulness-and-least-effort-to-a-green-build. Read through
+the **transition-tool** lens (success = "downstream is plain Bazel, you
+don't need this or cmake anymore", `ROADMAP.md` preamble), the three
+options aren't ranked — they're **phases of a burn-down**:
 
-- **`--cmake-script-runner=<label>`** runs cmake at **build time**, so
-  the converted project keeps a permanent cmake dependency. Most
-  faithful + auto-refreshing, but it **never finishes the transition**
-  (cmake forever in the build graph). Convenient for a quick gate;
-  wrong as an end-state.
-- **`--cmake-script-bake=true`** removes cmake from the build, but
-  freezes the output bytes (`warnConvertTimeBaking` flags them) and
-  keeps the *converter* in the loop (re-bake on input change).
-- **Native Bazel rule (best end-state — see §1b).** No cmake, no
-  converter, auto-refreshing, pure Bazel.
+- **`--cmake-script-runner=<label>` — the right EARLY route.** Runs
+  cmake at build time, so it's faithful + auto-refreshing AND cheap: it
+  defers the expensive per-script native reimplementation. During the
+  transition the converted build legitimately depends on
+  cmake-on-executor; that's fine *while transitioning*.
+- **Native Bazel rule (§1b) — the END-of-transition target.** What
+  runner-served scripts get migrated INTO so cmake drops out. No cmake,
+  no converter, auto-refreshing, pure Bazel.
+- **`--cmake-script-bake=true` — a side-variant.** Drops build-time
+  cmake without a native rewrite, but freezes the output bytes
+  (`warnConvertTimeBaking` flags them) and keeps the *converter* in the
+  loop (re-bake on input change). Useful for the long tail of rare
+  scripts not worth native-izing.
+
+The metric to drive is the count of `cmake -P` sites still **runner-**
+**served**, trending to **zero** as the common idioms (embed, hash) move
+to native rules — at which point cmake is fully shed. (Worth surfacing
+as an audit-tag census so the burn-down is measurable.)
 
 All 705 are liftable any of these ways: both `vtkEncodeString` and
 `vtkHashSource` are pure, hermetic, deterministic functions of a single
 declared `INPUT` (+ literal `-D` args), explicit `DEPENDS`, no hardcoded
 host paths.
 
-### 1b. Native conversion of the embed/hash codegen (the transition end-state)
+### 1b. Native conversion of the embed/hash codegen (the end-of-transition target)
 
 For these two scripts specifically, a **Bazel-native rule is achievable
 and beats both runner and bake** for a transition tool:
@@ -144,18 +152,19 @@ pass flags; cosmetic.
 1. **Cheap win first:** a VTK *survey* corpus entry already works
    (`make fetch-vtk` + `run-survey.sh`); wire it as a tracked survey
    target so the rejection surface is watched.
-2. **First build gate (interim):** enable the `cmake -P` lift with
-   `--cmake-script-bake=true` — NOT `--cmake-script-runner`. Both get
-   conversion clean to 3 expected fallbacks, but the runner leaves a
-   permanent cmake dependency in the converted build, which defeats the
-   transition goal; bake removes cmake from the build. Target a module
+2. **First build gate (early transition):** enable the `cmake -P` lift
+   with `--cmake-script-runner=<label>` — the cheap, faithful route that
+   defers the native rewrites (the buildbarn runner image already ships
+   cmake). Gets conversion clean to 3 expected fallbacks. Target a module
    that does NOT pull a bundled third-party (a pure VTK::CommonCore-tier
    leaf) so the build is green before the §2 forwarder fix.
-3. **Native `cc_embed` / `cc_hash` lowering (§1b) — the strategic
+3. **Native `cc_embed` / `cc_hash` lowering (§1b) — the burn-down
    target.** Convert `vtkEncodeString` / `vtkHashSource` to a repo
-   `cc_embed`-style rule + tiny hermetic tool so the converted project
-   needs neither cmake nor the converter at build time — the actual
-   transition end-state, and reusable beyond VTK.
+   `cc_embed`-style rule + tiny hermetic tool so those sites stop being
+   runner-served and the converted project needs neither cmake nor the
+   converter at build time. This is what drives the runner-served count
+   toward zero (the end-of-transition state); reusable beyond VTK. Bake
+   stays available for the rare long-tail script not worth native-izing.
 4. **The forwarder fix (§2)** is the converter change VTK uniquely
    motivates — route the third-party module wrapper's
    `target_link_libraries(<inner>_src …)` arms into the wrapper's
