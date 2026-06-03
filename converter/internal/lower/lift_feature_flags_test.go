@@ -8,9 +8,11 @@ import (
 )
 
 // TestLiftRawFeatureFlags_BasicRewrite locks the core contract:
-// recognized raw flags move from Copts/LinkOpts to Features; the
-// matching feature names are added (deduped, sorted); unrelated
-// flags stay in their slot in original order.
+// toolchain-backed raw flags (-fPIC, -fsanitize=address) move from
+// Copts/LinkOpts to Features; unrelated flags keep their slot + order;
+// and flags whose feature no toolchain backs (the visibility presets)
+// stay raw rather than being lifted onto a no-op feature that would
+// silently drop them (see toolchainfeature.RewriteFeature).
 func TestLiftRawFeatureFlags_BasicRewrite(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{{
 		Name:     "lib",
@@ -20,13 +22,15 @@ func TestLiftRawFeatureFlags_BasicRewrite(t *testing.T) {
 	}}}
 	liftRawFeatureFlags(pkg)
 	tgt := pkg.Targets[0]
-	if got, want := tgt.Copts, []string{"-O3", "-Wall"}; !reflect.DeepEqual(got, want) {
+	// -fPIC lifted to a feature; the visibility presets stay raw (no
+	// toolchain defines a visibility feature, so lifting would drop them).
+	if got, want := tgt.Copts, []string{"-O3", "-fvisibility=hidden", "-Wall", "-fvisibility-inlines-hidden"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Copts = %v, want %v", got, want)
 	}
 	if got, want := tgt.LinkOpts, []string{"-Wl,-rpath,/foo"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("LinkOpts = %v, want %v", got, want)
 	}
-	if got, want := tgt.Features, []string{"asan", "pic", "visibility_hidden", "visibility_inlines_hidden"}; !reflect.DeepEqual(got, want) {
+	if got, want := tgt.Features, []string{"asan", "pic"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Features = %v, want %v", got, want)
 	}
 }
