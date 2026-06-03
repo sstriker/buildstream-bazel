@@ -3,6 +3,7 @@ package toolchainfeature_test
 import (
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchainfeature"
 )
 
@@ -77,6 +78,39 @@ func TestRewriteFeature(t *testing.T) {
 	for _, flag := range []string{"-fvisibility=hidden", "-fvisibility-inlines-hidden", "-fsanitize=leak"} {
 		if toolchainfeature.Feature(flag) == "" {
 			t.Errorf("Feature(%q) = \"\"; audit detection should still name it", flag)
+		}
+	}
+}
+
+// TestRewriteFeature_TracksGeneratedVocabulary locks the toolkit-aware
+// invariant: the lift rewrites a flag to a feature iff that feature is in the
+// generated toolchain's declared vocabulary (toolchain.GeneratedFeatures)
+// plus the built-in `pic`. Computing the expectation from the same source
+// RewriteFeature gates on means this fails if RewriteFeature ever stops
+// tracking the vocabulary (e.g. reverts to a divergent hardcoded list), and
+// auto-adjusts when the generated toolchain's feature set legitimately
+// changes — so the lift and the emitted toolchain can't drift.
+func TestRewriteFeature_TracksGeneratedVocabulary(t *testing.T) {
+	backed := map[string]bool{"pic": true}
+	for _, f := range toolchain.GeneratedFeatures() {
+		backed[string(f)] = true
+	}
+	// Every flag Feature() recognizes.
+	flags := []string{
+		"-fPIC", "-fpic", "-flto",
+		"-fvisibility=hidden", "-fvisibility-inlines-hidden",
+		"-fsanitize=address", "-fsanitize=thread",
+		"-fsanitize=memory", "-fsanitize=undefined", "-fsanitize=leak",
+	}
+	for _, flag := range flags {
+		name := toolchainfeature.Feature(flag)
+		want := ""
+		if backed[name] {
+			want = name
+		}
+		if got := toolchainfeature.RewriteFeature(flag); got != want {
+			t.Errorf("RewriteFeature(%q) = %q, want %q (feature %q, backed=%v)",
+				flag, got, want, name, backed[name])
 		}
 	}
 }

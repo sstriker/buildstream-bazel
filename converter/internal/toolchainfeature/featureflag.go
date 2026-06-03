@@ -18,7 +18,11 @@
 // simultaneously.
 package toolchainfeature
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+)
 
 // Feature returns the cc_toolchain feature name that owns the
 // given raw compile/link flag, or "" when the flag has no
@@ -51,36 +55,53 @@ func Feature(flag string) string {
 	return ""
 }
 
+// backedFeatures is the set of feature NAMES the lift may safely rewrite a
+// raw flag to: the generated cc_toolchain's declared vocabulary
+// (toolchain.GeneratedFeatures) plus "pic" — a built-in feature every
+// cc_toolchain, including bazel's autodetected default, defines.
+//
+// Sourcing it from toolchain.GeneratedFeatures (the same set bazeltoolchain
+// emits feature() blocks for) rather than a hand-kept list is what makes the
+// lift toolkit-aware for the generated toolkit: add a feature to the
+// generated toolchain and the lift rewrites its flag automatically — the two
+// sides can't drift. Names Feature() yields that AREN'T backed (the
+// visibility presets, -fsanitize=leak) fall through to "" and stay raw, so
+// the lift can never drop a flag onto a no-op feature.
+var backedFeatures = func() map[string]bool {
+	// pic is a built-in cc feature, not a generated feature() block.
+	m := map[string]bool{"pic": true}
+	for _, f := range toolchain.GeneratedFeatures() {
+		m[string(f)] = true
+	}
+	return m
+}()
+
 // RewriteFeature returns the cc_toolchain feature name the lift may safely
 // rewrite the given raw flag to, or "" to leave it as a raw copt/linkopt.
+// It gates Feature() through backedFeatures so the lift only targets
+// features the generated toolchain actually implements.
 //
-// It is a deliberate, explicit ALLOWLIST of the Feature() names a real
-// cc_toolchain actually backs — NOT a denylist of the unbacked ones. The
-// distinction is for forward-safety: a denylist lifts every *future* Feature()
-// mapping by default, silently reintroducing the drop bug this guards against
-// the moment someone maps a flag no toolchain implements. With an allowlist a
-// new mapping stays a raw copt/linkopt until it's proven backed and added here.
+// IMPORTANT — this gates on the vocabulary of the cc_toolchain the converter
+// SHIPS ALONGSIDE these BUILD files (toolchain + lifted features are a coupled
+// matched set). It is NOT a universal truth about whatever toolchain
+// ultimately resolves: an operator can hand-edit, extend, or swap the Bazel
+// toolchain after conversion, and that's invisible here. The failure modes:
+//   - operator keeps the generated toolchain → correct.
+//   - operator ADDS features → the lift was conservative (flag stayed a raw
+//     copt), so it still compiles, just unlifted. Safe.
+//   - operator REMOVES/renames a targeted feature, or swaps in a toolchain
+//     that doesn't back it → features=[…] is a no-op Bazel silently ignores
+//     and the flag is dropped. The operator owns that divergence.
 //
-// Backed set = the features the converter's generated toolchain emits
-// (bazeltoolchain.featureSlots: asan, tsan, msan, ubsan, coverage, lto) that
-// Feature() can actually name, plus `pic` — a built-in feature every
-// cc_toolchain, including bazel's autodetected default, defines. Feature() has
-// no mapping that yields `coverage`, so it never reaches this switch.
-// Conversely the visibility presets and `-fsanitize=leak` are named by
-// Feature() but not backed by the toolchains converted projects target by
-// default — neither the generated one nor bazel's autodetected default — so
-// they fall through to "" and stay raw. (No toolchain anywhere defines a
-// visibility feature; the example sanitizer-features template DOES define an
-// `lsan` feature, but it isn't a default target, so leak stays conservative
-// here.) The planned toolkit-aware lift will replace this static allowlist
-// with the toolkit's actual feature vocabulary.
+// Likewise the resolved toolchain is a build-time (--platforms) choice, so a
+// per-kit lift would gate on the INTERSECTION of every targetable kit's
+// vocabulary. Letting the operator pass in their real toolchain to drive this
+// gate is a planned follow-up (separate PR); see ROADMAP.
 func RewriteFeature(flag string) string {
-	switch f := Feature(flag); f {
-	case "pic", "lto", "asan", "tsan", "msan", "ubsan":
+	if f := Feature(flag); backedFeatures[f] {
 		return f
-	default:
-		return ""
 	}
+	return ""
 }
 
 // IsFeatureFlag reports whether the flag has a registered feature

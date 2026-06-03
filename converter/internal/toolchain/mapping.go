@@ -42,6 +42,41 @@ const (
 	BazelFeatureStackProtector BazelFeature = "stack_protector" // -fstack-protector-strong
 )
 
+// generatedFeatures is the ordered set of BazelFeatures the converter's
+// generated cc_toolchain_config always backs — one feature() block each.
+// Accessed only through GeneratedFeatures() so this backing list stays
+// immutable.
+//
+// Hardening features (fortify_source / stack_protector) are deliberately
+// excluded: they're opt-in (Config.HardeningFeatures) rather than always
+// emitted, and no raw flag the lift sees maps to them.
+var generatedFeatures = []BazelFeature{
+	BazelFeatureDbg,
+	BazelFeatureOpt,
+	BazelFeatureAsan,
+	BazelFeatureTsan,
+	BazelFeatureMsan,
+	BazelFeatureUbsan,
+	BazelFeatureCoverage,
+	BazelFeatureLto,
+}
+
+// GeneratedFeatures returns the ordered feature vocabulary the generated
+// cc_toolchain_config always backs. It is the SINGLE SOURCE OF TRUTH for
+// that vocabulary, consumed by two sides that must not drift:
+//
+//   - bazeltoolchain emits a feature() per entry, in this order (stable
+//     .bzl diffs).
+//   - toolchainfeature gates the raw-flag → feature lift on this set (plus
+//     the built-in `pic`), so the lift can never rewrite a flag onto a
+//     feature the generated toolchain doesn't implement.
+//
+// Returns a fresh copy each call so neither consumer can mutate the source
+// (the lift snapshots it at init; a mutation would silently desync them).
+func GeneratedFeatures() []BazelFeature {
+	return append([]BazelFeature(nil), generatedFeatures...)
+}
+
 // FeatureVariants is the canonical catalog of feature probe
 // variants — sanitizers, coverage, and LTO. Each entry's
 // CacheVars sets CMAKE_C_FLAGS / CMAKE_CXX_FLAGS to the

@@ -221,20 +221,12 @@ func emitBuildBazel(m *toolchain.Model, cfg Config) ([]byte, error) {
 }
 
 // featureSlots is the ordered list of BazelFeatures the emitted
-// cc_toolchain_config.bzl produces feature() blocks for. Order is
-// stable: it controls the rendered order of constant blocks in the
-// .bzl, which keeps gofmt-style cross-version diffs minimal. Asan
-// before tsan etc. keeps the dialect-named features grouped.
-var featureSlots = []toolchain.BazelFeature{
-	toolchain.BazelFeatureDbg,
-	toolchain.BazelFeatureOpt,
-	toolchain.BazelFeatureAsan,
-	toolchain.BazelFeatureTsan,
-	toolchain.BazelFeatureMsan,
-	toolchain.BazelFeatureUbsan,
-	toolchain.BazelFeatureCoverage,
-	toolchain.BazelFeatureLto,
-}
+// cc_toolchain_config.bzl produces feature() blocks for. It's a copy of
+// toolchain.GeneratedFeatures() — the single source of truth shared with
+// toolchainfeature's flag-lift gate, so "what the toolchain backs" and
+// "what the lift may rewrite to" can't drift. Order is stable (it
+// controls the rendered order of constant blocks in the .bzl).
+var featureSlots = toolchain.GeneratedFeatures()
 
 // hardeningFeatureSlots is the ordered list of opt-in hardening
 // features (emitted only when Config.HardeningFeatures is true).
