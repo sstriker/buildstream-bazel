@@ -414,6 +414,65 @@ jobs:
       - name: Build converter
         run: make converter 2>&1 | tee -a /tmp/cijob.log
 
+      # Cache the bb-runner base images (docker.io debian:bookworm-slim +
+      # ghcr.io bb-runner-bare) across runs — the follow-up to PR #394's retry.
+      # The retry rides out the transient registry timeouts that pulling these
+      # provokes; this caches the pulls outright so the warm path never touches
+      # docker.io / ghcr at all. The cache holds a `docker save` tarball of the
+      # FROM images, keyed on the Dockerfile so a base-image bump re-populates
+      # it. Only the base-image *pulls* flake — the apt / cmake-download layers
+      # rebuild locally with their own curl --retry.
+      #
+      # Note: `docker compose build` uses BuildKit, which fetches FROM images
+      # into buildkit's *own* content store, NOT the docker daemon's image
+      # store — so a `docker save` after the build can't see them ("reference
+      # does not exist"). So we pull the base images EXPLICITLY here, into the
+      # daemon store: that's what `docker save` reads, and the daemon-embedded
+      # BuildKit reuses daemon-store images for FROM (no re-pull) on the build.
+      - name: Cache bb-runner base images
+        id: bb-base-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/bb-base-images.tar
+          key: bb-base-images-${{ hashFiles('deploy/buildbarn/runner/Dockerfile') }}
+
+      - name: Provide bb-runner base images
+        # Hit  -> docker load the saved tarball into the daemon store.
+        # Miss -> docker pull each FROM image (with PR #394's retry, since this
+        #         is the timeout-prone registry op), then docker save the
+        #         tarball for the post-job actions/cache hook to upload.
+        # Either way the base images end up in the daemon store, so the build
+        # below resolves FROM locally with no registry round-trip. Refs are
+        # parsed from the Dockerfile FROM lines, staying in lockstep with the
+        # cache key (same file) — no second place to keep the tags in sync.
+        run: |
+          set -o pipefail
+          base_images=$(grep -oP '^FROM \K\S+' deploy/buildbarn/runner/Dockerfile)
+          if [ "${{ steps.bb-base-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "loading cached bb-runner base images" | tee -a /tmp/cijob.log
+            docker load -i /tmp/bb-base-images.tar 2>&1 | tee -a /tmp/cijob.log
+            exit 0
+          fi
+          for img in $base_images; do
+            n=0
+            until [ "$n" -ge 3 ]; do
+              if docker pull "$img" 2>&1 | tee -a /tmp/cijob.log; then
+                break
+              fi
+              n=$((n + 1))
+              if [ "$n" -ge 3 ]; then
+                echo "pull of $img failed after 3 attempts" | tee -a /tmp/cijob.log
+                exit 1
+              fi
+              echo "pull of $img failed (likely a transient registry timeout); retrying in $((n * 10))s" | tee -a /tmp/cijob.log
+              sleep $((n * 10))
+            done
+          done
+          echo "caching bb-runner base images: $base_images" | tee -a /tmp/cijob.log
+          # Intentional word-split: $base_images is a space-separated ref list.
+          # shellcheck disable=SC2086
+          docker save -o /tmp/bb-base-images.tar $base_images 2>&1 | tee -a /tmp/cijob.log
+
       - name: Build custom bb-runner image (cmake/ninja layered on bb-runner-bare)
         # Building the worker image as an explicit step surfaces
         # Dockerfile / apt-repo issues independently of the test run
