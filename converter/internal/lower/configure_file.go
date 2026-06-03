@@ -117,9 +117,11 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		cc.OutToGenrule[rel] = name
 
 		out = append(out, configureFileOut{
-			AbsOutput:    call.Output,
-			RelOutput:    rel,
-			ExportHeader: strings.HasSuffix(call.Input, "/exportheader.cmake.in"),
+			AbsOutput: call.Output,
+			RelOutput: rel,
+			// Normalize backslashes so a Windows-separator trace still matches
+			// (mirrors shadow.isGenerateExportHeaderTemplate).
+			ExportHeader: strings.HasSuffix(strings.ReplaceAll(call.Input, "\\", "/"), "/exportheader.cmake.in"),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })

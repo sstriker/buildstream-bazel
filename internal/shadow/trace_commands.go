@@ -527,9 +527,10 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 // isGenerateExportHeaderTemplate reports whether the configure_file input is
 // CMake's GenerateExportHeader template (exportheader.cmake.in). cmake always
 // passes it as an absolute, module-dir-prefixed path, so a "/"-anchored suffix
-// match is precise without pulling in a path import.
+// match is precise. Backslashes are normalized first so a trace recorded with
+// Windows separators still matches (cmake can emit either).
 func isGenerateExportHeaderTemplate(input string) bool {
-	return strings.HasSuffix(input, "/exportheader.cmake.in")
+	return strings.HasSuffix(strings.ReplaceAll(input, "\\", "/"), "/exportheader.cmake.in")
 }
 
 // FileGenerateCall records one user-written
