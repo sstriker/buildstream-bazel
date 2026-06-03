@@ -487,11 +487,23 @@ jobs:
             done
           done
           echo "caching bb-runner base images: $base_images" | tee -a /tmp/cijob.log
+          # Save to a temp file and mv into place only on success, so the cache
+          # path never holds a partial tarball: a docker save interrupted partway
+          # would otherwise be uploaded by the actions/cache post step, and then
+          # every later run would cache-hit and fail loudly on docker load — a
+          # one-off hiccup turned into persistent CI failure until eviction. A
+          # save failure just degrades to "no cache this run"; the base images
+          # are already in the daemon store for the build below.
           # Intentional word-split: grep emits one ref per line, so $base_images
           # is a whitespace-separated (newline-delimited) ref list that IFS
           # splits into docker save's positional image args.
           # shellcheck disable=SC2086
-          docker save -o /tmp/bb-base-images.tar $base_images 2>&1 | tee -a /tmp/cijob.log
+          if docker save -o /tmp/bb-base-images.tar.tmp $base_images 2>&1 | tee -a /tmp/cijob.log; then
+            mv /tmp/bb-base-images.tar.tmp /tmp/bb-base-images.tar
+          else
+            echo "docker save failed; skipping base-image cache for this run" | tee -a /tmp/cijob.log
+            rm -f /tmp/bb-base-images.tar.tmp
+          fi
 
       - name: Build custom bb-runner image (cmake/ninja layered on bb-runner-bare)
         # Building the worker image as an explicit step surfaces
