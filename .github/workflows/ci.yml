@@ -462,8 +462,14 @@ jobs:
           base_images=$(grep -oP '^FROM \K\S+' deploy/buildbarn/runner/Dockerfile)
           if [ "${{ steps.bb-base-cache.outputs.cache-hit }}" = "true" ]; then
             echo "loading cached bb-runner base images" | tee -a /tmp/cijob.log
-            docker load -i /tmp/bb-base-images.tar 2>&1 | tee -a /tmp/cijob.log
-            exit 0
+            # Fail loudly if the restored tarball is corrupt rather than
+            # silently proceeding (the unconditional exit 0 would otherwise
+            # discard docker load's non-zero status even under pipefail).
+            if docker load -i /tmp/bb-base-images.tar 2>&1 | tee -a /tmp/cijob.log; then
+              exit 0
+            fi
+            echo "docker load of cached base images failed (corrupt tarball?)" | tee -a /tmp/cijob.log
+            exit 1
           fi
           for img in $base_images; do
             n=0
