@@ -50,7 +50,10 @@ on `$PATH` — don't burn a turn rediscovering them with `which`:
 
 - `bazel` / `bazelisk` (repo-pinned launcher; `BAZELISK_BASE_URL` points at
   GitHub releases because `releases.bazel.build` 403s here), `buildifier`,
-  `cmake`, `ninja`, `go` (host SDK), `gofmt`, `gfortran`.
+  `cmake` (bumped to the Makefile `CMAKE_VERSION` pin — cmake 4.x — so web
+  sessions survey on the same cmake as production; the base image's system
+  cmake is older, and modern projects' `>=3.29` floors would fail on it),
+  `ninja`, `go` (host SDK), `gofmt`, `gfortran`.
 - BCR modules resolve: `~/.bazelrc` repoints `--registry` at the GitHub BCR
   mirror (`bcr.bazel.build` — and every `*.bazel.build` host — 403s in this
   sandbox) and hands bazel's JVM a truststore for the egress CA. So
