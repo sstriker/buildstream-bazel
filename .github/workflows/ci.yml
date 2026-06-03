@@ -427,7 +427,32 @@ jobs:
         # below. docker compose up would build it implicitly anyway,
         # but the failure mode there is opaque. The remote-execution
         # gate below (e2e-meta-buildbarn-re) needs this image.
-        run: docker compose -f deploy/buildbarn/docker-compose.yml build bb-runner-bare 2>&1 | tee -a /tmp/cijob.log
+        #
+        # Retry the build: resolving the base images (docker.io
+        # debian:bookworm-slim, ghcr.io bb-runner-bare) transiently times out
+        # — the recurring buildbarn-e2e flake. Re-attempts reuse cached layers,
+        # so a retry is cheap and clears the transient registry stall.
+        run: |
+          # Explicit pipefail: the retry below keys off the `docker compose
+          # build` exit, but it's piped to tee — without pipefail the pipeline
+          # would report tee's success and never retry. (The job's shell: bash
+          # default already enables it; set it here too so the retry is robust
+          # regardless of how this step is invoked.)
+          set -o pipefail
+          n=0
+          until [ "$n" -ge 3 ]; do
+            if docker compose -f deploy/buildbarn/docker-compose.yml build bb-runner-bare 2>&1 | tee -a /tmp/cijob.log; then
+              exit 0
+            fi
+            n=$((n + 1))
+            # Only back off + announce a retry when another attempt will run.
+            if [ "$n" -lt 3 ]; then
+              echo "bb-runner image build attempt $n failed (likely a transient registry timeout); retrying in $((n * 10))s" | tee -a /tmp/cijob.log
+              sleep $((n * 10))
+            fi
+          done
+          echo "bb-runner image build failed after 3 attempts" | tee -a /tmp/cijob.log
+          exit 1
 
       - name: Run source-push roundtrip against real bb-storage (PR #59)
         # Pack a synthetic source tree, push every blob into CAS via
