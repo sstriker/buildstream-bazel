@@ -2941,6 +2941,19 @@ transition cleanly.
   are skipped with a stderr diagnostic; signal consumption is
   best-effort enrichment, not a hard input. Render gate:
   `scripts/meta-unify-toolchains.sh` (section 9).
+- **Generated cc_toolchain layout builds under bazel 9 + a build gate.**
+  The emitted `cc_toolchain_config.bzl` / `toolchains/BUILD.bazel` relied on
+  bazel's removed built-in globals (native `cc_toolchain`, `cc_common`,
+  `CcToolchainConfigInfo`), so the whole layout failed to *load* under
+  bazel 9 — a gap the render-only gates never caught because none compiled
+  with the generated toolchain. Both emitters (`bazeltoolchain.emit` +
+  `.unified`) now carry the Starlark-autoload `load()`s (`@rules_cc//cc:defs.bzl`
+  cc_toolchain, `@rules_cc//cc/common:cc_common.bzl` cc_common) and drop the
+  removed-global `provides`. `scripts/meta-toolchain-build.sh`
+  (`make e2e-meta-toolchain-build`, in the bazel-e2e job) is the regression
+  gate: derive a toolchain from a live cmake probe, then `bazel build` a C++
+  target *forcing* it.
+
 - **Unified multi-platform Bazel toolchain layout from CMake.**
   Operators with cmake projects can now generate a normal-shaped
   multi-platform Bazel toolchain layout — `//platforms`,
