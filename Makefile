@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-survey-regression \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -85,6 +85,8 @@ GRPC_VERSION      ?= v1.68.0
 GRPC_DIR          ?= /tmp/grpc
 GLOG_VERSION      ?= v0.7.1
 GLOG_DIR          ?= /tmp/glog
+GLM_VERSION       ?= 1.0.1
+GLM_DIR           ?= /tmp/glm
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1265,6 +1267,18 @@ fetch-glog:
 		echo "glog already at $(GLOG_DIR); rm -rf to refetch"; \
 	fi
 
+# glm: a header-only INTERFACE lib (glm-header-only) whose include path is the
+# source root, plus a compiled glm that PUBLIC-links it. The INTERFACE lib
+# emitted empty (root include skipped) and the glm→glm-header-only edge was
+# dropped — fixed (lowerInterfaceLibraries root-walk header ownership +
+# routeTraceInterfaceLibDeps edge routing).
+fetch-glm:
+	@if [ ! -d "$(GLM_DIR)" ]; then \
+		git clone --depth 1 --branch $(GLM_VERSION) https://github.com/g-truc/glm.git "$(GLM_DIR)"; \
+	else \
+		echo "glm already at $(GLM_DIR); rm -rf to refetch"; \
+	fi
+
 # mbedtls: wrapped `ctest -D Experimental` dashboard target wrongly lifted
 # (fixed — isCMakeInternalCmd dashboard filter). NOTE: 3.6.x needs its
 # `framework` git submodule, so this fetch recurses submodules.
@@ -1356,7 +1370,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see

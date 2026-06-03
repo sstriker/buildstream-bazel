@@ -66,6 +66,16 @@ func lowerInterfaceLibraries(
 	// an INTERFACE-only target, both arms describe what consumers
 	// see, which is the entire interface surface.
 	includesByTarget := map[string][]string{}
+	// Targets whose INTERFACE/PUBLIC include path is the package root
+	// (e.g. `target_include_directories(lib INTERFACE
+	// $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>)`). Bazel rejects
+	// `includes = [""]`, so the root never becomes an include attr — but
+	// the headers under it must still be discovered, so we record the
+	// target here and prepend "" to its discoverHeaders walk below
+	// (mirrors the codemodel path's walkPkgRootForHdrs). Without this an
+	// INTERFACE lib that declares only the source root emits empty
+	// (glm's glm-header-only shape).
+	rootWalkByTarget := map[string]bool{}
 	for _, ic := range decoded.Includes {
 		for _, grp := range ic.Groups {
 			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
@@ -81,7 +91,11 @@ func lowerInterfaceLibraries(
 					}
 				}
 				rel = strings.TrimSpace(rel)
-				if rel == "" || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+				if rel == "" {
+					rootWalkByTarget[ic.Target] = true
+					continue
+				}
+				if strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
 					continue
 				}
 				includesByTarget[ic.Target] = append(includesByTarget[ic.Target], rel)
@@ -289,7 +303,15 @@ func lowerInterfaceLibraries(
 			if missing == nil {
 				missing = map[string]bool{}
 			}
-			h, err := discoverHeaders(hostSrc, includes, cache, missing)
+			// Prepend the package root "" when the target declared a
+			// root-level include (see rootWalkByTarget) so discoverHeaders
+			// materialises the headers that live there — without it the
+			// INTERFACE lib would emit empty.
+			walkDirs := includes
+			if rootWalkByTarget[call.Name] {
+				walkDirs = append([]string{""}, includes...)
+			}
+			h, err := discoverHeaders(hostSrc, walkDirs, cache, missing)
 			if err == nil {
 				hdrs = h
 			}

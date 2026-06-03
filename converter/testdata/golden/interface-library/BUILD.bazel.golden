@@ -14,6 +14,7 @@ cc_binary(
     defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
     linkopts = ["-O3"],  # keep
+    deps = [":iflib"],
 )
 
 cc_library(
