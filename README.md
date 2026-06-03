@@ -2,6 +2,11 @@
 
 **Take your BuildStream project to Bazel — for real, not a wrapper.**
 
+> ⚠️ **Proof of concept.** This repository is exploratory work, not a
+> product. There are no releases — clone and build from source. Your
+> mileage may vary: it may or may not succeed on your project. Expect
+> rough edges.
+
 If you maintain a [BuildStream](https://www.buildstream.build/)
 project — say, the
 [FreeDesktop SDK](https://gitlab.com/freedesktop-sdk/freedesktop-sdk)
