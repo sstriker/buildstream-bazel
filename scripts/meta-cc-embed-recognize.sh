@@ -125,18 +125,32 @@ bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
 EOF
 
+# Append a cc_binary that LINKS the converted library, so the build half
+# exercises the full consumer wiring: the library compiles use_shader.cxx
+# (#include "shader_glsl.h") + the generated shader_glsl.cxx and links the
+# embedded symbol. This catches a regression where recoverGenrule mis-maps
+# the consumed output (.h vs .cxx) or the generated header isn't wired as a
+# declared hdr — either leaves the symbol undefined at link.
+grep -q '"@rules_cc//cc:defs.bzl"' "$ws/BUILD.bazel" \
+    && sed -i 's#\("@rules_cc//cc:defs.bzl", "cc_library"\)#\1, "cc_binary"#' "$ws/BUILD.bazel" \
+    || sed -i '1a load("@rules_cc//cc:defs.bzl", "cc_binary")' "$ws/BUILD.bazel"
+printf 'extern const char *get_shader();\nint main() { return (get_shader() && get_shader()[0]) ? 0 : 1; }\n' > "$ws/link_main.cxx"
+cat >> "$ws/BUILD.bazel" <<'EOF'
+
+cc_binary(
+    name = "link_check",
+    srcs = ["link_main.cxx"],
+    deps = [":ccembedvtk"],
+)
+EOF
+
 bz_cache="$work_dir/.bzcache"
 # shellcheck disable=SC2086
 if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARGS:-} \
-        build ${META_BAZEL_BUILD_ARGS:-} //:gen_shader_glsl_h) >"$work_dir/bazel.log" 2>&1; then
-    echo "FAIL: bazel build of the recognized cc_embed failed"
+        run ${META_BAZEL_BUILD_ARGS:-} //:link_check) >"$work_dir/bazel.log" 2>&1; then
+    echo "FAIL: building/running the consumer that links the cc_embed-produced symbol failed"
     sed 's/^/   /' "$work_dir/bazel.log"
     exit 1
 fi
-gen_src="$(find -L "$ws/bazel-bin" -name 'shader_glsl.cxx' 2>/dev/null | head -1)"
-if [ -z "$gen_src" ] || ! grep -q "shader_glsl" "$gen_src"; then
-    echo "FAIL: cc_embed didn't produce shader_glsl.cxx defining the symbol"
-    exit 1
-fi
 
-echo "ok  meta-cc-embed-recognize: cc_embed builds (runs cc-embed, emits the embedded symbol) — no cmake at build time"
+echo "ok  meta-cc-embed-recognize: the converted library compiles + LINKS the embedded symbol (consumer build, no cmake)"

@@ -92,6 +92,12 @@ func recognizeCcEmbed(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeS
 	for _, o := range genruleOuts(b, buildDir) {
 		cc.OutToGenrule[o] = name
 	}
+	// Record the source→header pairing so a target that compiles the
+	// generated .cxx also gets the sibling .h in its hdrs (the .cxx
+	// #includes the .h; both need it as a declared input).
+	if cc.CcEmbedSourceToHeader != nil {
+		cc.CcEmbedSourceToHeader[source] = header
+	}
 	return name, true
 }
 
