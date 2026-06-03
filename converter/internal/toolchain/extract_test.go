@@ -69,6 +69,33 @@ func TestFromReply_HelloWorldFixture(t *testing.T) {
 	}
 }
 
+// TestFromReply_Sysroot: a CMAKE_SYSROOT cache entry (set by a cross
+// toolchain file) is lifted into Model.Sysroot; its absence leaves it "".
+func TestFromReply_Sysroot(t *testing.T) {
+	r, err := fileapi.Load("../../testdata/fileapi/hello-world")
+	if err != nil {
+		t.Fatalf("fileapi.Load: %v", err)
+	}
+	// Baseline fixture has no CMAKE_SYSROOT → host build, empty sysroot.
+	if m, err := FromReply(r); err != nil {
+		t.Fatalf("FromReply: %v", err)
+	} else if m.Sysroot != "" {
+		t.Errorf("host build Sysroot = %q, want empty", m.Sysroot)
+	}
+	// Inject one (as a cross toolchain file would) and confirm it lifts.
+	const want = "/opt/aarch64-sysroot"
+	r.Cache.Entries = append(r.Cache.Entries, fileapi.CacheEntry{
+		Name: "CMAKE_SYSROOT", Value: want, Type: "PATH",
+	})
+	m, err := FromReply(r)
+	if err != nil {
+		t.Fatalf("FromReply: %v", err)
+	}
+	if m.Sysroot != want {
+		t.Errorf("Sysroot = %q, want %q", m.Sysroot, want)
+	}
+}
+
 func TestFromReply_NilRejected(t *testing.T) {
 	if _, err := FromReply(nil); err == nil {
 		t.Error("FromReply(nil) should error")

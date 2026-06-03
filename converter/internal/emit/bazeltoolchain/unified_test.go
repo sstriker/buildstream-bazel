@@ -506,3 +506,53 @@ func TestEmitUnified_RejectsKitVsPlatformNameCollision(t *testing.T) {
 		t.Fatal("EmitUnified accepted a kit name equal to a platform name; want collision error")
 	}
 }
+
+// TestEmitUnified_BuiltinSysroot: a probed CMAKE_SYSROOT becomes the
+// cc_toolchain_config builtin_sysroot instance attr (so Bazel passes
+// --sysroot=), the rule definition declares the attr + threads it
+// (empty → None), and a host build (no sysroot) emits no instance attr
+// so its output stays byte-identical to the pre-sysroot layout.
+func TestEmitUnified_BuiltinSysroot(t *testing.T) {
+	mk := func(sysroot string) PlatformToolchain {
+		return PlatformToolchain{
+			Name:        "linux_aarch64",
+			Constraints: []string{"@platforms//os:linux", "@platforms//cpu:arm64"},
+			Resolved: &toolchain.ResolvedToolchain{
+				Base: &toolchain.Model{
+					TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "aarch64"},
+					Sysroot:        sysroot,
+					Languages: map[string]toolchain.Language{
+						"C": {CompilerID: "GNU", CompilerPath: "/usr/bin/aarch64-linux-gnu-gcc"},
+					},
+				},
+				Variants: map[string]*toolchain.VariantDelta{},
+			},
+		}
+	}
+
+	withSR, err := EmitUnified([]PlatformToolchain{mk("/opt/aarch64-sysroot")}, UnifiedConfig{})
+	if err != nil {
+		t.Fatalf("EmitUnified (sysroot): %v", err)
+	}
+	tcB := string(withSR.Files["toolchains/BUILD.bazel"])
+	if !strings.Contains(tcB, `builtin_sysroot = "/opt/aarch64-sysroot"`) {
+		t.Errorf("toolchains/BUILD.bazel missing builtin_sysroot instance attr\n%s", tcB)
+	}
+	cfg := string(withSR.Files["toolchains/cc_toolchain_config.bzl"])
+	for _, want := range []string{
+		`"builtin_sysroot": attr.string(default = "")`,
+		`builtin_sysroot = ctx.attr.builtin_sysroot or None`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("cc_toolchain_config.bzl missing %q", want)
+		}
+	}
+
+	hostBundle, err := EmitUnified([]PlatformToolchain{mk("")}, UnifiedConfig{})
+	if err != nil {
+		t.Fatalf("EmitUnified (host): %v", err)
+	}
+	if hostB := string(hostBundle.Files["toolchains/BUILD.bazel"]); strings.Contains(hostB, "builtin_sysroot =") {
+		t.Errorf("host build must not emit a builtin_sysroot instance attr\n%s", hostB)
+	}
+}
