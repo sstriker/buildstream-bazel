@@ -1349,6 +1349,37 @@ transition cleanly.
   configure_file-shape case). Same operator-plumbing pattern
   as `--cmake-configure-file-bin`.
 
+- **`cmake -P` embed-file-as-C-array idiom → native `cc_embed`
+  rule (`--lift-cc-embed`) — shipped, now auto-staged by write-a.**
+  The Bazel-native END-state for the dominant codegen idiom the
+  runner/bake bridges otherwise serve at build time: a custom command
+  running a known file-embedding encoder (VTK's `vtkEncodeString.cmake`;
+  the same pattern recurs across LLVM / Qt / game engines) lowers to the
+  `cc_embed` rule (`//tools:cc-embed`) instead of refusing, running
+  cmake at build time (the runner), or freezing bytes at convert time
+  (the bake). Faithful — the symbol name + runtime bytes are preserved —
+  and hermetic (no convert-time execution, no cmake downstream). The
+  recognizer (`recognizeCcEmbed`, gated on `--lift-cc-embed` +
+  `knownCcEmbedEncoders`) parses the `-D` arg contract, declines on the
+  shapes the rule would reject (export half-set, nul-without-binary,
+  header/source dir mismatch, source outside the tree), and wires the
+  generated `.cxx` into the consuming library's `srcs` AND the sibling
+  `.h` into its `hdrs` (a `#include`d generated header must be a declared
+  input under Bazel — `CcEmbedSourceToHeader`), so a `vtkEncodeString`-
+  using library compiles + LINKS the embedded symbol (render+build gate
+  `scripts/meta-cc-embed-recognize.sh`). **This slice closes the
+  operator-plumbing gap**: `cmd/write-a --cc-embed-bin <path>` stages the
+  `cc-embed` binary into project A + project B `tools/` and threads
+  `--lift-cc-embed=true` into every kind:cmake converter genrule (both the
+  single-BUILD and `--split-packages` paths), mirroring
+  `--cmake-configure-file-bin` — so the lift is usable from a real
+  orchestrated conversion, not just the direct-converter gate. Off by
+  default (the encoder edge stays on the runner/bake/refuse path);
+  byte-stable when unset. New encoders sharing the `-D` contract drop into
+  `knownCcEmbedEncoders`. Per the runner→zero metric, every encoder this
+  recognizes is one fewer runner-served edge. See
+  `docs/research/codegen-idiom-coverage.md`.
+
 - **`cmake -E create_symlink` op support.** Adds the
   `create_symlink` op to the cmake -E lift's allowlist
   (alongside `copy` / `copy_if_different` / `touch` /

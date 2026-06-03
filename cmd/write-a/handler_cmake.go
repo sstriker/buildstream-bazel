@@ -30,6 +30,21 @@ var cmakeConfig struct {
 	// the tool working unchanged.
 	configureFileBin string
 
+	// ccEmbedBin is the absolute path to the cc-embed binary. When
+	// non-empty it mirrors configureFileBin for the cc_embed lift:
+	//   - writeProjectA / writeProjectB stage the binary into their
+	//     tools/ dir and add it to exports_files.
+	//   - The per-cmake-element genrule cmd includes
+	//     `--lift-cc-embed=true` so convert-element-cmake recognizes a
+	//     known file-embedding cmake -P encoder (VTK's vtkEncodeString)
+	//     and lowers it to the native cc_embed rule
+	//     (//tools:cc-embed) instead of refusing / running cmake at
+	//     build time.
+	// Empty (default) leaves the recognizer off — the encoder edge
+	// falls through to the runner/bake/refuse path. See
+	// docs/research/codegen-idiom-coverage.md.
+	ccEmbedBin string
+
 	// round2FallbackEnabled toggles the kind:cmake round-2
 	// fallback shape (Phase B; see
 	// docs/design/rendezvous.md).
@@ -596,6 +611,13 @@ filegroup(
 	if cmakeConfig.configureFileBin != "" {
 		liftFlag = ` \
             --lift-configure-file=true`
+	}
+	// cc_embed lift rides the same liftFlag string so it threads into
+	// both the split (cmakeSplitConvertBlock) and single-BUILD genrule
+	// paths without a separate parameter.
+	if cmakeConfig.ccEmbedBin != "" {
+		liftFlag += ` \
+            --lift-cc-embed=true`
 	}
 	// Phase B round-2 fallback: when enabled, convert-element-cmake
 	// is told to turn classifier refusals into the placeholder

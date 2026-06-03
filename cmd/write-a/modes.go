@@ -121,6 +121,7 @@ type modeFlags struct {
 	traceRound1           bool
 	platformsJSON         string
 	cmakeConfigureFileBin string
+	ccEmbedBin            string
 
 	// useFuseSources is the experimental fuse-sources opt-in. It's
 	// not a dial input per se, but the FUSE template for kind:cmake
