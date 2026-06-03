@@ -23,3 +23,19 @@ _ZN3fmt3v116detail11utf8_decodeEPKcPjPi
 _ZN3fmt3v116detail18parse_dynamic_specIcEEPKT_S5_S5_RiRNS1_7arg_refIS3_EERNS0_26basic_format_parse_contextIS3_EE
 # fmt::v11::detail::format_float<double> inner lambda — cmake-side instantiation
 _ZZN3fmt3v116detail12format_floatIdEEiT_iNS1_11float_specsERNS1_6bufferIcEEENKUljPcE_clEjS8_
+
+# fmt::v11::detail::dragonbox::cache_accessor<double>::get_cached_power(int)
+# — bazel-side weak template instantiation, same different-inlining-decision
+# category as the three above. Surfaced once the converter started faithfully
+# applying fmt's CMAKE_CXX_VISIBILITY_PRESET=hidden /
+# CMAKE_VISIBILITY_INLINES_HIDDEN presets to the Bazel build as raw copts
+# (PR #395). Previously those flags were lifted onto visibility_* features no
+# toolchain backs, so the fidelity bazel build — which uses bazel's default
+# autodetected toolchain — silently dropped them and compiled fmt *without*
+# visibility hiding. Now -fvisibility=hidden -fvisibility-inlines-hidden reach
+# the compile (matching cmake), which shifts gcc/clang's template-instantiation
+# / inlining boundary: this dragonbox cache accessor for double is emitted as a
+# standalone weak symbol bazel-side where the cmake distro toolchain doesn't
+# emit it (inlined away / instantiated at a different boundary). It's a
+# detail-namespace internal helper, not part of fmt's public API.
+_ZN3fmt3v116detail9dragonbox14cache_accessorIdE16get_cached_powerEi
