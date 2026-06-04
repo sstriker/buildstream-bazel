@@ -2506,26 +2506,32 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	for _, inc := range includesForWalk {
 		seenWalk[inc] = true
 	}
-	for _, s := range irt.Srcs {
-		dir := filepath.ToSlash(filepath.Dir(s))
-		if dir == "." {
-			dir = ""
+	// Gated on hostSrcOnDisk: without a real on-disk source root the per-dir
+	// os.Stat below would probe the current working directory (filepath.Join
+	// with an empty hostSrc collapses to the bare dir), so a reply-dir-only
+	// offline run could accidentally stage headers from an unrelated CWD.
+	if hostSrcOnDisk {
+		for _, s := range irt.Srcs {
+			dir := filepath.ToSlash(filepath.Dir(s))
+			if dir == "." {
+				dir = ""
+			}
+			if seenWalk[dir] {
+				continue
+			}
+			// Skip dirs that aren't real source-tree directories. A GENERATED
+			// source (CUSTOM_COMMAND output like "gen/foo.cc") carries a
+			// build-dir path that doesn't exist under hostSrc at convert time;
+			// feeding it to discoverHeaders would os.Stat(hostSrc/"gen") → miss
+			// → record it in cc.MissingIncludeDirs and surface a misleading
+			// "missing include dir" warning/rejection. Only real in-tree dirs
+			// hold sibling headers worth staging.
+			if st, statErr := os.Stat(filepath.Join(hostSrc, dir)); statErr != nil || !st.IsDir() {
+				continue
+			}
+			seenWalk[dir] = true
+			includesForWalk = append(includesForWalk, dir)
 		}
-		if seenWalk[dir] {
-			continue
-		}
-		// Skip dirs that aren't real source-tree directories. A GENERATED
-		// source (CUSTOM_COMMAND output like "gen/foo.cc") carries a build-dir
-		// path that doesn't exist under hostSrc at convert time; feeding it to
-		// discoverHeaders would os.Stat(hostSrc/"gen") → miss → record it in
-		// cc.MissingIncludeDirs and surface a misleading "missing include dir"
-		// warning/rejection. Only real in-tree dirs hold sibling headers worth
-		// staging, so stat-gate the add (this also no-ops on an empty hostSrc).
-		if st, statErr := os.Stat(filepath.Join(hostSrc, dir)); statErr != nil || !st.IsDir() {
-			continue
-		}
-		seenWalk[dir] = true
-		includesForWalk = append(includesForWalk, dir)
 	}
 	hdrs, err := discoverHeaders(hostSrc, includesForWalk, cc.HeaderWalkCache, cc.MissingIncludeDirs)
 	if err != nil {
