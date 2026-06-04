@@ -58,7 +58,7 @@ func TestRecognizeCcHash_FiresOnWellFormedSite(t *testing.T) {
 // interface) is recognized AND normalized to the canonical uppercase spelling
 // the cc_hash rule's `values` attr accepts — not declined to the fallback.
 func TestRecognizeCcHash_AlgorithmCaseInsensitive(t *testing.T) {
-	args := `"-Dinput_file=/src/x.cxx" "-Doutput_name=xHash" "-Dalgorithm=sha256"`
+	args := `"-Dinput_file=/src/x.cxx" "-Doutput_file=/build/xHash.h" "-Doutput_name=xHash" "-Dalgorithm=sha256"`
 	ok, spec := recognizeCcHashCase(t, args, []string{"/build/xHash.h"})
 	if !ok {
 		t.Fatal("lowercase algorithm should still be recognized")
@@ -71,7 +71,7 @@ func TestRecognizeCcHash_AlgorithmCaseInsensitive(t *testing.T) {
 // TestRecognizeCcHash_DefaultsToMD5 pins cmake's vtk_hash_source default: a
 // missing -Dalgorithm= is treated as MD5 (cmake's default), not declined.
 func TestRecognizeCcHash_DefaultsToMD5(t *testing.T) {
-	args := `"-Dinput_file=/src/x.cxx" "-Doutput_name=xHash"`
+	args := `"-Dinput_file=/src/x.cxx" "-Doutput_file=/build/xHash.h" "-Doutput_name=xHash"`
 	ok, spec := recognizeCcHashCase(t, args, []string{"/build/xHash.h"})
 	if !ok {
 		t.Fatal("missing algorithm should default to MD5, not decline")
@@ -89,22 +89,27 @@ func TestRecognizeCcHash_Declines(t *testing.T) {
 	}{
 		{
 			name:  "missing input_file",
-			dArgs: `"-Doutput_name=xHash" "-Dalgorithm=SHA256"`,
+			dArgs: `"-Doutput_file=/build/xHash.h" "-Doutput_name=xHash" "-Dalgorithm=SHA256"`,
+			outs:  []string{"/build/xHash.h"},
+		},
+		{
+			name:  "missing output_file",
+			dArgs: `"-Dinput_file=/src/x.cxx" "-Doutput_name=xHash" "-Dalgorithm=SHA256"`,
 			outs:  []string{"/build/xHash.h"},
 		},
 		{
 			name:  "missing output_name",
-			dArgs: `"-Dinput_file=/src/x.cxx" "-Dalgorithm=SHA256"`,
+			dArgs: `"-Dinput_file=/src/x.cxx" "-Doutput_file=/build/xHash.h" "-Dalgorithm=SHA256"`,
 			outs:  []string{"/build/xHash.h"},
 		},
 		{
 			name:  "unsupported algorithm",
-			dArgs: `"-Dinput_file=/src/x.cxx" "-Doutput_name=xHash" "-Dalgorithm=CRC32"`,
+			dArgs: `"-Dinput_file=/src/x.cxx" "-Doutput_file=/build/xHash.h" "-Doutput_name=xHash" "-Dalgorithm=CRC32"`,
 			outs:  []string{"/build/xHash.h"},
 		},
 		{
 			name:  "input outside source tree",
-			dArgs: `"-Dinput_file=/elsewhere/x.cxx" "-Doutput_name=xHash" "-Dalgorithm=SHA256"`,
+			dArgs: `"-Dinput_file=/elsewhere/x.cxx" "-Doutput_file=/build/xHash.h" "-Doutput_name=xHash" "-Dalgorithm=SHA256"`,
 			outs:  []string{"/build/xHash.h"},
 		},
 		{
@@ -127,7 +132,7 @@ func TestRecognizeCcHash_Declines(t *testing.T) {
 func TestRecognizeCcHash_OffByDefault(t *testing.T) {
 	cc := newCodegenContext() // LiftCCHash defaults false
 	b := &ninja.Build{Outputs: []string{"/build/xHash.h"}}
-	cmd := `/usr/bin/cmake "-Dinput_file=/src/x.cxx" "-Doutput_name=xHash" "-Dalgorithm=SHA256" -P /src/CMake/vtkHashSource.cmake`
+	cmd := `/usr/bin/cmake "-Dinput_file=/src/x.cxx" "-Doutput_file=/build/xHash.h" "-Doutput_name=xHash" "-Dalgorithm=SHA256" -P /src/CMake/vtkHashSource.cmake`
 	if _, ok := recognizeCcHash(cc, b, cmd, "/src/CMake/vtkHashSource.cmake", "/src", "/build"); ok {
 		t.Error("recognizer must not fire with --lift-cc-hash off")
 	}
