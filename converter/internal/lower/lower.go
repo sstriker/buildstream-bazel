@@ -2480,10 +2480,21 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		if dir == "." {
 			dir = ""
 		}
-		if !seenWalk[dir] {
-			seenWalk[dir] = true
-			includesForWalk = append(includesForWalk, dir)
+		if seenWalk[dir] {
+			continue
 		}
+		// Skip dirs that aren't real source-tree directories. A GENERATED
+		// source (CUSTOM_COMMAND output like "gen/foo.cc") carries a build-dir
+		// path that doesn't exist under hostSrc at convert time; feeding it to
+		// discoverHeaders would os.Stat(hostSrc/"gen") → miss → record it in
+		// cc.MissingIncludeDirs and surface a misleading "missing include dir"
+		// warning/rejection. Only real in-tree dirs hold sibling headers worth
+		// staging, so stat-gate the add (this also no-ops on an empty hostSrc).
+		if st, statErr := os.Stat(filepath.Join(hostSrc, dir)); statErr != nil || !st.IsDir() {
+			continue
+		}
+		seenWalk[dir] = true
+		includesForWalk = append(includesForWalk, dir)
 	}
 	hdrs, err := discoverHeaders(hostSrc, includesForWalk, cc.HeaderWalkCache, cc.MissingIncludeDirs)
 	if err != nil {
