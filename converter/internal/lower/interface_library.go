@@ -91,7 +91,16 @@ func lowerInterfaceLibraries(
 					}
 				}
 				rel = strings.TrimSpace(rel)
-				if rel == "" {
+				// The package root presents three ways: "" (an absolute
+				// ${CMAKE_SOURCE_DIR} that relativized to the element root) and
+				// the literal current-dir forms "." / "./" (a project writing
+				// `target_include_directories(lib INTERFACE .)`, recorded
+				// verbatim by --trace-expand). All denote the root: Bazel rejects
+				// includes=[""], and a stray "." would pollute split header-lib
+				// planning (normDir(".") → "" → a bogus root header lib), so route
+				// them to the root-walk signal instead of the includes slice —
+				// matching the codemodel path's rel=="" || rel=="." handling.
+				if rel == "" || rel == "." || rel == "./" {
 					rootWalkByTarget[ic.Target] = true
 					continue
 				}

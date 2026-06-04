@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -153,5 +154,43 @@ func TestLowerInterfaceLibraries_PrivateScopeNotRouted(t *testing.T) {
 	}
 	if len(got[0].Deps) != 0 {
 		t.Errorf("PRIVATE deps should not route on INTERFACE lib; got %v", got[0].Deps)
+	}
+}
+
+// TestLowerInterfaceLibraries_DotIncludeIsRootWalk: a literal "." (or "./")
+// INTERFACE include dir — `target_include_directories(lib INTERFACE .)`
+// recorded verbatim by --trace-expand — denotes the package root, like "". It
+// must set RootInclude (so split can restore include_prefix) and must NOT leak
+// "." into the includes slice (normDir(".") → "" would synthesize a bogus root
+// header lib under --split-packages). Matches the codemodel path's
+// rel=="" || rel=="." handling.
+func TestLowerInterfaceLibraries_DotIncludeIsRootWalk(t *testing.T) {
+	decoded := &shadow.Decoded{
+		AddLibraries: []shadow.AddLibraryCall{
+			{Name: "hdrlib", Type: "INTERFACE"},
+		},
+		Includes: []shadow.TargetIncludeCall{
+			{Target: "hdrlib", Groups: []shadow.TargetIncludeGroup{
+				{Visibility: "INTERFACE", Dirs: []string{"."}},
+			}},
+		},
+	}
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	var lib *ir.Target
+	for i := range got {
+		if got[i].Name == "hdrlib" {
+			lib = &got[i]
+		}
+	}
+	if lib == nil {
+		t.Fatalf("hdrlib not emitted: %+v", got)
+	}
+	if !lib.RootInclude {
+		t.Errorf("RootInclude = false; want true for a \".\" INTERFACE include dir")
+	}
+	for _, inc := range lib.Includes {
+		if inc == "." || inc == "" || inc == "./" {
+			t.Errorf("includes leaked a root-dir entry %q: %v", inc, lib.Includes)
+		}
 	}
 }
