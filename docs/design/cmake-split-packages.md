@@ -8,6 +8,10 @@ layout an operator already reads. This document describes the package
 model, the header-library synthesis, the label rules, and the v1
 boundaries.
 
+For a worked side-by-side example — a small CMake project shown next to
+its converted `BUILD.bazel` tree, directory for directory — see
+[`docs/cmake-split-packages-example.md`](../cmake-split-packages-example.md).
+
 The flag is off by default and the single-BUILD path is **byte-identical
 to the pre-feature output** when off (pinned by
 `TestEmit_SplitOff_ByteIdenticalToSingleGolden` and the unchanged
