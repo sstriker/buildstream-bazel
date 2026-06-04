@@ -74,6 +74,15 @@ type codegenContext struct {
 	// target re-walks every shared dir.
 	HeaderWalkCache map[string][]string
 
+	// FilteredInternalCmds collects the cmake-internal command edges the
+	// standalone-genrule pass drops (install / regen / cpack / dashboard /
+	// ide-stub) — keyed by the edge's first output, valued by category. These
+	// have no Bazel analogue so dropping is correct, but ToIR emits one
+	// aggregated stderr breadcrumb at the end (alongside MissingIncludeDirs)
+	// so an operator auditing a conversion sees WHAT was filtered rather than
+	// the drop being silent.
+	FilteredInternalCmds map[string]string
+
 	// MissingIncludeDirs collects absolute include-directory paths
 	// referenced by the codemodel that don't exist on disk. cmake
 	// permits these (LLVM's llvm-mca declares
@@ -238,6 +247,7 @@ func newCodegenContext() *codegenContext {
 		SeenBuilds:            map[*ninja.Build]string{},
 		HeaderWalkCache:       map[string][]string{},
 		MissingIncludeDirs:    map[string]bool{},
+		FilteredInternalCmds:  map[string]string{},
 	}
 }
 
