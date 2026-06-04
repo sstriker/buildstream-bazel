@@ -2441,8 +2441,9 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					// but the valid `includes=["."]` expresses exactly the
 					// needed path — and ONLY at a non-root package: Bazel also
 					// rejects `includes=["."]` at the workspace root ("'.'
-					// resolves to the workspace root"), so this is gated on a
-					// non-root package path (pkgPathIsRoot). Converting AT the
+					// resolves to the workspace root"), so it's added only when
+					// the package path is NOT root (`!pkgPathIsRoot`).
+					// Converting AT the
 					// workspace root (no package path, or "."/"./" — e.g. the
 					// fidelity harness) must NOT add it: the include can't be
 					// expressed there and adding it hard-fails analysis (the
