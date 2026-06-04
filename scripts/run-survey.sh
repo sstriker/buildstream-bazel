@@ -189,8 +189,11 @@ local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/
 EOF
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
+    # Thread both startup-arg and build-arg passthrough, matching the repo's
+    # other bazel-driving scripts (META_BAZEL_STARTUP_ARGS goes before the
+    # subcommand — e.g. --bazelrc / registry tweaks for sandboxed/offline runs).
     if ( cd "$_bb_ws" && $_bb_to "$bzl_bin" --output_user_root="$_bb_po/.bzcache" \
-            build ${META_BAZEL_BUILD_ARGS:-} //... ) >> "$_bb_po/build.log" 2>&1; then
+            ${META_BAZEL_STARTUP_ARGS:-} build ${META_BAZEL_BUILD_ARGS:-} //... ) >> "$_bb_po/build.log" 2>&1; then
         echo "ok"
     else
         echo "FAIL"
