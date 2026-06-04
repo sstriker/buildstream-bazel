@@ -28,7 +28,7 @@ build version.txt: CUSTOM_COMMAND
   COMMAND = git rev-parse HEAD
 build foo.o: CXX_COMPILER foo.cc
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d (%v)", len(got), got)
 	}
@@ -43,6 +43,49 @@ build foo.o: CXX_COMPILER foo.cc
 	}
 	if len(got[0].GenruleOuts) != 1 || got[0].GenruleOuts[0] != "version.txt" {
 		t.Errorf("Outs: %v", got[0].GenruleOuts)
+	}
+}
+
+// TestLowerStandaloneCustomCommands_BreadcrumbsInternalDrop pins that a
+// dropped cmake-internal edge (a scripted CDash dashboard target) is NOT
+// emitted as a genrule AND is recorded in the filteredInternal sink with its
+// category — the audit breadcrumb so the drop isn't silent.
+func TestLowerStandaloneCustomCommands_BreadcrumbsInternalDrop(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build CMakeFiles/ExperimentalStart: CUSTOM_COMMAND
+  COMMAND = /usr/bin/ctest -C Debug -DMODEL=Experimental -DACTIONS=Start -S CMakeFiles/CTestScript.cmake -V
+build real.stamp: CUSTOM_COMMAND
+  COMMAND = touch real.stamp
+`)
+	sink := map[string]string{}
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, sink)
+	// Only the real edge survives as a genrule.
+	if len(got) != 1 || got[0].GenruleOuts[0] != "real.stamp" {
+		t.Fatalf("want only real.stamp genrule; got %v", got)
+	}
+	// The dashboard edge is dropped but breadcrumbed.
+	if sink["CMakeFiles/ExperimentalStart"] != "dashboard" {
+		t.Errorf("dashboard drop not breadcrumbed: sink=%v", sink)
+	}
+}
+
+func TestCmakeInternalCmdKind(t *testing.T) {
+	cases := []struct{ cmd, want string }{
+		{`/usr/bin/ctest -C Debug -DMODEL=Experimental -DACTIONS=Start -S CMakeFiles/CTestScript.cmake`, "dashboard"},
+		{`ctest -D Nightly`, "dashboard"},
+		{`cmake -P cmake_install.cmake`, "install"},
+		{`cmake --regenerate-during-build -S/src -B/build`, "regen"},
+		{`cpack --config CPackConfig.cmake`, "cpack"},
+		{`echo No interactive CMake dialog available.`, "ide-stub"},
+		{`python gen.py in out`, ""},
+		{`git rev-parse HEAD`, ""},
+	}
+	for _, tc := range cases {
+		if got := cmakeInternalCmdKind(tc.cmd); got != tc.want {
+			t.Errorf("cmakeInternalCmdKind(%q) = %q, want %q", tc.cmd, got, tc.want)
+		}
 	}
 }
 
@@ -61,7 +104,7 @@ build foo.o: CXX_COMPILER foo.cc
 		Kind:        ir.KindGenrule,
 		GenruleOuts: []string{"generated.h"},
 	}}
-	got := lowerStandaloneCustomCommands(g, existing, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, existing, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 0 {
 		t.Errorf("expected dedup; got %v", got)
 	}
@@ -76,7 +119,7 @@ build alpha.stamp: CUSTOM_COMMAND
 build beta.stamp: CUSTOM_COMMAND
   COMMAND = touch beta.stamp
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 2 {
 		t.Fatalf("want 2 standalone; got %d", len(got))
 	}
@@ -101,7 +144,7 @@ build foo: CUSTOM_COMMAND
 build foo_: CUSTOM_COMMAND
   COMMAND = touch foo_
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 2 {
 		t.Fatalf("want 2; got %d", len(got))
 	}
@@ -116,7 +159,7 @@ func TestLowerStandaloneCustomCommands_SkipsRuleWithoutCommand(t *testing.T) {
 
 build phony: CUSTOM_COMMAND
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 0 {
 		t.Errorf("expected skip when rule has no command; got %v", got)
 	}
@@ -129,7 +172,7 @@ func TestLowerStandaloneCustomCommands_PreservesImplicitOuts(t *testing.T) {
 build main.txt | side.txt: CUSTOM_COMMAND in
   COMMAND = gen $in
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1; got %d", len(got))
 	}
@@ -140,7 +183,7 @@ build main.txt | side.txt: CUSTOM_COMMAND in
 }
 
 func TestLowerStandaloneCustomCommands_NilGraph(t *testing.T) {
-	if got := lowerStandaloneCustomCommands(nil, nil, "", "/build", "", nil, standaloneTraceContext{}); got != nil {
+	if got := lowerStandaloneCustomCommands(nil, nil, "", "/build", "", nil, standaloneTraceContext{}, nil); got != nil {
 		t.Errorf("nil graph should return nil; got %v", got)
 	}
 }
@@ -161,7 +204,7 @@ build CMakeFiles/rebuild_cache.util: CUSTOM_COMMAND
 build version.txt: CUSTOM_COMMAND
   COMMAND = git rev-parse HEAD
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone (bookkeeping edges filtered); got %d (%v)", len(got), got)
 	}
@@ -183,7 +226,7 @@ func TestLowerStandaloneCustomCommands_FiltersNinjaVarOutputs(t *testing.T) {
 build version.txt | ${cmake_ninja_workdir}version.txt: CUSTOM_COMMAND
   COMMAND = touch version.txt
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d (%v)", len(got), got)
 	}
@@ -321,7 +364,7 @@ build version.h: CUSTOM_COMMAND
 			{Name: "gen_headers", Depends: []string{"version.h"}},
 		},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d", len(got))
 	}
@@ -360,7 +403,7 @@ build generated.h: CUSTOM_COMMAND
 			{Target: "mylib", Depends: []string{"gen_target"}},
 		},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d", len(got))
 	}
@@ -396,7 +439,7 @@ build foo.txt: CUSTOM_COMMAND
 			{Target: "consumer", Depends: []string{"foo.txt"}},
 		},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d", len(got))
 	}
@@ -423,7 +466,7 @@ func TestLowerStandaloneCustomCommands_TraceEmptyKeepsLegacyBehavior(t *testing.
 build version.txt: CUSTOM_COMMAND
   COMMAND = touch version.txt
 `)
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{})
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, standaloneTraceContext{}, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 standalone; got %d", len(got))
 	}

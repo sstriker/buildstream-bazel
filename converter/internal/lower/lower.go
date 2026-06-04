@@ -1285,7 +1285,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				umbrellaPrefix = rel
 			}
 		}
-		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx)
+		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx, cc.FilteredInternalCmds)
 		// Add the transitive `include "..."` closure of tablegen-shaped
 		// codegen genrules to their srcs (their `.td` deps live only in
 		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
@@ -1384,6 +1384,31 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 					fmt.Sprintf("include dir %q referenced by codemodel doesn't exist on disk; treated as empty (cmake permits forward-declared include paths — LLVM's llvm-mca shape)", d),
 					"", d)
 			}
+		}
+	}
+	// Breadcrumb for the cmake-internal command edges the standalone-genrule
+	// pass dropped (install / regen / cpack / dashboard / ide-stub). They have
+	// no Bazel analogue so dropping is correct, but an operator auditing a
+	// conversion should see WHAT was filtered rather than the drop being
+	// silent — one aggregated notice grouped by category (mirrors the
+	// MissingIncludeDirs breadcrumb above).
+	if len(cc.FilteredInternalCmds) > 0 && opts.Warnings != nil {
+		byKind := map[string][]string{}
+		for out, kind := range cc.FilteredInternalCmds {
+			byKind[kind] = append(byKind[kind], out)
+		}
+		kinds := make([]string, 0, len(byKind))
+		for k := range byKind {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		fmt.Fprintf(opts.Warnings,
+			"lower: filtered %d cmake-internal command edge(s) with no Bazel analogue (dropped, not converted):\n",
+			len(cc.FilteredInternalCmds))
+		for _, k := range kinds {
+			outs := byKind[k]
+			sort.Strings(outs)
+			fmt.Fprintf(opts.Warnings, "  %s (%d): %s\n", k, len(outs), strings.Join(outs, ", "))
 		}
 	}
 	// Surface install(SCRIPT) / install(CODE) directives. These run

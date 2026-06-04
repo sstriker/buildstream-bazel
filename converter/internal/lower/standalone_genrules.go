@@ -128,7 +128,11 @@ type standaloneTraceContext struct {
 // map into the lift so rewriteToolFromTarget can lift bare
 // `bin/<tool>` references in the cmd into `$(location :<name>)` +
 // tools attribute entries. Empty map disables tool rewriting.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext) []ir.Target {
+// filteredInternal (when non-nil) collects the cmake-internal command edges
+// this pass drops — keyed by the edge's first output (or category when it has
+// none), valued by category (install / regen / cpack / dashboard / ide-stub)
+// — so the caller can surface an audit breadcrumb instead of dropping silently.
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -215,7 +219,19 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// outside the `.util` filter above (e.g.
 		// `CMakeFiles/install-<component>` shapes from
 		// add_subdirectory-spawned install components).
-		if isCMakeInternalCmd(cmd) {
+		if kind := cmakeInternalCmdKind(cmd); kind != "" {
+			// These edges have no Bazel analogue (they run cmake/cpack/ctest
+			// against cmake's own build-dir layout or submit to a CDash
+			// server) — dropping is correct, but record a breadcrumb so the
+			// drop isn't silent. Keyed by first output for a stable, readable
+			// identifier; value is the category.
+			if filteredInternal != nil {
+				key := kind
+				if len(outs) > 0 {
+					key = outs[0]
+				}
+				filteredInternal[key] = kind
+			}
 			continue
 		}
 		// Use genruleSrcs so source-tree-absolute inputs
@@ -1196,6 +1212,17 @@ func isCMakeBookkeepingOutput(p string) bool {
 // caught — those route through the operator-staged runner path
 // (CMakeScriptRunner) or refuse with UnsupportedCustomCommandScript.
 func isCMakeInternalCmd(cmd string) bool {
+	return cmakeInternalCmdKind(cmd) != ""
+}
+
+// cmakeInternalCmdKind reports the CATEGORY of cmake-internal command a
+// recovered ninja CUSTOM_COMMAND edge is, or "" if it isn't one. It's the
+// body of isCMakeInternalCmd; the category lets the drop site
+// (lowerStandaloneCustomCommands) record an audit breadcrumb instead of
+// dropping silently — these edges have no Bazel analogue, but an operator
+// auditing a conversion should still see WHAT was filtered. Categories:
+// "install" / "regen" / "cpack" / "dashboard" / "ide-stub".
+func cmakeInternalCmdKind(cmd string) string {
 	c := strings.TrimSpace(cmd)
 	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's
 	// per-target build-subdir cd, present on the raw cmd).
@@ -1216,16 +1243,16 @@ func isCMakeInternalCmd(cmd string) bool {
 	// occurrence of the script-name token).
 	if strings.HasPrefix(c, "cmake ") &&
 		strings.Contains(c, "cmake_install.cmake") {
-		return true
+		return "install"
 	}
 	// `--regenerate-during-build` — cmake's CMakeFiles regen hook.
 	if strings.HasPrefix(c, "cmake ") &&
 		strings.Contains(c, "--regenerate-during-build") {
-		return true
+		return "regen"
 	}
 	// cpack + cpack-with-rpmbuild — package distribution.
 	if strings.HasPrefix(c, "cpack ") || strings.HasPrefix(c, "cpack-") {
-		return true
+		return "cpack"
 	}
 	// `ctest -D <Dashboard>` — CDash dashboard submission edges
 	// (Experimental / Nightly / Continuous + Memory/Coverage
@@ -1249,7 +1276,7 @@ func isCMakeInternalCmd(cmd string) bool {
 	if strings.Contains(c, "-D Experimental") ||
 		strings.Contains(c, "-D Nightly") ||
 		strings.Contains(c, "-D Continuous") {
-		return true
+		return "dashboard"
 	}
 	// Scripted-dashboard form (newer cmake / brotli): instead of
 	// `ctest -D <Dashboard>`, the auto-generated target runs
@@ -1262,16 +1289,16 @@ func isCMakeInternalCmd(cmd string) bool {
 	if strings.Contains(c, "-DMODEL=Experimental") ||
 		strings.Contains(c, "-DMODEL=Nightly") ||
 		strings.Contains(c, "-DMODEL=Continuous") {
-		return true
+		return "dashboard"
 	}
 	// `cmake -E echo No interactive CMake dialog available.` IDE
 	// stubs that the `.util`-suffix filter misses when the output
 	// lands under a nested CMakeFiles/ subdir.
 	if strings.HasPrefix(c, "echo No interactive CMake dialog") ||
 		strings.HasPrefix(c, "echo No\\ interactive\\ CMake\\ dialog") {
-		return true
+		return "ide-stub"
 	}
-	return false
+	return ""
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a
