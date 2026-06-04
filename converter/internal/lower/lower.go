@@ -2618,6 +2618,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	if walkPkgRootForHdrs {
 		includesForWalk = append([]string{""}, irt.Includes...)
 	}
+	// Carry the dropped root-include signal to the IR so the split emitter can
+	// restore the prefix via include_prefix when this target re-homes into a
+	// subpackage (the includes=[""] entry can't survive directly).
+	irt.RootInclude = walkPkgRootForHdrs
 	// Stage private "sibling" headers that live in the target's own source
 	// directories. cmake implicitly searches a source file's own directory for
 	// quote-includes (`#include "sibling.h"`), so a private header beside the
