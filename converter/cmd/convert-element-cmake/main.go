@@ -483,6 +483,7 @@ func run(a cli.Args) error {
 			EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
 			UnsupportedExecuteProcessFallback: execFallback,
 			FallbackInstallTarget:             fallbackInstallTarget(a.BazelPackagePath),
+			BazelPackagePath:                  a.BazelPackagePath,
 			CMakeScriptRunner:                 a.CMakeScriptRunner,
 			CMakeScriptTrace:                  a.CMakeScriptTrace,
 			CMakeScriptBake:                   a.CMakeScriptBake,
