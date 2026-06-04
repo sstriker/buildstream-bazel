@@ -635,6 +635,41 @@ transition cleanly.
   paths" to "ships the sysroot"; larger, follows the `builtin_sysroot`
   item.
 
+- **Agent-actionable prompts for no-mechanical-form constructs.**
+  Some cmake constructs have a perfectly good *Bazel* form but no
+  *mechanical translation* — the behavior lives in a script the
+  converter can't faithfully rewrite, only an author can. The canonical
+  case is `add_test(COMMAND cmake -P <runner> …)` integration tests
+  (brotli's roundtrip/compatibility harness): the idiomatic target is an
+  `sh_test` / `bazel_skylib` `diff_test` driving the built CLI, but
+  reaching it means *re-authoring* the cmake-script harness, not
+  translating an AST. Today the converter correctly **breadcrumbs** these
+  to a warning (the #417 `add_test`-not-converted audit, the #412
+  cmake-internal-drop audit) so the gap is visible rather than silent.
+  Next: promote the breadcrumb from a human-readable warning to a
+  **structured, agent-actionable prompt** a post-conversion AI pass can
+  pick up. Shape: a `conversion-todos.json` sidecar alongside the
+  survey's existing `rejections` / `bazel-idiom` / `coverage` reports,
+  one entry per untranslatable construct carrying (a) a source anchor
+  (`CMakeLists.txt:line` + the construct), (b) recovered *evidence*
+  (the runner script path, the built exe target, the invocation args,
+  the verification — e.g. "SHA512(input)==SHA512(roundtrip)"), (c) a
+  *suggested Bazel shape*, and (d) a precise natural-language prompt.
+  Design constraints: the converter stays **deterministic** (same
+  prompts every run; the non-deterministic authoring is quarantined to
+  the separate post-pass operating on the fixed worklist); detection
+  **reuses** the existing breadcrumb logic (only the payload format is
+  new); prompts are **grouped by the unit the breadcrumb already groups
+  by** (brotli's 28 roundtrip tests share one runner → one
+  "author a reusable macro" prompt, not 28 near-duplicates); a stable
+  TODO marker (tag / comment ID) in the emitted BUILD makes pickup
+  idempotent; and agent-authored output crosses the **same trust
+  boundary** as mechanical output — it goes through the render gates,
+  it is not trusted on faith. First producer: the `cmake -P` test
+  breadcrumb; the same mechanism then fits any no-mechanical-form
+  breadcrumb (`install(SCRIPT)` / `install(CODE)`, dropped command edges).
+  Surfaced from the brotli test-form discussion.
+
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
   `continue-on-error` soft-launch was dropped from every fixture step after
