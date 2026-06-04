@@ -1380,6 +1380,33 @@ transition cleanly.
   recognizes is one fewer runner-served edge. See
   `docs/research/codegen-idiom-coverage.md`.
 
+- **`cmake -P` hash-a-file-into-a-header idiom → native `cc_hash`
+  rule (`--lift-cc-hash`) — shipped.** The second cmake -P codegen idiom
+  lowered to a Bazel-native end-state (after `cc_embed`), found by the
+  empirical VTK leaf-build bringup. A custom command running a known
+  file-hashing script (VTK's `vtkHashSource.cmake` — `vtk_hash_source()`
+  computes a digest of a source file and bakes it into a header consumers
+  `#include`) lowers to the `cc_hash` rule (`//tools:cc-hash`) instead of
+  refusing, running cmake at build time (the runner), or freezing the digest
+  at convert time (the bake). Faithful — the generated header is byte-for-byte
+  what `vtkHashSource.cmake` writes (`#ifndef NAME\n #define NAME "<digest>"\n
+  #endif`), the digest matching cmake's `file(<ALGO> …)` — and BETTER than the
+  bake: the hash is recomputed by the action, so it auto-refreshes when the
+  input changes (the bake's gap). The recognizer (`recognizeCcHash`, gated on
+  `--lift-cc-hash` + `knownCcHashScripts`) parses the `-D` arg contract
+  (`input_file` / `output_name` / `algorithm`), declines on an algorithm the
+  rule can't honor or a source outside the tree, and the `coveredOuts` dedup
+  marks `CCHash.OutHeader` so the standalone-genrule path doesn't re-emit a
+  second producer. A `vtk_hash_source`-using library compiles + LINKS the
+  digest symbol with no cmake (render+build gate `scripts/meta-cmake-cc-hash.sh`,
+  in `RENDER_GATES`). The hermetic tool is `cmd/cc-hash` (committed
+  `tools/cc-hash.bin`); supports MD5/SHA1/SHA224/SHA256/SHA384/SHA512. Off by
+  default; byte-stable when unset. New hashing scripts sharing the `-D`
+  contract drop into `knownCcHashScripts`. *Follow-up:* write-a auto-staging
+  of `//tools:cc-hash` (mirroring the `--cc-embed-bin` plumbing) so the lift
+  is usable from an orchestrated conversion, not just the direct-converter
+  gate. See `docs/research/codegen-idiom-coverage.md`.
+
 - **`generate_export_header` recovery + split-packages include wiring —
   shipped (real VTK leaf builds green).** Found by the empirical VTK leaf-build
   bringup. CMake's `GenerateExportHeader` module (the near-universal

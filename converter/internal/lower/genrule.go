@@ -127,6 +127,14 @@ type codegenContext struct {
 	// //tools:cc-embed, like the runner); the operator opts in.
 	LiftCCEmbed bool
 
+	// LiftCCHash, when true, recognizes a custom command running a known
+	// file-hashing cmake -P script (VTK's vtkHashSource) and lowers it to
+	// the native cc_hash rule (//tools:cc-hash) instead of the
+	// runner/bake/refuse path — so the converted project needs no cmake at
+	// build time and the digest recomputes on input change. Off by default
+	// (the consuming project must stage //tools:cc-hash); the operator opts in.
+	LiftCCHash bool
+
 	// CMakeScriptTrace, when true, asks the cmake -P lift to
 	// actually run the script under `cmake --trace --trace-format=
 	// json-v1 -P <script>` at convert time. The trace's read
@@ -345,6 +353,13 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		// header or source) so the consumer maps to the output it actually
 		// referenced; the sibling output reuses via the SeenBuilds check above.
 		if name, ok := recognizeCcEmbed(cc, b, cmd, script, cmakeSrc, buildDir); ok {
+			return relOut, name, nil
+		}
+		// Native cc_hash recognizer (opt-in via --lift-cc-hash): a known
+		// file-hashing script (vtkHashSource) lowers to the cc_hash rule, so
+		// the converted project needs no cmake at build time and the digest
+		// recomputes on input change. Same fall-through contract as cc_embed.
+		if name, ok := recognizeCcHash(cc, b, cmd, script, cmakeSrc, buildDir); ok {
 			return relOut, name, nil
 		}
 		var liftReason string

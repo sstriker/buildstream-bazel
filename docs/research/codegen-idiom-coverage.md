@@ -65,14 +65,45 @@ What cmake projects do in custom-command codegen, and where each lands:
 |---|---|---|
 | **configure_file / file(GENERATE)** | `config.h.in` → `config.h` | Native: `cmake_configure_file` rule (`--cmake-configure-file-bin`) |
 | **Embed a file as a C array** | VTK `vtkEncodeString` (shaders) | Native: `cc_embed` rule (`--lift-cc-embed`) — **this doc's focus** |
-| **Hash a file → C constant** | VTK `vtkHashSource` | Runner (recognizer queued — low value, ~3 sites) |
+| **Hash a file → C constant** | VTK `vtkHashSource` | Native: `cc_hash` rule (`--lift-cc-hash`) |
 | **tablegen-style generators** | LLVM `*.td` → `.inc` | `genrule` over the built tool (LLVM split-packages work, `ROADMAP.md`) |
 | **Arbitrary script codegen** | project-specific `*.cmake` | Runner / bake (long tail; North Star subsumes) |
 
-The first two are the common, recognizer-worthy idioms; both have
-native rules. The rest are either niche (hash), already a plain
-`genrule` over a real tool (tablegen), or genuinely arbitrary (the
-runner's tail).
+The first three are the common, recognizer-worthy idioms; all have
+native rules. The rest are either already a plain `genrule` over a real
+tool (tablegen) or genuinely arbitrary (the runner's tail).
+
+## The hash-a-file-into-a-header idiom → `cc_hash`
+
+A custom command runs a script that hashes a file's bytes and writes a
+header `#define`-ing the digest as a C string — VTK stamps a build's
+inter-process protocol compatibility this way
+(`vtkHashSource.cmake` → `vtkSocketCommunicatorHash.h`). Small in count
+(~3 sites in VTK) but on a leaf module's critical path, so it blocks the
+build the same as any other refused custom command.
+
+**Native lowering** (`rules_buildstream_bazel/rules/cc_hash.bzl` +
+`cmd/cc-hash`):
+
+- `recognizeCcHash` (`converter/internal/lower/cc_hash_recognize.go`)
+  fires under `--lift-cc-hash` when the script basename is a known
+  hasher (`knownCcHashScripts` — `vtkHashSource.cmake` today; new
+  scripts sharing the `input_file` / `output_name` / `algorithm` `-D`
+  contract drop in).
+- It emits a `cc_hash` target (predeclared `out_header`, `src`,
+  `define_name`, `algorithm`, `tool = "//tools:cc-hash"`); the
+  `coveredOuts` dedup marks `CCHash.OutHeader` so the standalone-genrule
+  path doesn't re-emit a second producer.
+- The `cc-hash` tool recomputes the digest at build time and writes the
+  byte-for-byte vtkHashSource header (`#ifndef NAME\n #define NAME
+  "<digest>"\n#endif`), the digest matching cmake's `file(<ALGO> …)`.
+  Supports MD5/SHA1/SHA224/SHA256/SHA384/SHA512.
+
+**Why a rule, not the bake:** unlike `--cmake-script-bake` (which freezes
+the digest at convert time), the hash is recomputed by the action, so it
+auto-refreshes when the input file changes — the correct semantics for a
+content hash. Faithful, hermetic, no cmake downstream. Render+build gate:
+`scripts/meta-cmake-cc-hash.sh`.
 
 ## The embed-file-as-C-array idiom → `cc_embed`
 
