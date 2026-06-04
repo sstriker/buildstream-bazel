@@ -77,11 +77,10 @@ func TestLiftRawFeatureFlags_NoLiftableLeavesAlone(t *testing.T) {
 }
 
 // TestLiftRawFeatureFlags_NegationFromProbeGenexPreserved
-// covers the "-pic" (force-off) shape applyProbeGenexProperties
-// emits when POSITION_INDEPENDENT_CODE=FALSE. The lift must not
-// reinstate "pic" via -fPIC if both appear (the convert-time
-// lifter shouldn't have produced this combination but the
-// post-pass is defensive).
+// covers a "-pic" (force-off) feature negation: if one is present on a
+// target, the lift must not reinstate "pic" via -fPIC. (applyProbeGenexProperties
+// no longer emits "-pic" — POSITION_INDEPENDENT_CODE=FALSE is a no-op now —
+// but the lift stays defensive in case a negation arrives from elsewhere.)
 func TestLiftRawFeatureFlags_NegationFromProbeGenexPreserved(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{{
 		Name:     "lib",

@@ -232,8 +232,10 @@ func TestApplyProbeGenexProperties_BuildRpathToLinkopts(t *testing.T) {
 	}
 }
 
-// TestApplyProbeGenexProperties_PIC covers POSITION_INDEPENDENT_CODE
-// → features=["pic"] / ["-pic"] routing.
+// TestApplyProbeGenexProperties_PIC covers POSITION_INDEPENDENT_CODE:
+// TRUE → features=["pic"]; FALSE/unset → NOTHING (cmake never disables
+// PIC for FALSE — the compiler default governs — so emitting "-pic" would
+// wrongly force non-PIC objects that can't link into Bazel's PIE binaries).
 func TestApplyProbeGenexProperties_PIC(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{
 		{Name: "on", Kind: ir.KindCCLibrary},
@@ -247,8 +249,12 @@ func TestApplyProbeGenexProperties_PIC(t *testing.T) {
 	if !stringSliceContains(pkg.Targets[0].Features, "pic") {
 		t.Errorf("on.Features: %v want [pic]", pkg.Targets[0].Features)
 	}
-	if !stringSliceContains(pkg.Targets[1].Features, "-pic") {
-		t.Errorf("off.Features: %v want [-pic]", pkg.Targets[1].Features)
+	// FALSE must NOT emit "-pic" (would disable PIC and break PIE linking).
+	if stringSliceContains(pkg.Targets[1].Features, "-pic") {
+		t.Errorf("off.Features: %v must not contain -pic (FALSE → no feature, toolchain default)", pkg.Targets[1].Features)
+	}
+	if len(pkg.Targets[1].Features) != 0 {
+		t.Errorf("off.Features: %v want empty (FALSE is a no-op)", pkg.Targets[1].Features)
 	}
 }
 
