@@ -315,6 +315,16 @@ type Options struct {
 	// depends on).
 	Warnings io.Writer
 
+	// BazelPackagePath is the repo-root-relative path of the destination
+	// Bazel package (e.g. "elements/hello-world"), mirroring the
+	// convert-element-cmake flag of the same name. Empty means the element
+	// converts AT the workspace root ("//"). It gates the package-root
+	// (`includes = ["."]`) include the configure_file consumer adds: Bazel
+	// rejects a root `includes` entry ("'.' resolves to the workspace
+	// root"), so that include is only valid — and only emitted — when the
+	// element lands in a sub-package (BazelPackagePath != "").
+	BazelPackagePath string
+
 	// BakeIn controls the convert-time-baked-output post-pass.
 	// Zero value (empty string) resolves to convmode.BakeInWarn so
 	// callers leaving the field default get today's behaviour:
@@ -1035,6 +1045,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		executeProcesses: executeProcesses,
 		findPkgAttrib:    findPkgAttrib,
 		workspaceRoot:    workspaceRoot,
+		bazelPackagePath: opts.BazelPackagePath,
 		generatedSources: generatedSources,
 		rejections:       opts.Rejections,
 	}
@@ -1566,6 +1577,7 @@ type targetLowerCtx struct {
 	executeProcesses []executeProcessOut
 	findPkgAttrib    *findPackageAttrib
 	workspaceRoot    string
+	bazelPackagePath string
 	generatedSources map[string]bool
 	rejections       *rejection.Collector
 }
@@ -1609,6 +1621,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	imports, tests := lc.imports, lc.tests
 	configureFiles, fileGenerates, executeProcesses := lc.configureFiles, lc.fileGenerates, lc.executeProcesses
 	findPkgAttrib, workspaceRoot := lc.findPkgAttrib, lc.workspaceRoot
+	bazelPackagePath := lc.bazelPackagePath
 	generatedSources, rejections := lc.generatedSources, lc.rejections
 	privateIncludeDirs, traceLinkLibs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkLibs, tt.traceLinkScope
 	platformConditionalSrcs, platformConditionalSrcsToAdd := tt.platformConditionalSrcs, tt.platformConditionalSrcsToAdd
@@ -2424,12 +2437,18 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					// libxml2: `configure_file(include/libxml/xmlversion.h.in
 					// libxml/xmlversion.h)` → `<build>/libxml/xmlversion.h`,
 					// #included as `<libxml/xmlversion.h>`. addBuildDirIncludes
-					// drops the root "" (Bazel rejects `includes=[""]`), but
-					// the valid `includes=["."]` expresses exactly the needed
-					// path. (A root-LEVEL output like `config.h` is consumed
-					// via a relative `#include "config.h"` and needs no path —
-					// gated out by the subdir check below.)
-					if needsPkgRootInclude(inc, cfgOut.RelOutput) {
+					// skips the root ""/"." (Bazel rejects `includes=[""]`),
+					// but the valid `includes=["."]` expresses exactly the
+					// needed path — and ONLY at a non-root package: Bazel also
+					// rejects `includes=["."]` at the workspace root ("'.'
+					// resolves to the workspace root"), so this is gated on a
+					// package path. Converting AT "//" (no package path — e.g.
+					// the fidelity harness) must NOT add it: the include can't
+					// be expressed there and adding it hard-fails analysis (the
+					// libpng regression). (A root-LEVEL output like `config.h`
+					// is consumed via a relative `#include "config.h"` and
+					// needs no path — gated out by the subdir check too.)
+					if bazelPackagePath != "" && needsPkgRootInclude(inc, cfgOut.RelOutput) {
 						needsPkgRoot = true
 					}
 					// A generate_export_header output is #included by BARE
