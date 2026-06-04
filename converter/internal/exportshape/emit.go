@@ -345,6 +345,9 @@ func renderExportTargetsFile(in EmitInputs, bundleFile string) []string {
 			)
 		}
 	}
+	// Clear the internal _IMPORT_PREFIX so it doesn't leak into the including
+	// project's scope (cmake's own generated export scripts do this at the end).
+	lines = append(lines, "", "set(_IMPORT_PREFIX)")
 	return lines
 }
 
