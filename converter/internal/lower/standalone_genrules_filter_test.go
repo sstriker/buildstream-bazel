@@ -51,6 +51,21 @@ func TestIsCMakeInternalCmd(t *testing.T) {
 			`sed -i.bak s+/usr/bin/valgrind+` + "`which valgrind`" + `+ DartConfiguration.tcl && ctest -O memcheck.log -D ExperimentalMemCheck && tail -n1 memcheck.log | grep 'Memory checking results:' > /dev/null`, true},
 		{"ctest -D ExperimentalCoverage (Coverage variant)",
 			`ctest -D ExperimentalCoverage`, true},
+		// Scripted-dashboard form (newer cmake / brotli): ctest -DMODEL=<Dashboard>
+		// -DACTIONS=... -S CMakeFiles/CTestScript.cmake. The -DMODEL= cache var
+		// isn't the `-D <Dashboard>` arg, so it needs its own match.
+		{"ctest scripted ExperimentalStart",
+			`/usr/bin/ctest -C Debug -DMODEL=Experimental -DACTIONS=Start -S CMakeFiles/CTestScript.cmake -V`, true},
+		{"ctest scripted ExperimentalBuild",
+			`/usr/bin/ctest -C Debug -DMODEL=Experimental -DACTIONS=Build -S CMakeFiles/CTestScript.cmake -V`, true},
+		{"ctest scripted NightlyMemoryCheck",
+			`/usr/bin/ctest -C Debug -DMODEL=NightlyMemoryCheck -S CMakeFiles/CTestScript.cmake -V`, true},
+		{"ctest scripted ContinuousStart",
+			`/usr/bin/ctest -DMODEL=Continuous -DACTIONS=Start -S CMakeFiles/CTestScript.cmake`, true},
+		// A user -D cache var that merely starts with MODEL= but isn't a
+		// dashboard model must NOT be swept up.
+		{"user -DMODEL=Foo passes through",
+			`ctest -DMODEL=Foo -S user.cmake`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
