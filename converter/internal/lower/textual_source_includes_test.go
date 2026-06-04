@@ -1,10 +1,14 @@
 package lower
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestFindTextualSourceIncludes reproduces fmt's posix-mock-test shape: a test
@@ -68,5 +72,70 @@ func TestFindTextualSourceIncludes_NoneAndGuards(t *testing.T) {
 	}
 	if got := findTextualSourceIncludes(hostSrc, nil); got != nil {
 		t.Errorf("nil srcs: got %v, want nil", got)
+	}
+}
+
+// TestSynthesizeTextualSourceIncludeLibs: a cc_test that textually includes a
+// .cc it doesn't compile gets a synthesized textual_hdrs cc_library carrying
+// that file, plus a dep on it — declaring the input without compiling it
+// standalone. Reproduces fmt's posix-mock-test. hostSrcOnDisk=false is a
+// no-op (the scan reads source files).
+func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
+	hostSrc := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(hostSrc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("test/posix-mock-test.cc", "#include \"../src/os.cc\"\nint main(){return 0;}\n")
+	write("src/os.cc", "int os(){return 0;}\n")
+	write("src/format.cc", "int fmt(){return 0;}\n")
+
+	mk := func() *ir.Package {
+		return &ir.Package{Targets: []ir.Target{
+			{Name: "posix-mock-test", Kind: ir.KindCCTest, Srcs: []string{"test/posix-mock-test.cc", "src/format.cc"}, Deps: []string{":gtest"}},
+		}}
+	}
+
+	// hostSrcOnDisk=false → no-op.
+	noop := mk()
+	synthesizeTextualSourceIncludeLibs(noop, hostSrc, false, nil)
+	if len(noop.Targets) != 1 {
+		t.Fatalf("hostSrcOnDisk=false should be a no-op; got %d targets", len(noop.Targets))
+	}
+
+	pkg := mk()
+	var warn bytes.Buffer
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, &warn)
+
+	if len(pkg.Targets) != 2 {
+		t.Fatalf("expected original test + 1 synth lib, got %d targets", len(pkg.Targets))
+	}
+	test := findTarget(pkg, "posix-mock-test")
+	lib := findTarget(pkg, "posix-mock-test_textual_srcs")
+	if lib == nil {
+		t.Fatalf("synth lib posix-mock-test_textual_srcs not found: %+v", pkg.Targets)
+	}
+	if lib.Kind != ir.KindCCLibrary {
+		t.Errorf("synth lib Kind = %v, want cc_library", lib.Kind)
+	}
+	if !reflect.DeepEqual(lib.TextualHdrs, []string{"src/os.cc"}) {
+		t.Errorf("synth lib TextualHdrs = %v, want [src/os.cc]", lib.TextualHdrs)
+	}
+	if !stringSliceContains(lib.Tags, "cmake-codegen-textual-source-include") {
+		t.Errorf("synth lib missing audit tag: %v", lib.Tags)
+	}
+	if !stringSliceContains(test.Deps, ":posix-mock-test_textual_srcs") {
+		t.Errorf("test deps missing synth lib: %v", test.Deps)
+	}
+	if !stringSliceContains(test.Deps, ":gtest") {
+		t.Errorf("test lost its original dep: %v", test.Deps)
+	}
+	if !strings.Contains(warn.String(), "posix-mock-test_textual_srcs") {
+		t.Errorf("breadcrumb missing synth lib name:\n%s", warn.String())
 	}
 }

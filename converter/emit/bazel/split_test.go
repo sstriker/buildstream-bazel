@@ -463,3 +463,32 @@ func ruleBlockAfterName(build, n string) string {
 	}
 	return rest
 }
+
+// TestEmit_Split_TextualHdrsRelabeled: a target's textual_hdrs entry that
+// belongs to a deeper package (the synthesized textual-source-include lib's
+// `src/os.cc`, src/ being its own package) is relabeled to a cross-package
+// file label, with exports_files() raised in the owning package — the same
+// treatment hdrs/srcs get. Without it the textual_hdr would cross a package
+// boundary and fail to load.
+func TestEmit_Split_TextualHdrsRelabeled(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "t_textual", Kind: ir.KindCCLibrary, TextualHdrs: []string{"src/os.cc"}},
+			{Name: "srclib", Kind: ir.KindCCLibrary, Srcs: []string{"src/format.cc"}},
+		},
+		SubPackages: map[string]string{"t_textual": "", "srclib": "src"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	root := string(tree[""])
+	if !contains(root, "/elements/x/src:os.cc") {
+		t.Errorf("root pkg: textual_hdr not relabeled to //elements/x/src:os.cc\n%s", root)
+	}
+	srcPkg := string(tree["src"])
+	if !contains(srcPkg, "exports_files") || !contains(srcPkg, `"os.cc"`) {
+		t.Errorf("src pkg missing exports_files([\"os.cc\"])\n%s", srcPkg)
+	}
+}

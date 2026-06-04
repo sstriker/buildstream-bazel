@@ -1546,6 +1546,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// lens on libxml2 (codegen/ranges.def in testrecurse's srcs).
 	dropNonSrcsHeadersFromCcExecutables(pkg, opts.Warnings)
 
+	// The "textually include a .cc to intercept its internals" idiom (fmt's
+	// posix-mock-test: `#include "../src/os.cc"`): a cc_binary/cc_test source
+	// quote-includes a .cc the target doesn't compile. Those rules have no
+	// textual_hdrs slot, so synthesize a textual_hdrs cc_library carrying the
+	// file and dep the target on it — declaring the input without compiling it
+	// standalone. Runs last so the synthesized libs aren't reprocessed above.
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, hostSrcOnDisk, opts.Warnings)
+
 	return pkg, nil
 }
 
