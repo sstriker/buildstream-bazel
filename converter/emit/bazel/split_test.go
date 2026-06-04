@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
@@ -390,4 +391,75 @@ func TestEmit_Split_CrossPackageHeaderRelabeled(t *testing.T) {
 	if !contains(testPkg, "exports_files") || !contains(testPkg, `"util.h"`) {
 		t.Errorf("test pkg missing exports_files([\"util.h\"])\n%s", testPkg)
 	}
+}
+
+// TestEmit_Split_PrivateIncludeHeaderLibWired covers the PRIVATE
+// target_include_directories case under --split-packages. A PRIVATE
+// include rides Copts as "-I<dir>" (lower keeps it off t.Includes so it
+// doesn't propagate). When <dir> is a synthesized header-lib root, the
+// bare "-I<dir>" sets the search path but leaves that package's headers
+// undeclared as inputs (fmt's posix-mock-test: PRIVATE -Iinclude into
+// the split-out //include package for <fmt/os.h>). EmitSplit must wire
+// the header lib so its hdrs become inputs — routing it to
+// implementation_deps on a cc_library (non-propagating, faithful to
+// cmake PRIVATE) and to deps on a cc_test (no implementation_deps
+// bucket) — and drop the now-redundant "-I<dir>" copt while keeping
+// unrelated copts.
+func TestEmit_Split_PrivateIncludeHeaderLibWired(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			// PUBLIC consumer: makes "include" a header-lib root (its own pkg).
+			{Name: "pub", Kind: ir.KindCCLibrary, Srcs: []string{"pub.cc"}, Includes: []string{"include"}, Hdrs: []string{"include/foo.h"}},
+			// PRIVATE include on a cc_library -> implementation_deps, copt dropped.
+			{Name: "privlib", Kind: ir.KindCCLibrary, Srcs: []string{"privlib.cc"}, Copts: []string{"-Iinclude", "-Wall"}},
+			// PRIVATE include on a cc_test -> deps, copt dropped.
+			{Name: "privtest", Kind: ir.KindCCTest, Srcs: []string{"privtest.cc"}, Copts: []string{"-Iinclude"}},
+		},
+		SubPackages: map[string]string{"pub": "", "privlib": "", "privtest": ""},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	const hdrLib = "//elements/x/include:include_headers"
+	root := string(tree[""])
+
+	lib := ruleBlockAfterName(root, "privlib")
+	if !strings.Contains(lib, "implementation_deps = ["+`"`+hdrLib+`"`+"]") {
+		t.Errorf("privlib: header lib not in implementation_deps\n%s", lib)
+	}
+	if strings.Contains(lib, "-Iinclude") {
+		t.Errorf("privlib: redundant -Iinclude copt not dropped\n%s", lib)
+	}
+	if !strings.Contains(lib, `"-Wall"`) {
+		t.Errorf("privlib: unrelated -Wall copt was lost\n%s", lib)
+	}
+
+	test := ruleBlockAfterName(root, "privtest")
+	if !strings.Contains(test, "deps = ["+`"`+hdrLib+`"`+"]") {
+		t.Errorf("privtest: header lib not in deps\n%s", test)
+	}
+	if strings.Contains(test, "implementation_deps") {
+		t.Errorf("privtest: cc_test must not get implementation_deps\n%s", test)
+	}
+	if strings.Contains(test, "-Iinclude") {
+		t.Errorf("privtest: redundant -Iinclude copt not dropped\n%s", test)
+	}
+}
+
+// ruleBlockAfterName returns the slice of a rendered BUILD from the
+// `name = "<n>"` attribute line up to the rule's column-0 closing paren —
+// enough to assert per-target attributes (deps/copts/implementation_deps)
+// without matching a sibling rule in the same file.
+func ruleBlockAfterName(build, n string) string {
+	i := strings.Index(build, `name = "`+n+`"`)
+	if i < 0 {
+		return ""
+	}
+	rest := build[i:]
+	if j := strings.Index(rest, "\n)"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
 }

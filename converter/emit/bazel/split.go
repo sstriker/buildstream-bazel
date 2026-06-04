@@ -625,7 +625,11 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 
 	// Header libs this target must depend on (one per include-root it
 	// referenced), plus the residual includes (none, after the split).
+	// headerDeps feed the consumer-visible deps (PUBLIC/INTERFACE
+	// includes, which propagate); privHeaderDeps feed the non-propagating
+	// implementation_deps (PRIVATE includes — see the copt scan below).
 	var headerDeps []string
+	var privHeaderDeps []string
 	incRoots := map[string]struct{}{}
 	for _, inc := range t.Includes {
 		n := normDir(inc)
@@ -635,6 +639,46 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		}
 	}
 	rt.Includes = nil
+
+	// PRIVATE target_include_directories ride in Copts as "-I<dir>" /
+	// "-isystem<dir>" rather than t.Includes, so lower can honour cmake's
+	// PRIVATE-doesn't-propagate semantics (Bazel's `includes` attribute is
+	// consumer-visible; copts aren't). Under --split-packages that breaks
+	// when <dir> is a synthesized header-lib root: the bare "-I<dir>" sets
+	// the search path but leaves that package's headers undeclared as
+	// inputs, so the sandbox can't find them (fmt's posix-mock-test:
+	// `#include <fmt/os.h>` via a PRIVATE -Iinclude into the split-out
+	// //include package — R_X86_64 "No such file or directory"). Wire the
+	// header lib so its hdrs become inputs, routing it like lower routes a
+	// PRIVATE link: implementation_deps on cc_library/cc_interface (the
+	// non-propagating slot that preserves PRIVATE) and deps on
+	// binary/test kinds (no implementation_deps bucket; no consumers to
+	// leak to). The "-I<dir>" copt is then redundant with the header lib's
+	// includes=["."] — drop it, mirroring the public-include path above.
+	if len(rt.Copts) > 0 {
+		kept := make([]string, 0, len(rt.Copts))
+		for _, c := range rt.Copts {
+			dir, isInc := includeDirFromCopt(c)
+			n := normDir(dir)
+			if isInc && n != "" {
+				if _, already := incRoots[n]; already {
+					continue // header dep already wired via a public include
+				}
+				if name, isRoot := plan.headerLibs[n]; isRoot {
+					incRoots[n] = struct{}{}
+					label := headerLibLabel(plan, n, name)
+					if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
+						privHeaderDeps = append(privHeaderDeps, label)
+					} else {
+						headerDeps = append(headerDeps, label)
+					}
+					continue // drop the now-redundant -I copt
+				}
+			}
+			kept = append(kept, c)
+		}
+		rt.Copts = kept
+	}
 
 	// Drop headers now owned by a synthesized header lib; keep the rest
 	// (physically under this target's dir) package-relative.
@@ -822,9 +866,11 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		}
 	}
 
-	// Rewrite intra-element deps (":x") to cross-package labels.
+	// Rewrite intra-element deps (":x") to cross-package labels. PRIVATE
+	// include-dir header libs (privHeaderDeps) ride implementation_deps so
+	// they don't propagate to consumers; PUBLIC ones ride deps.
 	rt.Deps = rewriteDeps(t.Deps, plan, headerDeps)
-	rt.ImplementationDeps = rewriteDeps(t.ImplementationDeps, plan, nil)
+	rt.ImplementationDeps = rewriteDeps(t.ImplementationDeps, plan, privHeaderDeps)
 	return rt
 }
 
@@ -935,6 +981,21 @@ func normDir(d string) string {
 		return ""
 	}
 	return d
+}
+
+// includeDirFromCopt extracts the directory from an include-search copt
+// in the joined form lower emits for PRIVATE include dirs ("-I<dir>" or
+// "-isystem<dir>"; see lower.go). It reports (dir, true) only for those
+// two flags so the header-lib relabel (rewriteTarget) doesn't misfire on
+// other -i* flags (-include, -iquote, -idirafter) or unrelated copts.
+func includeDirFromCopt(c string) (string, bool) {
+	if d := strings.TrimPrefix(c, "-isystem"); d != c {
+		return d, true
+	}
+	if d := strings.TrimPrefix(c, "-I"); d != c {
+		return d, true
+	}
+	return "", false
 }
 
 // relUnder returns (path-relative-to-dir, true) when p is at or below
