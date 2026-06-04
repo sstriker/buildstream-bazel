@@ -199,6 +199,26 @@ try_bazel_build() {
     # under elements/<name>/, the shared //config package stays at the
     # workspace root (the multi-config select() arms reference //config:<name>
     # absolutely, independent of the element's package path).
+    # Per-project cmake configure options that drive the project's OWN build
+    # flags at configure time (so the codemodel — and thus the emitted BUILD —
+    # reflects them). A project's warnings-as-errors policy is noise for a "does
+    # it build" check — the lens tests buildability, and it already opts in to
+    # install-export config generation in the same spirit.
+    #
+    # glm: its test/CMakeLists.txt adds `-Werror` (gcc) / `-Werror -Weverything`
+    # (clang), and under GCC 13 that trips on -Wclass-memaccess in glm's own
+    # gtc/packing.inl (memcpy over its packed vector types — intentional, not a
+    # bug). We can't reach for glm's GLM_DISABLE_AUTO_DETECTION knob: it does
+    # drop the test -Werror, but it also forces GLM_FORCE_CXX_UNKNOWN, which
+    # zeroes GLM_LANG and so disables glm's C++11 std::hash specializations —
+    # breaking the gtx_hash tests with deleted-function errors. Instead pass
+    # CMAKE_CXX_FLAGS=-w: it inhibits all warnings (so -Werror has nothing to
+    # promote, order-independently) while leaving C++ auto-detection intact, so
+    # the full test suite — hash included — compiles.
+    _bb_defines=""
+    case "$_bb_name" in
+        glm) _bb_defines="--cmake-define CMAKE_CXX_FLAGS=-w" ;;
+    esac
     # --emit-install-export-config: the build lens is the one place that opts in
     # to generating the install(EXPORT) config-mode bundle (the real
     # <Pkg>Targets.cmake + cmake_config_bundle filegroup). Default converts omit
@@ -207,7 +227,7 @@ try_bazel_build() {
     # bundle end-to-end rather than choking on a filegroup over not-on-disk files.
     if ! run_converter \
         --source-root "$_bb_src" \
-        $_bb_bt $_bb_sp \
+        $_bb_bt $_bb_sp $_bb_defines \
         --bazel-package-path "$_bb_pkg" \
         --emit-install-export-config \
         --out-build "$_bb_elt/BUILD.bazel" \

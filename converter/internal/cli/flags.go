@@ -112,6 +112,15 @@ type Args struct {
 	// (--exports-in a --exports-in b).
 	ExportsIn []string
 
+	// CmakeDefines carries extra `-D<KEY>=<VALUE>` cache variables to pass to
+	// the cmake configure (cmakerun.Options.ExtraCacheVars). Repeatable
+	// (--cmake-define K1=V1 --cmake-define K2=V2). Used to drive a project's
+	// own build options at configure time — e.g. glm's tests add a `-Werror`
+	// that GCC 13 trips on (a -Wclass-memaccess in glm's own headers), so the
+	// build lens passes -DCMAKE_CXX_FLAGS=-w to inhibit warnings while leaving
+	// glm's C++ auto-detection (and thus its std::hash specializations) intact.
+	CmakeDefines []string
+
 	// OutFailure, when non-empty, is the path to write failure.json on
 	// Tier-1 errors.
 	OutFailure string
@@ -593,6 +602,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutBundleDir, "out-bundle-dir", "", "directory for synthesized cmake-config bundle (optional)")
 	fs.StringVar(&a.OutExports, "out-exports", "", "path to write this element's exports manifest (manifest.Imports JSON: real namespaced cmake targets → this element's Bazel labels) for downstream consumers' --exports-in (optional; requires --bazel-package-path for label formation)")
 	fs.Var(repeatedString{&a.ExportsIn}, "exports-in", "producer exports-manifest file to merge into the imports resolver (the action-time half of the producer→consumer export channel). Repeatable: --exports-in a --exports-in b.")
+	fs.Var(repeatedString{&a.CmakeDefines}, "cmake-define", "extra -D<KEY>=<VALUE> cache variable for the cmake configure, to drive a project's own build options (e.g. -DCMAKE_CXX_FLAGS=-w to inhibit a project's warnings-as-errors that a newer host compiler trips on). Repeatable: --cmake-define K1=V1 --cmake-define K2=V2.")
 	fs.StringVar(&a.OutFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	fs.StringVar(&a.ImportsManifest, "imports-manifest", "", "path to JSON imports manifest mapping out-of-tree CMake targets to Bazel labels (optional)")
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
