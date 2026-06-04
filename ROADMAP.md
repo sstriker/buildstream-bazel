@@ -1015,6 +1015,30 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Build lens: googletest green (fused-source `textual_hdrs` +
+  opt-in install(EXPORT) config-mode generation).** Two blockers:
+  - **Fused-source `textual_hdrs`.** `gtest`/`gmock` compile one
+    `*-all.cc` that textually `#include`s its sibling `src/*.cc`; those
+    belong in `textual_hdrs` (not compiled standalone → duplicate
+    symbols). Extended the textual-source-include handling to
+    `cc_library` (the #423-deferred case) + ancestor-dir include
+    resolution (`gtest-all.cc`'s `#include "src/gtest.cc"` resolves
+    against the include root, not the includer's `src/`). The
+    `fatal error: src/gtest-assertion-result.cc` failures are gone.
+  - **Opt-in config-mode generation.** The `cmake_config_bundle`
+    filegroup referenced install(EXPORT)-generated `<Pkg>Targets.cmake`
+    files nothing produced, so `bazel build //...` choked. New
+    `--emit-install-export-config` makes the converter GENERATE the real
+    `Targets.cmake` with a `write_file` — `add_library(<Pkg>::<t>
+    IMPORTED)` + `IMPORTED_LOCATION` / `INTERFACE_INCLUDE_DIRECTORIES`
+    under `${_IMPORT_PREFIX}` (the form `synthprefix` parses + cmake
+    config-mode consumers `include()`) — and the bundle references those
+    producers. **OFF by default** (the orchestrated graph wires its own
+    synthprefix-synthesized bundle; emitting a filegroup over not-on-disk
+    files would only break the build); the **build lens is the one place
+    that opts in** (`run-survey.sh`), exercising the generation
+    end-to-end.
+
 - **Build lens: filter `create_symlink` + `ninja clean` + source-less `copy`
   command edges.** Three non-modelable cmake/ninja command shapes the
   standalone-genrule pass emitted as broken genrules (surfaced by the zstd

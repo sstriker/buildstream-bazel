@@ -22,11 +22,6 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/hello/helloTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "hello_import",
     static_library = "lib/libhello.a",

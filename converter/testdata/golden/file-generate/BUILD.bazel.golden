@@ -70,11 +70,6 @@ cmake_configure_file(
     visibility = ["//visibility:private"],
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/fglib/fglibTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "fglib_import",
     static_library = "lib/libfglib.a",

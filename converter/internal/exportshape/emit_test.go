@@ -166,11 +166,12 @@ func TestEmitDeclarative_BundleFilegroup(t *testing.T) {
 			"lib/cmake/MyPkg/MyPkgConfigVersion.cmake",
 			"lib/cmake/MyPkg/MyPkgTargets.cmake",
 		},
+		EmitConfig: true, // opt in to the config-mode bundle generation
 	}
 	out := exportshape.EmitDeclarative(in)
-	// cc_import + bundle filegroup.
-	if len(out) != 2 {
-		t.Fatalf("want 2 targets; got %d", len(out))
+	// cc_import + bundle filegroup + one write_file producer per bundle file (3).
+	if len(out) != 5 {
+		t.Fatalf("want 5 targets; got %d", len(out))
 	}
 	// Sorted alphabetically: "cmake_config_bundle" < "foo".
 	if out[0].Name != "cmake_config_bundle" {

@@ -17,8 +17,11 @@
 #   2. `cc_import` rule per exported library (foo_import,
 #      bar_import) with the right static_library / shared_library
 #      attr pointing at lib/libfoo.a / lib/libbar.so.<soversion>.
-#   3. `filegroup(name = "cmake_config_bundle"` carrying the
-#      synthesized lib/cmake/foopkg/foopkgTargets.cmake file.
+#   3. With --emit-install-export-config (opt-in): the cmake_config_bundle
+#      filegroup + a write_file generating the REAL foopkgTargets.cmake
+#      (add_library(foopkg::foo ... IMPORTED) + IMPORTED_LOCATION under
+#      ${_IMPORT_PREFIX}). Without the flag (default): the cc_import facades
+#      only, NO cmake_config_bundle (config-mode generation is opt-in).
 #   4. NO `_install_tree_extract` genrule (the round-2 fallback
 #      must not fire for declarative bundles).
 #   5. The `cmake-codegen-install-export-import` tag is on the
@@ -55,13 +58,33 @@ out_exports="$work_dir/exports.json"
 # --bazel-package-path frames the synthesized cmake_config_bundle /
 # *_import labels absolutely so the resolved-lift manifest-synth (M3)
 # assertions below see cross-element-resolvable labels.
+#
+# --emit-install-export-config opts in to the config-mode bundle: the cc_import
+# facades emit by default, but the cmake_config_bundle filegroup + the GENERATED
+# <Pkg>Targets.cmake are opt-in (default converts omit them — the orchestrated
+# graph wires its own synthprefix-synthesized bundle). The default convert below
+# asserts the bundle is ABSENT without the flag.
 "$bin_dir/convert-element-cmake" \
     --source-root "$fixture" \
+    --emit-install-export-config \
     --out-build "$out_build" \
     --out-exports "$out_exports" \
     --bazel-package-path "elements/foopkg" \
     >"$work_dir/convert.stdout" 2>"$work_dir/convert.stderr" || {
-    echo "FAIL: convert-element-cmake exited non-zero"
+    echo "FAIL: convert-element-cmake (opt-in) exited non-zero"
+    sed 's/^/   stderr: /' "$work_dir/convert.stderr"
+    exit 1
+}
+
+# Default convert (no --emit-install-export-config): cc_import facades present,
+# but NO cmake_config_bundle (config-mode generation is opt-in).
+out_build_default="$work_dir/BUILD.bazel.default.out"
+"$bin_dir/convert-element-cmake" \
+    --source-root "$fixture" \
+    --out-build "$out_build_default" \
+    --bazel-package-path "elements/foopkg" \
+    >>"$work_dir/convert.stdout" 2>>"$work_dir/convert.stderr" || {
+    echo "FAIL: convert-element-cmake (default) exited non-zero"
     sed 's/^/   stderr: /' "$work_dir/convert.stderr"
     exit 1
 }
@@ -91,13 +114,31 @@ if ! grep -q 'shared_library = "lib/libbar.so' "$out_build"; then
     fail "bar_import shared_library attr missing or wrong path"
 fi
 
-# Assert 3: cmake_config_bundle filegroup with the synthesized
-# foopkgTargets.cmake reference.
+# Assert 3a: the opt-in output has the cmake_config_bundle filegroup + the
+# GENERATED foopkgTargets.cmake write_file carrying real imported-target defs
+# (the form synthprefix parses + cmake config-mode consumers include()).
 if ! grep -q 'name = "cmake_config_bundle"' "$out_build"; then
-    fail "cmake_config_bundle filegroup missing"
+    fail "cmake_config_bundle filegroup missing (opt-in)"
 fi
-if ! grep -q 'lib/cmake/foopkg/foopkgTargets.cmake' "$out_build"; then
-    fail "cmake_config_bundle srcs missing foopkgTargets.cmake"
+if ! grep -q 'out = "lib/cmake/foopkg/foopkgTargets.cmake"' "$out_build"; then
+    fail "generated foopkgTargets.cmake write_file missing"
+fi
+if ! grep -q 'add_library(foopkg::foo STATIC IMPORTED)' "$out_build"; then
+    fail "generated Targets.cmake missing imported-target add_library(foopkg::foo ...)"
+fi
+# (grep the path fragment, not the quoted form — the write_file body stores the
+# .cmake lines with backslash-escaped quotes.)
+if ! grep -q 'IMPORTED_LOCATION_NOCONFIG' "$out_build" || ! grep -q '_IMPORT_PREFIX}/lib/libfoo.a' "$out_build"; then
+    fail "generated Targets.cmake missing IMPORTED_LOCATION for foo"
+fi
+
+# Assert 3b: the DEFAULT output (no opt-in) keeps the cc_import facades but emits
+# NO cmake_config_bundle — config-mode generation is opt-in.
+if ! grep -q 'name = "foo_import"' "$out_build_default"; then
+    fail "default convert dropped foo_import cc_import"
+fi
+if grep -q 'name = "cmake_config_bundle"' "$out_build_default"; then
+    fail "default convert emitted cmake_config_bundle; it must be opt-in (--emit-install-export-config)"
 fi
 
 # Assert 4: no install_tree_extract fallback genrule.

@@ -35,11 +35,6 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/toplib/toplibTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "toplib_import",
     static_library = "lib/libtoplib.a",

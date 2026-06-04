@@ -50,11 +50,6 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/multilang/multilangTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "multilang_import",
     static_library = "lib/libmultilang.a",

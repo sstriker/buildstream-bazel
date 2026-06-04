@@ -39,6 +39,15 @@ type Options struct {
 	// Defaults to the source path recorded in the File API codemodel.
 	HostSourceRoot string
 
+	// EmitInstallExportConfig opts in to generating the install(EXPORT)
+	// config-mode bundle — the real <Pkg>Targets.cmake + the cmake_config_bundle
+	// filegroup (exportshape.EmitInputs.EmitConfig). OFF by default: the
+	// orchestrated graph wires the synthprefix-synthesized bundle, so the
+	// converter's standalone bundle is unused and emitting it would only break
+	// `bazel build //...`. A project shipping the element for EXTERNAL cmake
+	// config-mode consumption opts in (--emit-install-export-config).
+	EmitInstallExportConfig bool
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -1224,7 +1233,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// first, generated content next, then install-side packaging
 	// rules (pkg_files for FILES/DIRECTORY, cmake_config_bundle
 	// filegroup for declarative install(EXPORT)).
-	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r)...)
+	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r, opts.EmitInstallExportConfig)...)
 	// INTERFACE-only library lift. cmake's File API codemodel
 	// omits INTERFACE_LIBRARY targets from its targets[] array —
 	// they're header-only declarations with no link step to

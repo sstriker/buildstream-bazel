@@ -70,7 +70,7 @@ import (
 //
 // Returns IR targets in deterministic order (sorted by target name)
 // so downstream emit produces byte-stable BUILD output.
-func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
+func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 	if r == nil || len(r.Directories) == 0 {
 		return nil
 	}
@@ -81,7 +81,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 	// Imperative installers fall through to the round-2
 	// pick_file-projection fallback unchanged (no IR emission
 	// here for them — they're outside this function's surface).
-	exportTargets := lowerExportInstallers(r)
+	exportTargets := lowerExportInstallers(r, emitConfig)
 
 	cmakeSrc := r.Codemodel.Paths.Source
 
@@ -313,7 +313,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply) []ir.Target {
 // projecting from codemodel-only sources — Target.Artifacts /
 // Target.Install.Destinations / Target.FileSets HEADERS — without
 // running `cmake --install` at convert time.
-func lowerExportInstallers(r *fileapi.Reply) []ir.Target {
+func lowerExportInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 	if r == nil || len(r.Directories) == 0 {
 		return nil
 	}
@@ -372,6 +372,7 @@ func lowerExportInstallers(r *fileapi.Reply) []ir.Target {
 				continue
 			}
 			in := exportshape.BuildInputs(inst, r.Targets)
+			in.EmitConfig = emitConfig
 			declarative := exportshape.EmitDeclarative(in)
 			// Suffix per-target cc_import / cc_library names with
 			// "_import" to avoid colliding with the cc_library

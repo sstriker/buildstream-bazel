@@ -470,6 +470,7 @@ func run(a cli.Args) error {
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment) (*ir.Package, error) {
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
+			EmitInstallExportConfig:           a.EmitInstallExportConfig,
 			BackedFeatures:                    backedFeatures,
 			HostPrefixDir:                     prefixAbs,
 			BuildDir:                          hostBuildOrReply,

@@ -44,6 +44,17 @@ type EmitInputs struct {
 	// HEADERS where the destination matches a canonical include
 	// prefix). One filegroup per target, named per the target.
 	PublicHeaders map[string][]string
+
+	// EmitConfig opts in to generating the install(EXPORT) config-mode bundle
+	// (the real <Pkg>Targets.cmake + the cmake_config_bundle filegroup). OFF by
+	// default: in the orchestrated graph the wired bundle is the synthprefix-
+	// synthesized one (write-a emits its own tar-based cmake_config_bundle), so
+	// the converter's standalone bundle is unused, and emitting it would only
+	// break `bazel build //...` (the install(EXPORT)-generated .cmake files
+	// don't exist on disk). A project shipping the element for EXTERNAL
+	// config-mode consumption opts in (--emit-install-export-config); the
+	// converter then GENERATES the real Targets.cmake.
+	EmitConfig bool
 }
 
 // EmitDeclarative projects a declarative install(EXPORT) bundle
@@ -63,11 +74,14 @@ type EmitInputs struct {
 //     `<target>_hdrs`. Source list from
 //     EmitInputs.PublicHeaders[target.Name].
 //
-//   - One filegroup named "cmake_config_bundle" if
-//     CMakeConfigBundleFiles is non-empty — the generated
-//     <Pkg>Targets.cmake + <Pkg>ConfigVersion.cmake + Config helper.
-//     Lets downstream consumers depend on the bundle as a single
-//     label.
+//   - When EmitInputs.EmitConfig is set (opt-in): a write_file
+//     generating the real <Pkg>Targets.cmake (imported-target defs)
+//     per CMakeConfigBundleFiles entry, plus a "cmake_config_bundle"
+//     filegroup referencing those producers. OFF by default — the
+//     orchestrated graph wires the synthprefix-synthesized bundle, so
+//     the converter's standalone bundle is unused there and emitting a
+//     filegroup over the (install-generated, not-on-disk) .cmake files
+//     would only break `bazel build //...`.
 //
 // Returns nil + nil for non-declarative installers (the caller
 // should have gated on Classify but the guard is defensive).
@@ -128,20 +142,140 @@ func EmitDeclarative(in EmitInputs) []ir.Target {
 		}
 	}
 
-	// One bundle filegroup if cmake-config files are staged.
-	if len(in.CMakeConfigBundleFiles) > 0 {
+	// install(EXPORT) config-mode bundle — OPT-IN (in.EmitConfig). The bundle's
+	// <Pkg>Targets.cmake is install(EXPORT)-GENERATED (not a source file); when
+	// opted in the converter GENERATES it with a write_file (real imported-target
+	// defs whose IMPORTED_LOCATION / INTERFACE_INCLUDE_DIRECTORIES synthprefix
+	// parses) and the cmake_config_bundle filegroup references those producers.
+	// OFF by default: the orchestrated graph wires its own synthprefix-synthesized
+	// bundle, so the converter's standalone bundle is unused there, and emitting a
+	// filegroup over the (not-on-disk) .cmake files would only break
+	// `bazel build //...`. The build lens opts in to exercise the generation; see
+	// EmitInputs.EmitConfig.
+	if in.EmitConfig && len(in.CMakeConfigBundleFiles) > 0 {
 		bundle := append([]string(nil), in.CMakeConfigBundleFiles...)
 		sort.Strings(bundle)
+		var bundleSrcs []string
+		for _, f := range bundle {
+			gen := "gen_" + sanitizeBundleName(f)
+			out = append(out, ir.Target{
+				Name:             gen,
+				Kind:             ir.KindWriteFile,
+				WriteFileOut:     f,
+				WriteFileContent: renderExportTargetsFile(in, f),
+				WriteFileNewline: "unix",
+				Visibility:       []string{"//visibility:public"},
+				Tags:             []string{"cmake-codegen-install-export-config"},
+			})
+			bundleSrcs = append(bundleSrcs, ":"+gen)
+		}
 		out = append(out, ir.Target{
 			Name:       "cmake_config_bundle",
 			Kind:       ir.KindFilegroup,
-			Srcs:       bundle,
+			Srcs:       bundleSrcs,
 			Visibility: []string{"//visibility:public"},
 		})
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// sanitizeBundleName turns an install-tree path (lib/cmake/Pkg/PkgTargets.cmake)
+// into a Bazel-identifier-safe suffix for the write_file producer's name.
+func sanitizeBundleName(f string) string {
+	var b strings.Builder
+	for _, r := range f {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+// renderExportTargetsFile generates a real install(EXPORT) <Pkg>Targets.cmake:
+// imported-target definitions for the exported libraries, with IMPORTED_LOCATION
+// + INTERFACE_INCLUDE_DIRECTORIES anchored at ${_IMPORT_PREFIX} (computed by
+// climbing from the file's install location to the prefix root). This is the
+// format cmake config-mode consumers `include()` AND the format synthprefix
+// parses to stub imported paths. The codemodel doesn't carry the export
+// NAMESPACE, so the imported-target prefix is derived from the bundle's <Pkg>
+// directory (the find_package(<Pkg>) convention, NAMESPACE <Pkg>::).
+func renderExportTargetsFile(in EmitInputs, bundleFile string) []string {
+	dest := path.Dir(bundleFile)          // lib/cmake/GTest
+	pkg := path.Base(dest)                // GTest
+	climb := strings.Count(dest, "/") + 1 // components of dest → climbs to prefix root
+	lines := []string{
+		"# " + path.Base(bundleFile) + " — generated by convert-element-cmake from",
+		"# install(EXPORT " + in.Installer.ExportName + "). Imported targets for",
+		"# find_package(" + pkg + " CONFIG) consumers. In the orchestrated graph the",
+		"# wired bundle is the synthprefix-synthesized one; this is the bundle a",
+		"# project ships for EXTERNAL config-mode consumption.",
+		`get_filename_component(_IMPORT_PREFIX "${CMAKE_CURRENT_LIST_FILE}" PATH)`,
+	}
+	for i := 0; i < climb; i++ {
+		lines = append(lines, `get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)`)
+	}
+	for _, et := range in.Installer.ExportTargets {
+		t, ok := in.Targets[et.Id]
+		if !ok {
+			continue
+		}
+		name := et.Name
+		if name == "" {
+			name = t.Name
+		}
+		if name == "" {
+			continue
+		}
+		imported := pkg + "::" + name
+		switch t.Type {
+		case "INTERFACE_LIBRARY":
+			lines = append(lines,
+				"",
+				"add_library("+imported+" INTERFACE IMPORTED)",
+				"set_target_properties("+imported+" PROPERTIES",
+				`  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include")`,
+			)
+		case "STATIC_LIBRARY", "SHARED_LIBRARY", "MODULE_LIBRARY":
+			artifact := resolveExportArtifact(t, in.InstallFiles)
+			if artifact == "" {
+				continue
+			}
+			kind := "STATIC"
+			if t.Type != "STATIC_LIBRARY" {
+				kind = "SHARED"
+			}
+			lines = append(lines,
+				"",
+				"add_library("+imported+" "+kind+" IMPORTED)",
+				"set_target_properties("+imported+" PROPERTIES",
+				`  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include")`,
+				"set_property(TARGET "+imported+" APPEND PROPERTY IMPORTED_CONFIGURATIONS NOCONFIG)",
+				"set_target_properties("+imported+" PROPERTIES",
+				`  IMPORTED_LOCATION_NOCONFIG "${_IMPORT_PREFIX}/`+artifact+`")`,
+			)
+		}
+	}
+	return lines
+}
+
+// resolveExportArtifact returns the install-tree path (<dest>/<NameOnDisk>) of
+// an exported library target, or "" when it can't be resolved against the
+// staged InstallFiles (mirrors emitCCImport's resolution).
+func resolveExportArtifact(t fileapi.Target, installFiles []string) string {
+	if t.NameOnDisk == "" || t.Install == nil {
+		return ""
+	}
+	for _, dest := range t.Install.Destinations {
+		artifact := path.Join(dest.Path, t.NameOnDisk)
+		if containsString(installFiles, artifact) {
+			return artifact
+		}
+	}
+	return ""
 }
 
 // emitCCImport finds t.NameOnDisk under t.Install.Destinations[0]

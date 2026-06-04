@@ -567,6 +567,15 @@ type Args struct {
 	// path round-trips IR through JSON, and the per-directory split is
 	// a v1-scope-cut single-platform-only emit transform).
 	SplitPackages bool
+
+	// EmitInstallExportConfig opts in to generating the install(EXPORT)
+	// config-mode bundle — the real <Pkg>Targets.cmake + cmake_config_bundle
+	// filegroup. Off by default: the orchestrated graph wires the
+	// synthprefix-synthesized bundle, so the converter's standalone bundle is
+	// unused and emitting it over non-existent .cmake files would break
+	// `bazel build //...`. Opt in when shipping the element for EXTERNAL cmake
+	// config-mode consumption.
+	EmitInstallExportConfig bool
 }
 
 // Parse reads argv (without program name), populates Args, and prints usage
@@ -614,6 +623,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.ToolchainCMakeFile, "toolchain-cmake-file", "", "CMake toolchain file (typically derive-toolchain's toolchain.cmake); skips per-conversion compiler probing")
 	fs.StringVar(&a.SourceKey, "source-key", "", "when set, prefix every source path in emitted cc_library/cc_binary srcs with @src_<key>//: (the FUSE-sources Bazel-label path)")
 	fs.BoolVar(&a.SplitPackages, "split-packages", false, "emit one BUILD.bazel per directory (the gazelle model) mirroring the CMakeLists/add_subdirectory layout, instead of a single monolithic BUILD.bazel. Targets land in the package matching their declaring cmake dir; header include-roots become a synthesized header cc_library; intra-element deps are rewritten to cross-package labels. Off by default (single-BUILD output is byte-identical to today). Mutually exclusive with --out-ir-json.")
+	fs.BoolVar(&a.EmitInstallExportConfig, "emit-install-export-config", false, "generate the install(EXPORT) config-mode bundle — the real <Pkg>Targets.cmake (imported-target defs) plus the cmake_config_bundle filegroup. Off by default: the orchestrated graph wires the synthprefix-synthesized bundle, so the converter's standalone bundle is unused and emitting it over the (install-generated, not-on-disk) .cmake files would break `bazel build //...`. Opt in when shipping the element for EXTERNAL cmake config-mode consumption.")
 	fs.StringVar(&a.BazelPackagePath, "bazel-package-path", "", "repo-root-relative path of the destination Bazel package (e.g. \"elements/hello-world\"). Frames the emitted `# gazelle:cc_search` directives so gazelle_cc's resolver — which interprets cc_search arguments repo-root relative — picks up the same include search paths cmake recorded. Empty suppresses the directive; safer than emitting wrong bytes.")
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")

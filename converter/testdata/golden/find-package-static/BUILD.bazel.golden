@@ -23,11 +23,6 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/usepkgst/usepkgstTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "usepkgst_import",
     static_library = "lib/libusepkgst.a",
