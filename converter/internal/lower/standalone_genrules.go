@@ -264,6 +264,26 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// absolute paths into the rendered genrule.
 		srcs := genruleSrcs(b, cmakeSrc, buildDir, umbrellaPrefix)
 
+		// A copy command (`cmake -E copy <src> <dst>`) with no recovered srcs
+		// has no staged input to read: its source is a cmd-arg-only reference to
+		// a file the ninja edge never declared as an input. zstd's manpages hit
+		// this — `add_custom_target(zstd.1 ALL ${CMAKE_COMMAND} -E copy
+		// ${PROGRAMS_DIR}/zstd.1 .)` with PROGRAMS_DIR a sibling dir OUTSIDE the
+		// surveyed build/cmake element root and no DEPENDS, so genruleSrcs (which
+		// rejects element-escaping inputs) yields nothing. Such a genrule always
+		// fails under Bazel (nothing to copy from in the sandbox), so emitting it
+		// is strictly worse than dropping it; record a `copy` breadcrumb.
+		if len(srcs) == 0 && isCopyCmd(cmd) {
+			if filteredInternal != nil {
+				key := "copy"
+				if len(outs) > 0 {
+					key = outs[0]
+				}
+				filteredInternal[key] = "copy"
+			}
+			continue
+		}
+
 		// In-place rewrite remediation: a custom command that reads a
 		// source-tree file and writes the SAME relative path into the
 		// build tree (LLVM's Remarks.exports shape) produces a genrule
@@ -1247,6 +1267,15 @@ func isCreateSymlinkCmd(cmd string) bool {
 	return strings.Contains(cmd, "create_symlink")
 }
 
+// isCopyCmd reports whether a recovered ninja CUSTOM_COMMAND is a
+// `cmake -E copy` (incl. copy_if_different / copy_directory) — cmake's portable
+// file-copy primitive. Matched on the raw ninja cmd before rewriteGenruleCmd
+// normalizes it to `cp`. Used only in tandem with an empty srcs list, where the
+// copy source was never staged and the genrule can't run.
+func isCopyCmd(cmd string) bool {
+	return strings.Contains(cmd, "-E copy")
+}
+
 // cmakeInternalCmdKind reports the CATEGORY of cmake-internal command a
 // recovered ninja CUSTOM_COMMAND edge is, or "" if it isn't one. It's the
 // body of isCMakeInternalCmd; the category lets the drop site
@@ -1254,8 +1283,9 @@ func isCreateSymlinkCmd(cmd string) bool {
 // dropping silently — these edges have no Bazel analogue, but an operator
 // auditing a conversion should still see WHAT was filtered. Categories:
 // "install" / "uninstall" / "regen" / "cpack" / "clean" / "dashboard" /
-// "ide-stub". (The create_symlink "symlink" category is filtered separately,
-// not via this function — it's a user command, not cmake-internal bookkeeping.)
+// "ide-stub". (The "symlink" (create_symlink) and "copy" (cmake -E copy with no
+// stageable source) categories are filtered separately, not via this function —
+// they're user commands, not cmake-internal bookkeeping.)
 func cmakeInternalCmdKind(cmd string) string {
 	c := strings.TrimSpace(cmd)
 	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's

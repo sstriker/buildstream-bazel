@@ -1399,7 +1399,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	// Breadcrumb for the cmake command edges the standalone-genrule pass
 	// dropped (install / uninstall / regen / cpack / clean / dashboard /
-	// ide-stub, and create_symlink tool/SONAME/manpage aliases). They have no
+	// ide-stub, create_symlink tool/SONAME/manpage aliases, and source-less
+	// cmake -E copy edges whose source is outside the element). They have no
 	// Bazel analogue
 	// so dropping is correct, but an operator auditing a conversion should see
 	// WHAT was filtered rather than the drop being silent — one aggregated

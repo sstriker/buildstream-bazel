@@ -76,8 +76,9 @@ type codegenContext struct {
 
 	// FilteredInternalCmds collects the cmake command edges the
 	// standalone-genrule pass drops (install / uninstall / regen / cpack /
-	// clean / dashboard / ide-stub, and create_symlink tool/SONAME/manpage
-	// aliases) — keyed by the edge's first output, valued by category. These
+	// clean / dashboard / ide-stub, create_symlink tool/SONAME/manpage aliases,
+	// and source-less cmake -E copy edges) — keyed by the edge's first output,
+	// valued by category. These
 	// have no Bazel analogue so dropping is correct, but ToIR emits one
 	// aggregated stderr breadcrumb at the end (alongside MissingIncludeDirs)
 	// so an operator auditing a conversion sees WHAT was filtered rather than
