@@ -1015,6 +1015,19 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Build lens: PRIVATE element-root include sets `RootInclude` (abseil).**
+  `target_include_directories(PRIVATE ${PROJECT_SOURCE_DIR})` resolves to
+  `rel==""`, but the include loop ran the private/system-include split
+  *before* the `rel==""` check — so a PRIVATE root include emitted a bogus
+  bare `-I` (`reanchor("")==""`) and left `RootInclude` false, costing the
+  target the `include_prefix=<package dir>` that re-homes its headers so its
+  own `#include "absl/base/internal/spinlock_wait.h"` resolves under split.
+  Moving the `rel==""` handling ahead of the split fixes abseil's
+  `spinlock_wait` (and every PRIVATE-root-include target). cctz's `time_zone`
+  remains: its root-walk hdr discovery pulls cross-package headers into hdrs,
+  which fail `allPackageLocalHdrs` and block the prefix (tracked in
+  `docs/survey-corpus.md`).
+
 - **Build lens: googletest green (fused-source `textual_hdrs` +
   opt-in install(EXPORT) config-mode generation).** Two blockers:
   - **Fused-source `textual_hdrs`.** `gtest`/`gmock` compile one

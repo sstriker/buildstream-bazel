@@ -2333,6 +2333,34 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				continue
 			}
 			seenInc[emit] = true
+			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+			// resolves to rel == "". Handle it BEFORE the private/system
+			// split below. Bazel rejects `includes = [""]` ("resolves to
+			// the workspace root, which would allow this rule and all of
+			// its transitive dependents to include any file in your
+			// workspace"); same-package consumers already see this target's
+			// headers via hdrs+deps, so dropping the entry from `includes =`
+			// is the idiomatic shape. The package root is still the
+			// authoritative source for hdrs discovery — walkPkgRootForHdrs
+			// makes discoverHeaders walk hostSrc (otherwise zlib-shape
+			// projects that declare ONLY target_include_directories(.) end
+			// up with empty hdrs) — and it sets RootInclude, which the split
+			// emitter turns into include_prefix=<package dir> so the
+			// target's own element-root-relative includes resolve.
+			//
+			// This MUST run before the privateIncludeDirs branch: a PRIVATE
+			// root include otherwise fell into the copt branch and emitted a
+			// bogus bare `-I` (reanchor("") == "") while leaving RootInclude
+			// false. abseil targets whose root include is PRIVATE
+			// (spinlock_wait, cctz — `#include
+			// "absl/base/internal/spinlock_wait.h"`) then lost the
+			// include_prefix that re-homes their headers, and their own
+			// compile couldn't find them. The PRIVATE-ness (don't propagate
+			// the -I to consumers) is moot once the headers carry the prefix.
+			if rel == "" {
+				walkPkgRootForHdrs = true
+				continue
+			}
 			if privateIncludeDirs[inc.Path] {
 				// Compile-only — don't propagate to consumers.
 				// target_include_directories(... SYSTEM PRIVATE ...)
@@ -2347,25 +2375,6 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					flag = "-isystem"
 				}
 				irt.Copts = append(irt.Copts, flag+emit)
-				continue
-			}
-			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-			// resolves to rel == "". Bazel rejects
-			// `includes = [""]` ("resolves to the workspace root,
-			// which would allow this rule and all of its transitive
-			// dependents to include any file in your workspace");
-			// same-package consumers already see this target's
-			// headers via hdrs+deps without an explicit include
-			// dir, so dropping the entry from `includes =` is the
-			// idiomatic shape. But the package root is still the
-			// authoritative source for hdrs discovery — record the
-			// signal so the discoverHeaders call below knows to
-			// walk hostSrc itself (otherwise zlib-shape projects
-			// that declare ONLY target_include_directories(.) end
-			// up with empty hdrs and consumers can't find any
-			// header).
-			if rel == "" {
-				walkPkgRootForHdrs = true
 				continue
 			}
 			irt.Includes = append(irt.Includes, emit)
