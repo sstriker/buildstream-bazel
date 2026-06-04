@@ -73,6 +73,14 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
 				continue
 			}
+			// An absolute include ("/usr/...", "C:\\...") is non-portable and
+			// never a stageable in-tree textual source — reject it before
+			// resolving. (filepath.Join folds an absolute element under dir
+			// rather than honoring it, so it could otherwise coincidentally
+			// match a same-named in-tree file and stage the wrong thing.)
+			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
+				continue
+			}
 			rel := filepath.ToSlash(filepath.Clean(filepath.Join(dir, inc)))
 			// Escapes the element root (can't be expressed as a package input)
 			// or is the includer itself — skip.
@@ -147,6 +155,15 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 			Tags:        []string{"cmake-codegen-textual-source-include"},
 		})
 		t.Deps = appendUnique(t.Deps, ":"+lib)
+		// Co-locate the synth lib in the consumer's package so the dep stays
+		// SAME-package under --split-packages. A private lib left in the root
+		// package would be a cross-package dep — and Bazel-rejected — for a
+		// consumer in a subpackage (test/ targets commonly land in their own
+		// package). pkg.SubPackages carries every target's dir (root → ""),
+		// populated during lowering before this tail pass.
+		if pkg.SubPackages != nil {
+			pkg.SubPackages[lib] = pkg.SubPackages[t.Name]
+		}
 		recs = append(recs, rec{target: t.Name, lib: lib, srcs: incs})
 	}
 	if len(synth) > 0 {
