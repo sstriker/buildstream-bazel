@@ -77,15 +77,25 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 	var out []configureFileOut
 	seenRel := map[string]bool{}
 	for _, call := range calls {
-		// configure_file output is sometimes a relative path
-		// (cmake resolves against the current binary dir at
-		// expand time). Trace records the resolved string so
-		// most calls have absolute paths. Skip relative —
-		// can't anchor without per-call binary-dir context.
-		if !filepath.IsAbs(call.Output) {
-			continue
+		// configure_file output is sometimes a relative path: cmake
+		// resolves it against CMAKE_CURRENT_BINARY_DIR — the build-dir
+		// mirror of the directory of the CMakeLists that made the call.
+		// The trace records the call's file (CallFile), so anchor the
+		// relative output there. This recovers the ubiquitous
+		// `configure_file(config.h.in config.h)` autotools idiom, which
+		// was previously dropped for "lack of per-call binary-dir context".
+		output := call.Output
+		if !filepath.IsAbs(output) {
+			if call.CallFile == "" || recordedSrcDir == "" {
+				continue
+			}
+			relDir, inside := relativeIfInside(recordedSrcDir, filepath.Dir(call.CallFile))
+			if !inside {
+				continue
+			}
+			output = filepath.Join(recordedBuildDir, relDir, call.Output)
 		}
-		rel, ok := relativeIfInsideRelaxed(recordedBuildDir, call.Output)
+		rel, ok := relativeIfInsideRelaxed(recordedBuildDir, output)
 		if !ok {
 			// Output landed outside the build dir — unusual
 			// (configure_file with absolute non-build dest).
@@ -117,7 +127,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		cc.OutToGenrule[rel] = name
 
 		out = append(out, configureFileOut{
-			AbsOutput: call.Output,
+			AbsOutput: output,
 			RelOutput: rel,
 			// Normalize backslashes so a Windows-separator trace still matches
 			// (mirrors shadow.isGenerateExportHeaderTemplate).

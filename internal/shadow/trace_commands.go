@@ -237,6 +237,12 @@ type ConfigureFileCall struct {
 	Input   string
 	Output  string
 	Options []string // any trailing flags: @ONLY, COPYONLY, ESCAPE_QUOTES, NEWLINE_STYLE ..., etc.
+	// CallFile is the absolute path of the CMakeLists that made the call
+	// (the trace event's `file`). cmake resolves a RELATIVE Output against
+	// CMAKE_CURRENT_BINARY_DIR — the build-dir mirror of this file's
+	// directory — so the recovery needs it to anchor relative outputs (the
+	// ubiquitous `configure_file(config.h.in config.h)` autotools idiom).
+	CallFile string
 }
 
 // ExtractTargetIncludes returns one entry per user-written
@@ -518,9 +524,10 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 		return ConfigureFileCall{}, false
 	}
 	return ConfigureFileCall{
-		Input:   ev.Args[0],
-		Output:  ev.Args[1],
-		Options: append([]string(nil), ev.Args[2:]...),
+		Input:    ev.Args[0],
+		Output:   ev.Args[1],
+		Options:  append([]string(nil), ev.Args[2:]...),
+		CallFile: ev.File,
 	}, true
 }
 

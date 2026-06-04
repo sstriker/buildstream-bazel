@@ -514,7 +514,9 @@ func TestRecoverConfigureFilesFromCalls_HappyPath(t *testing.T) {
 // TestRecoverConfigureFilesFromCalls_SkipsAndDedupes locks the
 // silent-skip paths:
 //   - empty calls → nil, no error.
-//   - relative output → skipped (no per-call binary-dir context).
+//   - relative output WITHOUT a call site → skipped (can't anchor).
+//     (A relative output WITH a CallFile is anchored + recovered — see
+//     the sibling TestRecoverConfigureFilesFromCalls_RelativeOutputAnchored.)
 //   - output outside build dir → skipped.
 //   - duplicate call (cmake re-evaluating the same configure_file
 //     across frames) → only one genrule.
@@ -565,6 +567,44 @@ func TestRecoverConfigureFilesFromCalls_SkipsAndDedupes(t *testing.T) {
 			t.Errorf("Genrules = %d; want 1", len(cc.Genrules))
 		}
 	})
+}
+
+// TestRecoverConfigureFilesFromCalls_RelativeOutputAnchored pins the fix for
+// the ubiquitous `configure_file(config.h.in config.h)` autotools idiom: a
+// RELATIVE output is anchored against CMAKE_CURRENT_BINARY_DIR — the build-dir
+// mirror of the directory of the CMakeLists that made the call (CallFile) —
+// and recovered, instead of being skipped for "lack of per-call binary-dir
+// context".
+func TestRecoverConfigureFilesFromCalls_RelativeOutputAnchored(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	// The call is made from a sub-directory's CMakeLists, so the binary-dir
+	// mirror is hostBuild/sub — exercises the relDir anchoring, not just root.
+	if err := os.MkdirAll(filepath.Join(hostBuild, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostBuild, "sub", "config.h"), []byte("#define X 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ConfigureFileCall{{
+		Input:    "config.h.cmake.in", // relative input (resolved against the source dir)
+		Output:   "config.h",          // RELATIVE output — the autotools idiom
+		CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
+	}}
+	cc := newCodegenContext()
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("out = %v; want 1 (relative output anchored + recovered)", out)
+	}
+	if out[0].RelOutput != "sub/config.h" {
+		t.Errorf("RelOutput = %q, want sub/config.h", out[0].RelOutput)
+	}
+	if _, ok := cc.OutToGenrule["sub/config.h"]; !ok {
+		t.Errorf("OutToGenrule missing sub/config.h: %v", cc.OutToGenrule)
+	}
 }
 
 // equalStringsForCF is a local string-slice equality helper.
