@@ -318,7 +318,8 @@ RENDER_GATES = \
 	scripts/meta-cmake-genrule-inplace-rewrite.sh \
 	scripts/meta-cc-embed.sh \
 	scripts/meta-cc-embed-recognize.sh \
-	scripts/meta-cmake-export-header.sh
+	scripts/meta-cmake-export-header.sh \
+	scripts/meta-cmake-cc-hash.sh
 
 # No `converter` prerequisite: each gate builds convert-element-cmake itself,
 # so the skip branches below truly skip (no forced converter build). Some

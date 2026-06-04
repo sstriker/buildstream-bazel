@@ -494,6 +494,11 @@ type Args struct {
 	// by default.
 	LiftCCEmbed bool
 
+	// LiftCCHash recognizes a known file-hashing cmake -P script
+	// (vtkHashSource) and lowers it to the native cc_hash rule. Off by
+	// default.
+	LiftCCHash bool
+
 	// CMakeScriptTrace asks the cmake -P lift to actually run
 	// the script under `cmake --trace --trace-format=json-v1
 	// -P <script>` at convert time. The trace's read paths
@@ -616,6 +621,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.CMakeScriptTrace, "cmake-script-trace", false, "actually run the cmake -P script under `cmake --trace --trace-format=json-v1 -P <script>` at convert time. The trace's read paths drive auto-augmentation of the genrule's srcs and a structured refusal diagnostic when the script touches paths Bazel's sandbox can't reproduce. Off by default — convert-time execution carries side-effect risk; opt in after reading docs/design/conversion-architecture.md's convert-time platform coupling note. Requires --cmake-script-runner.")
 	fs.BoolVar(&a.CMakeScriptBake, "cmake-script-bake", false, "run the cmake -P script at convert time, capture the declared output bytes, and emit genrules that materialize them via base64-decode. Closes the script-hardcoded-absolute-paths gap by resolving paths at convert time. Trade-off: outputs are convert-time-baked and don't auto-refresh on upstream input change — operator re-runs convert. Same warning shape as the legacy configure_file capture (warnConvertTimeBaking post-pass picks up the cmake-codegen-cmake-script-bake tag). Off by default.")
 	fs.BoolVar(&a.LiftCCEmbed, "lift-cc-embed", false, "recognize a custom command running a known file-embedding cmake -P encoder (VTK's vtkEncodeString) and lower it to the native cc_embed rule (//tools:cc-embed) — the converted project needs no cmake at build time. Faithful (the symbol name + runtime value are preserved). Off by default; requires the consuming project to stage //tools:cc-embed (like the runner). The Bazel-native end-state for the embed-file-as-C-array codegen idiom (docs/research/codegen-idiom-coverage.md).")
+	fs.BoolVar(&a.LiftCCHash, "lift-cc-hash", false, "recognize a custom command running a known file-hashing cmake -P script (VTK's vtkHashSource) and lower it to the native cc_hash rule (//tools:cc-hash) — the converted project needs no cmake at build time, and the digest recomputes on input change (unlike --cmake-script-bake). Faithful (the #define name + digest are preserved). Off by default; requires the consuming project to stage //tools:cc-hash. The Bazel-native end-state for the hash-a-file-into-a-header codegen idiom (docs/research/codegen-idiom-coverage.md).")
 	fs.BoolVar(&a.IgnoreRejectionsForDiagnostics, "ignore-rejections-for-diagnostics", false, "collect every Tier-1 refusal and continue past each with a local skip rather than aborting on the first one. The resulting BUILD.bazel is NOT guaranteed to build — refused constructs are silently elided. Use with --rejections-report to capture the structured rejection list. Diagnostic surveys only; production paths want the strict refusal.")
 	fs.StringVar(&a.RejectionsReport, "rejections-report", "", "write the structured rejection records (JSON array) here. Only meaningful with --ignore-rejections-for-diagnostics.")
 

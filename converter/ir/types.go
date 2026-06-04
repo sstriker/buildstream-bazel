@@ -147,6 +147,19 @@ const (
 	// @rules_buildstream_bazel//rules:cc_embed.bzl (the emitter writes the
 	// load, mirroring KindCMakeConfigureFile).
 	KindCCEmbed
+	// KindCCHash renders as the rules_buildstream_bazel `cc_hash(...)`
+	// rule: the Bazel-native lowering of the "hash a file into a generated
+	// header" cmake -P codegen idiom (VTK's vtkHashSource.cmake). Instead of
+	// running cmake at build time (the --cmake-script-runner bridge) or
+	// freezing the digest at convert time (--cmake-script-bake), the rule
+	// runs the hermetic //tools:cc-hash tool to write a header that
+	// `#define`s the file's digest as a C string — so the converted project
+	// needs neither cmake nor the converter at build time, and the digest
+	// auto-refreshes when the input changes (the bake's gap). Attributes
+	// live on Target.CCHash. Comes from
+	// @rules_buildstream_bazel//rules:cc_hash.bzl (the emitter writes the
+	// load, mirroring KindCCEmbed).
+	KindCCHash
 )
 
 func (k Kind) String() string {
@@ -179,6 +192,8 @@ func (k Kind) String() string {
 		return "cmake_configure_file"
 	case KindCCEmbed:
 		return "cc_embed"
+	case KindCCHash:
+		return "cc_hash"
 	case KindBoolFlag:
 		return "bool_flag"
 	case KindConfigSetting:
@@ -662,6 +677,10 @@ type Target struct {
 	// Kind == KindCCEmbed.
 	CCEmbed *CCEmbedSpec
 
+	// CCHash carries the cc_hash rule's attributes. Non-nil only when
+	// Kind == KindCCHash.
+	CCHash *CCHashSpec
+
 	// AliasActual is the Bazel label the alias resolves to.
 	// Populated only when Kind == KindAlias; renders as
 	// `actual = "<label>"` on the alias rule. Typically a
@@ -880,4 +899,25 @@ type CCEmbedSpec struct {
 	// empty for the common case.
 	ExportSymbol string
 	ExportHeader string
+}
+
+// CCHashSpec carries the attributes for a KindCCHash target — the cc_hash
+// rule that hashes a file's bytes and writes a header `#define`-ing the
+// digest as a C string (the native lowering of vtkHashSource-shaped cmake
+// -P codegen). The emitter projects these onto the rule's attributes; the
+// rule runs //tools:cc-hash at build time.
+type CCHashSpec struct {
+	// Src is the package-relative path of the file whose bytes are hashed
+	// (the rule's `src`).
+	Src string
+	// Name is the C `#define` name (and include-guard) the digest is bound
+	// to (the rule's `define_name`; the consumer references it). Mirrors
+	// vtk_hash_source's NAME.
+	Name string
+	// Algorithm is the digest: MD5, SHA1, SHA224, SHA256, SHA384 or SHA512
+	// (the rule's `algorithm`). Mirrors vtk_hash_source's ALGORITHM.
+	Algorithm string
+	// OutHeader is the package-relative predeclared header output (the
+	// rule's `out_header`), e.g. "<name>.h".
+	OutHeader string
 }

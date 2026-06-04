@@ -1062,6 +1062,15 @@ func coveredOuts(existing []ir.Target) map[string]bool {
 					covered[t.CCEmbed.OutSource] = true
 				}
 			}
+		case ir.KindCCHash:
+			// The cc_hash lift produces its header via CCHash.OutHeader (not
+			// GenruleOuts). The recognized vtkHashSource edge is a ninja
+			// CUSTOM_COMMAND, so — as for cc_embed — missing it here would
+			// re-emit a second producer for the same output and Bazel rejects
+			// the duplicate generated file.
+			if t.CCHash != nil && t.CCHash.OutHeader != "" {
+				covered[t.CCHash.OutHeader] = true
+			}
 		}
 	}
 	return covered

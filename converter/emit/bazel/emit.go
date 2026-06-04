@@ -407,6 +407,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitBoolFlagLoad(&buf, pkg)
 	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitCCEmbedLoad(&buf, pkg)
+	emitCCHashLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -472,6 +473,12 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		}
 		if t.Kind == ir.KindCCEmbed {
 			if err := emitCCEmbed(&buf, t); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if t.Kind == ir.KindCCHash {
+			if err := emitCCHash(&buf, t); err != nil {
 				return nil, err
 			}
 			continue
@@ -1481,6 +1488,69 @@ func emitCCEmbed(w *bytes.Buffer, t ir.Target) error {
 		ExportHeader: s.ExportHeader,
 		Tags:         sortedCopy(t.Tags),
 		Visibility:   nonDefaultVisibility(t.Visibility),
+	})
+}
+
+// emitCCHashLoad emits the
+// `load("@rules_buildstream_bazel//rules:cc_hash.bzl", "cc_hash")` line when
+// pkg emits any KindCCHash target. No-op otherwise so output for packages
+// without a hash lift stays byte-stable.
+func emitCCHashLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindCCHash {
+			buf.WriteString(`load("@rules_buildstream_bazel//rules:cc_hash.bzl", "cc_hash")` + "\n\n")
+			return
+		}
+	}
+}
+
+// ccHashTmpl renders the rules_buildstream_bazel `cc_hash(...)` rule — the
+// native lowering of vtkHashSource-shaped cmake -P codegen. The tool is fixed
+// to //tools:cc-hash, which the consuming project must stage (like
+// //tools:cc-embed). canonicalize() reformats, so this only has to get the
+// attribute set right.
+var ccHashTmpl = template.Must(template.New("cc_hash").Funcs(template.FuncMap{
+	"strList": strList,
+}).Parse(`cc_hash(
+    name = "{{.Name}}",
+    src = "{{.Src}}",
+    define_name = "{{.DefineName}}",
+    algorithm = "{{.Algorithm}}",
+    out_header = "{{.OutHeader}}",
+    tool = "//tools:cc-hash",
+{{- if .Tags}}
+    tags = {{strList .Tags}},
+{{- end}}
+{{- if .Visibility}}
+    visibility = {{strList .Visibility}},
+{{- end}}
+)
+`))
+
+// ccHashView projects ir.Target into the cc_hash template.
+type ccHashView struct {
+	Name       string
+	Src        string
+	DefineName string
+	Algorithm  string
+	OutHeader  string
+	Tags       []string
+	Visibility []string
+}
+
+func emitCCHash(w *bytes.Buffer, t ir.Target) error {
+	s := t.CCHash
+	if s == nil {
+		return fmt.Errorf("emit cc_hash %q: nil CCHash spec", t.Name)
+	}
+	return ccHashTmpl.Execute(w, ccHashView{
+		Name:       t.Name,
+		Src:        s.Src,
+		DefineName: s.Name,
+		Algorithm:  s.Algorithm,
+		OutHeader:  s.OutHeader,
+		Tags:       sortedCopy(t.Tags),
+		Visibility: nonDefaultVisibility(t.Visibility),
 	})
 }
 
