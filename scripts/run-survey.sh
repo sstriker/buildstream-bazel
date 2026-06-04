@@ -153,8 +153,10 @@ build_lens_for() {
 # copy of the source tree with a minimal MODULE.bazel, and `bazel build //...`.
 # Echoes one summary token (ok / FAIL / skip(<why>)); detail in the proj_out
 # logs. The convert here is deliberately WITHOUT --diagnostics: a clean build
-# presupposes a clean convert, so a project with refusals reports skip(convert)
-# rather than building a partial tree.
+# presupposes a clean convert. The caller already short-circuits a project that
+# surveys with rejections to skip(rej) (so this convert isn't even attempted
+# there); if a no-rejection project's clean convert still fails here, it's
+# skip(convert) rather than building a partial tree.
 try_bazel_build() {
     _bb_name="$1"; _bb_src="$2"; _bb_po="$3"; _bb_bt="$4"; _bb_sp="$5"
     [ -n "$bzl_bin" ] || { echo "skip(no-bazel)"; return; }
@@ -164,10 +166,15 @@ try_bazel_build() {
         echo "skip(copy)"; return
     fi
     # Strip any Bazel files the project SHIPS (fmt's support/bazel/, etc.): the
-    # lens tests the converter's output, not a project's hand-authored Bazel,
-    # and a leftover foreign BUILD/MODULE would collide with what we emit.
-    find "$_bb_ws" -type f \( -name BUILD.bazel -o -name BUILD -o -name BUILD.bzl \
-        -o -name 'WORKSPACE*' -o -name MODULE.bazel -o -name 'MODULE.bazel.lock' \) -delete 2>/dev/null
+    # lens tests the converter's output, not a project's hand-authored Bazel, so
+    # a leftover foreign BUILD/MODULE would collide with what we emit, and a
+    # shipped .bazelrc/.bazelversion would steer flags/toolchain away from
+    # testing just our output. NOT BUILD.bzl — that's a Starlark library, a
+    # legitimate source file, not a package marker. `|| true` so a stray find
+    # error (perms) can't abort the whole survey under `set -e`.
+    find "$_bb_ws" -type f \( -name BUILD.bazel -o -name BUILD \
+        -o -name 'WORKSPACE*' -o -name MODULE.bazel -o -name 'MODULE.bazel.lock' \
+        -o -name .bazelrc -o -name .bazelversion \) -delete 2>/dev/null || true
     # Convert into the overlay: per-package BUILDs land alongside the sources,
     # the //config package under config/, both self-contained.
     if ! run_converter \
@@ -189,11 +196,13 @@ local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/
 EOF
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
-    # Thread both startup-arg and build-arg passthrough, matching the repo's
-    # other bazel-driving scripts (META_BAZEL_STARTUP_ARGS goes before the
-    # subcommand — e.g. --bazelrc / registry tweaks for sandboxed/offline runs).
+    # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
+    # builds, so ignore any workspace .bazelrc (matches the repo's other survey
+    # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread
+    # both startup-arg and build-arg passthrough too (META_BAZEL_STARTUP_ARGS
+    # goes before the subcommand — registry tweaks for sandboxed/offline runs).
     if ( cd "$_bb_ws" && $_bb_to "$bzl_bin" --output_user_root="$_bb_po/.bzcache" \
-            ${META_BAZEL_STARTUP_ARGS:-} build ${META_BAZEL_BUILD_ARGS:-} //... ) >> "$_bb_po/build.log" 2>&1; then
+            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build ${META_BAZEL_BUILD_ARGS:-} //... ) >> "$_bb_po/build.log" 2>&1; then
         echo "ok"
     else
         echo "FAIL"
