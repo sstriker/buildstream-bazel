@@ -1,6 +1,7 @@
 package exportshape_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/exportshape"
@@ -182,6 +183,34 @@ func TestEmitDeclarative_BundleFilegroup(t *testing.T) {
 	}
 	if len(out[0].Srcs) != 3 {
 		t.Errorf("bundle srcs len: %d", len(out[0].Srcs))
+	}
+	// Each bundle file is generated per its ROLE — Targets gets the imported
+	// targets, Config include()s the Targets script, ConfigVersion gets a
+	// version stub (NOT imported-target defs, which would break find_package).
+	body := func(name string) string {
+		for i := range out {
+			if out[i].Name == name {
+				return strings.Join(out[i].WriteFileContent, "\n")
+			}
+		}
+		t.Fatalf("write_file %q not found in %v", name, out)
+		return ""
+	}
+	targets := body("gen_lib_cmake_MyPkg_MyPkgTargets_cmake")
+	if !strings.Contains(targets, "add_library(MyPkg::foo STATIC IMPORTED)") ||
+		!strings.Contains(targets, "IMPORTED_LOCATION_NOCONFIG") {
+		t.Errorf("Targets.cmake should carry imported-target defs; got:\n%s", targets)
+	}
+	cfg := body("gen_lib_cmake_MyPkg_MyPkgConfig_cmake")
+	if !strings.Contains(cfg, `include("${CMAKE_CURRENT_LIST_DIR}/MyPkgTargets.cmake")`) {
+		t.Errorf("Config.cmake should include() the Targets script; got:\n%s", cfg)
+	}
+	if strings.Contains(cfg, "add_library(") {
+		t.Errorf("Config.cmake must NOT carry imported-target defs; got:\n%s", cfg)
+	}
+	ver := body("gen_lib_cmake_MyPkg_MyPkgConfigVersion_cmake")
+	if !strings.Contains(ver, "PACKAGE_VERSION_COMPATIBLE") || strings.Contains(ver, "add_library(") {
+		t.Errorf("ConfigVersion.cmake should be a version stub, not targets; got:\n%s", ver)
 	}
 }
 
