@@ -1103,10 +1103,12 @@ transition cleanly.
   headers (the SourceKey regime keeps hdrs element-root-relative — already
   prefixed; a cross-package hdr label would be wrongly prefixed too). Surfaced
   by the glm build lens: the compiled `glm` lib now builds its full `<glm/…>`
-  header surface. glm's `test-*` targets still fail the lens under the
-  project's own `-Werror` combined with Bazel's default-toolchain `-Wall`
-  (glm's cmake build omits `-Wall`) — toolchain-flag strictness, not a
-  conversion fault (see `docs/survey-corpus.md`).
+  header surface. glm's `test-*` targets build too once the lens
+  passes `--cmake-define CMAKE_CXX_FLAGS=-w` (glm's tests set `-Werror`, which
+  Bazel's default-toolchain `-Wall` turns into a `-Wclass-memaccess` error in
+  glm's own `gtc/packing.inl`; `-w` inhibits the warning while leaving glm's
+  C++ auto-detection — and so its `std::hash` tests — intact). Toolchain-flag
+  strictness, not a conversion fault (see `docs/survey-corpus.md`).
 
 - **Build-lens corpus widened past the fmt/libxml2/brotli trio — four
   split-mode build bugs fixed.** Pointing the 4th (`bazel build //...`) lens
@@ -1140,12 +1142,13 @@ transition cleanly.
     its basename (`converter/internal/lower/standalone_genrules.go`).
   With these, abseil goes from failing at the first target to compiling
   hundreds of TUs deep, and glm/googletest clear their first-order failures.
-  Remaining build-lens targets (surfaced, not yet fixed): abseil's vendored
-  cctz `include/` root (a *nested* include root deeper than the consuming
-  target's package — distinct from the element-root case the `include_prefix`
-  entry above fixes for glm); googletest's `cmake_config_bundle` referencing
-  an install(EXPORT)-generated `GTestTargets.cmake`; abseil's standalone
-  external test deps (`GTest::gmock`, the testing-off
+  (glm and googletest have since gone fully green — glm via the build lens's
+  `--cmake-define CMAKE_CXX_FLAGS=-w` configure opt-in, googletest via the
+  opt-in install(EXPORT) config-mode generation.) Remaining build-lens targets
+  (surfaced, not yet fixed): abseil's vendored cctz `include/` root (a *nested*
+  include root deeper than the consuming target's package — distinct from the
+  element-root case the `include_prefix` entry above fixes for glm); abseil's
+  standalone external test deps (`GTest::gmock`, the testing-off
   `absl::test_instance_tracker`) — the documented standalone-survey
   limitation, arguing for scoping the build lens to library (non-test)
   targets; zstd's multi-config custom-command binary copy (`Debug/zstd`).

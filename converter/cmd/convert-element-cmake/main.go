@@ -157,6 +157,7 @@ func run(a cli.Args) error {
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
 			BuildType:          a.BuildType,
 			BuildTypes:         a.BuildTypes,
+			ExtraCacheVars:     cmakeDefinesToMap(a.CmakeDefines),
 			// DumpVars: independent of --lift-configure-file and
 			// --probe-genex. The flag defaults true (see flags.go)
 			// so the variable-form find_package attribution path
@@ -1319,6 +1320,21 @@ func exportNamespaceForPackage(traceRaw []byte, pkgName string) string {
 		}
 	}
 	return fallback
+}
+
+// cmakeDefinesToMap parses --cmake-define KEY=VALUE entries into the
+// ExtraCacheVars map cmakerun.Configure passes as -D<KEY>=<VALUE>. An entry
+// with no '=' maps to an empty value (cmake treats -DKEY as KEY="").
+func cmakeDefinesToMap(defs []string) map[string]string {
+	if len(defs) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(defs))
+	for _, d := range defs {
+		k, v, _ := strings.Cut(d, "=")
+		m[k] = v
+	}
+	return m
 }
 
 // buildExportsDoc assembles this element's exports manifest: one
