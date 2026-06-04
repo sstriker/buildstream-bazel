@@ -45,11 +45,14 @@ var ccSourceExts = map[string]bool{
 //
 // Returns element-root-relative paths (the shape of irt.Srcs), sorted and
 // deduped. hostSrc must be the on-disk source root — the caller gates on
-// hostSrcOnDisk. Each include resolves relative to its own including file's
-// directory (quote-include semantics). A path that escapes the element root
-// (".." after cleaning) or names a file the target already compiles, or one
-// absent on disk, is skipped — only a real, in-tree, not-otherwise-compiled
-// source qualifies.
+// hostSrcOnDisk. Each include resolves against the including file's own
+// directory first (the fmt posix-mock `#include "../src/os.cc"` shape) and then
+// against its ancestor directories (the gtest "fused source" shape, where
+// gtest-all.cc does `#include "src/gtest.cc"` resolved against the target's
+// include root — the package dir above src/); see resolveTextualInclude. A path
+// that escapes the element root (".." after cleaning) or names a file the
+// target already compiles, or one absent on disk, is skipped — only a real,
+// in-tree, not-otherwise-compiled source qualifies.
 func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 	if hostSrc == "" || len(srcs) == 0 {
 		return nil
@@ -81,16 +84,8 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
 				continue
 			}
-			rel := filepath.ToSlash(filepath.Clean(filepath.Join(dir, inc)))
-			// Escapes the element root (can't be expressed as a package input)
-			// or is the includer itself — skip.
-			if rel == "." || rel == s || strings.HasPrefix(rel, "../") || rel == ".." {
-				continue
-			}
-			if compiled[rel] || seen[rel] {
-				continue
-			}
-			if st, statErr := os.Stat(filepath.Join(hostSrc, filepath.FromSlash(rel))); statErr != nil || st.IsDir() {
+			rel := resolveTextualInclude(hostSrc, dir, inc, s, compiled)
+			if rel == "" || seen[rel] {
 				continue
 			}
 			seen[rel] = true
@@ -101,21 +96,53 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 	return out
 }
 
+// resolveTextualInclude resolves a quote-include `inc` (a compiled-source path)
+// to an element-root-relative path. It tries the including file's own directory
+// `dir` first — the fmt posix-mock `#include "../src/os.cc"` shape — then walks
+// up the ancestor directories, the gtest "fused source" shape where
+// `googletest/src/gtest-all.cc` does `#include "src/gtest.cc"` that cmake
+// resolves against the target's include root (the package dir `googletest/`
+// above `src/`), not the includer's `src/` dir. Returns the first candidate
+// that exists on disk under hostSrc, isn't the includer `self`, isn't already
+// compiled, and doesn't escape the element root; "" when none qualifies. The
+// deepest (most specific) ancestor wins, since the walk starts at `dir`.
+func resolveTextualInclude(hostSrc, dir, inc, self string, compiled map[string]bool) string {
+	for base := dir; ; base = filepath.Dir(base) {
+		rel := filepath.ToSlash(filepath.Clean(filepath.Join(base, inc)))
+		if rel != "." && rel != ".." && rel != self &&
+			!strings.HasPrefix(rel, "../") && !compiled[rel] {
+			if st, err := os.Stat(filepath.Join(hostSrc, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
+				return rel
+			}
+		}
+		// filepath.Dir("a")=="." and Dir(".")=="."; "/" is the abs-root fixpoint.
+		if base == "." || base == "/" || base == "" {
+			return ""
+		}
+	}
+}
+
 // synthesizeTextualSourceIncludeLibs wires the textual-source-include idiom
-// into the package for cc_binary / cc_test targets, which have NO
-// textual_hdrs attribute. For each such target whose sources quote-include a
-// .cc the target doesn't compile (findTextualSourceIncludes), it synthesizes a
-// cc_library carrying those files in textual_hdrs and adds it to the target's
-// deps: the file becomes a declared input (the quote-include resolves it
-// relative to the including source) without being compiled standalone (which
-// would duplicate its symbols). The synthesized lib is co-located in the
-// consumer's package (pkg.SubPackages[lib] = pkg.SubPackages[consumer]) so the
-// dep stays same-package under --split-packages; its textual_hdrs are then
-// relabeled to cross-package file labels by the emitter, exactly like hdrs.
-// Gated on hostSrcOnDisk (the scan reads source files); breadcrumbed so the
-// synthesis is auditable. (cc_library targets, which DO have textual_hdrs, are
-// left to add such files inline if a future case needs it — the synth-lib
-// indirection exists only for the no-slot kinds.)
+// into the package: a target whose sources quote-include a .cc the target
+// doesn't compile (findTextualSourceIncludes) needs that file as a declared
+// INPUT but must NOT compile it standalone (that would duplicate its symbols),
+// so it belongs in a textual_hdrs slot. Two shapes:
+//
+//   - cc_library / cc_interface HAVE a textual_hdrs attribute, so the included
+//     sources are added directly to the target's own textual_hdrs. This is the
+//     gtest/gmock "fused source" idiom — `gtest` compiles only
+//     `src/gtest-all.cc`, which `#include`s `src/gtest.cc` et al.; those land
+//     in `gtest`'s textual_hdrs.
+//   - cc_binary / cc_test have NO textual_hdrs attribute, so a carrier
+//     cc_library is synthesized (textual_hdrs = the included files) and added
+//     to the target's deps (fmt's posix-mock-test). The synth lib is
+//     co-located in the consumer's package (pkg.SubPackages[lib] =
+//     pkg.SubPackages[consumer]) so the dep stays same-package under
+//     --split-packages.
+//
+// Under --split-packages the emitter relabels textual_hdrs to cross-package
+// file labels, exactly like hdrs. Gated on hostSrcOnDisk (the scan reads source
+// files); breadcrumbed so the wiring is auditable.
 func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrcOnDisk bool, warn io.Writer) {
 	if pkg == nil || !hostSrcOnDisk {
 		return
@@ -136,17 +163,31 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		target, lib string
 		srcs        []string
 	}
-	var recs []rec
+	var recs []rec       // synth-lib wirings (cc_binary / cc_test)
+	var inlineRecs []rec // direct textual_hdrs wirings (cc_library / cc_interface)
 	var synth []ir.Target
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
-		if t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+		switch t.Kind {
+		case ir.KindCCLibrary, ir.KindCCInterface, ir.KindCCBinary, ir.KindCCTest:
+		default:
 			continue
 		}
 		incs := findTextualSourceIncludes(hostSrc, t.Srcs)
 		if len(incs) == 0 {
 			continue
 		}
+		if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
+			// Has a textual_hdrs slot — add the included sources directly (the
+			// gtest/gmock fused-source idiom). No synth lib, no dep needed.
+			for _, inc := range incs {
+				t.TextualHdrs = appendUnique(t.TextualHdrs, inc)
+			}
+			sort.Strings(t.TextualHdrs)
+			inlineRecs = append(inlineRecs, rec{target: t.Name, srcs: incs})
+			continue
+		}
+		// cc_binary / cc_test — no textual_hdrs slot; synthesize a carrier lib.
 		lib := uniqueName(t.Name + "_textual_srcs")
 		synth = append(synth, ir.Target{
 			Name:        lib,
@@ -170,12 +211,22 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 	if len(synth) > 0 {
 		pkg.Targets = append(pkg.Targets, synth...)
 	}
-	if len(recs) > 0 && warn != nil {
-		fmt.Fprintf(warn,
-			"lower: synthesized %d textual_hdrs cc_library(ies) for cc_binary/cc_test target(s) that textually #include a .cc they don't compile (those rules have no textual_hdrs slot):\n",
-			len(recs))
-		for _, r := range recs {
-			fmt.Fprintf(warn, "  %s -> %s (textual_hdrs: %s)\n", r.target, r.lib, strings.Join(r.srcs, ", "))
+	if warn != nil {
+		if len(inlineRecs) > 0 {
+			fmt.Fprintf(warn,
+				"lower: added textual_hdrs to %d cc_library/cc_interface target(s) that textually #include a .cc they don't compile (the fused-source idiom):\n",
+				len(inlineRecs))
+			for _, r := range inlineRecs {
+				fmt.Fprintf(warn, "  %s (textual_hdrs: %s)\n", r.target, strings.Join(r.srcs, ", "))
+			}
+		}
+		if len(recs) > 0 {
+			fmt.Fprintf(warn,
+				"lower: synthesized %d textual_hdrs cc_library(ies) for cc_binary/cc_test target(s) that textually #include a .cc they don't compile (those rules have no textual_hdrs slot):\n",
+				len(recs))
+			for _, r := range recs {
+				fmt.Fprintf(warn, "  %s -> %s (textual_hdrs: %s)\n", r.target, r.lib, strings.Join(r.srcs, ", "))
+			}
 		}
 	}
 }

@@ -171,3 +171,39 @@ func TestFindTextualSourceIncludes_AbsoluteRejected(t *testing.T) {
 		t.Errorf("absolute include should be rejected; got %v", got)
 	}
 }
+
+// TestSynthesizeTextualSourceIncludeLibs_CCLibraryInline: a cc_library whose
+// fused source textually #includes sibling .cc files (the gtest-all.cc /
+// gmock-all.cc idiom) gets them in its OWN textual_hdrs — no synth lib (the
+// library already has the slot). Also exercises ancestor-walk resolution: the
+// fused source at gt/src/all.cc does `#include "src/gtest.cc"`, which resolves
+// against the target's include root gt/ (an ancestor of the includer's gt/src/
+// dir), not gt/src/ itself.
+func TestSynthesizeTextualSourceIncludeLibs_CCLibraryInline(t *testing.T) {
+	hostSrc := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(hostSrc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("gt/src/all.cc", "#include \"src/gtest.cc\"\n#include \"src/port.cc\"\n")
+	write("gt/src/gtest.cc", "int g(){return 0;}\n")
+	write("gt/src/port.cc", "int p(){return 0;}\n")
+
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "gtest", Kind: ir.KindCCLibrary, Srcs: []string{"gt/src/all.cc"}},
+	}}
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, nil)
+	// No synth lib for a cc_library — the includes go in its own textual_hdrs.
+	if len(pkg.Targets) != 1 {
+		t.Fatalf("expected no synth lib for cc_library; got %d targets: %+v", len(pkg.Targets), pkg.Targets)
+	}
+	want := []string{"gt/src/gtest.cc", "gt/src/port.cc"}
+	if !reflect.DeepEqual(pkg.Targets[0].TextualHdrs, want) {
+		t.Errorf("textual_hdrs = %v, want %v (ancestor-walk resolved against the include root gt/)", pkg.Targets[0].TextualHdrs, want)
+	}
+}
