@@ -1221,7 +1221,7 @@ func isCMakeInternalCmd(cmd string) bool {
 // (lowerStandaloneCustomCommands) record an audit breadcrumb instead of
 // dropping silently — these edges have no Bazel analogue, but an operator
 // auditing a conversion should still see WHAT was filtered. Categories:
-// "install" / "regen" / "cpack" / "dashboard" / "ide-stub".
+// "install" / "uninstall" / "regen" / "cpack" / "dashboard" / "ide-stub".
 func cmakeInternalCmdKind(cmd string) string {
 	c := strings.TrimSpace(cmd)
 	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's
@@ -1231,12 +1231,16 @@ func cmakeInternalCmdKind(cmd string) string {
 			c = strings.TrimSpace(c[i+4:])
 		}
 	}
-	// Strip host-tool prefix on the leading command token.
-	for _, p := range []string{"/usr/bin/", "/usr/local/bin/", "/usr/sbin/"} {
-		if strings.HasPrefix(c, p) {
-			c = c[len(p):]
-			break
-		}
+	// Normalize the leading command token to its basename so any absolute or
+	// versioned install path resolves to the bare tool name. A fixed-prefix
+	// strip (/usr/bin, /usr/local/bin, …) missed non-standard locations — most
+	// visibly the web-session cmake pin (/usr/local/opt/cmake-4.3.3/bin/cmake),
+	// which left every `cmake ...`-prefixed match below (install / uninstall /
+	// regen) silently unmatched. Keying on the basename is path-independent.
+	if sp := strings.IndexByte(c, ' '); sp > 0 {
+		c = filepath.Base(c[:sp]) + c[sp:]
+	} else if c != "" {
+		c = filepath.Base(c)
 	}
 	// cmake_install.cmake invocations — `cmake ... cmake_install.cmake`
 	// (the -P arg may carry a relative or absolute path; check any
@@ -1244,6 +1248,17 @@ func cmakeInternalCmdKind(cmd string) string {
 	if strings.HasPrefix(c, "cmake ") &&
 		strings.Contains(c, "cmake_install.cmake") {
 		return "install"
+	}
+	// cmake_uninstall.cmake — the conventional uninstall maintenance target
+	// (the CMake-FAQ `add_custom_target(uninstall COMMAND cmake -P
+	// cmake_uninstall.cmake)` recipe glm and many projects copy verbatim). It
+	// deletes install-manifest files at action time: install's mirror, and just
+	// as much build-dir bookkeeping with no Bazel analogue. Like the install
+	// match it keys on the conventional script name, not a bare `-P`, so a
+	// user's own `cmake -P myscript.cmake` custom command isn't swept up.
+	if strings.HasPrefix(c, "cmake ") &&
+		strings.Contains(c, "cmake_uninstall.cmake") {
+		return "uninstall"
 	}
 	// `--regenerate-during-build` — cmake's CMakeFiles regen hook.
 	if strings.HasPrefix(c, "cmake ") &&

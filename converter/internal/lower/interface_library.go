@@ -238,13 +238,21 @@ func lowerInterfaceLibraries(
 				continue
 			}
 			seen := map[string]bool{}
-			for _, lib := range grp.Libs {
-				label := resolveLibToLabel(lib)
-				if label == "" || seen[label] {
-					continue
+			for _, raw := range grp.Libs {
+				// A single Libs entry can itself be a `;`-joined cmake list
+				// when the project passes a quoted deps *variable* to
+				// target_link_libraries (abseil's absl_cc_library expands
+				// `"${..._DEPS}"` to `absl::config;absl::int128;…` as one arg).
+				// Split on cmake's list separator so each lib resolves to its
+				// own label instead of one bogus `:absl_config;absl_int128;…`.
+				for _, lib := range strings.Split(raw, ";") {
+					label := resolveLibToLabel(lib)
+					if label == "" || seen[label] {
+						continue
+					}
+					seen[label] = true
+					depsByTarget[link.Target] = append(depsByTarget[link.Target], label)
 				}
-				seen[label] = true
-				depsByTarget[link.Target] = append(depsByTarget[link.Target], label)
 			}
 		}
 	}

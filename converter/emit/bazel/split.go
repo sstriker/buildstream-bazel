@@ -904,6 +904,16 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// they don't propagate to consumers; PUBLIC ones ride deps.
 	rt.Deps = rewriteDeps(t.Deps, plan, headerDeps)
 	rt.ImplementationDeps = rewriteDeps(t.ImplementationDeps, plan, privHeaderDeps)
+
+	// An alias's `actual` is an intra-element target reference too — relabel
+	// it to the target's real package the same way deps are. Aliases land in
+	// their declaring package (for abseil's absl::* / googletest's GTest::*
+	// the helper macro puts them in the root element package), but the target
+	// they point at often splits into a subpackage; the bare ":x" then no
+	// longer resolves and Bazel reads it as a missing same-package input file.
+	if t.Kind == ir.KindAlias && strings.HasPrefix(t.AliasActual, ":") {
+		rt.AliasActual = targetLabel(plan, strings.TrimPrefix(t.AliasActual, ":"))
+	}
 	return rt
 }
 
