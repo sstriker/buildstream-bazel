@@ -520,3 +520,52 @@ func TestEmit_Split_AliasActualRelabeled(t *testing.T) {
 		t.Errorf("alias still carries the dangling same-package actual:\n%s", alias)
 	}
 }
+
+// TestEmit_Split_RootIncludeBecomesIncludePrefix: a target whose headers are
+// include-rooted at the element root (RootInclude — cmake's
+// target_include_directories(${CMAKE_SOURCE_DIR}), which lower can't emit as
+// includes=[""]) and which re-homes into a subpackage under the split loses the
+// root-relative prefix on its headers (glm/foo.hpp → package-local foo.hpp).
+// The emitter must restore it with include_prefix=<package dir> so
+// `#include <glm/foo.hpp>` still resolves (the glm compiled-lib build-lens fix).
+func TestEmit_Split_RootIncludeBecomesIncludePrefix(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "glm", Kind: ir.KindCCLibrary, Srcs: []string{"glm/detail/glm.cpp"}, Hdrs: []string{"glm/glm.hpp", "glm/gtx/q.hpp"}, RootInclude: true},
+		},
+		SubPackages: map[string]string{"glm": "glm"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	glmPkg := string(tree["glm"])
+	if !contains(glmPkg, `include_prefix = "glm"`) {
+		t.Errorf("glm pkg: RootInclude target missing include_prefix = \"glm\":\n%s", glmPkg)
+	}
+	// Headers re-homed package-local (prefix stripped), restored by the prefix.
+	if !contains(glmPkg, `"glm.hpp"`) {
+		t.Errorf("glm pkg: expected package-local hdr \"glm.hpp\":\n%s", glmPkg)
+	}
+}
+
+// TestEmit_Split_RootIncludeRootPackageNoPrefix: a RootInclude target that
+// stays in the root package (dir == "") needs no include_prefix — its headers
+// keep their root-relative path within the single root package.
+func TestEmit_Split_RootIncludeRootPackageNoPrefix(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "root_lib", Kind: ir.KindCCLibrary, Hdrs: []string{"api.h"}, RootInclude: true},
+		},
+		SubPackages: map[string]string{"root_lib": ""},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	if contains(string(tree[""]), "include_prefix") {
+		t.Errorf("root-package RootInclude target should NOT get include_prefix:\n%s", string(tree[""]))
+	}
+}

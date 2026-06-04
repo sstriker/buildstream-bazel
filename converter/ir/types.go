@@ -356,6 +356,20 @@ type Target struct {
 	// `#include "myelem/api.h"`.
 	StripIncludePrefix string
 
+	// RootInclude is set when the target's headers are include-rooted at the
+	// element/package root — cmake's
+	// `target_include_directories(t ${CMAKE_SOURCE_DIR})` (rel == ""). Bazel
+	// rejects `includes = [""]`, so lower drops the entry from `includes =`
+	// and walks the package root for hdrs instead (see walkPkgRootForHdrs /
+	// rootWalkByTarget). That's correct for the monolithic emit (the headers
+	// keep their root-relative path within the single package), but under
+	// --split-packages a target that re-homes into a subpackage loses the
+	// root-relative prefix on its headers (`glm/foo.hpp` → package-local
+	// `foo.hpp`), breaking `#include <glm/foo.hpp>`. The split emitter reads
+	// this signal and emits `include_prefix = <package dir>` to restore the
+	// prefix (see rewriteTarget). Ignored by the monolithic emit.
+	RootInclude bool
+
 	// Copts, Defines, Linkopts pass through to the cc_* rule of the same name.
 	Copts    []string
 	Defines  []string

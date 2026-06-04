@@ -337,14 +337,15 @@ func lowerInterfaceLibraries(
 			}
 		}
 		tgt := ir.Target{
-			Name:       call.Name,
-			Kind:       ir.KindCCLibrary,
-			Hdrs:       hdrs,
-			Includes:   includes,
-			Defines:    defines,
-			Deps:       filtered,
-			Visibility: []string{"//visibility:public"},
-			Tags:       []string{"cmake-codegen-interface-library-from-trace"},
+			Name:        call.Name,
+			Kind:        ir.KindCCLibrary,
+			Hdrs:        hdrs,
+			Includes:    includes,
+			Defines:     defines,
+			Deps:        filtered,
+			RootInclude: rootWalkByTarget[call.Name],
+			Visibility:  []string{"//visibility:public"},
+			Tags:        []string{"cmake-codegen-interface-library-from-trace"},
 		}
 		out = append(out, tgt)
 	}

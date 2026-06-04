@@ -914,7 +914,41 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	if t.Kind == ir.KindAlias && strings.HasPrefix(t.AliasActual, ":") {
 		rt.AliasActual = targetLabel(plan, strings.TrimPrefix(t.AliasActual, ":"))
 	}
+
+	// A target whose headers are include-rooted at the element root
+	// (RootInclude — cmake's target_include_directories(${CMAKE_SOURCE_DIR}),
+	// which lower can't emit as includes=[""]) loses that root-relative prefix
+	// when it re-homes into a subpackage: `glm/foo.hpp` becomes package-local
+	// `foo.hpp`, so `#include <glm/foo.hpp>` no longer resolves. Restore it with
+	// include_prefix=<package dir> — Bazel re-prepends the dir to this target's
+	// header paths for both its own compilation and its consumers (the
+	// self-contained shape gazelle_cc also emits; no parent-package header lib
+	// or cross-package up-reference needed).
+	//
+	// Gated to the LOCAL regime with all-package-local headers: the SourceKey
+	// regime keeps hdrs element-root-relative (they already carry the prefix —
+	// include_prefix would double it to `glm/glm/foo.hpp`), and a cross-package
+	// header label (`//pkg:h`) would be wrongly prefixed too (include_prefix
+	// applies uniformly to every hdr). glm's single-package header set in the
+	// local regime satisfies both.
+	if local && t.RootInclude && dir != "" && rt.IncludePrefix == "" &&
+		allPackageLocalHdrs(rt.Hdrs) && allPackageLocalHdrs(rt.TextualHdrs) {
+		rt.IncludePrefix = dir
+	}
 	return rt
+}
+
+// allPackageLocalHdrs reports whether every header entry is a package-local
+// path (not a cross-package "//…" or external "@…" label). include_prefix
+// applies uniformly to all of a target's hdrs, so it's only safe to set when
+// none of them already live in (or point at) another package.
+func allPackageLocalHdrs(hdrs []string) bool {
+	for _, h := range hdrs {
+		if strings.HasPrefix(h, "//") || strings.HasPrefix(h, "@") {
+			return false
+		}
+	}
+	return true
 }
 
 // rewriteDeps maps each intra-element ":x" dep to its cross-package
