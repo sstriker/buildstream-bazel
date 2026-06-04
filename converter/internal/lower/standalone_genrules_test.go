@@ -126,6 +126,27 @@ func TestIsCreateSymlinkCmd(t *testing.T) {
 	}
 }
 
+func TestIsCopyCmd(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		// Raw ninja form (pre-rewrite), across cmake paths + copy variants.
+		{`/usr/local/opt/cmake-4.3.3/bin/cmake -E copy build/cmake/../../programs/zstd.1 .`, true},
+		{`cmake -E copy_if_different a b`, true},
+		{`cmake -E copy_directory src dst`, true},
+		// Not a copy.
+		{`cmake -E create_symlink zstd zstdcat`, false},
+		{`cp a b`, false}, // post-rewrite form; the drop check runs on the raw `-E copy`
+		{`python gen.py`, false},
+	}
+	for _, tc := range cases {
+		if got := isCopyCmd(tc.cmd); got != tc.want {
+			t.Errorf("isCopyCmd(%q) = %v, want %v", tc.cmd, got, tc.want)
+		}
+	}
+}
+
 func TestLowerStandaloneCustomCommands_SkipsCoveredEdge(t *testing.T) {
 	g := mustParseNinja(t, `rule CUSTOM_COMMAND
   command = $COMMAND

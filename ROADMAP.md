@@ -1015,9 +1015,10 @@ transition cleanly.
 
 ## Done (high points)
 
-- **Build lens: filter `create_symlink` + `ninja clean` command edges.** Two
-  more non-modelable cmake/ninja command shapes the standalone-genrule pass
-  emitted as broken genrules (surfaced by the zstd build lens):
+- **Build lens: filter `create_symlink` + `ninja clean` + source-less `copy`
+  command edges.** Three non-modelable cmake/ninja command shapes the
+  standalone-genrule pass emitted as broken genrules (surfaced by the zstd
+  build lens):
   - **`cmake -E create_symlink`** — projects use it for tool aliases (zstd's
     `unzstd`/`zstdcat`/`zstdmt` → `zstd`), library SONAME links, and manpage
     aliases. It's a symlink *side-effect*, not a content output; the recovered
@@ -1029,10 +1030,19 @@ transition cleanly.
     (output `CMakeFiles/clean_all-<config>`, which leaks past the `.util`
     bookkeeping filter). No Bazel analogue (`bazel clean` is separate); now a
     `clean` category in `cmakeInternalCmdKind`.
-  zstd advances past both failure classes; its remaining blocker (manpage
-  `cp`s of `../../programs/*.1` source files *outside* the `build/cmake`
-  element root — zstd's subdir-builds-`../../` layout) is tracked in
-  `docs/survey-corpus.md`.
+  - **source-less `cmake -E copy`** — a copy edge whose source was never
+    declared as a ninja input (zstd's manpages: `add_custom_target(zstd.1 ALL
+    cmake -E copy ${PROGRAMS_DIR}/zstd.1 .)`, `PROGRAMS_DIR` a sibling dir
+    outside the element, no `DEPENDS`). With empty `srcs` the genrule has
+    nothing staged to copy and always fails; now dropped with a `copy`
+    breadcrumb (`isCopyCmd` + empty-srcs guard).
+  These three cleaned up zstd's broken custom-command emission, but **zstd is
+  not greenable via the build lens at the `build/cmake` scope**: its real
+  sources live in `repo/lib` + `repo/programs` (siblings of `build/`, outside
+  the surveyed root), so the `libzstd` cc_library references in-element
+  sources/headers that aren't there. A standalone `build/cmake` element is
+  structurally incomplete — a survey-scope/layout matter, not a converter bug
+  (see `docs/survey-corpus.md`).
 
 - **Build lens: `include_prefix` for element-root-included headers under
   split.** A target whose headers are include-rooted at the element root
