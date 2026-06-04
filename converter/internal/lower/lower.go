@@ -1411,6 +1411,61 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			fmt.Fprintf(opts.Warnings, "  %s (%d): %s\n", k, len(outs), strings.Join(outs, ", "))
 		}
 	}
+	// add_test registrations for which no cc_test was emitted — breadcrumb
+	// so the drop isn't silent (mirrors the cmake-internal filter above). An
+	// add_test becomes a cc_test only when its COMMAND is a converted
+	// executable; entries whose COMMAND is a script runner (e.g. brotli's
+	// `cmake -P` roundtrip/compatibility harness) — or whose executable the
+	// converter didn't emit — have no Bazel test target, so they're left
+	// unconverted. Surfacing them keeps "not all of this project's tests are
+	// buildable" auditable instead of silent.
+	//
+	// The "emitted" set comes from the synthesized cc.Tests, which preserve
+	// the original add_test NAME — NOT pkg.Targets, whose cc_test names have
+	// by now been through sanitizeTestNames / disambiguateTestNameCollisions
+	// and so would no longer match the registry's original names (false-
+	// positiving renamed-but-converted tests as dropped).
+	if opts.CTest != nil && opts.Warnings != nil {
+		emitted := map[string]bool{}
+		for _, t := range cc.Tests {
+			emitted[t.Name] = true
+		}
+		byCmd := map[string][]string{}
+		var cmds []string
+		for _, tst := range opts.CTest.All() {
+			if emitted[tst.Name] {
+				continue
+			}
+			if _, seen := byCmd[tst.Target]; !seen {
+				cmds = append(cmds, tst.Target)
+			}
+			byCmd[tst.Target] = append(byCmd[tst.Target], tst.Name)
+		}
+		if len(cmds) > 0 {
+			total := 0
+			for _, n := range byCmd {
+				total += len(n)
+			}
+			sort.Strings(cmds)
+			fmt.Fprintf(opts.Warnings,
+				"lower: %d add_test registration(s) not converted to cc_test — no Bazel test target emitted (COMMAND is a script runner like cmake -P, or its executable wasn't converted):\n",
+				total)
+			for _, c := range cmds {
+				names := byCmd[c]
+				sort.Strings(names)
+				shown, more := names, ""
+				if len(shown) > 12 {
+					more = fmt.Sprintf(", … +%d more", len(shown)-12)
+					shown = shown[:12]
+				}
+				label := c
+				if label == "" {
+					label = "(unknown)"
+				}
+				fmt.Fprintf(opts.Warnings, "  COMMAND %s (%d): %s%s\n", label, len(names), strings.Join(shown, ", "), more)
+			}
+		}
+	}
 	// Surface install(SCRIPT) / install(CODE) directives. These run
 	// cmake script code at install time and have no Bazel
 	// analogue — the converter drops them silently. The warning
