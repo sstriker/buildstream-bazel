@@ -1015,24 +1015,25 @@ transition cleanly.
 
 ## Done (high points)
 
-- **Build lens: PRIVATE element-root include sets `RootInclude` (abseil).**
+- **Build lens: PRIVATE element-root include sets `RootInclude` (#431).**
   `target_include_directories(PRIVATE ${PROJECT_SOURCE_DIR})` resolves to
   `rel==""`, but the include loop ran the private/system-include split
   *before* the `rel==""` check — so a PRIVATE root include emitted a bogus
-  bare `-I` (`reanchor("")==""`) and left `RootInclude` false, costing the
-  target the `include_prefix=<package dir>` that re-homes its headers so its
-  own `#include "absl/base/internal/spinlock_wait.h"` resolves under split.
-  Moving the `rel==""` handling ahead of the split fixes abseil's
-  `spinlock_wait` (and every PRIVATE-root-include target) — necessary, but
-  **not sufficient** for abseil-green. With `--keep_going` abseil still has
-  **~363 compile failures across ~10 packages** from the same root cause: the
-  `rel==""` root-walk pulls **all ~397 element headers into every
+  bare `-I` (`reanchor("")==""`) and left `RootInclude` false. Moving the
+  `rel==""` handling ahead of the split makes a PRIVATE root include set
+  `RootInclude` like a PUBLIC one (the correct signal for the split emitter's
+  `include_prefix`). **This is a logic cleanup + precursor, NOT an abseil
+  fix:** abseil's element-root-include targets (`spinlock_wait` included) still
+  fail — verified `spinlock_wait` still can't find its own
+  `absl/base/internal/spinlock_wait.h`. The real blocker is broad: with
+  `--keep_going` abseil has **~363 compile failures across ~10 packages**
+  because the `rel==""` root-walk pulls **all ~397 element headers into every
   element-root-include target's `hdrs`**, the cross-package ones block
   `include_prefix` (`allPackageLocalHdrs`), and abseil has no link deps for
   these header-only cross-package includes. abseil-green needs
   **header-dependency inference** (header→owning-target index → inject deps +
-  reduce `hdrs` to package-local → `include_prefix` applies) — a feature, not a
-  patch. Scoped in `docs/survey-corpus.md`.
+  reduce `hdrs` to package-local → `include_prefix` applies) — a feature.
+  Scoped in `docs/survey-corpus.md`.
 
 - **Build lens: googletest green (fused-source `textual_hdrs` +
   opt-in install(EXPORT) config-mode generation).** Two blockers:
