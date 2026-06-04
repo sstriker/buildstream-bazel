@@ -44,7 +44,12 @@ func recognizeCcHash(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSr
 	}
 	d := parseCmakeDashDMap(cmd)
 	srcAbs, defineName := d["input_file"], d["output_name"]
-	if srcAbs == "" || defineName == "" {
+	// Require the full vtkHashSource -D contract (input_file / output_file /
+	// output_name). output_file isn't used to derive the output — that comes
+	// from the ninja edge's outs below — but demanding its presence keeps the
+	// match consistent with the documented contract and rejects a script that
+	// only coincidentally passes input_file/output_name.
+	if srcAbs == "" || defineName == "" || d["output_file"] == "" {
 		return "", false
 	}
 	// cmake's vtk_hash_source defaults ALGORITHM to MD5 and always passes
