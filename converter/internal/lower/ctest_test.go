@@ -1,6 +1,7 @@
 package lower_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -267,4 +268,99 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+const fixtureCTestScriptCommand = `add_test([=[roundtrip/quality]=] "/usr/local/bin/cmake" "-DBROTLI_CLI=/build/brotli" "-P" "/src/run.cmake")
+add_test([=[compatibility/file]=] "/usr/local/bin/cmake" "-P" "/src/compat.cmake")
+`
+
+// TestToIR_CTest_UnconvertedScriptTestsBreadcrumb: add_test entries whose
+// COMMAND is a script runner (cmake -P), not a built executable, can't become
+// cc_test — and must be surfaced in the Warnings breadcrumb rather than
+// dropped silently (brotli's roundtrip/compatibility harness shape).
+func TestToIR_CTest_UnconvertedScriptTestsBreadcrumb(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "lib", Id: "lib::@b"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"lib::@b": {
+				Name:          "lib",
+				Type:          "STATIC_LIBRARY",
+				Sources:       []fileapi.TargetSource{{Path: "lib.cc", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{Language: "CXX", SourceIndexes: []int{0}}},
+			},
+		},
+	}
+	var warn bytes.Buffer
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/nonexistent",
+		CTest:          buildRegistry(t, fixtureCTestScriptCommand),
+		Warnings:       &warn,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Kind == ir.KindCCTest {
+			t.Errorf("unexpected cc_test %q (cmake -P script tests must not convert)", pkg.Targets[i].Name)
+		}
+	}
+	out := warn.String()
+	for _, want := range []string{"not converted to cc_test", "roundtrip/quality", "compatibility/file", "cmake"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("breadcrumb missing %q\n--- got ---\n%s", want, out)
+		}
+	}
+}
+
+// TestToIR_CTest_ConvertedRenamedTestNotFalselyDropped: a converted cc_test
+// whose add_test NAME needs sanitization (. and / chars) is renamed in
+// pkg.Targets by sanitizeTestNames — but it WAS converted, so the
+// unconverted-breadcrumb (keyed off the registry's ORIGINAL names) must not
+// report it as dropped. Regression guard for deriving "emitted" from cc.Tests
+// (original names) rather than the sanitized pkg.Targets.
+func TestToIR_CTest_ConvertedRenamedTestNotFalselyDropped(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "mytool", Id: "mytool::@a"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"mytool::@a": {
+				Name:          "mytool",
+				Type:          "EXECUTABLE",
+				Sources:       []fileapi.TargetSource{{Path: "mytool.cc", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{Language: "CXX", SourceIndexes: []int{0}}},
+			},
+		},
+	}
+	const fixture = `add_test([=[my.slashy/test]=] "/build/mytool" "--x")
+`
+	var warn bytes.Buffer
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/nonexistent",
+		CTest:          buildRegistry(t, fixture),
+		Warnings:       &warn,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	haveTest := false
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Kind == ir.KindCCTest {
+			haveTest = true
+		}
+	}
+	if !haveTest {
+		t.Fatalf("expected a cc_test for the converted add_test, got %+v", pkg.Targets)
+	}
+	if strings.Contains(warn.String(), "my.slashy/test") {
+		t.Errorf("converted (renamed) test falsely reported as unconverted:\n%s", warn.String())
+	}
 }
