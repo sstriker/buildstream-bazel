@@ -251,18 +251,25 @@ func renderConfigVersionFile() []string {
 // since the codemodel doesn't carry install(EXPORT NAMESPACE)) from the bundle
 // destination, falling back to the export name. The <Pkg> segment of the dest
 // is preferred — lib/cmake/<Pkg> (last component) or share/<Pkg>/cmake (before
-// the trailing "cmake") — but destinations Classify also allows carry no <Pkg>
-// segment (DESTINATION lib/cmake, share/cmake); there the dir is a conventional
-// non-package component, so derive <Pkg> from the export name instead (the
-// install(EXPORT <Pkg>Targets) convention — strip the trailing "Targets").
+// the trailing "cmake"). But a destination can be exactly a CanonicalDestinations
+// prefix with no <Pkg> appended (DESTINATION lib/cmake, lib64/cmake, share/cmake,
+// share); there the path carries no package name, so derive <Pkg> from the export
+// name instead (the install(EXPORT <Pkg>Targets) convention — strip a trailing
+// "Targets"). Keying off CanonicalDestinations keeps this in lockstep with what
+// Classify accepts (e.g. the multilib lib64/cmake).
 func pkgFromBundle(dest, exportName string) string {
+	cleaned := strings.Trim(dest, "/") + "/"
+	for _, p := range CanonicalDestinations {
+		if cleaned == p {
+			return strings.TrimSuffix(exportName, "Targets")
+		}
+	}
 	parts := strings.Split(strings.Trim(dest, "/"), "/")
 	cand := parts[len(parts)-1]
 	if cand == "cmake" && len(parts) >= 2 {
 		cand = parts[len(parts)-2]
 	}
-	switch cand {
-	case "", "cmake", "lib", "share":
+	if cand == "" {
 		return strings.TrimSuffix(exportName, "Targets")
 	}
 	return cand
