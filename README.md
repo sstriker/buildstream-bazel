@@ -206,6 +206,9 @@ implementation.
   [`docs/design/`](docs/design/) for the key mechanism specs
   (rendezvous, convergence loop, finalize-b, sources, narrowing
   audit).
+- **See a conversion side by side** — a small CMake project next to
+  its converted `BUILD.bazel` tree, directory for directory:
+  [`docs/cmake-split-packages-example.md`](docs/cmake-split-packages-example.md).
 - **Develop the converter** — [`docs/codebase-map.md`](docs/codebase-map.md)
   for the package tour; [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
   dev-loop commands and per-handler test map.
