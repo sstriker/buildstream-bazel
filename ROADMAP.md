@@ -1402,10 +1402,13 @@ transition cleanly.
   in `RENDER_GATES`). The hermetic tool is `cmd/cc-hash` (committed
   `tools/cc-hash.bin`); supports MD5/SHA1/SHA224/SHA256/SHA384/SHA512. Off by
   default; byte-stable when unset. New hashing scripts sharing the `-D`
-  contract drop into `knownCcHashScripts`. *Follow-up:* write-a auto-staging
-  of `//tools:cc-hash` (mirroring the `--cc-embed-bin` plumbing) so the lift
-  is usable from an orchestrated conversion, not just the direct-converter
-  gate. See `docs/research/codegen-idiom-coverage.md`.
+  contract drop into `knownCcHashScripts`. **Auto-staged by write-a**:
+  `cmd/write-a --cc-hash-bin <path>` stages the `cc-hash` binary into project A
+  + project B `tools/` and threads `--lift-cc-hash=true` into every kind:cmake
+  converter genrule (both the single-BUILD and `--split-packages` paths),
+  mirroring `--cc-embed-bin` — so the lift is usable from a real orchestrated
+  conversion, not just the direct-converter gate. See
+  `docs/research/codegen-idiom-coverage.md`.
 
 - **`generate_export_header` recovery + split-packages include wiring —
   shipped (real VTK leaf builds green).** Found by the empirical VTK leaf-build
