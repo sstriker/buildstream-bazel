@@ -79,6 +79,13 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 #                             unresolved standalone find_package deps — honest).
 #   - <name list>          -> exactly those (comma/space separated).
 # The build half needs bazel/bazelisk on PATH; absent, the column shows skip.
+#
+# NOTE: the build lens only acts on projects actually being surveyed. The
+# curated "auto" set (fmt/libxml2/brotli) is NOT in the no-args default corpus
+# (abseil/protobuf/googletest/eigen), so `SURVEY_BAZEL_BUILD=auto
+# scripts/run-survey.sh` shows "-" for all of them — pass those projects
+# explicitly (e.g. `SURVEY_BAZEL_BUILD=auto scripts/run-survey.sh fmt=$FMT_DIR
+# libxml2=$LIBXML2_DIR brotli=$BROTLI_DIR`) to exercise it.
 bazel_build="${SURVEY_BAZEL_BUILD:-}"
 build_lens_default="fmt libxml2 brotli"
 
@@ -173,7 +180,7 @@ try_bazel_build() {
     # legitimate source file, not a package marker. `|| true` so a stray find
     # error (perms) can't abort the whole survey under `set -e`.
     find "$_bb_ws" -type f \( -name BUILD.bazel -o -name BUILD \
-        -o -name 'WORKSPACE*' -o -name MODULE.bazel -o -name 'MODULE.bazel.lock' \
+        -o -name WORKSPACE -o -name WORKSPACE.bazel -o -name MODULE.bazel -o -name 'MODULE.bazel.lock' \
         -o -name .bazelrc -o -name .bazelversion \) -delete 2>/dev/null || true
     # Convert into the overlay: per-package BUILDs land alongside the sources,
     # the //config package under config/, both self-contained.
