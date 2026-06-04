@@ -2,6 +2,7 @@ package lower
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -48,9 +49,13 @@ func recognizeCcHash(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSr
 	}
 	// cmake's vtk_hash_source defaults ALGORITHM to MD5 and always passes
 	// -Dalgorithm=, so the trace normally carries it; default here too for
-	// robustness. Decline for any algorithm the rule/tool can't honor —
-	// emitting a cc_hash the rule would fail() on is worse than the fallback.
-	algorithm := d["algorithm"]
+	// robustness. cmake's file(<ALGO> …) — and the cc-hash tool — accept the
+	// algorithm case-insensitively, so normalize to upper before validating
+	// AND storing: the cc_hash rule's `values` attr only accepts the canonical
+	// uppercase spellings, so a lowercase `sha256` from a script sharing
+	// vtkHashSource's -D interface must become "SHA256" or the emitted rule
+	// would fail() on it. Decline for any algorithm the rule/tool can't honor.
+	algorithm := strings.ToUpper(d["algorithm"])
 	if algorithm == "" {
 		algorithm = "MD5"
 	}

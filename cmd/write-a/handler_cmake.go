@@ -45,6 +45,13 @@ var cmakeConfig struct {
 	// docs/research/codegen-idiom-coverage.md.
 	ccEmbedBin string
 
+	// ccHashBin is the staged path to cmd/cc-hash. When set, kind:cmake
+	// elements thread --lift-cc-hash so convert-element-cmake lowers a
+	// known file-hashing cmake -P script (vtkHashSource) to the native
+	// cc_hash rule. Empty (default) leaves the hashing edge on the
+	// runner/bake/refuse path. See docs/research/codegen-idiom-coverage.md.
+	ccHashBin string
+
 	// round2FallbackEnabled toggles the kind:cmake round-2
 	// fallback shape (Phase B; see
 	// docs/design/rendezvous.md).
@@ -618,6 +625,10 @@ filegroup(
 	if cmakeConfig.ccEmbedBin != "" {
 		liftFlag += ` \
             --lift-cc-embed=true`
+	}
+	if cmakeConfig.ccHashBin != "" {
+		liftFlag += ` \
+            --lift-cc-hash=true`
 	}
 	// Phase B round-2 fallback: when enabled, convert-element-cmake
 	// is told to turn classifier refusals into the placeholder
