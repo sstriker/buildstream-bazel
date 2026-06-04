@@ -1023,10 +1023,16 @@ transition cleanly.
   target the `include_prefix=<package dir>` that re-homes its headers so its
   own `#include "absl/base/internal/spinlock_wait.h"` resolves under split.
   Moving the `rel==""` handling ahead of the split fixes abseil's
-  `spinlock_wait` (and every PRIVATE-root-include target). cctz's `time_zone`
-  remains: its root-walk hdr discovery pulls cross-package headers into hdrs,
-  which fail `allPackageLocalHdrs` and block the prefix (tracked in
-  `docs/survey-corpus.md`).
+  `spinlock_wait` (and every PRIVATE-root-include target) — necessary, but
+  **not sufficient** for abseil-green. With `--keep_going` abseil still has
+  **~363 compile failures across ~10 packages** from the same root cause: the
+  `rel==""` root-walk pulls **all ~397 element headers into every
+  element-root-include target's `hdrs`**, the cross-package ones block
+  `include_prefix` (`allPackageLocalHdrs`), and abseil has no link deps for
+  these header-only cross-package includes. abseil-green needs
+  **header-dependency inference** (header→owning-target index → inject deps +
+  reduce `hdrs` to package-local → `include_prefix` applies) — a feature, not a
+  patch. Scoped in `docs/survey-corpus.md`.
 
 - **Build lens: googletest green (fused-source `textual_hdrs` +
   opt-in install(EXPORT) config-mode generation).** Two blockers:
