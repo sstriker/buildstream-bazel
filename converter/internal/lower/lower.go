@@ -2493,6 +2493,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	if walkPkgRootForHdrs {
 		includesForWalk = append([]string{""}, irt.Includes...)
 	}
+	// Stage private "sibling" headers that live in the target's own source
+	// directories. cmake implicitly searches a source file's own directory for
+	// quote-includes (`#include "sibling.h"`), so a private header beside the
+	// sources — brotli's c/common/platform.h, libxml2's libxml.h, fmt's
+	// test/gtest-extra.h — is found at cmake build time with no -I. Under Bazel
+	// the header must be a declared input or the quote-include misses in the
+	// sandbox. These dirs feed the hdrs walk ONLY, never irt.Includes (the
+	// emit-side include path): a sibling quote-include resolves relative to the
+	// including file, so no -I is needed — just the staged hdr.
+	seenWalk := map[string]bool{}
+	for _, inc := range includesForWalk {
+		seenWalk[inc] = true
+	}
+	for _, s := range irt.Srcs {
+		dir := filepath.ToSlash(filepath.Dir(s))
+		if dir == "." {
+			dir = ""
+		}
+		if !seenWalk[dir] {
+			seenWalk[dir] = true
+			includesForWalk = append(includesForWalk, dir)
+		}
+	}
 	hdrs, err := discoverHeaders(hostSrc, includesForWalk, cc.HeaderWalkCache, cc.MissingIncludeDirs)
 	if err != nil {
 		return nil, err
