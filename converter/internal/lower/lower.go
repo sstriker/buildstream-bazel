@@ -1524,6 +1524,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// (lowerTarget) and the trace-synth path (lowerInterfaceLibraries).
 	shapeHeaderOnlyStripIncludePrefix(pkg)
 
+	// cc_binary / cc_test have no `hdrs` (nor `textual_hdrs`) attribute, so
+	// the emitter folds their Hdrs into `srcs`. A header whose extension
+	// Bazel rejects in `srcs` (e.g. `.def`, `.gen` — not in rules_cc's
+	// CC_HEADER set) then trips the rule's srcs-extension check at analysis
+	// ("source file '…' is misplaced here"). Drop such headers from
+	// executable targets so the fold is legal; they reach the target via a
+	// dep's hdrs/textual_hdrs (the only place such a header can live), and
+	// the drop is breadcrumbed so it isn't silent. Found by the survey build
+	// lens on libxml2 (codegen/ranges.def in testrecurse's srcs).
+	dropNonSrcsHeadersFromCcExecutables(pkg, opts.Warnings)
+
 	return pkg, nil
 }
 
@@ -4173,6 +4184,90 @@ func dropGenexIncludeDirs(pkg *ir.Package) int {
 		}
 	}
 	return dropped
+}
+
+// ccSrcsAllowedExts is the lower-cased extension set rules_cc accepts in a
+// cc rule's `srcs` — its ALLOWED_SRC_FILES (CC_SOURCE ∪ C_SOURCE ∪ CC_HEADER
+// ∪ ASSEMBLER{,_WITH_C_PREPROCESSOR} ∪ ARCHIVE ∪ PIC_ARCHIVE). Lower-cased
+// because filepath.Ext is case-sensitive but `.C`→`.c` / `.H`→`.h` are both
+// valid; `.pic.a`'s Ext is `.a`, already covered. NOT the broader cc_library
+// `hdrs` set — `hdrs` additionally accepts header-like artifacts srcs
+// rejects (e.g. `.def` for LLVM's x-macro idiom), which is exactly why the
+// fold below is gated to executable kinds.
+var ccSrcsAllowedExts = map[string]bool{
+	// sources
+	".cc": true, ".cpp": true, ".cxx": true, ".c++": true, ".c": true,
+	".cu": true, ".cl": true,
+	// headers
+	".h": true, ".hh": true, ".hpp": true, ".ipp": true, ".hxx": true,
+	".h++": true, ".inc": true, ".inl": true, ".tlh": true, ".tli": true,
+	".tcc": true,
+	// assembler + archives
+	".s": true, ".asm": true, ".a": true, ".lib": true,
+}
+
+// dropNonSrcsHeadersFromCcExecutables removes from each cc_binary / cc_test
+// any Hdrs entry whose extension Bazel rejects in `srcs`. Those rules have
+// no `hdrs` (nor `textual_hdrs`) attribute, so the emitter folds their Hdrs
+// into `srcs`; an entry whose extension isn't in rules_cc's ALLOWED_SRC_FILES
+// then hard-fails the rule's srcs-extension check at analysis — "source file
+// '…' is misplaced here" (a header ext srcs rejects, e.g. `.def`/`.gen`) or
+// "'…' does not produce any cc_binary srcs files" (a non-code artifact, e.g.
+// a generated `.pc` pkg-config file or an extension-less config script).
+// Such a file can only reach an executable target via a dep's hdrs/
+// textual_hdrs (a cc_library can hold it), so dropping it here is the only
+// legal shape — cc_library / cc_interface keep theirs (their `hdrs` accepts
+// the wider set). The drop is breadcrumbed (no silent drops) so an operator
+// knows to ensure a providing dep where one isn't already present.
+func dropNonSrcsHeadersFromCcExecutables(pkg *ir.Package, warn io.Writer) {
+	if pkg == nil {
+		return
+	}
+	type dropRec struct {
+		target string
+		hdrs   []string
+	}
+	var recs []dropRec
+	total := 0
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+			continue
+		}
+		if len(t.Hdrs) == 0 {
+			continue
+		}
+		kept := make([]string, 0, len(t.Hdrs))
+		var dropped []string
+		for _, h := range t.Hdrs {
+			if ccSrcsAllowedExts[strings.ToLower(filepath.Ext(h))] {
+				kept = append(kept, h)
+				continue
+			}
+			dropped = append(dropped, h)
+		}
+		if len(dropped) == 0 {
+			continue
+		}
+		if len(kept) == 0 {
+			t.Hdrs = nil
+		} else {
+			t.Hdrs = kept
+		}
+		sort.Strings(dropped)
+		recs = append(recs, dropRec{target: t.Name, hdrs: dropped})
+		total += len(dropped)
+	}
+	if total == 0 || warn == nil {
+		return
+	}
+	sort.Slice(recs, func(i, j int) bool { return recs[i].target < recs[j].target })
+	fmt.Fprintf(warn,
+		"lower: dropped %d non-srcs file(s) from %d cc_binary/cc_test target(s) — those rules have no hdrs/textual_hdrs slot, so a file whose extension Bazel rejects in srcs (e.g. .def/.gen headers, .pc pkg-config, config scripts) must reach the target via a dep's hdrs:\n",
+		total, len(recs))
+	for _, r := range recs {
+		fmt.Fprintf(warn, "  %s (%d): %s\n", r.target, len(r.hdrs), strings.Join(r.hdrs, ", "))
+	}
 }
 
 // disambiguateTestNameCollisions renames any cc_test whose name
