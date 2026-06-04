@@ -1015,6 +1015,25 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Build lens: filter `create_symlink` + `ninja clean` command edges.** Two
+  more non-modelable cmake/ninja command shapes the standalone-genrule pass
+  emitted as broken genrules (surfaced by the zstd build lens):
+  - **`cmake -E create_symlink`** — projects use it for tool aliases (zstd's
+    `unzstd`/`zstdcat`/`zstdmt` → `zstd`), library SONAME links, and manpage
+    aliases. It's a symlink *side-effect*, not a content output; the recovered
+    genrule declared a stamp output the symlink cmd never creates and consumed
+    the link target via its multi-config output path (`Debug/zstd`, no Bazel
+    file). Bazel models tool aliases natively, so these are now dropped with a
+    `symlink` breadcrumb (`isCreateSymlinkCmd`; the stamp is never consumed).
+  - **`ninja clean`** — the Ninja-Multi-Config `clean`/`clean_all` target
+    (output `CMakeFiles/clean_all-<config>`, which leaks past the `.util`
+    bookkeeping filter). No Bazel analogue (`bazel clean` is separate); now a
+    `clean` category in `cmakeInternalCmdKind`.
+  zstd advances past both failure classes; its remaining blocker (manpage
+  `cp`s of `../../programs/*.1` source files *outside* the `build/cmake`
+  element root — zstd's subdir-builds-`../../` layout) is tracked in
+  `docs/survey-corpus.md`.
+
 - **Build lens: `include_prefix` for element-root-included headers under
   split.** A target whose headers are include-rooted at the element root
   (cmake's `target_include_directories(t ${CMAKE_SOURCE_DIR})`) loses that

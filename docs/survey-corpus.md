@@ -227,7 +227,7 @@ queued follow-ups live in `ROADMAP.md`, not here.
 | **glm** | library builds | `include_prefix` for element-root-included headers under split — the compiled `glm` lib re-homes to `//…/glm` and gets `include_prefix = "glm"`, so its whole `<glm/…>` surface resolves. `test-*` targets still fail under the `-Werror` + toolchain-`-Wall` interaction below (out of scope). |
 | **abseil** | compiles deep | `alias` `actual` relabeled cross-package under split + `;`-joined `target_link_libraries` deps split (#424): from failing at the first target to compiling hundreds of TUs. Further findings (vendored cctz `include/` root; standalone external test deps `GTest::gmock` / testing-off `absl::test_instance_tracker`) in `ROADMAP.md`. |
 | **googletest** | partial | `alias` `actual` relabel (#424) clears the `GTest::*` aliases; the `cmake_config_bundle` → install(EXPORT)-generated `GTestTargets.cmake` finding is in `ROADMAP.md`. |
-| **zstd** | `FAIL` | Multi-config custom-command binary copy (`unzstd`/`zstdcat` ← `Debug/zstd`); in `ROADMAP.md`. |
+| **zstd** | `FAIL` (deeper) | The `create_symlink` tool aliases (`unzstd`/`zstdcat`/`zstdmt` → `zstd`) and the `ninja clean` target are now filtered (both non-modelable cmake/ninja command edges). Remaining blocker: manpage `cp`s reference `../../programs/*.1` — source files *outside* the `build/cmake` element root (zstd's subdir-builds-`../../` layout), which a standalone element can't stage. In `ROADMAP.md`. |
 | **glog** | `skip(rej)` | Surveys with rejections, so the lens skips it (not build-lens-eligible until they lift). |
 | protobuf, eigen, curl, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
 

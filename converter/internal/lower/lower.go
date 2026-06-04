@@ -1397,12 +1397,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 	}
-	// Breadcrumb for the cmake-internal command edges the standalone-genrule
-	// pass dropped (install / regen / cpack / dashboard / ide-stub). They have
-	// no Bazel analogue so dropping is correct, but an operator auditing a
-	// conversion should see WHAT was filtered rather than the drop being
-	// silent — one aggregated notice grouped by category (mirrors the
-	// MissingIncludeDirs breadcrumb above).
+	// Breadcrumb for the cmake command edges the standalone-genrule pass
+	// dropped (install / uninstall / regen / cpack / clean / dashboard /
+	// ide-stub, and create_symlink tool/SONAME/manpage aliases). They have no
+	// Bazel analogue
+	// so dropping is correct, but an operator auditing a conversion should see
+	// WHAT was filtered rather than the drop being silent — one aggregated
+	// notice grouped by category (mirrors the MissingIncludeDirs breadcrumb
+	// above).
 	if len(cc.FilteredInternalCmds) > 0 && opts.Warnings != nil {
 		byKind := map[string][]string{}
 		for out, kind := range cc.FilteredInternalCmds {
@@ -1414,7 +1416,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 		sort.Strings(kinds)
 		fmt.Fprintf(opts.Warnings,
-			"lower: filtered %d cmake-internal command edge(s) with no Bazel analogue (dropped, not converted):\n",
+			"lower: filtered %d cmake command edge(s) with no Bazel analogue (dropped, not converted):\n",
 			len(cc.FilteredInternalCmds))
 		for _, k := range kinds {
 			outs := byKind[k]

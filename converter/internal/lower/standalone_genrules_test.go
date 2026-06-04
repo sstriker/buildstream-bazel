@@ -87,13 +87,41 @@ func TestCmakeInternalCmdKind(t *testing.T) {
 		{`cmake -P myscript.cmake`, ""},
 		{`cmake --regenerate-during-build -S/src -B/build`, "regen"},
 		{`cpack --config CPackConfig.cmake`, "cpack"},
+		{`ninja clean && rm -rf `, "clean"},
+		{`cd /tmp/b && /usr/local/bin/ninja clean`, "clean"},
 		{`echo No interactive CMake dialog available.`, "ide-stub"},
 		{`python gen.py in out`, ""},
 		{`git rev-parse HEAD`, ""},
+		// create_symlink is filtered separately (isCreateSymlinkCmd), not here.
+		{`cmake -E create_symlink zstd zstdcat`, ""},
 	}
 	for _, tc := range cases {
 		if got := cmakeInternalCmdKind(tc.cmd); got != tc.want {
 			t.Errorf("cmakeInternalCmdKind(%q) = %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+}
+
+func TestIsCreateSymlinkCmd(t *testing.T) {
+	cases := []struct {
+		cmd  string
+		want bool
+	}{
+		// Raw ninja form (what the recovery sees, before the ln -sfn rewrite),
+		// across cmake paths — zstd's zstdcat/unzstd/zstdmt tool aliases and
+		// the .1 manpage aliases.
+		{`/usr/local/opt/cmake-4.3.3/bin/cmake -E create_symlink zstd zstdcat`, true},
+		{`cd /tmp/b && /usr/bin/cmake -E create_symlink zstd.1 zstdcat.1`, true},
+		{`cmake -E create_symlink libfoo.so.1 libfoo.so`, true},
+		// Not create_symlink.
+		{`ln -sfn zstd zstdcat`, false}, // post-rewrite form; the filter runs pre-rewrite
+		{`cp build/cmake/../../programs/zstdless.1 .`, false},
+		{`cmake -E copy a b`, false},
+		{`python gen.py`, false},
+	}
+	for _, tc := range cases {
+		if got := isCreateSymlinkCmd(tc.cmd); got != tc.want {
+			t.Errorf("isCreateSymlinkCmd(%q) = %v, want %v", tc.cmd, got, tc.want)
 		}
 	}
 }
