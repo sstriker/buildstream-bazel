@@ -363,3 +363,31 @@ func keysOf(m map[string][]byte) []string {
 	sort.Strings(ks)
 	return ks
 }
+
+// TestEmit_Split_CrossPackageHeaderRelabeled: a target whose Hdrs include a
+// header living in a deeper package must reference it by a cross-package
+// label (+ raise an exports_files() in the owning package), not drop it.
+// Regression guard for the fmt build-lens fix (a test pulling a sibling .cc
+// cross-package also needs that package's sibling .h as a compile input).
+func TestEmit_Split_CrossPackageHeaderRelabeled(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "rootlib", Kind: ir.KindCCLibrary, Srcs: []string{"main.cc"}, Hdrs: []string{"test/util.h"}},
+			{Name: "testlib", Kind: ir.KindCCLibrary, Srcs: []string{"test/lib.cc"}},
+		},
+		SubPackages: map[string]string{"rootlib": "", "testlib": "test"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	root := string(tree[""])
+	if !contains(root, "//elements/x/test:util.h") {
+		t.Errorf("root pkg: cross-package hdr not relabeled to //elements/x/test:util.h\n%s", root)
+	}
+	testPkg := string(tree["test"])
+	if !contains(testPkg, "exports_files") || !contains(testPkg, `"util.h"`) {
+		t.Errorf("test pkg missing exports_files([\"util.h\"])\n%s", testPkg)
+	}
+}
