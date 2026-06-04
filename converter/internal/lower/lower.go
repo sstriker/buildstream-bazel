@@ -2442,13 +2442,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					// needed path — and ONLY at a non-root package: Bazel also
 					// rejects `includes=["."]` at the workspace root ("'.'
 					// resolves to the workspace root"), so this is gated on a
-					// package path. Converting AT "//" (no package path — e.g.
-					// the fidelity harness) must NOT add it: the include can't
-					// be expressed there and adding it hard-fails analysis (the
+					// non-root package path (pkgPathIsRoot). Converting AT the
+					// workspace root (no package path, or "."/"./" — e.g. the
+					// fidelity harness) must NOT add it: the include can't be
+					// expressed there and adding it hard-fails analysis (the
 					// libpng regression). (A root-LEVEL output like `config.h`
 					// is consumed via a relative `#include "config.h"` and
 					// needs no path — gated out by the subdir check too.)
-					if bazelPackagePath != "" && needsPkgRootInclude(inc, cfgOut.RelOutput) {
+					if !pkgPathIsRoot(bazelPackagePath) && needsPkgRootInclude(inc, cfgOut.RelOutput) {
 						needsPkgRoot = true
 					}
 					// A generate_export_header output is #included by BARE
@@ -5223,6 +5224,32 @@ func isPathPrefix(prefix, path string) bool {
 	return strings.HasPrefix(path, prefix+"/")
 }
 
+// needsPkgRootInclude reports whether a configure_file output at relOutput,
+// hosted by the build-dir include `inc`, requires the package root (".") on
+// the consuming target's include path. True only when the output lives in a
+// SUBDIR under the ROOT ("") build-dir include — it's then consumed via that
+// subdir path (e.g. libxml2's `<build>/libxml/xmlversion.h`, #included as
+// `<libxml/xmlversion.h>`), so the package-root genfiles dir must be on -I.
+// addBuildDirIncludes skips the root ""/"." (Bazel rejects `includes=[""]`),
+// but the valid `includes=["."]` expresses exactly this — and it resolves to
+// a real sub-dir ONLY under a non-root package (project-B's
+// `elements/<name>/`); at the workspace root Bazel rejects it, so the caller
+// also gates on pkgPathIsRoot. A root-LEVEL output (no subdir) is consumed
+// via a relative `#include "x.h"` and needs no -I, so it returns false.
+func needsPkgRootInclude(inc, relOutput string) bool {
+	return (inc == "" || inc == ".") && strings.Contains(relOutput, "/")
+}
+
+// pkgPathIsRoot reports whether a --bazel-package-path value denotes the
+// workspace root ("", ".", "./", " . "), where Bazel rejects an
+// `includes = ["."]` entry ("'.' resolves to the workspace root"). The
+// configure_file package-root include (needsPkgRootInclude) is suppressed
+// for such root conversions — it can't be expressed there anyway.
+func pkgPathIsRoot(p string) bool {
+	p = strings.Trim(strings.TrimSpace(p), "/")
+	return p == "" || p == "."
+}
+
 // addBuildDirIncludes appends build-dir-relative include dirs to
 // irt.Includes (sorted, deduped against existing entries). Used by the
 // codegen-consumer attribution blocks when a lifted output
@@ -5230,22 +5257,6 @@ func isPathPrefix(prefix, path string) bool {
 // a build-dir include the codemodel recorded but lowerTarget otherwise
 // elides: once the genrule writes the header there, the dir is a real
 // Bazel include path the angle-bracket `#include <…>` needs.
-// needsPkgRootInclude reports whether a configure_file output at relOutput,
-// hosted by the build-dir include `inc`, requires the package root (".") on
-// the consuming target's include path. True only when the output lives in a
-// SUBDIR under the ROOT ("") build-dir include — it's then consumed via that
-// subdir path (e.g. libxml2's `<build>/libxml/xmlversion.h`, #included as
-// `<libxml/xmlversion.h>`), so the package-root genfiles dir must be on -I.
-// addBuildDirIncludes skips the root "" (Bazel rejects `includes=[""]`), but
-// the valid `includes=["."]` expresses exactly this — and it resolves to a
-// real sub-dir under the project-B `elements/<name>/` package layout (a
-// target at the literal workspace root can't carry it, but elements never
-// land there). A root-LEVEL output (no subdir) is consumed via a relative
-// `#include "x.h"` and needs no -I, so it returns false.
-func needsPkgRootInclude(inc, relOutput string) bool {
-	return (inc == "" || inc == ".") && strings.Contains(relOutput, "/")
-}
-
 func addBuildDirIncludes(irt *ir.Target, dirs map[string]bool) {
 	if len(dirs) == 0 {
 		return

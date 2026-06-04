@@ -64,3 +64,23 @@ func TestNeedsPkgRootInclude(t *testing.T) {
 		}
 	}
 }
+
+// TestPkgPathIsRoot: the package-root include is suppressed for a workspace-
+// root conversion. "", ".", "./" and whitespace variants are root (Bazel
+// rejects `includes=["."]` there); a real sub-package path is not. Guards the
+// `--bazel-package-path .` edge that would otherwise re-trigger the libpng
+// analysis failure.
+func TestPkgPathIsRoot(t *testing.T) {
+	roots := []string{"", ".", "./", " . ", "/", " "}
+	for _, p := range roots {
+		if !pkgPathIsRoot(p) {
+			t.Errorf("pkgPathIsRoot(%q) = false, want true (root)", p)
+		}
+	}
+	nonRoots := []string{"elements/fmt", "elements/libxml2", "pkg", "a/b/c"}
+	for _, p := range nonRoots {
+		if pkgPathIsRoot(p) {
+			t.Errorf("pkgPathIsRoot(%q) = true, want false (sub-package)", p)
+		}
+	}
+}
