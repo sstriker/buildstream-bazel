@@ -234,6 +234,27 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			}
 			continue
 		}
+		// Skip `cmake -E create_symlink` edges. Projects use create_symlink to
+		// make tool aliases (zstd's zstdcat / unzstd / zstdmt → zstd), library
+		// SONAME links, and manpage aliases — a symlink side-effect in the
+		// build/install tree, not a content-producing build step. The recovered
+		// shape can't model it: cmake's Ninja generator gives the custom target
+		// a stamp output (`CMakeFiles/<name>-<config>`) the symlink cmd never
+		// creates, and the link target is a built binary referenced by its
+		// multi-config output path (`Debug/zstd`) that is no Bazel file — so the
+		// genrule fails analysis on a missing input + an uncreated output. Bazel
+		// models tool aliases natively; drop with a breadcrumb (the stamp is
+		// never consumed, so nothing depends on it).
+		if isCreateSymlinkCmd(cmd) {
+			if filteredInternal != nil {
+				key := "symlink"
+				if len(outs) > 0 {
+					key = outs[0]
+				}
+				filteredInternal[key] = "symlink"
+			}
+			continue
+		}
 		// Use genruleSrcs so source-tree-absolute inputs
 		// (e.g. `/tmp/<src>/foo.c` from a `cmake -P` build line
 		// that the ninja generator resolved with the cmake build
@@ -1215,13 +1236,26 @@ func isCMakeInternalCmd(cmd string) bool {
 	return cmakeInternalCmdKind(cmd) != ""
 }
 
+// isCreateSymlinkCmd reports whether a recovered ninja CUSTOM_COMMAND is a
+// `cmake -E create_symlink` invocation — cmake's portable symlink primitive.
+// It creates a symlink side-effect (a tool alias like zstd→zstdcat, a library
+// SONAME link, or a manpage alias), not a content output, so it has no Bazel
+// build-graph analogue and is dropped like the cmake-internal edges. Matched on
+// the RAW ninja cmd (before rewriteGenruleCmd normalizes it to `ln -sfn`),
+// where the `create_symlink` -E subcommand token is stable across cmake paths.
+func isCreateSymlinkCmd(cmd string) bool {
+	return strings.Contains(cmd, "create_symlink")
+}
+
 // cmakeInternalCmdKind reports the CATEGORY of cmake-internal command a
 // recovered ninja CUSTOM_COMMAND edge is, or "" if it isn't one. It's the
 // body of isCMakeInternalCmd; the category lets the drop site
 // (lowerStandaloneCustomCommands) record an audit breadcrumb instead of
 // dropping silently — these edges have no Bazel analogue, but an operator
 // auditing a conversion should still see WHAT was filtered. Categories:
-// "install" / "uninstall" / "regen" / "cpack" / "dashboard" / "ide-stub".
+// "install" / "uninstall" / "regen" / "cpack" / "clean" / "dashboard" /
+// "ide-stub". (The create_symlink "symlink" category is filtered separately,
+// not via this function — it's a user command, not cmake-internal bookkeeping.)
 func cmakeInternalCmdKind(cmd string) string {
 	c := strings.TrimSpace(cmd)
 	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's
@@ -1268,6 +1302,14 @@ func cmakeInternalCmdKind(cmd string) string {
 	// cpack + cpack-with-rpmbuild — package distribution.
 	if strings.HasPrefix(c, "cpack ") || strings.HasPrefix(c, "cpack-") {
 		return "cpack"
+	}
+	// `ninja clean` — the Ninja (Multi-Config) clean / clean_all target. Runs
+	// the generator's clean against cmake's build dir; no Bazel analogue
+	// (`bazel clean` is separate). Multi-config emits a clean_all custom target
+	// whose output is a `CMakeFiles/clean_all-<config>` stamp — not `.util`, so
+	// it leaks past the bookkeeping-output filter.
+	if strings.HasPrefix(c, "ninja clean") {
+		return "clean"
 	}
 	// `ctest -D <Dashboard>` — CDash dashboard submission edges
 	// (Experimental / Nightly / Continuous + Memory/Coverage
