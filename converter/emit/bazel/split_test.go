@@ -569,3 +569,26 @@ func TestEmit_Split_RootIncludeRootPackageNoPrefix(t *testing.T) {
 		t.Errorf("root-package RootInclude target should NOT get include_prefix:\n%s", string(tree[""]))
 	}
 }
+
+// TestEmit_Split_RootIncludeSourceKeyNoPrefix: in the SourceKey regime hdrs
+// stay element-root-relative (they already carry the `glm/` prefix), so a
+// RootInclude target must NOT get include_prefix — that would double-prefix
+// consumers to `glm/glm/foo.hpp`. The gate is local-regime only.
+func TestEmit_Split_RootIncludeSourceKeyNoPrefix(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "glm", Kind: ir.KindCCLibrary, Srcs: []string{"glm/detail/glm.cpp"}, Hdrs: []string{"glm/glm.hpp"}, RootInclude: true},
+		},
+		SubPackages: map[string]string{"glm": "glm"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x", SourceKey: "abc"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	for dir, b := range tree {
+		if contains(string(b), "include_prefix") {
+			t.Errorf("SourceKey regime must not emit include_prefix (pkg %q):\n%s", dir, string(b))
+		}
+	}
+}
