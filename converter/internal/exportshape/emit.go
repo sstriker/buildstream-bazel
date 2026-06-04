@@ -237,6 +237,10 @@ func renderConfigVersionFile() []string {
 		"# (the export's project VERSION isn't in the codemodel).",
 		`set(PACKAGE_VERSION "0.0.0")`,
 		"set(PACKAGE_VERSION_COMPATIBLE TRUE)",
+		// EXACT too: find_package(<Pkg> <ver> EXACT) checks PACKAGE_VERSION_EXACT,
+		// so the permissive "always-compatible" stub must set it or EXACT requests
+		// fail despite the intent.
+		"set(PACKAGE_VERSION_EXACT TRUE)",
 	}
 }
 
@@ -263,6 +267,14 @@ func renderExportTargetsFile(in EmitInputs, bundleFile string) []string {
 	for i := 0; i < climb; i++ {
 		lines = append(lines, `get_filename_component(_IMPORT_PREFIX "${_IMPORT_PREFIX}" PATH)`)
 	}
+	// Normalize a root install prefix (cmake's own generated export files do this
+	// after the climb) so "${_IMPORT_PREFIX}/include" doesn't expand to
+	// "//include" when the prefix root is "/".
+	lines = append(lines,
+		`if(_IMPORT_PREFIX STREQUAL "/")`,
+		`  set(_IMPORT_PREFIX "")`,
+		`endif()`,
+	)
 	for _, et := range in.Installer.ExportTargets {
 		t, ok := in.Targets[et.Id]
 		if !ok {
