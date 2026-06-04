@@ -96,9 +96,14 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 	write("src/format.cc", "int fmt(){return 0;}\n")
 
 	mk := func() *ir.Package {
-		return &ir.Package{Targets: []ir.Target{
-			{Name: "posix-mock-test", Kind: ir.KindCCTest, Srcs: []string{"test/posix-mock-test.cc", "src/format.cc"}, Deps: []string{":gtest"}},
-		}}
+		return &ir.Package{
+			Targets: []ir.Target{
+				{Name: "posix-mock-test", Kind: ir.KindCCTest, Srcs: []string{"test/posix-mock-test.cc", "src/format.cc"}, Deps: []string{":gtest"}},
+			},
+			// The consumer lives in the test/ subpackage — the synth lib must
+			// co-locate there so the dep stays same-package under split.
+			SubPackages: map[string]string{"posix-mock-test": "test"},
+		}
 	}
 
 	// hostSrcOnDisk=false → no-op.
@@ -135,7 +140,34 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 	if !stringSliceContains(test.Deps, ":gtest") {
 		t.Errorf("test lost its original dep: %v", test.Deps)
 	}
+	// Co-located in the consumer's package (test/) so the dep is same-package
+	// under split — a root-package private lib would be cross-package rejected.
+	if got := pkg.SubPackages["posix-mock-test_textual_srcs"]; got != "test" {
+		t.Errorf("synth lib SubPackages dir = %q, want \"test\" (co-located with consumer)", got)
+	}
 	if !strings.Contains(warn.String(), "posix-mock-test_textual_srcs") {
 		t.Errorf("breadcrumb missing synth lib name:\n%s", warn.String())
+	}
+}
+
+// TestFindTextualSourceIncludes_AbsoluteRejected: an absolute include
+// (`#include "/src/os.cc"`) must be rejected outright. Without the guard,
+// filepath.Join("test", "/src/os.cc") folds to "test/src/os.cc" — which we
+// also create here — so it would be wrongly staged; the guard skips it.
+func TestFindTextualSourceIncludes_AbsoluteRejected(t *testing.T) {
+	hostSrc := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(hostSrc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("test/a.cc", "#include \"/src/os.cc\"\n")
+	write("test/src/os.cc", "int x(){return 0;}\n") // the would-be fold target
+	if got := findTextualSourceIncludes(hostSrc, []string{"test/a.cc"}); got != nil {
+		t.Errorf("absolute include should be rejected; got %v", got)
 	}
 }
