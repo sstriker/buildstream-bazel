@@ -3739,15 +3739,21 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 				tgt.LinkOpts = append(tgt.LinkOpts, "-Wl,-rpath,"+entry)
 			}
 		}
-		// POSITION_INDEPENDENT_CODE = TRUE → features=["pic"]
-		// (or "-pic" when explicitly OFF).
-		if v := strings.TrimSpace(p.Properties["POSITION_INDEPENDENT_CODE"]); v != "" {
-			if cmakeTruthy(v) {
-				if !stringSliceContains(tgt.Features, "pic") {
-					tgt.Features = append(tgt.Features, "pic")
-				}
-			} else if !stringSliceContains(tgt.Features, "-pic") {
-				tgt.Features = append(tgt.Features, "-pic")
+		// POSITION_INDEPENDENT_CODE = TRUE → features=["pic"].
+		//
+		// FALSE/unset emits NOTHING — deliberately. In cmake this property
+		// only ever ADDS -fPIC (libs) / -fPIE (executables) when TRUE; it
+		// never adds -fno-PIC/-fno-PIE for FALSE, so a FALSE/unset target
+		// just inherits the compiler's default (PIE on modern toolchains).
+		// Emitting features=["-pic"] there actively DISABLES pic, producing
+		// non-PIC objects that then can't link into Bazel's PIE binaries /
+		// shared libs (ld: "relocation R_X86_64_PC32 ... recompile with
+		// -fPIC"). Letting Bazel's toolchain default govern matches cmake's
+		// actual behavior and links cleanly. (Found via the brotli build
+		// lens: its `brotli` tool leaves PIC unset, only the libs set it.)
+		if v := strings.TrimSpace(p.Properties["POSITION_INDEPENDENT_CODE"]); v != "" && cmakeTruthy(v) {
+			if !stringSliceContains(tgt.Features, "pic") {
+				tgt.Features = append(tgt.Features, "pic")
 			}
 		}
 		// Visibility presets — gcc/clang -fvisibility=<value>.
