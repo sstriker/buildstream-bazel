@@ -484,7 +484,7 @@ func TestEmit_Split_TextualHdrsRelabeled(t *testing.T) {
 		t.Fatalf("EmitSplit: %v", err)
 	}
 	root := string(tree[""])
-	if !contains(root, "/elements/x/src:os.cc") {
+	if !contains(root, "//elements/x/src:os.cc") {
 		t.Errorf("root pkg: textual_hdr not relabeled to //elements/x/src:os.cc\n%s", root)
 	}
 	srcPkg := string(tree["src"])
