@@ -164,6 +164,47 @@ they have very different tooling support:
    deliberately *not* pursued (false-positive cost exceeds signal, per the
    relocation cases above).
 
+## The build lens (4th lens, opt-in)
+
+The three lenses above measure **convertibility** — did intent survive the
+convert. They deliberately do *not* answer the end-to-end question: **does the
+Bazel-native output actually `bazel build` green, with no cmake?** A project
+can survey `0 / 0 / 0` (no rejections, no idiom gaps, no dropped edges) and
+still not build — a missing `-I` include dir, an unfiltered `ctest` dashboard
+`custom_command`, a header that wasn't wired as a declared input. The build
+lens closes that gap.
+
+Turn it on with `SURVEY_BAZEL_BUILD`:
+
+- unset / `off` — (default) no build attempt; the `build` column shows `-`.
+- `auto` / `on` — build only the curated near-clean starter set
+  (`fmt libxml2 brotli` — projects that already survey clean, so a `FAIL` is a
+  real regression, not expected external-dep noise).
+- `all` — attempt every surveyed project (most will `FAIL` on unresolved
+  standalone `find_package` deps — honest, but noisy).
+- a name list (`"fmt,brotli"`) — exactly those.
+
+How it builds (it mirrors **project B's wiring**, not a degraded shape): for
+each selected project it does its own *clean* (non-`--diagnostics`) convert in
+the **same faithful shape the survey diagnoses** (multi-config + split) plus
+`--out-config-settings`, which emits the `//config` package the
+`//config:build_type` `select()` arms resolve against — the one piece write-a
+renders into project B that the bare converter leaves to the orchestrator. It
+overlays the converted BUILD tree onto a copy of the source (stripping any
+Bazel files the project *ships*, so the lens tests our output, not theirs),
+synthesizes a minimal `MODULE.bazel` (rules_cc / rules_pkg / bazel_skylib /
+local `rules_buildstream_bazel`), and runs `bazel build //...`. Needs
+bazel/bazelisk on `$PATH`; absent → `skip(no-bazel)`. A project with refusals
+can't convert cleanly → `skip(convert)` (you can't build what won't convert).
+`SURVEY_BAZEL_BUILD_TIMEOUT` (default 900s) bounds each build.
+
+A `FAIL` is the start of a triage, exactly like a rejection: read
+`<out>/<project>/build.log` for the first compile/load error. The lens is
+strict on purpose — `//...` includes test targets, which for some projects
+pull external test deps (e.g. fmt's tests need GoogleTest) that standalone
+conversion can't resolve; scoping to the library targets is a possible
+refinement if that noise outweighs the signal.
+
 ## The corpus
 
 The corpus is curated for **complementary high-signal coverage**, not

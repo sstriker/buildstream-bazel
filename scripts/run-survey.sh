@@ -20,6 +20,18 @@
 # enumerating the refusal + idiom surface in one pass, not producing
 # usable output.
 #
+# Fourth lens (opt-in): SURVEY_BAZEL_BUILD turns on a `bazel build //...`
+# pass/fail column — the end-to-end "does the Bazel-native output actually
+# build, no cmake?" question the diagnostic lenses don't answer. It does its
+# OWN clean (non-diagnostic) convert in the SAME faithful shape the survey
+# diagnoses (multi-config + split) PLUS --out-config-settings, which emits the
+# //config package the multi-config select() arms resolve against — the one
+# piece write-a renders into project B that the bare converter otherwise
+# leaves to the orchestrator. So the lens builds exactly project B's wiring,
+# self-contained: it overlays the converted BUILD tree on a copy of the
+# source, synthesizes a minimal MODULE.bazel, and builds //.... See
+# docs/survey-corpus.md "The build lens".
+#
 # Usage:
 #   scripts/run-survey.sh [--out-dir <dir>] [name=<src-root> ...]
 #
@@ -56,6 +68,19 @@ case "$build_types" in single|none|off) build_types="" ;; esac
 # "0"/"no"/"off" to emit the single monolithic BUILD.bazel instead.
 split_packages="${SURVEY_SPLIT_PACKAGES:-1}"
 case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
+
+# SURVEY_BAZEL_BUILD controls the fourth lens — a `bazel build //...` pass/fail
+# on the converted output (no cmake at build time). Forms:
+#   - unset / "" / "off"   -> (DEFAULT) no build lens; the column shows "-".
+#   - "auto" / "1" / "on"  -> build only the curated near-clean starter set
+#                             ($build_lens_default) — the projects that already
+#                             survey clean, so a FAIL is a real regression.
+#   - "all"                -> attempt every surveyed project (most will FAIL on
+#                             unresolved standalone find_package deps — honest).
+#   - <name list>          -> exactly those (comma/space separated).
+# The build half needs bazel/bazelisk on PATH; absent, the column shows skip.
+bazel_build="${SURVEY_BAZEL_BUILD:-}"
+build_lens_default="fmt libxml2 brotli"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -104,12 +129,81 @@ detect_configs() {
     rm -rf "$_dc_bld"
 }
 
+# Build-lens (4th lens) helpers. -------------------------------------------
+bzl_bin=""
+if command -v bazel >/dev/null 2>&1; then bzl_bin=bazel
+elif command -v bazelisk >/dev/null 2>&1; then bzl_bin=bazelisk; fi
+
+# build_lens_for <name> — true if SURVEY_BAZEL_BUILD selects this project.
+build_lens_for() {
+    case "$bazel_build" in
+        ""|0|no|off|false) return 1 ;;
+        all) return 0 ;;
+        auto|1|on|yes|true) _bl_set="$build_lens_default" ;;
+        *) _bl_set="$(printf '%s' "$bazel_build" | tr ',' ' ')" ;;
+    esac
+    for _bl_p in $_bl_set; do
+        [ "$_bl_p" = "$1" ] && return 0
+    done
+    return 1
+}
+
+# try_bazel_build <name> <src> <proj_out> <bt_args> <sp_args> — clean-convert
+# the project in the faithful shape + --out-config-settings, overlay onto a
+# copy of the source tree with a minimal MODULE.bazel, and `bazel build //...`.
+# Echoes one summary token (ok / FAIL / skip(<why>)); detail in the proj_out
+# logs. The convert here is deliberately WITHOUT --diagnostics: a clean build
+# presupposes a clean convert, so a project with refusals reports skip(convert)
+# rather than building a partial tree.
+try_bazel_build() {
+    _bb_name="$1"; _bb_src="$2"; _bb_po="$3"; _bb_bt="$4"; _bb_sp="$5"
+    [ -n "$bzl_bin" ] || { echo "skip(no-bazel)"; return; }
+    _bb_ws="$_bb_po/build-ws"
+    rm -rf "$_bb_ws"; mkdir -p "$_bb_ws"
+    if ! cp -a "$_bb_src/." "$_bb_ws/" 2>"$_bb_po/build.log"; then
+        echo "skip(copy)"; return
+    fi
+    # Strip any Bazel files the project SHIPS (fmt's support/bazel/, etc.): the
+    # lens tests the converter's output, not a project's hand-authored Bazel,
+    # and a leftover foreign BUILD/MODULE would collide with what we emit.
+    find "$_bb_ws" -type f \( -name BUILD.bazel -o -name BUILD -o -name BUILD.bzl \
+        -o -name 'WORKSPACE*' -o -name MODULE.bazel -o -name 'MODULE.bazel.lock' \) -delete 2>/dev/null
+    # Convert into the overlay: per-package BUILDs land alongside the sources,
+    # the //config package under config/, both self-contained.
+    if ! run_converter \
+        --source-root "$_bb_src" \
+        $_bb_bt $_bb_sp \
+        --out-build "$_bb_ws/BUILD.bazel" \
+        --out-config-settings "$_bb_ws/config/BUILD.bazel" \
+        >> "$_bb_po/build.log" 2>&1
+    then
+        echo "skip(convert)"; return
+    fi
+    cat > "$_bb_ws/MODULE.bazel" <<EOF
+module(name = "survey_$(printf '%s' "$_bb_name" | tr -c 'a-z0-9_' '_')", version = "0.0.0")
+bazel_dep(name = "rules_cc", version = "0.0.17")
+bazel_dep(name = "rules_pkg", version = "1.0.1")
+bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
+local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
+EOF
+    _bb_to=""
+    command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
+    if ( cd "$_bb_ws" && $_bb_to "$bzl_bin" --output_user_root="$_bb_po/.bzcache" \
+            build ${META_BAZEL_BUILD_ARGS:-} //... ) >> "$_bb_po/build.log" 2>&1; then
+        echo "ok"
+    else
+        echo "FAIL"
+    fi
+}
+# --------------------------------------------------------------------------
+
 mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
 : > "$summary"
 
-printf '%-14s %10s %10s %10s %s\n' project rejections idioms coverage status | tee "$summary"
-printf '%-14s %10s %10s %10s %s\n' ------- ---------- ------ -------- ------ | tee -a "$summary"
+printf '%-14s %10s %10s %10s %8s %s\n' project rejections idioms coverage build status | tee "$summary"
+printf '%-14s %10s %10s %10s %8s %s\n' ------- ---------- ------ -------- ----- ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -118,7 +212,7 @@ for entry in $projects; do
     mkdir -p "$proj_out"
 
     if [ ! -d "$src" ]; then
-        printf '%-14s %10s %10s %s\n' "$name" - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
+        printf '%-14s %10s %10s %10s %8s %s\n' "$name" - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
         continue
     fi
 
@@ -185,7 +279,16 @@ for entry in $projects; do
     idi_n=$( [ -f "$idiom" ] && grep -o '"Code"' "$idiom" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     cov_n=$( [ -f "$cov" ]   && grep -o '"Code"' "$cov"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
 
-    printf '%-14s %10s %10s %10s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "$status" | tee -a "$summary"
+    # 4th lens: `bazel build //...` of the faithful (project-B-shaped) output.
+    # Only when this project is selected by SURVEY_BAZEL_BUILD and the
+    # diagnostic convert above didn't hard-fail (configure must work first).
+    build_status="-"
+    if [ "$status" = "ok" ] && build_lens_for "$name"; then
+        build_status="$(try_bazel_build "$name" "$src" "$proj_out" "$bt_args" "$sp_args")"
+        [ "$build_status" = "FAIL" ] && status="bazel build //... FAILED — see $proj_out/build.log"
+    fi
+
+    printf '%-14s %10s %10s %10s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "$build_status" "$status" | tee -a "$summary"
 done
 
 echo ""
