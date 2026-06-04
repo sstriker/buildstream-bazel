@@ -108,8 +108,9 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 // cc_library carrying those files in textual_hdrs and adds it to the target's
 // deps: the file becomes a declared input (the quote-include resolves it
 // relative to the including source) without being compiled standalone (which
-// would duplicate its symbols). The synthesized lib lands in the root package
-// (no SubPackages entry → root); under --split-packages its textual_hdrs are
+// would duplicate its symbols). The synthesized lib is co-located in the
+// consumer's package (pkg.SubPackages[lib] = pkg.SubPackages[consumer]) so the
+// dep stays same-package under --split-packages; its textual_hdrs are then
 // relabeled to cross-package file labels by the emitter, exactly like hdrs.
 // Gated on hostSrcOnDisk (the scan reads source files); breadcrumbed so the
 // synthesis is auditable. (cc_library targets, which DO have textual_hdrs, are
