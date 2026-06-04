@@ -1,11 +1,15 @@
 package lower
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // quoteIncludeRe matches a C/C++ quote-form include directive — `#include
@@ -87,4 +91,73 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// synthesizeTextualSourceIncludeLibs wires the textual-source-include idiom
+// into the package for cc_binary / cc_test targets, which have NO
+// textual_hdrs attribute. For each such target whose sources quote-include a
+// .cc the target doesn't compile (findTextualSourceIncludes), it synthesizes a
+// cc_library carrying those files in textual_hdrs and adds it to the target's
+// deps: the file becomes a declared input (the quote-include resolves it
+// relative to the including source) without being compiled standalone (which
+// would duplicate its symbols). The synthesized lib lands in the root package
+// (no SubPackages entry → root); under --split-packages its textual_hdrs are
+// relabeled to cross-package file labels by the emitter, exactly like hdrs.
+// Gated on hostSrcOnDisk (the scan reads source files); breadcrumbed so the
+// synthesis is auditable. (cc_library targets, which DO have textual_hdrs, are
+// left to add such files inline if a future case needs it — the synth-lib
+// indirection exists only for the no-slot kinds.)
+func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrcOnDisk bool, warn io.Writer) {
+	if pkg == nil || !hostSrcOnDisk {
+		return
+	}
+	names := map[string]bool{}
+	for i := range pkg.Targets {
+		names[pkg.Targets[i].Name] = true
+	}
+	uniqueName := func(base string) string {
+		n := base
+		for i := 1; names[n]; i++ {
+			n = fmt.Sprintf("%s_%d", base, i)
+		}
+		names[n] = true
+		return n
+	}
+	type rec struct {
+		target, lib string
+		srcs        []string
+	}
+	var recs []rec
+	var synth []ir.Target
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+			continue
+		}
+		incs := findTextualSourceIncludes(hostSrc, t.Srcs)
+		if len(incs) == 0 {
+			continue
+		}
+		lib := uniqueName(t.Name + "_textual_srcs")
+		synth = append(synth, ir.Target{
+			Name:        lib,
+			Kind:        ir.KindCCLibrary,
+			TextualHdrs: incs,
+			Visibility:  []string{"//visibility:private"},
+			Tags:        []string{"cmake-codegen-textual-source-include"},
+		})
+		t.Deps = appendUnique(t.Deps, ":"+lib)
+		recs = append(recs, rec{target: t.Name, lib: lib, srcs: incs})
+	}
+	if len(synth) > 0 {
+		pkg.Targets = append(pkg.Targets, synth...)
+	}
+	if len(recs) > 0 && warn != nil {
+		fmt.Fprintf(warn,
+			"lower: synthesized %d textual_hdrs cc_library(ies) for cc_binary/cc_test target(s) that textually #include a .cc they don't compile (those rules have no textual_hdrs slot):\n",
+			len(recs))
+		for _, r := range recs {
+			fmt.Fprintf(warn, "  %s -> %s (textual_hdrs: %s)\n", r.target, r.lib, strings.Join(r.srcs, ", "))
+		}
+	}
 }

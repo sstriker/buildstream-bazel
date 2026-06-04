@@ -724,6 +724,39 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	}
 	rt.Hdrs = keepHdrs
 
+	// Re-relativize / relabel textual_hdrs the same way as hdrs: a
+	// textually-#included file (e.g. the synthesized textual-source-include
+	// lib's `src/os.cc`, or a cc_library's own textual header) that belongs to
+	// a deeper/other package becomes a cross-package file label + an
+	// exports_files() need; one in this package stays package-relative. (No
+	// header-lib "owned" check — textual_hdrs are explicit textual includes,
+	// not glob-claimed by a synthesized include-root header lib.)
+	if len(t.TextualHdrs) > 0 {
+		var keepTextual []string
+		for _, h := range t.TextualHdrs {
+			if !local {
+				// SourceKey regime: left element-root-relative, prefixed
+				// @src_<key>//: by the emitter — package-location-independent.
+				keepTextual = append(keepTextual, h)
+				continue
+			}
+			if plan.deepestPkg(h) == dir {
+				rel, _ := relUnder(dir, h)
+				keepTextual = append(keepTextual, rel)
+				continue
+			}
+			dh := plan.deepestPkg(h)
+			if file, _ := relUnder(dh, h); file != "" {
+				keepTextual = append(keepTextual, crossPkgFileLabel(plan, dh, file))
+				if exportsByDir[dh] == nil {
+					exportsByDir[dh] = map[string]struct{}{}
+				}
+				exportsByDir[dh][file] = struct{}{}
+			}
+		}
+		rt.TextualHdrs = keepTextual
+	}
+
 	// Re-relativize srcs to the declaring dir in the local regime, routing
 	// any entry that belongs to a deeper/other package to a cross-package
 	// label (files) or dropping it (a bare packaged directory).
