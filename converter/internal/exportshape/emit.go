@@ -164,8 +164,11 @@ func EmitDeclarative(in EmitInputs) []ir.Target {
 				WriteFileOut:     f,
 				WriteFileContent: renderBundleFile(in, f),
 				WriteFileNewline: "unix",
-				Visibility:       []string{"//visibility:public"},
-				Tags:             []string{"cmake-codegen-install-export-config"},
+				// Private: an impl detail surfaced via the public cmake_config_bundle
+				// filegroup, which references these producers same-package (the bundle
+				// files land in the install-export targets' own package).
+				Visibility: []string{"//visibility:private"},
+				Tags:       []string{"cmake-codegen-install-export-config"},
 			})
 			bundleSrcs = append(bundleSrcs, ":"+gen)
 		}
