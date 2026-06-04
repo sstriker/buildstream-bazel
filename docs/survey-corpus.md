@@ -212,6 +212,40 @@ pull external test deps (e.g. fmt's tests need GoogleTest) that standalone
 conversion can't resolve; scoping to the library targets is a possible
 refinement if that noise outweighs the signal.
 
+### Build-lens status (per project)
+
+What the build lens has surfaced as the corpus is driven through it — recorded
+the way the regression table records findings + the fixing PR. The `Build
+lens` token is the survey's own `build` column (`ok` / `FAIL` / `skip(<why>)`);
+queued follow-ups live in `ROADMAP.md`, not here.
+
+| Project | Build lens | What it surfaced / fix |
+| --- | --- | --- |
+| **fmt** | `ok` | Green clean control (textual-source-include support + cross-package header / PRIVATE-include wiring). |
+| **libxml2** | `ok` | Green (subdir `configure_file` output on the package-root include path; surveyed in project-B shape). |
+| **brotli** | `ok` | Green. |
+| **glm** | library builds | `include_prefix` for element-root-included headers under split — the compiled `glm` lib re-homes to `//…/glm` and gets `include_prefix = "glm"`, so its whole `<glm/…>` surface resolves. `test-*` targets still fail under the `-Werror` + toolchain-`-Wall` interaction below (out of scope). |
+| **abseil** | compiles deep | `alias` `actual` relabeled cross-package under split + `;`-joined `target_link_libraries` deps split (#424): from failing at the first target to compiling hundreds of TUs. Further findings (vendored cctz `include/` root; standalone external test deps `GTest::gmock` / testing-off `absl::test_instance_tracker`) in `ROADMAP.md`. |
+| **googletest** | partial | `alias` `actual` relabel (#424) clears the `GTest::*` aliases; the `cmake_config_bundle` → install(EXPORT)-generated `GTestTargets.cmake` finding is in `ROADMAP.md`. |
+| **zstd** | `FAIL` | Multi-config custom-command binary copy (`unzstd`/`zstdcat` ← `Debug/zstd`); in `ROADMAP.md`. |
+| **glog** | `skip(rej)` | Surveys with rejections, so the lens skips it (not build-lens-eligible until they lift). |
+| protobuf, eigen, curl, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
+
+**`-Werror` projects vs. the toolchain's `-Wall`.** A project that builds clean
+under its *own* cmake can still `FAIL` the build lens when it sets `-Werror`
+and Bazel's default C/C++ toolchain adds `-Wall` that the project's cmake build
+omits — the union promotes a latent warning to an error (glm's
+`-Wclass-memaccess` on its own headers; glm's `test/CMakeLists.txt` sets
+`-Werror` but deliberately *not* `-Wall`). This is toolchain-flag strictness,
+not a conversion fault, and is out of scope for the converter.
+
+**Iterating fast on one project.** The build half of `run-survey.sh` does a
+fresh source copy + a cold bazel output root every run. When iterating on a
+converter fix against a single project, keep a *persistent* workspace + bazel
+`--output_user_root` and only re-convert + incrementally rebuild: after each
+`make converter` the loop is a few seconds (warm cache) instead of a cold
+fetch + full analysis. Drop the workspace when done (the bazel cache is large).
+
 ## The corpus
 
 The corpus is curated for **complementary high-signal coverage**, not

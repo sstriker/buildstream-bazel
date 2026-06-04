@@ -1015,6 +1015,26 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Build lens: `include_prefix` for element-root-included headers under
+  split.** A target whose headers are include-rooted at the element root
+  (cmake's `target_include_directories(t ${CMAKE_SOURCE_DIR})`) loses that
+  root-relative prefix when `--split-packages` re-homes it into a subpackage
+  (`glm/foo.hpp` → package-local `foo.hpp`), breaking `#include <glm/foo.hpp>`.
+  lower can't carry the root entry as `includes = [""]` (Bazel rejects the
+  empty root), so a new `ir.Target.RootInclude` flag records the dropped
+  signal (set on both the codemodel `walkPkgRootForHdrs` path and the trace
+  `rootWalkByTarget` path), and split's `rewriteTarget` translates it to
+  `include_prefix = <package dir>` when the target re-homes below the root —
+  the self-contained shape gazelle_cc emits (no parent-package header lib, no
+  cross-package up-reference). Gated to the local regime with all-package-local
+  headers (the SourceKey regime keeps hdrs element-root-relative — already
+  prefixed; a cross-package hdr label would be wrongly prefixed too). Surfaced
+  by the glm build lens: the compiled `glm` lib now builds its full `<glm/…>`
+  header surface. glm's `test-*` targets still fail the lens under the
+  project's own `-Werror` combined with Bazel's default-toolchain `-Wall`
+  (glm's cmake build omits `-Wall`) — toolchain-flag strictness, not a
+  conversion fault (see `docs/survey-corpus.md`).
+
 - **Build-lens corpus widened past the fmt/libxml2/brotli trio — four
   split-mode build bugs fixed.** Pointing the 4th (`bazel build //...`) lens
   at the clean-surveying corpus members (abseil, googletest, glm — all
@@ -1047,15 +1067,15 @@ transition cleanly.
     its basename (`converter/internal/lower/standalone_genrules.go`).
   With these, abseil goes from failing at the first target to compiling
   hundreds of TUs deep, and glm/googletest clear their first-order failures.
-  Remaining build-lens targets (surfaced, not yet fixed): **prefix-include
-  header roots under split** (glm's `glm/gtx/…`, abseil's vendored cctz
-  `cctz/…` — the include root is an *ancestor* of the target's own package);
-  googletest's `cmake_config_bundle` referencing an install(EXPORT)-generated
-  `GTestTargets.cmake`; abseil's standalone external test deps (`GTest::gmock`,
-  the testing-off `absl::test_instance_tracker`) — the documented
-  standalone-survey limitation, arguing for scoping the build lens to
-  library (non-test) targets; zstd's multi-config custom-command binary copy
-  (`Debug/zstd`).
+  Remaining build-lens targets (surfaced, not yet fixed): abseil's vendored
+  cctz `include/` root (a *nested* include root deeper than the consuming
+  target's package — distinct from the element-root case the `include_prefix`
+  entry above fixes for glm); googletest's `cmake_config_bundle` referencing
+  an install(EXPORT)-generated `GTestTargets.cmake`; abseil's standalone
+  external test deps (`GTest::gmock`, the testing-off
+  `absl::test_instance_tracker`) — the documented standalone-survey
+  limitation, arguing for scoping the build lens to library (non-test)
+  targets; zstd's multi-config custom-command binary copy (`Debug/zstd`).
 
 - **Toolkit-aware feature lift — gates on the toolchain's real vocabulary.**
   Two steps. First, `toolchainfeature.RewriteFeature` sources its
