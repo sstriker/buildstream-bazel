@@ -661,12 +661,22 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			keepHdrs = append(keepHdrs, rel)
 			continue
 		}
-		// Cross-package header with no owning header lib isn't expressible
-		// as a local hdr (listing it would cross a package boundary and
-		// fail to load); drop it. Rare — a discoverHeaders artifact whose
-		// dir became its own package without being an include root. The
-		// header still reaches consumers via the owning package's own rule
-		// and the layout-independent install path.
+		// Cross-package header with no owning header lib: reference it by a
+		// cross-package label + raise an exports_files() need in the owning
+		// package — the same treatment cross-package source FILEs get below.
+		// (Dropping it, as we used to, loses headers a target genuinely
+		// needs: e.g. a test that pulls a sibling .cc cross-package whose
+		// quote-include resolves to that same package's sibling .h — the
+		// source-dir siblings #413 stages.) A bare packaged directory
+		// (file == "") isn't a file label, so that case still drops.
+		dh := plan.deepestPkg(h)
+		if file, _ := relUnder(dh, h); file != "" {
+			keepHdrs = append(keepHdrs, crossPkgFileLabel(plan, dh, file))
+			if exportsByDir[dh] == nil {
+				exportsByDir[dh] = map[string]struct{}{}
+			}
+			exportsByDir[dh][file] = struct{}{}
+		}
 	}
 	rt.Hdrs = keepHdrs
 
