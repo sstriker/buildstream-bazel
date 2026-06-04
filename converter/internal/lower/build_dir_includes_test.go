@@ -37,3 +37,30 @@ func TestAddBuildDirIncludes(t *testing.T) {
 		t.Errorf("root includes should be skipped; got %v", tgt3.Includes)
 	}
 }
+
+// TestNeedsPkgRootInclude covers the predicate behind the
+// subdir-output-under-root case: a configure_file output in a SUBDIR under
+// the ROOT ("") build-dir include is consumed via that subdir path and so
+// needs the package root (".") on -I (addBuildDirIncludes skips ""); a
+// root-LEVEL output uses a relative include and needs none; and a non-root
+// build-dir include is handled by addBuildDirIncludes itself. Reproduces
+// libxml2's `<libxml/xmlversion.h>` (configure_file output libxml/xmlversion.h
+// under the root build-dir) vs a plain root-level config.h.
+func TestNeedsPkgRootInclude(t *testing.T) {
+	cases := []struct {
+		inc, relOutput string
+		want           bool
+	}{
+		{"", "libxml/xmlversion.h", true},  // subdir output under root build-dir
+		{".", "libxml/xmlversion.h", true}, // "." treated as root too
+		{"", "config.h", false},            // root-LEVEL output → relative include
+		{".", "config.h", false},
+		{"generated-includes", "catch2/catch_user_config.hpp", false}, // non-root inc: addBuildDirIncludes handles it
+		{"", "", false},                                               // degenerate
+	}
+	for _, c := range cases {
+		if got := needsPkgRootInclude(c.inc, c.relOutput); got != c.want {
+			t.Errorf("needsPkgRootInclude(%q, %q) = %v, want %v", c.inc, c.relOutput, got, c.want)
+		}
+	}
+}
