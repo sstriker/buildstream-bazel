@@ -97,6 +97,59 @@ func TestNonSystemPrivateInclude_RoutesToI(t *testing.T) {
 	}
 }
 
+// TestPrivateRootInclude_SetsRootInclude pins the abseil spinlock_wait/cctz fix:
+// a PRIVATE target_include_directories at the ELEMENT ROOT (rel == "") must set
+// RootInclude (→ include_prefix=<package dir> under split, so the target's own
+// element-root-relative `#include "absl/..."` resolves) rather than fall into
+// the private-include copt branch and emit a bogus bare `-I` (reanchor("")=="")
+// while leaving RootInclude false.
+func TestPrivateRootInclude_SetsRootInclude(t *testing.T) {
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "h.h"), []byte("#pragma once\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.c"), []byte("#include \"h.h\"\nint f(){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: src},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "foo", Id: "foo::@a"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"foo::@a": {
+				Name:    "foo",
+				Type:    "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{{Path: "a.c", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language:      "C",
+					SourceIndexes: []int{0},
+					Includes:      []fileapi.CompileInclude{{Path: src}}, // the element root
+				}},
+			},
+		},
+	}
+	// Scope the root include PRIVATE (abseil's spinlock_wait/cctz shape).
+	trace := []byte(`{"args":["foo","PRIVATE","` + src + `"],"cmd":"target_include_directories","file":"` + filepath.Join(src, "CMakeLists.txt") + `","line":3}` + "\n")
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src, TraceRaw: trace})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	got := pkg.Targets[0]
+	if !got.RootInclude {
+		t.Errorf("PRIVATE root include should set RootInclude=true; got false (copts=%v)", got.Copts)
+	}
+	if containsStr(got.Copts, "-I") {
+		t.Errorf("PRIVATE root include must not emit a bogus bare -I copt; got %v", got.Copts)
+	}
+	if containsStr(got.Includes, "") {
+		t.Errorf("root include must be dropped from includes (Bazel rejects [\"\"]); got %v", got.Includes)
+	}
+}
+
 func containsStr(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {
