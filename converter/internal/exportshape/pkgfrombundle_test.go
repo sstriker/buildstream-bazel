@@ -11,8 +11,10 @@ func TestPkgFromBundle(t *testing.T) {
 		{"lib/cmake/GTest", "GTestTargets", "GTest"},   // canonical: <Pkg> is the last component
 		{"share/MyPkg/cmake", "MyPkgTargets", "MyPkg"}, // share/<Pkg>/cmake
 		{"lib/cmake/absl", "absl", "absl"},             // <Pkg> present; export name has no "Targets" suffix
+		{"lib64/cmake/Foo", "FooTargets", "Foo"},       // multilib lib64 with <Pkg>
 		{"lib/cmake", "GTestTargets", "GTest"},         // no <Pkg> segment → export-name fallback
 		{"share/cmake", "FooTargets", "Foo"},           // no <Pkg> segment → export-name fallback
+		{"lib64/cmake", "BarTargets", "Bar"},           // canonical multilib, no <Pkg> → fallback
 	}
 	for _, tc := range cases {
 		if got := pkgFromBundle(tc.dest, tc.exportName); got != tc.want {
