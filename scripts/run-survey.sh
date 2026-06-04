@@ -168,8 +168,21 @@ try_bazel_build() {
     _bb_name="$1"; _bb_src="$2"; _bb_po="$3"; _bb_bt="$4"; _bb_sp="$5"
     [ -n "$bzl_bin" ] || { echo "skip(no-bazel)"; return; }
     _bb_ws="$_bb_po/build-ws"
-    rm -rf "$_bb_ws"; mkdir -p "$_bb_ws"
-    if ! cp -a "$_bb_src/." "$_bb_ws/" 2>"$_bb_po/build.log"; then
+    # Convert in the FAITHFUL project-B shape: the element lands under
+    # elements/<name>/ (a real sub-package), NOT at the workspace root. This
+    # mirrors how cmd/stage-b places a converted element in project B, and it
+    # is load-bearing for correctness — a target at the workspace root can't
+    # carry `includes = ["."]` (Bazel: "'.' resolves to the workspace root"),
+    # so a project whose cmake puts a generated header on the build-dir-root
+    # include path (libxml2's `$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>`
+    # → `<libxml/xmlversion.h>`) could never go green when surveyed at "//".
+    # Under elements/<name>/ that same include resolves to a valid sub-dir.
+    # `--bazel-package-path` tells the converter the landing package so its
+    # labels (and the `# gazelle:cc_search` directives) frame correctly.
+    _bb_pkg="elements/$_bb_name"
+    _bb_elt="$_bb_ws/$_bb_pkg"
+    rm -rf "$_bb_ws"; mkdir -p "$_bb_elt"
+    if ! cp -a "$_bb_src/." "$_bb_elt/" 2>"$_bb_po/build.log"; then
         echo "skip(copy)"; return
     fi
     # Strip any Bazel files the project SHIPS (fmt's support/bazel/, etc.): the
@@ -179,15 +192,18 @@ try_bazel_build() {
     # testing just our output. NOT BUILD.bzl — that's a Starlark library, a
     # legitimate source file, not a package marker. `|| true` so a stray find
     # error (perms) can't abort the whole survey under `set -e`.
-    find "$_bb_ws" -type f \( -name BUILD.bazel -o -name BUILD \
+    find "$_bb_elt" -type f \( -name BUILD.bazel -o -name BUILD \
         -o -name WORKSPACE -o -name WORKSPACE.bazel -o -name MODULE.bazel -o -name 'MODULE.bazel.lock' \
         -o -name .bazelrc -o -name .bazelversion \) -delete 2>/dev/null || true
-    # Convert into the overlay: per-package BUILDs land alongside the sources,
-    # the //config package under config/, both self-contained.
+    # Convert into the overlay: per-package BUILDs land alongside the sources
+    # under elements/<name>/, the shared //config package stays at the
+    # workspace root (the multi-config select() arms reference //config:<name>
+    # absolutely, independent of the element's package path).
     if ! run_converter \
         --source-root "$_bb_src" \
         $_bb_bt $_bb_sp \
-        --out-build "$_bb_ws/BUILD.bazel" \
+        --bazel-package-path "$_bb_pkg" \
+        --out-build "$_bb_elt/BUILD.bazel" \
         --out-config-settings "$_bb_ws/config/BUILD.bazel" \
         >> "$_bb_po/build.log" 2>&1
     then
