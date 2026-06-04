@@ -251,6 +251,19 @@ root label:
 }
 ```
 
+**`exports.json` is a transition-only artifact, not a build input.** It
+is *not* loaded by Bazel and not referenced by any `BUILD.bazel` — the
+emitted rules already carry their resolved labels inline. Its only
+consumer is `convert-element-cmake` itself when converting a *dependent*
+element: the dependent's run takes this file via `--exports-in` so its
+`find_package(<Pkg> CONFIG)` resolves to the producer's real Bazel
+labels. Once the whole dependency graph has been converted and the
+transition is complete — downstream is plain Bazel, nothing re-runs the
+converter — `exports.json` serves no purpose and **can be deleted**.
+(The same goes for the other converter-time sidecars such as
+`read_paths.json`; the checked-in `BUILD.bazel` tree is the durable
+output.)
+
 ## For contrast: the single-`BUILD` (default) emit
 
 `--split-packages` is opt-in. With it **off** (the default), the same
