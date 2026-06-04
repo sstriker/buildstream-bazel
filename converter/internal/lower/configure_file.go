@@ -23,6 +23,14 @@ import (
 type configureFileOut struct {
 	AbsOutput string // recording-machine absolute path: ${cmakeBuild}/<rel>
 	RelOutput string // <rel>: build-dir-relative path; package-relative in the BUILD file
+	// ExportHeader marks a generate_export_header output (template
+	// exportheader.cmake.in). cmake generates it into CMAKE_CURRENT_BINARY_DIR
+	// and puts that dir on the target's include path, so consumers #include the
+	// header by BARE name (`#include "<name>_export.h"`). The consumer
+	// attribution therefore must add the output's OWN directory to the target's
+	// includes — the generic hosting-include match can pick a shallower parent
+	// dir, which leaves the bare include unresolved.
+	ExportHeader bool
 }
 
 // recoverConfigureFiles walks the trace's configure_file events
@@ -111,6 +119,9 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		out = append(out, configureFileOut{
 			AbsOutput: call.Output,
 			RelOutput: rel,
+			// Normalize backslashes so a Windows-separator trace still matches
+			// (mirrors shadow.isGenerateExportHeaderTemplate).
+			ExportHeader: strings.HasSuffix(strings.ReplaceAll(call.Input, "\\", "/"), "/exportheader.cmake.in"),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })

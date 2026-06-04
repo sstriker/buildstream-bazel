@@ -1380,6 +1380,35 @@ transition cleanly.
   recognizes is one fewer runner-served edge. See
   `docs/research/codegen-idiom-coverage.md`.
 
+- **`generate_export_header` recovery + split-packages include wiring —
+  shipped (real VTK leaf builds green).** Found by the empirical VTK leaf-build
+  bringup. CMake's `GenerateExportHeader` module (the near-universal
+  symbol-visibility idiom — nearly every cmake C++ library uses it) calls
+  `configure_file()` from cmake's OWN module dir against the fixed template
+  `exportheader.cmake.in`, producing `<name>_export.h`. Two gaps closed:
+  (1) **Recovery** — `classifyConfigureFile` (`internal/shadow`) dropped the
+  call because its call-SITE (`GenerateExportHeader.cmake`) is outside the
+  project tree; it now recognizes the `exportheader.cmake.in` template basename
+  and recovers the (baked) header, while every other out-of-tree
+  configure_file (try_compile scratch, package-config helpers) stays filtered —
+  the same recognize-a-known-idiom move as the cc_embed encoder list.
+  (2) **Include wiring** — the generated header is `#include`d by BARE name, so
+  cmake's `CMAKE_CURRENT_BINARY_DIR` (the header's own dir) must be on the
+  include path. The configure_file consumer attribution
+  (`lower.go`) now adds an `ExportHeader` output's own directory to the
+  consuming target's build-dir includes (the generic hosting-include prefix
+  match could settle on a shallower parent dir). Under `--split-packages` that
+  directory becomes its own include-root header lib (`includes=["."]`) carrying
+  the export header, so the bare include resolves. Proven end-to-end: VTK's
+  `vtkdoubleconversion` leaf (`bazel build …:doubleconversion` → `.a` + `.so`)
+  and the synthetic `export-header` fixture both build green with no cmake and
+  no hand-edits. Render+build gate `scripts/meta-cmake-export-header.sh`
+  (in `RENDER_GATES`). *Known follow-up:* a generated build-dir header listed by
+  the codemodel with an ABSOLUTE temp-build path leaks into single-BUILD `hdrs`
+  (invalid Bazel label); `--split-packages` re-relativizes around it (which is
+  why the leaf builds), but single-BUILD monolithic VTK still trips on it —
+  separate from this fix.
+
 - **`cmake -E create_symlink` op support.** Adds the
   `create_symlink` op to the cmake -E lift's allowlist
   (alongside `copy` / `copy_if_different` / `touch` /
