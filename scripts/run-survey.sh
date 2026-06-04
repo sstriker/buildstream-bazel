@@ -29,8 +29,8 @@
 # piece write-a renders into project B that the bare converter otherwise
 # leaves to the orchestrator. So the lens builds exactly project B's wiring,
 # self-contained: it overlays the converted BUILD tree on a copy of the
-# source, synthesizes a minimal MODULE.bazel, and builds //.... See
-# docs/survey-corpus.md "The build lens".
+# source, synthesizes a minimal MODULE.bazel, and builds the //... wildcard.
+# See docs/survey-corpus.md "The build lens".
 #
 # Usage:
 #   scripts/run-survey.sh [--out-dir <dir>] [name=<src-root> ...]
@@ -86,7 +86,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --out-dir) out_dir="$2"; shift 2 ;;
         -h|--help)
-            sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+            awk 'NR>=2 && /^#/{sub(/^# ?/, ""); print; next} NR>=2{exit}' "$0"
             exit 0 ;;
         *=*) projects="$projects $1"; shift ;;
         *) echo "run-survey.sh: unrecognized arg '$1'" >&2; exit 2 ;;
@@ -282,13 +282,22 @@ for entry in $projects; do
     idi_n=$( [ -f "$idiom" ] && grep -o '"Code"' "$idiom" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     cov_n=$( [ -f "$cov" ]   && grep -o '"Code"' "$cov"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
 
-    # 4th lens: `bazel build //...` of the faithful (project-B-shaped) output.
-    # Only when this project is selected by SURVEY_BAZEL_BUILD and the
-    # diagnostic convert above didn't hard-fail (configure must work first).
+    # 4th lens: `bazel build //...` of the faithful (project-B-shaped) output,
+    # only when this project is selected by SURVEY_BAZEL_BUILD. Short-circuit
+    # the cases that can't (or shouldn't) build before paying for a clean
+    # convert: a hard-failed diagnostic convert (configure must work first),
+    # and a project that surveys with rejections (the lens contract is to skip
+    # refusals — the clean convert would just abort on the first one).
     build_status="-"
-    if [ "$status" = "ok" ] && build_lens_for "$name"; then
-        build_status="$(try_bazel_build "$name" "$src" "$proj_out" "$bt_args" "$sp_args")"
-        [ "$build_status" = "FAIL" ] && status="bazel build //... FAILED — see $proj_out/build.log"
+    if build_lens_for "$name"; then
+        if [ "$status" != "ok" ]; then
+            build_status="skip(convert)"
+        elif [ -n "$rej_n" ] && [ "$rej_n" != "0" ] && [ "$rej_n" != "-" ]; then
+            build_status="skip(rej)"
+        else
+            build_status="$(try_bazel_build "$name" "$src" "$proj_out" "$bt_args" "$sp_args")"
+            [ "$build_status" = "FAIL" ] && status="bazel build //... FAILED — see $proj_out/build.log"
+        fi
     fi
 
     printf '%-14s %10s %10s %10s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "$build_status" "$status" | tee -a "$summary"

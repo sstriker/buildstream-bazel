@@ -194,9 +194,16 @@ overlays the converted BUILD tree onto a copy of the source (stripping any
 Bazel files the project *ships*, so the lens tests our output, not theirs),
 synthesizes a minimal `MODULE.bazel` (rules_cc / rules_pkg / bazel_skylib /
 local `rules_buildstream_bazel`), and runs `bazel build //...`. Needs
-bazel/bazelisk on `$PATH`; absent → `skip(no-bazel)`. A project with refusals
-can't convert cleanly → `skip(convert)` (you can't build what won't convert).
+bazel/bazelisk on `$PATH`; absent → `skip(no-bazel)`.
 `SURVEY_BAZEL_BUILD_TIMEOUT` (default 900s) bounds each build.
+
+The `build` column tokens: `ok` / `FAIL` (built or not), or a `skip(<why>)`
+that didn't attempt the build — `skip(no-bazel)` (no bazel on `$PATH`),
+`skip(rej)` (the project surveys with rejections; the lens contract is to skip
+refusals rather than convert a tree that won't build), `skip(convert)` (the
+clean convert itself failed), and `skip(copy)` (couldn't copy the source tree
+into the build workspace). The rejection short-circuit also avoids paying for a
+second convert on a project the diagnostic pass already flagged.
 
 A `FAIL` is the start of a triage, exactly like a rejection: read
 `<out>/<project>/build.log` for the first compile/load error. The lens is
