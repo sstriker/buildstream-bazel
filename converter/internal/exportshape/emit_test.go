@@ -214,6 +214,40 @@ func TestEmitDeclarative_BundleFilegroup(t *testing.T) {
 	}
 }
 
+func TestEmitDeclarative_NamespaceFromShareLayout_AndModule(t *testing.T) {
+	in := exportshape.EmitInputs{
+		Installer: fileapi.DirectoryInstaller{
+			Type:          "export",
+			Destination:   "share/MyPkg/cmake", // the share/<Pkg>/cmake layout
+			ExportName:    "MyPkgTargets",
+			ExportTargets: []fileapi.ExportTarget{{Id: "mod::@", Name: "mod"}},
+		},
+		Targets: map[string]fileapi.Target{
+			"mod::@": {
+				Name: "mod", Type: "MODULE_LIBRARY", NameOnDisk: "libmod.so",
+				Install: &fileapi.TargetInstall{Destinations: []fileapi.TargetInstallDest{{Path: "lib"}}},
+			},
+		},
+		InstallFiles:           []string{"lib/libmod.so", "share/MyPkg/cmake/MyPkgTargets.cmake"},
+		CMakeConfigBundleFiles: []string{"share/MyPkg/cmake/MyPkgTargets.cmake"},
+		EmitConfig:             true,
+	}
+	var body string
+	for _, tgt := range exportshape.EmitDeclarative(in) {
+		if tgt.Kind == ir.KindWriteFile {
+			body = strings.Join(tgt.WriteFileContent, "\n")
+		}
+	}
+	// Namespace is derived as MyPkg even for share/<Pkg>/cmake (NOT "cmake"), and
+	// a MODULE_LIBRARY renders as MODULE IMPORTED (not flattened to SHARED).
+	if !strings.Contains(body, "add_library(MyPkg::mod MODULE IMPORTED)") {
+		t.Errorf("want add_library(MyPkg::mod MODULE IMPORTED); got:\n%s", body)
+	}
+	if strings.Contains(body, "cmake::") {
+		t.Errorf("namespace should be MyPkg, not cmake (share/<Pkg>/cmake layout):\n%s", body)
+	}
+}
+
 func TestEmitDeclarative_SkipsUnresolvableArtifact(t *testing.T) {
 	// libfoo.a not in InstallFiles — the artifact-resolve fails
 	// silently and the cc_import is skipped (no emit). Matches
