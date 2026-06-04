@@ -1251,6 +1251,19 @@ func isCMakeInternalCmd(cmd string) bool {
 		strings.Contains(c, "-D Continuous") {
 		return true
 	}
+	// Scripted-dashboard form (newer cmake / brotli): instead of
+	// `ctest -D <Dashboard>`, the auto-generated target runs
+	// `ctest -DMODEL=<Dashboard> [-DACTIONS=...] -S CMakeFiles/CTestScript.cmake`.
+	// The `-DMODEL=` here is a ctest cache var, not the `-D <Dashboard>`
+	// arg, so the classic match above misses it. The `-DMODEL=Experimental`
+	// / `Nightly` / `Continuous` substring is the stable marker (it prefixes
+	// the *MemoryCheck / *Coverage variants too) and only appears in cmake's
+	// CTestTargets-generated dashboard cmds.
+	if strings.Contains(c, "-DMODEL=Experimental") ||
+		strings.Contains(c, "-DMODEL=Nightly") ||
+		strings.Contains(c, "-DMODEL=Continuous") {
+		return true
+	}
 	// `cmake -E echo No interactive CMake dialog available.` IDE
 	// stubs that the `.util`-suffix filter misses when the output
 	// lands under a nested CMakeFiles/ subdir.
