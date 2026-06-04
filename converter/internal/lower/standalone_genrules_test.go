@@ -76,6 +76,15 @@ func TestCmakeInternalCmdKind(t *testing.T) {
 		{`/usr/bin/ctest -C Debug -DMODEL=Experimental -DACTIONS=Start -S CMakeFiles/CTestScript.cmake`, "dashboard"},
 		{`ctest -D Nightly`, "dashboard"},
 		{`cmake -P cmake_install.cmake`, "install"},
+		{`cd /tmp/b && /usr/bin/cmake -P cmake_uninstall.cmake`, "uninstall"},
+		{`cmake -P cmake_uninstall.cmake`, "uninstall"},
+		// Versioned / non-standard install path (the web-session cmake pin)
+		// must still match — normalization keys on the basename, not a fixed
+		// /usr/bin prefix.
+		{`cd /tmp/b && /usr/local/opt/cmake-4.3.3/bin/cmake -P cmake_uninstall.cmake`, "uninstall"},
+		{`/usr/local/opt/cmake-4.3.3/bin/cmake -P cmake_install.cmake`, "install"},
+		// A user's own -P script is NOT swept up (keys on the conventional name).
+		{`cmake -P myscript.cmake`, ""},
 		{`cmake --regenerate-during-build -S/src -B/build`, "regen"},
 		{`cpack --config CPackConfig.cmake`, "cpack"},
 		{`echo No interactive CMake dialog available.`, "ide-stub"},

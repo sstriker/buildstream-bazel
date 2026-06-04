@@ -1015,6 +1015,48 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Build-lens corpus widened past the fmt/libxml2/brotli trio — four
+  split-mode build bugs fixed.** Pointing the 4th (`bazel build //...`) lens
+  at the clean-surveying corpus members (abseil, googletest, glm — all
+  `0/0/0` on the convertibility lenses) surfaced end-to-end build bugs those
+  lenses structurally can't see, each now fixed + unit-tested:
+  - **`alias` `actual` not relabeled under `--split-packages`.** An alias
+    lands in its declaring package (abseil's `absl::*` / googletest's
+    `GTest::*` helper-macro aliases sit in the root element package) but the
+    target it points at often splits into a subpackage; `rewriteTarget` left
+    the bare `:x`, which Bazel reads as a missing same-package input file. It
+    now relabels `AliasActual` through the split plan like any dep
+    (`converter/emit/bazel/split.go`).
+  - **`;`-joined dep lists not split.** When a project passes a quoted deps
+    *variable* to `target_link_libraries` (abseil's `absl_cc_library` expands
+    `"${..._DEPS}"` to `absl::config;absl::int128;…` as one arg), the trace
+    INTERFACE/PUBLIC routing emitted one bogus `:absl_config;absl_int128;…`
+    label. It now splits on cmake's `;` list separator
+    (`converter/internal/lower/interface_library.go`).
+  - **`uninstall` maintenance target now filtered.** The CMake-FAQ
+    `add_custom_target(uninstall COMMAND cmake -P cmake_uninstall.cmake)`
+    recipe (glm and many projects copy it verbatim) is install's mirror —
+    build-dir bookkeeping with no Bazel analogue — and now joins install /
+    cpack / dashboard in the `cmakeInternalCmdKind` filter.
+  - **cmake-internal command filter made path-independent.** The filter's
+    leading-token normalization only stripped `/usr/bin` etc., so the
+    web-session cmake pin (`/usr/local/opt/cmake-4.3.3/bin/cmake`) left
+    *every* `cmake …` match (install / uninstall / regen) silently unmatched
+    — install/cpack genrules would leak into the build in any environment
+    where cmake isn't at a standard path. It now reduces the leading token to
+    its basename (`converter/internal/lower/standalone_genrules.go`).
+  With these, abseil goes from failing at the first target to compiling
+  hundreds of TUs deep, and glm/googletest clear their first-order failures.
+  Remaining build-lens targets (surfaced, not yet fixed): **prefix-include
+  header roots under split** (glm's `glm/gtx/…`, abseil's vendored cctz
+  `cctz/…` — the include root is an *ancestor* of the target's own package);
+  googletest's `cmake_config_bundle` referencing an install(EXPORT)-generated
+  `GTestTargets.cmake`; abseil's standalone external test deps (`GTest::gmock`,
+  the testing-off `absl::test_instance_tracker`) — the documented
+  standalone-survey limitation, arguing for scoping the build lens to
+  library (non-test) targets; zstd's multi-config custom-command binary copy
+  (`Debug/zstd`).
+
 - **Toolkit-aware feature lift — gates on the toolchain's real vocabulary.**
   Two steps. First, `toolchainfeature.RewriteFeature` sources its
   backed-feature set from the generated toolchain's declared vocabulary

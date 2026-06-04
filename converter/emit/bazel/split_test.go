@@ -492,3 +492,31 @@ func TestEmit_Split_TextualHdrsRelabeled(t *testing.T) {
 		t.Errorf("src pkg missing exports_files([\"os.cc\"])\n%s", srcPkg)
 	}
 }
+
+// TestEmit_Split_AliasActualRelabeled: an alias whose `actual` target splits
+// into a subpackage must have its `actual` relabeled to the cross-package
+// label. abseil's absl::* / googletest's GTest::* aliases land in the root
+// element package (the helper macro declares them there) but point at targets
+// that split into subdirs; a bare ":x" there is read by Bazel as a missing
+// same-package input file (the abseil/googletest build-lens FAIL).
+func TestEmit_Split_AliasActualRelabeled(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "absl_foo", Kind: ir.KindAlias, AliasActual: ":foo"},
+			{Name: "foo", Kind: ir.KindCCLibrary, Srcs: []string{"absl/foo/foo.cc"}},
+		},
+		SubPackages: map[string]string{"absl_foo": "", "foo": "absl/foo"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	alias := ruleBlockAfterName(string(tree[""]), "absl_foo")
+	if !contains(alias, `actual = "//elements/x/absl/foo:foo"`) {
+		t.Errorf("alias actual not relabeled to cross-package label:\n%s", alias)
+	}
+	if contains(alias, `actual = ":foo"`) {
+		t.Errorf("alias still carries the dangling same-package actual:\n%s", alias)
+	}
+}

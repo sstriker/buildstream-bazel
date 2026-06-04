@@ -44,6 +44,36 @@ func TestLowerInterfaceLibraries_RoutesInterfaceLinkLibsAsDeps(t *testing.T) {
 	}
 }
 
+// TestLowerInterfaceLibraries_SplitsSemicolonJoinedLibs: a single Libs entry
+// that is itself a `;`-joined cmake list — abseil's absl_cc_library expands a
+// quoted "${..._DEPS}" variable into one target_link_libraries arg — must
+// split into one dep per lib, not a single bogus
+// `:absl_config;absl_int128;…` label Bazel can't resolve (the abseil
+// random_internal_pcg_engine build-lens failure).
+func TestLowerInterfaceLibraries_SplitsSemicolonJoinedLibs(t *testing.T) {
+	decoded := &shadow.Decoded{
+		AddLibraries: []shadow.AddLibraryCall{
+			{Name: "pcg_engine", Type: "INTERFACE"},
+		},
+		Links: []shadow.TargetLinkCall{
+			{
+				Target: "pcg_engine",
+				Groups: []shadow.TargetLinkGroup{
+					{Visibility: "INTERFACE", Libs: []string{"absl::config;absl::int128;absl::type_traits"}},
+				},
+			},
+		},
+	}
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	if len(got) != 1 {
+		t.Fatalf("want 1 interface lib; got %d", len(got))
+	}
+	want := []string{":absl_config", ":absl_int128", ":absl_type_traits"}
+	if !reflect.DeepEqual(got[0].Deps, want) {
+		t.Errorf("deps = %v; want %v (the ;-list must split)", got[0].Deps, want)
+	}
+}
+
 func TestLowerInterfaceLibraries_NamespacedLibWithoutRecordedAliasSanitizes(t *testing.T) {
 	// Consumer references `Pkg::Foo` but no ALIAS in trace —
 	// sanitize to :Pkg_Foo (the alias-target lift will emit the
