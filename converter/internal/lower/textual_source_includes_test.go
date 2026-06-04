@@ -122,8 +122,8 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 	}
 	test := findTarget(pkg, "posix-mock-test")
 	lib := findTarget(pkg, "posix-mock-test_textual_srcs")
-	if lib == nil {
-		t.Fatalf("synth lib posix-mock-test_textual_srcs not found: %+v", pkg.Targets)
+	if test == nil || lib == nil {
+		t.Fatalf("expected posix-mock-test + synth lib posix-mock-test_textual_srcs; got %+v", pkg.Targets)
 	}
 	if lib.Kind != ir.KindCCLibrary {
 		t.Errorf("synth lib Kind = %v, want cc_library", lib.Kind)
