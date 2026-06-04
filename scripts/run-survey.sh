@@ -199,10 +199,17 @@ try_bazel_build() {
     # under elements/<name>/, the shared //config package stays at the
     # workspace root (the multi-config select() arms reference //config:<name>
     # absolutely, independent of the element's package path).
+    # --emit-install-export-config: the build lens is the one place that opts in
+    # to generating the install(EXPORT) config-mode bundle (the real
+    # <Pkg>Targets.cmake + cmake_config_bundle filegroup). Default converts omit
+    # it — the orchestrated graph wires its own synthprefix-synthesized bundle —
+    # but the lens generates the real file so `bazel build //...` exercises the
+    # bundle end-to-end rather than choking on a filegroup over not-on-disk files.
     if ! run_converter \
         --source-root "$_bb_src" \
         $_bb_bt $_bb_sp \
         --bazel-package-path "$_bb_pkg" \
+        --emit-install-export-config \
         --out-build "$_bb_elt/BUILD.bazel" \
         --out-config-settings "$_bb_ws/config/BUILD.bazel" \
         >> "$_bb_po/build.log" 2>&1

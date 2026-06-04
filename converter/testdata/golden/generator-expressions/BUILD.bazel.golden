@@ -20,11 +20,6 @@ cc_library(
     linkstatic = True,  # keep
 )
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/genex/genexTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "genex_import",
     static_library = "lib/libgenex.a",

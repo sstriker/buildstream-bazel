@@ -292,10 +292,12 @@ func TestBuildInputs_FeedsEmitDeclarative(t *testing.T) {
 		},
 	}
 	in := exportshape.BuildInputs(inst, targets)
+	in.EmitConfig = true // opt in to the config-mode bundle generation
 	out := exportshape.EmitDeclarative(in)
-	// Expect: cmake_config_bundle, lib (cc_import), lib_hdrs (filegroup)
-	if len(out) != 3 {
-		t.Fatalf("want 3 IR targets; got %d: %v", len(out), out)
+	// Expect: cmake_config_bundle, lib (cc_import), lib_hdrs (filegroup),
+	// gen_... (write_file producer for the one bundle file).
+	if len(out) != 4 {
+		t.Fatalf("want 4 IR targets; got %d: %v", len(out), out)
 	}
 	var ccImport *ir.Target
 	for i := range out {

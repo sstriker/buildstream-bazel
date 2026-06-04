@@ -40,8 +40,3 @@ cc_import(
     static_library = "lib/libcfglib.a",
     tags = ["cmake-codegen-install-export-import"],
 )  # keep
-
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/cfglib/cfglibTargets.cmake"],
-)  # keep

@@ -27,11 +27,6 @@ genrule(
     visibility = ["//visibility:private"],
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/codegen/codegenTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "codegen_import",
     static_library = "lib/libcodegen.a",

@@ -2,6 +2,7 @@ package lower
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -37,7 +38,7 @@ func TestLowerDirectoryInstallers_FileInstaller(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d (%+v)", len(got), got)
 	}
@@ -89,7 +90,7 @@ func TestLowerDirectoryInstallers_GroupsByDestination(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup (merged); got %d", len(got))
 	}
@@ -122,7 +123,7 @@ func TestLowerDirectoryInstallers_SanitizeNameCollisionDisambiguated(t *testing.
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 2 {
 		t.Fatalf("want 2 distinct targets; got %d (%v)", len(got), got)
 	}
@@ -165,7 +166,7 @@ func TestLowerDirectoryInstallers_SkipsNonFileNonDirectoryTypes(t *testing.T) {
 			},
 		},
 	}
-	if got := lowerDirectoryInstallers(r); got != nil {
+	if got := lowerDirectoryInstallers(r, false); got != nil {
 		t.Errorf("expected nil for target/export only; got %v", got)
 	}
 }
@@ -190,7 +191,7 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
@@ -239,7 +240,7 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm(t *testing.
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
@@ -275,7 +276,7 @@ func TestLowerDirectoryInstallers_DirectoryTree_RootDir(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 target; got %d", len(got))
 	}
@@ -309,7 +310,7 @@ func TestLowerDirectoryInstallers_FileRename(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 target; got %d", len(got))
 	}
@@ -349,7 +350,7 @@ func TestLowerDirectoryInstallers_SkipsExcludeAndOptional(t *testing.T) {
 			},
 		},
 	}
-	if got := lowerDirectoryInstallers(r); got != nil {
+	if got := lowerDirectoryInstallers(r, false); got != nil {
 		t.Errorf("expected nil for excluded/optional installers; got %v", got)
 	}
 }
@@ -372,7 +373,7 @@ func TestLowerDirectoryInstallers_SkipsOutOfTreePaths(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
@@ -401,7 +402,7 @@ func TestLowerDirectoryInstallers_DeterministicOrder(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r)
+	got := lowerDirectoryInstallers(r, false)
 	wantOrder := []string{"install_files__alpha", "install_files__middle", "install_files__zeta"}
 	if len(got) != len(wantOrder) {
 		t.Fatalf("len: %d", len(got))
@@ -469,20 +470,36 @@ func TestLowerExportInstallers_DeclarativeWiresThroughEmitDeclarative(t *testing
 			},
 		},
 	}
-	got := lowerExportInstallers(r)
-	// Two targets: cmake_config_bundle filegroup + foo_import
-	// cc_import. Sorted by name: cmake_config_bundle, foo_import.
-	if len(got) != 2 {
-		t.Fatalf("want 2 IR targets; got %d (%v)", len(got), got)
+	got := lowerExportInstallers(r, true)
+	// Opt-in (EmitConfig=true): cmake_config_bundle filegroup + foo_import
+	// cc_import + the gen_... write_file that generates FooTargets.cmake. Sorted
+	// by name: cmake_config_bundle, foo_import, gen_lib_cmake_Foo_FooTargets_cmake.
+	if len(got) != 3 {
+		t.Fatalf("want 3 IR targets; got %d (%v)", len(got), got)
 	}
 	if got[0].Name != "cmake_config_bundle" || got[0].Kind != ir.KindFilegroup {
 		t.Errorf("first target should be cmake_config_bundle filegroup; got %+v", got[0])
+	}
+	// The bundle references the write_file producer, not a raw .cmake path.
+	if len(got[0].Srcs) != 1 || got[0].Srcs[0] != ":gen_lib_cmake_Foo_FooTargets_cmake" {
+		t.Errorf("bundle should reference the write_file producer; got srcs %v", got[0].Srcs)
 	}
 	if got[1].Name != "foo_import" || got[1].Kind != ir.KindCCImport {
 		t.Errorf("second target should be foo_import cc_import; got %+v", got[1])
 	}
 	if got[1].StaticLibrary != "lib/libfoo.a" {
 		t.Errorf("static_library: %q", got[1].StaticLibrary)
+	}
+	// The generated FooTargets.cmake carries the real imported-target def with
+	// IMPORTED_LOCATION under ${_IMPORT_PREFIX} — the form synthprefix parses.
+	gen := got[2]
+	if gen.Name != "gen_lib_cmake_Foo_FooTargets_cmake" || gen.Kind != ir.KindWriteFile {
+		t.Fatalf("third target should be the write_file producer; got %+v", gen)
+	}
+	body := strings.Join(gen.WriteFileContent, "\n")
+	if !strings.Contains(body, "add_library(Foo::foo STATIC IMPORTED)") ||
+		!strings.Contains(body, `IMPORTED_LOCATION_NOCONFIG "${_IMPORT_PREFIX}/lib/libfoo.a"`) {
+		t.Errorf("generated Targets.cmake missing real imported-target def:\n%s", body)
 	}
 	// Phase 6 tag must be present so cmakecfg's bundle synthesizer
 	// can de-duplicate the IMPORTED entry.
@@ -533,7 +550,7 @@ func TestLowerExportInstallers_ImperativeStaysOnFallback(t *testing.T) {
 			},
 		},
 	}
-	if got := lowerExportInstallers(r); len(got) != 0 {
+	if got := lowerExportInstallers(r, true); len(got) != 0 {
 		t.Errorf("imperative bundle should emit nothing; got %+v", got)
 	}
 }
@@ -562,7 +579,7 @@ func TestLowerExportInstallers_BundleFilegroupsMerge(t *testing.T) {
 			},
 		},
 	}
-	got := lowerExportInstallers(r)
+	got := lowerExportInstallers(r, true)
 	var bundle *ir.Target
 	for i := range got {
 		if got[i].Name == "cmake_config_bundle" {
@@ -572,10 +589,11 @@ func TestLowerExportInstallers_BundleFilegroupsMerge(t *testing.T) {
 	if bundle == nil {
 		t.Fatal("cmake_config_bundle filegroup missing")
 	}
-	// Both bundle scripts present in srcs.
+	// Both bundle scripts present in srcs — as write_file producer refs (the
+	// .cmake files are generated, opt-in, by write_file).
 	wantSrcs := map[string]bool{
-		"lib/cmake/A/ATargets.cmake": true,
-		"lib/cmake/B/BTargets.cmake": true,
+		":gen_lib_cmake_A_ATargets_cmake": true,
+		":gen_lib_cmake_B_BTargets_cmake": true,
 	}
 	for _, s := range bundle.Srcs {
 		delete(wantSrcs, s)

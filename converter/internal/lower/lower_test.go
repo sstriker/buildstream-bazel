@@ -49,8 +49,11 @@ func TestToIR_HelloWorld(t *testing.T) {
 	//   - the hello_import cc_import the export's per-target
 	//     projection emits for cross-element find_package
 	//     consumers (Phase 6).
-	if got := len(pkg.Targets); got != 4 {
-		t.Fatalf("Targets = %d, want 4 (cc_library + install_directory + cmake_config_bundle + hello_import)", got)
+	// The install(EXPORT) cmake_config_bundle is NOT in this count: it's opt-in
+	// (--emit-install-export-config); the default convert omits it (the
+	// orchestrated graph wires the synthprefix-synthesized bundle instead).
+	if got := len(pkg.Targets); got != 3 {
+		t.Fatalf("Targets = %d, want 3 (cc_library + install_directory + hello_import; bundle is opt-in)", got)
 	}
 
 	tgt := pkg.Targets[0]

@@ -28,11 +28,6 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/visi/visiTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "visi_import",
     static_library = "lib/libvisi.a",

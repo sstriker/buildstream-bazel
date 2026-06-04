@@ -14,11 +14,6 @@ cc_library(
     tags = ["cmake-elided-build-dir-source"],  # keep
 )
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/foo/fooTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "foo_import",
     static_library = "lib/libfoo.a",

@@ -26,11 +26,6 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
-filegroup(
-    name = "cmake_config_bundle",
-    srcs = ["lib/cmake/pcuser/pcuserTargets.cmake"],
-)  # keep
-
 cc_import(
     name = "pcuser_import",
     shared_library = "lib/libpcuser.so",
