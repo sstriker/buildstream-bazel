@@ -2412,11 +2412,26 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	if len(configureFiles) > 0 && len(targetBuildIncs) > 0 {
 		var addedHdrs []string
 		hostingIncs := map[string]bool{}
+		needsPkgRoot := false
 		for _, cfgOut := range configureFiles {
 			for inc := range targetBuildIncs {
 				if isPathPrefix(inc, cfgOut.RelOutput) {
 					addedHdrs = append(addedHdrs, cfgOut.RelOutput)
 					hostingIncs[inc] = true
+					// A configure_file output that lands in a SUBDIR under the
+					// ROOT build-dir include ("") is consumed via that subdir
+					// path, so the package-root genfiles dir must be searched.
+					// libxml2: `configure_file(include/libxml/xmlversion.h.in
+					// libxml/xmlversion.h)` → `<build>/libxml/xmlversion.h`,
+					// #included as `<libxml/xmlversion.h>`. addBuildDirIncludes
+					// drops the root "" (Bazel rejects `includes=[""]`), but
+					// the valid `includes=["."]` expresses exactly the needed
+					// path. (A root-LEVEL output like `config.h` is consumed
+					// via a relative `#include "config.h"` and needs no path —
+					// gated out by the subdir check below.)
+					if needsPkgRootInclude(inc, cfgOut.RelOutput) {
+						needsPkgRoot = true
+					}
 					// A generate_export_header output is #included by BARE
 					// name, so its OWN directory (cmake's
 					// CMAKE_CURRENT_BINARY_DIR) must be on the include path —
@@ -2448,6 +2463,21 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// build-dir includes that DON'T host a lifted output stay elided
 		// — they'd point at the absent cmake build dir.)
 		addBuildDirIncludes(irt, hostingIncs)
+		// Package root (".") for a subdir output under the root build-dir
+		// (see needsPkgRoot above); addBuildDirIncludes deliberately skips
+		// "."/"" so it's added here, deduped.
+		if needsPkgRoot {
+			hasDot := false
+			for _, e := range irt.Includes {
+				if e == "." {
+					hasDot = true
+					break
+				}
+			}
+			if !hasDot {
+				irt.Includes = append(irt.Includes, ".")
+			}
+		}
 	}
 
 	// file(GENERATE) consumer attribution. Sister block to the
@@ -5181,6 +5211,22 @@ func isPathPrefix(prefix, path string) bool {
 // a build-dir include the codemodel recorded but lowerTarget otherwise
 // elides: once the genrule writes the header there, the dir is a real
 // Bazel include path the angle-bracket `#include <…>` needs.
+// needsPkgRootInclude reports whether a configure_file output at relOutput,
+// hosted by the build-dir include `inc`, requires the package root (".") on
+// the consuming target's include path. True only when the output lives in a
+// SUBDIR under the ROOT ("") build-dir include — it's then consumed via that
+// subdir path (e.g. libxml2's `<build>/libxml/xmlversion.h`, #included as
+// `<libxml/xmlversion.h>`), so the package-root genfiles dir must be on -I.
+// addBuildDirIncludes skips the root "" (Bazel rejects `includes=[""]`), but
+// the valid `includes=["."]` expresses exactly this — and it resolves to a
+// real sub-dir under the project-B `elements/<name>/` package layout (a
+// target at the literal workspace root can't carry it, but elements never
+// land there). A root-LEVEL output (no subdir) is consumed via a relative
+// `#include "x.h"` and needs no -I, so it returns false.
+func needsPkgRootInclude(inc, relOutput string) bool {
+	return (inc == "" || inc == ".") && strings.Contains(relOutput, "/")
+}
+
 func addBuildDirIncludes(irt *ir.Target, dirs map[string]bool) {
 	if len(dirs) == 0 {
 		return
