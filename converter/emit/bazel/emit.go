@@ -401,6 +401,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	}
 	emitGazelleCcSearch(&buf, pkg, opts)
 	emitLoad(&buf, pkg)
+	emitCudaLoad(&buf, pkg)
 	emitInstallLoad(&buf, pkg)
 	emitPkgFilesLoad(&buf, pkg)
 	emitWriteFileLoad(&buf, pkg)
@@ -584,7 +585,7 @@ func addKeepMarkers(f *build.File) {
 		switch kind {
 		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
 			markCallKeep(call)
-		case "cc_library", "cc_binary", "cc_test":
+		case "cc_library", "cc_binary", "cc_test", "cuda_library", "cuda_binary", "cuda_test":
 			if kind == "cc_library" && callHasTag(call, generatedIncludesTag) {
 				// The fully synthesized generated-header wrapper has no
 				// on-disk srcs for gazelle to reconcile it against — a
@@ -744,7 +745,7 @@ func ccKeepAttrs(kind string) map[string]bool {
 		// strip the generated-header wrapper's contents.
 		"textual_hdrs": true,
 	}
-	if kind == "cc_test" {
+	if kind == "cc_test" || kind == "cuda_test" {
 		base["args"] = true
 		base["env"] = true
 		base["timeout"] = true
@@ -1504,6 +1505,45 @@ func emitCCHashLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
+// cudaRuleLoads maps each CUDA Kind to its @rules_cuda//cuda:defs.bzl symbol.
+// Separate from ccRuleLoads (which is the @rules_cc load set) so the two loads
+// stay distinct — a BUILD with `.cu` targets loads cuda_library/cuda_binary/
+// cuda_test from rules_cuda, NOT rules_cc.
+var cudaRuleLoads = map[ir.Kind]string{
+	ir.KindCudaLibrary: "cuda_library",
+	ir.KindCudaBinary:  "cuda_binary",
+	ir.KindCudaTest:    "cuda_test",
+}
+
+// emitCudaLoad writes a single `load("@rules_cuda//cuda:defs.bzl", ...)` line
+// covering every cuda_* symbol used by pkg's targets, sorted for byte
+// stability. No-op when pkg has no CUDA target, so a non-CUDA BUILD stays
+// byte-identical and needs no rules_cuda bazel_dep. The consuming MODULE.bazel
+// must carry rules_cuda + a registered CUDA toolchain (the build lens injects
+// both via the per-project .conf's EXTRA_BAZEL_DEPS; the orchestrated graph
+// wires them for a kind:cmake CUDA element the same way).
+func emitCudaLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	used := map[string]struct{}{}
+	for _, t := range pkg.Targets {
+		if sym, ok := cudaRuleLoads[t.Kind]; ok {
+			used[sym] = struct{}{}
+		}
+	}
+	if len(used) == 0 {
+		return
+	}
+	syms := make([]string, 0, len(used))
+	for s := range used {
+		syms = append(syms, s)
+	}
+	sort.Strings(syms)
+	buf.WriteString(`load("@rules_cuda//cuda:defs.bzl"`)
+	for _, s := range syms {
+		fmt.Fprintf(buf, ", %q", s)
+	}
+	buf.WriteString(")\n\n")
+}
+
 // ccHashTmpl renders the rules_buildstream_bazel `cc_hash(...)` rule — the
 // native lowering of vtkHashSource-shaped cmake -P codegen. The tool is fixed
 // to //tools:cc-hash, which the consuming project must stage (like
@@ -1730,7 +1770,11 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	// cc_binary's stricture, so apply the same fold there.
 	srcsSel := perPlatformAttr(t, "srcs")
 	hdrsSel := perPlatformAttr(t, "hdrs")
-	if (t.Kind == ir.KindCCBinary || t.Kind == ir.KindCCTest) && (len(hdrs) > 0 || len(hdrsSel) > 0) {
+	// cuda_binary / cuda_test mirror cc_binary / cc_test: rules_cuda's
+	// executable macros have no `hdrs` attribute either, so fold headers
+	// into srcs the same way.
+	if (t.Kind == ir.KindCCBinary || t.Kind == ir.KindCCTest ||
+		t.Kind == ir.KindCudaBinary || t.Kind == ir.KindCudaTest) && (len(hdrs) > 0 || len(hdrsSel) > 0) {
 		srcs = append(srcs, hdrs...)
 		sort.Strings(srcs)
 		hdrs = nil
@@ -1794,9 +1838,9 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		Tags:       sortedCopy(t.Tags),
 		Visibility: nonDefaultVisibility(t.Visibility),
 	}
-	if t.Kind == ir.KindCCTest {
+	if t.Kind == ir.KindCCTest || t.Kind == ir.KindCudaTest {
 		v.Args = append([]string(nil), t.TestArgs...) // preserve order; arg order matters
-		// cc_test: merge t.Data (add_dependencies-derived) with
+		// cc_test / cuda_test: merge t.Data (add_dependencies-derived) with
 		// t.TestData (set_tests_properties), sorted + deduped.
 		merged := append([]string(nil), v.Data...)
 		merged = append(merged, t.TestData...)
@@ -1813,7 +1857,49 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 			}
 		}
 	}
+	// CUDA rules (cuda_library / cuda_binary / cuda_test from rules_cuda)
+	// accept a NARROWER attribute set than cc_*: they have no
+	// include_prefix / strip_include_prefix / textual_hdrs /
+	// implementation_deps / linkstatic / features / additional_linker_inputs.
+	// Emitting any of those would hard-fail analysis ("no attribute X"). Adapt
+	// the view: fold the convertible ones into supported attrs and drop the
+	// rest. cuda_library's `copts` are the nvcc DEVICE compile flags, which is
+	// exactly where cmake's CUDA compile-group fragments belong, so copts/
+	// defines/local_defines/includes/deps/alwayslink pass through unchanged.
+	if isCudaKind(t.Kind) {
+		adaptCudaView(&v)
+	}
 	return ccRuleTmpl.Execute(w, v)
+}
+
+// isCudaKind reports whether k is one of the rules_cuda rule kinds.
+func isCudaKind(k ir.Kind) bool {
+	return k == ir.KindCudaLibrary || k == ir.KindCudaBinary || k == ir.KindCudaTest
+}
+
+// adaptCudaView rewrites a ccView assembled for a CUDA target so it only
+// carries attributes rules_cuda's rules accept. textual_hdrs has no
+// cuda_library analogue, so fold it into hdrs (a cuda_library hdrs entry is a
+// plain header input — close enough; the device compile sees it either way).
+// implementation_deps (cc's non-transitive deps) collapses into deps, which is
+// the only dep attribute cuda_library exposes. include_prefix /
+// strip_include_prefix / linkstatic / features / additional_linker_inputs are
+// dropped: cuda_library has no equivalent. The drop is safe for the build
+// lens's CUDA shapes (a `.cu` object library / device-code executable doesn't
+// rehome its own include root the way a split-package header lib does).
+func adaptCudaView(v *ccView) {
+	// textual_hdrs → hdrs (concatenate the rendered list exprs).
+	v.HdrsExpr = concatListExprs(v.HdrsExpr, v.TextualHdrsExpr)
+	v.TextualHdrsExpr = ""
+	// implementation_deps → deps.
+	v.DepsExpr = concatListExprs(v.DepsExpr, v.ImplementationDepsExpr)
+	v.ImplementationDepsExpr = ""
+	// Unsupported on rules_cuda rules — drop.
+	v.IncludePrefix = ""
+	v.StripIncludePrefix = ""
+	v.AdditionalLinkerInputsExpr = ""
+	v.Linkstatic = false
+	v.Features = nil
 }
 
 // perPlatformScalarAttr returns the per-platform scalar delta map
@@ -2143,6 +2229,24 @@ func attrExpr(flat []string, sel map[string][]string) string {
 		return flatPart + " + " + b.String()
 	}
 	return b.String()
+}
+
+// concatListExprs joins two already-rendered list-attribute exprs (each a
+// list literal, a select() block, or `<list> + select(...)`, or "") into one.
+// Used by adaptCudaView to fold textual_hdrs→hdrs and implementation_deps→deps
+// for CUDA rules, which lack the source attribute. If either side is empty the
+// other is returned verbatim (preserving byte-identical single-attr output);
+// otherwise they're joined with " + ", which is valid Starlark list
+// concatenation and survives the buildifier canonicalize pass.
+func concatListExprs(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	default:
+		return a + " + " + b
+	}
 }
 
 // indentArmList renders a select() arm's value as a Starlark

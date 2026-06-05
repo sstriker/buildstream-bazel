@@ -196,9 +196,15 @@ try_bazel_build() {
     #   CONVERT_FLAGS       extra args appended to the clean convert argv
     #                       (e.g. --cmake-define X=Y, --imports-manifest=...).
     #   BAZEL_FLAGS         extra args to `bazel build` (e.g. --dynamic_mode=off).
-    #   EXTRA_BAZEL_DEPS    newline-separated bazel_dep(...) lines injected into
-    #                       the synthesized MODULE.bazel.
+    #   EXTRA_BAZEL_DEPS    newline-separated MODULE.bazel lines injected into the
+    #                       synthesized MODULE.bazel (bazel_dep / use_extension /
+    #                       register_toolchains — e.g. the rules_cuda toolchain
+    #                       block for CUDA projects; see scripts/build-lens/
+    #                       cutlass.conf's note on the `.cu` path).
     #   EMIT_INSTALL_EXPORT 1 (default) emits --emit-install-export-config; 0 skips.
+    #   BUILD_LENS_IGNORE_REJ  read in the main loop (NOT here): 1 bypasses the
+    #                       skip(rej) gate when CONVERT_FLAGS disable the surface
+    #                       producing the diagnostic rejection (cutlass's tools/).
     #   ELEMENT_SOURCE_ROOT absolute dir to OVERLAY into the element instead of
     #                       the surveyed cmake dir ($_bb_src) — for a subdir-cmake
     #                       project whose sources live OUTSIDE the cmake root. The
@@ -436,17 +442,45 @@ for entry in $projects; do
         rej_blocking="-"
     fi
 
+    # A project whose build-lens .conf disables the very surface that produces
+    # its diagnostic rejection(s) can opt the skip(rej) gate OFF with
+    # BUILD_LENS_IGNORE_REJ=1 in scripts/build-lens/<name>.conf. The diagnostic
+    # pass above surveys the FULL tree (no CONVERT_FLAGS) so its rejection count
+    # — the reported `rejections` column — stays honest; but the build lens
+    # converts the CONFIGURED surface (CONVERT_FLAGS applied), which may not hit
+    # those rejections at all. cutlass is the case: its core is a header-only
+    # template library, but its tools/ DEV SURFACE has a `cmake -E env`
+    # execute_process the full-tree diagnostic flags as 1 rejection; the
+    # build-lens conf disables tools/ (CUTLASS_ENABLE_TOOLS=OFF, …), so the
+    # configured convert never sees it. The gate is only a cost optimization
+    # ("don't pay for a second convert on a tree that would abort"); the
+    # build-lens's OWN clean convert is the real test and returns skip(convert)
+    # if it actually fails — so honoring this opt-out can't mask a broken
+    # convert. Read just this knob from the .conf here (try_bazel_build sources
+    # the full .conf again, resetting all knobs, so nothing leaks between
+    # projects). Empty/0 (the default, no .conf or knob unset) keeps the gate.
+    bl_ignore_rej=0
+    _bl_conf="$repo_root/scripts/build-lens/$name.conf"
+    if [ -f "$_bl_conf" ]; then
+        BUILD_LENS_IGNORE_REJ=0
+        # shellcheck disable=SC1090
+        . "$_bl_conf"
+        bl_ignore_rej="${BUILD_LENS_IGNORE_REJ:-0}"
+        unset BUILD_LENS_IGNORE_REJ
+    fi
+
     # 4th lens: `bazel build //...` of the faithful (project-B-shaped) output,
     # only when this project is selected by SURVEY_BAZEL_BUILD. Short-circuit
     # the cases that can't (or shouldn't) build before paying for a clean
     # convert: a hard-failed diagnostic convert (configure must work first),
     # and a project that surveys with rejections (the lens contract is to skip
-    # refusals — the clean convert would just abort on the first one).
+    # refusals — the clean convert would just abort on the first one), unless
+    # the project opted out of the rejection gate (BUILD_LENS_IGNORE_REJ, above).
     build_status="-"
     if build_lens_for "$name"; then
         if [ "$status" != "ok" ]; then
             build_status="skip(convert)"
-        elif [ -n "$rej_blocking" ] && [ "$rej_blocking" != "0" ] && [ "$rej_blocking" != "-" ]; then
+        elif [ "$bl_ignore_rej" != "1" ] && [ -n "$rej_blocking" ] && [ "$rej_blocking" != "0" ] && [ "$rej_blocking" != "-" ]; then
             build_status="skip(rej)"
         else
             build_status="$(try_bazel_build "$name" "$src" "$proj_out" "$bt_args" "$sp_args")"

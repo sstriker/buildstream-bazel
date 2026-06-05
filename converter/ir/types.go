@@ -160,6 +160,33 @@ const (
 	// @rules_buildstream_bazel//rules:cc_hash.bzl (the emitter writes the
 	// load, mirroring KindCCEmbed).
 	KindCCHash
+	// KindCudaLibrary renders as rules_cuda's `cuda_library(...)` (from
+	// @rules_cuda//cuda:defs.bzl). It carries `.cu` CUDA device sources that
+	// a plain cc_library can't compile — Bazel's cc rules dispatch by file
+	// extension and have NO nvcc compile action, so a cc_library with `.cu`
+	// srcs is unbuildable as emitted. cuda_library drives nvcc via a
+	// registered CUDA toolchain, accepting the same core attributes
+	// (srcs/hdrs/deps/copts/includes/defines) so the converter reuses the
+	// cc_library view/template to render it.
+	//
+	// Lowered from a CMake CUDA compile group (cg.Language == "CUDA"):
+	// the per-language target split (lower.go) tags the CUDA sub-library
+	// with this kind, and a whole-target single-CUDA-group library is
+	// retagged in place. Needs rules_cuda on the consuming MODULE.bazel
+	// plus a registered CUDA toolchain — the build lens injects both via
+	// scripts/build-lens/<name>.conf's EXTRA_BAZEL_DEPS (the orchestrated
+	// graph would wire them the same way for a kind:cmake CUDA element).
+	// There is no canonical gazelle CUDA extension to hand the layout to,
+	// so (like the Fortran partition) the converter owns the rule shape.
+	KindCudaLibrary
+	// KindCudaBinary renders as rules_cuda's `cuda_binary(...)` — the CUDA
+	// analogue of cc_binary for an executable whose compiled sources are all
+	// `.cu` (cuda-samples' device-code programs). Folds hdrs into srcs like
+	// cc_binary (the cuda_binary macro has no `hdrs` attribute either).
+	KindCudaBinary
+	// KindCudaTest renders as rules_cuda's `cuda_test(...)` — the CUDA
+	// analogue of cc_test for a `.cu`-only test executable.
+	KindCudaTest
 )
 
 func (k Kind) String() string {
@@ -194,6 +221,12 @@ func (k Kind) String() string {
 		return "cc_embed"
 	case KindCCHash:
 		return "cc_hash"
+	case KindCudaLibrary:
+		return "cuda_library"
+	case KindCudaBinary:
+		return "cuda_binary"
+	case KindCudaTest:
+		return "cuda_test"
 	case KindBoolFlag:
 		return "bool_flag"
 	case KindConfigSetting:
