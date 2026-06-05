@@ -685,12 +685,12 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 		reservedWhy, reserved := reservedCmakeDefine[bareKey]
 		switch {
 		case key == "":
-			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: expected KEY=VALUE with a non-empty KEY\n", d)
+			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: expected KEY[=VALUE] with a non-empty KEY\n", d)
 			return a, ExitUsage
 		case strings.HasPrefix(key, "-"):
 			// The converter prepends the -D itself; a copy-pasted cmake-CLI
 			// "-DKEY=VALUE" here would emit "-D-DKEY=VALUE". Pass KEY=VALUE.
-			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: pass KEY=VALUE without a leading -D (the converter adds it)\n", d)
+			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: pass KEY[=VALUE] without a leading -D (the converter adds it)\n", d)
 			return a, ExitUsage
 		case strings.ContainsAny(key, " \t\r\n\f\v"):
 			// A space in the KEY (e.g. "CMAKE_CXX_FLAGS =-w") would set the
