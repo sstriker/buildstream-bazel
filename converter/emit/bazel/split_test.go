@@ -621,25 +621,42 @@ func TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs(t *testing.T) {
 		t.Fatalf("EmitSplit: %v", err)
 	}
 	// The aggregate lives in the root package.
-	if !contains(string(tree[""]), `name = "element_root_headers"`) {
+	if ruleBlockAfterName(string(tree[""]), "element_root_headers") == "" {
 		t.Errorf("root pkg missing the element_root_headers aggregate:\n%s", string(tree[""]))
 	}
-	// A subpackage owner gets a per-package header lib with include_prefix.
-	if !contains(string(tree["absl/base"]), `include_prefix = "absl/base"`) {
-		t.Errorf("absl/base pkg missing root-hdr lib with include_prefix:\n%s", string(tree["absl/base"]))
+	// The per-package header LIB (a distinct rule from the target) carries the
+	// prefix that re-exposes the package's headers at their absl/… path.
+	baseHdrLib := ruleBlockAfterName(string(tree["absl/base"]), "absl_base_root_hdrs")
+	if !strings.Contains(baseHdrLib, `include_prefix = "absl/base"`) {
+		t.Errorf("absl_base_root_hdrs lib missing include_prefix:\n%s", baseHdrLib)
 	}
-	// The root-owned header (absl/meta, a non-package dir) gets includes=["."]
-	// (not include_prefix, which would double the absl/ prefix) and keeps its
-	// element-root path.
-	rootPkg := string(tree[""])
-	if !contains(rootPkg, `includes = ["."]`) || !contains(rootPkg, `"absl/meta/traits.h"`) {
-		t.Errorf("root pkg missing includes=[\".\"] root-hdr lib carrying absl/meta/traits.h:\n%s", rootPkg)
+	// The root-owned header (absl/meta, a non-package dir) lands in the root
+	// root_hdrs lib with includes=["."] (NOT include_prefix, which would double
+	// the absl/ prefix), keeping its element-root path.
+	rootHdrLib := ruleBlockAfterName(string(tree[""]), "root_hdrs")
+	if !strings.Contains(rootHdrLib, `includes = ["."]`) || !strings.Contains(rootHdrLib, `"absl/meta/traits.h"`) {
+		t.Errorf("root_hdrs lib missing includes=[\".\"] / absl/meta/traits.h:\n%s", rootHdrLib)
 	}
-	// Each RootInclude target depends on the aggregate (and dropped its own
-	// copy of the cross-package surface — it must NOT carry include_prefix,
-	// since that path is for the single-package shape only).
-	basePkg := string(tree["absl/base"])
-	if !contains(basePkg, `//elements/x:element_root_headers`) {
-		t.Errorf("absl/base pkg: base target should depend on the aggregate:\n%s", basePkg)
+	if strings.Contains(rootHdrLib, "include_prefix") {
+		t.Errorf("root_hdrs lib must NOT carry include_prefix:\n%s", rootHdrLib)
+	}
+	// Each RootInclude TARGET (the cc_library itself, not its header lib) drops
+	// its walked surface, depends on the aggregate, and carries NO include_prefix
+	// (that path is for the single-package glm shape only). Assert against the
+	// specific rule block so the header lib in the same package can't false-pass.
+	for _, tgt := range []struct{ pkg, name string }{{"absl/base", "base"}, {"absl/strings", "strings"}} {
+		rule := ruleBlockAfterName(string(tree[tgt.pkg]), tgt.name)
+		if rule == "" {
+			t.Fatalf("no %q rule in pkg %q", tgt.name, tgt.pkg)
+		}
+		if !strings.Contains(rule, "//elements/x:element_root_headers") {
+			t.Errorf("%s target should depend on the aggregate:\n%s", tgt.name, rule)
+		}
+		if strings.Contains(rule, "include_prefix") {
+			t.Errorf("%s target (the consumer) must NOT carry include_prefix:\n%s", tgt.name, rule)
+		}
+		if strings.Contains(rule, "casts.h") || strings.Contains(rule, "traits.h") {
+			t.Errorf("%s target should have dropped its walked hdr surface:\n%s", tgt.name, rule)
+		}
 	}
 }
