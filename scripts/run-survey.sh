@@ -249,6 +249,17 @@ bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
 EOF
+    # Per-project `bazel build` flags. glog: its unit tests reference glog's
+    # internal (GLOG_NO_EXPORT / -fvisibility=hidden) symbols
+    # (GetExistingTempDirectories, g_logging_fail_func, SafeFNMatch_, ...).
+    # Bazel's default dynamic linking builds glog as a .so that doesn't export
+    # those hidden symbols, so the cc_tests fail to link; --dynamic_mode=off
+    # links them statically (the way glog's own static build links its tests,
+    # matching the converter's linkstatic=True output), resolving the symbols.
+    _bb_bzlflags=""
+    case "$_bb_name" in
+        glog) _bb_bzlflags="--dynamic_mode=off" ;;
+    esac
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
@@ -257,7 +268,7 @@ EOF
     # both startup-arg and build-arg passthrough too (META_BAZEL_STARTUP_ARGS
     # goes before the subcommand — registry tweaks for sandboxed/offline runs).
     if ( cd "$_bb_ws" && $_bb_to "$bzl_bin" --output_user_root="$_bb_po/.bzcache" \
-            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build ${META_BAZEL_BUILD_ARGS:-} //... ) >> "$_bb_po/build.log" 2>&1; then
+            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build ${META_BAZEL_BUILD_ARGS:-} $_bb_bzlflags //... ) >> "$_bb_po/build.log" 2>&1; then
         echo "ok"
     else
         echo "FAIL"
