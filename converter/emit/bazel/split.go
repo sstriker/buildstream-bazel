@@ -150,6 +150,19 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		groups[inc] = append(groups[inc], plan.headerLibTarget(inc, name))
 	}
 
+	// Add the per-package root-walk header libs + their aggregate. These are
+	// populated only for the multi-package RootInclude shape (abseil's
+	// element-root grant spanning many packages); the single-package shape
+	// (glm) leaves them empty and restores the prefix on the target itself.
+	for owner, name := range plan.rootHdrLibs {
+		ensure(owner)
+		groups[owner] = append(groups[owner], plan.rootHdrLibTarget(owner, name))
+	}
+	if plan.rootHdrAgg != "" {
+		ensure("")
+		groups[""] = append(groups[""], plan.rootHdrAggTarget())
+	}
+
 	// Add the synthesized file(GLOB) glob() filegroups to their owning
 	// packages (referenced by the globbing genrules above).
 	for d, fgs := range globFilegroups {
@@ -226,6 +239,23 @@ type splitPlan struct {
 	headersIn  map[string][]string // include-root dir → element-root-relative header paths under it
 	base       string              // repo-root-relative element package path (label base)
 	pkgs       []string            // every sub-package dir (incl. ""), longest-first
+
+	// Root-walk (element-root include) header libraries. A target whose
+	// include root is the ELEMENT ROOT (RootInclude — cmake's
+	// target_include_directories(${PROJECT_SOURCE_DIR})) has the "" entry
+	// dropped from Includes (Bazel rejects includes=[""]) and its headers
+	// folded into Hdrs by the discoverHeaders walk. When those headers span a
+	// SINGLE package, rewriteTarget restores the prefix with include_prefix on
+	// the target itself (the glm path). When they span MULTIPLE packages under
+	// split, include_prefix can't apply, so the element-root header surface is
+	// re-homed into per-package header libs (each carrying its package's
+	// headers with include_prefix=<pkg>) aggregated behind one lib that every
+	// RootInclude target depends on. These maps drive that synthesis; they stay
+	// empty (and the glm path stays in force) unless the root-walk set is
+	// genuinely multi-package.
+	rootHdrLibs map[string]string   // owning package dir → root-walk header-lib name
+	rootHdrsIn  map[string][]string // owning package dir → element-root-relative header paths
+	rootHdrAgg  string              // aggregate lib name in the root package ("" when no multi-package root walk)
 }
 
 // deepestPkg returns the longest sub-package directory that owns path p
@@ -298,6 +328,64 @@ func (p *splitPlan) headerLibTarget(inc, name string) ir.Target {
 		Kind:       ir.KindCCLibrary,
 		Hdrs:       hdrs,
 		Includes:   []string{"."},
+		Deps:       deps,
+		Visibility: []string{"//visibility:public"},
+	}
+}
+
+// rootHdrLibTarget builds the per-package root-walk header library for owner
+// (splitPlan.rootHdrLibs). It carries owner's slice of the element-root header
+// surface, re-relativized to the package and re-prefixed with
+// include_prefix=<owner> so that cmake's `#include "<owner>/foo.h"` resolves
+// again after --split-packages re-homed the file to a package-local path.
+// owner=="" (the root package) needs no prefix — those headers already sit at
+// their element-root-relative paths.
+func (p *splitPlan) rootHdrLibTarget(owner, name string) ir.Target {
+	hdrs := make([]string, 0, len(p.rootHdrsIn[owner]))
+	for _, h := range p.rootHdrsIn[owner] {
+		rel, _ := relUnder(owner, h)
+		hdrs = append(hdrs, rel)
+	}
+	sort.Strings(hdrs)
+	t := ir.Target{
+		Name:       name,
+		Kind:       ir.KindCCLibrary,
+		Hdrs:       hdrs,
+		Visibility: []string{"//visibility:public"},
+	}
+	if owner != "" {
+		// A subpackage lib's hdrs were re-relativized to the package
+		// (casts.h, not absl/base/casts.h), so restore the element-root path
+		// with include_prefix=<owner> → `#include "absl/base/casts.h"` resolves.
+		t.IncludePrefix = owner
+	} else {
+		// The root-package lib owns the headers in element-root dirs that are
+		// NOT their own Bazel package (abseil's header-only absl/meta,
+		// absl/utility, …). Those hdrs already sit at their element-root paths
+		// (absl/meta/type_traits.h), so includes=["."] — which puts the element
+		// root on the search path — is what makes `#include "absl/meta/..."`
+		// resolve (include_prefix would wrongly double the absl/ prefix).
+		t.Includes = []string{"."}
+	}
+	return t
+}
+
+// rootHdrAggTarget builds the aggregate root-walk header library: a headerless
+// cc_library in the root package whose deps fan out to every per-package
+// rootHdrLib, so a single dep on it re-exposes the whole element-root `#include`
+// surface (each piece at its include_prefix-restored path). Every RootInclude
+// target that triggered the multi-package split depends on this aggregate
+// (rewriteTarget) — mirroring the `target_include_directories(${SOURCE_DIR})`
+// grant, which lets such a target include any header under the root.
+func (p *splitPlan) rootHdrAggTarget() ir.Target {
+	deps := make([]string, 0, len(p.rootHdrLibs))
+	for owner, name := range p.rootHdrLibs {
+		deps = append(deps, headerLibLabel(p, owner, name))
+	}
+	sort.Strings(deps)
+	return ir.Target{
+		Name:       p.rootHdrAgg,
+		Kind:       ir.KindCCLibrary,
 		Deps:       deps,
 		Visibility: []string{"//visibility:public"},
 	}
@@ -613,6 +701,55 @@ func planSplit(pkg *ir.Package) *splitPlan {
 		}
 		return p.pkgs[i] < p.pkgs[j]
 	})
+
+	// Root-walk header-lib synthesis (see splitPlan.rootHdrLibs). Collect the
+	// union of every RootInclude target's headers and bucket them by owning
+	// package (deepestPkg, which needs p.pkgs — hence after the pkgSet build).
+	// Only when the surface spans MORE THAN ONE package does the
+	// include_prefix-on-the-target path (rewriteTarget, the glm shape) break
+	// down — a single package keeps that path. In the multi-package case
+	// re-home the surface into per-package header libs behind one aggregate.
+	p.rootHdrLibs = map[string]string{}
+	p.rootHdrsIn = map[string][]string{}
+	rootWalk := map[string]struct{}{}
+	for _, t := range pkg.Targets {
+		if !t.RootInclude {
+			continue
+		}
+		for _, h := range t.Hdrs {
+			rootWalk[h] = struct{}{}
+		}
+	}
+	byPkg := map[string][]string{}
+	for h := range rootWalk {
+		owner := p.deepestPkg(h)
+		byPkg[owner] = append(byPkg[owner], h)
+	}
+	if len(byPkg) > 1 {
+		uniqueName := func(name string) string {
+			base := name
+			for i := 1; ; i++ {
+				_, clash := realNames[name]
+				if !clash && !hasValue(p.headerLibs, name) && !hasValue(p.rootHdrLibs, name) && name != p.rootHdrAgg {
+					return name
+				}
+				name = fmt.Sprintf("%s_%d", base, i)
+			}
+		}
+		// Deterministic order: synthesize per-package libs in package order.
+		owners := make([]string, 0, len(byPkg))
+		for owner := range byPkg {
+			owners = append(owners, owner)
+		}
+		sort.Strings(owners)
+		for _, owner := range owners {
+			hs := byPkg[owner]
+			sort.Strings(hs)
+			p.rootHdrsIn[owner] = hs
+			p.rootHdrLibs[owner] = uniqueName(rootHdrLibName(owner))
+		}
+		p.rootHdrAgg = uniqueName("element_root_headers")
+	}
 	return p
 }
 
@@ -915,6 +1052,22 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		rt.AliasActual = targetLabel(plan, strings.TrimPrefix(t.AliasActual, ":"))
 	}
 
+	// Multi-package RootInclude (abseil's element-root grant spanning many
+	// packages): planSplit re-homed the whole element-root header surface into
+	// per-package header libs behind the aggregate, because include_prefix on the
+	// target itself (the glm path below) can't carry headers that re-home into
+	// OTHER packages. Drop this target's now-redundant copy of that surface and
+	// depend on the aggregate instead — every walked header is re-provided there
+	// at its include_prefix-restored `<pkg>/...` path, so the target's own
+	// `#include "<pkg>/foo.h"` resolves. (rewriteDeps is idempotent over the
+	// already-labeled rt.Deps; it just folds in the aggregate label and re-sorts.
+	// The single-package shape leaves rootHdrAgg empty and falls through.)
+	if t.RootInclude && plan.rootHdrAgg != "" {
+		rt.Hdrs = nil
+		rt.Deps = rewriteDeps(rt.Deps, plan, []string{headerLibLabel(plan, "", plan.rootHdrAgg)})
+		return rt
+	}
+
 	// A target whose headers are include-rooted at the element root
 	// (RootInclude — cmake's target_include_directories(${CMAKE_SOURCE_DIR}),
 	// which lower can't emit as includes=[""]) loses that root-relative prefix
@@ -1131,6 +1284,20 @@ func headerLibName(inc string) string {
 	}
 	s := strings.NewReplacer("/", "_", "-", "_", ".", "_").Replace(inc)
 	return s + "_headers"
+}
+
+// rootHdrLibName derives a deterministic sanitized cc_library name for a
+// per-package root-walk header lib (splitPlan.rootHdrLibs): "absl/base" →
+// "absl_base_root_hdrs"; "" (root) → "root_hdrs". The "_root_hdrs" suffix is
+// distinct from headerLibName's "_headers" so the two synthesis schemes never
+// collide on a name.
+func rootHdrLibName(dir string) string {
+	dir = normDir(dir)
+	if dir == "" {
+		return "root_hdrs"
+	}
+	s := strings.NewReplacer("/", "_", "-", "_", ".", "_").Replace(dir)
+	return s + "_root_hdrs"
 }
 
 // dirKey renders a sub-package dir for error messages.

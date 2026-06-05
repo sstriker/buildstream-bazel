@@ -1015,6 +1015,28 @@ transition cleanly.
 
 ## Done (high points)
 
+- **Build lens: abseil green — element-root header surface re-homed into
+  per-package header libs (header-dependency inference).** abseil's
+  `target_include_directories(${PROJECT_SOURCE_DIR})` PRIVATE root grant let
+  the `rel==""` root-walk pull all ~397 element headers into every such
+  target's `hdrs`; under `--split-packages` the cross-package ones became
+  `//…` labels that fail `allPackageLocalHdrs`, blocking `include_prefix`, so
+  the targets' own `absl/…` includes didn't resolve (~363 compile failures
+  across ~10 packages). The split emitter (`planSplit` + `rewriteTarget`) now
+  detects when a `RootInclude` target's walked surface spans MORE THAN ONE
+  package and re-homes it: one synthesized per-package header lib per owning
+  package — each carrying that package's headers with `include_prefix=<pkg>`,
+  or `includes=["."]` for the root-owned headers in non-package dirs like
+  `absl/meta` — behind a single aggregate `cc_library` every such target
+  depends on. That mirrors the cmake grant (any such target may include any
+  header under the root), so it needs no per-TU include scan (robust to
+  quote-vs-angle include form). The single-package shape (glm) is untouched —
+  it keeps the `include_prefix`-on-target path. abseil goes from ~363 failures
+  to **637/639 targets building with zero header-resolution failures**; the 2
+  residuals are the documented standalone external test deps (`GTest::gmock`,
+  the testing-off `absl::test_instance_tracker`), orthogonal to header
+  inference (they argue for scoping the lens to library, non-test targets).
+
 - **Build lens: PRIVATE element-root include sets `RootInclude` (#431).**
   `target_include_directories(PRIVATE ${PROJECT_SOURCE_DIR})` resolves to
   `rel==""`, but the include loop ran the private/system-include split
@@ -1030,10 +1052,10 @@ transition cleanly.
   because the `rel==""` root-walk pulls **all ~397 element headers into every
   element-root-include target's `hdrs`**, the cross-package ones block
   `include_prefix` (`allPackageLocalHdrs`), and abseil has no link deps for
-  these header-only cross-package includes. abseil-green needs
-  **header-dependency inference** (header→owning-target index → inject deps +
-  reduce `hdrs` to package-local → `include_prefix` applies) — a feature.
-  Scoped in `docs/survey-corpus.md`.
+  these header-only cross-package includes. abseil-green needed
+  **header-dependency inference** — now shipped (see the abseil bullet above):
+  the split emitter re-homes the surface into per-package header libs behind an
+  aggregate every `RootInclude` target depends on.
 
 - **Build lens: googletest green (fused-source `textual_hdrs` +
   opt-in install(EXPORT) config-mode generation).** Two blockers:
@@ -1145,13 +1167,16 @@ transition cleanly.
   (glm and googletest have since gone fully green — glm via the build lens's
   `--cmake-define CMAKE_CXX_FLAGS=-w` configure opt-in, googletest via the
   opt-in install(EXPORT) config-mode generation.) Remaining build-lens targets
-  (surfaced, not yet fixed): abseil's vendored cctz `include/` root (a *nested*
-  include root deeper than the consuming target's package — distinct from the
-  element-root case the `include_prefix` entry above fixes for glm); abseil's
-  standalone external test deps (`GTest::gmock`, the testing-off
+  (surfaced, not yet fixed): abseil's standalone external test deps
+  (`GTest::gmock`, the testing-off
   `absl::test_instance_tracker`) — the documented standalone-survey
   limitation, arguing for scoping the build lens to library (non-test)
   targets; zstd's multi-config custom-command binary copy (`Debug/zstd`).
+  (abseil's broad element-root header-resolution failure — including its
+  vendored cctz `time_zone`, the same root-walk shape — is green via the
+  per-package header-lib inference at the top of Done; googletest's
+  `cmake_config_bundle` is green via the opt-in install(EXPORT) config-mode
+  generation.)
 
 - **Toolkit-aware feature lift — gates on the toolchain's real vocabulary.**
   Two steps. First, `toolchainfeature.RewriteFeature` sources its
