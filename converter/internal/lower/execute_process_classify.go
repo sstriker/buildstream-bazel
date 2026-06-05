@@ -429,6 +429,11 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 				Bucket: BucketProbe,
 				Reason: driver + " is a host probe driver (pipeline stage 0)" + outputContext(call),
 			}
+		case executeProcessRunsHostDetectionScript(argv):
+			return ClassifyResult{
+				Bucket: BucketProbe,
+				Reason: "host-triple detection script (config.guess/config.sub) (pipeline stage 0)" + outputContext(call),
+			}
 		case dualUseProbeDrivers[driver] && call.OutputFile == "" &&
 			(call.OutputVariable != "" || call.ResultVariable != ""):
 			return ClassifyResult{

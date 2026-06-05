@@ -285,6 +285,18 @@ func TestClassify_Buckets(t *testing.T) {
 			bucket: BucketProbe,
 		},
 		{
+			// Host-triple detection script piped through a filter
+			// (`sh config.guess | tr ...`): still a probe — recognized via
+			// executeProcessRunsHostDetectionScript on stage 0's argv even
+			// though the driver is the shell.
+			name: "sh config.guess | tr → probe (pipeline)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"sh", "/src/config/config.guess"}, {"tr", "-d", "\\n"}},
+				OutputVariable: "HOST_TRIPLE",
+			},
+			bucket: BucketProbe,
+		},
+		{
 			// A pipeline whose stage 0 is NOT a probe/stamp driver still
 			// refuses — we can't reproduce arbitrary stdout chaining, and
 			// it may produce a real artifact (`cat spec | gen > out`).
