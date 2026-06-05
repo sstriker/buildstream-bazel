@@ -10,15 +10,23 @@
   SDL_REVISION=<str>` short-circuits its git_describe → both its rejections
   vanish).
 - **In flight:** eigen (`claude/green-eigen`); curl (`claude/green-curl` — the
-  3-for-1 cc_import fix); protobuf (`claude/green-protobuf`); VTK
-  (`claude/green-vtk` — `--lift-cc-embed`/`--lift-cc-hash` clear 705/708 rej +
-  stage `//tools:cc-embed`,`//tools:cc-hash`).
-- **Queued:** grpc + SDL (`.conf`-only, the moment curl's cc_import fix lands);
-  abseil (gmock via the imports lever).
-- **Sunday cut (honest):** LLVM — needs ≥3 new converter features (tablegen
-  `.td` include-closure on 278 per-target genrules; `llvm/$(RULEDIR)` prefix
-  doubling; 601 empty split-header libs) — too big for Sunday. zstd —
-  won't-green-standalone (structural scope).
+  3-for-1 cc_import fix); VTK (`claude/green-vtk` — cc-embed/cc-hash lifts);
+  abseil (`claude/green-abseil` — gmock via imports, *if* gmock is an external
+  find_package dep, not FetchContent'd in-graph).
+- **Queued:** grpc + SDL (`.conf`-only, the moment curl's cc_import fix lands).
+- **Sunday cut (honest):**
+  - **protobuf** — NOT weekend-sized: its abseil is FetchContent'd (in-graph),
+    and the imports-manifest only routes NOT-in-graph deps
+    (`converter/internal/lower/lower.go:2817`), so greening needs a
+    hand-curated ~75-entry abseil CMake→Bazel label table (36/75 have no direct
+    Bazel target) — multi-day, abseil-version-specific. *Worthwhile separate
+    PR:* a general `--fetchcontent-remap` slice (detect+drop `_deps/<dep>-src`
+    targets, route their edges via imports) — but protobuf still needs the
+    abseil table.
+  - **LLVM** — ≥3 new converter features (tablegen `.td` include-closure on 278
+    per-target genrules; `llvm/$(RULEDIR)` prefix doubling; 601 empty
+    split-header libs).
+  - **zstd** — won't-green-standalone (sources outside the `build/cmake` scope).
 - **Greened (6):** fmt, libxml2, brotli, glm, googletest, glog.
 
 This doc is the **single source of truth** for greening the whole survey
