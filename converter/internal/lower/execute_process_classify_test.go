@@ -253,6 +253,49 @@ func TestClassify_Buckets(t *testing.T) {
 			bucket: BucketProbe,
 		},
 		{
+			// Multi-COMMAND pipeline whose stage 0 is a dual-use probe
+			// driver (eigen's `c++ --version | head`): still a probe —
+			// stage 1 only trims stage 0's output. Classify by stage 0
+			// so the no-OUTPUT_FILE probe skip clears the refusal.
+			name: "c++ --version | head + OUTPUT_VARIABLE → probe (pipeline)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"c++", "--version"}, {"head", "-n1"}},
+				OutputVariable: "CXX_VERSION",
+			},
+			bucket: BucketProbe,
+		},
+		{
+			// Stamp pipeline `git describe | sed ...`: stage 0 is a
+			// non-hermetic VCS driver; the sed post-process doesn't change
+			// that. Classify by stage 0 → stamp.
+			name: "git describe | sed + OUTPUT_VARIABLE → stamp (pipeline)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"git", "describe", "--tags"}, {"sed", "s/-/./g"}},
+				OutputVariable: "VERSION",
+			},
+			bucket: BucketStamp,
+		},
+		{
+			// Strong-probe pipeline `uname -m | tr A-Z a-z`.
+			name: "uname -m | tr + OUTPUT_VARIABLE → probe (pipeline)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"uname", "-m"}, {"tr", "A-Z", "a-z"}},
+				OutputVariable: "ARCH",
+			},
+			bucket: BucketProbe,
+		},
+		{
+			// A pipeline whose stage 0 is NOT a probe/stamp driver still
+			// refuses — we can't reproduce arbitrary stdout chaining, and
+			// it may produce a real artifact (`cat spec | gen > out`).
+			name: "cat | gen pipeline → refuse (non-probe stage 0)",
+			call: shadow.ExecuteProcessCall{
+				Commands:       [][]string{{"cat", "spec.txt"}, {"gen"}},
+				OutputVariable: "OUT",
+			},
+			bucket: BucketRefuse,
+		},
+		{
 			name: "pkg-config --modversion → probe",
 			call: shadow.ExecuteProcessCall{
 				Commands:       [][]string{{"pkg-config", "--modversion", "zlib"}},
