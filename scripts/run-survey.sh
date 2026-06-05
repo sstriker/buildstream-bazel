@@ -331,6 +331,35 @@ for entry in $projects; do
     cov="$proj_out/coverage.json"
     status="ok"
 
+    # DIAG_CONVERT_FLAGS (opt-in, per-project): extra --cmake-define / convert
+    # args applied to THIS project's *diagnostics* convert below — i.e. the
+    # convert whose rejections.json drives the build-lens skip(rej) gate. It is
+    # SEPARATE from the build-lens CONVERT_FLAGS (sourced inside try_bazel_build):
+    # those shape only the build, and run AFTER the gate, so they can't lift a
+    # rejection that makes the gate skip in the first place. Default empty → the
+    # diagnostics survey stays the faithful default-configure for every member
+    # that doesn't set it (no change to existing survey numbers). A project sets
+    # it when its faithful default configure surfaces a not-Bazel-modelable
+    # rejection that an equally-faithful ALTERNATE configure of the same project
+    # avoids — e.g. OpenBLAS: its native configure runs the getarch host-CPU
+    # probes (4 execute_process(OUTPUT_VARIABLE) → unsupported-execute-process),
+    # but its first-class deterministic-arch (cross-compile) configure branch
+    # writes the arch config from a static per-core table and needs no probe;
+    # pinning the core (CORE/TARGET=HASWELL + CMAKE_SYSTEM_NAME) is what makes
+    # the arch-conditional source selection static, which is exactly what a
+    # Bazel graph requires. See scripts/build-lens/openblas.conf. Sourced in a
+    # subshell so only this one var crosses back — the .conf's other knobs
+    # (build CONVERT_FLAGS/BAZEL_FLAGS/...) stay scoped to try_bazel_build.
+    diag_convert_flags=""
+    _diag_conf="$repo_root/scripts/build-lens/$name.conf"
+    if [ -f "$_diag_conf" ]; then
+        diag_convert_flags="$(
+            DIAG_CONVERT_FLAGS=""
+            . "$_diag_conf" >/dev/null 2>&1 || true
+            printf '%s' "$DIAG_CONVERT_FLAGS"
+        )"
+    fi
+
     # The survey runs each project standalone, so out-of-tree
     # find_package(...) deps (e.g. protobuf's find_package(ZLIB))
     # surface as honest find-package-dep-unresolved findings. In a
@@ -365,11 +394,16 @@ for entry in $projects; do
         sp_args="--split-packages"
     fi
 
+    # $diag_convert_flags word-splits intentionally (a flag list authored in the
+    # .conf, e.g. `--cmake-define CORE=HASWELL`); empty for every project that
+    # doesn't opt in, so the expansion adds nothing there.
+    # shellcheck disable=SC2086
     if ! run_converter \
         --source-root "$src" \
         --diagnostics \
         $bt_args \
         $sp_args \
+        $diag_convert_flags \
         --rejections-report "$rej" \
         --audit-bazel-idiom-report "$idiom" \
         --audit-coverage-report "$cov" \
