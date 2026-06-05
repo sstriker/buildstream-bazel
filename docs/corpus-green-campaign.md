@@ -9,8 +9,8 @@
   `.conf` (grpc: `--cmake-define gRPC_BUILD_TESTS=OFF`; SDL: `--cmake-define
   SDL_REVISION=<str>` short-circuits its git_describe → both its rejections
   vanish).
-- **Landed greens this wave:** eigen (#443 → green #7), abseil (#444 → green
-  #8, 639/639). Each via the land procedure below.
+- **Landed greens this wave:** eigen (#443 → #7), abseil (#444 → #8, 639/639),
+  zstd (#445 → #9 — survey-scope `ELEMENT_SOURCE_ROOT` knob, NO converter change).
 - **In flight (4 agents):** curl (`claude/green-curl` — 3-for-1 cc_import fix,
   unblocks grpc+SDL); VTK (`claude/green-vtk` — cc-embed/cc-hash);
   **protobuf** (`claude/green-protobuf` — DEEP); **llvm** (`claude/green-llvm` —
@@ -32,9 +32,14 @@
   - **LLVM** — (A) `llvm/$(RULEDIR)` prefix-doubling in per-target genrule cmds;
     (B) per-target tablegen `.td` include-closure (278 genrules); (C) 601 empty
     split-header libs; (D) ZLIB imports; (E) tblgen-as-genrule-tool. Iterative.
-- **Structural won't-green (flag):** zstd — sources outside the surveyed
-  `build/cmake` root (needs a survey-scope change; not requested).
-- **Greened (8):** fmt, libxml2, brotli, glm, googletest, glog, eigen, abseil.
+- **zstd: GREEN (#445)** — the earlier "structural won't-green" flag was WRONG.
+  The converter already anchors subdir-cmake labels to the repo root (#303
+  workspace-root path); the gap was the build-lens harness overlaying only
+  `build/cmake`. Fixed with the `ELEMENT_SOURCE_ROOT` overlay knob — no
+  converter change. Lesson: re-test a "structural" verdict before accepting it.
+- **Greened (9):** fmt, libxml2, brotli, glm, googletest, glog, eigen, abseil,
+  zstd. **Remaining (6):** curl, VTK, protobuf, llvm (agents grinding), grpc,
+  SDL (queued behind curl's cc_import fix).
 
 This doc is the **single source of truth** for greening the whole survey
 corpus on the build lens (`build = ok` for every member). It is the
