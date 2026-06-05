@@ -215,9 +215,16 @@ try_bazel_build() {
     # CMAKE_CXX_FLAGS=-w: it inhibits all warnings (so -Werror has nothing to
     # promote, order-independently) while leaving C++ auto-detection intact, so
     # the full test suite — hash included — compiles.
-    _bb_defines=""
+    # Build the converter argv in the positional params so every argument is
+    # passed atomically: a --cmake-define value may carry spaces
+    # (CMAKE_<LANG>_FLAGS commonly does), which an unquoted "$var" expansion
+    # would word-split. (try_bazel_build saved its own args to _bb_* above, so
+    # reusing "$@" here is safe; _bb_bt / _bb_sp are single tokens or empty.)
+    set -- --source-root "$_bb_src"
+    [ -n "$_bb_bt" ] && set -- "$@" "$_bb_bt"
+    [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
     case "$_bb_name" in
-        glm) _bb_defines="--cmake-define CMAKE_CXX_FLAGS=-w" ;;
+        glm) set -- "$@" --cmake-define "CMAKE_CXX_FLAGS=-w" ;;
     esac
     # --emit-install-export-config: the build lens is the one place that opts in
     # to generating the install(EXPORT) config-mode bundle (the real
@@ -225,14 +232,12 @@ try_bazel_build() {
     # it — the orchestrated graph wires its own synthprefix-synthesized bundle —
     # but the lens generates the real file so `bazel build //...` exercises the
     # bundle end-to-end rather than choking on a filegroup over not-on-disk files.
-    if ! run_converter \
-        --source-root "$_bb_src" \
-        $_bb_bt $_bb_sp $_bb_defines \
+    set -- "$@" \
         --bazel-package-path "$_bb_pkg" \
         --emit-install-export-config \
         --out-build "$_bb_elt/BUILD.bazel" \
-        --out-config-settings "$_bb_ws/config/BUILD.bazel" \
-        >> "$_bb_po/build.log" 2>&1
+        --out-config-settings "$_bb_ws/config/BUILD.bazel"
+    if ! run_converter "$@" >> "$_bb_po/build.log" 2>&1
     then
         echo "skip(convert)"; return
     fi

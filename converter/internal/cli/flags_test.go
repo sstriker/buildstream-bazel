@@ -389,6 +389,22 @@ func TestParse_CmakeDefineEmptyKeyRejected(t *testing.T) {
 	}
 }
 
+// TestParse_CmakeDefineWhitespaceKeyRejected pins that a KEY carrying
+// whitespace (e.g. "CMAKE_CXX_FLAGS =-w") is a clean usage error rather than
+// silently setting the wrong cache variable.
+func TestParse_CmakeDefineWhitespaceKeyRejected(t *testing.T) {
+	for _, bad := range []string{"CMAKE_CXX_FLAGS =-w", " LEADING=1", "TRAIL\t=1"} {
+		var stderr bytes.Buffer
+		_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", bad}, &stderr)
+		if code != ExitUsage {
+			t.Fatalf("%q: code = %d; want ExitUsage (%d)", bad, code, ExitUsage)
+		}
+		if !strings.Contains(stderr.String(), "whitespace") {
+			t.Errorf("%q: stderr should mention whitespace, got %q", bad, stderr.String())
+		}
+	}
+}
+
 // TestParse_CmakeDefineReservedRejected pins that a cache var the converter
 // owns through a dedicated flag (CMAKE_BUILD_TYPE / CMAKE_CONFIGURATION_TYPES)
 // is rejected at parse time rather than conflicting at configure time.
