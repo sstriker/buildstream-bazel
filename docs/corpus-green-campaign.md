@@ -9,24 +9,24 @@
   `.conf` (grpc: `--cmake-define gRPC_BUILD_TESTS=OFF`; SDL: `--cmake-define
   SDL_REVISION=<str>` short-circuits its git_describe → both its rejections
   vanish).
-- **In flight:** eigen (`claude/green-eigen`); curl (`claude/green-curl` — the
-  3-for-1 cc_import fix); VTK (`claude/green-vtk` — cc-embed/cc-hash lifts);
-  abseil (`claude/green-abseil` — gmock via imports, *if* gmock is an external
-  find_package dep, not FetchContent'd in-graph).
+- **In flight (6 agents):** eigen (`claude/green-eigen`); curl
+  (`claude/green-curl` — 3-for-1 cc_import fix); VTK (`claude/green-vtk` —
+  cc-embed/cc-hash); abseil (`claude/green-abseil` — gmock-via-imports);
+  **protobuf** (`claude/green-protobuf` — DEEP); **llvm** (`claude/green-llvm` —
+  DEEPEST).
 - **Queued:** grpc + SDL (`.conf`-only, the moment curl's cc_import fix lands).
-- **Sunday cut (honest):**
-  - **protobuf** — NOT weekend-sized: its abseil is FetchContent'd (in-graph),
-    and the imports-manifest only routes NOT-in-graph deps
-    (`converter/internal/lower/lower.go:2817`), so greening needs a
-    hand-curated ~75-entry abseil CMake→Bazel label table (36/75 have no direct
-    Bazel target) — multi-day, abseil-version-specific. *Worthwhile separate
-    PR:* a general `--fetchcontent-remap` slice (detect+drop `_deps/<dep>-src`
-    targets, route their edges via imports) — but protobuf still needs the
-    abseil table.
-  - **LLVM** — ≥3 new converter features (tablegen `.td` include-closure on 278
-    per-target genrules; `llvm/$(RULEDIR)` prefix doubling; 601 empty
-    split-header libs).
-  - **zstd** — won't-green-standalone (sources outside the `build/cmake` scope).
+- **Deep-grind (IN scope per operator — iterative, multi-pass agents):**
+  - **protobuf** — (A) general `--fetchcontent-remap` converter slice
+    (detect+drop `_deps/<dep>-src` targets, route edges via imports;
+    `lower.go:2817`/`5909`, `split.go:1177`) + (B) the abseil CMake→Bazel label
+    table (~75 targets; the ~36 fine-grained CMake-only ones → coarse
+    `@com_google_absl` owner, or drop-if-transitive). Agent reports progress +
+    branch each pass.
+  - **LLVM** — (A) `llvm/$(RULEDIR)` prefix-doubling in per-target genrule cmds;
+    (B) per-target tablegen `.td` include-closure (278 genrules); (C) 601 empty
+    split-header libs; (D) ZLIB imports; (E) tblgen-as-genrule-tool. Iterative.
+- **Structural won't-green (flag):** zstd — sources outside the surveyed
+  `build/cmake` root (needs a survey-scope change; not requested).
 - **Greened (6):** fmt, libxml2, brotli, glm, googletest, glog.
 
 This doc is the **single source of truth** for greening the whole survey
