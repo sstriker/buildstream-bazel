@@ -1013,6 +1013,27 @@ transition cleanly.
   converter's in-process File API consumer reads the reply
   when the cmake-configure step runs on a remote node.
 
+- **Test-support classification (`testonly`) for the build lens —
+  deliberately postponed.** The cmake converter emits `testonly` on
+  **zero** targets and draws no test/non-test distinction (no `cc_test` /
+  `cc_binary` either), so test-support libraries — `cc_library` targets
+  that link an imported GTest/gmock, like abseil's
+  `heterogeneous_lookup_testing` — are indistinguishable from production
+  libs. In the standalone build lens those targets dangle on the
+  unprovided `GTest::gmock` import (abseil's 2 residuals; see the
+  build-lens Done bullet). A general fix would infer `testonly = True`
+  from an imported GTest/gmock dependency, then scope the build lens's
+  target pattern to exclude test-support targets — Bazel still *analyzes*
+  `testonly` targets under `//...`, so the marker alone doesn't green the
+  build; it has to pair with a pattern scope. Postponed deliberately:
+  637/639 already greens abseil's *library* surface, the residuals are
+  faithful conversions of real external test deps the standalone survey
+  doesn't stage, and the heuristic ("what makes a target test-only from
+  cmake?") deserves a deliberate design pass rather than a point fix.
+  Revisit when a corpus project's *non-test* surface depends on an
+  unprovided import, or when the lens policy itself needs a test/non-test
+  split.
+
 ## Done (high points)
 
 - **Build lens: abseil green — element-root header surface re-homed into
@@ -1166,12 +1187,17 @@ transition cleanly.
   hundreds of TUs deep, and glm/googletest clear their first-order failures.
   (glm and googletest have since gone fully green — glm via the build lens's
   `--cmake-define CMAKE_CXX_FLAGS=-w` configure opt-in, googletest via the
-  opt-in install(EXPORT) config-mode generation.) Remaining build-lens targets
-  (surfaced, not yet fixed): abseil's standalone external test deps
-  (`GTest::gmock`, the testing-off
-  `absl::test_instance_tracker`) — the documented standalone-survey
-  limitation, arguing for scoping the build lens to library (non-test)
-  targets; zstd's multi-config custom-command binary copy (`Debug/zstd`).
+  opt-in install(EXPORT) config-mode generation.) abseil's *library*
+  surface is **accepted green at 637/639** — the 2 residuals are
+  standalone external test deps: `cc_library` *test-support*
+  libs (e.g. `heterogeneous_lookup_testing`) that depend on the
+  `find_package(GTest)` → `GTest::gmock` imported target, which the
+  standalone lens stages no element for (the testing-off
+  `absl::test_instance_tracker` is the second). The converter faithfully
+  emits the dep — real orchestration resolves it via the imports channel,
+  so it's a lens-environment gap, not a converter defect — and the
+  `testonly`-scope fix is **deliberately postponed** (see Later). Still
+  remaining: zstd's multi-config custom-command binary copy (`Debug/zstd`).
   (abseil's broad element-root header-resolution failure — including its
   vendored cctz `time_zone`, the same root-walk shape — is green via the
   per-package header-lib inference at the top of Done; googletest's
