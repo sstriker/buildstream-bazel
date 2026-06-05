@@ -1162,6 +1162,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// keeping the cc_* target buildable and the Fortran intent labeled +
 	// operator-routable. See partitionFortranSources.
 	partitionFortranSources(pkg)
+	// CUDA retag — a cc_* target whose compiled srcs are entirely `.cu`
+	// CUDA device code renders as the matching rules_cuda rule (cuda_library
+	// / cuda_binary / cuda_test) so nvcc compiles it; a plain cc_library
+	// can't (no `.cu` compile action). Runs after the per-language split so
+	// it only catches WHOLE-target CUDA cases (the split already retagged
+	// mixed-language CUDA sub-libs). See retagCudaTargets.
+	retagCudaTargets(pkg)
 	// HEADER_FILE_ONLY reclassification — walk every target's
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked
@@ -3620,9 +3627,19 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		}
 		langSeen[cg.Language]++
 
+		// A CUDA compile group's `.cu` sources can't compile in a cc_*
+		// sub-library (no nvcc action in Bazel's cc rules), so the sub
+		// renders as rules_cuda's cuda_library. Other languages keep the
+		// wrapper's kind. The wrapper stays a deps-only cc_library/cc_binary
+		// that depends on this sub, so the link is a normal cc→cuda dep
+		// (rules_cuda's cuda_library provides CcInfo).
+		subKind := irt.Kind
+		if cg.Language == "CUDA" {
+			subKind = ir.KindCudaLibrary
+		}
 		sub := ir.Target{
 			Name:       subName,
-			Kind:       irt.Kind,
+			Kind:       subKind,
 			Srcs:       subSrcs,
 			Hdrs:       subHdrs,
 			Includes:   sharedIncludes,
@@ -4582,6 +4599,75 @@ func partitionFortranSources(pkg *ir.Package) {
 		kept = append(kept, t)
 	}
 	pkg.Targets = append(kept, added...)
+}
+
+// isCudaSrc reports whether p is a CUDA device-code source (`.cu`). `.cuh`
+// is a CUDA header, not a compiled TU, so it is NOT treated as a source here
+// (it rides in hdrs like any header).
+func isCudaSrc(p string) bool {
+	if dot := strings.LastIndex(p, "."); dot >= 0 {
+		return strings.ToLower(p[dot:]) == ".cu"
+	}
+	return false
+}
+
+// retagCudaTargets retags a cc_* target whose COMPILED sources are entirely
+// `.cu` CUDA device code as the matching rules_cuda rule (cuda_library /
+// cuda_binary / cuda_test), so it renders with nvcc-driving rules instead of
+// a cc_library that Bazel can't compile (`.cu` has no cc compile action — the
+// same gap partitionFortranSources handles for Fortran, but unlike Fortran,
+// CUDA HAS a canonical Bazel ruleset (rules_cuda in the BCR), so the honest
+// lowering is a real buildable rule, not a parked filegroup).
+//
+// Runs AFTER splitCompileGroups' per-language split (which already tags a CUDA
+// sub-library KindCudaLibrary and leaves the wrapper deps-only): this pass
+// catches the WHOLE-target case — a library/binary/test whose only compile
+// group is CUDA, so it never split (cuda-samples' `.cu` executables, cutlass's
+// `.cu`-only object libs). A target that MIXES `.cu` with C/C++ compiled srcs
+// is left as cc_* (it should already have been language-split; retagging a
+// genuinely-mixed leftover to cuda_* would drop its C/C++ TUs from the cc
+// compile path — safer to leave it and let the bazelidiom audit flag it).
+// Headers (.h/.hpp/.cuh/…) don't count as compiled srcs for this test, so a
+// cuda_library keeps its non-.cu headers in srcs/hdrs as usual.
+func retagCudaTargets(pkg *ir.Package) {
+	if pkg == nil {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		var cudaKind ir.Kind
+		switch t.Kind {
+		case ir.KindCCLibrary, ir.KindCCInterface:
+			cudaKind = ir.KindCudaLibrary
+		case ir.KindCCBinary:
+			cudaKind = ir.KindCudaBinary
+		case ir.KindCCTest:
+			cudaKind = ir.KindCudaTest
+		default:
+			continue
+		}
+		// Inspect compiled sources only (skip headers): the target is a CUDA
+		// target iff it has at least one `.cu` and every compiled src is `.cu`.
+		sawCuda := false
+		sawNonCudaCompiled := false
+		for _, s := range t.Srcs {
+			ext := ""
+			if dot := strings.LastIndex(s, "."); dot >= 0 {
+				ext = strings.ToLower(s[dot:])
+			}
+			if headerExts[ext] {
+				continue // a header in srcs — not a compiled TU
+			}
+			if isCudaSrc(s) {
+				sawCuda = true
+			} else {
+				sawNonCudaCompiled = true
+			}
+		}
+		if sawCuda && !sawNonCudaCompiled {
+			t.Kind = cudaKind
+		}
+	}
 }
 
 // reclassifyHeaderOnlySources walks every target in pkg.Targets
@@ -5831,6 +5917,19 @@ func reanchorLinkOptTokenWithInput(tok, cmakeSrc, buildDir string) (string, bool
 	return tok, true, ""
 }
 
+// stripBalancedQuotes removes ONE balanced pair of surrounding double-quotes
+// from s (`"foo"` → `foo`), leaving an unbalanced or quote-less token
+// untouched (`"foo` and `foo` stay as-is). Used to de-shell-quote
+// CompileCommandFragments tokens for Bazel's no-shell argv (see the call site
+// in splitCompileFragments). Length guard (>=2) avoids treating a lone `"` as
+// a pair.
+func stripBalancedQuotes(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
 // pieces are returned as defines (with the leading -D stripped); everything
 // else is a copt. -I and -isystem are dropped — those come through
@@ -5860,6 +5959,17 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 			continue
 		}
 		for _, p := range strings.Fields(f.Fragment) {
+			// Strip a balanced pair of surrounding double-quotes cmake added
+			// when it shell-quoted a fragment whose value carries shell-special
+			// chars (CUDA's `"--generate-code=arch=compute_80,code=[sm_80]"` —
+			// quoted for the `[`/`,`). Bazel passes copts as argv with NO shell,
+			// so a literal surrounding quote becomes part of the argument and
+			// breaks the tool (nvcc: "a single input file is required ..."). The
+			// File API fragment is meant to be shell-tokenized; for a no-shell
+			// argv the de-quoted token is the faithful flag. Only a whole-token
+			// "..." pair is stripped (a flag never legitimately needs surrounding
+			// shell quotes in argv form); embedded quotes are left untouched.
+			p = stripBalancedQuotes(p)
 			switch {
 			case strings.HasPrefix(p, "-D"):
 				val := strings.TrimPrefix(p, "-D")

@@ -267,6 +267,7 @@ queued follow-ups live in `ROADMAP.md`, not here.
 | **zstd** | `FAIL` (un-greenable at this scope) | Three non-modelable command edges are now filtered — `create_symlink` tool aliases (`unzstd`/`zstdcat`/`zstdmt` → `zstd`), the `ninja clean` target, and source-less `cmake -E copy` manpage edges. But zstd is **not greenable via the build lens at the `build/cmake` scope**: its actual sources live in `repo/lib` + `repo/programs` (siblings of `build/`, *outside* the surveyed `build/cmake` root), so the `libzstd` `cc_library` references `//elements/zstd/lib:common/*.c` / headers that aren't in the element. A standalone `build/cmake` element is structurally incomplete — a survey-scope/layout matter, not a converter bug. (zstd still earns its corpus place on the *convertibility* lenses + as the subdir-under-umbrella regression guard, #303.) |
 | **glog** | `ok` | **Green (three parts).** Its only 2 rejections are benign forward-declared-include notices (`$<TARGET_PROPERTY:…>` / `glog/`), a no-op in strict mode; the survey's `skip(rej)` gate now subtracts that benign class so the lens actually exercises glog. The empty-placeholder source `CMakeFiles/glog.cc` (CMake's `_glog_EMPTY_SOURCE`, a `cmake -E touch` recovered from ninja) builds via the recovered-genrule subdir-output `$(RULEDIR)` anchor. The 9 `cc_test`s reference glog's internal `-fvisibility=hidden` symbols (`GetExistingTempDirectories`, `g_logging_fail_func`, `SafeFNMatch_`, …); Bazel's default dynamic linking builds glog as a `.so` that doesn't export them, so the lens passes `--dynamic_mode=off` to link them statically (matching glog's own static test build + the converter's `linkstatic=True`). Remaining: 30 `raw-toolchain-feature-flag` idiom findings (non-build-blocking — a separate idiom-lens follow-up). |
 | **eigen** | `ok` | **Green as the header-only library.** eigen is HEADER-ONLY with no `find_package`, so the header library converts to a single `cc_library` and builds. The build lens (`scripts/build-lens/eigen.conf`) disables the parts of eigen's tree that aren't the library: `EIGEN_BUILD_BLAS`/`EIGEN_BUILD_LAPACK` (eigen's bundled **Fortran reference BLAS/LAPACK** — no Bazel Fortran ruleset exists, genuinely unsupported, **deferred**), `EIGEN_BUILD_TESTING` (its ~900-target `-Werror` SIMD test suite — a separate dev surface), and `EIGEN_BUILD_DOC`/`EIGEN_BUILD_DEMOS` (the `doc/examples` + `doc/snippets` + `unsupported/doc/examples` + `demos/` programs — documentation/demo `cc_binary`s that fail to resolve `<Eigen/Dense>` in the converted shape, again dev surface not the library). One general converter fix was needed: eigen's `uninstall` maintenance target runs `cmake -P cmake/EigenUninstall.cmake`, and the cmake-internal-command filter keyed only on the conventional `cmake_uninstall.cmake` script name — it now matches any `-P` script whose basename contains "uninstall" (case-insensitive), catching project-specific names like eigen's. The diagnostic survey (full tree, no conf) still reports 16 `fortran-target-needs-ruleset` idioms for the Fortran BLAS/LAPACK — non-build-blocking; the deferred Fortran surface. |
+| **cutlass** | `ok` | **Green as the header-only library** (CUDA tier), like eigen. cutlass's core is a HEADER-ONLY C++ template library (`project(CUTLASS … LANGUAGES CXX)`; `include/` is all `.hpp`/`.inl`) — every `.cu` device source lives in the unit tests / examples / `tools/` library / profiler, which are dev surfaces. The build lens (`scripts/build-lens/cutlass.conf`) disables them (`CUTLASS_ENABLE_TESTS/EXAMPLES/TOOLS/PROFILER/LIBRARY=OFF`) and converts to the single header `cc_library(name = "CUTLASS")` (822 hdrs, `strip_include_prefix = "include"`), which builds with the plain cc toolchain — **no nvcc needed to COMPILE the header library, only to CONFIGURE** (cutlass's `CUDA.cmake` does `enable_language(CUDA)` + `find_package(CUDAToolkit REQUIRED)` unconditionally, so cmake configure — which the converter runs for the codemodel — needs a CUDA toolkit; provision it with the hook's `BSB_PROVISION_CUDA=1`). The full-tree diagnostic survey reports 1 rejection (a `cmake -E env` execute_process in `tools/library` — disabled in the lens build), so the conf sets `BUILD_LENS_IGNORE_REJ=1` to bypass the cost-optimization skip(rej) gate (the build lens's own clean convert is the real test; it returns skip(convert) if it fails). The CUDA-compile path (rules_cuda + the converter's cuda_library lowering, below) is built and proven but not exercised by the header-library build — it's what cuda-samples needs. |
 | protobuf, curl, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
 
 **`-Werror` projects vs. the toolchain's `-Wall`.** A project that builds clean
@@ -371,9 +372,23 @@ llvm-subdir note below):
   **submodule**; `make fetch-mbedtls` recurses submodules, otherwise
   configure fails with `framework/CMakeLists.txt not found`.
 - **cutlass / cuda-samples:** both need a **CUDA toolkit (`nvcc`) on
-  `PATH`** to configure. Without CUDA the survey stops at cmake configure
-  (itself a datapoint, but not the idiom/refusal surface). They're fetched
-  so the corpus is whole; survey them on a CUDA-equipped host.
+  `PATH`** to configure (they `enable_language(CUDA)` /
+  `find_package(CUDAToolkit REQUIRED)`). Provision it with the SessionStart
+  hook's `BSB_PROVISION_CUDA=1` path (apt `nvidia-cuda-toolkit` + `gcc-12`).
+  **cutlass is GREEN on the build lens** as its header-only library (see
+  *Build-lens status* / `scripts/build-lens/cutlass.conf`) — the header
+  library needs nvcc only to *configure*, not to compile. **cuda-samples**
+  needs the `.cu` compile path: the converter now lowers `.cu` targets to
+  rules_cuda's `cuda_library` / `cuda_binary` / `cuda_test` (the
+  KindCudaLibrary path), the build lens injects rules_cuda + a CUDA toolchain
+  via `scripts/build-lens/cuda-samples.conf`'s `EXTRA_BAZEL_DEPS`, and
+  `scripts/provision-cuda-root.sh` assembles the self-contained CUDA root
+  rules_cuda's local toolchain needs from Debian's scattered packaging. That
+  pipeline is proven (a real sample TU compiles via nvcc); the remaining
+  cuda-samples greening work (its force-set Blackwell-class arches that CUDA
+  12.0 rejects, the shared `Common/` headers, and the `9_CUDA_Tile` group's
+  `find_program(tileiras REQUIRED)` configure blocker) is enumerated in
+  `cuda-samples.conf`.
 - **Boost.Core:** a modular Boost library — its `CMakeLists.txt`
   configures for the standalone modular build; sibling-library
   `find_package` deps surface as honest `find-package-dep-unresolved`
@@ -412,12 +427,19 @@ install them when you want the deeper surface.
   Debian/Ubuntu: `apt-get install -y gfortran` (≈ GNU Fortran 13). The
   portable default stays `-DNOFORTRAN=1 -DC_LAPACK=1` for hosts without
   it; install gfortran to see the Fortran-target gap.
-- **CUDA toolkit (`nvcc` + driver)** — required for **cutlass** and
-  **cuda-samples** to pass cmake configure at all (they `enable_language(CUDA)`
-  / `find_package(CUDAToolkit)`); without it the survey stops at
-  configure. Install the CUDA toolkit (`nvcc` on `PATH`) and, for any
-  step that runs device code, the NVIDIA driver. Survey these on a
-  CUDA-equipped host; they're fetched so the corpus is whole regardless.
+- **CUDA toolkit (`nvcc` + a CUDA-12-compatible host `gcc`)** — required for
+  **cutlass** and **cuda-samples** to pass cmake configure at all (they
+  `enable_language(CUDA)` / `find_package(CUDAToolkit)`); without it the survey
+  stops at configure. The hook's `BSB_PROVISION_CUDA=1` path installs apt's
+  `nvidia-cuda-toolkit` (CUDA 12.0) plus `gcc-12`/`g++-12` (nvcc 12.0 caps the
+  host compiler at gcc 12). cutlass's **header library** build needs nvcc only
+  to configure. To actually **compile `.cu`** (cuda-samples), two more pieces:
+  (1) `scripts/provision-cuda-root.sh` assembles a self-contained CUDA root
+  (Debian scatters CUDA across `/usr`; rules_cuda's local toolchain wants one
+  tree), and (2) the build lens points rules_cuda's `cuda.toolkit` at it and
+  steers nvcc's `-ccbin` at gcc-12 via `--repo_env=CC` — both wired by
+  `scripts/build-lens/cuda-samples.conf`. Building device code that *runs*
+  additionally needs the NVIDIA driver (not required to compile/link).
 
 These are container/CI-environment provisioning notes: the ephemeral
 survey container doesn't ship every toolchain by default. The repo's
@@ -430,7 +452,11 @@ sessions. It provisions:
   canonical-form check, so `survey-gazelle` / the split gate don't pay a
   per-run install.
 - **CUDA toolkit** (`BSB_PROVISION_CUDA=1`) — cutlass / cuda-samples;
-  opt-in because it's multi-GB.
+  opt-in because it's multi-GB. Installs `nvidia-cuda-toolkit` + `gcc-12`
+  (nvcc 12.0's host-compiler cap). For the `.cu` compile path (cuda-samples)
+  also run `scripts/provision-cuda-root.sh` to assemble the self-contained
+  CUDA root rules_cuda needs (it prints the path; export it as `BSB_CUDA_ROOT`
+  for `scripts/build-lens/cuda-samples.conf`).
 - **gazelle_cc toolchain warm** (`BSB_WARM_GAZELLE=1`) — pre-builds the
   `gazelle_cc` binary into the persistent survey cache
   (`SURVEY_GAZELLE_BZL_CACHE`) so the first `make survey-gazelle` is
