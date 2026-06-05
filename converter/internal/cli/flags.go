@@ -674,6 +674,11 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 		case key == "":
 			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: expected KEY=VALUE with a non-empty KEY\n", d)
 			return a, ExitUsage
+		case strings.ContainsAny(key, " \t\r\n\f\v"):
+			// A space in the KEY (e.g. "CMAKE_CXX_FLAGS =-w") would set the
+			// wrong cache variable name or emit an unparseable -D argument.
+			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: KEY must not contain whitespace\n", d)
+			return a, ExitUsage
 		case reservedCmakeDefine[key]:
 			fmt.Fprintf(stderr, "convert-element-cmake: --cmake-define %s is reserved; set it via --build-type / --build-types instead\n", key)
 			return a, ExitUsage
