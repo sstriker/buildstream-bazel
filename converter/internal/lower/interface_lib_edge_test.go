@@ -33,7 +33,7 @@ func TestLowerInterfaceLibraries_RootIncludeDiscoversHeaders(t *testing.T) {
 			},
 		}},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, root, root, root, nil,
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, root, root, root, nil, nil,
 		&codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 1 {
 		t.Fatalf("want 1 interface lib; got %d", len(got))

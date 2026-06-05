@@ -1257,7 +1257,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// + INTERFACE_COMPILE_DEFINITIONS as hdrs / defines / includes.
 	if decodedTrace != nil {
 		pkg.Targets = append(pkg.Targets,
-			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, genexTargets, cc)...)
+			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, genexTargets, opts.Imports, cc)...)
 	}
 	// Alias-target lift from trace: `add_library(<alias> ALIAS
 	// <target>)` shapes don't appear in codemodel.targets[]
@@ -1284,6 +1284,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		pkg.Targets = append(pkg.Targets,
 			lowerAliasTargets(decodedTrace, resolvable, cmakeSrc)...)
 	}
+	// Prune dangling `:`-local deps from trace-synth INTERFACE libraries —
+	// edges whose label points at no emitted target or alias. Runs AFTER
+	// both lowerInterfaceLibraries and lowerAliasTargets so the
+	// emitted-target/alias set is final (no forward-ref false positives).
+	// See pruneDanglingTraceInterfaceDeps for the abseil case it fixes.
+	pruneDanglingTraceInterfaceDeps(pkg)
 	// Phase 4 standalone custom-command emission. Opt-in via
 	// Options.EmitStandaloneCustomCommands; the dedup against
 	// existing genrules keeps the recoverGenrule path's output
@@ -4234,6 +4240,82 @@ func routeTraceInterfaceLibDeps(pkg *ir.Package, traceLinkLibs map[string][]stri
 			have[label] = true
 		}
 	}
+}
+
+// pruneDanglingTraceInterfaceDeps drops dependency edges on trace-synthesized
+// INTERFACE libraries (`cmake-codegen-interface-library-from-trace`) that name
+// a same-package target which was never emitted — a `:<name>` label with no
+// matching rule or alias in the package. Such a label is guaranteed to fail
+// Bazel analysis ("target '//pkg:<name>' does not exist").
+//
+// Why these arise: the trace records an INTERFACE library's
+// target_link_libraries arms verbatim, but the codemodel can legitimately
+// omit a *referenced* target. abseil's GTest-less default build is the canonical
+// case: `absl_heterogeneous_lookup_testing` (a header-only INTERFACE lib that
+// abseil declares WITHOUT the TESTONLY keyword, so it is always emitted) links
+// `absl::test_instance_tracker`, which IS TESTONLY — so when testing is off the
+// macro early-returns and never creates that target. The codemodel never sees
+// it, lowerInterfaceLibraries sanitizes the dep to a local
+// `:absl_test_instance_tracker`, and `bazel build //...` then dies on the
+// dangling label even though every other one of abseil's 600+ targets builds.
+// (The sibling find_package edge, GTest::gmock, is handled separately by
+// lowerInterfaceLibraries' imports-manifest routing.)
+//
+// Pruning — rather than erroring — is the right call here: the INTERFACE lib is
+// header-only, so without the unbuildable edge it still carries its headers and
+// every real consumer builds; the dropped edge points at a target that, by
+// construction, does not exist in this configuration. This is a graceful,
+// intentional repair (a sibling of routeTraceInterfaceLibDeps and
+// dropGenexIncludeDirs), NOT a Tier-1 refusal — the codemodel dep path records
+// an UnresolvedLinkDep because it has no fallback and must abort, whereas this
+// IS the fallback. So the drop is silent: recording a rejection would both
+// misreport a handled case as a refusal and trip the survey's skip(rej)
+// short-circuit, suppressing the very build-lens pass that proves the repair.
+// Runs LAST (after both lowerInterfaceLibraries and lowerAliasTargets) so the
+// emitted-name set is complete and no forward reference is misread as dangling.
+// Only `:`-local labels are considered: external (`@repo//:t`) and absolute
+// in-repo (`//pkg:t`) labels resolve elsewhere and are left untouched. Returns
+// the number of edges dropped.
+func pruneDanglingTraceInterfaceDeps(pkg *ir.Package) int {
+	if pkg == nil {
+		return 0
+	}
+	// Set of every emitted target/alias name in the package — the universe a
+	// `:<name>` local label can legitimately resolve to.
+	emitted := make(map[string]bool, len(pkg.Targets))
+	for i := range pkg.Targets {
+		emitted[pkg.Targets[i].Name] = true
+	}
+	// danglingLocal reports whether a dep label is a `:`-local reference to a
+	// name with no emitted target/alias. A bare ":" (defensive) is not dangling.
+	danglingLocal := func(label string) bool {
+		name, ok := strings.CutPrefix(label, ":")
+		if !ok || name == "" {
+			return false
+		}
+		return !emitted[name]
+	}
+	dropped := 0
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if !stringSliceContains(t.Tags, "cmake-codegen-interface-library-from-trace") {
+			continue
+		}
+		pruneBucket := func(deps []string) []string {
+			kept := deps[:0]
+			for _, d := range deps {
+				if danglingLocal(d) {
+					dropped++
+					continue
+				}
+				kept = append(kept, d)
+			}
+			return kept
+		}
+		t.Deps = pruneBucket(t.Deps)
+		t.ImplementationDeps = pruneBucket(t.ImplementationDeps)
+	}
+	return dropped
 }
 
 // dropGenexIncludeDirs removes include directories that are unresolved
