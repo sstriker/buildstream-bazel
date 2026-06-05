@@ -80,8 +80,8 @@ when the work is:
 
 - A `ROADMAP.md` `Now` / `Next` item the user asked you to tackle.
 - A specific GitHub issue the user pointed at (by number or URL).
-- A direct fix-up follow-on to a PR already in flight (rebase, address
-  review feedback, land a stacked PR's bottom layer).
+- A direct fix-up follow-on to a PR already in flight (address review
+  feedback, land a stacked PR's bottom layer).
 
 For everything else — ad-hoc cleanups, refactors not on the roadmap,
 experimental spikes — keep the default: commit + push, then ask
@@ -130,37 +130,39 @@ loop is:
      dispatch shapes): ask the user before acting.
    - **Already-resolved-by-an-earlier-fix** threads: skip; the bot's
      auto-outdate heuristic catches up on the next review pass.
-6. **Push** the fixes. Use `--force-with-lease` for amends / squashes.
+6. **Push** the fixes as follow-up commits on the PR branch (a plain
+   push — no amend/force-push or rebase, since we land with merge
+   commits, not a squashed replay).
 7. **Re-request review** (step 3 again).
 8. **Loop** until the bot stops surfacing real bugs. Stop when the
    only open threads are doc-style suggestions you've considered and
    declined or that the bot will mark outdated on the next pass.
 
+**Landing PRs — merge commits only.** Squash and rebase-merge are both
+disabled on this repo, so **merge with a merge commit**
+(`merge_method=merge`) and **never rebase a branch onto `main` just to
+land it** — GitHub's 3-way merge reconciles any already-landed commits.
+Merge once required checks are green; the auto-merge tool can't always
+arm while checks are still pending, so in that case just merge when they
+pass.
+
 For stacked PRs:
 
 - **All PRs target `main`.** Don't base one PR's branch on another
   PR's branch on GitHub — GitHub's stack-via-base-branch UI mostly
-  fights the linear-history workflow this repo uses. Each PR is its
+  fights the one-PR-per-branch workflow this repo uses. Each PR is its
   own branch off main, carries its own commits, and is independently
   mergeable in principle. The "stack" lives in the operator's head
   (and the PR descriptions cross-referencing each other), not in the
   PR base setting.
-- **Land the bottom PR first**, then rebase the upper branches onto
-  `main` to drop the now-merged commits and pick up any review fixes.
-  GitHub will narrow the upper PRs' diffs automatically after the
-  rebase + force-push lands.
-- Address the bottom PR's feedback first, push, then rebase the rest
-  of the stack on top so each downstream PR picks up the fix before
-  its own review pass.
-- If the same kind of bug surfaces at multiple levels of the stack
-  (e.g. a docstring claim landed at PR #N is still wrong at PR #N+2
-  because the rebase brought it forward), fix at the lowest level
-  that can hold the change cleanly; the chain rebase pulls it
-  forward.
-- Rebase conflicts on docs that have been edited at multiple stack
-  levels are common — resolve in favour of the most-current text
-  (the version closest to HEAD's intent), not the older snapshot
-  the cherry-pick brought in.
+- **Land the bottom PR first**, then merge the upper PRs — also with
+  merge commits, *without* rebasing them onto `main` first. GitHub
+  reconciles the bottom PR's now-landed commits and narrows the upper
+  PRs' diffs automatically.
+- Address review feedback with follow-up commits on the relevant PR's
+  branch (plain pushes). If the same bug spans multiple levels of the
+  stack, fix it on the lowest branch that can hold the change; the
+  upper PRs pick it up when they merge after the lower one lands.
 
 Don't over-engineer the loop. Each iteration costs a re-review cycle
 on the operator's Anthropic account; batch related fixes into one
