@@ -9,11 +9,18 @@
   `.conf` (grpc: `--cmake-define gRPC_BUILD_TESTS=OFF`; SDL: `--cmake-define
   SDL_REVISION=<str>` short-circuits its git_describe → both its rejections
   vanish).
-- **In flight (6 agents):** eigen (`claude/green-eigen`); curl
-  (`claude/green-curl` — 3-for-1 cc_import fix); VTK (`claude/green-vtk` —
-  cc-embed/cc-hash); abseil (`claude/green-abseil` — gmock-via-imports);
+- **Landed greens this wave:** eigen (#443 → green #7), abseil (#444 → green
+  #8, 639/639). Each via the land procedure below.
+- **In flight (4 agents):** curl (`claude/green-curl` — 3-for-1 cc_import fix,
+  unblocks grpc+SDL); VTK (`claude/green-vtk` — cc-embed/cc-hash);
   **protobuf** (`claude/green-protobuf` — DEEP); **llvm** (`claude/green-llvm` —
-  DEEPEST).
+  DEEPEST). Their branches are NOT yet pushed = still grinding.
+- **Land procedure (agents branched pre-Phase-0 → reconcile onto main):**
+  checkout the agent branch, `git merge origin/main` (picks up Phase-0 + prior
+  greens; drop any *rebuilt* config loader in favor of main's #442), then
+  `go build ./...` + `gofmt -l` + `go test ./converter/internal/...`, push, PR,
+  merge-commit. (eigen needed file-by-file extraction since its merge collided
+  on the rebuilt loader; abseil merged clean.)
 - **Queued:** grpc + SDL (`.conf`-only, the moment curl's cc_import fix lands).
 - **Deep-grind (IN scope per operator — iterative, multi-pass agents):**
   - **protobuf** — (A) general `--fetchcontent-remap` converter slice
@@ -27,7 +34,7 @@
     split-header libs; (D) ZLIB imports; (E) tblgen-as-genrule-tool. Iterative.
 - **Structural won't-green (flag):** zstd — sources outside the surveyed
   `build/cmake` root (needs a survey-scope change; not requested).
-- **Greened (6):** fmt, libxml2, brotli, glm, googletest, glog.
+- **Greened (8):** fmt, libxml2, brotli, glm, googletest, glog, eigen, abseil.
 
 This doc is the **single source of truth** for greening the whole survey
 corpus on the build lens (`build = ok` for every member). It is the
