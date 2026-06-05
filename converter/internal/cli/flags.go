@@ -589,14 +589,19 @@ type Args struct {
 	EmitInstallExportConfig bool
 }
 
-// reservedCmakeDefine names cmake cache vars the converter drives through
-// dedicated flags (and routes to their own cmakerun slots), so accepting them
-// via --cmake-define would conflict at configure time. CMAKE_BUILD_TYPE is the
-// single-config slot (cmakerun.Options.BuildType, from --build-type);
-// CMAKE_CONFIGURATION_TYPES is the multi-config set (--build-types).
-var reservedCmakeDefine = map[string]bool{
-	"CMAKE_BUILD_TYPE":          true,
-	"CMAKE_CONFIGURATION_TYPES": true,
+// reservedCmakeDefine names cmake cache vars the converter drives itself —
+// either through a dedicated flag (routed to its own cmakerun slot) or set
+// unconditionally to make the configure observable. Accepting one via
+// --cmake-define would conflict at configure time (last-wins, or a broken
+// codemodel), so each is rejected at parse time with the per-var guidance
+// shown here (a single hardcoded "use --build-type" message would be wrong for
+// the non-build-type entries).
+var reservedCmakeDefine = map[string]string{
+	"CMAKE_BUILD_TYPE":                 "set it via --build-type / --build-types",
+	"CMAKE_CONFIGURATION_TYPES":        "set it via --build-types",
+	"CMAKE_TOOLCHAIN_FILE":             "set it via --toolchain-cmake-file",
+	"CMAKE_EXPORT_COMPILE_COMMANDS":    "the converter sets it ON to read the compile commands",
+	"CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "the converter sets it to inject its variable-dump hook",
 }
 
 // Parse reads argv (without program name), populates Args, and prints usage
@@ -676,6 +681,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 		// bare KEY (sans :TYPE) against the reserved set so a typed
 		// CMAKE_BUILD_TYPE:STRING can't slip the reservation.
 		bareKey, _, _ := strings.Cut(key, ":")
+		reservedWhy, reserved := reservedCmakeDefine[bareKey]
 		switch {
 		case key == "":
 			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: expected KEY=VALUE with a non-empty KEY\n", d)
@@ -690,8 +696,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 			// wrong cache variable name or emit an unparseable -D argument.
 			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: KEY must not contain whitespace\n", d)
 			return a, ExitUsage
-		case reservedCmakeDefine[bareKey]:
-			fmt.Fprintf(stderr, "convert-element-cmake: --cmake-define %s is reserved; set it via --build-type / --build-types instead\n", bareKey)
+		case reserved:
+			fmt.Fprintf(stderr, "convert-element-cmake: --cmake-define %s is reserved — %s\n", bareKey, reservedWhy)
 			return a, ExitUsage
 		}
 	}

@@ -410,11 +410,15 @@ func TestParse_CmakeDefineWhitespaceKeyRejected(t *testing.T) {
 // is rejected at parse time rather than conflicting at configure time.
 func TestParse_CmakeDefineReservedRejected(t *testing.T) {
 	// Include a typed cache entry (KEY:TYPE=VALUE) to pin that the reserved
-	// check sees through the :TYPE suffix.
+	// check sees through the :TYPE suffix, plus the non-build-type vars the
+	// converter also owns.
 	for _, entry := range []string{
 		"CMAKE_BUILD_TYPE=Debug",
 		"CMAKE_CONFIGURATION_TYPES=Debug;Release",
 		"CMAKE_BUILD_TYPE:STRING=Debug",
+		"CMAKE_TOOLCHAIN_FILE=/x/tc.cmake",
+		"CMAKE_EXPORT_COMPILE_COMMANDS=OFF",
+		"CMAKE_PROJECT_TOP_LEVEL_INCLUDES=/x/inc.cmake",
 	} {
 		var stderr bytes.Buffer
 		_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", entry}, &stderr)
