@@ -1,5 +1,17 @@
 # Corpus-green campaign — workflow + live board (target: Sunday night)
 
+## Live state — Fri (post-launch)
+- **Phase 0** (data-driven `build-lens/<m>.conf`): ✅ landed (#442). Greening
+  agents now add only their own `.conf` → conflict-free.
+- **In flight (4 parallel worktree agents):** eigen → `claude/green-eigen`
+  (Phase 1, recipe verified); curl → `claude/green-curl` (Phase 2 — fix the
+  shared-lib `cc_import` seam + add tests to the 3 split/genrule fixes);
+  protobuf → `claude/green-protobuf` (Phase 2 — FetchContent→`@bcr` remap, or a
+  scoped not-by-Sunday verdict); triage → grpc/SDL/LLVM/VTK.
+- **Next wave (on report / freed slot):** abseil (gmock via the imports lever),
+  then triaged assignments.
+- **Greened so far (6):** fmt, libxml2, brotli, glm, googletest, glog.
+
 This doc is the **single source of truth** for greening the whole survey
 corpus on the build lens (`build = ok` for every member). It is the
 campaign's *memory*: it survives context-window summarization and session
