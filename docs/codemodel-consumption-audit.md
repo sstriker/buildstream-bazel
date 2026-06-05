@@ -265,8 +265,7 @@ carry information, and the topology links are correctly skipped.**
 
 ## Goal: close all spec-coverage gaps — **done**
 
-The field-level residue identified in this audit has been retired
-(see `ROADMAP.md`'s Done list):
+The field-level residue identified in this audit has been retired:
 
 1. **`cmakeFiles.globsDependent`** (correctness) — ✅ parsed into the
    `CMakeFiles` struct; matched `paths` fold into the configure-inputs

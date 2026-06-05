@@ -285,4 +285,4 @@ on the same host cmake built with reproduces that build's hardening without
 the operator having to pass anything explicitly). Opt out per-build with
 `--features=-fortify_source` / `--features=-stack_protector`. The classifier
 auto-classifies these undefined-symbol deltas as benign (no allowlist entry
-needed). See `ROADMAP.md`'s "Toolchain-feature parity" Done entry.
+needed).

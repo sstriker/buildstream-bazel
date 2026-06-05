@@ -194,7 +194,7 @@ implementation.
 | `converter/` | The cmake converter. cmake File API codemodel + `--trace-expand` → native cc rules. |
 | `internal/` | Shared packages — CAS, REAPI, manifest, shadow tree, fidelity, the `.bst` element parser, regression, sourcecheckout, exports, etc. See [`docs/codebase-map.md`](docs/codebase-map.md). |
 | `testdata/meta-project/` | End-to-end fixtures driven by the gates under `scripts/`. |
-| `docs/` | Architecture, codebase map, design specs. See [`ROADMAP.md`](ROADMAP.md) for what's done / next. |
+| `docs/` | Architecture, codebase map, design specs. See [`ROADMAP.md`](ROADMAP.md) for what's planned. |
 
 ## Where to go next
 

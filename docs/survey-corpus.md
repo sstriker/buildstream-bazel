@@ -18,6 +18,33 @@ the analysis framing and `scripts/run-survey.sh` for the driver.
 This document is the single source of truth for **which projects are in the
 corpus** and **how to survey them faithfully** (so two runs are comparable).
 
+## Status at a glance
+
+State per project across the four lenses (each lens is defined in the
+sections below). The three **convertibility** lenses report finding
+counts — `0` is healthy; the **build** lens reports the survey's
+`build` token. Per-project build-lens detail is in *Build-lens status*
+below; the full corpus roster + rationale is under *The corpus*.
+
+| Project | Rejections | Idiom | Coverage | Build lens |
+| --- | --- | --- | --- | --- |
+| **fmt** | 0 | 0 | 0 | `ok` |
+| **libxml2** | 0 | 0 | 0 | `ok` |
+| **brotli** | 0 | 0 | 0 | `ok` |
+| **glm** | 0 | 0 | 0 | `ok` |
+| **googletest** | 0 | 0 | 0 | `ok` |
+| **abseil** | 0 | 0 | 0 | `FAIL` (2 ext test-dep — accepted) |
+| **zstd** | 0 | 0 | 0 | `FAIL` (un-greenable at this scope) |
+| **glog** | rej | 0 | 0 | `skip(rej)` |
+| **protobuf, eigen, curl, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
+
+`rej` = surveys with rejections, so the build lens skips it; for
+protobuf / eigen / curl these are honest external `find_package` deps
+that resolve in a real `.bst` element graph (not converter debt).
+Large members surveyed for convertibility but not yet driven through
+the build lens (SDL, grpc, llvm, VTK, OpenBLAS, …) live under *The
+corpus* / *Regression corpus* below.
+
 ## What a survey is checking for (the three lenses)
 
 A survey isn't just "did it crash" — it's three distinct questions, and
@@ -323,8 +350,7 @@ llvm-subdir note below):
   is off), and the probe's `INTERFACE_LINK_LIBRARIES` `file(GENERATE)`
   forced evaluation of that dangling `::` reference. `probe-genex.cmake`
   now skips probing any target with an unresolvable `::` link-interface
-  dep (see the ROADMAP Done entry +
-  `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil converts
+  dep (see `TestProbeGenex_DanglingLinkInterface_LiveCMake`), so abseil converts
   with the probe on instead of crashing — no `--probe-genex=false` needed.
   Surveys clean (`0/0/0`) under the default `auto`+split.
 - **zstd:** the buildable CMake root is the **`build/cmake` subdir**, not

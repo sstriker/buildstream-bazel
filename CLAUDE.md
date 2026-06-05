@@ -3,24 +3,26 @@
 ## Keeping `ROADMAP.md` current
 
 `ROADMAP.md` (at the repo root) is the single source of truth for
-what's shipped vs. queued. The architecture docs under `docs/`
-describe how the systems work but **do not** restate roadmap state
-— they point at `ROADMAP.md` instead. Don't add "What's shipped"
-or "What's next" sections to architecture docs; that duplication
-is what we deleted in PR #75.
+what's **planned** — the `Now` / `Next` / `Later` work. It is **not**
+a changelog: git history and the code are the record of what shipped.
+The architecture docs under `docs/` describe how the systems work but
+**do not** restate roadmap state — they point at `ROADMAP.md` instead.
+Don't add "What's shipped" or "What's next" sections to architecture
+docs; that duplication is what we deleted in PR #75.
 
 When a change ships work that advances a `ROADMAP.md` item:
 
-- If the change completes a `Now` or `Next` bullet, move it to
-  `Done (high points)` in the same PR (or delete it if it's a
-  small detail unworthy of the Done list).
+- If the change completes a `Now` or `Next` bullet, **delete the
+  bullet** — don't archive it. (We removed the old `Done (high
+  points)` section precisely to stop using the roadmap as a changelog.)
 - If the change makes meaningful progress without finishing the
   bullet, edit the bullet in place to reflect the new state.
 - If the change reveals a follow-up that wasn't in `ROADMAP.md`,
   add it under `Now` / `Next` / `Later` as appropriate.
 
-The goal: anyone reading `ROADMAP.md` on `main` should see an
-honest current picture, not a snapshot from N PRs ago.
+The goal: anyone reading `ROADMAP.md` on `main` should see an honest
+picture of what's *left*, not a snapshot from N PRs ago and not an
+archive of work already done.
 
 ## Verifying code edits
 
