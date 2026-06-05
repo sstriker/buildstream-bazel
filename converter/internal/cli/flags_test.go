@@ -350,3 +350,57 @@ func TestParse_BuildType(t *testing.T) {
 		t.Errorf("BuildTypes should be empty when --build-type set; got %v", args.BuildTypes)
 	}
 }
+
+// TestParse_CmakeDefine covers the repeatable --cmake-define happy path:
+// multiple KEY=VALUE entries accumulate in order, and a bare KEY (no '=')
+// is accepted (cmake reads it as KEY="").
+func TestParse_CmakeDefine(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{
+		"--source-root", "/proj",
+		"--cmake-define", "CMAKE_CXX_FLAGS=-w",
+		"--cmake-define", "GLM_ENABLE_CXX_17=ON",
+		"--cmake-define", "BARE_KEY",
+	}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	want := []string{"CMAKE_CXX_FLAGS=-w", "GLM_ENABLE_CXX_17=ON", "BARE_KEY"}
+	if len(args.CmakeDefines) != len(want) {
+		t.Fatalf("CmakeDefines = %v; want %v", args.CmakeDefines, want)
+	}
+	for i, w := range want {
+		if args.CmakeDefines[i] != w {
+			t.Errorf("CmakeDefines[%d] = %q; want %q", i, args.CmakeDefines[i], w)
+		}
+	}
+}
+
+// TestParse_CmakeDefineEmptyKeyRejected pins that a "=VALUE" entry (empty
+// KEY) is a clean usage error, not a downstream cmake "-D=VALUE" failure.
+func TestParse_CmakeDefineEmptyKeyRejected(t *testing.T) {
+	var stderr bytes.Buffer
+	_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", "=VALUE"}, &stderr)
+	if code != ExitUsage {
+		t.Fatalf("code = %d; want ExitUsage (%d)", code, ExitUsage)
+	}
+	if !strings.Contains(stderr.String(), "--cmake-define") {
+		t.Errorf("stderr should name the offending flag, got %q", stderr.String())
+	}
+}
+
+// TestParse_CmakeDefineReservedRejected pins that a cache var the converter
+// owns through a dedicated flag (CMAKE_BUILD_TYPE / CMAKE_CONFIGURATION_TYPES)
+// is rejected at parse time rather than conflicting at configure time.
+func TestParse_CmakeDefineReservedRejected(t *testing.T) {
+	for _, key := range []string{"CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES"} {
+		var stderr bytes.Buffer
+		_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", key + "=Debug"}, &stderr)
+		if code != ExitUsage {
+			t.Fatalf("%s: code = %d; want ExitUsage (%d)", key, code, ExitUsage)
+		}
+		if !strings.Contains(stderr.String(), "reserved") {
+			t.Errorf("%s: stderr should explain it is reserved, got %q", key, stderr.String())
+		}
+	}
+}
