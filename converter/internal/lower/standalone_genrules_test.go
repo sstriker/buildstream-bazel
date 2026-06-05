@@ -78,13 +78,26 @@ func TestCmakeInternalCmdKind(t *testing.T) {
 		{`cmake -P cmake_install.cmake`, "install"},
 		{`cd /tmp/b && /usr/bin/cmake -P cmake_uninstall.cmake`, "uninstall"},
 		{`cmake -P cmake_uninstall.cmake`, "uninstall"},
+		// Project-specific uninstall script names — the script name is
+		// project-chosen, but always carries the word "uninstall" (case-
+		// insensitive). eigen ships EigenUninstall.cmake; others use
+		// <Proj>Uninstall.cmake / uninstall.cmake; the -P arg may be a relative
+		// or absolute path.
+		{`/usr/local/opt/cmake-4.3.3/bin/cmake -P cmake/EigenUninstall.cmake`, "uninstall"},
+		{`cmake -P FooUninstall.cmake`, "uninstall"},
+		{`cmake -P /abs/path/Uninstall.cmake`, "uninstall"},
+		{`cmake -P uninstall.cmake`, "uninstall"},
 		// Versioned / non-standard install path (the web-session cmake pin)
 		// must still match — normalization keys on the basename, not a fixed
 		// /usr/bin prefix.
 		{`cd /tmp/b && /usr/local/opt/cmake-4.3.3/bin/cmake -P cmake_uninstall.cmake`, "uninstall"},
 		{`/usr/local/opt/cmake-4.3.3/bin/cmake -P cmake_install.cmake`, "install"},
-		// A user's own -P script is NOT swept up (keys on the conventional name).
+		// A user's own -P script is NOT swept up — no "uninstall" in the name.
 		{`cmake -P myscript.cmake`, ""},
+		// A script merely mentioning install but not an install/uninstall
+		// maintenance script also isn't swept up (the install match keys on the
+		// exact cmake_install.cmake name, not any *install* substring).
+		{`cmake -P generate_installer_config.cmake`, ""},
 		{`cmake --regenerate-during-build -S/src -B/build`, "regen"},
 		{`cpack --config CPackConfig.cmake`, "cpack"},
 		{`ninja clean && rm -rf `, "clean"},

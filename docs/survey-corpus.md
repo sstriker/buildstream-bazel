@@ -36,14 +36,21 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **abseil** | 0 | 0 | 0 | `ok` |
 | **zstd** | 0 | 0 | 0 | `FAIL` (un-greenable at this scope) |
 | **glog** | 0† | 30 | 0 | `ok` |
-| **protobuf, eigen, curl, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
+| **eigen** | 0 | 16‡ | 0 | `ok` |
+| **protobuf, curl, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for
-protobuf / eigen / curl these are honest external `find_package` deps
+protobuf / curl these are honest external `find_package` deps
 that resolve in a real `.bst` element graph (not converter debt).
 † glog's 2 rejections are benign forward-declared-include "treated as
 empty" notices (0 blocking — a no-op in strict mode), so it builds; see
 *Build-lens status* for the static-link detail.
+‡ eigen's 16 idioms are all `fortran-target-needs-ruleset` — the bundled
+Fortran reference BLAS/LAPACK, which the diagnostic survey (full tree)
+flags as needing a Bazel Fortran ruleset (deferred — none exists). They
+don't block the **header-library** build lens, which disables the
+Fortran BLAS/LAPACK + the test/doc/demo dev surfaces (see *Build-lens
+status*).
 Large members surveyed for convertibility but not yet driven through
 the build lens (SDL, grpc, llvm, VTK, OpenBLAS, …) live under *The
 corpus* / *Regression corpus* below.
@@ -259,7 +266,8 @@ queued follow-ups live in `ROADMAP.md`, not here.
 | **googletest** | `ok` | Green. gtest/gmock libs build via the fused-source `textual_hdrs` fix (`gtest-all.cc` textually `#include`s its sibling `src/*.cc`); the `cmake_config_bundle` builds via the **opt-in** install(EXPORT) config-mode generation (`--emit-install-export-config`, which the build lens passes) — a `write_file` generates the real `GTestTargets.cmake` (`GTest::gtest`/`gmock`/… imported targets + `IMPORTED_LOCATION` under `${_IMPORT_PREFIX}`). Default converts omit the bundle (the orchestrated graph wires its own synthprefix-synthesized one). |
 | **zstd** | `FAIL` (un-greenable at this scope) | Three non-modelable command edges are now filtered — `create_symlink` tool aliases (`unzstd`/`zstdcat`/`zstdmt` → `zstd`), the `ninja clean` target, and source-less `cmake -E copy` manpage edges. But zstd is **not greenable via the build lens at the `build/cmake` scope**: its actual sources live in `repo/lib` + `repo/programs` (siblings of `build/`, *outside* the surveyed `build/cmake` root), so the `libzstd` `cc_library` references `//elements/zstd/lib:common/*.c` / headers that aren't in the element. A standalone `build/cmake` element is structurally incomplete — a survey-scope/layout matter, not a converter bug. (zstd still earns its corpus place on the *convertibility* lenses + as the subdir-under-umbrella regression guard, #303.) |
 | **glog** | `ok` | **Green (three parts).** Its only 2 rejections are benign forward-declared-include notices (`$<TARGET_PROPERTY:…>` / `glog/`), a no-op in strict mode; the survey's `skip(rej)` gate now subtracts that benign class so the lens actually exercises glog. The empty-placeholder source `CMakeFiles/glog.cc` (CMake's `_glog_EMPTY_SOURCE`, a `cmake -E touch` recovered from ninja) builds via the recovered-genrule subdir-output `$(RULEDIR)` anchor. The 9 `cc_test`s reference glog's internal `-fvisibility=hidden` symbols (`GetExistingTempDirectories`, `g_logging_fail_func`, `SafeFNMatch_`, …); Bazel's default dynamic linking builds glog as a `.so` that doesn't export them, so the lens passes `--dynamic_mode=off` to link them statically (matching glog's own static test build + the converter's `linkstatic=True`). Remaining: 30 `raw-toolchain-feature-flag` idiom findings (non-build-blocking — a separate idiom-lens follow-up). |
-| protobuf, eigen, curl, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
+| **eigen** | `ok` | **Green as the header-only library.** eigen is HEADER-ONLY with no `find_package`, so the header library converts to a single `cc_library` and builds. The build lens (`scripts/build-lens/eigen.conf`) disables the parts of eigen's tree that aren't the library: `EIGEN_BUILD_BLAS`/`EIGEN_BUILD_LAPACK` (eigen's bundled **Fortran reference BLAS/LAPACK** — no Bazel Fortran ruleset exists, genuinely unsupported, **deferred**), `EIGEN_BUILD_TESTING` (its ~900-target `-Werror` SIMD test suite — a separate dev surface), and `EIGEN_BUILD_DOC`/`EIGEN_BUILD_DEMOS` (the `doc/examples` + `doc/snippets` + `unsupported/doc/examples` + `demos/` programs — documentation/demo `cc_binary`s that fail to resolve `<Eigen/Dense>` in the converted shape, again dev surface not the library). One general converter fix was needed: eigen's `uninstall` maintenance target runs `cmake -P cmake/EigenUninstall.cmake`, and the cmake-internal-command filter keyed only on the conventional `cmake_uninstall.cmake` script name — it now matches any `-P` script whose basename contains "uninstall" (case-insensitive), catching project-specific names like eigen's. The diagnostic survey (full tree, no conf) still reports 16 `fortran-target-needs-ruleset` idioms for the Fortran BLAS/LAPACK — non-build-blocking; the deferred Fortran surface. |
+| protobuf, curl, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
 
 **`-Werror` projects vs. the toolchain's `-Wall`.** A project that builds clean
 under its *own* cmake can still `FAIL` the build lens when it sets `-Werror`
