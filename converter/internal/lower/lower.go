@@ -867,7 +867,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 		rescueVars = merged
 	}
-	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, cc)
+	// A stamp value forwarded onward by a recovered set() copy (the SrcVar of
+	// a SetAssignment) — including a helper function's PARENT_SCOPE return —
+	// reaches a consuming configure_file even when the execute_process's own
+	// OUTPUT_VARIABLE is a function-local the dump-vars top-level snapshot
+	// can't see, so recoverExecuteProcess rescues it rather than refusing
+	// (git_describe()'s shape). Empty in the single-pass default (no recovered
+	// copies), which preserves the uncaptured-stamp → round-2 refusal.
+	forwardedStampVars := map[string]bool{}
+	for _, a := range opts.SetAssignments {
+		forwardedStampVars[a.SrcVar] = true
+	}
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, forwardedStampVars, cc)
 	// Expand the stamp-var set through verbatim set(X ${Y}) copies the
 	// driver recovered from a non-expanded trace (empty in the single-pass
 	// default), so a configure_file referencing a copy of a VCS-stamp var

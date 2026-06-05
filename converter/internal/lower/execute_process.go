@@ -170,7 +170,7 @@ type execAnchors struct {
 	recordedBuildDir string
 }
 
-func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
+func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, forwardedStampVars map[string]bool, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -303,19 +303,29 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				driver := executeProcessDriverBasename(call.Commands[0][0])
 				cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
 			}
-			// Stamp capture gate. A stamp's value (a VCS revision) WOULD bake
-			// into the srckey of any configure_file that consumed it —
-			// silently pinning the build to one commit — so unlike a probe a
-			// stamp isn't skipped blindly. It rescues when the dump-vars hook
-			// captured its value (downstream configure_file / file(GENERATE)
-			// lifts then read it via Reply.Vars); otherwise it refuses so the
-			// operator opts into round-2 for the non-baked stamp. A
-			// BucketProbe reaches here only when it set OUTPUT_FILE (a
-			// strong-probe/host-detection driver redirecting to a file); it
-			// follows the same gate.
+			// Stamp / probe capture gate. A stamp's value (a VCS revision)
+			// WOULD bake into the srckey of any configure_file that consumed
+			// it — silently pinning the build to one commit — so unlike a probe
+			// a stamp isn't skipped blindly. It rescues when that value is
+			// reachable by a consuming configure_file: captured at top level by
+			// dump-vars (OUTPUT_VARIABLE in cmakeVars), OR forwarded onward by a
+			// recovered `set()` copy — including a helper function's
+			// `set(${_var} "${out}" PARENT_SCOPE)` return, whose function-local
+			// OUTPUT_VARIABLE the dump-vars top-level snapshot can't see but
+			// whose value still reaches a captured var the configure_file reads
+			// (git_describe()'s shape, as in SDL). A stamp whose OUTPUT_VARIABLE
+			// is neither captured nor forwarded has no namespace path to a
+			// consumer and stays refused so the operator opts into round-2 (the
+			// synthetic single-pass fixtures, with no recovered set() copies,
+			// model exactly that). A BucketProbe reaches here only when it set
+			// OUTPUT_FILE; it follows the capture gate but not the stamp-only
+			// forwarded rescue.
 			if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 				if call.OutputVariable != "" {
 					if _, ok := cmakeVars[call.OutputVariable]; ok {
+						continue
+					}
+					if v.Bucket == BucketStamp && forwardedStampVars[call.OutputVariable] {
 						continue
 					}
 				}

@@ -316,7 +316,21 @@ transition cleanly.
     (`--trace`, which keeps `${GIT_SHA}` verbatim where
     `--trace-expand` would substitute it), `ExtractSetAssignments`
     recovers the copies, and the stamp key propagates to the copy
-    so the `@VERSION@` consumer lifts. A feature-
+    so the `@VERSION@` consumer lifts. A stamp wrapped in a helper
+    FUNCTION — the `GetGitRevisionDescription.cmake` / `git_describe()`
+    shape SDL and the hundreds of projects that copy that module use,
+    where the `execute_process` OUTPUT_VARIABLE is a function-local
+    handed back via `set(${_var} "${out}" PARENT_SCOPE)` — no longer
+    ABORTS the clean convert: the local is the `SrcVar` of the
+    recovered copy, and on a pass-1 stamp abort the converter re-runs
+    the non-expanded-trace pass and re-lowers with that copy (the
+    rescue is narrow to forwarded stamps; an uncaptured, unforwarded
+    stamp still refuses). That forwarded value currently BAKES — its
+    parent-scope name `${_var}` isn't resolved to the real var, so the
+    var isn't marked for the `stamp_values` lift — which is acceptable
+    while round-2 is unwired (baking beats dead-ending at the refusal);
+    lifting a function-forwarded stamp to `stamp_values` is queued
+    below. A feature-
     declaration probe (`HAVE_*` / `USE_*` / `*_FOUND` / …) instead
     lifts to an operator-overridable `bool_flag` +
     `config_setting` — the Bazel idiom for "does the host have
@@ -607,6 +621,17 @@ transition cleanly.
   drops the volatile value without leaking it.
 
 ## Next
+
+- **Lift function-forwarded VCS stamps to `stamp_values` instead of
+  baking.** A `git_describe()`-style helper hands its revision back via
+  `set(${_var} "${out}" PARENT_SCOPE)`; the forwarded-stamp recovery now
+  keeps the clean convert from aborting on it (SDL, and the hundreds of
+  projects that copy `GetGitRevisionDescription.cmake`), but the value
+  bakes because the parent-scope name `${_var}` isn't resolved to the
+  real var, so that var isn't marked for the `stamp_values` lift. Resolve
+  the function-return name (model `_var` <- the call arg) so the forwarded
+  stamp re-reads the live revision from workspace status, like the direct
+  and `set(VERSION ${GIT_SHA})` indirection cases already do.
 
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
