@@ -419,6 +419,7 @@ func TestParse_CmakeDefineReservedRejected(t *testing.T) {
 		"CMAKE_TOOLCHAIN_FILE=/x/tc.cmake",
 		"CMAKE_EXPORT_COMPILE_COMMANDS=OFF",
 		"CMAKE_PROJECT_TOP_LEVEL_INCLUDES=/x/inc.cmake",
+		"CMAKE_FIND_PACKAGE_PREFER_CONFIG=OFF",
 	} {
 		var stderr bytes.Buffer
 		_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", entry}, &stderr)
