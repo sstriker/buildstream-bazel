@@ -215,6 +215,23 @@ try_bazel_build() {
     # CMAKE_CXX_FLAGS=-w: it inhibits all warnings (so -Werror has nothing to
     # promote, order-independently) while leaving C++ auto-detection intact, so
     # the full test suite — hash included — compiles.
+    #
+    # curl: the lens exercises curl as a find_package consumer — its one
+    # manifest-resolvable external dep is ZLIB (ZLIB::ZLIB -> @zlib//:zlib via
+    # --imports-manifest below), so the goal is to prove libcurl's converted
+    # output builds with that dep fetched + linked. OpenSSL is disabled
+    # (CURL_USE_OPENSSL/CURL_ENABLE_SSL OFF) — it's a heavy second find_package
+    # dep with no BCR module wired. The TOOL (BUILD_CURL_EXE), TEST tree
+    # (BUILD_TESTING / CURL_DISABLE_TESTS), DOCS (BUILD_LIBCURL_DOCS /
+    # BUILD_MISC_DOCS / ENABLE_CURL_MANUAL) and EXAMPLES (BUILD_EXAMPLES) are
+    # turned OFF so the //... wildcard builds just libcurl. Those auxiliary
+    # subtrees are curl's `make test` / man-page surface: dozens of standalone
+    # custom-command genrules running non-hermetic perl/pytest/cert-gen drivers
+    # (runtests.pl, managen, cd2nroff, genroot.sh) that read the whole source
+    # tree, plus the curl CLI's curlx_* alias headers that trip -Werror=
+    # implicit-function-declaration outside curl's own tool include wiring —
+    # none of which the converter models, and none of which bear on the
+    # find_package question the lens is here to answer.
     # Build the converter argv in the positional params so every argument is
     # passed atomically: a --cmake-define value may carry spaces
     # (CMAKE_<LANG>_FLAGS commonly does), which an unquoted "$var" expansion
@@ -225,6 +242,17 @@ try_bazel_build() {
     [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
     case "$_bb_name" in
         glm) set -- "$@" --cmake-define "CMAKE_CXX_FLAGS=-w" ;;
+        curl) set -- "$@" \
+                  --cmake-define "CURL_USE_OPENSSL=OFF" \
+                  --cmake-define "CURL_ENABLE_SSL=OFF" \
+                  --cmake-define "BUILD_CURL_EXE=OFF" \
+                  --cmake-define "BUILD_TESTING=OFF" \
+                  --cmake-define "CURL_DISABLE_TESTS=ON" \
+                  --cmake-define "BUILD_LIBCURL_DOCS=OFF" \
+                  --cmake-define "BUILD_MISC_DOCS=OFF" \
+                  --cmake-define "ENABLE_CURL_MANUAL=OFF" \
+                  --cmake-define "BUILD_EXAMPLES=OFF" \
+                  --imports-manifest="$repo_root/testdata/fidelity/curl-imports.json" ;;
     esac
     # --emit-install-export-config: the build lens is the one place that opts in
     # to generating the install(EXPORT) config-mode bundle (the real
@@ -241,6 +269,18 @@ try_bazel_build() {
     then
         echo "skip(convert)"; return
     fi
+    # Per-project extra bazel_deps for the synthesized MODULE.bazel — the
+    # build-lens analogue of run-fidelity.sh's --bazel-external. A project
+    # whose find_package(...) deps resolve through an --imports-manifest entry
+    # (above) needs the BCR module backing that Bazel label declared here so it
+    # fetches. curl: its only manifest-resolvable external dep is ZLIB
+    # (ZLIB::ZLIB → @zlib//:zlib), so add the zlib BCR module (same pin as the
+    # libpng fidelity gate). OpenSSL is disabled at configure time (above), so
+    # no openssl module is needed.
+    _bb_extra_deps=""
+    case "$_bb_name" in
+        curl) _bb_extra_deps='bazel_dep(name = "zlib", version = "1.3.1.bcr.5")' ;;
+    esac
     cat > "$_bb_ws/MODULE.bazel" <<EOF
 module(name = "survey_$(printf '%s' "$_bb_name" | tr -c 'a-z0-9_' '_')", version = "0.0.0")
 bazel_dep(name = "rules_cc", version = "0.0.17")
@@ -248,6 +288,7 @@ bazel_dep(name = "rules_pkg", version = "1.0.1")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
+${_bb_extra_deps}
 EOF
     # Per-project `bazel build` flags. glog: its unit tests reference glog's
     # internal (GLOG_NO_EXPORT / -fvisibility=hidden) symbols

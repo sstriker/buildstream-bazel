@@ -54,6 +54,44 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	// cross-package source references in the local regime.
 	exportsByDir := map[string]map[string]struct{}{}
 
+	// genOutputs is the set of every element-root-relative path PRODUCED by
+	// a rule in this element (genrule outs, write_file / cmake_configure_file
+	// outputs). A cross-package reference to one of these (e.g. curl's
+	// src/ tool_hugehelp.c genrule consuming the root package's generated
+	// docs/cmdline-opts/curl.txt) must NOT raise an exports_files() need in
+	// the owning package: the path is already a generated output there, and
+	// Bazel rejects a file that is both an exports_files() source and a rule
+	// output ("source file ... conflicts with existing generated file").
+	// The cross-package label itself is fine — `//pkg:generated_out` resolves
+	// to the producing rule's output regardless — so only the exports_files()
+	// recording is suppressed, not the label rewrite. Local regime only (the
+	// SourceKey regime keeps element-root paths and raises no exports needs).
+	genOutputs := map[string]struct{}{}
+	if local {
+		for _, t := range pkg.Targets {
+			for _, o := range t.GenruleOuts {
+				genOutputs[o] = struct{}{}
+			}
+			if t.WriteFileOut != "" {
+				genOutputs[t.WriteFileOut] = struct{}{}
+			}
+			if t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
+				genOutputs[t.CMakeConfigureFile.Out] = struct{}{}
+			}
+		}
+	}
+	// genXpkgConsumed collects the element-root paths of generated outputs
+	// that a target in a DIFFERENT package references (as a src / hdr /
+	// textual_hdr). Such a producer must be visible to its consuming package
+	// — the recovered custom-command genrule's default //visibility:private
+	// (or :__pkg__) hides its output from a sibling package's genrule. We
+	// broaden those producers to //visibility:public after partitioning
+	// (the split layout is the only place that knows consumption crosses a
+	// package boundary; the lower pass that set the private default can't).
+	// curl: src/'s tool_hugehelp.c genrule consumes the root package's
+	// generated docs/cmdline-opts/curl.txt.
+	genXpkgConsumed := map[string]struct{}{}
+
 	// Ensure every header-lib package and every declaring dir exists as
 	// a key so empty packages still render (rare, but keeps the set
 	// stable).
@@ -111,7 +149,7 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		if len(t.GlobSrcGroups) > 0 && len(globLabels[t.Name]) > 0 {
 			src = dropGlobSrcFiles(t)
 		}
-		rt := rewriteTarget(src, dir, plan, local, exportsByDir)
+		rt := rewriteTarget(src, dir, plan, local, exportsByDir, genOutputs, genXpkgConsumed)
 		// Splice the synthesized file(GLOB) glob-filegroup labels into this
 		// genrule's srcs (full labels, so no further rewriting), and drop
 		// the now-consumed metadata.
@@ -177,6 +215,26 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		groups[d] = append(groups[d], ws...)
 	}
 
+	// 2b. Broaden the visibility of any producer whose output a different
+	// package consumes (collected in genXpkgConsumed during rewrite). The
+	// recovered custom-command genrules default to //visibility:private, which
+	// hides their output from a sibling package's consumer — so a cross-
+	// package reference (e.g. curl's src/ tool_hugehelp.c genrule reading the
+	// root package's generated docs/cmdline-opts/curl.txt) fails analysis with
+	// a visibility error. Public is the safe superset; the in-package case is
+	// unaffected (no entry recorded). Only producers (genrule / write_file /
+	// cmake_configure_file) carry outputs, so only they are inspected.
+	if len(genXpkgConsumed) > 0 {
+		for dir, targets := range groups {
+			for i := range targets {
+				if producesConsumedOutput(targets[i], dir, genXpkgConsumed) {
+					targets[i].Visibility = []string{"//visibility:public"}
+				}
+			}
+			groups[dir] = targets
+		}
+	}
+
 	// 3. Render each package group via the shared EmitWithOptions.
 	base := strings.Trim(opts.BazelPackagePath, "/")
 	out := map[string][]byte{}
@@ -228,6 +286,44 @@ func primaryGeneratedOutput(t ir.Target) string {
 		}
 	}
 	return ""
+}
+
+// producesConsumedOutput reports whether any output of t (now living in
+// package dir, so its out paths are package-relative after rewriteTarget)
+// is in consumed — the set of element-root-relative generated-output paths
+// referenced from a different package. The package-relative outs are joined
+// back with dir to reconstruct the element-root path the set is keyed by.
+// Used to decide which producers EmitSplit must make //visibility:public so
+// a cross-package consumer can read the generated file.
+func producesConsumedOutput(t ir.Target, dir string, consumed map[string]struct{}) bool {
+	if len(consumed) == 0 {
+		return false
+	}
+	elementRoot := func(o string) string {
+		if dir == "" {
+			return o
+		}
+		return dir + "/" + o
+	}
+	switch t.Kind {
+	case ir.KindGenrule:
+		for _, o := range t.GenruleOuts {
+			if _, ok := consumed[elementRoot(o)]; ok {
+				return true
+			}
+		}
+	case ir.KindWriteFile:
+		if _, ok := consumed[elementRoot(t.WriteFileOut)]; ok {
+			return true
+		}
+	case ir.KindCMakeConfigureFile:
+		if t.CMakeConfigureFile != nil {
+			if _, ok := consumed[elementRoot(t.CMakeConfigureFile.Out)]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // splitPlan is the precomputed split layout: per-target declaring dir,
@@ -764,7 +860,7 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 // re-relativize srcs/hdrs to its declaring dir, strip include-roots +
 // their headers (now owned by the synthesized header libs), and rewrite
 // intra-element deps to cross-package labels.
-func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}) ir.Target {
+func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}, genOutputs, genXpkgConsumed map[string]struct{}) ir.Target {
 	rt := t
 
 	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
@@ -883,10 +979,18 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		dh := plan.deepestPkg(h)
 		if file, _ := relUnder(dh, h); file != "" {
 			keepHdrs = append(keepHdrs, crossPkgFileLabel(plan, dh, file))
-			if exportsByDir[dh] == nil {
-				exportsByDir[dh] = map[string]struct{}{}
+			// Skip the exports_files() need for a generated output (see the
+			// srcs loop / genOutputs): the cross-package label resolves to
+			// the producing rule, and exporting it as a source would collide.
+			// Record it so the producer's visibility is broadened below.
+			if _, generated := genOutputs[h]; generated {
+				genXpkgConsumed[h] = struct{}{}
+			} else {
+				if exportsByDir[dh] == nil {
+					exportsByDir[dh] = map[string]struct{}{}
+				}
+				exportsByDir[dh][file] = struct{}{}
 			}
-			exportsByDir[dh][file] = struct{}{}
 		}
 	}
 	rt.Hdrs = keepHdrs
@@ -918,10 +1022,17 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			dh := plan.deepestPkg(h)
 			if file, _ := relUnder(dh, h); file != "" {
 				keepTextual = append(keepTextual, crossPkgFileLabel(plan, dh, file))
-				if exportsByDir[dh] == nil {
-					exportsByDir[dh] = map[string]struct{}{}
+				// Skip the exports_files() need for a generated output (see
+				// the srcs loop / genOutputs): the cross-package label
+				// resolves to the producing rule, not a source file.
+				if _, generated := genOutputs[h]; generated {
+					genXpkgConsumed[h] = struct{}{}
+				} else {
+					if exportsByDir[dh] == nil {
+						exportsByDir[dh] = map[string]struct{}{}
+					}
+					exportsByDir[dh][file] = struct{}{}
 				}
-				exportsByDir[dh][file] = struct{}{}
 			}
 		}
 		rt.TextualHdrs = keepTextual
@@ -965,12 +1076,19 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 				continue
 			}
 			// Cross-package source FILE: reference by label + raise an
-			// exports_files() need in the owning package.
+			// exports_files() need in the owning package — UNLESS the file
+			// is itself a generated output of a rule in that package (then
+			// the label already resolves to the producing rule's output, and
+			// an exports_files() over it would collide). See genOutputs.
 			srcs = append(srcs, crossPkgFileLabel(plan, d, file))
-			if exportsByDir[d] == nil {
-				exportsByDir[d] = map[string]struct{}{}
+			if _, generated := genOutputs[s]; generated {
+				genXpkgConsumed[s] = struct{}{}
+			} else {
+				if exportsByDir[d] == nil {
+					exportsByDir[d] = map[string]struct{}{}
+				}
+				exportsByDir[d][file] = struct{}{}
 			}
-			exportsByDir[d][file] = struct{}{}
 		}
 		rt.Srcs = srcs
 	}

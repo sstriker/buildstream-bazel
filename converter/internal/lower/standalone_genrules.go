@@ -168,6 +168,18 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			// stamp shape (just declares a phony output). Skip.
 			continue
 		}
+		// Escape every literal `$` for Bazel's genrule `cmd`, which runs
+		// Make-variable substitution before handing the string to the
+		// shell: a bare `$VAR` / `${VAR}` / `$(cmd)` is read as a Make
+		// variable and rejected ("$X syntax is not supported; use $(X) …
+		// or escape the $ as $$"). cmake's Ninja generator emits literal
+		// shell `$` in custom-command lines (curl's test runner:
+		// `runtests.pl … "$TFLAGS"`), and ninja.CommandFor has already
+		// collapsed ninja's own `$$`→`$` escaping, so what remains here is
+		// genuine shell text that must reach the shell verbatim — double it.
+		// Done BEFORE the $(location)/$(RULEDIR) lifts below add their own
+		// (correct) Bazel `$(...)` tokens, so those are never double-escaped.
+		cmd = escapeGenruleDollars(cmd)
 		// All outputs reference relative to the build dir's
 		// per-target convention; emit them as-is. Stripping
 		// buildDir isn't safe because the outputs are already
@@ -384,6 +396,18 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		})
 	}
 	return out
+}
+
+// escapeGenruleDollars doubles every `$` so a recovered custom-command cmd
+// survives Bazel's genrule Make-variable substitution and reaches the shell
+// verbatim. Applied to the raw ninja command BEFORE the $(location) /
+// $(RULEDIR) lifts introduce legitimate Bazel `$(...)` tokens, so it never
+// has to distinguish "shell $" from "Bazel $" — at this point every `$` is
+// shell text (ninja.CommandFor already undid ninja's `$$`→`$` escaping). The
+// later lifts append their `$(...)` tokens to the escaped string, leaving
+// them single-`$` (correct) while the shell literals stay doubled.
+func escapeGenruleDollars(cmd string) string {
+	return strings.ReplaceAll(cmd, "$", "$$")
 }
 
 // dropLiftedToolSrcs removes srcs that rewriteToolFromTarget already
