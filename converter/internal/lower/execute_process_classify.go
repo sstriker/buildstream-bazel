@@ -394,12 +394,6 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 			Reason: "no COMMAND clause",
 		}
 	}
-	if len(call.Commands) > 1 {
-		return ClassifyResult{
-			Bucket: BucketRefuse,
-			Reason: "multi-COMMAND pipeline (concurrent stages with stdout chaining)",
-		}
-	}
 
 	argv := call.Commands[0]
 	if len(argv) == 0 {
@@ -410,6 +404,48 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	}
 
 	driver := executeProcessDriverBasename(argv[0])
+
+	// Multi-COMMAND pipeline: a pipeline whose FIRST stage is a
+	// non-hermetic stamp or a host/toolchain probe driver is still a
+	// stamp/probe — the downstream stages only post-process stage 0's
+	// output (`c++ --version | head`, `git describe | sed`,
+	// `uname -m | tr A-Z a-z`); they don't make the call reproducible as
+	// a genrule, but they don't change that stage 0 is non-hermetic and
+	// emits no build artifact. Classify by stage 0 so the probe
+	// no-OUTPUT_FILE skip / stamp handling applies (clears the
+	// multi-COMMAND-probe refusal that, e.g., eigen hits). Any other
+	// pipeline still refuses — we can't reproduce arbitrary stdout
+	// chaining as a Bazel rule, and a non-probe/stamp pipeline may
+	// produce a real artifact we'd otherwise silently drop.
+	if len(call.Commands) > 1 {
+		switch {
+		case stampDrivers[driver]:
+			return ClassifyResult{
+				Bucket: BucketStamp,
+				Reason: driver + " is a stamp / non-hermetic driver (pipeline stage 0)" + outputContext(call),
+			}
+		case strongProbeDrivers[driver]:
+			return ClassifyResult{
+				Bucket: BucketProbe,
+				Reason: driver + " is a host probe driver (pipeline stage 0)" + outputContext(call),
+			}
+		case executeProcessRunsHostDetectionScript(argv):
+			return ClassifyResult{
+				Bucket: BucketProbe,
+				Reason: "host-triple detection script (config.guess/config.sub) (pipeline stage 0)" + outputContext(call),
+			}
+		case dualUseProbeDrivers[driver] && call.OutputFile == "" &&
+			(call.OutputVariable != "" || call.ResultVariable != ""):
+			return ClassifyResult{
+				Bucket: BucketProbe,
+				Reason: driver + " (pipeline stage 0) writing a capture looks like a host/toolchain probe",
+			}
+		}
+		return ClassifyResult{
+			Bucket: BucketRefuse,
+			Reason: "multi-COMMAND pipeline (concurrent stages with stdout chaining)",
+		}
+	}
 
 	// cmake -E builtin recognition first — overrides stamp /
 	// probe / file-producing patterns even if the call also
