@@ -401,6 +401,42 @@ llvm-subdir note below):
   `ok` under cmake 4.3.3 with gfortran: 1 rejection (the getarch probe) +
   51 `fortran-target-needs-ruleset` idioms (the Fortran partition). libevent
   (floor 3.1) is lifted the same way.
+- **OpenBLAS on the build lens (not yet `ok` — one converter feature short):**
+  the build lens (`SURVEY_BAZEL_BUILD=openblas`) needs OpenBLAS surveyed
+  0-rejection so the gate doesn't `skip(rej)`. `scripts/build-lens/openblas.conf`
+  selects OpenBLAS's deterministic-arch (cross-compile) configure branch
+  (`CMAKE_SYSTEM_NAME=Linux` + `CORE/TARGET=HASWELL`, plus `NOFORTRAN=1
+  C_LAPACK=1`): that branch (cmake/prebuild.cmake:98) writes the arch config
+  from a static per-core table, dead-branching the four getarch
+  `execute_process(OUTPUT_VARIABLE)` probes — the rejection drops to 0 and the
+  Fortran idioms to 0. Because the build-lens skip(rej) gate runs the
+  *diagnostics* convert flag-less, a `.conf`'s build-time `CONVERT_FLAGS` alone
+  can't lift it; `run-survey.sh` gained an opt-in per-project
+  `DIAG_CONVERT_FLAGS` knob (default empty → no change to any other member)
+  applied to that gate convert. Three split-package converter fixes then take
+  the ~2460-target graph cleanly through Bazel load + analysis (each was a real
+  general bug OpenBLAS is the first corpus member large enough to trip):
+  (1) a synthesized include-root header lib (`root_headers`, `includes=["."]`)
+  listed headers physically owned by SUBPACKAGES as bare same-package strings —
+  invalid labels; now relabeled to cross-package file labels like the
+  real-target path (`headerLibTarget`); (2) `exports_files()` must not be raised
+  for a cross-package reference to a GENERATED file (write_file/genrule out) —
+  it errors "source file conflicts with existing generated file" (a new
+  `splitPlan.genOuts` index guards all four export sites); (3) a cross-package
+  GENERATED compiled source (.c/.S) swept into a header aggregation is dropped
+  entirely — it's a translation unit its package compiles, never a header, and
+  relabeling it would only force the private write_file rule public for
+  visibility. The **remaining** blocker is genuinely beyond `.conf` + these
+  fixes: OpenBLAS's `GenerateNamedObjects` codegen (cmake/utils.cmake:421)
+  `file(WRITE ...)`s ~1951 per-routine wrappers each `#include`-ing the real
+  kernel by ABSOLUTE configure-time path (`#include "<source-root>/lapack/getf2/
+  zgetf2_k.c"`); the converter bakes that path verbatim, so the Bazel compile
+  fails "No such file" (the convert-host path isn't in the sandbox). Greening
+  needs a lower pass that rewrites source-root-absolute `#include`s in generated
+  content to in-tree references AND stages each included kernel source as a
+  textual input on the consuming compile (resolving include path +
+  cross-package visibility) — a sizable, well-scoped converter feature, not a
+  `.conf` tweak.
 
 ### Optional toolchains (unlock fuller surveys)
 

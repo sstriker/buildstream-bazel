@@ -393,6 +393,72 @@ func TestEmit_Split_CrossPackageHeaderRelabeled(t *testing.T) {
 	}
 }
 
+// TestEmit_Split_IncludeRootHeaderLib_CrossPackageGeneratedSource is the
+// OpenBLAS regression: a target declares the element root as an include root
+// (includes=["."]), so EmitSplit synthesizes a `root_headers` cc_library that
+// aggregates every header under "." with includes=["."]. OpenBLAS's hdrs walk
+// sweeps in the per-routine codegen sources it writes under a SUBPACKAGE's
+// CMakeFiles/ (e.g. driver/level2/CMakeFiles/cgbmv_c.c, a write_file out that
+// driver_level2 also compiles) AND real sibling .h headers in subpackages.
+// Under --split-packages the synthesized header lib must:
+//   - DROP the cross-package GENERATED compiled source (.c) — it's a
+//     translation unit its package compiles, never a header; listing it would
+//     emit an invalid same-package label (the subdir is its own package) and,
+//     once relabeled, a visibility error against the private write_file rule;
+//   - relabel the cross-package real .h to //sub:foo.h + raise exports_files()
+//     in the owning package (it's an on-disk source other code may #include).
+//
+// Before the fix the .c was emitted as a bare "sub/CMakeFiles/x.c" string,
+// which Bazel rejects ("'…/sub' is a subpackage").
+func TestEmit_Split_IncludeRootHeaderLib_CrossPackageGeneratedSource(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "ob",
+		Targets: []ir.Target{
+			// Root lib declaring the element root as an include root; its Hdrs
+			// walk pulled in a subpackage's generated .c and a real .h.
+			{
+				Name:     "rootlib",
+				Kind:     ir.KindCCLibrary,
+				Srcs:     []string{"main.c"},
+				Hdrs:     []string{"sub/CMakeFiles/gen_routine.c", "sub/real.h"},
+				Includes: []string{"."},
+			},
+			// The subpackage that owns + compiles the generated source, and the
+			// write_file rule that produces it (so it's a genOut).
+			{Name: "sublib", Kind: ir.KindCCLibrary, Srcs: []string{"sub/CMakeFiles/gen_routine.c"}},
+			{Name: "gen_sub_routine", Kind: ir.KindWriteFile, WriteFileOut: "sub/CMakeFiles/gen_routine.c"},
+		},
+		SubPackages: map[string]string{"rootlib": "", "sublib": "sub", "gen_sub_routine": "sub"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/ob"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	hdrLib := ruleBlockAfterName(string(tree[""]), "root_headers")
+	if hdrLib == "" {
+		t.Fatalf("root pkg missing root_headers lib:\n%s", string(tree[""]))
+	}
+	// The generated .c must NOT appear at all — neither as a bare subpackage
+	// string nor as a cross-package label.
+	if strings.Contains(hdrLib, "gen_routine.c") {
+		t.Errorf("root_headers must drop the cross-package generated .c; got:\n%s", hdrLib)
+	}
+	// The real .h must be a cross-package label.
+	if !strings.Contains(hdrLib, "//elements/ob/sub:real.h") {
+		t.Errorf("root_headers should relabel real.h to //elements/ob/sub:real.h; got:\n%s", hdrLib)
+	}
+	sub := string(tree["sub"])
+	// The owning package exports the real .h (an on-disk source) ...
+	if !contains(sub, "exports_files") || !contains(sub, `"real.h"`) {
+		t.Errorf("sub pkg missing exports_files([\"real.h\"]):\n%s", sub)
+	}
+	// ... but NOT the generated .c (already a target; exports_files would
+	// conflict with the write_file rule's output).
+	if exp := ruleBlockAfterName(sub, "exports_files"); strings.Contains(exp, "gen_routine.c") {
+		t.Errorf("sub pkg must NOT exports_files the generated .c:\n%s", sub)
+	}
+}
+
 // TestEmit_Split_PrivateIncludeHeaderLibWired covers the PRIVATE
 // target_include_directories case under --split-packages. A PRIVATE
 // include rides Copts as "-I<dir>" (lower keeps it off t.Includes so it
