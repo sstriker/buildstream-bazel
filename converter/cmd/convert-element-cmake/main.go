@@ -506,9 +506,47 @@ func run(a cli.Args) error {
 	// the Go-side evaluator + structural probe can't resolve land in
 	// the sink instead of being dropped.
 	literalSink := &lower.LiteralProbeSink{}
+	// recoveredStampSets holds the set()-copies recovered to lift a
+	// git_describe()-style forwarded stamp that aborted pass 1; threaded into
+	// the genex/stamp re-lifts below so they don't re-abort on the same call.
+	var recoveredStampSets []shadow.SetAssignment
 	pkg, err := runToIR(literalSink, nil, nil)
 	if err != nil {
-		return err
+		// A pass-1 abort on a forwarded stamp (git_describe() helper return,
+		// SDL) is recoverable: lower.go fills stampSink before returning the
+		// refusal, so when stamps were detected we recover the set()-copies
+		// via a warm non-expanded-trace configure and re-lower — the
+		// forwarded-stamp rescue then lifts the call. If recovery doesn't
+		// apply or still fails, surface the original error.
+		if a.TwoPassGenex && hostBuildDir != "" && len(stampSink) > 0 {
+			plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
+			if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
+				SourceRoot:         a.SourceRoot,
+				BuildDir:           hostBuildDir,
+				PrefixDir:          a.PrefixDir,
+				ToolchainCMakeFile: a.ToolchainCMakeFile,
+				BuildType:          a.BuildType,
+				BuildTypes:         a.BuildTypes,
+				TracePath:          plainTrace,
+				TraceNonExpanded:   true,
+				Stdout:             os.Stderr,
+				Stderr:             os.Stderr,
+			}); cfgErr == nil {
+				if raw, rerr := os.ReadFile(plainTrace); rerr == nil {
+					if sets := shadow.ExtractSetAssignments(raw, a.SourceRoot); len(sets) > 0 {
+						literalSink = &lower.LiteralProbeSink{}
+						if pkg2, err2 := runToIR(literalSink, nil, sets); err2 == nil {
+							recoveredStampSets = sets
+							pkg, err = pkg2, nil
+							fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 stamp abort via %d non-expanded-trace set()-copy/-ies.\n", len(sets))
+						}
+					}
+				}
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
 	// genexResolutions carries the genex two-pass result forward to the
 	// stamp set()-indirection pass below, so a project that needs BOTH
@@ -552,7 +590,7 @@ func run(a cli.Args) error {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); keeping pass-1 result.\n", readErr)
 		} else if len(resolutions) > 0 {
 			genexResolutions = resolutions
-			pkg2, err2 := runToIR(nil, resolutions, nil)
+			pkg2, err2 := runToIR(nil, resolutions, recoveredStampSets)
 			if err2 != nil {
 				return err2
 			}
@@ -571,7 +609,7 @@ func run(a cli.Args) error {
 	// (the common case → zero overhead), when opted out, or offline (no
 	// live build dir). A failed pass is non-fatal: keep the pass-1 result
 	// (direct stamp vars only).
-	if a.TwoPassGenex && hostBuildDir != "" && len(stampSink) > 0 {
+	if a.TwoPassGenex && hostBuildDir != "" && len(stampSink) > 0 && len(recoveredStampSets) == 0 {
 		plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: %d VCS-stamp var(s) after pass 1; running warm second configure (non-expanded trace) to recover set()-copy indirection.\n", len(stampSink))
 		if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{

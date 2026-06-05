@@ -22,7 +22,7 @@ func TestRecoverExecuteProcess_LiftCMakeETouch(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "touch", "/build/marker.stamp"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -70,7 +70,7 @@ func TestRecoverExecuteProcess_BenignFilesystemUtils(t *testing.T) {
 		{File: "/src/CMakeLists.txt", Line: 5, Commands: [][]string{{"chgrp", "staff", "/build/x"}}},
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("benign chmod/chown/chgrp must not refuse; got %v", refusals)
 	}
@@ -92,7 +92,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			Commands: [][]string{{"install", "-m", "644", "/src/gen/cfg.h", "/build/include/"}},
 		}}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("install into build tree should lift, not refuse; got %v", refusals)
 		}
@@ -110,7 +110,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			Commands: [][]string{{"install", "-m", "755", "/build/tool", "/usr/local/bin/"}},
 		}}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("install to an install-prefix must skip benignly; got %v", refusals)
 		}
@@ -125,7 +125,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			Commands: [][]string{{"install", "-d", "-m", "755", "/build/staging/lib"}},
 		}}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("install -d (dir create) must skip benignly; got %v", refusals)
 		}
@@ -145,7 +145,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			cc := newCodegenContext()
 			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 				File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{strip},
-			}}, "/src", "/src", "/build", "/build", false, nil, cc)
+			}}, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 			if len(refusals) == 0 {
 				t.Errorf("install with strip must refuse (bytes differ); got none")
 			}
@@ -164,7 +164,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 			Commands: [][]string{{"install", "--owner", "root", "--mode", "644", "/src/cfg.h", "/build/include/"}},
 		}}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, cc)
+		_, refusals := recoverExecuteProcess(calls, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("install with long value-options should lift; got %v", refusals)
 		}
@@ -178,7 +178,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 			File: "/src/CMakeLists.txt", Line: 3,
 			Commands: [][]string{{"install", "--frobnicate", "/src/x", "/build/x"}},
-		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		}}, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) == 0 {
 			t.Error("install with an unrecognized flag must refuse rather than guess operands")
 		}
@@ -196,7 +196,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 			File: "/src/CMakeLists.txt", Line: 3,
 			Commands: [][]string{{"install", "-m", "644", "/src/cfg.h", incDir}},
-		}}, "/src", "/src", build, build, false, nil, cc)
+		}}, "/src", "/src", build, build, false, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("got refusals: %v", refusals)
 		}
@@ -210,7 +210,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 			File: "/src/CMakeLists.txt", Line: 3,
 			Commands: [][]string{{"install", "/src/foo", "include/"}},
-		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		}}, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) == 0 {
 			t.Error("relative dest must refuse (can't anchor), not benign-skip")
 		}
@@ -221,7 +221,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 			File: "/src/CMakeLists.txt", Line: 3,
 			Commands: [][]string{{"install", "-m"}},
-		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		}}, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) == 0 {
 			t.Error("trailing value-taking flag (-m with no value) must refuse")
 		}
@@ -240,7 +240,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 			File: "/src/CMakeLists.txt", Line: 3,
 			Commands: [][]string{{"install", "-T", "/src/foo", out}},
-		}}, "/src", "/src", build, build, false, nil, cc)
+		}}, "/src", "/src", build, build, false, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("got refusals: %v", refusals)
 		}
@@ -254,7 +254,7 @@ func TestRecoverExecuteProcess_Install(t *testing.T) {
 		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{{
 			File: "/src/CMakeLists.txt", Line: 3,
 			Commands: [][]string{{"install", "/src/gen/foo.h", "/src/include/foo.h"}},
-		}}, "/src", "/src", "/build", "/build", false, nil, cc)
+		}}, "/src", "/src", "/build", "/build", false, nil, nil, cc)
 		if len(refusals) == 0 {
 			t.Error("install into the source tree must refuse, not benign-skip (could drop a build input)")
 		}
@@ -269,7 +269,7 @@ func TestRecoverExecuteProcess_BenignFilesystemUtils_CapturedRefuses(t *testing.
 		{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{{"chmod", "+x", "/build/x"}}, ResultVariable: "RV"},
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) == 0 {
 		t.Fatal("chmod capturing RESULT_VARIABLE must refuse (not silently skip)")
 	}
@@ -287,7 +287,7 @@ func TestRecoverExecuteProcess_LiftCMakeECopy(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "copy", "/src/inputs/template.cfg", "/build/staged/template.cfg"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -320,7 +320,7 @@ func TestRecoverExecuteProcess_LiftCMakeECreateSymlink(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "create_symlink", "/src/bin/clang-18", "/build/bin/clang"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -358,7 +358,7 @@ func TestRecoverExecuteProcess_LiftCMakeECopy_RejectsSourceOutsideTree(t *testin
 		Commands: [][]string{{"cmake", "-E", "copy", "/usr/share/foo/data.bin", "/build/staged/data.bin"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) == 0 {
 		t.Fatal("expected refusal")
 	}
@@ -386,7 +386,7 @@ func TestRecoverExecuteProcess_LiftFileProducing(t *testing.T) {
 		OutputFile: "/build/generated.h",
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -448,7 +448,7 @@ func TestRecoverExecuteProcess_LiftFileProducing_SourceRootArgv(t *testing.T) {
 		OutputFile: "/build/generated.h",
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift to succeed; got refusals: %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -504,7 +504,7 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 			}
 			tc.mut(&call)
 			cc := newCodegenContext()
-			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, cc)
+			_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
 			if len(refusals) == 0 {
 				t.Fatalf("expected refusal")
 			}
@@ -550,7 +550,7 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile(t *testing.T) {
 		}},
 	}}
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("expected lift, got refusals: %+v", refusals)
 	}
@@ -614,7 +614,7 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_LiftDisabledFallback(t *t
 		}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -662,7 +662,7 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_NoBuildDirSoftSkips(t *te
 		}},
 	}}
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", true, nil, cc)
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", true, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("empty hostBuildDir should soft-skip, not refuse; got refusals %+v", refusals)
 	}
@@ -695,7 +695,7 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_MissingRenderedSoftSkips(
 		}},
 	}}
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("missing rendered output should soft-skip, not refuse; got %+v", refusals)
 	}
@@ -729,7 +729,7 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_RefusesFlags(t *testing.T
 		}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal for flag-bearing form; got %+v", refusals)
 	}
@@ -759,7 +759,7 @@ func TestRecoverExecuteProcess_LiftPlusRefuse(t *testing.T) {
 		},
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) == 0 {
 		t.Fatal("expected refusal for the git call")
 	}
@@ -787,7 +787,7 @@ func TestRecoverExecuteProcess_RescueProbeViaDumpVars(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	cmakeVars := map[string]string{"GCC_VERSION": "13.2.0"}
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, nil, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected probe rescue; got refusals: %v", refusals)
 	}
@@ -807,7 +807,7 @@ func TestRecoverExecuteProcess_NoRescueWhenVarMissing(t *testing.T) {
 		OutputVariable: "GIT_SHA",
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) == 0 {
 		t.Error("expected refusal for an uncaptured stamp")
 	}
@@ -824,9 +824,39 @@ func TestRecoverExecuteProcess_RescueStamp(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	cmakeVars := map[string]string{"GIT_SHA": "abc123def456"}
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, nil, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected stamp rescue via dump-vars; got refusals: %v", refusals)
+	}
+}
+
+// TestRecoverExecuteProcess_RescueForwardedStamp covers the git_describe()
+// helper shape: the stamp's OUTPUT_VARIABLE is a function-local the dump-vars
+// top-level snapshot can't capture, but its value is forwarded onward by a
+// recovered set()-copy (set(${_var} "${out}" PARENT_SCOPE)). The call is
+// rescued via forwardedStampVars (the SrcVar of that copy) even though it's
+// absent from cmakeVars -- which is what lets a clean convert complete
+// instead of aborting on the stamp.
+func TestRecoverExecuteProcess_RescueForwardedStamp(t *testing.T) {
+	calls := []shadow.ExecuteProcessCall{{
+		File:           "/src/CMakeLists.txt",
+		Line:           9,
+		Commands:       [][]string{{"git", "describe", "--tags", "--always"}},
+		OutputVariable: "out",
+	}}
+	// "out" is function-local: NOT in cmakeVars, but it is the SrcVar of a
+	// recovered set()-copy, so forwardedStampVars carries it.
+	cc := newCodegenContext()
+	forwarded := map[string]bool{"out": true}
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, forwarded, cc); len(refusals) != 0 {
+		t.Errorf("expected forwarded stamp rescue; got refusals: %v", refusals)
+	}
+	// Negative control: without the forwarding signal the same uncaptured
+	// stamp still refuses (the gate bites -> round-2), so the rescue is
+	// narrow to genuinely-forwarded stamps and doesn't blanket-skip.
+	cc2 := newCodegenContext()
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc2); len(refusals) == 0 {
+		t.Error("expected refusal for an uncaptured, unforwarded stamp")
 	}
 }
 
@@ -843,7 +873,7 @@ func TestRecoverExecuteProcess_StampRecordsStampVar(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	cmakeVars := map[string]string{"GIT_SHA": "abc123"}
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("captured stamp should skip; got refusals: %v", refusals)
 	}
@@ -882,7 +912,7 @@ func TestRecoverExecuteProcess_StampNonGitDrivers(t *testing.T) {
 			}}
 			cc := newCodegenContext()
 			cmakeVars := map[string]string{tc.outVar: "captured-value"}
-			_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+			_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, nil, cc)
 			if len(refusals) != 0 {
 				t.Fatalf("captured stamp should skip; got refusals: %v", refusals)
 			}
@@ -907,7 +937,7 @@ func TestRecoverExecuteProcess_DateRecordsVolatile(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	cmakeVars := map[string]string{"BUILD_DATE": "2026-06-02"}
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, cmakeVars, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("captured date stamp should skip; got refusals: %v", refusals)
 	}
@@ -930,7 +960,7 @@ func TestRecoverExecuteProcess_RescueCapabilityProbe(t *testing.T) {
 		ResultVariable: "_AR_D",
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected capability-probe rescue; got refusals: %v", refusals)
 	}
@@ -949,7 +979,7 @@ func TestRecoverExecuteProcess_RescueHostDetectionScript(t *testing.T) {
 		OutputVariable: "TT_OUT",
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected host-detection rescue; got refusals: %v", refusals)
 	}
@@ -971,13 +1001,13 @@ func TestRecoverExecuteProcess_GenericProbeSkips(t *testing.T) {
 	}}
 	// Uncaptured: skips (no refusal) under the broaden.
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Errorf("uncaptured generic probe should skip; got %v", refusals)
 	}
 	// Captured: also skips (the value is recovered via Reply.Vars).
 	cc = newCodegenContext()
 	captured := map[string]string{"PYGMENTS_STATUS": "0"}
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, nil, cc); len(refusals) != 0 {
 		t.Errorf("captured generic probe should skip; got %v", refusals)
 	}
 }
@@ -998,7 +1028,7 @@ func TestRecoverExecuteProcess_FeatureProbeToBuildSetting(t *testing.T) {
 	}}
 	cc := newCodegenContext()
 	captured := map[string]string{"HAVE_ZLIB": "0"} // exit 0 == success == zlib present
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, captured, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("feature probe should lift, not refuse; got %v", refusals)
 	}
@@ -1033,7 +1063,7 @@ func TestRecoverExecuteProcess_FeatureProbeDedup(t *testing.T) {
 		ResultVariable: "HAVE_ZLIB",
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{probe, probe}, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{probe, probe}, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("unexpected refusals: %v", refusals)
 	}
@@ -1072,7 +1102,7 @@ func TestRecoverExecuteProcess_FeatureProbeNameCollision(t *testing.T) {
 		},
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("collision should surface exactly one refusal; got %d: %v", len(refusals), refusals)
 	}
@@ -1189,7 +1219,7 @@ func TestRecoverExecuteProcess_RescueViaConfigureLog(t *testing.T) {
 		OutputVariable: "GCC_VERSION",
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, nil, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected configureLog rescue; got refusals: %v", refusals)
 	}
@@ -1260,7 +1290,7 @@ func TestRecoverExecuteProcess_RescueViaFindPackage(t *testing.T) {
 		OutputVariable: "OpenSSL_FOUND",
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, clVars, nil, cc)
 	if len(refusals) != 0 {
 		t.Errorf("expected find_package rescue; got refusals: %v", refusals)
 	}

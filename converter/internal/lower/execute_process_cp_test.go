@@ -26,7 +26,7 @@ func TestRecoverExecuteProcess_LiftCp_SingleFile(t *testing.T) {
 		Commands: [][]string{{"cp", filepath.Join(hostSrc, "src.txt"), "/build/sub/src.txt"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -67,7 +67,7 @@ func TestRecoverExecuteProcess_LiftCp_FileIntoDir(t *testing.T) {
 		Commands: [][]string{{"cp", filepath.Join(hostSrc, "a.txt"), "/build/dir/"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -91,7 +91,7 @@ func TestRecoverExecuteProcess_LiftCp_FileToExtensionlessDest(t *testing.T) {
 		Commands: [][]string{{"cp", filepath.Join(hostSrc, "script"), "/build/script"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -135,7 +135,7 @@ func TestRecoverExecuteProcess_LiftCp_RecursiveSymlinkDir(t *testing.T) {
 		Commands: [][]string{{"cp", "-RauL", link, "/build"}},
 	}}
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc)
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
@@ -187,7 +187,7 @@ func TestRecoverExecuteProcess_LiftCp_ThreeOperandsRefuses(t *testing.T) {
 		Commands: [][]string{{"cp", filepath.Join(hostSrc, "a"), filepath.Join(hostSrc, "b"), "/build/dst/"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -209,7 +209,7 @@ func TestRecoverExecuteProcess_LiftCp_MissingSourceRefuses(t *testing.T) {
 		Commands: [][]string{{"cp", filepath.Join(hostSrc, "ghost.txt"), "/build/ghost.txt"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -235,7 +235,7 @@ func TestRecoverExecuteProcess_LiftCp_DirWithoutRecursiveRefuses(t *testing.T) {
 		Commands: [][]string{{"cp", filepath.Join(hostSrc, "d"), "/build"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
