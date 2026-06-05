@@ -199,22 +199,29 @@ try_bazel_build() {
     # under elements/<name>/, the shared //config package stays at the
     # workspace root (the multi-config select() arms reference //config:<name>
     # absolutely, independent of the element's package path).
-    # Per-project cmake configure options that drive the project's OWN build
-    # flags at configure time (so the codemodel — and thus the emitted BUILD —
-    # reflects them). A project's warnings-as-errors policy is noise for a "does
-    # it build" check — the lens tests buildability, and it already opts in to
-    # install-export config generation in the same spirit.
     #
-    # glm: its test/CMakeLists.txt adds `-Werror` (gcc) / `-Werror -Weverything`
-    # (clang), and under GCC 13 that trips on -Wclass-memaccess in glm's own
-    # gtc/packing.inl (memcpy over its packed vector types — intentional, not a
-    # bug). We can't reach for glm's GLM_DISABLE_AUTO_DETECTION knob: it does
-    # drop the test -Werror, but it also forces GLM_FORCE_CXX_UNKNOWN, which
-    # zeroes GLM_LANG and so disables glm's C++11 std::hash specializations —
-    # breaking the gtx_hash tests with deleted-function errors. Instead pass
-    # CMAKE_CXX_FLAGS=-w: it inhibits all warnings (so -Werror has nothing to
-    # promote, order-independently) while leaving C++ auto-detection intact, so
-    # the full test suite — hash included — compiles.
+    # Per-project build-lens config: ONE sourced file per project,
+    # scripts/build-lens/<name>.conf, instead of inline `case "$_bb_name"`
+    # statements here. A greening agent adds only its own <name>.conf, so two
+    # agents greening different members never touch this shared file (the
+    # Phase-0 enabler for conflict-free parallel greening — see
+    # docs/corpus-green-campaign.md). Reset the four knobs to their safe
+    # defaults FIRST so one project's config can't leak into the next
+    # (try_bazel_build runs once per project in the same shell). Schema (all
+    # optional):
+    #   CONVERT_FLAGS       extra args appended to the clean convert argv
+    #                       (e.g. --cmake-define X=Y, --imports-manifest=...).
+    #   BAZEL_FLAGS         extra args to `bazel build` (e.g. --dynamic_mode=off).
+    #   EXTRA_BAZEL_DEPS    newline-separated bazel_dep(...) lines injected into
+    #                       the synthesized MODULE.bazel.
+    #   EMIT_INSTALL_EXPORT 1 (default) emits --emit-install-export-config; 0 skips.
+    CONVERT_FLAGS=""
+    BAZEL_FLAGS=""
+    EXTRA_BAZEL_DEPS=""
+    EMIT_INSTALL_EXPORT=1
+    _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
+    [ -f "$_bb_conf" ] && . "$_bb_conf"
+
     # Build the converter argv in the positional params so every argument is
     # passed atomically: a --cmake-define value may carry spaces
     # (CMAKE_<LANG>_FLAGS commonly does), which an unquoted "$var" expansion
@@ -223,18 +230,20 @@ try_bazel_build() {
     set -- --source-root "$_bb_src"
     [ -n "$_bb_bt" ] && set -- "$@" "$_bb_bt"
     [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
-    case "$_bb_name" in
-        glm) set -- "$@" --cmake-define "CMAKE_CXX_FLAGS=-w" ;;
-    esac
+    # CONVERT_FLAGS from the per-project .conf (word-split intentional: it's a
+    # flag list authored in the conf, e.g. `--cmake-define CMAKE_CXX_FLAGS=-w`).
+    # shellcheck disable=SC2086
+    [ -n "$CONVERT_FLAGS" ] && set -- "$@" $CONVERT_FLAGS
     # --emit-install-export-config: the build lens is the one place that opts in
     # to generating the install(EXPORT) config-mode bundle (the real
     # <Pkg>Targets.cmake + cmake_config_bundle filegroup). Default converts omit
     # it — the orchestrated graph wires its own synthprefix-synthesized bundle —
     # but the lens generates the real file so `bazel build //...` exercises the
     # bundle end-to-end rather than choking on a filegroup over not-on-disk files.
+    # A project can opt out via EMIT_INSTALL_EXPORT=0 in its .conf.
+    [ "$EMIT_INSTALL_EXPORT" = "0" ] || set -- "$@" --emit-install-export-config
     set -- "$@" \
         --bazel-package-path "$_bb_pkg" \
-        --emit-install-export-config \
         --out-build "$_bb_elt/BUILD.bazel" \
         --out-config-settings "$_bb_ws/config/BUILD.bazel"
     if ! run_converter "$@" >> "$_bb_po/build.log" 2>&1
@@ -249,17 +258,15 @@ bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
 EOF
-    # Per-project `bazel build` flags. glog: its unit tests reference glog's
-    # internal (GLOG_NO_EXPORT / -fvisibility=hidden) symbols
-    # (GetExistingTempDirectories, g_logging_fail_func, SafeFNMatch_, ...).
-    # Bazel's default dynamic linking builds glog as a .so that doesn't export
-    # those hidden symbols, so the cc_tests fail to link; --dynamic_mode=off
-    # links them statically (the way glog's own static build links its tests,
-    # matching the converter's linkstatic=True output), resolving the symbols.
-    _bb_bzlflags=""
-    case "$_bb_name" in
-        glog) _bb_bzlflags="--dynamic_mode=off" ;;
-    esac
+    # EXTRA_BAZEL_DEPS from the per-project .conf: newline-separated
+    # bazel_dep(...) lines a project needs beyond the base set above (e.g. a
+    # find_package dep remapped to a @bcr module). Appended verbatim.
+    [ -n "$EXTRA_BAZEL_DEPS" ] && printf '%s\n' "$EXTRA_BAZEL_DEPS" >> "$_bb_ws/MODULE.bazel"
+    # Per-project `bazel build` flags come from BAZEL_FLAGS in the .conf sourced
+    # above (e.g. glog's --dynamic_mode=off, because its tests reference glog's
+    # internal -fvisibility=hidden symbols that a default-dynamic .so won't
+    # export — see scripts/build-lens/glog.conf). Empty for projects with none.
+    _bb_bzlflags="$BAZEL_FLAGS"
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
