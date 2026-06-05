@@ -277,6 +277,62 @@ build /build/x.cpp: CUSTOM_COMMAND
 	}
 }
 
+// TestRecoverGenrule_AnchorsSubdirOutputs pins the subdir-output anchoring: a
+// recovered genrule whose output lives in a subdir rewrites the bare path to
+// $(RULEDIR)/<out> so the write lands under bazel-out (glog's
+// CMakeFiles/glog.cc empty-placeholder, which otherwise failed on the absent
+// sandbox subdir); a root-level output is left bare (no over-anchoring, so
+// recovered genrules that build today stay unchanged).
+func TestRecoverGenrule_AnchorsSubdirOutputs(t *testing.T) {
+	cases := []struct {
+		name     string
+		output   string
+		cmd      string
+		anchored bool
+	}{
+		{
+			name:     "subdir output anchored to $(RULEDIR)",
+			output:   "/build/CMakeFiles/glog.cc",
+			cmd:      "/usr/bin/cmake -E touch /build/CMakeFiles/glog.cc",
+			anchored: true,
+		},
+		{
+			name:     "root output left bare",
+			output:   "/build/version.h",
+			cmd:      "/usr/bin/python3 /src/gen.py /build/version.h",
+			anchored: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ninjaSrc := "rule CUSTOM_COMMAND\n  command = $COMMAND\n\nbuild " +
+				tc.output + ": CUSTOM_COMMAND\n  COMMAND = " + tc.cmd + "\n"
+			g, err := ninja.Parse(strings.NewReader(ninjaSrc), "", nil)
+			if err != nil {
+				t.Fatalf("ninja.Parse: %v", err)
+			}
+			cc := newCodegenContext()
+			_, name, err := cc.recoverGenrule(tc.output, "/src", "/build", g)
+			if err != nil {
+				t.Fatalf("recoverGenrule: %v", err)
+			}
+			var cmd string
+			for i := range cc.Genrules {
+				if cc.Genrules[i].Name == name {
+					cmd = cc.Genrules[i].GenruleCmd
+					break
+				}
+			}
+			if cmd == "" {
+				t.Fatalf("genrule %q not found in cc.Genrules", name)
+			}
+			if got := strings.Contains(cmd, "$(RULEDIR)/"); got != tc.anchored {
+				t.Errorf("anchored=%v, want %v; cmd = %q", got, tc.anchored, cmd)
+			}
+		})
+	}
+}
+
 // TestSplitShellTokens covers the small shell-style tokenizer
 // used by extractDriver / usesCmakeScriptMode. Not POSIX-complete
 // by design — only the shapes CMake's CUSTOM_COMMAND emits. The

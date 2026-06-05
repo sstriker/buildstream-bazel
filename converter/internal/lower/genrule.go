@@ -428,6 +428,24 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 
 	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "")
 	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName)
+	// A recovered genrule whose output is in a SUBDIR (glog's
+	// empty-placeholder source `CMakeFiles/glog.cc`, a `cmake -E touch`
+	// recovered from ninja) wrote to a bare relative path that bazel rejects
+	// as a missing output — the subdir doesn't exist in the action sandbox.
+	// Anchor those outputs (and their multi-component parents) to
+	// $(RULEDIR)/<out>, mirroring the standalone-custom-command path's
+	// anchorGenruleOutputsToRuledir. Scoped to subdir outputs on purpose:
+	// root-level outputs already render correctly, so leaving them untouched
+	// avoids churning recovered genrules that build today.
+	subdirOuts := make([]string, 0, len(outs))
+	for _, o := range outs {
+		if strings.Contains(o, "/") {
+			subdirOuts = append(subdirOuts, o)
+		}
+	}
+	if len(subdirOuts) > 0 {
+		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, subdirOuts)
+	}
 	gen := ir.Target{
 		Name:         name,
 		Kind:         ir.KindGenrule,
