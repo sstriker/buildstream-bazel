@@ -768,20 +768,21 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	rt := t
 
 	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
-	// many packages): planSplit re-homed the surface into per-package header libs
-	// behind plan.rootHdrAgg, so this target drops its now-redundant copy of
-	// (nearly) all element headers and instead depends on the aggregate (wired at
-	// the bottom). Compute it up front and clear the surface now so the hdr /
-	// textual_hdr rewrite loops below SKIP it — otherwise they'd
+	// many packages): planSplit re-homed the HEADER surface (every RootInclude
+	// target's t.Hdrs) into per-package header libs behind plan.rootHdrAgg, so
+	// this target drops its now-redundant copy of (nearly) all element headers and
+	// instead depends on the aggregate (wired at the bottom). Compute it up front
+	// so the hdr-rewrite loop below SKIPS this target — otherwise it'd
 	// cross-package-relabel + exports_files() the whole ~397-header walked set,
 	// which is pure BUILD bloat (and a collision risk) since it's dropped anyway.
 	// Local-only, matching the synthesis gate (the SourceKey regime keeps hdrs
 	// element-root-relative and never synthesizes the libs).
+	//
+	// Only Hdrs are re-homed — textual_hdrs are NOT collected into the root-walk
+	// surface, so they still need their normal package-local / cross-package
+	// rewrite (the textual loop below runs for fast-path targets too). Dropping
+	// them here would lose textual inputs the aggregate never provides.
 	rootHdrFastPath := local && t.RootInclude && plan.rootHdrAgg != ""
-	if rootHdrFastPath {
-		rt.Hdrs = nil
-		rt.TextualHdrs = nil
-	}
 
 	// Header libs this target must depend on (one per include-root it
 	// referenced), plus the residual includes (none, after the split).
@@ -896,8 +897,11 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// a deeper/other package becomes a cross-package file label + an
 	// exports_files() need; one in this package stays package-relative. (No
 	// header-lib "owned" check — textual_hdrs are explicit textual includes,
-	// not glob-claimed by a synthesized include-root header lib.)
-	if !rootHdrFastPath && len(t.TextualHdrs) > 0 {
+	// not glob-claimed by a synthesized include-root header lib.) Runs for
+	// multi-package RootInclude (rootHdrFastPath) targets too: their textual_hdrs
+	// are NOT re-homed into the aggregate, so they need this rewrite to stay
+	// loadable after the split.
+	if len(t.TextualHdrs) > 0 {
 		var keepTextual []string
 		for _, h := range t.TextualHdrs {
 			if !local {
@@ -1085,14 +1089,16 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// packages): planSplit re-homed the whole element-root header surface into
 	// per-package header libs behind the aggregate, because include_prefix on the
 	// target itself (the glm path below) can't carry headers that re-home into
-	// OTHER packages. The surface was already dropped from rt.Hdrs/TextualHdrs at
-	// the top (so the hdr-rewrite loops skipped it); here just depend on the
-	// aggregate — every walked header is re-provided there at its
-	// include_prefix-restored `<pkg>/...` path, so the target's own
-	// `#include "<pkg>/foo.h"` resolves. (rewriteDeps is idempotent over the
-	// already-labeled rt.Deps; it folds in the aggregate label and re-sorts. The
-	// single-package shape leaves rootHdrAgg empty and falls through.)
+	// OTHER packages. Drop this target's now-redundant header copy (the hdr-rewrite
+	// loop above already skipped relabeling it) and depend on the aggregate — every
+	// walked header is re-provided there at its include_prefix-restored `<pkg>/...`
+	// path, so the target's own `#include "<pkg>/foo.h"` resolves. textual_hdrs are
+	// left as the textual loop rewrote them (not re-homed into the aggregate).
+	// (rewriteDeps is idempotent over the already-labeled rt.Deps; it folds in the
+	// aggregate label and re-sorts. The single-package shape leaves rootHdrAgg
+	// empty and falls through.)
 	if rootHdrFastPath {
+		rt.Hdrs = nil
 		rt.Deps = rewriteDeps(rt.Deps, plan, []string{headerLibLabel(plan, "", plan.rootHdrAgg)})
 		return rt
 	}

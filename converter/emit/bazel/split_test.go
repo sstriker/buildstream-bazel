@@ -611,7 +611,10 @@ func TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs(t *testing.T) {
 	pkg := &ir.Package{
 		Name: "x",
 		Targets: []ir.Target{
-			{Name: "base", Kind: ir.KindCCLibrary, Srcs: []string{"absl/base/base.cc"}, Hdrs: surface, RootInclude: true},
+			// base also carries a textual_hdr — NOT part of the root-walk surface,
+			// so it must survive the fast-path (re-relativized to package-local),
+			// not be dropped alongside the re-homed hdrs.
+			{Name: "base", Kind: ir.KindCCLibrary, Srcs: []string{"absl/base/base.cc"}, Hdrs: surface, TextualHdrs: []string{"absl/base/casts.inc"}, RootInclude: true},
 			{Name: "strings", Kind: ir.KindCCLibrary, Srcs: []string{"absl/strings/str.cc"}, Hdrs: surface, RootInclude: true},
 		},
 		SubPackages: map[string]string{"base": "absl/base", "strings": "absl/strings"},
@@ -658,5 +661,11 @@ func TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs(t *testing.T) {
 		if strings.Contains(rule, "casts.h") || strings.Contains(rule, "traits.h") {
 			t.Errorf("%s target should have dropped its walked hdr surface:\n%s", tgt.name, rule)
 		}
+	}
+	// The fast-path must NOT drop textual_hdrs — they aren't re-homed into the
+	// aggregate. base's textual_hdr survives, re-relativized to package-local.
+	baseRule := ruleBlockAfterName(string(tree["absl/base"]), "base")
+	if !strings.Contains(baseRule, "textual_hdrs") || !strings.Contains(baseRule, `"casts.inc"`) {
+		t.Errorf("base target must KEEP its (package-local) textual_hdrs, not drop them with the re-homed surface:\n%s", baseRule)
 	}
 }
