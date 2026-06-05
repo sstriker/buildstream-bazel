@@ -1313,15 +1313,17 @@ func cmakeInternalCmdKind(cmd string) string {
 		strings.Contains(c, "cmake_install.cmake") {
 		return "install"
 	}
-	// cmake_uninstall.cmake — the conventional uninstall maintenance target
-	// (the CMake-FAQ `add_custom_target(uninstall COMMAND cmake -P
-	// cmake_uninstall.cmake)` recipe glm and many projects copy verbatim). It
-	// deletes install-manifest files at action time: install's mirror, and just
-	// as much build-dir bookkeeping with no Bazel analogue. Like the install
-	// match it keys on the conventional script name, not a bare `-P`, so a
-	// user's own `cmake -P myscript.cmake` custom command isn't swept up.
-	if strings.HasPrefix(c, "cmake ") &&
-		strings.Contains(c, "cmake_uninstall.cmake") {
+	// Uninstall maintenance target — `add_custom_target(uninstall COMMAND cmake
+	// -P <uninstall-script>.cmake)`. The CMake-FAQ recipe glm and many projects
+	// copy verbatim names the script `cmake_uninstall.cmake`, but the script name
+	// is project-chosen: eigen ships `EigenUninstall.cmake`, others use
+	// `<Proj>Uninstall.cmake` / `uninstall.cmake`. Match any `-P` script whose
+	// basename contains "uninstall" (case-insensitive) and ends in `.cmake`, so
+	// the variants are all caught while a user's own `cmake -P myscript.cmake`
+	// custom command (no "uninstall" in the name) still isn't swept up. The
+	// script deletes install-manifest files at action time: install's mirror, and
+	// just as much build-dir bookkeeping with no Bazel analogue.
+	if strings.HasPrefix(c, "cmake ") && cmdRunsUninstallScript(c) {
 		return "uninstall"
 	}
 	// `--regenerate-during-build` — cmake's CMakeFiles regen hook.
@@ -1386,6 +1388,31 @@ func cmakeInternalCmdKind(cmd string) string {
 		return "ide-stub"
 	}
 	return ""
+}
+
+// cmdRunsUninstallScript reports whether a `cmake ...` cmd invokes a `-P`
+// script whose basename names an uninstall maintenance script — basename
+// contains "uninstall" (case-insensitive) and ends in `.cmake`. This is the
+// project-independent uninstall signal: the script name is project-chosen
+// (`cmake_uninstall.cmake`, eigen's `EigenUninstall.cmake`, a
+// `<Proj>Uninstall.cmake`, …) but always carries the word "uninstall". Keying
+// on the script basename (not a bare `-P`) means a user's own
+// `cmake -P myscript.cmake` custom command isn't mis-classified. The cmd is
+// already cd-stripped + basename-normalized by cmakeInternalCmdKind, so tokens
+// are space-separated; a `-P` script arg may carry a relative or absolute path,
+// so we test the basename of the token following `-P`.
+func cmdRunsUninstallScript(cmd string) bool {
+	fields := strings.Fields(cmd)
+	for i := 0; i+1 < len(fields); i++ {
+		if fields[i] != "-P" {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(strings.Trim(fields[i+1], `"'`)))
+		if strings.HasSuffix(base, ".cmake") && strings.Contains(base, "uninstall") {
+			return true
+		}
+	}
+	return false
 }
 
 // sanitizeOutputName converts a path like `gen/version.h` into a
