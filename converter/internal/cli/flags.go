@@ -602,6 +602,7 @@ var reservedCmakeDefine = map[string]string{
 	"CMAKE_TOOLCHAIN_FILE":             "set it via --toolchain-cmake-file",
 	"CMAKE_EXPORT_COMPILE_COMMANDS":    "the converter sets it ON to read the compile commands",
 	"CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "the converter sets it to inject its variable-dump hook",
+	"CMAKE_FIND_PACKAGE_PREFER_CONFIG": "the converter sets it ON to keep find_package hermetic (prefer config-mode)",
 }
 
 // Parse reads argv (without program name), populates Args, and prints usage
