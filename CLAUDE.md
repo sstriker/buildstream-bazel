@@ -150,7 +150,7 @@ For stacked PRs:
 
 - **All PRs target `main`.** Don't base one PR's branch on another
   PR's branch on GitHub — GitHub's stack-via-base-branch UI mostly
-  fights the linear-history workflow this repo uses. Each PR is its
+  fights the one-PR-per-branch workflow this repo uses. Each PR is its
   own branch off main, carries its own commits, and is independently
   mergeable in principle. The "stack" lives in the operator's head
   (and the PR descriptions cross-referencing each other), not in the
