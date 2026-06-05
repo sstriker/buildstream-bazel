@@ -354,7 +354,10 @@ for entry in $projects; do
     # convert, so counting it falsely skipped projects whose clean convert
     # succeeds (glog). rej_blocking subtracts that benign class; rej_n stays
     # the raw diagnostic count shown in the column.
-    rej_benign=$( [ -f "$rej" ] && grep -c 'treated as empty' "$rej" 2>/dev/null )
+    # `|| true` so grep -c's exit-1-on-zero-matches doesn't trip `set -e` for
+    # the common case (rejections.json present, no benign notice); the "0" it
+    # printed is still captured. ${:-0} covers the no-file case (empty).
+    rej_benign=$( [ -f "$rej" ] && grep -c 'treated as empty' "$rej" 2>/dev/null || true )
     rej_benign=${rej_benign:-0}
     if [ "$rej_n" != "-" ]; then
         rej_blocking=$((rej_n - rej_benign))
