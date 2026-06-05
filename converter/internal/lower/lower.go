@@ -4655,8 +4655,8 @@ func retagCudaTargets(pkg *ir.Package) {
 			if dot := strings.LastIndex(s, "."); dot >= 0 {
 				ext = strings.ToLower(s[dot:])
 			}
-			if headerExts[ext] {
-				continue // a header in srcs — not a compiled TU
+			if headerExts[ext] || ext == ".cuh" {
+				continue // a header in srcs (incl. CUDA `.cuh`) — not a compiled TU
 			}
 			if isCudaSrc(s) {
 				sawCuda = true

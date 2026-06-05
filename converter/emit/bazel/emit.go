@@ -1770,9 +1770,10 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	// cc_binary's stricture, so apply the same fold there.
 	srcsSel := perPlatformAttr(t, "srcs")
 	hdrsSel := perPlatformAttr(t, "hdrs")
-	// cuda_binary / cuda_test mirror cc_binary / cc_test: rules_cuda's
-	// executable macros have no `hdrs` attribute either, so fold headers
-	// into srcs the same way.
+	// cuda_binary / cuda_test are rules_cuda macros that DO accept `hdrs`
+	// (forwarded to their internal _cuda_library), but folding headers into
+	// srcs is tolerated identically — the cuda_library's `srcs` accepts header
+	// files — and keeps a single code path with cc_binary/cc_test.
 	if (t.Kind == ir.KindCCBinary || t.Kind == ir.KindCCTest ||
 		t.Kind == ir.KindCudaBinary || t.Kind == ir.KindCudaTest) && (len(hdrs) > 0 || len(hdrsSel) > 0) {
 		srcs = append(srcs, hdrs...)
