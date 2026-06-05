@@ -36,7 +36,7 @@ func TestLowerInterfaceLibraries_GenexDefineReconciledFromProbe(t *testing.T) {
 	genexTargets := map[string]genexeval.TargetInfo{
 		"iface": {Type: "INTERFACE_LIBRARY", InterfaceCompileDefinitions: "PLAIN_DEF=1;RELEASE_ONLY=1"},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", genexTargets, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", genexTargets, nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 1 {
 		t.Fatalf("want 1 interface lib; got %d", len(got))
 	}
@@ -67,7 +67,7 @@ func TestLowerInterfaceLibraries_GenexDefineDroppedWithoutProbe(t *testing.T) {
 			},
 		},
 	}
-	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
 	if len(got) != 1 {
 		t.Fatalf("want 1 interface lib; got %d", len(got))
 	}

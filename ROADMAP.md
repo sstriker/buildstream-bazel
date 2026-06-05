@@ -1037,27 +1037,6 @@ transition cleanly.
   converter's in-process File API consumer reads the reply
   when the cmake-configure step runs on a remote node.
 
-- **Test-support classification (`testonly`) for the build lens —
-  deliberately postponed.** The cmake converter emits `testonly` on
-  **zero** targets and draws no test/non-test distinction (no `cc_test` /
-  `cc_binary` either), so test-support libraries — `cc_library` targets
-  that link an imported GTest/gmock, like abseil's
-  `heterogeneous_lookup_testing` — are indistinguishable from production
-  libs. In the standalone build lens those targets dangle on the
-  unprovided `GTest::gmock` import (abseil's 2 residuals; see
-  `docs/survey-corpus.md`). A general fix would infer `testonly = True`
-  from an imported GTest/gmock dependency, then scope the build lens's
-  target pattern to exclude test-support targets — Bazel still *analyzes*
-  `testonly` targets under `//...`, so the marker alone doesn't green the
-  build; it has to pair with a pattern scope. Postponed deliberately:
-  637/639 already greens abseil's *library* surface, the residuals are
-  faithful conversions of real external test deps the standalone survey
-  doesn't stage, and the heuristic ("what makes a target test-only from
-  cmake?") deserves a deliberate design pass rather than a point fix.
-  Revisit when a corpus project's *non-test* surface depends on an
-  unprovided import, or when the lens policy itself needs a test/non-test
-  split.
-
 ---
 
 For how the codebase works *today* (not just what's planned here), see

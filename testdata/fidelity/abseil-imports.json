@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "googletest",
+      "exports": [
+        {
+          "cmake_target": "GTest::gmock",
+          "bazel_label": "@googletest//:gtest"
+        },
+        {
+          "cmake_target": "GTest::gtest",
+          "bazel_label": "@googletest//:gtest"
+        },
+        {
+          "cmake_target": "GTest::gmock_main",
+          "bazel_label": "@googletest//:gtest_main"
+        },
+        {
+          "cmake_target": "GTest::gtest_main",
+          "bazel_label": "@googletest//:gtest_main"
+        }
+      ]
+    }
+  ]
+}

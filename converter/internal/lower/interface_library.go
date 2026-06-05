@@ -7,6 +7,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -55,6 +56,7 @@ func lowerInterfaceLibraries(
 	knownTargets map[string]bool,
 	hostSrc, cmakeSrc, workspaceRoot string,
 	genexTargets map[string]genexeval.TargetInfo,
+	imports *manifest.Resolver,
 	cc *codegenContext,
 ) []ir.Target {
 	if decoded == nil || len(decoded.AddLibraries) == 0 {
@@ -204,16 +206,35 @@ func lowerInterfaceLibraries(
 	//
 	// Lib name → Bazel label resolution:
 	//
-	//   1. If the lib appears in `decoded.AddLibraries` as an
+	//   1. If the lib is in the imports manifest (a find_package
+	//      IMPORTED target the orchestrator routes to a Bazel
+	//      label), emit that label. This is the trace-synth
+	//      counterpart of the codemodel dep path's
+	//      imports.LookupCMakeTarget step (lower.go): an INTERFACE
+	//      library that links a find_package target —
+	//      `target_link_libraries(absl_heterogeneous_lookup_testing
+	//      INTERFACE GTest::gmock)` — must route GTest::gmock to its
+	//      external label (`@googletest//:gmock`), not a dangling
+	//      in-package `:GTest_gmock`. Checked FIRST so an external
+	//      `Pkg::Comp` resolves to its real label before the
+	//      sanitize-to-local fallback fabricates a non-existent
+	//      sibling target.
+	//   2. If the lib appears in `decoded.AddLibraries` as an
 	//      ALIAS, resolve to the underlying target's sanitized
 	//      name (`absl::log_internal_check_impl` →
 	//      `:absl_log_internal_check_impl`).
-	//   2. If the lib is a plain in-tree name (no `::`), emit as
+	//   3. If the lib is a plain in-tree name (no `::`), emit as
 	//      `:<name>` — the consumer side resolves it whether the
 	//      target is codemodel-emitted or trace-synthesized.
-	//   3. If the lib has `::` but no recorded ALIAS, sanitize
+	//   4. If the lib has `::` but no recorded ALIAS, sanitize
 	//      `::` → `_` and emit (alias-target rule will resolve).
-	//   4. Empty / build-genex / link-flag tokens drop silently.
+	//   5. Empty / build-genex / link-flag tokens drop silently.
+	//
+	// A `:`-local label produced by (2)/(3)/(4) that resolves to no
+	// emitted target (e.g. abseil's GTest-less default build, where
+	// `absl::test_instance_tracker` is a TESTONLY lib the codemodel
+	// filtered out) is pruned later by pruneDanglingTraceInterfaceDeps,
+	// once the full emitted-target/alias set is known.
 	aliasMap := map[string]string{}
 	for _, call := range decoded.AddLibraries {
 		if call.Type == "ALIAS" && len(call.Aliases) > 0 {
@@ -234,6 +255,15 @@ func lowerInterfaceLibraries(
 		// Drop genex placeholders cmake didn't expand.
 		if strings.Contains(lib, "$<") {
 			return ""
+		}
+		// Imports-manifest routing FIRST: a find_package IMPORTED
+		// target (GTest::gmock, Foo::Bar) the orchestrator maps to a
+		// Bazel label resolves to that label, never a fabricated
+		// in-package sibling. Mirrors the codemodel dep path's
+		// imports.LookupCMakeTarget step so the trace-synth INTERFACE
+		// library route honours the same manifest.
+		if export := imports.LookupCMakeTarget(lib); export != nil {
+			return export.BazelLabel
 		}
 		if actual, ok := aliasMap[lib]; ok {
 			return ":" + strings.ReplaceAll(actual, "::", "_")
