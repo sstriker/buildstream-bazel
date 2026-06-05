@@ -346,6 +346,25 @@ for entry in $projects; do
     idi_n=$( [ -f "$idiom" ] && grep -o '"Code"' "$idiom" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     cov_n=$( [ -f "$cov" ]   && grep -o '"Code"' "$cov"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
 
+    # The build-lens skip(rej) decision must ignore BENIGN diagnostics that
+    # don't actually block a clean (strict-mode) convert: the
+    # "...doesn't exist on disk; treated as empty" unsupported-source-path
+    # notice (forward-declared / genex include dirs) is recorded only in
+    # diagnostics mode and is a no-op in strict mode -- it never aborts the
+    # convert, so counting it falsely skipped projects whose clean convert
+    # succeeds (glog). rej_blocking subtracts that benign class; rej_n stays
+    # the raw diagnostic count shown in the column.
+    # `|| true` so grep -c's exit-1-on-zero-matches doesn't trip `set -e` for
+    # the common case (rejections.json present, no benign notice); the "0" it
+    # printed is still captured. ${:-0} covers the no-file case (empty).
+    rej_benign=$( [ -f "$rej" ] && grep -c 'treated as empty' "$rej" 2>/dev/null || true )
+    rej_benign=${rej_benign:-0}
+    if [ "$rej_n" != "-" ]; then
+        rej_blocking=$((rej_n - rej_benign))
+    else
+        rej_blocking="-"
+    fi
+
     # 4th lens: `bazel build //...` of the faithful (project-B-shaped) output,
     # only when this project is selected by SURVEY_BAZEL_BUILD. Short-circuit
     # the cases that can't (or shouldn't) build before paying for a clean
@@ -356,7 +375,7 @@ for entry in $projects; do
     if build_lens_for "$name"; then
         if [ "$status" != "ok" ]; then
             build_status="skip(convert)"
-        elif [ -n "$rej_n" ] && [ "$rej_n" != "0" ] && [ "$rej_n" != "-" ]; then
+        elif [ -n "$rej_blocking" ] && [ "$rej_blocking" != "0" ] && [ "$rej_blocking" != "-" ]; then
             build_status="skip(rej)"
         else
             build_status="$(try_bazel_build "$name" "$src" "$proj_out" "$bt_args" "$sp_args")"
