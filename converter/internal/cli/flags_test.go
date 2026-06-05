@@ -409,14 +409,36 @@ func TestParse_CmakeDefineWhitespaceKeyRejected(t *testing.T) {
 // owns through a dedicated flag (CMAKE_BUILD_TYPE / CMAKE_CONFIGURATION_TYPES)
 // is rejected at parse time rather than conflicting at configure time.
 func TestParse_CmakeDefineReservedRejected(t *testing.T) {
-	for _, key := range []string{"CMAKE_BUILD_TYPE", "CMAKE_CONFIGURATION_TYPES"} {
+	// Include a typed cache entry (KEY:TYPE=VALUE) to pin that the reserved
+	// check sees through the :TYPE suffix.
+	for _, entry := range []string{
+		"CMAKE_BUILD_TYPE=Debug",
+		"CMAKE_CONFIGURATION_TYPES=Debug;Release",
+		"CMAKE_BUILD_TYPE:STRING=Debug",
+	} {
 		var stderr bytes.Buffer
-		_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", key + "=Debug"}, &stderr)
+		_, code := Parse([]string{"--source-root", "/proj", "--cmake-define", entry}, &stderr)
 		if code != ExitUsage {
-			t.Fatalf("%s: code = %d; want ExitUsage (%d)", key, code, ExitUsage)
+			t.Fatalf("%s: code = %d; want ExitUsage (%d)", entry, code, ExitUsage)
 		}
 		if !strings.Contains(stderr.String(), "reserved") {
-			t.Errorf("%s: stderr should explain it is reserved, got %q", key, stderr.String())
+			t.Errorf("%s: stderr should explain it is reserved, got %q", entry, stderr.String())
 		}
+	}
+}
+
+// TestParse_CmakeDefineLeadingDashRejected pins that a copy-pasted cmake-CLI
+// "-DKEY=VALUE" is rejected — the converter adds the -D itself, so accepting it
+// would emit "-D-DKEY=VALUE" downstream.
+func TestParse_CmakeDefineLeadingDashRejected(t *testing.T) {
+	var stderr bytes.Buffer
+	// Use the --flag=value form so the leading-dash value is unambiguously the
+	// flag's argument (not parsed as a separate flag).
+	_, code := Parse([]string{"--source-root", "/proj", "--cmake-define=-DCMAKE_CXX_FLAGS=-w"}, &stderr)
+	if code != ExitUsage {
+		t.Fatalf("code = %d; want ExitUsage (%d)", code, ExitUsage)
+	}
+	if !strings.Contains(stderr.String(), "-D") {
+		t.Errorf("stderr should explain the -D issue, got %q", stderr.String())
 	}
 }

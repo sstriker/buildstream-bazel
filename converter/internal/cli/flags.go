@@ -112,13 +112,15 @@ type Args struct {
 	// (--exports-in a --exports-in b).
 	ExportsIn []string
 
-	// CmakeDefines carries extra `-D<KEY>=<VALUE>` cache variables to pass to
-	// the cmake configure (cmakerun.Options.ExtraCacheVars). Repeatable
-	// (--cmake-define K1=V1 --cmake-define K2=V2). Used to drive a project's
-	// own build options at configure time — e.g. glm's tests add a `-Werror`
-	// that GCC 13 trips on (a -Wclass-memaccess in glm's own headers), so the
-	// build lens passes -DCMAKE_CXX_FLAGS=-w to inhibit warnings while leaving
-	// glm's C++ auto-detection (and thus its std::hash specializations) intact.
+	// CmakeDefines carries extra cmake cache variables for the configure as
+	// KEY[=VALUE] entries WITHOUT a leading -D (cmakeDefinesToMap →
+	// cmakerun.Options.ExtraCacheVars, which prepends the -D itself).
+	// Repeatable (--cmake-define K1=V1 --cmake-define K2=V2). Drives a
+	// project's own build options at configure time — e.g. glm's tests add a
+	// `-Werror` that GCC 13 trips on (a -Wclass-memaccess in glm's own
+	// headers), so the build lens passes --cmake-define CMAKE_CXX_FLAGS=-w to
+	// inhibit warnings while leaving glm's C++ auto-detection (and thus its
+	// std::hash specializations) intact.
 	CmakeDefines []string
 
 	// OutFailure, when non-empty, is the path to write failure.json on
@@ -612,7 +614,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.OutBundleDir, "out-bundle-dir", "", "directory for synthesized cmake-config bundle (optional)")
 	fs.StringVar(&a.OutExports, "out-exports", "", "path to write this element's exports manifest (manifest.Imports JSON: real namespaced cmake targets → this element's Bazel labels) for downstream consumers' --exports-in (optional; requires --bazel-package-path for label formation)")
 	fs.Var(repeatedString{&a.ExportsIn}, "exports-in", "producer exports-manifest file to merge into the imports resolver (the action-time half of the producer→consumer export channel). Repeatable: --exports-in a --exports-in b.")
-	fs.Var(repeatedString{&a.CmakeDefines}, "cmake-define", "extra -D<KEY>=<VALUE> cache variable for the cmake configure, to drive a project's own build options (e.g. -DCMAKE_CXX_FLAGS=-w to inhibit a project's warnings-as-errors that a newer host compiler trips on). Repeatable: --cmake-define K1=V1 --cmake-define K2=V2.")
+	fs.Var(repeatedString{&a.CmakeDefines}, "cmake-define", "extra cmake cache variable for the configure, as KEY[=VALUE] WITHOUT a leading -D (the converter adds the -D) — drives a project's own build options. E.g. --cmake-define CMAKE_CXX_FLAGS=-w to inhibit a project's warnings-as-errors that a newer host compiler trips on. Repeatable: --cmake-define K1=V1 --cmake-define K2=V2.")
 	fs.StringVar(&a.OutFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	fs.StringVar(&a.ImportsManifest, "imports-manifest", "", "path to JSON imports manifest mapping out-of-tree CMake targets to Bazel labels (optional)")
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
@@ -670,17 +672,26 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	// ExitUsage rather than letting cmakerun fail Tier-2 downstream.
 	for _, d := range a.CmakeDefines {
 		key, _, _ := strings.Cut(d, "=")
+		// cmake also accepts a typed cache entry, "KEY:TYPE=VALUE" — compare the
+		// bare KEY (sans :TYPE) against the reserved set so a typed
+		// CMAKE_BUILD_TYPE:STRING can't slip the reservation.
+		bareKey, _, _ := strings.Cut(key, ":")
 		switch {
 		case key == "":
 			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: expected KEY=VALUE with a non-empty KEY\n", d)
+			return a, ExitUsage
+		case strings.HasPrefix(key, "-"):
+			// The converter prepends the -D itself; a copy-pasted cmake-CLI
+			// "-DKEY=VALUE" here would emit "-D-DKEY=VALUE". Pass KEY=VALUE.
+			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: pass KEY=VALUE without a leading -D (the converter adds it)\n", d)
 			return a, ExitUsage
 		case strings.ContainsAny(key, " \t\r\n\f\v"):
 			// A space in the KEY (e.g. "CMAKE_CXX_FLAGS =-w") would set the
 			// wrong cache variable name or emit an unparseable -D argument.
 			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: KEY must not contain whitespace\n", d)
 			return a, ExitUsage
-		case reservedCmakeDefine[key]:
-			fmt.Fprintf(stderr, "convert-element-cmake: --cmake-define %s is reserved; set it via --build-type / --build-types instead\n", key)
+		case reservedCmakeDefine[bareKey]:
+			fmt.Fprintf(stderr, "convert-element-cmake: --cmake-define %s is reserved; set it via --build-type / --build-types instead\n", bareKey)
 			return a, ExitUsage
 		}
 	}
