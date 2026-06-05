@@ -1,5 +1,28 @@
 # Corpus-green campaign — workflow + live board (target: Sunday night)
 
+## Coordination rules (operator, Fri PM) — READ BEFORE LAUNCHING/LANDING
+**Collective pickup — no double-work, no breaking each other** (curl + OpenBLAS
+both independently re-fixed the same `split.go` cross-package bug — exactly what
+this prevents):
+1. **Land general converter fixes to `main` IMMEDIATELY**, separate from
+   member-specific `.conf` (e.g. the split.go cross-package fixes landed as #446
+   independent of OpenBLAS's green). The shared foundation grows continuously.
+2. **Every greening-agent prompt MUST say:** "`git merge origin/main` before you
+   start and periodically; before writing any *general* converter fix, check if
+   it's already in `main` — don't re-implement landed work."
+3. **Always branch agents off the LATEST `main`** (all landed fixes), never a
+   stale base. (The pre-Phase-0 base bug came from launching off the campaign
+   branch — `git checkout main && git pull` first.)
+4. **At land: reconcile + DROP dups.** `git merge origin/main` into the agent
+   branch; if it re-implemented a fix already in `main`, keep main's version.
+
+**Code-review gate (quality) — before merging ANY agent branch:**
+- Run a **review pass** on the diff — a dedicated review agent, or the
+  `/code-review` skill — checking correctness, regressions to the green set,
+  test coverage, and idiom. Weight changes to shared emit paths (`split.go`,
+  `lower.go`) heavily — they affect every green member. Address findings, then
+  merge. (Copilot's PR review is a second, async pass.)
+
 ## Operator directives — EXPANDED SCOPE (Fri PM, authoritative)
 "Full corpus green" now explicitly **includes the CUDA tier**, and OpenBLAS's
 **final** form is the Fortran build:
