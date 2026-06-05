@@ -592,3 +592,54 @@ func TestEmit_Split_RootIncludeSourceKeyNoPrefix(t *testing.T) {
 		}
 	}
 }
+
+// TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs: when a
+// RootInclude target's element-root header surface spans MORE THAN ONE package
+// (abseil's `target_include_directories(${PROJECT_SOURCE_DIR})` grant — every
+// such target may include any absl/… header), include_prefix on the target
+// itself can't carry headers that re-home into OTHER packages. Instead the
+// surface is re-homed into per-package header libs (each with
+// include_prefix=<pkg>, or includes=["."] for the root-owned headers in
+// non-package dirs like absl/meta) behind one aggregate that every RootInclude
+// target depends on.
+func TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs(t *testing.T) {
+	// Two libs in different subpackages, each carrying the full cross-package
+	// header surface (the shape the discoverHeaders root-walk produces). The
+	// surface includes a header in absl/meta, which has no target of its own
+	// (so it is NOT a Bazel package and buckets to the root owner).
+	surface := []string{"absl/base/casts.h", "absl/strings/str.h", "absl/meta/traits.h"}
+	pkg := &ir.Package{
+		Name: "x",
+		Targets: []ir.Target{
+			{Name: "base", Kind: ir.KindCCLibrary, Srcs: []string{"absl/base/base.cc"}, Hdrs: surface, RootInclude: true},
+			{Name: "strings", Kind: ir.KindCCLibrary, Srcs: []string{"absl/strings/str.cc"}, Hdrs: surface, RootInclude: true},
+		},
+		SubPackages: map[string]string{"base": "absl/base", "strings": "absl/strings"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/x"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	// The aggregate lives in the root package.
+	if !contains(string(tree[""]), `name = "element_root_headers"`) {
+		t.Errorf("root pkg missing the element_root_headers aggregate:\n%s", string(tree[""]))
+	}
+	// A subpackage owner gets a per-package header lib with include_prefix.
+	if !contains(string(tree["absl/base"]), `include_prefix = "absl/base"`) {
+		t.Errorf("absl/base pkg missing root-hdr lib with include_prefix:\n%s", string(tree["absl/base"]))
+	}
+	// The root-owned header (absl/meta, a non-package dir) gets includes=["."]
+	// (not include_prefix, which would double the absl/ prefix) and keeps its
+	// element-root path.
+	rootPkg := string(tree[""])
+	if !contains(rootPkg, `includes = ["."]`) || !contains(rootPkg, `"absl/meta/traits.h"`) {
+		t.Errorf("root pkg missing includes=[\".\"] root-hdr lib carrying absl/meta/traits.h:\n%s", rootPkg)
+	}
+	// Each RootInclude target depends on the aggregate (and dropped its own
+	// copy of the cross-package surface — it must NOT carry include_prefix,
+	// since that path is for the single-package shape only).
+	basePkg := string(tree["absl/base"])
+	if !contains(basePkg, `//elements/x:element_root_headers`) {
+		t.Errorf("absl/base pkg: base target should depend on the aggregate:\n%s", basePkg)
+	}
+}
