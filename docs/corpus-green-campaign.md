@@ -1,5 +1,23 @@
 # Corpus-green campaign — workflow + live board (target: Sunday night)
 
+## Operator directives — EXPANDED SCOPE (Fri PM, authoritative)
+"Full corpus green" now explicitly **includes the CUDA tier**, and OpenBLAS's
+**final** form is the Fortran build:
+- **CUDA tier IN (cutlass + cuda-samples).** Needs `nvcc` (provision via
+  `BSB_PROVISION_CUDA=1` / the SessionStart hook's CUDA path) + `rules_cuda`
+  wired into the build-lens synthesized MODULE + a `.cu`→`cuda_library` mapping.
+  Agent `claude/green-cutlass` is building the CUDA infra + greening cutlass;
+  cuda-samples reuses the infra (then a `cuda-samples.conf`). Toolchain INFRA —
+  multi-day, but IN scope.
+- **OpenBLAS final form = Fortran (operator's explicit end-goal).** The C-only
+  (`NOFORTRAN=1 C_LAPACK=1`) green from agent `claude/green-openblas` is
+  **INTERIM**. The deliverable the operator wants is the **Fortran** OpenBLAS —
+  reference BLAS + LAPACK compiled via **edbaunton's `fortran_rules`** Bazel
+  ruleset — on its own branch (`claude/green-openblas-fortran`), as the FINAL
+  item after the rest of the corpus is green. That agent: base the build-lens
+  MODULE on edbaunton/fortran_rules (`bazel_dep` + git_override), compile
+  OpenBLAS's `.f`/LAPACK with it, verify `openblas` green WITH Fortran.
+
 ## Live state — Fri (triage in; wave 1 running)
 - **Phase 0** ✅ landed (#442) — data-driven `build-lens/<m>.conf`.
 - **KEY (triage):** curl, **grpc, and SDL share ONE blocker** — the dangling
