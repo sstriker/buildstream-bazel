@@ -155,6 +155,31 @@ build_lens_for() {
     return 1
 }
 
+# load_build_lens_conf <name> — source the per-project build-lens config
+# scripts/build-lens/<name>.conf, if it exists, into the current shell. This is
+# the DATA-DRIVEN per-project knob layer: each project's build-lens tweaks live
+# in ONE file of its own (so concurrent greening agents never collide editing
+# run-survey.sh's body — see docs/corpus-green-campaign.md "Conflicts"). A conf
+# is a tiny POSIX-sh fragment setting any of:
+#   CONVERT_FLAGS     extra args appended to the build-lens convert (e.g.
+#                     `--cmake-define EIGEN_BUILD_TESTING=OFF ...`). Word-split
+#                     on whitespace, so a value carrying spaces must be a single
+#                     --cmake-define KEY=VALUE pair without internal spaces.
+#   BAZEL_BUILD_FLAGS extra flags for the `bazel build //...` invocation (e.g.
+#                     glog's `--dynamic_mode=off`).
+# Both default to empty (no-op) when the conf is absent or doesn't set them.
+# Each call resets them first so one project's conf never leaks into the next.
+load_build_lens_conf() {
+    CONVERT_FLAGS=""
+    BAZEL_BUILD_FLAGS=""
+    _blc_f="$repo_root/scripts/build-lens/$1.conf"
+    if [ -f "$_blc_f" ]; then
+        # shellcheck disable=SC1090
+        . "$_blc_f"
+        echo "  $1: build-lens conf: ${_blc_f#"$repo_root"/}" >&2
+    fi
+}
+
 # try_bazel_build <name> <src> <proj_out> <bt_args> <sp_args> — clean-convert
 # the project in the faithful shape + --out-config-settings, overlay onto a
 # copy of the source tree with a minimal MODULE.bazel, and `bazel build //...`.
@@ -167,6 +192,9 @@ build_lens_for() {
 try_bazel_build() {
     _bb_name="$1"; _bb_src="$2"; _bb_po="$3"; _bb_bt="$4"; _bb_sp="$5"
     [ -n "$bzl_bin" ] || { echo "skip(no-bazel)"; return; }
+    # Load this project's data-driven build-lens conf (CONVERT_FLAGS /
+    # BAZEL_BUILD_FLAGS), if any, before assembling the convert argv + build flags.
+    load_build_lens_conf "$_bb_name"
     _bb_ws="$_bb_po/build-ws"
     # Convert in the FAITHFUL project-B shape: the element lands under
     # elements/<name>/ (a real sub-package), NOT at the workspace root. This
@@ -205,16 +233,20 @@ try_bazel_build() {
     # it build" check — the lens tests buildability, and it already opts in to
     # install-export config generation in the same spirit.
     #
-    # glm: its test/CMakeLists.txt adds `-Werror` (gcc) / `-Werror -Weverything`
-    # (clang), and under GCC 13 that trips on -Wclass-memaccess in glm's own
-    # gtc/packing.inl (memcpy over its packed vector types — intentional, not a
-    # bug). We can't reach for glm's GLM_DISABLE_AUTO_DETECTION knob: it does
-    # drop the test -Werror, but it also forces GLM_FORCE_CXX_UNKNOWN, which
-    # zeroes GLM_LANG and so disables glm's C++11 std::hash specializations —
-    # breaking the gtx_hash tests with deleted-function errors. Instead pass
-    # CMAKE_CXX_FLAGS=-w: it inhibits all warnings (so -Werror has nothing to
-    # promote, order-independently) while leaving C++ auto-detection intact, so
-    # the full test suite — hash included — compiles.
+    # Per-project converter flags come from the data-driven build-lens conf
+    # (scripts/build-lens/<name>.conf -> CONVERT_FLAGS), loaded above into the
+    # CONVERT_FLAGS var. Examples that live in a conf rather than inline here:
+    #   - glm: its test/CMakeLists.txt adds `-Werror`; under GCC 13 that trips on
+    #     -Wclass-memaccess in glm's own gtc/packing.inl (intentional memcpy over
+    #     packed vector types). CONVERT_FLAGS='--cmake-define CMAKE_CXX_FLAGS=-w'
+    #     inhibits the warnings so -Werror has nothing to promote, while leaving
+    #     glm's C++ auto-detection intact (GLM_DISABLE_AUTO_DETECTION would also
+    #     force GLM_FORCE_CXX_UNKNOWN, breaking the std::hash tests).
+    #   - eigen: header-only; its bundled Fortran reference BLAS/LAPACK need a
+    #     Bazel Fortran ruleset (unsupported), its SIMD test suite is a large
+    #     -Werror dev surface, and its doc-example/demo programs are dev surface
+    #     too. CONVERT_FLAGS disables EIGEN_BUILD_TESTING/BLAS/LAPACK/DOC/DEMOS so
+    #     it converts to its header library (single cc_library).
     # Build the converter argv in the positional params so every argument is
     # passed atomically: a --cmake-define value may carry spaces
     # (CMAKE_<LANG>_FLAGS commonly does), which an unquoted "$var" expansion
@@ -223,9 +255,11 @@ try_bazel_build() {
     set -- --source-root "$_bb_src"
     [ -n "$_bb_bt" ] && set -- "$@" "$_bb_bt"
     [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
-    case "$_bb_name" in
-        glm) set -- "$@" --cmake-define "CMAKE_CXX_FLAGS=-w" ;;
-    esac
+    # CONVERT_FLAGS is intentionally word-split (it's a flat flag list); per-flag
+    # values carrying spaces aren't supported via the conf (use a space-free
+    # KEY=VALUE). Word-splitting is deliberate here, so don't quote $CONVERT_FLAGS.
+    # shellcheck disable=SC2086
+    [ -n "${CONVERT_FLAGS:-}" ] && set -- "$@" $CONVERT_FLAGS
     # --emit-install-export-config: the build lens is the one place that opts in
     # to generating the install(EXPORT) config-mode bundle (the real
     # <Pkg>Targets.cmake + cmake_config_bundle filegroup). Default converts omit
@@ -249,17 +283,17 @@ bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
 EOF
-    # Per-project `bazel build` flags. glog: its unit tests reference glog's
-    # internal (GLOG_NO_EXPORT / -fvisibility=hidden) symbols
-    # (GetExistingTempDirectories, g_logging_fail_func, SafeFNMatch_, ...).
-    # Bazel's default dynamic linking builds glog as a .so that doesn't export
-    # those hidden symbols, so the cc_tests fail to link; --dynamic_mode=off
-    # links them statically (the way glog's own static build links its tests,
-    # matching the converter's linkstatic=True output), resolving the symbols.
-    _bb_bzlflags=""
-    case "$_bb_name" in
-        glog) _bb_bzlflags="--dynamic_mode=off" ;;
-    esac
+    # Per-project `bazel build` flags come from the data-driven build-lens conf
+    # (scripts/build-lens/<name>.conf -> BAZEL_BUILD_FLAGS), loaded above. Example
+    # that lives in a conf rather than inline here:
+    #   - glog: its unit tests reference glog's internal (GLOG_NO_EXPORT /
+    #     -fvisibility=hidden) symbols (GetExistingTempDirectories,
+    #     g_logging_fail_func, SafeFNMatch_, ...). Bazel's default dynamic linking
+    #     builds glog as a .so that doesn't export those hidden symbols, so the
+    #     cc_tests fail to link; BAZEL_BUILD_FLAGS='--dynamic_mode=off' links them
+    #     statically (matching glog's own static test build + the converter's
+    #     linkstatic=True output), resolving the symbols.
+    _bb_bzlflags="${BAZEL_BUILD_FLAGS:-}"
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
