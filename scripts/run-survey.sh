@@ -182,7 +182,54 @@ try_bazel_build() {
     _bb_pkg="elements/$_bb_name"
     _bb_elt="$_bb_ws/$_bb_pkg"
     rm -rf "$_bb_ws"; mkdir -p "$_bb_elt"
-    if ! cp -a "$_bb_src/." "$_bb_elt/" 2>"$_bb_po/build.log"; then
+
+    # Per-project build-lens config: ONE sourced file per project,
+    # scripts/build-lens/<name>.conf, instead of inline `case "$_bb_name"`
+    # statements here. A greening agent adds only its own <name>.conf, so two
+    # agents greening different members never touch this shared file (the
+    # Phase-0 enabler for conflict-free parallel greening — see
+    # docs/corpus-green-campaign.md). Reset the knobs to their safe defaults
+    # FIRST so one project's config can't leak into the next (try_bazel_build
+    # runs once per project in the same shell). Sourced BEFORE the source copy
+    # so ELEMENT_SOURCE_ROOT can redirect what gets overlaid. Schema (all
+    # optional):
+    #   CONVERT_FLAGS       extra args appended to the clean convert argv
+    #                       (e.g. --cmake-define X=Y, --imports-manifest=...).
+    #   BAZEL_FLAGS         extra args to `bazel build` (e.g. --dynamic_mode=off).
+    #   EXTRA_BAZEL_DEPS    newline-separated MODULE.bazel lines injected into the
+    #                       synthesized MODULE.bazel (bazel_dep / use_extension /
+    #                       register_toolchains — e.g. the rules_cuda toolchain
+    #                       block for CUDA projects; see scripts/build-lens/
+    #                       cutlass.conf's note on the `.cu` path).
+    #   EMIT_INSTALL_EXPORT 1 (default) emits --emit-install-export-config; 0 skips.
+    #   BUILD_LENS_IGNORE_REJ  read in the main loop (NOT here): 1 bypasses the
+    #                       skip(rej) gate when CONVERT_FLAGS disable the surface
+    #                       producing the diagnostic rejection (cutlass's tools/).
+    #   ELEMENT_SOURCE_ROOT absolute dir to OVERLAY into the element instead of
+    #                       the surveyed cmake dir ($_bb_src) — for a subdir-cmake
+    #                       project whose sources live OUTSIDE the cmake root. The
+    #                       surveyed dir ($_bb_src) must be inside this dir; cmake
+    #                       still configures at $_bb_src (the --source-root). zstd
+    #                       is the canonical case: its cmake root is
+    #                       <repo>/build/cmake but its library sources are at
+    #                       <repo>/lib + <repo>/programs (siblings of build/), so
+    #                       the converter — detecting the repo root as the
+    #                       workspace root — emits labels like //elements/zstd/lib:…
+    #                       that only resolve when the WHOLE repo is staged under
+    #                       elements/zstd/. Default empty → overlay $_bb_src.
+    CONVERT_FLAGS=""
+    BAZEL_FLAGS=""
+    EXTRA_BAZEL_DEPS=""
+    EMIT_INSTALL_EXPORT=1
+    ELEMENT_SOURCE_ROOT=""
+    _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
+    [ -f "$_bb_conf" ] && . "$_bb_conf"
+
+    # The dir overlaid into the element. Defaults to the surveyed cmake dir;
+    # ELEMENT_SOURCE_ROOT redirects it to an ancestor (the repo root) for a
+    # subdir-cmake project whose sources sit outside the cmake root (zstd).
+    _bb_overlay_src="${ELEMENT_SOURCE_ROOT:-$_bb_src}"
+    if ! cp -a "$_bb_overlay_src/." "$_bb_elt/" 2>"$_bb_po/build.log"; then
         echo "skip(copy)"; return
     fi
     # Strip any Bazel files the project SHIPS (fmt's support/bazel/, etc.): the
@@ -199,34 +246,6 @@ try_bazel_build() {
     # under elements/<name>/, the shared //config package stays at the
     # workspace root (the multi-config select() arms reference //config:<name>
     # absolutely, independent of the element's package path).
-    #
-    # Per-project build-lens config: ONE sourced file per project,
-    # scripts/build-lens/<name>.conf, instead of inline `case "$_bb_name"`
-    # statements here. A greening agent adds only its own <name>.conf, so two
-    # agents greening different members never touch this shared file (the
-    # Phase-0 enabler for conflict-free parallel greening — see
-    # docs/corpus-green-campaign.md). Reset the four knobs to their safe
-    # defaults FIRST so one project's config can't leak into the next
-    # (try_bazel_build runs once per project in the same shell). Schema (all
-    # optional):
-    #   CONVERT_FLAGS       extra args appended to the clean convert argv
-    #                       (e.g. --cmake-define X=Y, --imports-manifest=...).
-    #   BAZEL_FLAGS         extra args to `bazel build` (e.g. --dynamic_mode=off).
-    #   EXTRA_BAZEL_DEPS    newline-separated MODULE.bazel lines injected into the
-    #                       synthesized MODULE.bazel (bazel_dep / use_extension /
-    #                       register_toolchains — e.g. the rules_cuda toolchain
-    #                       block for CUDA projects; see scripts/build-lens/
-    #                       cutlass.conf's note on the `.cu` path).
-    #   EMIT_INSTALL_EXPORT 1 (default) emits --emit-install-export-config; 0 skips.
-    #   BUILD_LENS_IGNORE_REJ  read in the main loop (NOT here): 1 bypasses the
-    #                       skip(rej) gate when CONVERT_FLAGS disable the surface
-    #                       producing the diagnostic rejection (cutlass's tools/).
-    CONVERT_FLAGS=""
-    BAZEL_FLAGS=""
-    EXTRA_BAZEL_DEPS=""
-    EMIT_INSTALL_EXPORT=1
-    _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
-    [ -f "$_bb_conf" ] && . "$_bb_conf"
 
     # Build the converter argv in the positional params so every argument is
     # passed atomically: a --cmake-define value may carry spaces
