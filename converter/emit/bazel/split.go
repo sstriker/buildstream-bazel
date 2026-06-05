@@ -44,7 +44,7 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	//    headerLibs maps an include-root dir → the synthesized header
 	//    cc_library's bare name; the package dir for that lib is the
 	//    include-root dir itself.
-	plan := planSplit(pkg)
+	plan := planSplit(pkg, local)
 	plan.setBase(strings.Trim(opts.BazelPackagePath, "/"))
 
 	// 2. Partition real targets by their declaring directory and
@@ -612,7 +612,7 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 }
 
 // planSplit computes the split layout from a lowered package.
-func planSplit(pkg *ir.Package) *splitPlan {
+func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
 		sub:        map[string]string{},
 		headerLibs: map[string]string{},
@@ -709,6 +709,13 @@ func planSplit(pkg *ir.Package) *splitPlan {
 	// include_prefix-on-the-target path (rewriteTarget, the glm shape) break
 	// down — a single package keeps that path. In the multi-package case
 	// re-home the surface into per-package header libs behind one aggregate.
+	//
+	// Local regime only (opts.SourceKey==""), like the include_prefix gate this
+	// replaces: the SourceKey regime keeps hdrs element-root-relative (the
+	// emitter prefixes them to @src_<key>//:tree_dir/<path>), so re-relativizing
+	// + include_prefix here would emit wrong labels. Gating the synthesis off
+	// keeps rootHdrLibs/rootHdrAgg empty there, so emission and the
+	// rewriteTarget fast-path both no-op.
 	p.rootHdrLibs = map[string]string{}
 	p.rootHdrsIn = map[string][]string{}
 	rootWalk := map[string]struct{}{}
@@ -725,7 +732,7 @@ func planSplit(pkg *ir.Package) *splitPlan {
 		owner := p.deepestPkg(h)
 		byPkg[owner] = append(byPkg[owner], h)
 	}
-	if len(byPkg) > 1 {
+	if local && len(byPkg) > 1 {
 		uniqueName := func(name string) string {
 			base := name
 			for i := 1; ; i++ {
@@ -759,6 +766,22 @@ func planSplit(pkg *ir.Package) *splitPlan {
 // intra-element deps to cross-package labels.
 func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}) ir.Target {
 	rt := t
+
+	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
+	// many packages): planSplit re-homed the surface into per-package header libs
+	// behind plan.rootHdrAgg, so this target drops its now-redundant copy of
+	// (nearly) all element headers and instead depends on the aggregate (wired at
+	// the bottom). Compute it up front and clear the surface now so the hdr /
+	// textual_hdr rewrite loops below SKIP it — otherwise they'd
+	// cross-package-relabel + exports_files() the whole ~397-header walked set,
+	// which is pure BUILD bloat (and a collision risk) since it's dropped anyway.
+	// Local-only, matching the synthesis gate (the SourceKey regime keeps hdrs
+	// element-root-relative and never synthesizes the libs).
+	rootHdrFastPath := local && t.RootInclude && plan.rootHdrAgg != ""
+	if rootHdrFastPath {
+		rt.Hdrs = nil
+		rt.TextualHdrs = nil
+	}
 
 	// Header libs this target must depend on (one per include-root it
 	// referenced), plus the residual includes (none, after the split).
@@ -821,6 +844,12 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// (physically under this target's dir) package-relative.
 	var keepHdrs []string
 	for _, h := range t.Hdrs {
+		if rootHdrFastPath {
+			// Surface dropped + served by the aggregate (set above); skip the
+			// per-header cross-package relabel + exports_files() recording,
+			// which over the whole walked set is pure BUILD bloat.
+			break
+		}
 		owned := false
 		for inc := range incRoots {
 			if _, ok := relUnder(inc, h); ok {
@@ -868,7 +897,7 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// exports_files() need; one in this package stays package-relative. (No
 	// header-lib "owned" check — textual_hdrs are explicit textual includes,
 	// not glob-claimed by a synthesized include-root header lib.)
-	if len(t.TextualHdrs) > 0 {
+	if !rootHdrFastPath && len(t.TextualHdrs) > 0 {
 		var keepTextual []string
 		for _, h := range t.TextualHdrs {
 			if !local {
@@ -1056,14 +1085,14 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// packages): planSplit re-homed the whole element-root header surface into
 	// per-package header libs behind the aggregate, because include_prefix on the
 	// target itself (the glm path below) can't carry headers that re-home into
-	// OTHER packages. Drop this target's now-redundant copy of that surface and
-	// depend on the aggregate instead — every walked header is re-provided there
-	// at its include_prefix-restored `<pkg>/...` path, so the target's own
+	// OTHER packages. The surface was already dropped from rt.Hdrs/TextualHdrs at
+	// the top (so the hdr-rewrite loops skipped it); here just depend on the
+	// aggregate — every walked header is re-provided there at its
+	// include_prefix-restored `<pkg>/...` path, so the target's own
 	// `#include "<pkg>/foo.h"` resolves. (rewriteDeps is idempotent over the
-	// already-labeled rt.Deps; it just folds in the aggregate label and re-sorts.
-	// The single-package shape leaves rootHdrAgg empty and falls through.)
-	if t.RootInclude && plan.rootHdrAgg != "" {
-		rt.Hdrs = nil
+	// already-labeled rt.Deps; it folds in the aggregate label and re-sorts. The
+	// single-package shape leaves rootHdrAgg empty and falls through.)
+	if rootHdrFastPath {
 		rt.Deps = rewriteDeps(rt.Deps, plan, []string{headerLibLabel(plan, "", plan.rootHdrAgg)})
 		return rt
 	}
