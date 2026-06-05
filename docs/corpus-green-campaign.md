@@ -1,16 +1,25 @@
 # Corpus-green campaign — workflow + live board (target: Sunday night)
 
-## Live state — Fri (post-launch)
-- **Phase 0** (data-driven `build-lens/<m>.conf`): ✅ landed (#442). Greening
-  agents now add only their own `.conf` → conflict-free.
-- **In flight (4 parallel worktree agents):** eigen → `claude/green-eigen`
-  (Phase 1, recipe verified); curl → `claude/green-curl` (Phase 2 — fix the
-  shared-lib `cc_import` seam + add tests to the 3 split/genrule fixes);
-  protobuf → `claude/green-protobuf` (Phase 2 — FetchContent→`@bcr` remap, or a
-  scoped not-by-Sunday verdict); triage → grpc/SDL/LLVM/VTK.
-- **Next wave (on report / freed slot):** abseil (gmock via the imports lever),
-  then triaged assignments.
-- **Greened so far (6):** fmt, libxml2, brotli, glm, googletest, glog.
+## Live state — Fri (triage in; wave 1 running)
+- **Phase 0** ✅ landed (#442) — data-driven `build-lens/<m>.conf`.
+- **KEY (triage):** curl, **grpc, and SDL share ONE blocker** — the dangling
+  install-export `cc_import` seam (`converter/internal/exportshape/emit.go:378`
+  emits a `cc_import` at non-existent install-tree `lib/*.{a,so}` paths). The
+  **curl agent's fix unblocks all three**; then grpc + SDL green with just a
+  `.conf` (grpc: `--cmake-define gRPC_BUILD_TESTS=OFF`; SDL: `--cmake-define
+  SDL_REVISION=<str>` short-circuits its git_describe → both its rejections
+  vanish).
+- **In flight:** eigen (`claude/green-eigen`); curl (`claude/green-curl` — the
+  3-for-1 cc_import fix); protobuf (`claude/green-protobuf`); VTK
+  (`claude/green-vtk` — `--lift-cc-embed`/`--lift-cc-hash` clear 705/708 rej +
+  stage `//tools:cc-embed`,`//tools:cc-hash`).
+- **Queued:** grpc + SDL (`.conf`-only, the moment curl's cc_import fix lands);
+  abseil (gmock via the imports lever).
+- **Sunday cut (honest):** LLVM — needs ≥3 new converter features (tablegen
+  `.td` include-closure on 278 per-target genrules; `llvm/$(RULEDIR)` prefix
+  doubling; 601 empty split-header libs) — too big for Sunday. zstd —
+  won't-green-standalone (structural scope).
+- **Greened (6):** fmt, libxml2, brotli, glm, googletest, glog.
 
 This doc is the **single source of truth** for greening the whole survey
 corpus on the build lens (`build = ok` for every member). It is the
