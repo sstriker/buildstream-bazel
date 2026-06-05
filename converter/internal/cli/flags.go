@@ -587,6 +587,16 @@ type Args struct {
 	EmitInstallExportConfig bool
 }
 
+// reservedCmakeDefine names cmake cache vars the converter drives through
+// dedicated flags (and routes to their own cmakerun slots), so accepting them
+// via --cmake-define would conflict at configure time. CMAKE_BUILD_TYPE is the
+// single-config slot (cmakerun.Options.BuildType, from --build-type);
+// CMAKE_CONFIGURATION_TYPES is the multi-config set (--build-types).
+var reservedCmakeDefine = map[string]bool{
+	"CMAKE_BUILD_TYPE":          true,
+	"CMAKE_CONFIGURATION_TYPES": true,
+}
+
 // Parse reads argv (without program name), populates Args, and prints usage
 // to stderr if invalid. Returns ExitUsage on bad input.
 func Parse(argv []string, stderr io.Writer) (Args, int) {
@@ -650,6 +660,24 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	}
 	if a.VerifyReport != "" {
 		a.Verify = true
+	}
+	// --cmake-define entries must carry a non-empty KEY (a bare "=VALUE"
+	// would emit a bogus "-D=VALUE"), and must not name a cache var the
+	// converter already owns through a dedicated flag: CMAKE_BUILD_TYPE /
+	// CMAKE_CONFIGURATION_TYPES are driven by --build-type / --build-types
+	// and routed to their own cmakerun slots, so passing them here would
+	// conflict at configure time. Reject at parse time with a clean
+	// ExitUsage rather than letting cmakerun fail Tier-2 downstream.
+	for _, d := range a.CmakeDefines {
+		key, _, _ := strings.Cut(d, "=")
+		switch {
+		case key == "":
+			fmt.Fprintf(stderr, "convert-element-cmake: malformed --cmake-define %q: expected KEY=VALUE with a non-empty KEY\n", d)
+			return a, ExitUsage
+		case reservedCmakeDefine[key]:
+			fmt.Fprintf(stderr, "convert-element-cmake: --cmake-define %s is reserved; set it via --build-type / --build-types instead\n", key)
+			return a, ExitUsage
+		}
 	}
 	// Entry-point selection: exactly one of SourceRoot,
 	// ReplyDir, or CMakeBuildDir must be set. CMakeBuildDir is
