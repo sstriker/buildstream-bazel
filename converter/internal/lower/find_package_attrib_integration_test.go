@@ -146,10 +146,13 @@ func TestLowerTarget_FindPackageAttrib_ManifestHit(t *testing.T) {
 }
 
 // TestLowerTarget_FindPackageAttrib_NoManifest covers the
-// fallback path: find_package attributes the lib to ZLIB but
-// the imports manifest has no entry — emit a
-// cmake-codegen-find-package-fallback tag so the gap is
-// visible to the operator.
+// no-manifest path when find_package resolved to a SYSTEM library:
+// find_package attributes the lib to ZLIB and the imports manifest has
+// no entry, but the resolved fragment is /usr/lib/.../libz.so — a system
+// lib — so it's lifted to a `-lz` linkopt (the rule must actually link
+// it, else every executable pulling zlib's compression code fails the
+// final link). The tag-only fallback is reserved for non-system
+// (vendored / custom-prefix) fragments; see the sibling test below.
 func TestLowerTarget_FindPackageAttrib_NoManifest(t *testing.T) {
 	target := &fileapi.Target{
 		Name: "iostreams",
@@ -193,8 +196,68 @@ func TestLowerTarget_FindPackageAttrib_NoManifest(t *testing.T) {
 	if found == nil {
 		t.Fatal("iostreams not in pkg.Targets")
 	}
-	if !stringSliceContains(found.Tags, "cmake-codegen-find-package-fallback=ZLIB=libz.so") {
-		t.Errorf("Tags should include find-package fallback; got %v", found.Tags)
+	if !stringSliceContains(found.LinkOpts, "-lz") {
+		t.Errorf("system-lib find_package should lift to -lz linkopt; got LinkOpts %v", found.LinkOpts)
+	}
+	if stringSliceContains(found.Tags, "cmake-codegen-find-package-fallback=ZLIB=libz.so") {
+		t.Errorf("system lib should link, not tag-fallback; got Tags %v", found.Tags)
+	}
+}
+
+// TestLowerTarget_FindPackageAttrib_NoManifest_VendoredTags covers the
+// tag-only fallback that remains for a NON-system fragment: find_package
+// attributes the lib to a package but the resolved path is under a custom
+// prefix (not /usr/lib*, /lib*, /usr/local/lib*), so there's no safe
+// `-l<name>` lift — emit the cmake-codegen-find-package-fallback tag so the
+// unresolved dep stays visible to the operator.
+func TestLowerTarget_FindPackageAttrib_NoManifest_VendoredTags(t *testing.T) {
+	target := &fileapi.Target{
+		Name: "iostreams",
+		Type: "STATIC_LIBRARY",
+		Link: &fileapi.TargetLink{
+			Language: "CXX",
+			CommandFragments: []fileapi.CommandFragment{
+				{Fragment: "/opt/acme/lib/libacme.so", Role: "libraries"},
+			},
+		},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"iostreams::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "iostreams::@", Name: "iostreams"}},
+			}},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{
+		ConfigureLog: []fileapi.Event{{
+			Kind: "find_package-v1",
+			Found: &fileapi.EventFindPackageFound{
+				IsFound: true, Package: "Acme",
+			},
+		}},
+		CMakeVars: map[string]string{
+			"Acme_LIBRARIES": "/opt/acme/lib/libacme.so",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	var found *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Name == "iostreams" {
+			found = &pkg.Targets[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("iostreams not in pkg.Targets")
+	}
+	if !stringSliceContains(found.Tags, "cmake-codegen-find-package-fallback=Acme=libacme.so") {
+		t.Errorf("vendored find_package should tag-fallback; got Tags %v", found.Tags)
+	}
+	if stringSliceContains(found.LinkOpts, "-lacme") {
+		t.Errorf("vendored (non-system) path must not lift to -l; got LinkOpts %v", found.LinkOpts)
 	}
 }
 

@@ -329,30 +329,22 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 
 		// In-place rewrite remediation: a custom command that reads a
 		// source-tree file and writes the SAME relative path into the
-		// build tree (LLVM's Remarks.exports shape) produces a genrule
-		// with that path as BOTH an srcs entry and an outs entry — which
-		// Bazel rejects ("file X as both an input and an output"). Detect
-		// the collision (an output whose source-tree form is also a src)
-		// and rename the colliding OUTPUT to a non-shadowing sibling. The
-		// rename is applied to the build-output occurrence in the RAW cmd
-		// (still carrying its absolute buildDir prefix, so it stays
-		// distinct from the source-tree input occurrence) BEFORE
-		// rewriteGenruleCmd strips prefixes — that's what disambiguates
-		// input (→ source token) from output (→ renamed token), so the
-		// later anchorGenruleOutputsToRuledir anchors only the output.
+		// build tree (LLVM's Remarks.exports shape — `> ${target}.exports`
+		// where the source symbol file is also named `${target}.exports`)
+		// produces a genrule with that path as BOTH an srcs entry and an
+		// outs entry, which Bazel rejects ("file X as both an input and an
+		// output"). Detect the collision (an output whose source-tree form
+		// is also a src) and rename the colliding OUTPUT to a non-shadowing
+		// `.gen` sibling. The cmd-side rename is deferred until AFTER
+		// anchorGenruleOutputsToRuledir (below): cmake emits the output as
+		// a BARE basename redirect (`> ${native_export_file}`, run in
+		// CMAKE_CURRENT_BINARY_DIR), so the build-output token never carries
+		// a `<buildDir>/` prefix to match on the raw cmd — but every output
+		// form (bare-basename redirect, buildDir-prefixed) converges on the
+		// `$(RULEDIR)/<out>` form once anchored, so renaming there catches
+		// it uniformly while leaving the (source-tree, non-$(RULEDIR)) input
+		// occurrence untouched.
 		inPlaceRenames := detectInPlaceOutputRenames(outs, srcs, umbrellaPrefix)
-		if len(inPlaceRenames) > 0 {
-			cmd = renameRawCmdBuildOutputs(cmd, buildDir, inPlaceRenames)
-			renamed := make([]string, len(outs))
-			for i, o := range outs {
-				if r, ok := inPlaceRenames[o]; ok {
-					renamed[i] = r
-				} else {
-					renamed[i] = o
-				}
-			}
-			outs = renamed
-		}
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
@@ -413,6 +405,23 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			tags = append(tags, genexTag)
 		}
 		if len(inPlaceRenames) > 0 {
+			// Deferred in-place-output rename (see detectInPlaceOutputRenames
+			// above): every output occurrence is now in its anchored
+			// $(RULEDIR)/<out> form, so rewrite the colliding output to its
+			// `.gen` sibling in BOTH the cmd and the outs declaration, in
+			// lockstep. The source-tree input occurrence (not
+			// $(RULEDIR)-prefixed) is left alone, so the genrule reads the
+			// source and writes the renamed, non-shadowing output.
+			rewrittenCmd = renameAnchoredGenruleOutputs(rewrittenCmd, inPlaceRenames)
+			renamed := make([]string, len(outs))
+			for i, o := range outs {
+				if r, ok := inPlaceRenames[o]; ok {
+					renamed[i] = r
+				} else {
+					renamed[i] = o
+				}
+			}
+			outs = renamed
 			tags = append(tags, "cmake-codegen-genrule-inplace-rewrite")
 		}
 		out = append(out, ir.Target{
@@ -514,30 +523,31 @@ func inPlaceRenamedOutput(o string) string {
 	return o + ".gen"
 }
 
-// renameRawCmdBuildOutputs rewrites each `<buildDir>/<o>` occurrence in
-// the RAW (pre-strip) cmd to `<buildDir>/<renamed>`, keeping the absolute
-// buildDir prefix so rewriteGenruleCmd's later prefix-strip yields the
-// renamed token while the source-tree input occurrence (a `<cmakeSrc>/…`
-// path) is untouched — which is what separates the input and output
-// tokens that would otherwise collapse to the same string. Only the
-// build-output occurrence is renamed; the source read stays as-is.
-func renameRawCmdBuildOutputs(cmd, buildDir string, renames map[string]string) string {
-	if cmd == "" || buildDir == "" || len(renames) == 0 {
+// renameAnchoredGenruleOutputs rewrites each `$(RULEDIR)/<o>` occurrence in
+// the ALREADY-ANCHORED cmd to `$(RULEDIR)/<renamed>`, renaming an in-place-
+// rewrite output to its non-shadowing `.gen` sibling in lockstep with the
+// outs declaration. It runs after anchorGenruleOutputsToRuledir so it keys on
+// the single canonical `$(RULEDIR)/<out>` form every output shape converges
+// on — the cmake bare-basename redirect (`> ${native_export_file}`, cd'd into
+// the binary dir) and the buildDir-prefixed form alike. The source-tree input
+// occurrence is NOT `$(RULEDIR)`-prefixed (it carries the element package
+// path, e.g. `elements/llvm/tools/remarks-shlib/Remarks.exports`), so it is
+// left untouched — the genrule reads the source and writes the renamed output.
+//
+// Pairs are applied longest-search-first in a single left-to-right pass so
+// that overlapping outputs (`$(RULEDIR)/x` vs `$(RULEDIR)/x.inc`) and the
+// search-is-a-prefix-of-its-replacement case (`$(RULEDIR)/x` →
+// `$(RULEDIR)/x.gen`) can't re-match or mangle one another, independent of
+// Go's randomized map iteration order.
+func renameAnchoredGenruleOutputs(cmd string, renames map[string]string) string {
+	if cmd == "" || len(renames) == 0 {
 		return cmd
 	}
-	// Build (search → replacement) pairs and apply them in a single
-	// left-to-right pass, trying the LONGEST search first at each position.
-	// This is deterministic regardless of Go's randomized map iteration AND
-	// correct under overlap: when one output path is a textual prefix of
-	// another (`gen/x` vs `gen/x.inc`) the longer match wins, and advancing
-	// past each emitted replacement means neither overlapping keys nor the
-	// search-is-a-prefix-of-its-own-replacement case (`<bd>/x` →
-	// `<bd>/x.gen`) can re-match. A naive `strings.ReplaceAll` per key would
-	// be both order-dependent and self-re-matching.
+	const rp = "$(RULEDIR)/"
 	type repl struct{ search, with string }
 	pairs := make([]repl, 0, len(renames))
 	for o, renamed := range renames {
-		pairs = append(pairs, repl{buildDir + "/" + o, buildDir + "/" + renamed})
+		pairs = append(pairs, repl{rp + o, rp + renamed})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].search) > len(pairs[j].search) })
 	var b strings.Builder

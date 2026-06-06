@@ -781,15 +781,16 @@ func TestEmit_FindPackageVariableForm_Golden(t *testing.T) {
 	}
 }
 
-// TestEmit_FindPackageVariableForm_NoManifest_FallbackTag confirms
-// the operator-visible failure mode when the imports manifest has
-// no entry for the find_package-attributed library: the lower
-// emits a `cmake-codegen-find-package-fallback=<Pkg>=<basename>`
-// tag instead of silently dropping the dep. The bazelidiom audit
-// surfaces this as a `find-package-dep-unresolved` finding.
+// TestEmit_FindPackageVariableForm_NoManifest_SystemLibLink confirms
+// that when the imports manifest has no entry for the find_package-
+// attributed library BUT the resolved fragment is a system library
+// (here ZLIB → /usr/lib/.../libz.so via the ${ZLIB_LIBRARIES}
+// variable form), the lower lifts it to a `-lz` linkopt rather than a
+// tag-only fallback — so the dependent actually links against it. The
+// tag-only fallback is reserved for non-system (vendored) fragments.
 //
 // Same configureLog-synthesis caveat as the parent test.
-func TestEmit_FindPackageVariableForm_NoManifest_FallbackTag(t *testing.T) {
+func TestEmit_FindPackageVariableForm_NoManifest_SystemLibLink(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/find-package-variable-form")
 	if err != nil {
 		t.Fatal(err)
@@ -830,16 +831,20 @@ func TestEmit_FindPackageVariableForm_NoManifest_FallbackTag(t *testing.T) {
 	if found == nil {
 		t.Fatal("usepkg_var not in pkg.Targets")
 	}
-	wantTag := "cmake-codegen-find-package-fallback=ZLIB=libz.so"
-	hasTag := false
-	for _, tag := range found.Tags {
-		if tag == wantTag {
-			hasTag = true
+	hasLZ := false
+	for _, opt := range found.LinkOpts {
+		if opt == "-lz" {
+			hasLZ = true
 			break
 		}
 	}
-	if !hasTag {
-		t.Errorf("Tags should include %q (no-manifest fallback); got %v", wantTag, found.Tags)
+	if !hasLZ {
+		t.Errorf("system-lib find_package (variable form) should lift to -lz; got LinkOpts %v", found.LinkOpts)
+	}
+	for _, tag := range found.Tags {
+		if tag == "cmake-codegen-find-package-fallback=ZLIB=libz.so" {
+			t.Errorf("system lib should link, not tag-fallback; got Tags %v", found.Tags)
+		}
 	}
 }
 

@@ -626,6 +626,25 @@ transition cleanly.
 
 ## Next
 
+- **Make the host-system-library fallback EXPLICIT (hermeticity boundary).**
+  When a `find_package`/`target_link_libraries` link fragment resolves to a
+  standard system library (`/usr/lib*`, `/lib*`, `/usr/local/lib*`) and the
+  imports manifest has no entry for it, the lower lifts it to a `-l<name>`
+  linkopt (`converter/internal/lower/lower.go`: the `systemLibName(path)`
+  sites — the find_package-attributed branch AND the attribution-missed
+  branch). This is what makes LLVM's `opt`/`llc` link against host zlib. It
+  is **not hermetic**: the build relies on the host toolchain's library
+  search path containing `libz.so` etc. Today the lift is **silent** — there
+  is no signal in the emitted BUILD that a target took a host dependency.
+  Decide + implement the explicit contract: (a) emit a visible marker on
+  every host-syslib lift (e.g. a `cmake-codegen-host-syslib=<name>` tag and
+  an idiom-audit finding) so host coupling is auditable; and/or (b) gate the
+  lift behind an opt-in flag (default: refuse with a typed failure pointing
+  at the imports manifest), so the hermetic path (map `<Pkg>::<Pkg>` →
+  a BCR module like `@zlib//:zlib` via the manifest) is the default and
+  host-coupling is a conscious choice. The manifest is already the hermetic
+  channel (abseil→googletest); this item is about not silently bypassing it.
+
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
   `toolchain.Model` and the emit sets `cc_toolchain_config`'s

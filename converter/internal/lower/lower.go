@@ -3093,12 +3093,45 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					}
 					continue
 				}
-				// No manifest hit; emit a fallback tag so
-				// operators see which package's link is
-				// unresolved. One tag per (pkg, path)
-				// pair — same package can show up across
-				// multiple paths (release + debug, main +
-				// dep libs).
+				// No manifest hit. Before falling back to a
+				// tag-only elision, try the same lift the
+				// attribution-MISSED path uses below: if
+				// find_package resolved to a real SYSTEM library
+				// (e.g. find_package(ZLIB) → /usr/lib/.../libz.so),
+				// link it as `-l<name>` so the rule actually links
+				// against it. cmake found the lib on the host; the
+				// toolchain's library search path covers the standard
+				// system locations, so `-lz` resolves the same way at
+				// Bazel build time. Without this, a static-archive
+				// build looks fine (undefined symbols are legal in a
+				// .a) but every EXECUTABLE that pulls the compression
+				// code (LLVM's opt/llc → zlib's compress2/crc32/…)
+				// fails the final link. A producer element claiming
+				// the lib name (exports.json) still wins over the host
+				// -l<name>.
+				if name := systemLibName(path); name != "" {
+					if export := imports.LookupLinkLibrary(name); export != nil {
+						if !seen[export.BazelLabel] {
+							seen[export.BazelLabel] = true
+							if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+								irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+							} else {
+								irt.Deps = append(irt.Deps, export.BazelLabel)
+							}
+						}
+						continue
+					}
+					flag := "-l" + name
+					if !stringSliceContains(irt.LinkOpts, flag) {
+						irt.LinkOpts = append(irt.LinkOpts, flag)
+					}
+					continue
+				}
+				// Not a system lib (vendored / custom prefix); emit a
+				// fallback tag so operators see which package's link is
+				// unresolved. One tag per (pkg, path) pair — same
+				// package can show up across multiple paths (release +
+				// debug, main + dep libs).
 				tag := "cmake-codegen-find-package-fallback=" + pkg + "=" + filepath.Base(path)
 				if !stringSliceContains(irt.Tags, tag) {
 					irt.Tags = append(irt.Tags, tag)
