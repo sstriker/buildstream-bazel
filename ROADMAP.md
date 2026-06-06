@@ -653,34 +653,33 @@ transition cleanly.
   paths" to "ships the sysroot"; larger, follows the `builtin_sysroot`
   item.
 
-- **Agent-actionable prompts for no-mechanical-form constructs.**
-  Some cmake constructs have a perfectly good *Bazel* form but no
-  *mechanical translation* — the behavior lives in a script the
-  converter can't faithfully rewrite, only an author can (the canonical
-  case is `add_test(COMMAND cmake -P <runner> …)` integration tests, e.g.
-  brotli's roundtrip harness → an `sh_test`/`diff_test` driving the built
-  CLI). Today the converter **breadcrumbs** these to stderr warnings (the
-  #417 `add_test`-not-converted audit, the #412 cmake-internal-drop audit,
-  the `install(SCRIPT)`/`install(CODE)` surface). Promote them to a
-  deterministic, structured `conversion-todos.json` sidecar (alongside the
-  survey's `rejections`/`bazel-idiom`/`coverage` reports) a
-  post-conversion AI pass consumes. **Design decided** — see
-  `docs/design/conversion-todos.md` (delete that doc once the producer lands):
-  this slice is the deterministic **producer** + the consumer **contract**,
-  not the AI post-pass itself. v1 wires all three existing breadcrumb sites
-  (each already groups+sorts, each gains one `todos.Add`); the report
-  carries a per-entry `{id, kind, group_key, anchors, evidence,
-  suggested_shape, prompt}` plus an **operator preamble** (overridable;
-  ships a default encoding this repo's transition-to-plain-Bazel intent
-  with the brotli worked example). Idempotency is the stable `id` + a
-  **file-ownership split** (the converter owns `BUILD.bazel.out`, regenerated
-  wholesale and carrying no marker, and `stage-b` derives project B's
-  `BUILD.bazel` from it; the post-pass authors into a separate file outside that
-  chain, keyed by `id`) — no in-BUILD placeholder, since the
-  wholesale-regenerated output would clobber it. Stderr warnings are
-  retained. Agent-authored output crosses the **same trust boundary** as
-  mechanical output (render gates; not trusted on faith). Surfaced from the
-  brotli test-form discussion.
+- **Agent-actionable prompts for no-mechanical-form constructs — AI
+  post-pass (consumer) remains.** The deterministic **producer** + the
+  consumer **contract** shipped: `convert-element-cmake
+  --conversion-todos-report=<p>` (and `--conversion-todos-preamble=<f>`)
+  writes a deterministic, byte-identical `conversion-todos.json` (the
+  `todos.Collector` in `converter/internal/todos`, plumbed through
+  `lower.Options.Todos`) carrying the operator **preamble** + one grouped
+  `{id, kind, group_key, anchors, evidence, suggested_shape, prompt}`
+  entry per no-mechanical-form unit, from all three existing breadcrumb
+  sites — `cmake-p-test` (`add_test(COMMAND cmake -P …)`),
+  `cmake-internal-drop` (filtered command edges), and
+  `install-script`/`install-code` (`converter/internal/lower/todos_producers.go`,
+  each alongside its retained stderr warning). The survey aggregates it
+  alongside `rejections`/`bazel-idiom`/`coverage` (run-survey.sh `todos`
+  column). Idempotency is the stable line-free `id` + the file-ownership
+  split (the converter-owned `BUILD.bazel.out` stays byte-identical and
+  marker-free; the post-pass authors into a separate file keyed by `id`).
+  **What's left:** the non-deterministic **AI post-pass** that consumes
+  the report to author the Bazel form (an `sh_test`/`diff_test` driving the
+  built CLI, one reusable macro per shared unit) — deliberately quarantined
+  out of the converter so it stays a pure replayable function. It honors
+  the contract above: read `preamble` + `todos`, author one unit per `id`
+  into the authored-output file (skip ids already present), turn
+  `evidence.verification` into the test's assertion, emit plain idiomatic
+  Bazel (no cmake re-invocation), and pass the **same render gates** as
+  mechanical output (not trusted on faith). Surfaced from the brotli
+  test-form discussion.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the

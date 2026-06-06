@@ -547,6 +547,25 @@ type Args struct {
 	// so consumers can rely on the path existing).
 	RejectionsReport string
 
+	// ConversionTodosReport, when non-empty, is the path the
+	// converter writes the structured conversion-todos.json to: the
+	// "no-mechanical-form" cmake constructs (add_test COMMAND cmake -P
+	// harnesses, filtered command edges with no Bazel analogue,
+	// install(SCRIPT)/install(CODE)) an author or AI post-pass must
+	// re-express. Always materialized when set (an empty {todos:[]}
+	// report when nothing fired), so consumers can rely on the path
+	// existing. Independent of --ignore-rejections-for-diagnostics —
+	// these are clean (Tier-0) drops, not refusals. See
+	// converter/internal/todos.
+	ConversionTodosReport string
+
+	// ConversionTodosPreamble, when non-empty, is the path to an
+	// operator-supplied preamble that replaces the built-in default in
+	// conversion-todos.json. Read verbatim as prose (not JSON). Empty
+	// uses the built-in default encoding this repo's
+	// transition-to-plain-Bazel intent with the brotli worked example.
+	ConversionTodosPreamble string
+
 	// SourceKey, when non-empty, names the @src_<key>// external
 	// repository the FUSE-sources path declared for this element's
 	// source tree. The Bazel emitter prefixes every relative source
@@ -662,6 +681,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.LiftCCHash, "lift-cc-hash", false, "recognize a custom command running a known file-hashing cmake -P script (VTK's vtkHashSource) and lower it to the native cc_hash rule (//tools:cc-hash) — the converted project needs no cmake at build time, and the digest recomputes on input change (unlike --cmake-script-bake). Faithful (the #define name + digest are preserved). Off by default; requires the consuming project to stage //tools:cc-hash. The Bazel-native end-state for the hash-a-file-into-a-header codegen idiom (docs/research/codegen-idiom-coverage.md).")
 	fs.BoolVar(&a.IgnoreRejectionsForDiagnostics, "ignore-rejections-for-diagnostics", false, "collect every Tier-1 refusal and continue past each with a local skip rather than aborting on the first one. The resulting BUILD.bazel is NOT guaranteed to build — refused constructs are silently elided. Use with --rejections-report to capture the structured rejection list. Diagnostic surveys only; production paths want the strict refusal.")
 	fs.StringVar(&a.RejectionsReport, "rejections-report", "", "write the structured rejection records (JSON array) here. Only meaningful with --ignore-rejections-for-diagnostics.")
+	fs.StringVar(&a.ConversionTodosReport, "conversion-todos-report", "", "write the structured conversion-todos.json here: the no-mechanical-form cmake constructs (add_test COMMAND cmake -P harnesses, filtered command edges with no Bazel analogue, install(SCRIPT)/install(CODE)) an author or AI post-pass must re-express. Always materialized when set (empty todos list when nothing fired). The deterministic producer; the AI post-pass that consumes it is out of scope. See the no-mechanical-form-constructs item in ROADMAP.md.")
+	fs.StringVar(&a.ConversionTodosPreamble, "conversion-todos-preamble", "", "path to an operator-supplied preamble (prose, read verbatim) that replaces the built-in default in conversion-todos.json. Empty uses the built-in default (transition-to-plain-Bazel intent + brotli worked example). Only meaningful with --conversion-todos-report.")
 
 	if err := fs.Parse(argv); err != nil {
 		return a, ExitUsage
