@@ -47,6 +47,7 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) |
 | **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) |
 | **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) |
+| **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) |
 | **protobuf, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for
