@@ -669,12 +669,25 @@ transition cleanly.
   always-on `framework` builds `mbedtls_test_helpers` → `#include
   "test/ssl_helpers.h"` from PRIVATE-only `tests/include`) and **sdl**
   (`SDL_uclibc` → `#include "SDL_internal.h"` from PRIVATE-only `src`).
-  Implement: in planSplit add PRIVATE `-I` copt dirs to `incRoots` so a header
-  lib synthesizes for them too — BUT note `headerLibTarget` populates hdrs from
-  *declared* headers (`headersIn`/`allHdrs`), so a PRIVATE-only dir whose headers
-  aren't declared also needs header DISCOVERY (walk the dir, cf.
-  `walkPkgRootForHdrs`/`discoverHeaders`) for the lib to actually contain
-  `SDL_internal.h`. Two pieces: synthesize the lib + discover its headers.
+  Implement (verified-safe shape — two pieces, BOTH required):
+  1. **lower: discover the PRIVATE dirs' headers.** `includesForWalk`
+     (lower.go ~2736, fed to `discoverHeaders`) starts from `irt.Includes`
+     (the NON-private include attr) + each src file's dir — it does NOT include
+     the PRIVATE `-I` copt dirs. So a PRIVATE-ONLY dir's headers never land in
+     `irt.Hdrs`/`allHdrs`. Add the PRIVATE include dirs (the `emit` values from
+     the `privateIncludeDirs` branch ~2459) to `includesForWalk` so their
+     headers are discovered + declared.
+  2. **split: synthesize + wire.** In planSplit add PRIVATE `-I` copt dirs to
+     `incRoots` so `headerLibTarget` builds a lib (now non-empty thanks to #1);
+     rewriteTarget's existing copt scan (~944) then wires it as a private header
+     dep and drops the bare `-I`.
+  WHY BOTH: with only #2, a PRIVATE-only dir gets an EMPTY header lib (its
+  headers weren't discovered) AND the `-I` is dropped → regression. SDL's `src`
+  happens to be safe with #2-only because another (non-private) target already
+  declares `SDL_internal.h`, but mbedtls's PRIVATE-only `tests/include` is not —
+  hence #1 is mandatory for a general fix. Needs full corpus re-validation (it
+  touches header-lib synthesis broadly); two earlier point-fixes in this area
+  regressed fmt and the cp-dir tests, so validate every green member before/after.
 
   RELATED mbedtls blocker (separate): its `link_to_source(X)` copies a generated
   build file back to its same-relative source path, lowering to an
