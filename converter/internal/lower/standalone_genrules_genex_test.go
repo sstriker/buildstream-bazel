@@ -25,7 +25,7 @@ build gen.h: CUSTOM_COMMAND
 			Commands: [][]string{{"$<TARGET_FILE:tool>", "--emit", "gen.h"}},
 		}},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", artifactToName, ctx, nil)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", artifactToName, ctx, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 genrule; got %d (%v)", len(got), got)
 	}
@@ -60,7 +60,7 @@ build manifest.txt: CUSTOM_COMMAND
 			Commands: [][]string{{"list-objs", "$<TARGET_OBJECTS:objlib>", ">", "manifest.txt"}},
 		}},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 genrule; got %d", len(got))
 	}
@@ -85,7 +85,7 @@ build tag.txt: CUSTOM_COMMAND
 			Commands: [][]string{{"emit", "$<CONFIG>", ">", "tag.txt"}},
 		}},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 genrule; got %d", len(got))
 	}
@@ -109,7 +109,7 @@ build out.txt: CUSTOM_COMMAND
 			Commands: [][]string{{"echo", "hi", ">", "out.txt"}},
 		}},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", nil, ctx, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 genrule; got %d", len(got))
 	}
@@ -137,7 +137,7 @@ build gen.h: CUSTOM_COMMAND
 			Commands: [][]string{{"$<TARGET_FILE:tool>", "--out-dir", "$<TARGET_FILE_DIR:tool>", "--emit", "gen.h"}},
 		}},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", artifactToName, ctx, nil)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", artifactToName, ctx, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 genrule; got %d", len(got))
 	}
@@ -175,7 +175,7 @@ build gen.h: CUSTOM_COMMAND
 		}},
 		AliasToActual: map[string]string{"Foo::Bar": "actual"},
 	}
-	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", artifactToName, ctx, nil)
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", artifactToName, ctx, nil, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 genrule; got %d", len(got))
 	}

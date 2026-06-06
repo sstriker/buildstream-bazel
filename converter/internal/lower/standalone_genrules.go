@@ -132,7 +132,7 @@ type standaloneTraceContext struct {
 // this pass drops — keyed by the edge's first output (or category when it has
 // none), valued by category (install / regen / cpack / dashboard / ide-stub)
 // — so the caller can surface an audit breadcrumb instead of dropping silently.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -302,6 +302,29 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 				filteredInternal[key] = "make_directory"
 			}
 			continue
+		}
+
+		// A standalone `cmake -P <script>` custom command can't run under Bazel
+		// (no cmake on the executor), so emitting it as a raw genrule produces
+		// an unrunnable rule (LLVM's VCSRevision.h: `cmake -P
+		// GenerateVersionFromVCS.cmake`). The ninja-genrule path
+		// (recoverGenrule) already routes cmake -P through the bake/lift logic;
+		// mirror that here so the standalone path bakes too. Gated on
+		// cc.CMakeScriptBake (opt-in --cmake-script-bake) — off by default, so
+		// every project that doesn't opt in keeps the exact prior behavior.
+		// bakeCmakeScriptGenrule runs the script at convert time and appends the
+		// captured-bytes write_file(s) to cc.Genrules + cc.OutToGenrule; move
+		// those into this pass's return slice (cc.Genrules was already merged
+		// into pkg.Targets before this pass runs) and skip the raw emit.
+		if cc != nil && cc.CMakeScriptBake && usesCmakeScriptMode(cmd) {
+			n := len(cc.Genrules)
+			if _, _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); ok {
+				out = append(out, cc.Genrules[n:]...)
+				cc.Genrules = cc.Genrules[:n]
+				continue
+			}
+			// Bake declined (e.g. no cmake on PATH, script produced no output):
+			// fall through to the existing raw-genrule emit / refusal path.
 		}
 
 		// In-place rewrite remediation: a custom command that reads a

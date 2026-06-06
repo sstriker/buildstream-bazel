@@ -1341,7 +1341,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				umbrellaPrefix = rel
 			}
 		}
-		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx, cc.FilteredInternalCmds)
+		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx, cc.FilteredInternalCmds, cc)
 		// Add the transitive `include "..."` closure of tablegen-shaped
 		// codegen genrules to their srcs (their `.td` deps live only in
 		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
