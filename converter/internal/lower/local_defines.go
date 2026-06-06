@@ -1,9 +1,33 @@
 package lower
 
 import (
+	"strings"
+
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// normalizeDefineItem strips a compiler `-D` / `/D` prefix from a
+// target_compile_definitions trace item. cmake tolerates both the bare
+// macro form (`HAVE_ZLIB`) and the flag form (`-DHAVE_ZLIB`, common in
+// real CMakeLists — protobuf's
+// `target_compile_definitions(t PRIVATE -DHAVE_ZLIB)`) and normalizes
+// them to the bare form in the codemodel's CompileGroups.Defines. The
+// scope-routing passes match trace items against those normalized
+// codemodel defines, so the trace side must be normalized too — without
+// it `-DHAVE_ZLIB` (trace) never matches `HAVE_ZLIB` (codemodel) and a
+// PRIVATE define wrongly stays in the transitive `defines`, leaking to
+// consumers (protobuf's libupb → protoc-gen-upb, whose guarded
+// gzip_stream.cc then references zlib it doesn't link).
+func normalizeDefineItem(item string) string {
+	if d := strings.TrimPrefix(item, "-D"); d != item {
+		return d
+	}
+	if d := strings.TrimPrefix(item, "/D"); d != item {
+		return d
+	}
+	return item
+}
 
 // applyPrivateScopeToDefines routes PRIVATE-scoped
 // target_compile_definitions trace events into the IR's
@@ -58,7 +82,7 @@ func applyPrivateScopeToDefines(pkg *ir.Package, calls []shadow.TargetCompileCal
 				privateByTarget[call.Target] = set
 			}
 			for _, item := range grp.Items {
-				set[item] = true
+				set[normalizeDefineItem(item)] = true
 			}
 		}
 	}
@@ -116,7 +140,7 @@ func applyAddDefinitionsScope(pkg *ir.Package, addDefs []shadow.AddDefinitionsCa
 	addDefSet := map[string]bool{}
 	for _, c := range addDefs {
 		for _, it := range c.Items {
-			addDefSet[it] = true
+			addDefSet[normalizeDefineItem(it)] = true
 		}
 	}
 	if len(addDefSet) == 0 {
@@ -140,7 +164,7 @@ func applyAddDefinitionsScope(pkg *ir.Package, addDefs []shadow.AddDefinitionsCa
 				propagatingByTarget[call.Target] = set
 			}
 			for _, item := range grp.Items {
-				set[item] = true
+				set[normalizeDefineItem(item)] = true
 			}
 		}
 	}
