@@ -724,28 +724,34 @@ transition cleanly.
   element-relative; do the staging in split (header lib), not by rewriting the
   copt in lower.
 
-- **Cross-package relabel PerPlatform (select-arm) sources in split.** split's
-  `rewriteTarget` relabels `rt.Srcs` to cross-package labels when a source dir
-  becomes a subpackage (`//pkg/src:foo.c`), but leaves `t.PerPlatform`
-  (the `select()` arms — `map[platform]map[attr][]string`) untouched. So a
-  platform-conditional source under a now-subpackage dir keeps the invalid
-  same-package label and Bazel rejects it ("Label '//elements/sdl:src/power/
-  linux/SDL_syspower.c' is invalid because 'elements/sdl/src' is a subpackage").
-  Surfaced on sdl once the header-staging fix made `src/` a package. Implement:
-  in rewriteTarget (local regime), rebuild `rt.PerPlatform` (it shares the input
-  IR's map — must copy, not mutate) applying the same cross-package relabel as
-  the `rt.Srcs` loop to the `srcs`/`hdrs`/`textual_hdrs` arms (deepestPkg →
-  relUnder or crossPkgFileLabel + exports_files). Generic (any multi-platform
-  member with select sources in a subpackage); sdl is the first to hit it, and
-  has further blockers behind it (it's a large media lib).
-  COMPLICATION (verified): a rewriteTarget-only PerPlatform relabel is NOT
-  enough for sdl and was implemented + reverted (unexercised). sdl's failing
-  targets are MULTI-CONFIG variants (`SDL3-static_c_0`/`_c_1`, one per
-  `--build-types` config from the config-fold path); their `select()` `srcs`
-  arms don't flow through rewriteTarget. The fix must relabel select-arm sources
-  in the multi-config-variant emit path too (or route `_c_N` variants through
-  rewriteTarget). sdl is multi-config × per-platform × subpackage × large lib —
-  a genuinely deep member; this relabel is just its current top blocker.
+- **Green sdl — multi-config `file(GENERATE)` into a `$<CONFIG>` dir +
+  build-dir include relativization.** sdl's select-arm cross-package relabel is
+  fixed (split's rewriteTarget now relabels `PerPlatform["srcs"]` too), so the
+  subpackage-label rejection is gone. The current top blocker:
+  `SDL_build_config.h: No such file` compiling `src/libm/s_floor.c`. SDL
+  generates that header in two steps (CMakeLists ~3124):
+  1. `configure_file(SDL_build_config.h.cmake → CMakeFiles/SDL_build_config.h.intermediate)`
+     — the converter recovers this as a genrule (config-independent content).
+  2. `file(GENERATE OUTPUT include-config-$<LOWER_CASE:$<CONFIG>>/build_config/SDL_build_config.h INPUT <intermediate>)`
+     — copies the intermediate into a build-type-dependent folder that's "first
+     in the include search path".
+  Two gaps to close, both multi-config-shaped:
+  - `recoverFileGenerate` drops step 2: its OUTPUT carries `$<CONFIG>` which
+    has no single value under `--build-types` (multi-config), so neither the
+    Go genex evaluator nor the two-pass literal probe resolves it. Needs to
+    emit one genrule per detected config (resolving `$<CONFIG>`→debug/release/
+    relwithdebinfo), each copying the intermediate to
+    `include-config-<c>/build_config/SDL_build_config.h` (content identical
+    across configs — input is the resolved intermediate).
+  - The codemodel records the per-config include dir as an ABSOLUTE throwaway-
+    build-dir path (`/tmp/convert-element-build-*/include-config-<c>/build_config`);
+    lower drops build-dir includes (→ `missing-include`) except under umbrella
+    promotion. It must surface a build-dir include dir that a recovered genrule
+    populates, relativized to the genrule's package-relative out dir, in the
+    config `select()`. Generic: any project that `file(GENERATE)`s a header into
+    a `$<CONFIG>` build dir and puts it on the include path. sdl is
+    multi-config × per-platform × subpackage × large media lib — expect further
+    blockers behind this one.
 
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
