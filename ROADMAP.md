@@ -626,67 +626,32 @@ transition cleanly.
 
 ## Next
 
-- **Make external `find_package` deps AVAILABLE in the build-lens workspace
-  (protobuf / grpc).** These survey `skip(rej)` standalone because their deps
-  (protobuf→abseil+utf8_range; grpc→abseil+protobuf+re2+c-ares+zlib+…) aren't
-  resolvable. Two viable mechanisms, both "set up for success" rather than
-  scope-out: (a) **host-install + imports-manifest → BCR**: install the dep so
-  `find_package(absl CONFIG)` SUCCEEDS at cmake time (today it fails — "Could
-  NOT find absl" — and protobuf silently falls back to FetchContent, which
-  downloads abseil into the BUILD dir and the converter converts it in-graph
-  with 0 rejections, but those sources aren't in the lens overlay so it can't
-  build), then map `absl::*`→`@abseil-cpp//…` BCR labels via `--imports-manifest`
-  (the abseil→googletest pattern in abseil.conf) + `EXTRA_BAZEL_DEPS`; or (b)
-  **multi-element overlay**: convert the dep (abseil is already a green corpus
-  member) and overlay it as a local repo in the consumer's survey workspace,
-  mapping `find_package` to the overlaid labels — the in-workspace analog of the
-  "real .bst element graph" the board mentions. (b) is the more faithful, more
-  general capability and the natural home for grpc's deeper graph. Either
-  unblocks protobuf, then grpc.
-
-  GROUNDWORK DONE (mechanism (a) de-risked for protobuf): built+installed abseil
-  to a prefix (`cmake -S /tmp/abseil-cpp -B … -DCMAKE_INSTALL_PREFIX=/tmp/absl-
-  install … --target install`) and converted protobuf with `protobuf_ABSL_
-  PROVIDER=package` + `CMAKE_PREFIX_PATH=/tmp/absl-install` — `find_package(absl)`
-  then SUCCEEDS and protobuf converts with **0 rejections** (vs the FetchContent
-  fallback). So the path works; remaining is mechanical: protobuf links **117
-  distinct `absl::*` targets** that need imports-manifest entries to
-  `@abseil-cpp//…`. Auto-generate from abseil's own BUILD.bazel files (= the BCR
-  module): **79/117 map 1:1** by grepping `name = "<X>"` in `absl/*/BUILD.bazel`
-  → `@abseil-cpp//absl/<dir>:<X>`. The **38 misses are abseil's
-  `*_internal_*` targets** where the CMAKE name carries the dir prefix the bazel
-  name drops — `absl::log_internal_check_impl` → `@abseil-cpp//absl/log/internal:
-  check_impl`, `absl::random_internal_pcg_engine` →
-  `@abseil-cpp//absl/random/internal:pcg_engine`. So the generator rule: strip a
-  leading `<dir>_internal_` and target `//absl/<dir>/internal:<rest>`. Then add
-  `bazel_dep(name="abseil-cpp", version=<BCR ver compatible with 20260107.1>)`,
-  `BAZEL_FLAGS=--incompatible_autoload_externally=...` (cf. abseil.conf), survey,
-  and iterate on protobuf's own build (utf8_range, protoc). A focused session.
-  WHY THE MANIFEST IS REQUIRED (verified): with abseil installed but NO manifest,
-  the converter resolves the `find_package(absl)` imported targets to HOST
-  `cc_import`s of the installed `.a` files (234 refs to `/tmp/absl-install/lib/
-  libabsl_*.a` in the convert) — non-hermetic, not in the lens overlay, so it
-  can't build. The manifest intercepts those imported targets → `@abseil-cpp`
-  (hermetic). NOTE you only need to map the DIRECT link deps (the `cc_import`
-  set, ~15-20), not all 117 transitive — BCR `@abseil-cpp`'s deps are transitive.
-  The 117-vs-direct distinction + the auto-gen rule are the time-savers; the
-  per-target `*_internal_*` dir-prefix-strip handles ~all of the 15 hard ones.
-  DONE + COMMITTED: the full 78-entry manifest (scripts/build-lens/protobuf-
-  imports.json, auto-generated + 3 hand-resolved: log_internal_message→
-  log/internal:log_message, vlog_config_internal→log/internal:vlog_config,
-  flags_internal→flags:flag_internal) + protobuf.conf. VALIDATED: abseil now
-  resolves via the manifest → `@abseil-cpp` BCR (no host cc_imports), proving the
-  dep-availability mechanism end-to-end. protobuf then hits its OWN internal
-  blockers (no longer dep-availability): (1) **upb codegen** — `plugin.upb_
-  minitable.h: No such file`, a generated header from protobuf's upb protoc-
-  plugin (`protoc-gen-upb`); the converter must model the upb-minitable codegen
-  genrules. (2) **absl-header wiring on direct-compile targets** —
-  `protoc-gen-upbdefs_cxx` recompiles descriptor.cc but lacks the `@abseil-cpp`
-  headers (`absl/base/attributes.h: No such file`); the absl dep is wired for the
-  library targets but not every binary that recompiles protobuf sources. Both are
-  protobuf-internal, the next focused session's work. CAVEAT: protobuf.conf
-  hardcodes `/tmp/absl-install` (host-installed abseil) — fold the abseil install
-  into the SessionStart hook for reproducibility.
+- **Green grpc — the deepest `find_package` graph
+  (abseil+protobuf+re2+c-ares+zlib+…).** protobuf is now green (libs + protoc +
+  upb generators), which proves the whole find_package-availability +
+  whole-include-tree machinery end-to-end; grpc is the next member to drive
+  through it. The reusable mechanism, now in place:
+  - **Host-install + imports-manifest → BCR.** Install each dep so
+    `find_package(<Pkg> CONFIG)` SUCCEEDS at cmake time (else the project
+    FetchContent-downloads it into the build dir, which the lens overlay can't
+    stage), point `CMAKE_PREFIX_PATH` at the installs, and map the imported
+    targets → BCR labels with `--imports-manifest` (+ `EXTRA_BAZEL_DEPS`). The
+    abseil manifest auto-gen rule (name-match in `absl/*/BUILD.bazel`; strip
+    `<dir>_internal_` → `//absl/<dir>/internal:<rest>`) is in
+    scripts/build-lens/ and reusable; grpc needs the same for protobuf + re2 +
+    c-ares targets.
+  - **find_package whole-include-tree umbrella.** `find_package(<Pkg>)` puts
+    Pkg's ENTIRE include dir on every consumer, so consumers `#include` headers
+    for targets they never link (Bazel strict-deps rejects). The manifest's
+    `umbrella_label` + `umbrella_include_roots` + the build-lens `extra_ws_setup`
+    hook (generates `//absl_umbrella:absl` from
+    scripts/build-lens/absl-umbrella-deps.txt = every public abseil target)
+    model this. grpc will want the same umbrella for protobuf's headers.
+  - REPRODUCIBILITY TODO (carried from protobuf): the .conf files hardcode
+    `/tmp/absl-install` (host-installed abseil) and the umbrella deps list is a
+    snapshot of the pinned abseil. Fold the abseil (and protobuf, for grpc)
+    host-installs into the SessionStart hook so the lens is reproducible without
+    a manual prep step.
 
 - **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
   `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
