@@ -127,22 +127,23 @@ func stageGeneratedSourceRootIncludes(pkg *ir.Package, hostSrc, bazelPackagePath
 		for _, s := range t.Srcs {
 			compiled[filepath.ToSlash(filepath.Clean(s))] = true
 		}
-		var incs []string
+		var seeds []string
 		for _, s := range t.Srcs {
-			staged, ok := included[filepath.ToSlash(filepath.Clean(s))]
-			if !ok {
-				continue
-			}
-			for _, k := range staged {
-				if !compiled[k] {
-					incs = appendUnique(incs, k)
-				}
+			if staged, ok := included[filepath.ToSlash(filepath.Clean(s))]; ok {
+				seeds = append(seeds, staged...)
 			}
 		}
+		if len(seeds) == 0 {
+			continue
+		}
+		// Stage the TRANSITIVE textual-include closure of the directly-included
+		// kernels: an OpenBLAS kernel #includes sibling micro-kernel sources by
+		// relative path, which must also be declared inputs (they resolve
+		// against the kernel's own dir at compile time — no rewrite needed).
+		incs := textualIncludeClosure(hostSrc, seeds, compiled)
 		if len(incs) == 0 {
 			continue
 		}
-		sort.Strings(incs)
 		lib := attachTextualSourceIncludes(pkg, t, incs, "cmake-codegen-generated-source-include", &synth, uniqueName)
 		if lib == "" {
 			inlineRecs = append(inlineRecs, rec{target: t.Name, srcs: incs})

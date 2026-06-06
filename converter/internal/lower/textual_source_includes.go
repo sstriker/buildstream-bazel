@@ -199,6 +199,56 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 	}
 }
 
+// textualIncludeClosure expands a seed set of element-root-relative compiled
+// sources to its transitive textual-include closure: each seed (and each newly
+// reached file) is scanned ON DISK for quote-includes of OTHER compiled sources
+// (resolved against the includer's dir + ancestors, like resolveTextualInclude),
+// following the chain to fixpoint. OpenBLAS kernels #include sibling micro-kernel
+// sources (caxpy.c -> caxpy_microk_haswell-2.c, often #ifdef-guarded per arch)
+// that are themselves only ever textually included, so the whole chain — not
+// just the first hop — must be staged. Returns the closure (seeds included),
+// sorted, excluding any path in `compiled` (a source the target builds
+// standalone) and any absent/escaping path. hostSrc must be on disk.
+func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]bool) []string {
+	result := map[string]bool{}
+	var work []string
+	push := func(rel string) {
+		if rel == "" || result[rel] || compiled[rel] {
+			return
+		}
+		result[rel] = true
+		work = append(work, rel)
+	}
+	for _, s := range seeds {
+		push(filepath.ToSlash(filepath.Clean(s)))
+	}
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+		data, err := os.ReadFile(filepath.Join(hostSrc, filepath.FromSlash(cur)))
+		if err != nil {
+			continue
+		}
+		dir := filepath.Dir(cur)
+		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
+			inc := string(m[1])
+			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
+				continue
+			}
+			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
+				continue
+			}
+			push(resolveTextualInclude(hostSrc, dir, inc, cur, compiled))
+		}
+	}
+	out := make([]string, 0, len(result))
+	for r := range result {
+		out = append(out, r)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // targetNamer returns a closure that yields collision-free target names within
 // pkg: it seeds a set from the existing target names and appends a numeric
 // suffix (`_1`, `_2`, …) until the candidate is unused, registering each name
