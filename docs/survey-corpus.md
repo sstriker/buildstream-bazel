@@ -41,6 +41,10 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
 | **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) |
 | **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) |
+| **boost-core** | 0 | 0 | 0 | `ok` (header lib) |
+| **spdlog** | 0 | 0 | 0 | `ok` |
+| **catch2** | 1 | 0 | 0 | `ok` |
+| **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) |
 | **protobuf, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for
