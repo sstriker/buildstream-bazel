@@ -2460,20 +2460,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				if inc.IsSystem {
 					flag = "-isystem"
 				}
-				// A raw -I/-isystem copt runs at the Bazel exec root, so a
-				// source-tree include dir needs its exec-root form
-				// (<bazelPackagePath>/<emit>). Unlike the includes attr
-				// (irt.Includes below), which split re-relativizes per package,
-				// this copt is opaque and never re-anchored downstream — without
-				// the prefix a PRIVATE cross-package include (curl's unit tests'
-				// target_include_directories(PRIVATE tests/libtest) for test.h)
-				// emits -Itests/libtest, unresolvable at the exec root. Empty
-				// bazelPackagePath (convert-at-root) leaves emit unchanged.
-				incDir := emit
-				if bazelPackagePath != "" {
-					incDir = filepath.ToSlash(filepath.Join(bazelPackagePath, emit))
-				}
-				irt.Copts = append(irt.Copts, flag+incDir)
+				// Emit the PRIVATE include dir in element-root-relative form
+				// (`-Iinclude`, not the exec-root `-Ielements/<pkg>/include`):
+				// split's rewriteTarget copt scan keys on this form to wire the
+				// synthesized header lib for the dir (staging its headers + the
+				// correct exec-root search path via the lib's `includes`) and drop
+				// the bare -I. Anchoring to exec-root here breaks that match and
+				// leaves the dir's headers unstaged (fmt's posix-mock-test:
+				// `#include <fmt/os.h>` "No such file"). NOTE: this only stages
+				// headers when the dir is ALSO a public include root somewhere (so
+				// a header lib exists for it); a PRIVATE-only dir whose headers
+				// aren't otherwise declared still needs the header-staging work
+				// tracked in ROADMAP (mbedtls / sdl).
+				irt.Copts = append(irt.Copts, flag+emit)
 				continue
 			}
 			irt.Includes = append(irt.Includes, emit)

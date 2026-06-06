@@ -655,21 +655,36 @@ transition cleanly.
   avoid a hang. Lower priority than greening members, but a hang (vs a clean
   refusal) is a sharp edge worth removing.
 
-- **Stage headers from a PRIVATE cross-package include dir.** A target with
-  `target_include_directories(PRIVATE <dir-in-another-package>)` lowers the dir
-  to a `-I<exec-root-dir>` copt (correctly anchored), but the HEADERS under that
-  dir aren't declared as inputs — and a `-I` doesn't stage files in Bazel's
-  sandbox, so a bare `#include "test/x.h"` fails "No such file" even with the
-  `-I` present. Blocks mbedtls: its always-on `framework` subdir builds an
-  `mbedtls_test_helpers` OBJECT lib that `#include "test/ssl_helpers.h"` from
-  `tests/include` (a different package); the `-I` is right but the header isn't
-  an input. (The `includes`-attr path synthesizes a header lib per include root;
-  the raw `-I`-copt path for PRIVATE dirs doesn't.) Implement: when a PRIVATE
-  include dir resolves to another package, synthesize/locate a header lib for it
-  (as the `includes` path does) and add it to the consumer's deps, OR stage the
-  dir's headers as the target's inputs. Unblocks mbedtls (converts clean — the
-  srcs-dedup + identity-copy fixes landed — and its library/programs build once
-  the test-helper headers stage).
+- **Stage headers from a PRIVATE include dir with no public header lib.** How
+  the existing machinery works (verified): lower emits a `target_include_
+  directories(PRIVATE <dir>)` as an element-root-relative `-I<dir>` copt; split's
+  `rewriteTarget` copt scan (split.go ~944) then keys on that `-I<dir>` and, IFF
+  a header lib was synthesized for `<dir>` (i.e. `<dir>` is ALSO a public include
+  root of some target, so it's in `incRoots`), wires the lib as a (private)
+  header dep and drops the bare `-I`. That stages the headers + supplies the
+  correct exec-root search path via the lib's `includes`. The GAP: a dir that is
+  PRIVATE-only (no target lists it as a public include) gets no header lib, so
+  the scan finds nothing, the `-I<dir>` stays element-relative (unresolved at the
+  exec root), and the dir's headers are never staged. Blocks **mbedtls** (its
+  always-on `framework` builds `mbedtls_test_helpers` → `#include
+  "test/ssl_helpers.h"` from PRIVATE-only `tests/include`) and **sdl**
+  (`SDL_uclibc` → `#include "SDL_internal.h"` from PRIVATE-only `src`).
+  Implement: in planSplit add PRIVATE `-I` copt dirs to `incRoots` so a header
+  lib synthesizes for them too — BUT note `headerLibTarget` populates hdrs from
+  *declared* headers (`headersIn`/`allHdrs`), so a PRIVATE-only dir whose headers
+  aren't declared also needs header DISCOVERY (walk the dir, cf.
+  `walkPkgRootForHdrs`/`discoverHeaders`) for the lib to actually contain
+  `SDL_internal.h`. Two pieces: synthesize the lib + discover its headers.
+
+  REGRESSION LESSON (do not repeat): an earlier attempt "exec-root anchor the
+  PRIVATE `-I` copt" (so `-Itests/libtest`→`-Ielements/<pkg>/tests/libtest`)
+  made curl's unit-test build find headers it had in `srcs`, but it BROKE the
+  split copt scan above for every member relying on it — the scan matches the
+  element-relative form, so the exec-root form silently stopped wiring the header
+  lib and regressed **fmt** (posix-mock-test: `#include <fmt/os.h>` "No such
+  file", fmt's `include/` lib no longer wired). Reverted. The copt MUST stay
+  element-relative; do the staging in split (header lib), not by rewriting the
+  copt in lower.
 
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
