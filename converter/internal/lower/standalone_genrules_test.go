@@ -565,3 +565,34 @@ func TestSanitizeOutputName(t *testing.T) {
 		})
 	}
 }
+
+func TestCustomTargetStampIsNonAll(t *testing.T) {
+	allByName := map[string]bool{
+		"test-ci":  false, // add_custom_target(test-ci ...)  — no ALL
+		"docs-all": true,  // add_custom_target(docs-all ALL ...)
+	}
+	cases := []struct {
+		name string
+		outs []string
+		want bool
+	}{
+		{"non-all stamp", []string{"tests/CMakeFiles/test-ci"}, true},
+		{"non-all stamp multi-config suffix", []string{"tests/CMakeFiles/test-ci-Debug"}, true},
+		{"ALL target stays in default build", []string{"docs/CMakeFiles/docs-all-Release"}, false},
+		{"unknown name under CMakeFiles (real genrule)", []string{"x/CMakeFiles/some_codegen.inc"}, false},
+		{"deeper file under CMakeFiles is not a stamp", []string{"a/CMakeFiles/test-ci/extra.o"}, false},
+		{"not under CMakeFiles", []string{"gen/test-ci"}, false},
+		{"empty map (no trace)", []string{"tests/CMakeFiles/test-ci"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := allByName
+			if c.name == "empty map (no trace)" {
+				m = nil
+			}
+			if got := customTargetStampIsNonAll(c.outs, m); got != c.want {
+				t.Errorf("customTargetStampIsNonAll(%v) = %v; want %v", c.outs, got, c.want)
+			}
+		})
+	}
+}

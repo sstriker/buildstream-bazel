@@ -132,6 +132,43 @@ type standaloneTraceContext struct {
 // this pass drops — keyed by the edge's first output (or category when it has
 // none), valued by category (install / regen / cpack / dashboard / ide-stub)
 // — so the caller can surface an audit breadcrumb instead of dropping silently.
+// customTargetStampIsNonAll reports whether any of a genrule's outputs is
+// the stamp file of an add_custom_target that was declared WITHOUT `ALL`.
+// cmake places a custom target's stamp at `<dir>/CMakeFiles/<name>` (Ninja
+// Multi-Config appends a `-<config>` suffix). The check is gated on the
+// derived name being a KNOWN custom target in allByName, so an ordinary
+// genrule that merely happens to write under a CMakeFiles/ path is never
+// mis-tagged. Returns false on an empty map (no trace).
+func customTargetStampIsNonAll(outs []string, allByName map[string]bool) bool {
+	if len(allByName) == 0 {
+		return false
+	}
+	for _, o := range outs {
+		idx := strings.LastIndex(o, "CMakeFiles/")
+		if idx < 0 {
+			continue
+		}
+		base := o[idx+len("CMakeFiles/"):]
+		if strings.Contains(base, "/") {
+			continue // a deeper file under CMakeFiles/, not a target stamp
+		}
+		if all, ok := allByName[base]; ok {
+			if !all {
+				return true
+			}
+			continue
+		}
+		for _, cfg := range []string{"Debug", "Release", "RelWithDebInfo", "MinSizeRel"} {
+			if n, found := strings.CutSuffix(base, "-"+cfg); found {
+				if all, ok := allByName[n]; ok && !all {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
@@ -155,6 +192,19 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 	// were lifted to $(location) labels. nil when the trace has no
 	// genex-bearing commands (the audit tag is then never added).
 	genexIndex := buildOutputToCustomCommandGenex(traceCtx.CustomCommands)
+	// add_custom_target name → ALL flag. A custom target declared
+	// WITHOUT `ALL` is not part of cmake's default build (you invoke it
+	// explicitly, `make <name>`); the faithful Bazel analog is a
+	// `manual`-tagged rule, excluded from `bazel build //...` wildcard
+	// expansion. This keeps phony run-targets — curl's `test-ci` /
+	// `test-am` runtests.pl harness wrappers, whose cmds carry shell
+	// `$TFLAGS` and produce no real file — out of the default build
+	// instead of breaking its analysis. Empty when the trace has no
+	// add_custom_target records (offline-replay-no-trace path).
+	customTargetAll := map[string]bool{}
+	for _, ct := range traceCtx.CustomTargets {
+		customTargetAll[ct.Name] = ct.All
+	}
 
 	var out []ir.Target
 	seenNames := map[string]int{}
@@ -403,6 +453,11 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		tags := []string{"cmake-codegen-standalone-custom-command"}
 		if genexTag := customCommandGenexTag(outs, genexIndex, tools, traceCtx.AliasToActual); genexTag != "" {
 			tags = append(tags, genexTag)
+		}
+		// A non-ALL add_custom_target's stamp → `manual` (not in the
+		// default build; see customTargetAll above).
+		if customTargetStampIsNonAll(outs, customTargetAll) {
+			tags = append(tags, "manual")
 		}
 		if len(inPlaceRenames) > 0 {
 			// Deferred in-place-output rename (see detectInPlaceOutputRenames
