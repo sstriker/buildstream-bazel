@@ -3,6 +3,10 @@
   "elements": [
     {
       "name": "abseil",
+      "umbrella_label": "//absl_umbrella:absl",
+      "umbrella_include_roots": [
+        "/tmp/absl-install/include"
+      ],
       "exports": [
         {
           "cmake_target": "absl::absl_check",

@@ -2407,6 +2407,24 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				//     propagation. A separate audit tag for
 				//     the hardcode case can land if a real
 				//     downstream surfaces the need.
+				// find_package whole-include-tree umbrella: a
+				// find_package(<Pkg>) puts Pkg's entire include
+				// dir on this target's compile line (the dir
+				// resolves outside the source/build tree, so we'd
+				// otherwise drop it here). If the imports manifest
+				// declared this dir as one of an element's
+				// UmbrellaIncludeRoots, add the element's umbrella
+				// label to deps instead — a cc_library re-exporting
+				// the package's full public header surface — so
+				// headers the consumer #includes but never linked a
+				// specific target for (absl/functional/overload.h
+				// from protobuf, never in protobuf_ABSL_USED_TARGETS)
+				// resolve under Bazel's strict per-target headers.
+				if umbrella := imports.UmbrellaForIncludeDir(inc.Path); umbrella != "" {
+					if !stringSliceContains(irt.Deps, umbrella) {
+						irt.Deps = append(irt.Deps, umbrella)
+					}
+				}
 				if hostPrefix != "" {
 					if relUnder, inside := relativeIfInside(hostPrefix, inc.Path); inside {
 						tag := "cmake-elided-prefix-include=" + relUnder
@@ -3840,15 +3858,28 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		}
 		langSeen[cg.Language]++
 
-		// A CUDA compile group's `.cu` sources can't compile in a cc_*
-		// sub-library (no nvcc action in Bazel's cc rules), so the sub
-		// renders as rules_cuda's cuda_library. Other languages keep the
-		// wrapper's kind. The wrapper stays a deps-only cc_library/cc_binary
-		// that depends on this sub, so the link is a normal cc→cuda dep
-		// (rules_cuda's cuda_library provides CcInfo).
-		subKind := irt.Kind
-		if cg.Language == "CUDA" {
+		// A split sub is always an object LIBRARY absorbed into the
+		// deps-only wrapper — never the wrapper's own kind. A cc_binary /
+		// cc_test wrapper whose subs were themselves cc_binary/cc_test
+		// can't link: the wrapper (srcs cleared) has no `main`, and a
+		// cc_binary in another cc_binary's deps doesn't contribute its
+		// objects, so the link fails "undefined symbol: main" (protobuf's
+		// mixed C/C++ protoc-gen-upb). Emit cc_library subs (CUDA → rules_
+		// cuda's cuda_library, which also provides CcInfo); the wrapper
+		// deps on them as a normal cc→cc(/cuda) link.
+		//
+		// For an executable wrapper force the subs alwayslink so EVERY
+		// translation unit folds into the binary — cmake compiles all of
+		// the executable's sources in, but a plain cc_library archive only
+		// contributes the objects the linker references, which would drop
+		// `main` and registration-only TUs.
+		subKind := ir.KindCCLibrary
+		subAlwayslink := irt.Alwayslink
+		switch {
+		case cg.Language == "CUDA":
 			subKind = ir.KindCudaLibrary
+		case irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest:
+			subAlwayslink = true
 		}
 		// Propagate the wrapper's deps to the sub so its sources compile
 		// (and link) against the deps' headers/symbols. A sub that accepts
@@ -3885,7 +3916,7 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			// llvm_blake3_hash_many_*). Static absorption keeps all the
 			// objects in one linkage unit so those symbols resolve.
 			Linkstatic: true,
-			Alwayslink: irt.Alwayslink,
+			Alwayslink: subAlwayslink,
 			Visibility: []string{"//visibility:private"},
 		}
 		// OpenMP (issue #313): a split sub-library carries the per-CG copts,

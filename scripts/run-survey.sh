@@ -232,6 +232,7 @@ try_bazel_build() {
     EXTRA_BAZEL_DEPS=""
     EMIT_INSTALL_EXPORT=1
     ELEMENT_SOURCE_ROOT=""
+    unset -f extra_ws_setup 2>/dev/null || true
     _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
     [ -f "$_bb_conf" ] && . "$_bb_conf"
 
@@ -311,6 +312,14 @@ EOF
     # bazel_dep(...) lines a project needs beyond the base set above (e.g. a
     # find_package dep remapped to a @bcr module). Appended verbatim.
     [ -n "$EXTRA_BAZEL_DEPS" ] && printf '%s\n' "$EXTRA_BAZEL_DEPS" >> "$_bb_ws/MODULE.bazel"
+    # extra_ws_setup: optional shell function a .conf may define to write
+    # additional packages into the synthesized workspace AFTER MODULE.bazel
+    # exists — e.g. protobuf's //absl_umbrella package, the cc_library that
+    # re-exports abseil's full public header surface to model
+    # find_package(absl)'s whole-include-tree behavior (see protobuf.conf and
+    # the manifest's umbrella_label). Called with the workspace root; reset
+    # below between projects so one project's setup can't leak into the next.
+    command -v extra_ws_setup >/dev/null 2>&1 && extra_ws_setup "$_bb_ws"
     # Per-project `bazel build` flags come from BAZEL_FLAGS in the .conf sourced
     # above (e.g. glog's --dynamic_mode=off, because its tests reference glog's
     # internal -fvisibility=hidden symbols that a default-dynamic .so won't
