@@ -83,6 +83,8 @@ func TestIsMakeDirOnlyCmd(t *testing.T) {
 		"/usr/bin/cmake -E make_directory /b/Debug/lib/ocaml/llvm",
 		"mkdir -p Debug/lib/ocaml/llvm",
 		"mkdir /b/x",
+		"cd /b/x && /usr/local/opt/cmake/bin/cmake -E make_directory /b/Debug/lib/ocaml/llvm",     // cd preamble
+		"cd /b && /usr/bin/cmake -E make_directory /b/a && /usr/bin/cmake -E make_directory /b/b", // chained make_directory only
 	}
 	for _, c := range yes {
 		if !isMakeDirOnlyCmd(c) {

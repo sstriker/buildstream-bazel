@@ -1332,16 +1332,32 @@ func isCopyCmd(cmd string) bool {
 // matched, so only a pure dir-create is dropped.
 func isMakeDirOnlyCmd(cmd string) bool {
 	c := strings.TrimSpace(cmd)
-	if c == "" || strings.ContainsAny(c, "&;|") {
+	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's per-target
+	// build-subdir cd, present on the raw cmd before rewriteGenruleCmd drops
+	// it). Without this the && guard below would reject every cd-prefixed
+	// make_directory (LLVM's ocaml_make_directory).
+	if strings.HasPrefix(c, "cd ") {
+		if i := strings.Index(c, " && "); i > 0 {
+			c = strings.TrimSpace(c[i+4:])
+		}
+	}
+	if c == "" || strings.ContainsAny(c, ";|") {
 		return false
 	}
-	if strings.Contains(c, "-E make_directory") {
-		return true
+	// Every &&-joined segment must be a pure make_directory / mkdir — a custom
+	// command that ONLY creates directories (cmake sometimes chains several).
+	// Any other segment means real work, so don't drop.
+	for _, seg := range strings.Split(c, " && ") {
+		seg = strings.TrimSpace(seg)
+		if strings.Contains(seg, "-E make_directory") {
+			continue
+		}
+		if fields := strings.Fields(seg); len(fields) > 0 && filepath.Base(fields[0]) == "mkdir" {
+			continue
+		}
+		return false
 	}
-	if fields := strings.Fields(c); len(fields) > 0 {
-		return filepath.Base(fields[0]) == "mkdir"
-	}
-	return false
+	return true
 }
 
 // cmakeInternalCmdKind reports the CATEGORY of cmake-internal command a
