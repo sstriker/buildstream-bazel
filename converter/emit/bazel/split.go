@@ -1085,51 +1085,59 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// any entry that belongs to a deeper/other package to a cross-package
 	// label (files) or dropping it (a bare packaged directory).
 	if local {
-		var srcs []string
-		for _, s := range t.Srcs {
-			// PkgSrcsGlob srcs are glob PATTERNS (e.g.
-			// "c/include/brotli/**" from install(DIRECTORY)), not file
-			// paths. A glob can't be expressed as a cross-package label
-			// (`glob(["//c/include:brotli/**"])` is invalid — patterns
-			// must be package-relative, never absolute) and Bazel's glob
-			// doesn't cross package boundaries anyway, so once the
-			// globbed dir is its own package a root-level glob wouldn't
-			// match it. Same situation as the bare-packaged-directory
-			// case below: not expressible post-split; drop it — the
-			// install is served by the layout-independent install root,
-			// and EmitSplit skips the now-empty pkg_files. (The glob
-			// pattern itself contains no package boundary we can
-			// re-root against, so there's nothing to relativize.)
-			if t.PkgSrcsGlob {
-				continue
-			}
-			d := plan.deepestPkg(s)
-			if d == dir {
-				rel, _ := relUnder(dir, s)
-				srcs = append(srcs, rel)
-				continue
-			}
-			file, _ := relUnder(d, s)
-			if file == "" {
-				// s names a packaged directory itself (e.g. an
-				// install(DIRECTORY) filegroup src pointing at a dir that
-				// became its own package). Not expressible as a
-				// cross-package file label; drop it — the install path is
-				// served by the install root, which is layout-independent.
-				continue
-			}
-			// Cross-package source FILE: reference by label + raise an
-			// exports_files() need in the owning package (unless it's a
-			// generated out — already a target, exports_files() would conflict).
-			srcs = append(srcs, crossPkgFileLabel(plan, d, file))
-			if !plan.genOuts[s] {
-				if exportsByDir[d] == nil {
-					exportsByDir[d] = map[string]struct{}{}
+		// Rewrite a source list to the post-split shape: a src in THIS
+		// package stays package-relative; one in a deeper/other package
+		// becomes a cross-package file label (+ an exports_files() need in
+		// the owner); a bare packaged-directory or a glob PATTERN isn't
+		// expressible post-split and drops. Shared by the flat Srcs and
+		// the per-platform select() arms below so a src partitioned into a
+		// `select({...})` arm (SDL's platform-conditional
+		// src/power/linux/SDL_syspower.c, where src/ became its own
+		// package) gets the SAME cross-package relabel — otherwise Bazel
+		// reads the bare "src/..." in the arm as `//<pkg>:src/...` and
+		// fails "src is a subpackage".
+		rewriteSrcList := func(in []string) []string {
+			var out []string
+			for _, s := range in {
+				if t.PkgSrcsGlob {
+					continue
 				}
-				exportsByDir[d][file] = struct{}{}
+				d := plan.deepestPkg(s)
+				if d == dir {
+					rel, _ := relUnder(dir, s)
+					out = append(out, rel)
+					continue
+				}
+				file, _ := relUnder(d, s)
+				if file == "" {
+					continue
+				}
+				out = append(out, crossPkgFileLabel(plan, d, file))
+				if !plan.genOuts[s] {
+					if exportsByDir[d] == nil {
+						exportsByDir[d] = map[string]struct{}{}
+					}
+					exportsByDir[d][file] = struct{}{}
+				}
 			}
+			return out
 		}
-		rt.Srcs = srcs
+		rt.Srcs = rewriteSrcList(t.Srcs)
+		// Per-platform (select() arm) srcs need the identical rewrite.
+		// Build a fresh map so the shallow rt := t copy doesn't mutate the
+		// caller's PerPlatform inner maps.
+		if arms, ok := t.PerPlatform["srcs"]; ok {
+			newArms := make(map[string][]string, len(arms))
+			for k, v := range arms {
+				newArms[k] = rewriteSrcList(v)
+			}
+			pp := make(map[string]map[string][]string, len(rt.PerPlatform))
+			for ak, av := range rt.PerPlatform {
+				pp[ak] = av
+			}
+			pp["srcs"] = newArms
+			rt.PerPlatform = pp
+		}
 	}
 	// (SourceKey regime: srcs/hdrs are left element-root-relative;
 	// EmitWithOptions prefixes them with @src_<key>//: unchanged.)
