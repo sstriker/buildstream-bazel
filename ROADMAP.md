@@ -715,6 +715,21 @@ transition cleanly.
   element-relative; do the staging in split (header lib), not by rewriting the
   copt in lower.
 
+- **Cross-package relabel PerPlatform (select-arm) sources in split.** split's
+  `rewriteTarget` relabels `rt.Srcs` to cross-package labels when a source dir
+  becomes a subpackage (`//pkg/src:foo.c`), but leaves `t.PerPlatform`
+  (the `select()` arms — `map[platform]map[attr][]string`) untouched. So a
+  platform-conditional source under a now-subpackage dir keeps the invalid
+  same-package label and Bazel rejects it ("Label '//elements/sdl:src/power/
+  linux/SDL_syspower.c' is invalid because 'elements/sdl/src' is a subpackage").
+  Surfaced on sdl once the header-staging fix made `src/` a package. Implement:
+  in rewriteTarget (local regime), rebuild `rt.PerPlatform` (it shares the input
+  IR's map — must copy, not mutate) applying the same cross-package relabel as
+  the `rt.Srcs` loop to the `srcs`/`hdrs`/`textual_hdrs` arms (deepestPkg →
+  relUnder or crossPkgFileLabel + exports_files). Generic (any multi-platform
+  member with select sources in a subpackage); sdl is the first to hit it, and
+  has further blockers behind it (it's a large media lib).
+
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
   (`lower.go` target-type switch), which Bazel static-links into every consumer
