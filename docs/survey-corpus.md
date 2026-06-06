@@ -39,10 +39,11 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **eigen** | 0 | 16‡ | 0 | `ok` |
 | **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) |
 | **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
-| **protobuf, curl, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
+| **curl** | 0 | 1 | 0 | `ok` (library + CLI; 234 actions) |
+| **protobuf, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for
-protobuf / curl these are honest external `find_package` deps
+protobuf these are honest external `find_package` deps
 that resolve in a real `.bst` element graph (not converter debt).
 † glog's 2 rejections are benign forward-declared-include "treated as
 empty" notices (0 blocking — a no-op in strict mode), so it builds; see
