@@ -644,6 +644,25 @@ transition cleanly.
   general capability and the natural home for grpc's deeper graph. Either
   unblocks protobuf, then grpc.
 
+  GROUNDWORK DONE (mechanism (a) de-risked for protobuf): built+installed abseil
+  to a prefix (`cmake -S /tmp/abseil-cpp -B … -DCMAKE_INSTALL_PREFIX=/tmp/absl-
+  install … --target install`) and converted protobuf with `protobuf_ABSL_
+  PROVIDER=package` + `CMAKE_PREFIX_PATH=/tmp/absl-install` — `find_package(absl)`
+  then SUCCEEDS and protobuf converts with **0 rejections** (vs the FetchContent
+  fallback). So the path works; remaining is mechanical: protobuf links **117
+  distinct `absl::*` targets** that need imports-manifest entries to
+  `@abseil-cpp//…`. Auto-generate from abseil's own BUILD.bazel files (= the BCR
+  module): **79/117 map 1:1** by grepping `name = "<X>"` in `absl/*/BUILD.bazel`
+  → `@abseil-cpp//absl/<dir>:<X>`. The **38 misses are abseil's
+  `*_internal_*` targets** where the CMAKE name carries the dir prefix the bazel
+  name drops — `absl::log_internal_check_impl` → `@abseil-cpp//absl/log/internal:
+  check_impl`, `absl::random_internal_pcg_engine` →
+  `@abseil-cpp//absl/random/internal:pcg_engine`. So the generator rule: strip a
+  leading `<dir>_internal_` and target `//absl/<dir>/internal:<rest>`. Then add
+  `bazel_dep(name="abseil-cpp", version=<BCR ver compatible with 20260107.1>)`,
+  `BAZEL_FLAGS=--incompatible_autoload_externally=...` (cf. abseil.conf), survey,
+  and iterate on protobuf's own build (utf8_range, protoc). A focused session.
+
 - **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
   `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
   output) UNLESS `EVENT__DISABLE_TESTS=ON` — so the libevent lens scopes the
