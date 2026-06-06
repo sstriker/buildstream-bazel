@@ -303,6 +303,7 @@ module(name = "survey_$(printf '%s' "$_bb_name" | tr -c 'a-z0-9_' '_')", version
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
 EOF
