@@ -110,6 +110,17 @@ type Options struct {
 	// leaves only the direct stamp vars.
 	SetAssignments []shadow.SetAssignment
 
+	// ParentScopeForwards carries function-parameter-forwarded stamp writes
+	// recovered from the same NON-EXPANDED trace
+	// (shadow.ExtractParentScopeForwards): a helper's
+	// `set(${_var} "${out}" PARENT_SCOPE)` resolved to the caller argument the
+	// parameter was bound to (`get_git_sha(GIT_SHA)` -> GIT_SHA). ToIR marks
+	// the resolved consumer as a stamp var (re-keyed to its own name) before
+	// propagation, so a configure_file referencing it (`@GIT_SHA@`) lifts to
+	// stamp_values instead of baking the convert-time revision. Empty (the
+	// single-pass default) leaves a function-forwarded stamp baked.
+	ParentScopeForwards []shadow.ParentScopeForward
+
 	// StampVarSink, when non-nil, receives a copy of the recovered
 	// stamp-variable set (var -> workspace-status key) after
 	// recoverExecuteProcess + propagation. The driver reads it after
@@ -884,6 +895,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// default), so a configure_file referencing a copy of a VCS-stamp var
 	// lifts to stamp_values. Then surface the (direct + propagated) set to
 	// the optional sink for the driver's second-pass gate.
+	// Resolve function-parameter-forwarded stamps (git_describe()'s
+	// `set(${_var} "${out}" PARENT_SCOPE)`) to the caller-scope variable
+	// before propagating verbatim copies, so the marked consumer (GIT_SHA)
+	// also seeds any further `set(VERSION ${GIT_SHA})` copy of it.
+	applyParentScopeForwards(cc.StampVars, opts.ParentScopeForwards)
 	propagateStampVars(cc.StampVars, opts.SetAssignments)
 	if opts.StampVarSink != nil {
 		// Reset first: the driver reuses one sink across passes, and a
