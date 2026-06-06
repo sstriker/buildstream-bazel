@@ -624,6 +624,24 @@ func renameAnchoredGenruleOutputs(cmd string, renames map[string]string) string 
 	return b.String()
 }
 
+// containsBoundaryToken reports whether tok occurs in cmd at a path-token
+// boundary — its left edge is the string start or a non-'/' byte (so a
+// substring sitting in the middle of a longer path, including an already
+// `$(RULEDIR)/`-anchored occurrence, doesn't count). Mirrors the left-boundary
+// guard the anchoring loop uses, so the suffix-fallback only fires when the
+// token is a real standalone reference.
+func containsBoundaryToken(cmd, tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for i := 0; i+len(tok) <= len(cmd); i++ {
+		if cmd[i:i+len(tok)] == tok && (i == 0 || cmd[i-1] != '/') {
+			return true
+		}
+	}
+	return false
+}
+
 func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	if cmd == "" || len(outs) == 0 {
 		return cmd
@@ -646,6 +664,28 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 		tokenSet[o] = true
 		for d := path.Dir(o); strings.Contains(d, "/"); d = path.Dir(d) {
 			tokenSet[d] = true
+		}
+	}
+	// Fallback for cd-stripped WORKING_DIRECTORY-relative outputs: cmake
+	// records an add_custom_command OUTPUT relative to CMAKE_CURRENT_BINARY_DIR
+	// and wraps the recipe in `cd <subdir> && …`; rewriteGenruleCmd strips that
+	// cd, leaving a positional output arg in its bare workdir-relative form
+	// (curl's `perl mk-lib1521.pl < curl.h lib1521.c`, where the declared out is
+	// the build-dir-relative `tests/libtest/lib1521.c`). When an output's full
+	// form isn't in the cmd, anchor the LONGEST path-suffix of it that IS — the
+	// workdir-relative form — so it still resolves; split re-relativizes the
+	// $(RULEDIR)-relative result on the genrule's package move. No-op (no churn)
+	// when the full form is present, which is the standalone path's usual shape.
+	for _, o := range outs {
+		if o == "" || containsBoundaryToken(cmd, o) {
+			continue
+		}
+		for s := o; strings.Contains(s, "/"); {
+			s = s[strings.Index(s, "/")+1:]
+			if containsBoundaryToken(cmd, s) {
+				tokenSet[s] = true
+				break
+			}
 		}
 	}
 	sorted := make([]string, 0, len(tokenSet))

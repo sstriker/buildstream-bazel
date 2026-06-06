@@ -26,3 +26,39 @@ func TestAnchorGenruleOutputsToRuledir_SingleComponentParentSafe(t *testing.T) {
 		t.Errorf("single-component parent must stay un-anchored:\n got  %q\n want %q", got, want)
 	}
 }
+
+// A cd-stripped WORKING_DIRECTORY-relative output (curl's
+// `perl mk-lib1521.pl < curl.h lib1521.c`, declared out tests/libtest/lib1521.c)
+// appears in the cmd only by its workdir-relative suffix; the suffix fallback
+// must still anchor it to $(RULEDIR)/.
+func TestAnchorGenruleOutputsToRuledir_CdStrippedSuffix(t *testing.T) {
+	cmd := "perl elements/curl/tests/libtest/mk-lib1521.pl < elements/curl/include/curl/curl.h lib1521.c"
+	got := anchorGenruleOutputsToRuledir(cmd, []string{"tests/libtest/lib1521.c"})
+	want := "perl elements/curl/tests/libtest/mk-lib1521.pl < elements/curl/include/curl/curl.h $(RULEDIR)/lib1521.c"
+	if got != want {
+		t.Errorf("cd-stripped suffix output must anchor:\n got  %q\n want %q", got, want)
+	}
+}
+
+// The suffix fallback anchors the LONGEST present suffix: a nested
+// workdir-relative output (out a/b/sub/foo.c, cmd carries sub/foo.c) anchors
+// sub/foo.c, not the bare basename foo.c.
+func TestAnchorGenruleOutputsToRuledir_LongestSuffix(t *testing.T) {
+	cmd := "tool -o sub/foo.c input"
+	got := anchorGenruleOutputsToRuledir(cmd, []string{"a/b/sub/foo.c"})
+	want := "tool -o $(RULEDIR)/sub/foo.c input"
+	if got != want {
+		t.Errorf("longest present suffix must anchor:\n got  %q\n want %q", got, want)
+	}
+}
+
+// When the full build-dir-relative form IS present, the fallback is a no-op —
+// the basename is NOT additionally anchored (no churn for the standalone shape).
+func TestAnchorGenruleOutputsToRuledir_FullFormNoFallback(t *testing.T) {
+	cmd := "tool gen/myproj/out.inc"
+	got := anchorGenruleOutputsToRuledir(cmd, []string{"gen/myproj/out.inc"})
+	want := "tool $(RULEDIR)/gen/myproj/out.inc"
+	if got != want {
+		t.Errorf("full-form output anchors once:\n got  %q\n want %q", got, want)
+	}
+}
