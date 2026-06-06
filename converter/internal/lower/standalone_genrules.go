@@ -284,6 +284,26 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
+		// A make_directory-only custom command (`cmake -E make_directory <dir>`
+		// / `mkdir -p <dir>`) has no Bazel build-graph analogue — the same
+		// reasoning as the cmake -E make_directory execute_process no-op
+		// (noopExecuteProcessOps): a Bazel action creates its output's parents
+		// implicitly under $(RULEDIR), and the files later written into the dir
+		// are recovered by their own genrules. Worse, cmake's make_directory
+		// custom command declares a STAMP output (CMakeFiles/<name>-<cfg>) that
+		// the mkdir cmd never writes, so a genrule fails "declared output was
+		// not created" (LLVM's OCaml-bindings ocaml_make_directory). Drop it.
+		if isMakeDirOnlyCmd(cmd) {
+			if filteredInternal != nil {
+				key := "make_directory"
+				if len(outs) > 0 {
+					key = outs[0]
+				}
+				filteredInternal[key] = "make_directory"
+			}
+			continue
+		}
+
 		// In-place rewrite remediation: a custom command that reads a
 		// source-tree file and writes the SAME relative path into the
 		// build tree (LLVM's Remarks.exports shape) produces a genrule
@@ -1274,6 +1294,31 @@ func isCreateSymlinkCmd(cmd string) bool {
 // copy source was never staged and the genrule can't run.
 func isCopyCmd(cmd string) bool {
 	return strings.Contains(cmd, "-E copy")
+}
+
+// isMakeDirOnlyCmd reports whether a recovered ninja CUSTOM_COMMAND is purely a
+// directory creation — `cmake -E make_directory <dir>` or a raw `mkdir [-p]
+// <dir>` — with no other command chained. Such a command has no Bazel
+// build-graph analogue (a Bazel action creates its output's parents implicitly
+// under $(RULEDIR); files written into the dir are recovered by their own
+// genrules), and cmake's make_directory custom command declares a stamp output
+// the mkdir never writes, so emitting a genrule fails "declared output was not
+// created". Matched on the raw ninja cmd (the `-E make_directory` token is
+// stable before rewriteGenruleCmd normalizes it to `mkdir -p`). A chained
+// command (`&&` / `;` / pipe) does real work beyond the mkdir and is NOT
+// matched, so only a pure dir-create is dropped.
+func isMakeDirOnlyCmd(cmd string) bool {
+	c := strings.TrimSpace(cmd)
+	if c == "" || strings.ContainsAny(c, "&;|") {
+		return false
+	}
+	if strings.Contains(c, "-E make_directory") {
+		return true
+	}
+	if fields := strings.Fields(c); len(fields) > 0 {
+		return filepath.Base(fields[0]) == "mkdir"
+	}
+	return false
 }
 
 // cmakeInternalCmdKind reports the CATEGORY of cmake-internal command a

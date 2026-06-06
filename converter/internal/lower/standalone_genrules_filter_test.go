@@ -75,3 +75,30 @@ func TestIsCMakeInternalCmd(t *testing.T) {
 		})
 	}
 }
+
+// TestIsMakeDirOnlyCmd: a pure make_directory / mkdir command is recognized
+// (and thus dropped), while a chained command that also does real work is not.
+func TestIsMakeDirOnlyCmd(t *testing.T) {
+	yes := []string{
+		"/usr/bin/cmake -E make_directory /b/Debug/lib/ocaml/llvm",
+		"mkdir -p Debug/lib/ocaml/llvm",
+		"mkdir /b/x",
+	}
+	for _, c := range yes {
+		if !isMakeDirOnlyCmd(c) {
+			t.Errorf("isMakeDirOnlyCmd(%q) = false, want true", c)
+		}
+	}
+	no := []string{
+		"mkdir -p x && cp a b",                          // chained — real work
+		"/usr/bin/cmake -E make_directory x && touch y", // chained
+		"/usr/bin/cmake -E copy a b",                    // copy, not mkdir
+		"python3 gen.py > out.h",                        // codegen
+		"",
+	}
+	for _, c := range no {
+		if isMakeDirOnlyCmd(c) {
+			t.Errorf("isMakeDirOnlyCmd(%q) = true, want false", c)
+		}
+	}
+}
