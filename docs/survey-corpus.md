@@ -38,6 +38,7 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **glog** | 0† | 30 | 0 | `ok` |
 | **eigen** | 0 | 16‡ | 0 | `ok` |
 | **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) |
+| **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
 | **protobuf, curl, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for
@@ -58,8 +59,18 @@ in `tools/library`) that the full-tree diagnostic survey flags but the
 doesn't block the build — `cutlass.conf` sets `BUILD_LENS_IGNORE_REJ=1` to
 bypass the skip(rej) gate (see *Build-lens status*). Needs nvcc on `PATH`
 to configure (`BSB_PROVISION_CUDA=1`).
+¶ OpenBLAS is green on the **C-LAPACK** shape (`NOFORTRAN=1 C_LAPACK=1`,
+deterministic `TARGET=HASWELL`): the whole ~2460-target kernel + LAPACK +
+BLAS library `bazel build //...`s with no cmake. Getting there took four
+converter features (generated-wrapper absolute-`#include` rewrite +
+kernel staging, transitive micro-kernel closure, `file(RENAME)` config.h
+recovery) and two build-lens flags (`-mfma`, `NO_CBLAS=1`) — see
+*Build-lens status*. The **real reference-Fortran** LAPACK (no `C_LAPACK`)
+remains future work: it needs a Bazel Fortran ruleset (`edbaunton/rules_fortran`
+is an empty stub; the path is a hand-rolled `fortran_library` in
+`rules_buildstream_bazel`).
 Large members surveyed for convertibility but not yet driven through
-the build lens (SDL, grpc, llvm, VTK, OpenBLAS, …) live under *The
+the build lens (SDL, grpc, llvm, VTK, …) live under *The
 corpus* / *Regression corpus* below.
 
 ## What a survey is checking for (the three lenses)
@@ -493,6 +504,23 @@ llvm-subdir note below):
   per-source `COMPILE_OPTIONS` recovery (split the divergent sources into a
   sub-`cc_library` carrying the extra copts) would drop the conf flag — tracked
   here, mirrors the per-source `COMPILE_DEFINITIONS` handling already shipped.
+  **CBLAS reference tests — build-lens flag, then GREEN.** With every kernel
+  compiling, the last failure was linking the `ctest/` reference-test programs
+  (`x?cblat?`): `duplicate symbol: cblas_xerbla`. Each test compiles its own
+  `ctest/c_xerbla.c` (defining `cblas_xerbla`) AND links the library, whose
+  `cblas_xerbla` is force-included because the converter inlines cmake OBJECT
+  libraries as `alwayslink=True` cc_library deps — a real `.a` archive wouldn't
+  pull the overridden object. `ctest`/`utest` are gated by `NO_CBLAS`/`ONLY_CBLAS`
+  (NOT `BUILD_TESTING`, which only gates `lapack-netlib/TESTING`; `NOFORTRAN=1`
+  already drops the Fortran `test/`), so `openblas.conf` sets `NO_CBLAS=1` to
+  scope out the C-interface veneer + its reference tests — the same
+  "build the library, not its test tree" move eigen/cutlass apply. **With that,
+  OpenBLAS is GREEN: `0/0/0 ok ok`, the whole ~2460-target C-LAPACK library
+  `bazel build //...`s clean.** Follow-up (converter): don't force a test
+  target's own symbols in via an `alwayslink` dep (so the reference tests build
+  too without `NO_CBLAS`). Real reference-Fortran LAPACK (no `C_LAPACK`) is
+  separate future work — needs a Bazel Fortran ruleset (none exists in the BCR;
+  `edbaunton/rules_fortran` is an empty stub).
 
 ### Optional toolchains (unlock fuller surveys)
 
