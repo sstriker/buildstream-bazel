@@ -188,6 +188,16 @@ type codegenContext struct {
 	// the recoverGenrule signature.
 	ArtifactToName map[string]string
 
+	// BazelPackagePath is the element's Bazel package path (e.g.
+	// "elements/curl") — the exec-root prefix a genrule cmd's
+	// source-tree inputs / `-I` roots need so they resolve at the
+	// Bazel exec root rather than as bare project-relative paths.
+	// Threaded here (like ArtifactToName) so recoverGenrule's ninja
+	// path can hand it to rewriteGenruleCmd without a signature
+	// change — the standalone path receives it as a parameter. Empty
+	// for offline-replay / convert-at-root callers.
+	BazelPackagePath string
+
 	// LiteralProbeSink and LiteralResolutions thread the
 	// generalized-genex two-pass through the codegen helpers
 	// (mirrors how Warnings / ArtifactToName ride here rather than
@@ -435,31 +445,26 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	srcs := genruleSrcs(b, cmakeSrc, buildDir, "")
 	tags := genruleTags(cmd, b, g)
 
-	// recoverGenrule predates the umbrella/exec-root anchoring and has
-	// neither labelRoot nor bazelPackagePath in scope; pass "" for both so
-	// its source-relative srcs/cmd shape is unchanged. The exec-root
-	// anchoring lives on the standalone-custom-command path
-	// (lowerStandaloneCustomCommands), which is where LLVM's tablegen
-	// genrules surface.
-	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", "")
+	// Exec-root anchoring: a genrule cmd runs at the Bazel exec root, so a
+	// source-tree input / `-I` root referenced bare (cmakeSrc-relative) must
+	// carry the element's package prefix (cc.BazelPackagePath, e.g.
+	// elements/curl/include/curl/curl.h) to resolve — mirroring the
+	// standalone-custom-command path. Empty BazelPackagePath (offline-replay /
+	// convert-at-root) leaves the bare shape unchanged. umbrellaPrefix stays ""
+	// here: the per-target recovery path isn't reached under the workspace-root
+	// umbrella promotion (that surfaces on the standalone path).
+	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", cc.BazelPackagePath)
 	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName)
-	// A recovered genrule whose output is in a SUBDIR (glog's
-	// empty-placeholder source `CMakeFiles/glog.cc`, a `cmake -E touch`
-	// recovered from ninja) wrote to a bare relative path that bazel rejects
-	// as a missing output — the subdir doesn't exist in the action sandbox.
-	// Anchor those outputs (and their multi-component parents) to
-	// $(RULEDIR)/<out>, mirroring the standalone-custom-command path's
-	// anchorGenruleOutputsToRuledir. Scoped to subdir outputs on purpose:
-	// root-level outputs already render correctly, so leaving them untouched
-	// avoids churning recovered genrules that build today.
-	subdirOuts := make([]string, 0, len(outs))
-	for _, o := range outs {
-		if strings.Contains(o, "/") {
-			subdirOuts = append(subdirOuts, o)
-		}
-	}
-	if len(subdirOuts) > 0 {
-		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, subdirOuts)
+	// Anchor declared outputs to $(RULEDIR)/<out> so a cmd that names its
+	// output as a literal arg (curl's `perl mk-lib1521.pl < curl.h lib1521.c`,
+	// where the script writes to argv) writes under bazel-out rather than a
+	// bare exec-root path bazel rejects as a missing output. anchorGenrule-
+	// OutputsToRuledir only rewrites literal occurrences, so a cmd that emits
+	// via `> $@` (no literal output token) is a no-op — root-level outputs are
+	// now anchored too (was subdir-only), which the literal-occurrence scoping
+	// keeps churn-free for the stdout-redirect recovered genrules.
+	if len(outs) > 0 {
+		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
 	}
 	gen := ir.Target{
 		Name:         name,
