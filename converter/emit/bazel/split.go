@@ -1152,6 +1152,13 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// they don't propagate to consumers; PUBLIC ones ride deps.
 	rt.Deps = rewriteDeps(t.Deps, plan, headerDeps)
 	rt.ImplementationDeps = rewriteDeps(t.ImplementationDeps, plan, privHeaderDeps)
+	// Data carries add_dependencies-derived intra-element target edges (":x",
+	// build-order only); relabel them to cross-package labels like deps, else a
+	// sub-package consumer's `:LLVMAnalysis` resolves to its OWN package
+	// (LLVM's lib/Frontend/Atomic referencing lib/Analysis:LLVMAnalysis →
+	// "missing input file"). Same target-ref shape as deps, so rewriteDeps is
+	// the right mapper.
+	rt.Data = rewriteDeps(t.Data, plan, nil)
 
 	// An alias's `actual` is an intra-element target reference too — relabel
 	// it to the target's real package the same way deps are. Aliases land in
