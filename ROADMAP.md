@@ -626,6 +626,24 @@ transition cleanly.
 
 ## Next
 
+- **Make external `find_package` deps AVAILABLE in the build-lens workspace
+  (protobuf / grpc).** These survey `skip(rej)` standalone because their deps
+  (protobuf→abseil+utf8_range; grpc→abseil+protobuf+re2+c-ares+zlib+…) aren't
+  resolvable. Two viable mechanisms, both "set up for success" rather than
+  scope-out: (a) **host-install + imports-manifest → BCR**: install the dep so
+  `find_package(absl CONFIG)` SUCCEEDS at cmake time (today it fails — "Could
+  NOT find absl" — and protobuf silently falls back to FetchContent, which
+  downloads abseil into the BUILD dir and the converter converts it in-graph
+  with 0 rejections, but those sources aren't in the lens overlay so it can't
+  build), then map `absl::*`→`@abseil-cpp//…` BCR labels via `--imports-manifest`
+  (the abseil→googletest pattern in abseil.conf) + `EXTRA_BAZEL_DEPS`; or (b)
+  **multi-element overlay**: convert the dep (abseil is already a green corpus
+  member) and overlay it as a local repo in the consumer's survey workspace,
+  mapping `find_package` to the overlaid labels — the in-workspace analog of the
+  "real .bst element graph" the board mentions. (b) is the more faithful, more
+  general capability and the natural home for grpc's deeper graph. Either
+  unblocks protobuf, then grpc.
+
 - **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
   `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
   output) UNLESS `EVENT__DISABLE_TESTS=ON` — so the libevent lens scopes the
