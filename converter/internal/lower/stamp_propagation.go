@@ -1,6 +1,10 @@
 package lower
 
-import "github.com/sstriker/buildstream-bazel/internal/shadow"
+import (
+	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
+)
 
 // propagateStampVars expands the stamp-variable set transitively through
 // verbatim `set(X ${Y})` copies recovered from the non-expanded trace.
@@ -40,5 +44,44 @@ func propagateStampVars(stampVars map[string]string, assignments []shadow.SetAss
 		if !changed {
 			return
 		}
+	}
+}
+
+// applyParentScopeForwards marks the caller-scope variable a helper function
+// forwards a stamp value into (`set(${_var} "${out}" PARENT_SCOPE)` then
+// `get_git_sha(GIT_SHA)`), so a configure_file referencing that variable
+// (`@GIT_SHA@`) lifts to stamp_values instead of baking. recoverExecuteProcess
+// seeds stampVars with the function-LOCAL OUTPUT_VARIABLE (`out`); each
+// forward whose SrcVar is that local promotes its resolved Dst (the call
+// argument, `GIT_SHA`) to a stamp var.
+//
+// Unlike propagateStampVars (which INHERITS the source var's key — the right
+// call for a verbatim same-name-ish copy), the forwarded consumer is RE-KEYED
+// to its own name: the source is a generic function-local (`out`) the operator
+// never names in their --workspace_status_command, so the consumer reads
+// STABLE_GIT_SHA, not STABLE_OUT. The STABLE_/VOLATILE_ prefix is preserved
+// from the source key (a forwarded `date` stamp stays volatile).
+//
+// Mutates stampVars in place. Runs BEFORE propagateStampVars so a further
+// verbatim copy of the now-marked consumer (`set(VERSION ${GIT_SHA})`)
+// propagates from it. A variable already carrying a (direct) key is never
+// overwritten.
+func applyParentScopeForwards(stampVars map[string]string, forwards []shadow.ParentScopeForward) {
+	if len(stampVars) == 0 || len(forwards) == 0 {
+		return
+	}
+	for _, f := range forwards {
+		srcKey, srcIsStamp := stampVars[f.SrcVar]
+		if !srcIsStamp {
+			continue
+		}
+		if _, dstAlready := stampVars[f.Dst]; dstAlready {
+			continue
+		}
+		prefix := "STABLE_"
+		if strings.HasPrefix(srcKey, "VOLATILE_") {
+			prefix = "VOLATILE_"
+		}
+		stampVars[f.Dst] = statusKeyWithPrefix(prefix, f.Dst)
 	}
 }
