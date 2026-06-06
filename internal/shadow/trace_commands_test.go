@@ -909,3 +909,26 @@ func TestDecode_CustomCommandsAndTargets(t *testing.T) {
 		t.Errorf("AddCustomTargets[0].Name: %q", d.AddCustomTargets[0].Name)
 	}
 }
+
+// TestExtractFileRename_AsConfigureCopyonly: file(RENAME tmp dest) called
+// from the source tree is recovered as a synthetic COPYONLY configure_file
+// (OpenBLAS's config.h cross-compile shape); a cmake-internal rename and a
+// non-RENAME file() subcommand are both ignored. Decode routes RENAME into
+// ConfigFiles alongside real configure_file calls.
+func TestExtractFileRename_AsConfigureCopyonly(t *testing.T) {
+	trace := `{"args":["RENAME","/build/config.h.tmp","/build/config.h"],"cmd":"file","file":"/src/cmake/prebuild.cmake","line":1374}
+{"args":["RENAME","/x/a","/x/b"],"cmd":"file","file":"/usr/share/cmake/Modules/Internal.cmake","line":9}
+{"args":["GLOB","V","/src/*.c"],"cmd":"file","file":"/src/CMakeLists.txt","line":3}
+`
+	got := Decode([]byte(trace), "/src", nil).ConfigFiles
+	if len(got) != 1 {
+		t.Fatalf("want 1 recovered RENAME (cmake-internal + GLOB ignored); got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Input != "/build/config.h.tmp" || c.Output != "/build/config.h" {
+		t.Errorf("input/output: %+v", c)
+	}
+	if len(c.Options) != 1 || c.Options[0] != "COPYONLY" {
+		t.Errorf("options: %+v want [COPYONLY]", c.Options)
+	}
+}

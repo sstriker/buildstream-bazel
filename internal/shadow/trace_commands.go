@@ -100,6 +100,9 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		if call, ok := classifyConfigureFile(ev, traceSourceRoot); ok {
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
+		if call, ok := classifyFileRename(ev, traceSourceRoot); ok {
+			d.ConfigFiles = append(d.ConfigFiles, call)
+		}
 		if call, ok := classifyFileGenerate(ev, traceSourceRoot); ok {
 			d.FileGenerates = append(d.FileGenerates, call)
 		}
@@ -527,6 +530,38 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 		Input:    ev.Args[0],
 		Output:   ev.Args[1],
 		Options:  append([]string(nil), ev.Args[2:]...),
+		CallFile: ev.File,
+	}, true
+}
+
+// classifyFileRename models cmake's `file(RENAME <src> <dest>)` — the
+// "atomically materialize a generated file" idiom — as a synthetic
+// COPYONLY configure_file whose <dest> bytes are baked verbatim (the
+// configure_file recovery reads them from the build dir). OpenBLAS's
+// deterministic-arch (cross-compile) branch writes config.h this way
+// (cmake/prebuild.cmake: file(WRITE ...tmp) + APPENDs, then
+// file(RENAME tmp config.h)), whereas its non-cross branch uses
+// configure_file(... COPYONLY) — so the existing configure_file recovery
+// only ever saw config.h on the path the build lens doesn't take. Treating
+// RENAME as COPYONLY routes config.h through the identical bake + consumer
+// attribution. Only the call site being in the source tree qualifies, so
+// cmake-internal renames (try_compile scratch, etc.) are filtered; renames
+// whose dest lands outside the build dir are dropped later by the recovery
+// (relativeIfInsideRelaxed), so a source-tree-dest rename can't bake.
+func classifyFileRename(ev TraceEvent, sourceRoot string) (ConfigureFileCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "file") {
+		return ConfigureFileCall{}, false
+	}
+	if len(ev.Args) != 3 || !strings.EqualFold(ev.Args[0], "RENAME") {
+		return ConfigureFileCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return ConfigureFileCall{}, false
+	}
+	return ConfigureFileCall{
+		Input:    ev.Args[1],
+		Output:   ev.Args[2],
+		Options:  []string{"COPYONLY"},
 		CallFile: ev.File,
 	}, true
 }
