@@ -323,7 +323,20 @@ func emitInstallScriptTodos(c *todos.Collector, r *fileapi.Reply) {
 			f.scriptFiles[scriptFile] = true
 		}
 	}
-	for _, dir := range r.Directories {
+	// Traverse directories in sorted key order, not map-iteration order, so
+	// anchor INSERTION order is deterministic. Report sorts anchors by
+	// (file, line, construct), which already disambiguates anchors that
+	// differ; this guarantees a stable order for anchors that fold under
+	// one todo and compare EQUAL (e.g. several siteless install(CODE)),
+	// without relying on the incidental "every Anchor field is in the sort
+	// key" invariant.
+	dirKeys := make([]string, 0, len(r.Directories))
+	for k := range r.Directories {
+		dirKeys = append(dirKeys, k)
+	}
+	sort.Strings(dirKeys)
+	for _, dk := range dirKeys {
+		dir := r.Directories[dk]
 		for _, inst := range dir.Installers {
 			switch inst.Type {
 			case "script":

@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -296,6 +297,46 @@ func TestEmitInstallScriptTodos_ReanchorsAbsoluteSite(t *testing.T) {
 	}
 	if td.Anchors[0].Line != 12 {
 		t.Errorf("anchor line = %d; want 12", td.Anchors[0].Line)
+	}
+}
+
+// TestEmitInstallScriptTodos_MultiDirDeterministic runs the producer over
+// a reply with several directories (map iteration order varies per range)
+// many times and asserts the rendered report is byte-identical, guarding
+// the sorted-directory-traversal determinism across the install fold.
+func TestEmitInstallScriptTodos_MultiDirDeterministic(t *testing.T) {
+	mk := func(file string, line int) fileapi.Directory {
+		return fileapi.Directory{
+			BacktraceGraph: fileapi.BacktraceGraph{
+				Files: []string{file},
+				Nodes: []fileapi.BacktraceNode{{File: 0}, {File: 0, Line: line, Command: 0}},
+			},
+			Installers: []fileapi.DirectoryInstaller{
+				{Type: "code", Backtrace: 1},
+				{Type: "script", ScriptFile: "post.cmake", Backtrace: 1},
+			},
+		}
+	}
+	r := &fileapi.Reply{Directories: map[string]fileapi.Directory{
+		"a": mk("a/CMakeLists.txt", 3),
+		"b": mk("b/CMakeLists.txt", 9),
+		"c": mk("c/CMakeLists.txt", 5),
+		"d": {Installers: []fileapi.DirectoryInstaller{{Type: "code"}, {Type: "code"}}}, // siteless fold
+	}}
+	render := func() string {
+		c := todos.New()
+		emitInstallScriptTodos(c, r)
+		b, err := json.MarshalIndent(c.Report(todos.DefaultPreamble(), ""), "", "  ")
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		return string(b)
+	}
+	want := render()
+	for i := 0; i < 50; i++ {
+		if got := render(); got != want {
+			t.Fatalf("non-deterministic install report on run %d:\n%s", i, got)
+		}
 	}
 }
 
