@@ -25,6 +25,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
@@ -276,6 +277,16 @@ type Options struct {
 	// that didn't land in any dep bucket). Surfaced via
 	// --audit-coverage-report; see converter/internal/coverage.
 	Coverage *coverage.Collector
+
+	// Todos, when non-nil, collects "no-mechanical-form" constructs —
+	// ones with a good Bazel form but no faithful mechanical
+	// translation, which an author (or AI post-pass) must re-express:
+	// add_test(COMMAND cmake -P …) script harnesses, filtered cmake
+	// command edges with no Bazel analogue, and install(SCRIPT) /
+	// install(CODE) directives. Each producer site Adds one grouped
+	// entry alongside its (retained) stderr warning. Surfaced via
+	// --conversion-todos-report; see converter/internal/todos.
+	Todos *todos.Collector
 
 	// CMakeScriptRunner, when non-empty, is the Bazel label of a
 	// target that the cmake-P lift will invoke at Bazel build
@@ -1474,6 +1485,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			fmt.Fprintf(opts.Warnings, "  %s (%d): %s\n", k, len(outs), strings.Join(outs, ", "))
 		}
 	}
+	// Same filtered-command drops, as structured conversion-todos (one
+	// per drop kind). No-op on a nil collector; independent of the
+	// stderr breadcrumb above so the JSON is produced even when
+	// Warnings is nil.
+	emitInternalDropTodos(opts.Todos, cc.FilteredInternalCmds)
 	// add_test registrations for which no cc_test was emitted — breadcrumb
 	// so the drop isn't silent (mirrors the cmake-internal filter above). An
 	// add_test becomes a cc_test only when its COMMAND is a converted
@@ -1529,12 +1545,20 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 	}
+	// Same unconverted add_test registrations, as structured
+	// conversion-todos (one per COMMAND runner). No-op on a nil
+	// collector; independent of the stderr breadcrumb above.
+	emitCMakePTestTodos(opts.Todos, opts.CTest, cc.Tests)
 	// Surface install(SCRIPT) / install(CODE) directives. These run
 	// cmake script code at install time and have no Bazel
 	// analogue — the converter drops them silently. The warning
 	// makes the omission auditable so operators who care about
 	// install-time logic see what was lost.
 	surfaceInstallScriptInstallers(r, opts.Warnings)
+	// Same install(SCRIPT)/install(CODE) directives, as structured
+	// conversion-todos (one per (site, scriptFile)). No-op on a nil
+	// collector.
+	emitInstallScriptTodos(opts.Todos, r)
 
 	// Surface target launchers (CROSSCOMPILING_EMULATOR /
 	// TEST_LAUNCHER). Bazel has no per-target run-launcher; these

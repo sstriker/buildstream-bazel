@@ -1,6 +1,7 @@
 #!/bin/sh
 # run-survey.sh — drive the diagnostic-survey corpus through the cmake
-# converter and emit a per-project rejection + bazel-idiom report.
+# converter and emit a per-project rejection / bazel-idiom / coverage /
+# conversion-todos report.
 #
 # This is the self-contained, in-repo version of the cross-project
 # survey described in docs/codemodel-consumption-audit.md. It does NOT
@@ -312,8 +313,8 @@ mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
 : > "$summary"
 
-printf '%-14s %10s %10s %10s %8s %s\n' project rejections idioms coverage build status | tee "$summary"
-printf '%-14s %10s %10s %10s %8s %s\n' ------- ---------- ------ -------- ----- ------ | tee -a "$summary"
+printf '%-14s %10s %10s %10s %6s %8s %s\n' project rejections idioms coverage todos build status | tee "$summary"
+printf '%-14s %10s %10s %10s %6s %8s %s\n' ------- ---------- ------ -------- ----- ----- ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -329,6 +330,7 @@ for entry in $projects; do
     rej="$proj_out/rejections.json"
     idiom="$proj_out/bazel-idiom.json"
     cov="$proj_out/coverage.json"
+    todo="$proj_out/conversion-todos.json"
     status="ok"
 
     # DIAG_CONVERT_FLAGS (opt-in, per-project): extra --cmake-define / convert
@@ -407,6 +409,7 @@ for entry in $projects; do
         --rejections-report "$rej" \
         --audit-bazel-idiom-report "$idiom" \
         --audit-coverage-report "$cov" \
+        --conversion-todos-report "$todo" \
         --out-build "$proj_out/BUILD.bazel" \
         --out-failure "$proj_out/failure.json" \
         > "$proj_out/convert.log" 2>&1
@@ -422,6 +425,9 @@ for entry in $projects; do
     rej_n=$( [ -f "$rej" ]   && grep -o '"code"' "$rej"  2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     idi_n=$( [ -f "$idiom" ] && grep -o '"Code"' "$idiom" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     cov_n=$( [ -f "$cov" ]   && grep -o '"Code"' "$cov"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
+    # conversion-todos.json is {version, preamble, todos:[{id,...}]}; the
+    # todos column counts the no-mechanical-form units ("id" is unique per todo).
+    todo_n=$( [ -f "$todo" ] && grep -o '"id"' "$todo"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
 
     # The build-lens skip(rej) decision must ignore BENIGN diagnostics that
     # don't actually block a clean (strict-mode) convert: the
@@ -488,8 +494,8 @@ for entry in $projects; do
         fi
     fi
 
-    printf '%-14s %10s %10s %10s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "$build_status" "$status" | tee -a "$summary"
+    printf '%-14s %10s %10s %10s %6s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$build_status" "$status" | tee -a "$summary"
 done
 
 echo ""
-echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage}.json; summary at $summary"
+echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos}.json; summary at $summary"
