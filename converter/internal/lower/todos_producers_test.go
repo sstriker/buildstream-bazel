@@ -127,7 +127,9 @@ func TestEmitCMakePTestTodos_NormalizesBuildDirPath(t *testing.T) {
 		t.Fatalf("ctest.Parse: %v", err)
 	}
 	c := todos.New()
-	emitCMakePTestTodos(c, reg, nil, "/proj", "/tmp/cmbuild-9999")
+	// Roots passed WITH trailing separators (common operator input) must
+	// still match + slice cleanly into "<BUILD>/…" / "<SRC>/…".
+	emitCMakePTestTodos(c, reg, nil, "/proj/", "/tmp/cmbuild-9999/")
 	rep := c.Report(todos.DefaultPreamble(), "")
 	td := rep.Todos[0]
 	invs, _ := td.Evidence["invocations"].([][]string)

@@ -31,6 +31,16 @@ func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests [
 	if c == nil || reg == nil {
 		return
 	}
+	// Normalize the roots once: filepath.Clean strips any trailing
+	// separator (common in operator-supplied paths) so the prefix match +
+	// token slicing below can't miss or emit a malformed "<BUILD>x" token.
+	// Guard empty — filepath.Clean("") is ".", which must not become a root.
+	if sourceRoot != "" {
+		sourceRoot = filepath.Clean(sourceRoot)
+	}
+	if buildDir != "" {
+		buildDir = filepath.Clean(buildDir)
+	}
 	emitted := map[string]bool{}
 	for _, t := range emittedTests {
 		emitted[t.Name] = true

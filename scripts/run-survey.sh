@@ -426,8 +426,10 @@ for entry in $projects; do
     idi_n=$( [ -f "$idiom" ] && grep -o '"Code"' "$idiom" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     cov_n=$( [ -f "$cov" ]   && grep -o '"Code"' "$cov"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
     # conversion-todos.json is {version, preamble, todos:[{id,...}]}; the
-    # todos column counts the no-mechanical-form units ("id" is unique per todo).
-    todo_n=$( [ -f "$todo" ] && grep -o '"id"' "$todo"   2>/dev/null | wc -l | tr -d ' ' || echo "-" )
+    # todos column counts the no-mechanical-form units. Match the "id" KEY
+    # (`"id":`) rather than the bare token so a string value equal to "id"
+    # can't overcount.
+    todo_n=$( [ -f "$todo" ] && grep -oE '"id"[[:space:]]*:' "$todo" 2>/dev/null | wc -l | tr -d ' ' || echo "-" )
 
     # The build-lens skip(rej) decision must ignore BENIGN diagnostics that
     # don't actually block a clean (strict-mode) convert: the

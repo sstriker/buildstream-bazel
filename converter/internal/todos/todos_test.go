@@ -87,6 +87,24 @@ func TestReport_EmptyEmitsArray(t *testing.T) {
 	}
 }
 
+// TestReport_DoesNotMutateInputAnchors guards the aliasing bug: Report
+// must deep-copy each Todo's Anchors before sorting, leaving the caller's
+// (and the Collector's) slice untouched.
+func TestReport_DoesNotMutateInputAnchors(t *testing.T) {
+	c := New()
+	anchors := []Anchor{{File: "b", Line: 2, Construct: "x"}, {File: "a", Line: 1, Construct: "y"}}
+	c.Add(Todo{Kind: "cmake-p-test", GroupKey: "g", Anchors: anchors})
+	rep := c.Report(DefaultPreamble(), "")
+	// The report is sorted...
+	if rep.Todos[0].Anchors[0].File != "a" {
+		t.Errorf("report anchors not sorted: %+v", rep.Todos[0].Anchors)
+	}
+	// ...but the caller's original slice is untouched.
+	if anchors[0].File != "b" || anchors[1].File != "a" {
+		t.Errorf("Report mutated the caller's anchors: %+v", anchors)
+	}
+}
+
 func TestReset_ClearsAcrossPasses(t *testing.T) {
 	c := New()
 	c.Add(Todo{Kind: "cmake-p-test", GroupKey: "pass1.cmake", Anchors: []Anchor{{Construct: "x"}}})

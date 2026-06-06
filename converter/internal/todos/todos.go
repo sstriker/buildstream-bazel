@@ -143,16 +143,22 @@ func (c *Collector) Reset() {
 // stable id, anchors are sorted by (file, line), and the todo slice is
 // sorted by (kind, group_key). Same input → byte-identical report.
 func (c *Collector) Report(pre Preamble, toolVersion string) Report {
-	var items []Todo
+	var raw []Todo
 	if c != nil {
 		c.mu.Lock()
-		items = make([]Todo, len(c.items))
-		copy(items, c.items)
+		raw = make([]Todo, len(c.items))
+		copy(raw, c.items)
 		c.mu.Unlock()
 	}
-	for i := range items {
-		items[i].ID = ID(items[i].Kind, items[i].GroupKey)
-		anchors := items[i].Anchors
+	items := make([]Todo, len(raw))
+	for i, it := range raw {
+		it.ID = ID(it.Kind, it.GroupKey)
+		// Deep-copy the Anchors slice before sorting: the shallow copy
+		// above shares each Todo's anchor backing array with the
+		// Collector's internal state, so sorting in place would mutate it
+		// (and race with a concurrent Report). Report must be a pure
+		// assembler with no side effects on the Collector.
+		anchors := append([]Anchor(nil), it.Anchors...)
 		sort.SliceStable(anchors, func(a, b int) bool {
 			if anchors[a].File != anchors[b].File {
 				return anchors[a].File < anchors[b].File
@@ -162,6 +168,8 @@ func (c *Collector) Report(pre Preamble, toolVersion string) Report {
 			}
 			return anchors[a].Construct < anchors[b].Construct
 		})
+		it.Anchors = anchors
+		items[i] = it
 	}
 	sort.SliceStable(items, func(a, b int) bool {
 		if items[a].Kind != items[b].Kind {
