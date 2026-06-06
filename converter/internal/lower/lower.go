@@ -1143,6 +1143,20 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// appended in target-walk order during lowerTarget, which is
 	// itself stable.
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
+	// Co-locate each per-language sub-library in its parent wrapper's
+	// sub-package (set above at pkg.SubPackages[irt.Name]). The sub's srcs and
+	// the wrapper that deps on it both live there; leaving the sub in the root
+	// package makes the wrapper→sub edge cross-package against a private target
+	// (LLVM's BLAKE3 _asm/_c splits: "not visible from").
+	if pkg.SubPackages != nil {
+		for _, sub := range cc.Subs {
+			if parent, ok := cc.SubParent[sub.Name]; ok {
+				if dir, ok := pkg.SubPackages[parent]; ok {
+					pkg.SubPackages[sub.Name] = dir
+				}
+			}
+		}
+	}
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
 	// Make every cc_test name a valid Bazel identifier before anything
@@ -3677,6 +3691,13 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// lowerTarget is a no-op once the split clears irt.Copts).
 		propagateOpenMPLinkFlag(&sub)
 		cc.Subs = append(cc.Subs, sub)
+		// Record the sub→parent link so the package-assignment pass co-locates
+		// this sub in the parent's sub-package (its srcs + the wrapper that
+		// deps on it live there). Without it the sub defaults to the root
+		// package — a cross-package + private-visibility analysis error.
+		if cc.SubParent != nil {
+			cc.SubParent[sub.Name] = irt.Name
+		}
 		subDeps = append(subDeps, ":"+sub.Name)
 	}
 

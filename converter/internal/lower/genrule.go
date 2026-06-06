@@ -37,6 +37,14 @@ type codegenContext struct {
 	// rendered BUILD groups them naturally with their parent.
 	Subs []ir.Target
 
+	// SubParent maps a per-language sub-library's name (cc.Subs) to its
+	// parent wrapper target's name, so the package-assignment pass can
+	// co-locate each sub in its parent's sub-package. Without this the subs
+	// default to the root package while the parent (and the sub's srcs +
+	// the wrapper that deps on it) live in a sub-package — a cross-package +
+	// private-visibility analysis error (LLVM's BLAKE3 _asm/_c splits).
+	SubParent map[string]string
+
 	// OutToGenrule maps a package-relative output path to the genrule
 	// name that produces it. Used by the consumer side to add
 	// has-cmake-codegen and to reference outputs by label.
@@ -258,6 +266,7 @@ func newCodegenContext() *codegenContext {
 		HeaderWalkCache:       map[string][]string{},
 		MissingIncludeDirs:    map[string]bool{},
 		FilteredInternalCmds:  map[string]string{},
+		SubParent:             map[string]string{},
 	}
 }
 
