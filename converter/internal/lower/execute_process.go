@@ -690,6 +690,19 @@ func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenC
 	if !ok {
 		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
 	}
+	if srcRel == dstRel {
+		// Single-file copy/link whose source and destination resolve to the SAME
+		// package-relative path — mbedtls's link_to_source(X) copies a generated
+		// build file back to its own committed source path (error.c,
+		// version_features.c). Emitting it would make X both an input and an
+		// output, which Bazel forbids; and the copy is redundant — X already
+		// exists as the committed source. Drop it; consumers of X resolve to that
+		// source. Only fires on the genuine in==out collision (which Bazel
+		// rejects regardless), so it can't regress a building target. Scoped to
+		// the single-file path: a recursive DIR copy (emitDirCopyGenrule) at the
+		// same relative root is a real staging copy, not an identity.
+		return []string{dstRel}, "", true
+	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true
 	}
