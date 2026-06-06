@@ -690,6 +690,15 @@ func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenC
 	if !ok {
 		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
 	}
+	if srcRel == dstRel {
+		// Identity copy (cp X X): mbedtls's link_to_source(X) links a build-dir
+		// file back to its own source path, which after anchoring is the same
+		// package-relative label. Bazel forbids a file as both an input and an
+		// output ("has file X as both an input and an output"), and the copy
+		// produces nothing new — dstRel already exists as the source file. Drop
+		// the genrule; consumers of dstRel resolve to the existing source.
+		return []string{dstRel}, "", true
+	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true
 	}
@@ -1231,6 +1240,13 @@ func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op string, anc exec
 		}
 		outRel := dirCopyOutRel(dstRel, subPrefix, fileUnder)
 		if _, exists := cc.OutToGenrule[outRel]; exists {
+			return nil
+		}
+		if srcFileRel == outRel {
+			// Identity copy (link_to_source of an in-tree dir, e.g. mbedtls's
+			// include/ headers linked back to themselves): the file already
+			// exists at its source path and Bazel forbids in==out. Skip — the
+			// source serves the file; no genrule entry needed.
 			return nil
 		}
 		pairs = append(pairs, pair{src: srcFileRel, out: outRel})

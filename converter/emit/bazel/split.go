@@ -1272,7 +1272,37 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	if plan.publicize[t.Name] {
 		rt.Visibility = []string{"//visibility:public"}
 	}
+	// Dedup srcs (order-preserving): a single relativized label may appear
+	// twice when two distinct codemodel source paths collapse to one package-
+	// relative form — e.g. mbedtls generates error.c into the build dir AND
+	// commits a same-named source, both normalizing to "error.c". Bazel rejects
+	// duplicate srcs ("attribute srcs has duplicate entries"), so emit each once.
+	// No-op (no churn) for the dup-free common case.
+	rt.Srcs = dedupKeepOrder(rt.Srcs)
 	return rt
+}
+
+// dedupKeepOrder returns s with later duplicate entries removed, preserving
+// first-occurrence order. Returns s unchanged when it has no duplicates.
+func dedupKeepOrder(s []string) []string {
+	if len(s) < 2 {
+		return s
+	}
+	seen := make(map[string]struct{}, len(s))
+	out := s[:0:0]
+	dup := false
+	for _, v := range s {
+		if _, ok := seen[v]; ok {
+			dup = true
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if !dup {
+		return s
+	}
+	return out
 }
 
 // allPackageLocalHdrs reports whether every header entry is a package-local
