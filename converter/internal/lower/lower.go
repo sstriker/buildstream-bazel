@@ -1144,12 +1144,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 		pkg.SubPackages[irt.Name] = subPackageDir(cfg, tref.DirectoryIndex, cmakeSrc, workspaceRoot)
 
-		// Record this cc_library's codemodel UTILITY dependencies so a pass
+		// Record this target's codemodel UTILITY dependencies so a pass
 		// AFTER standalone-genrule recovery (which is what fills the genrule
 		// output set the walk filters on) can resolve them to the generated
-		// `.inc` headers it consumes. Only cc_library carries the wrapper
-		// dep cleanly via the consumer's deps; cc_binary/cc_test are skipped.
-		if irt.Kind == ir.KindCCLibrary && len(t.Dependencies) > 0 {
+		// `.inc` headers it consumes. cc_binary/cc_test are included alongside
+		// cc_library: LLVM's tools are cc_binary that `#include "Opts.inc"`
+		// (the `-gen-opt-parser-defs` tablegen output from each tool's Opts.td,
+		// wired via add_public_tablegen_target), so they need the same
+		// generated-header wrapper dep + genfiles include the libraries get.
+		// The split transform's wrapper synthesis keys on consumer NAME, not
+		// kind, so a cc_binary consumer flows through unchanged.
+		if (irt.Kind == ir.KindCCLibrary || irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) && len(t.Dependencies) > 0 {
 			codegenConsumerDeps[irt.Name] = t.Dependencies
 		}
 	}
