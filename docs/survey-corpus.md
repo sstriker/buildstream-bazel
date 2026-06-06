@@ -463,17 +463,36 @@ llvm-subdir note below):
   (`synthesizeTextualSourceIncludeLibs`, with which it now shares the
   carrier-lib / textual_hdrs wiring). All 1951 includes rewrite + stage; the
   build advances from analysis-clean to a real C compile of the kernels.
-  **Next blocker (config.h).** With the kernels resolving, the C compile now
-  fails `common.h:62: fatal error: config.h: No such file`. In the
-  deterministic-arch branch the `.conf` selects, OpenBLAS writes `config.h` via
+  **Transitive micro-kernel closure — fixed.** An OpenBLAS kernel a wrapper
+  stages itself `#include`s sibling micro-kernel sources by relative path
+  (`caxpy.c` → `caxpy_microk_haswell-2.c`, `#ifdef`-guarded per arch), so the
+  staging is now the full transitive textual-include closure
+  (`textualIncludeClosure`), not just the first hop — relative sibling includes
+  need no rewrite (they resolve against the includer's own dir once staged).
+  **config.h — fixed.** With the kernels resolving, the C compile next failed
+  `common.h:62: fatal error: config.h: No such file`. In the deterministic-arch
+  branch the `.conf` selects, OpenBLAS writes `config.h` via
   `file(RENAME ${tmp} config.h)` at cmake/prebuild.cmake:1374 — NOT
   `configure_file` (that's the non-cross branch, which needs the getarch probe
   the `.conf` dead-branches), so the converter's configure_file recovery never
-  sees it. The fix is to recover configure-time `file(RENAME)`/`file(WRITE)`
-  build-dir outputs that sources `#include` the same way COPYONLY configure_file
-  outputs are recovered (read the dest bytes, bake a write_file, attach to
-  consumers + the build-dir include path). Until that lands, the build lens
-  yields FAIL on config.h, not ok.
+  saw it. `shadow.classifyFileRename` now models an in-source-tree
+  `file(RENAME <src> <dest>)` as a synthetic COPYONLY configure_file: the
+  existing recovery bakes `config.h` from the build-dir bytes and the split
+  emitter folds the recovered root-package header into `root_headers`, so it
+  resolves through the element-root header lib exactly like `common.h`.
+  **FMA per-source flags — build-lens flag.** Past config.h, the FMA kernels
+  (`*rot_k*`, `dgemv_t_k`) fail `inlining failed … '_mm256_fmadd_pd': target
+  specific option mismatch`: OpenBLAS tags those individual generated wrappers
+  with `set_source_files_properties(... COMPILE_OPTIONS "-mfma")`
+  (cmake/utils.cmake, gated on HAVE_FMA3), and the converter doesn't yet split
+  per-source `COMPILE_OPTIONS` into a per-flag sub-library (Bazel has no
+  per-source copts). The build lens pins a single `TARGET=HASWELL`
+  (DYNAMIC_ARCH off — no runtime CPU dispatch), so `openblas.conf` passes
+  `--cmake-define CMAKE_C_FLAGS=-mfma` to enable FMA build-wide (correct for the
+  arch, the same build-lens-flag move as glm's `-w`). **Follow-up (converter):**
+  per-source `COMPILE_OPTIONS` recovery (split the divergent sources into a
+  sub-`cc_library` carrying the extra copts) would drop the conf flag — tracked
+  here, mirrors the per-source `COMPILE_DEFINITIONS` handling already shipped.
 
 ### Optional toolchains (unlock fuller surveys)
 
