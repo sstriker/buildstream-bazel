@@ -626,6 +626,28 @@ transition cleanly.
 
 ## Next
 
+- **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
+  collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
+  (`lower.go` target-type switch), which Bazel static-links into every consumer
+  — the "shared-ness" (a real `.so`, dynamic linking, symbol-boundary
+  semantics) is lost. It mostly works because a static lib behaves like a shared
+  one for well-behaved code, but it's wrong where the shared boundary is
+  load-bearing: symbol dedup/visibility (curl's tests recompile the curlx
+  utility sources precisely because the `.so` hides them — static-collapse then
+  duplicates them and the test binary SIGSEGVs at startup; the curl lens works
+  around this with `BUILD_SHARED_LIBS=OFF`, an interim static alignment, see
+  docs/survey-corpus.md curl row), `MODULE_LIBRARY` plugins that are dlopen'd at
+  runtime (static-collapse breaks the model entirely), and per-`.so` global
+  state (two shared libs each owning a copy get silently merged). Implement:
+  emit a `cc_shared_library` wrapping the target's `cc_library` for
+  SHARED/MODULE targets, wire consumers' `dynamic_deps` to it, carry the `.so`
+  in runfiles for `bazel run`/test, and decide the lens policy (build static by
+  default — Bazel's idiom — but be ABLE to build the shared variant, ideally
+  both, so a shared-configured project converts faithfully instead of being
+  silently downgraded). Bazel's `cc_shared_library` constraints to honor: each
+  `cc_library` is owned by at most one shared lib in the graph, plus the
+  `exports`/`dynamic_deps` wiring.
+
 - **Make the host-system-library fallback EXPLICIT (hermeticity boundary).**
   When a `find_package`/`target_link_libraries` link fragment resolves to a
   standard system library (`/usr/lib*`, `/lib*`, `/usr/local/lib*`) and the
