@@ -3307,21 +3307,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 	}
 
-	// STATIC IMPORTED dep recovery from trace. STATIC archives don't
-	// run a link step at build time, so cmake's codemodel records
-	// no Link.CommandFragments and no IMPORTED-target Dependencies
-	// for them — both upstream channels are empty. Trace's
-	// target_link_libraries calls are the only ground truth for a
-	// static lib's IMPORTED deps. For each lib name the trace
-	// records, look it up in the imports manifest; resolve hits
-	// are appended (deduped). Non-IMPORTED libs (in-codebase target
-	// names) already came in via t.Dependencies above and are
-	// covered by the seen-map.
+	// IMPORTED dep recovery from trace. Two channels miss find_package
+	// imports that the trace records as direct target_link_libraries:
+	//   - A STATIC archive runs no link step, so cmake's codemodel
+	//     records no Link.CommandFragments and no IMPORTED-target
+	//     Dependencies — both upstream channels are empty.
+	//   - A header-only IMPORTED target (no .a / .so on disk, e.g.
+	//     absl::flat_hash_map / absl::span) never appears as a link
+	//     fragment on ANY consumer, EXECUTABLE or SHARED included, so
+	//     the Link.CommandFragments attribution above can't reach it
+	//     even though the executable's sources #include its headers.
+	// The trace's target_link_libraries calls are the ground truth for
+	// both. For each direct lib name the trace records, look it up in
+	// the imports manifest; resolve hits are appended (deduped). Runs
+	// for every cc rule kind (the seen-map keeps the link-fragment path
+	// from double-adding the compiled libs it already wired on
+	// executables/shared libs); in-codebase target names already came
+	// in via t.Dependencies above and are covered by the seen-map too.
 	//
 	// The seen-set spans Deps + ImplementationDeps so a dep already
 	// routed to ImplementationDeps by the t.Dependencies loop above
 	// doesn't get re-appended to Deps here.
-	if t.Type == "STATIC_LIBRARY" && len(traceLinkLibs) > 0 {
+	if (t.Type == "STATIC_LIBRARY" || t.Type == "SHARED_LIBRARY" ||
+		t.Type == "MODULE_LIBRARY" || t.Type == "EXECUTABLE") && len(traceLinkLibs) > 0 {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {
 			seen[d] = true
@@ -3733,6 +3741,24 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 	sharedDeps := append([]string(nil), irt.Deps...)
 	sharedImplDeps := append([]string(nil), irt.ImplementationDeps...)
 
+	// PRIVATE include dirs (target_include_directories(... PRIVATE ...))
+	// ride the wrapper's irt.Copts as `-I<dir>` / `-isystem<dir>` (added by
+	// the include loop in lowerTarget); the per-CG CompileCommandFragments
+	// the subs draw from don't carry them. Since the subs are what compile
+	// the sources, extract those include copts and replay them onto every
+	// sub so a source in a PRIVATE include tree resolves its siblings
+	// (protobuf's protoc-gen-upb_c compiles
+	// upb_generator/cmake/.../plugin.upb_minitable.c, which #includes the
+	// sibling plugin.upb_minitable.h via the PRIVATE -Iupb_generator/cmake).
+	// Harmless on a sub that doesn't compile anything under the dir — an
+	// unused -I is a no-op.
+	var sharedIncludeCopts []string
+	for _, c := range irt.Copts {
+		if strings.HasPrefix(c, "-I") || strings.HasPrefix(c, "-isystem") {
+			sharedIncludeCopts = append(sharedIncludeCopts, c)
+		}
+	}
+
 	var subDeps []string
 	// Track each emitted sub's language so a cross-language linkage pass below
 	// can wire C/C++ → asm/fortran deps (the subStart marks where this call's
@@ -3770,6 +3796,10 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			continue
 		}
 		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		// Replay the wrapper's PRIVATE include-dir copts (see
+		// sharedIncludeCopts above) so this sub's sources resolve headers
+		// reached via target_include_directories(... PRIVATE ...).
+		copts = append(copts, sharedIncludeCopts...)
 		// Pick up per-CG LanguageStandard so sub-libraries
 		// inherit the cmake-recorded -std=c++17 / -std=c11
 		// (idempotent if the CG's CompileCommandFragments
