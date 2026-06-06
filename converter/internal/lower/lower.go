@@ -3678,15 +3678,23 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			subKind = ir.KindCudaLibrary
 		}
 		sub := ir.Target{
-			Name:       subName,
-			Kind:       subKind,
-			Srcs:       subSrcs,
-			Hdrs:       subHdrs,
-			Includes:   sharedIncludes,
-			Copts:      copts,
-			Defines:    defs,
-			Tags:       subTags,
-			Linkstatic: irt.Linkstatic,
+			Name:     subName,
+			Kind:     subKind,
+			Srcs:     subSrcs,
+			Hdrs:     subHdrs,
+			Includes: sharedIncludes,
+			Copts:    copts,
+			Defines:  defs,
+			Tags:     subTags,
+			// Split sub-libraries are INTERNAL object-libraries (alwayslink)
+			// that exist only to be statically absorbed into the deps-only
+			// wrapper — never linked standalone. Force linkstatic so Bazel
+			// doesn't build a standalone .so for each: a C/C++ sub's .so can't
+			// resolve the hidden-visibility symbols of a sibling asm/fortran sub
+			// across a .so boundary (LLVM's BLAKE3 _c.so → the _asm subs'
+			// llvm_blake3_hash_many_*). Static absorption keeps all the
+			// objects in one linkage unit so those symbols resolve.
+			Linkstatic: true,
 			Alwayslink: irt.Alwayslink,
 			Visibility: []string{"//visibility:private"},
 		}
