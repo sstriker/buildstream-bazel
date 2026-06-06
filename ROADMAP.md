@@ -729,6 +729,14 @@ transition cleanly.
   relUnder or crossPkgFileLabel + exports_files). Generic (any multi-platform
   member with select sources in a subpackage); sdl is the first to hit it, and
   has further blockers behind it (it's a large media lib).
+  COMPLICATION (verified): a rewriteTarget-only PerPlatform relabel is NOT
+  enough for sdl and was implemented + reverted (unexercised). sdl's failing
+  targets are MULTI-CONFIG variants (`SDL3-static_c_0`/`_c_1`, one per
+  `--build-types` config from the config-fold path); their `select()` `srcs`
+  arms don't flow through rewriteTarget. The fix must relabel select-arm sources
+  in the multi-config-variant emit path too (or route `_c_N` variants through
+  rewriteTarget). sdl is multi-config × per-platform × subpackage × large lib —
+  a genuinely deep member; this relabel is just its current top blocker.
 
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
