@@ -2460,7 +2460,20 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				if inc.IsSystem {
 					flag = "-isystem"
 				}
-				irt.Copts = append(irt.Copts, flag+emit)
+				// A raw -I/-isystem copt runs at the Bazel exec root, so a
+				// source-tree include dir needs its exec-root form
+				// (<bazelPackagePath>/<emit>). Unlike the includes attr
+				// (irt.Includes below), which split re-relativizes per package,
+				// this copt is opaque and never re-anchored downstream — without
+				// the prefix a PRIVATE cross-package include (curl's unit tests'
+				// target_include_directories(PRIVATE tests/libtest) for test.h)
+				// emits -Itests/libtest, unresolvable at the exec root. Empty
+				// bazelPackagePath (convert-at-root) leaves emit unchanged.
+				incDir := emit
+				if bazelPackagePath != "" {
+					incDir = filepath.ToSlash(filepath.Join(bazelPackagePath, emit))
+				}
+				irt.Copts = append(irt.Copts, flag+incDir)
 				continue
 			}
 			irt.Includes = append(irt.Includes, emit)
