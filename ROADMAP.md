@@ -671,6 +671,22 @@ transition cleanly.
   set, ~15-20), not all 117 transitive — BCR `@abseil-cpp`'s deps are transitive.
   The 117-vs-direct distinction + the auto-gen rule are the time-savers; the
   per-target `*_internal_*` dir-prefix-strip handles ~all of the 15 hard ones.
+  DONE + COMMITTED: the full 78-entry manifest (scripts/build-lens/protobuf-
+  imports.json, auto-generated + 3 hand-resolved: log_internal_message→
+  log/internal:log_message, vlog_config_internal→log/internal:vlog_config,
+  flags_internal→flags:flag_internal) + protobuf.conf. VALIDATED: abseil now
+  resolves via the manifest → `@abseil-cpp` BCR (no host cc_imports), proving the
+  dep-availability mechanism end-to-end. protobuf then hits its OWN internal
+  blockers (no longer dep-availability): (1) **upb codegen** — `plugin.upb_
+  minitable.h: No such file`, a generated header from protobuf's upb protoc-
+  plugin (`protoc-gen-upb`); the converter must model the upb-minitable codegen
+  genrules. (2) **absl-header wiring on direct-compile targets** —
+  `protoc-gen-upbdefs_cxx` recompiles descriptor.cc but lacks the `@abseil-cpp`
+  headers (`absl/base/attributes.h: No such file`); the absl dep is wired for the
+  library targets but not every binary that recompiles protobuf sources. Both are
+  protobuf-internal, the next focused session's work. CAVEAT: protobuf.conf
+  hardcodes `/tmp/absl-install` (host-installed abseil) — fold the abseil install
+  into the SessionStart hook for reproducibility.
 
 - **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
   `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
