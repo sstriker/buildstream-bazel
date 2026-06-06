@@ -448,17 +448,32 @@ llvm-subdir note below):
   GENERATED compiled source (.c/.S) swept into a header aggregation is dropped
   entirely — it's a translation unit its package compiles, never a header, and
   relabeling it would only force the private write_file rule public for
-  visibility. The **remaining** blocker is genuinely beyond `.conf` + these
-  fixes: OpenBLAS's `GenerateNamedObjects` codegen (cmake/utils.cmake:421)
-  `file(WRITE ...)`s ~1951 per-routine wrappers each `#include`-ing the real
-  kernel by ABSOLUTE configure-time path (`#include "<source-root>/lapack/getf2/
-  zgetf2_k.c"`); the converter bakes that path verbatim, so the Bazel compile
-  fails "No such file" (the convert-host path isn't in the sandbox). Greening
-  needs a lower pass that rewrites source-root-absolute `#include`s in generated
-  content to in-tree references AND stages each included kernel source as a
-  textual input on the consuming compile (resolving include path +
-  cross-package visibility) — a sizable, well-scoped converter feature, not a
-  `.conf` tweak.
+  visibility. **GenerateNamedObjects absolute-include — fixed.** OpenBLAS's
+  `GenerateNamedObjects` codegen (cmake/utils.cmake:421) `file(WRITE ...)`s
+  ~1951 per-routine wrappers each `#include`-ing the real kernel by ABSOLUTE
+  configure-time path (`#include "<source-root>/lapack/getf2/zgetf2_k.c"`);
+  the converter baked that path verbatim, so the Bazel compile failed "No such
+  file" (the convert-host path isn't in the sandbox). The `lower`
+  `stageGeneratedSourceRootIncludes` pass now rewrites every source-root-
+  absolute quote-`#include` baked into a generated wrapper (write_file) to a
+  WORKSPACE-relative path (resolving through Bazel's default `-iquote`
+  exec-root) and stages the included in-tree source (.c **and** assembly .S/.s)
+  as a `textual_hdr` on the target that compiles the wrapper — a declared input
+  that isn't compiled standalone, mirroring the on-disk fused-source idiom
+  (`synthesizeTextualSourceIncludeLibs`, with which it now shares the
+  carrier-lib / textual_hdrs wiring). All 1951 includes rewrite + stage; the
+  build advances from analysis-clean to a real C compile of the kernels.
+  **Next blocker (config.h).** With the kernels resolving, the C compile now
+  fails `common.h:62: fatal error: config.h: No such file`. In the
+  deterministic-arch branch the `.conf` selects, OpenBLAS writes `config.h` via
+  `file(RENAME ${tmp} config.h)` at cmake/prebuild.cmake:1374 — NOT
+  `configure_file` (that's the non-cross branch, which needs the getarch probe
+  the `.conf` dead-branches), so the converter's configure_file recovery never
+  sees it. The fix is to recover configure-time `file(RENAME)`/`file(WRITE)`
+  build-dir outputs that sources `#include` the same way COPYONLY configure_file
+  outputs are recovered (read the dest bytes, bake a write_file, attach to
+  consumers + the build-dir include path). Until that lands, the build lens
+  yields FAIL on config.h, not ok.
 
 ### Optional toolchains (unlock fuller surveys)
 

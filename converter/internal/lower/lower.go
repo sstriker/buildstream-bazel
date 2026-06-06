@@ -1590,6 +1590,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// standalone. Runs last so the synthesized libs aren't reprocessed above.
 	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, hostSrcOnDisk, opts.Warnings)
 
+	// The same idiom in GENERATED form: a convert-time-baked wrapper source
+	// (configure_file / file(WRITE) → write_file) textually `#include`s a real
+	// in-tree source by its source-root-ABSOLUTE path — OpenBLAS's
+	// GenerateNamedObjects writes ~1951 such per-routine wrappers. Rewrite the
+	// baked absolute include to a workspace-relative path and stage the kernel
+	// as a textual_hdr on the compiling target. Runs after the on-disk pass
+	// above (it can also feed textual_hdrs onto the same cc_library).
+	stageGeneratedSourceRootIncludes(pkg, hostSrc, opts.BazelPackagePath, hostSrcOnDisk, opts.Warnings)
+
 	return pkg, nil
 }
 
