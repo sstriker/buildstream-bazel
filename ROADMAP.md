@@ -626,6 +626,17 @@ transition cleanly.
 
 ## Next
 
+- **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
+  `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
+  output) UNLESS `EVENT__DISABLE_TESTS=ON` — so the libevent lens scopes the
+  regress tests off (libevent.conf), which also dodges a `test/regress.gen.c
+  outside-build-dir` rejection. With tests off both converts complete in
+  seconds with 0 rejections, so the loop is in the regress target graph (likely
+  the custom-command / generated-source recovery over the regress test tree).
+  Find + fix the loop so libevent's tests don't have to be scoped purely to
+  avoid a hang. Lower priority than greening members, but a hang (vs a clean
+  refusal) is a sharp edge worth removing.
+
 - **Stage headers from a PRIVATE cross-package include dir.** A target with
   `target_include_directories(PRIVATE <dir-in-another-package>)` lowers the dir
   to a `-I<exec-root-dir>` copt (correctly anchored), but the HEADERS under that
