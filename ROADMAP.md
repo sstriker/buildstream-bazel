@@ -676,6 +676,16 @@ transition cleanly.
   `walkPkgRootForHdrs`/`discoverHeaders`) for the lib to actually contain
   `SDL_internal.h`. Two pieces: synthesize the lib + discover its headers.
 
+  RELATED mbedtls blocker (separate): its `link_to_source(X)` copies a generated
+  build file back to its same-relative source path, lowering to an
+  execute_process copy genrule with `srcs=[X]`+`outs=[X]` — Bazel's in==out
+  error. A naive "drop the copy when srcRel==dstRel" was tried and reverted: it
+  also dropped legitimate `cp <srcdir> <build>` staging copies (same rel path,
+  different root — a real copy, not an identity), breaking the cp-dir-lift tests.
+  The right handling is an in-place output RENAME (X→X.gen, rewrite consumers),
+  the mechanism standalone genrules already use for `.exports`; apply it to the
+  execute_process copy path, gated on the genuine in==out collision.
+
   REGRESSION LESSON (do not repeat): an earlier attempt "exec-root anchor the
   PRIVATE `-I` copt" (so `-Itests/libtest`→`-Ielements/<pkg>/tests/libtest`)
   made curl's unit-test build find headers it had in `srcs`, but it BROKE the
