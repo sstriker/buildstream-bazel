@@ -645,19 +645,37 @@ transition cleanly.
   host-coupling is a conscious choice. The manifest is already the hermetic
   channel (abseil→googletest); this item is about not silently bypassing it.
 
-- **Stage a genrule's invoked-script inputs.** A recovered/standalone genrule
-  whose cmd runs an interpreter over a source-tree script (`perl scripts/foo`,
-  `python tools/gen.py`, `sh scripts/x.sh`) needs that script — and the inputs
-  it reads — in the rule's `srcs`, or Bazel's sandbox can't open it at action
-  time (`Can't open perl script "…/cd2nroff": No such file`). curl surfaces
-  this: its `docs/` manpage genrules (`cd2nroff`/`managen`/`mkhelp.pl` over
-  ~300 `.md` files) and its perl `runtests.pl` **test** harness all fail this
-  way, so the curl lens currently scopes docs+tests off (`curl.conf`).
-  Implement: scan the genrule cmd for an interpreter+script invocation, resolve
-  the script (and, where tractable, its read inputs — cf. the `--cmake-script-
-  trace` read-path augmentation) against the source tree, and add them to
-  `srcs`. Unblocks building docs/test surfaces faithfully instead of scoping
-  them away. See docs/survey-corpus.md (curl row).
+- **Build curl's `docs/` manpage genrules.** curl's test surface now builds
+  (`BUILD_TESTING=ON`; the ninja-recovery exec-root + cd-stripped-output
+  anchoring that did it shipped — see docs/survey-corpus.md curl row), but the
+  lens still scopes `docs/` off (`BUILD_LIBCURL_DOCS=OFF`). The `docs/` tree is
+  manpage generation: genrules running perl helpers (`cd2nroff`/`managen`/
+  `mkhelp.pl`) over ~300 `.md` files, often with a different shape than the test
+  codegen (whole-directory `managen` inputs, `>`-redirect outputs, multi-input
+  staging). Verify which of those build under the current anchoring and close
+  the remainder, so docs build faithfully instead of being scoped away. It's a
+  documentation surface, not library/test code, so lower priority than the test
+  side that's now green.
+
+- **Build-lens fidelity: compare Bazel vs cmake `compile_commands.json`.** The
+  build lens today is binary (does `bazel build //...` succeed?), so a build can
+  succeed with the WRONG per-TU flags — the `BUILDING_LIBCURL` leak compiled
+  fine but applied a macro to TUs cmake never gave it. Add a per-translation-
+  unit flag-fidelity check: get Bazel's side from `bazel aquery
+  'mnemonic("CppCompile", //...)' --output=jsonproto` (built-in, hermetic — no
+  third-party extractor `bazel_dep`, which matters under this sandbox's network
+  policy; the argv carries the effective `defines`+`local_defines` merged), and
+  cmake's from `CMAKE_EXPORT_COMPILE_COMMANDS=ON` (the survey already drives
+  cmake). Compare per source file. Stage by signal-to-noise: **(1) defines**
+  first — highest signal, lowest noise (path/toolchain-independent; divergence
+  is almost always a real bug: missing macro or a leak); **(2) includes** —
+  needs canonicalizing cmake's absolute/source-relative `-I` and Bazel's
+  exec-root form to a common source-relative shape; **(3) copts** last — needs a
+  toolchain-default filter to isolate project-authored flags. Report as a 5th
+  per-project lens (`SURVEY_COMPILE_DB=1`), `0` = flag-faithful to cmake. Catches
+  the class of bug curl/LLVM surfaced this cycle. Caveats: source identity
+  (abs↔exec-root suffix match), config alignment (cmake's db is single-config;
+  defines/includes are largely config-stable, copts are not), generated sources.
 
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
