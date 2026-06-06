@@ -662,6 +662,15 @@ transition cleanly.
   `bazel_dep(name="abseil-cpp", version=<BCR ver compatible with 20260107.1>)`,
   `BAZEL_FLAGS=--incompatible_autoload_externally=...` (cf. abseil.conf), survey,
   and iterate on protobuf's own build (utf8_range, protoc). A focused session.
+  WHY THE MANIFEST IS REQUIRED (verified): with abseil installed but NO manifest,
+  the converter resolves the `find_package(absl)` imported targets to HOST
+  `cc_import`s of the installed `.a` files (234 refs to `/tmp/absl-install/lib/
+  libabsl_*.a` in the convert) — non-hermetic, not in the lens overlay, so it
+  can't build. The manifest intercepts those imported targets → `@abseil-cpp`
+  (hermetic). NOTE you only need to map the DIRECT link deps (the `cc_import`
+  set, ~15-20), not all 117 transitive — BCR `@abseil-cpp`'s deps are transitive.
+  The 117-vs-direct distinction + the auto-gen rule are the time-savers; the
+  per-target `*_internal_*` dir-prefix-strip handles ~all of the 15 hard ones.
 
 - **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
   `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
