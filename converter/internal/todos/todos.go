@@ -126,6 +126,19 @@ func (c *Collector) Len() int {
 	return len(c.items)
 }
 
+// Reset drops all recorded todos. Callers that run the producers more
+// than once against the same collector (e.g. the converter's two-pass
+// genex / stamp-recovery re-lowers) Reset before the final pass so the
+// report reflects only that pass rather than accumulating duplicates.
+func (c *Collector) Reset() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.items = nil
+	c.mu.Unlock()
+}
+
 // Report assembles the deterministic on-disk report: each todo gets its
 // stable id, anchors are sorted by (file, line), and the todo slice is
 // sorted by (kind, group_key). Same input → byte-identical report.

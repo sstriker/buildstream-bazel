@@ -87,6 +87,19 @@ func TestReport_EmptyEmitsArray(t *testing.T) {
 	}
 }
 
+func TestReset_ClearsAcrossPasses(t *testing.T) {
+	c := New()
+	c.Add(Todo{Kind: "cmake-p-test", GroupKey: "pass1.cmake", Anchors: []Anchor{{Construct: "x"}}})
+	c.Reset() // simulate a re-run pass replacing the prior result
+	c.Add(Todo{Kind: "cmake-p-test", GroupKey: "pass2.cmake", Anchors: []Anchor{{Construct: "y"}}})
+	rep := c.Report(DefaultPreamble(), "")
+	if len(rep.Todos) != 1 || rep.Todos[0].GroupKey != "pass2.cmake" {
+		t.Fatalf("Reset should leave only the final pass; got %+v", rep.Todos)
+	}
+	var nilc *Collector
+	nilc.Reset() // must not panic
+}
+
 func TestReport_NilCollector(t *testing.T) {
 	var c *Collector
 	rep := c.Report(DefaultPreamble(), "v1")

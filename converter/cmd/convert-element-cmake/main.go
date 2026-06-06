@@ -475,6 +475,12 @@ func run(a cli.Args) error {
 		}
 	}
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
+		// Reset the todos collector each pass: ToIR can run more than once
+		// (two-pass genex / stamp recovery) against the same collector, and
+		// the producers Add on every pass. Resetting first means the report
+		// reflects only the final pass's result rather than accumulating
+		// duplicate entries across passes.
+		todosCollector.Reset()
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
@@ -844,7 +850,13 @@ func run(a cli.Args) error {
 			return fmt.Errorf("--conversion-todos-preamble %s: %w", a.ConversionTodosPreamble, perr)
 		}
 		report := todosCollector.Report(pre, "")
-		body, _ := json.MarshalIndent(report, "", "  ")
+		body, merr := json.MarshalIndent(report, "", "  ")
+		if merr != nil {
+			// Evidence is map[string]any; a producer adding a
+			// non-marshalable value should fail loudly, not write a
+			// truncated/invalid report.
+			return fmt.Errorf("marshal conversion-todos report: %w", merr)
+		}
 		if err := os.MkdirAll(filepath.Dir(a.ConversionTodosReport), 0o755); err != nil {
 			return err
 		}

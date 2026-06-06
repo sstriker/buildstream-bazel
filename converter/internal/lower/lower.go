@@ -1548,7 +1548,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.
-	emitCMakePTestTodos(opts.Todos, opts.CTest, cc.Tests)
+	emitCMakePTestTodos(opts.Todos, opts.CTest, cc.Tests, opts.HostSourceRoot, opts.BuildDir)
 	// Surface install(SCRIPT) / install(CODE) directives. These run
 	// cmake script code at install time and have no Bazel
 	// analogue — the converter drops them silently. The warning

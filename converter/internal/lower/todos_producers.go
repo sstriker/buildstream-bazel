@@ -27,7 +27,7 @@ import (
 // reachable only by re-authoring the harness.
 //
 // No-op on a nil collector or absent test registry.
-func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests []ir.Target) {
+func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests []ir.Target, sourceRoot, buildDir string) {
 	if c == nil || reg == nil {
 		return
 	}
@@ -46,7 +46,7 @@ func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests [
 			continue
 		}
 		script := cmakeScriptArg(tst.Args)
-		key := cmakePTestGroupKey(tst.Target, script)
+		key := cmakePTestGroupKey(tst.Target, script, sourceRoot)
 		g := byUnit[key]
 		if g == nil {
 			g = &group{script: script}
@@ -65,9 +65,15 @@ func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests [
 		invocations := make([][]string, 0, len(tests))
 		commands := map[string]bool{}
 		for _, tst := range tests {
-			anchors = append(anchors, todos.Anchor{Construct: addTestConstruct(tst)})
+			// Normalize recorded paths so the report doesn't leak (and churn
+			// on) the converter's transient build-dir — cmake bakes the
+			// $<TARGET_FILE:t> resolution as an absolute build-dir path into
+			// add_test args. <BUILD>/<SRC> tokens keep the report
+			// byte-identical across independent configures and portable.
+			nargs := normalizeReportPaths(tst.Args, sourceRoot, buildDir)
+			anchors = append(anchors, todos.Anchor{Construct: addTestConstruct(tst, nargs)})
 			names = append(names, tst.Name)
-			invocations = append(invocations, append([]string{}, tst.Args...))
+			invocations = append(invocations, nargs)
 			if tst.Target != "" {
 				commands[tst.Target] = true
 			}
@@ -77,7 +83,7 @@ func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests [
 			"invocations": invocations,
 		}
 		if g.script != "" {
-			evidence["script"] = g.script
+			evidence["script"] = normalizeReportPath(g.script, sourceRoot, buildDir)
 		}
 		if len(commands) > 0 {
 			cmds := make([]string, 0, len(commands))
@@ -124,12 +130,21 @@ func cmakeScriptArg(args []string) string {
 	return ""
 }
 
-// cmakePTestGroupKey derives the shared-unit key for a cmake-p-test todo:
-// the basename of the `-P` script when present (stable across machines,
-// unlike the absolute path the codemodel records, and distinct per
-// script), else the COMMAND target, else a stable placeholder.
-func cmakePTestGroupKey(target, script string) string {
+// cmakePTestGroupKey derives the shared-unit key for a cmake-p-test todo.
+// For a `-P` script it is the script path made relative to the source
+// root — checkout-stable (unlike the absolute path the codemodel records)
+// AND directory-distinct, so two runners with the same basename in
+// different dirs (tests/run.cmake vs tools/run.cmake) don't collapse to
+// one id. Falls back to the basename when the script isn't under the
+// source root, then to the COMMAND target, then a stable placeholder.
+// Path-based, never line-based, so the id honors the line-free guarantee.
+func cmakePTestGroupKey(target, script, sourceRoot string) string {
 	if script != "" {
+		if sourceRoot != "" {
+			if rel, err := filepath.Rel(sourceRoot, script); err == nil && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+				return filepath.ToSlash(rel)
+			}
+		}
 		return filepath.Base(script)
 	}
 	if target != "" {
@@ -139,10 +154,11 @@ func cmakePTestGroupKey(target, script string) string {
 }
 
 // addTestConstruct reconstructs a representative add_test(...) call for
-// the todo anchor's construct text. The ctest registry doesn't carry a
+// the todo anchor's construct text from the test's name/target and its
+// already-path-normalized args. The ctest registry doesn't carry a
 // backtrace, so anchors are synthesized (file/line left empty) — the
 // construct text is the locating signal.
-func addTestConstruct(t ctest.Test) string {
+func addTestConstruct(t ctest.Test, normArgs []string) string {
 	var b strings.Builder
 	b.WriteString("add_test(NAME ")
 	b.WriteString(t.Name)
@@ -150,12 +166,59 @@ func addTestConstruct(t ctest.Test) string {
 	if t.Target != "" {
 		b.WriteString(t.Target)
 	}
-	for _, a := range t.Args {
+	for _, a := range normArgs {
 		b.WriteByte(' ')
 		b.WriteString(a)
 	}
 	b.WriteString(")")
 	return b.String()
+}
+
+// normalizeReportPaths applies normalizeReportPath to each arg.
+func normalizeReportPaths(args []string, sourceRoot, buildDir string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = normalizeReportPath(a, sourceRoot, buildDir)
+	}
+	return out
+}
+
+// normalizeReportPath rewrites an absolute path that falls under the
+// converter's build dir or source root to a stable "<BUILD>/…" / "<SRC>/…"
+// token, so recorded args don't leak the transient build-dir (which would
+// break byte-identical-across-configures determinism) or a machine-
+// specific source path. Handles both a bare path arg and the value of a
+// "-DKEY=<path>" arg. Build dir is checked first since it may itself sit
+// under the source root. A non-path arg is returned unchanged.
+func normalizeReportPath(arg, sourceRoot, buildDir string) string {
+	key, val, hasEq := strings.Cut(arg, "=")
+	target := arg
+	if hasEq {
+		target = val
+	}
+	norm := target
+	if buildDir != "" && pathHasPrefix(target, buildDir) {
+		norm = "<BUILD>" + filepath.ToSlash(target[len(buildDir):])
+	} else if sourceRoot != "" && pathHasPrefix(target, sourceRoot) {
+		norm = "<SRC>" + filepath.ToSlash(target[len(sourceRoot):])
+	}
+	if norm == target {
+		return arg
+	}
+	if hasEq {
+		return key + "=" + norm
+	}
+	return norm
+}
+
+// pathHasPrefix reports whether p is prefix itself or lies under it
+// (prefix + path separator), avoiding false matches like "/a/bc" under
+// "/a/b".
+func pathHasPrefix(p, prefix string) bool {
+	if p == prefix {
+		return true
+	}
+	return strings.HasPrefix(p, prefix+string(filepath.Separator))
 }
 
 // emitInternalDropTodos records the cmake command edges the
@@ -292,15 +355,20 @@ func emitInstallScriptTodos(c *todos.Collector, r *fileapi.Reply) {
 }
 
 // installScriptGroupKey derives the fold key for an install(SCRIPT) /
-// install(CODE) todo: the (site, scriptFile) pair when available, else
+// install(CODE) todo: the (file, scriptFile) pair when available, else
 // the kind so siteless directives fold together deterministically rather
-// than colliding on identical (kind, group_key) ids.
+// than colliding on identical (kind, group_key) ids. The site's LINE is
+// deliberately dropped — ids are hash(kind, group_key) and must stay
+// line-free, so an edit that shifts a line can't churn the id (the line
+// survives on the anchor, which is informational). Multiple directives in
+// the same file then fold into one todo with multiple anchors.
 func installScriptGroupKey(kind, scriptFile, site string) string {
+	file, _ := splitSite(site)
 	switch {
-	case site != "" && scriptFile != "":
-		return site + "|" + scriptFile
-	case site != "":
-		return site
+	case file != "" && scriptFile != "":
+		return file + "|" + scriptFile
+	case file != "":
+		return file
 	case scriptFile != "":
 		return scriptFile
 	default:

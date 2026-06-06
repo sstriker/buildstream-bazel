@@ -3,6 +3,7 @@ package lower
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
@@ -31,13 +32,13 @@ add_test([=[unit]=] "/build/unit_test")
 	c := todos.New()
 	// "unit" was emitted as a cc_test; the cmake -P tests were not.
 	emitted := []ir.Target{{Name: "unit"}}
-	emitCMakePTestTodos(c, reg, emitted)
+	emitCMakePTestTodos(c, reg, emitted, "/proj", "/build")
 
 	rep := c.Report(todos.DefaultPreamble(), "")
 	if len(rep.Todos) != 2 {
 		t.Fatalf("expected 2 todos (one per -P script), got %d: %+v", len(rep.Todos), rep.Todos)
 	}
-	// Sorted by group_key (basename): compat.cmake before run_test.cmake.
+	// Sorted by group_key (source-relative): compat.cmake before run_test.cmake.
 	compat, runTest := rep.Todos[0], rep.Todos[1]
 	if compat.GroupKey != "compat.cmake" || runTest.GroupKey != "run_test.cmake" {
 		t.Fatalf("group keys = %q, %q; want compat.cmake, run_test.cmake", compat.GroupKey, runTest.GroupKey)
@@ -48,9 +49,9 @@ add_test([=[unit]=] "/build/unit_test")
 	if compat.ID == runTest.ID || compat.ID == "" {
 		t.Errorf("distinct scripts must have distinct ids: %q vs %q", compat.ID, runTest.ID)
 	}
-	// Evidence carries the full script path + the driver command.
-	if runTest.Evidence["script"] != "/proj/run_test.cmake" {
-		t.Errorf("script evidence = %v; want /proj/run_test.cmake", runTest.Evidence["script"])
+	// Evidence carries the source-normalized script path + the driver command.
+	if runTest.Evidence["script"] != "<SRC>/run_test.cmake" {
+		t.Errorf("script evidence = %v; want <SRC>/run_test.cmake", runTest.Evidence["script"])
 	}
 	if cmds, ok := runTest.Evidence["command"].([]string); !ok || len(cmds) != 1 || cmds[0] != "cmake" {
 		t.Errorf("command evidence = %v; want [cmake]", runTest.Evidence["command"])
@@ -70,7 +71,7 @@ add_test([=[harness-2]=] "/build/harness" "case2")
 		t.Fatalf("ctest.Parse: %v", err)
 	}
 	c := todos.New()
-	emitCMakePTestTodos(c, reg, nil)
+	emitCMakePTestTodos(c, reg, nil, "", "")
 	rep := c.Report(todos.DefaultPreamble(), "")
 	if len(rep.Todos) != 1 || rep.Todos[0].GroupKey != "harness" {
 		t.Fatalf("expected one todo grouped by target 'harness'; got %+v", rep.Todos)
@@ -81,7 +82,71 @@ add_test([=[harness-2]=] "/build/harness" "case2")
 }
 
 func TestEmitCMakePTestTodos_NilCollector_NoPanic(t *testing.T) {
-	emitCMakePTestTodos(nil, nil, nil) // must not panic
+	emitCMakePTestTodos(nil, nil, nil, "", "") // must not panic
+}
+
+// TestEmitCMakePTestTodos_SameBasenameDifferentDir locks in that two
+// runners sharing a basename but in different directories stay distinct
+// todos (source-relative group key), not collapsed into one id.
+func TestEmitCMakePTestTodos_SameBasenameDifferentDir(t *testing.T) {
+	dir := t.TempDir()
+	body := `add_test([=[a]=] "/usr/bin/cmake" "-P" "/proj/tests/run.cmake" "x")
+add_test([=[b]=] "/usr/bin/cmake" "-P" "/proj/tools/run.cmake" "y")
+`
+	mustWriteFile(t, filepath.Join(dir, "CTestTestfile.cmake"), body)
+	reg, err := ctest.Parse(dir)
+	if err != nil {
+		t.Fatalf("ctest.Parse: %v", err)
+	}
+	c := todos.New()
+	emitCMakePTestTodos(c, reg, nil, "/proj", "/build")
+	rep := c.Report(todos.DefaultPreamble(), "")
+	if len(rep.Todos) != 2 {
+		t.Fatalf("same-basename runners in different dirs must stay 2 todos, got %d", len(rep.Todos))
+	}
+	if rep.Todos[0].GroupKey != "tests/run.cmake" || rep.Todos[1].GroupKey != "tools/run.cmake" {
+		t.Errorf("group keys = %q, %q; want tests/run.cmake, tools/run.cmake", rep.Todos[0].GroupKey, rep.Todos[1].GroupKey)
+	}
+	if rep.Todos[0].ID == rep.Todos[1].ID {
+		t.Error("distinct runners must have distinct ids")
+	}
+}
+
+// TestEmitCMakePTestTodos_NormalizesBuildDirPath is the determinism guard
+// for the common $<TARGET_FILE:t> shape: cmake bakes the resolved target
+// path (under the transient build dir) into add_test args. The report must
+// tokenize it to <BUILD>/… so it doesn't leak/churn on the random build
+// dir across configures.
+func TestEmitCMakePTestTodos_NormalizesBuildDirPath(t *testing.T) {
+	dir := t.TempDir()
+	body := `add_test([=[rt]=] "/usr/bin/cmake" "-DTOOL=/tmp/cmbuild-9999/revtool" "-DINPUT=/proj/testdata/x.txt" "-P" "/proj/run.cmake")
+`
+	mustWriteFile(t, filepath.Join(dir, "CTestTestfile.cmake"), body)
+	reg, err := ctest.Parse(dir)
+	if err != nil {
+		t.Fatalf("ctest.Parse: %v", err)
+	}
+	c := todos.New()
+	emitCMakePTestTodos(c, reg, nil, "/proj", "/tmp/cmbuild-9999")
+	rep := c.Report(todos.DefaultPreamble(), "")
+	td := rep.Todos[0]
+	invs, _ := td.Evidence["invocations"].([][]string)
+	if len(invs) != 1 {
+		t.Fatalf("expected 1 invocation, got %v", td.Evidence["invocations"])
+	}
+	joined := strings.Join(invs[0], " ")
+	if strings.Contains(joined, "/tmp/cmbuild-9999") {
+		t.Errorf("build-dir path leaked into invocation: %q", joined)
+	}
+	if !strings.Contains(joined, "-DTOOL=<BUILD>/revtool") {
+		t.Errorf("build-dir path not tokenized: %q", joined)
+	}
+	if !strings.Contains(joined, "-DINPUT=<SRC>/testdata/x.txt") {
+		t.Errorf("source path not tokenized: %q", joined)
+	}
+	if strings.Contains(td.Anchors[0].Construct, "/tmp/cmbuild-9999") {
+		t.Errorf("build-dir path leaked into construct: %q", td.Anchors[0].Construct)
+	}
 }
 
 // TestEmitInternalDropTodos_GroupsByKind checks one todo per drop kind,
