@@ -262,6 +262,43 @@ func TestEmitInstallScriptTodos_FoldsSitelessCode(t *testing.T) {
 	}
 }
 
+// TestEmitInstallScriptTodos_ReanchorsAbsoluteSite guards determinism for
+// the configure_file-generated-CMakeLists case: an absolute build-dir site
+// from the BacktraceGraph must be re-anchored to a workspace-relative path
+// so it doesn't leak into (and churn) the group_key / id / anchor.
+func TestEmitInstallScriptTodos_ReanchorsAbsoluteSite(t *testing.T) {
+	bg := fileapi.BacktraceGraph{
+		Commands: []string{"install"},
+		Files:    []string{"/tmp/cmbuild-xyz/generated/CMakeLists.txt"},
+		Nodes: []fileapi.BacktraceNode{
+			{File: 0},
+			{File: 0, Line: 12, Command: 0},
+		},
+	}
+	r := &fileapi.Reply{
+		Directories: map[string]fileapi.Directory{
+			"d": {
+				Paths:          fileapi.CodemodelPaths{Source: "/home/u/proj/src", Build: "/tmp/cmbuild-xyz"},
+				BacktraceGraph: bg,
+				Installers:     []fileapi.DirectoryInstaller{{Type: "code", Backtrace: 1}},
+			},
+		},
+	}
+	c := todos.New()
+	emitInstallScriptTodos(c, r)
+	rep := c.Report(todos.DefaultPreamble(), "")
+	td := rep.Todos[0]
+	if td.GroupKey != "generated/CMakeLists.txt" {
+		t.Errorf("group_key = %q; want re-anchored generated/CMakeLists.txt", td.GroupKey)
+	}
+	if strings.Contains(td.Anchors[0].File, "/tmp/cmbuild-xyz") {
+		t.Errorf("absolute build path leaked into anchor: %q", td.Anchors[0].File)
+	}
+	if td.Anchors[0].Line != 12 {
+		t.Errorf("anchor line = %d; want 12", td.Anchors[0].Line)
+	}
+}
+
 func TestEmitInstallScriptTodos_NilReply_NoOp(t *testing.T) {
 	c := todos.New()
 	emitInstallScriptTodos(c, nil)
