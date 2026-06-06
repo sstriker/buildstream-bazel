@@ -132,7 +132,7 @@ type standaloneTraceContext struct {
 // this pass drops — keyed by the edge's first output (or category when it has
 // none), valued by category (install / regen / cpack / dashboard / ide-stub)
 // — so the caller can surface an audit breadcrumb instead of dropping silently.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -388,7 +388,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// anchor pass strips buildDir prefixes from the cmd so
 		// the bare `bin/<tool>` form survives intact for the
 		// lookup.
-		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix)
+		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
 		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName)
 		// The tool-from-target lift hoisted the generator binary into
 		// `tools` and rewrote the cmd to $(location :tool); drop the
@@ -596,16 +596,23 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 		if o == "" {
 			continue
 		}
-		// Anchor each occurrence of o that isn't already prefixed by rp.
-		// A per-occurrence guard (vs a whole-cmd strings.Contains check)
-		// avoids a false "already anchored" skip when one out is a prefix
-		// of another — rp+"foo" is a substring of rp+"foo.d", so the old
-		// check skipped anchoring a still-literal "foo" — while the rp guard
-		// still blocks double-anchoring. Occurrences where o is a prefix of
-		// a longer path (e.g. a "<o>.d" depfile) stay anchored, as before.
+		// Anchor each occurrence of o that begins a path token. The guard
+		// is "the preceding byte is not '/'": an occurrence preceded by '/'
+		// sits in the MIDDLE of a longer path and must not be anchored —
+		// either it's already `$(RULEDIR)/<o>` (rp ends in '/', so this
+		// subsumes the old double-anchor guard), or it's a source input the
+		// strip already re-anchored to its exec-root form
+		// (`<bazelPackagePath>/…/<outdir>/<file>` — e.g. a tablegen `.td`
+		// living in the same subdir as a generated `.inc` output, where the
+		// output's parent-dir token is a substring of the source path).
+		// Injecting `$(RULEDIR)/` there would corrupt the source reference.
+		// Occurrences at a real token boundary stay anchored, including the
+		// `<o>.d` depfile (a right-extension of o, whose left edge is still a
+		// boundary) and joined-flag forms like `-I<outdir>` (preceded by 'I',
+		// not '/').
 		var b strings.Builder
 		for i := 0; i < len(cmd); {
-			if strings.HasPrefix(cmd[i:], o) && !(i >= len(rp) && cmd[i-len(rp):i] == rp) {
+			if strings.HasPrefix(cmd[i:], o) && (i == 0 || cmd[i-1] != '/') {
 				b.WriteString(rp)
 				b.WriteString(o)
 				i += len(o)
@@ -654,7 +661,13 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 // one of their own `-I` roots count as include-resolving codegen. A plain
 // genrule that passes `-I` for a compiler invocation doesn't match — its
 // input isn't resolved via the include path — so it's left untouched.
-func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
+//
+// bazelPackagePath is the element's exec-root landing package: source `-I`
+// roots in the rewritten cmd carry it as a prefix (rewriteGenruleCmd anchors
+// them to exec-root form), but the genrule's srcs and the on-disk source tree
+// are labelRoot-relative — so the prefix is stripped before resolving each
+// include against labelRoot. Empty bazelPackagePath leaves the roots as-is.
+func recordCodegenIncludeClosure(targets []ir.Target, labelRoot, bazelPackagePath string) {
 	if labelRoot == "" {
 		return
 	}
@@ -663,7 +676,7 @@ func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 		if t.Kind != ir.KindGenrule || t.GenruleCmd == "" {
 			continue
 		}
-		roots := genruleIncludeRoots(t.GenruleCmd)
+		roots := stripPackagePrefixFromRoots(genruleIncludeRoots(t.GenruleCmd), bazelPackagePath)
 		if len(roots) == 0 {
 			continue
 		}
@@ -689,6 +702,37 @@ func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 		sort.Strings(add)
 		t.Srcs = append(t.Srcs, add...)
 	}
+}
+
+// stripPackagePrefixFromRoots returns roots with a leading
+// "<bazelPackagePath>/" removed (and the bare package itself mapped to
+// "."), so exec-root-anchored source `-I` roots resolve against the
+// labelRoot-relative source tree on disk. Build-dir roots ($(RULEDIR)/…)
+// and roots that don't carry the prefix pass through unchanged; the result
+// is de-duplicated so a source root that collapses onto an existing
+// build-dir root doesn't double the work. Empty bazelPackagePath is a
+// pass-through.
+func stripPackagePrefixFromRoots(roots []string, bazelPackagePath string) []string {
+	if bazelPackagePath == "" || len(roots) == 0 {
+		return roots
+	}
+	pref := bazelPackagePath + "/"
+	seen := make(map[string]bool, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		switch {
+		case r == bazelPackagePath:
+			r = "."
+		case strings.HasPrefix(r, pref):
+			r = r[len(pref):]
+		}
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 // tdIncludeClosure returns the set of labelRoot-relative source files

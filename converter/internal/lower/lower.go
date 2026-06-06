@@ -1371,12 +1371,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				umbrellaPrefix = rel
 			}
 		}
-		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx, cc.FilteredInternalCmds, cc)
+		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, opts.BazelPackagePath, artifactToName, traceCtx, cc.FilteredInternalCmds, cc)
 		// Add the transitive `include "..."` closure of tablegen-shaped
 		// codegen genrules to their srcs (their `.td` deps live only in
 		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
 		// labelRoot the genrules' anchored `-I` paths resolve against.
-		recordCodegenIncludeClosure(stand, hostSrc)
+		recordCodegenIncludeClosure(stand, hostSrc, opts.BazelPackagePath)
 		// Fold cmake file(GLOB)/file(GLOB_RECURSE)-sourced genrule inputs
 		// back into build-time glob() filegroups (split-synthesized), so a
 		// globbing genrule's deps re-evaluate in project B. No-op when the
@@ -5654,7 +5654,21 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 // All rewrites are conservative — paths only re-anchor when they
 // start with the canonical anchor prefix + "/", so partial-match
 // hazards (e.g. `<buildDir>` vs `<buildDir>_other`) are avoided.
-func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
+//
+// bazelPackagePath is the repo-root-relative landing package of the
+// element (e.g. "elements/llvm"); when non-empty, source-tree paths
+// re-anchor to their EXEC-ROOT form (`<bazelPackagePath>/<umbrella>/<rel>`)
+// rather than the bare labelRoot-relative form. A genrule cmd runs at the
+// Bazel exec root, so a source input or `-I` root referenced by a bare
+// relative path (`include/...`) would resolve against the exec root, not
+// the element's package — wrong for any element that lands under a
+// sub-package. The exec-root anchor is package-location-independent: it
+// stays correct no matter which sub-package split moves the genrule into
+// (split only re-relativizes the `$(RULEDIR)/<out>` build-output tokens,
+// never these source paths). Empty bazelPackagePath (the fidelity harness
+// converting AT the workspace root) preserves the prior labelRoot-relative
+// behavior exactly.
+func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string) string {
 	if cmd == "" {
 		return cmd
 	}
@@ -5714,10 +5728,20 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 	// (build, → include); a post-pass couldn't tell them apart. Empty
 	// umbrella (the non-promoted case) preserves the prior strip-to-""
 	// behavior exactly.
+	// Source-tree paths re-anchor to their exec-root form: the element's
+	// landing package (bazelPackagePath) joined with the cmakeSrc-relative-
+	// to-labelRoot umbrella segment. With an empty bazelPackagePath this
+	// collapses to the umbrella-only form (the fidelity harness, converting
+	// at the workspace root); with an empty umbrella it's just the package
+	// (the common element-under-elements/<name> case, e.g. LLVM).
+	srcBase := umbrellaPrefix
+	if bazelPackagePath != "" {
+		srcBase = filepath.ToSlash(filepath.Join(bazelPackagePath, umbrellaPrefix))
+	}
 	srcRepl, srcBareRepl := "", "."
-	if umbrellaPrefix != "" {
-		srcRepl = umbrellaPrefix + "/"
-		srcBareRepl = umbrellaPrefix
+	if srcBase != "" {
+		srcRepl = srcBase + "/"
+		srcBareRepl = srcBase
 	}
 	for _, a := range []struct{ anchor, repl, bareRepl string }{
 		{cmakeSrc, srcRepl, srcBareRepl},

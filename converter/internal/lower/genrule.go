@@ -435,7 +435,13 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	srcs := genruleSrcs(b, cmakeSrc, buildDir, "")
 	tags := genruleTags(cmd, b, g)
 
-	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "")
+	// recoverGenrule predates the umbrella/exec-root anchoring and has
+	// neither labelRoot nor bazelPackagePath in scope; pass "" for both so
+	// its source-relative srcs/cmd shape is unchanged. The exec-root
+	// anchoring lives on the standalone-custom-command path
+	// (lowerStandaloneCustomCommands), which is where LLVM's tablegen
+	// genrules surface.
+	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", "")
 	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName)
 	// A recovered genrule whose output is in a SUBDIR (glog's
 	// empty-placeholder source `CMakeFiles/glog.cc`, a `cmake -E touch`
