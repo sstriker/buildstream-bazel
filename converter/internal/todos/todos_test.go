@@ -68,7 +68,10 @@ func TestReport_ByteIdenticalAcrossRuns(t *testing.T) {
 		c.Add(Todo{Kind: "cmake-internal-drop", GroupKey: "install", Anchors: []Anchor{{Construct: "install: x"}}, Evidence: map[string]any{"drop_kind": "install", "outputs": []string{"x", "y"}}})
 		c.Add(Todo{Kind: "cmake-p-test", GroupKey: "//:cli", Anchors: []Anchor{{Construct: "add_test(...)"}}})
 		rep := c.Report(DefaultPreamble(), "")
-		b, _ := json.MarshalIndent(rep, "", "  ")
+		b, err := json.MarshalIndent(rep, "", "  ")
+		if err != nil {
+			t.Fatalf("MarshalIndent: %v", err)
+		}
 		return b
 	}
 	first := string(build())
@@ -81,7 +84,10 @@ func TestReport_ByteIdenticalAcrossRuns(t *testing.T) {
 func TestReport_EmptyEmitsArray(t *testing.T) {
 	c := New()
 	rep := c.Report(DefaultPreamble(), "")
-	b, _ := json.Marshal(rep)
+	b, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
 	if !strings.Contains(string(b), `"todos":[]`) {
 		t.Errorf("empty report should marshal todos as []; got %s", b)
 	}

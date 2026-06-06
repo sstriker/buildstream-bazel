@@ -177,11 +177,8 @@ func (c *Collector) Report(pre Preamble, toolVersion string) Report {
 		}
 		return items[a].GroupKey < items[b].GroupKey
 	})
-	if items == nil {
-		// Coerce to an empty slice so json.Marshal emits `[]`, not
-		// `null` — consumers iterate the array unconditionally.
-		items = []Todo{}
-	}
+	// items is make()'d above (never nil), so it marshals as `[]` when
+	// empty — consumers can iterate the array unconditionally.
 	return Report{
 		Version:     SchemaVersion,
 		ToolVersion: toolVersion,
