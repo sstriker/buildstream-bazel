@@ -645,6 +645,20 @@ transition cleanly.
   host-coupling is a conscious choice. The manifest is already the hermetic
   channel (abseil→googletest); this item is about not silently bypassing it.
 
+- **Stage a genrule's invoked-script inputs.** A recovered/standalone genrule
+  whose cmd runs an interpreter over a source-tree script (`perl scripts/foo`,
+  `python tools/gen.py`, `sh scripts/x.sh`) needs that script — and the inputs
+  it reads — in the rule's `srcs`, or Bazel's sandbox can't open it at action
+  time (`Can't open perl script "…/cd2nroff": No such file`). curl surfaces
+  this: its `docs/` manpage genrules (`cd2nroff`/`managen`/`mkhelp.pl` over
+  ~300 `.md` files) and its perl `runtests.pl` **test** harness all fail this
+  way, so the curl lens currently scopes docs+tests off (`curl.conf`).
+  Implement: scan the genrule cmd for an interpreter+script invocation, resolve
+  the script (and, where tractable, its read inputs — cf. the `--cmake-script-
+  trace` read-path augmentation) against the source tree, and add them to
+  `srcs`. Unblocks building docs/test surfaces faithfully instead of scoping
+  them away. See docs/survey-corpus.md (curl row).
+
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
   `toolchain.Model` and the emit sets `cc_toolchain_config`'s
