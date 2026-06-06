@@ -267,6 +267,23 @@ type splitPlan struct {
 	// codegen sources (driver/<n>/CMakeFiles/<routine>.c, written by write_file)
 	// it rolls into the root include-root header lib.
 	genOuts map[string]bool
+
+	// genOutProducer maps a generated output path (genrule out / write_file out)
+	// to the NAME of the rule that produces it, so a cross-package consumer of
+	// that output can publicize the producer (see publicize).
+	genOutProducer map[string]string
+
+	// publicize is the set of rule names whose visibility must be forced to
+	// public because a generated output of theirs is referenced directly (in
+	// srcs) by a consumer in a DIFFERENT package. A genrule's outputs inherit
+	// the genrule's visibility, so a private producer (the converter's default
+	// for standalone custom commands) makes its output unreachable from another
+	// package — e.g. curl's `tool_hugehelp.c` genrule in //src consumes the
+	// `docs/cmdline-opts/curl.txt` output of a genrule in the root package.
+	// The generated-HEADER (.inc) path doesn't need this: it's consumed via a
+	// same-package `generated_includes` wrapper (itself public), not by a direct
+	// cross-package output reference.
+	publicize map[string]bool
 }
 
 // deepestPkg returns the longest sub-package directory that owns path p
@@ -291,6 +308,23 @@ func (p *splitPlan) targetDir(name string) string {
 		return d
 	}
 	return ""
+}
+
+// landingDir returns the Bazel package dir a target is placed in by the emit
+// loop: its declaring dir, overridden (local regime) to the package owning its
+// primary generated output so the out is package-local. Mirrors the dir
+// computation in EmitSplit's partition loop; used by the cross-package
+// gen-output publicize pre-pass.
+func (p *splitPlan) landingDir(t ir.Target, local bool) string {
+	dir := p.targetDir(t.Name)
+	if local {
+		if out := primaryGeneratedOutput(t); out != "" {
+			if od := p.deepestPkg(out); od != "" {
+				dir = od
+			}
+		}
+	}
+	return dir
 }
 
 // headerLibTarget builds the synthesized header cc_library for an
@@ -668,10 +702,12 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 // planSplit computes the split layout from a lowered package.
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
-		sub:        map[string]string{},
-		headerLibs: map[string]string{},
-		headersIn:  map[string][]string{},
-		genOuts:    map[string]bool{},
+		sub:            map[string]string{},
+		headerLibs:     map[string]string{},
+		headersIn:      map[string][]string{},
+		genOuts:        map[string]bool{},
+		genOutProducer: map[string]string{},
+		publicize:      map[string]bool{},
 	}
 	for k, v := range pkg.SubPackages {
 		p.sub[k] = v
@@ -683,12 +719,13 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	for _, t := range pkg.Targets {
 		for _, o := range t.GenruleOuts {
 			p.genOuts[o] = true
+			p.genOutProducer[o] = t.Name
 		}
 		if t.WriteFileOut != "" {
 			p.genOuts[t.WriteFileOut] = true
+			p.genOutProducer[t.WriteFileOut] = t.Name
 		}
 	}
-
 	// Collect every include-root dir and the union of every target's
 	// headers so header-library synthesis can glob the right files.
 	incRoots := map[string]struct{}{}
@@ -768,6 +805,27 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		}
 		return p.pkgs[i] < p.pkgs[j]
 	})
+
+	// Publicize any producer whose generated output is referenced directly (in
+	// srcs) by a consumer landing in a DIFFERENT package — the producer's
+	// private default would make that output unreachable cross-package (Bazel
+	// "target X is not visible from Y", e.g. curl's `tool_hugehelp.c` genrule in
+	// //src consuming the `docs/cmdline-opts/curl.txt` output of a root-package
+	// genrule). Needs p.pkgs (deepestPkg / landingDir), hence after the pkgSet
+	// build. Computed before the emit loop so a producer processed before its
+	// consumer still gets the bump.
+	for _, t := range pkg.Targets {
+		consumerDir := p.landingDir(t, local)
+		for _, s := range t.Srcs {
+			prod, ok := p.genOutProducer[s]
+			if !ok || prod == t.Name {
+				continue
+			}
+			if p.deepestPkg(s) != consumerDir {
+				p.publicize[prod] = true
+			}
+		}
+	}
 
 	// Root-walk header-lib synthesis (see splitPlan.rootHdrLibs). Collect the
 	// union of every RootInclude target's headers and bucket them by owning
@@ -1207,6 +1265,12 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	if local && t.RootInclude && dir != "" && rt.IncludePrefix == "" &&
 		allPackageLocalHdrs(rt.Hdrs) && allPackageLocalHdrs(rt.TextualHdrs) {
 		rt.IncludePrefix = dir
+	}
+	// A producer whose generated output is consumed cross-package (see
+	// plan.publicize) must be public so the output is reachable from the
+	// consumer's package — its outputs inherit this visibility.
+	if plan.publicize[t.Name] {
+		rt.Visibility = []string{"//visibility:public"}
 	}
 	return rt
 }
