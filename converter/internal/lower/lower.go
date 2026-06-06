@@ -3720,6 +3720,19 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 	sharedIncludes := append([]string(nil), irt.Includes...)
 	wrapperSrcs := irt.Srcs
 
+	// Snapshot the wrapper's deps BEFORE the loop (which appends the
+	// sub-targets themselves to subDeps). These are the real compile/link
+	// deps the dep-wiring passes resolved for the target — codemodel
+	// Dependencies, find_package imports (absl, libprotobuf, …), the
+	// trace-recovered static-lib deps. The sub-libraries are what actually
+	// COMPILE the sources, so they need these deps to find the deps'
+	// headers (protobuf's protoc-gen-upb_cxx compiles wire_format_lite.cc,
+	// which #includes absl/base/casts.h from @abseil-cpp//absl/base:base).
+	// The wrapper keeps them too (line below appends subDeps), so its own
+	// consumers still get the PUBLIC deps transitively.
+	sharedDeps := append([]string(nil), irt.Deps...)
+	sharedImplDeps := append([]string(nil), irt.ImplementationDeps...)
+
 	var subDeps []string
 	// Track each emitted sub's language so a cross-language linkage pass below
 	// can wire C/C++ → asm/fortran deps (the subStart marks where this call's
@@ -3807,15 +3820,32 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		if cg.Language == "CUDA" {
 			subKind = ir.KindCudaLibrary
 		}
+		// Propagate the wrapper's deps to the sub so its sources compile
+		// (and link) against the deps' headers/symbols. A sub that accepts
+		// implementation_deps (cc_library) keeps the wrapper's PRIVATE /
+		// PUBLIC split; one that doesn't (cc_binary sub of a mixed-language
+		// cc_binary wrapper) folds both into deps. The sub is
+		// //visibility:private and only the wrapper consumes it, so an
+		// over-broad sub `deps` never leaks to an external consumer — the
+		// wrapper carries the faithful split for ITS consumers.
+		subDepsForSub := append([]string(nil), sharedDeps...)
+		var subImplDeps []string
+		if kindAllowsImplementationDeps(subKind) {
+			subImplDeps = append([]string(nil), sharedImplDeps...)
+		} else {
+			subDepsForSub = append(subDepsForSub, sharedImplDeps...)
+		}
 		sub := ir.Target{
-			Name:     subName,
-			Kind:     subKind,
-			Srcs:     subSrcs,
-			Hdrs:     subHdrs,
-			Includes: sharedIncludes,
-			Copts:    copts,
-			Defines:  defs,
-			Tags:     subTags,
+			Name:               subName,
+			Kind:               subKind,
+			Srcs:               subSrcs,
+			Hdrs:               subHdrs,
+			Includes:           sharedIncludes,
+			Copts:              copts,
+			Defines:            defs,
+			Tags:               subTags,
+			Deps:               subDepsForSub,
+			ImplementationDeps: subImplDeps,
 			// Split sub-libraries are INTERNAL object-libraries (alwayslink)
 			// that exist only to be statically absorbed into the deps-only
 			// wrapper — never linked standalone. Force linkstatic so Bazel
