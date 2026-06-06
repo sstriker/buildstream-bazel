@@ -646,7 +646,22 @@ transition cleanly.
   both, so a shared-configured project converts faithfully instead of being
   silently downgraded). Bazel's `cc_shared_library` constraints to honor: each
   `cc_library` is owned by at most one shared lib in the graph, plus the
-  `exports`/`dynamic_deps` wiring.
+  `exports`/`dynamic_deps` wiring. **After this lands, re-validate the whole
+  corpus** under both link models — the SHARED-defaulting members especially
+  (curl / brotli / libxml2 / OpenBLAS), which today only build because the lens
+  forces static; the shared variant has never actually been built, so each needs
+  a fresh build+run pass once `cc_shared_library` exists.
+
+- **Final corpus validation pass before declaring the converter "done."**
+  Independent of any single feature: when the corpus is considered complete, do
+  one clean-room full pass — every build-lens member fetched fresh, converted
+  from scratch (no stale `build/bin` binary, no warm out-dir), `bazel build
+  //...` green, AND the lens's run/execution checks green (the unit-test-style
+  "does it actually run" probes, e.g. curl's unit tests passing) — on a machine
+  with enough disk for the large members (LLVM `TOOLS=ON`, VTK) so nothing is
+  scoped out for disk. Capture the result as the corpus's "all green, no cmake"
+  baseline. This is the acceptance gate, distinct from the per-change
+  re-validation the dev loop already does.
 
 - **Make the host-system-library fallback EXPLICIT (hermeticity boundary).**
   When a `find_package`/`target_link_libraries` link fragment resolves to a

@@ -253,6 +253,26 @@ local `rules_buildstream_bazel`), and runs `bazel build //...`. Needs
 bazel/bazelisk on `$PATH`; absent → `skip(no-bazel)`.
 `SURVEY_BAZEL_BUILD_TIMEOUT` (default 900s) bounds each build.
 
+**The lens configures cmake STATIC** (`--cmake-define BUILD_SHARED_LIBS=OFF`,
+applied globally before any per-project `CONVERT_FLAGS`). Bazel's `cc_library`
+is always static-linked into a `cc_binary`, and the converter currently lowers
+`SHARED_LIBRARY` → `cc_library` (no `cc_shared_library` yet — see ROADMAP), so
+the lens must configure static for cmake's model to match what Bazel actually
+links. A SHARED configure silently diverges — the converter collapses the `.so`
+to static, and any project that compiles differently for shared vs static
+builds wrong: curl's `tests/libtest` recompiles the curlx utility sources *only*
+under SHARED ("part of the libcurl static lib — do not compile/link them again"
+when static), so under a SHARED configure Bazel ends up with two copies of each
+(the test's + the static-linked libcurl's) and the test binary SIGSEGVs at
+`base+0` before `main`. Static configure makes cmake's own static/shared
+conditionals fire the way Bazel links. The corpus has several SHARED-defaulting
+members (curl / brotli / libxml2 set `option(BUILD_SHARED_LIBS ON)`; OpenBLAS
+declares an explicit `_shared` target) that were silently static-collapsed
+before this default; faithfully building the *shared* variant is the tracked
+`cc_shared_library` ROADMAP item. A project that genuinely needs the shared
+configure can re-enable it in its `.conf` `CONVERT_FLAGS` (a later cmake `-D`
+wins).
+
 The `build` column tokens: `ok` / `FAIL` (built or not), or a `skip(<why>)`
 that didn't attempt the build — `skip(no-bazel)` (no bazel on `$PATH`),
 `skip(rej)` (the project surveys with rejections; the lens contract is to skip

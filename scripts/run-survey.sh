@@ -265,6 +265,19 @@ try_bazel_build() {
     set -- --source-root "$_bb_src"
     [ -n "$_bb_bt" ] && set -- "$@" "$_bb_bt"
     [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
+    # Global build-lens default: configure cmake STATIC. Bazel's cc_library is
+    # always static-linked into a cc_binary, so the build lens (which lowers
+    # SHARED_LIBRARY → cc_library today — see ROADMAP's cc_shared_library item)
+    # must configure cmake static for its model to match what Bazel actually
+    # links. A SHARED configure silently diverges: the converter collapses the
+    # .so to static, and a project that compiles differently for shared vs static
+    # (curl's tests recompile the curlx utility sources only under SHARED, then
+    # Bazel ALSO static-links libcurl → duplicate objects → the test binary
+    # SIGSEGVs) builds wrong. Forcing BUILD_SHARED_LIBS=OFF makes cmake's own
+    # static/shared conditionals fire the way Bazel links. Placed BEFORE
+    # CONVERT_FLAGS so a project can still override (a later cmake -D wins) if it
+    # genuinely needs the shared configure. See docs/survey-corpus.md.
+    set -- "$@" --cmake-define BUILD_SHARED_LIBS=OFF
     # CONVERT_FLAGS from the per-project .conf (word-split intentional: it's a
     # flag list authored in the conf, e.g. `--cmake-define CMAKE_CXX_FLAGS=-w`).
     # shellcheck disable=SC2086
