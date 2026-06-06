@@ -1282,3 +1282,27 @@ flow, all in one place) and `docs/codebase-map.md` (the developer-facing
 repo tour). `ROADMAP.md` tracks only what's *left*; git history is the
 record of what shipped.
 
+
+### protobuf finish — static-lib find_package header wiring (294/321)
+
+protobuf converts 0-rej and builds **294/321** with the abseil manifest +
+link_paths (78 @abseil deps on the LINKING targets: libprotobuf, libprotoc,
+protoc — their `.a` link fragments path-attribute to @abseil-cpp). The remaining
+failures are **static-archive libraries** (libprotobuf-lite) that `#include`
+absl headers (absl_check.h, cord.h, …) but get NO absl wiring:
+- a static lib has no link step → no `.a` link fragments → nothing for
+  link_paths to attribute;
+- find_package IMPORTED targets aren't in the codemodel's `t.Dependencies`
+  (they're external), so the cmake_target name-match (lower.go ~2925) never sees
+  them;
+- abseil's host include dir (`/tmp/absl-install/include`) is ELIDED as a
+  host-prefix include, so the headers aren't even on `-I`.
+So libprotobuf-lite compiles with zero absl — `No such file`.
+
+The hermetic fix: wire find_package imported deps onto STATIC libs that include
+their headers — source the deps from the TRACE (`target_link_libraries(lib
+${protobuf_ABSL_USED_TARGETS})` expands in trace-expand) since the codemodel
+omits them for archives, and route through the imports manifest → @abseil-cpp
+(header carriers). A non-hermetic shortcut (NOT "legitimate"): don't elide the
+abseil host include so headers resolve from /tmp/absl-install — rejected, that's
+a host dep on a hand-installed abseil, not reproducible.
