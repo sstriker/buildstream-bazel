@@ -324,6 +324,40 @@ converter fix against a single project, keep a *persistent* workspace + bazel
 `make converter` the loop is a few seconds (warm cache) instead of a cold
 fetch + full analysis. Drop the workspace when done (the bazel cache is large).
 
+### Large-project (LLVM-scale) build-lens playbook
+
+LLVM (~2,400 actions, a ~14G build tree, ~83 tool executables) doesn't fit
+the naive "`bazel build //...` and wait" loop on the web sandbox. The recipe
+that drove it green:
+
+- **Disk is the binding constraint, not CPU.** The sandbox's writable layer is
+  ~38G; LLVM's library tree alone is ~14G. **Do NOT pass `--disk_cache`** for a
+  project this size — it stores a *second* copy of every action output and fills
+  the disk mid-link (the build dies with a misleading `as: … .o: No such file
+  or directory`, which is ENOSPC, not a compile error). The out-dir's own
+  `--output_user_root` action cache is enough; put `SURVEY_OUT_DIR` under
+  **`/home`** (a `/tmp` reclaim spares `/home`) so a reclaim mid-build resumes
+  from cache rather than recompiling.
+- **A disk-full failure poisons resume.** When the disk hits 100%, bazel can't
+  write its action cache either, so a "resume" rebuilds from scratch. Keep
+  enough headroom that the build never fills the disk and the warm server +
+  `.bzcache` resume near-instantly.
+- **Many large executables → cycle, don't accumulate.** A full `//...` with all
+  of LLVM's tools links dozens of static executables that won't coexist on
+  ~38G. Build them **one batch at a time, deleting each tool's outputs
+  (`bazel-bin/<pkg>/<tool>` + `_objs/<name>`) before the next batch**, so disk
+  stays flat. This proves every tool builds/runs without ever holding them all
+  at once. (That's why `llvm.conf` keeps `LLVM_INCLUDE_TOOLS=OFF` for the
+  committed lens — a disk scoping, not a converter gap; see the llvm row.)
+- **Bump the lens timeout.** `SURVEY_BAZEL_BUILD_TIMEOUT` defaults low; a cold
+  LLVM build needs ~40-50 min on 4 cores (`-c fastbuild`, already `-O0`).
+- **Always rebuild the converter from source.** `run-survey.sh` now `go build`s
+  it every run; never trust a `build/bin` binary left over from an earlier
+  checkout (a stale one silently drops fixes the source already has).
+- **Watch progress with a time-based poll of the log**, not a `grep` for exact
+  `[N / total]` milestones (bazel's counter jumps and skips round numbers) and
+  not a `pgrep` whose pattern matches the monitor's own command line.
+
 ## The corpus
 
 The corpus is curated for **complementary high-signal coverage**, not
