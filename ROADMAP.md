@@ -626,6 +626,22 @@ transition cleanly.
 
 ## Next
 
+- **Stage headers from a PRIVATE cross-package include dir.** A target with
+  `target_include_directories(PRIVATE <dir-in-another-package>)` lowers the dir
+  to a `-I<exec-root-dir>` copt (correctly anchored), but the HEADERS under that
+  dir aren't declared as inputs — and a `-I` doesn't stage files in Bazel's
+  sandbox, so a bare `#include "test/x.h"` fails "No such file" even with the
+  `-I` present. Blocks mbedtls: its always-on `framework` subdir builds an
+  `mbedtls_test_helpers` OBJECT lib that `#include "test/ssl_helpers.h"` from
+  `tests/include` (a different package); the `-I` is right but the header isn't
+  an input. (The `includes`-attr path synthesizes a header lib per include root;
+  the raw `-I`-copt path for PRIVATE dirs doesn't.) Implement: when a PRIVATE
+  include dir resolves to another package, synthesize/locate a header lib for it
+  (as the `includes` path does) and add it to the consumer's deps, OR stage the
+  dir's headers as the target's inputs. Unblocks mbedtls (converts clean — the
+  srcs-dedup + identity-copy fixes landed — and its library/programs build once
+  the test-helper headers stage).
+
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
   (`lower.go` target-type switch), which Bazel static-links into every consumer

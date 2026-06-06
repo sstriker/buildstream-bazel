@@ -45,6 +45,7 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **spdlog** | 0 | 0 | 0 | `ok` |
 | **catch2** | 1 | 0 | 0 | `ok` |
 | **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) |
+| **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) |
 | **protobuf, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for
