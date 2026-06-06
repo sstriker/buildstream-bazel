@@ -40,6 +40,7 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) |
 | **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
 | **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) |
+| **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) |
 | **protobuf, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
 
 `rej` = surveys with rejections, so the build lens skips it; for

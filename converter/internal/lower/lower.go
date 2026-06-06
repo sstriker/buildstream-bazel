@@ -3018,6 +3018,17 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					if isCompileOnlyLinkFlag(rewritten) {
 						continue
 					}
+					// Shared-only link flags (version script / soname /
+					// retain-symbols) apply to a .so link. SHARED_LIBRARY /
+					// MODULE_LIBRARY collapse to a static cc_library (no .so),
+					// where a propagating version-script linkopt fails on every
+					// consumer link missing the script's symbols (zlib's
+					// zlib.map). Drop them (and their additional_linker_input,
+					// since this skips before the append below).
+					if (t.Type == "SHARED_LIBRARY" || t.Type == "MODULE_LIBRARY") &&
+						isSharedOnlyLinkFlag(rewritten) {
+						continue
+					}
 					// Dedup against earlier appends — cmake's
 					// commandFragments occasionally lists the same
 					// flag multiple times (transitive PUBLIC
