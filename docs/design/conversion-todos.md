@@ -88,9 +88,9 @@ survey alongside `rejections` / `bazel-idiom` / `coverage`.
 ```
 
 Determinism: each producer site already sorts/groups; the final `todos` slice is
-explicit-sorted by `(kind, group_key, anchors[0].file, anchors[0].line)` before
-marshal (mirroring the coverage report). The preamble is static text. Same input
-→ byte-identical report.
+explicitly sorted by `(kind, group_key, anchors[0].file, anchors[0].line)` before
+marshaling (mirroring the coverage report). The preamble is static text. Same
+input → byte-identical report.
 
 ## Operator preamble
 
@@ -125,24 +125,30 @@ Default preamble (intent + rules + a worked example):
 
 ## Idempotency: stable `id` + file-ownership split (no in-BUILD marker)
 
-The converter **regenerates `BUILD.bazel.out` wholesale** every run and emits
-nothing for these constructs today. So an in-BUILD marker can't carry
-idempotency: if the post-pass authored into the converter-owned BUILD, the next
-convert would **clobber** it. Idempotency therefore comes from two things, not a
-marker:
+The converter **regenerates its `BUILD.bazel.out` wholesale** every run (and
+`stage-b` then derives project B's `elements/<name>/BUILD.bazel` from it), and it
+emits nothing for these constructs today. So an in-BUILD marker can't carry
+idempotency: if the post-pass authored into either the converter-owned
+`BUILD.bazel.out` or the stage-b-written `BUILD.bazel`, the next
+convert+stage-b would **clobber** it. Idempotency therefore comes from two
+things, not a marker:
 
 1. **The stable `id`** (a content hash of the construct), constant across runs.
 2. **A file-ownership split.** The converter owns `BUILD.bazel.out` (purely
-   mechanical, carries *no* todo placeholder). The post-pass authors into a
-   **separate, converter-untouched file** (e.g. `conversion_authored.bzl` /
-   `extra_tests/BUILD`), keyed by `id`. Re-running the post-pass is idempotent
-   because it checks whether output for `id` already exists in *its own* file;
-   re-running the converter never touches that file.
+   mechanical, carries *no* todo placeholder), and `stage-b` owns the
+   `BUILD.bazel` it copies from it. The post-pass authors into a **separate file
+   outside that ownership chain** — one neither the converter's `BUILD.bazel.out`
+   emit nor `stage-b` writes (e.g. its own `extra_tests/BUILD` package, or a
+   `conversion_authored.bzl` that the authored package — not the converter-owned
+   BUILD — loads), keyed by `id`. Re-running the post-pass is idempotent because
+   it checks whether output for `id` already exists in *its own* file;
+   convert+stage-b never touch that file.
 
 This is decision **(c)**: no placeholder target, no comment marker — the JSON is
-the sole worklist, the converter-owned BUILD stays clean and fully mechanical,
-and the human stderr warnings are **retained** (humans + agents read the same
-breadcrumb from different surfaces).
+the sole worklist, the converter-owned `BUILD.bazel.out` (and the
+stage-b-derived `BUILD.bazel`) stay clean and fully mechanical, and the human
+stderr warnings are **retained** (humans + agents read the same breadcrumb from
+different surfaces).
 
 ## Consumer contract (what the post-pass must honor)
 
@@ -159,7 +165,8 @@ breadcrumb from different surfaces).
   (byte-identical across runs) `conversion-todos.json` with the preamble + one
   grouped entry per unit from all three producers; the survey aggregates them.
 - The stderr breadcrumbs are unchanged (retained alongside the JSON).
-- The converter-owned `BUILD.bazel` is byte-identical to today (no placeholder
-  targets, no markers).
+- The converter-owned `BUILD.bazel.out` (and therefore the stage-b-derived
+  project-B `BUILD.bazel`) is byte-identical to today — no placeholder targets,
+  no markers.
 - The operator can override the preamble; the default encodes the
   transition-to-plain-Bazel intent with the brotli worked example.
