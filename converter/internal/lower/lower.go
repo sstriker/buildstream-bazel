@@ -2245,6 +2245,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// further down.
 	walkPkgRootForHdrs := false
 
+	// PRIVATE include dirs (emitted as -I copts below) collected so the
+	// discoverHeaders walk further down also walks them — otherwise a
+	// PRIVATE-only dir's headers are never declared as inputs and a bare
+	// `#include` into it fails in the sandbox (the dir's -I sets the search
+	// path but stages no files). See ROADMAP "Stage headers from a PRIVATE
+	// include dir with no public header lib".
+	var privateIncDirs []string
+
 	if len(t.CompileGroups) > 0 {
 		// M1 assumption: at most one language per target. Aggregate the
 		// first compile group's flags/includes/defines.
@@ -2473,6 +2481,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// aren't otherwise declared still needs the header-staging work
 				// tracked in ROADMAP (mbedtls / sdl).
 				irt.Copts = append(irt.Copts, flag+emit)
+				privateIncDirs = append(privateIncDirs, emit)
 				continue
 			}
 			irt.Includes = append(irt.Includes, emit)
@@ -2736,6 +2745,12 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	includesForWalk := irt.Includes
 	if walkPkgRootForHdrs {
 		includesForWalk = append([]string{""}, irt.Includes...)
+	}
+	// Also walk PRIVATE include dirs so their headers are discovered + declared
+	// (the -I copt alone stages no files). Feeds hdrs discovery only — these
+	// rode into copts, not irt.Includes, preserving cmake's PRIVATE scope.
+	if len(privateIncDirs) > 0 {
+		includesForWalk = append(append([]string{}, includesForWalk...), privateIncDirs...)
 	}
 	// Carry the dropped root-include signal to the IR so the split emitter can
 	// restore the prefix via include_prefix when this target re-homes into a

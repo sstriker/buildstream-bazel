@@ -744,6 +744,27 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 			}
 			incRoots[normDir(inc)] = struct{}{}
 		}
+		// PRIVATE target_include_directories ride in Copts as element-relative
+		// `-I<dir>`/`-isystem<dir>`. A PRIVATE-only dir (no target lists it as a
+		// public include) gets no header lib otherwise, so its headers never
+		// stage and a bare `#include` fails despite the -I (SDL's
+		// `src`→SDL_internal.h, mbedtls's `tests/include`→test/ssl_helpers.h).
+		// Treat element-relative -I copt dirs as include roots so a header lib
+		// synthesizes for them too (its hdrs are now populated — lower added the
+		// PRIVATE dirs to its discoverHeaders walk); rewriteTarget then wires the
+		// lib as a private header dep and drops the bare -I. Absolute (system)
+		// and genex dirs are skipped — no in-tree headers to stage.
+		for _, c := range t.Copts {
+			dir, ok := includeDirFromCopt(c)
+			if !ok {
+				continue
+			}
+			n := normDir(dir)
+			if n == "" || strings.HasPrefix(n, "/") || strings.Contains(n, "$<") {
+				continue
+			}
+			incRoots[n] = struct{}{}
+		}
 		for _, h := range t.Hdrs {
 			allHdrs[h] = struct{}{}
 		}
