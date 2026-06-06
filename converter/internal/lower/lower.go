@@ -755,6 +755,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		detectAnchor = cmakeSrc
 	}
 	workspaceRoot := detectWorkspaceRoot(detectAnchor)
+	// Only PROMOTE to the detected workspace root if the project actually
+	// references sources OUTSIDE cmakeSrc (zstd's sibling-dir file(GLOB), which
+	// the File API records as absolute paths). A self-contained subproject of a
+	// larger git repo — LLVM's llvm-project/llvm — trips detectWorkspaceRoot on
+	// the monorepo's .git but keeps every source under cmakeSrc; promoting there
+	// injects a spurious `llvm/` umbrella prefix the converter applies
+	// inconsistently across emitters (genrule srcs vs install(FILES)/root refs),
+	// yielding a self-inconsistent single/double package tree no overlay can
+	// satisfy. Gate on real escape so zstd still promotes and LLVM doesn't.
+	if workspaceRoot != "" && workspaceRoot != cmakeSrc && !sourcesEscapeCmakeSrc(r, cmakeSrc, workspaceRoot) {
+		workspaceRoot = ""
+	}
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
 		hostSrc = cmakeSrc

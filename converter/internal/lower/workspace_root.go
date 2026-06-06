@@ -3,7 +3,48 @@ package lower
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 )
+
+// sourcesEscapeCmakeSrc reports whether any target source resolves OUTSIDE
+// cmakeSrc but INSIDE workspaceRoot — the signal that a project genuinely needs
+// the wider workspace-root label namespace (zstd's sibling-dir file(GLOB)), as
+// opposed to a self-contained subproject that merely happens to live under a
+// monorepo's .git (LLVM's llvm-project/llvm). The File API records a source
+// inside the top-level source dir (cmakeSrc) as a RELATIVE path and one outside
+// it as an ABSOLUTE path, so an absolute source under workspaceRoot but not
+// under cmakeSrc is exactly that signal. Pure codemodel inspection; no
+// filesystem access.
+//
+// Why gate on it: promoting labelRoot above cmakeSrc prefixes source-path
+// labels with the cmakeSrc-relative-to-labelRoot segment (LLVM's `llvm/`). The
+// converter applies that prefix INCONSISTENTLY across emitters — genrule
+// source-tree srcs get it, install(FILES)/root-package refs don't — so a
+// promotion that isn't actually needed yields a self-inconsistent single/double
+// package tree that no overlay shape can satisfy. zstd genuinely needs the
+// promotion (its sources escape cmakeSrc); LLVM doesn't (everything's under
+// llvm/), so it must not promote.
+func sourcesEscapeCmakeSrc(r *fileapi.Reply, cmakeSrc, workspaceRoot string) bool {
+	if r == nil || cmakeSrc == "" || workspaceRoot == "" {
+		return false
+	}
+	for _, t := range r.Targets {
+		for _, s := range t.Sources {
+			p := s.Path
+			if p == "" || !filepath.IsAbs(p) {
+				continue // relative ⇒ inside cmakeSrc by the File API contract
+			}
+			if _, inCmake := relativeIfInside(cmakeSrc, p); inCmake {
+				continue // absolute but still under cmakeSrc
+			}
+			if _, inWs := relativeIfInside(workspaceRoot, p); inWs {
+				return true // outside cmakeSrc, inside workspaceRoot
+			}
+		}
+	}
+	return false
+}
 
 // detectWorkspaceRoot walks up at most workspaceMarkerMaxDepth
 // levels from dir looking for a directory that carries a "this

@@ -184,25 +184,18 @@ func TestLowerTarget_WorkspaceRoot_PathOutsideWorkspace_StillRefuses(t *testing.
 	}
 }
 
-// TestLowerTarget_UmbrellaReanchorsCmakeRelativeSources covers
-// the LLVM-shape gap that the umbrella detection exposed: cmake
-// records sources as cmakeSrc-relative when they live INSIDE
-// cmakeSrc (per codemodel-v2 spec). When the umbrella detection
-// promotes labelRoot above cmakeSrc (e.g., LLVM's `llvm-project/`
-// becomes labelRoot above cmakeSrc=`llvm-project/llvm/`), the
-// cmakeSrc-relative path needs re-anchoring so both the on-disk
-// existence check AND the emitted Bazel label resolve correctly.
-//
-// Pre-fix: the on-disk check joined the promoted hostSrc
-// (=labelRoot) with the still-cmakeSrc-relative path, looked
-// at the wrong location, didn't find the file, and elided the
-// source. The cc_binary ended up with empty srcs and the audit
-// flagged it as empty-srcs.
-//
-// Surfaced by LLVM unittests (191 empty-srcs cc_binary
-// targets like ADTTests, AnalysisTests after #258 enabled
-// LLVM convert).
-func TestLowerTarget_UmbrellaReanchorsCmakeRelativeSources(t *testing.T) {
+// TestLowerTarget_Umbrella_NoSourceEscape_DoesNotPromote covers the LLVM shape:
+// a self-contained cmake subproject (llvm-project/llvm) that sits under a
+// monorepo's .git but keeps EVERY source inside cmakeSrc. detectWorkspaceRoot
+// trips on the .git, but the promotion must NOT take effect — nothing escapes
+// cmakeSrc, so there's no wider namespace to anchor to. Promoting anyway would
+// prefix labels with `llvm/`, which the converter applies inconsistently across
+// emitters (genrule srcs get it, install(FILES)/root refs don't), producing a
+// self-inconsistent single/double package tree that no overlay can satisfy
+// (the LLVM build-lens whole-tree drive surfaced exactly this). The source
+// therefore stays cmakeSrc-relative. The genuine promote-on-escape case (zstd's
+// sibling sources) is covered by TestLowerTarget_WorkspaceRoot_ZstdLayout.
+func TestLowerTarget_Umbrella_NoSourceEscape_DoesNotPromote(t *testing.T) {
 	monorepo := t.TempDir()
 	// Umbrella marker (no top-level CMakeLists.txt → umbrella).
 	if err := os.WriteFile(filepath.Join(monorepo, ".gitignore"), []byte("build/\n"), 0o644); err != nil {
@@ -273,11 +266,16 @@ func TestLowerTarget_UmbrellaReanchorsCmakeRelativeSources(t *testing.T) {
 	if got == nil {
 		t.Fatal("ADTTests not in pkg.Targets")
 	}
-	// The source must survive (not be elided as missing-on-disk)
-	// AND must be re-anchored to labelRoot-relative.
-	want := "llvm/unittests/ADT/AnyTest.cpp"
+	// The source must survive (not be elided as missing-on-disk) and stay
+	// cmakeSrc-relative: this fixture's only source lives INSIDE cmakeSrc, so
+	// nothing escapes and the workspace-root promotion must NOT fire (the .git
+	// is the monorepo's, but a self-contained subproject like llvm-project/llvm
+	// doesn't need the umbrella — promoting it injects a spurious `llvm/` prefix
+	// the converter applies inconsistently across emitters). The promote-on-
+	// real-escape case is covered by TestLowerTarget_WorkspaceRoot_ZstdLayout.
+	want := "unittests/ADT/AnyTest.cpp"
 	if len(got.Srcs) != 1 || got.Srcs[0] != want {
-		t.Errorf("Srcs: got %v; want [%q] (labelRoot-relative after umbrella re-anchor)",
+		t.Errorf("Srcs: got %v; want [%q] (cmakeSrc-relative — no promotion without source escape)",
 			got.Srcs, want)
 	}
 }
