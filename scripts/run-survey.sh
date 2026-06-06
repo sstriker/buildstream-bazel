@@ -110,14 +110,24 @@ if [ -z "$projects" ]; then
     "
 fi
 
-# Locate the converter: prefer the Makefile-built binary, fall back to
-# `go run` so the script works in a bare checkout.
+# Locate the converter. ALWAYS (re)build it from the CURRENT source before
+# surveying — never trust a build/bin binary left lying about from an earlier
+# checkout. A stale prebuilt converter silently runs without fixes the source
+# already carries (e.g. after a session-recovery checkout moves HEAD), which
+# produces wrong survey results that look like real regressions. `go build` is
+# cheap (incremental + cached), so rebuilding every run is well worth removing
+# that footgun. Fall back to an existing binary, then `go run`, only when
+# `go build` can't run (no Go toolchain on PATH).
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 converter="$repo_root/build/bin/convert-element-cmake"
-if [ -x "$converter" ]; then
+if command -v go >/dev/null 2>&1 && \
+   ( cd "$repo_root" && go build -o "$converter" ./converter/cmd/convert-element-cmake ); then
+    run_converter() { "$converter" "$@"; }
+elif [ -x "$converter" ]; then
+    echo "warning: 'go build' unavailable or failed; using existing (possibly stale) $converter" >&2
     run_converter() { "$converter" "$@"; }
 else
-    echo "note: $converter not built; using 'go run' (slower). Run 'make converter' to speed up." >&2
+    echo "note: $converter not built and 'go build' failed; using 'go run' (slower)." >&2
     run_converter() { ( cd "$repo_root" && go run ./converter/cmd/convert-element-cmake "$@" ); }
 fi
 
