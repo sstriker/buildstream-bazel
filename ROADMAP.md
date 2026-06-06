@@ -673,10 +673,11 @@ transition cleanly.
   suggested_shape, prompt}` plus an **operator preamble** (overridable;
   ships a default encoding this repo's transition-to-plain-Bazel intent
   with the brotli worked example). Idempotency is the stable `id` + a
-  **file-ownership split** (the converter owns `BUILD.bazel`, regenerated
-  wholesale and carrying no marker; the post-pass authors into a separate,
-  converter-untouched file keyed by `id`) — no in-BUILD placeholder, since
-  a wholesale-regenerated BUILD would clobber it. Stderr warnings are
+  **file-ownership split** (the converter owns `BUILD.bazel.out`, regenerated
+  wholesale and carrying no marker, and `stage-b` derives project B's
+  `BUILD.bazel` from it; the post-pass authors into a separate file outside that
+  chain, keyed by `id`) — no in-BUILD placeholder, since the
+  wholesale-regenerated output would clobber it. Stderr warnings are
   retained. Agent-authored output crosses the **same trust boundary** as
   mechanical output (render gates; not trusted on faith). Surfaced from the
   brotli test-form discussion.

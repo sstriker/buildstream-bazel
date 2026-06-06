@@ -68,10 +68,16 @@ survey alongside `rejections` / `bazel-idiom` / `coverage`.
   "preamble": { /* see "Operator preamble" */ },
   "todos": [
     {
-      "id": "todo-<stable-hash>",          // hash(kind, group_key, anchors) — the idempotency key
+      "id": "todo-<stable-hash>",          // hash(kind, group_key) — the idempotency key. Deliberately
+                                            // EXCLUDES line numbers (anchors are informational payload),
+                                            // so an unrelated edit above the construct can't churn the id
+                                            // and make the post-pass re-author a duplicate.
       "kind": "cmake-p-test",              // | cmake-internal-drop | install-script | install-code
-      "group_key": "tools/run_test.cmake", // the shared unit → ONE todo, N instances
-      "anchors": [                          // every source site folded into this unit
+      "group_key": "tools/run_test.cmake", // the shared unit → ONE todo, N instances. Always set: the
+                                            // producer's grouping key, or (for an inherently-ungrouped
+                                            // construct) its own stable identity (file + normalized
+                                            // construct text, line-free).
+      "anchors": [                          // ≥1 source site folded into this unit (invariant: never empty)
         {"file": "tests/CMakeLists.txt", "line": 42, "construct": "add_test(NAME roundtrip_x COMMAND cmake -P run_test.cmake x)"}
       ],
       "evidence": {                         // recovered facts, kind-specific
@@ -88,9 +94,12 @@ survey alongside `rejections` / `bazel-idiom` / `coverage`.
 ```
 
 Determinism: each producer site already sorts/groups; the final `todos` slice is
-explicitly sorted by `(kind, group_key, anchors[0].file, anchors[0].line)` before
-marshaling (mirroring the coverage report). The preamble is static text. Same
-input → byte-identical report.
+explicitly sorted by `(kind, group_key)` before marshaling (mirroring the
+coverage report) — the same line-free per-unit identity the `id` hashes, which is
+always present and unique per unit, so the sort needs no `anchors[0]` indexing.
+Each todo's own `anchors` (always ≥1; an empty list is a producer bug) are sorted
+by `(file, line)` for stable display. The preamble is static text. Same input →
+byte-identical report.
 
 ## Operator preamble
 
