@@ -3591,6 +3591,11 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 	wrapperSrcs := irt.Srcs
 
 	var subDeps []string
+	// Track each emitted sub's language so a cross-language linkage pass below
+	// can wire C/C++ → asm/fortran deps (the subStart marks where this call's
+	// subs begin in cc.Subs).
+	subStart := len(cc.Subs)
+	langByName := map[string]string{}
 	for _, cg := range groups {
 		if cg.Language == "" {
 			continue
@@ -3698,7 +3703,33 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		if cc.SubParent != nil {
 			cc.SubParent[sub.Name] = irt.Name
 		}
+		langByName[sub.Name] = cg.Language
 		subDeps = append(subDeps, ":"+sub.Name)
+	}
+
+	// Cross-language linkage: a C/C++ sub typically CALLS into the same target's
+	// asm/fortran subs (BLAKE3's blake3_dispatch.c → the per-arch
+	// llvm_blake3_hash_many_* asm functions, compiled hidden-visibility). The
+	// split makes them siblings under the wrapper, so when a C/C++ sub is linked
+	// as a standalone .so (a dynamic consumer of the wrapper triggers it) its
+	// hidden cross-language symbols are undefined. Make each C/C++ sub dep on
+	// the same target's asm/fortran subs (one direction → no cycle): those subs
+	// are alwayslink, so their objects fold into the C/C++ sub's linkage and the
+	// symbols resolve. Asm/fortran calling back into C is rare and not wired.
+	var otherLangSubs []string
+	for i := subStart; i < len(cc.Subs); i++ {
+		switch langByName[cc.Subs[i].Name] {
+		case "ASM", "ASM_NASM", "Fortran":
+			otherLangSubs = append(otherLangSubs, ":"+cc.Subs[i].Name)
+		}
+	}
+	if len(otherLangSubs) > 0 {
+		for i := subStart; i < len(cc.Subs); i++ {
+			switch langByName[cc.Subs[i].Name] {
+			case "C", "CXX", "OBJC", "OBJCXX":
+				cc.Subs[i].Deps = appendUnique(cc.Subs[i].Deps, otherLangSubs...)
+			}
+		}
 	}
 
 	if len(subDeps) == 0 {
