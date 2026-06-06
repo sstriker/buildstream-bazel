@@ -71,7 +71,9 @@ func TestReport_ByteIdenticalAcrossRuns(t *testing.T) {
 		b, _ := json.MarshalIndent(rep, "", "  ")
 		return b
 	}
-	if string(build()) != string(build()) {
+	first := string(build())
+	second := string(build())
+	if first != second {
 		t.Error("report not byte-identical across runs")
 	}
 }
