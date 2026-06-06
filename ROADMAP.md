@@ -689,15 +689,21 @@ transition cleanly.
   touches header-lib synthesis broadly); two earlier point-fixes in this area
   regressed fmt and the cp-dir tests, so validate every green member before/after.
 
-  RELATED mbedtls blocker (separate): its `link_to_source(X)` copies a generated
-  build file back to its same-relative source path, lowering to an
-  execute_process copy genrule with `srcs=[X]`+`outs=[X]` — Bazel's in==out
-  error. A naive "drop the copy when srcRel==dstRel" was tried and reverted: it
-  also dropped legitimate `cp <srcdir> <build>` staging copies (same rel path,
-  different root — a real copy, not an identity), breaking the cp-dir-lift tests.
-  The right handling is an in-place output RENAME (X→X.gen, rewrite consumers),
-  the mechanism standalone genrules already use for `.exports`; apply it to the
-  execute_process copy path, gated on the genuine in==out collision.
+  RELATED mbedtls blocker (separate, AFTER header-staging — verified by getting
+  past ssl_helpers.h to here): mbedtls GENERATES `query_config.c`, `error.c`,
+  `version_features.c` via python scripts, then `link_to_source`-copies them,
+  lowering to execute_process copy genrules with `srcs=[X]`+`outs=[X]` (in==out).
+  Two failed shortcuts, both reverted: (a) "drop the dir copy when
+  srcFileRel==outRel" broke legitimate `cp <srcdir> <build>` staging (the
+  cp-dir-lift tests); (b) "drop the single-file copy" cleared the in==out and got
+  mbedtls compiling 475/591, but then `ld: undefined symbol: query_config /
+  list_config` — because X is GENERATED-ONLY (no usable committed source), so
+  dropping its copy loses the content entirely. So the real fix is NOT to drop or
+  rename the copy — it's to actually GENERATE these files: emit the python-script
+  genrule (the genrule-script-staging item) that produces query_config.c et al.,
+  and recognize the link_to_source copy as redundant with it. mbedtls needs:
+  header-staging (DONE) + python-script source generation + then the in==out copy
+  falls away (the generating genrule owns the output).
 
   REGRESSION LESSON (do not repeat): an earlier attempt "exec-root anchor the
   PRIVATE `-I` copt" (so `-Itests/libtest`→`-Ielements/<pkg>/tests/libtest`)
