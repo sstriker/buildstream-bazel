@@ -1235,6 +1235,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// or when no PRIVATE-scoped defines appear.
 	if decodedTrace != nil {
 		applyPrivateScopeToDefines(pkg, decodedTrace.CompileDefinitions)
+		// Directory-scoped add_definitions() is PRIVATE too (never
+		// exported via INTERFACE_COMPILE_DEFINITIONS) — route it to
+		// local_defines so it doesn't leak to consumers (e.g. curl's
+		// BUILDING_LIBCURL on libcurl leaking to the curl tool).
+		applyAddDefinitionsScope(pkg, decodedTrace.AddDefinitions, decodedTrace.CompileDefinitions)
 	}
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,

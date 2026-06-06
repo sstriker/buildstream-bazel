@@ -46,6 +46,7 @@ type Decoded struct {
 	AddLibraries               []AddLibraryCall
 	InstallExports             []InstallExportCall
 	FileGlobs                  []FileGlobCall
+	AddDefinitions             []AddDefinitionsCall
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -129,6 +130,9 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyInstallExport(ev); ok {
 			d.InstallExports = append(d.InstallExports, call)
+		}
+		if call, ok := classifyAddDefinitions(ev, traceSourceRoot); ok {
+			d.AddDefinitions = append(d.AddDefinitions, call)
 		}
 		if traceHasEndif {
 			d.PlatformConditionalSources = maybeCollectPlatformConditionalSourceTraceStack(ev, tier1Stack, traceSourceRoot, knownTargets, d.PlatformConditionalSources)
@@ -486,6 +490,51 @@ func classifyTargetCompile(ev TraceEvent, sourceRoot string, knownTargets map[st
 		return TargetCompileCall{}, false
 	}
 	return call, true
+}
+
+// AddDefinitionsCall records one user-written add_definitions(...)
+// call in the source tree. add_definitions is DIRECTORY-scoped: it
+// adds to the COMPILE_DEFINITIONS directory property, applying to
+// every target created in that directory (and subdirectories added
+// afterwards). Those definitions are PRIVATE — cmake never exposes
+// add_definitions through INTERFACE_COMPILE_DEFINITIONS, so they do
+// NOT propagate to consumers of a target. The codemodel folds them
+// into each in-directory target's CompileGroups[].Defines with no
+// origin tag, so (like PRIVATE target_compile_definitions) the trace
+// is the only signal that they should land in Bazel's non-transitive
+// local_defines rather than the transitive defines.
+//
+// Items hold the define payload with the leading -D stripped (the
+// "NAME" / "NAME=VALUE" form the codemodel uses); non -D arguments
+// (legacy compile flags some projects still pass to add_definitions)
+// are ignored here — only definitions are routed.
+type AddDefinitionsCall struct {
+	File  string // absolute path of the CMakeLists that made the call
+	Items []string
+}
+
+// classifyAddDefinitions is the per-event arm of Decode for
+// add_definitions. add_definitions is a directory command (no target
+// argument), so it's scoped by the calling file being inside the
+// source tree — the same filter inSourceTree applies elsewhere, which
+// drops cmake's bundled-module and try_compile-scratch calls.
+func classifyAddDefinitions(ev TraceEvent, sourceRoot string) (AddDefinitionsCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_definitions") {
+		return AddDefinitionsCall{}, false
+	}
+	if len(ev.Args) == 0 || !inSourceTree(ev.File, sourceRoot) {
+		return AddDefinitionsCall{}, false
+	}
+	var items []string
+	for _, a := range ev.Args {
+		if strings.HasPrefix(a, "-D") {
+			items = append(items, strings.TrimPrefix(a, "-D"))
+		}
+	}
+	if len(items) == 0 {
+		return AddDefinitionsCall{}, false
+	}
+	return AddDefinitionsCall{File: ev.File, Items: items}, true
 }
 
 // ExtractConfigureFiles returns one entry per user-written
