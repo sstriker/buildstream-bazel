@@ -407,7 +407,20 @@ func classifyTargetLinks(ev TraceEvent, sourceRoot string, knownTargets map[stri
 			// Legacy positional shape — start an unkeyed group.
 			current = &TargetLinkGroup{Visibility: ""}
 		}
-		current.Libs = append(current.Libs, a)
+		// A single trace argument can carry a whole cmake list when a
+		// `${VAR}` holding a list is expanded by --trace-expand: the
+		// elements arrive semicolon-joined in ONE arg (e.g. protobuf's
+		// `target_link_libraries(libprotobuf-lite PUBLIC
+		// ${protobuf_ABSL_USED_TARGETS})` records as the single string
+		// "absl::strings;absl::base;..."). Split on the cmake list
+		// separator so each lib is recovered individually; an empty
+		// expansion (`${CMAKE_THREAD_LIBS_INIT}` → "") drops to nothing.
+		for _, lib := range splitCMakeListArg(a) {
+			if lib == "" {
+				continue
+			}
+			current.Libs = append(current.Libs, lib)
+		}
 	}
 	if current != nil {
 		call.Groups = append(call.Groups, *current)

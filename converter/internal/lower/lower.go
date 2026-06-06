@@ -3002,6 +3002,25 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		for _, d := range irt.ImplementationDeps {
 			seen[d] = true
 		}
+		// Direct find_package deps the trace recorded for THIS target
+		// (target_link_libraries lib names). When present, they gate the
+		// link-fragment LookupLinkPath attribution below: an EXECUTABLE /
+		// SHARED lib static-links its WHOLE transitive .a closure, so
+		// cmake's Link.CommandFragments lists every archive — including
+		// internal ones a consumer never names directly (abseil's
+		// raw_logging_internal / spinlock_wait / strerror, pulled in by
+		// the public absl targets). Attributing each flattened archive as
+		// a DIRECT Bazel dep both over-specifies the graph and breaks on
+		// the internal targets' restricted visibility
+		// (`//absl:__subpackages__`). Bazel computes transitivity itself,
+		// so we only want the libs the target links DIRECTLY; the rest
+		// flow through the directly-named public deps. Empty (no trace for
+		// this target) → the gate is disabled and every matched fragment
+		// is attributed, preserving the offline-replay behavior.
+		directTraceLibs := map[string]bool{}
+		for _, lib := range traceLinkLibs {
+			directTraceLibs[lib] = true
+		}
 		for _, frag := range t.Link.CommandFragments {
 			// Non-library fragments (flags / libraryPath /
 			// frameworkPath / frameworks) route directly to
@@ -3101,6 +3120,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				path = manifestPrefixAnchor + path[len(hostPrefix)+1:]
 			}
 			if export := imports.LookupLinkPath(path); export != nil {
+				// Gate on the direct-trace set: when the trace
+				// recorded this target's direct link libs, only
+				// attribute a flattened archive fragment if the
+				// target links it DIRECTLY. A transitive-only
+				// archive (in the static closure but not named in
+				// target_link_libraries) is dropped — it reaches
+				// the link through a directly-named public dep's
+				// own Bazel deps, with correct visibility. Skip
+				// the gate entirely when no trace covers this
+				// target (directTraceLibs empty).
+				if len(directTraceLibs) > 0 && !directTraceLibs[export.CMakeTarget] {
+					continue
+				}
 				if !seen[export.BazelLabel] {
 					seen[export.BazelLabel] = true
 					// Trace-scope routing: if the
