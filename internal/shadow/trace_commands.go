@@ -974,6 +974,50 @@ func ExtractExecuteProcess(traceRaw []byte, sourceRoot string) []ExecuteProcessC
 	return out
 }
 
+// splitCMakeListArg splits a cmake list-valued COMMAND argument on its element
+// separator `;`. cmake joins list elements with `;` and splits them back into
+// distinct values before use, but `--trace-expand` records an unquoted
+// list-variable expansion (the common `COMMAND ${command}` idiom) as ONE
+// `;`-joined token — so the converter must re-split to recover the real argv.
+// A literal semicolon is escaped `\;` in cmake; those are unescaped to `;`
+// rather than treated as separators, and empty elements (from leading/trailing
+// or doubled `;`) are dropped, matching cmake's list semantics. A token with no
+// `;` returns unchanged. (Tradeoff: a quoted COMMAND arg that embeds a bare
+// `;` — rare, since COMMAND clauses are argv lists, not shell strings — would
+// also split; the list-expansion case it fixes is overwhelmingly more common
+// and is what real projects' execute_process drivers depend on.)
+func splitCMakeListArg(a string) []string {
+	if !strings.Contains(a, ";") {
+		return []string{a}
+	}
+	var out []string
+	var cur strings.Builder
+	for i := 0; i < len(a); i++ {
+		if a[i] == '\\' && i+1 < len(a) && a[i+1] == ';' {
+			cur.WriteByte(';')
+			i++
+			continue
+		}
+		if a[i] == ';' {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		cur.WriteByte(a[i])
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	if len(out) == 0 {
+		// All-empty (e.g. a lone ";") — keep the original token defensively
+		// rather than vanishing the argument.
+		return []string{a}
+	}
+	return out
+}
+
 // classifyExecuteProcess parses one trace event into an
 // ExecuteProcessCall, or returns (_, false) when the event
 // isn't an in-source-tree execute_process. Shared between the
@@ -1147,7 +1191,16 @@ func classifyExecuteProcess(ev TraceEvent, sourceRoot string) (ExecuteProcessCal
 		// Bare value: append to whichever list is open.
 		switch open {
 		case listCommand:
-			currentCmd = append(currentCmd, a)
+			// A cmake list-valued COMMAND argument — most commonly an
+			// unquoted ${command} variable holding a pre-built argv — is
+			// recorded by --trace-expand as a single ;-joined token, but
+			// cmake splits it into separate argv elements before exec. Split
+			// it back so argv[0] is the real driver: a
+			// `/usr/bin/cc;-Wl,--version;-o;/dev/null` token's driver is `cc`
+			// (a toolchain probe), not `null` (basename of /dev/null), which
+			// is what LLVM's AddLLVM.cmake linker-detection execute_process
+			// otherwise mis-classified into an unliftable refusal.
+			currentCmd = append(currentCmd, splitCMakeListArg(a)...)
 		case listEnvironment:
 			call.Environment = append(call.Environment, a)
 		default:

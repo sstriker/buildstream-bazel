@@ -932,3 +932,21 @@ func TestExtractFileRename_AsConfigureCopyonly(t *testing.T) {
 		t.Errorf("options: %+v want [COPYONLY]", c.Options)
 	}
 }
+
+// TestExecuteProcess_ListValuedCommandSplits: a COMMAND built from an unquoted
+// ${command} list variable arrives as one ;-joined token; the parser must
+// split it so argv[0] is the real driver (cc), not basename(/dev/null)=null.
+// Escaped \; is a literal semicolon; empty elements are dropped.
+func TestExecuteProcess_ListValuedCommandSplits(t *testing.T) {
+	trace := `{"args":["COMMAND","/usr/bin/cc;-Wl,--version;-o;/dev/null","OUTPUT_VARIABLE","stdout"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}
+`
+	got := Decode([]byte(trace), "/src", nil).ExecuteProcesses
+	if len(got) != 1 || len(got[0].Commands) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	argv := got[0].Commands[0]
+	want := []string{"/usr/bin/cc", "-Wl,--version", "-o", "/dev/null"}
+	if len(argv) != 4 || argv[0] != want[0] || argv[3] != want[3] {
+		t.Errorf("argv = %v, want %v", argv, want)
+	}
+}
