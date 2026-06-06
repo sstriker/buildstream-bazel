@@ -11,13 +11,15 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
-// TestEmitCMakePTestTodos_GroupsByRunner mirrors brotli: many cmake -P
-// add_test registrations sharing one runner collapse to ONE todo with N
-// anchors, while a test whose executable WAS converted is excluded.
-func TestEmitCMakePTestTodos_GroupsByRunner(t *testing.T) {
+// TestEmitCMakePTestTodos_GroupsByScript mirrors brotli: cmake -P
+// add_test registrations sharing ONE script collapse to one todo with N
+// anchors, DIFFERENT -P scripts are separate todos (different contracts),
+// and a test whose executable WAS converted is excluded.
+func TestEmitCMakePTestTodos_GroupsByScript(t *testing.T) {
 	dir := t.TempDir()
-	body := `add_test([=[roundtrip-a]=] "/usr/bin/cmake" "-P" "run_test.cmake" "a")
-add_test([=[roundtrip-b]=] "/usr/bin/cmake" "-P" "run_test.cmake" "b")
+	body := `add_test([=[roundtrip-a]=] "/usr/bin/cmake" "-P" "/proj/run_test.cmake" "a")
+add_test([=[roundtrip-b]=] "/usr/bin/cmake" "-P" "/proj/run_test.cmake" "b")
+add_test([=[compat]=] "/usr/bin/cmake" "-P" "/proj/compat.cmake" "x")
 add_test([=[unit]=] "/build/unit_test")
 `
 	mustWriteFile(t, filepath.Join(dir, "CTestTestfile.cmake"), body)
@@ -27,26 +29,54 @@ add_test([=[unit]=] "/build/unit_test")
 	}
 
 	c := todos.New()
-	// "unit" was emitted as a cc_test; the two cmake runners were not.
+	// "unit" was emitted as a cc_test; the cmake -P tests were not.
 	emitted := []ir.Target{{Name: "unit"}}
 	emitCMakePTestTodos(c, reg, emitted)
 
 	rep := c.Report(todos.DefaultPreamble(), "")
-	if len(rep.Todos) != 1 {
-		t.Fatalf("expected 1 grouped todo (one cmake runner), got %d: %+v", len(rep.Todos), rep.Todos)
+	if len(rep.Todos) != 2 {
+		t.Fatalf("expected 2 todos (one per -P script), got %d: %+v", len(rep.Todos), rep.Todos)
 	}
-	td := rep.Todos[0]
-	if td.Kind != "cmake-p-test" {
-		t.Errorf("kind = %q, want cmake-p-test", td.Kind)
+	// Sorted by group_key (basename): compat.cmake before run_test.cmake.
+	compat, runTest := rep.Todos[0], rep.Todos[1]
+	if compat.GroupKey != "compat.cmake" || runTest.GroupKey != "run_test.cmake" {
+		t.Fatalf("group keys = %q, %q; want compat.cmake, run_test.cmake", compat.GroupKey, runTest.GroupKey)
 	}
-	if td.GroupKey != "cmake" {
-		t.Errorf("group_key = %q, want cmake (the runner basename)", td.GroupKey)
+	if len(compat.Anchors) != 1 || len(runTest.Anchors) != 2 {
+		t.Errorf("anchor counts = %d, %d; want 1, 2", len(compat.Anchors), len(runTest.Anchors))
 	}
-	if len(td.Anchors) != 2 {
-		t.Errorf("expected 2 anchors (roundtrip-a, -b), got %d", len(td.Anchors))
+	if compat.ID == runTest.ID || compat.ID == "" {
+		t.Errorf("distinct scripts must have distinct ids: %q vs %q", compat.ID, runTest.ID)
 	}
-	if td.ID == "" {
-		t.Error("todo missing stable id")
+	// Evidence carries the full script path + the driver command.
+	if runTest.Evidence["script"] != "/proj/run_test.cmake" {
+		t.Errorf("script evidence = %v; want /proj/run_test.cmake", runTest.Evidence["script"])
+	}
+	if cmds, ok := runTest.Evidence["command"].([]string); !ok || len(cmds) != 1 || cmds[0] != "cmake" {
+		t.Errorf("command evidence = %v; want [cmake]", runTest.Evidence["command"])
+	}
+}
+
+// TestEmitCMakePTestTodos_NonCmakeRunner: an add_test whose COMMAND is an
+// unconverted executable (not cmake -P) groups by the target.
+func TestEmitCMakePTestTodos_NonCmakeRunner(t *testing.T) {
+	dir := t.TempDir()
+	body := `add_test([=[harness-1]=] "/build/harness" "case1")
+add_test([=[harness-2]=] "/build/harness" "case2")
+`
+	mustWriteFile(t, filepath.Join(dir, "CTestTestfile.cmake"), body)
+	reg, err := ctest.Parse(dir)
+	if err != nil {
+		t.Fatalf("ctest.Parse: %v", err)
+	}
+	c := todos.New()
+	emitCMakePTestTodos(c, reg, nil)
+	rep := c.Report(todos.DefaultPreamble(), "")
+	if len(rep.Todos) != 1 || rep.Todos[0].GroupKey != "harness" {
+		t.Fatalf("expected one todo grouped by target 'harness'; got %+v", rep.Todos)
+	}
+	if _, hasScript := rep.Todos[0].Evidence["script"]; hasScript {
+		t.Error("non-cmake-P runner should carry no script evidence")
 	}
 }
 
@@ -133,6 +163,35 @@ func TestEmitInstallScriptTodos_ScriptAndCode(t *testing.T) {
 	}
 	if !sawScript || !sawCode {
 		t.Errorf("expected both install-script and install-code todos; script=%v code=%v", sawScript, sawCode)
+	}
+}
+
+// TestEmitInstallScriptTodos_FoldsSitelessCode is the regression guard
+// for the duplicate-id bug: multiple install(CODE) directives with no
+// recoverable backtrace site all key on the kind, so they must FOLD into
+// one todo with N anchors (not N todos colliding on (kind, group_key) →
+// identical id), keeping the report deterministic and ids unique.
+func TestEmitInstallScriptTodos_FoldsSitelessCode(t *testing.T) {
+	r := &fileapi.Reply{
+		Directories: map[string]fileapi.Directory{
+			"d": {Installers: []fileapi.DirectoryInstaller{
+				{Type: "code"},
+				{Type: "code"},
+				{Type: "code"},
+			}},
+		},
+	}
+	c := todos.New()
+	emitInstallScriptTodos(c, r)
+	rep := c.Report(todos.DefaultPreamble(), "")
+	if len(rep.Todos) != 1 {
+		t.Fatalf("siteless install(CODE) must fold to 1 todo, got %d", len(rep.Todos))
+	}
+	if len(rep.Todos[0].Anchors) != 3 {
+		t.Errorf("expected 3 folded anchors, got %d", len(rep.Todos[0].Anchors))
+	}
+	if rep.Todos[0].ID == "" {
+		t.Error("folded todo missing id")
 	}
 }
 

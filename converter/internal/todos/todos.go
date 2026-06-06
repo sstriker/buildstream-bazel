@@ -23,7 +23,8 @@
 // Scope: this is the deterministic PRODUCER plus the consumer CONTRACT
 // (idempotency via the stable id + a file-ownership split; the trust
 // boundary). The non-deterministic AI post-pass that consumes the
-// report is out of scope — see docs/design/conversion-todos.md.
+// report is out of scope — see the "Agent-actionable prompts for
+// no-mechanical-form constructs" item in ROADMAP.md.
 package todos
 
 import (
