@@ -369,6 +369,15 @@ func stampStatusKey(varName, driver string) string {
 	if driver == "date" {
 		prefix = "VOLATILE_"
 	}
+	return statusKeyWithPrefix(prefix, varName)
+}
+
+// statusKeyWithPrefix builds a workspace-status key from a given prefix and a
+// cmake variable name (the name upper-cased with any non-[A-Z0-9_] run folded
+// to '_'). Shared by stampStatusKey (driver -> prefix) and the
+// function-forward re-key (which preserves a known stamp's STABLE_/VOLATILE_
+// prefix while restemming to the consumer variable's name).
+func statusKeyWithPrefix(prefix, varName string) string {
 	var b strings.Builder
 	b.WriteString(prefix)
 	for _, r := range strings.ToUpper(varName) {

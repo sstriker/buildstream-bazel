@@ -468,7 +468,7 @@ func run(a cli.Args) error {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --toolchain-features-from %s declared no literal feature() names; only the built-in `pic` will lift (the toolchain may build features via wrappers/computed names the parser can't read — see docs/operator-toolchain-features.md)\n", a.ToolchainFeaturesFrom)
 		}
 	}
-	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment) (*ir.Package, error) {
+	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
@@ -498,6 +498,7 @@ func run(a cli.Args) error {
 			LiteralProbeSink:                  sink,
 			LiteralResolutions:                resolutions,
 			SetAssignments:                    setAssignments,
+			ParentScopeForwards:               parentScopeForwards,
 			StampVarSink:                      stampSink,
 		})
 	}
@@ -510,7 +511,12 @@ func run(a cli.Args) error {
 	// git_describe()-style forwarded stamp that aborted pass 1; threaded into
 	// the genex/stamp re-lifts below so they don't re-abort on the same call.
 	var recoveredStampSets []shadow.SetAssignment
-	pkg, err := runToIR(literalSink, nil, nil)
+	// recoveredStampForwards holds the function-parameter-forwarded stamps
+	// (git_describe()'s PARENT_SCOPE return) recovered alongside the set-copies,
+	// threaded into the re-lifts so the forwarded value lifts to stamp_values
+	// rather than baking.
+	var recoveredStampForwards []shadow.ParentScopeForward
+	pkg, err := runToIR(literalSink, nil, nil, nil)
 	if err != nil {
 		// A pass-1 abort on a forwarded stamp (git_describe() helper return,
 		// SDL) is recoverable: lower.go fills stampSink before returning the
@@ -533,12 +539,15 @@ func run(a cli.Args) error {
 				Stderr:             os.Stderr,
 			}); cfgErr == nil {
 				if raw, rerr := os.ReadFile(plainTrace); rerr == nil {
-					if sets := shadow.ExtractSetAssignments(raw, a.SourceRoot); len(sets) > 0 {
+					sets := shadow.ExtractSetAssignments(raw, a.SourceRoot)
+					forwards := shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
+					if len(sets) > 0 || len(forwards) > 0 {
 						literalSink = &lower.LiteralProbeSink{}
-						if pkg2, err2 := runToIR(literalSink, nil, sets); err2 == nil {
+						if pkg2, err2 := runToIR(literalSink, nil, sets, forwards); err2 == nil {
 							recoveredStampSets = sets
+							recoveredStampForwards = forwards
 							pkg, err = pkg2, nil
-							fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 stamp abort via %d non-expanded-trace set()-copy/-ies.\n", len(sets))
+							fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 stamp abort via %d non-expanded-trace set()-copy/-ies + %d function-forward(s).\n", len(sets), len(forwards))
 						}
 					}
 				}
@@ -590,7 +599,7 @@ func run(a cli.Args) error {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); keeping pass-1 result.\n", readErr)
 		} else if len(resolutions) > 0 {
 			genexResolutions = resolutions
-			pkg2, err2 := runToIR(nil, resolutions, recoveredStampSets)
+			pkg2, err2 := runToIR(nil, resolutions, recoveredStampSets, recoveredStampForwards)
 			if err2 != nil {
 				return err2
 			}
@@ -635,12 +644,16 @@ func run(a cli.Args) error {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure (stamp set-trace) failed (%v); keeping pass-1 result with direct stamp vars only.\n", cfgErr)
 		} else if raw, readErr := os.ReadFile(plainTrace); readErr != nil {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading non-expanded trace failed (%v); keeping pass-1 result.\n", readErr)
-		} else if sets := shadow.ExtractSetAssignments(raw, a.SourceRoot); len(sets) > 0 {
-			pkg3, err3 := runToIR(nil, genexResolutions, sets)
-			if err3 != nil {
-				return err3
+		} else {
+			sets := shadow.ExtractSetAssignments(raw, a.SourceRoot)
+			forwards := shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
+			if len(sets) > 0 || len(forwards) > 0 {
+				pkg3, err3 := runToIR(nil, genexResolutions, sets, forwards)
+				if err3 != nil {
+					return err3
+				}
+				pkg = pkg3
 			}
-			pkg = pkg3
 		}
 	}
 	// Always materialize the rejections report when its path is
