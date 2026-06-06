@@ -665,7 +665,7 @@ transition cleanly.
   deterministic, structured `conversion-todos.json` sidecar (alongside the
   survey's `rejections`/`bazel-idiom`/`coverage` reports) a
   post-conversion AI pass consumes. **Design decided** — see
-  `docs/design/conversion-todos.md` (delete that doc once this lands):
+  `docs/design/conversion-todos.md` (delete that doc once the producer lands):
   this slice is the deterministic **producer** + the consumer **contract**,
   not the AI post-pass itself. v1 wires all three existing breadcrumb sites
   (each already groups+sorts, each gains one `todos.Add`); the report

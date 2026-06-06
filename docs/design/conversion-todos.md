@@ -117,8 +117,10 @@ Default preamble (intent + rules + a worked example):
 > `cmake -P` or shells out to the cmake harness. Prefer `bazel_skylib`
 > `diff_test` / `sh_test` over re-running cmake.
 >
-> **Rules.** (1) Author into the designated authored-output file, never the
-> converter-owned `BUILD.bazel` (the converter regenerates it wholesale).
+> **Rules.** (1) Author into the designated authored-output file — never the
+> converter-owned `BUILD.bazel.out` nor the `stage-b`-derived `BUILD.bazel`
+> (the converter regenerates `BUILD.bazel.out` wholesale and stage-b overwrites
+> `BUILD.bazel` from it).
 > (2) One reusable macro per shared unit, instantiated N times — not N
 > near-duplicate targets. (3) Preserve the recovered `verification` as the
 > test's assertion. (4) Your output crosses the same trust boundary as
