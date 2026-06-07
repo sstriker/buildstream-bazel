@@ -25,10 +25,12 @@ fix.
 - **Roundtrip-safe leading-comment emission already ships.**
   `bazel.Options.EmitProvenance` (`converter/emit/bazel`) emits a leading
   `# Source: <file>:<line> (<command>)` comment
-  above each target; the emitter is buildtools-AST-based and routes through the
-  `build.Parse` → `build.Format` canonicalize pass (same one `buildifier
-  --mode=fix` uses), and the code notes leading comments attached to rule calls
-  survive it. So **Option D (a provenance breadcrumb) is already implemented**,
+  above each target; the emitter assembles BUILD text from templates and then
+  canonicalizes it through the `build.Parse` → `build.Format` pass (the same one
+  `buildifier --mode=fix` uses), with comment attachment done by mutating the
+  parsed AST (exactly as the `# keep` markers already do, `addKeepMarkers`). The
+  code notes leading comments attached to rule calls survive that pass. So
+  **Option D (a provenance breadcrumb) is already implemented**,
   and leading-comment emission is proven gate-safe.
 - **Reading raw cmake source at a declaration site is a production pattern.**
   `cmakeargv.ReadCall(path, line, command)` opens `CMakeLists.txt` at a backtrace

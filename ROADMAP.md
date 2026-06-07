@@ -689,12 +689,13 @@ transition cleanly.
   lands). Most of the substrate already ships: `ir.Target.Provenance`
   (backtrace-derived declaration site) gives free association;
   `bazel.Options.EmitProvenance` (`converter/emit/bazel`) already emits a
-  roundtrip-safe leading `# Source: <file>:<line>` comment (the provenance
-  breadcrumb, "D");
+  roundtrip-safe leading `# Source: <file>:<line> (<command>)` comment (the
+  provenance breadcrumb, "D");
   `cmakeargv.ReadCall` already reads raw cmake at a declaration site; the
-  `pkg.HeaderComments` slot already emits at top-of-BUILD; and the
-  buildtools-AST emit (`.Before`/`.Suffix`, the `# keep` precedent) keeps
-  output buildifier-canonical. v1 scope: **A** file-header → HeaderComments,
+  `pkg.HeaderComments` slot already emits at top-of-BUILD; and the emit
+  canonicalizes through buildtools Parse+Format with post-parse AST comment
+  attachment (`.Before`/`.Suffix`, the `# keep` precedent) keeping output
+  buildifier-canonical. v1 scope: **A** file-header → HeaderComments,
   **B** leading comment → rule `.Before` (including **every** synthesized
   codegen target — `add_custom_command`/`add_custom_target`, lifted
   `execute_process`, `configure_file`/`file(GENERATE)`, `cmake -P` — by
