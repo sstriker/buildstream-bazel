@@ -844,10 +844,17 @@ func run(a cli.Args) error {
 
 	// Conversion-todos report (collected during ToIR). The stderr
 	// breadcrumbs are emitted at their producer sites and retained; this
-	// writes the deterministic conversion-todos.json for the AI post-pass
-	// when --conversion-todos-report is set. Always materialized (empty
-	// todos list when nothing fired) so consumers can rely on the path.
-	if a.ConversionTodosReport != "" {
+	// writes the deterministic conversion-todos.json for the AI post-pass.
+	// On by default (--conversion-todos); destination is the explicit
+	// --conversion-todos-report, else <dir(out-build)>/conversion-todos.json.
+	// With neither resolvable (no out-build), it's a silent no-op. Always
+	// materialized when written (empty todos list when nothing fired) so
+	// consumers can rely on the path.
+	todosDest := a.ConversionTodosReport
+	if todosDest == "" && a.OutBuild != "" {
+		todosDest = filepath.Join(filepath.Dir(a.OutBuild), "conversion-todos.json")
+	}
+	if a.ConversionTodos && todosDest != "" {
 		pre, perr := todos.LoadPreamble(a.ConversionTodosPreamble)
 		if perr != nil {
 			return fmt.Errorf("--conversion-todos-preamble %s: %w", a.ConversionTodosPreamble, perr)
@@ -860,10 +867,10 @@ func run(a cli.Args) error {
 			// truncated/invalid report.
 			return fmt.Errorf("marshal conversion-todos report: %w", merr)
 		}
-		if err := os.MkdirAll(filepath.Dir(a.ConversionTodosReport), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(todosDest), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(a.ConversionTodosReport, append(body, '\n'), 0o644); err != nil {
+		if err := os.WriteFile(todosDest, append(body, '\n'), 0o644); err != nil {
 			return err
 		}
 	}

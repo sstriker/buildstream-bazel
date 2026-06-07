@@ -655,32 +655,47 @@ transition cleanly.
 
 - **Agent-actionable prompts for no-mechanical-form constructs — AI
   post-pass (consumer) remains.** The deterministic **producer** + the
-  consumer **contract** shipped: `convert-element-cmake
-  --conversion-todos-report=<p>` (and `--conversion-todos-preamble=<f>`)
-  writes a deterministic, byte-identical `conversion-todos.json` (the
-  `todos.Collector` in `converter/internal/todos`, plumbed through
-  `lower.Options.Todos`) carrying the operator **preamble** + one grouped
+  consumer **contract** shipped, and the producer is now **on by default
+  and wired through to project B**. `convert-element-cmake` emits a
+  deterministic, byte-identical `conversion-todos.json` by default
+  (`--conversion-todos=false` opts out; destination is
+  `--conversion-todos-report=<p>` if set, else
+  `<dir(out-build)>/conversion-todos.json`; `--conversion-todos-preamble=<f>`
+  overrides the preamble) — the `todos.Collector` in
+  `converter/internal/todos`, plumbed through `lower.Options.Todos`,
+  carrying the operator **preamble** + one grouped
   `{id, kind, disposition, group_key, anchors, evidence, suggested_shape,
   prompt}` entry per unit. **Full coverage of the refusal + bake surfaces**
-  (`converter/internal/lower/todos_producers.go` +
-  `todos_coverage.go`): the three breadcrumb producers — `cmake-p-test`
-  (`add_test(COMMAND cmake -P …)`), `cmake-internal-drop` (filtered command
-  edges), `install-script`/`install-code` — plus generic producers mirroring
-  **every Tier-1 refusal** (`rejection:<code>`, diagnostic mode only — a
-  refusal aborts in normal mode), **every convert-time bake** (`bake`, from
-  `collectBakedEntries`), and **every unresolved-genex audit tag**
-  (`genex-unresolved`). Each entry carries a best-guess **`disposition`**
-  (`actionable` | `improvement` | `informational`) — a *fallible hint*, not a
-  gate: the preamble invites the agent to upgrade an improvement/informational
-  entry when it sees a better form (e.g. a baked check/try_compile probe option
-  → a `config_setting`/`select` over platform/sysroot/toolchain). Defaults are
-  per-producer with **per-site overrides** (a hoisted VCS/identity/date stamp
-  bake is `actionable` while a baked check-probe under the same tag stays
-  `improvement`). The survey aggregates it alongside
-  `rejections`/`bazel-idiom`/`coverage` (run-survey.sh `todos` column).
-  Idempotency is the stable line-free `id` + the file-ownership split (the
-  converter-owned `BUILD.bazel.out` stays byte-identical and marker-free; the
-  post-pass authors into a separate file keyed by `id`).
+  (`converter/internal/lower/todos_producers.go` + `todos_coverage.go`): the
+  three breadcrumb sites — `cmake-p-test` (`add_test(COMMAND cmake -P …)`),
+  `cmake-internal-drop` (filtered command edges), and
+  `install-script`/`install-code` (each alongside its retained stderr
+  warning) — plus generic producers mirroring **every Tier-1 refusal**
+  (`rejection:<code>`, diagnostic mode only — a refusal aborts in normal
+  mode), **every convert-time bake** (`bake`, from `collectBakedEntries`),
+  and **every unresolved-genex audit tag** (`genex-unresolved`). Each entry
+  carries a best-guess **`disposition`** (`actionable` | `improvement` |
+  `informational`) — a *fallible hint*, not a gate: the preamble invites the
+  agent to upgrade an improvement/informational entry when it sees a better
+  form (e.g. a baked check/try_compile probe option → a `config_setting`/
+  `select` over platform/sysroot/toolchain). Defaults are per-producer with
+  **per-site overrides** (a hoisted VCS/identity/date stamp bake is
+  `actionable` while a baked check-probe under the same tag stays
+  `improvement`). The preamble's **`environment` block** states the target
+  Bazel version + canonical rule providers (`@rules_cc` / `@rules_shell` /
+  `bazel_skylib` / `rules_pkg`) + the buildifier/gazelle gate, and names the
+  rendered `MODULE.bazel` as a handoff input; README's *"Post-conversion
+  prompts for an AI agent"* documents the handoff bundle (worklist + rendered
+  `BUILD.bazel` + `MODULE.bazel` + the CMake sources the anchors point at).
+  The orchestrator carries it to project B: the `<name>_converted` convert
+  genrule declares `conversion-todos.json` as an output (and the
+  `cmake_split_convert` rule writes it into the `packages` TreeArtifact), and
+  `stage-b` lands it in `elements/<name>/conversion-todos.json`. The survey
+  aggregates it alongside `rejections`/`bazel-idiom`/`coverage` (run-survey.sh
+  `todos` column). Idempotency is the stable line-free `id` + the
+  file-ownership split (the converter-owned `BUILD.bazel.out` stays
+  byte-identical and marker-free; the post-pass authors into a separate file
+  keyed by `id`).
   **What's left:** the non-deterministic **AI post-pass** that consumes
   the report to author the Bazel form (an `sh_test`/`diff_test` driving the
   built CLI, one reusable macro per shared unit) — deliberately quarantined
