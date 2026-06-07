@@ -381,11 +381,15 @@ type Args struct {
 
 	// EmitSourceComments enables comment-carrying: recover the author's
 	// CMakeLists comments (leading block per target + the file header) from
-	// raw source and emit them onto the corresponding rules. Default OFF —
-	// unlike --emit-provenance (which reads the already-loaded backtrace),
-	// this reads raw source files, adding them to the action's inputs, so
-	// it's opt-in. Drives lower.Options.RecoverSourceComments +
-	// emit.Options.EmitSourceComments together.
+	// raw source and emit them onto the corresponding rules. Default ON —
+	// the author's comments are high-signal navigation help that survives
+	// into the converted BUILD. Unlike --emit-provenance (which reads the
+	// already-loaded backtrace), this reads raw source files, adding them
+	// to the action's inputs; pass --emit-source-comments=false to suppress
+	// (skips the raw-source reads, e.g. for byte-clean output or
+	// reply-dir-only runs where source isn't staged). Drives
+	// lower.Options.RecoverSourceComments + emit.Options.EmitSourceComments
+	// together.
 	EmitSourceComments bool
 
 	// EmitStandaloneCustomCommands enables Phase 4 of the
@@ -556,16 +560,25 @@ type Args struct {
 	// so consumers can rely on the path existing).
 	RejectionsReport string
 
-	// ConversionTodosReport, when non-empty, is the path the
+	// ConversionTodos enables the agent-prompts producer: write the
+	// structured conversion-todos.json (the "no-mechanical-form" cmake
+	// constructs an author or AI post-pass must re-express). Default ON.
+	// Destination is ConversionTodosReport when set, else
+	// "<dir(OutBuild)>/conversion-todos.json"; with no resolvable
+	// destination the producer is a silent no-op. Pass --conversion-todos=false
+	// to suppress entirely.
+	ConversionTodos bool
+
+	// ConversionTodosReport, when non-empty, is the explicit path the
 	// converter writes the structured conversion-todos.json to: the
 	// "no-mechanical-form" cmake constructs (add_test COMMAND cmake -P
 	// harnesses, filtered command edges with no Bazel analogue,
 	// install(SCRIPT)/install(CODE)) an author or AI post-pass must
-	// re-express. Always materialized when set (an empty {todos:[]}
-	// report when nothing fired), so consumers can rely on the path
-	// existing. Independent of --ignore-rejections-for-diagnostics —
-	// these are clean (Tier-0) drops, not refusals. See
-	// converter/internal/todos.
+	// re-express. Always materialized when ConversionTodos is on (an empty
+	// {todos:[]} report when nothing fired), so consumers can rely on the
+	// path existing. Overrides the OutBuild-derived default destination.
+	// Independent of --ignore-rejections-for-diagnostics — these are clean
+	// (Tier-0) drops, not refusals. See converter/internal/todos.
 	ConversionTodosReport string
 
 	// ConversionTodosPreamble, when non-empty, is the path to an
@@ -670,7 +683,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
 	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
-	fs.BoolVar(&a.EmitSourceComments, "emit-source-comments", false, "carry author comments from CMakeLists into the emitted BUILD: the leading `#` comment block above each target's declaration, plus the top-of-file header block. Reads raw source (adds it to the action's inputs), so default OFF; pass --emit-source-comments to enable.")
+	fs.BoolVar(&a.EmitSourceComments, "emit-source-comments", true, "carry author comments from CMakeLists into the emitted BUILD: the leading `#` comment block above each target's declaration, plus the top-of-file header block. Default ON; pass --emit-source-comments=false to suppress (skips reading raw source — useful for byte-clean output or reply-dir-only runs where source isn't staged).")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
 	fs.StringVar(&a.OutConfigSettings, "out-config-settings", "", "write a //config package BUILD (string_flag build_type + one config_setting per non-sanitizer config in --build-types) backing the multi-config fold's //config:<name> select() arms, making the converted output self-contained. Phase 5 of the generator-parity uplift.")
@@ -691,7 +704,8 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.LiftCCHash, "lift-cc-hash", false, "recognize a custom command running a known file-hashing cmake -P script (VTK's vtkHashSource) and lower it to the native cc_hash rule (//tools:cc-hash) — the converted project needs no cmake at build time, and the digest recomputes on input change (unlike --cmake-script-bake). Faithful (the #define name + digest are preserved). Off by default; requires the consuming project to stage //tools:cc-hash. The Bazel-native end-state for the hash-a-file-into-a-header codegen idiom (docs/research/codegen-idiom-coverage.md).")
 	fs.BoolVar(&a.IgnoreRejectionsForDiagnostics, "ignore-rejections-for-diagnostics", false, "collect every Tier-1 refusal and continue past each with a local skip rather than aborting on the first one. The resulting BUILD.bazel is NOT guaranteed to build — refused constructs are silently elided. Use with --rejections-report to capture the structured rejection list. Diagnostic surveys only; production paths want the strict refusal.")
 	fs.StringVar(&a.RejectionsReport, "rejections-report", "", "write the structured rejection records (JSON array) here. Only meaningful with --ignore-rejections-for-diagnostics.")
-	fs.StringVar(&a.ConversionTodosReport, "conversion-todos-report", "", "write the structured conversion-todos.json here: the no-mechanical-form cmake constructs (add_test COMMAND cmake -P harnesses, filtered command edges with no Bazel analogue, install(SCRIPT)/install(CODE)) an author or AI post-pass must re-express. Always materialized when set (empty todos list when nothing fired). The deterministic producer; the AI post-pass that consumes it is out of scope. See the no-mechanical-form-constructs item in ROADMAP.md.")
+	fs.BoolVar(&a.ConversionTodos, "conversion-todos", true, "emit conversion-todos.json — the agent-actionable prompts for no-mechanical-form cmake constructs (add_test COMMAND cmake -P harnesses, filtered command edges with no Bazel analogue, install(SCRIPT)/install(CODE)). Default ON; written to --conversion-todos-report if set, else <out-build dir>/conversion-todos.json. Pass --conversion-todos=false to suppress.")
+	fs.StringVar(&a.ConversionTodosReport, "conversion-todos-report", "", "explicit destination for conversion-todos.json, overriding the <out-build dir>/conversion-todos.json default. The deterministic producer; the AI post-pass that consumes it is out of scope. See the no-mechanical-form-constructs item in ROADMAP.md.")
 	fs.StringVar(&a.ConversionTodosPreamble, "conversion-todos-preamble", "", "path to an operator-supplied preamble (prose, read verbatim) that replaces the built-in default in conversion-todos.json. Empty uses the built-in default (transition-to-plain-Bazel intent + brotli worked example). Only meaningful with --conversion-todos-report.")
 
 	if err := fs.Parse(argv); err != nil {

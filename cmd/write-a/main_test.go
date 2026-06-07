@@ -298,6 +298,8 @@ func TestWriter_HelloWorldShape(t *testing.T) {
 		`"BUILD.bazel.out"`,
 		`"read_paths.json"`,
 		`"cmake-config-bundle.tar"`,
+		`"conversion-todos.json"`,
+		`--conversion-todos-report="$(location conversion-todos.json)"`,
 		`$(location //tools:convert-element-cmake)`,
 	} {
 		if !strings.Contains(got, marker) {

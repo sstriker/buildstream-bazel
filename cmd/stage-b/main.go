@@ -161,6 +161,17 @@ func run(a args) ([]string, error) {
 			}
 			return nil, fmt.Errorf("read converted output %s: %v", src, err)
 		}
+		// Stage the agent-prompts sidecar alongside the BUILD (the
+		// converter emits conversion-todos.json next to BUILD.bazel.out by
+		// default). Independent of the BUILD diff — a todos-only change
+		// still needs to land — and not counted as a "changed" package
+		// since it isn't a BUILD file (no gazelle/buildifier pass needed).
+		// The --split-packages path lands it via stageSplitDir (it's a file
+		// inside the packages TreeArtifact), so this covers only the
+		// single-file genrule shape.
+		if err := stageSidecar(filepath.Join(aElements, name), filepath.Join(bElements, name), "conversion-todos.json"); err != nil {
+			return nil, fmt.Errorf("stage conversion-todos for %s: %v", name, err)
+		}
 		dst := filepath.Join(bElements, name, "BUILD.bazel")
 		dstBytes, err := os.ReadFile(dst)
 		if err != nil && !os.IsNotExist(err) {
@@ -179,6 +190,38 @@ func run(a args) ([]string, error) {
 	}
 	sort.Strings(changed)
 	return changed, nil
+}
+
+// stageSidecar copies a per-element converter sidecar file (e.g.
+// conversion-todos.json) from project A's bazel-bin element dir (aDir)
+// into project B's element dir (bDir), writing only when the content
+// differs. A missing source is not an error — the converter may not have
+// produced it (e.g. --conversion-todos=false, or a kind that emits no
+// such file). Unlike the BUILD staging, this does not feed the "changed"
+// list: the sidecar isn't a BUILD file, so it needs no gazelle/buildifier
+// follow-up.
+func stageSidecar(aDir, bDir, file string) error {
+	src := filepath.Join(aDir, file)
+	srcBytes, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %v", src, err)
+	}
+	dst := filepath.Join(bDir, file)
+	if cur, err := os.ReadFile(dst); err == nil && bytes.Equal(cur, srcBytes) {
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %v", dst, err)
+	}
+	if err := os.MkdirAll(bDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %v", bDir, err)
+	}
+	if err := os.WriteFile(dst, srcBytes, 0o644); err != nil {
+		return fmt.Errorf("write %s: %v", dst, err)
+	}
+	return nil
 }
 
 // stageSplitDir merges a --split-packages TreeArtifact directory (the

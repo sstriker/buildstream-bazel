@@ -302,14 +302,48 @@ func TestParse_ConversionTodos(t *testing.T) {
 		t.Errorf("ConversionTodosPreamble=%q; want /tmp/pre.txt", args.ConversionTodosPreamble)
 	}
 
-	// Default empty.
+	// --conversion-todos is on by default; report/preamble paths default empty.
 	stderr.Reset()
 	args, code = Parse([]string{"--source-root", "/proj"}, &stderr)
 	if code != ExitSuccess {
 		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
 	}
+	if !args.ConversionTodos {
+		t.Errorf("ConversionTodos default=false; want true (on by default)")
+	}
 	if args.ConversionTodosReport != "" || args.ConversionTodosPreamble != "" {
-		t.Errorf("conversion-todos defaults non-empty: report=%q preamble=%q", args.ConversionTodosReport, args.ConversionTodosPreamble)
+		t.Errorf("conversion-todos path defaults non-empty: report=%q preamble=%q", args.ConversionTodosReport, args.ConversionTodosPreamble)
+	}
+
+	// Opt-out.
+	stderr.Reset()
+	args, code = Parse([]string{"--source-root", "/proj", "--conversion-todos=false"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.ConversionTodos {
+		t.Errorf("--conversion-todos=false did not disable")
+	}
+}
+
+// TestParse_EmitSourceCommentsDefault pins comment-carrying on by default
+// with a =false opt-out.
+func TestParse_EmitSourceCommentsDefault(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if !args.EmitSourceComments {
+		t.Errorf("EmitSourceComments default=false; want true (on by default)")
+	}
+	stderr.Reset()
+	args, code = Parse([]string{"--source-root", "/proj", "--emit-source-comments=false"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	if args.EmitSourceComments {
+		t.Errorf("--emit-source-comments=false did not disable")
 	}
 }
 
