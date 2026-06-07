@@ -688,8 +688,9 @@ transition cleanly.
   `docs/design/comment-carrying.md` (delete that doc once the producer
   lands). Most of the substrate already ships: `ir.Target.Provenance`
   (backtrace-derived declaration site) gives free association;
-  `emit.Options.EmitProvenance` already emits a roundtrip-safe leading
-  `# Source: <file>:<line>` comment (the provenance breadcrumb, "D");
+  `bazel.Options.EmitProvenance` (`converter/emit/bazel`) already emits a
+  roundtrip-safe leading `# Source: <file>:<line>` comment (the provenance
+  breadcrumb, "D");
   `cmakeargv.ReadCall` already reads raw cmake at a declaration site; the
   `pkg.HeaderComments` slot already emits at top-of-BUILD; and the
   buildtools-AST emit (`.Before`/`.Suffix`, the `# keep` precedent) keeps

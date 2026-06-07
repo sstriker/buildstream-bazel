@@ -22,8 +22,9 @@ fix.
   {File, Line, Command}` is populated from the codemodel `backtraceGraph` at
   lowering (`lower.go` ~1714). Association of a target to its `CMakeLists:line`
   is **free**.
-- **Roundtrip-safe leading-comment emission already ships.** `emit.Options.
-  EmitProvenance` emits a leading `# Source: <file>:<line> (<command>)` comment
+- **Roundtrip-safe leading-comment emission already ships.**
+  `bazel.Options.EmitProvenance` (`converter/emit/bazel`) emits a leading
+  `# Source: <file>:<line> (<command>)` comment
   above each target; the emitter is buildtools-AST-based and routes through the
   `build.Parse` → `build.Format` canonicalize pass (same one `buildifier
   --mode=fix` uses), and the code notes leading comments attached to rule calls
@@ -160,8 +161,9 @@ Provenance-walking proves insufficient, but is not needed for v1.)
 
 ## Gating, determinism, caveats
 
-- **Opt-in flag** (`emit.Options.EmitSourceComments`, sibling of
-  EmitProvenance). Off by default keeps output byte-identical to today and avoids
+- **Opt-in flag** (`bazel.Options.EmitSourceComments`, a new sibling of
+  `EmitProvenance` in `converter/emit/bazel`). Off by default keeps output
+  byte-identical to today and avoids
   silently adding source-read inputs; operators opt in. (Whether to default it on
   later is a follow-up call.)
 - **Determinism:** recovered comments are a pure function of source text; emitted
