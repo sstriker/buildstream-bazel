@@ -73,6 +73,34 @@ Two network caveats worth not rediscovering:
   gazelle_cc into the persistent survey cache so the first gazelle run is
   fast).
 
+## Staying current with `main` (don't drift)
+
+Long-lived branches drift, and features land on `main` *separately* while
+you work — during the VTK push, comment-carrying (#452/#454/#455) and the
+`conversion-todos.json` producer (#450/#451) both landed on `main`, but the
+branch had drifted ~40 commits behind and didn't have them. Two concrete
+costs: you can **answer wrong** ("comments aren't carried" — true for the
+stale branch, false for `main`), and you can **re-implement work that
+already shipped**.
+
+So **`git fetch origin main` and check divergence
+(`git rev-list --left-right --count origin/main...HEAD`) at reasoning
+points** — at minimum:
+
+- **Before starting each new corpus member** (grpc, cuda-samples, …). Skim
+  `git log origin/main ^HEAD --oneline` for anything touching the converter
+  area you're about to work in, so you build on the latest mechanisms
+  instead of a stale snapshot.
+- **Before claiming a capability is missing** — confirm against `origin/main`,
+  not just the working branch, before saying "the converter doesn't do X."
+- **When a fix recurs or feels like it should already exist** — check whether
+  it landed on `main` first.
+
+Picking the changes up (merge `origin/main` in vs. land your branch and let
+GitHub's 3-way merge reconcile at PR-merge time) is a per-situation call —
+ask when the conflict surface is large. The non-negotiable part is *looking*,
+not silently diverging.
+
 ## When to open a PR
 
 Open a PR proactively — no separate "should I open a PR?" check-in —
