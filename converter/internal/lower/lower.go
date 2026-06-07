@@ -514,9 +514,16 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 	incs := map[string]bool{}
 	for o := range neededOuts {
 		hdrs = append(hdrs, o)
-		if d := filepath.Dir(o); d != "." && d != "" {
-			incs[d] = true
+		// Propagate -I<dir-of-header> so the BASENAME include resolves for
+		// dependents. dir == "." (header at the package root) is the common case
+		// (the auto-init basename genrule outputs there) and MUST be included as
+		// "." — otherwise the root-package header is only includable at its
+		// repo-root path, not by basename, and the consumer still can't find it.
+		d := filepath.Dir(o)
+		if d == "" {
+			d = "."
 		}
+		incs[d] = true
 	}
 	sort.Strings(hdrs)
 	includes := make([]string, 0, len(incs))
