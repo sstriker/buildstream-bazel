@@ -61,6 +61,10 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 	var out []fileGenerateOut
 	seenRel := map[string]bool{}
 	for _, call := range calls {
+		// outputs holds the concrete OUTPUT path(s) this call lifts to —
+		// normally one. The multi-config glob fallback (below) is the only
+		// producer of >1.
+		var outputs []string
 		if hasGenex([]byte(call.Output)) {
 			// cmake allows generator expressions in the OUTPUT
 			// path (e.g. `OUTPUT $<CONFIG>/foo.h`) and writes
@@ -91,73 +95,95 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 				// outs), which the second configure pass — still
 				// pre-Bazel — satisfies.
 				probed, pok := cc.resolveLiteral(call.Output, "")
-				if !pok {
-					continue
+				if pok && !hasGenex([]byte(probed)) {
+					resolved = probed
+					ok = true
 				}
-				if hasGenex([]byte(probed)) {
-					// cmake's evaluator returned a value that still
-					// carries `$<...>` — can't be a static output
-					// path. Drop, same as a failed Go-side resolve.
-					continue
-				}
-				resolved = probed
 			}
-			call.Output = resolved
-		}
-		if !filepath.IsAbs(call.Output) {
-			// Relative outputs can't be anchored without
-			// per-call binary-dir context (cmake resolves
-			// against the current binary dir at expand time).
-			// configure_file applies the same filter.
-			continue
-		}
-		rel, ok := relativeIfInsideRelaxed(recordedBuildDir, call.Output)
-		if !ok {
-			// Output landed outside the build dir — unusual
-			// for file(GENERATE) (the docs call out a relative
-			// path being resolved under the current binary dir,
-			// but an absolute path can in principle point
-			// anywhere). Drop silently; not a recovery target.
-			continue
-		}
-		if seenRel[rel] {
-			// Dedupe: cmake can re-emit the same file(GENERATE)
-			// event across multiple trace frames.
-			continue
-		}
-		seenRel[rel] = true
-
-		body, err := os.ReadFile(filepath.Join(hostBuildDir, rel))
-		if err != nil {
-			// Output not on disk — for CONDITION-gated calls
-			// whose condition evaluated false, cmake skips the
-			// write; for offline fixtures the stash may not
-			// include every output. Skip with no error so
-			// missing outputs degrade gracefully.
-			continue
+			if ok {
+				outputs = []string{resolved}
+			} else {
+				// Neither the evaluator nor the probe pinned a single
+				// path — the OUTPUT genex is config-dependent and the
+				// build is multi-config (`$<CONFIG>` has no single
+				// convert-time value), so cmake wrote one file per
+				// config. Resolve against the FILESYSTEM: replace each
+				// `$<...>` span with `*`, glob the build dir, and emit a
+				// genrule per match so every per-config include dir a
+				// consumer's compile line names finds its copy (SDL's
+				// include-config-$<LOWER_CASE:$<CONFIG>>/build_config/
+				// SDL_build_config.h). ONLY when ≥2 files match: a single
+				// match means the existing single-resolution / two-pass
+				// machinery owns the call (and the drop-on-unresolved
+				// contract its tests pin), so fall through to that drop.
+				if globbed := globGenexOutputs(call.Output, hostBuildDir); len(globbed) >= 2 {
+					outputs = globbed
+				} else {
+					continue
+				}
+			}
+		} else {
+			outputs = []string{call.Output}
 		}
 
-		if _, exists := cc.OutToGenrule[rel]; exists {
-			// Some other lifter (configure_file, execute_process)
-			// already claimed this output path. Two recoveries
-			// emitting the same rel would land duplicate rule
-			// names + colliding outs in BUILD.bazel. cmake itself
-			// rejects two writers to the same output, so this is
-			// the "shouldn't happen with a sane CMakeLists" case;
-			// defensive skip mirrors the execute_process lifters
-			// and keeps the recovered BUILD valid.
-			continue
+		for _, outPath := range outputs {
+			if !filepath.IsAbs(outPath) {
+				// Relative outputs can't be anchored without
+				// per-call binary-dir context (cmake resolves
+				// against the current binary dir at expand time).
+				// configure_file applies the same filter.
+				continue
+			}
+			rel, ok := relativeIfInsideRelaxed(recordedBuildDir, outPath)
+			if !ok {
+				// Output landed outside the build dir — unusual
+				// for file(GENERATE) (the docs call out a relative
+				// path being resolved under the current binary dir,
+				// but an absolute path can in principle point
+				// anywhere). Drop silently; not a recovery target.
+				continue
+			}
+			if seenRel[rel] {
+				// Dedupe: cmake can re-emit the same file(GENERATE)
+				// event across multiple trace frames.
+				continue
+			}
+			seenRel[rel] = true
+
+			body, err := os.ReadFile(filepath.Join(hostBuildDir, rel))
+			if err != nil {
+				// Output not on disk — for CONDITION-gated calls
+				// whose condition evaluated false, cmake skips the
+				// write; for offline fixtures the stash may not
+				// include every output. Skip with no error so
+				// missing outputs degrade gracefully.
+				continue
+			}
+
+			if _, exists := cc.OutToGenrule[rel]; exists {
+				// Some other lifter (configure_file, execute_process)
+				// already claimed this output path. Two recoveries
+				// emitting the same rel would land duplicate rule
+				// names + colliding outs in BUILD.bazel. cmake itself
+				// rejects two writers to the same output, so this is
+				// the "shouldn't happen with a sane CMakeLists" case;
+				// defensive skip mirrors the execute_process lifters
+				// and keeps the recovered BUILD valid.
+				continue
+			}
+
+			callForOut := call
+			callForOut.Output = outPath
+			name := configureFileGenruleName(rel) // reuse the gen_<path> namer
+			gen := buildFileGenerateGenrule(name, rel, body, callForOut, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets, imports, cc)
+			cc.Genrules = append(cc.Genrules, gen)
+			cc.OutToGenrule[rel] = name
+
+			out = append(out, fileGenerateOut{
+				AbsOutput: outPath,
+				RelOutput: rel,
+			})
 		}
-
-		name := configureFileGenruleName(rel) // reuse the gen_<path> namer
-		gen := buildFileGenerateGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets, imports, cc)
-		cc.Genrules = append(cc.Genrules, gen)
-		cc.OutToGenrule[rel] = name
-
-		out = append(out, fileGenerateOut{
-			AbsOutput: call.Output,
-			RelOutput: rel,
-		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })
 	return out, nil
@@ -1760,6 +1786,62 @@ func marshalGenexContext(ctx genexeval.Context) ([]byte, error) {
 // for target-evaluator-dependent ops surfaces here as "false"
 // just like at the body site; the call is dropped (no Bazel
 // shape can carry a Bazel-time-dynamic output filename).
+// globGenexOutputs resolves a file(GENERATE) OUTPUT carrying an unresolvable
+// generator expression against the filesystem: it replaces each balanced
+// `$<...>` span with `*` and globs under the build dir, returning the absolute
+// paths cmake actually wrote. The multi-config case (OUTPUT
+// `include-config-$<LOWER_CASE:$<CONFIG>>/build_config/SDL_build_config.h`,
+// where `$<CONFIG>` has no single convert-time value) yields one file per
+// config. Caller gates on len>=2 so this only fires for genuine multi-config
+// fan-out — a single match stays with the single-resolution / two-pass path.
+// Returns nil when the pattern is relative or nothing matches (offline runs
+// degrade to the prior drop).
+func globGenexOutputs(output, hostBuildDir string) []string {
+	pat := replaceGenexSpansWithStar(output)
+	if !filepath.IsAbs(pat) {
+		return nil
+	}
+	matches, err := filepath.Glob(pat)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	sort.Strings(matches)
+	return matches
+}
+
+// replaceGenexSpansWithStar replaces every balanced `$<...>` span (nested
+// genex included, e.g. `$<LOWER_CASE:$<CONFIG>>`) in s with a single `*`,
+// yielding a filepath.Glob pattern. `*` matches within one path segment,
+// which fits the cmake idiom (the genex sits inside one directory component
+// like `include-config-$<...>`).
+func replaceGenexSpansWithStar(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if i+1 < len(s) && s[i] == '$' && s[i+1] == '<' {
+			depth := 0
+			j := i + 1 // at '<'
+			for j < len(s) {
+				switch s[j] {
+				case '<':
+					depth++
+				case '>':
+					depth--
+				}
+				j++
+				if depth == 0 {
+					break
+				}
+			}
+			b.WriteByte('*')
+			i = j
+			continue
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
 func resolveGenexInPath(path string, ctx genexeval.Context) (string, bool) {
 	nodes, err := genexeval.Parse([]byte(path))
 	if err != nil {

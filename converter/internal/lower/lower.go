@@ -6279,6 +6279,22 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 	// safe). Same dedup applies to defines.
 	coptsSeen := map[string]bool{}
 	defSeen := map[string]bool{}
+	// heldInclude defers a `-include` / `-include-pch` flag until we see its
+	// argument: cmake's target_precompile_headers adds `-include
+	// <build>/CMakeFiles/<t>.dir/<cfg>/cmake_pch.h` to the compile line, an
+	// absolute build-dir path to a PCH that doesn't exist under Bazel's
+	// hermetic compile. Bazel has no PCH (it's a compile-speed optimization,
+	// not a correctness input — the real headers are #included by the sources
+	// normally), so drop the flag+arg pair. A `-include` of a NON-PCH forced
+	// header is preserved (the held flag is emitted when its arg isn't a PCH).
+	heldInclude := ""
+	emitHeld := func() {
+		if heldInclude != "" && !coptsSeen[heldInclude] {
+			coptsSeen[heldInclude] = true
+			copts = append(copts, heldInclude)
+		}
+		heldInclude = ""
+	}
 	for _, f := range frags {
 		if f.Role != "" {
 			// Reserved for link fragments; ignore on the compile side.
@@ -6296,6 +6312,22 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 			// "..." pair is stripped (a flag never legitimately needs surrounding
 			// shell quotes in argv form); embedded quotes are left untouched.
 			p = stripBalancedQuotes(p)
+			// Resolve a pending `-include` / `-include-pch` against this
+			// token (its argument). A cmake PCH artifact (cmake_pch.h /
+			// cmake_pch.hxx) drops the whole pair; any other forced-include
+			// header keeps both.
+			if heldInclude != "" {
+				if isCMakePCHPath(p) {
+					heldInclude = ""
+					continue
+				}
+				emitHeld()
+				// fall through to process p normally below
+			}
+			if p == "-include" || p == "-include-pch" {
+				heldInclude = p
+				continue
+			}
 			switch {
 			case strings.HasPrefix(p, "-D"):
 				val := strings.TrimPrefix(p, "-D")
@@ -6322,7 +6354,23 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 			}
 		}
 	}
+	// A `-include` with no following argument in the fragment stream (cmake
+	// shouldn't emit this, but be defensive) is preserved rather than lost.
+	emitHeld()
 	return copts, defines
+}
+
+// isCMakePCHPath reports whether p is a cmake target_precompile_headers
+// artifact — the generated PCH header cmake names cmake_pch.h / cmake_pch.hxx
+// under CMakeFiles/<target>.dir/<config>/. These are absolute build-dir paths
+// that don't exist under Bazel's hermetic compile and carry no correctness
+// (PCH is a speed optimization); splitCompileFragments drops the `-include` of
+// one. Match on basename so it's robust to the host build-dir prefix and the
+// per-config segment.
+func isCMakePCHPath(p string) bool {
+	base := filepath.Base(p)
+	return base == "cmake_pch.h" || base == "cmake_pch.hxx" ||
+		base == "cmake_pch.h.gch" || base == "cmake_pch.hxx.pch"
 }
 
 // subPackageDir returns the element-root-relative directory the target at
