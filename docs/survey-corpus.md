@@ -684,12 +684,41 @@ already a todo/rejection is a **producer/lowering gap**.
 
 It's opt-in and cost-gated because it calls an LLM. Turn it on with
 `SURVEY_INTENT=1` and a pluggable judge command in `INTENT_LENS_JUDGE` (the
-judge reads the prompt on stdin and writes the findings JSON on stdout), e.g.:
+judge reads the prompt on stdin and writes the findings JSON on stdout).
+
+**The judge must be a CAPABLE agent with filesystem access to the bundle.** The
+prompt (`converter/cmd/intent-lens prompt`) hands the judge the project-derived
+context it needs — that the output targets **Bazel 9** (native `cc`/`sh` rules
+removed, so the BUILDs load `@rules_cc` / `@rules_shell` / `@rules_pkg` /
+`@bazel_skylib` providers), that the BUILDs are **gazelle-cc-maintained**, and the
+paths to the converted bundle (`MODULE.bazel`, every `BUILD.bazel`/`.bzl`) and
+the original CMake sources — then asks it to READ them and report net-new misses.
+So the judge needs (a) a model strong enough to reason over the bundle and (b)
+read access to the bundle + cmake-source paths.
+
+Local-CLI judge (`claude -p`) in the **remote/cloud environment** needs two
+tweaks — the bare `claude -p` the older docs showed does NOT work here:
 
 ```sh
-SURVEY_BAZEL_BUILD=fmt SURVEY_INTENT=1 INTENT_LENS_JUDGE='claude -p' \
-  scripts/run-survey.sh fmt=$FMT_DIR
+# - env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: the remote shell exports this,
+#   which makes a nested `claude -p` demand --output-format=stream-json; unset it.
+# - --add-dir /tmp: the judge is sandboxed to the repo, but the survey out-dir +
+#   cmake sources live under /tmp; grant access so it can read them. (Point the
+#   survey at in-repo paths instead and you can drop --add-dir.)
+# - SURVEY_SKIP_BUILD=1: run the convert + fidelity + intent lenses but skip the
+#   (redundant, slow) `bazel build //...` — for refreshing lens rows on an
+#   already-green corpus.
+# - SURVEY_BAZEL_BUILD selects which projects the lenses act on (the lenses live
+#   on the build-lens path); SURVEY_SKIP_BUILD then drops the build itself.
+export INTENT_LENS_JUDGE='env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES claude -p --add-dir /tmp'
+SURVEY_BAZEL_BUILD=fmt SURVEY_SKIP_BUILD=1 SURVEY_COMPILE_DB=1 SURVEY_INTENT=1 \
+  scripts/run-survey.sh --out-dir /tmp/survey-lens fmt=$FMT_DIR
 ```
+
+The judge is heavy (it reads the whole bundle): budget several minutes per
+project and bump `SURVEY_BAZEL_BUILD_TIMEOUT` for big members (grpc/llvm/vtk list
+100+ files). A non-`claude` judge is any command that takes the prompt on stdin
+and emits the findings JSON on stdout.
 
 For each build-lens-selected project it writes `<out>/<name>/intent-capture.json`
 — the judge's findings, each triaged **net-new vs already-flagged** (deduped
@@ -817,9 +846,13 @@ SURVEY_BAZEL_BUILD=fmt scripts/run-survey.sh fmt=$FMT_DIR
 # 5th lens — compile-commands fidelity (per-TU defines/-std/includes drift):
 SURVEY_BAZEL_BUILD=fmt SURVEY_COMPILE_DB=1 scripts/run-survey.sh fmt=$FMT_DIR
 # 6th lens — intent-capture (agent-as-oracle "what did we miss?"); needs a
-# pluggable judge in INTENT_LENS_JUDGE (writes <out>/<name>/intent-capture.json):
-SURVEY_BAZEL_BUILD=fmt SURVEY_INTENT=1 INTENT_LENS_JUDGE='claude -p' \
-  scripts/run-survey.sh fmt=$FMT_DIR
+# CAPABLE judge in INTENT_LENS_JUDGE with read access to the bundle (writes
+# <out>/<name>/intent-capture.json + the `missed` column). See "The
+# intent-capture lens" for the judge contract + the remote-env tweaks.
+# Run BOTH non-build lenses on an already-green corpus WITHOUT rebuilding:
+export INTENT_LENS_JUDGE='env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES claude -p --add-dir /tmp'
+SURVEY_BAZEL_BUILD=fmt SURVEY_SKIP_BUILD=1 SURVEY_COMPILE_DB=1 SURVEY_INTENT=1 \
+  scripts/run-survey.sh --out-dir /tmp/survey-lens fmt=$FMT_DIR
 ```
 
 > **Multi-config under the default `auto`.** The converter folds every
