@@ -357,14 +357,14 @@ type Options struct {
 	EmitProvenance bool
 
 	// EmitSourceComments enables comment-carrying: the author's
-	// CMakeLists comments recovered onto each Target's
-	// LeadingComment / TrailingComment (and the package
-	// HeaderComments) are emitted onto the corresponding rule. Off
-	// by default — like EmitProvenance, it changes BUILD bytes and
-	// reads raw source. CLI surface via
+	// CMakeLists comments recovered onto each Target's LeadingComment
+	// (and the package HeaderComments) are emitted onto the
+	// corresponding rule. Off by default — like EmitProvenance, it
+	// changes BUILD bytes and reads raw source. CLI surface via
 	// `convert-element-cmake --emit-source-comments`. The author
 	// comment is emitted above the `# Source:` breadcrumb when both
-	// are on.
+	// are on. (TrailingComment is not yet rendered — the trailing slice
+	// is still pending; see the ROADMAP bullet.)
 	EmitSourceComments bool
 }
 

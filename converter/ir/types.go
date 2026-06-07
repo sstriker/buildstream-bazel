@@ -354,9 +354,12 @@ type Target struct {
 
 	// TrailingComment is an author comment trailing the declaring command
 	// on its last line (e.g. `add_library(foo ...)  # core lib`), without
-	// the leading `#`/space. Emitted as a `# <text>` suffix on the rule —
-	// except on whole-rule-`# keep` kinds, where it routes to leading
-	// placement to avoid stacking two suffix comments. Empty when absent.
+	// the leading `#`/space. Reserved for the trailing-comment slice (the
+	// field exists; recovery + emission are NOT wired yet — see the
+	// "Carry CMakeLists comments" ROADMAP bullet). When wired it will emit as
+	// a `# <text>` suffix on the rule, routing to leading placement on
+	// whole-rule-`# keep` kinds to avoid stacking two suffix comments.
+	// Always empty today.
 	TrailingComment string
 
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).

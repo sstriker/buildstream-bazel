@@ -45,6 +45,20 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 	if pkg == nil {
 		return
 	}
+	// Read each source file at most once: many targets are declared in one
+	// CMakeLists, so re-reading per site would be O(N_targets x file_size).
+	lineCache := map[string][]string{}
+	fileLines := func(path string) []string {
+		if v, ok := lineCache[path]; ok {
+			return v
+		}
+		v, err := cmakeargv.ReadSourceLines(path)
+		if err != nil {
+			v = nil
+		}
+		lineCache[path] = v
+		return v
+	}
 	// Codemodel targets already carry the correct declaration site in their
 	// Provenance (populated from the codemodel backtrace). Recover the leading
 	// comment from that site, reading the host file (Provenance.File is source-
@@ -63,7 +77,6 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 		}
 		count[site{p.File, p.Line}]++
 	}
-	cache := map[site][]string{}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
 		if len(t.LeadingComment) > 0 || t.Provenance.File == "" || t.Provenance.Line <= 0 {
@@ -80,18 +93,8 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 		if host == "" || isCMakeInternalPath(filepath.ToSlash(host)) {
 			continue
 		}
-		readKey := site{host, t.Provenance.Line}
-		lines, ok := cache[readKey]
-		if !ok {
-			recovered, err := cmakeargv.LeadingComment(host, t.Provenance.Line)
-			if err != nil {
-				recovered = nil
-			}
-			cache[readKey] = recovered
-			lines = recovered
-		}
-		if len(lines) > 0 {
-			t.LeadingComment = lines
+		if lc := cmakeargv.LeadingCommentLines(fileLines(host), t.Provenance.Line); len(lc) > 0 {
+			t.LeadingComment = lc
 		}
 	}
 
@@ -100,8 +103,8 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 	// HeaderComments are plain text (the emitter prefixes "# "), so strip the
 	// recovered raw tokens' leading "#".
 	if hostSrc != "" {
-		hdr, err := cmakeargv.FileHeaderComment(filepath.Join(hostSrc, "CMakeLists.txt"))
-		if err == nil && len(hdr) > 0 {
+		hdr := cmakeargv.FileHeaderCommentLines(fileLines(filepath.Join(hostSrc, "CMakeLists.txt")))
+		if len(hdr) > 0 {
 			stripped := make([]string, 0, len(hdr))
 			for _, ln := range hdr {
 				stripped = append(stripped, stripCommentPrefix(ln))
@@ -118,7 +121,6 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 	// an unmatched or ambiguous-basename genrule simply gets no comment.
 	siteByBase := buildCodegenSiteIndex(execProcs, customCmds, customTgts)
 	if len(siteByBase) > 0 {
-		commentCache := map[codegenSite][]string{}
 		for i := range pkg.Targets {
 			t := &pkg.Targets[i]
 			if t.Kind != ir.KindGenrule || len(t.LeadingComment) > 0 {
@@ -129,16 +131,7 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 				if !ok || s.file == "" || isCMakeInternalPath(filepath.ToSlash(s.file)) {
 					continue
 				}
-				lc, cached := commentCache[s]
-				if !cached {
-					recovered, err := cmakeargv.LeadingComment(s.file, s.line)
-					if err != nil {
-						recovered = nil
-					}
-					commentCache[s] = recovered
-					lc = recovered
-				}
-				if len(lc) > 0 {
+				if lc := cmakeargv.LeadingCommentLines(fileLines(s.file), s.line); len(lc) > 0 {
 					t.LeadingComment = lc
 				}
 				if t.Provenance.IsZero() {

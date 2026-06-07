@@ -68,14 +68,25 @@ func isLineComment(trimmed string) bool {
 // A comment trailing code on the line above is NOT a leading comment: that
 // line's trimmed text won't start with `#`, so the scan stops.
 func LeadingComment(path string, line int) ([]string, error) {
-	lines, err := readSourceLines(path)
+	lines, err := ReadSourceLines(path)
 	if err != nil {
 		return nil, err
 	}
+	return LeadingCommentLines(lines, line), nil
+}
+
+// ReadSourceLines reads path into newline-stripped lines. Exported so a caller
+// recovering many sites from one file can read it once and reuse the lines with
+// the *Lines helpers below, instead of re-reading per site.
+func ReadSourceLines(path string) ([]string, error) { return readSourceLines(path) }
+
+// LeadingCommentLines is the pure (no-I/O) core of LeadingComment over already-
+// read lines.
+func LeadingCommentLines(lines []string, line int) []string {
 	// line-2 is the 0-based index of the line directly above the command.
 	start := line - 2
 	if start < 0 || start >= len(lines) {
-		return nil, nil
+		return nil
 	}
 	var rev []string
 	for i := start; i >= 0; i-- {
@@ -86,14 +97,14 @@ func LeadingComment(path string, line int) ([]string, error) {
 		rev = append(rev, t)
 	}
 	if len(rev) == 0 {
-		return nil, nil
+		return nil
 	}
 	// rev is bottom-to-top; reverse to source order.
 	out := make([]string, len(rev))
 	for i, s := range rev {
 		out[len(rev)-1-i] = s
 	}
-	return out, nil
+	return out
 }
 
 // FileHeaderComment returns the file's leading `#` line-comment block — the
@@ -102,10 +113,16 @@ func LeadingComment(path string, line int) ([]string, error) {
 // license/copyright/file-doc header. Returns nil when the file opens with a
 // command.
 func FileHeaderComment(path string) ([]string, error) {
-	lines, err := readSourceLines(path)
+	lines, err := ReadSourceLines(path)
 	if err != nil {
 		return nil, err
 	}
+	return FileHeaderCommentLines(lines), nil
+}
+
+// FileHeaderCommentLines is the pure (no-I/O) core of FileHeaderComment over
+// already-read lines.
+func FileHeaderCommentLines(lines []string) []string {
 	var out []string
 	started := false
 	for _, ln := range lines {
@@ -122,5 +139,5 @@ func FileHeaderComment(path string) ([]string, error) {
 		started = true
 		out = append(out, t)
 	}
-	return out, nil
+	return out
 }
