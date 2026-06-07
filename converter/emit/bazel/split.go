@@ -1243,8 +1243,8 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// same target-ref shape as deps, so rewriteDeps relabels them to the right
 	// cross-package label when the consumer and the cc_shared_library land in
 	// different split packages.
-	rt.DynamicDeps = rewriteDeps(t.DynamicDeps, plan, nil)
-	rt.SharedLibDynamicDeps = rewriteDeps(t.SharedLibDynamicDeps, plan, nil)
+	rt.DynamicDeps = rewriteSharedDeps(t.DynamicDeps, plan)
+	rt.SharedLibDynamicDeps = rewriteSharedDeps(t.SharedLibDynamicDeps, plan)
 	// Data carries add_dependencies-derived intra-element target edges (":x",
 	// build-order only); relabel them to cross-package labels like deps, else a
 	// sub-package consumer's `:LLVMAnalysis` resolves to its OWN package
@@ -1351,6 +1351,28 @@ func allPackageLocalHdrs(hdrs []string) bool {
 		}
 	}
 	return true
+}
+
+// rewriteSharedDeps relabels faithful-SHARED dynamic_deps (":<lib>_shared" /
+// "//pkg:<lib>_shared"). The cc_shared_library WRAPPER is synthesized in emit
+// (not a planned ir.Target), so the plan can't locate "<lib>_shared" directly —
+// but it lives in the SAME package as its impl "<lib>". So strip the "_shared"
+// suffix, resolve the base lib's cross-package label via rewriteDeps, then
+// re-append "_shared". Labels without the suffix (defensive) pass through.
+func rewriteSharedDeps(deps []string, plan *splitPlan) []string {
+	if len(deps) == 0 {
+		return nil
+	}
+	var bases []string
+	for _, d := range deps {
+		bases = append(bases, strings.TrimSuffix(d, "_shared"))
+	}
+	resolved := rewriteDeps(bases, plan, nil)
+	out := make([]string, 0, len(resolved))
+	for _, r := range resolved {
+		out = append(out, r+"_shared")
+	}
+	return out
 }
 
 // rewriteDeps maps each intra-element ":x" dep to its cross-package
