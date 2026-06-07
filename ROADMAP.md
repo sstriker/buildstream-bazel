@@ -767,36 +767,41 @@ transition cleanly.
   `df /` and check `du -xsh /home/user/*` before concluding disk is the limit —
   and clean per-project `.bzcache`/`build-ws` under `--out-dir/<member>/`.
 
-- **Faithful SHARED-library conversion (`cc_shared_library`) — Phase 1 LANDED
-  (opt-in emission); Phase 2: consumers + flip the survey default.** The WHOLE
+- **Faithful SHARED-library conversion (`cc_shared_library`) — Phases 1/2/2b
+  LANDED & validated; remaining: corpus-wide re-green + edge cases.** The WHOLE
   POINT of shared is FIDELITY — to build what cmake would actually build. The
   survey forces `BUILD_SHARED_LIBS=OFF` for simplicity, but static is NOT
-  cmake's/the project's default; that forced-static is a deviation the shared
-  work exists to remove (and the fidelity lens currently compares against that
-  same deviated static config). Historically lower collapsed
-  `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`, losing the `.so` /
-  dynamic linking / symbol-boundary semantics. It mostly works because a static
-  lib behaves like a shared one for well-behaved code, but it's wrong where the
-  shared boundary is load-bearing: symbol dedup/visibility (curl's tests
-  recompile the curlx utility sources precisely because the `.so` hides them —
-  static-collapse duplicates them and the test binary SIGSEGVs at startup),
-  `MODULE_LIBRARY` plugins dlopen'd at runtime, and per-`.so` global state.
-  **Phase 1 (landed):** `--emit-shared-libraries` makes lower set
-  `ir.Target.SharedLibName` for SHARED/MODULE targets and emit render a sibling
-  `cc_shared_library(name=<t>_shared, shared_lib_name=libX.so, deps=[":<t>"])`
-  alongside the static impl; default emit is byte-identical (opt-in), validated
-  end-to-end (zlib → real `libz.so`).
-  **Phase 2 (remaining):** wire consumers' `dynamic_deps` to the `_shared`
-  target (+ the "a cc_library is owned by at most one shared lib" /
-  `exports`/`dynamic_deps` constraints + the "linked statically more than once"
-  guard); render in the SPLIT emit path (split.go) too, since the survey defaults
-  to `--split-packages`; carry the `.so` in runfiles for `bazel run`/test; and
-  flip the survey to build the project's NATURAL config (drop the forced
-  `BUILD_SHARED_LIBS=OFF`) so green + fidelity run against what cmake produces.
-  **After Phase 2, re-validate the whole corpus** under the natural link model —
-  the SHARED-defaulting members especially (curl / brotli / libxml2 / OpenBLAS),
-  which today only build because the lens forces static; the shared variant has
-  never actually been built, so each needs a fresh build+run pass.
+  cmake's/the project's default; that forced-static is the deviation this work
+  removes. Historically lower collapsed `SHARED_LIBRARY`/`MODULE_LIBRARY` → a
+  plain `cc_library`, losing the `.so` / dynamic linking / symbol-boundary
+  semantics — wrong where the shared boundary is load-bearing (curl's tests
+  SIGSEGV under static-collapse because the `.so` should hide the curlx
+  utility symbols; `MODULE_LIBRARY` dlopen plugins; per-`.so` global state).
+  **Landed:**
+  - `--emit-shared-libraries` (survey: `SURVEY_SHARED=1`, which also drops the
+    forced static so the project builds its NATURAL config). lower sets
+    `ir.Target.SharedLibName` for SHARED/MODULE targets; emit renders a sibling
+    `cc_shared_library(name=<t>_shared, shared_lib_name=<NameOnDisk>, deps=[":<t>"])`
+    alongside the static impl. Default emit byte-identical (opt-in).
+  - Consumer `dynamic_deps` wired (`wireDynamicDeps`): consumers keep the impl
+    in deps (headers) + the `_shared` sibling in dynamic_deps → Bazel links the
+    real `.so` (validated: example binary's ELF shows `NEEDED libz.so`).
+  - Multi-shared-lib graphs: the wrapper gets its OWN dynamic_deps to sibling
+    shared libs (`SharedLibDynamicDeps`) so it doesn't statically re-link a
+    cc_library another shared lib owns ("linked more than once"); the
+    shared_lib_name appends the cmake SOVERSION when the unversioned name would
+    collide with the impl's auto `lib<t>.so` (brotli).
+  - Split (build-lens) path: dynamic_deps + the wrapper labels relabel
+    cross-package (`rewriteSharedDeps` resolves `<lib>_shared` to the impl's
+    package — curl's `libcurl_shared` in `//elements/curl/lib`).
+  Validated green under `SURVEY_SHARED=1`: zlib, fmt, libxml2, brotli (multi-lib),
+  curl (multi-package + the SIGSEGV root-cause — now fixed by the real `.so`),
+  glog, spdlog, mbedtls (multi-lib).
+  **Remaining:** run the WHOLE build-lens corpus under `SURVEY_SHARED=1` (incl.
+  protobuf/abseil, sdl, OpenBLAS, the heavy LLVM/VTK) and fix fallout; carry the
+  `.so` in runfiles for `bazel run`/test; `MODULE_LIBRARY` dlopen semantics;
+  and consider flipping `SURVEY_SHARED` to the DEFAULT once the corpus is green
+  under it (so green + the fidelity lens run against the config cmake produces).
 
 - **Final corpus validation pass before declaring the converter "done."**
   Independent of any single feature: when the corpus is considered complete, do
