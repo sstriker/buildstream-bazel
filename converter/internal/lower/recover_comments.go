@@ -93,8 +93,12 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 		if host == "" || isCMakeInternalPath(filepath.ToSlash(host)) {
 			continue
 		}
-		if lc := cmakeargv.LeadingCommentLines(fileLines(host), t.Provenance.Line); len(lc) > 0 {
+		ls := fileLines(host)
+		if lc := cmakeargv.LeadingCommentLines(ls, t.Provenance.Line); len(lc) > 0 {
 			t.LeadingComment = lc
+		}
+		if tc := cmakeargv.TrailingCommentLines(ls, t.Provenance.Line); tc != "" {
+			t.TrailingComment = tc
 		}
 	}
 
@@ -131,8 +135,12 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 				if !ok || s.file == "" || isCMakeInternalPath(filepath.ToSlash(s.file)) {
 					continue
 				}
-				if lc := cmakeargv.LeadingCommentLines(fileLines(s.file), s.line); len(lc) > 0 {
+				gls := fileLines(s.file)
+				if lc := cmakeargv.LeadingCommentLines(gls, s.line); len(lc) > 0 {
 					t.LeadingComment = lc
+				}
+				if tc := cmakeargv.TrailingCommentLines(gls, s.line); tc != "" {
+					t.TrailingComment = tc
 				}
 				if t.Provenance.IsZero() {
 					t.Provenance = ir.Provenance{

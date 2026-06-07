@@ -128,3 +128,32 @@ func TestComment_MissingFile(t *testing.T) {
 		t.Error("expected error for missing file")
 	}
 }
+
+func TestTrailingCommentLines(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string
+		line  int
+		want  string
+	}{
+		{"single line", []string{`add_library(foo STATIC foo.c)  # core lib`}, 1, "# core lib"},
+		{"no trailing", []string{`add_library(foo STATIC foo.c)`}, 1, ""},
+		{
+			"multi-line call",
+			[]string{`add_custom_command(`, `  OUTPUT x`, `  COMMAND gen)   # makes x`},
+			1, "# makes x",
+		},
+		{
+			"paren inside quoted arg",
+			[]string{`add_custom_command(OUTPUT x COMMAND sh -c "echo (hi)")  # quoted`},
+			1, "# quoted",
+		},
+		{"trailing after close on its own line", []string{`add_library(`, `  foo`, `)  # lib`}, 1, "# lib"},
+		{"comment inside args is not trailing", []string{`add_library(foo  # not this`, `  bar)`}, 1, ""},
+	}
+	for _, c := range cases {
+		if got := TrailingCommentLines(c.lines, c.line); got != c.want {
+			t.Errorf("%s: TrailingCommentLines = %q, want %q", c.name, got, c.want)
+		}
+	}
+}

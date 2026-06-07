@@ -352,14 +352,13 @@ type Target struct {
 	// together by the `--emit-source-comments` CLI flag.
 	LeadingComment []string
 
-	// TrailingComment is an author comment trailing the declaring command
-	// on its last line (e.g. `add_library(foo ...)  # core lib`), without
-	// the leading `#`/space. Reserved for the trailing-comment slice (the
-	// field exists; recovery + emission are NOT wired yet — see the
-	// "Carry CMakeLists comments" ROADMAP bullet). When wired it will emit as
-	// a `# <text>` suffix on the rule, routing to leading placement on
-	// whole-rule-`# keep` kinds to avoid stacking two suffix comments.
-	// Always empty today.
+	// TrailingComment is an author comment trailing the declaring command on
+	// its last line (e.g. `add_library(foo ...)  # core lib`), as a raw token
+	// ("# core lib", leading `#` kept). Populated by the recovery pass like
+	// LeadingComment; rendered under emit.Options.EmitSourceComments as a `#`
+	// suffix on the rule — routing to leading placement on whole-rule-`# keep`
+	// kinds (genrule/filegroup/…) to avoid stacking two suffix comments. Empty
+	// when the declaration has no trailing comment.
 	TrailingComment string
 
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).

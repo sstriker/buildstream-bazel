@@ -2068,6 +2068,30 @@ func TestEmit_SourceComments_LeadingRendersAboveRule(t *testing.T) {
 	}
 }
 
+// TestEmit_SourceComments_Trailing covers trailing-comment emission: a normal
+// rule gets it as a suffix; a whole-rule-`# keep` kind (genrule) routes it to
+// leading to avoid stacking two suffix comments.
+func TestEmit_SourceComments_Trailing(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "widget", Kind: ir.KindCCLibrary, Srcs: []string{"w.c"}, TrailingComment: "# core lib"},
+		{Name: "gen_x", Kind: ir.KindGenrule, GenruleCmd: "touch $@", GenruleOuts: []string{"x.h"}, TrailingComment: "# makes x"},
+	}}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitSourceComments: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "# core lib") {
+		t.Errorf("expected cc_library trailing comment; got:\n%s", s)
+	}
+	// genrule (whole-rule keep): the author comment routes to leading, above the rule.
+	iComment := strings.Index(s, "# makes x")
+	iGenrule := strings.Index(s, "genrule(")
+	if iComment < 0 || iGenrule < 0 || iComment > iGenrule {
+		t.Errorf("genrule trailing comment should route to leading (above the rule); got:\n%s", s)
+	}
+}
+
 // TestEmit_SourceComments_OmittedWhenDisabled keeps output byte-stable when the
 // flag is off, even if a Target carries a LeadingComment.
 func TestEmit_SourceComments_OmittedWhenDisabled(t *testing.T) {

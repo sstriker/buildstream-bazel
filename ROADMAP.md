@@ -681,30 +681,6 @@ transition cleanly.
   mechanical output (not trusted on faith). Surfaced from the brotli
   test-form discussion.
 
-- **Carry CMakeLists comments into BUILD files — leading + header + codegen
-  shipped; trailing remaining.** cmake discards comments at lex time (no
-  AST), so the File API + trace carry none; the converter recovers them from
-  raw source (`cmakeargv.LeadingComment`/`FileHeaderComment`) and re-attaches
-  them under the opt-in `--emit-source-comments` (off by default → byte-
-  identical; reads raw source, so it's not on by default). **Shipped:** the
-  file header → `pkg.HeaderComments` (A); each target's leading `#` block →
-  the rule's leading comment (B), for codemodel targets (recovered from the
-  target's `Provenance` site, with a shared-site skip so a helper invoked N
-  times doesn't smear one body comment across N targets) AND for codegen
-  genrules (`execute_process` / `add_custom_command` / `add_custom_target`,
-  matched to their originating trace call by output basename — "comments
-  before a codegen"); composed with the `# Source:` provenance breadcrumb
-  (D). Render gate `scripts/meta-cmake-comment-carrying.sh` proves all three
-  carry, none leak when off, and `buildifier -mode=diff` stays a no-op.
-  **Remaining:** **C-trailing** — a comment trailing the declaring command
-  (`add_library(foo …)  # core lib`) → the rule's `.Suffix` (the
-  `ir.Target.TrailingComment` field exists; needs trailing recovery extending
-  `cmakeargv` + AST-phase suffix emission, routing to leading on whole-rule-
-  `# keep` kinds to avoid stacking two suffix comments). Attr-level comments
-  stay out (arg reordering/canonicalization makes them roundtrip-fragile).
-  Caveat: comments sited inside a function/macro are skipped (the shared-site
-  guard), the same bounded ambiguity as the function-forwarded stamp lift.
-
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
   `continue-on-error` soft-launch was dropped from every fixture step after
