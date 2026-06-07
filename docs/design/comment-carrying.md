@@ -125,6 +125,39 @@ lexer — it reuses the `ReadCall` "open at line, tokenize" precedent.
   whole-rule-keep kinds, route the author comment to **leading** placement (B),
   never trailing — trailing is reserved for kinds without a whole-rule keep.
 
+## Validation: carried comments are verbatim, not vouched-for
+
+The mechanical carry copies the author's comment **verbatim** — it does not, and
+must not, rewrite it. Rewriting is a judgment call (nondeterministic) outside the
+converter's deterministic contract. So a carried comment can be **stale or
+misleading** after the cmake→Bazel transform: it may describe cmake mechanics
+that don't map 1:1 onto the emitted rule (e.g. `# OBJECT library to share
+objects` on a target that became a plain `cc_library`, or `# INTERFACE so it
+propagates` on a `cc_library(hdrs=…)`). Carried verbatim it preserves the
+author's *intent* (worth keeping), but it is **not vouched-for**.
+
+So carried comments cross the **same trust boundary** as every other converter
+output: they are recovered mechanically and deterministically, but
+**confirming/adapting them is a separate validation pass, not the converter's
+job.** This mirrors — from the mechanical side — the discipline the
+conversion-todos operator preamble already encodes for *agent-authored* targets
+("carry the source comment onto the authored target, but VALIDATE it; rewrite a
+stale cmake-mechanics description or drop it; never carry a comment that
+misdescribes the target"). The two paths share one rule:
+
+- **Mechanical targets** (this design): carry verbatim, deterministically.
+- **Agent-authored targets** (conversion-todos post-pass): carry **and** validate.
+- **Either way**, an optional validation/adaptation pass — the same agent
+  discipline — is what makes a carried comment trustworthy in the Bazel context;
+  the converter never silently rewrites.
+
+To make that pass tractable, carried comments are **findable**: every one sits on
+a converter-emitted rule whose `Provenance` records the originating
+`CMakeLists:line`, so a validator can locate each carried comment, compare it
+against the emitted rule, and adapt or drop it. (A lighter alternative — tagging
+carried comments with a marker the validator greps for — is available if
+Provenance-walking proves insufficient, but is not needed for v1.)
+
 ## Gating, determinism, caveats
 
 - **Opt-in flag** (`emit.Options.EmitSourceComments`, sibling of
