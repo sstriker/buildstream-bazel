@@ -150,22 +150,6 @@ func orderedLibIdentities(tokens []string, nameToTarget map[string]string) []str
 	return out
 }
 
-// orderedSystemLibs is retained for callers/tests that want only the system-lib
-// subset.
-func orderedSystemLibs(tokens []string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, t := range tokens {
-		id := libIdentity(t)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
-	}
-	return out
-}
-
 // aqueryLinkDoc is the slice of a CppLink aquery jsonproto needed to recover
 // each link action's argv and resolve its output binary's basename.
 type aqueryLinkDoc struct {
