@@ -146,6 +146,22 @@ func TestDefaultPreamble_HasBrotliExample(t *testing.T) {
 	}
 }
 
+// TestDefaultPreamble_ValidatesComments pins the rule instructing the post-pass
+// to carry AND validate the construct's source comment onto the authored
+// target — re-authored targets must not propagate a stale comment describing
+// the old cmake mechanics. (Agent-authored targets are the comment-carrying
+// path that the mechanical converter-side carry does not cover.)
+func TestDefaultPreamble_ValidatesComments(t *testing.T) {
+	p := DefaultPreamble()
+	// Pin a phrase unique to rule (5) so the test fails if the rule is
+	// substantively changed or removed, not merely if the words appear
+	// anywhere in the preamble.
+	const rule5 = "never carry a comment that misdescribes the target"
+	if !strings.Contains(p.Rules, rule5) {
+		t.Errorf("default preamble rules should carry rule (5) (%q); got %q", rule5, p.Rules)
+	}
+}
+
 func TestLoadPreamble_OverrideAndDefault(t *testing.T) {
 	got, err := LoadPreamble("")
 	if err != nil {
