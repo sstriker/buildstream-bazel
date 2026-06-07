@@ -477,6 +477,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
+	var defineSymbols map[string]string               // target → cmake DEFINE_SYMBOL export macro (trace set_target_properties)
 	var traceLinkLibs map[string][]string             // target → ordered list of cmake lib names from target_link_libraries (all visibility arms, dedup-preserved)
 	// traceLinkScope maps target → libName → cmake keyword
 	// ("PUBLIC", "PRIVATE", "INTERFACE", or "" for the legacy
@@ -662,6 +663,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				}
 			}
 		}
+		defineSymbols = decoded.DefineSymbols
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
@@ -1117,6 +1119,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			traceLinkScope:               traceLinkScope[tref.Name],
 			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
 			platformConditionalSrcsToAdd: platformConditionalSrcsToAdd[tref.Name],
+			defineSymbol:                 defineSymbols[tref.Name],
 		}, lc)
 		if err != nil {
 			return nil, err
@@ -1696,6 +1699,11 @@ type targetTrace struct {
 	traceLinkScope               map[string]string
 	platformConditionalSrcs      map[string]string
 	platformConditionalSrcsToAdd map[string][]string
+	// defineSymbol is the target's cmake DEFINE_SYMBOL export macro (from the
+	// trace's set_target_properties), or "" if unset. lowerTarget routes a
+	// matching define to local_defines so a SHARED/MODULE lib's export macro
+	// doesn't propagate to consumers when SHARED collapses to cc_library.
+	defineSymbol string
 }
 
 func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
@@ -2298,6 +2306,23 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 		}
 		irt.Defines = defs
+
+		// DEFINE_SYMBOL export-macro routing. cmake defines the export macro
+		// (`-D<DEFINE_SYMBOL>`, default `<target>_EXPORTS`) ONLY when compiling
+		// a SHARED/MODULE library's OWN sources — it's the __declspec(dllexport)
+		// trigger and is PRIVATE (never propagated to consumers). The
+		// SHARED->cc_library collapse otherwise emits it as a transitive
+		// `defines`, leaking it to every consumer (zlib's DEFINE_SYMBOL=ZLIB_DLL
+		// reaching example.c/minigzip.c — caught by the compile-commands fidelity
+		// lens). Move the macro to local_defines. Value: the trace-recovered
+		// DEFINE_SYMBOL, else cmake's default `<C-identifier of target>_EXPORTS`.
+		if t.Type == "SHARED_LIBRARY" || t.Type == "MODULE_LIBRARY" {
+			macro := tt.defineSymbol
+			if macro == "" {
+				macro = makeCIdentifier(t.Name) + "_EXPORTS"
+			}
+			moveDefineToLocal(irt, macro)
+		}
 
 		// Sysroot: tag the target with the cmake-recorded sysroot
 		// path. Operators see cross-compile context via grep;
@@ -6381,6 +6406,58 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 	// shouldn't emit this, but be defensive) is preserved rather than lost.
 	emitHeld()
 	return copts, defines
+}
+
+// makeCIdentifier mirrors cmake's string(MAKE_C_IDENTIFIER): every character
+// that isn't [A-Za-z0-9_] becomes `_`, and a leading digit is prefixed with
+// `_`. cmake derives the default DEFINE_SYMBOL as `<MAKE_C_IDENTIFIER(target)>_EXPORTS`.
+func makeCIdentifier(s string) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlnum := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+		if isAlnum {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if out[0] >= '0' && out[0] <= '9' {
+		out = "_" + out
+	}
+	return out
+}
+
+// moveDefineToLocal moves a define (matched on its NAME, before any `=value`)
+// from irt.Defines (transitive) to irt.LocalDefines (non-propagating), deduped.
+// No-op when the define isn't present.
+func moveDefineToLocal(irt *ir.Target, macro string) {
+	if macro == "" {
+		return
+	}
+	kept := irt.Defines[:0]
+	moved := false
+	for _, d := range irt.Defines {
+		name := d
+		if i := strings.IndexByte(d, '='); i >= 0 {
+			name = d[:i]
+		}
+		if name == macro {
+			moved = true
+			if !stringSliceContains(irt.LocalDefines, d) {
+				irt.LocalDefines = append(irt.LocalDefines, d)
+			}
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if moved {
+		irt.Defines = kept
+	}
 }
 
 // isCMakePCHPath reports whether p is a cmake target_precompile_headers

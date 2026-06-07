@@ -23,12 +23,10 @@ cc_library(
     srcs = ["src/lib.c"],
     hdrs = ["include/multi.h"],
     copts = ["-O3"],  # keep
-    defines = [
-        "NDEBUG",
-        "multishared_EXPORTS",
-    ],  # keep
+    defines = ["NDEBUG"],  # keep
     features = ["pic"],
     includes = ["include"],  # keep
+    local_defines = ["multishared_EXPORTS"],
 )
 
 cc_library(

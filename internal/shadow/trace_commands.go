@@ -47,6 +47,17 @@ type Decoded struct {
 	InstallExports             []InstallExportCall
 	FileGlobs                  []FileGlobCall
 	AddDefinitions             []AddDefinitionsCall
+
+	// DefineSymbols maps a target name to its cmake DEFINE_SYMBOL property
+	// value, recovered from `set_target_properties(<t> PROPERTIES DEFINE_SYMBOL
+	// <macro>)`. DEFINE_SYMBOL is the export macro cmake defines (as `-D<macro>`)
+	// ONLY when compiling a SHARED/MODULE library's OWN sources — it's the
+	// __declspec(dllexport) trigger and is PRIVATE (never propagated to
+	// consumers). lower routes the matching define to `local_defines` so the
+	// SHARED->cc_library collapse doesn't leak it transitively (zlib's ZLIB_DLL
+	// leaking to example.c/minigzip.c). When unset, the default is
+	// `<target>_EXPORTS`, which lower derives without the trace.
+	DefineSymbols map[string]string
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -133,6 +144,12 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyAddDefinitions(ev, traceSourceRoot); ok {
 			d.AddDefinitions = append(d.AddDefinitions, call)
+		}
+		for tgt, macro := range classifyDefineSymbols(ev) {
+			if d.DefineSymbols == nil {
+				d.DefineSymbols = map[string]string{}
+			}
+			d.DefineSymbols[tgt] = macro
 		}
 		if traceHasEndif {
 			d.PlatformConditionalSources = maybeCollectPlatformConditionalSourceTraceStack(ev, tier1Stack, traceSourceRoot, knownTargets, d.PlatformConditionalSources)
@@ -548,6 +565,47 @@ func classifyAddDefinitions(ev TraceEvent, sourceRoot string) (AddDefinitionsCal
 		return AddDefinitionsCall{}, false
 	}
 	return AddDefinitionsCall{File: ev.File, Items: items}, true
+}
+
+// classifyDefineSymbols extracts target -> DEFINE_SYMBOL macro pairs from a
+// `set_target_properties(t1 [t2 ...] PROPERTIES ... DEFINE_SYMBOL <macro> ...)`
+// trace event. Returns nil for any other command. The shape is a leading list
+// of target names, the literal `PROPERTIES`, then property/value pairs; we scan
+// the pairs for DEFINE_SYMBOL and map it onto every named target. Not scoped to
+// the source tree: set_target_properties on a target is meaningful wherever it
+// runs (incl. a module's helper .cmake), and the value is just a macro name.
+func classifyDefineSymbols(ev TraceEvent) map[string]string {
+	if !strings.EqualFold(ev.Cmd, "set_target_properties") {
+		return nil
+	}
+	// Find the PROPERTIES keyword splitting targets from prop/value pairs.
+	propIdx := -1
+	for i, a := range ev.Args {
+		if a == "PROPERTIES" {
+			propIdx = i
+			break
+		}
+	}
+	if propIdx <= 0 || propIdx+1 >= len(ev.Args) {
+		return nil
+	}
+	var macro string
+	for i := propIdx + 1; i+1 < len(ev.Args); i += 2 {
+		if ev.Args[i] == "DEFINE_SYMBOL" {
+			macro = ev.Args[i+1]
+			break
+		}
+	}
+	if macro == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, t := range ev.Args[:propIdx] {
+		if t != "" {
+			out[t] = macro
+		}
+	}
+	return out
 }
 
 // ExtractConfigureFiles returns one entry per user-written
