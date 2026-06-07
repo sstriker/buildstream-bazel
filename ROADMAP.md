@@ -698,12 +698,12 @@ transition cleanly.
   codegen target — `add_custom_command`/`add_custom_target`, lifted
   `execute_process`, `configure_file`/`file(GENERATE)`, `cmake -P` — by
   stamping each with a `Provenance` from the highest-level originating trace
-  call line, so "comments before a codegen" works uniformly), **C-trailing-
-  only** → rule `.Suffix` (attr-level comments are
-  out: arg reordering/canonicalization makes them fragile), and **D** kept +
+  call line, so "comments before a codegen" works uniformly),
+  **C-trailing-only** → rule `.Suffix` (attr-level comments are out: arg
+  reordering/canonicalization makes them fragile), and **D** kept +
   composed. The only new work is recovering the comment text (a targeted
-  upward/trailing read extending `cmakeargv`). Opt-in flag; off → byte-
-  identical to today. Caveat: comments sited inside a function/macro are
+  upward/trailing read extending `cmakeargv`). Opt-in flag; off →
+  byte-identical to today. Caveat: comments sited inside a function/macro are
   skipped (Provenance points into the helper, not the call site), the same
   bounded ambiguity as the function-forwarded stamp lift.
 

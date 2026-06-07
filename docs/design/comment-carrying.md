@@ -1,9 +1,9 @@
 # Carrying CMakeLists comments into BUILD files
 
-> **Lifespan.** Design doc for unbuilt work. **Delete it once the comment-
-> carrying producer has landed** — the code + `ROADMAP.md` become the record
-> (per `CLAUDE.md`: architecture docs describe how systems work today; they
-> don't carry plans).
+> **Lifespan.** Design doc for unbuilt work. **Delete it once the
+> comment-carrying producer has landed** — the code + `ROADMAP.md` become the
+> record (per `CLAUDE.md`: architecture docs describe how systems work today;
+> they don't carry plans).
 
 ## Problem
 
