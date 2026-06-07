@@ -2010,6 +2010,17 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			consumesCodegen = true
 			ext := strings.ToLower(filepath.Ext(relOut))
 			switch {
+			case !isCcSrcEntry(relOut):
+				// Generated output that is neither a header nor a cc compile/link
+				// input — drop it from the cc target. VTK lists each module's
+				// wrap-hierarchy artifacts (CMakeFiles/<mod>-hierarchy.*.args/.data)
+				// as the module target's cmake sources for build ordering, and
+				// cmake even files them under a compile group; a cc rule REJECTS a
+				// non-source srcs entry ("does not produce any cc_library srcs
+				// files"). They have no cc-rule role and the producing genrule
+				// builds independently (cross-package ones also can't be a bare-path
+				// data entry, since rewriteDeps only relabels :name target refs).
+				// Checked BEFORE inCompileGroup so cmake's grouping can't override.
 			case inCompileGroup[i]:
 				irt.Srcs = append(irt.Srcs, relOut)
 				// A cc_embed lift's generated .cxx #includes its sibling .h;
@@ -2022,21 +2033,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 			case headerExts[ext]:
 				irt.Hdrs = append(irt.Hdrs, relOut)
-			case ccLinkableSrcExts[ext]:
-				// A generated object / archive / assembly is a real cc src
-				// input (compiled or linked) — keep it in srcs.
-				irt.Srcs = append(irt.Srcs, relOut)
 			default:
-				// Generated output the target depends on but that is neither a
-				// header nor a cc compile/link input — VTK lists its module
-				// hierarchy artifacts (CMakeFiles/<mod>-hierarchy.*.args/.data,
-				// inputs to the wrap-hierarchy tool) as the module target's
-				// cmake sources for build ordering. A `cc_library` REJECTS a
-				// non-source srcs entry ("does not produce any cc_library srcs
-				// files"), so route it to `data` instead: keeps the genrule
-				// output referenced (build-order dependency, the cmake intent)
-				// without the source-compilation requirement.
-				irt.Data = append(irt.Data, relOut)
+				// A compilable source not in a compile group, or a linkable
+				// object/archive/assembly — a real cc src input.
+				irt.Srcs = append(irt.Srcs, relOut)
 			}
 			continue
 		}
