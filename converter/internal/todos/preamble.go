@@ -28,6 +28,13 @@ func DefaultPreamble() Preamble {
 			"(4) Your output crosses the same trust boundary as mechanical output: " +
 				"it must pass the render gates (buildifier -mode=diff no-op, gazelle " +
 				"roundtrip, bazel build/test) — it is not trusted on faith.",
+			"(5) Carry the construct's source comment (read it at the todo's " +
+				"anchor) onto the authored target as a leading comment — but " +
+				"VALIDATE it, the same not-trusted-on-faith discipline as (4): " +
+				"re-authoring changes the mechanics, so a comment describing the " +
+				"old cmake form (e.g. running `cmake -P`) is stale. Rewrite it to " +
+				"describe the authored Bazel target accurately, or drop it if it no " +
+				"longer adds value; never carry a comment that misdescribes the target.",
 		}, " "),
 		Example: "28 add_test(… COMMAND cmake -P run_test.cmake <input>) share one " +
 			"runner whose contract is \"compress then decompress <input> with the " +
