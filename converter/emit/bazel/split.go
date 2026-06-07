@@ -913,6 +913,20 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}) ir.Target {
 	rt := t
 
+	// strip_include_prefix is element-root-relative in the IR (lower computes it
+	// against cmakeSrc), but Bazel resolves a RELATIVE strip_include_prefix
+	// against the target's PACKAGE. For a target re-homed into a sub-package
+	// (local split), the element-relative form then double-counts the package
+	// path — VTK's Utilities/octree lands in package elements/vtk/Utilities/octree
+	// yet keeps strip_include_prefix="Utilities/octree", which Bazel resolves to
+	// elements/vtk/Utilities/octree/Utilities/octree (headers under octree/* are
+	// "not under the strip prefix"). Re-emit it in the unambiguous repo-root
+	// absolute form (/<base>/<strip>) for sub-package targets; root-package
+	// targets (dir=="") keep the relative form, so non-split members don't churn.
+	if local && dir != "" && dir != "." && rt.StripIncludePrefix != "" && plan.base != "" {
+		rt.StripIncludePrefix = "/" + plan.base + "/" + rt.StripIncludePrefix
+	}
+
 	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
 	// many packages): planSplit re-homed the HEADER surface (every RootInclude
 	// target's t.Hdrs) into per-package header libs behind plan.rootHdrAgg, so
