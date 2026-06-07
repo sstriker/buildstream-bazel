@@ -6962,6 +6962,44 @@ func pathHasDotDotSegment(p string) bool {
 // Walks are memoized through cache (keyed on absolute include-dir path)
 // so that multiple targets sharing an include root don't re-walk the
 // same filesystem subtree. Pass nil for cache to disable memoization.
+// looksLikeCxxHeader sniffs an extensionless file to decide whether it's a C/C++
+// header (eigen's `Dense`/`Core`/… module headers) vs. a stray non-source file
+// (LICENSE, README, a data file) that also sits in an include dir. Conservative:
+// requires an early preprocessor directive or an obvious C++ header construct, so
+// plain-text files aren't mis-collected. Reads only the first 4 KiB.
+func looksLikeCxxHeader(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	if n == 0 {
+		return false
+	}
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		s := strings.TrimSpace(line)
+		if s == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(s, "#include"), strings.HasPrefix(s, "#ifndef"),
+			strings.HasPrefix(s, "#define"), strings.HasPrefix(s, "#pragma"),
+			strings.HasPrefix(s, "#if "), strings.HasPrefix(s, "namespace "),
+			strings.HasPrefix(s, "template"):
+			return true
+		}
+		// Allow leading comment/blank lines (license headers) before the first
+		// directive; bail once real non-comment, non-directive text appears.
+		if !strings.HasPrefix(s, "//") && !strings.HasPrefix(s, "/*") &&
+			!strings.HasPrefix(s, "*") {
+			return false
+		}
+	}
+	return false
+}
+
 func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string, missing map[string]bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, inc := range includeDirs {
@@ -7018,7 +7056,14 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 			}
 			ext := strings.ToLower(filepath.Ext(p))
 			if !headerExts[ext] {
-				return nil
+				// Extensionless C++ headers (eigen ships `Dense`, `Core`,
+				// `Eigenvalues`, … with no extension; VTK's bundled vtkeigen the
+				// same) are real headers consumers `#include <vtkeigen/eigen/Dense>`
+				// — collect them when a content sniff confirms a header, so they're
+				// not silently dropped. Anything else non-header is skipped.
+				if ext != "" || !looksLikeCxxHeader(p) {
+					return nil
+				}
 			}
 			rel, err := filepath.Rel(sourceRoot, p)
 			if err != nil {
