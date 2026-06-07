@@ -93,6 +93,14 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
 # after the convert but BEFORE the build's compile (aquery needs only analysis),
 # so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
+# SURVEY_INTENT=1 turns on the sixth lens — intent-capture, the agent-as-oracle
+# "what did we miss?" pass. For each build-lens-selected project it hands the
+# converted bundle (workspace BUILD/MODULE + the cmake sources) to a PLUGGABLE
+# judge ($INTENT_LENS_JUDGE, e.g. 'claude -p'), then triages the findings against
+# the element's own conversion-todos / rejections, writing <out>/<name>/
+# intent-capture.json. Opt-in + cost-gated (skips silently with no judge);
+# non-deterministic, so it's a triage queue, not a gate. See
+# scripts/intent-capture-lens.sh + converter/cmd/intent-lens.
 # SURVEY_SHARED=1 builds the FAITHFUL link model for build-lens members: the
 # project's natural config (no forced BUILD_SHARED_LIBS=OFF) with real
 # cc_shared_library .so's (--emit-shared-libraries) and consumers' dynamic_deps
@@ -403,6 +411,19 @@ EOF
             fi
         fi
     fi
+    # Sixth lens — intent-capture (SURVEY_INTENT=1 + $INTENT_LENS_JUDGE). The
+    # agent-as-oracle "what did we miss?" pass over the converted bundle (this
+    # workspace's BUILD/MODULE + the cmake sources), triaged against the
+    # conversion-todos / rejections this element already wrote to $_bb_po. Runs
+    # here, after convert + MODULE are in place; needs no build. Best-effort.
+    if [ "${SURVEY_INTENT:-0}" != "0" ] && [ -n "${INTENT_LENS_JUDGE:-}" ]; then
+        if sh "$repo_root/scripts/intent-capture-lens.sh" \
+                "$_bb_ws" "$_bb_src" "$_bb_po" "$_bb_name" >> "$_bb_po/intent.log" 2>&1; then
+            echo "  $_bb_name: intent-capture -> $_bb_po/intent-capture.json" >&2
+        else
+            echo "  $_bb_name: intent-capture lens failed (see $_bb_po/intent.log)" >&2
+        fi
+    fi
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
     # builds, so ignore any workspace .bazelrc (matches the repo's other survey
     # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread
@@ -421,8 +442,13 @@ mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
 : > "$summary"
 
-printf '%-14s %10s %10s %10s %6s %8s %s\n' project rejections idioms coverage todos build status | tee "$summary"
-printf '%-14s %10s %10s %10s %6s %8s %s\n' ------- ---------- ------ -------- ----- ----- ------ | tee -a "$summary"
+# The `missed` column is the intent-capture lens's net-new finding count (6th
+# lens; "-" unless SURVEY_INTENT ran). UNLIKE every other column it is
+# NON-DETERMINISTIC (an LLM judge produced it) — a triage pointer to
+# producer-gap candidates, NOT a count comparable across runs. See the
+# intent-capture lens section in docs/survey-corpus.md.
+printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' project rejections idioms coverage todos missed build status | tee "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' ------- ---------- ------ -------- ----- ------ ----- ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -431,7 +457,7 @@ for entry in $projects; do
     mkdir -p "$proj_out"
 
     if [ ! -d "$src" ]; then
-        printf '%-14s %10s %10s %10s %8s %s\n' "$name" - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
+        printf '%-14s %10s %10s %10s %6s %7s %s\n' "$name" - - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
         continue
     fi
 
@@ -606,8 +632,16 @@ for entry in $projects; do
         fi
     fi
 
-    printf '%-14s %10s %10s %10s %6s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$build_status" "$status" | tee -a "$summary"
+    # 6th lens: intent-capture net-new count (written by try_bazel_build via
+    # intent-capture-lens.sh when SURVEY_INTENT ran). "-" when the lens didn't
+    # run. NON-DETERMINISTIC (LLM judge) — a triage pointer, not a comparable
+    # metric; the per-finding detail lives in $proj_out/intent-capture.json.
+    intent="$proj_out/intent-capture.json"
+    missed_n=$( [ -f "$intent" ] && grep -oE '"net_new"[[:space:]]*:[[:space:]]*[0-9]+' "$intent" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "-" )
+    missed_n="${missed_n:--}"
+
+    printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$status" | tee -a "$summary"
 done
 
 echo ""
-echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos}.json; summary at $summary"
+echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos,intent-capture}.json; summary at $summary"

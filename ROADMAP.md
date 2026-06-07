@@ -1133,6 +1133,56 @@ transition cleanly.
   staging the sources there; (c) relax rule (1) to permit append-only
   `exports_files` blocks. Pick one when the consumer ships.
 
+- **Intent-capture survey lens — an agent-as-oracle "what did we miss?"
+  pass.** A new, qualitative survey lens complementing the deterministic
+  ones (`rejections` / `bazel-idiom` / `coverage` / `conversion-todos` /
+  compile-commands `fidelity`). Those catch what the converter *knows* it
+  couldn't do (Tier-1 refusals, flagged bakes, the no-mechanical-form
+  worklist) or mechanically-diffable per-TU drift; this lens hunts the
+  **silent** intent loss — things that aren't a rejection, aren't a bake,
+  aren't in the todos, and compile fine, but that a reader comparing the two
+  trees would see is missing (a dropped test target, an install layout, an
+  option default, a visibility constraint, a build-time codegen step). The
+  shape: hand a subagent the **converted Bazel project** (the same handoff
+  bundle the post-pass gets — rendered `BUILD.bazel` + `MODULE.bazel` + the
+  original CMake sources) plus standing context (this is a cmake→Bazel
+  conversion targeting Bazel 9, authored against `@rules_cc` / `@rules_shell`
+  / `bazel_skylib` / `rules_pkg`, gazelle-cc-maintained, …), and ask the one
+  question: *did the Bazel project capture all the intent of the cmake
+  project, and what did it miss?* It is the inverse of the `conversion-todos`
+  producer — the worklist is what the converter flagged; this is what the
+  converter *didn't know* it dropped — so the lens doubles as a **producer-gap
+  finder**: a real miss it surfaces that isn't already a todo/rejection is a
+  bug in the producers or the lowering.
+  **Shipped — the deterministic harness with a pluggable judge.**
+  `converter/cmd/intent-lens` has two deterministic subcommands —
+  `prompt` (assemble the grounded prompt: standing context + the one question +
+  the converted-bundle file manifest + the ALREADY-FLAGGED set + the
+  cite-a-cmake-ref grounding rule) and `triage` (classify each finding net-new
+  vs already-flagged by deduping its `cmake_ref` against the todos' anchors /
+  group_keys and the rejections' sources, bucket by severity, write
+  `intent-capture.json`). The LLM judgment in between is a **pluggable command**
+  (`$INTENT_LENS_JUDGE`, e.g. `claude -p`), so the non-determinism is quarantined
+  to one step and CI stubs it. `scripts/intent-capture-lens.sh` runs the
+  pipeline; `run-survey.sh` wires it as the 6th, opt-in lens (`SURVEY_INTENT=1` +
+  `$INTENT_LENS_JUDGE`); `scripts/meta-intent-capture-lens.sh` is the render gate
+  (stub judge, in the `RENDER_GATES` aggregate). Output is a triage queue, not a
+  pass/fail gate — open question (a) below stands by design.
+  The `run-survey.sh` `summary.txt` carries a per-element **`missed` column**
+  (the net-new finding count; non-deterministic, so a triage pointer not a
+  comparable metric).
+  **What's left:** (a) **corpus-level scoring** — roll the per-element triage
+  queues into an aggregate signal beyond the per-row count (a confirmed-miss
+  tally after human triage? severity-weighting? a stable subset that reproduces
+  across judge passes?), since the `missed` column itself isn't run-comparable;
+  (b) **richer grounding** —
+  the dedup currently grounds on `cmake_ref` vs the todos/rejections; feeding the
+  judge the cmake codemodel/fileapi facts (targets, tests, install rules) would
+  let triage *verify* a claimed miss against structured truth, not just dedup it
+  (and would sharpen if the todo producers populated structured `Anchor.File`
+  uniformly — today only the rejection-mirror does); (c) a **real-judge corpus
+  pass** to calibrate false-positive rate and confirm the producer-gaps it finds.
+
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
   `continue-on-error` soft-launch was dropped from every fixture step after
