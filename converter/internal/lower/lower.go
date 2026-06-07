@@ -2821,7 +2821,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// like the execute_process walk below — headers go to hdrs,
 	// other artefacts go to srcs.
 	if len(fileGenerates) > 0 && len(targetBuildIncs) > 0 {
-		var addedHdrs, addedSrcs []string
+		var addedHdrs, addedSrcs, addedData []string
 		seenHdr := map[string]bool{}
 		seenSrc := map[string]bool{}
 		for _, fg := range fileGenerates {
@@ -2843,6 +2843,20 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				continue
 			}
+			// A file(GENERATE) output that isn't a cc compile/link input is a
+			// build-order artifact, not a source — VTK emits each module's
+			// per-config wrap-hierarchy args via file(GENERATE OUTPUT
+			// <mod>-hierarchy.$<CONFIG>.args); adding it to cc srcs fails analysis
+			// ("does not produce any cc_library srcs files"). Route it to data
+			// (same-package attribution → no cross-package relabel), preserving
+			// the build-order association without the srcs requirement.
+			if !isCcSrcEntry(fg.RelOutput) {
+				if !seenSrc[fg.RelOutput] {
+					seenSrc[fg.RelOutput] = true
+					addedData = append(addedData, fg.RelOutput)
+				}
+				continue
+			}
 			if !seenSrc[fg.RelOutput] {
 				seenSrc[fg.RelOutput] = true
 				addedSrcs = append(addedSrcs, fg.RelOutput)
@@ -2854,7 +2868,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		if len(addedSrcs) > 0 {
 			irt.Srcs = append(irt.Srcs, addedSrcs...)
 		}
-		if len(addedHdrs) > 0 || len(addedSrcs) > 0 {
+		if len(addedData) > 0 {
+			irt.Data = append(irt.Data, addedData...)
+		}
+		if len(addedHdrs) > 0 || len(addedSrcs) > 0 || len(addedData) > 0 {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}
@@ -2876,7 +2893,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// inputs); same shape as the IsGenerated branch in the
 	// CompileGroup walk above.
 	if len(executeProcesses) > 0 && len(targetBuildIncs) > 0 {
-		var addedHdrs, addedSrcs []string
+		var addedHdrs, addedSrcs, addedData []string
 		seenHdr := map[string]bool{}
 		seenSrc := map[string]bool{}
 		for _, ep := range executeProcesses {
@@ -2898,6 +2915,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				continue
 			}
+			// Same non-cc-input guard as the file(GENERATE) block above:
+			// non-cc execute_process output → data, not cc srcs.
+			if !isCcSrcEntry(ep.RelOutput) {
+				if !seenSrc[ep.RelOutput] {
+					seenSrc[ep.RelOutput] = true
+					addedData = append(addedData, ep.RelOutput)
+				}
+				continue
+			}
 			if !seenSrc[ep.RelOutput] {
 				seenSrc[ep.RelOutput] = true
 				addedSrcs = append(addedSrcs, ep.RelOutput)
@@ -2909,7 +2935,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		if len(addedSrcs) > 0 {
 			irt.Srcs = append(irt.Srcs, addedSrcs...)
 		}
-		if len(addedHdrs) > 0 || len(addedSrcs) > 0 {
+		if len(addedData) > 0 {
+			irt.Data = append(irt.Data, addedData...)
+		}
+		if len(addedHdrs) > 0 || len(addedSrcs) > 0 || len(addedData) > 0 {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}
