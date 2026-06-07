@@ -28,8 +28,10 @@ func DefaultPreamble() Preamble {
 			"(4) Your output crosses the same trust boundary as mechanical output: " +
 				"it must pass the render gates (buildifier -mode=diff no-op, gazelle " +
 				"roundtrip, bazel build/test) — it is not trusted on faith.",
-			"(5) Carry the construct's source comment (read it at the todo's " +
-				"anchor) onto the authored target as a leading comment — but " +
+			"(5) Carry the construct's source comment onto the authored target " +
+				"as a leading comment — read it at the todo's anchor site(s) (a " +
+				"todo may fold several anchors into one unit; carry the comment " +
+				"documenting the shared construct, not one per instance) — but " +
 				"VALIDATE it, the same not-trusted-on-faith discipline as (4): " +
 				"re-authoring changes the mechanics, so a comment describing the " +
 				"old cmake form (e.g. running `cmake -P`) is stale. Rewrite it to " +

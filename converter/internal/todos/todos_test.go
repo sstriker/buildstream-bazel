@@ -153,10 +153,12 @@ func TestDefaultPreamble_HasBrotliExample(t *testing.T) {
 // path that the mechanical converter-side carry does not cover.)
 func TestDefaultPreamble_ValidatesComments(t *testing.T) {
 	p := DefaultPreamble()
-	for _, want := range []string{"comment", "VALIDATE"} {
-		if !strings.Contains(p.Rules, want) {
-			t.Errorf("default preamble rules should mention %q; got %q", want, p.Rules)
-		}
+	// Pin a phrase unique to rule (5) so the test fails if the rule is
+	// substantively changed or removed, not merely if the words appear
+	// anywhere in the preamble.
+	const rule5 = "never carry a comment that misdescribes the target"
+	if !strings.Contains(p.Rules, rule5) {
+		t.Errorf("default preamble rules should carry rule (5) (%q); got %q", rule5, p.Rules)
 	}
 }
 
