@@ -37,6 +37,30 @@ import (
 // SchemaVersion fences future readers of conversion-todos.json.
 const SchemaVersion = 1
 
+// Disposition is the converter's best-guess qualifier for how the post-pass
+// should treat a todo. It is a FALLIBLE HINT, not a gate: the converter often
+// can't tell from its vantage whether a baked or refused construct has an
+// elegant Bazel form, so the preamble explicitly invites the agent to upgrade
+// an Improvement/Informational entry to action when it sees a better solution.
+type Disposition string
+
+const (
+	// Actionable — the converter produced no faithful/working result; an author
+	// must supply the Bazel form or behavior is missing (refusals: cmake -P
+	// tests, execute_process, custom commands, install(SCRIPT), dropped edges).
+	Actionable Disposition = "actionable"
+	// Improvement — the converter produced a working but frozen/non-faithful
+	// result (a bake: a convert-time value embedded instead of a dynamic Bazel
+	// form). The build is fine without action; an author could replace it with a
+	// faithful idiom — sometimes elegantly (a baked check-probe option mapping
+	// onto a platform/sysroot/toolchain select). The default for bakes.
+	Improvement Disposition = "improvement"
+	// Informational — surfaced for visibility; action usually unnecessary or
+	// impossible (accepted residue, cosmetic drops, pure diagnostics the agent
+	// cannot author).
+	Informational Disposition = "informational"
+)
+
 // Anchor is one source site folded into a todo unit. A todo always
 // carries at least one anchor (an empty list is a producer bug). Line
 // is informational payload — the stable id deliberately excludes it so
@@ -56,8 +80,12 @@ type Todo struct {
 	// line numbers so the id is stable across unrelated source edits.
 	ID string `json:"id"`
 	// Kind is the producer category: "cmake-p-test" |
-	// "cmake-internal-drop" | "install-script" | "install-code".
+	// "cmake-internal-drop" | "install-script" | "install-code" |
+	// "rejection:<code>" | "bake" | "genex-unresolved".
 	Kind string `json:"kind"`
+	// Disposition is the best-guess qualifier (actionable | improvement |
+	// informational); see Disposition. Always set by the producer.
+	Disposition Disposition `json:"disposition"`
 	// GroupKey is the shared unit's stable identity — the producer's
 	// grouping key (a runner path, a drop kind, an install site). Always
 	// set and unique per unit, so it doubles as the sort key.
@@ -81,10 +109,14 @@ type Todo struct {
 // whole block with the file's text via Text. JSON consumers read
 // whichever fields are present.
 type Preamble struct {
-	Intent  string `json:"intent,omitempty"`
-	Rules   string `json:"rules,omitempty"`
-	Example string `json:"example,omitempty"`
-	Text    string `json:"text,omitempty"`
+	Intent string `json:"intent,omitempty"`
+	// Environment states the project's concrete Bazel conventions the agent
+	// must author against (target Bazel version, the canonical rule providers,
+	// the buildifier/gazelle gate) so it doesn't have to rediscover them.
+	Environment string `json:"environment,omitempty"`
+	Rules       string `json:"rules,omitempty"`
+	Example     string `json:"example,omitempty"`
+	Text        string `json:"text,omitempty"`
 }
 
 // Report is the on-disk conversion-todos.json shape.

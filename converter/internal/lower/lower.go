@@ -1759,6 +1759,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// collector.
 	emitInstallScriptTodos(opts.Todos, r)
 
+	// Full-coverage generic producers: mirror every Tier-1 refusal (diagnostic
+	// mode only), every convert-time bake, and every unresolved-genex audit tag
+	// into the report, each carrying a best-guess disposition.
+	emitRejectionTodos(opts.Todos, opts.Rejections, cmakeBuild)
+	emitBakeTodos(opts.Todos, pkg, cc.bakeTodoDisposition)
+	emitUnresolvedGenexTodos(opts.Todos, pkg)
+
 	// Surface target launchers (CROSSCOMPILING_EMULATOR /
 	// TEST_LAUNCHER). Bazel has no per-target run-launcher; these
 	// aren't routed automatically, so name them rather than drop
