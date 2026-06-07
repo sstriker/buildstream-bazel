@@ -325,6 +325,16 @@ func interestingCopt(a string) bool {
 	return true
 }
 
+// unescapeShellQuotes strips backslash-escaping from quotes in a define value so
+// the two toolchains' spellings compare equal. cmake's compile_commands.json
+// records args from a shell `command` string with shell-escaped quotes
+// (`FOO=\"x\"`), while Bazel's aquery `arguments` array carries the literal arg
+// (`FOO="x"`) — same compiler input. Without this, a correctly-quoted string
+// define shows as a spurious mismatch.
+func unescapeShellQuotes(s string) string {
+	return strings.ReplaceAll(s, `\"`, `"`)
+}
+
 // factsFromArgv extracts the path-independent compile facts from a compile argv.
 func factsFromArgv(argv []string) tuFacts {
 	f := tuFacts{Defines: map[string]bool{}, IncludeDir: map[string]bool{}, Copts: map[string]bool{}}
@@ -337,6 +347,7 @@ func factsFromArgv(argv []string) tuFacts {
 				i++
 				v = argv[i]
 			}
+			v = unescapeShellQuotes(v)
 			if v != "" && !ignoredDefine(v) {
 				f.Defines[v] = true
 			}
