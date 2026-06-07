@@ -93,6 +93,14 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
 # after the convert but BEFORE the build's compile (aquery needs only analysis),
 # so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
+# SURVEY_INTENT=1 turns on the sixth lens — intent-capture, the agent-as-oracle
+# "what did we miss?" pass. For each build-lens-selected project it hands the
+# converted bundle (workspace BUILD/MODULE + the cmake sources) to a PLUGGABLE
+# judge ($INTENT_LENS_JUDGE, e.g. 'claude -p'), then triages the findings against
+# the element's own conversion-todos / rejections, writing <out>/<name>/
+# intent-capture.json. Opt-in + cost-gated (skips silently with no judge);
+# non-deterministic, so it's a triage queue, not a gate. See
+# scripts/intent-capture-lens.sh + converter/cmd/intent-lens.
 # SURVEY_SHARED=1 builds the FAITHFUL link model for build-lens members: the
 # project's natural config (no forced BUILD_SHARED_LIBS=OFF) with real
 # cc_shared_library .so's (--emit-shared-libraries) and consumers' dynamic_deps
@@ -401,6 +409,19 @@ EOF
                     >> "$_bb_po/fidelity.log" 2>&1 || true
                 echo "  $_bb_name: compile-db fidelity -> $_bb_po/fidelity.json" >&2
             fi
+        fi
+    fi
+    # Sixth lens — intent-capture (SURVEY_INTENT=1 + $INTENT_LENS_JUDGE). The
+    # agent-as-oracle "what did we miss?" pass over the converted bundle (this
+    # workspace's BUILD/MODULE + the cmake sources), triaged against the
+    # conversion-todos / rejections this element already wrote to $_bb_po. Runs
+    # here, after convert + MODULE are in place; needs no build. Best-effort.
+    if [ "${SURVEY_INTENT:-0}" != "0" ] && [ -n "${INTENT_LENS_JUDGE:-}" ]; then
+        if sh "$repo_root/scripts/intent-capture-lens.sh" \
+                "$_bb_ws" "$_bb_src" "$_bb_po" "$_bb_name" >> "$_bb_po/intent.log" 2>&1; then
+            echo "  $_bb_name: intent-capture -> $_bb_po/intent-capture.json" >&2
+        else
+            echo "  $_bb_name: intent-capture lens failed (see $_bb_po/intent.log)" >&2
         fi
     fi
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph

@@ -1153,17 +1153,30 @@ transition cleanly.
   producer — the worklist is what the converter flagged; this is what the
   converter *didn't know* it dropped — so the lens doubles as a **producer-gap
   finder**: a real miss it surfaces that isn't already a todo/rejection is a
-  bug in the producers or the lowering. Open questions before it's a survey
-  lens: (a) **reproducibility** — an LLM judge is non-deterministic, so the
-  output is a triage queue, not a pass/fail gate (unlike the other lenses'
-  counts); how to score/aggregate it across the corpus (severity buckets?
-  a count of confirmed misses?); (b) **grounding** — feed it the cmake
-  codemodel / fileapi facts (targets, tests, install rules) so a "miss" is
-  checkable against structured truth, not just prose, to keep
-  false-positives down; (c) **dedup against the existing lenses** so it
-  reports only NET-new misses (cross-check each finding against the
-  `conversion-todos.json` + `rejections.json` already produced). Pairs with
-  `run-survey.sh` as a 6th, opt-in (cost-gated) lens.
+  bug in the producers or the lowering.
+  **Shipped — the deterministic harness with a pluggable judge.**
+  `converter/cmd/intent-lens` has two deterministic subcommands —
+  `prompt` (assemble the grounded prompt: standing context + the one question +
+  the converted-bundle file manifest + the ALREADY-FLAGGED set + the
+  cite-a-cmake-ref grounding rule) and `triage` (classify each finding net-new
+  vs already-flagged by deduping its `cmake_ref` against the todos' anchors /
+  group_keys and the rejections' sources, bucket by severity, write
+  `intent-capture.json`). The LLM judgment in between is a **pluggable command**
+  (`$INTENT_LENS_JUDGE`, e.g. `claude -p`), so the non-determinism is quarantined
+  to one step and CI stubs it. `scripts/intent-capture-lens.sh` runs the
+  pipeline; `run-survey.sh` wires it as the 6th, opt-in lens (`SURVEY_INTENT=1` +
+  `$INTENT_LENS_JUDGE`); `scripts/meta-intent-capture-lens.sh` is the render gate
+  (stub judge, in the `RENDER_GATES` aggregate). Output is a triage queue, not a
+  pass/fail gate — open question (a) below stands by design.
+  **What's left:** (a) **scoring/aggregation** — how to roll the per-element
+  triage queues into a corpus-level signal (confirmed-miss count? severity-
+  weighted?) and a `run-survey.sh` summary column; (b) **richer grounding** —
+  the dedup currently grounds on `cmake_ref` vs the todos/rejections; feeding the
+  judge the cmake codemodel/fileapi facts (targets, tests, install rules) would
+  let triage *verify* a claimed miss against structured truth, not just dedup it
+  (and would sharpen if the todo producers populated structured `Anchor.File`
+  uniformly — today only the rejection-mirror does); (c) a **real-judge corpus
+  pass** to calibrate false-positive rate and confirm the producer-gaps it finds.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the

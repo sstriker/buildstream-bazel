@@ -670,6 +670,38 @@ manage their own toolchains (CI via
 - Fetches are **shallow** (`--depth 1`) — the survey only needs a tree to
   configure, not history.
 
+## The intent-capture lens (6th lens, opt-in)
+
+The lenses above are deterministic — they count what the converter *knows* it
+couldn't do (rejections, idiom, coverage, the conversion-todos worklist) or
+mechanically-diffable per-TU drift (compile-commands fidelity). The
+**intent-capture** lens is the qualitative complement: an agent-as-oracle "what
+did we miss?" pass that hunts the **silent** intent loss — a dropped test
+target, an install layout, an option default, a visibility constraint, a
+build-time codegen step — that compiles fine and is flagged nowhere. It's the
+inverse of the conversion-todos producer, so a real miss it surfaces that isn't
+already a todo/rejection is a **producer/lowering gap**.
+
+It's opt-in and cost-gated because it calls an LLM. Turn it on with
+`SURVEY_INTENT=1` and a pluggable judge command in `INTENT_LENS_JUDGE` (the
+judge reads the prompt on stdin and writes the findings JSON on stdout), e.g.:
+
+```sh
+SURVEY_BAZEL_BUILD=fmt SURVEY_INTENT=1 INTENT_LENS_JUDGE='claude -p' \
+  scripts/run-survey.sh fmt=$FMT_DIR
+```
+
+For each build-lens-selected project it writes `<out>/<name>/intent-capture.json`
+— the judge's findings, each triaged **net-new vs already-flagged** (deduped
+against that element's own `conversion-todos.json` + `rejections.json`) and
+bucketed by severity. Because the judge is non-deterministic the output is a
+**triage queue, not a pass/fail gate** — net-new findings are the producer-gap
+candidates to investigate. The pipeline (`scripts/intent-capture-lens.sh` →
+`converter/cmd/intent-lens prompt|triage`) can also be run standalone on any
+converted bundle; the deterministic halves are gated by
+`scripts/meta-intent-capture-lens.sh` (stub judge). See the intent-capture lens
+item in `ROADMAP.md` for the open scoring/grounding questions.
+
 ## Running a faithful survey
 
 The cardinal rule: **a survey number is only comparable to another survey
