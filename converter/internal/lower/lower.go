@@ -1192,6 +1192,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	// Faithful-SHARED Phase 2: wire consumers' dynamic_deps. A target that
+	// depends on a SHARED/MODULE library (which now also emits a sibling
+	// cc_shared_library) keeps the impl in deps (for headers) and lists the
+	// `<dep>_shared` target in dynamic_deps, so Bazel links the .so instead of
+	// static-linking the impl — and the "a cc_library is owned by at most one
+	// shared lib" rule is satisfied. Intra-package label match by bare name;
+	// the split emit relabels DynamicDeps cross-package like it does deps.
+	if opts.EmitSharedLibraries {
+		wireDynamicDeps(pkg)
+	}
 	// Make every cc_test name a valid Bazel identifier before anything
 	// else looks at it: CTest registers tests with hierarchical names
 	// like `Suite::Case::Sub` (the Catch2 / GoogleTest convention) and the
@@ -6432,6 +6442,53 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 	// shouldn't emit this, but be defensive) is preserved rather than lost.
 	emitHeld()
 	return copts, defines
+}
+
+// wireDynamicDeps adds, to every consumer of a shared (SharedLibName-bearing)
+// library, the sibling `<lib>_shared` cc_shared_library in DynamicDeps — so the
+// consumer dynamically links the .so rather than static-linking the impl. Match
+// is by bare target name against the package's shared libs; the shared lib
+// itself is skipped (it doesn't dynamic-dep on itself).
+func wireDynamicDeps(pkg *ir.Package) {
+	shared := map[string]bool{}
+	for _, t := range pkg.Targets {
+		if t.SharedLibName != "" {
+			shared[t.Name] = true
+		}
+	}
+	if len(shared) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.SharedLibName != "" {
+			continue
+		}
+		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+			continue
+		}
+		seen := map[string]bool{}
+		all := append(append([]string{}, t.Deps...), t.ImplementationDeps...)
+		for _, d := range all {
+			name := bareDepName(d)
+			if shared[name] && !seen[name] {
+				seen[name] = true
+				t.DynamicDeps = append(t.DynamicDeps, ":"+name+"_shared")
+			}
+		}
+	}
+}
+
+// bareDepName extracts the bare target name from a Bazel dep label:
+// ":foo"→"foo", "//a/b:foo"→"foo", "//a/b/foo"→"foo".
+func bareDepName(label string) string {
+	if i := strings.LastIndex(label, ":"); i >= 0 {
+		return label[i+1:]
+	}
+	if i := strings.LastIndex(label, "/"); i >= 0 {
+		return label[i+1:]
+	}
+	return label
 }
 
 // makeCIdentifier mirrors cmake's string(MAKE_C_IDENTIFIER): every character

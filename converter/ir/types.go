@@ -445,6 +445,16 @@ type Target struct {
 	// target_link_libraries() in CMake belong here.
 	Deps []string
 
+	// DynamicDeps are Bazel labels to cc_shared_library targets this target
+	// links DYNAMICALLY (the `dynamic_deps = [...]` attribute on
+	// cc_binary/cc_test/cc_library). Under faithful-SHARED conversion
+	// (EmitSharedLibraries), a consumer of a SHARED/MODULE library keeps the
+	// impl cc_library in Deps (for headers) and lists the sibling
+	// `<dep>_shared` here, so Bazel links the .so instead of static-linking the
+	// impl (and the "owned by at most one shared lib" rule is satisfied). Empty
+	// for the default static-collapse emit.
+	DynamicDeps []string
+
 	// ImplementationDeps are Bazel labels to other targets used
 	// only in this target's .cc files (`PRIVATE`
 	// target_link_libraries() in CMake). Maps to

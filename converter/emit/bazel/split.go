@@ -1239,6 +1239,11 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// they don't propagate to consumers; PUBLIC ones ride deps.
 	rt.Deps = rewriteDeps(t.Deps, plan, headerDeps)
 	rt.ImplementationDeps = rewriteDeps(t.ImplementationDeps, plan, privHeaderDeps)
+	// dynamic_deps (faithful-SHARED) carry intra-element ":<lib>_shared" refs —
+	// same target-ref shape as deps, so rewriteDeps relabels them to the right
+	// cross-package label when the consumer and the cc_shared_library land in
+	// different split packages.
+	rt.DynamicDeps = rewriteDeps(t.DynamicDeps, plan, nil)
 	// Data carries add_dependencies-derived intra-element target edges (":x",
 	// build-order only); relabel them to cross-package labels like deps, else a
 	// sub-package consumer's `:LLVMAnalysis` resolves to its OWN package

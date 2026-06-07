@@ -49,3 +49,19 @@ func TestEmit_SharedLibrary_OffByDefault(t *testing.T) {
 		t.Errorf("unexpected cc_shared_library for a plain cc_library:\n%s", got)
 	}
 }
+
+// TestEmit_DynamicDeps confirms a consumer's DynamicDeps render as the
+// dynamic_deps attribute (faithful-SHARED Phase 2).
+func TestEmit_DynamicDeps(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name: "app", Kind: ir.KindCCBinary, Srcs: []string{"main.c"},
+		Deps: []string{":z"}, DynamicDeps: []string{":z_shared"},
+	}}}
+	got, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	if !strings.Contains(string(got), `dynamic_deps = [":z_shared"]`) {
+		t.Errorf("missing dynamic_deps:\n%s", got)
+	}
+}

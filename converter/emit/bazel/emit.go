@@ -816,6 +816,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .DepsExpr}}
     deps = {{.DepsExpr}},
 {{- end}}
+{{- if .DynamicDepsExpr}}
+    dynamic_deps = {{.DynamicDepsExpr}},
+{{- end}}
 {{- if .ImplementationDepsExpr}}
     implementation_deps = {{.ImplementationDepsExpr}},
 {{- end}}
@@ -1219,6 +1222,7 @@ type ccView struct {
 	LinkoptsExpr               string
 	AdditionalLinkerInputsExpr string
 	DepsExpr                   string
+	DynamicDepsExpr            string
 	ImplementationDepsExpr     string
 	Linkstatic                 bool
 	Alwayslink                 bool
@@ -1848,6 +1852,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
+		DynamicDepsExpr:            attrExpr(sortedCopy(t.DynamicDeps), nil),
 		ImplementationDepsExpr:     attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
