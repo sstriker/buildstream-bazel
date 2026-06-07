@@ -214,8 +214,6 @@ func buildCodegenSiteIndex(
 func stripCommentPrefix(token string) string {
 	s := strings.TrimSpace(token)
 	s = strings.TrimPrefix(s, "#")
-	if strings.HasPrefix(s, " ") {
-		s = s[1:]
-	}
+	s = strings.TrimPrefix(s, " ") // drop at most one space after the '#'
 	return s
 }
