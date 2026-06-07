@@ -352,19 +352,26 @@ EOF
             else shift; fi
         done
         _cc_cm="$_bb_po/cc-cmake"
-        rm -rf "$_cc_cm"; mkdir -p "$_cc_cm"
+        rm -rf "$_cc_cm"; mkdir -p "$_cc_cm/.cmake/api/v1/query"
+        : > "$_cc_cm/.cmake/api/v1/query/codemodel-v2"  # for the link-ORDER check
         # shellcheck disable=SC2086
         if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
                 >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
             if ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
                     ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
                     > "$_bb_po/cc-aquery.json" 2>> "$_bb_po/fidelity.log"; then
+                # CppLink aquery for the link-order check (best-effort).
+                ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppLink", //...)' ) \
+                    > "$_bb_po/cc-aquery-link.json" 2>> "$_bb_po/fidelity.log" || true
                 _cc_diff="$repo_root/build/bin/compile-commands-diff"
                 ( cd "$repo_root" && go build -o "$_cc_diff" ./converter/cmd/compile-commands-diff ) 2>>"$_bb_po/fidelity.log" || _cc_diff="go run $repo_root/converter/cmd/compile-commands-diff"
                 # shellcheck disable=SC2086
                 $_cc_diff --cmake "$_cc_cm/compile_commands.json" --aquery "$_bb_po/cc-aquery.json" \
                     --json "$_bb_po/fidelity.json" --cmake-src "$_bb_src" --cmake-build "$_cc_cm" \
-                    --bazel-package "$_bb_pkg" >> "$_bb_po/fidelity.log" 2>&1 || true
+                    --bazel-package "$_bb_pkg" \
+                    --cmake-codemodel "$_cc_cm/.cmake/api/v1/reply" --aquery-link "$_bb_po/cc-aquery-link.json" \
+                    >> "$_bb_po/fidelity.log" 2>&1 || true
                 echo "  $_bb_name: compile-db fidelity -> $_bb_po/fidelity.json" >&2
             fi
         fi
