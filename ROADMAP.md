@@ -740,15 +740,36 @@ transition cleanly.
     `cmake -P vtkEncodeString.cmake` codegen commands, `VTK_GIT_DESCRIBE` skips
     the git stamp), and now LOADS + ANALYZES (1533 actions) after fixing the
     FILE_SET-HEADERS relativization bug (141 targets had `//pkg:/abs` labels).
-    Current blocker: ThirdParty `cmake -P` codegen — VTK emits ~119 build-time
-    `cmake -P` runner genrules, the first failing being libproj's
-    `generate_proj_db.cmake` (`include(sql_filelist.cmake)` + SQLite db build).
-    These need the converter to run the `cmake -P` script HERMETICALLY: stage
-    its `include()`d siblings + data reads, or bake its output (bake currently
-    falls back to a build-time genrule when the convert-time run can't resolve
-    the script's relative `include()` — the likely fix is the script-runner's
-    cwd / CMAKE_MODULE_PATH at execution). A real multi-step VTK lift, but
-    converter-shaped, not disk- or scale-blocked.
+    PRE-BUILD FIDELITY (run the compile-commands lens on the analyzed graph
+    before chasing a green build — the right loop): 804 TUs matched cmake; it
+    caught the string-define **quote-stripping** bug (VTK_PARSE_VERSION /
+    LZ4_VERSION="1.8.0" / H5_ZLIB_HEADER reached the compiler UNQUOTED because
+    Bazel's `defines` Bourne-tokenization strips single-escaped quotes — FIXED
+    in emit, corpus-wide). Remaining fidelity diffs are over-broad-but-benign:
+    `-I.` (package root) on every TU, HDF5 include breadth, VTK_PARSE_VERSION /
+    H5_ZLIB_HEADER define over-propagation (PRIVATE→`defines`, same class as
+    DEFINE_SYMBOL), and dropped `-fno-common`/`-ftrapv` (HDF5) vs added
+    `-fvisibility*`.
+    BUILD blockers (the real multi-step VTK lift):
+    1. **Built-tool genrule recovery (proj.db).** libproj's
+       `generate_proj_db.cmake` pipes its .sql into a sqlite3 binary, and VTK
+       hardcodes its OWN bundled tool via `set(EXE_SQLITE3
+       "$<TARGET_FILE:VTK::sqlitebin>")` (the `find_program`/host path is
+       disabled behind `if (FALSE)`, so host sqlite3 / `-DEXE_SQLITE3` is
+       ignored — an earlier "needs host sqlite3" reading was wrong). The
+       recovered genrule references the build-tree path `bin/Debug/sqlitebin-9.4`
+       which doesn't exist in the sandbox. `sqlitebin` IS already converted to a
+       cc_binary; the converter needs to recover a custom command's in-tree
+       built-EXECUTABLE dependency — rewrite the build-tree binary path to
+       `$(location :sqlitebin)` + add it to the genrule's `tools`. GENERAL
+       capability (any project with an in-tree codegen tool); genrule.go has no
+       `tools=`/`$(location)` wiring today. (The bake's WORKING_DIRECTORY fix —
+       lower's extractCdDir — landed and helps OTHER relative-`include()` bake
+       scripts, but can't bake proj.db since the tool isn't built at convert.)
+    2. **Analysis failures** in a few targets (`Utilities/octree`,
+       `IO/HDFTools`) — separate cc_library conversion fixes (aquery `--keep_going`
+       still yields 836 TUs for the fidelity pass).
+    A converter-shaped lift, not disk- or scale-blocked.
   - **cuda-samples** — needs the CUDA toolkit (`BSB_PROVISION_CUDA=1`); not
     provisioned in the default web session and a multi-GB install. (Verify by
     trying, not assuming — the vtk "disk-blocked" claim was an untested
