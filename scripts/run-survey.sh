@@ -442,8 +442,13 @@ mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
 : > "$summary"
 
-printf '%-14s %10s %10s %10s %6s %8s %s\n' project rejections idioms coverage todos build status | tee "$summary"
-printf '%-14s %10s %10s %10s %6s %8s %s\n' ------- ---------- ------ -------- ----- ----- ------ | tee -a "$summary"
+# The `missed` column is the intent-capture lens's net-new finding count (6th
+# lens; "-" unless SURVEY_INTENT ran). UNLIKE every other column it is
+# NON-DETERMINISTIC (an LLM judge produced it) — a triage pointer to
+# producer-gap candidates, NOT a count comparable across runs. See the
+# intent-capture lens section in docs/survey-corpus.md.
+printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' project rejections idioms coverage todos missed build status | tee "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' ------- ---------- ------ -------- ----- ------ ----- ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -452,7 +457,7 @@ for entry in $projects; do
     mkdir -p "$proj_out"
 
     if [ ! -d "$src" ]; then
-        printf '%-14s %10s %10s %10s %8s %s\n' "$name" - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
+        printf '%-14s %10s %10s %10s %6s %7s %s\n' "$name" - - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
         continue
     fi
 
@@ -627,8 +632,16 @@ for entry in $projects; do
         fi
     fi
 
-    printf '%-14s %10s %10s %10s %6s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$build_status" "$status" | tee -a "$summary"
+    # 6th lens: intent-capture net-new count (written by try_bazel_build via
+    # intent-capture-lens.sh when SURVEY_INTENT ran). "-" when the lens didn't
+    # run. NON-DETERMINISTIC (LLM judge) — a triage pointer, not a comparable
+    # metric; the per-finding detail lives in $proj_out/intent-capture.json.
+    intent="$proj_out/intent-capture.json"
+    missed_n=$( [ -f "$intent" ] && grep -oE '"net_new"[[:space:]]*:[[:space:]]*[0-9]+' "$intent" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "-" )
+    missed_n="${missed_n:--}"
+
+    printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$status" | tee -a "$summary"
 done
 
 echo ""
-echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos}.json; summary at $summary"
+echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos,intent-capture}.json; summary at $summary"

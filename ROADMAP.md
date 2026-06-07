@@ -1168,9 +1168,14 @@ transition cleanly.
   `$INTENT_LENS_JUDGE`); `scripts/meta-intent-capture-lens.sh` is the render gate
   (stub judge, in the `RENDER_GATES` aggregate). Output is a triage queue, not a
   pass/fail gate — open question (a) below stands by design.
-  **What's left:** (a) **scoring/aggregation** — how to roll the per-element
-  triage queues into a corpus-level signal (confirmed-miss count? severity-
-  weighted?) and a `run-survey.sh` summary column; (b) **richer grounding** —
+  The `run-survey.sh` `summary.txt` carries a per-element **`missed` column**
+  (the net-new finding count; non-deterministic, so a triage pointer not a
+  comparable metric).
+  **What's left:** (a) **corpus-level scoring** — roll the per-element triage
+  queues into an aggregate signal beyond the per-row count (a confirmed-miss
+  tally after human triage? severity-weighting? a stable subset that reproduces
+  across judge passes?), since the `missed` column itself isn't run-comparable;
+  (b) **richer grounding** —
   the dedup currently grounds on `cmake_ref` vs the todos/rejections; feeding the
   judge the cmake codemodel/fileapi facts (targets, tests, install rules) would
   let triage *verify* a claimed miss against structured truth, not just dedup it

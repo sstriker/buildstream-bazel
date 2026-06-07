@@ -694,9 +694,13 @@ SURVEY_BAZEL_BUILD=fmt SURVEY_INTENT=1 INTENT_LENS_JUDGE='claude -p' \
 For each build-lens-selected project it writes `<out>/<name>/intent-capture.json`
 — the judge's findings, each triaged **net-new vs already-flagged** (deduped
 against that element's own `conversion-todos.json` + `rejections.json`) and
-bucketed by severity. Because the judge is non-deterministic the output is a
-**triage queue, not a pass/fail gate** — net-new findings are the producer-gap
-candidates to investigate. The pipeline (`scripts/intent-capture-lens.sh` →
+bucketed by severity. The `summary.txt` table gains a **`missed` column** = the
+net-new finding count (`-` when the lens didn't run). Because the judge is
+non-deterministic the output is a **triage queue, not a pass/fail gate** —
+net-new findings are the producer-gap candidates to investigate, and unlike the
+other columns `missed` is **not comparable across runs** (a different judge pass
+can return a different number); treat it as a pointer into `intent-capture.json`,
+not a metric to diff. The pipeline (`scripts/intent-capture-lens.sh` →
 `converter/cmd/intent-lens prompt|triage`) can also be run standalone on any
 converted bundle; the deterministic halves are gated by
 `scripts/meta-intent-capture-lens.sh` (stub judge). See the intent-capture lens
