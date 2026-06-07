@@ -7,6 +7,25 @@ transition cleanly.
 
 ## Now
 
+- **Refactor: one source-classification chokepoint in `lower`.** The "is this
+  path a cc compile/link/header input, and which attribute does it go in
+  (srcs/hdrs/data/drop)?" decision is duplicated across ~6 sites in
+  `converter/internal/lower/lower.go` — the main per-source switch, the
+  recovered-genrule branch, the GENERATED-not-on-disk branch, the inCompileGroup
+  branch, the file(GENERATE) consumer-attribution block, and the execute_process
+  sister block. The VTK wrap-hierarchy `.args/.data` bug had to be fixed at
+  several of these independently before the actual entry path (file(GENERATE)
+  attribution) was found — a clear "same fix in N places" smell. `isCcSrcEntry`
+  centralized the *predicate*; the *routing* (append to hdrs vs srcs vs data,
+  drop cross-package non-cc, dedup, CcEmbed header pairing, the has-cmake-codegen
+  tag) is still scattered. Consolidate into a single
+  `classifyAndAttach(irt, path, policy)` helper that every source-producing site
+  calls, so a new non-cc/odd-extension shape is handled once. Audit the wider
+  converter for the same pattern (cross-package relabeling, visibility
+  publicizing, and exports_files also recur at multiple sites) and capture any
+  further consolidations. Guard with the existing goldens + the abseil/glm/VTK
+  surveys so the refactor is behavior-preserving.
+
 - **Generator-parity uplift for the cmake converter.** The
   current cmake converter reads File API codemodel-v2 +
   `--trace-expand` and emits BUILD files; that recovers
