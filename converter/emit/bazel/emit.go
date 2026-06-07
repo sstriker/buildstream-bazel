@@ -86,6 +86,18 @@ func emitProvenanceComment(buf *bytes.Buffer, p ir.Provenance) {
 	buf.WriteString("\n")
 }
 
+// emitLeadingComment writes the author's recovered CMakeLists comment block
+// (raw `# ...` tokens) as leading comment lines above a rule. The canonicalize
+// pass (build.Parse + build.Format) attaches a comment immediately preceding a
+// statement to that statement and normalizes spacing, so these survive the
+// buildifier round-trip. No-op for an empty block.
+func emitLeadingComment(buf *bytes.Buffer, lines []string) {
+	for _, ln := range lines {
+		buf.WriteString(ln)
+		buf.WriteString("\n")
+	}
+}
+
 // itoa is a tiny non-fmt int-to-string helper for the per-rule
 // provenance comment's hot path. Avoids pulling fmt into emit's
 // per-target loop.
@@ -343,6 +355,17 @@ type Options struct {
 	// would invalidate every existing golden if always-on. CLI
 	// surface via `convert-element-cmake --emit-provenance`.
 	EmitProvenance bool
+
+	// EmitSourceComments enables comment-carrying: the author's
+	// CMakeLists comments recovered onto each Target's
+	// LeadingComment / TrailingComment (and the package
+	// HeaderComments) are emitted onto the corresponding rule. Off
+	// by default — like EmitProvenance, it changes BUILD bytes and
+	// reads raw source. CLI surface via
+	// `convert-element-cmake --emit-source-comments`. The author
+	// comment is emitted above the `# Source:` breadcrumb when both
+	// are on.
+	EmitSourceComments bool
 }
 
 // Emit returns the contents of a BUILD.bazel file for pkg using
@@ -414,6 +437,11 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	for i, t := range pkg.Targets {
 		if i > 0 {
 			buf.WriteString("\n")
+		}
+		if opts.EmitSourceComments {
+			// Author's source comment first, then the provenance
+			// breadcrumb beneath it (when both are on).
+			emitLeadingComment(&buf, t.LeadingComment)
 		}
 		if opts.EmitProvenance && !t.Provenance.IsZero() {
 			emitProvenanceComment(&buf, t.Provenance)

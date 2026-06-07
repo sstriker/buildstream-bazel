@@ -341,6 +341,22 @@ type Target struct {
 	// pre-date this field.
 	Provenance Provenance
 
+	// LeadingComment is the author's source comment block recovered from
+	// the originating CMakeLists (the contiguous `#` line-comment block
+	// immediately above the declaring command, as raw `# ...` tokens).
+	// Populated only when comment-carrying is enabled
+	// (emit.Options.EmitSourceComments) and the declaration site has a
+	// leading comment; nil otherwise. Emitted as a leading comment on the
+	// rule, above the optional `# Source:` provenance breadcrumb.
+	LeadingComment []string
+
+	// TrailingComment is an author comment trailing the declaring command
+	// on its last line (e.g. `add_library(foo ...)  # core lib`), without
+	// the leading `#`/space. Emitted as a `# <text>` suffix on the rule —
+	// except on whole-rule-`# keep` kinds, where it routes to leading
+	// placement to avoid stacking two suffix comments. Empty when absent.
+	TrailingComment string
+
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).
 	Srcs []string
 
