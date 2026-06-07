@@ -440,6 +440,24 @@ var ccLinkableSrcExts = map[string]bool{
 	".asm": true,
 }
 
+// compilableSrcExts are the source extensions Bazel's cc rules COMPILE.
+var compilableSrcExts = map[string]bool{
+	".c": true, ".cc": true, ".cpp": true, ".cxx": true, ".c++": true,
+	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
+	".m": true, ".mm": true,
+}
+
+// isCcSrcEntry reports whether path p is a valid cc_library/cc_binary `srcs`
+// entry — a compiled source, a header, or a linkable object/archive/assembly.
+// A GENERATED target-source that is none of these (VTK lists each module's
+// wrap-hierarchy artifacts — CMakeFiles/<mod>-hierarchy.*.args / .data — as the
+// module target's cmake sources for build ordering) must not enter cc srcs, or
+// Bazel fails analysis with "does not produce any cc_library srcs files".
+func isCcSrcEntry(p string) bool {
+	ext := strings.ToLower(filepath.Ext(p))
+	return headerExts[ext] || compilableSrcExts[ext] || ccLinkableSrcExts[ext]
+}
+
 // ToIR lowers a parsed reply into a Package. The optional ninja graph
 // enables genrule recovery for targets with isGenerated sources; pass nil to
 // disable (M1-style behavior — generated sources then trigger
@@ -2282,6 +2300,16 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// codemodel flagging them.
 				if generatedSources[src.Path] {
 					declaredGeneratedSrc = true
+					// A GENERATED target-source that isn't a cc compile/link/header
+					// input is a build-ordering artifact, not a source — VTK lists
+					// each module's wrap-hierarchy files (CMakeFiles/<mod>-hierarchy.
+					// *.args/.data, incl. dependency modules' across packages) as the
+					// module target's GENERATED sources. Keeping it in cc srcs fails
+					// analysis; it has no cc-rule role (the producing genrule builds
+					// independently), so drop it from the target.
+					if !isCcSrcEntry(src.Path) {
+						continue
+					}
 					irt.Srcs = append(irt.Srcs, src.Path)
 					continue
 				}
