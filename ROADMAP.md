@@ -1023,6 +1023,36 @@ transition cleanly.
   converter's in-process File API consumer reads the reply
   when the cmake-configure step runs on a remote node.
 
+- **Two-species split: remotable, cacheable configure + convert.**
+  The deeper architecture the item above leads to. `cmake configure`
+  must run on the *target* platform P (its `try_compile`/`try_run`/
+  `check_*`/`find_package` resolve against P), possibly a subset of
+  platforms per element; the converter is a Linux/Go binary not built
+  for every P. So split the welded `convert-element-cmake` (which execs
+  cmake in-process via `cmakerun.Configure`) into two independently
+  remotable+cacheable action species: `configure(element, P)` — native
+  cmake on a P worker, **no Go**, emits a File API reply bundle — and
+  `convert(element)` — Linux/Go, **no cmake**, consumes the per-platform
+  bundles via the existing `--reply-dir` seam and folds them. The File
+  API query is language-agnostic (five touch-files), so a configure
+  action is just `cmake <argv>` with hooks staged as inputs; argv/hook
+  construction stays a shared `cmakerun` function the planner (`write-a`)
+  calls. The genex literal two-pass becomes a static
+  `configure → analyze → litprobe → convert` graph whose `litprobe(P)`
+  command branches on a 0-byte probe (no cmake when empty; the 0-byte
+  probe on pass 1 makes the input roots byte-identical so the empty case
+  is a warm no-op — only the scheduling round-trip remains, removable by
+  making `litprobe` opt-in with `-unresolved` tail-baking). **Hard
+  invariant: the standalone path keeps working** — `convert-element-cmake
+  --source-root` stays a complete, infrastructure-free, full-fidelity
+  composition of the same steps; the serialized reply bundle is a complete
+  interface so `--reply-dir` is byte-identical to in-process (new gate
+  guards it). Native-P configure also closes the `try_run` cross-compile
+  fidelity gap (`docs/research/cmake_analysis.md` §7). Full design +
+  cost/narrowing model + standalone-preservation disciplines in
+  `docs/design/remotable-configure-convert.md` (delete that doc once this
+  lands).
+
 ---
 
 For how the codebase works *today* (not just what's planned here), see
