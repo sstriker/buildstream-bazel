@@ -424,6 +424,22 @@ var headerExts = map[string]bool{
 	".inc": true,
 }
 
+// ccLinkableSrcExts are non-header extensions that are still valid `srcs`
+// entries for a cc_library/cc_binary — precompiled objects/archives and
+// assembly that Bazel links or assembles. A GENERATED output with one of these
+// extensions stays in srcs; any other non-header generated output (VTK's
+// hierarchy .args/.data, etc.) is routed to `data` since cc rules reject a
+// non-source srcs entry.
+var ccLinkableSrcExts = map[string]bool{
+	".o":   true,
+	".obj": true,
+	".a":   true,
+	".lo":  true,
+	".s":   true,
+	".S":   true,
+	".asm": true,
+}
+
 // ToIR lowers a parsed reply into a Package. The optional ninja graph
 // enables genrule recovery for targets with isGenerated sources; pass nil to
 // disable (M1-style behavior — generated sources then trigger
@@ -1988,10 +2004,21 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 			case headerExts[ext]:
 				irt.Hdrs = append(irt.Hdrs, relOut)
-			default:
-				// Non-header, not compiled: still belongs in srcs so the
-				// genrule's output is included in the package's input set.
+			case ccLinkableSrcExts[ext]:
+				// A generated object / archive / assembly is a real cc src
+				// input (compiled or linked) — keep it in srcs.
 				irt.Srcs = append(irt.Srcs, relOut)
+			default:
+				// Generated output the target depends on but that is neither a
+				// header nor a cc compile/link input — VTK lists its module
+				// hierarchy artifacts (CMakeFiles/<mod>-hierarchy.*.args/.data,
+				// inputs to the wrap-hierarchy tool) as the module target's
+				// cmake sources for build ordering. A `cc_library` REJECTS a
+				// non-source srcs entry ("does not produce any cc_library srcs
+				// files"), so route it to `data` instead: keeps the genrule
+				// output referenced (build-order dependency, the cmake intent)
+				// without the source-compilation requirement.
+				irt.Data = append(irt.Data, relOut)
 			}
 			continue
 		}
