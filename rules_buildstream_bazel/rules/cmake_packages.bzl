@@ -101,6 +101,10 @@ def _cmake_split_convert_impl(ctx):
         "--out-bundle-dir=\"$BUNDLE_DIR\"",
         "--out-read-paths=%s" % _shquote(read_paths.path),
         "--out-exports=%s" % _shquote(exports.path),
+        # Agent-prompts sidecar, written INTO the packages TreeArtifact so
+        # stage-b's stageSplitDir lands it in project B's elements/<name>/
+        # alongside the BUILDs (no extra scalar output to thread).
+        "--conversion-todos-report=%s/conversion-todos.json" % _shquote(packages.path),
         "--bazel-package-path=%s" % _shquote(ctx.attr.bazel_package_path),
     ]
 

@@ -698,7 +698,8 @@ genrule(
         %[13]s
         "read_paths.json",
         "cmake-config-bundle.tar",
-        "exports.json",%[11]s
+        "exports.json",
+        "conversion-todos.json",%[11]s
     ],
     cmd = """
         # Build a unified source-root by merging real srcs (workspace
@@ -730,6 +731,7 @@ genrule(
             --out-bundle-dir="$$BUNDLE_DIR" \\
             --out-read-paths="$(location read_paths.json)" \\
             --out-exports="$(location exports.json)" \\
+            --conversion-todos-report="$(location conversion-todos.json)" \\
             --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s%[16]s%[19]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .%[17]s
     """,

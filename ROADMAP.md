@@ -655,17 +655,25 @@ transition cleanly.
 
 - **Agent-actionable prompts for no-mechanical-form constructs — AI
   post-pass (consumer) remains.** The deterministic **producer** + the
-  consumer **contract** shipped: `convert-element-cmake
-  --conversion-todos-report=<p>` (and `--conversion-todos-preamble=<f>`)
-  writes a deterministic, byte-identical `conversion-todos.json` (the
-  `todos.Collector` in `converter/internal/todos`, plumbed through
-  `lower.Options.Todos`) carrying the operator **preamble** + one grouped
+  consumer **contract** shipped, and the producer is now **on by default
+  and wired through to project B**. `convert-element-cmake` emits a
+  deterministic, byte-identical `conversion-todos.json` by default
+  (`--conversion-todos=false` opts out; destination is
+  `--conversion-todos-report=<p>` if set, else
+  `<dir(out-build)>/conversion-todos.json`; `--conversion-todos-preamble=<f>`
+  overrides the preamble) — the `todos.Collector` in
+  `converter/internal/todos`, plumbed through `lower.Options.Todos`,
+  carrying the operator **preamble** + one grouped
   `{id, kind, group_key, anchors, evidence, suggested_shape, prompt}`
   entry per no-mechanical-form unit, from all three existing breadcrumb
   sites — `cmake-p-test` (`add_test(COMMAND cmake -P …)`),
   `cmake-internal-drop` (filtered command edges), and
   `install-script`/`install-code` (`converter/internal/lower/todos_producers.go`,
-  each alongside its retained stderr warning). The survey aggregates it
+  each alongside its retained stderr warning). The orchestrator carries it
+  to project B: the `<name>_converted` convert genrule declares
+  `conversion-todos.json` as an output (and the `cmake_split_convert` rule
+  writes it into the `packages` TreeArtifact), and `stage-b` lands it in
+  `elements/<name>/conversion-todos.json`. The survey aggregates it
   alongside `rejections`/`bazel-idiom`/`coverage` (run-survey.sh `todos`
   column). Idempotency is the stable line-free `id` + the file-ownership
   split (the converter-owned `BUILD.bazel.out` stays byte-identical and

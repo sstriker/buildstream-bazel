@@ -59,6 +59,54 @@ func mkProject(t *testing.T, aOuts, bBuilds map[string]string) (projectA, projec
 	return projectA, projectB
 }
 
+// TestRun_StagesConversionTodosSidecar verifies the single-package path
+// lands conversion-todos.json (the agent-prompts sidecar the converter
+// emits next to BUILD.bazel.out) into project B's element dir, and that
+// it isn't counted as a "changed" package (it's not a BUILD file).
+func TestRun_StagesConversionTodosSidecar(t *testing.T) {
+	a, b := mkProject(t, map[string]string{"hello": "cc_library(name=\"hello\")\n"}, nil)
+	todos := `{"version":1,"todos":[{"id":"todo-abc","kind":"cmake-p-test"}]}` + "\n"
+	if err := os.WriteFile(filepath.Join(a, "bazel-bin", "elements", "hello", "conversion-todos.json"), []byte(todos), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := run(args{projectA: a, projectB: b})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !reflect.DeepEqual(changed, []string{"elements/hello"}) {
+		t.Errorf("changed = %v; want [elements/hello] (BUILD changed; sidecar must not add extra entries)", changed)
+	}
+	got, err := os.ReadFile(filepath.Join(b, "elements", "hello", "conversion-todos.json"))
+	if err != nil {
+		t.Fatalf("sidecar not staged: %v", err)
+	}
+	if string(got) != todos {
+		t.Errorf("staged sidecar = %q; want %q", got, todos)
+	}
+
+	// Idempotent: a re-run with no change reports nothing and leaves the
+	// sidecar intact.
+	changed, err = run(args{projectA: a, projectB: b})
+	if err != nil {
+		t.Fatalf("re-run: %v", err)
+	}
+	if len(changed) != 0 {
+		t.Errorf("re-stage reported changes %v; want none", changed)
+	}
+}
+
+// TestRun_NoSidecarWhenAbsent confirms a missing conversion-todos.json
+// (e.g. --conversion-todos=false) is not an error and stages nothing.
+func TestRun_NoSidecarWhenAbsent(t *testing.T) {
+	a, b := mkProject(t, map[string]string{"hello": "cc_library(name=\"hello\")\n"}, nil)
+	if _, err := run(args{projectA: a, projectB: b}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b, "elements", "hello", "conversion-todos.json")); !os.IsNotExist(err) {
+		t.Errorf("expected no sidecar staged; stat err = %v", err)
+	}
+}
+
 func TestRun_FirstStage_AllChanged(t *testing.T) {
 	a, b := mkProject(t,
 		map[string]string{"alpha": "cc_library(name = \"alpha\")\n", "beta": "cc_library(name = \"beta\")\n"},
