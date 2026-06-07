@@ -1239,6 +1239,20 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 					outs = append(outs, o)
 				}
 			}
+			// The parent-dir shrink above stops at a SINGLE-component output
+			// root: a genrule moved INTO that root (its package IS `dir`, e.g.
+			// grpc's protoc gens moved into `gens`) has $(RULEDIR) pointing AT
+			// dir, so a cmd that passes the output ROOT as a directory arg
+			// (`--cpp_out=$(RULEDIR)/gens`) would double to $(RULEDIR)/gens/gens.
+			// Shrink `$(RULEDIR)/<dir>` → `$(RULEDIR)`. (Multi-component dirs are
+			// already handled by the parent-dir loop's relUnder shrink.)
+			if dir != "" && !strings.Contains(dir, "/") {
+				cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+dir+"/", "$(RULEDIR)/")
+				cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+dir+" ", "$(RULEDIR) ")
+				if strings.HasSuffix(cmd, "$(RULEDIR)/"+dir) {
+					cmd = strings.TrimSuffix(cmd, "$(RULEDIR)/"+dir) + "$(RULEDIR)"
+				}
+			}
 			rt.GenruleOuts = outs
 			rt.GenruleCmd = cmd
 		}
@@ -1255,6 +1269,23 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 				if strings.HasPrefix(tool, ":") {
 					label := targetLabel(plan, strings.TrimPrefix(tool, ":"))
 					tools = append(tools, label)
+					cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
+					continue
+				}
+				// A BARE in-element tool name (no `:`, not an absolute `@repo//`
+				// or `//pkg` label): when the genrule has moved out of the tool's
+				// package, the bare name would resolve in the genrule's new package
+				// and miss. Relabel to the tool's actual package — but only when the
+				// cmd references it as a Bazel label ($(execpath)/$(location)), which
+				// proves it's a target (not a PATH tool); a non-target bare name is
+				// left untouched. grpc's protoc gens genrules (moved into `gens`)
+				// reference the element-root `grpc_cpp_plugin` cc_binary this way.
+				if !strings.HasPrefix(tool, "@") && !strings.HasPrefix(tool, "//") &&
+					!strings.Contains(tool, ":") &&
+					(strings.Contains(cmd, "$(execpath "+tool+")") || strings.Contains(cmd, "$(location "+tool+")")) {
+					label := targetLabel(plan, tool)
+					tools = append(tools, label)
+					cmd = strings.ReplaceAll(cmd, "$(execpath "+tool+")", "$(execpath "+label+")")
 					cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
 					continue
 				}
