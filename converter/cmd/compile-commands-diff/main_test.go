@@ -53,8 +53,8 @@ func TestNormalizeInclude(t *testing.T) {
 		"/usr/include":          "sys:include", // system
 		"elements/zlib/include": "include",     // bazel source include (matches cmake's)
 		"elements/zlib":         ".",           // bazel package root (matches cmake's)
-		"bazel-out/k8-fastbuild/bin/elements/zlib":   "gen:.", // bazel generated root
-		"bazel-out/k8-fastbuild/bin/elements/zlib/g": "gen:g", // bazel generated subdir
+		"bazel-out/k8-fastbuild/bin/elements/zlib":   "gen:.",   // bazel generated root
+		"bazel-out/k8-fastbuild/bin/elements/zlib/g": "gen:g",   // bazel generated subdir
 		"/tmp/zlib/sub/../include":                   "include", // `..` collapses (cmake src/../include shape)
 	}
 	for in, want := range cases {
