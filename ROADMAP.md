@@ -1133,6 +1133,38 @@ transition cleanly.
   staging the sources there; (c) relax rule (1) to permit append-only
   `exports_files` blocks. Pick one when the consumer ships.
 
+- **Intent-capture survey lens — an agent-as-oracle "what did we miss?"
+  pass.** A new, qualitative survey lens complementing the deterministic
+  ones (`rejections` / `bazel-idiom` / `coverage` / `conversion-todos` /
+  compile-commands `fidelity`). Those catch what the converter *knows* it
+  couldn't do (Tier-1 refusals, flagged bakes, the no-mechanical-form
+  worklist) or mechanically-diffable per-TU drift; this lens hunts the
+  **silent** intent loss — things that aren't a rejection, aren't a bake,
+  aren't in the todos, and compile fine, but that a reader comparing the two
+  trees would see is missing (a dropped test target, an install layout, an
+  option default, a visibility constraint, a build-time codegen step). The
+  shape: hand a subagent the **converted Bazel project** (the same handoff
+  bundle the post-pass gets — rendered `BUILD.bazel` + `MODULE.bazel` + the
+  original CMake sources) plus standing context (this is a cmake→Bazel
+  conversion targeting Bazel 9, authored against `@rules_cc` / `@rules_shell`
+  / `bazel_skylib` / `rules_pkg`, gazelle-cc-maintained, …), and ask the one
+  question: *did the Bazel project capture all the intent of the cmake
+  project, and what did it miss?* It is the inverse of the `conversion-todos`
+  producer — the worklist is what the converter flagged; this is what the
+  converter *didn't know* it dropped — so the lens doubles as a **producer-gap
+  finder**: a real miss it surfaces that isn't already a todo/rejection is a
+  bug in the producers or the lowering. Open questions before it's a survey
+  lens: (a) **reproducibility** — an LLM judge is non-deterministic, so the
+  output is a triage queue, not a pass/fail gate (unlike the other lenses'
+  counts); how to score/aggregate it across the corpus (severity buckets?
+  a count of confirmed misses?); (b) **grounding** — feed it the cmake
+  codemodel / fileapi facts (targets, tests, install rules) so a "miss" is
+  checkable against structured truth, not just prose, to keep
+  false-positives down; (c) **dedup against the existing lenses** so it
+  reports only NET-new misses (cross-check each finding against the
+  `conversion-todos.json` + `rejections.json` already produced). Pairs with
+  `run-survey.sh` as a 6th, opt-in (cost-gated) lens.
+
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
   `continue-on-error` soft-launch was dropped from every fixture step after
