@@ -86,6 +86,12 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # scripts/run-survey.sh` shows "-" for all of them — pass those projects
 # explicitly (e.g. `SURVEY_BAZEL_BUILD=auto scripts/run-survey.sh fmt=$FMT_DIR
 # libxml2=$LIBXML2_DIR brotli=$BROTLI_DIR`) to exercise it.
+# SURVEY_COMPILE_DB=1 turns on the fifth lens — compile-commands FIDELITY. For
+# each build-lens-selected project it diffs cmake's CMAKE_EXPORT_COMPILE_COMMANDS
+# db against Bazel's `aquery 'mnemonic("CppCompile",//...)'` per translation unit
+# (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
+# after the convert but BEFORE the build's compile (aquery needs only analysis),
+# so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
 bazel_build="${SURVEY_BAZEL_BUILD:-}"
 build_lens_default="fmt libxml2 brotli"
 
@@ -327,6 +333,42 @@ EOF
     _bb_bzlflags="$BAZEL_FLAGS"
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
+
+    # Fifth lens — compile-commands FIDELITY (SURVEY_COMPILE_DB=1). Runs HERE,
+    # after the convert + MODULE/workspace are in place but BEFORE the build's
+    # compile: `bazel aquery` needs only ANALYSIS, so we catch per-TU flag drift
+    # (defines / -std / source includes) without paying for the full build. cmake
+    # ground truth comes from a quick EXPORT_COMPILE_COMMANDS configure of
+    # $_bb_src with the SAME cmake-defines the convert used (BUILD_SHARED_LIBS=OFF
+    # + the .conf's --cmake-define pairs). Report-only (writes fidelity.json); it
+    # does not gate the build. See cmd/compile-commands-diff + docs.
+    if [ "${SURVEY_COMPILE_DB:-0}" != "0" ]; then
+        _cc_defs="-DBUILD_SHARED_LIBS=OFF"
+        # shellcheck disable=SC2086
+        set -- $CONVERT_FLAGS
+        while [ $# -gt 0 ]; do
+            if [ "$1" = "--cmake-define" ] && [ $# -ge 2 ]; then
+                _cc_defs="$_cc_defs -D$2"; shift 2
+            else shift; fi
+        done
+        _cc_cm="$_bb_po/cc-cmake"
+        rm -rf "$_cc_cm"; mkdir -p "$_cc_cm"
+        # shellcheck disable=SC2086
+        if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
+                >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
+            if ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
+                    > "$_bb_po/cc-aquery.json" 2>> "$_bb_po/fidelity.log"; then
+                _cc_diff="$repo_root/build/bin/compile-commands-diff"
+                ( cd "$repo_root" && go build -o "$_cc_diff" ./converter/cmd/compile-commands-diff ) 2>>"$_bb_po/fidelity.log" || _cc_diff="go run $repo_root/converter/cmd/compile-commands-diff"
+                # shellcheck disable=SC2086
+                $_cc_diff --cmake "$_cc_cm/compile_commands.json" --aquery "$_bb_po/cc-aquery.json" \
+                    --json "$_bb_po/fidelity.json" --cmake-src "$_bb_src" --cmake-build "$_cc_cm" \
+                    --bazel-package "$_bb_pkg" >> "$_bb_po/fidelity.log" 2>&1 || true
+                echo "  $_bb_name: compile-db fidelity -> $_bb_po/fidelity.json" >&2
+            fi
+        fi
+    fi
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
     # builds, so ignore any workspace .bazelrc (matches the repo's other survey
     # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread
