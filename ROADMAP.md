@@ -681,6 +681,30 @@ transition cleanly.
   mechanical output (not trusted on faith). Surfaced from the brotli
   test-form discussion.
 
+- **Carry CMakeLists comments into BUILD files.** Author comments are lost
+  on conversion: cmake discards comments at lex time (no AST), so the File
+  API + trace carry none and the regenerated BUILD drops them. Recover them
+  from raw source and re-attach. **Design decided** — see
+  `docs/design/comment-carrying.md` (delete that doc once the producer
+  lands). Most of the substrate already ships: `ir.Target.Provenance`
+  (backtrace-derived declaration site) gives free association;
+  `emit.Options.EmitProvenance` already emits a roundtrip-safe leading
+  `# Source: <file>:<line>` comment (the provenance breadcrumb, "D");
+  `cmakeargv.ReadCall` already reads raw cmake at a declaration site; the
+  `pkg.HeaderComments` slot already emits at top-of-BUILD; and the
+  buildtools-AST emit (`.Before`/`.Suffix`, the `# keep` precedent) keeps
+  output buildifier-canonical. v1 scope: **A** file-header → HeaderComments,
+  **B** leading comment → rule `.Before` (including synthesized codegen
+  genrules, whose `Provenance` is set from the highest-level originating
+  `add_custom_target`/`add_custom_command` trace line — "comments before a
+  codegen"), **C-trailing-only** → rule `.Suffix` (attr-level comments are
+  out: arg reordering/canonicalization makes them fragile), and **D** kept +
+  composed. The only new work is recovering the comment text (a targeted
+  upward/trailing read extending `cmakeargv`). Opt-in flag; off → byte-
+  identical to today. Caveat: comments sited inside a function/macro are
+  skipped (Provenance points into the helper, not the call site), the same
+  bounded ambiguity as the function-forwarded stamp lift.
+
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
   `continue-on-error` soft-launch was dropped from every fixture step after
