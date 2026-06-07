@@ -812,23 +812,34 @@ transition cleanly.
     proj.db (built-tool recovery), octree (split strip_include_prefix), KWSys
     (cross-package generated-header publicize), and the wrap-hierarchy
     `.args/.data` (non-cc generated outputs → data, not cc srcs) all landed.
-    `bazel build //...` now compiles **~5,837 / 6,366 actions (~92%)**; the 529
-    CppCompile failures collapse to a short list dominated by ONE root cause:
-    - **`vtkModuleAutoInit_<hash>.h` not found (501) — the lever.** VTK
-      (`vtkModule.cmake:3494`) puts
-      `target_compile_definitions(<Mod>_AUTOINIT_INCLUDE="vtkModuleAutoInit_<hash>.h")`
-      on each implementing module and the source does `#ifdef <mod>_AUTOINIT_INCLUDE
-      / #include <mod>_AUTOINIT_INCLUDE` — a DEFINE-DRIVEN include the literal
-      #include scan never sees, so the (already-generated, 8 genrules at
-      `CMakeFiles/vtkModuleAutoInit_<hash>.h`) header is never wired into the
-      consumer. Fix = a define-driven-generated-header pass: detect a
-      `*_AUTOINIT_INCLUDE="<hdr>"` define, map `<hdr>` → its producing genrule,
-      wire it into the consumer's inputs + an `-I…/CMakeFiles` so the BASENAME
-      include resolves (cross-package consumers reuse the KWSys publicize path).
-      Clears ~501/529 → VTK ~99% compiling.
-    - Tail: `kwsysPrivate.h` (15), `vtkeigen/eigen/*` include path (6),
-      `proj_config.h` (4), misc (2); plus 2 genrule EXECUTION failures
-      (`proj_db` cmake -P at build time, `vtkCommonCore-hierarchy.txt`).
+    LANDED since: the **vtkModuleAutoInit define-driven generated-header** wiring
+    (501→0 — `wireDefineDrivenGeneratedHeaders` synthesizes a wrapper with the
+    right `includes` so the basename include resolves), the **eigen extensionless
+    headers** (Dense/Core/Eigenvalues — `discoverHeaders` now content-sniffs
+    extensionless C++ headers), and `.txx/.tcc/.ipp` added to headerExts
+    (vtkImageProgressIterator.txx). `bazel build //...` now compiles **~6,345 /
+    6,366 (~99.6%)**.
+    REMAINING TAIL (~20, well-diagnosed — the documented follow-up):
+    - **configure_file config-headers not wired to consumers (~19):**
+      `kwsysPrivate.h` (15), `proj_config.h` (4), `pugiconfig.hpp` (3). A header
+      `configure_file(... COPYONLY)` output, #included by BARE quote name from a
+      same-dir source — cmake needs no `-I` (quote resolves same-dir), so
+      `targetBuildIncs` never records it and the prefix-match attribution misses
+      it; the consuming multi-language SUB-library never declares the generated
+      header. A same-dir-attribution pass was added but DOESN'T engage for these:
+      instrumentation showed `lowerTarget`'s `t.Name` for the kwsys-consuming
+      target is NOT "vtksys" (the converter renames on emit) and/or VTK's
+      configure_files don't reach the `configureFiles` slice the attribution
+      iterates — the precise recovery-path/target-identity needs one more
+      instrumented pass. Fix lands the output in the consuming sub-lib's hdrs
+      (rides `splitCompileGroups`' sharedHdrs).
+    - **2 genrule-EXECUTION failures:** `proj_db` (`cmake -P generate_proj_db.cmake`
+      fails at `include(sql_filelist.cmake)` — relative include not staged in the
+      genrule's cwd at build time) and `vtkCommonCore-hierarchy.txt`
+      (`vtkWrapHierarchy: couldn't open @…hierarchy.Debug.args` — the `.args`
+      response-file, routed to `data`, isn't staged as a genrule input at the
+      expected path). Both are build-time genrule input-staging fixes.
+    - misc: `lz4.c` (1).
     provisioned in the default web session and a multi-GB install. (Verify by
     trying, not assuming — the vtk "disk-blocked" claim was an untested
     assumption that turned out false.)

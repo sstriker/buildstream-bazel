@@ -422,6 +422,9 @@ var headerExts = map[string]bool{
 	".inl": true,
 	".def": true,
 	".inc": true,
+	".txx": true, // template-impl headers (VTK's vtkImageProgressIterator.txx)
+	".tcc": true,
+	".ipp": true,
 }
 
 // ccLinkableSrcExts are non-header extensions that are still valid `srcs`
