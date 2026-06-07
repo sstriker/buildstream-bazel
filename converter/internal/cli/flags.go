@@ -379,6 +379,15 @@ type Args struct {
 	// regression tests pre-dating the provenance comments).
 	EmitProvenance bool
 
+	// EmitSourceComments enables comment-carrying: recover the author's
+	// CMakeLists comments (leading block per target + the file header) from
+	// raw source and emit them onto the corresponding rules. Default OFF —
+	// unlike --emit-provenance (which reads the already-loaded backtrace),
+	// this reads raw source files, adding them to the action's inputs, so
+	// it's opt-in. Drives lower.Options.RecoverSourceComments +
+	// emit.Options.EmitSourceComments together.
+	EmitSourceComments bool
+
 	// EmitStandaloneCustomCommands enables Phase 4 of the
 	// generator-parity uplift's standalone-genrule emission: walk
 	// every CUSTOM_COMMAND edge in build.ninja and emit a genrule
@@ -661,6 +670,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
 	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
+	fs.BoolVar(&a.EmitSourceComments, "emit-source-comments", false, "carry author comments from CMakeLists into the emitted BUILD: the leading `#` comment block above each target's declaration, plus the top-of-file header block. Reads raw source (adds it to the action's inputs), so default OFF; pass --emit-source-comments to enable.")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
 	fs.StringVar(&a.OutConfigSettings, "out-config-settings", "", "write a //config package BUILD (string_flag build_type + one config_setting per non-sanitizer config in --build-types) backing the multi-config fold's //config:<name> select() arms, making the converted output self-contained. Phase 5 of the generator-parity uplift.")
