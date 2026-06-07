@@ -465,6 +465,25 @@ type Target struct {
 	// target_link_libraries() in CMake belong here.
 	Deps []string
 
+	// DynamicDeps are Bazel labels to cc_shared_library targets this target
+	// links DYNAMICALLY (the `dynamic_deps = [...]` attribute on
+	// cc_binary/cc_test/cc_library). Under faithful-SHARED conversion
+	// (EmitSharedLibraries), a consumer of a SHARED/MODULE library keeps the
+	// impl cc_library in Deps (for headers) and lists the sibling
+	// `<dep>_shared` here, so Bazel links the .so instead of static-linking the
+	// impl (and the "owned by at most one shared lib" rule is satisfied). Empty
+	// for the default static-collapse emit.
+	DynamicDeps []string
+
+	// SharedLibDynamicDeps are the dynamic_deps for the cc_shared_library
+	// WRAPPER emitted for this (SharedLibName-bearing) target — the
+	// `<dep>_shared` siblings for deps that are themselves shared libs. Without
+	// them a shared lib statically re-links a dep that another shared lib also
+	// owns, violating cc_shared_library's "a cc_library is linked into at most
+	// one shared lib" rule (the brotli brotlidec/brotlicommon case). Empty for
+	// non-shared targets and leaf shared libs.
+	SharedLibDynamicDeps []string
+
 	// ImplementationDeps are Bazel labels to other targets used
 	// only in this target's .cc files (`PRIVATE`
 	// target_link_libraries() in CMake). Maps to
@@ -524,6 +543,16 @@ type Target struct {
 	// Linkstatic / Alwayslink only meaningful for KindCCLibrary.
 	Linkstatic bool
 	Alwayslink bool
+
+	// SharedLibName, when non-empty, marks a KindCCLibrary that cmake declared
+	// as a SHARED_LIBRARY / MODULE_LIBRARY: the cc_library is the static
+	// implementation, and emit ALSO renders a sibling `cc_shared_library`
+	// (name `<target>_shared`, roots=[":<target>"]) producing this real .so
+	// (the value is the cmake artifact name, e.g. "libz.so"). Faithful-SHARED
+	// conversion — see ROADMAP's cc_shared_library item. Populated by lower only
+	// under the opt-in EmitSharedLibraries mode, so the default (static-collapse)
+	// emit stays byte-identical; empty for every static lib.
+	SharedLibName string
 
 	// Features routes to Bazel's `features = [...]` attribute on
 	// cc_library / cc_binary / cc_test. Each entry is a feature

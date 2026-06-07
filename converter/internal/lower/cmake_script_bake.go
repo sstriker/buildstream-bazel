@@ -13,6 +13,29 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
+// extractCdDir returns the directory from a leading `cd <dir> && …` prefix on a
+// ninja-emitted command (cmake's custom-command WORKING_DIRECTORY), or "" when
+// the command doesn't start with one. Handles a quoted or bare dir token.
+func extractCdDir(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if !strings.HasPrefix(cmd, "cd ") {
+		return ""
+	}
+	i := strings.Index(cmd, " && ")
+	if i < 0 {
+		return ""
+	}
+	dir := strings.TrimSpace(cmd[len("cd "):i])
+	dir = strings.Trim(dir, `"'`)
+	return dir
+}
+
+// dirExists reports whether p is an existing directory.
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
 // bakeCmakeScriptGenrule executes `cmake -P <script>` at convert
 // time, captures the script's declared OUTPUT files, and emits
 // one genrule per output whose cmd materializes the baked bytes
@@ -112,8 +135,18 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	//
 	// Falls back to a tmpDir when buildDir is empty (the unit-test
 	// shape that doesn't have a real cmake build dir on hand).
+	// Honor the recovered command's WORKING_DIRECTORY. cmake's Ninja generator
+	// emits custom commands as `cd <WORKING_DIRECTORY> && cmake … -P script`,
+	// and some scripts depend on that cwd: VTK's libproj generate_proj_db.cmake
+	// runs from the data SOURCE dir so `include(sql_filelist.cmake)` and its
+	// `${CMAKE_CURRENT_SOURCE_DIR}/sql/*.sql` paths resolve. Running from buildDir
+	// (the default) breaks that relative include. When the cd-dir exists, prefer
+	// it; it equals buildDir for the libpng ${BINDIR}-bridge shape (those custom
+	// commands cd into the build subdir), so this is safe for both.
 	var workDir string
-	if buildDir != "" {
+	if cd := extractCdDir(cmd); cd != "" && dirExists(cd) {
+		workDir = cd
+	} else if buildDir != "" {
 		workDir = buildDir
 	} else {
 		tmpDir, err := os.MkdirTemp("", "cmake-script-bake-*")

@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -224,6 +225,28 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 			case "defines":
 				if rewritten, keep := reanchorDefineValue(tok, cmakeSrc, cmakeBuild); keep {
 					values = append(values, rewritten)
+				}
+			case "includes":
+				// Per-config include deltas can be absolute build-dir or
+				// source-dir paths the single-config include handler never
+				// saw (it only walks the primary config). Relativize them
+				// the same way: a build-dir include (a `$<CONFIG>`-dependent
+				// file(GENERATE) output dir like
+				// include-config-debug/build_config) becomes build-dir-
+				// relative — which is exactly where the recovered per-config
+				// genrule places its output, so the select arm's `-I` finds
+				// the generated header. A source-tree include becomes src-
+				// relative. System / out-of-tree absolutes drop (the
+				// toolchain supplies those). Without this the select kept
+				// absolute throwaway-build-dir paths
+				// (/tmp/convert-element-build-*/...) that resolve to nothing
+				// at Bazel time (SDL's per-config SDL_build_config.h dir).
+				if rel, ok := relativeIfInsideRelaxed(cmakeBuild, tok); ok {
+					values = append(values, rel)
+				} else if rel, ok := relativeIfInside(cmakeSrc, tok); ok {
+					values = append(values, rel)
+				} else if !filepath.IsAbs(tok) {
+					values = append(values, tok)
 				}
 			default:
 				values = append(values, tok)

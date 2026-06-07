@@ -7,6 +7,25 @@ transition cleanly.
 
 ## Now
 
+- **Refactor: one source-classification chokepoint in `lower`.** The "is this
+  path a cc compile/link/header input, and which attribute does it go in
+  (srcs/hdrs/data/drop)?" decision is duplicated across ~6 sites in
+  `converter/internal/lower/lower.go` — the main per-source switch, the
+  recovered-genrule branch, the GENERATED-not-on-disk branch, the inCompileGroup
+  branch, the file(GENERATE) consumer-attribution block, and the execute_process
+  sister block. The VTK wrap-hierarchy `.args/.data` bug had to be fixed at
+  several of these independently before the actual entry path (file(GENERATE)
+  attribution) was found — a clear "same fix in N places" smell. `isCcSrcEntry`
+  centralized the *predicate*; the *routing* (append to hdrs vs srcs vs data,
+  drop cross-package non-cc, dedup, CcEmbed header pairing, the has-cmake-codegen
+  tag) is still scattered. Consolidate into a single
+  `classifyAndAttach(irt, path, policy)` helper that every source-producing site
+  calls, so a new non-cc/odd-extension shape is handled once. Audit the wider
+  converter for the same pattern (cross-package relabeling, visibility
+  publicizing, and exports_files also recur at multiple sites) and capture any
+  further consolidations. Guard with the existing goldens + the abseil/glm/VTK
+  surveys so the refactor is behavior-preserving.
+
 - **Generator-parity uplift for the cmake converter.** The
   current cmake converter reads File API codemodel-v2 +
   `--trace-expand` and emits BUILD files; that recovers
@@ -626,6 +645,372 @@ transition cleanly.
 
 ## Next
 
+- **Green grpc — the deepest `find_package` graph
+  (abseil+protobuf+re2+c-ares+zlib+…).** protobuf is now green (libs + protoc +
+  upb generators), which proves the whole find_package-availability +
+  whole-include-tree machinery end-to-end; grpc is the next member to drive
+  through it. The reusable mechanism, now in place:
+  - **Host-install + imports-manifest → BCR.** Install each dep so
+    `find_package(<Pkg> CONFIG)` SUCCEEDS at cmake time (else the project
+    FetchContent-downloads it into the build dir, which the lens overlay can't
+    stage), point `CMAKE_PREFIX_PATH` at the installs, and map the imported
+    targets → BCR labels with `--imports-manifest` (+ `EXTRA_BAZEL_DEPS`). The
+    abseil manifest auto-gen rule (name-match in `absl/*/BUILD.bazel`; strip
+    `<dir>_internal_` → `//absl/<dir>/internal:<rest>`) is in
+    scripts/build-lens/ and reusable; grpc needs the same for protobuf + re2 +
+    c-ares targets.
+  - **find_package whole-include-tree umbrella.** `find_package(<Pkg>)` puts
+    Pkg's ENTIRE include dir on every consumer, so consumers `#include` headers
+    for targets they never link (Bazel strict-deps rejects). The manifest's
+    `umbrella_label` + `umbrella_include_roots` + the build-lens `extra_ws_setup`
+    hook (generates `//absl_umbrella:absl` from
+    scripts/build-lens/absl-umbrella-deps.txt = every public abseil target)
+    model this. grpc will want the same umbrella for protobuf's headers.
+  - REPRODUCIBILITY TODO (carried from protobuf): the .conf files hardcode
+    `/tmp/absl-install` (host-installed abseil) and the umbrella deps list is a
+    snapshot of the pinned abseil. Fold the abseil (and protobuf, for grpc)
+    host-installs into the SessionStart hook so the lens is reproducible without
+    a manual prep step.
+
+- **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
+  `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
+  output) UNLESS `EVENT__DISABLE_TESTS=ON` — so the libevent lens scopes the
+  regress tests off (libevent.conf), which also dodges a `test/regress.gen.c
+  outside-build-dir` rejection. With tests off both converts complete in
+  seconds with 0 rejections, so the loop is in the regress target graph (likely
+  the custom-command / generated-source recovery over the regress test tree).
+  Find + fix the loop so libevent's tests don't have to be scoped purely to
+  avoid a hang. Lower priority than greening members, but a hang (vs a clean
+  refusal) is a sharp edge worth removing.
+
+- **Stage headers from a PRIVATE include dir with no public header lib.** How
+  the existing machinery works (verified): lower emits a `target_include_
+  directories(PRIVATE <dir>)` as an element-root-relative `-I<dir>` copt; split's
+  `rewriteTarget` copt scan (split.go ~944) then keys on that `-I<dir>` and, IFF
+  a header lib was synthesized for `<dir>` (i.e. `<dir>` is ALSO a public include
+  root of some target, so it's in `incRoots`), wires the lib as a (private)
+  header dep and drops the bare `-I`. That stages the headers + supplies the
+  correct exec-root search path via the lib's `includes`. The GAP: a dir that is
+  PRIVATE-only (no target lists it as a public include) gets no header lib, so
+  the scan finds nothing, the `-I<dir>` stays element-relative (unresolved at the
+  exec root), and the dir's headers are never staged. Blocks **mbedtls** (its
+  always-on `framework` builds `mbedtls_test_helpers` → `#include
+  "test/ssl_helpers.h"` from PRIVATE-only `tests/include`) and **sdl**
+  (`SDL_uclibc` → `#include "SDL_internal.h"` from PRIVATE-only `src`).
+  Implement (verified-safe shape — two pieces, BOTH required):
+  1. **lower: discover the PRIVATE dirs' headers.** `includesForWalk`
+     (lower.go ~2736, fed to `discoverHeaders`) starts from `irt.Includes`
+     (the NON-private include attr) + each src file's dir — it does NOT include
+     the PRIVATE `-I` copt dirs. So a PRIVATE-ONLY dir's headers never land in
+     `irt.Hdrs`/`allHdrs`. Add the PRIVATE include dirs (the `emit` values from
+     the `privateIncludeDirs` branch ~2459) to `includesForWalk` so their
+     headers are discovered + declared.
+  2. **split: synthesize + wire.** In planSplit add PRIVATE `-I` copt dirs to
+     `incRoots` so `headerLibTarget` builds a lib (now non-empty thanks to #1);
+     rewriteTarget's existing copt scan (~944) then wires it as a private header
+     dep and drops the bare `-I`.
+  WHY BOTH: with only #2, a PRIVATE-only dir gets an EMPTY header lib (its
+  headers weren't discovered) AND the `-I` is dropped → regression. SDL's `src`
+  happens to be safe with #2-only because another (non-private) target already
+  declares `SDL_internal.h`, but mbedtls's PRIVATE-only `tests/include` is not —
+  hence #1 is mandatory for a general fix. Needs full corpus re-validation (it
+  touches header-lib synthesis broadly); two earlier point-fixes in this area
+  regressed fmt and the cp-dir tests, so validate every green member before/after.
+
+  RELATED mbedtls blocker (separate, AFTER header-staging — verified by getting
+  past ssl_helpers.h to here): mbedtls GENERATES `query_config.c`, `error.c`,
+  `version_features.c` via python scripts, then `link_to_source`-copies them,
+  lowering to execute_process copy genrules with `srcs=[X]`+`outs=[X]` (in==out).
+  Two failed shortcuts, both reverted: (a) "drop the dir copy when
+  srcFileRel==outRel" broke legitimate `cp <srcdir> <build>` staging (the
+  cp-dir-lift tests); (b) "drop the single-file copy" cleared the in==out and got
+  mbedtls compiling 475/591, but then `ld: undefined symbol: query_config /
+  list_config` — because X is GENERATED-ONLY (no usable committed source), so
+  dropping its copy loses the content entirely. So the real fix is NOT to drop or
+  rename the copy — it's to actually GENERATE these files: emit the python-script
+  genrule (the genrule-script-staging item) that produces query_config.c et al.,
+  and recognize the link_to_source copy as redundant with it. mbedtls needs:
+  header-staging (DONE) + python-script source generation + then the in==out copy
+  falls away (the generating genrule owns the output).
+
+  REGRESSION LESSON (do not repeat): an earlier attempt "exec-root anchor the
+  PRIVATE `-I` copt" (so `-Itests/libtest`→`-Ielements/<pkg>/tests/libtest`)
+  made curl's unit-test build find headers it had in `srcs`, but it BROKE the
+  split copt scan above for every member relying on it — the scan matches the
+  element-relative form, so the exec-root form silently stopped wiring the header
+  lib and regressed **fmt** (posix-mock-test: `#include <fmt/os.h>` "No such
+  file", fmt's `include/` lib no longer wired). Reverted. The copt MUST stay
+  element-relative; do the staging in split (header lib), not by rewriting the
+  copt in lower.
+
+- **Green the remaining heavyweight corpus members: grpc, vtk, cuda-samples.**
+  23/26 are green (protobuf + sdl landed). The last three are each deep:
+  - **grpc** — the deepest `find_package` graph (abseil + protobuf + re2 +
+    c-ares + zlib). The whole mechanism is proven (see the grpc bullet under
+    `Next`): host-install each dep so find_package succeeds, map imported
+    targets → BCR labels via `--imports-manifest`, and use the find_package
+    whole-include-tree umbrella (manifest `umbrella_label` +
+    `//absl_umbrella:absl`-style generated lib). grpc's build is large — mind
+    the disk-bounded build cycle in the large-project playbook below.
+  - **vtk** — NOT disk-blocked (an earlier note wrongly claimed this; the
+    container had ~22 GB of stale prior-session survey dirs under `/home/user/`
+    masking ~25 GB of real free space — reclaimed). VTK configures, converts
+    with **0 rejections** (vtk.conf: `--cmake-script-bake` lifts the 705
+    `cmake -P vtkEncodeString.cmake` codegen commands, `VTK_GIT_DESCRIBE` skips
+    the git stamp), and now LOADS + ANALYZES (1533 actions) after fixing the
+    FILE_SET-HEADERS relativization bug (141 targets had `//pkg:/abs` labels).
+    PRE-BUILD FIDELITY (run the compile-commands lens on the analyzed graph
+    before chasing a green build — the right loop): 804 TUs matched cmake; it
+    caught the string-define **quote-stripping** bug (VTK_PARSE_VERSION /
+    LZ4_VERSION="1.8.0" / H5_ZLIB_HEADER reached the compiler UNQUOTED because
+    Bazel's `defines` Bourne-tokenization strips single-escaped quotes — FIXED
+    in emit, corpus-wide). Remaining fidelity diffs are over-broad-but-benign:
+    `-I.` (package root) on every TU, HDF5 include breadth, VTK_PARSE_VERSION /
+    H5_ZLIB_HEADER define over-propagation (PRIVATE→`defines`, same class as
+    DEFINE_SYMBOL), and dropped `-fno-common`/`-ftrapv` (HDF5) vs added
+    `-fvisibility*`.
+    BUILD blockers (the real multi-step VTK lift):
+    1. **Built-tool genrule recovery (proj.db) — LANDED + validated.** libproj's
+       `generate_proj_db.cmake` pipes its .sql into a sqlite3 binary, and VTK
+       hardcodes its OWN bundled tool via `set(EXE_SQLITE3
+       "$<TARGET_FILE:VTK::sqlitebin>")` (the `find_program`/host path is
+       disabled behind `if (FALSE)`, so host sqlite3 / `-DEXE_SQLITE3` is
+       ignored — an earlier "needs host sqlite3" reading was wrong). The
+       recovered genrule referenced the build-tree path `bin/Debug/sqlitebin-9.4`
+       which doesn't exist in the sandbox. Fixed: `rewriteToolFromTarget` now
+       lifts the `VAR=<artifact-path>` embedded form (gated on a new
+       `ExecArtifacts` set so libs aren't mis-lifted) — proj.db now carries
+       `EXE_SQLITE3=$(location …:sqlitebin)` + `tools=[…:sqlitebin]`, and the
+       build advances past it. General capability (any in-tree codegen tool
+       passed as a -D arg). (The bake's WORKING_DIRECTORY fix — lower's
+       extractCdDir — also landed, helping OTHER relative-`include()` bake scripts.)
+    2. **octree split-package `strip_include_prefix` — LANDED + validated.**
+       Under `--split-packages` octree got its own package
+       (`elements/vtk/Utilities/octree`) but kept the element-root-relative
+       `strip_include_prefix = "Utilities/octree"`, which Bazel resolves relative
+       to the PACKAGE → the doubled `…/Utilities/octree/Utilities/octree` (its
+       `octree/*` headers "not under the strip prefix"). Fixed: rewriteTarget
+       now emits the repo-root absolute form (`/elements/vtk/Utilities/octree`)
+       for sub-package targets; root-package targets keep the relative form
+       (no churn). abseil + glm re-validated green (`0 0 0 ok ok`); glm emits no
+       strip_include_prefix so it's a no-op there.
+    3. **KWSys cross-package header refs (NEXT blocker).** The build now aborts
+       at `//…/Utilities/KWSys:Utilities_KWSys_headers` — a Visibility error:
+       its synthesized `hdrs` list files (`Base64.h`, `CommandLineArguments.hxx`,
+       …) that physically live in the `vtksys` SUB-package
+       (`Utilities/KWSys/vtksys`), so the cross-package file refs aren't visible.
+       The synthesized header-lib collection needs to either `exports_files`
+       those headers in their owning sub-package or reference the sub-package's
+       header-lib label — the split-emit cross-package-source handling
+       (`exportsByDir`) extended to synthesized header libs. (~20 consumers all
+       report the same one root cause.) The build is still in ANALYSIS — no TU
+       has compiled yet; expect more split-package edge cases before the large
+       compile.
+    A converter-shaped lift, not disk- or scale-blocked.
+
+    UPDATE — analysis is now FULLY GREEN (2359/2359) and the COMPILE runs.
+    proj.db (built-tool recovery), octree (split strip_include_prefix), KWSys
+    (cross-package generated-header publicize), and the wrap-hierarchy
+    `.args/.data` (non-cc generated outputs → data, not cc srcs) all landed.
+    LANDED since: the **vtkModuleAutoInit define-driven generated-header** wiring
+    (501→0 — `wireDefineDrivenGeneratedHeaders` synthesizes a wrapper with the
+    right `includes` so the basename include resolves), the **eigen extensionless
+    headers** (Dense/Core/Eigenvalues — `discoverHeaders` now content-sniffs
+    extensionless C++ headers), and `.txx/.tcc/.ipp` added to headerExts
+    (vtkImageProgressIterator.txx). `bazel build //...` now compiles **~6,345 /
+    6,366 (~99.6%)**.
+    REMAINING TAIL (~20, well-diagnosed — the documented follow-up):
+    - **configure_file config-headers not wired to consumers (~19):**
+      `kwsysPrivate.h` (15), `proj_config.h` (4), `pugiconfig.hpp` (3). A header
+      `configure_file(... COPYONLY)` output, #included by BARE quote name from a
+      same-dir source — cmake needs no `-I` (quote resolves same-dir), so
+      `targetBuildIncs` never records it and the prefix-match attribution misses
+      it; the consuming multi-language SUB-library never declares the generated
+      header. A same-dir-attribution pass was added but DOESN'T engage for these:
+      instrumentation showed `lowerTarget`'s `t.Name` for the kwsys-consuming
+      target is NOT "vtksys" (the converter renames on emit) and/or VTK's
+      configure_files don't reach the `configureFiles` slice the attribution
+      iterates — the precise recovery-path/target-identity needs one more
+      instrumented pass. Fix lands the output in the consuming sub-lib's hdrs
+      (rides `splitCompileGroups`' sharedHdrs).
+    - **2 genrule-EXECUTION failures:** `proj_db` (`cmake -P generate_proj_db.cmake`
+      fails at `include(sql_filelist.cmake)` — relative include not staged in the
+      genrule's cwd at build time) and `vtkCommonCore-hierarchy.txt`
+      (`vtkWrapHierarchy: couldn't open @…hierarchy.Debug.args` — the `.args`
+      response-file, routed to `data`, isn't staged as a genrule input at the
+      expected path). Both are build-time genrule input-staging fixes.
+    - misc: `lz4.c` (1).
+    provisioned in the default web session and a multi-GB install. (Verify by
+    trying, not assuming — the vtk "disk-blocked" claim was an untested
+    assumption that turned out false.)
+  The converter features sdl + vtk needed are all generic and landed:
+  multi-config `file(GENERATE)` glob fan-out, per-config include relativization,
+  cmake PCH `-include` drop, select-arm cross-package relabel, and FILE_SET
+  HEADERS path relativization. The remaining members lean on dep-availability
+  (`tools/install-survey-deps.sh`) + hermetic `cmake -P` script execution +
+  scale.
+
+  DISK NOTE (corrected): the real ceiling is ~37 GB, and a clean session has
+  ~25 GB free — ample for grpc/vtk builds. The earlier "~3 GB, disk-blocked"
+  reading was stale prior-session survey dirs (`g-*`, `revisit`, `final-val`,
+  …) accumulating under `/home/user/`; reclaim them between runs. Always
+  `df /` and check `du -xsh /home/user/*` before concluding disk is the limit —
+  and clean per-project `.bzcache`/`build-ws` under `--out-dir/<member>/`.
+
+- **Faithful SHARED-library conversion (`cc_shared_library`) — Phases 1/2/2b
+  LANDED & validated; remaining: corpus-wide re-green + edge cases.** The WHOLE
+  POINT of shared is FIDELITY — to build what cmake would actually build. The
+  survey forces `BUILD_SHARED_LIBS=OFF` for simplicity, but static is NOT
+  cmake's/the project's default; that forced-static is the deviation this work
+  removes. Historically lower collapsed `SHARED_LIBRARY`/`MODULE_LIBRARY` → a
+  plain `cc_library`, losing the `.so` / dynamic linking / symbol-boundary
+  semantics — wrong where the shared boundary is load-bearing (curl's tests
+  SIGSEGV under static-collapse because the `.so` should hide the curlx
+  utility symbols; `MODULE_LIBRARY` dlopen plugins; per-`.so` global state).
+  **Landed:**
+  - `--emit-shared-libraries` (survey: `SURVEY_SHARED=1`, which also drops the
+    forced static so the project builds its NATURAL config). lower sets
+    `ir.Target.SharedLibName` for SHARED/MODULE targets; emit renders a sibling
+    `cc_shared_library(name=<t>_shared, shared_lib_name=<NameOnDisk>, deps=[":<t>"])`
+    alongside the static impl. Default emit byte-identical (opt-in).
+  - Consumer `dynamic_deps` wired (`wireDynamicDeps`): consumers keep the impl
+    in deps (headers) + the `_shared` sibling in dynamic_deps → Bazel links the
+    real `.so` (validated: example binary's ELF shows `NEEDED libz.so`).
+  - Multi-shared-lib graphs: the wrapper gets its OWN dynamic_deps to sibling
+    shared libs (`SharedLibDynamicDeps`) so it doesn't statically re-link a
+    cc_library another shared lib owns ("linked more than once"); the
+    shared_lib_name appends the cmake SOVERSION when the unversioned name would
+    collide with the impl's auto `lib<t>.so` (brotli).
+  - Split (build-lens) path: dynamic_deps + the wrapper labels relabel
+    cross-package (`rewriteSharedDeps` resolves `<lib>_shared` to the impl's
+    package — curl's `libcurl_shared` in `//elements/curl/lib`).
+  Validated green under `SURVEY_SHARED=1` (9/9 probed): zlib, fmt, libxml2,
+  brotli (multi-lib), curl (multi-package + the SIGSEGV root-cause — now fixed
+  by the real `.so`), glog, spdlog, mbedtls (multi-lib), protobuf
+  (find_package(absl) + umbrella + many libs).
+  **Remaining:** run the WHOLE build-lens corpus under `SURVEY_SHARED=1` (incl.
+  protobuf/abseil, sdl, OpenBLAS, the heavy LLVM/VTK) and fix fallout; carry the
+  `.so` in runfiles for `bazel run`/test; `MODULE_LIBRARY` dlopen semantics;
+  and consider flipping `SURVEY_SHARED` to the DEFAULT once the corpus is green
+  under it (so green + the fidelity lens run against the config cmake produces).
+
+- **Test-target coverage — enable the scoped-out members' tests.** The build
+  lens builds `//...`, which already INCLUDES test targets where the project's
+  tests need no extra infra: tests build green today for fmt (20 `cc_test`),
+  libxml2 (8), glog (10, via `--dynamic_mode=off`), glm, googletest, abseil
+  (test-off but the surface compiles); curl builds its test PROGRAMS (cc_binary,
+  perl-harness-driven). The remaining members scope tests out via a `.conf`
+  flag, each for a concrete reason — to enable, resolve that reason:
+  - **spdlog** (`SPDLOG_BUILD_TESTS=OFF`): tests need `find_package(Catch2 3)`.
+    Catch2 IS a corpus member (3.5.3) — wire it cross-element via the imports
+    manifest + a host-install prefix (the protobuf↔absl pattern).
+  - **nlohmann-json** (`JSON_BuildTests=OFF`): tests `#include` a generated
+    `test_data.hpp` whose data is a `git clone` of `json_test_data` (network) —
+    stage the data dir + point `JSON_TestDataDirectory` at it.
+  - **mbedtls** (`ENABLE_TESTING=OFF`): test suites are `.c` generated from
+    `.data` + `.function` by `generate_test_code.py` (python add_custom_command)
+    — verify the converter recovers those as genrules.
+  - **libevent** (`EVENT__DISABLE_TESTS=ON`): `regress` needs `regress.gen.c`
+    from `event_rpcgen.py` (python codegen) — same genrule-recovery check.
+  - **eigen** (`EIGEN_BUILD_TESTING=OFF`): ~900-target `-Werror` SIMD suite,
+    self-contained (no ext dep/codegen) but a huge build — needs a scoped/
+    sharded build, not `//...` in one shot. Deferred dev surface.
+  - **openblas** (`BUILD_TESTING=OFF`): utest is C but the BLAS test surface
+    pulls the Fortran reference — gated on the (deferred) Fortran ruleset.
+  - **protobuf** (`protobuf_BUILD_TESTS=OFF`): needs googletest as a dep
+    (BCR module / corpus member) wired like abseil's `GTest::gmock`.
+
+- **Final corpus validation pass before declaring the converter "done."**
+  Independent of any single feature: when the corpus is considered complete, do
+  one clean-room full pass — every build-lens member fetched fresh, converted
+  from scratch (no stale `build/bin` binary, no warm out-dir), `bazel build
+  //...` green, AND the lens's run/execution checks green (the unit-test-style
+  "does it actually run" probes, e.g. curl's unit tests passing) — on a machine
+  with enough disk for the large members (LLVM `TOOLS=ON`, VTK) so nothing is
+  scoped out for disk. Capture the result as the corpus's "all green, no cmake"
+  baseline. This is the acceptance gate, distinct from the per-change
+  re-validation the dev loop already does.
+
+- **Make the host-system-library fallback EXPLICIT (hermeticity boundary).**
+  When a `find_package`/`target_link_libraries` link fragment resolves to a
+  standard system library (`/usr/lib*`, `/lib*`, `/usr/local/lib*`) and the
+  imports manifest has no entry for it, the lower lifts it to a `-l<name>`
+  linkopt (`converter/internal/lower/lower.go`: the `systemLibName(path)`
+  sites — the find_package-attributed branch AND the attribution-missed
+  branch). This is what makes LLVM's `opt`/`llc` link against host zlib. It
+  is **not hermetic**: the build relies on the host toolchain's library
+  search path containing `libz.so` etc. Today the lift is **silent** — there
+  is no signal in the emitted BUILD that a target took a host dependency.
+  Decide + implement the explicit contract: (a) emit a visible marker on
+  every host-syslib lift (e.g. a `cmake-codegen-host-syslib=<name>` tag and
+  an idiom-audit finding) so host coupling is auditable; and/or (b) gate the
+  lift behind an opt-in flag (default: refuse with a typed failure pointing
+  at the imports manifest), so the hermetic path (map `<Pkg>::<Pkg>` →
+  a BCR module like `@zlib//:zlib` via the manifest) is the default and
+  host-coupling is a conscious choice. The manifest is already the hermetic
+  channel (abseil→googletest); this item is about not silently bypassing it.
+
+- **Build curl's `docs/` manpage genrules.** curl's test surface now builds
+  (`BUILD_TESTING=ON`; the ninja-recovery exec-root + cd-stripped-output
+  anchoring that did it shipped — see docs/survey-corpus.md curl row), but the
+  lens still scopes `docs/` off (`BUILD_LIBCURL_DOCS=OFF`). The `docs/` tree is
+  manpage generation: genrules running perl helpers (`cd2nroff`/`managen`/
+  `mkhelp.pl`) over ~300 `.md` files, often with a different shape than the test
+  codegen (whole-directory `managen` inputs, `>`-redirect outputs, multi-input
+  staging). Verify which of those build under the current anchoring and close
+  the remainder, so docs build faithfully instead of being scoped away. It's a
+  documentation surface, not library/test code, so lower priority than the test
+  side that's now green.
+
+- **Build-lens fidelity (compile-commands lens) — defines + -std + includes +
+  copts + link-order(v1) LANDED & wired; remaining: link-order project-archive
+  layer.** The build lens proves
+  `bazel build //...` succeeds, but a build can succeed with the WRONG per-TU
+  flags (the `BUILDING_LIBCURL` / `HAVE_ZLIB` leaks compiled fine while applying
+  a macro to TUs cmake never gave it). Shipped: `cmd/compile-commands-diff` +
+  `scripts/compile-commands-lens.sh`, wired into `run-survey.sh` as the 5th lens
+  `SURVEY_COMPILE_DB=1` (runs after convert but BEFORE the build's compile —
+  `aquery` needs only analysis — writing `<out>/<name>/fidelity.json`). It diffs
+  cmake's `CMAKE_EXPORT_COMPILE_COMMANDS=ON` db against Bazel's
+  `aquery 'mnemonic("CppCompile",//...)'` (built-in, hermetic) per TU on:
+  **(1) defines** (set-diff, filtering Bazel's `__DATE__/__TIME__/__TIMESTAMP__`
+  reproducibility stamps); **-std**; and **(2) includes** — both sides
+  normalized to one source-relative space (`normalizeInclude`: cmake absolute
+  paths strip cmakeSrc→source-rel / cmakeBuild→`gen:` / `/usr`→`sys:`; Bazel
+  exec-root paths strip the element package→source-rel /
+  `bazel-out/<cfg>/bin/<pkg>`→`gen:` / `external/`→`ext:`), so source includes
+  diff exactly and the `gen:/sys:/ext:` build-layout/toolchain noise is filtered
+  from the headline. First real catch: zlib's `DEFINE_SYMBOL ZLIB_DLL` leaking
+  to `example.c`/`minigzip.c` — FIXED (DEFINE_SYMBOL→`local_defines`); zlib is
+  now fully fidelity-clean (0/0/0/0).
+  Also LANDED: **(3) copts** (project-authored flags only — `interestingCopt`
+  keeps `-fvisibility=`/`-fno-rtti`/`-fopenmp`/`-march`/`-pthread`, filters
+  optimization/debug/warnings/hardening/PIC toolchain + build-mode defaults),
+  and **link-line ORDER v1** (`linkOrderDiff`: cmake codemodel
+  `link.commandFragments` via fileapi — Ninja emits no `link.txt` — vs Bazel
+  `aquery 'mnemonic("CppLink",//...)'`, output binary resolved by walking the
+  pathFragment tree; reports relative-order inversions per matched executable).
+  Remaining (PARKED — extend the link-order check to compare ALL libraries in
+  order, not just system libs):
+  - The v1 compares SYSTEM libs only (stdc++/m/pthread/dl/rt — stable identity
+    both sides), which is empirically LOW-YIELD: pure-C members link no
+    allowlist system libs (zlib's exes link only `libz.so`), and others link
+    ssl/crypto/z as paths. The goal is to diff the FULL ordered link line —
+    system libs AND project archives AND find_package/external deps — since the
+    first-to-satisfy-a-symbol rule applies across all of them. That's gated on
+    cross-build-system identity matching for the non-system libs: map cmake's
+    link-fragment path basename → target via `NameOnDisk`, and Bazel's mangled
+    `-lelements_Szlib_Slibzlib` → target by reversing the solib escape
+    (`_S`→`/`, `_U`→`_`, basename, strip `lib`) — both land on the cmake
+    `Target.Name`, the common key; external/find_package libs map via the
+    imports manifest's BazelLabel. Also handle Bazel `.a`-path link forms
+    (static mode) vs the solib `-l` form (default dynamic), and the
+    static-vs-dynamic caveat (dynamic linking is order-independent, so a
+    project-archive order divergence only matters where Bazel links static).
+  Caveats still open: TU keying is by basename (collides across dirs in big
+  trees; disambiguate by relative-suffix), config alignment (cmake db is
+  single-config; defines/-std/includes are largely config-stable).
+
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
   `toolchain.Model` and the emit sets `cc_toolchain_config`'s
@@ -1069,3 +1454,27 @@ flow, all in one place) and `docs/codebase-map.md` (the developer-facing
 repo tour). `ROADMAP.md` tracks only what's *left*; git history is the
 record of what shipped.
 
+
+### protobuf finish — static-lib find_package header wiring (294/321)
+
+protobuf converts 0-rej and builds **294/321** with the abseil manifest +
+link_paths (78 @abseil deps on the LINKING targets: libprotobuf, libprotoc,
+protoc — their `.a` link fragments path-attribute to @abseil-cpp). The remaining
+failures are **static-archive libraries** (libprotobuf-lite) that `#include`
+absl headers (absl_check.h, cord.h, …) but get NO absl wiring:
+- a static lib has no link step → no `.a` link fragments → nothing for
+  link_paths to attribute;
+- find_package IMPORTED targets aren't in the codemodel's `t.Dependencies`
+  (they're external), so the cmake_target name-match (lower.go ~2925) never sees
+  them;
+- abseil's host include dir (`/tmp/absl-install/include`) is ELIDED as a
+  host-prefix include, so the headers aren't even on `-I`.
+So libprotobuf-lite compiles with zero absl — `No such file`.
+
+The hermetic fix: wire find_package imported deps onto STATIC libs that include
+their headers — source the deps from the TRACE (`target_link_libraries(lib
+${protobuf_ABSL_USED_TARGETS})` expands in trace-expand) since the codemodel
+omits them for archives, and route through the imports manifest → @abseil-cpp
+(header carriers). A non-hermetic shortcut (NOT "legitimate"): don't elide the
+abseil host include so headers resolve from /tmp/absl-install — rejected, that's
+a host dep on a hand-installed abseil, not reproducible.

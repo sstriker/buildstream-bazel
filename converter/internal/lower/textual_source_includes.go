@@ -21,15 +21,18 @@ import (
 var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)"`)
 
 // ccSourceExts are the compiled-source extensions whose presence in a
-// quote-include marks a "textually include a .cc to intercept its internals"
-// idiom (fmt's posix-mock-test does `#include "../src/os.cc"`). These are the
-// extensions Bazel/rules_cc treat as COMPILED sources — a file with one of
-// them can't simply be added to a consumer's srcs (it would be compiled
-// standalone, duplicating its symbols), so the caller routes it to a
-// textual_hdrs slot instead.
+// quote-include marks a "textually include a compiled source to intercept its
+// internals" idiom (fmt's posix-mock-test does `#include "../src/os.cc"`;
+// OpenBLAS's GenerateNamedObjects wrappers do `#include "kernel/x86_64/amax_sse.S"`).
+// These are the extensions Bazel/rules_cc treat as COMPILED sources — a file
+// with one of them can't simply be added to a consumer's srcs (it would be
+// compiled standalone, duplicating its symbols), so the caller routes it to a
+// textual_hdrs slot instead. Keys are lowercase; callers lowercase the ext
+// before lookup (so preprocessed-assembly `.S` matches `.s`).
 var ccSourceExts = map[string]bool{
 	".cc": true, ".cpp": true, ".cxx": true, ".c++": true, ".c": true,
 	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
+	".s": true, ".sx": true, ".asm": true,
 }
 
 // findTextualSourceIncludes scans a target's compiled source files for
@@ -147,18 +150,7 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 	if pkg == nil || !hostSrcOnDisk {
 		return
 	}
-	names := map[string]bool{}
-	for i := range pkg.Targets {
-		names[pkg.Targets[i].Name] = true
-	}
-	uniqueName := func(base string) string {
-		n := base
-		for i := 1; names[n]; i++ {
-			n = fmt.Sprintf("%s_%d", base, i)
-		}
-		names[n] = true
-		return n
-	}
+	uniqueName := targetNamer(pkg)
 	type rec struct {
 		target, lib string
 		srcs        []string
@@ -177,36 +169,12 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		if len(incs) == 0 {
 			continue
 		}
-		if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
-			// Has a textual_hdrs slot — add the included sources directly (the
-			// gtest/gmock fused-source idiom). No synth lib, no dep needed.
-			for _, inc := range incs {
-				t.TextualHdrs = appendUnique(t.TextualHdrs, inc)
-			}
-			sort.Strings(t.TextualHdrs)
+		lib := attachTextualSourceIncludes(pkg, t, incs, "cmake-codegen-textual-source-include", &synth, uniqueName)
+		if lib == "" {
 			inlineRecs = append(inlineRecs, rec{target: t.Name, srcs: incs})
-			continue
+		} else {
+			recs = append(recs, rec{target: t.Name, lib: lib, srcs: incs})
 		}
-		// cc_binary / cc_test — no textual_hdrs slot; synthesize a carrier lib.
-		lib := uniqueName(t.Name + "_textual_srcs")
-		synth = append(synth, ir.Target{
-			Name:        lib,
-			Kind:        ir.KindCCLibrary,
-			TextualHdrs: incs,
-			Visibility:  []string{"//visibility:private"},
-			Tags:        []string{"cmake-codegen-textual-source-include"},
-		})
-		t.Deps = appendUnique(t.Deps, ":"+lib)
-		// Co-locate the synth lib in the consumer's package so the dep stays
-		// SAME-package under --split-packages. A private lib left in the root
-		// package would be a cross-package dep — and Bazel-rejected — for a
-		// consumer in a subpackage (test/ targets commonly land in their own
-		// package). pkg.SubPackages carries every target's dir (root → ""),
-		// populated during lowering before this tail pass.
-		if pkg.SubPackages != nil {
-			pkg.SubPackages[lib] = pkg.SubPackages[t.Name]
-		}
-		recs = append(recs, rec{target: t.Name, lib: lib, srcs: incs})
 	}
 	if len(synth) > 0 {
 		pkg.Targets = append(pkg.Targets, synth...)
@@ -229,4 +197,114 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 			}
 		}
 	}
+}
+
+// textualIncludeClosure expands a seed set of element-root-relative compiled
+// sources to its transitive textual-include closure: each seed (and each newly
+// reached file) is scanned ON DISK for quote-includes of OTHER compiled sources
+// (resolved against the includer's dir + ancestors, like resolveTextualInclude),
+// following the chain to fixpoint. OpenBLAS kernels #include sibling micro-kernel
+// sources (caxpy.c -> caxpy_microk_haswell-2.c, often #ifdef-guarded per arch)
+// that are themselves only ever textually included, so the whole chain — not
+// just the first hop — must be staged. Returns the closure (seeds included),
+// sorted, excluding any path in `compiled` (a source the target builds
+// standalone) and any absent/escaping path. hostSrc must be on disk.
+func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]bool) []string {
+	result := map[string]bool{}
+	var work []string
+	push := func(rel string) {
+		if rel == "" || result[rel] || compiled[rel] {
+			return
+		}
+		result[rel] = true
+		work = append(work, rel)
+	}
+	for _, s := range seeds {
+		push(filepath.ToSlash(filepath.Clean(s)))
+	}
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+		data, err := os.ReadFile(filepath.Join(hostSrc, filepath.FromSlash(cur)))
+		if err != nil {
+			continue
+		}
+		dir := filepath.Dir(cur)
+		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
+			inc := string(m[1])
+			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
+				continue
+			}
+			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
+				continue
+			}
+			push(resolveTextualInclude(hostSrc, dir, inc, cur, compiled))
+		}
+	}
+	out := make([]string, 0, len(result))
+	for r := range result {
+		out = append(out, r)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// targetNamer returns a closure that yields collision-free target names within
+// pkg: it seeds a set from the existing target names and appends a numeric
+// suffix (`_1`, `_2`, …) until the candidate is unused, registering each name
+// it hands out. Shared by the tail passes that synthesize carrier libraries.
+func targetNamer(pkg *ir.Package) func(string) string {
+	names := map[string]bool{}
+	for i := range pkg.Targets {
+		names[pkg.Targets[i].Name] = true
+	}
+	return func(base string) string {
+		n := base
+		for i := 1; names[n]; i++ {
+			n = fmt.Sprintf("%s_%d", base, i)
+		}
+		names[n] = true
+		return n
+	}
+}
+
+// attachTextualSourceIncludes routes the textually-#included source files
+// `incs` (element-root-relative paths) onto consumer target t so they're
+// declared INPUTS without being compiled standalone (which would duplicate
+// their symbols). Two shapes, mirroring the two slots Bazel offers:
+//
+//   - cc_library / cc_interface HAVE a textual_hdrs attribute, so the sources
+//     are added directly to t's own textual_hdrs; returns "".
+//   - cc_binary / cc_test have NO textual_hdrs slot, so a carrier cc_library
+//     (textual_hdrs = incs, tagged `tag`) is appended to *synth, added to t's
+//     deps, and co-located in t's package (pkg.SubPackages) so the dep stays
+//     same-package under --split-packages; returns the synth lib's name.
+//
+// uniqueName must be a collision-free namer over pkg (see targetNamer).
+func attachTextualSourceIncludes(pkg *ir.Package, t *ir.Target, incs []string, tag string, synth *[]ir.Target, uniqueName func(string) string) string {
+	if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
+		for _, inc := range incs {
+			t.TextualHdrs = appendUnique(t.TextualHdrs, inc)
+		}
+		sort.Strings(t.TextualHdrs)
+		return ""
+	}
+	lib := uniqueName(t.Name + "_textual_srcs")
+	*synth = append(*synth, ir.Target{
+		Name:        lib,
+		Kind:        ir.KindCCLibrary,
+		TextualHdrs: incs,
+		Visibility:  []string{"//visibility:private"},
+		Tags:        []string{tag},
+	})
+	t.Deps = appendUnique(t.Deps, ":"+lib)
+	// Co-locate the synth lib in the consumer's package so the dep stays
+	// SAME-package under --split-packages. A private lib left in the root
+	// package would be a cross-package dep — and Bazel-rejected — for a
+	// consumer in a subpackage. pkg.SubPackages carries every target's dir
+	// (root → ""), populated during lowering before this tail pass.
+	if pkg.SubPackages != nil {
+		pkg.SubPackages[lib] = pkg.SubPackages[t.Name]
+	}
+	return lib
 }

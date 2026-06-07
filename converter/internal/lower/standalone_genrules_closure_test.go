@@ -53,7 +53,7 @@ func TestRecordCodegenIncludeClosure(t *testing.T) {
 	}
 	targets := []ir.Target{tablegen, plain}
 
-	recordCodegenIncludeClosure(targets, root)
+	recordCodegenIncludeClosure(targets, root, "")
 
 	// Primary stays first; closure additions appended sorted. Decoy.td is
 	// excluded (not reachable via include directives).
@@ -83,7 +83,7 @@ func TestRecordCodegenIncludeClosure_UnresolvedInclude(t *testing.T) {
 		Srcs:       []string{"lib/Foo.td"},
 		GenruleCmd: "tblgen -I lib lib/Foo.td -o $(RULEDIR)/Foo.inc",
 	}}
-	recordCodegenIncludeClosure(targets, root)
+	recordCodegenIncludeClosure(targets, root, "")
 	if got := targets[0].Srcs; !reflect.DeepEqual(got, []string{"lib/Foo.td"}) {
 		t.Errorf("unresolved include must add nothing, got %v", got)
 	}
@@ -98,7 +98,7 @@ func TestRecordCodegenIncludeClosure_NoLabelRoot(t *testing.T) {
 		Srcs:       []string{"lib/Foo/Foo.td"},
 		GenruleCmd: "tblgen -I lib/Foo lib/Foo/Foo.td -o $(RULEDIR)/Foo.inc",
 	}}
-	recordCodegenIncludeClosure(targets, "")
+	recordCodegenIncludeClosure(targets, "", "")
 	if got := targets[0].Srcs; !reflect.DeepEqual(got, []string{"lib/Foo/Foo.td"}) {
 		t.Errorf("empty labelRoot should add nothing, got %v", got)
 	}
@@ -126,7 +126,7 @@ func TestRecordCodegenIncludeClosure_NonTdSkipped(t *testing.T) {
 		Srcs:       []string{"gen/input.x"},
 		GenruleCmd: "tool -I gen gen/input.x -o $(RULEDIR)/out.inc",
 	}}
-	recordCodegenIncludeClosure(targets, root)
+	recordCodegenIncludeClosure(targets, root, "")
 	if got := targets[0].Srcs; !reflect.DeepEqual(got, []string{"gen/input.x"}) {
 		t.Errorf("non-.td primary must add no closure, got %v", got)
 	}
@@ -155,7 +155,7 @@ func TestRecordCodegenIncludeClosure_AncestorRoot(t *testing.T) {
 		Srcs:       []string{"gen/sub/main.td"},
 		GenruleCmd: "tblgen -I gen gen/sub/main.td -o $(RULEDIR)/out.inc",
 	}}
-	recordCodegenIncludeClosure(targets, root)
+	recordCodegenIncludeClosure(targets, root, "")
 	found := false
 	for _, s := range targets[0].Srcs {
 		if s == "gen/leaf.td" {
@@ -224,6 +224,19 @@ func TestAnchorGenruleOutputsToRuledir(t *testing.T) {
 			outs: []string{"foo", "foo.d"},
 			want: "tool -o $(RULEDIR)/foo -d $(RULEDIR)/foo.d",
 		},
+		{
+			// A source input re-anchored to its exec-root form
+			// (elements/llvm/include/llvm/CodeGen/ValueTypes.td) shares its
+			// subdir with the generated output (llvm/CodeGen/GenVT.inc), so the
+			// output's parent-dir token "llvm/CodeGen" is a MID-PATH substring of
+			// the source path. It must NOT be anchored there (preceded by '/'),
+			// only the real output tokens get $(RULEDIR)/. Regression for the
+			// tablegen `.td` over-anchoring.
+			name: "source_input_sharing_outdir_not_corrupted",
+			cmd:  "tblgen -gen-vt -I llvm/CodeGen elements/llvm/include/llvm/CodeGen/ValueTypes.td -o llvm/CodeGen/GenVT.inc -d llvm/CodeGen/GenVT.inc.d",
+			outs: []string{"llvm/CodeGen/GenVT.inc"},
+			want: "tblgen -gen-vt -I $(RULEDIR)/llvm/CodeGen elements/llvm/include/llvm/CodeGen/ValueTypes.td -o $(RULEDIR)/llvm/CodeGen/GenVT.inc -d $(RULEDIR)/llvm/CodeGen/GenVT.inc.d",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -231,6 +244,44 @@ func TestAnchorGenruleOutputsToRuledir(t *testing.T) {
 				t.Errorf("\n  got:  %s\n  want: %s", got, tt.want)
 			}
 		})
+	}
+}
+
+// When rewriteGenruleCmd anchors source `-I` roots to their exec-root form
+// (`<bazelPackagePath>/<root>`), recordCodegenIncludeClosure must strip that
+// package prefix before resolving includes against the labelRoot-relative
+// source tree on disk — otherwise the closure can't find the included `.td`s.
+func TestRecordCodegenIncludeClosure_PackagePrefixedRoots(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// On disk (labelRoot-relative): primary include/llvm/CodeGen/ValueTypes.td
+	// includes "llvm/IR/Attributes.td", resolved via the source include root.
+	write("include/llvm/CodeGen/ValueTypes.td", "include \"llvm/IR/Attributes.td\"\n")
+	write("include/llvm/IR/Attributes.td", "// leaf\n")
+
+	// The genrule cmd carries the EXEC-ROOT-anchored source root
+	// (elements/llvm/include) the way rewriteGenruleCmd now emits it; the
+	// primary src stays labelRoot-relative (the emitter adds the package
+	// prefix later). Only the package-prefix strip lets the include resolve.
+	targets := []ir.Target{{
+		Name:       "gen_vt",
+		Kind:       ir.KindGenrule,
+		Srcs:       []string{"include/llvm/CodeGen/ValueTypes.td"},
+		GenruleCmd: "tblgen -gen-vt -I elements/llvm/include elements/llvm/include/llvm/CodeGen/ValueTypes.td -o $(RULEDIR)/llvm/CodeGen/GenVT.inc",
+	}}
+	recordCodegenIncludeClosure(targets, root, "elements/llvm")
+
+	wantSrcs := []string{"include/llvm/CodeGen/ValueTypes.td", "include/llvm/IR/Attributes.td"}
+	if got := targets[0].Srcs; !reflect.DeepEqual(got, wantSrcs) {
+		t.Errorf("package-prefixed root closure:\n  got:  %v\n  want: %v", got, wantSrcs)
 	}
 }
 

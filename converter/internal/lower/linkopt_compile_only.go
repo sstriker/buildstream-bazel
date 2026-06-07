@@ -128,3 +128,28 @@ func isCompileOnlyLinkFlag(tok string) bool {
 	}
 	return false
 }
+
+// isSharedOnlyLinkFlag reports whether tok is a linker flag that only
+// applies when producing a shared library (`.so`) — a version script, a
+// retained-symbols file, or a soname. The converter collapses
+// SHARED_LIBRARY/MODULE_LIBRARY to a static cc_library (no `.so`; faithful
+// shared output via cc_shared_library is a ROADMAP item), so these flags are
+// not just dead but HARMFUL: Bazel `linkopts` propagate to every consumer's
+// link, and a `--version-script` whose script names symbols the consumer's
+// link doesn't define fails hard ("version script assignment of 'X' to symbol
+// 'Y' failed: symbol not defined" — zlib's zlib.map, applied to the example
+// executables that link only part of zlib). Dropped for collapsed shared
+// targets in the linkopt assembly. Matches both the comma and `=` separator
+// forms cmake emits.
+func isSharedOnlyLinkFlag(tok string) bool {
+	for _, p := range []string{
+		"-Wl,--version-script,", "-Wl,--version-script=",
+		"-Wl,--retain-symbols-file,", "-Wl,--retain-symbols-file=",
+		"-Wl,-soname,", "-Wl,-soname=", "-Wl,--soname,", "-Wl,--soname=",
+	} {
+		if strings.HasPrefix(tok, p) {
+			return true
+		}
+	}
+	return false
+}

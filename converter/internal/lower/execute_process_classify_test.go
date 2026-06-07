@@ -752,3 +752,30 @@ func TestClassify_CMakeEOpsAreLowercased(t *testing.T) {
 		t.Errorf("op: %q want %q", got.CMakeEOp, "touch")
 	}
 }
+
+// TestClassify_GitRepoLocationProbe: `git rev-parse --git-dir` (and sibling
+// location flags) is a benign repo-location probe (skips), not a value stamp;
+// `git rev-parse HEAD` / `git describe` stay stamps.
+func TestClassify_GitRepoLocationProbe(t *testing.T) {
+	loc := Classify(shadow.ExecuteProcessCall{
+		Commands:       [][]string{{"/usr/bin/git", "rev-parse", "--git-dir"}},
+		OutputVariable: "git_output",
+	})
+	if loc.Bucket != BucketProbe {
+		t.Errorf("git rev-parse --git-dir: Bucket = %v, want BucketProbe", loc.Bucket)
+	}
+	rev := Classify(shadow.ExecuteProcessCall{
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	})
+	if rev.Bucket != BucketStamp {
+		t.Errorf("git rev-parse HEAD: Bucket = %v, want BucketStamp", rev.Bucket)
+	}
+	desc := Classify(shadow.ExecuteProcessCall{
+		Commands:       [][]string{{"git", "describe", "--tags"}},
+		OutputVariable: "GIT_TAG",
+	})
+	if desc.Bucket != BucketStamp {
+		t.Errorf("git describe: Bucket = %v, want BucketStamp", desc.Bucket)
+	}
+}

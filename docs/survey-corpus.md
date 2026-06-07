@@ -38,10 +38,21 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **glog** | 0† | 30 | 0 | `ok` |
 | **eigen** | 0 | 16‡ | 0 | `ok` |
 | **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) |
-| **protobuf, curl, …** | rej (ext `find_package`) | — | — | `skip(rej)` |
+| **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
+| **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) |
+| **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) |
+| **boost-core** | 0 | 0 | 0 | `ok` (header lib) |
+| **spdlog** | 0 | 0 | 0 | `ok` |
+| **catch2** | 1 | 0 | 0 | `ok` |
+| **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) |
+| **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) |
+| **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) |
+| **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) |
+| **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) |
+| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) |
 
 `rej` = surveys with rejections, so the build lens skips it; for
-protobuf / curl these are honest external `find_package` deps
+protobuf these are honest external `find_package` deps
 that resolve in a real `.bst` element graph (not converter debt).
 † glog's 2 rejections are benign forward-declared-include "treated as
 empty" notices (0 blocking — a no-op in strict mode), so it builds; see
@@ -58,8 +69,18 @@ in `tools/library`) that the full-tree diagnostic survey flags but the
 doesn't block the build — `cutlass.conf` sets `BUILD_LENS_IGNORE_REJ=1` to
 bypass the skip(rej) gate (see *Build-lens status*). Needs nvcc on `PATH`
 to configure (`BSB_PROVISION_CUDA=1`).
+¶ OpenBLAS is green on the **C-LAPACK** shape (`NOFORTRAN=1 C_LAPACK=1`,
+deterministic `TARGET=HASWELL`): the whole ~2460-target kernel + LAPACK +
+BLAS library `bazel build //...`s with no cmake. Getting there took four
+converter features (generated-wrapper absolute-`#include` rewrite +
+kernel staging, transitive micro-kernel closure, `file(RENAME)` config.h
+recovery) and two build-lens flags (`-mfma`, `NO_CBLAS=1`) — see
+*Build-lens status*. The **real reference-Fortran** LAPACK (no `C_LAPACK`)
+remains future work: it needs a Bazel Fortran ruleset (`edbaunton/rules_fortran`
+is an empty stub; the path is a hand-rolled `fortran_library` in
+`rules_buildstream_bazel`).
 Large members surveyed for convertibility but not yet driven through
-the build lens (SDL, grpc, llvm, VTK, OpenBLAS, …) live under *The
+the build lens (SDL, grpc, llvm, VTK, …) live under *The
 corpus* / *Regression corpus* below.
 
 ## What a survey is checking for (the three lenses)
@@ -241,6 +262,26 @@ local `rules_buildstream_bazel`), and runs `bazel build //...`. Needs
 bazel/bazelisk on `$PATH`; absent → `skip(no-bazel)`.
 `SURVEY_BAZEL_BUILD_TIMEOUT` (default 900s) bounds each build.
 
+**The lens configures cmake STATIC** (`--cmake-define BUILD_SHARED_LIBS=OFF`,
+applied globally before any per-project `CONVERT_FLAGS`). Bazel's `cc_library`
+is always static-linked into a `cc_binary`, and the converter currently lowers
+`SHARED_LIBRARY` → `cc_library` (no `cc_shared_library` yet — see ROADMAP), so
+the lens must configure static for cmake's model to match what Bazel actually
+links. A SHARED configure silently diverges — the converter collapses the `.so`
+to static, and any project that compiles differently for shared vs static
+builds wrong: curl's `tests/libtest` recompiles the curlx utility sources *only*
+under SHARED ("part of the libcurl static lib — do not compile/link them again"
+when static), so under a SHARED configure Bazel ends up with two copies of each
+(the test's + the static-linked libcurl's) and the test binary SIGSEGVs at
+`base+0` before `main`. Static configure makes cmake's own static/shared
+conditionals fire the way Bazel links. The corpus has several SHARED-defaulting
+members (curl / brotli / libxml2 set `option(BUILD_SHARED_LIBS ON)`; OpenBLAS
+declares an explicit `_shared` target) that were silently static-collapsed
+before this default; faithfully building the *shared* variant is the tracked
+`cc_shared_library` ROADMAP item. A project that genuinely needs the shared
+configure can re-enable it in its `.conf` `CONVERT_FLAGS` (a later cmake `-D`
+wins).
+
 The `build` column tokens: `ok` / `FAIL` (built or not), or a `skip(<why>)`
 that didn't attempt the build — `skip(no-bazel)` (no bazel on `$PATH`),
 `skip(rej)` (the project surveys with rejections; the lens contract is to skip
@@ -275,7 +316,22 @@ queued follow-ups live in `ROADMAP.md`, not here.
 | **glog** | `ok` | **Green (three parts).** Its only 2 rejections are benign forward-declared-include notices (`$<TARGET_PROPERTY:…>` / `glog/`), a no-op in strict mode; the survey's `skip(rej)` gate now subtracts that benign class so the lens actually exercises glog. The empty-placeholder source `CMakeFiles/glog.cc` (CMake's `_glog_EMPTY_SOURCE`, a `cmake -E touch` recovered from ninja) builds via the recovered-genrule subdir-output `$(RULEDIR)` anchor. The 9 `cc_test`s reference glog's internal `-fvisibility=hidden` symbols (`GetExistingTempDirectories`, `g_logging_fail_func`, `SafeFNMatch_`, …); Bazel's default dynamic linking builds glog as a `.so` that doesn't export them, so the lens passes `--dynamic_mode=off` to link them statically (matching glog's own static test build + the converter's `linkstatic=True`). Remaining: 30 `raw-toolchain-feature-flag` idiom findings (non-build-blocking — a separate idiom-lens follow-up). |
 | **eigen** | `ok` | **Green as the header-only library.** eigen is HEADER-ONLY with no `find_package`, so the header library converts to a single `cc_library` and builds. The build lens (`scripts/build-lens/eigen.conf`) disables the parts of eigen's tree that aren't the library: `EIGEN_BUILD_BLAS`/`EIGEN_BUILD_LAPACK` (eigen's bundled **Fortran reference BLAS/LAPACK** — no Bazel Fortran ruleset exists, genuinely unsupported, **deferred**), `EIGEN_BUILD_TESTING` (its ~900-target `-Werror` SIMD test suite — a separate dev surface), and `EIGEN_BUILD_DOC`/`EIGEN_BUILD_DEMOS` (the `doc/examples` + `doc/snippets` + `unsupported/doc/examples` + `demos/` programs — documentation/demo `cc_binary`s that fail to resolve `<Eigen/Dense>` in the converted shape, again dev surface not the library). One general converter fix was needed: eigen's `uninstall` maintenance target runs `cmake -P cmake/EigenUninstall.cmake`, and the cmake-internal-command filter keyed only on the conventional `cmake_uninstall.cmake` script name — it now matches any `-P` script whose basename contains "uninstall" (case-insensitive), catching project-specific names like eigen's. The diagnostic survey (full tree, no conf) still reports 16 `fortran-target-needs-ruleset` idioms for the Fortran BLAS/LAPACK — non-build-blocking; the deferred Fortran surface. |
 | **cutlass** | `ok` | **Green as the header-only library** (CUDA tier), like eigen. cutlass's core is a HEADER-ONLY C++ template library (`project(CUTLASS … LANGUAGES CXX)`; `include/` is all `.hpp`/`.inl`) — every `.cu` device source lives in the unit tests / examples / `tools/` library / profiler, which are dev surfaces. The build lens (`scripts/build-lens/cutlass.conf`) disables them (`CUTLASS_ENABLE_TESTS/EXAMPLES/TOOLS/PROFILER/LIBRARY=OFF`) and converts to the single header `cc_library(name = "CUTLASS")` (822 hdrs, `strip_include_prefix = "include"`), which builds with the plain cc toolchain — **no nvcc needed to COMPILE the header library, only to CONFIGURE** (cutlass's `CUDA.cmake` does `enable_language(CUDA)` + `find_package(CUDAToolkit REQUIRED)` unconditionally, so cmake configure — which the converter runs for the codemodel — needs a CUDA toolkit; provision it with the hook's `BSB_PROVISION_CUDA=1`). The full-tree diagnostic survey reports 1 rejection (a `cmake -E env` execute_process in `tools/library` — disabled in the lens build), so the conf sets `BUILD_LENS_IGNORE_REJ=1` to bypass the cost-optimization skip(rej) gate (the build lens's own clean convert is the real test; it returns skip(convert) if it fails). The CUDA-compile path (rules_cuda + the converter's cuda_library lowering, below) is built and proven but not exercised by the header-library build — it's what cuda-samples needs. |
-| protobuf, curl, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
+| **OpenBLAS** | `ok` | **Green on the C-LAPACK shape** — the whole ~2460-target kernel + LAPACK + BLAS library `bazel build //...`s with no cmake. Four converter features + two build-lens flags, each peeling the next blocker: (1) `stageGeneratedSourceRootIncludes` rewrites the ~1951 GenerateNamedObjects wrapper `#include "<srcroot>/…kernel.c"` to workspace-relative + stages the kernel (.c/.S) as a `textual_hdr`; (2) `textualIncludeClosure` stages the transitive micro-kernel chain (`caxpy.c`→`caxpy_microk_haswell-2.c`); (3) `classifyFileRename` recovers `config.h` (written via `file(RENAME)` in the cross-compile branch, not `configure_file`) as a COPYONLY bake folded into `root_headers`; (4 flag) `CMAKE_C_FLAGS=-mfma` for the per-source `COMPILE_OPTIONS "-mfma"` FMA kernels the converter can't yet express per-source (safe on the pinned HASWELL arch); (5 flag) `NO_CBLAS=1` drops the CBLAS reference-test suite whose `cblas_xerbla` collides with the library under `alwayslink`. Follow-ups (faithful converter fixes for #4/#5; real reference-Fortran LAPACK) tracked above/below. `scripts/build-lens/openblas.conf`. |
+| **llvm** | `ok` (libraries; `LLVM_INCLUDE_TOOLS=OFF` — tools are the next in-scope step) | First whole-tree build-lens drive (survey `$(LLVM_DIR)/llvm`, the subproject). **Strict convert now clean** — the 4 `AddLLVM.cmake` `execute_process` blockers were each fixed *in the converter* (preferred over conf flags): (a) the `cc -Wl,--version` linker probe was mis-parsed (argv `/usr/bin/cc;-Wl,--version;-o;/dev/null` arrived as one `;`-joined token → driver `null`); `splitCMakeListArg` re-splits cmake list-valued COMMAND args so argv[0] is `cc` → probe → skip; (b)/(c) `cmake -E copy_if_different .../Extension.def.tmp → Extension.def` (and `ExtensionDependencies.inc`) bake the build-dir output bytes (`bakeBuildDirCopyOutput`, config.h-class — the cmake-E copy lifter no longer refuses a build-dir intermediate src); (d) `git rev-parse --git-dir` is a repo-*location* probe, not a value stamp — `gitRepoLocationQuery` classifies it `BucketProbe` → skip. With those, `bazel build //...` runs (rejections 390→194). **Umbrella/split desync — FIXED** (the root blocker): the converter spuriously promoted labelRoot to the monorepo root (on the `.git` above `llvm/`) even though LLVM is self-contained under `llvm/`, then applied the `llvm/` umbrella prefix INCONSISTENTLY across emitters (genrule srcs got it, install(FILES)/root refs didn't) → a self-inconsistent single/double package tree no overlay could satisfy. `sourcesEscapeCmakeSrc` now gates promotion on a real signal (a File-API-absolute source outside cmakeSrc, zstd's case), so LLVM stays cmakeSrc-rooted (consistent single `llvm`) and zstd still promotes. **With that the survey reads 0 rejections** (the spurious promotion had inflated them) and the `.exports` labels resolve. **Temporarily scoped to the LIBRARIES** (`LLVM_INCLUDE_TOOLS=OFF` +
+`LLVM_ENABLE_BINDINGS=OFF`) to get the library graph green first — but **the
+tools are IN-SCOPE**: LLVM is itself a likely Bazel toolchain (clang/llvm in
+bootstraps), so `llvm-tblgen`/`llc`/`opt`/the `.exports` shared libs must build.
+`LLVM_INCLUDE_TOOLS=OFF` is a stepping-stone, not the end state (bindings can
+stay off — OCaml/Go are language bindings, not the toolchain). The tools surface
+needs a **REQUIRED converter fix**: the **`.exports` in-place-rewrite** genrules
+(`Remarks`/`LTO`/`bugpoint` version scripts) — redirect-aware in-place cmd
+rewrite, since the cmd's input+output share one build-dir-relative token that
+`renameRawCmdBuildOutputs` can't disambiguate and `anchorGenruleOutputsToRuledir`
+drags both to `$(RULEDIR)` (root-caused MONOLITHIC). Sequence: tablegen `.td`
+anchoring → libraries green → `.exports` fix → drop `LLVM_INCLUDE_TOOLS=OFF` →
+tools green. Then a sequence of converter/conf fixes took the build from analysis-only deep into the **library compile graph (533 / 2,401 actions, 466 real compiles)**, each its own landed fix: **make_directory standalone no-op** (`isMakeDirOnlyCmd` drops a pure `cmake -E make_directory`/`mkdir` custom command — it declared a stamp output the mkdir never wrote, strip the `cd … &&` preamble first); **VCSRevision.h** (an unconditional `cmake -P GenerateVersionFromVCS.cmake` reading git `HEAD` — the standalone path now routes `cmake -P` through `bakeCmakeScriptGenrule` like the ninja-genrule path, baked at convert time via `--cmake-script-bake`); **BLAKE3** three fixes — co-locate per-language split sub-libraries in the parent's sub-package (`cc.SubParent`, was a cross-package private-visibility error), make C/C++ subs dep on the same-target asm/fortran subs (the C dispatcher calls hidden-visibility asm), and force `Linkstatic` on split subs (so no standalone `.so` whose link can't resolve the sibling subs' hidden symbols); **data-attr relabeling** (`rewriteDeps` now also rewrites the `data` attr's intra-element `:x` edges to cross-package labels — add_dependencies edges were dangling); plus the `--dynamic_mode=off` conf flag (LLVM is static-by-default). **tablegen `.td` input/`-I` path anchoring — FIXED in the converter.** The tablegen genrules (`GenVT.inc`, `Intrinsics*.h`) referenced their SOURCE `.td` input AND source `-I` roots as `$(RULEDIR)/…` (the genfiles/bin tree) — `llvm-min-tblgen` "Could not open input file". Two root causes, both generic: (1) `rewriteGenruleCmd` stripped a source-tree path to its bare *labelRoot-relative* form (`include/…`), but a genrule cmd runs at the Bazel **exec root**, so a source input/`-I` root needs its **exec-root** form (`<bazelPackagePath>/…` = `elements/llvm/include/…`) — the strip now anchors source paths there (was umbrella-only, which only covered the fidelity harness's convert-at-root case); (2) `anchorGenruleOutputsToRuledir` substring-matched output **parent-dir** tokens (`llvm/CodeGen`) anywhere, so it injected `$(RULEDIR)/` into the *middle* of the now-exec-root source path that shares the output's subdir — a left-`/` boundary guard now skips mid-path occurrences (real token boundaries, joined `-Iflags`, and `<o>.d` depfiles still anchor). `recordCodegenIncludeClosure` strips the package prefix off `-I` roots before resolving the `.td` closure against the on-disk (labelRoot-relative) source tree. Generic — keys on cmake/Bazel path shapes, not LLVM. Verified: the `GenVT.inc` genrule now reads `elements/llvm/include/llvm/CodeGen/ValueTypes.td` + `-Ielements/llvm/include`. **With it the LLVM library graph is GREEN**: `bazel build //...` completes successfully — **2,401 / 2,401 actions, no cmake** — building 96 archives including `libLLVMCore.a` (IR core) and `libLLVMX86CodeGen.a` (the X86 backend), the full tablegen tier + every `Intrinsics*.h`/`.inc` consumer, and the whole `Transforms`/`CodeGen`/`ExecutionEngine` tree. The lens build is fast-build (`-O0`, the cc_library `-O3`/`-g` copts sit behind `//config:release`/`debug` selects that default empty). **The tools build + RUN too** (`LLVM_INCLUDE_TOOLS=ON` converts clean — **0 rejections** — and analyzes green, 527 targets). Two more generic converter fixes were needed and landed: (a) **`.exports` in-place-output rename** — cmake generates a linker version script whose output basename equals its source symbol file (`Remarks.exports` from `Remarks.exports`), a Bazel src/out label collision; the output is renamed to a `.gen` sibling, and the rename is now applied AFTER anchoring on the canonical `$(RULEDIR)/<out>` form (cmake emits the output as a bare-basename `> ${native_export_file}` redirect that the old raw-cmd rename never matched). (b) **host system-library link** — `find_package(ZLIB)` resolved to `/usr/lib/.../libz.so` but, with no imports-manifest entry, was tag-only; it now lifts to a `-lz` linkopt (a HOST dependency — see the ROADMAP item on making that explicit), without which every tool executable that pulls zlib's compression code (`opt`/`llc` → `compress2`/`crc32`/…) failed the final link (a static `.a` tolerates the undefined symbols; an executable doesn't). A third generic fix completed the tool surface: (c) **generated-header (`.inc`) consumers for `cc_binary`/`cc_test`** — LLVM's tools are `cc_binary` that `#include "Opts.inc"` (the `-gen-opt-parser-defs` tablegen output from each tool's `Opts.td`, wired in cmake via `add_public_tablegen_target`); the codegen-consumer pass that resolves a target's tablegen UTILITY deps to the generated `.inc` and has split synthesize a `generated_includes` wrapper lib + genfiles include was gated to `cc_library`, orphaning the tools' `Opts.inc` (`Opts.inc: No such file`). The split wrapper synthesis keys on consumer NAME not kind, so extending the gate wires the binaries unchanged. **Verified by EXECUTION on the full tool tree** via a disk-bounded cycle (build each tool → run `--version` → delete its outputs before the next, so all 83 never coexist on disk): **78 / 83 tools build, 68 run** (`llc`/`opt`/`llvm-as`/`llvm-dis`/`llvm-link`/`llvm-mc`/`llvm-nm`/`llvm-objdump`/`llvm-readobj`/`llvm-objcopy`/`llvm-dwarfdump`/`llvm-symbolizer`/`dsymutil`/`llvm-ar`/…). The full IR pipeline runs on converter-built binaries — `llvm-as` (`.ll`→`.bc`) → `opt -O2` → `llc` emits real X86 assembly (`add(i32,i32)` → `leal (%rdi,%rsi), %eax; retq`); the `.exports` genrule emits a valid `LLVM_20.1 { global: … }` version script. The **5 residual fails are niche/genuine**, not converter-core gaps: `llvm-c-test` (×3 — the LLVM-C *API test harness*, needs C-API symbol linkage), `llvm-config` (its special `LibraryDependencies.inc` component-map codegen), and `llvm-rc` (the Windows resource compiler, missing `ResourceScriptTokenList.def`). **Why `LLVM_INCLUDE_TOOLS` is still OFF in the committed conf: DISK, not converter capability.** A full `bazel build //...` with all of LLVM's tools links dozens of statically-linked executables on top of the ~14G library tree — more than the web sandbox's ~38G writable layer holds. The conf keeps tools off to stay green on the sandbox; the converter handles them (proven above) and `TOOLS=ON` is the end state on a larger disk. `scripts/build-lens/llvm.conf`. (Build-lens disk note: LLVM's tree is ~14G; on the ~38G layer, do NOT add a `--disk_cache` — it stores a second copy of every output and fills the disk mid-link. The out-dir's own `.bzcache` under `/home` is enough for resume-after-reclaim without the 2× duplication.) |
+| **curl** | `ok` (library + CLI + test surface build green, ~238 actions, no cmake) | Converts **clean — 0 rejections**; **`bazel build //...` is GREEN with `BUILD_TESTING=ON`** — libcurl, the full curl CLI, and the test codegen, with all ~298 `EXCLUDE_FROM_ALL` test executables emitted + buildable on request. Five generic converter fixes drove it: **(1) cross-package generated-output visibility** — curl's `tool_hugehelp.c` genrule in `//src` consumes the `curl.txt` output of a root-package genrule; a genrule's outputs inherit its visibility, and the producer was private. `emit/split` now publicizes any producer whose generated output is referenced directly (in srcs) by a consumer in a different package (`splitPlan.publicize`, off `genOutProducer`; the `.inc`-via-wrapper path is unaffected). **(2) `add_definitions()` → `local_defines`** — cmake's directory-scoped `add_definitions(-DBUILDING_LIBCURL)` is PRIVATE (never INTERFACE-exported), but the codemodel folds it into every in-dir target's effective `Defines` untagged, so it was emitted as a transitive Bazel `defines` that **leaked onto the curl tool** linking libcurl. The tool compiles the same sources WITHOUT `BUILDING_LIBCURL` so `lib/curl_base64.h` aliases `Curl_*`→`curlx_*`; inheriting the macro left `var.c`'s `curlx_base64_encode` undeclared. The shadow trace now captures `add_definitions` and `lower` routes those defines to `local_defines` (a PUBLIC/INTERFACE `target_compile_definitions` of the same string still wins). **(3) non-`ALL` `add_custom_target` → `manual`** — curl's `test-ci`/`test-am` `runtests.pl` wrappers (no `ALL`, shell `$TFLAGS`, no real output) aren't in cmake's default build; the converter tags their stamps `manual` (out of `//...`). **(4) ninja-genrule exec-root + output anchoring** — `recoverGenrule` predated the exec-root anchoring, so test codegen like `perl mk-lib1521.pl < include/curl/curl.h lib1521.c` left the source input project-relative (unresolvable at exec root) and the output un-`$(RULEDIR)`-anchored; it now threads `BazelPackagePath` and anchors all outputs. **(5) cd-stripped output anchoring** — that output is recorded in cmake's `WORKING_DIRECTORY`-relative form (the `cd` preamble stripped), so `anchorGenruleOutputsToRuledir` now falls back to the longest path-suffix present in the cmd. `find_package(ZLIB)` lifts to the host `-lz`. **The lens configures STATIC (`BUILD_SHARED_LIBS=OFF`) to match Bazel's link model (cc_library is always static-linked).** This isn't cosmetic: curl's `tests/libtest/CMakeLists.txt` drops the curlx utility sources (`warnless.c`/`curl_multibyte.c`/`timediff.c`/threads) from each test when `LIB_SELECTED STREQUAL LIB_STATIC` ("part of the libcurl static lib — do not compile/link them again"). Configured SHARED, the tests RECOMPILE those sources, and since Bazel then ALSO static-links libcurl, each test binary ends up with two copies — which **corrupts startup: the test binary SIGSEGVs at base+0 before `main`** (a NULL/duplicate-resolved function pointer). Static configure makes the cmake model match Bazel's link model so the dedup fires; verified by EXECUTION — `unit1300`/`unit1302` pass (`Test ended with result 0`), and `lib1156` fails-to-connect gracefully (exit 1, "bad error code (7)") byte-for-byte like the cmake reference build instead of crashing. The lens keeps `BUILD_LIBCURL_DOCS=OFF`+`ENABLE_CURL_MANUAL=OFF` (the `docs/` tree is manpage generation — documentation, not library/test code). |
+| protobuf, … | `skip(rej)` | Honest external `find_package` deps (resolved in a real `.bst` element graph, not standalone). |
 
 **`-Werror` projects vs. the toolchain's `-Wall`.** A project that builds clean
 under its *own* cmake can still `FAIL` the build lens when it sets `-Werror`
@@ -298,6 +354,40 @@ converter fix against a single project, keep a *persistent* workspace + bazel
 `--output_user_root` and only re-convert + incrementally rebuild: after each
 `make converter` the loop is a few seconds (warm cache) instead of a cold
 fetch + full analysis. Drop the workspace when done (the bazel cache is large).
+
+### Large-project (LLVM-scale) build-lens playbook
+
+LLVM (~2,400 actions, a ~14G build tree, ~83 tool executables) doesn't fit
+the naive "`bazel build //...` and wait" loop on the web sandbox. The recipe
+that drove it green:
+
+- **Disk is the binding constraint, not CPU.** The sandbox's writable layer is
+  ~38G; LLVM's library tree alone is ~14G. **Do NOT pass `--disk_cache`** for a
+  project this size — it stores a *second* copy of every action output and fills
+  the disk mid-link (the build dies with a misleading `as: … .o: No such file
+  or directory`, which is ENOSPC, not a compile error). The out-dir's own
+  `--output_user_root` action cache is enough; put `SURVEY_OUT_DIR` under
+  **`/home`** (a `/tmp` reclaim spares `/home`) so a reclaim mid-build resumes
+  from cache rather than recompiling.
+- **A disk-full failure poisons resume.** When the disk hits 100%, bazel can't
+  write its action cache either, so a "resume" rebuilds from scratch. Keep
+  enough headroom that the build never fills the disk and the warm server +
+  `.bzcache` resume near-instantly.
+- **Many large executables → cycle, don't accumulate.** A full `//...` with all
+  of LLVM's tools links dozens of static executables that won't coexist on
+  ~38G. Build them **one batch at a time, deleting each tool's outputs
+  (`bazel-bin/<pkg>/<tool>` + `_objs/<name>`) before the next batch**, so disk
+  stays flat. This proves every tool builds/runs without ever holding them all
+  at once. (That's why `llvm.conf` keeps `LLVM_INCLUDE_TOOLS=OFF` for the
+  committed lens — a disk scoping, not a converter gap; see the llvm row.)
+- **Bump the lens timeout.** `SURVEY_BAZEL_BUILD_TIMEOUT` defaults low; a cold
+  LLVM build needs ~40-50 min on 4 cores (`-c fastbuild`, already `-O0`).
+- **Always rebuild the converter from source.** `run-survey.sh` now `go build`s
+  it every run; never trust a `build/bin` binary left over from an earlier
+  checkout (a stale one silently drops fixes the source already has).
+- **Watch progress with a time-based poll of the log**, not a `grep` for exact
+  `[N / total]` milestones (bazel's counter jumps and skips round numbers) and
+  not a `pgrep` whose pattern matches the monitor's own command line.
 
 ## The corpus
 
@@ -448,17 +538,68 @@ llvm-subdir note below):
   GENERATED compiled source (.c/.S) swept into a header aggregation is dropped
   entirely — it's a translation unit its package compiles, never a header, and
   relabeling it would only force the private write_file rule public for
-  visibility. The **remaining** blocker is genuinely beyond `.conf` + these
-  fixes: OpenBLAS's `GenerateNamedObjects` codegen (cmake/utils.cmake:421)
-  `file(WRITE ...)`s ~1951 per-routine wrappers each `#include`-ing the real
-  kernel by ABSOLUTE configure-time path (`#include "<source-root>/lapack/getf2/
-  zgetf2_k.c"`); the converter bakes that path verbatim, so the Bazel compile
-  fails "No such file" (the convert-host path isn't in the sandbox). Greening
-  needs a lower pass that rewrites source-root-absolute `#include`s in generated
-  content to in-tree references AND stages each included kernel source as a
-  textual input on the consuming compile (resolving include path +
-  cross-package visibility) — a sizable, well-scoped converter feature, not a
-  `.conf` tweak.
+  visibility. **GenerateNamedObjects absolute-include — fixed.** OpenBLAS's
+  `GenerateNamedObjects` codegen (cmake/utils.cmake:421) `file(WRITE ...)`s
+  ~1951 per-routine wrappers each `#include`-ing the real kernel by ABSOLUTE
+  configure-time path (`#include "<source-root>/lapack/getf2/zgetf2_k.c"`);
+  the converter baked that path verbatim, so the Bazel compile failed "No such
+  file" (the convert-host path isn't in the sandbox). The `lower`
+  `stageGeneratedSourceRootIncludes` pass now rewrites every source-root-
+  absolute quote-`#include` baked into a generated wrapper (write_file) to a
+  WORKSPACE-relative path (resolving through Bazel's default `-iquote`
+  exec-root) and stages the included in-tree source (.c **and** assembly .S/.s)
+  as a `textual_hdr` on the target that compiles the wrapper — a declared input
+  that isn't compiled standalone, mirroring the on-disk fused-source idiom
+  (`synthesizeTextualSourceIncludeLibs`, with which it now shares the
+  carrier-lib / textual_hdrs wiring). All 1951 includes rewrite + stage; the
+  build advances from analysis-clean to a real C compile of the kernels.
+  **Transitive micro-kernel closure — fixed.** An OpenBLAS kernel a wrapper
+  stages itself `#include`s sibling micro-kernel sources by relative path
+  (`caxpy.c` → `caxpy_microk_haswell-2.c`, `#ifdef`-guarded per arch), so the
+  staging is now the full transitive textual-include closure
+  (`textualIncludeClosure`), not just the first hop — relative sibling includes
+  need no rewrite (they resolve against the includer's own dir once staged).
+  **config.h — fixed.** With the kernels resolving, the C compile next failed
+  `common.h:62: fatal error: config.h: No such file`. In the deterministic-arch
+  branch the `.conf` selects, OpenBLAS writes `config.h` via
+  `file(RENAME ${tmp} config.h)` at cmake/prebuild.cmake:1374 — NOT
+  `configure_file` (that's the non-cross branch, which needs the getarch probe
+  the `.conf` dead-branches), so the converter's configure_file recovery never
+  saw it. `shadow.classifyFileRename` now models an in-source-tree
+  `file(RENAME <src> <dest>)` as a synthetic COPYONLY configure_file: the
+  existing recovery bakes `config.h` from the build-dir bytes and the split
+  emitter folds the recovered root-package header into `root_headers`, so it
+  resolves through the element-root header lib exactly like `common.h`.
+  **FMA per-source flags — build-lens flag.** Past config.h, the FMA kernels
+  (`*rot_k*`, `dgemv_t_k`) fail `inlining failed … '_mm256_fmadd_pd': target
+  specific option mismatch`: OpenBLAS tags those individual generated wrappers
+  with `set_source_files_properties(... COMPILE_OPTIONS "-mfma")`
+  (cmake/utils.cmake, gated on HAVE_FMA3), and the converter doesn't yet split
+  per-source `COMPILE_OPTIONS` into a per-flag sub-library (Bazel has no
+  per-source copts). The build lens pins a single `TARGET=HASWELL`
+  (DYNAMIC_ARCH off — no runtime CPU dispatch), so `openblas.conf` passes
+  `--cmake-define CMAKE_C_FLAGS=-mfma` to enable FMA build-wide (correct for the
+  arch, the same build-lens-flag move as glm's `-w`). **Follow-up (converter):**
+  per-source `COMPILE_OPTIONS` recovery (split the divergent sources into a
+  sub-`cc_library` carrying the extra copts) would drop the conf flag — tracked
+  here, mirrors the per-source `COMPILE_DEFINITIONS` handling already shipped.
+  **CBLAS reference tests — build-lens flag, then GREEN.** With every kernel
+  compiling, the last failure was linking the `ctest/` reference-test programs
+  (`x?cblat?`): `duplicate symbol: cblas_xerbla`. Each test compiles its own
+  `ctest/c_xerbla.c` (defining `cblas_xerbla`) AND links the library, whose
+  `cblas_xerbla` is force-included because the converter inlines cmake OBJECT
+  libraries as `alwayslink=True` cc_library deps — a real `.a` archive wouldn't
+  pull the overridden object. `ctest`/`utest` are gated by `NO_CBLAS`/`ONLY_CBLAS`
+  (NOT `BUILD_TESTING`, which only gates `lapack-netlib/TESTING`; `NOFORTRAN=1`
+  already drops the Fortran `test/`), so `openblas.conf` sets `NO_CBLAS=1` to
+  scope out the C-interface veneer + its reference tests — the same
+  "build the library, not its test tree" move eigen/cutlass apply. **With that,
+  OpenBLAS is GREEN: `0/0/0 ok ok`, the whole ~2460-target C-LAPACK library
+  `bazel build //...`s clean.** Follow-up (converter): don't force a test
+  target's own symbols in via an `alwayslink` dep (so the reference tests build
+  too without `NO_CBLAS`). Real reference-Fortran LAPACK (no `C_LAPACK`) is
+  separate future work — needs a Bazel Fortran ruleset (none exists in the BCR;
+  `edbaunton/rules_fortran` is an empty stub).
 
 ### Optional toolchains (unlock fuller surveys)
 

@@ -569,7 +569,53 @@ func liftCMakeECopy(op string, args []string, anc execAnchors, cc *codegenContex
 	if len(args) != 2 {
 		return nil, fmt.Sprintf("cmake -E %s: v1 supports the 2-arg form only (got %d args)", op, len(args)), false
 	}
-	return emitCopyGenrule("cmake -E "+op, op, args[0], args[1], anc, cc)
+	src, dst := args[0], args[1]
+	// Fast path: a real source-tree input copied to a build-dir output is a
+	// `cp` genrule (the file is a declared Bazel input).
+	if _, ok := executeProcessAnchorSource(src, anc); ok {
+		return emitCopyGenrule("cmake -E "+op, op, src, dst, anc, cc)
+	}
+	// The source isn't under the source root — it's a CONFIGURE-TIME build-dir
+	// intermediate (LLVM's `Extension.def.tmp`, written by an earlier
+	// file(WRITE)/configure step, then `copy_if_different`'d to the final
+	// `Extension.def`). There's no Bazel input to `cp` from, but the final
+	// OUTPUT exists on disk in the build dir — bake its bytes as a write_file,
+	// exactly like a configure_file COPYONLY / file(RENAME) recovery. This is
+	// the config.h-class generated-header materialization, generalized to the
+	// `cmake -E copy[_if_different]` spelling.
+	if baked, ok := bakeBuildDirCopyOutput(op, dst, anc, cc); ok {
+		return baked, "", true
+	}
+	return nil, fmt.Sprintf("cmake -E %s: source %q is not under the source root", op, src), false
+}
+
+// bakeBuildDirCopyOutput recovers a `cmake -E copy[_if_different] <tmp> <dst>`
+// whose SOURCE is a build-dir configure-time intermediate (not a source-tree
+// input) by baking the on-disk bytes of <dst> as a write_file — the same move
+// classifyFileRename makes for `file(RENAME)` and liftCMakeEConfigureFile makes
+// for `cmake -E configure_file`. Returns (outs, true) when the dst anchors
+// under the build dir and its bytes are readable; (nil, false) otherwise (no
+// build-dir stash, dst outside the build dir, or output not on disk) so the
+// caller falls back to the original source-not-under-source-root refusal.
+func bakeBuildDirCopyOutput(op, dst string, anc execAnchors, cc *codegenContext) ([]string, bool) {
+	if anc.hostBuildDir == "" {
+		return nil, false
+	}
+	dstRel, ok := executeProcessAnchorOutput(dst, anc)
+	if !ok {
+		return nil, false
+	}
+	if _, exists := cc.OutToGenrule[dstRel]; exists {
+		return []string{dstRel}, true
+	}
+	rendered, err := os.ReadFile(filepath.Join(anc.hostBuildDir, dstRel))
+	if err != nil {
+		return nil, false
+	}
+	name := executeProcessGenruleName(dstRel)
+	cc.Genrules = append(cc.Genrules, bakeFileTarget(name, dstRel, rendered, cmakeETags(op)))
+	cc.OutToGenrule[dstRel] = name
+	return []string{dstRel}, true
 }
 
 // liftCreateSymlinkLike translates `cmake -E create_symlink <target>
@@ -643,6 +689,19 @@ func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenC
 	dstRel, ok := executeProcessAnchorOutput(dst, anc)
 	if !ok {
 		return nil, fmt.Sprintf("%s: destination %q is not under the build dir", what, dst), false
+	}
+	if srcRel == dstRel {
+		// Single-file copy/link whose source and destination resolve to the SAME
+		// package-relative path — mbedtls's link_to_source(X) copies a generated
+		// build file back to its own committed source path (error.c,
+		// version_features.c). Emitting it would make X both an input and an
+		// output, which Bazel forbids; and the copy is redundant — X already
+		// exists as the committed source. Drop it; consumers of X resolve to that
+		// source. Only fires on the genuine in==out collision (which Bazel
+		// rejects regardless), so it can't regress a building target. Scoped to
+		// the single-file path: a recursive DIR copy (emitDirCopyGenrule) at the
+		// same relative root is a real staging copy, not an identity.
+		return []string{dstRel}, "", true
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true

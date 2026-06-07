@@ -127,8 +127,15 @@ func TestExecuteProcess_ConsumerAttribution_NonHeaderUnderBuildInclude(t *testin
 		if tgt.Name != "thelib" {
 			continue
 		}
-		if !contains(tgt.Srcs, "marker.dat") {
-			t.Errorf("expected marker.dat in srcs (non-header attribution); got srcs=%v", tgt.Srcs)
+		// A non-cc execute_process output (marker.dat) is NOT a valid cc srcs
+		// entry — a cc rule rejects it ("does not produce any cc_library srcs
+		// files"). It's attributed to `data` instead (build-order association
+		// without the source-compilation requirement).
+		if !contains(tgt.Data, "marker.dat") {
+			t.Errorf("expected marker.dat in data (non-cc attribution); got data=%v srcs=%v", tgt.Data, tgt.Srcs)
+		}
+		if contains(tgt.Srcs, "marker.dat") {
+			t.Errorf("non-cc marker.dat must not land in cc srcs; got srcs=%v", tgt.Srcs)
 		}
 		if contains(tgt.Hdrs, "marker.dat") {
 			t.Errorf("non-header marker.dat should not land in hdrs; got hdrs=%v", tgt.Hdrs)

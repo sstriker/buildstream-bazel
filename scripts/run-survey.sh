@@ -87,6 +87,18 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # scripts/run-survey.sh` shows "-" for all of them — pass those projects
 # explicitly (e.g. `SURVEY_BAZEL_BUILD=auto scripts/run-survey.sh fmt=$FMT_DIR
 # libxml2=$LIBXML2_DIR brotli=$BROTLI_DIR`) to exercise it.
+# SURVEY_COMPILE_DB=1 turns on the fifth lens — compile-commands FIDELITY. For
+# each build-lens-selected project it diffs cmake's CMAKE_EXPORT_COMPILE_COMMANDS
+# db against Bazel's `aquery 'mnemonic("CppCompile",//...)'` per translation unit
+# (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
+# after the convert but BEFORE the build's compile (aquery needs only analysis),
+# so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
+# SURVEY_SHARED=1 builds the FAITHFUL link model for build-lens members: the
+# project's natural config (no forced BUILD_SHARED_LIBS=OFF) with real
+# cc_shared_library .so's (--emit-shared-libraries) and consumers' dynamic_deps
+# wired — i.e. what cmake would actually build. The default (off) keeps the
+# forced-static alignment the green corpus is validated under; SURVEY_SHARED is
+# the path to re-greening each member against its natural config.
 bazel_build="${SURVEY_BAZEL_BUILD:-}"
 build_lens_default="fmt libxml2 brotli"
 
@@ -111,14 +123,24 @@ if [ -z "$projects" ]; then
     "
 fi
 
-# Locate the converter: prefer the Makefile-built binary, fall back to
-# `go run` so the script works in a bare checkout.
+# Locate the converter. ALWAYS (re)build it from the CURRENT source before
+# surveying — never trust a build/bin binary left lying about from an earlier
+# checkout. A stale prebuilt converter silently runs without fixes the source
+# already carries (e.g. after a session-recovery checkout moves HEAD), which
+# produces wrong survey results that look like real regressions. `go build` is
+# cheap (incremental + cached), so rebuilding every run is well worth removing
+# that footgun. Fall back to an existing binary, then `go run`, only when
+# `go build` can't run (no Go toolchain on PATH).
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 converter="$repo_root/build/bin/convert-element-cmake"
-if [ -x "$converter" ]; then
+if command -v go >/dev/null 2>&1 && \
+   ( cd "$repo_root" && go build -o "$converter" ./converter/cmd/convert-element-cmake ); then
+    run_converter() { "$converter" "$@"; }
+elif [ -x "$converter" ]; then
+    echo "warning: 'go build' unavailable or failed; using existing (possibly stale) $converter" >&2
     run_converter() { "$converter" "$@"; }
 else
-    echo "note: $converter not built; using 'go run' (slower). Run 'make converter' to speed up." >&2
+    echo "note: $converter not built and 'go build' failed; using 'go run' (slower)." >&2
     run_converter() { ( cd "$repo_root" && go run ./converter/cmd/convert-element-cmake "$@" ); }
 fi
 
@@ -223,6 +245,7 @@ try_bazel_build() {
     EXTRA_BAZEL_DEPS=""
     EMIT_INSTALL_EXPORT=1
     ELEMENT_SOURCE_ROOT=""
+    unset -f extra_ws_setup 2>/dev/null || true
     _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
     [ -f "$_bb_conf" ] && . "$_bb_conf"
 
@@ -256,6 +279,29 @@ try_bazel_build() {
     set -- --source-root "$_bb_src"
     [ -n "$_bb_bt" ] && set -- "$@" "$_bb_bt"
     [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
+    # Global build-lens default: configure cmake STATIC. Bazel's cc_library is
+    # always static-linked into a cc_binary, so the build lens (which lowers
+    # SHARED_LIBRARY → cc_library today — see ROADMAP's cc_shared_library item)
+    # must configure cmake static for its model to match what Bazel actually
+    # links. A SHARED configure silently diverges: the converter collapses the
+    # .so to static, and a project that compiles differently for shared vs static
+    # (curl's tests recompile the curlx utility sources only under SHARED, then
+    # Bazel ALSO static-links libcurl → duplicate objects → the test binary
+    # SIGSEGVs) builds wrong. Forcing BUILD_SHARED_LIBS=OFF makes cmake's own
+    # static/shared conditionals fire the way Bazel links. Placed BEFORE
+    # CONVERT_FLAGS so a project can still override (a later cmake -D wins) if it
+    # genuinely needs the shared configure. See docs/survey-corpus.md.
+    # SURVEY_SHARED=1 opts into the FAITHFUL link model: build the project's
+    # NATURAL config (no forced static) and emit real cc_shared_library .so's
+    # (--emit-shared-libraries) with consumers' dynamic_deps wired. This is the
+    # fidelity target — match what cmake would actually build; the forced-static
+    # default below is the deviation. Off by default (the green corpus is
+    # validated under forced-static today; flipping is a per-member re-green).
+    if [ "${SURVEY_SHARED:-0}" != "0" ]; then
+        set -- "$@" --emit-shared-libraries
+    else
+        set -- "$@" --cmake-define BUILD_SHARED_LIBS=OFF
+    fi
     # CONVERT_FLAGS from the per-project .conf (word-split intentional: it's a
     # flag list authored in the conf, e.g. `--cmake-define CMAKE_CXX_FLAGS=-w`).
     # shellcheck disable=SC2086
@@ -281,6 +327,7 @@ module(name = "survey_$(printf '%s' "$_bb_name" | tr -c 'a-z0-9_' '_')", version
 bazel_dep(name = "rules_cc", version = "0.0.17")
 bazel_dep(name = "rules_pkg", version = "1.0.1")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
+bazel_dep(name = "platforms", version = "0.0.11")
 bazel_dep(name = "rules_buildstream_bazel", version = "0.0.0")
 local_path_override(module_name = "rules_buildstream_bazel", path = "$repo_root/rules_buildstream_bazel")
 EOF
@@ -288,6 +335,14 @@ EOF
     # bazel_dep(...) lines a project needs beyond the base set above (e.g. a
     # find_package dep remapped to a @bcr module). Appended verbatim.
     [ -n "$EXTRA_BAZEL_DEPS" ] && printf '%s\n' "$EXTRA_BAZEL_DEPS" >> "$_bb_ws/MODULE.bazel"
+    # extra_ws_setup: optional shell function a .conf may define to write
+    # additional packages into the synthesized workspace AFTER MODULE.bazel
+    # exists — e.g. protobuf's //absl_umbrella package, the cc_library that
+    # re-exports abseil's full public header surface to model
+    # find_package(absl)'s whole-include-tree behavior (see protobuf.conf and
+    # the manifest's umbrella_label). Called with the workspace root; reset
+    # below between projects so one project's setup can't leak into the next.
+    command -v extra_ws_setup >/dev/null 2>&1 && extra_ws_setup "$_bb_ws"
     # Per-project `bazel build` flags come from BAZEL_FLAGS in the .conf sourced
     # above (e.g. glog's --dynamic_mode=off, because its tests reference glog's
     # internal -fvisibility=hidden symbols that a default-dynamic .so won't
@@ -295,6 +350,49 @@ EOF
     _bb_bzlflags="$BAZEL_FLAGS"
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
+
+    # Fifth lens — compile-commands FIDELITY (SURVEY_COMPILE_DB=1). Runs HERE,
+    # after the convert + MODULE/workspace are in place but BEFORE the build's
+    # compile: `bazel aquery` needs only ANALYSIS, so we catch per-TU flag drift
+    # (defines / -std / source includes) without paying for the full build. cmake
+    # ground truth comes from a quick EXPORT_COMPILE_COMMANDS configure of
+    # $_bb_src with the SAME cmake-defines the convert used (BUILD_SHARED_LIBS=OFF
+    # + the .conf's --cmake-define pairs). Report-only (writes fidelity.json); it
+    # does not gate the build. See cmd/compile-commands-diff + docs.
+    if [ "${SURVEY_COMPILE_DB:-0}" != "0" ]; then
+        _cc_defs="-DBUILD_SHARED_LIBS=OFF"
+        # shellcheck disable=SC2086
+        set -- $CONVERT_FLAGS
+        while [ $# -gt 0 ]; do
+            if [ "$1" = "--cmake-define" ] && [ $# -ge 2 ]; then
+                _cc_defs="$_cc_defs -D$2"; shift 2
+            else shift; fi
+        done
+        _cc_cm="$_bb_po/cc-cmake"
+        rm -rf "$_cc_cm"; mkdir -p "$_cc_cm/.cmake/api/v1/query"
+        : > "$_cc_cm/.cmake/api/v1/query/codemodel-v2"  # for the link-ORDER check
+        # shellcheck disable=SC2086
+        if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
+                >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
+            if ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
+                    > "$_bb_po/cc-aquery.json" 2>> "$_bb_po/fidelity.log"; then
+                # CppLink aquery for the link-order check (best-effort).
+                ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppLink", //...)' ) \
+                    > "$_bb_po/cc-aquery-link.json" 2>> "$_bb_po/fidelity.log" || true
+                _cc_diff="$repo_root/build/bin/compile-commands-diff"
+                ( cd "$repo_root" && go build -o "$_cc_diff" ./converter/cmd/compile-commands-diff ) 2>>"$_bb_po/fidelity.log" || _cc_diff="go run $repo_root/converter/cmd/compile-commands-diff"
+                # shellcheck disable=SC2086
+                $_cc_diff --cmake "$_cc_cm/compile_commands.json" --aquery "$_bb_po/cc-aquery.json" \
+                    --json "$_bb_po/fidelity.json" --cmake-src "$_bb_src" --cmake-build "$_cc_cm" \
+                    --bazel-package "$_bb_pkg" \
+                    --cmake-codemodel "$_cc_cm/.cmake/api/v1/reply" --aquery-link "$_bb_po/cc-aquery-link.json" \
+                    >> "$_bb_po/fidelity.log" 2>&1 || true
+                echo "  $_bb_name: compile-db fidelity -> $_bb_po/fidelity.json" >&2
+            fi
+        fi
+    fi
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
     # builds, so ignore any workspace .bazelrc (matches the repo's other survey
     # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread

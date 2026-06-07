@@ -240,6 +240,9 @@ func emitLoad(buf *bytes.Buffer, pkg *ir.Package) {
 		if sym, ok := ccRuleLoads[t.Kind]; ok {
 			used[sym] = struct{}{}
 		}
+		if t.SharedLibName != "" {
+			used["cc_shared_library"] = struct{}{}
+		}
 	}
 	if len(used) == 0 {
 		return
@@ -526,6 +529,9 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
 			return nil, err
 		}
+		if t.SharedLibName != "" {
+			emitSharedLibrary(&buf, t)
+		}
 	}
 	var trailing map[string]string
 	if opts.EmitSourceComments {
@@ -548,6 +554,30 @@ func trailingCommentMap(pkg *ir.Package) map[string]string {
 		m[t.Name] = t.TrailingComment
 	}
 	return m
+}
+
+// emitSharedLibrary writes the cc_shared_library that wraps a SHARED/MODULE
+// library's static cc_library impl into a real .so (faithful-SHARED). roots is
+// the impl target; shared_lib_name is the cmake artifact name (libfoo.so).
+// Consumers that should link it dynamically add it to their dynamic_deps — a
+// later phase wires that; on its own the .so just builds alongside the impl.
+func emitSharedLibrary(buf *bytes.Buffer, t ir.Target) {
+	buf.WriteString("\ncc_shared_library(\n")
+	fmt.Fprintf(buf, "    name = %q,\n", t.Name+"_shared")
+	fmt.Fprintf(buf, "    shared_lib_name = %q,\n", t.SharedLibName)
+	// dynamic_deps: sibling shared libs this one links dynamically (so it
+	// doesn't statically re-link a cc_library another shared lib owns).
+	if len(t.SharedLibDynamicDeps) > 0 {
+		buf.WriteString("    dynamic_deps = [\n")
+		for _, d := range sortedCopy(t.SharedLibDynamicDeps) {
+			fmt.Fprintf(buf, "        %q,\n", d)
+		}
+		buf.WriteString("    ],\n")
+	}
+	// `deps` is the modern rules_cc spelling of the former `roots` attribute —
+	// the libraries linked INTO the .so.
+	fmt.Fprintf(buf, "    deps = [\":%s\"],\n", t.Name)
+	buf.WriteString(")\n")
 }
 
 // canonicalize routes the template-assembled BUILD text
@@ -902,6 +932,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- end}}
 {{- if .DepsExpr}}
     deps = {{.DepsExpr}},
+{{- end}}
+{{- if .DynamicDepsExpr}}
+    dynamic_deps = {{.DynamicDepsExpr}},
 {{- end}}
 {{- if .ImplementationDepsExpr}}
     implementation_deps = {{.ImplementationDepsExpr}},
@@ -1306,6 +1339,7 @@ type ccView struct {
 	LinkoptsExpr               string
 	AdditionalLinkerInputsExpr string
 	DepsExpr                   string
+	DynamicDepsExpr            string
 	ImplementationDepsExpr     string
 	Linkstatic                 bool
 	Alwayslink                 bool
@@ -1866,7 +1900,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	hdrs := sortedCopy(t.Hdrs)
 	includes := sortedCopy(t.Includes)
 	copts := append([]string(nil), t.Copts...) // preserve order; flag order matters
-	defines := sortedCopy(t.Defines)
+	defines := escapeDefinesForBazel(sortedCopy(t.Defines))
 	linkopts := append([]string(nil), t.LinkOpts...) // preserve order
 	deps := sortedCopy(t.Deps)
 	implementationDeps := sortedCopy(t.ImplementationDeps)
@@ -1930,11 +1964,12 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,
 		CoptsExpr:                  attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:                attrExpr(defines, perPlatformAttr(t, "defines")),
-		LocalDefinesExpr:           attrExpr(sortedCopy(t.LocalDefines), perPlatformAttr(t, "local_defines")),
+		DefinesExpr:                attrExpr(defines, escapeDefinesPerPlatform(perPlatformAttr(t, "defines"))),
+		LocalDefinesExpr:           attrExpr(escapeDefinesForBazel(sortedCopy(t.LocalDefines)), escapeDefinesPerPlatform(perPlatformAttr(t, "local_defines"))),
 		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
+		DynamicDepsExpr:            attrExpr(sortedCopy(t.DynamicDeps), nil),
 		ImplementationDepsExpr:     attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
@@ -2087,6 +2122,44 @@ func scalarAttrExpr(flat string, sel map[string]string) string {
 // The returned map is a shallow copy so emit-time mutations
 // (the cc_binary hdrs→srcs fold) don't bleed back into the
 // caller's IR.
+// escapeDefineForBazel makes a C `-D` define survive Bazel's Bourne-shell
+// tokenization of the `defines`/`local_defines` attributes. Those attrs
+// tokenize each entry, which STRIPS unescaped quotes: a value like
+// `FOO="9.4"` reaches the compiler as `-DFOO=9.4` (a bare token, not the C
+// string `"9.4"`) — breaking any TU that uses the macro in string context
+// (caught by the compile-commands fidelity lens on VTK: VTK_PARSE_VERSION,
+// LZ4_VERSION, H5_ZLIB_HEADER). Backslash-escaping each `"` makes the shell
+// preserve it as a literal quote after tokenization. (The Starlark printer then
+// renders the backslash as `\\\"` in the BUILD text.)
+func escapeDefineForBazel(d string) string {
+	if !strings.Contains(d, `"`) {
+		return d
+	}
+	return strings.ReplaceAll(d, `"`, `\"`)
+}
+
+func escapeDefinesForBazel(ds []string) []string {
+	if len(ds) == 0 {
+		return ds
+	}
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = escapeDefineForBazel(d)
+	}
+	return out
+}
+
+func escapeDefinesPerPlatform(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = escapeDefinesForBazel(v)
+	}
+	return out
+}
+
 func perPlatformAttr(t ir.Target, name string) map[string][]string {
 	if len(t.PerPlatform) == 0 {
 		return nil

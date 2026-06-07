@@ -74,6 +74,43 @@ func TestExtractTargetLinks_PublicPrivate(t *testing.T) {
 	}
 }
 
+// TestExtractTargetLinks_ListExpansion pins the --trace-expand
+// list-variable case: a `target_link_libraries(t PUBLIC ${VAR})` where
+// VAR holds a cmake list records the whole list as ONE semicolon-joined
+// argument (this is exactly how protobuf's
+// `target_link_libraries(libprotobuf-lite PUBLIC ${protobuf_ABSL_USED_TARGETS})`
+// arrives). The classifier must split it back into individual libs so
+// downstream find_package attribution can match each absl::X — otherwise
+// the whole blob is one un-matchable "lib" and a static archive's absl
+// deps go unwired. An empty expansion (e.g. `${CMAKE_THREAD_LIBS_INIT}`
+// → "") contributes nothing.
+func TestExtractTargetLinks_ListExpansion(t *testing.T) {
+	trace := `{"args":["lite","PRIVATE",""],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":1}
+{"args":["lite","PUBLIC","absl::strings;absl::base;absl::log"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":2}
+`
+	got := ExtractTargetLinks([]byte(trace), "/src", nil)
+	if len(got) != 2 {
+		t.Fatalf("want 2 calls; got %d (%+v)", len(got), got)
+	}
+	// The empty-expansion PRIVATE arm yields a group with no libs.
+	if len(got[0].Groups) != 1 || len(got[0].Groups[0].Libs) != 0 {
+		t.Errorf("empty expansion should yield no libs; got %+v", got[0].Groups)
+	}
+	pub := got[1].Groups[0]
+	if pub.Visibility != "PUBLIC" {
+		t.Fatalf("want PUBLIC arm; got %+v", pub)
+	}
+	want := []string{"absl::strings", "absl::base", "absl::log"}
+	if len(pub.Libs) != len(want) {
+		t.Fatalf("list not split: got %+v want %v", pub.Libs, want)
+	}
+	for i := range want {
+		if pub.Libs[i] != want[i] {
+			t.Errorf("lib %d: %q want %q", i, pub.Libs[i], want[i])
+		}
+	}
+}
+
 // TestExtractTargetCompile_Definitions and _Options pin the
 // new TARGET_PROPERTY INTERFACE_* aggregation extractor — same
 // keyword shape as target_link_libraries, but for
@@ -907,5 +944,46 @@ func TestDecode_CustomCommandsAndTargets(t *testing.T) {
 	}
 	if d.AddCustomTargets[0].Name != "mygen" {
 		t.Errorf("AddCustomTargets[0].Name: %q", d.AddCustomTargets[0].Name)
+	}
+}
+
+// TestExtractFileRename_AsConfigureCopyonly: file(RENAME tmp dest) called
+// from the source tree is recovered as a synthetic COPYONLY configure_file
+// (OpenBLAS's config.h cross-compile shape); a cmake-internal rename and a
+// non-RENAME file() subcommand are both ignored. Decode routes RENAME into
+// ConfigFiles alongside real configure_file calls.
+func TestExtractFileRename_AsConfigureCopyonly(t *testing.T) {
+	trace := `{"args":["RENAME","/build/config.h.tmp","/build/config.h"],"cmd":"file","file":"/src/cmake/prebuild.cmake","line":1374}
+{"args":["RENAME","/x/a","/x/b"],"cmd":"file","file":"/usr/share/cmake/Modules/Internal.cmake","line":9}
+{"args":["GLOB","V","/src/*.c"],"cmd":"file","file":"/src/CMakeLists.txt","line":3}
+`
+	got := Decode([]byte(trace), "/src", nil).ConfigFiles
+	if len(got) != 1 {
+		t.Fatalf("want 1 recovered RENAME (cmake-internal + GLOB ignored); got %d (%+v)", len(got), got)
+	}
+	c := got[0]
+	if c.Input != "/build/config.h.tmp" || c.Output != "/build/config.h" {
+		t.Errorf("input/output: %+v", c)
+	}
+	if len(c.Options) != 1 || c.Options[0] != "COPYONLY" {
+		t.Errorf("options: %+v want [COPYONLY]", c.Options)
+	}
+}
+
+// TestExecuteProcess_ListValuedCommandSplits: a COMMAND built from an unquoted
+// ${command} list variable arrives as one ;-joined token; the parser must
+// split it so argv[0] is the real driver (cc), not basename(/dev/null)=null.
+// Escaped \; is a literal semicolon; empty elements are dropped.
+func TestExecuteProcess_ListValuedCommandSplits(t *testing.T) {
+	trace := `{"args":["COMMAND","/usr/bin/cc;-Wl,--version;-o;/dev/null","OUTPUT_VARIABLE","stdout"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}
+`
+	got := Decode([]byte(trace), "/src", nil).ExecuteProcesses
+	if len(got) != 1 || len(got[0].Commands) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	argv := got[0].Commands[0]
+	want := []string{"/usr/bin/cc", "-Wl,--version", "-o", "/dev/null"}
+	if len(argv) != 4 || argv[0] != want[0] || argv[3] != want[3] {
+		t.Errorf("argv = %v, want %v", argv, want)
 	}
 }

@@ -49,6 +49,13 @@ type Options struct {
 	// config-mode consumption opts in (--emit-install-export-config).
 	EmitInstallExportConfig bool
 
+	// EmitSharedLibraries opts in to faithful SHARED conversion: a cmake
+	// SHARED_LIBRARY/MODULE_LIBRARY emits its static cc_library impl PLUS a
+	// sibling cc_shared_library (real .so). OFF by default — the historical
+	// static-collapse emit stays byte-identical. See ROADMAP's cc_shared_library
+	// item.
+	EmitSharedLibraries bool
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -435,6 +442,132 @@ var headerExts = map[string]bool{
 	".inl": true,
 	".def": true,
 	".inc": true,
+	".txx": true, // template-impl headers (VTK's vtkImageProgressIterator.txx)
+	".tcc": true,
+	".ipp": true,
+}
+
+// ccLinkableSrcExts are non-header extensions that are still valid `srcs`
+// entries for a cc_library/cc_binary — precompiled objects/archives and
+// assembly that Bazel links or assembles. A GENERATED output with one of these
+// extensions stays in srcs; any other non-header generated output (VTK's
+// hierarchy .args/.data, etc.) is routed to `data` since cc rules reject a
+// non-source srcs entry.
+var ccLinkableSrcExts = map[string]bool{
+	".o":   true,
+	".obj": true,
+	".a":   true,
+	".lo":  true,
+	".s":   true,
+	".S":   true,
+	".asm": true,
+}
+
+// compilableSrcExts are the source extensions Bazel's cc rules COMPILE.
+var compilableSrcExts = map[string]bool{
+	".c": true, ".cc": true, ".cpp": true, ".cxx": true, ".c++": true,
+	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
+	".m": true, ".mm": true,
+}
+
+// isCcSrcEntry reports whether path p is a valid cc_library/cc_binary `srcs`
+// entry — a compiled source, a header, or a linkable object/archive/assembly.
+// A GENERATED target-source that is none of these (VTK lists each module's
+// wrap-hierarchy artifacts — CMakeFiles/<mod>-hierarchy.*.args / .data — as the
+// module target's cmake sources for build ordering) must not enter cc srcs, or
+// Bazel fails analysis with "does not produce any cc_library srcs files".
+func isCcSrcEntry(p string) bool {
+	ext := strings.ToLower(filepath.Ext(p))
+	return headerExts[ext] || compilableSrcExts[ext] || ccLinkableSrcExts[ext]
+}
+
+// wireDefineDrivenGeneratedHeaders connects a target to a generated header it
+// pulls in via a compile DEFINE rather than a literal #include, which the
+// converter's include scan can't see. VTK's module machinery
+// (vtkModule.cmake) does exactly this: each implementing module gets
+// `target_compile_definitions(<Mod>_AUTOINIT_INCLUDE="vtkModuleAutoInit_<hash>.h")`
+// and its sources do `#ifdef <mod>_AUTOINIT_INCLUDE / #include
+// <mod>_AUTOINIT_INCLUDE` — so the (already-generated, by a genrule) per-module
+// auto-init header is never wired into the consumer and every such TU fails with
+// "vtkModuleAutoInit_<hash>.h: No such file".
+//
+// The header is included by BASENAME and the genrule emits it under CMakeFiles/,
+// so we synthesize one public wrapper cc_library carrying every such header with
+// `includes=["CMakeFiles"]` (which propagates the -I to dependents so the
+// basename resolves) and add it to the `deps` of each target whose defines name
+// one. The wrapper lives in the root package (no SubPackages entry); split
+// relabels the intra-element `:`-dep and the public wrapper is reachable
+// cross-package.
+func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
+	const suffix = "_AUTOINIT_INCLUDE"
+	// Generated-header basename → its genrule output path (package-relative).
+	outByBase := map[string]string{}
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindGenrule {
+			continue
+		}
+		for _, o := range t.GenruleOuts {
+			outByBase[filepath.Base(o)] = o
+		}
+	}
+	neededOuts := map[string]bool{}
+	consumers := map[int]bool{}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+			continue
+		}
+		defs := append(append([]string{}, t.Defines...), t.LocalDefines...)
+		for _, d := range defs {
+			eq := strings.IndexByte(d, '=')
+			if eq < 0 || !strings.HasSuffix(d[:eq], suffix) {
+				continue
+			}
+			base := filepath.Base(strings.Trim(d[eq+1:], `"`))
+			if out, ok := outByBase[base]; ok {
+				neededOuts[out] = true
+				consumers[i] = true
+			}
+		}
+	}
+	if len(neededOuts) == 0 {
+		return
+	}
+	hdrs := make([]string, 0, len(neededOuts))
+	incs := map[string]bool{}
+	for o := range neededOuts {
+		hdrs = append(hdrs, o)
+		// Propagate -I<dir-of-header> so the BASENAME include resolves for
+		// dependents. dir == "." (header at the package root) is the common case
+		// (the auto-init basename genrule outputs there) and MUST be included as
+		// "." — otherwise the root-package header is only includable at its
+		// repo-root path, not by basename, and the consumer still can't find it.
+		d := filepath.Dir(o)
+		if d == "" {
+			d = "."
+		}
+		incs[d] = true
+	}
+	sort.Strings(hdrs)
+	includes := make([]string, 0, len(incs))
+	for d := range incs {
+		includes = append(includes, d)
+	}
+	sort.Strings(includes)
+	const wrapperName = "define_driven_generated_headers"
+	pkg.Targets = append(pkg.Targets, ir.Target{
+		Name:       wrapperName,
+		Kind:       ir.KindCCLibrary,
+		Hdrs:       hdrs,
+		Includes:   includes, // propagate -I<dir> so the BASENAME include resolves
+		Visibility: []string{"//visibility:public"},
+		Tags:       []string{"cmake-define-driven-generated-headers"},
+	})
+	for i := range pkg.Targets {
+		if consumers[i] {
+			pkg.Targets[i].Deps = append(pkg.Targets[i].Deps, ":"+wrapperName)
+		}
+	}
 }
 
 // ToIR lowers a parsed reply into a Package. The optional ninja graph
@@ -497,6 +630,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
+	var defineSymbols map[string]string               // target → cmake DEFINE_SYMBOL export macro (trace set_target_properties)
 	var traceLinkLibs map[string][]string             // target → ordered list of cmake lib names from target_link_libraries (all visibility arms, dedup-preserved)
 	// traceLinkScope maps target → libName → cmake keyword
 	// ("PUBLIC", "PRIVATE", "INTERFACE", or "" for the legacy
@@ -682,6 +816,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				}
 			}
 		}
+		defineSymbols = decoded.DefineSymbols
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
@@ -786,6 +921,18 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		detectAnchor = cmakeSrc
 	}
 	workspaceRoot := detectWorkspaceRoot(detectAnchor)
+	// Only PROMOTE to the detected workspace root if the project actually
+	// references sources OUTSIDE cmakeSrc (zstd's sibling-dir file(GLOB), which
+	// the File API records as absolute paths). A self-contained subproject of a
+	// larger git repo — LLVM's llvm-project/llvm — trips detectWorkspaceRoot on
+	// the monorepo's .git but keeps every source under cmakeSrc; promoting there
+	// injects a spurious `llvm/` umbrella prefix the converter applies
+	// inconsistently across emitters (genrule srcs vs install(FILES)/root refs),
+	// yielding a self-inconsistent single/double package tree no overlay can
+	// satisfy. Gate on real escape so zstd still promotes and LLVM doesn't.
+	if workspaceRoot != "" && workspaceRoot != cmakeSrc && !sourcesEscapeCmakeSrc(r, cmakeSrc, workspaceRoot) {
+		workspaceRoot = ""
+	}
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
 		hostSrc = cmakeSrc
@@ -827,6 +974,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	cc := newCodegenContext()
+	cc.BazelPackagePath = opts.BazelPackagePath
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
 	cc.CMakeScriptBake = opts.CMakeScriptBake
@@ -1044,6 +1192,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// artifact-path tool references in genrule cmds into
 	// `$(location :<name>)` form plus a tools attr entry.
 	artifactToName := map[string]string{}
+	execArtifacts := map[string]bool{}
 	for _, tref := range cfg.Targets {
 		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
 			utilityIDs[tref.Id] = true
@@ -1055,6 +1204,9 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			for _, art := range t.Artifacts {
 				if art.Path != "" {
 					artifactToName[art.Path] = tref.Name
+					if t.Type == "EXECUTABLE" {
+						execArtifacts[art.Path] = true
+					}
 				}
 			}
 		}
@@ -1065,6 +1217,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// genrule cmds — same shape lowerStandaloneCustomCommands
 	// receives the map as a parameter.
 	cc.ArtifactToName = artifactToName
+	cc.ExecArtifacts = execArtifacts
 
 	// isTargetName is the set of every codemodel target name (real +
 	// UTILITY). The codegen-header walk uses it to stop at sibling-target
@@ -1085,25 +1238,26 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	codegenConsumerDeps := map[string][]fileapi.TargetDependency{}
 
 	lc := targetLowerCtx{
-		cmakeSrc:         cmakeSrc,
-		cmakeBuild:       cmakeBuild,
-		hostSrc:          hostSrc,
-		hostPrefix:       opts.HostPrefixDir,
-		hostSrcOnDisk:    hostSrcOnDisk,
-		g:                g,
-		cc:               cc,
-		idToName:         idToName,
-		utilityIDs:       utilityIDs,
-		imports:          opts.Imports,
-		tests:            opts.CTest,
-		configureFiles:   configureFiles,
-		fileGenerates:    fileGenerates,
-		executeProcesses: executeProcesses,
-		findPkgAttrib:    findPkgAttrib,
-		workspaceRoot:    workspaceRoot,
-		bazelPackagePath: opts.BazelPackagePath,
-		generatedSources: generatedSources,
-		rejections:       opts.Rejections,
+		cmakeSrc:            cmakeSrc,
+		cmakeBuild:          cmakeBuild,
+		hostSrc:             hostSrc,
+		hostPrefix:          opts.HostPrefixDir,
+		hostSrcOnDisk:       hostSrcOnDisk,
+		g:                   g,
+		cc:                  cc,
+		idToName:            idToName,
+		utilityIDs:          utilityIDs,
+		imports:             opts.Imports,
+		tests:               opts.CTest,
+		configureFiles:      configureFiles,
+		fileGenerates:       fileGenerates,
+		executeProcesses:    executeProcesses,
+		findPkgAttrib:       findPkgAttrib,
+		workspaceRoot:       workspaceRoot,
+		bazelPackagePath:    opts.BazelPackagePath,
+		generatedSources:    generatedSources,
+		rejections:          opts.Rejections,
+		emitSharedLibraries: opts.EmitSharedLibraries,
 	}
 
 	for _, tref := range cfg.Targets {
@@ -1124,6 +1278,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			traceLinkScope:               traceLinkScope[tref.Name],
 			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
 			platformConditionalSrcsToAdd: platformConditionalSrcsToAdd[tref.Name],
+			defineSymbol:                 defineSymbols[tref.Name],
 		}, lc)
 		if err != nil {
 			return nil, err
@@ -1152,12 +1307,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 		pkg.SubPackages[irt.Name] = subPackageDir(cfg, tref.DirectoryIndex, cmakeSrc, workspaceRoot)
 
-		// Record this cc_library's codemodel UTILITY dependencies so a pass
+		// Record this target's codemodel UTILITY dependencies so a pass
 		// AFTER standalone-genrule recovery (which is what fills the genrule
 		// output set the walk filters on) can resolve them to the generated
-		// `.inc` headers it consumes. Only cc_library carries the wrapper
-		// dep cleanly via the consumer's deps; cc_binary/cc_test are skipped.
-		if irt.Kind == ir.KindCCLibrary && len(t.Dependencies) > 0 {
+		// `.inc` headers it consumes. cc_binary/cc_test are included alongside
+		// cc_library: LLVM's tools are cc_binary that `#include "Opts.inc"`
+		// (the `-gen-opt-parser-defs` tablegen output from each tool's Opts.td,
+		// wired via add_public_tablegen_target), so they need the same
+		// generated-header wrapper dep + genfiles include the libraries get.
+		// The split transform's wrapper synthesis keys on consumer NAME, not
+		// kind, so a cc_binary consumer flows through unchanged.
+		if (irt.Kind == ir.KindCCLibrary || irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) && len(t.Dependencies) > 0 {
 			codegenConsumerDeps[irt.Name] = t.Dependencies
 		}
 	}
@@ -1167,8 +1327,33 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// appended in target-walk order during lowerTarget, which is
 	// itself stable.
 	pkg.Targets = append(pkg.Targets, cc.Genrules...)
+	// Co-locate each per-language sub-library in its parent wrapper's
+	// sub-package (set above at pkg.SubPackages[irt.Name]). The sub's srcs and
+	// the wrapper that deps on it both live there; leaving the sub in the root
+	// package makes the wrapper→sub edge cross-package against a private target
+	// (LLVM's BLAKE3 _asm/_c splits: "not visible from").
+	if pkg.SubPackages != nil {
+		for _, sub := range cc.Subs {
+			if parent, ok := cc.SubParent[sub.Name]; ok {
+				if dir, ok := pkg.SubPackages[parent]; ok {
+					pkg.SubPackages[sub.Name] = dir
+				}
+			}
+		}
+	}
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	wireDefineDrivenGeneratedHeaders(pkg)
+	// Faithful-SHARED Phase 2: wire consumers' dynamic_deps. A target that
+	// depends on a SHARED/MODULE library (which now also emits a sibling
+	// cc_shared_library) keeps the impl in deps (for headers) and lists the
+	// `<dep>_shared` target in dynamic_deps, so Bazel links the .so instead of
+	// static-linking the impl — and the "a cc_library is owned by at most one
+	// shared lib" rule is satisfied. Intra-package label match by bare name;
+	// the split emit relabels DynamicDeps cross-package like it does deps.
+	if opts.EmitSharedLibraries {
+		wireDynamicDeps(pkg)
+	}
 	// Make every cc_test name a valid Bazel identifier before anything
 	// else looks at it: CTest registers tests with hierarchical names
 	// like `Suite::Case::Sub` (the Catch2 / GoogleTest convention) and the
@@ -1224,6 +1409,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// or when no PRIVATE-scoped defines appear.
 	if decodedTrace != nil {
 		applyPrivateScopeToDefines(pkg, decodedTrace.CompileDefinitions)
+		// Directory-scoped add_definitions() is PRIVATE too (never
+		// exported via INTERFACE_COMPILE_DEFINITIONS) — route it to
+		// local_defines so it doesn't leak to consumers (e.g. curl's
+		// BUILDING_LIBCURL on libcurl leaking to the curl tool).
+		applyAddDefinitionsScope(pkg, decodedTrace.AddDefinitions, decodedTrace.CompileDefinitions)
 	}
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
@@ -1365,12 +1555,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 				umbrellaPrefix = rel
 			}
 		}
-		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, artifactToName, traceCtx, cc.FilteredInternalCmds)
+		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, opts.BazelPackagePath, artifactToName, traceCtx, cc.FilteredInternalCmds, cc)
 		// Add the transitive `include "..."` closure of tablegen-shaped
 		// codegen genrules to their srcs (their `.td` deps live only in
 		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
 		// labelRoot the genrules' anchored `-I` paths resolve against.
-		recordCodegenIncludeClosure(stand, hostSrc)
+		recordCodegenIncludeClosure(stand, hostSrc, opts.BazelPackagePath)
 		// Fold cmake file(GLOB)/file(GLOB_RECURSE)-sourced genrule inputs
 		// back into build-time glob() filegroups (split-synthesized), so a
 		// globbing genrule's deps re-evaluate in project B. No-op when the
@@ -1647,6 +1837,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// standalone. Runs last so the synthesized libs aren't reprocessed above.
 	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, hostSrcOnDisk, opts.Warnings)
 
+	// The same idiom in GENERATED form: a convert-time-baked wrapper source
+	// (configure_file / file(WRITE) → write_file) textually `#include`s a real
+	// in-tree source by its source-root-ABSOLUTE path — OpenBLAS's
+	// GenerateNamedObjects writes ~1951 such per-routine wrappers. Rewrite the
+	// baked absolute include to a workspace-relative path and stage the kernel
+	// as a textual_hdr on the compiling target. Runs after the on-disk pass
+	// above (it can also feed textual_hdrs onto the same cc_library).
+	stageGeneratedSourceRootIncludes(pkg, hostSrc, opts.BazelPackagePath, hostSrcOnDisk, opts.Warnings)
+
 	return pkg, nil
 }
 
@@ -1681,6 +1880,10 @@ type targetLowerCtx struct {
 	bazelPackagePath string
 	generatedSources map[string]bool
 	rejections       *rejection.Collector
+	// emitSharedLibraries: when true, a SHARED_LIBRARY/MODULE_LIBRARY target's
+	// IR carries SharedLibName so emit renders a real cc_shared_library wrapper
+	// (faithful-SHARED). Off by default — the static-collapse emit is unchanged.
+	emitSharedLibraries bool
 }
 
 // targetTrace bundles the per-target trace-derived inputs to
@@ -1691,6 +1894,11 @@ type targetTrace struct {
 	traceLinkScope               map[string]string
 	platformConditionalSrcs      map[string]string
 	platformConditionalSrcsToAdd map[string][]string
+	// defineSymbol is the target's cmake DEFINE_SYMBOL export macro (from the
+	// trace's set_target_properties), or "" if unset. lowerTarget routes a
+	// matching define to local_defines so a SHARED/MODULE lib's export macro
+	// doesn't propagate to consumers when SHARED collapses to cc_library.
+	defineSymbol string
 }
 
 func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
@@ -1778,6 +1986,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		irt.Alwayslink = true
 	case "SHARED_LIBRARY", "MODULE_LIBRARY":
 		irt.Kind = ir.KindCCLibrary
+		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
+		// cc_shared_library producing the real .so. Use the FULL cmake artifact
+		// name (NameOnDisk, e.g. libbrotlidec.so.1.2.0) — both because that's
+		// what cmake actually produces (versioned soname) and because it must
+		// NOT collide with the impl cc_library's auto-generated lib<target>.so
+		// dynamic output (a cc_shared_library and a cc_library can't both emit
+		// the same path — the brotli collision). When the unversioned NameOnDisk
+		// WOULD equal lib<target>.so, suffix it so the two outputs stay distinct.
+		if lc.emitSharedLibraries {
+			so := t.NameOnDisk
+			if so == "" {
+				so = "lib" + t.Name + ".so"
+			}
+			if so == "lib"+t.Name+".so" {
+				// The unversioned name collides with the impl cc_library's auto
+				// lib<target>.so output. Append a soversion so the two outputs
+				// stay distinct AND the name stays a valid .so.<N> filetype
+				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
+				// cmake-recorded soversion tag; fall back to ".1".
+				so += "." + soversionFromTags(irt.Tags, "1")
+			}
+			irt.SharedLibName = so
+		}
 	case "EXECUTABLE":
 		irt.Kind = ir.KindCCBinary
 	case "INTERFACE_LIBRARY":
@@ -1810,6 +2041,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	elidedMissingSrc := false
 	elidedCompilerArtifact := false
 	declaredGeneratedSrc := false
+	droppedNonCcSrc := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -1913,6 +2145,17 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			consumesCodegen = true
 			ext := strings.ToLower(filepath.Ext(relOut))
 			switch {
+			case !isCcSrcEntry(relOut):
+				// Generated output that is neither a header nor a cc compile/link
+				// input — drop it from the cc target. VTK lists each module's
+				// wrap-hierarchy artifacts (CMakeFiles/<mod>-hierarchy.*.args/.data)
+				// as the module target's cmake sources for build ordering, and
+				// cmake even files them under a compile group; a cc rule REJECTS a
+				// non-source srcs entry ("does not produce any cc_library srcs
+				// files"). They have no cc-rule role and the producing genrule
+				// builds independently (cross-package ones also can't be a bare-path
+				// data entry, since rewriteDeps only relabels :name target refs).
+				// Checked BEFORE inCompileGroup so cmake's grouping can't override.
 			case inCompileGroup[i]:
 				irt.Srcs = append(irt.Srcs, relOut)
 				// A cc_embed lift's generated .cxx #includes its sibling .h;
@@ -1926,8 +2169,8 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			case headerExts[ext]:
 				irt.Hdrs = append(irt.Hdrs, relOut)
 			default:
-				// Non-header, not compiled: still belongs in srcs so the
-				// genrule's output is included in the package's input set.
+				// A compilable source not in a compile group, or a linkable
+				// object/archive/assembly — a real cc src input.
 				irt.Srcs = append(irt.Srcs, relOut)
 			}
 			continue
@@ -2192,6 +2435,16 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// codemodel flagging them.
 				if generatedSources[src.Path] {
 					declaredGeneratedSrc = true
+					// A GENERATED target-source that isn't a cc compile/link/header
+					// input is a build-ordering artifact, not a source — VTK lists
+					// each module's wrap-hierarchy files (CMakeFiles/<mod>-hierarchy.
+					// *.args/.data, incl. dependency modules' across packages) as the
+					// module target's GENERATED sources. Keeping it in cc srcs fails
+					// analysis; it has no cc-rule role (the producing genrule builds
+					// independently), so drop it from the target.
+					if !isCcSrcEntry(src.Path) {
+						continue
+					}
 					irt.Srcs = append(irt.Srcs, src.Path)
 					continue
 				}
@@ -2201,6 +2454,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 		irt.Srcs = append(irt.Srcs, src.Path)
 	}
+
+	// Catch-all over every src-append path above: a cc/cuda rule rejects a srcs
+	// entry that isn't a compile/link/header input. Some GENERATED build-order
+	// artifacts reach srcs through cmake's compile-group filing (VTK files each
+	// module's wrap-hierarchy .args/.data under a compile group), past the
+	// per-branch handling. Drop any entry whose extension is clearly non-cc; the
+	// producing genrule still builds via //... and the artifact has no cc-rule
+	// role. Only entries WITH a non-cc extension are dropped, so bare-name /
+	// extensionless labels (`:foo`, `//pkg:foo`) are never touched.
+	switch irt.Kind {
+	case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCTest,
+		ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest:
+		kept := make([]string, 0, len(irt.Srcs))
+		for _, s := range irt.Srcs {
+			if filepath.Ext(s) != "" && !isCcSrcEntry(s) {
+				droppedNonCcSrc = true
+				continue
+			}
+			kept = append(kept, s)
+		}
+		irt.Srcs = kept
+	}
+
 	if consumesCodegen {
 		irt.Tags = append(irt.Tags, "has-cmake-codegen")
 	}
@@ -2222,6 +2498,11 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// configure_file edge if the converter didn't recover one.
 		irt.Tags = append(irt.Tags, "cmake-declared-generated-source")
 	}
+	if droppedNonCcSrc {
+		// A non-cc-input source (e.g. a VTK wrap-hierarchy .args/.data build-order
+		// artifact cmake filed under the module target) was dropped from cc srcs.
+		irt.Tags = append(irt.Tags, "cmake-dropped-non-cc-src")
+	}
 
 	// Build-dir-rooted includes (relative to the cmake build
 	// dir). Populated alongside the source-tree includes in
@@ -2239,6 +2520,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// guard) so the flag survives to the discoverHeaders call
 	// further down.
 	walkPkgRootForHdrs := false
+
+	// PRIVATE include dirs (emitted as -I copts below) collected so the
+	// discoverHeaders walk further down also walks them — otherwise a
+	// PRIVATE-only dir's headers are never declared as inputs and a bare
+	// `#include` into it fails in the sandbox (the dir's -I sets the search
+	// path but stages no files). See ROADMAP "Stage headers from a PRIVATE
+	// include dir with no public header lib".
+	var privateIncDirs []string
 
 	if len(t.CompileGroups) > 0 {
 		// M1 assumption: at most one language per target. Aggregate the
@@ -2285,6 +2574,23 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 		}
 		irt.Defines = defs
+
+		// DEFINE_SYMBOL export-macro routing. cmake defines the export macro
+		// (`-D<DEFINE_SYMBOL>`, default `<target>_EXPORTS`) ONLY when compiling
+		// a SHARED/MODULE library's OWN sources — it's the __declspec(dllexport)
+		// trigger and is PRIVATE (never propagated to consumers). The
+		// SHARED->cc_library collapse otherwise emits it as a transitive
+		// `defines`, leaking it to every consumer (zlib's DEFINE_SYMBOL=ZLIB_DLL
+		// reaching example.c/minigzip.c — caught by the compile-commands fidelity
+		// lens). Move the macro to local_defines. Value: the trace-recovered
+		// DEFINE_SYMBOL, else cmake's default `<C-identifier of target>_EXPORTS`.
+		if t.Type == "SHARED_LIBRARY" || t.Type == "MODULE_LIBRARY" {
+			macro := tt.defineSymbol
+			if macro == "" {
+				macro = makeCIdentifier(t.Name) + "_EXPORTS"
+			}
+			moveDefineToLocal(irt, macro)
+		}
 
 		// Sysroot: tag the target with the cmake-recorded sysroot
 		// path. Operators see cross-compile context via grep;
@@ -2394,6 +2700,24 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				//     propagation. A separate audit tag for
 				//     the hardcode case can land if a real
 				//     downstream surfaces the need.
+				// find_package whole-include-tree umbrella: a
+				// find_package(<Pkg>) puts Pkg's entire include
+				// dir on this target's compile line (the dir
+				// resolves outside the source/build tree, so we'd
+				// otherwise drop it here). If the imports manifest
+				// declared this dir as one of an element's
+				// UmbrellaIncludeRoots, add the element's umbrella
+				// label to deps instead — a cc_library re-exporting
+				// the package's full public header surface — so
+				// headers the consumer #includes but never linked a
+				// specific target for (absl/functional/overload.h
+				// from protobuf, never in protobuf_ABSL_USED_TARGETS)
+				// resolve under Bazel's strict per-target headers.
+				if umbrella := imports.UmbrellaForIncludeDir(inc.Path); umbrella != "" {
+					if !stringSliceContains(irt.Deps, umbrella) {
+						irt.Deps = append(irt.Deps, umbrella)
+					}
+				}
 				if hostPrefix != "" {
 					if relUnder, inside := relativeIfInside(hostPrefix, inc.Path); inside {
 						tag := "cmake-elided-prefix-include=" + relUnder
@@ -2455,7 +2779,20 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				if inc.IsSystem {
 					flag = "-isystem"
 				}
+				// Emit the PRIVATE include dir in element-root-relative form
+				// (`-Iinclude`, not the exec-root `-Ielements/<pkg>/include`):
+				// split's rewriteTarget copt scan keys on this form to wire the
+				// synthesized header lib for the dir (staging its headers + the
+				// correct exec-root search path via the lib's `includes`) and drop
+				// the bare -I. Anchoring to exec-root here breaks that match and
+				// leaves the dir's headers unstaged (fmt's posix-mock-test:
+				// `#include <fmt/os.h>` "No such file"). NOTE: this only stages
+				// headers when the dir is ALSO a public include root somewhere (so
+				// a header lib exists for it); a PRIVATE-only dir whose headers
+				// aren't otherwise declared still needs the header-staging work
+				// tracked in ROADMAP (mbedtls / sdl).
 				irt.Copts = append(irt.Copts, flag+emit)
+				privateIncDirs = append(privateIncDirs, emit)
 				continue
 			}
 			irt.Includes = append(irt.Includes, emit)
@@ -2611,6 +2948,42 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 	}
 
+	// Same-directory configure_file CONFIG HEADERS. A header like kwsysPrivate.h
+	// (configure_file ... COPYONLY) or proj_config.h is #included by BARE quote
+	// name (`#include "kwsysPrivate.h"`) from a source in the SAME directory, so
+	// cmake needs no `-I` for it (a quote-include resolves same-dir) — which means
+	// targetBuildIncs never records the dir and the prefix-match block above
+	// misses it entirely (it's gated on a build-include match). In Bazel a
+	// quote-include still needs the header DECLARED as an input of the compiling
+	// target. Attribute any header configure_file output whose directory matches a
+	// directory this target compiles sources in (compared in the element-root-
+	// relative space both irt.Srcs and the recovered output already use). These
+	// ride into the per-language sub-libraries via splitCompileGroups' sharedHdrs.
+	if len(configureFiles) > 0 && len(irt.Srcs) > 0 {
+		srcDirs := map[string]bool{}
+		for _, s := range irt.Srcs {
+			srcDirs[filepath.ToSlash(filepath.Dir(s))] = true
+		}
+		have := map[string]bool{}
+		for _, h := range irt.Hdrs {
+			have[h] = true
+		}
+		var extra []string
+		for _, cfgOut := range configureFiles {
+			if !headerExts[strings.ToLower(filepath.Ext(cfgOut.RelOutput))] || have[cfgOut.RelOutput] {
+				continue
+			}
+			if srcDirs[filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))] {
+				extra = append(extra, cfgOut.RelOutput)
+				have[cfgOut.RelOutput] = true
+			}
+		}
+		if len(extra) > 0 {
+			irt.Hdrs = append(irt.Hdrs, extra...)
+			irt.Tags = append(irt.Tags, "has-cmake-codegen")
+		}
+	}
+
 	// file(GENERATE) consumer attribution. Sister block to the
 	// configure_file walk above; file(GENERATE) outputs can be
 	// any extension (config-shaped .h, license blobs, generated
@@ -2618,7 +2991,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// like the execute_process walk below — headers go to hdrs,
 	// other artefacts go to srcs.
 	if len(fileGenerates) > 0 && len(targetBuildIncs) > 0 {
-		var addedHdrs, addedSrcs []string
+		var addedHdrs, addedSrcs, addedData []string
 		seenHdr := map[string]bool{}
 		seenSrc := map[string]bool{}
 		for _, fg := range fileGenerates {
@@ -2640,6 +3013,20 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				continue
 			}
+			// A file(GENERATE) output that isn't a cc compile/link input is a
+			// build-order artifact, not a source — VTK emits each module's
+			// per-config wrap-hierarchy args via file(GENERATE OUTPUT
+			// <mod>-hierarchy.$<CONFIG>.args); adding it to cc srcs fails analysis
+			// ("does not produce any cc_library srcs files"). Route it to data
+			// (same-package attribution → no cross-package relabel), preserving
+			// the build-order association without the srcs requirement.
+			if !isCcSrcEntry(fg.RelOutput) {
+				if !seenSrc[fg.RelOutput] {
+					seenSrc[fg.RelOutput] = true
+					addedData = append(addedData, fg.RelOutput)
+				}
+				continue
+			}
 			if !seenSrc[fg.RelOutput] {
 				seenSrc[fg.RelOutput] = true
 				addedSrcs = append(addedSrcs, fg.RelOutput)
@@ -2651,7 +3038,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		if len(addedSrcs) > 0 {
 			irt.Srcs = append(irt.Srcs, addedSrcs...)
 		}
-		if len(addedHdrs) > 0 || len(addedSrcs) > 0 {
+		if len(addedData) > 0 {
+			irt.Data = append(irt.Data, addedData...)
+		}
+		if len(addedHdrs) > 0 || len(addedSrcs) > 0 || len(addedData) > 0 {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}
@@ -2673,7 +3063,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// inputs); same shape as the IsGenerated branch in the
 	// CompileGroup walk above.
 	if len(executeProcesses) > 0 && len(targetBuildIncs) > 0 {
-		var addedHdrs, addedSrcs []string
+		var addedHdrs, addedSrcs, addedData []string
 		seenHdr := map[string]bool{}
 		seenSrc := map[string]bool{}
 		for _, ep := range executeProcesses {
@@ -2695,6 +3085,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				continue
 			}
+			// Same non-cc-input guard as the file(GENERATE) block above:
+			// non-cc execute_process output → data, not cc srcs.
+			if !isCcSrcEntry(ep.RelOutput) {
+				if !seenSrc[ep.RelOutput] {
+					seenSrc[ep.RelOutput] = true
+					addedData = append(addedData, ep.RelOutput)
+				}
+				continue
+			}
 			if !seenSrc[ep.RelOutput] {
 				seenSrc[ep.RelOutput] = true
 				addedSrcs = append(addedSrcs, ep.RelOutput)
@@ -2706,7 +3105,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		if len(addedSrcs) > 0 {
 			irt.Srcs = append(irt.Srcs, addedSrcs...)
 		}
-		if len(addedHdrs) > 0 || len(addedSrcs) > 0 {
+		if len(addedData) > 0 {
+			irt.Data = append(irt.Data, addedData...)
+		}
+		if len(addedHdrs) > 0 || len(addedSrcs) > 0 || len(addedData) > 0 {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}
@@ -2719,6 +3121,12 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	includesForWalk := irt.Includes
 	if walkPkgRootForHdrs {
 		includesForWalk = append([]string{""}, irt.Includes...)
+	}
+	// Also walk PRIVATE include dirs so their headers are discovered + declared
+	// (the -I copt alone stages no files). Feeds hdrs discovery only — these
+	// rode into copts, not irt.Includes, preserving cmake's PRIVATE scope.
+	if len(privateIncDirs) > 0 {
+		includesForWalk = append(append([]string{}, includesForWalk...), privateIncDirs...)
 	}
 	// Carry the dropped root-include signal to the IR so the split emitter can
 	// restore the prefix via include_prefix when this target re-homes into a
@@ -2788,7 +3196,30 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			if t.FileSets[idx].Type != "HEADERS" {
 				continue
 			}
-			fileSetHdrs = append(fileSetHdrs, src.Path)
+			// Relativize like every other header path — a FILE_SET HEADERS
+			// entry can be an absolute path (cmake records generated headers,
+			// e.g. VTK's per-module `vtk<Module>Module.h` export header, at
+			// their CMAKE_CURRENT_BINARY_DIR-absolute path). Appending it raw
+			// made emit render an invalid `//pkg:/abs/path` label ("target
+			// names may not start with /"). A source-tree path relativizes to
+			// (and reanchors under) the package; a build-dir path becomes
+			// build-dir-relative — matching the recovered genrule's output
+			// (the module header has a gen_*_Module_h genrule) — and is NOT
+			// reanchored, like other generated outputs. An out-of-tree
+			// absolute drops (not expressible as a label).
+			p := src.Path
+			if filepath.IsAbs(p) {
+				if rel, inside := relativeIfInside(cmakeSrc, p); inside {
+					fileSetHdrs = append(fileSetHdrs, reanchor(rel))
+				} else if rel, inside := relativeIfInside(cmakeBuild, p); inside {
+					fileSetHdrs = append(fileSetHdrs, rel)
+				}
+				continue
+			}
+			if pathHasDotDotSegment(p) {
+				continue
+			}
+			fileSetHdrs = append(fileSetHdrs, reanchor(p))
 		}
 	}
 	merged := append(irt.Hdrs, hdrs...)
@@ -2970,6 +3401,25 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		for _, d := range irt.ImplementationDeps {
 			seen[d] = true
 		}
+		// Direct find_package deps the trace recorded for THIS target
+		// (target_link_libraries lib names). When present, they gate the
+		// link-fragment LookupLinkPath attribution below: an EXECUTABLE /
+		// SHARED lib static-links its WHOLE transitive .a closure, so
+		// cmake's Link.CommandFragments lists every archive — including
+		// internal ones a consumer never names directly (abseil's
+		// raw_logging_internal / spinlock_wait / strerror, pulled in by
+		// the public absl targets). Attributing each flattened archive as
+		// a DIRECT Bazel dep both over-specifies the graph and breaks on
+		// the internal targets' restricted visibility
+		// (`//absl:__subpackages__`). Bazel computes transitivity itself,
+		// so we only want the libs the target links DIRECTLY; the rest
+		// flow through the directly-named public deps. Empty (no trace for
+		// this target) → the gate is disabled and every matched fragment
+		// is attributed, preserving the offline-replay behavior.
+		directTraceLibs := map[string]bool{}
+		for _, lib := range traceLinkLibs {
+			directTraceLibs[lib] = true
+		}
 		for _, frag := range t.Link.CommandFragments {
 			// Non-library fragments (flags / libraryPath /
 			// frameworkPath / frameworks) route directly to
@@ -2998,6 +3448,17 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					// rejects these on the link line at best as
 					// dead bytes, at worst as warnings.
 					if isCompileOnlyLinkFlag(rewritten) {
+						continue
+					}
+					// Shared-only link flags (version script / soname /
+					// retain-symbols) apply to a .so link. SHARED_LIBRARY /
+					// MODULE_LIBRARY collapse to a static cc_library (no .so),
+					// where a propagating version-script linkopt fails on every
+					// consumer link missing the script's symbols (zlib's
+					// zlib.map). Drop them (and their additional_linker_input,
+					// since this skips before the append below).
+					if (t.Type == "SHARED_LIBRARY" || t.Type == "MODULE_LIBRARY") &&
+						isSharedOnlyLinkFlag(rewritten) {
 						continue
 					}
 					// Dedup against earlier appends — cmake's
@@ -3058,6 +3519,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				path = manifestPrefixAnchor + path[len(hostPrefix)+1:]
 			}
 			if export := imports.LookupLinkPath(path); export != nil {
+				// Gate on the direct-trace set: when the trace
+				// recorded this target's direct link libs, only
+				// attribute a flattened archive fragment if the
+				// target links it DIRECTLY. A transitive-only
+				// archive (in the static closure but not named in
+				// target_link_libraries) is dropped — it reaches
+				// the link through a directly-named public dep's
+				// own Bazel deps, with correct visibility. Skip
+				// the gate entirely when no trace covers this
+				// target (directTraceLibs empty).
+				if len(directTraceLibs) > 0 && !directTraceLibs[export.CMakeTarget] {
+					continue
+				}
 				if !seen[export.BazelLabel] {
 					seen[export.BazelLabel] = true
 					// Trace-scope routing: if the
@@ -3099,12 +3573,45 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					}
 					continue
 				}
-				// No manifest hit; emit a fallback tag so
-				// operators see which package's link is
-				// unresolved. One tag per (pkg, path)
-				// pair — same package can show up across
-				// multiple paths (release + debug, main +
-				// dep libs).
+				// No manifest hit. Before falling back to a
+				// tag-only elision, try the same lift the
+				// attribution-MISSED path uses below: if
+				// find_package resolved to a real SYSTEM library
+				// (e.g. find_package(ZLIB) → /usr/lib/.../libz.so),
+				// link it as `-l<name>` so the rule actually links
+				// against it. cmake found the lib on the host; the
+				// toolchain's library search path covers the standard
+				// system locations, so `-lz` resolves the same way at
+				// Bazel build time. Without this, a static-archive
+				// build looks fine (undefined symbols are legal in a
+				// .a) but every EXECUTABLE that pulls the compression
+				// code (LLVM's opt/llc → zlib's compress2/crc32/…)
+				// fails the final link. A producer element claiming
+				// the lib name (exports.json) still wins over the host
+				// -l<name>.
+				if name := systemLibName(path); name != "" {
+					if export := imports.LookupLinkLibrary(name); export != nil {
+						if !seen[export.BazelLabel] {
+							seen[export.BazelLabel] = true
+							if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+								irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+							} else {
+								irt.Deps = append(irt.Deps, export.BazelLabel)
+							}
+						}
+						continue
+					}
+					flag := "-l" + name
+					if !stringSliceContains(irt.LinkOpts, flag) {
+						irt.LinkOpts = append(irt.LinkOpts, flag)
+					}
+					continue
+				}
+				// Not a system lib (vendored / custom prefix); emit a
+				// fallback tag so operators see which package's link is
+				// unresolved. One tag per (pkg, path) pair — same
+				// package can show up across multiple paths (release +
+				// debug, main + dep libs).
 				tag := "cmake-codegen-find-package-fallback=" + pkg + "=" + filepath.Base(path)
 				if !stringSliceContains(irt.Tags, tag) {
 					irt.Tags = append(irt.Tags, tag)
@@ -3199,21 +3706,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 	}
 
-	// STATIC IMPORTED dep recovery from trace. STATIC archives don't
-	// run a link step at build time, so cmake's codemodel records
-	// no Link.CommandFragments and no IMPORTED-target Dependencies
-	// for them — both upstream channels are empty. Trace's
-	// target_link_libraries calls are the only ground truth for a
-	// static lib's IMPORTED deps. For each lib name the trace
-	// records, look it up in the imports manifest; resolve hits
-	// are appended (deduped). Non-IMPORTED libs (in-codebase target
-	// names) already came in via t.Dependencies above and are
-	// covered by the seen-map.
+	// IMPORTED dep recovery from trace. Two channels miss find_package
+	// imports that the trace records as direct target_link_libraries:
+	//   - A STATIC archive runs no link step, so cmake's codemodel
+	//     records no Link.CommandFragments and no IMPORTED-target
+	//     Dependencies — both upstream channels are empty.
+	//   - A header-only IMPORTED target (no .a / .so on disk, e.g.
+	//     absl::flat_hash_map / absl::span) never appears as a link
+	//     fragment on ANY consumer, EXECUTABLE or SHARED included, so
+	//     the Link.CommandFragments attribution above can't reach it
+	//     even though the executable's sources #include its headers.
+	// The trace's target_link_libraries calls are the ground truth for
+	// both. For each direct lib name the trace records, look it up in
+	// the imports manifest; resolve hits are appended (deduped). Runs
+	// for every cc rule kind (the seen-map keeps the link-fragment path
+	// from double-adding the compiled libs it already wired on
+	// executables/shared libs); in-codebase target names already came
+	// in via t.Dependencies above and are covered by the seen-map too.
 	//
 	// The seen-set spans Deps + ImplementationDeps so a dep already
 	// routed to ImplementationDeps by the t.Dependencies loop above
 	// doesn't get re-appended to Deps here.
-	if t.Type == "STATIC_LIBRARY" && len(traceLinkLibs) > 0 {
+	if (t.Type == "STATIC_LIBRARY" || t.Type == "SHARED_LIBRARY" ||
+		t.Type == "MODULE_LIBRARY" || t.Type == "EXECUTABLE") && len(traceLinkLibs) > 0 {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {
 			seen[d] = true
@@ -3612,7 +4127,43 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 	sharedIncludes := append([]string(nil), irt.Includes...)
 	wrapperSrcs := irt.Srcs
 
+	// Snapshot the wrapper's deps BEFORE the loop (which appends the
+	// sub-targets themselves to subDeps). These are the real compile/link
+	// deps the dep-wiring passes resolved for the target — codemodel
+	// Dependencies, find_package imports (absl, libprotobuf, …), the
+	// trace-recovered static-lib deps. The sub-libraries are what actually
+	// COMPILE the sources, so they need these deps to find the deps'
+	// headers (protobuf's protoc-gen-upb_cxx compiles wire_format_lite.cc,
+	// which #includes absl/base/casts.h from @abseil-cpp//absl/base:base).
+	// The wrapper keeps them too (line below appends subDeps), so its own
+	// consumers still get the PUBLIC deps transitively.
+	sharedDeps := append([]string(nil), irt.Deps...)
+	sharedImplDeps := append([]string(nil), irt.ImplementationDeps...)
+
+	// PRIVATE include dirs (target_include_directories(... PRIVATE ...))
+	// ride the wrapper's irt.Copts as `-I<dir>` / `-isystem<dir>` (added by
+	// the include loop in lowerTarget); the per-CG CompileCommandFragments
+	// the subs draw from don't carry them. Since the subs are what compile
+	// the sources, extract those include copts and replay them onto every
+	// sub so a source in a PRIVATE include tree resolves its siblings
+	// (protobuf's protoc-gen-upb_c compiles
+	// upb_generator/cmake/.../plugin.upb_minitable.c, which #includes the
+	// sibling plugin.upb_minitable.h via the PRIVATE -Iupb_generator/cmake).
+	// Harmless on a sub that doesn't compile anything under the dir — an
+	// unused -I is a no-op.
+	var sharedIncludeCopts []string
+	for _, c := range irt.Copts {
+		if strings.HasPrefix(c, "-I") || strings.HasPrefix(c, "-isystem") {
+			sharedIncludeCopts = append(sharedIncludeCopts, c)
+		}
+	}
+
 	var subDeps []string
+	// Track each emitted sub's language so a cross-language linkage pass below
+	// can wire C/C++ → asm/fortran deps (the subStart marks where this call's
+	// subs begin in cc.Subs).
+	subStart := len(cc.Subs)
+	langByName := map[string]string{}
 	for _, cg := range groups {
 		if cg.Language == "" {
 			continue
@@ -3644,6 +4195,10 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			continue
 		}
 		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		// Replay the wrapper's PRIVATE include-dir copts (see
+		// sharedIncludeCopts above) so this sub's sources resolve headers
+		// reached via target_include_directories(... PRIVATE ...).
+		copts = append(copts, sharedIncludeCopts...)
 		// Pick up per-CG LanguageStandard so sub-libraries
 		// inherit the cmake-recorded -std=c++17 / -std=c11
 		// (idempotent if the CG's CompileCommandFragments
@@ -3684,27 +4239,65 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		}
 		langSeen[cg.Language]++
 
-		// A CUDA compile group's `.cu` sources can't compile in a cc_*
-		// sub-library (no nvcc action in Bazel's cc rules), so the sub
-		// renders as rules_cuda's cuda_library. Other languages keep the
-		// wrapper's kind. The wrapper stays a deps-only cc_library/cc_binary
-		// that depends on this sub, so the link is a normal cc→cuda dep
-		// (rules_cuda's cuda_library provides CcInfo).
-		subKind := irt.Kind
-		if cg.Language == "CUDA" {
+		// A split sub is always an object LIBRARY absorbed into the
+		// deps-only wrapper — never the wrapper's own kind. A cc_binary /
+		// cc_test wrapper whose subs were themselves cc_binary/cc_test
+		// can't link: the wrapper (srcs cleared) has no `main`, and a
+		// cc_binary in another cc_binary's deps doesn't contribute its
+		// objects, so the link fails "undefined symbol: main" (protobuf's
+		// mixed C/C++ protoc-gen-upb). Emit cc_library subs (CUDA → rules_
+		// cuda's cuda_library, which also provides CcInfo); the wrapper
+		// deps on them as a normal cc→cc(/cuda) link.
+		//
+		// For an executable wrapper force the subs alwayslink so EVERY
+		// translation unit folds into the binary — cmake compiles all of
+		// the executable's sources in, but a plain cc_library archive only
+		// contributes the objects the linker references, which would drop
+		// `main` and registration-only TUs.
+		subKind := ir.KindCCLibrary
+		subAlwayslink := irt.Alwayslink
+		switch {
+		case cg.Language == "CUDA":
 			subKind = ir.KindCudaLibrary
+		case irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest:
+			subAlwayslink = true
+		}
+		// Propagate the wrapper's deps to the sub so its sources compile
+		// (and link) against the deps' headers/symbols. A sub that accepts
+		// implementation_deps (cc_library) keeps the wrapper's PRIVATE /
+		// PUBLIC split; one that doesn't (cc_binary sub of a mixed-language
+		// cc_binary wrapper) folds both into deps. The sub is
+		// //visibility:private and only the wrapper consumes it, so an
+		// over-broad sub `deps` never leaks to an external consumer — the
+		// wrapper carries the faithful split for ITS consumers.
+		subDepsForSub := append([]string(nil), sharedDeps...)
+		var subImplDeps []string
+		if kindAllowsImplementationDeps(subKind) {
+			subImplDeps = append([]string(nil), sharedImplDeps...)
+		} else {
+			subDepsForSub = append(subDepsForSub, sharedImplDeps...)
 		}
 		sub := ir.Target{
-			Name:       subName,
-			Kind:       subKind,
-			Srcs:       subSrcs,
-			Hdrs:       subHdrs,
-			Includes:   sharedIncludes,
-			Copts:      copts,
-			Defines:    defs,
-			Tags:       subTags,
-			Linkstatic: irt.Linkstatic,
-			Alwayslink: irt.Alwayslink,
+			Name:               subName,
+			Kind:               subKind,
+			Srcs:               subSrcs,
+			Hdrs:               subHdrs,
+			Includes:           sharedIncludes,
+			Copts:              copts,
+			Defines:            defs,
+			Tags:               subTags,
+			Deps:               subDepsForSub,
+			ImplementationDeps: subImplDeps,
+			// Split sub-libraries are INTERNAL object-libraries (alwayslink)
+			// that exist only to be statically absorbed into the deps-only
+			// wrapper — never linked standalone. Force linkstatic so Bazel
+			// doesn't build a standalone .so for each: a C/C++ sub's .so can't
+			// resolve the hidden-visibility symbols of a sibling asm/fortran sub
+			// across a .so boundary (LLVM's BLAKE3 _c.so → the _asm subs'
+			// llvm_blake3_hash_many_*). Static absorption keeps all the
+			// objects in one linkage unit so those symbols resolve.
+			Linkstatic: true,
+			Alwayslink: subAlwayslink,
 			Visibility: []string{"//visibility:private"},
 		}
 		// OpenMP (issue #313): a split sub-library carries the per-CG copts,
@@ -3713,7 +4306,40 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// lowerTarget is a no-op once the split clears irt.Copts).
 		propagateOpenMPLinkFlag(&sub)
 		cc.Subs = append(cc.Subs, sub)
+		// Record the sub→parent link so the package-assignment pass co-locates
+		// this sub in the parent's sub-package (its srcs + the wrapper that
+		// deps on it live there). Without it the sub defaults to the root
+		// package — a cross-package + private-visibility analysis error.
+		if cc.SubParent != nil {
+			cc.SubParent[sub.Name] = irt.Name
+		}
+		langByName[sub.Name] = cg.Language
 		subDeps = append(subDeps, ":"+sub.Name)
+	}
+
+	// Cross-language linkage: a C/C++ sub typically CALLS into the same target's
+	// asm/fortran subs (BLAKE3's blake3_dispatch.c → the per-arch
+	// llvm_blake3_hash_many_* asm functions, compiled hidden-visibility). The
+	// split makes them siblings under the wrapper, so when a C/C++ sub is linked
+	// as a standalone .so (a dynamic consumer of the wrapper triggers it) its
+	// hidden cross-language symbols are undefined. Make each C/C++ sub dep on
+	// the same target's asm/fortran subs (one direction → no cycle): those subs
+	// are alwayslink, so their objects fold into the C/C++ sub's linkage and the
+	// symbols resolve. Asm/fortran calling back into C is rare and not wired.
+	var otherLangSubs []string
+	for i := subStart; i < len(cc.Subs); i++ {
+		switch langByName[cc.Subs[i].Name] {
+		case "ASM", "ASM_NASM", "Fortran":
+			otherLangSubs = append(otherLangSubs, ":"+cc.Subs[i].Name)
+		}
+	}
+	if len(otherLangSubs) > 0 {
+		for i := subStart; i < len(cc.Subs); i++ {
+			switch langByName[cc.Subs[i].Name] {
+			case "C", "CXX", "OBJC", "OBJCXX":
+				cc.Subs[i].Deps = appendUnique(cc.Subs[i].Deps, otherLangSubs...)
+			}
+		}
 	}
 
 	if len(subDeps) == 0 {
@@ -5614,7 +6240,21 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 // All rewrites are conservative — paths only re-anchor when they
 // start with the canonical anchor prefix + "/", so partial-match
 // hazards (e.g. `<buildDir>` vs `<buildDir>_other`) are avoided.
-func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
+//
+// bazelPackagePath is the repo-root-relative landing package of the
+// element (e.g. "elements/llvm"); when non-empty, source-tree paths
+// re-anchor to their EXEC-ROOT form (`<bazelPackagePath>/<umbrella>/<rel>`)
+// rather than the bare labelRoot-relative form. A genrule cmd runs at the
+// Bazel exec root, so a source input or `-I` root referenced by a bare
+// relative path (`include/...`) would resolve against the exec root, not
+// the element's package — wrong for any element that lands under a
+// sub-package. The exec-root anchor is package-location-independent: it
+// stays correct no matter which sub-package split moves the genrule into
+// (split only re-relativizes the `$(RULEDIR)/<out>` build-output tokens,
+// never these source paths). Empty bazelPackagePath (the fidelity harness
+// converting AT the workspace root) preserves the prior labelRoot-relative
+// behavior exactly.
+func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string) string {
 	if cmd == "" {
 		return cmd
 	}
@@ -5674,10 +6314,20 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix string) string {
 	// (build, → include); a post-pass couldn't tell them apart. Empty
 	// umbrella (the non-promoted case) preserves the prior strip-to-""
 	// behavior exactly.
+	// Source-tree paths re-anchor to their exec-root form: the element's
+	// landing package (bazelPackagePath) joined with the cmakeSrc-relative-
+	// to-labelRoot umbrella segment. With an empty bazelPackagePath this
+	// collapses to the umbrella-only form (the fidelity harness, converting
+	// at the workspace root); with an empty umbrella it's just the package
+	// (the common element-under-elements/<name> case, e.g. LLVM).
+	srcBase := umbrellaPrefix
+	if bazelPackagePath != "" {
+		srcBase = filepath.ToSlash(filepath.Join(bazelPackagePath, umbrellaPrefix))
+	}
 	srcRepl, srcBareRepl := "", "."
-	if umbrellaPrefix != "" {
-		srcRepl = umbrellaPrefix + "/"
-		srcBareRepl = umbrellaPrefix
+	if srcBase != "" {
+		srcRepl = srcBase + "/"
+		srcBareRepl = srcBase
 	}
 	for _, a := range []struct{ anchor, repl, bareRepl string }{
 		{cmakeSrc, srcRepl, srcBareRepl},
@@ -6010,6 +6660,22 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 	// safe). Same dedup applies to defines.
 	coptsSeen := map[string]bool{}
 	defSeen := map[string]bool{}
+	// heldInclude defers a `-include` / `-include-pch` flag until we see its
+	// argument: cmake's target_precompile_headers adds `-include
+	// <build>/CMakeFiles/<t>.dir/<cfg>/cmake_pch.h` to the compile line, an
+	// absolute build-dir path to a PCH that doesn't exist under Bazel's
+	// hermetic compile. Bazel has no PCH (it's a compile-speed optimization,
+	// not a correctness input — the real headers are #included by the sources
+	// normally), so drop the flag+arg pair. A `-include` of a NON-PCH forced
+	// header is preserved (the held flag is emitted when its arg isn't a PCH).
+	heldInclude := ""
+	emitHeld := func() {
+		if heldInclude != "" && !coptsSeen[heldInclude] {
+			coptsSeen[heldInclude] = true
+			copts = append(copts, heldInclude)
+		}
+		heldInclude = ""
+	}
 	for _, f := range frags {
 		if f.Role != "" {
 			// Reserved for link fragments; ignore on the compile side.
@@ -6027,6 +6693,22 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 			// "..." pair is stripped (a flag never legitimately needs surrounding
 			// shell quotes in argv form); embedded quotes are left untouched.
 			p = stripBalancedQuotes(p)
+			// Resolve a pending `-include` / `-include-pch` against this
+			// token (its argument). A cmake PCH artifact (cmake_pch.h /
+			// cmake_pch.hxx) drops the whole pair; any other forced-include
+			// header keeps both.
+			if heldInclude != "" {
+				if isCMakePCHPath(p) {
+					heldInclude = ""
+					continue
+				}
+				emitHeld()
+				// fall through to process p normally below
+			}
+			if p == "-include" || p == "-include-pch" {
+				heldInclude = p
+				continue
+			}
 			switch {
 			case strings.HasPrefix(p, "-D"):
 				val := strings.TrimPrefix(p, "-D")
@@ -6053,7 +6735,147 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 			}
 		}
 	}
+	// A `-include` with no following argument in the fragment stream (cmake
+	// shouldn't emit this, but be defensive) is preserved rather than lost.
+	emitHeld()
 	return copts, defines
+}
+
+// wireDynamicDeps adds, to every consumer of a shared (SharedLibName-bearing)
+// library, the sibling `<lib>_shared` cc_shared_library in DynamicDeps — so the
+// consumer dynamically links the .so rather than static-linking the impl. Match
+// is by bare target name against the package's shared libs; the shared lib
+// itself is skipped (it doesn't dynamic-dep on itself).
+func wireDynamicDeps(pkg *ir.Package) {
+	shared := map[string]bool{}
+	for _, t := range pkg.Targets {
+		if t.SharedLibName != "" {
+			shared[t.Name] = true
+		}
+	}
+	if len(shared) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+			continue
+		}
+		seen := map[string]bool{}
+		var sharedDeps []string
+		all := append(append([]string{}, t.Deps...), t.ImplementationDeps...)
+		for _, d := range all {
+			name := bareDepName(d)
+			if name == t.Name { // a shared lib's wrapper deps on its own impl — skip
+				continue
+			}
+			if shared[name] && !seen[name] {
+				seen[name] = true
+				sharedDeps = append(sharedDeps, ":"+name+"_shared")
+			}
+		}
+		if t.SharedLibName != "" {
+			// This target is a shared lib: its cc_shared_library WRAPPER must
+			// dynamic-dep on sibling shared libs so it doesn't statically
+			// re-link a cc_library another shared lib already owns.
+			t.SharedLibDynamicDeps = sharedDeps
+		} else {
+			// A plain consumer: link sibling shared libs dynamically.
+			t.DynamicDeps = sharedDeps
+		}
+	}
+}
+
+// bareDepName extracts the bare target name from a Bazel dep label:
+// ":foo"→"foo", "//a/b:foo"→"foo", "//a/b/foo"→"foo".
+func bareDepName(label string) string {
+	if i := strings.LastIndex(label, ":"); i >= 0 {
+		return label[i+1:]
+	}
+	if i := strings.LastIndex(label, "/"); i >= 0 {
+		return label[i+1:]
+	}
+	return label
+}
+
+// soversionFromTags returns the SOVERSION recorded in a target's
+// `cmake-codegen-soversion=<N>` tag, or def when absent. Used to disambiguate a
+// shared lib's output name from the impl cc_library's auto lib<name>.so.
+func soversionFromTags(tags []string, def string) string {
+	const pfx = "cmake-codegen-soversion="
+	for _, t := range tags {
+		if strings.HasPrefix(t, pfx) {
+			if v := strings.TrimPrefix(t, pfx); v != "" {
+				return v
+			}
+		}
+	}
+	return def
+}
+
+// makeCIdentifier mirrors cmake's string(MAKE_C_IDENTIFIER): every character
+// that isn't [A-Za-z0-9_] becomes `_`, and a leading digit is prefixed with
+// `_`. cmake derives the default DEFINE_SYMBOL as `<MAKE_C_IDENTIFIER(target)>_EXPORTS`.
+func makeCIdentifier(s string) string {
+	if s == "" {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isAlnum := (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'
+		if isAlnum {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	out := b.String()
+	if out[0] >= '0' && out[0] <= '9' {
+		out = "_" + out
+	}
+	return out
+}
+
+// moveDefineToLocal moves a define (matched on its NAME, before any `=value`)
+// from irt.Defines (transitive) to irt.LocalDefines (non-propagating), deduped.
+// No-op when the define isn't present.
+func moveDefineToLocal(irt *ir.Target, macro string) {
+	if macro == "" {
+		return
+	}
+	kept := irt.Defines[:0]
+	moved := false
+	for _, d := range irt.Defines {
+		name := d
+		if i := strings.IndexByte(d, '='); i >= 0 {
+			name = d[:i]
+		}
+		if name == macro {
+			moved = true
+			if !stringSliceContains(irt.LocalDefines, d) {
+				irt.LocalDefines = append(irt.LocalDefines, d)
+			}
+			continue
+		}
+		kept = append(kept, d)
+	}
+	if moved {
+		irt.Defines = kept
+	}
+}
+
+// isCMakePCHPath reports whether p is a cmake target_precompile_headers
+// artifact — the generated PCH header cmake names cmake_pch.h / cmake_pch.hxx
+// under CMakeFiles/<target>.dir/<config>/. These are absolute build-dir paths
+// that don't exist under Bazel's hermetic compile and carry no correctness
+// (PCH is a speed optimization); splitCompileFragments drops the `-include` of
+// one. Match on basename so it's robust to the host build-dir prefix and the
+// per-config segment.
+func isCMakePCHPath(p string) bool {
+	base := filepath.Base(p)
+	return base == "cmake_pch.h" || base == "cmake_pch.hxx" ||
+		base == "cmake_pch.h.gch" || base == "cmake_pch.hxx.pch"
 }
 
 // subPackageDir returns the element-root-relative directory the target at
@@ -6220,6 +7042,44 @@ func pathHasDotDotSegment(p string) bool {
 // Walks are memoized through cache (keyed on absolute include-dir path)
 // so that multiple targets sharing an include root don't re-walk the
 // same filesystem subtree. Pass nil for cache to disable memoization.
+// looksLikeCxxHeader sniffs an extensionless file to decide whether it's a C/C++
+// header (eigen's `Dense`/`Core`/… module headers) vs. a stray non-source file
+// (LICENSE, README, a data file) that also sits in an include dir. Conservative:
+// requires an early preprocessor directive or an obvious C++ header construct, so
+// plain-text files aren't mis-collected. Reads only the first 4 KiB.
+func looksLikeCxxHeader(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	if n == 0 {
+		return false
+	}
+	for _, line := range strings.Split(string(buf[:n]), "\n") {
+		s := strings.TrimSpace(line)
+		if s == "" {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(s, "#include"), strings.HasPrefix(s, "#ifndef"),
+			strings.HasPrefix(s, "#define"), strings.HasPrefix(s, "#pragma"),
+			strings.HasPrefix(s, "#if "), strings.HasPrefix(s, "namespace "),
+			strings.HasPrefix(s, "template"):
+			return true
+		}
+		// Allow leading comment/blank lines (license headers) before the first
+		// directive; bail once real non-comment, non-directive text appears.
+		if !strings.HasPrefix(s, "//") && !strings.HasPrefix(s, "/*") &&
+			!strings.HasPrefix(s, "*") {
+			return false
+		}
+	}
+	return false
+}
+
 func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string, missing map[string]bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, inc := range includeDirs {
@@ -6276,7 +7136,14 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 			}
 			ext := strings.ToLower(filepath.Ext(p))
 			if !headerExts[ext] {
-				return nil
+				// Extensionless C++ headers (eigen ships `Dense`, `Core`,
+				// `Eigenvalues`, … with no extension; VTK's bundled vtkeigen the
+				// same) are real headers consumers `#include <vtkeigen/eigen/Dense>`
+				// — collect them when a content sniff confirms a header, so they're
+				// not silently dropped. Anything else non-header is skipped.
+				if ext != "" || !looksLikeCxxHeader(p) {
+					return nil
+				}
 			}
 			rel, err := filepath.Rel(sourceRoot, p)
 			if err != nil {

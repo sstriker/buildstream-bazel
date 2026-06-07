@@ -12,6 +12,12 @@ func TestRewriteToolFromTarget(t *testing.T) {
 		"lib/libfoo.so":           "foo",
 		"obj/CustomGen/CustomGen": "CustomGen",
 	}
+	execArtifacts := map[string]bool{
+		"bin/llvm-min-tblgen":     true,
+		"bin/clang-tblgen":        true,
+		"obj/CustomGen/CustomGen": true,
+		// lib/libfoo.so is intentionally NOT an executable.
+	}
 
 	cases := []struct {
 		name      string
@@ -44,9 +50,22 @@ func TestRewriteToolFromTarget(t *testing.T) {
 			wantTools: []string{":llvm-min-tblgen"},
 		},
 		{
-			name:      "tool inside arg does not rewrite",
+			// VAR=<executable-artifact> form: a custom command passes a
+			// built tool as a cmake -D arg (VTK's
+			// -DEXE_SQLITE3=bin/Debug/sqlitebin-9.4). The embedded path is
+			// lifted, keeping the `VAR=` prefix.
+			name:      "executable inside VAR= arg lifts",
 			in:        "echo --tool=bin/llvm-min-tblgen",
-			wantCmd:   "echo --tool=bin/llvm-min-tblgen",
+			wantCmd:   "echo --tool=$(location :llvm-min-tblgen)",
+			wantTools: []string{":llvm-min-tblgen"},
+		},
+		{
+			// A LIBRARY artifact embedded in an arg must NOT be lifted — it's
+			// not a runnable tool (a linker flag / data path), so the gate
+			// keys on execArtifacts.
+			name:      "library inside VAR= arg does not lift",
+			in:        "echo -DFOO=lib/libfoo.so",
+			wantCmd:   "echo -DFOO=lib/libfoo.so",
 			wantTools: nil,
 		},
 		{
@@ -65,10 +84,12 @@ func TestRewriteToolFromTarget(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m := artifacts
+			e := execArtifacts
 			if tc.name == "no map → passthrough" {
 				m = nil
+				e = nil
 			}
-			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m)
+			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m, e)
 			if gotCmd != tc.wantCmd {
 				t.Errorf("cmd:\n  in:   %q\n  got:  %q\n  want: %q", tc.in, gotCmd, tc.wantCmd)
 			}

@@ -485,6 +485,7 @@ func run(a cli.Args) error {
 			HostSourceRoot:                    a.SourceRoot,
 			RecoverSourceComments:             a.EmitSourceComments,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
+			EmitSharedLibraries:               a.EmitSharedLibraries,
 			BackedFeatures:                    backedFeatures,
 			HostPrefixDir:                     prefixAbs,
 			BuildDir:                          hostBuildOrReply,

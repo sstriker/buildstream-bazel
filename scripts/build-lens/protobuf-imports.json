@@ -1,0 +1,1016 @@
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "abseil",
+      "umbrella_label": "//absl_umbrella:absl",
+      "umbrella_include_roots": [
+        "/tmp/absl-install/include"
+      ],
+      "exports": [
+        {
+          "cmake_target": "absl::absl_check",
+          "bazel_label": "@abseil-cpp//absl/log:absl_check"
+        },
+        {
+          "cmake_target": "absl::absl_log",
+          "bazel_label": "@abseil-cpp//absl/log:absl_log"
+        },
+        {
+          "cmake_target": "absl::absl_vlog_is_on",
+          "bazel_label": "@abseil-cpp//absl/log:absl_vlog_is_on"
+        },
+        {
+          "cmake_target": "absl::algorithm",
+          "bazel_label": "@abseil-cpp//absl/algorithm:algorithm"
+        },
+        {
+          "cmake_target": "absl::algorithm_container",
+          "bazel_label": "@abseil-cpp//absl/algorithm:container"
+        },
+        {
+          "cmake_target": "absl::any",
+          "bazel_label": "@abseil-cpp//absl/types:any"
+        },
+        {
+          "cmake_target": "absl::any_invocable",
+          "bazel_label": "@abseil-cpp//absl/functional:any_invocable"
+        },
+        {
+          "cmake_target": "absl::atomic_hook",
+          "bazel_label": "@abseil-cpp//absl/base:atomic_hook"
+        },
+        {
+          "cmake_target": "absl::bad_any_cast",
+          "bazel_label": "@abseil-cpp//absl/types:bad_any_cast"
+        },
+        {
+          "cmake_target": "absl::bad_optional_access",
+          "bazel_label": "@abseil-cpp//absl/types:bad_optional_access"
+        },
+        {
+          "cmake_target": "absl::bad_variant_access",
+          "bazel_label": "@abseil-cpp//absl/types:bad_variant_access"
+        },
+        {
+          "cmake_target": "absl::base",
+          "bazel_label": "@abseil-cpp//absl/base:base",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_base.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::base_internal",
+          "bazel_label": "@abseil-cpp//absl/base:base_internal"
+        },
+        {
+          "cmake_target": "absl::bind_front",
+          "bazel_label": "@abseil-cpp//absl/functional:bind_front"
+        },
+        {
+          "cmake_target": "absl::bits",
+          "bazel_label": "@abseil-cpp//absl/numeric:bits"
+        },
+        {
+          "cmake_target": "absl::borrowed_fixup_buffer",
+          "bazel_label": "@abseil-cpp//absl/debugging:borrowed_fixup_buffer",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_borrowed_fixup_buffer.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::bounded_utf8_length_sequence",
+          "bazel_label": "@abseil-cpp//absl/debugging:bounded_utf8_length_sequence"
+        },
+        {
+          "cmake_target": "absl::btree",
+          "bazel_label": "@abseil-cpp//absl/container:btree"
+        },
+        {
+          "cmake_target": "absl::charset",
+          "bazel_label": "@abseil-cpp//absl/strings:charset"
+        },
+        {
+          "cmake_target": "absl::check",
+          "bazel_label": "@abseil-cpp//absl/log:check"
+        },
+        {
+          "cmake_target": "absl::chunked_queue",
+          "bazel_label": "@abseil-cpp//absl/container:chunked_queue"
+        },
+        {
+          "cmake_target": "absl::city",
+          "bazel_label": "@abseil-cpp//absl/hash:city",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_city.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::civil_time",
+          "bazel_label": "@abseil-cpp//absl/time/internal/cctz:civil_time",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_civil_time.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::cleanup",
+          "bazel_label": "@abseil-cpp//absl/cleanup:cleanup"
+        },
+        {
+          "cmake_target": "absl::cleanup_internal",
+          "bazel_label": "@abseil-cpp//absl/cleanup:cleanup_internal"
+        },
+        {
+          "cmake_target": "absl::common_policy_traits",
+          "bazel_label": "@abseil-cpp//absl/container:common_policy_traits"
+        },
+        {
+          "cmake_target": "absl::compare",
+          "bazel_label": "@abseil-cpp//absl/types:compare"
+        },
+        {
+          "cmake_target": "absl::compressed_tuple",
+          "bazel_label": "@abseil-cpp//absl/container:compressed_tuple"
+        },
+        {
+          "cmake_target": "absl::config",
+          "bazel_label": "@abseil-cpp//absl/base:config"
+        },
+        {
+          "cmake_target": "absl::container_common",
+          "bazel_label": "@abseil-cpp//absl/container:common"
+        },
+        {
+          "cmake_target": "absl::container_memory",
+          "bazel_label": "@abseil-cpp//absl/container:container_memory"
+        },
+        {
+          "cmake_target": "absl::cord",
+          "bazel_label": "@abseil-cpp//absl/strings:cord",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_cord.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::cord_internal",
+          "bazel_label": "@abseil-cpp//absl/strings:cord_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_cord_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::cordz_functions",
+          "bazel_label": "@abseil-cpp//absl/strings:cordz_functions",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_cordz_functions.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::cordz_handle",
+          "bazel_label": "@abseil-cpp//absl/strings:cordz_handle",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_cordz_handle.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::cordz_info",
+          "bazel_label": "@abseil-cpp//absl/strings:cordz_info",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_cordz_info.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::cordz_statistics",
+          "bazel_label": "@abseil-cpp//absl/strings:cordz_statistics"
+        },
+        {
+          "cmake_target": "absl::cordz_update_scope",
+          "bazel_label": "@abseil-cpp//absl/strings:cordz_update_scope"
+        },
+        {
+          "cmake_target": "absl::cordz_update_tracker",
+          "bazel_label": "@abseil-cpp//absl/strings:cordz_update_tracker"
+        },
+        {
+          "cmake_target": "absl::core_headers",
+          "bazel_label": "@abseil-cpp//absl/base:core_headers"
+        },
+        {
+          "cmake_target": "absl::crc32c",
+          "bazel_label": "@abseil-cpp//absl/crc:crc32c",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_crc32c.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::crc_cord_state",
+          "bazel_label": "@abseil-cpp//absl/crc:crc_cord_state",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_crc_cord_state.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::crc_cpu_detect",
+          "bazel_label": "@abseil-cpp//absl/crc:cpu_detect",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_crc_cpu_detect.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::crc_internal",
+          "bazel_label": "@abseil-cpp//absl/crc:crc_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_crc_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::debugging",
+          "bazel_label": "@abseil-cpp//absl/debugging:stacktrace"
+        },
+        {
+          "cmake_target": "absl::debugging_internal",
+          "bazel_label": "@abseil-cpp//absl/debugging:debugging_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_debugging_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::decode_rust_punycode",
+          "bazel_label": "@abseil-cpp//absl/debugging:decode_rust_punycode",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_decode_rust_punycode.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::demangle_internal",
+          "bazel_label": "@abseil-cpp//absl/debugging:demangle_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_demangle_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::demangle_rust",
+          "bazel_label": "@abseil-cpp//absl/debugging:demangle_rust",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_demangle_rust.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::die_if_null",
+          "bazel_label": "@abseil-cpp//absl/log:die_if_null",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_die_if_null.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::dynamic_annotations",
+          "bazel_label": "@abseil-cpp//absl/base:dynamic_annotations"
+        },
+        {
+          "cmake_target": "absl::endian",
+          "bazel_label": "@abseil-cpp//absl/base:endian"
+        },
+        {
+          "cmake_target": "absl::errno_saver",
+          "bazel_label": "@abseil-cpp//absl/base:errno_saver"
+        },
+        {
+          "cmake_target": "absl::examine_stack",
+          "bazel_label": "@abseil-cpp//absl/debugging:examine_stack",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_examine_stack.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::exponential_biased",
+          "bazel_label": "@abseil-cpp//absl/profiling:exponential_biased",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_exponential_biased.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::fast_type_id",
+          "bazel_label": "@abseil-cpp//absl/base:fast_type_id"
+        },
+        {
+          "cmake_target": "absl::fixed_array",
+          "bazel_label": "@abseil-cpp//absl/container:fixed_array"
+        },
+        {
+          "cmake_target": "absl::flags",
+          "bazel_label": "@abseil-cpp//absl/log:flags"
+        },
+        {
+          "cmake_target": "absl::flags_commandlineflag",
+          "bazel_label": "@abseil-cpp//absl/flags:commandlineflag",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_commandlineflag.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_commandlineflag_internal",
+          "bazel_label": "@abseil-cpp//absl/flags:commandlineflag_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_commandlineflag_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_config",
+          "bazel_label": "@abseil-cpp//absl/flags:config",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_config.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_internal",
+          "bazel_label": "@abseil-cpp//absl/flags:flag_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_marshalling",
+          "bazel_label": "@abseil-cpp//absl/flags:marshalling",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_marshalling.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_path_util",
+          "bazel_label": "@abseil-cpp//absl/flags:path_util"
+        },
+        {
+          "cmake_target": "absl::flags_private_handle_accessor",
+          "bazel_label": "@abseil-cpp//absl/flags:private_handle_accessor",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_private_handle_accessor.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_program_name",
+          "bazel_label": "@abseil-cpp//absl/flags:program_name",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_program_name.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flags_reflection",
+          "bazel_label": "@abseil-cpp//absl/flags:reflection",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_flags_reflection.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::flat_hash_map",
+          "bazel_label": "@abseil-cpp//absl/container:flat_hash_map"
+        },
+        {
+          "cmake_target": "absl::flat_hash_set",
+          "bazel_label": "@abseil-cpp//absl/container:flat_hash_set"
+        },
+        {
+          "cmake_target": "absl::function_ref",
+          "bazel_label": "@abseil-cpp//absl/functional:function_ref"
+        },
+        {
+          "cmake_target": "absl::graphcycles_internal",
+          "bazel_label": "@abseil-cpp//absl/synchronization:graphcycles_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_graphcycles_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::has_ostream_operator",
+          "bazel_label": "@abseil-cpp//absl/strings:has_ostream_operator"
+        },
+        {
+          "cmake_target": "absl::hash",
+          "bazel_label": "@abseil-cpp//absl/hash:hash",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_hash.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::hash_container_defaults",
+          "bazel_label": "@abseil-cpp//absl/container:hash_container_defaults"
+        },
+        {
+          "cmake_target": "absl::hash_function_defaults",
+          "bazel_label": "@abseil-cpp//absl/container:hash_function_defaults"
+        },
+        {
+          "cmake_target": "absl::hash_policy_traits",
+          "bazel_label": "@abseil-cpp//absl/container:hash_policy_traits"
+        },
+        {
+          "cmake_target": "absl::hashtable_control_bytes",
+          "bazel_label": "@abseil-cpp//absl/container:hashtable_control_bytes"
+        },
+        {
+          "cmake_target": "absl::hashtable_debug",
+          "bazel_label": "@abseil-cpp//absl/container:hashtable_debug"
+        },
+        {
+          "cmake_target": "absl::hashtable_debug_hooks",
+          "bazel_label": "@abseil-cpp//absl/container:hashtable_debug_hooks"
+        },
+        {
+          "cmake_target": "absl::hashtablez_sampler",
+          "bazel_label": "@abseil-cpp//absl/container:hashtablez_sampler",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_hashtablez_sampler.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::heterogeneous_lookup_testing",
+          "bazel_label": "@abseil-cpp//absl/container:heterogeneous_lookup_testing"
+        },
+        {
+          "cmake_target": "absl::inlined_vector",
+          "bazel_label": "@abseil-cpp//absl/container:inlined_vector"
+        },
+        {
+          "cmake_target": "absl::inlined_vector_internal",
+          "bazel_label": "@abseil-cpp//absl/container:inlined_vector_internal"
+        },
+        {
+          "cmake_target": "absl::int128",
+          "bazel_label": "@abseil-cpp//absl/numeric:int128",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_int128.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::iterator_traits_internal",
+          "bazel_label": "@abseil-cpp//absl/base:iterator_traits_internal"
+        },
+        {
+          "cmake_target": "absl::kernel_timeout_internal",
+          "bazel_label": "@abseil-cpp//absl/synchronization:kernel_timeout_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_kernel_timeout_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::layout",
+          "bazel_label": "@abseil-cpp//absl/container:layout"
+        },
+        {
+          "cmake_target": "absl::leak_check",
+          "bazel_label": "@abseil-cpp//absl/debugging:leak_check",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_leak_check.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::linked_hash_map",
+          "bazel_label": "@abseil-cpp//absl/container:linked_hash_map"
+        },
+        {
+          "cmake_target": "absl::linked_hash_set",
+          "bazel_label": "@abseil-cpp//absl/container:linked_hash_set"
+        },
+        {
+          "cmake_target": "absl::log",
+          "bazel_label": "@abseil-cpp//absl/log:log"
+        },
+        {
+          "cmake_target": "absl::log_entry",
+          "bazel_label": "@abseil-cpp//absl/log:log_entry",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_entry.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_globals",
+          "bazel_label": "@abseil-cpp//absl/log:globals",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_globals.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_initialize",
+          "bazel_label": "@abseil-cpp//absl/log:initialize",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_initialize.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_append_truncated",
+          "bazel_label": "@abseil-cpp//absl/log/internal:append_truncated"
+        },
+        {
+          "cmake_target": "absl::log_internal_check_impl",
+          "bazel_label": "@abseil-cpp//absl/log/internal:check_impl"
+        },
+        {
+          "cmake_target": "absl::log_internal_check_op",
+          "bazel_label": "@abseil-cpp//absl/log/internal:check_op",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_check_op.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_conditions",
+          "bazel_label": "@abseil-cpp//absl/log/internal:conditions",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_conditions.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_config",
+          "bazel_label": "@abseil-cpp//absl/log/internal:config"
+        },
+        {
+          "cmake_target": "absl::log_internal_container",
+          "bazel_label": "@abseil-cpp//absl/log/internal:container"
+        },
+        {
+          "cmake_target": "absl::log_internal_flags",
+          "bazel_label": "@abseil-cpp//absl/log/internal:flags"
+        },
+        {
+          "cmake_target": "absl::log_internal_fnmatch",
+          "bazel_label": "@abseil-cpp//absl/log/internal:fnmatch",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_fnmatch.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_format",
+          "bazel_label": "@abseil-cpp//absl/log/internal:format",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_format.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_globals",
+          "bazel_label": "@abseil-cpp//absl/log/internal:globals",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_globals.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_log_impl",
+          "bazel_label": "@abseil-cpp//absl/log/internal:log_impl"
+        },
+        {
+          "cmake_target": "absl::log_internal_log_sink_set",
+          "bazel_label": "@abseil-cpp//absl/log/internal:log_sink_set",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_log_sink_set.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_message",
+          "bazel_label": "@abseil-cpp//absl/log/internal:log_message",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_message.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_nullguard",
+          "bazel_label": "@abseil-cpp//absl/log/internal:nullguard",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_nullguard.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_nullstream",
+          "bazel_label": "@abseil-cpp//absl/log/internal:nullstream"
+        },
+        {
+          "cmake_target": "absl::log_internal_proto",
+          "bazel_label": "@abseil-cpp//absl/log/internal:proto",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_proto.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_strip",
+          "bazel_label": "@abseil-cpp//absl/log/internal:strip"
+        },
+        {
+          "cmake_target": "absl::log_internal_structured",
+          "bazel_label": "@abseil-cpp//absl/log/internal:structured"
+        },
+        {
+          "cmake_target": "absl::log_internal_structured_proto",
+          "bazel_label": "@abseil-cpp//absl/log/internal:structured_proto",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_internal_structured_proto.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_internal_voidify",
+          "bazel_label": "@abseil-cpp//absl/log/internal:voidify"
+        },
+        {
+          "cmake_target": "absl::log_severity",
+          "bazel_label": "@abseil-cpp//absl/base:log_severity",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_severity.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_sink",
+          "bazel_label": "@abseil-cpp//absl/log:log_sink",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_log_sink.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::log_sink_registry",
+          "bazel_label": "@abseil-cpp//absl/log:log_sink_registry"
+        },
+        {
+          "cmake_target": "absl::log_streamer",
+          "bazel_label": "@abseil-cpp//absl/log:log_streamer"
+        },
+        {
+          "cmake_target": "absl::log_structured",
+          "bazel_label": "@abseil-cpp//absl/log:structured"
+        },
+        {
+          "cmake_target": "absl::malloc_internal",
+          "bazel_label": "@abseil-cpp//absl/base:malloc_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_malloc_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::memory",
+          "bazel_label": "@abseil-cpp//absl/memory:memory"
+        },
+        {
+          "cmake_target": "absl::meta",
+          "bazel_label": "@abseil-cpp//absl/meta:type_traits"
+        },
+        {
+          "cmake_target": "absl::no_destructor",
+          "bazel_label": "@abseil-cpp//absl/base:no_destructor"
+        },
+        {
+          "cmake_target": "absl::node_hash_map",
+          "bazel_label": "@abseil-cpp//absl/container:node_hash_map"
+        },
+        {
+          "cmake_target": "absl::node_hash_set",
+          "bazel_label": "@abseil-cpp//absl/container:node_hash_set"
+        },
+        {
+          "cmake_target": "absl::node_slot_policy",
+          "bazel_label": "@abseil-cpp//absl/container:node_slot_policy"
+        },
+        {
+          "cmake_target": "absl::non_temporal_arm_intrinsics",
+          "bazel_label": "@abseil-cpp//absl/crc:non_temporal_arm_intrinsics"
+        },
+        {
+          "cmake_target": "absl::non_temporal_memcpy",
+          "bazel_label": "@abseil-cpp//absl/crc:non_temporal_memcpy"
+        },
+        {
+          "cmake_target": "absl::nullability",
+          "bazel_label": "@abseil-cpp//absl/base:nullability"
+        },
+        {
+          "cmake_target": "absl::nullability_traits_internal",
+          "bazel_label": "@abseil-cpp//absl/base:nullability_traits_internal"
+        },
+        {
+          "cmake_target": "absl::numeric",
+          "bazel_label": "@abseil-cpp//absl/numeric:int128"
+        },
+        {
+          "cmake_target": "absl::numeric_representation",
+          "bazel_label": "@abseil-cpp//absl/numeric:representation"
+        },
+        {
+          "cmake_target": "absl::optional",
+          "bazel_label": "@abseil-cpp//absl/types:optional"
+        },
+        {
+          "cmake_target": "absl::overload",
+          "bazel_label": "@abseil-cpp//absl/functional:overload"
+        },
+        {
+          "cmake_target": "absl::prefetch",
+          "bazel_label": "@abseil-cpp//absl/base:prefetch"
+        },
+        {
+          "cmake_target": "absl::pretty_function",
+          "bazel_label": "@abseil-cpp//absl/base:pretty_function"
+        },
+        {
+          "cmake_target": "absl::random_bit_gen_ref",
+          "bazel_label": "@abseil-cpp//absl/random:bit_gen_ref"
+        },
+        {
+          "cmake_target": "absl::random_distributions",
+          "bazel_label": "@abseil-cpp//absl/random:distributions",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_distributions.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_distribution_caller",
+          "bazel_label": "@abseil-cpp//absl/random/internal:distribution_caller"
+        },
+        {
+          "cmake_target": "absl::random_internal_entropy_pool",
+          "bazel_label": "@abseil-cpp//absl/random/internal:entropy_pool",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_entropy_pool.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_fast_uniform_bits",
+          "bazel_label": "@abseil-cpp//absl/random/internal:fast_uniform_bits"
+        },
+        {
+          "cmake_target": "absl::random_internal_fastmath",
+          "bazel_label": "@abseil-cpp//absl/random/internal:fastmath"
+        },
+        {
+          "cmake_target": "absl::random_internal_generate_real",
+          "bazel_label": "@abseil-cpp//absl/random/internal:generate_real"
+        },
+        {
+          "cmake_target": "absl::random_internal_iostream_state_saver",
+          "bazel_label": "@abseil-cpp//absl/random/internal:iostream_state_saver"
+        },
+        {
+          "cmake_target": "absl::random_internal_mock_helpers",
+          "bazel_label": "@abseil-cpp//absl/random/internal:mock_helpers"
+        },
+        {
+          "cmake_target": "absl::random_internal_nonsecure_base",
+          "bazel_label": "@abseil-cpp//absl/random/internal:nonsecure_base"
+        },
+        {
+          "cmake_target": "absl::random_internal_pcg_engine",
+          "bazel_label": "@abseil-cpp//absl/random/internal:pcg_engine"
+        },
+        {
+          "cmake_target": "absl::random_internal_platform",
+          "bazel_label": "@abseil-cpp//absl/random/internal:platform",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_platform.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_randen",
+          "bazel_label": "@abseil-cpp//absl/random/internal:randen",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_randen.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_randen_engine",
+          "bazel_label": "@abseil-cpp//absl/random/internal:randen_engine"
+        },
+        {
+          "cmake_target": "absl::random_internal_randen_hwaes",
+          "bazel_label": "@abseil-cpp//absl/random/internal:randen_hwaes",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_randen_hwaes.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_randen_hwaes_impl",
+          "bazel_label": "@abseil-cpp//absl/random/internal:randen_hwaes_impl",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_randen_hwaes_impl.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_randen_slow",
+          "bazel_label": "@abseil-cpp//absl/random/internal:randen_slow",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_randen_slow.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_salted_seed_seq",
+          "bazel_label": "@abseil-cpp//absl/random/internal:salted_seed_seq"
+        },
+        {
+          "cmake_target": "absl::random_internal_seed_material",
+          "bazel_label": "@abseil-cpp//absl/random/internal:seed_material",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_internal_seed_material.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_internal_traits",
+          "bazel_label": "@abseil-cpp//absl/random/internal:traits"
+        },
+        {
+          "cmake_target": "absl::random_internal_uniform_helper",
+          "bazel_label": "@abseil-cpp//absl/random/internal:uniform_helper"
+        },
+        {
+          "cmake_target": "absl::random_internal_wide_multiply",
+          "bazel_label": "@abseil-cpp//absl/random/internal:wide_multiply"
+        },
+        {
+          "cmake_target": "absl::random_random",
+          "bazel_label": "@abseil-cpp//absl/random:random"
+        },
+        {
+          "cmake_target": "absl::random_seed_gen_exception",
+          "bazel_label": "@abseil-cpp//absl/random:seed_gen_exception",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_seed_gen_exception.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::random_seed_sequences",
+          "bazel_label": "@abseil-cpp//absl/random:seed_sequences",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_random_seed_sequences.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::raw_hash_map",
+          "bazel_label": "@abseil-cpp//absl/container:raw_hash_map"
+        },
+        {
+          "cmake_target": "absl::raw_hash_set",
+          "bazel_label": "@abseil-cpp//absl/container:raw_hash_set",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_raw_hash_set.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::raw_hash_set_resize_impl",
+          "bazel_label": "@abseil-cpp//absl/container:raw_hash_set_resize_impl"
+        },
+        {
+          "cmake_target": "absl::raw_logging_internal",
+          "bazel_label": "@abseil-cpp//absl/base:raw_logging_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_raw_logging_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::sample_recorder",
+          "bazel_label": "@abseil-cpp//absl/profiling:sample_recorder"
+        },
+        {
+          "cmake_target": "absl::span",
+          "bazel_label": "@abseil-cpp//absl/types:span"
+        },
+        {
+          "cmake_target": "absl::spinlock_wait",
+          "bazel_label": "@abseil-cpp//absl/base:spinlock_wait",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_spinlock_wait.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::stacktrace",
+          "bazel_label": "@abseil-cpp//absl/debugging:stacktrace",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_stacktrace.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::status",
+          "bazel_label": "@abseil-cpp//absl/status:status",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_status.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::statusor",
+          "bazel_label": "@abseil-cpp//absl/status:statusor",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_statusor.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::str_format",
+          "bazel_label": "@abseil-cpp//absl/strings:str_format"
+        },
+        {
+          "cmake_target": "absl::str_format_internal",
+          "bazel_label": "@abseil-cpp//absl/strings:str_format_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_str_format_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::strerror",
+          "bazel_label": "@abseil-cpp//absl/base:strerror",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_strerror.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::string_view",
+          "bazel_label": "@abseil-cpp//absl/strings:string_view"
+        },
+        {
+          "cmake_target": "absl::strings",
+          "bazel_label": "@abseil-cpp//absl/strings:strings",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_strings.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::strings_append_and_overwrite",
+          "bazel_label": "@abseil-cpp//absl/strings:append_and_overwrite"
+        },
+        {
+          "cmake_target": "absl::strings_internal",
+          "bazel_label": "@abseil-cpp//absl/strings:internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_strings_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::strings_resize_and_overwrite",
+          "bazel_label": "@abseil-cpp//absl/strings:resize_and_overwrite"
+        },
+        {
+          "cmake_target": "absl::symbolize",
+          "bazel_label": "@abseil-cpp//absl/debugging:symbolize",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_symbolize.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::synchronization",
+          "bazel_label": "@abseil-cpp//absl/synchronization:synchronization",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_synchronization.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::throw_delegate",
+          "bazel_label": "@abseil-cpp//absl/base:throw_delegate",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_throw_delegate.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::time",
+          "bazel_label": "@abseil-cpp//absl/time:time",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_time.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::time_zone",
+          "bazel_label": "@abseil-cpp//absl/time/internal/cctz:time_zone",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_time_zone.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::tracing_internal",
+          "bazel_label": "@abseil-cpp//absl/base:tracing_internal",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_tracing_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::type_traits",
+          "bazel_label": "@abseil-cpp//absl/meta:type_traits"
+        },
+        {
+          "cmake_target": "absl::utf8_for_code_point",
+          "bazel_label": "@abseil-cpp//absl/debugging:utf8_for_code_point",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_utf8_for_code_point.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::utility",
+          "bazel_label": "@abseil-cpp//absl/utility:utility"
+        },
+        {
+          "cmake_target": "absl::variant",
+          "bazel_label": "@abseil-cpp//absl/types:variant"
+        },
+        {
+          "cmake_target": "absl::vlog_config_internal",
+          "bazel_label": "@abseil-cpp//absl/log/internal:vlog_config",
+          "link_paths": [
+            "/tmp/absl-install/lib/libabsl_vlog_config_internal.a"
+          ]
+        },
+        {
+          "cmake_target": "absl::vlog_is_on",
+          "bazel_label": "@abseil-cpp//absl/log:vlog_is_on"
+        },
+        {
+          "cmake_target": "absl::weakly_mixed_integer",
+          "bazel_label": "@abseil-cpp//absl/hash:weakly_mixed_integer"
+        }
+      ]
+    }
+  ]
+}

@@ -132,7 +132,44 @@ type standaloneTraceContext struct {
 // this pass drops — keyed by the edge's first output (or category when it has
 // none), valued by category (install / regen / cpack / dashboard / ide-stub)
 // — so the caller can surface an audit breadcrumb instead of dropping silently.
-func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string) []ir.Target {
+// customTargetStampIsNonAll reports whether any of a genrule's outputs is
+// the stamp file of an add_custom_target that was declared WITHOUT `ALL`.
+// cmake places a custom target's stamp at `<dir>/CMakeFiles/<name>` (Ninja
+// Multi-Config appends a `-<config>` suffix). The check is gated on the
+// derived name being a KNOWN custom target in allByName, so an ordinary
+// genrule that merely happens to write under a CMakeFiles/ path is never
+// mis-tagged. Returns false on an empty map (no trace).
+func customTargetStampIsNonAll(outs []string, allByName map[string]bool) bool {
+	if len(allByName) == 0 {
+		return false
+	}
+	for _, o := range outs {
+		idx := strings.LastIndex(o, "CMakeFiles/")
+		if idx < 0 {
+			continue
+		}
+		base := o[idx+len("CMakeFiles/"):]
+		if strings.Contains(base, "/") {
+			continue // a deeper file under CMakeFiles/, not a target stamp
+		}
+		if all, ok := allByName[base]; ok {
+			if !all {
+				return true
+			}
+			continue
+		}
+		for _, cfg := range []string{"Debug", "Release", "RelWithDebInfo", "MinSizeRel"} {
+			if n, found := strings.CutSuffix(base, "-"+cfg); found {
+				if all, ok := allByName[n]; ok && !all {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
@@ -155,6 +192,19 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 	// were lifted to $(location) labels. nil when the trace has no
 	// genex-bearing commands (the audit tag is then never added).
 	genexIndex := buildOutputToCustomCommandGenex(traceCtx.CustomCommands)
+	// add_custom_target name → ALL flag. A custom target declared
+	// WITHOUT `ALL` is not part of cmake's default build (you invoke it
+	// explicitly, `make <name>`); the faithful Bazel analog is a
+	// `manual`-tagged rule, excluded from `bazel build //...` wildcard
+	// expansion. This keeps phony run-targets — curl's `test-ci` /
+	// `test-am` runtests.pl harness wrappers, whose cmds carry shell
+	// `$TFLAGS` and produce no real file — out of the default build
+	// instead of breaking its analysis. Empty when the trace has no
+	// add_custom_target records (offline-replay-no-trace path).
+	customTargetAll := map[string]bool{}
+	for _, ct := range traceCtx.CustomTargets {
+		customTargetAll[ct.Name] = ct.All
+	}
 
 	var out []ir.Target
 	seenNames := map[string]int{}
@@ -284,32 +334,67 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
+		// A make_directory-only custom command (`cmake -E make_directory <dir>`
+		// / `mkdir -p <dir>`) has no Bazel build-graph analogue — the same
+		// reasoning as the cmake -E make_directory execute_process no-op
+		// (noopExecuteProcessOps): a Bazel action creates its output's parents
+		// implicitly under $(RULEDIR), and the files later written into the dir
+		// are recovered by their own genrules. Worse, cmake's make_directory
+		// custom command declares a STAMP output (CMakeFiles/<name>-<cfg>) that
+		// the mkdir cmd never writes, so a genrule fails "declared output was
+		// not created" (LLVM's OCaml-bindings ocaml_make_directory). Drop it.
+		if isMakeDirOnlyCmd(cmd) {
+			if filteredInternal != nil {
+				key := "make_directory"
+				if len(outs) > 0 {
+					key = outs[0]
+				}
+				filteredInternal[key] = "make_directory"
+			}
+			continue
+		}
+
+		// A standalone `cmake -P <script>` custom command can't run under Bazel
+		// (no cmake on the executor), so emitting it as a raw genrule produces
+		// an unrunnable rule (LLVM's VCSRevision.h: `cmake -P
+		// GenerateVersionFromVCS.cmake`). The ninja-genrule path
+		// (recoverGenrule) already routes cmake -P through the bake/lift logic;
+		// mirror that here so the standalone path bakes too. Gated on
+		// cc.CMakeScriptBake (opt-in --cmake-script-bake) — off by default, so
+		// every project that doesn't opt in keeps the exact prior behavior.
+		// bakeCmakeScriptGenrule runs the script at convert time and appends the
+		// captured-bytes write_file(s) to cc.Genrules + cc.OutToGenrule; move
+		// those into this pass's return slice (cc.Genrules was already merged
+		// into pkg.Targets before this pass runs) and skip the raw emit.
+		if cc != nil && cc.CMakeScriptBake && usesCmakeScriptMode(cmd) {
+			n := len(cc.Genrules)
+			if _, _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); ok {
+				out = append(out, cc.Genrules[n:]...)
+				cc.Genrules = cc.Genrules[:n]
+				continue
+			}
+			// Bake declined (e.g. no cmake on PATH, script produced no output):
+			// fall through to the existing raw-genrule emit / refusal path.
+		}
+
 		// In-place rewrite remediation: a custom command that reads a
 		// source-tree file and writes the SAME relative path into the
-		// build tree (LLVM's Remarks.exports shape) produces a genrule
-		// with that path as BOTH an srcs entry and an outs entry — which
-		// Bazel rejects ("file X as both an input and an output"). Detect
-		// the collision (an output whose source-tree form is also a src)
-		// and rename the colliding OUTPUT to a non-shadowing sibling. The
-		// rename is applied to the build-output occurrence in the RAW cmd
-		// (still carrying its absolute buildDir prefix, so it stays
-		// distinct from the source-tree input occurrence) BEFORE
-		// rewriteGenruleCmd strips prefixes — that's what disambiguates
-		// input (→ source token) from output (→ renamed token), so the
-		// later anchorGenruleOutputsToRuledir anchors only the output.
+		// build tree (LLVM's Remarks.exports shape — `> ${target}.exports`
+		// where the source symbol file is also named `${target}.exports`)
+		// produces a genrule with that path as BOTH an srcs entry and an
+		// outs entry, which Bazel rejects ("file X as both an input and an
+		// output"). Detect the collision (an output whose source-tree form
+		// is also a src) and rename the colliding OUTPUT to a non-shadowing
+		// `.gen` sibling. The cmd-side rename is deferred until AFTER
+		// anchorGenruleOutputsToRuledir (below): cmake emits the output as
+		// a BARE basename redirect (`> ${native_export_file}`, run in
+		// CMAKE_CURRENT_BINARY_DIR), so the build-output token never carries
+		// a `<buildDir>/` prefix to match on the raw cmd — but every output
+		// form (bare-basename redirect, buildDir-prefixed) converges on the
+		// `$(RULEDIR)/<out>` form once anchored, so renaming there catches
+		// it uniformly while leaving the (source-tree, non-$(RULEDIR)) input
+		// occurrence untouched.
 		inPlaceRenames := detectInPlaceOutputRenames(outs, srcs, umbrellaPrefix)
-		if len(inPlaceRenames) > 0 {
-			cmd = renameRawCmdBuildOutputs(cmd, buildDir, inPlaceRenames)
-			renamed := make([]string, len(outs))
-			for i, o := range outs {
-				if r, ok := inPlaceRenames[o]; ok {
-					renamed[i] = r
-				} else {
-					renamed[i] = o
-				}
-			}
-			outs = renamed
-		}
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
@@ -345,8 +430,12 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// anchor pass strips buildDir prefixes from the cmd so
 		// the bare `bin/<tool>` form survives intact for the
 		// lookup.
-		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix)
-		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName)
+		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
+		var execArtifacts map[string]bool
+		if cc != nil {
+			execArtifacts = cc.ExecArtifacts
+		}
+		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts)
 		// The tool-from-target lift hoisted the generator binary into
 		// `tools` and rewrote the cmd to $(location :tool); drop the
 		// now-redundant build artifact (e.g. the multi-config
@@ -369,7 +458,29 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		if genexTag := customCommandGenexTag(outs, genexIndex, tools, traceCtx.AliasToActual); genexTag != "" {
 			tags = append(tags, genexTag)
 		}
+		// A non-ALL add_custom_target's stamp → `manual` (not in the
+		// default build; see customTargetAll above).
+		if customTargetStampIsNonAll(outs, customTargetAll) {
+			tags = append(tags, "manual")
+		}
 		if len(inPlaceRenames) > 0 {
+			// Deferred in-place-output rename (see detectInPlaceOutputRenames
+			// above): every output occurrence is now in its anchored
+			// $(RULEDIR)/<out> form, so rewrite the colliding output to its
+			// `.gen` sibling in BOTH the cmd and the outs declaration, in
+			// lockstep. The source-tree input occurrence (not
+			// $(RULEDIR)-prefixed) is left alone, so the genrule reads the
+			// source and writes the renamed, non-shadowing output.
+			rewrittenCmd = renameAnchoredGenruleOutputs(rewrittenCmd, inPlaceRenames)
+			renamed := make([]string, len(outs))
+			for i, o := range outs {
+				if r, ok := inPlaceRenames[o]; ok {
+					renamed[i] = r
+				} else {
+					renamed[i] = o
+				}
+			}
+			outs = renamed
 			tags = append(tags, "cmake-codegen-genrule-inplace-rewrite")
 		}
 		out = append(out, ir.Target{
@@ -471,30 +582,31 @@ func inPlaceRenamedOutput(o string) string {
 	return o + ".gen"
 }
 
-// renameRawCmdBuildOutputs rewrites each `<buildDir>/<o>` occurrence in
-// the RAW (pre-strip) cmd to `<buildDir>/<renamed>`, keeping the absolute
-// buildDir prefix so rewriteGenruleCmd's later prefix-strip yields the
-// renamed token while the source-tree input occurrence (a `<cmakeSrc>/…`
-// path) is untouched — which is what separates the input and output
-// tokens that would otherwise collapse to the same string. Only the
-// build-output occurrence is renamed; the source read stays as-is.
-func renameRawCmdBuildOutputs(cmd, buildDir string, renames map[string]string) string {
-	if cmd == "" || buildDir == "" || len(renames) == 0 {
+// renameAnchoredGenruleOutputs rewrites each `$(RULEDIR)/<o>` occurrence in
+// the ALREADY-ANCHORED cmd to `$(RULEDIR)/<renamed>`, renaming an in-place-
+// rewrite output to its non-shadowing `.gen` sibling in lockstep with the
+// outs declaration. It runs after anchorGenruleOutputsToRuledir so it keys on
+// the single canonical `$(RULEDIR)/<out>` form every output shape converges
+// on — the cmake bare-basename redirect (`> ${native_export_file}`, cd'd into
+// the binary dir) and the buildDir-prefixed form alike. The source-tree input
+// occurrence is NOT `$(RULEDIR)`-prefixed (it carries the element package
+// path, e.g. `elements/llvm/tools/remarks-shlib/Remarks.exports`), so it is
+// left untouched — the genrule reads the source and writes the renamed output.
+//
+// Pairs are applied longest-search-first in a single left-to-right pass so
+// that overlapping outputs (`$(RULEDIR)/x` vs `$(RULEDIR)/x.inc`) and the
+// search-is-a-prefix-of-its-replacement case (`$(RULEDIR)/x` →
+// `$(RULEDIR)/x.gen`) can't re-match or mangle one another, independent of
+// Go's randomized map iteration order.
+func renameAnchoredGenruleOutputs(cmd string, renames map[string]string) string {
+	if cmd == "" || len(renames) == 0 {
 		return cmd
 	}
-	// Build (search → replacement) pairs and apply them in a single
-	// left-to-right pass, trying the LONGEST search first at each position.
-	// This is deterministic regardless of Go's randomized map iteration AND
-	// correct under overlap: when one output path is a textual prefix of
-	// another (`gen/x` vs `gen/x.inc`) the longer match wins, and advancing
-	// past each emitted replacement means neither overlapping keys nor the
-	// search-is-a-prefix-of-its-own-replacement case (`<bd>/x` →
-	// `<bd>/x.gen`) can re-match. A naive `strings.ReplaceAll` per key would
-	// be both order-dependent and self-re-matching.
+	const rp = "$(RULEDIR)/"
 	type repl struct{ search, with string }
 	pairs := make([]repl, 0, len(renames))
 	for o, renamed := range renames {
-		pairs = append(pairs, repl{buildDir + "/" + o, buildDir + "/" + renamed})
+		pairs = append(pairs, repl{rp + o, rp + renamed})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].search) > len(pairs[j].search) })
 	var b strings.Builder
@@ -514,6 +626,24 @@ func renameRawCmdBuildOutputs(cmd, buildDir string, renames map[string]string) s
 		}
 	}
 	return b.String()
+}
+
+// containsBoundaryToken reports whether tok occurs in cmd at a path-token
+// boundary — its left edge is the string start or a non-'/' byte (so a
+// substring sitting in the middle of a longer path, including an already
+// `$(RULEDIR)/`-anchored occurrence, doesn't count). Mirrors the left-boundary
+// guard the anchoring loop uses, so the suffix-fallback only fires when the
+// token is a real standalone reference.
+func containsBoundaryToken(cmd, tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for i := 0; i+len(tok) <= len(cmd); i++ {
+		if cmd[i:i+len(tok)] == tok && (i == 0 || cmd[i-1] != '/') {
+			return true
+		}
+	}
+	return false
 }
 
 func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
@@ -540,6 +670,28 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 			tokenSet[d] = true
 		}
 	}
+	// Fallback for cd-stripped WORKING_DIRECTORY-relative outputs: cmake
+	// records an add_custom_command OUTPUT relative to CMAKE_CURRENT_BINARY_DIR
+	// and wraps the recipe in `cd <subdir> && …`; rewriteGenruleCmd strips that
+	// cd, leaving a positional output arg in its bare workdir-relative form
+	// (curl's `perl mk-lib1521.pl < curl.h lib1521.c`, where the declared out is
+	// the build-dir-relative `tests/libtest/lib1521.c`). When an output's full
+	// form isn't in the cmd, anchor the LONGEST path-suffix of it that IS — the
+	// workdir-relative form — so it still resolves; split re-relativizes the
+	// $(RULEDIR)-relative result on the genrule's package move. No-op (no churn)
+	// when the full form is present, which is the standalone path's usual shape.
+	for _, o := range outs {
+		if o == "" || containsBoundaryToken(cmd, o) {
+			continue
+		}
+		for s := o; strings.Contains(s, "/"); {
+			s = s[strings.Index(s, "/")+1:]
+			if containsBoundaryToken(cmd, s) {
+				tokenSet[s] = true
+				break
+			}
+		}
+	}
 	sorted := make([]string, 0, len(tokenSet))
 	for tkn := range tokenSet {
 		sorted = append(sorted, tkn)
@@ -553,16 +705,23 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 		if o == "" {
 			continue
 		}
-		// Anchor each occurrence of o that isn't already prefixed by rp.
-		// A per-occurrence guard (vs a whole-cmd strings.Contains check)
-		// avoids a false "already anchored" skip when one out is a prefix
-		// of another — rp+"foo" is a substring of rp+"foo.d", so the old
-		// check skipped anchoring a still-literal "foo" — while the rp guard
-		// still blocks double-anchoring. Occurrences where o is a prefix of
-		// a longer path (e.g. a "<o>.d" depfile) stay anchored, as before.
+		// Anchor each occurrence of o that begins a path token. The guard
+		// is "the preceding byte is not '/'": an occurrence preceded by '/'
+		// sits in the MIDDLE of a longer path and must not be anchored —
+		// either it's already `$(RULEDIR)/<o>` (rp ends in '/', so this
+		// subsumes the old double-anchor guard), or it's a source input the
+		// strip already re-anchored to its exec-root form
+		// (`<bazelPackagePath>/…/<outdir>/<file>` — e.g. a tablegen `.td`
+		// living in the same subdir as a generated `.inc` output, where the
+		// output's parent-dir token is a substring of the source path).
+		// Injecting `$(RULEDIR)/` there would corrupt the source reference.
+		// Occurrences at a real token boundary stay anchored, including the
+		// `<o>.d` depfile (a right-extension of o, whose left edge is still a
+		// boundary) and joined-flag forms like `-I<outdir>` (preceded by 'I',
+		// not '/').
 		var b strings.Builder
 		for i := 0; i < len(cmd); {
-			if strings.HasPrefix(cmd[i:], o) && !(i >= len(rp) && cmd[i-len(rp):i] == rp) {
+			if strings.HasPrefix(cmd[i:], o) && (i == 0 || cmd[i-1] != '/') {
 				b.WriteString(rp)
 				b.WriteString(o)
 				i += len(o)
@@ -611,7 +770,13 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 // one of their own `-I` roots count as include-resolving codegen. A plain
 // genrule that passes `-I` for a compiler invocation doesn't match — its
 // input isn't resolved via the include path — so it's left untouched.
-func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
+//
+// bazelPackagePath is the element's exec-root landing package: source `-I`
+// roots in the rewritten cmd carry it as a prefix (rewriteGenruleCmd anchors
+// them to exec-root form), but the genrule's srcs and the on-disk source tree
+// are labelRoot-relative — so the prefix is stripped before resolving each
+// include against labelRoot. Empty bazelPackagePath leaves the roots as-is.
+func recordCodegenIncludeClosure(targets []ir.Target, labelRoot, bazelPackagePath string) {
 	if labelRoot == "" {
 		return
 	}
@@ -620,7 +785,7 @@ func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 		if t.Kind != ir.KindGenrule || t.GenruleCmd == "" {
 			continue
 		}
-		roots := genruleIncludeRoots(t.GenruleCmd)
+		roots := stripPackagePrefixFromRoots(genruleIncludeRoots(t.GenruleCmd), bazelPackagePath)
 		if len(roots) == 0 {
 			continue
 		}
@@ -646,6 +811,37 @@ func recordCodegenIncludeClosure(targets []ir.Target, labelRoot string) {
 		sort.Strings(add)
 		t.Srcs = append(t.Srcs, add...)
 	}
+}
+
+// stripPackagePrefixFromRoots returns roots with a leading
+// "<bazelPackagePath>/" removed (and the bare package itself mapped to
+// "."), so exec-root-anchored source `-I` roots resolve against the
+// labelRoot-relative source tree on disk. Build-dir roots ($(RULEDIR)/…)
+// and roots that don't carry the prefix pass through unchanged; the result
+// is de-duplicated so a source root that collapses onto an existing
+// build-dir root doesn't double the work. Empty bazelPackagePath is a
+// pass-through.
+func stripPackagePrefixFromRoots(roots []string, bazelPackagePath string) []string {
+	if bazelPackagePath == "" || len(roots) == 0 {
+		return roots
+	}
+	pref := bazelPackagePath + "/"
+	seen := make(map[string]bool, len(roots))
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		switch {
+		case r == bazelPackagePath:
+			r = "."
+		case strings.HasPrefix(r, pref):
+			r = r[len(pref):]
+		}
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 // tdIncludeClosure returns the set of labelRoot-relative source files
@@ -1274,6 +1470,47 @@ func isCreateSymlinkCmd(cmd string) bool {
 // copy source was never staged and the genrule can't run.
 func isCopyCmd(cmd string) bool {
 	return strings.Contains(cmd, "-E copy")
+}
+
+// isMakeDirOnlyCmd reports whether a recovered ninja CUSTOM_COMMAND is purely a
+// directory creation — `cmake -E make_directory <dir>` or a raw `mkdir [-p]
+// <dir>` — with no other command chained. Such a command has no Bazel
+// build-graph analogue (a Bazel action creates its output's parents implicitly
+// under $(RULEDIR); files written into the dir are recovered by their own
+// genrules), and cmake's make_directory custom command declares a stamp output
+// the mkdir never writes, so emitting a genrule fails "declared output was not
+// created". Matched on the raw ninja cmd (the `-E make_directory` token is
+// stable before rewriteGenruleCmd normalizes it to `mkdir -p`). A chained
+// command (`&&` / `;` / pipe) does real work beyond the mkdir and is NOT
+// matched, so only a pure dir-create is dropped.
+func isMakeDirOnlyCmd(cmd string) bool {
+	c := strings.TrimSpace(cmd)
+	// Strip a leading `cd <abs> && ` preamble (cmake-Ninja's per-target
+	// build-subdir cd, present on the raw cmd before rewriteGenruleCmd drops
+	// it). Without this the && guard below would reject every cd-prefixed
+	// make_directory (LLVM's ocaml_make_directory).
+	if strings.HasPrefix(c, "cd ") {
+		if i := strings.Index(c, " && "); i > 0 {
+			c = strings.TrimSpace(c[i+4:])
+		}
+	}
+	if c == "" || strings.ContainsAny(c, ";|") {
+		return false
+	}
+	// Every &&-joined segment must be a pure make_directory / mkdir — a custom
+	// command that ONLY creates directories (cmake sometimes chains several).
+	// Any other segment means real work, so don't drop.
+	for _, seg := range strings.Split(c, " && ") {
+		seg = strings.TrimSpace(seg)
+		if strings.Contains(seg, "-E make_directory") {
+			continue
+		}
+		if fields := strings.Fields(seg); len(fields) > 0 && filepath.Base(fields[0]) == "mkdir" {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // cmakeInternalCmdKind reports the CATEGORY of cmake-internal command a

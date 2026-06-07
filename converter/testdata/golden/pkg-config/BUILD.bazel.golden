@@ -10,12 +10,10 @@ cc_library(
     srcs = ["src/pcuser.c"],
     hdrs = ["include/pcuser.h"],
     copts = ["-O3"],  # keep
-    defines = [
-        "NDEBUG",
-        "pcuser_EXPORTS",
-    ],  # keep
+    defines = ["NDEBUG"],  # keep
     features = ["pic"],
     includes = ["include"],  # keep
+    local_defines = ["pcuser_EXPORTS"],
     deps = ["//elements/zlib"],
 )
 

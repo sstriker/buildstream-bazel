@@ -267,6 +267,23 @@ type splitPlan struct {
 	// codegen sources (driver/<n>/CMakeFiles/<routine>.c, written by write_file)
 	// it rolls into the root include-root header lib.
 	genOuts map[string]bool
+
+	// genOutProducer maps a generated output path (genrule out / write_file out)
+	// to the NAME of the rule that produces it, so a cross-package consumer of
+	// that output can publicize the producer (see publicize).
+	genOutProducer map[string]string
+
+	// publicize is the set of rule names whose visibility must be forced to
+	// public because a generated output of theirs is referenced directly (in
+	// srcs) by a consumer in a DIFFERENT package. A genrule's outputs inherit
+	// the genrule's visibility, so a private producer (the converter's default
+	// for standalone custom commands) makes its output unreachable from another
+	// package — e.g. curl's `tool_hugehelp.c` genrule in //src consumes the
+	// `docs/cmdline-opts/curl.txt` output of a genrule in the root package.
+	// The generated-HEADER (.inc) path doesn't need this: it's consumed via a
+	// same-package `generated_includes` wrapper (itself public), not by a direct
+	// cross-package output reference.
+	publicize map[string]bool
 }
 
 // deepestPkg returns the longest sub-package directory that owns path p
@@ -291,6 +308,23 @@ func (p *splitPlan) targetDir(name string) string {
 		return d
 	}
 	return ""
+}
+
+// landingDir returns the Bazel package dir a target is placed in by the emit
+// loop: its declaring dir, overridden (local regime) to the package owning its
+// primary generated output so the out is package-local. Mirrors the dir
+// computation in EmitSplit's partition loop; used by the cross-package
+// gen-output publicize pre-pass.
+func (p *splitPlan) landingDir(t ir.Target, local bool) string {
+	dir := p.targetDir(t.Name)
+	if local {
+		if out := primaryGeneratedOutput(t); out != "" {
+			if od := p.deepestPkg(out); od != "" {
+				dir = od
+			}
+		}
+	}
+	return dir
 }
 
 // headerLibTarget builds the synthesized header cc_library for an
@@ -668,10 +702,12 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 // planSplit computes the split layout from a lowered package.
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
-		sub:        map[string]string{},
-		headerLibs: map[string]string{},
-		headersIn:  map[string][]string{},
-		genOuts:    map[string]bool{},
+		sub:            map[string]string{},
+		headerLibs:     map[string]string{},
+		headersIn:      map[string][]string{},
+		genOuts:        map[string]bool{},
+		genOutProducer: map[string]string{},
+		publicize:      map[string]bool{},
 	}
 	for k, v := range pkg.SubPackages {
 		p.sub[k] = v
@@ -683,12 +719,13 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	for _, t := range pkg.Targets {
 		for _, o := range t.GenruleOuts {
 			p.genOuts[o] = true
+			p.genOutProducer[o] = t.Name
 		}
 		if t.WriteFileOut != "" {
 			p.genOuts[t.WriteFileOut] = true
+			p.genOutProducer[t.WriteFileOut] = t.Name
 		}
 	}
-
 	// Collect every include-root dir and the union of every target's
 	// headers so header-library synthesis can glob the right files.
 	incRoots := map[string]struct{}{}
@@ -706,6 +743,27 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 				continue
 			}
 			incRoots[normDir(inc)] = struct{}{}
+		}
+		// PRIVATE target_include_directories ride in Copts as element-relative
+		// `-I<dir>`/`-isystem<dir>`. A PRIVATE-only dir (no target lists it as a
+		// public include) gets no header lib otherwise, so its headers never
+		// stage and a bare `#include` fails despite the -I (SDL's
+		// `src`→SDL_internal.h, mbedtls's `tests/include`→test/ssl_helpers.h).
+		// Treat element-relative -I copt dirs as include roots so a header lib
+		// synthesizes for them too (its hdrs are now populated — lower added the
+		// PRIVATE dirs to its discoverHeaders walk); rewriteTarget then wires the
+		// lib as a private header dep and drops the bare -I. Absolute (system)
+		// and genex dirs are skipped — no in-tree headers to stage.
+		for _, c := range t.Copts {
+			dir, ok := includeDirFromCopt(c)
+			if !ok {
+				continue
+			}
+			n := normDir(dir)
+			if n == "" || strings.HasPrefix(n, "/") || strings.Contains(n, "$<") {
+				continue
+			}
+			incRoots[n] = struct{}{}
 		}
 		for _, h := range t.Hdrs {
 			allHdrs[h] = struct{}{}
@@ -768,6 +826,56 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		}
 		return p.pkgs[i] < p.pkgs[j]
 	})
+
+	// Publicize any producer whose generated output is referenced directly (in
+	// srcs) by a consumer landing in a DIFFERENT package — the producer's
+	// private default would make that output unreachable cross-package (Bazel
+	// "target X is not visible from Y", e.g. curl's `tool_hugehelp.c` genrule in
+	// //src consuming the `docs/cmdline-opts/curl.txt` output of a root-package
+	// genrule). Needs p.pkgs (deepestPkg / landingDir), hence after the pkgSet
+	// build. Computed before the emit loop so a producer processed before its
+	// consumer still gets the bump.
+	publicizeIfCrossPkgGen := func(path, consumerDir, selfName string) {
+		prod, ok := p.genOutProducer[path]
+		if !ok || prod == selfName {
+			return
+		}
+		if p.deepestPkg(path) != consumerDir {
+			p.publicize[prod] = true
+		}
+	}
+	for _, t := range pkg.Targets {
+		consumerDir := p.landingDir(t, local)
+		for _, s := range t.Srcs {
+			publicizeIfCrossPkgGen(s, consumerDir, t.Name)
+		}
+		// hdrs/textual_hdrs that are a GENERATED output owned by another package
+		// are referenced by a direct cross-package file label too (rewriteTarget),
+		// so the producer needs publicizing just like a cross-package src — e.g. a
+		// cc_library that lists a sibling-package tablegen .inc directly in hdrs.
+		for _, h := range t.Hdrs {
+			publicizeIfCrossPkgGen(h, consumerDir, t.Name)
+		}
+		for _, h := range t.TextualHdrs {
+			publicizeIfCrossPkgGen(h, consumerDir, t.Name)
+		}
+	}
+	// Synthesized include-root header libs (headerLibTarget) aren't in
+	// pkg.Targets but reference their include-root's headers, cross-package-
+	// labelling any header owned by a deeper package. When such a header is a
+	// GENERATED output (VTK's KWSys aggregates vtksys's generated kwsys headers —
+	// Base64.h, Encoding.h, …), the lib lands in the include-root package while
+	// the producing genrule lives in the deeper package; publicize the producer
+	// so the cross-package hdr label resolves. (Compiled-source genOuts are
+	// dropped by headerLibTarget, so only header outputs matter here.)
+	for inc, hs := range p.headersIn {
+		for _, h := range hs {
+			if p.genOuts[h] && isCompiledSourceExt(h) {
+				continue
+			}
+			publicizeIfCrossPkgGen(h, inc, "")
+		}
+	}
 
 	// Root-walk header-lib synthesis (see splitPlan.rootHdrLibs). Collect the
 	// union of every RootInclude target's headers and bucket them by owning
@@ -833,6 +941,20 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 // intra-element deps to cross-package labels.
 func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}) ir.Target {
 	rt := t
+
+	// strip_include_prefix is element-root-relative in the IR (lower computes it
+	// against cmakeSrc), but Bazel resolves a RELATIVE strip_include_prefix
+	// against the target's PACKAGE. For a target re-homed into a sub-package
+	// (local split), the element-relative form then double-counts the package
+	// path — VTK's Utilities/octree lands in package elements/vtk/Utilities/octree
+	// yet keeps strip_include_prefix="Utilities/octree", which Bazel resolves to
+	// elements/vtk/Utilities/octree/Utilities/octree (headers under octree/* are
+	// "not under the strip prefix"). Re-emit it in the unambiguous repo-root
+	// absolute form (/<base>/<strip>) for sub-package targets; root-package
+	// targets (dir=="") keep the relative form, so non-split members don't churn.
+	if local && dir != "" && dir != "." && rt.StripIncludePrefix != "" && plan.base != "" {
+		rt.StripIncludePrefix = "/" + plan.base + "/" + rt.StripIncludePrefix
+	}
 
 	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
 	// many packages): planSplit re-homed the HEADER surface (every RootInclude
@@ -1006,51 +1128,59 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// any entry that belongs to a deeper/other package to a cross-package
 	// label (files) or dropping it (a bare packaged directory).
 	if local {
-		var srcs []string
-		for _, s := range t.Srcs {
-			// PkgSrcsGlob srcs are glob PATTERNS (e.g.
-			// "c/include/brotli/**" from install(DIRECTORY)), not file
-			// paths. A glob can't be expressed as a cross-package label
-			// (`glob(["//c/include:brotli/**"])` is invalid — patterns
-			// must be package-relative, never absolute) and Bazel's glob
-			// doesn't cross package boundaries anyway, so once the
-			// globbed dir is its own package a root-level glob wouldn't
-			// match it. Same situation as the bare-packaged-directory
-			// case below: not expressible post-split; drop it — the
-			// install is served by the layout-independent install root,
-			// and EmitSplit skips the now-empty pkg_files. (The glob
-			// pattern itself contains no package boundary we can
-			// re-root against, so there's nothing to relativize.)
-			if t.PkgSrcsGlob {
-				continue
-			}
-			d := plan.deepestPkg(s)
-			if d == dir {
-				rel, _ := relUnder(dir, s)
-				srcs = append(srcs, rel)
-				continue
-			}
-			file, _ := relUnder(d, s)
-			if file == "" {
-				// s names a packaged directory itself (e.g. an
-				// install(DIRECTORY) filegroup src pointing at a dir that
-				// became its own package). Not expressible as a
-				// cross-package file label; drop it — the install path is
-				// served by the install root, which is layout-independent.
-				continue
-			}
-			// Cross-package source FILE: reference by label + raise an
-			// exports_files() need in the owning package (unless it's a
-			// generated out — already a target, exports_files() would conflict).
-			srcs = append(srcs, crossPkgFileLabel(plan, d, file))
-			if !plan.genOuts[s] {
-				if exportsByDir[d] == nil {
-					exportsByDir[d] = map[string]struct{}{}
+		// Rewrite a source list to the post-split shape: a src in THIS
+		// package stays package-relative; one in a deeper/other package
+		// becomes a cross-package file label (+ an exports_files() need in
+		// the owner); a bare packaged-directory or a glob PATTERN isn't
+		// expressible post-split and drops. Shared by the flat Srcs and
+		// the per-platform select() arms below so a src partitioned into a
+		// `select({...})` arm (SDL's platform-conditional
+		// src/power/linux/SDL_syspower.c, where src/ became its own
+		// package) gets the SAME cross-package relabel — otherwise Bazel
+		// reads the bare "src/..." in the arm as `//<pkg>:src/...` and
+		// fails "src is a subpackage".
+		rewriteSrcList := func(in []string) []string {
+			var out []string
+			for _, s := range in {
+				if t.PkgSrcsGlob {
+					continue
 				}
-				exportsByDir[d][file] = struct{}{}
+				d := plan.deepestPkg(s)
+				if d == dir {
+					rel, _ := relUnder(dir, s)
+					out = append(out, rel)
+					continue
+				}
+				file, _ := relUnder(d, s)
+				if file == "" {
+					continue
+				}
+				out = append(out, crossPkgFileLabel(plan, d, file))
+				if !plan.genOuts[s] {
+					if exportsByDir[d] == nil {
+						exportsByDir[d] = map[string]struct{}{}
+					}
+					exportsByDir[d][file] = struct{}{}
+				}
 			}
+			return out
 		}
-		rt.Srcs = srcs
+		rt.Srcs = rewriteSrcList(t.Srcs)
+		// Per-platform (select() arm) srcs need the identical rewrite.
+		// Build a fresh map so the shallow rt := t copy doesn't mutate the
+		// caller's PerPlatform inner maps.
+		if arms, ok := t.PerPlatform["srcs"]; ok {
+			newArms := make(map[string][]string, len(arms))
+			for k, v := range arms {
+				newArms[k] = rewriteSrcList(v)
+			}
+			pp := make(map[string]map[string][]string, len(rt.PerPlatform))
+			for ak, av := range rt.PerPlatform {
+				pp[ak] = av
+			}
+			pp["srcs"] = newArms
+			rt.PerPlatform = pp
+		}
 	}
 	// (SourceKey regime: srcs/hdrs are left element-root-relative;
 	// EmitWithOptions prefixes them with @src_<key>//: unchanged.)
@@ -1152,6 +1282,19 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// they don't propagate to consumers; PUBLIC ones ride deps.
 	rt.Deps = rewriteDeps(t.Deps, plan, headerDeps)
 	rt.ImplementationDeps = rewriteDeps(t.ImplementationDeps, plan, privHeaderDeps)
+	// dynamic_deps (faithful-SHARED) carry intra-element ":<lib>_shared" refs —
+	// same target-ref shape as deps, so rewriteDeps relabels them to the right
+	// cross-package label when the consumer and the cc_shared_library land in
+	// different split packages.
+	rt.DynamicDeps = rewriteSharedDeps(t.DynamicDeps, plan)
+	rt.SharedLibDynamicDeps = rewriteSharedDeps(t.SharedLibDynamicDeps, plan)
+	// Data carries add_dependencies-derived intra-element target edges (":x",
+	// build-order only); relabel them to cross-package labels like deps, else a
+	// sub-package consumer's `:LLVMAnalysis` resolves to its OWN package
+	// (LLVM's lib/Frontend/Atomic referencing lib/Analysis:LLVMAnalysis →
+	// "missing input file"). Same target-ref shape as deps, so rewriteDeps is
+	// the right mapper.
+	rt.Data = rewriteDeps(t.Data, plan, nil)
 
 	// An alias's `actual` is an intra-element target reference too — relabel
 	// it to the target's real package the same way deps are. Aliases land in
@@ -1201,7 +1344,43 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		allPackageLocalHdrs(rt.Hdrs) && allPackageLocalHdrs(rt.TextualHdrs) {
 		rt.IncludePrefix = dir
 	}
+	// A producer whose generated output is consumed cross-package (see
+	// plan.publicize) must be public so the output is reachable from the
+	// consumer's package — its outputs inherit this visibility.
+	if plan.publicize[t.Name] {
+		rt.Visibility = []string{"//visibility:public"}
+	}
+	// Dedup srcs (order-preserving): a single relativized label may appear
+	// twice when two distinct codemodel source paths collapse to one package-
+	// relative form — e.g. mbedtls generates error.c into the build dir AND
+	// commits a same-named source, both normalizing to "error.c". Bazel rejects
+	// duplicate srcs ("attribute srcs has duplicate entries"), so emit each once.
+	// No-op (no churn) for the dup-free common case.
+	rt.Srcs = dedupKeepOrder(rt.Srcs)
 	return rt
+}
+
+// dedupKeepOrder returns s with later duplicate entries removed, preserving
+// first-occurrence order. Returns s unchanged when it has no duplicates.
+func dedupKeepOrder(s []string) []string {
+	if len(s) < 2 {
+		return s
+	}
+	seen := make(map[string]struct{}, len(s))
+	out := s[:0:0]
+	dup := false
+	for _, v := range s {
+		if _, ok := seen[v]; ok {
+			dup = true
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	if !dup {
+		return s
+	}
+	return out
 }
 
 // allPackageLocalHdrs reports whether every header entry is a package-local
@@ -1215,6 +1394,28 @@ func allPackageLocalHdrs(hdrs []string) bool {
 		}
 	}
 	return true
+}
+
+// rewriteSharedDeps relabels faithful-SHARED dynamic_deps (":<lib>_shared" /
+// "//pkg:<lib>_shared"). The cc_shared_library WRAPPER is synthesized in emit
+// (not a planned ir.Target), so the plan can't locate "<lib>_shared" directly —
+// but it lives in the SAME package as its impl "<lib>". So strip the "_shared"
+// suffix, resolve the base lib's cross-package label via rewriteDeps, then
+// re-append "_shared". Labels without the suffix (defensive) pass through.
+func rewriteSharedDeps(deps []string, plan *splitPlan) []string {
+	if len(deps) == 0 {
+		return nil
+	}
+	var bases []string
+	for _, d := range deps {
+		bases = append(bases, strings.TrimSuffix(d, "_shared"))
+	}
+	resolved := rewriteDeps(bases, plan, nil)
+	out := make([]string, 0, len(resolved))
+	for _, r := range resolved {
+		out = append(out, r+"_shared")
+	}
+	return out
 }
 
 // rewriteDeps maps each intra-element ":x" dep to its cross-package

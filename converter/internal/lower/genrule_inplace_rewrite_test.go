@@ -74,28 +74,48 @@ func TestDetectInPlaceOutputRenames(t *testing.T) {
 	}
 }
 
-// TestRenameRawCmdBuildOutputs confirms the build-output occurrence is
-// renamed (keeping its buildDir prefix, so the later strip yields the
-// renamed token) while the source-tree input occurrence — sharing the
-// same basename but a different absolute prefix — is untouched. This is
-// the disambiguation that stops input and output collapsing to one token.
-func TestRenameRawCmdBuildOutputs(t *testing.T) {
-	cmd := "cmake -E copy /src/proj/version.txt /build/proj/version.txt"
-	got := renameRawCmdBuildOutputs(cmd, "/build/proj", map[string]string{"version.txt": "version.txt.gen"})
-	want := "cmake -E copy /src/proj/version.txt /build/proj/version.txt.gen"
+// TestRenameAnchoredGenruleOutputs confirms the rename keys on the anchored
+// $(RULEDIR)/<out> output form (renaming it to its `.gen` sibling) while the
+// source-tree input occurrence — sharing the same basename but carrying the
+// element package path, NOT $(RULEDIR) — is left untouched. This is the
+// LLVM Remarks.exports shape: cmake reads the source `Remarks.exports` and
+// writes a build-tree `Remarks.exports`, which collide as one Bazel label
+// until the output is renamed.
+func TestRenameAnchoredGenruleOutputs(t *testing.T) {
+	cmd := `python3 -c "..." < elements/llvm/tools/remarks-shlib/Remarks.exports > $(RULEDIR)/tools/remarks-shlib/Remarks.exports`
+	got := renameAnchoredGenruleOutputs(cmd, map[string]string{
+		"tools/remarks-shlib/Remarks.exports": "tools/remarks-shlib/Remarks.exports.gen",
+	})
+	want := `python3 -c "..." < elements/llvm/tools/remarks-shlib/Remarks.exports > $(RULEDIR)/tools/remarks-shlib/Remarks.exports.gen`
 	if got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }
 
-// TestRenameRawCmdBuildOutputs_NoOp confirms an empty rename map / empty
-// buildDir leaves the cmd byte-identical (the common, non-in-place path).
-func TestRenameRawCmdBuildOutputs_NoOp(t *testing.T) {
-	cmd := "cp /build/a.txt /build/b.txt"
-	if got := renameRawCmdBuildOutputs(cmd, "/build", nil); got != cmd {
+// TestRenameAnchoredGenruleOutputs_NoOp confirms an empty rename map / empty
+// cmd leaves the cmd byte-identical (the common, non-in-place path).
+func TestRenameAnchoredGenruleOutputs_NoOp(t *testing.T) {
+	cmd := "tool -o $(RULEDIR)/a.txt"
+	if got := renameAnchoredGenruleOutputs(cmd, nil); got != cmd {
 		t.Errorf("nil renames should be a no-op; got %q", got)
 	}
-	if got := renameRawCmdBuildOutputs(cmd, "", map[string]string{"a.txt": "a.txt.gen"}); got != cmd {
-		t.Errorf("empty buildDir should be a no-op; got %q", got)
+	if got := renameAnchoredGenruleOutputs("", map[string]string{"a.txt": "a.txt.gen"}); got != "" {
+		t.Errorf("empty cmd should be a no-op; got %q", got)
+	}
+}
+
+// TestRenameAnchoredGenruleOutputs_OverlapSafe confirms longest-first
+// matching: an output that is a textual prefix of another ($(RULEDIR)/x vs
+// $(RULEDIR)/x.inc) renames each independently without the shorter mangling
+// the longer, and the `.gen` replacement isn't itself re-matched.
+func TestRenameAnchoredGenruleOutputs_OverlapSafe(t *testing.T) {
+	cmd := "tool -o $(RULEDIR)/x.inc -d $(RULEDIR)/x"
+	got := renameAnchoredGenruleOutputs(cmd, map[string]string{
+		"x":     "x.gen",
+		"x.inc": "x.inc.gen",
+	})
+	want := "tool -o $(RULEDIR)/x.inc.gen -d $(RULEDIR)/x.gen"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
 	}
 }

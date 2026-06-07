@@ -34,6 +34,21 @@ type Imports struct {
 type Element struct {
 	Name    string    `json:"name"`              // matches Bazel external repo name
 	Exports []*Export `json:"exports,omitempty"` // exported imported-targets
+
+	// UmbrellaLabel + UmbrellaIncludeRoots model find_package(<Pkg>)'s
+	// whole-include-tree behavior. A cmake `find_package(P)` puts P's
+	// INTERFACE_INCLUDE_DIRECTORIES on every consumer's compile line, so
+	// ALL of P's headers are reachable even though the consumer links only
+	// a subset of P's targets (protobuf links 37 absl targets but its
+	// sources #include ~70 absl headers, e.g. absl/functional/overload.h
+	// from absl::overload — never declared). Bazel's strict per-target
+	// headers reject that. When lower drops one of these include roots (an
+	// absolute find_package include dir outside the source/build tree), it
+	// instead adds UmbrellaLabel to the consumer's deps — a single
+	// cc_library that re-exports P's full public header surface. Empty for
+	// elements without a find_package whole-tree include (the common case).
+	UmbrellaLabel        string   `json:"umbrella_label,omitempty"`
+	UmbrellaIncludeRoots []string `json:"umbrella_include_roots,omitempty"`
 }
 
 // Export wires one CMake imported target name to a Bazel label.
@@ -159,10 +174,11 @@ func LoadDoc(path string) (*Imports, error) {
 // always an authoring error, never an intended override).
 func LoadMerged(paths ...string) (*Resolver, error) {
 	r := &Resolver{
-		byCMakeTarget: map[string]*Export{},
-		byElement:     map[string]*Element{},
-		byLinkPath:    map[string]*Export{},
-		byLinkLib:     map[string]*Export{},
+		byCMakeTarget:   map[string]*Export{},
+		byElement:       map[string]*Element{},
+		byLinkPath:      map[string]*Export{},
+		byLinkLib:       map[string]*Export{},
+		byUmbrellaIncRt: map[string]string{},
 	}
 	for _, p := range paths {
 		if p == "" {
@@ -180,6 +196,13 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 				continue
 			}
 			r.byElement[el.Name] = el
+			if el.UmbrellaLabel != "" {
+				for _, root := range el.UmbrellaIncludeRoots {
+					if root != "" {
+						r.byUmbrellaIncRt[root] = el.UmbrellaLabel
+					}
+				}
+			}
 			for _, ex := range el.Exports {
 				if ex == nil || ex.CMakeTarget == "" {
 					continue
@@ -212,10 +235,11 @@ func Index(im *Imports) (*Resolver, error) {
 		return nil, fmt.Errorf("manifest: unsupported version %d (want 1)", im.Version)
 	}
 	r := &Resolver{
-		byCMakeTarget: map[string]*Export{},
-		byElement:     map[string]*Element{},
-		byLinkPath:    map[string]*Export{},
-		byLinkLib:     map[string]*Export{},
+		byCMakeTarget:   map[string]*Export{},
+		byElement:       map[string]*Element{},
+		byLinkPath:      map[string]*Export{},
+		byLinkLib:       map[string]*Export{},
+		byUmbrellaIncRt: map[string]string{},
 	}
 	for _, el := range im.Elements {
 		if el == nil || el.Name == "" {
@@ -225,6 +249,13 @@ func Index(im *Imports) (*Resolver, error) {
 			return nil, fmt.Errorf("manifest: duplicate element %q", el.Name)
 		}
 		r.byElement[el.Name] = el
+		if el.UmbrellaLabel != "" {
+			for _, root := range el.UmbrellaIncludeRoots {
+				if root != "" {
+					r.byUmbrellaIncRt[root] = el.UmbrellaLabel
+				}
+			}
+		}
 		for _, ex := range el.Exports {
 			if ex == nil || ex.CMakeTarget == "" {
 				return nil, fmt.Errorf("manifest: element %q: export with empty cmake_target", el.Name)
@@ -270,10 +301,24 @@ func findElementForExport(im *Imports, ex *Export) string {
 // Resolver is the indexed manifest. Query methods are pure and concurrency-
 // safe (no mutation post-Load).
 type Resolver struct {
-	byCMakeTarget map[string]*Export
-	byElement     map[string]*Element
-	byLinkPath    map[string]*Export
-	byLinkLib     map[string]*Export
+	byCMakeTarget   map[string]*Export
+	byElement       map[string]*Element
+	byLinkPath      map[string]*Export
+	byLinkLib       map[string]*Export
+	byUmbrellaIncRt map[string]string // find_package include root → umbrella label
+}
+
+// UmbrellaForIncludeDir returns the umbrella label registered for an
+// absolute find_package include root, or "" if none. lower calls this
+// when it would otherwise drop an out-of-tree include dir, so a
+// find_package(<Pkg>) whose whole-include-tree behavior an element
+// declared (Element.UmbrellaIncludeRoots) wires the umbrella dep
+// instead of silently losing the headers.
+func (r *Resolver) UmbrellaForIncludeDir(path string) string {
+	if r == nil {
+		return ""
+	}
+	return r.byUmbrellaIncRt[path]
 }
 
 // LookupCMakeTarget returns the export for a CMake namespaced target name

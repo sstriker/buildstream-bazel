@@ -361,6 +361,48 @@ func executeProcessRunsHostDetectionScript(argv []string) bool {
 	return false
 }
 
+// gitLocationFlags names `git rev-parse` flags that query the repository's
+// LOCATION / layout (a path or boolean about where the repo lives) rather
+// than resolving a revision value. Their output is used at configure time
+// (e.g. to depend on the git index for reconfigure) and is never baked into
+// a build artifact, so a call made purely of these flags is a benign probe,
+// not a value stamp.
+var gitLocationFlags = map[string]bool{
+	"--git-dir":             true,
+	"--git-common-dir":      true,
+	"--show-toplevel":       true,
+	"--show-cdup":           true,
+	"--show-prefix":         true,
+	"--is-inside-work-tree": true,
+	"--is-inside-git-dir":   true,
+	"--absolute-git-dir":    true,
+}
+
+// gitRepoLocationQuery reports whether argv is a `git rev-parse` invocation
+// made up only of repo-location flags (gitLocationFlags) with NO revision
+// operand — i.e. a "where is the repo?" query, not "what revision is HEAD?".
+// A non-flag operand (a ref/path like HEAD) means it resolves a revision, so
+// it stays a value stamp.
+func gitRepoLocationQuery(argv []string) bool {
+	if len(argv) < 3 || argv[1] != "rev-parse" {
+		return false
+	}
+	sawLocation := false
+	for _, a := range argv[2:] {
+		switch {
+		case gitLocationFlags[a]:
+			sawLocation = true
+		case strings.HasPrefix(a, "-"):
+			// Another flag (e.g. --quiet) — neutral.
+		default:
+			// A non-flag operand → revision resolution, not a pure location
+			// query.
+			return false
+		}
+	}
+	return sawLocation
+}
+
 // Classify maps one execute_process call to a Bucket using
 // argv-only heuristics — no subprocess execution, no
 // filesystem access. Order of checks:
@@ -587,6 +629,23 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// prevent. Diagnostic context (OutputVariable / OutputFile)
 	// threads into the reason so operators see the full
 	// shape; classification doesn't pivot on it.
+	// git repo-LOCATION queries (`git rev-parse --git-dir`,
+	// `--show-toplevel`, `--is-inside-work-tree`, …) are NOT value stamps:
+	// their output is a path/boolean about where the repo lives, used at
+	// configure time (LLVM's find_first_existing_vc_file uses
+	// `rev-parse --git-dir` to locate .git and set a reconfigure
+	// dependency), never a revision baked into a build artifact. Classify
+	// them as a benign probe so they SKIP — a genuine value stamp
+	// (`git rev-parse HEAD`, `git describe`) carries a revision operand and
+	// stays BucketStamp below (refuse-unless-consumed). Checked before the
+	// stamp-driver gate so the location form doesn't get the value-stamp
+	// treatment.
+	if driver == "git" && gitRepoLocationQuery(argv) {
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: "git repo-location query (" + strings.Join(argv[1:], " ") + ") — configure-time repo layout, no baked value" + outputContext(call),
+		}
+	}
 	if stampDrivers[driver] {
 		return ClassifyResult{
 			Bucket: BucketStamp,

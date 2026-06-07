@@ -63,3 +63,6 @@ converter/testdata/sample-projects/libdrm/
 /convert-element-pyproject
 /convert-element-trace
 /build-tracer
+
+# stray go-build artifact (built into build/bin/ normally)
+/compile-commands-diff

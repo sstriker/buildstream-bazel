@@ -277,12 +277,14 @@ build /build/x.cpp: CUSTOM_COMMAND
 	}
 }
 
-// TestRecoverGenrule_AnchorsSubdirOutputs pins the subdir-output anchoring: a
-// recovered genrule whose output lives in a subdir rewrites the bare path to
-// $(RULEDIR)/<out> so the write lands under bazel-out (glog's
-// CMakeFiles/glog.cc empty-placeholder, which otherwise failed on the absent
-// sandbox subdir); a root-level output is left bare (no over-anchoring, so
-// recovered genrules that build today stay unchanged).
+// TestRecoverGenrule_AnchorsSubdirOutputs pins the output anchoring: a
+// recovered genrule whose output is named as a literal in the cmd rewrites
+// that occurrence to $(RULEDIR)/<out> so the write lands under bazel-out —
+// both subdir outputs (glog's CMakeFiles/glog.cc empty-placeholder, which
+// otherwise failed on the absent sandbox subdir) AND root-level outputs (curl's
+// `perl mk-lib1521.pl < curl.h lib1521.c`, where the script writes to its argv).
+// A cmd that emits via `> $@` never names the output token, so anchoring is a
+// no-op there — no over-anchoring of the stdout-redirect recovered genrules.
 func TestRecoverGenrule_AnchorsSubdirOutputs(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -297,9 +299,20 @@ func TestRecoverGenrule_AnchorsSubdirOutputs(t *testing.T) {
 			anchored: true,
 		},
 		{
-			name:     "root output left bare",
+			// A root-level output named as a literal arg (the script
+			// writes to it) is anchored too — otherwise the cmd writes
+			// to the bare exec-root path and bazel can't find the output.
+			name:     "root output anchored when named literally",
 			output:   "/build/version.h",
 			cmd:      "/usr/bin/python3 /src/gen.py /build/version.h",
+			anchored: true,
+		},
+		{
+			// A cmd that emits via `> $@` never names the output token,
+			// so anchoring is a no-op — no over-anchoring / churn.
+			name:     "stdout-redirect output not over-anchored",
+			output:   "/build/out.txt",
+			cmd:      "/usr/bin/gen > $@",
 			anchored: false,
 		},
 	}

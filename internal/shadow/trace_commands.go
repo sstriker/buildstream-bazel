@@ -46,6 +46,18 @@ type Decoded struct {
 	AddLibraries               []AddLibraryCall
 	InstallExports             []InstallExportCall
 	FileGlobs                  []FileGlobCall
+	AddDefinitions             []AddDefinitionsCall
+
+	// DefineSymbols maps a target name to its cmake DEFINE_SYMBOL property
+	// value, recovered from `set_target_properties(<t> PROPERTIES DEFINE_SYMBOL
+	// <macro>)`. DEFINE_SYMBOL is the export macro cmake defines (as `-D<macro>`)
+	// ONLY when compiling a SHARED/MODULE library's OWN sources — it's the
+	// __declspec(dllexport) trigger and is PRIVATE (never propagated to
+	// consumers). lower routes the matching define to `local_defines` so the
+	// SHARED->cc_library collapse doesn't leak it transitively (zlib's ZLIB_DLL
+	// leaking to example.c/minigzip.c). When unset, the default is
+	// `<target>_EXPORTS`, which lower derives without the trace.
+	DefineSymbols map[string]string
 }
 
 // Decode walks the trace once and dispatches every event to all
@@ -100,6 +112,9 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		if call, ok := classifyConfigureFile(ev, traceSourceRoot); ok {
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
+		if call, ok := classifyFileRename(ev, traceSourceRoot); ok {
+			d.ConfigFiles = append(d.ConfigFiles, call)
+		}
 		if call, ok := classifyFileGenerate(ev, traceSourceRoot); ok {
 			d.FileGenerates = append(d.FileGenerates, call)
 		}
@@ -126,6 +141,15 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyInstallExport(ev); ok {
 			d.InstallExports = append(d.InstallExports, call)
+		}
+		if call, ok := classifyAddDefinitions(ev, traceSourceRoot); ok {
+			d.AddDefinitions = append(d.AddDefinitions, call)
+		}
+		for tgt, macro := range classifyDefineSymbols(ev) {
+			if d.DefineSymbols == nil {
+				d.DefineSymbols = map[string]string{}
+			}
+			d.DefineSymbols[tgt] = macro
 		}
 		if traceHasEndif {
 			d.PlatformConditionalSources = maybeCollectPlatformConditionalSourceTraceStack(ev, tier1Stack, traceSourceRoot, knownTargets, d.PlatformConditionalSources)
@@ -400,7 +424,20 @@ func classifyTargetLinks(ev TraceEvent, sourceRoot string, knownTargets map[stri
 			// Legacy positional shape — start an unkeyed group.
 			current = &TargetLinkGroup{Visibility: ""}
 		}
-		current.Libs = append(current.Libs, a)
+		// A single trace argument can carry a whole cmake list when a
+		// `${VAR}` holding a list is expanded by --trace-expand: the
+		// elements arrive semicolon-joined in ONE arg (e.g. protobuf's
+		// `target_link_libraries(libprotobuf-lite PUBLIC
+		// ${protobuf_ABSL_USED_TARGETS})` records as the single string
+		// "absl::strings;absl::base;..."). Split on the cmake list
+		// separator so each lib is recovered individually; an empty
+		// expansion (`${CMAKE_THREAD_LIBS_INIT}` → "") drops to nothing.
+		for _, lib := range splitCMakeListArg(a) {
+			if lib == "" {
+				continue
+			}
+			current.Libs = append(current.Libs, lib)
+		}
 	}
 	if current != nil {
 		call.Groups = append(call.Groups, *current)
@@ -485,6 +522,92 @@ func classifyTargetCompile(ev TraceEvent, sourceRoot string, knownTargets map[st
 	return call, true
 }
 
+// AddDefinitionsCall records one user-written add_definitions(...)
+// call in the source tree. add_definitions is DIRECTORY-scoped: it
+// adds to the COMPILE_DEFINITIONS directory property, applying to
+// every target created in that directory (and subdirectories added
+// afterwards). Those definitions are PRIVATE — cmake never exposes
+// add_definitions through INTERFACE_COMPILE_DEFINITIONS, so they do
+// NOT propagate to consumers of a target. The codemodel folds them
+// into each in-directory target's CompileGroups[].Defines with no
+// origin tag, so (like PRIVATE target_compile_definitions) the trace
+// is the only signal that they should land in Bazel's non-transitive
+// local_defines rather than the transitive defines.
+//
+// Items hold the define payload with the leading -D stripped (the
+// "NAME" / "NAME=VALUE" form the codemodel uses); non -D arguments
+// (legacy compile flags some projects still pass to add_definitions)
+// are ignored here — only definitions are routed.
+type AddDefinitionsCall struct {
+	File  string // absolute path of the CMakeLists that made the call
+	Items []string
+}
+
+// classifyAddDefinitions is the per-event arm of Decode for
+// add_definitions. add_definitions is a directory command (no target
+// argument), so it's scoped by the calling file being inside the
+// source tree — the same filter inSourceTree applies elsewhere, which
+// drops cmake's bundled-module and try_compile-scratch calls.
+func classifyAddDefinitions(ev TraceEvent, sourceRoot string) (AddDefinitionsCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_definitions") {
+		return AddDefinitionsCall{}, false
+	}
+	if len(ev.Args) == 0 || !inSourceTree(ev.File, sourceRoot) {
+		return AddDefinitionsCall{}, false
+	}
+	var items []string
+	for _, a := range ev.Args {
+		if strings.HasPrefix(a, "-D") {
+			items = append(items, strings.TrimPrefix(a, "-D"))
+		}
+	}
+	if len(items) == 0 {
+		return AddDefinitionsCall{}, false
+	}
+	return AddDefinitionsCall{File: ev.File, Items: items}, true
+}
+
+// classifyDefineSymbols extracts target -> DEFINE_SYMBOL macro pairs from a
+// `set_target_properties(t1 [t2 ...] PROPERTIES ... DEFINE_SYMBOL <macro> ...)`
+// trace event. Returns nil for any other command. The shape is a leading list
+// of target names, the literal `PROPERTIES`, then property/value pairs; we scan
+// the pairs for DEFINE_SYMBOL and map it onto every named target. Not scoped to
+// the source tree: set_target_properties on a target is meaningful wherever it
+// runs (incl. a module's helper .cmake), and the value is just a macro name.
+func classifyDefineSymbols(ev TraceEvent) map[string]string {
+	if !strings.EqualFold(ev.Cmd, "set_target_properties") {
+		return nil
+	}
+	// Find the PROPERTIES keyword splitting targets from prop/value pairs.
+	propIdx := -1
+	for i, a := range ev.Args {
+		if a == "PROPERTIES" {
+			propIdx = i
+			break
+		}
+	}
+	if propIdx <= 0 || propIdx+1 >= len(ev.Args) {
+		return nil
+	}
+	var macro string
+	for i := propIdx + 1; i+1 < len(ev.Args); i += 2 {
+		if ev.Args[i] == "DEFINE_SYMBOL" {
+			macro = ev.Args[i+1]
+			break
+		}
+	}
+	if macro == "" {
+		return nil
+	}
+	out := map[string]string{}
+	for _, t := range ev.Args[:propIdx] {
+		if t != "" {
+			out[t] = macro
+		}
+	}
+	return out
+}
+
 // ExtractConfigureFiles returns one entry per user-written
 // configure_file call in the source tree. The trace records
 // args as resolved strings (variables already expanded);
@@ -527,6 +650,38 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 		Input:    ev.Args[0],
 		Output:   ev.Args[1],
 		Options:  append([]string(nil), ev.Args[2:]...),
+		CallFile: ev.File,
+	}, true
+}
+
+// classifyFileRename models cmake's `file(RENAME <src> <dest>)` — the
+// "atomically materialize a generated file" idiom — as a synthetic
+// COPYONLY configure_file whose <dest> bytes are baked verbatim (the
+// configure_file recovery reads them from the build dir). OpenBLAS's
+// deterministic-arch (cross-compile) branch writes config.h this way
+// (cmake/prebuild.cmake: file(WRITE ...tmp) + APPENDs, then
+// file(RENAME tmp config.h)), whereas its non-cross branch uses
+// configure_file(... COPYONLY) — so the existing configure_file recovery
+// only ever saw config.h on the path the build lens doesn't take. Treating
+// RENAME as COPYONLY routes config.h through the identical bake + consumer
+// attribution. Only the call site being in the source tree qualifies, so
+// cmake-internal renames (try_compile scratch, etc.) are filtered; renames
+// whose dest lands outside the build dir are dropped later by the recovery
+// (relativeIfInsideRelaxed), so a source-tree-dest rename can't bake.
+func classifyFileRename(ev TraceEvent, sourceRoot string) (ConfigureFileCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "file") {
+		return ConfigureFileCall{}, false
+	}
+	if len(ev.Args) != 3 || !strings.EqualFold(ev.Args[0], "RENAME") {
+		return ConfigureFileCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return ConfigureFileCall{}, false
+	}
+	return ConfigureFileCall{
+		Input:    ev.Args[1],
+		Output:   ev.Args[2],
+		Options:  []string{"COPYONLY"},
 		CallFile: ev.File,
 	}, true
 }
@@ -939,6 +1094,50 @@ func ExtractExecuteProcess(traceRaw []byte, sourceRoot string) []ExecuteProcessC
 	return out
 }
 
+// splitCMakeListArg splits a cmake list-valued COMMAND argument on its element
+// separator `;`. cmake joins list elements with `;` and splits them back into
+// distinct values before use, but `--trace-expand` records an unquoted
+// list-variable expansion (the common `COMMAND ${command}` idiom) as ONE
+// `;`-joined token — so the converter must re-split to recover the real argv.
+// A literal semicolon is escaped `\;` in cmake; those are unescaped to `;`
+// rather than treated as separators, and empty elements (from leading/trailing
+// or doubled `;`) are dropped, matching cmake's list semantics. A token with no
+// `;` returns unchanged. (Tradeoff: a quoted COMMAND arg that embeds a bare
+// `;` — rare, since COMMAND clauses are argv lists, not shell strings — would
+// also split; the list-expansion case it fixes is overwhelmingly more common
+// and is what real projects' execute_process drivers depend on.)
+func splitCMakeListArg(a string) []string {
+	if !strings.Contains(a, ";") {
+		return []string{a}
+	}
+	var out []string
+	var cur strings.Builder
+	for i := 0; i < len(a); i++ {
+		if a[i] == '\\' && i+1 < len(a) && a[i+1] == ';' {
+			cur.WriteByte(';')
+			i++
+			continue
+		}
+		if a[i] == ';' {
+			if cur.Len() > 0 {
+				out = append(out, cur.String())
+				cur.Reset()
+			}
+			continue
+		}
+		cur.WriteByte(a[i])
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	if len(out) == 0 {
+		// All-empty (e.g. a lone ";") — keep the original token defensively
+		// rather than vanishing the argument.
+		return []string{a}
+	}
+	return out
+}
+
 // classifyExecuteProcess parses one trace event into an
 // ExecuteProcessCall, or returns (_, false) when the event
 // isn't an in-source-tree execute_process. Shared between the
@@ -1112,7 +1311,16 @@ func classifyExecuteProcess(ev TraceEvent, sourceRoot string) (ExecuteProcessCal
 		// Bare value: append to whichever list is open.
 		switch open {
 		case listCommand:
-			currentCmd = append(currentCmd, a)
+			// A cmake list-valued COMMAND argument — most commonly an
+			// unquoted ${command} variable holding a pre-built argv — is
+			// recorded by --trace-expand as a single ;-joined token, but
+			// cmake splits it into separate argv elements before exec. Split
+			// it back so argv[0] is the real driver: a
+			// `/usr/bin/cc;-Wl,--version;-o;/dev/null` token's driver is `cc`
+			// (a toolchain probe), not `null` (basename of /dev/null), which
+			// is what LLVM's AddLLVM.cmake linker-detection execute_process
+			// otherwise mis-classified into an unliftable refusal.
+			currentCmd = append(currentCmd, splitCMakeListArg(a)...)
 		case listEnvironment:
 			call.Environment = append(call.Environment, a)
 		default:
