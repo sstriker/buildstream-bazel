@@ -3,6 +3,7 @@ package lower
 import (
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -93,6 +94,34 @@ func TestStripBalancedQuotes(t *testing.T) {
 	for _, c := range cases {
 		if got := stripBalancedQuotes(c.in); got != c.want {
 			t.Errorf("stripBalancedQuotes(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestSplitCompileFragments_DropsCudaArchFlags: cmake bakes
+// CMAKE_CUDA_ARCHITECTURES into `--generate-code=arch=...` compile flags, but
+// rules_cuda rejects per-target arch flags in copts (arch is a toolchain/flag
+// concern). splitCompileFragments drops both the `=`-joined and the
+// space-separated nvcc arch-flag forms while keeping every other copt.
+func TestSplitCompileFragments_DropsCudaArchFlags(t *testing.T) {
+	frags := []fileapi.CommandFragment{
+		{Fragment: "-O3"},
+		{Fragment: "--generate-code=arch=compute_75,code=[compute_75,sm_75]"},
+		{Fragment: `"--generate-code=arch=compute_120,code=[compute_120,sm_120]"`},
+		{Fragment: "-gencode=arch=compute_80,code=sm_80"},
+		{Fragment: "--extended-lambda"},
+		{Fragment: "-gencode arch=compute_86,code=sm_86"},
+		{Fragment: "--generate-code arch=compute_90,code=sm_90"},
+		{Fragment: "-std=c++17"},
+	}
+	copts, _ := splitCompileFragments(frags)
+	want := []string{"-O3", "--extended-lambda", "-std=c++17"}
+	if len(copts) != len(want) {
+		t.Fatalf("copts = %v; want %v", copts, want)
+	}
+	for i, c := range copts {
+		if c != want[i] {
+			t.Fatalf("copts = %v; want %v", copts, want)
 		}
 	}
 }
