@@ -759,47 +759,28 @@ transition cleanly.
     cycle). grpc converts with **0 rejections**, analyzes, and
     `bazel build //...` compiles **~99.9% (4,847/4,851 TUs)** — everything but
     the 5 gRPC C++ **service-stub** codegens (channelz + reflection).
-    PROVEN GREEN (116/116 targets) by hand-patching the 5 genrules in the
-    build-ws; the converter generalizations are the documented tail.
-    REMAINING TAIL — the 5 `.grpc.pb` service-stub codegens, each root-caused:
-    1. **Build-dir proto-copy `cd` strip strands relative paths.** grpc's
-       cmake copies protos into `<build>/protos/` at *configure* time (no ninja
-       producer) and runs `cd <build>/protos && protoc -I . src/proto/…proto`.
-       `rewriteGenruleCmd` strips the `cd`, leaving `gens` (output dir), `-I .`,
-       and `src/proto/…` un-rebased for Bazel's exec-root cwd. Fix: when a
-       `cd <buildDir>/<sub>` is stripped, re-anchor — the output dir →
-       `$(RULEDIR)/gens`, `-I .` → the element package (`elements/grpc`), and
-       the cwd-relative proto arg → the SOURCE-tree input (the copy is
-       byte-identical to `<cmakeSrc>/src/proto/…`, which is already a genrule
-       input), then DROP the producerless `protos/…proto` copy src.
-    2. **Proto `import` deps not staged.** `service.proto` imports
-       `channelz/v2/channelz.proto`; cmake doesn't record it as a ninja input,
-       so it's absent from the genrule's srcs. Fix: parse `import "…"` and add
-       the source-tree proto to srcs (the `recordCodegenIncludeClosure`
-       machinery, extended from C `#include` to proto `import`).
-    3. **Generated `.pb.h`/`.grpc.pb.h` not wired to consumers.** The
-       service-stub cc_library lists only the genrule's `.cc` in srcs; the
-       sibling generated headers (`.pb.h`, `.grpc.pb.h`, `_mock.grpc.pb.h`)
-       must land in the consumer's `hdrs` with `includes=["gens"]` so the
-       full-path `#include "src/proto/…pb.h"` resolves. (split-emit: a genrule
-       whose `.cc` a consumer compiles should contribute its sibling `.h`
-       outputs + the gen-root include to that consumer.)
-    4. **Host protoc vs BCR protobuf version skew (CONF, not converter).**
-       find_package found host protobuf 31.1 → genrule invokes host
-       `protoc-31.1.0`, but `rules_cc@0.2.17` forces the BCR protobuf RUNTIME
-       to 33.4 via MVS → gencode/runtime `PROTOBUF_VERSION` guard mismatch.
-       Conf fix: either rebuild the host protobuf-install to match the
-       BCR-resolved runtime, or map `protobuf::protoc` → `@protobuf//:protoc`
-       in the imports manifest so gencode is produced by the same protobuf
-       that's linked (the validated hand-patch used `@protobuf//:protoc`).
-    5. **Host-tool sandbox visibility (CONF).** The genrule execs host protoc
-       under `/tmp/protobuf-install`; Bazel's hermetic `/tmp` hides it. The
-       validated build added `--sandbox_add_mount_pair=/tmp` to grpc.conf's
-       `BAZEL_FLAGS` (the same host-install model the corpus already uses for
-       `-I/tmp/*-install/include`). Fold this into grpc.conf once #1–#3 land.
-    A converter-shaped lift (#1–#3) + a conf alignment (#4–#5), not disk- or
-    scale-blocked. grpc's build is large — mind the disk-bounded build cycle in
-    the large-project playbook below.
+    `bazel build //...` compiles **~99.9% (4,847/4,851 TUs)** — everything but
+    the 5 gRPC C++ **service-stub** codegens (channelz + reflection).
+    LANDED since (the protoc-genrule conversion is now CORRECT): the converter's
+    `reanchorBuildDirCopyGenrule` handles grpc's configure-time proto-copy shape
+    (`cd <build>/protos && protoc -I . src/proto/…`) — drops the producerless
+    copy srcs, reanchors `-I .`/the proto arg to the source tree, anchors the
+    output-root to `$(RULEDIR)`, stages the proto `import` closure, drops the
+    host-tool basename phantom, and swaps the host protoc for the hermetic
+    `$(execpath @protobuf//:protoc)` (so gencode matches the rules_cc-forced BCR
+    runtime 33.4); the consumer gets the generated-output root on `includes`;
+    `--sandbox_add_mount_pair=/tmp` is on grpc.conf. Verified end-to-end in
+    MONOLITHIC emit (the genrule cmd builds the stubs); the converter goldens +
+    new `reanchor_buildcopy_test.go` guard it.
+    REMAINING (the one open gap): under the default `--split-packages`, those
+    genrules move into a `gens/` SUB-package, so **split-emit must re-relativize
+    the codegen genrule's `$(RULEDIR)/gens` output-dir (→ `$(RULEDIR)`) and its
+    same-package `grpc_cpp_plugin` tool label (→ `//elements/grpc:grpc_cpp_plugin`)
+    on the package move** — the existing split relabel handles `srcs` labels but
+    not the cmd's output-root dir or the genrule `tools` labels. (Monolithic emit
+    keeps the genrule where the cmd is already correct, but grpc's third_party
+    includes don't resolve monolithically, so split is the right mode and the
+    split-emit codegen relabel is the fix.) Not disk- or scale-blocked.
   - **vtk** — NOT disk-blocked (an earlier note wrongly claimed this; the
     container had ~22 GB of stale prior-session survey dirs under `/home/user/`
     masking ~25 GB of real free space — reclaimed). VTK configures, converts
