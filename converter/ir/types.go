@@ -455,6 +455,15 @@ type Target struct {
 	// for the default static-collapse emit.
 	DynamicDeps []string
 
+	// SharedLibDynamicDeps are the dynamic_deps for the cc_shared_library
+	// WRAPPER emitted for this (SharedLibName-bearing) target — the
+	// `<dep>_shared` siblings for deps that are themselves shared libs. Without
+	// them a shared lib statically re-links a dep that another shared lib also
+	// owns, violating cc_shared_library's "a cc_library is linked into at most
+	// one shared lib" rule (the brotli brotlidec/brotlicommon case). Empty for
+	// non-shared targets and leaf shared libs.
+	SharedLibDynamicDeps []string
+
 	// ImplementationDeps are Bazel labels to other targets used
 	// only in this target's .cc files (`PRIVATE`
 	// target_link_libraries() in CMake). Maps to

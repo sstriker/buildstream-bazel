@@ -518,6 +518,15 @@ func emitSharedLibrary(buf *bytes.Buffer, t ir.Target) {
 	buf.WriteString("\ncc_shared_library(\n")
 	fmt.Fprintf(buf, "    name = %q,\n", t.Name+"_shared")
 	fmt.Fprintf(buf, "    shared_lib_name = %q,\n", t.SharedLibName)
+	// dynamic_deps: sibling shared libs this one links dynamically (so it
+	// doesn't statically re-link a cc_library another shared lib owns).
+	if len(t.SharedLibDynamicDeps) > 0 {
+		buf.WriteString("    dynamic_deps = [\n")
+		for _, d := range sortedCopy(t.SharedLibDynamicDeps) {
+			fmt.Fprintf(buf, "        %q,\n", d)
+		}
+		buf.WriteString("    ],\n")
+	}
 	// `deps` is the modern rules_cc spelling of the former `roots` attribute —
 	// the libraries linked INTO the .so.
 	fmt.Fprintf(buf, "    deps = [\":%s\"],\n", t.Name)

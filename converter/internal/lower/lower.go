@@ -1814,16 +1814,25 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	case "SHARED_LIBRARY", "MODULE_LIBRARY":
 		irt.Kind = ir.KindCCLibrary
 		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
-		// cc_shared_library producing the real .so. The shared_lib_name is the
-		// unversioned artifact form (libz.so.1.3.1 -> libz.so); derive
-		// lib<name>.so when cmake recorded no NameOnDisk.
+		// cc_shared_library producing the real .so. Use the FULL cmake artifact
+		// name (NameOnDisk, e.g. libbrotlidec.so.1.2.0) — both because that's
+		// what cmake actually produces (versioned soname) and because it must
+		// NOT collide with the impl cc_library's auto-generated lib<target>.so
+		// dynamic output (a cc_shared_library and a cc_library can't both emit
+		// the same path — the brotli collision). When the unversioned NameOnDisk
+		// WOULD equal lib<target>.so, suffix it so the two outputs stay distinct.
 		if lc.emitSharedLibraries {
 			so := t.NameOnDisk
-			if i := strings.Index(so, ".so"); i >= 0 {
-				so = so[:i+len(".so")]
-			}
 			if so == "" {
 				so = "lib" + t.Name + ".so"
+			}
+			if so == "lib"+t.Name+".so" {
+				// The unversioned name collides with the impl cc_library's auto
+				// lib<target>.so output. Append a soversion so the two outputs
+				// stay distinct AND the name stays a valid .so.<N> filetype
+				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
+				// cmake-recorded soversion tag; fall back to ".1".
+				so += "." + soversionFromTags(irt.Tags, "1")
 			}
 			irt.SharedLibName = so
 		}
@@ -6461,20 +6470,30 @@ func wireDynamicDeps(pkg *ir.Package) {
 	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
-		if t.SharedLibName != "" {
-			continue
-		}
 		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
 			continue
 		}
 		seen := map[string]bool{}
+		var sharedDeps []string
 		all := append(append([]string{}, t.Deps...), t.ImplementationDeps...)
 		for _, d := range all {
 			name := bareDepName(d)
+			if name == t.Name { // a shared lib's wrapper deps on its own impl — skip
+				continue
+			}
 			if shared[name] && !seen[name] {
 				seen[name] = true
-				t.DynamicDeps = append(t.DynamicDeps, ":"+name+"_shared")
+				sharedDeps = append(sharedDeps, ":"+name+"_shared")
 			}
+		}
+		if t.SharedLibName != "" {
+			// This target is a shared lib: its cc_shared_library WRAPPER must
+			// dynamic-dep on sibling shared libs so it doesn't statically
+			// re-link a cc_library another shared lib already owns.
+			t.SharedLibDynamicDeps = sharedDeps
+		} else {
+			// A plain consumer: link sibling shared libs dynamically.
+			t.DynamicDeps = sharedDeps
 		}
 	}
 }
@@ -6489,6 +6508,21 @@ func bareDepName(label string) string {
 		return label[i+1:]
 	}
 	return label
+}
+
+// soversionFromTags returns the SOVERSION recorded in a target's
+// `cmake-codegen-soversion=<N>` tag, or def when absent. Used to disambiguate a
+// shared lib's output name from the impl cc_library's auto lib<name>.so.
+func soversionFromTags(tags []string, def string) string {
+	const pfx = "cmake-codegen-soversion="
+	for _, t := range tags {
+		if strings.HasPrefix(t, pfx) {
+			if v := strings.TrimPrefix(t, pfx); v != "" {
+				return v
+			}
+		}
+	}
+	return def
 }
 
 // makeCIdentifier mirrors cmake's string(MAKE_C_IDENTIFIER): every character
