@@ -481,6 +481,52 @@ func isCcSrcEntry(p string) bool {
 	return headerExts[ext] || compilableSrcExts[ext] || ccLinkableSrcExts[ext]
 }
 
+// classifyAndAttach routes a generated / consumer-attributed output PATH into
+// the correct cc attribute on irt, records it in seen for dedup, and returns
+// true iff it attached the path. It is the single source-classification
+// chokepoint the consumer-attribution sites share: the file(GENERATE) and
+// execute_process attribution blocks historically open-coded the identical
+// "header→hdrs / non-cc→data / cc→srcs" routing, and the VTK wrap-hierarchy
+// `.args/.data` fix had to be repeated across them — a "same fix in N places"
+// smell. Centralizing it means a new non-cc / odd-extension shape is handled
+// once. (See ROADMAP.md's source-classification consolidation item; the
+// CompileGroup IsGenerated branch carries extra concerns — CcEmbed header
+// pairing, compile-group priority — so it keeps its own switch but shares the
+// dropNonCc disposition documented below.)
+//
+// Routing:
+//   - a header extension → Hdrs (exposed to consumers);
+//   - a non-cc input (isCcSrcEntry false: a `.args` response file, `.data` blob,
+//     `.json` manifest, …): dropNonCc=false routes it to Data (preserves the
+//     build-order association without the cc-srcs requirement — what the
+//     consumer-attribution blocks need); dropNonCc=true drops it (the
+//     cross-package-safe behavior the CompileGroup site needs, where a bare-path
+//     data entry can't carry a cross-package ref);
+//   - otherwise a cc compile/link input → Srcs.
+//
+// seen dedups within one attribution pass (a path has one extension, so it lands
+// in exactly one attribute). It does NOT dedup against entries irt already
+// carried before the pass — matching the open-coded blocks it replaces.
+func classifyAndAttach(irt *ir.Target, path string, seen map[string]bool, dropNonCc bool) bool {
+	if seen[path] {
+		return false
+	}
+	seen[path] = true
+	ext := strings.ToLower(filepath.Ext(path))
+	switch {
+	case headerExts[ext]:
+		irt.Hdrs = append(irt.Hdrs, path)
+	case !isCcSrcEntry(path):
+		if dropNonCc {
+			return false
+		}
+		irt.Data = append(irt.Data, path)
+	default:
+		irt.Srcs = append(irt.Srcs, path)
+	}
+	return true
+}
+
 // wireDefineDrivenGeneratedHeaders connects a target to a generated header it
 // pulls in via a compile DEFINE rather than a literal #include, which the
 // converter's include scan can't see. VTK's module machinery
@@ -2998,9 +3044,8 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// like the execute_process walk below — headers go to hdrs,
 	// other artefacts go to srcs.
 	if len(fileGenerates) > 0 && len(targetBuildIncs) > 0 {
-		var addedHdrs, addedSrcs, addedData []string
-		seenHdr := map[string]bool{}
-		seenSrc := map[string]bool{}
+		seen := map[string]bool{}
+		attached := false
 		for _, fg := range fileGenerates {
 			match := false
 			for inc := range targetBuildIncs {
@@ -3012,43 +3057,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			if !match {
 				continue
 			}
-			ext := strings.ToLower(filepath.Ext(fg.RelOutput))
-			if headerExts[ext] {
-				if !seenHdr[fg.RelOutput] {
-					seenHdr[fg.RelOutput] = true
-					addedHdrs = append(addedHdrs, fg.RelOutput)
-				}
-				continue
-			}
-			// A file(GENERATE) output that isn't a cc compile/link input is a
-			// build-order artifact, not a source — VTK emits each module's
-			// per-config wrap-hierarchy args via file(GENERATE OUTPUT
-			// <mod>-hierarchy.$<CONFIG>.args); adding it to cc srcs fails analysis
-			// ("does not produce any cc_library srcs files"). Route it to data
-			// (same-package attribution → no cross-package relabel), preserving
-			// the build-order association without the srcs requirement.
-			if !isCcSrcEntry(fg.RelOutput) {
-				if !seenSrc[fg.RelOutput] {
-					seenSrc[fg.RelOutput] = true
-					addedData = append(addedData, fg.RelOutput)
-				}
-				continue
-			}
-			if !seenSrc[fg.RelOutput] {
-				seenSrc[fg.RelOutput] = true
-				addedSrcs = append(addedSrcs, fg.RelOutput)
+			// header→hdrs, non-cc build artifact (e.g. VTK's per-config
+			// wrap-hierarchy `.args`)→data, cc input→srcs. dropNonCc=false:
+			// non-cc outputs are same-package here, so data is safe. See
+			// classifyAndAttach.
+			if classifyAndAttach(irt, fg.RelOutput, seen, false) {
+				attached = true
 			}
 		}
-		if len(addedHdrs) > 0 {
-			irt.Hdrs = append(irt.Hdrs, addedHdrs...)
-		}
-		if len(addedSrcs) > 0 {
-			irt.Srcs = append(irt.Srcs, addedSrcs...)
-		}
-		if len(addedData) > 0 {
-			irt.Data = append(irt.Data, addedData...)
-		}
-		if len(addedHdrs) > 0 || len(addedSrcs) > 0 || len(addedData) > 0 {
+		if attached {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}
@@ -3070,9 +3087,8 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// inputs); same shape as the IsGenerated branch in the
 	// CompileGroup walk above.
 	if len(executeProcesses) > 0 && len(targetBuildIncs) > 0 {
-		var addedHdrs, addedSrcs, addedData []string
-		seenHdr := map[string]bool{}
-		seenSrc := map[string]bool{}
+		seen := map[string]bool{}
+		attached := false
 		for _, ep := range executeProcesses {
 			match := false
 			for inc := range targetBuildIncs {
@@ -3084,38 +3100,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			if !match {
 				continue
 			}
-			ext := strings.ToLower(filepath.Ext(ep.RelOutput))
-			if headerExts[ext] {
-				if !seenHdr[ep.RelOutput] {
-					seenHdr[ep.RelOutput] = true
-					addedHdrs = append(addedHdrs, ep.RelOutput)
-				}
-				continue
-			}
-			// Same non-cc-input guard as the file(GENERATE) block above:
-			// non-cc execute_process output → data, not cc srcs.
-			if !isCcSrcEntry(ep.RelOutput) {
-				if !seenSrc[ep.RelOutput] {
-					seenSrc[ep.RelOutput] = true
-					addedData = append(addedData, ep.RelOutput)
-				}
-				continue
-			}
-			if !seenSrc[ep.RelOutput] {
-				seenSrc[ep.RelOutput] = true
-				addedSrcs = append(addedSrcs, ep.RelOutput)
+			// Same routing as the file(GENERATE) block above (header→hdrs,
+			// non-cc→data, cc→srcs); the shared classifyAndAttach is why the
+			// VTK `.args/.data` fix now lives in exactly one place.
+			if classifyAndAttach(irt, ep.RelOutput, seen, false) {
+				attached = true
 			}
 		}
-		if len(addedHdrs) > 0 {
-			irt.Hdrs = append(irt.Hdrs, addedHdrs...)
-		}
-		if len(addedSrcs) > 0 {
-			irt.Srcs = append(irt.Srcs, addedSrcs...)
-		}
-		if len(addedData) > 0 {
-			irt.Data = append(irt.Data, addedData...)
-		}
-		if len(addedHdrs) > 0 || len(addedSrcs) > 0 || len(addedData) > 0 {
+		if attached {
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
 		}
 	}
