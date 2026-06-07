@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -483,6 +484,16 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	if len(outs) > 0 {
 		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
 	}
+	// Build-dir staging-copy reanchor: when the raw command ran in a build-dir
+	// subdir of CONFIGURE-time-copied inputs (`cd <buildDir>/<sub> && tool -I .
+	// <rel>` — grpc copies its .protos into <build>/protos/ at configure time
+	// and runs protoc from there), stripping the cd stranded the cwd-relative
+	// reads. Re-anchor them to the byte-identical source-tree inputs the genrule
+	// already carries, drop the producerless copies, and anchor the output-root
+	// dir. See reanchorBuildDirCopyGenrule.
+	var copyTools []string
+	rewrittenCmd, srcs, copyTools = reanchorBuildDirCopyGenrule(cmd, rewrittenCmd, srcs, outs, cmakeSrc, buildDir, cc.BazelPackagePath)
+	tools = append(tools, copyTools...)
 	gen := ir.Target{
 		Name:         name,
 		Kind:         ir.KindGenrule,
@@ -920,4 +931,285 @@ func relativeIfInsideRelaxed(root, abs string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+// reanchorBuildDirCopyGenrule fixes the genrule shape where the raw custom
+// command ran inside a build-dir subdir of CONFIGURE-time-copied inputs:
+//
+//	cd <buildDir>/<sub> && <tool> --out=<buildDir>/<R> -I . <rel...>
+//
+// grpc copies its src/proto/**.proto into <build>/protos/ at configure time and
+// runs `cd protos && protoc --cpp_out=gens -I . src/proto/.../x.proto`. The
+// copies have no ninja producer, so genruleSrcs carries BOTH the build-dir copy
+// (`<sub>/<rel>`) and the byte-identical source-tree input (`<rel>`); after the
+// cd-strip the cwd-relative reads (`-I .`, `<rel>`) point nowhere under Bazel's
+// exec-root cwd.
+//
+// This re-anchors the command to read the SOURCE-TREE inputs the genrule already
+// declares: `-I .` → `-I <pkg>`, each cwd-relative source `<rel>` → `<pkg>/<rel>`,
+// a build-tool src referenced bare (an extension-less binary like
+// grpc_cpp_plugin) → `$(execpath <tool>)`, the shared output-root dir `<R>` →
+// `$(RULEDIR)/<R>`; and it drops the producerless `<sub>/<rel>` copies from srcs.
+//
+// Gated tightly on the `cd <buildDir>/<sub>` shape: a genrule whose raw command
+// had no such cd (the corpus norm) is returned untouched, as is the pkg=="" /
+// no-twin case.
+func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeSrc, buildDir, pkg string) (string, []string, []string) {
+	if pkg == "" || !strings.HasPrefix(rawCmd, "cd ") {
+		return cmd, srcs, nil
+	}
+	end := strings.Index(rawCmd, " && ")
+	if end < 0 {
+		return cmd, srcs, nil
+	}
+	cdTarget := strings.TrimSpace(strings.TrimPrefix(rawCmd[:end], "cd "))
+	sub, ok := relativeIfInside(buildDir, cdTarget)
+	if !ok || sub == "" {
+		return cmd, srcs, nil // not a cd into a build-dir subdir
+	}
+	sub = filepath.ToSlash(sub)
+	var protocTool string
+
+	srcSet := map[string]bool{}
+	for _, s := range srcs {
+		srcSet[s] = true
+	}
+	// Only act when at least one `<sub>/<rel>` copy has a source-tree twin also
+	// declared — the signature of the configure-time-copy shape. Otherwise leave
+	// the command alone (don't perturb unrelated cd-into-build-dir genrules).
+	copyPrefix := sub + "/"
+	hasTwin := false
+	var kept []string
+	for _, s := range srcs {
+		if rel := strings.TrimPrefix(s, copyPrefix); rel != s && srcSet[rel] {
+			hasTwin = true
+			continue // drop the producerless copy
+		}
+		kept = append(kept, s)
+	}
+	if !hasTwin {
+		return cmd, srcs, nil
+	}
+
+	// `-I .` / `-I.` (the cd dir) → the package root.
+	cmd = strings.ReplaceAll(cmd, "-I . ", "-I "+pkg+" ")
+	cmd = strings.ReplaceAll(cmd, "-I.", "-I"+pkg+"/")
+
+	// Reanchor kept srcs referenced bare in the command. Longest-first so a path
+	// that prefixes another isn't half-rewritten. A source FILE (has extension)
+	// → its exec path under the package; an extension-less build tool → execpath.
+	ordered := append([]string(nil), kept...)
+	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
+	toolSet := map[string]bool{}
+	for _, s := range ordered {
+		if filepath.Ext(s) == "" {
+			// An extension-less in-tree build tool (grpc_cpp_plugin): reference it
+			// via $(execpath) and move it to the genrule's `tools` — keeping it in
+			// `srcs` would make the emitter exports_files() a name that's already a
+			// cc_binary rule ("source file conflicts with existing rule").
+			cmd = replaceBareToken(cmd, s, "$(execpath "+s+")")
+			toolSet[s] = true
+		} else {
+			cmd = replaceBareToken(cmd, s, pkg+"/"+s)
+		}
+	}
+
+	// Anchor the shared output-root dir (e.g. "gens") to $(RULEDIR)/<root>.
+	if root := commonRootDir(outs); root != "" {
+		cmd = anchorOutputRootDir(cmd, root)
+	}
+
+	// Hermetic protoc: the recovered command drives a HOST protoc by absolute
+	// path (find_package(Protobuf) → `/tmp/.../protoc-31.1.0`). The Bazel build
+	// links the BCR protobuf RUNTIME, which MVS resolves independently (rules_cc
+	// pulls it to 33.4), so host-protoc gencode fails its PROTOBUF_VERSION guard
+	// against the runtime headers. Generate with the BCR protoc instead
+	// (`$(execpath @protobuf//:protoc)`) so gencode matches the linked runtime —
+	// and the genrule needs no host protoc at action time. Only fires on this
+	// proto-codegen shape (a `protoc`-named absolute driver).
+	protocBasename := ""
+	if drv, rest, found := strings.Cut(cmd, " "); found {
+		if filepath.IsAbs(drv) && strings.HasPrefix(filepath.Base(drv), "protoc") {
+			protocBasename = filepath.Base(drv)
+			cmd = "$(execpath @protobuf//:protoc) " + rest
+			protocTool = "@protobuf//:protoc"
+		}
+	}
+
+	// Drop host-tool phantom srcs: a bare-basename src (no "/") that the command
+	// references only as the basename of an ABSOLUTE host path (e.g. genruleSrcs'
+	// basename-fallback of `/tmp/protobuf-install/bin/protoc-31.1.0` → a
+	// `protoc-31.1.0` src). Bazel can't stage a basename-only label, and the tool
+	// is invoked by absolute path, so the src is a dangling input. A real in-tree
+	// tool ref (grpc_cpp_plugin, now `$(execpath grpc_cpp_plugin)`) is preceded by
+	// a space, not a `/`, so it's preserved.
+	// also move the execpath'd in-tree tools out of srcs into the returned tools.
+	kept2 := kept[:0:0]
+	var tools []string
+	if protocTool != "" {
+		tools = append(tools, protocTool)
+	}
+	for _, s := range kept {
+		if toolSet[s] {
+			tools = append(tools, s)
+			continue
+		}
+		// Host-tool phantom basename: the genruleSrcs basename-fallback of the
+		// host-absolute driver. Dropped whether the driver was swapped to the BCR
+		// protoc (protocBasename) or left as an absolute host path (cmd carries
+		// `/<s>`).
+		if s == protocBasename {
+			continue
+		}
+		if !strings.Contains(s, "/") && strings.Contains(cmd, "/"+s) {
+			continue
+		}
+		kept2 = append(kept2, s)
+	}
+	kept = kept2
+
+	// Proto import closure: cmake doesn't record a proto's `import "x.proto"`
+	// dependencies as ninja inputs, so a service proto that imports a sibling
+	// (grpc's service.proto imports channelz/v2/channelz.proto) is missing the
+	// imported file from the genrule's staged inputs. Walk each kept `.proto`
+	// src's transitive imports (resolved under cmakeSrc, the `-I <pkg>` root) and
+	// add any that exist on disk and aren't already declared.
+	kept = append(kept, protoImportClosure(kept, cmakeSrc)...)
+
+	return cmd, kept, tools
+}
+
+// protoImportClosure returns the source-tree-relative paths of the protos
+// transitively `import`ed by the `.proto` entries in srcs, that exist under
+// cmakeSrc and aren't already in srcs. Imports are resolved relative to the
+// source root (the `-I <pkg>` include root the reanchored command uses), which
+// is grpc's `import "src/proto/..."` convention.
+func protoImportClosure(srcs []string, cmakeSrc string) []string {
+	if cmakeSrc == "" {
+		return nil
+	}
+	have := map[string]bool{}
+	for _, s := range srcs {
+		have[s] = true
+	}
+	var queue []string
+	for _, s := range srcs {
+		if strings.HasSuffix(s, ".proto") {
+			queue = append(queue, s)
+		}
+	}
+	var added []string
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		data, err := os.ReadFile(filepath.Join(cmakeSrc, cur))
+		if err != nil {
+			continue
+		}
+		for _, imp := range parseProtoImports(string(data)) {
+			if have[imp] {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(cmakeSrc, imp)); err != nil {
+				continue // not a source-tree proto (a well-known type from -I include)
+			}
+			have[imp] = true
+			added = append(added, imp)
+			queue = append(queue, imp)
+		}
+	}
+	sort.Strings(added)
+	return added
+}
+
+// parseProtoImports extracts the paths from `import "path";` / `import public
+// "path";` / `import weak "path";` statements in a .proto file's text.
+func parseProtoImports(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		t := strings.TrimSpace(line)
+		if !strings.HasPrefix(t, "import") {
+			continue
+		}
+		i := strings.IndexByte(t, '"')
+		if i < 0 {
+			continue
+		}
+		j := strings.IndexByte(t[i+1:], '"')
+		if j < 0 {
+			continue
+		}
+		out = append(out, t[i+1:i+1+j])
+	}
+	return out
+}
+
+// replaceBareToken replaces every whole-token occurrence of tok in s with repl.
+// "Whole token" = the byte before tok is start-of-string, space, '=', or ':',
+// and the byte after is end-of-string or space. Avoids mangling tok as a
+// substring of a longer path/flag.
+func replaceBareToken(s, tok, repl string) string {
+	if tok == "" {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(s[i:], tok) {
+			leftOK := i == 0 || s[i-1] == ' ' || s[i-1] == '=' || s[i-1] == ':'
+			rEnd := i + len(tok)
+			rightOK := rEnd == len(s) || s[rEnd] == ' '
+			if leftOK && rightOK {
+				b.WriteString(repl)
+				i = rEnd
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+		i++
+	}
+	return b.String()
+}
+
+// commonRootDir returns the first path component shared by every out, or "" if
+// the outs don't all share one (so nothing single-component is anchored by
+// accident).
+func commonRootDir(outs []string) string {
+	root := ""
+	for _, o := range outs {
+		o = filepath.ToSlash(o)
+		i := strings.IndexByte(o, '/')
+		if i <= 0 {
+			return "" // a root-level out: no shared subdir to anchor
+		}
+		r := o[:i]
+		if root == "" {
+			root = r
+		} else if root != r {
+			return ""
+		}
+	}
+	return root
+}
+
+// anchorOutputRootDir rewrites a bare output-root dir token (root) to
+// $(RULEDIR)/root where it sits as an argument value — preceded by '=' or ':'
+// (e.g. `--cpp_out=gens`, `--grpc_out=...:gens`) and followed by space or
+// end-of-string. The already-$(RULEDIR)-prefixed and `/`-followed forms are left
+// alone (anchorGenruleOutputsToRuledir handles full output paths).
+func anchorOutputRootDir(cmd, root string) string {
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		if strings.HasPrefix(cmd[i:], root) && i > 0 && (cmd[i-1] == '=' || cmd[i-1] == ':') {
+			rEnd := i + len(root)
+			if rEnd == len(cmd) || cmd[rEnd] == ' ' {
+				b.WriteString("$(RULEDIR)/")
+				b.WriteString(root)
+				i = rEnd
+				continue
+			}
+		}
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return b.String()
 }

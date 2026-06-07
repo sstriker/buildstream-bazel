@@ -527,6 +527,24 @@ func classifyAndAttach(irt *ir.Target, path string, seen map[string]bool, dropNo
 	return true
 }
 
+// isGeneratedOutputRoot reports whether dir is the leading directory component
+// of any generated output (an OutToGenrule key) — i.e. genrule outputs live
+// under dir. Used to surface a build-dir include (cmake's `-I<build>/<dir>`,
+// e.g. grpc's protoc `gens/`) on a consumer's `includes` so a generated source's
+// full-path `#include "..."` of a sibling generated header resolves.
+func isGeneratedOutputRoot(dir string, outToGenrule map[string]string) bool {
+	if dir == "" || len(outToGenrule) == 0 {
+		return false
+	}
+	prefix := dir + "/"
+	for out := range outToGenrule {
+		if strings.HasPrefix(out, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // attachGeneratedSource routes a GENERATED target-source PATH into the right cc
 // attribute, the second source-classification chokepoint (sister to
 // classifyAndAttach). Where classifyAndAttach serves the consumer-attribution
@@ -568,6 +586,8 @@ func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, em
 	}
 }
 
+// wireDefineDrivenGeneratedHeaders connects a target to a generated header it
+// pulls in via a compile DEFINE rather than a literal #include, which the
 // converter's include scan can't see. VTK's module machinery
 // (vtkModule.cmake) does exactly this: each implementing module gets
 // `target_compile_definitions(<Mod>_AUTOINIT_INCLUDE="vtkModuleAutoInit_<hash>.h")`
@@ -2700,6 +2720,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// path ("include/..."). Surface that build-dir include so
 				// `-Iinclude` finds the generated headers' bazel-out tree.
 				if umbrellaPrefix != "" && !seenInc[rel] {
+					seenInc[rel] = true
+					irt.Includes = append(irt.Includes, rel)
+				}
+				// A build-dir include that is the ROOT of generated outputs
+				// (cmake's `-I<build>/gens` for grpc's protoc gens dir) must be
+				// surfaced on `includes` too: the generated `.pb.cc` does a
+				// full-path `#include "src/proto/.../x.pb.h"`, which only
+				// resolves with the gens root on the include path. The headers
+				// are declared in hdrs (staged), but Bazel still needs the
+				// `-I<root>` to find them. Gated on the dir actually holding a
+				// genrule output, so non-generated build-dir includes (tracked
+				// for configure_file consumer attribution above) aren't surfaced.
+				if !seenInc[rel] && cc != nil && isGeneratedOutputRoot(rel, cc.OutToGenrule) {
 					seenInc[rel] = true
 					irt.Includes = append(irt.Includes, rel)
 				}
