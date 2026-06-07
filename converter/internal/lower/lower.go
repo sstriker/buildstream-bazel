@@ -1624,7 +1624,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// source onto the lowered targets + the package header. The File API
 	// carries no comments, so this reads source at each declaration site.
 	if opts.RecoverSourceComments {
-		recoverSourceComments(pkg, r, hostSrc)
+		recoverSourceComments(pkg, r, hostSrc, cmakeSrc, cmakeBuild,
+			decodedExecuteProcesses, decodedAddCustomCommands, decodedAddCustomTargets)
 	}
 
 	// cc_binary / cc_test have no `hdrs` (nor `textual_hdrs`) attribute, so

@@ -7,6 +7,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakeargv"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
 // recoverSourceComments carries author comments from raw cmake source into the
@@ -25,7 +26,10 @@ import (
 // body line, the egregious misattribution case. cmake-internal and unreadable
 // files are skipped (best-effort; offline --reply-dir runs whose recorded paths
 // don't exist locally simply recover nothing).
-func recoverSourceComments(pkg *ir.Package, r *fileapi.Reply, hostSrc string) {
+func recoverSourceComments(pkg *ir.Package, r *fileapi.Reply, hostSrc, cmakeSrc, cmakeBuild string,
+	execProcs []shadow.ExecuteProcessCall,
+	customCmds []shadow.AddCustomCommandCall,
+	customTgts []shadow.AddCustomTargetCall) {
 	if pkg == nil || r == nil {
 		return
 	}
@@ -96,6 +100,106 @@ func recoverSourceComments(pkg *ir.Package, r *fileapi.Reply, hostSrc string) {
 			pkg.HeaderComments = append(stripped, pkg.HeaderComments...)
 		}
 	}
+
+	// Codegen genrules (the "comments before a codegen" case): synthesized
+	// genrules aren't codemodel targets, so they carry no backtrace. Match
+	// each to its originating trace call (execute_process / add_custom_command
+	// / add_custom_target — all carry File/Line + outputs) by output basename,
+	// then recover the leading comment there and stamp Provenance. Best-effort:
+	// an unmatched or ambiguous-basename genrule simply gets no comment.
+	siteByBase := buildCodegenSiteIndex(execProcs, customCmds, customTgts)
+	if len(siteByBase) > 0 {
+		commentCache := map[codegenSite][]string{}
+		for i := range pkg.Targets {
+			t := &pkg.Targets[i]
+			if t.Kind != ir.KindGenrule || len(t.LeadingComment) > 0 {
+				continue
+			}
+			for _, out := range t.GenruleOuts {
+				s, ok := siteByBase[filepath.Base(out)]
+				if !ok || s.file == "" || isCMakeInternalPath(s.file) {
+					continue
+				}
+				lc, cached := commentCache[s]
+				if !cached {
+					recovered, err := cmakeargv.LeadingComment(s.file, s.line)
+					if err != nil {
+						recovered = nil
+					}
+					commentCache[s] = recovered
+					lc = recovered
+				}
+				if len(lc) > 0 {
+					t.LeadingComment = lc
+				}
+				if t.Provenance.IsZero() {
+					t.Provenance = ir.Provenance{
+						File:    reanchorProvenanceFile(s.file, cmakeSrc, cmakeBuild),
+						Line:    s.line,
+						Command: s.command,
+					}
+				}
+				break
+			}
+		}
+	}
+}
+
+// codegenSite is a trace-call declaration site for a synthesized genrule.
+type codegenSite struct {
+	file    string
+	line    int
+	command string
+}
+
+// buildCodegenSiteIndex maps a codegen output's basename to the trace call that
+// declared it. Basenames seen with conflicting sites are dropped (ambiguous →
+// don't misattribute). Basename (not full path) is the match key because trace
+// outputs are build/source-relative while genrule outs are package-relative;
+// the final component is the stable common denominator.
+func buildCodegenSiteIndex(
+	execProcs []shadow.ExecuteProcessCall,
+	customCmds []shadow.AddCustomCommandCall,
+	customTgts []shadow.AddCustomTargetCall,
+) map[string]codegenSite {
+	idx := map[string]codegenSite{}
+	ambiguous := map[string]bool{}
+	add := func(out string, s codegenSite) {
+		base := filepath.Base(out)
+		if base == "" || base == "." || base == "/" || s.file == "" || s.line <= 0 {
+			return
+		}
+		if ambiguous[base] {
+			return
+		}
+		if prev, ok := idx[base]; ok && prev != s {
+			delete(idx, base)
+			ambiguous[base] = true
+			return
+		}
+		idx[base] = s
+	}
+	for _, c := range execProcs {
+		if c.OutputFile != "" {
+			add(c.OutputFile, codegenSite{file: c.File, line: c.Line, command: "execute_process"})
+		}
+	}
+	for _, c := range customCmds {
+		s := codegenSite{file: c.File, line: c.Line, command: "add_custom_command"}
+		for _, o := range c.Outputs {
+			add(o, s)
+		}
+		for _, o := range c.ByProducts {
+			add(o, s)
+		}
+	}
+	for _, c := range customTgts {
+		s := codegenSite{file: c.File, line: c.Line, command: "add_custom_target"}
+		for _, o := range c.ByProducts {
+			add(o, s)
+		}
+	}
+	return idx
 }
 
 // stripCommentPrefix removes a leading "#" and one optional following space
