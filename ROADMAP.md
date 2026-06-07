@@ -681,33 +681,29 @@ transition cleanly.
   mechanical output (not trusted on faith). Surfaced from the brotli
   test-form discussion.
 
-- **Carry CMakeLists comments into BUILD files.** Author comments are lost
-  on conversion: cmake discards comments at lex time (no AST), so the File
-  API + trace carry none and the regenerated BUILD drops them. Recover them
-  from raw source and re-attach. **Design decided** — see
-  `docs/design/comment-carrying.md` (delete that doc once the producer
-  lands). Most of the substrate already ships: `ir.Target.Provenance`
-  (backtrace-derived declaration site) gives free association;
-  `bazel.Options.EmitProvenance` (`converter/emit/bazel`) already emits a
-  roundtrip-safe leading `# Source: <file>:<line> (<command>)` comment (the
-  provenance breadcrumb, "D");
-  `cmakeargv.ReadCall` already reads raw cmake at a declaration site; the
-  `pkg.HeaderComments` slot already emits at top-of-BUILD; and the emit
-  canonicalizes through buildtools Parse+Format with post-parse AST comment
-  attachment (`.Before`/`.Suffix`, the `# keep` precedent) keeping output
-  buildifier-canonical. v1 scope: **A** file-header → HeaderComments,
-  **B** leading comment → rule `.Before` (including **every** synthesized
-  codegen target — `add_custom_command`/`add_custom_target`, lifted
-  `execute_process`, `configure_file`/`file(GENERATE)`, `cmake -P` — by
-  stamping each with a `Provenance` from the highest-level originating trace
-  call line, so "comments before a codegen" works uniformly),
-  **C-trailing-only** → rule `.Suffix` (attr-level comments are out: arg
-  reordering/canonicalization makes them fragile), and **D** kept +
-  composed. The only new work is recovering the comment text (a targeted
-  upward/trailing read extending `cmakeargv`). Opt-in flag; off →
-  byte-identical to today. Caveat: comments sited inside a function/macro are
-  skipped (Provenance points into the helper, not the call site), the same
-  bounded ambiguity as the function-forwarded stamp lift.
+- **Carry CMakeLists comments into BUILD files — leading + header + codegen
+  shipped; trailing remaining.** cmake discards comments at lex time (no
+  AST), so the File API + trace carry none; the converter recovers them from
+  raw source (`cmakeargv.LeadingComment`/`FileHeaderComment`) and re-attaches
+  them under the opt-in `--emit-source-comments` (off by default → byte-
+  identical; reads raw source, so it's not on by default). **Shipped:** the
+  file header → `pkg.HeaderComments` (A); each target's leading `#` block →
+  the rule's leading comment (B), for codemodel targets (recovered from the
+  target's `Provenance` site, with a shared-site skip so a helper invoked N
+  times doesn't smear one body comment across N targets) AND for codegen
+  genrules (`execute_process` / `add_custom_command` / `add_custom_target`,
+  matched to their originating trace call by output basename — "comments
+  before a codegen"); composed with the `# Source:` provenance breadcrumb
+  (D). Render gate `scripts/meta-cmake-comment-carrying.sh` proves all three
+  carry, none leak when off, and `buildifier -mode=diff` stays a no-op.
+  **Remaining:** **C-trailing** — a comment trailing the declaring command
+  (`add_library(foo …)  # core lib`) → the rule's `.Suffix` (the
+  `ir.Target.TrailingComment` field exists; needs trailing recovery extending
+  `cmakeargv` + AST-phase suffix emission, routing to leading on whole-rule-
+  `# keep` kinds to avoid stacking two suffix comments). Attr-level comments
+  stay out (arg reordering/canonicalization makes them roundtrip-fragile).
+  Caveat: comments sited inside a function/macro are skipped (the shared-site
+  guard), the same bounded ambiguity as the function-forwarded stamp lift.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
