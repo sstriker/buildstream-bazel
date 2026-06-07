@@ -37,6 +37,19 @@ func DefaultPreamble() Preamble {
 				"old cmake form (e.g. running `cmake -P`) is stale. Rewrite it to " +
 				"describe the authored Bazel target accurately, or drop it if it no " +
 				"longer adds value; never carry a comment that misdescribes the target.",
+			"(6) Each todo carries a `disposition` — the converter's BEST-GUESS, " +
+				"FALLIBLE hint, not a gate. `actionable`: the converter produced no " +
+				"faithful/working result, so the build is missing behavior until you " +
+				"author the Bazel form — do these. `improvement`: the converter baked " +
+				"a convert-time value (the build works but is frozen/non-faithful); an " +
+				"author can replace it with a dynamic Bazel idiom. `informational`: " +
+				"surfaced for visibility; usually skip. CRUCIALLY, you MAY upgrade an " +
+				"`improvement` or `informational` entry to action when you see a " +
+				"better Bazel form — the converter can't see what you can. In " +
+				"particular, a baked option derived from a check/try_compile probe " +
+				"(e.g. a frozen HAVE_X) often correlates 1:1 with a " +
+				"platform/sysroot/toolchain: prefer a `config_setting` + `select()` " +
+				"(or an operator-overridable `bool_flag`) over the frozen value.",
 		}, " "),
 		Example: "28 add_test(… COMMAND cmake -P run_test.cmake <input>) share one " +
 			"runner whose contract is \"compress then decompress <input> with the " +

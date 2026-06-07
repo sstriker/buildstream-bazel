@@ -9,6 +9,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -1611,6 +1612,13 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
+	// Per-site conversion-todos override: a hoisted VCS/identity/date stamp
+	// bakes a non-hermetic value (wrong on rebuild) — more than an
+	// "improvement", an author should re-express it (workspace-status / stamp).
+	// A baked check-probe under the same tag stays the default Improvement.
+	if cc.bakeTodoDisposition != nil && stampDrivers[driver] {
+		cc.bakeTodoDisposition[name] = todos.Actionable
+	}
 	return []string{dstRel}, "", true
 }
 

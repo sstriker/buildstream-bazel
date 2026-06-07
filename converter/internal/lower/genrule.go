@@ -11,6 +11,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -61,6 +62,14 @@ type codegenContext struct {
 	// baking the convert-time value into srckey. Empty when the project
 	// has no VCS-stamp probe.
 	StampVars map[string]string
+
+	// bakeTodoDisposition lets a lift site override the conversion-todos
+	// disposition for a baked target (keyed by target name), so two targets
+	// carrying the same bake tag can differ — e.g. a hoisted VCS/identity/date
+	// stamp (non-hermetic, wrong on rebuild) is todos.Actionable while a baked
+	// check-probe stays the default todos.Improvement. Consumed by
+	// emitBakeTodos. Empty unless a site sets an override.
+	bakeTodoDisposition map[string]todos.Disposition
 
 	// SeenBuilds dedupes recovered builds when multiple targets reference
 	// the same generated source.
@@ -254,6 +263,7 @@ func newCodegenContext() *codegenContext {
 		OutToGenrule:          map[string]string{},
 		CcEmbedSourceToHeader: map[string]string{},
 		StampVars:             map[string]string{},
+		bakeTodoDisposition:   map[string]todos.Disposition{},
 		SeenBuilds:            map[*ninja.Build]string{},
 		HeaderWalkCache:       map[string][]string{},
 		MissingIncludeDirs:    map[string]bool{},

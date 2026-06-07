@@ -117,10 +117,11 @@ func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests [
 				"invocation.", len(tests), key)
 		}
 		c.Add(todos.Todo{
-			Kind:     "cmake-p-test",
-			GroupKey: key,
-			Anchors:  anchors,
-			Evidence: evidence,
+			Kind:        "cmake-p-test",
+			Disposition: todos.Actionable,
+			GroupKey:    key,
+			Anchors:     anchors,
+			Evidence:    evidence,
 			SuggestedShape: "one reusable macro wrapping a bazel_skylib diff_test / sh_test over " +
 				"the built artifact, instantiated once per input",
 			Prompt: prompt,
@@ -254,9 +255,10 @@ func emitInternalDropTodos(c *todos.Collector, filtered map[string]string) {
 			anchors = append(anchors, todos.Anchor{Construct: kind + ": " + out})
 		}
 		c.Add(todos.Todo{
-			Kind:     "cmake-internal-drop",
-			GroupKey: kind,
-			Anchors:  anchors,
+			Kind:        "cmake-internal-drop",
+			Disposition: todos.Informational,
+			GroupKey:    kind,
+			Anchors:     anchors,
 			Evidence: map[string]any{
 				"drop_kind": kind,
 				"outputs":   outs,
@@ -363,10 +365,11 @@ func emitInstallScriptTodos(c *todos.Collector, r *fileapi.Reply) {
 			}
 		}
 		c.Add(todos.Todo{
-			Kind:     f.kind,
-			GroupKey: f.groupKey,
-			Anchors:  f.anchors,
-			Evidence: evidence,
+			Kind:        f.kind,
+			Disposition: todos.Actionable,
+			GroupKey:    f.groupKey,
+			Anchors:     f.anchors,
+			Evidence:    evidence,
 			SuggestedShape: "no Bazel analogue for install-time cmake script execution; " +
 				"re-express the install-time effect operator-side (rules_pkg) or drop it",
 			Prompt: fmt.Sprintf("Re-express %d install-time cmake %s directive(s) as plain Bazel "+
