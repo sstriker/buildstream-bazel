@@ -2904,6 +2904,42 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 	}
 
+	// Same-directory configure_file CONFIG HEADERS. A header like kwsysPrivate.h
+	// (configure_file ... COPYONLY) or proj_config.h is #included by BARE quote
+	// name (`#include "kwsysPrivate.h"`) from a source in the SAME directory, so
+	// cmake needs no `-I` for it (a quote-include resolves same-dir) — which means
+	// targetBuildIncs never records the dir and the prefix-match block above
+	// misses it entirely (it's gated on a build-include match). In Bazel a
+	// quote-include still needs the header DECLARED as an input of the compiling
+	// target. Attribute any header configure_file output whose directory matches a
+	// directory this target compiles sources in (compared in the element-root-
+	// relative space both irt.Srcs and the recovered output already use). These
+	// ride into the per-language sub-libraries via splitCompileGroups' sharedHdrs.
+	if len(configureFiles) > 0 && len(irt.Srcs) > 0 {
+		srcDirs := map[string]bool{}
+		for _, s := range irt.Srcs {
+			srcDirs[filepath.ToSlash(filepath.Dir(s))] = true
+		}
+		have := map[string]bool{}
+		for _, h := range irt.Hdrs {
+			have[h] = true
+		}
+		var extra []string
+		for _, cfgOut := range configureFiles {
+			if !headerExts[strings.ToLower(filepath.Ext(cfgOut.RelOutput))] || have[cfgOut.RelOutput] {
+				continue
+			}
+			if srcDirs[filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))] {
+				extra = append(extra, cfgOut.RelOutput)
+				have[cfgOut.RelOutput] = true
+			}
+		}
+		if len(extra) > 0 {
+			irt.Hdrs = append(irt.Hdrs, extra...)
+			irt.Tags = append(irt.Tags, "has-cmake-codegen")
+		}
+	}
+
 	// file(GENERATE) consumer attribution. Sister block to the
 	// configure_file walk above; file(GENERATE) outputs can be
 	// any extension (config-shaped .h, license blobs, generated
