@@ -346,6 +346,15 @@ type Options struct {
 	// depends on).
 	Warnings io.Writer
 
+	// RecoverSourceComments enables comment-carrying recovery: ToIR reads
+	// raw cmake source at each target's declaration site (the File API
+	// carries no comments) and populates ir.Target.LeadingComment plus the
+	// package HeaderComments file-header block, for the emitter to render
+	// under emit.Options.EmitSourceComments. Off by default — it reads
+	// source files and changes IR; the CLI sets both from one
+	// `--emit-source-comments` flag.
+	RecoverSourceComments bool
+
 	// BazelPackagePath is the repo-root-relative path of the destination
 	// Bazel package (e.g. "elements/hello-world"), mirroring the
 	// convert-element-cmake flag of the same name. Empty means the element
@@ -1610,6 +1619,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// package so it catches header-only libs from BOTH the codemodel path
 	// (lowerTarget) and the trace-synth path (lowerInterfaceLibraries).
 	shapeHeaderOnlyStripIncludePrefix(pkg)
+
+	// Comment-carrying (opt-in): recover author comments from raw cmake
+	// source onto the lowered targets + the package header. The File API
+	// carries no comments, so this reads source at each declaration site.
+	if opts.RecoverSourceComments {
+		recoverSourceComments(pkg, r, hostSrc)
+	}
 
 	// cc_binary / cc_test have no `hdrs` (nor `textual_hdrs`) attribute, so
 	// the emitter folds their Hdrs into `srcs`. A header whose extension
