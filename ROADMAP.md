@@ -863,20 +863,23 @@ transition cleanly.
   `link.commandFragments` via fileapi — Ninja emits no `link.txt` — vs Bazel
   `aquery 'mnemonic("CppLink",//...)'`, output binary resolved by walking the
   pathFragment tree; reports relative-order inversions per matched executable).
-  Remaining:
-  - **link-order project-archive layer** — the v1 compares SYSTEM libs only
-    (stdc++/m/pthread/dl/rt — stable identity both sides), which is empirically
-    LOW-YIELD: pure-C members link no allowlist system libs (zlib's exes link
-    only `libz.so`), and others link ssl/crypto/z as paths (project-ish, not
-    truly-system). The high-value comparison is PROJECT-archive order, gated on
-    cross-build-system identity matching: map cmake's link-fragment path
-    basename → target via `NameOnDisk`, and Bazel's mangled
+  Remaining (PARKED — extend the link-order check to compare ALL libraries in
+  order, not just system libs):
+  - The v1 compares SYSTEM libs only (stdc++/m/pthread/dl/rt — stable identity
+    both sides), which is empirically LOW-YIELD: pure-C members link no
+    allowlist system libs (zlib's exes link only `libz.so`), and others link
+    ssl/crypto/z as paths. The goal is to diff the FULL ordered link line —
+    system libs AND project archives AND find_package/external deps — since the
+    first-to-satisfy-a-symbol rule applies across all of them. That's gated on
+    cross-build-system identity matching for the non-system libs: map cmake's
+    link-fragment path basename → target via `NameOnDisk`, and Bazel's mangled
     `-lelements_Szlib_Slibzlib` → target by reversing the solib escape
     (`_S`→`/`, `_U`→`_`, basename, strip `lib`) — both land on the cmake
-    `Target.Name`, the common key. Also handle Bazel `.a`-path link forms (static
-    mode) vs the solib `-l` form (default dynamic), and the static-vs-dynamic
-    caveat (dynamic linking is order-independent, so a project-archive order
-    divergence only matters where Bazel links static).
+    `Target.Name`, the common key; external/find_package libs map via the
+    imports manifest's BazelLabel. Also handle Bazel `.a`-path link forms
+    (static mode) vs the solib `-l` form (default dynamic), and the
+    static-vs-dynamic caveat (dynamic linking is order-independent, so a
+    project-archive order divergence only matters where Bazel links static).
   Caveats still open: TU keying is by basename (collides across dirs in big
   trees; disambiguate by relative-suffix), config alignment (cmake db is
   single-config; defines/-std/includes are largely config-stable).
