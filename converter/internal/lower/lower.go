@@ -458,6 +458,88 @@ func isCcSrcEntry(p string) bool {
 	return headerExts[ext] || compilableSrcExts[ext] || ccLinkableSrcExts[ext]
 }
 
+// wireDefineDrivenGeneratedHeaders connects a target to a generated header it
+// pulls in via a compile DEFINE rather than a literal #include, which the
+// converter's include scan can't see. VTK's module machinery
+// (vtkModule.cmake) does exactly this: each implementing module gets
+// `target_compile_definitions(<Mod>_AUTOINIT_INCLUDE="vtkModuleAutoInit_<hash>.h")`
+// and its sources do `#ifdef <mod>_AUTOINIT_INCLUDE / #include
+// <mod>_AUTOINIT_INCLUDE` — so the (already-generated, by a genrule) per-module
+// auto-init header is never wired into the consumer and every such TU fails with
+// "vtkModuleAutoInit_<hash>.h: No such file".
+//
+// The header is included by BASENAME and the genrule emits it under CMakeFiles/,
+// so we synthesize one public wrapper cc_library carrying every such header with
+// `includes=["CMakeFiles"]` (which propagates the -I to dependents so the
+// basename resolves) and add it to the `deps` of each target whose defines name
+// one. The wrapper lives in the root package (no SubPackages entry); split
+// relabels the intra-element `:`-dep and the public wrapper is reachable
+// cross-package.
+func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
+	const suffix = "_AUTOINIT_INCLUDE"
+	// Generated-header basename → its genrule output path (package-relative).
+	outByBase := map[string]string{}
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindGenrule {
+			continue
+		}
+		for _, o := range t.GenruleOuts {
+			outByBase[filepath.Base(o)] = o
+		}
+	}
+	neededOuts := map[string]bool{}
+	consumers := map[int]bool{}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+			continue
+		}
+		defs := append(append([]string{}, t.Defines...), t.LocalDefines...)
+		for _, d := range defs {
+			eq := strings.IndexByte(d, '=')
+			if eq < 0 || !strings.HasSuffix(d[:eq], suffix) {
+				continue
+			}
+			base := filepath.Base(strings.Trim(d[eq+1:], `"`))
+			if out, ok := outByBase[base]; ok {
+				neededOuts[out] = true
+				consumers[i] = true
+			}
+		}
+	}
+	if len(neededOuts) == 0 {
+		return
+	}
+	hdrs := make([]string, 0, len(neededOuts))
+	incs := map[string]bool{}
+	for o := range neededOuts {
+		hdrs = append(hdrs, o)
+		if d := filepath.Dir(o); d != "." && d != "" {
+			incs[d] = true
+		}
+	}
+	sort.Strings(hdrs)
+	includes := make([]string, 0, len(incs))
+	for d := range incs {
+		includes = append(includes, d)
+	}
+	sort.Strings(includes)
+	const wrapperName = "define_driven_generated_headers"
+	pkg.Targets = append(pkg.Targets, ir.Target{
+		Name:       wrapperName,
+		Kind:       ir.KindCCLibrary,
+		Hdrs:       hdrs,
+		Includes:   includes, // propagate -I<dir> so the BASENAME include resolves
+		Visibility: []string{"//visibility:public"},
+		Tags:       []string{"cmake-define-driven-generated-headers"},
+	})
+	for i := range pkg.Targets {
+		if consumers[i] {
+			pkg.Targets[i].Deps = append(pkg.Targets[i].Deps, ":"+wrapperName)
+		}
+	}
+}
+
 // ToIR lowers a parsed reply into a Package. The optional ninja graph
 // enables genrule recovery for targets with isGenerated sources; pass nil to
 // disable (M1-style behavior — generated sources then trigger
@@ -1231,6 +1313,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	pkg.Targets = append(pkg.Targets, cc.Subs...)
 	pkg.Targets = append(pkg.Targets, cc.Tests...)
+	wireDefineDrivenGeneratedHeaders(pkg)
 	// Faithful-SHARED Phase 2: wire consumers' dynamic_deps. A target that
 	// depends on a SHARED/MODULE library (which now also emits a sibling
 	// cc_shared_library) keeps the impl in deps (for headers) and lists the
