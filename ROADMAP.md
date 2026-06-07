@@ -835,8 +835,9 @@ transition cleanly.
   documentation surface, not library/test code, so lower priority than the test
   side that's now green.
 
-- **Build-lens fidelity (compile-commands lens) — defines + -std + includes
-  LANDED & wired; remaining: link-order + copts.** The build lens proves
+- **Build-lens fidelity (compile-commands lens) — defines + -std + includes +
+  copts + link-order(v1) LANDED & wired; remaining: link-order project-archive
+  layer.** The build lens proves
   `bazel build //...` succeeds, but a build can succeed with the WRONG per-TU
   flags (the `BUILDING_LIBCURL` / `HAVE_ZLIB` leaks compiled fine while applying
   a macro to TUs cmake never gave it). Shipped: `cmd/compile-commands-diff` +
@@ -854,21 +855,28 @@ transition cleanly.
   diff exactly and the `gen:/sys:/ext:` build-layout/toolchain noise is filtered
   from the headline. First real catch: zlib's `DEFINE_SYMBOL ZLIB_DLL` leaking
   to `example.c`/`minigzip.c` — FIXED (DEFINE_SYMBOL→`local_defines`); zlib is
-  now fully fidelity-clean (0/0/0).
+  now fully fidelity-clean (0/0/0/0).
+  Also LANDED: **(3) copts** (project-authored flags only — `interestingCopt`
+  keeps `-fvisibility=`/`-fno-rtti`/`-fopenmp`/`-march`/`-pthread`, filters
+  optimization/debug/warnings/hardening/PIC toolchain + build-mode defaults),
+  and **link-line ORDER v1** (`linkOrderDiff`: cmake codemodel
+  `link.commandFragments` via fileapi — Ninja emits no `link.txt` — vs Bazel
+  `aquery 'mnemonic("CppLink",//...)'`, output binary resolved by walking the
+  pathFragment tree; reports relative-order inversions per matched executable).
   Remaining:
-  - **link-line ORDER** — for static archives the first lib to satisfy a symbol
-    wins, so link order is load-bearing. Sources: cmake's codemodel
-    `link.commandFragments` (role=libraries, ordered — NOT `link.txt`, which the
-    Ninja generator doesn't emit; add a codemodel-v2 query to the lens's cmake
-    configure) vs Bazel `aquery 'mnemonic("CppLink",//...)'` args. The HARD part
-    is cross-build-system lib IDENTITY matching: Bazel emits mangled
-    `-lelements_Szlib_Slibzlib`, cmake emits `libz.a`/`-lz`. Tractable first cut:
-    compare the relative order of SAME-identity libs — the system libs
-    (`-lstdc++ -lm -lpthread -ldl -lrt`), which name identically on both sides,
-    and where ordering bugs commonly bite — then layer project-archive identity
-    mapping (demangle Bazel's `-l<pkg>_S<...>` back to the cmake target).
-  - **(3) copts** — needs a toolchain-default filter to isolate project-authored
-    flags from Bazel/cmake builtins.
+  - **link-order project-archive layer** — the v1 compares SYSTEM libs only
+    (stdc++/m/pthread/dl/rt — stable identity both sides), which is empirically
+    LOW-YIELD: pure-C members link no allowlist system libs (zlib's exes link
+    only `libz.so`), and others link ssl/crypto/z as paths (project-ish, not
+    truly-system). The high-value comparison is PROJECT-archive order, gated on
+    cross-build-system identity matching: map cmake's link-fragment path
+    basename → target via `NameOnDisk`, and Bazel's mangled
+    `-lelements_Szlib_Slibzlib` → target by reversing the solib escape
+    (`_S`→`/`, `_U`→`_`, basename, strip `lib`) — both land on the cmake
+    `Target.Name`, the common key. Also handle Bazel `.a`-path link forms (static
+    mode) vs the solib `-l` form (default dynamic), and the static-vs-dynamic
+    caveat (dynamic linking is order-independent, so a project-archive order
+    divergence only matters where Bazel links static).
   Caveats still open: TU keying is by basename (collides across dirs in big
   trees; disambiguate by relative-suffix), config alignment (cmake db is
   single-config; defines/-std/includes are largely config-stable).
