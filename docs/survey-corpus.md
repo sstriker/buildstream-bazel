@@ -806,6 +806,16 @@ SURVEY_BUILD_TYPES=Release,Debug scripts/run-survey.sh
 SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 # Narrowest/fastest pass (single-config monolithic):
 SURVEY_BUILD_TYPES=single SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
+
+# --- Opt-in lenses (off by default; each acts on build-lens-selected projects).
+# 4th lens — build: does `bazel build //...` succeed? (see "The build lens")
+SURVEY_BAZEL_BUILD=fmt scripts/run-survey.sh fmt=$FMT_DIR
+# 5th lens — compile-commands fidelity (per-TU defines/-std/includes drift):
+SURVEY_BAZEL_BUILD=fmt SURVEY_COMPILE_DB=1 scripts/run-survey.sh fmt=$FMT_DIR
+# 6th lens — intent-capture (agent-as-oracle "what did we miss?"); needs a
+# pluggable judge in INTENT_LENS_JUDGE (writes <out>/<name>/intent-capture.json):
+SURVEY_BAZEL_BUILD=fmt SURVEY_INTENT=1 INTENT_LENS_JUDGE='claude -p' \
+  scripts/run-survey.sh fmt=$FMT_DIR
 ```
 
 > **Multi-config under the default `auto`.** The converter folds every
