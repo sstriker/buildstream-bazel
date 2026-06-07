@@ -835,25 +835,29 @@ transition cleanly.
   documentation surface, not library/test code, so lower priority than the test
   side that's now green.
 
-- **Build-lens fidelity: compare Bazel vs cmake `compile_commands.json`.** The
-  build lens today is binary (does `bazel build //...` succeed?), so a build can
-  succeed with the WRONG per-TU flags — the `BUILDING_LIBCURL` leak compiled
-  fine but applied a macro to TUs cmake never gave it. Add a per-translation-
-  unit flag-fidelity check: get Bazel's side from `bazel aquery
-  'mnemonic("CppCompile", //...)' --output=jsonproto` (built-in, hermetic — no
-  third-party extractor `bazel_dep`, which matters under this sandbox's network
-  policy; the argv carries the effective `defines`+`local_defines` merged), and
-  cmake's from `CMAKE_EXPORT_COMPILE_COMMANDS=ON` (the survey already drives
-  cmake). Compare per source file. Stage by signal-to-noise: **(1) defines**
-  first — highest signal, lowest noise (path/toolchain-independent; divergence
-  is almost always a real bug: missing macro or a leak); **(2) includes** —
-  needs canonicalizing cmake's absolute/source-relative `-I` and Bazel's
-  exec-root form to a common source-relative shape; **(3) copts** last — needs a
-  toolchain-default filter to isolate project-authored flags. Report as a 5th
-  per-project lens (`SURVEY_COMPILE_DB=1`), `0` = flag-faithful to cmake. Catches
-  the class of bug curl/LLVM surfaced this cycle. Caveats: source identity
-  (abs↔exec-root suffix match), config alignment (cmake's db is single-config;
-  defines/includes are largely config-stable, copts are not), generated sources.
+- **Build-lens fidelity: compare Bazel vs cmake `compile_commands.json` —
+  STAGE 1 LANDED; finish (2) includes + (3) copts, then wire as a survey lens.**
+  The build lens proves `bazel build //...` succeeds, but a build can succeed
+  with the WRONG per-TU flags (the `BUILDING_LIBCURL` / `HAVE_ZLIB` leaks
+  compiled fine while applying a macro to TUs cmake never gave it). Shipped:
+  `converter/cmd/compile-commands-diff` + `scripts/compile-commands-lens.sh`
+  diff cmake's `CMAKE_EXPORT_COMPILE_COMMANDS=ON` db against Bazel's
+  `aquery --output=jsonproto 'mnemonic("CppCompile", //...)'` (built-in,
+  hermetic — no third-party extractor `bazel_dep`), per translation unit, on
+  **(1) defines** (highest signal — match by TU basename, set-diff, filtering
+  Bazel's `__DATE__/__TIME__/__TIMESTAMP__` reproducibility stamps) and the
+  **-std** standard. First real catch: zlib's `DEFINE_SYMBOL ZLIB_DLL`
+  (the shared-lib export macro, PRIVATE to the lib's own compile) leaking to
+  `example.c`/`minigzip.c` as a propagating `defines` — see the cc_shared_library
+  item; fixing DEFINE_SYMBOL→`local_defines` is part of that work.
+  Remaining: **(2) includes** — currently basename-set + informational; needs
+  canonicalizing cmake's absolute/source-relative `-I` and Bazel's exec-root
+  form to a common source-relative shape for a real header-search check;
+  **(3) copts** — needs a toolchain-default filter to isolate project-authored
+  flags; and wiring the lens into `run-survey.sh` as `SURVEY_COMPILE_DB=1`
+  (`0` = flag-faithful to cmake). Caveats still open: TU keying is by basename
+  (collides across dirs in big trees; disambiguate by relative-suffix), config
+  alignment (cmake db is single-config; defines/-std are largely config-stable).
 
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
