@@ -74,7 +74,10 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 			continue // shared site: helper-invoked, ambiguous — skip
 		}
 		host := provenanceHostPath(t.Provenance.File, hostSrc)
-		if host == "" || isCMakeInternalPath(host) {
+		// isCMakeInternalPath matches forward-slash substrings; host comes from
+		// filepath.Join (OS separators), so normalize for the check only — the
+		// original host path is still used for reading.
+		if host == "" || isCMakeInternalPath(filepath.ToSlash(host)) {
 			continue
 		}
 		readKey := site{host, t.Provenance.Line}
@@ -123,7 +126,7 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 			}
 			for _, out := range t.GenruleOuts {
 				s, ok := siteByBase[filepath.Base(out)]
-				if !ok || s.file == "" || isCMakeInternalPath(s.file) {
+				if !ok || s.file == "" || isCMakeInternalPath(filepath.ToSlash(s.file)) {
 					continue
 				}
 				lc, cached := commentCache[s]

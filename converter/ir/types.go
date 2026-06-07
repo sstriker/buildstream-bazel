@@ -344,10 +344,12 @@ type Target struct {
 	// LeadingComment is the author's source comment block recovered from
 	// the originating CMakeLists (the contiguous `#` line-comment block
 	// immediately above the declaring command, as raw `# ...` tokens).
-	// Populated only when comment-carrying is enabled
-	// (emit.Options.EmitSourceComments) and the declaration site has a
-	// leading comment; nil otherwise. Emitted as a leading comment on the
-	// rule, above the optional `# Source:` provenance breadcrumb.
+	// Populated by the lowering pass only when recovery is enabled
+	// (lower.Options.RecoverSourceComments) and the declaration site has a
+	// leading comment; nil otherwise. The emitter renders it (above the
+	// optional `# Source:` provenance breadcrumb) only when
+	// emit.Options.EmitSourceComments is set — the two flags are driven
+	// together by the `--emit-source-comments` CLI flag.
 	LeadingComment []string
 
 	// TrailingComment is an author comment trailing the declaring command
