@@ -81,8 +81,77 @@ func libIdentity(tok string) string {
 	return ""
 }
 
-// orderedSystemLibs returns the system-lib identities in argv order, deduped to
-// first occurrence (order semantics care about first appearance).
+// sonameBase normalizes a library file basename to its unversioned form so a
+// cmake link fragment (libz.so.1.3.1) and a target's NameOnDisk (libz.so.1) map
+// to the same key (libz.so). Static archives keep their .a name.
+func sonameBase(base string) string {
+	if i := strings.Index(base, ".so"); i >= 0 {
+		return base[:i+len(".so")]
+	}
+	return base
+}
+
+// demangleBazelSolib reverses Bazel's solib name escaping in a `-l<mangled>`
+// token (`_S`→`/`, `_U`→`_`, `_D`→`-`, `_C`→`:`) and returns the cmake target
+// name it corresponds to: the path's basename with a leading `lib` stripped.
+// `-lelements_Szlib_Slibzlib` → `elements/zlib/libzlib` → `zlib`. Returns "" if
+// the token isn't a `-l` solib reference.
+func demangleBazelSolib(tok string) string {
+	if !strings.HasPrefix(tok, "-l") {
+		return ""
+	}
+	m := strings.TrimPrefix(tok, "-l")
+	if !strings.Contains(m, "_S") { // not a mangled package path
+		return ""
+	}
+	r := strings.NewReplacer("_S", "/", "_U", "_", "_D", "-", "_C", ":")
+	p := r.Replace(m)
+	base := filepath.Base(p)
+	return strings.TrimPrefix(base, "lib")
+}
+
+// orderedLibIdentities returns the libraries in argv/fragment order — system
+// libs ("sys:<name>") AND project archives ("tgt:<cmake-target>") — deduped to
+// first occurrence (order semantics care about first appearance). nameToTarget
+// maps a cmake artifact basename (sonameBase form) → cmake target name, used to
+// resolve cmake-side in-tree path fragments; pass nil on the Bazel side, where
+// project libs resolve via solib demangling instead.
+func orderedLibIdentities(tokens []string, nameToTarget map[string]string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, t := range tokens {
+		if sys := libIdentity(t); sys != "" {
+			add("sys:" + sys)
+			continue
+		}
+		// Bazel solib reference -> cmake target (project archive).
+		if tgt := demangleBazelSolib(t); tgt != "" {
+			add("tgt:" + tgt)
+			continue
+		}
+		// cmake in-tree path fragment (or a .a/.so path on either side) ->
+		// target via the NameOnDisk map.
+		if strings.Contains(t, ".so") || strings.HasSuffix(t, ".a") {
+			key := sonameBase(filepath.Base(strings.TrimSpace(t)))
+			if nameToTarget != nil {
+				if tgt, ok := nameToTarget[key]; ok {
+					add("tgt:" + tgt)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// orderedSystemLibs is retained for callers/tests that want only the system-lib
+// subset.
 func orderedSystemLibs(tokens []string) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -157,7 +226,21 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 		return nil, fmt.Errorf("aquery-link parse: %w", err)
 	}
 
-	// cmake: binary basename -> ordered system libs (EXECUTABLE targets).
+	// Map every in-tree library target's artifact basename (sonameBase form) to
+	// its cmake target name, so cmake-side link fragments (which name libraries
+	// by output path, e.g. lib/libcurl.a) resolve to the same identity Bazel's
+	// demangled solib refs do.
+	nameToTarget := map[string]string{}
+	for _, t := range reply.Targets {
+		switch t.Type {
+		case "STATIC_LIBRARY", "SHARED_LIBRARY", "MODULE_LIBRARY":
+			if t.NameOnDisk != "" {
+				nameToTarget[sonameBase(t.NameOnDisk)] = t.Name
+			}
+		}
+	}
+
+	// cmake: binary basename -> ordered lib identities (EXECUTABLE targets).
 	cmakeOrd := map[string][]string{}
 	for _, t := range reply.Targets {
 		if t.Type != "EXECUTABLE" || t.Link == nil {
@@ -173,12 +256,12 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 		if base == "" {
 			base = t.Name
 		}
-		if ord := orderedSystemLibs(toks); len(ord) > 0 {
+		if ord := orderedLibIdentities(toks, nameToTarget); len(ord) > 0 {
 			cmakeOrd[base] = ord
 		}
 	}
 
-	// bazel: binary basename -> ordered system libs (CppLink actions).
+	// bazel: binary basename -> ordered lib identities (CppLink actions).
 	bazelOrd := map[string][]string{}
 	for _, a := range doc.Actions {
 		if a.Mnemonic != "CppLink" {
@@ -188,7 +271,7 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 		if base == "" {
 			continue
 		}
-		if ord := orderedSystemLibs(a.Arguments); len(ord) > 0 {
+		if ord := orderedLibIdentities(a.Arguments, nil); len(ord) > 0 {
 			bazelOrd[base] = ord
 		}
 	}
@@ -242,9 +325,9 @@ func orderInversions(a, b []string) []string {
 }
 
 func (r *linkOrderReport) print(w *os.File) {
-	fmt.Fprintf(w, "\nlink-order fidelity (system libs): %d binaries matched\n", r.Matched)
+	fmt.Fprintf(w, "\nlink-order fidelity (system + project libs): %d binaries matched\n", r.Matched)
 	if len(r.Inversions) == 0 {
-		fmt.Fprintln(w, "  no system-lib order inversions")
+		fmt.Fprintln(w, "  no link-order inversions on common libs")
 		return
 	}
 	keys := make([]string, 0, len(r.Inversions))

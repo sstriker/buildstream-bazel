@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFactsFromArgv(t *testing.T) {
 	argv := []string{
@@ -147,5 +150,37 @@ func TestOrderInversions(t *testing.T) {
 	inv := orderInversions([]string{"m", "pthread"}, []string{"pthread", "m", "rt"})
 	if len(inv) != 1 || inv[0] != "m<->pthread" {
 		t.Errorf("got %v want [m<->pthread]", inv)
+	}
+}
+
+func TestDemangleBazelSolib(t *testing.T) {
+	cases := map[string]string{
+		"-lelements_Szlib_Slibzlib": "zlib", // elements/zlib/libzlib -> zlib
+		"-lelements_Scurl_Slibcurl": "curl", // -> curl
+		"-lstdc++":                  "",     // no _S: not a mangled project solib
+		"-lpthread":                 "",     // system, not mangled
+		"/usr/lib/libfoo.a":         "",     // not a -l ref
+	}
+	for in, want := range cases {
+		if got := demangleBazelSolib(in); got != want {
+			t.Errorf("demangleBazelSolib(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestOrderedLibIdentities(t *testing.T) {
+	n2t := map[string]string{"libcurl.a": "libcurl", "libz.so": "zlib"}
+	// cmake side: in-tree path fragments resolve via the NameOnDisk map; system
+	// libs as paths; order preserved.
+	cmake := []string{"lib/libcurl.a", "/usr/lib/x86_64-linux-gnu/libz.so.1", "-lpthread"}
+	got := orderedLibIdentities(cmake, n2t)
+	want := []string{"tgt:libcurl", "tgt:zlib", "sys:pthread"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("cmake order = %v want %v", got, want)
+	}
+	// bazel side: demangled solib + system, no map needed.
+	bz := []string{"-lelements_Scurl_Slibcurl", "-lpthread"}
+	if g := orderedLibIdentities(bz, nil); strings.Join(g, ",") != "tgt:curl,sys:pthread" {
+		t.Errorf("bazel order = %v", g)
 	}
 }
