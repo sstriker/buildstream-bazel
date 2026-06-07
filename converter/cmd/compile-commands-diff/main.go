@@ -72,10 +72,14 @@ type normOpts struct {
 // lossy on the gen: side (build-dir layouts differ) but exact on source
 // includes, which is where header-search fidelity actually matters.
 func normalizeInclude(dir string, o normOpts) string {
-	dir = strings.TrimRight(strings.TrimSpace(dir), "/")
+	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return ""
 	}
+	// Collapse `.`/`..` segments so equivalent spellings compare equal — cmake
+	// records e.g. `.../vtklibharu/src/../include`, Bazel `.../vtklibharu/include`;
+	// both Clean to the same dir (else a false-positive include mismatch).
+	dir = filepath.Clean(dir)
 	if filepath.IsAbs(dir) {
 		if o.cmakeBuild != "" {
 			if rel, ok := relUnder(o.cmakeBuild, dir); ok {

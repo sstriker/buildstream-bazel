@@ -1792,7 +1792,7 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	hdrs := sortedCopy(t.Hdrs)
 	includes := sortedCopy(t.Includes)
 	copts := append([]string(nil), t.Copts...) // preserve order; flag order matters
-	defines := sortedCopy(t.Defines)
+	defines := escapeDefinesForBazel(sortedCopy(t.Defines))
 	linkopts := append([]string(nil), t.LinkOpts...) // preserve order
 	deps := sortedCopy(t.Deps)
 	implementationDeps := sortedCopy(t.ImplementationDeps)
@@ -1856,8 +1856,8 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,
 		CoptsExpr:                  attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:                attrExpr(defines, perPlatformAttr(t, "defines")),
-		LocalDefinesExpr:           attrExpr(sortedCopy(t.LocalDefines), perPlatformAttr(t, "local_defines")),
+		DefinesExpr:                attrExpr(defines, escapeDefinesPerPlatform(perPlatformAttr(t, "defines"))),
+		LocalDefinesExpr:           attrExpr(escapeDefinesForBazel(sortedCopy(t.LocalDefines)), escapeDefinesPerPlatform(perPlatformAttr(t, "local_defines"))),
 		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
@@ -2014,6 +2014,44 @@ func scalarAttrExpr(flat string, sel map[string]string) string {
 // The returned map is a shallow copy so emit-time mutations
 // (the cc_binary hdrs→srcs fold) don't bleed back into the
 // caller's IR.
+// escapeDefineForBazel makes a C `-D` define survive Bazel's Bourne-shell
+// tokenization of the `defines`/`local_defines` attributes. Those attrs
+// tokenize each entry, which STRIPS unescaped quotes: a value like
+// `FOO="9.4"` reaches the compiler as `-DFOO=9.4` (a bare token, not the C
+// string `"9.4"`) — breaking any TU that uses the macro in string context
+// (caught by the compile-commands fidelity lens on VTK: VTK_PARSE_VERSION,
+// LZ4_VERSION, H5_ZLIB_HEADER). Backslash-escaping each `"` makes the shell
+// preserve it as a literal quote after tokenization. (The Starlark printer then
+// renders the backslash as `\\\"` in the BUILD text.)
+func escapeDefineForBazel(d string) string {
+	if !strings.Contains(d, `"`) {
+		return d
+	}
+	return strings.ReplaceAll(d, `"`, `\"`)
+}
+
+func escapeDefinesForBazel(ds []string) []string {
+	if len(ds) == 0 {
+		return ds
+	}
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = escapeDefineForBazel(d)
+	}
+	return out
+}
+
+func escapeDefinesPerPlatform(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = escapeDefinesForBazel(v)
+	}
+	return out
+}
+
 func perPlatformAttr(t ir.Target, name string) map[string][]string {
 	if len(t.PerPlatform) == 0 {
 		return nil
