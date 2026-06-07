@@ -765,19 +765,28 @@ transition cleanly.
        build advances past it. General capability (any in-tree codegen tool
        passed as a -D arg). (The bake's WORKING_DIRECTORY fix — lower's
        extractCdDir — also landed, helping OTHER relative-`include()` bake scripts.)
-    2. **octree split-package `strip_include_prefix` (NEXT blocker).** With
-       proj.db cleared the build aborts at `//…/Utilities/octree:octree`
-       analysis: `header '…/Utilities/octree/octree/octree' is not under strip
-       prefix '…/Utilities/octree/Utilities/octree'`. Under `--split-packages`
-       octree gets its own package (`elements/vtk/Utilities/octree`), but the
-       converter emits the element-root-relative `strip_include_prefix =
-       "Utilities/octree"`, which Bazel resolves relative to the PACKAGE → a
-       doubled/wrong path; the headers sit at package-relative `octree/*`. Fix:
-       emit `strip_include_prefix` package-location-independently (absolute
-       `/elements/vtk/Utilities/octree` form, or subtract the package's
-       within-element path) — touches the split-package emit abseil/glm also
-       exercise, so it needs care against golden churn.
-    3. **IO/HDFTools** analysis failure (after octree) — separate cc_library fix.
+    2. **octree split-package `strip_include_prefix` — LANDED + validated.**
+       Under `--split-packages` octree got its own package
+       (`elements/vtk/Utilities/octree`) but kept the element-root-relative
+       `strip_include_prefix = "Utilities/octree"`, which Bazel resolves relative
+       to the PACKAGE → the doubled `…/Utilities/octree/Utilities/octree` (its
+       `octree/*` headers "not under the strip prefix"). Fixed: rewriteTarget
+       now emits the repo-root absolute form (`/elements/vtk/Utilities/octree`)
+       for sub-package targets; root-package targets keep the relative form
+       (no churn). abseil + glm re-validated green (`0 0 0 ok ok`); glm emits no
+       strip_include_prefix so it's a no-op there.
+    3. **KWSys cross-package header refs (NEXT blocker).** The build now aborts
+       at `//…/Utilities/KWSys:Utilities_KWSys_headers` — a Visibility error:
+       its synthesized `hdrs` list files (`Base64.h`, `CommandLineArguments.hxx`,
+       …) that physically live in the `vtksys` SUB-package
+       (`Utilities/KWSys/vtksys`), so the cross-package file refs aren't visible.
+       The synthesized header-lib collection needs to either `exports_files`
+       those headers in their owning sub-package or reference the sub-package's
+       header-lib label — the split-emit cross-package-source handling
+       (`exportsByDir`) extended to synthesized header libs. (~20 consumers all
+       report the same one root cause.) The build is still in ANALYSIS — no TU
+       has compiled yet; expect more split-package edge cases before the large
+       compile.
     A converter-shaped lift, not disk- or scale-blocked.
   - **cuda-samples** — needs the CUDA toolkit (`BSB_PROVISION_CUDA=1`); not
     provisioned in the default web session and a multi-GB install. (Verify by
