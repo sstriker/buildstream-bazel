@@ -245,6 +245,11 @@ try_bazel_build() {
     EXTRA_BAZEL_DEPS=""
     EMIT_INSTALL_EXPORT=1
     ELEMENT_SOURCE_ROOT=""
+    # Per-project override of the global SURVEY_SPLIT_PACKAGES (empty → inherit).
+    # A member whose emit isn't split-package-clean yet (grpc's protoc `gens/`
+    # codegen: the sub-package move would need $(RULEDIR)/<root> and cross-package
+    # tool-label rewrites the converter doesn't do yet) can force monolithic.
+    CONF_SPLIT_PACKAGES=""
     unset -f extra_ws_setup 2>/dev/null || true
     _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
     [ -f "$_bb_conf" ] && . "$_bb_conf"
@@ -490,7 +495,9 @@ for entry in $projects; do
         bt_args="--build-types=$build_types"
     fi
     sp_args=""
-    if [ -n "$split_packages" ]; then
+    _eff_split="${CONF_SPLIT_PACKAGES:-$split_packages}"
+    case "$_eff_split" in 0|no|off|false) _eff_split="" ;; esac
+    if [ -n "$_eff_split" ]; then
         sp_args="--split-packages"
     fi
 
