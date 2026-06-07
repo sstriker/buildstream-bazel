@@ -835,29 +835,43 @@ transition cleanly.
   documentation surface, not library/test code, so lower priority than the test
   side that's now green.
 
-- **Build-lens fidelity: compare Bazel vs cmake `compile_commands.json` —
-  STAGE 1 LANDED; finish (2) includes + (3) copts, then wire as a survey lens.**
-  The build lens proves `bazel build //...` succeeds, but a build can succeed
-  with the WRONG per-TU flags (the `BUILDING_LIBCURL` / `HAVE_ZLIB` leaks
-  compiled fine while applying a macro to TUs cmake never gave it). Shipped:
-  `converter/cmd/compile-commands-diff` + `scripts/compile-commands-lens.sh`
-  diff cmake's `CMAKE_EXPORT_COMPILE_COMMANDS=ON` db against Bazel's
-  `aquery --output=jsonproto 'mnemonic("CppCompile", //...)'` (built-in,
-  hermetic — no third-party extractor `bazel_dep`), per translation unit, on
-  **(1) defines** (highest signal — match by TU basename, set-diff, filtering
-  Bazel's `__DATE__/__TIME__/__TIMESTAMP__` reproducibility stamps) and the
-  **-std** standard. First real catch: zlib's `DEFINE_SYMBOL ZLIB_DLL`
-  (the shared-lib export macro, PRIVATE to the lib's own compile) leaking to
-  `example.c`/`minigzip.c` as a propagating `defines` — see the cc_shared_library
-  item; fixing DEFINE_SYMBOL→`local_defines` is part of that work.
-  Remaining: **(2) includes** — currently basename-set + informational; needs
-  canonicalizing cmake's absolute/source-relative `-I` and Bazel's exec-root
-  form to a common source-relative shape for a real header-search check;
-  **(3) copts** — needs a toolchain-default filter to isolate project-authored
-  flags; and wiring the lens into `run-survey.sh` as `SURVEY_COMPILE_DB=1`
-  (`0` = flag-faithful to cmake). Caveats still open: TU keying is by basename
-  (collides across dirs in big trees; disambiguate by relative-suffix), config
-  alignment (cmake db is single-config; defines/-std are largely config-stable).
+- **Build-lens fidelity (compile-commands lens) — defines + -std + includes
+  LANDED & wired; remaining: link-order + copts.** The build lens proves
+  `bazel build //...` succeeds, but a build can succeed with the WRONG per-TU
+  flags (the `BUILDING_LIBCURL` / `HAVE_ZLIB` leaks compiled fine while applying
+  a macro to TUs cmake never gave it). Shipped: `cmd/compile-commands-diff` +
+  `scripts/compile-commands-lens.sh`, wired into `run-survey.sh` as the 5th lens
+  `SURVEY_COMPILE_DB=1` (runs after convert but BEFORE the build's compile —
+  `aquery` needs only analysis — writing `<out>/<name>/fidelity.json`). It diffs
+  cmake's `CMAKE_EXPORT_COMPILE_COMMANDS=ON` db against Bazel's
+  `aquery 'mnemonic("CppCompile",//...)'` (built-in, hermetic) per TU on:
+  **(1) defines** (set-diff, filtering Bazel's `__DATE__/__TIME__/__TIMESTAMP__`
+  reproducibility stamps); **-std**; and **(2) includes** — both sides
+  normalized to one source-relative space (`normalizeInclude`: cmake absolute
+  paths strip cmakeSrc→source-rel / cmakeBuild→`gen:` / `/usr`→`sys:`; Bazel
+  exec-root paths strip the element package→source-rel /
+  `bazel-out/<cfg>/bin/<pkg>`→`gen:` / `external/`→`ext:`), so source includes
+  diff exactly and the `gen:/sys:/ext:` build-layout/toolchain noise is filtered
+  from the headline. First real catch: zlib's `DEFINE_SYMBOL ZLIB_DLL` leaking
+  to `example.c`/`minigzip.c` — FIXED (DEFINE_SYMBOL→`local_defines`); zlib is
+  now fully fidelity-clean (0/0/0).
+  Remaining:
+  - **link-line ORDER** — for static archives the first lib to satisfy a symbol
+    wins, so link order is load-bearing. Sources: cmake's codemodel
+    `link.commandFragments` (role=libraries, ordered — NOT `link.txt`, which the
+    Ninja generator doesn't emit; add a codemodel-v2 query to the lens's cmake
+    configure) vs Bazel `aquery 'mnemonic("CppLink",//...)'` args. The HARD part
+    is cross-build-system lib IDENTITY matching: Bazel emits mangled
+    `-lelements_Szlib_Slibzlib`, cmake emits `libz.a`/`-lz`. Tractable first cut:
+    compare the relative order of SAME-identity libs — the system libs
+    (`-lstdc++ -lm -lpthread -ldl -lrt`), which name identically on both sides,
+    and where ordering bugs commonly bite — then layer project-archive identity
+    mapping (demangle Bazel's `-l<pkg>_S<...>` back to the cmake target).
+  - **(3) copts** — needs a toolchain-default filter to isolate project-authored
+    flags from Bazel/cmake builtins.
+  Caveats still open: TU keying is by basename (collides across dirs in big
+  trees; disambiguate by relative-suffix), config alignment (cmake db is
+  single-config; defines/-std/includes are largely config-stable).
 
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
