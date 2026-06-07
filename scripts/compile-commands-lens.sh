@@ -76,6 +76,12 @@ if ! ( cd "$repo_root" && go build -o "$diff_bin" ./converter/cmd/compile-comman
     diff_bin="go run $repo_root/converter/cmd/compile-commands-diff"
 fi
 log "diffing"
+# Normalization prefixes so cmake's absolute host includes and Bazel's
+# exec-root-relative ones diff in one source-relative space: cmake source root
+# is $src, cmake build dir is $out/cmake, and the converted element package is
+# elements/<name> (the build lens's faithful project-B landing — see
+# run-survey.sh try_bazel_build).
 # shellcheck disable=SC2086
-$diff_bin --cmake "$out/cmake/compile_commands.json" --aquery "$out/aquery.json" --json "$out/fidelity.json"
+$diff_bin --cmake "$out/cmake/compile_commands.json" --aquery "$out/aquery.json" --json "$out/fidelity.json" \
+    --cmake-src "$src" --cmake-build "$out/cmake" --bazel-package "elements/$name"
 log "report: $out/fidelity.json"

@@ -21,10 +21,36 @@ func TestFactsFromArgv(t *testing.T) {
 	if f.Std != "c++17" {
 		t.Errorf("std = %q want c++17", f.Std)
 	}
-	for _, want := range []string{"inc", "inc", "inc"} { // basenames
+	for _, want := range []string{"/abs/inc", "rel/inc", "/sys/inc"} { // raw, normalized at diff time
 		if !f.IncludeDir[want] {
-			t.Errorf("missing include basename %q in %v", want, f.IncludeDir)
+			t.Errorf("missing raw include %q in %v", want, f.IncludeDir)
 		}
+	}
+}
+
+func TestNormalizeInclude(t *testing.T) {
+	o := normOpts{cmakeSrc: "/tmp/zlib", cmakeBuild: "/tmp/zbuild", bazelPkg: "elements/zlib"}
+	cases := map[string]string{
+		"/tmp/zlib/include":     "include",     // cmake source include
+		"/tmp/zlib":             ".",           // cmake package root
+		"/tmp/zbuild":           "gen:.",       // cmake build dir
+		"/tmp/zbuild/gen":       "gen:gen",     // cmake generated subdir
+		"/usr/include":          "sys:include", // system
+		"elements/zlib/include": "include",     // bazel source include (matches cmake's)
+		"elements/zlib":         ".",           // bazel package root (matches cmake's)
+		"bazel-out/k8-fastbuild/bin/elements/zlib":   "gen:.", // bazel generated root
+		"bazel-out/k8-fastbuild/bin/elements/zlib/g": "gen:g", // bazel generated subdir
+	}
+	for in, want := range cases {
+		if got := normalizeInclude(in, o); got != want {
+			t.Errorf("normalizeInclude(%q) = %q want %q", in, got, want)
+		}
+	}
+	// The point of the exercise: a cmake source include and the matching bazel
+	// one collapse to the SAME key, so equivalent header search doesn't show as
+	// a spurious mismatch.
+	if normalizeInclude("/tmp/zlib/include", o) != normalizeInclude("elements/zlib/include", o) {
+		t.Error("cmake and bazel source includes should normalize equal")
 	}
 }
 
@@ -61,7 +87,7 @@ func TestDiff_DefineDelta(t *testing.T) {
 		"foo.cc": {Defines: map[string]bool{"A": true, "ZLIB_DLL": true}, Std: "c++20", IncludeDir: map[string]bool{}},
 		"bar.cc": {Defines: map[string]bool{"X": true}, IncludeDir: map[string]bool{}},
 	}
-	r := diff(cmake, bazel)
+	r := diff(cmake, bazel, normOpts{})
 	if r.Matched != 2 {
 		t.Fatalf("matched = %d want 2", r.Matched)
 	}

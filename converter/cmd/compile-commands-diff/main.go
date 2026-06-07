@@ -39,12 +39,103 @@ import (
 )
 
 // tuFacts is the normalized, path-independent compile view of one translation
-// unit: the set of macro defines, the language standard, and the set of
-// include-dir basenames.
+// unit: the set of macro defines, the language standard, and the RAW include
+// dirs (normalized to a common source-relative space at diff time — see
+// normalizeInclude).
 type tuFacts struct {
 	Defines    map[string]bool
 	Std        string
-	IncludeDir map[string]bool // basenames only
+	IncludeDir map[string]bool // raw -I/-isystem dirs as they appeared in argv
+}
+
+// normOpts carries the prefixes needed to translate cmake (absolute host) and
+// Bazel (exec-root-relative) include dirs into one comparable space.
+type normOpts struct {
+	cmakeSrc   string // cmake source root, e.g. /tmp/zlib
+	cmakeBuild string // cmake build dir, e.g. /tmp/cc-lens-zlib/cmake
+	bazelPkg   string // converted element package, e.g. elements/zlib
+}
+
+// normalizeInclude maps a raw include dir (from either cmake's absolute host
+// paths or Bazel's exec-root-relative paths) to a canonical key so the two
+// sides diff meaningfully:
+//
+//	<src-relative>   a source-tree dir (cmake: under cmakeSrc; bazel: under the
+//	                 element package) — e.g. "include", "." (the package root)
+//	gen:<rel>        a generated/build-dir include (cmake: under cmakeBuild;
+//	                 bazel: under bazel-out/<cfg>/bin/<pkg>)
+//	sys:<base>      a system dir (/usr, /lib, …) — toolchain-supplied
+//	ext:<tail>      anything else (host/external prefix) — keyed by a stable tail
+//
+// Empty result means "drop" (an unkeyable dir). The mapping is intentionally
+// lossy on the gen: side (build-dir layouts differ) but exact on source
+// includes, which is where header-search fidelity actually matters.
+func normalizeInclude(dir string, o normOpts) string {
+	dir = strings.TrimRight(strings.TrimSpace(dir), "/")
+	if dir == "" {
+		return ""
+	}
+	if filepath.IsAbs(dir) {
+		if o.cmakeBuild != "" {
+			if rel, ok := relUnder(o.cmakeBuild, dir); ok {
+				return "gen:" + rel
+			}
+		}
+		if o.cmakeSrc != "" {
+			if rel, ok := relUnder(o.cmakeSrc, dir); ok {
+				return rel
+			}
+		}
+		if strings.HasPrefix(dir, "/usr/") || strings.HasPrefix(dir, "/lib") || dir == "/usr/include" {
+			return "sys:" + filepath.Base(dir)
+		}
+		return "ext:" + filepath.Base(dir)
+	}
+	// Bazel exec-root-relative forms.
+	if rest, ok := stripBazelOut(dir); ok {
+		// bazel-out/<cfg>/bin/<pkg>/<rel> → gen:<rel>
+		if o.bazelPkg != "" {
+			if rel, ok := relUnder(o.bazelPkg, rest); ok {
+				return "gen:" + rel
+			}
+		}
+		return "gen:" + rest
+	}
+	if o.bazelPkg != "" {
+		if rel, ok := relUnder(o.bazelPkg, dir); ok {
+			return rel
+		}
+	}
+	if strings.HasPrefix(dir, "external/") {
+		return "ext:" + filepath.Base(dir)
+	}
+	return dir
+}
+
+// relUnder returns p relative to base when p is base or under it. "." for an
+// exact match (the package/build root itself).
+func relUnder(base, p string) (string, bool) {
+	base = strings.TrimRight(base, "/")
+	if p == base {
+		return ".", true
+	}
+	if strings.HasPrefix(p, base+"/") {
+		return p[len(base)+1:], true
+	}
+	return "", false
+}
+
+// stripBazelOut removes a leading bazel-out/<config>/bin (or /genfiles) segment,
+// returning the package-rooted remainder.
+func stripBazelOut(p string) (string, bool) {
+	if !strings.HasPrefix(p, "bazel-out/") {
+		return "", false
+	}
+	parts := strings.SplitN(p, "/", 4) // bazel-out, <cfg>, bin, <rest>
+	if len(parts) < 4 {
+		return "", true
+	}
+	return parts[3], true
 }
 
 // cmakeEntry is one record in a cmake compile_commands.json. cmake emits either
@@ -72,7 +163,11 @@ func main() {
 	cmakePath := flag.String("cmake", "", "path to cmake compile_commands.json (CMAKE_EXPORT_COMPILE_COMMANDS=ON)")
 	aqueryPath := flag.String("aquery", "", "path to `bazel aquery --output=jsonproto mnemonic(CppCompile,//...)` JSON")
 	jsonOut := flag.String("json", "", "optional: write a machine-readable summary here")
+	cmakeSrc := flag.String("cmake-src", "", "cmake source root (for include normalization, e.g. /tmp/zlib)")
+	cmakeBuild := flag.String("cmake-build", "", "cmake build dir (for include normalization, e.g. /tmp/zbuild)")
+	bazelPkg := flag.String("bazel-package", "", "converted element package (for include normalization, e.g. elements/zlib)")
 	flag.Parse()
+	o := normOpts{cmakeSrc: *cmakeSrc, cmakeBuild: *cmakeBuild, bazelPkg: *bazelPkg}
 
 	if *cmakePath == "" || *aqueryPath == "" {
 		fmt.Fprintln(os.Stderr, "compile-commands-diff: --cmake and --aquery are required")
@@ -90,7 +185,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	rep := diff(cmakeTUs, bazelTUs)
+	rep := diff(cmakeTUs, bazelTUs, o)
 	rep.print(os.Stdout)
 	if *jsonOut != "" {
 		if err := rep.writeJSON(*jsonOut); err != nil {
@@ -204,17 +299,20 @@ func factsFromArgv(argv []string) tuFacts {
 				d = argv[i]
 			}
 			if d != "" {
-				f.IncludeDir[filepath.Base(strings.TrimRight(d, "/"))] = true
+				f.IncludeDir[d] = true // raw; normalized at diff time
 			}
-		case a == "-isystem":
+		case a == "-isystem", a == "-iquote":
 			if i+1 < len(argv) {
 				i++
-				f.IncludeDir[filepath.Base(strings.TrimRight(argv[i], "/"))] = true
+				f.IncludeDir[argv[i]] = true
 			}
 		case strings.HasPrefix(a, "-isystem"):
-			d := strings.TrimPrefix(a, "-isystem")
-			if d != "" {
-				f.IncludeDir[filepath.Base(strings.TrimRight(d, "/"))] = true
+			if d := strings.TrimPrefix(a, "-isystem"); d != "" {
+				f.IncludeDir[d] = true
+			}
+		case strings.HasPrefix(a, "-iquote"):
+			if d := strings.TrimPrefix(a, "-iquote"); d != "" {
+				f.IncludeDir[d] = true
 			}
 		}
 	}
@@ -261,11 +359,20 @@ type diffSet struct {
 	ExtraInBazel   []string `json:"extra_in_bazel"`   // bazel has, cmake lacks
 }
 
-func diff(cmake, bazel map[string]tuFacts) *report {
+func diff(cmake, bazel map[string]tuFacts, o normOpts) *report {
 	r := &report{
 		DefineMismatch:  map[string]diffSet{},
 		StdMismatch:     map[string][2]string{},
 		IncludeMismatch: map[string]diffSet{},
+	}
+	normSet := func(raw map[string]bool) map[string]bool {
+		out := map[string]bool{}
+		for d := range raw {
+			if k := normalizeInclude(d, o); k != "" {
+				out[k] = true
+			}
+		}
+		return out
 	}
 	for k := range cmake {
 		if _, ok := bazel[k]; !ok {
@@ -291,11 +398,31 @@ func diff(cmake, bazel map[string]tuFacts) *report {
 		if cf.Std != bf.Std {
 			r.StdMismatch[k] = [2]string{cf.Std, bf.Std}
 		}
-		if miss, extra := setDelta(cf.IncludeDir, bf.IncludeDir); len(miss)+len(extra) > 0 {
+		// Compare SOURCE-relative include dirs (high-confidence: a real
+		// header-search divergence). gen:/sys:/ext: keys reflect build-layout
+		// and toolchain differences (cmake build-dir vs bazel-out, Bazel's
+		// hermetic toolchain externals) that legitimately differ even when the
+		// converted graph is correct, so they're bucketed as informational, not
+		// a headline mismatch.
+		miss, extra := setDelta(srcOnly(normSet(cf.IncludeDir)), srcOnly(normSet(bf.IncludeDir)))
+		if len(miss)+len(extra) > 0 {
 			r.IncludeMismatch[k] = diffSet{MissingInBazel: miss, ExtraInBazel: extra}
 		}
 	}
 	return r
+}
+
+// srcOnly keeps only source-relative include keys (dropping the gen:/sys:/ext:
+// build-layout/toolchain buckets) so the include diff is high-confidence.
+func srcOnly(s map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for k := range s {
+		if strings.HasPrefix(k, "gen:") || strings.HasPrefix(k, "sys:") || strings.HasPrefix(k, "ext:") {
+			continue
+		}
+		out[k] = true
+	}
+	return out
 }
 
 func setDelta(a, b map[string]bool) (missingInB, extraInB []string) {
@@ -317,14 +444,8 @@ func setDelta(a, b map[string]bool) (missingInB, extraInB []string) {
 func (r *report) print(w *os.File) {
 	fmt.Fprintf(w, "compile-commands fidelity: %d TUs matched\n", r.Matched)
 	fmt.Fprintf(w, "  only in cmake: %d   only in bazel: %d\n", len(r.OnlyCmake), len(r.OnlyBazel))
-	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d\n",
-		len(r.DefineMismatch), len(r.StdMismatch))
-	// Include-dir deltas are informational: cmake records build-dir/source
-	// absolute paths, Bazel exec-root-relative sandbox paths, so the basename
-	// sets legitimately differ even when header resolution is equivalent. A
-	// real header-search fidelity check is future work (ROADMAP); surfaced
-	// here only as a count + in --json, never as a headline mismatch.
-	fmt.Fprintf(w, "  include-dir basename deltas (informational): %d\n", len(r.IncludeMismatch))
+	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d   include-dir mismatches: %d\n",
+		len(r.DefineMismatch), len(r.StdMismatch), len(r.IncludeMismatch))
 	// Defines are the highest-signal, path-independent facts — show them in full.
 	if len(r.DefineMismatch) > 0 {
 		fmt.Fprintln(w, "\n-- DEFINE mismatches (cmake vs bazel, per TU) --")
@@ -345,6 +466,23 @@ func (r *report) print(w *os.File) {
 		for _, k := range sortedStdKeys(r.StdMismatch) {
 			v := r.StdMismatch[k]
 			fmt.Fprintf(w, "  %s: cmake=%q bazel=%q\n", k, v[0], v[1])
+		}
+	}
+	if len(r.IncludeMismatch) > 0 {
+		// Normalized to a common source-relative space (gen:/sys:/ext: prefixes
+		// mark generated/system/external roots). Source-relative deltas are
+		// high-confidence; gen:/sys: deltas reflect build-layout differences and
+		// are lower-confidence.
+		fmt.Fprintln(w, "\n-- include-dir mismatches (normalized; cmake vs bazel) --")
+		for _, k := range sortedKeys(r.IncludeMismatch) {
+			d := r.IncludeMismatch[k]
+			fmt.Fprintf(w, "  %s\n", k)
+			if len(d.MissingInBazel) > 0 {
+				fmt.Fprintf(w, "      missing in bazel: %s\n", strings.Join(d.MissingInBazel, " "))
+			}
+			if len(d.ExtraInBazel) > 0 {
+				fmt.Fprintf(w, "      extra in bazel:   %s\n", strings.Join(d.ExtraInBazel, " "))
+			}
 		}
 	}
 }
