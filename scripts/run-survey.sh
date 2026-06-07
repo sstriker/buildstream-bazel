@@ -92,6 +92,12 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
 # after the convert but BEFORE the build's compile (aquery needs only analysis),
 # so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
+# SURVEY_SHARED=1 builds the FAITHFUL link model for build-lens members: the
+# project's natural config (no forced BUILD_SHARED_LIBS=OFF) with real
+# cc_shared_library .so's (--emit-shared-libraries) and consumers' dynamic_deps
+# wired — i.e. what cmake would actually build. The default (off) keeps the
+# forced-static alignment the green corpus is validated under; SURVEY_SHARED is
+# the path to re-greening each member against its natural config.
 bazel_build="${SURVEY_BAZEL_BUILD:-}"
 build_lens_default="fmt libxml2 brotli"
 
@@ -284,7 +290,17 @@ try_bazel_build() {
     # static/shared conditionals fire the way Bazel links. Placed BEFORE
     # CONVERT_FLAGS so a project can still override (a later cmake -D wins) if it
     # genuinely needs the shared configure. See docs/survey-corpus.md.
-    set -- "$@" --cmake-define BUILD_SHARED_LIBS=OFF
+    # SURVEY_SHARED=1 opts into the FAITHFUL link model: build the project's
+    # NATURAL config (no forced static) and emit real cc_shared_library .so's
+    # (--emit-shared-libraries) with consumers' dynamic_deps wired. This is the
+    # fidelity target — match what cmake would actually build; the forced-static
+    # default below is the deviation. Off by default (the green corpus is
+    # validated under forced-static today; flipping is a per-member re-green).
+    if [ "${SURVEY_SHARED:-0}" != "0" ]; then
+        set -- "$@" --emit-shared-libraries
+    else
+        set -- "$@" --cmake-define BUILD_SHARED_LIBS=OFF
+    fi
     # CONVERT_FLAGS from the per-project .conf (word-split intentional: it's a
     # flag list authored in the conf, e.g. `--cmake-define CMAKE_CXX_FLAGS=-w`).
     # shellcheck disable=SC2086
