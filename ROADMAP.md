@@ -733,29 +733,39 @@ transition cleanly.
     whole-include-tree umbrella (manifest `umbrella_label` +
     `//absl_umbrella:absl`-style generated lib). grpc's build is large — mind
     the disk-bounded build cycle in the large-project playbook below.
-  - **vtk** — LLVM-scale; apply the large-project playbook (disk-bounded,
-    resume, no `--disk_cache`).
+  - **vtk** — NOT disk-blocked (an earlier note wrongly claimed this; the
+    container had ~22 GB of stale prior-session survey dirs under `/home/user/`
+    masking ~25 GB of real free space — reclaimed). VTK configures, converts
+    with **0 rejections** (vtk.conf: `--cmake-script-bake` lifts the 705
+    `cmake -P vtkEncodeString.cmake` codegen commands, `VTK_GIT_DESCRIBE` skips
+    the git stamp), and now LOADS + ANALYZES (1533 actions) after fixing the
+    FILE_SET-HEADERS relativization bug (141 targets had `//pkg:/abs` labels).
+    Current blocker: ThirdParty `cmake -P` codegen — VTK emits ~119 build-time
+    `cmake -P` runner genrules, the first failing being libproj's
+    `generate_proj_db.cmake` (`include(sql_filelist.cmake)` + SQLite db build).
+    These need the converter to run the `cmake -P` script HERMETICALLY: stage
+    its `include()`d siblings + data reads, or bake its output (bake currently
+    falls back to a build-time genrule when the convert-time run can't resolve
+    the script's relative `include()` — the likely fix is the script-runner's
+    cwd / CMAKE_MODULE_PATH at execution). A real multi-step VTK lift, but
+    converter-shaped, not disk- or scale-blocked.
   - **cuda-samples** — needs the CUDA toolkit (`BSB_PROVISION_CUDA=1`); not
-    provisioned in the default web session and a multi-GB install.
-  The converter features sdl needed are all generic and landed: multi-config
-  `file(GENERATE)` into a `$<CONFIG>` dir (glob fan-out in `recoverFileGenerate`),
-  per-config include relativization in the multi-config fold, cmake PCH
-  `-include` drop, and select-arm cross-package relabel. The remaining members
-  lean on dep-availability (`tools/install-survey-deps.sh`) + scale, not new
-  converter shapes.
+    provisioned in the default web session and a multi-GB install. (Verify by
+    trying, not assuming — the vtk "disk-blocked" claim was an untested
+    assumption that turned out false.)
+  The converter features sdl + vtk needed are all generic and landed:
+  multi-config `file(GENERATE)` glob fan-out, per-config include relativization,
+  cmake PCH `-include` drop, select-arm cross-package relabel, and FILE_SET
+  HEADERS path relativization. The remaining members lean on dep-availability
+  (`tools/install-survey-deps.sh`) + hermetic `cmake -P` script execution +
+  scale.
 
-  ENVIRONMENT CONSTRAINT (verified, blocks all three on the default web
-  session): the container's filesystem has a ~38 GB ceiling (`df /` showed
-  34 GB used, ~3–4 GB free). A full grpc or vtk build doesn't fit — grpc links
-  abseil + protobuf + re2 + c-ares + its own large tree (the compiled objects +
-  bazel install cache run to multiple GB each), and vtk is LLVM-scale.
-  cuda-samples additionally needs the multi-GB CUDA toolkit (`BSB_PROVISION_CUDA=1`)
-  and there's no nvcc/GPU in the base image. So these three need a
-  LARGER-DISK environment (and CUDA for cuda-samples) provisioned before they
-  can go green; the converter side is ready. Watch `df` and clean per-project
-  `.bzcache`/`build-ws` between members (the survey writes them under
-  `--out-dir/<member>/`) — a single survey of a green member is ~100–200 MB,
-  but they accumulate and ENOSPC silently corrupts a run.
+  DISK NOTE (corrected): the real ceiling is ~37 GB, and a clean session has
+  ~25 GB free — ample for grpc/vtk builds. The earlier "~3 GB, disk-blocked"
+  reading was stale prior-session survey dirs (`g-*`, `revisit`, `final-val`,
+  …) accumulating under `/home/user/`; reclaim them between runs. Always
+  `df /` and check `du -xsh /home/user/*` before concluding disk is the limit —
+  and clean per-project `.bzcache`/`build-ws` under `--out-dir/<member>/`.
 
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
