@@ -483,6 +483,7 @@ func run(a cli.Args) error {
 		todosCollector.Reset()
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
+			RecoverSourceComments:             a.EmitSourceComments,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
 			BackedFeatures:                    backedFeatures,
 			HostPrefixDir:                     prefixAbs,
@@ -726,9 +727,10 @@ func run(a cli.Args) error {
 		// the CMakeLists/add_subdirectory layout. Root → a.OutBuild;
 		// subdir "src/util" → <dir(a.OutBuild)>/src/util/BUILD.bazel.
 		tree, err := bazel.EmitSplit(pkg, bazel.Options{
-			SourceKey:        a.SourceKey,
-			BazelPackagePath: a.BazelPackagePath,
-			EmitProvenance:   a.EmitProvenance,
+			SourceKey:          a.SourceKey,
+			BazelPackagePath:   a.BazelPackagePath,
+			EmitProvenance:     a.EmitProvenance,
+			EmitSourceComments: a.EmitSourceComments,
 		})
 		if err != nil {
 			return err
@@ -757,9 +759,10 @@ func run(a cli.Args) error {
 		}
 	} else {
 		out, err := bazel.EmitWithOptions(pkg, bazel.Options{
-			SourceKey:        a.SourceKey,
-			BazelPackagePath: a.BazelPackagePath,
-			EmitProvenance:   a.EmitProvenance,
+			SourceKey:          a.SourceKey,
+			BazelPackagePath:   a.BazelPackagePath,
+			EmitProvenance:     a.EmitProvenance,
+			EmitSourceComments: a.EmitSourceComments,
 		})
 		if err != nil {
 			// canonicalize failures arrive pre-typed as
