@@ -782,6 +782,68 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 			}
 		}
 	}
+	// Propagate each tool's output-roots across its TRANSITIVE in-element dep
+	// closure: a lib linked into the tool (grpc_cpp_plugin → grpc_plugin_support)
+	// that carries the same spurious global gen-root include would otherwise dep
+	// the gen-root header lib and move the cycle one level deeper. None of a
+	// codegen tool's deps legitimately consume the generated protos (the gen
+	// CONSUMERS — grpcpp_channelz, grpc++_reflection — aren't in the plugin's
+	// closure), so suppressing the root across the closure is safe.
+	if len(p.codegenToolRoots) > 0 {
+		inElem := map[string]bool{}
+		for _, t := range pkg.Targets {
+			inElem[t.Name] = true
+		}
+		resolveName := func(lbl string) string {
+			if lbl == "" || strings.HasPrefix(lbl, "@") {
+				return ""
+			}
+			if i := strings.LastIndexByte(lbl, ':'); i >= 0 {
+				lbl = lbl[i+1:]
+			}
+			return lbl
+		}
+		depAdj := map[string][]string{}
+		for _, t := range pkg.Targets {
+			var ds []string
+			for _, d := range append(append([]string{}, t.Deps...), t.ImplementationDeps...) {
+				if n := resolveName(d); n != "" && inElem[n] {
+					ds = append(ds, n)
+				}
+			}
+			depAdj[t.Name] = ds
+		}
+		// Snapshot the seed tools (we mutate p.codegenToolRoots while walking).
+		seeds := map[string]map[string]bool{}
+		for tool, roots := range p.codegenToolRoots {
+			cp := map[string]bool{}
+			for r := range roots {
+				cp[r] = true
+			}
+			seeds[tool] = cp
+		}
+		for tool, roots := range seeds {
+			seen := map[string]bool{tool: true}
+			queue := []string{tool}
+			for len(queue) > 0 {
+				cur := queue[0]
+				queue = queue[1:]
+				for _, d := range depAdj[cur] {
+					if seen[d] {
+						continue
+					}
+					seen[d] = true
+					queue = append(queue, d)
+					if p.codegenToolRoots[d] == nil {
+						p.codegenToolRoots[d] = map[string]bool{}
+					}
+					for r := range roots {
+						p.codegenToolRoots[d][r] = true
+					}
+				}
+			}
+		}
+	}
 	// Collect every include-root dir and the union of every target's
 	// headers so header-library synthesis can glob the right files.
 	incRoots := map[string]struct{}{}
