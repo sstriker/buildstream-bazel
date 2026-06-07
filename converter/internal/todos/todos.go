@@ -109,10 +109,14 @@ type Todo struct {
 // whole block with the file's text via Text. JSON consumers read
 // whichever fields are present.
 type Preamble struct {
-	Intent  string `json:"intent,omitempty"`
-	Rules   string `json:"rules,omitempty"`
-	Example string `json:"example,omitempty"`
-	Text    string `json:"text,omitempty"`
+	Intent string `json:"intent,omitempty"`
+	// Environment states the project's concrete Bazel conventions the agent
+	// must author against (target Bazel version, the canonical rule providers,
+	// the buildifier/gazelle gate) so it doesn't have to rediscover them.
+	Environment string `json:"environment,omitempty"`
+	Rules       string `json:"rules,omitempty"`
+	Example     string `json:"example,omitempty"`
+	Text        string `json:"text,omitempty"`
 }
 
 // Report is the on-disk conversion-todos.json shape.

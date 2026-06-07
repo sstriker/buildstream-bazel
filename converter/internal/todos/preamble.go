@@ -17,6 +17,20 @@ func DefaultPreamble() Preamble {
 			"Bazel rule driving the *built artifact* — not a wrapper that re-invokes " +
 			"`cmake -P` or shells out to the cmake harness. Prefer bazel_skylib " +
 			"diff_test / sh_test over re-running cmake.",
+		Environment: "Target Bazel 9 (the repo's pinned floor; see CONTRIBUTING.md). " +
+			"Author with these rule providers, NOT native rules (Bazel 9 removed the " +
+			"native sh rules and deprecated native cc): C/C++ via " +
+			"`@rules_cc//cc:defs.bzl` (cc_binary/cc_library/cc_test); shell tests & " +
+			"binaries via `@rules_shell//shell:sh_test.bzl` / `sh_binary.bzl` / " +
+			"`sh_library.bzl`; file-comparison tests via " +
+			"`@bazel_skylib//rules:diff_test.bzl`; install/packaging via " +
+			"`@rules_pkg//pkg:mappings.bzl`. The converter already declares rules_cc, " +
+			"bazel_skylib and rules_pkg as `bazel_dep`s in MODULE.bazel (read it for " +
+			"the pinned versions); if you introduce a provider it doesn't list (e.g. " +
+			"rules_shell for an sh_test), add the matching `bazel_dep`. Your authored " +
+			"BUILD must be buildifier-canonical (`buildifier -mode=fix` is a no-op) " +
+			"and survive a `gazelle` / `gazelle fix` roundtrip — the same gate the " +
+			"converter's mechanical output meets (rule 4).",
 		Rules: strings.Join([]string{
 			"(1) Author into the designated authored-output file — never the " +
 				"converter-owned BUILD.bazel.out nor the stage-b-derived BUILD.bazel " +

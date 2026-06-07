@@ -78,6 +78,13 @@ rules = d.get("preamble", {}).get("rules", "")
 if "disposition" not in rules:
     print("FAIL: preamble rules missing disposition guidance")
     sys.exit(1)
+# (3b) the preamble states the project's Bazel environment/conventions so the
+# agent doesn't rediscover them (target version + canonical rule providers).
+env = d.get("preamble", {}).get("environment", "")
+for want in ("Bazel 9", "@rules_shell", "@rules_cc"):
+    if want not in env:
+        print("FAIL: preamble environment missing", want)
+        sys.exit(1)
 print("ok  meta-cmake-todos-coverage: refusal mirrored as rejection todo (disposition=actionable); preamble carries disposition guidance")
 PY
 

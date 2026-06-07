@@ -146,6 +146,19 @@ func TestDefaultPreamble_HasBrotliExample(t *testing.T) {
 	}
 }
 
+// TestDefaultPreamble_HasEnvironment pins the project-conventions block so the
+// agent is told the target Bazel version + the canonical rule providers
+// (rather than rediscovering, e.g., that sh_test lives in @rules_shell under
+// Bazel 9).
+func TestDefaultPreamble_HasEnvironment(t *testing.T) {
+	p := DefaultPreamble()
+	for _, want := range []string{"Bazel 9", "@rules_shell", "@rules_cc", "buildifier", "gazelle"} {
+		if !strings.Contains(p.Environment, want) {
+			t.Errorf("default preamble environment should mention %q; got %q", want, p.Environment)
+		}
+	}
+}
+
 // TestDefaultPreamble_ValidatesComments pins the rule instructing the post-pass
 // to carry AND validate the construct's source comment onto the authored
 // target — re-authored targets must not propagate a stale comment describing
