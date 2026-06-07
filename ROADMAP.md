@@ -849,29 +849,25 @@ transition cleanly.
     provisioned in the default web session and a multi-GB install. (Verify by
     trying, not assuming — the vtk "disk-blocked" claim was an untested
     assumption that turned out false.)
-  - **cuda-samples** — needs CUDA provisioned (`apt-get install
-    nvidia-cuda-toolkit gcc-12` + `scripts/provision-cuda-root.sh` →
-    `BSB_CUDA_ROOT`; `BSB_CUDA_HOST_CC=/usr/bin/gcc-12`). LANDED: the converter
-    now DROPS nvcc GPU-arch flags (`--generate-code` / `-gencode`) from BOTH
-    copts and linkopts (lower's `isNvccArchFlag`) — rules_cuda forbids per-target
-    arch flags in copts ("not allowed to be specified directly via copts of
-    rules_cuda related rules"; arch is a `@rules_cuda//cuda:archs` toolchain
-    concern), and cmake also baked them QUOTED onto the device-link line. This
-    was the analysis blocker AND sidesteps CUDA 12.0's Blackwell-arch
-    (compute_100/110/120) rejection. Also LANDED: cuda-samples.conf overlays the
-    whole repo (`ELEMENT_SOURCE_ROOT`) so the repo-root `Common/` headers
-    (`helper_cuda.h`, …) stage into the element. ACTIVE BLOCKER (see
-    cuda-samples.conf's remaining-work item 3): the config-root/anchor-root
-    mismatch — each sample is a self-contained `project()`, so the converter
-    anchors the element package at the sample dir (`--source-root`) and emits
-    `srcs = ["vectorAdd.cu"]`, but the repo overlay places the file deep
-    (`cpp/0_Introduction/vectorAdd/vectorAdd.cu`) → Bazel "missing input file".
-    zstd dodges this because its sources span the repo (auto-anchors at the
-    repo); a single sample's are local. FIX: a converter flag to decouple the
-    cmake CONFIGURE root from the element ANCHOR root (anchor srcs/includes at
-    the overlay/repo root while cmake configures at the sample). Then item 2
-    (find_package(CUDAToolkit) → CUDA::* imports manifest) for the library
-    samples. Arch-flag drop + `.cu` compile proven on CUDA 12.0.140 + gcc-12.
+  - **cuda-samples** — a surveyed sample now builds GREEN (needs CUDA
+    provisioned: `apt-get install nvidia-cuda-toolkit gcc-12` +
+    `scripts/provision-cuda-root.sh` → `BSB_CUDA_ROOT`;
+    `BSB_CUDA_HOST_CC=/usr/bin/gcc-12`). `cpp/0_Introduction/vectorAdd` converts
+    0-rej and `bazel build //...` completes (cuda_binary nvcc-compiled, deps the
+    synthesized `Common:Common_headers`). LANDED: (a) nvcc GPU-arch flags
+    (`--generate-code`/`-gencode`) dropped from copts+linkopts (rules_cuda
+    rejects per-target arch flags; arch is `@rules_cuda//cuda:archs`, which also
+    sidesteps CUDA 12.0's Blackwell-arch rejection); (b) `--element-source-root`
+    decouples the cmake CONFIGURE root (per-sample `project()`, dodging the
+    `9_CUDA_Tile`/tileiras whole-tree blocker) from the element ANCHOR root (the
+    repo overlay), so a sample's srcs land at `cpp/<group>/<sample>/` matching
+    the overlay; (c) the repo-root `Common/` include — outside the per-sample
+    cmake root but inside the overlay root — is anchored labelRoot-relative and
+    surfaced as an include root (`helper_cuda.h` resolves via the synthesized
+    `Common` header lib). REMAINING for the FULL suite: the
+    `find_package(CUDAToolkit)` library group (a `cuda-samples-imports.json`
+    mapping `CUDA::cublas` etc. → `@cuda//:…`) and the `9_CUDA_Tile`/tileiras
+    whole-tree configure prune (or keep surveying buildable sample subdirs).
   The converter features sdl + vtk needed are all generic and landed:
   multi-config `file(GENERATE)` glob fan-out, per-config include relativization,
   cmake PCH `-include` drop, select-arm cross-package relabel, and FILE_SET
