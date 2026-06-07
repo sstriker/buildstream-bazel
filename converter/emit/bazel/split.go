@@ -431,6 +431,16 @@ func (p *splitPlan) headerLibTarget(inc, name string, local bool, exportsByDir m
 func (p *splitPlan) rootHdrLibTarget(owner, name string) ir.Target {
 	hdrs := make([]string, 0, len(p.rootHdrsIn[owner]))
 	for _, h := range p.rootHdrsIn[owner] {
+		// Generated outputs are NOT part of the source element-root grant — they
+		// belong to their producing genrule / generated-header wrapper. Pulling a
+		// generated header into the root-walk aggregate cycles when its producer
+		// depends back on the aggregate: grpc's element_root_headers → a generated
+		// reflection.pb.h → its genrule → grpc_cpp_plugin → grpc_plugin_support →
+		// (element-root grant) element_root_headers. abseil/glm's root-walk is all
+		// SOURCE headers, so this exclusion is a no-op there.
+		if p.genOuts[h] {
+			continue
+		}
 		rel, _ := relUnder(owner, h)
 		hdrs = append(hdrs, rel)
 	}

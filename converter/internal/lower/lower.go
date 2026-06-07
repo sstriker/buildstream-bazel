@@ -3449,6 +3449,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					if isCompileOnlyLinkFlag(rewritten) {
 						continue
 					}
+					// nvcc GPU-arch flags (--generate-code / -gencode): cmake
+					// puts the CMAKE_CUDA_ARCHITECTURES list on the device-LINK
+					// line too (CUDA_SEPARABLE_COMPILATION). rules_cuda forbids
+					// them in linkopts (arch is a toolchain/flag concern), and
+					// cmake's quoted form would reach the linker driver with
+					// literal quotes. Drop them — mirror the copts-side drop.
+					if isNvccArchFlag(rewritten) {
+						continue
+					}
 					// Shared-only link flags (version script / soname /
 					// retain-symbols) apply to a .so link. SHARED_LIBRARY /
 					// MODULE_LIBRARY collapse to a static cc_library (no .so),
@@ -6636,6 +6645,21 @@ func stripBalancedQuotes(s string) string {
 	return s
 }
 
+// isNvccArchFlag reports whether s is an nvcc GPU-architecture selection flag
+// (`--generate-code=arch=...` / `-gencode...`), the form cmake bakes a
+// CMAKE_CUDA_ARCHITECTURES list into on both the compile and link lines.
+// rules_cuda forbids these in a rule's copts/linkopts ("not allowed to be
+// specified directly via copts of rules_cuda related rules") — arch is a
+// TOOLCHAIN concern set via the `@rules_cuda//cuda:archs` build flag. They never
+// appear on a non-CUDA compile/link line, so dropping them is safe across kinds.
+// Strips a balanced surrounding quote pair first: cmake shell-quotes the
+// fragment for the `[`/`,` it contains, and the link-flag path carries that
+// quoted form verbatim.
+func isNvccArchFlag(s string) bool {
+	s = stripBalancedQuotes(s)
+	return strings.HasPrefix(s, "--generate-code") || strings.HasPrefix(s, "-gencode")
+}
+
 // splitCompileFragments parses each whitespace-delimited fragment piece. -D
 // pieces are returned as defines (with the leading -D stripped); everything
 // else is a copt. -I and -isystem are dropped — those come through
@@ -6675,6 +6699,9 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 		}
 		heldInclude = ""
 	}
+	// heldArch swallows the VALUE token of a space-separated nvcc arch flag
+	// (`-gencode arch=...` / `--generate-code arch=...`). See the drop case below.
+	heldArch := false
 	for _, f := range frags {
 		if f.Role != "" {
 			// Reserved for link fragments; ignore on the compile side.
@@ -6708,7 +6735,28 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 				heldInclude = p
 				continue
 			}
+			// nvcc GPU-arch flags: rules_cuda forbids per-target arch flags in
+			// copts — arch selection is a TOOLCHAIN concern, set via the
+			// `@rules_cuda//cuda:archs` build flag, not the rule's copts
+			// (`--generate-code=... is not allowed to be specified directly via
+			// copts of rules_cuda related rules`). cmake bakes
+			// CMAKE_CUDA_ARCHITECTURES into `--generate-code=arch=...` compile
+			// flags, so drop them here; the build lens sets the arch via
+			// rules_cuda's flag. These nvcc flags never appear on a non-CUDA
+			// compile line, so the drop is safe for cc targets too. Handle both
+			// the `=`-joined token form (cmake's shape) and a defensive
+			// space-separated `-gencode <arg>` form (swallow the value).
+			if heldArch {
+				heldArch = false
+				continue
+			}
+			if p == "-gencode" || p == "--generate-code" {
+				heldArch = true
+				continue
+			}
 			switch {
+			case isNvccArchFlag(p):
+				// dropped: see the nvcc GPU-arch comment above.
 			case strings.HasPrefix(p, "-D"):
 				val := strings.TrimPrefix(p, "-D")
 				if defSeen[val] {
