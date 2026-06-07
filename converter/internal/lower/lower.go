@@ -527,8 +527,47 @@ func classifyAndAttach(irt *ir.Target, path string, seen map[string]bool, dropNo
 	return true
 }
 
-// wireDefineDrivenGeneratedHeaders connects a target to a generated header it
-// pulls in via a compile DEFINE rather than a literal #include, which the
+// attachGeneratedSource routes a GENERATED target-source PATH into the right cc
+// attribute, the second source-classification chokepoint (sister to
+// classifyAndAttach). Where classifyAndAttach serves the consumer-attribution
+// blocks (match-an-include then route), this serves the per-source IsGenerated /
+// on-disk-generated / OutToGenrule branches in the main lowerTarget walk, which
+// share a compile-group-aware shape that classifyAndAttach's plain ext routing
+// doesn't capture:
+//
+//   - inCG (the source is in one of cmake's compile groups → a COMPILED source):
+//     it goes to Srcs, and a cc_embed lift's generated `.cxx` also contributes
+//     its sibling header (embedHdr, from cc.CcEmbedSourceToHeader) to Hdrs so a
+//     target compiling the source — and any same-package source that #includes
+//     the header — resolves it as a declared input;
+//   - a header extension → Hdrs;
+//   - otherwise → Srcs (a compilable source not in a group, or a linkable
+//     object/archive/assembly).
+//
+// dropNonCc=true drops a non-cc input (a `.args`/`.data` build-order artifact)
+// instead of letting it fall through to Srcs — the IsGenerated branch's
+// cross-package-safe behavior, where a non-cc srcs entry fails cc analysis and a
+// bare-path data entry can't carry a cross-package ref. The compile-group test
+// is `inCG && !header`: a compile group only ever holds compiled sources, so the
+// header guard is defensive (an inCG header still routes to Hdrs). embedHdr ""
+// means no cc_embed pairing.
+func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, embedHdr string) {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch {
+	case dropNonCc && !isCcSrcEntry(path):
+		return
+	case inCG && !headerExts[ext]:
+		irt.Srcs = append(irt.Srcs, path)
+		if embedHdr != "" {
+			irt.Hdrs = append(irt.Hdrs, embedHdr)
+		}
+	case headerExts[ext]:
+		irt.Hdrs = append(irt.Hdrs, path)
+	default:
+		irt.Srcs = append(irt.Srcs, path)
+	}
+}
+
 // converter's include scan can't see. VTK's module machinery
 // (vtkModule.cmake) does exactly this: each implementing module gets
 // `target_compile_definitions(<Mod>_AUTOINIT_INCLUDE="vtkModuleAutoInit_<hash>.h")`
@@ -2160,15 +2199,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				if rel != "" && hostSrc != "" {
 					if _, err := os.Stat(filepath.Join(hostSrc, rel)); err == nil {
-						ext := strings.ToLower(filepath.Ext(rel))
-						switch {
-						case inCompileGroup[i]:
-							irt.Srcs = append(irt.Srcs, rel)
-						case headerExts[ext]:
-							irt.Hdrs = append(irt.Hdrs, rel)
-						default:
-							irt.Srcs = append(irt.Srcs, rel)
-						}
+						attachGeneratedSource(irt, rel, inCompileGroup[i], false, "")
 						continue
 					}
 				}
@@ -2196,36 +2227,11 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				return nil, err
 			}
 			consumesCodegen = true
-			ext := strings.ToLower(filepath.Ext(relOut))
-			switch {
-			case !isCcSrcEntry(relOut):
-				// Generated output that is neither a header nor a cc compile/link
-				// input — drop it from the cc target. VTK lists each module's
-				// wrap-hierarchy artifacts (CMakeFiles/<mod>-hierarchy.*.args/.data)
-				// as the module target's cmake sources for build ordering, and
-				// cmake even files them under a compile group; a cc rule REJECTS a
-				// non-source srcs entry ("does not produce any cc_library srcs
-				// files"). They have no cc-rule role and the producing genrule
-				// builds independently (cross-package ones also can't be a bare-path
-				// data entry, since rewriteDeps only relabels :name target refs).
-				// Checked BEFORE inCompileGroup so cmake's grouping can't override.
-			case inCompileGroup[i]:
-				irt.Srcs = append(irt.Srcs, relOut)
-				// A cc_embed lift's generated .cxx #includes its sibling .h;
-				// a target compiling the source needs the header as a
-				// declared hdr (an -I path isn't enough — Bazel needs the
-				// file as a declared input), which also lets any same-package
-				// source that #includes it resolve.
-				if hdr := cc.CcEmbedSourceToHeader[relOut]; hdr != "" {
-					irt.Hdrs = append(irt.Hdrs, hdr)
-				}
-			case headerExts[ext]:
-				irt.Hdrs = append(irt.Hdrs, relOut)
-			default:
-				// A compilable source not in a compile group, or a linkable
-				// object/archive/assembly — a real cc src input.
-				irt.Srcs = append(irt.Srcs, relOut)
-			}
+			// Generated output: drop a non-cc build artifact (VTK wrap-hierarchy
+			// .args/.data), route a compile-group source to srcs (+ its cc_embed
+			// sibling header), a header to hdrs, else to srcs. See
+			// attachGeneratedSource.
+			attachGeneratedSource(irt, relOut, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[relOut])
 			continue
 		}
 
@@ -2298,23 +2304,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// dir; see recoverConfigureFiles' recordedBuildDir).
 				if _, produced := cc.OutToGenrule[rel]; produced {
 					consumesCodegen = true
-					ext := strings.ToLower(filepath.Ext(rel))
-					if inCompileGroup[i] && !headerExts[ext] {
-						irt.Srcs = append(irt.Srcs, rel)
-						// A cc_embed lift's generated .cxx #includes its
-						// sibling .h; a target compiling the source needs the
-						// header as a declared hdr (an -I path isn't enough —
-						// Bazel needs the file as a declared input). Add it so
-						// this library — and any same-package source that
-						// #includes the header — resolves it.
-						if hdr := cc.CcEmbedSourceToHeader[rel]; hdr != "" {
-							irt.Hdrs = append(irt.Hdrs, hdr)
-						}
-					} else if headerExts[ext] {
-						irt.Hdrs = append(irt.Hdrs, rel)
-					} else {
-						irt.Srcs = append(irt.Srcs, rel)
-					}
+					attachGeneratedSource(irt, rel, inCompileGroup[i], false, cc.CcEmbedSourceToHeader[rel])
 					continue
 				}
 				elidedBuildDirSrc = true
