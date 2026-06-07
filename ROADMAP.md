@@ -691,6 +691,18 @@ transition cleanly.
   Bazel (no cmake re-invocation), and pass the **same render gates** as
   mechanical output (not trusted on faith). Surfaced from the brotli
   test-form discussion.
+  **Follow-up — root-package source exports for the post-pass.** A
+  real-corpus dry-run (glog v0.7.1) surfaced a gap in the file-ownership
+  split: when the post-pass authors a test into a *sibling* package
+  (`tests/BUILD.bazel`), its `cc_test` / `sh_test` call sites need the
+  converter-owned root `BUILD.bazel` to `exports_files([...])` the
+  cmake-test-only `.cc`/headers (sources no converted target lists, so the
+  converter never exports them) — but rule (1) forbids the agent from editing
+  the converter-owned BUILD. Options: (a) have the converter export
+  test-referenced loose sources behind a stable `filegroup`; (b) let the
+  post-pass author a `tests/` package *with its own* `exports_files` by
+  staging the sources there; (c) relax rule (1) to permit append-only
+  `exports_files` blocks. Pick one when the consumer ships.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
