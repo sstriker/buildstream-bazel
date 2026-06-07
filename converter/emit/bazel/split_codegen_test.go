@@ -86,3 +86,64 @@ func TestEmitSplit_GeneratedHeaderWrapper_NameCollision(t *testing.T) {
 		t.Errorf("collision error should name the reserved target, got: %v", err)
 	}
 }
+
+// A protoc-style genrule whose outputs live under a single-component output
+// root (grpc's `gens/`) moves INTO that `gens` package under --split-packages.
+// split-emit must then (A) shrink the cmd's `$(RULEDIR)/gens` output-dir arg to
+// `$(RULEDIR)` (the package IS gens, so $(RULEDIR) already points at it) and
+// (B) relabel the bare in-element tool `grpc_cpp_plugin` (a cc_binary in the
+// element root, referenced via $(execpath)) to its cross-package label.
+func TestEmitSplit_CodegenGenrule_OutputRootAndToolRelabel(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{
+			{Name: "grpc_cpp_plugin", Kind: ir.KindCCBinary, Srcs: []string{"plugin.cc"}},
+			{
+				Name:         "gen_gens_x_grpc_pb_cc",
+				Kind:         ir.KindGenrule,
+				GenruleOuts:  []string{"gens/src/proto/x.grpc.pb.cc", "gens/src/proto/x.grpc.pb.h"},
+				GenruleCmd:   "$(execpath @protobuf//:protoc) --grpc_out=:$(RULEDIR)/gens --cpp_out=$(RULEDIR)/gens --plugin=protoc-gen-grpc=$(execpath grpc_cpp_plugin) -I elements/p elements/p/src/proto/x.proto",
+				GenruleTools: []string{"@protobuf//:protoc", "grpc_cpp_plugin"},
+				Srcs:         []string{"src/proto/x.proto"},
+				Visibility:   []string{"//visibility:private"},
+			},
+			// Consumer compiles the generated .cc and carries the gens output
+			// root on includes (the #4 wiring) — which makes `gens` an include
+			// root → its own package, so the genrule moves into it.
+			{
+				Name:     "consumer",
+				Kind:     ir.KindCCLibrary,
+				Srcs:     []string{"gens/src/proto/x.grpc.pb.cc"},
+				Hdrs:     []string{"gens/src/proto/x.grpc.pb.h"},
+				Includes: []string{"gens"},
+			},
+		},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	gens, ok := tree["gens"]
+	if !ok {
+		t.Fatalf("no gens package emitted; got %v", keysOf(tree))
+	}
+	body := string(gens)
+	// (A) output-root shrunk: no doubled $(RULEDIR)/gens remains.
+	if strings.Contains(body, "$(RULEDIR)/gens") {
+		t.Errorf("output-root not shrunk (still $(RULEDIR)/gens):\n%s", body)
+	}
+	if !strings.Contains(body, "--cpp_out=$(RULEDIR) ") {
+		t.Errorf("--cpp_out not anchored to bare $(RULEDIR):\n%s", body)
+	}
+	// (B) bare tool relabeled cross-package in both tools + cmd; the absolute
+	// @protobuf//:protoc is left as-is.
+	if !strings.Contains(body, "$(execpath //elements/p:grpc_cpp_plugin)") {
+		t.Errorf("bare tool not relabeled in cmd:\n%s", body)
+	}
+	if !strings.Contains(body, `"//elements/p:grpc_cpp_plugin"`) {
+		t.Errorf("bare tool not relabeled in tools:\n%s", body)
+	}
+	if !strings.Contains(body, "$(execpath @protobuf//:protoc)") {
+		t.Errorf("absolute tool ref should be preserved:\n%s", body)
+	}
+}
