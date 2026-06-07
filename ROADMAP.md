@@ -807,7 +807,28 @@ transition cleanly.
        has compiled yet; expect more split-package edge cases before the large
        compile.
     A converter-shaped lift, not disk- or scale-blocked.
-  - **cuda-samples** — needs the CUDA toolkit (`BSB_PROVISION_CUDA=1`); not
+
+    UPDATE — analysis is now FULLY GREEN (2359/2359) and the COMPILE runs.
+    proj.db (built-tool recovery), octree (split strip_include_prefix), KWSys
+    (cross-package generated-header publicize), and the wrap-hierarchy
+    `.args/.data` (non-cc generated outputs → data, not cc srcs) all landed.
+    `bazel build //...` now compiles **~5,837 / 6,366 actions (~92%)**; the 529
+    CppCompile failures collapse to a short list dominated by ONE root cause:
+    - **`vtkModuleAutoInit_<hash>.h` not found (501) — the lever.** VTK
+      (`vtkModule.cmake:3494`) puts
+      `target_compile_definitions(<Mod>_AUTOINIT_INCLUDE="vtkModuleAutoInit_<hash>.h")`
+      on each implementing module and the source does `#ifdef <mod>_AUTOINIT_INCLUDE
+      / #include <mod>_AUTOINIT_INCLUDE` — a DEFINE-DRIVEN include the literal
+      #include scan never sees, so the (already-generated, 8 genrules at
+      `CMakeFiles/vtkModuleAutoInit_<hash>.h`) header is never wired into the
+      consumer. Fix = a define-driven-generated-header pass: detect a
+      `*_AUTOINIT_INCLUDE="<hdr>"` define, map `<hdr>` → its producing genrule,
+      wire it into the consumer's inputs + an `-I…/CMakeFiles` so the BASENAME
+      include resolves (cross-package consumers reuse the KWSys publicize path).
+      Clears ~501/529 → VTK ~99% compiling.
+    - Tail: `kwsysPrivate.h` (15), `vtkeigen/eigen/*` include path (6),
+      `proj_config.h` (4), misc (2); plus 2 genrule EXECUTION failures
+      (`proj_db` cmake -P at build time, `vtkCommonCore-hierarchy.txt`).
     provisioned in the default web session and a multi-GB install. (Verify by
     trying, not assuming — the vtk "disk-blocked" claim was an untested
     assumption that turned out false.)
