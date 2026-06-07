@@ -188,6 +188,13 @@ type codegenContext struct {
 	// the recoverGenrule signature.
 	ArtifactToName map[string]string
 
+	// ExecArtifacts is the subset of ArtifactToName keys whose target is an
+	// EXECUTABLE. The `VAR=<artifact-path>` tool lift (e.g. VTK's
+	// -DEXE_SQLITE3=bin/Debug/sqlitebin-9.4) is gated on this so a library
+	// artifact embedded in an arg (a linker flag, a data path) isn't
+	// mis-lifted into the genrule's `tools` as if it were a runnable tool.
+	ExecArtifacts map[string]bool
+
 	// BazelPackagePath is the element's Bazel package path (e.g.
 	// "elements/curl") — the exec-root prefix a genrule cmd's
 	// source-tree inputs / `-I` roots need so they resolve at the
@@ -454,7 +461,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// here: the per-target recovery path isn't reached under the workspace-root
 	// umbrella promotion (that surfaces on the standalone path).
 	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", cc.BazelPackagePath)
-	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName)
+	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts)
 	// Anchor declared outputs to $(RULEDIR)/<out> so a cmd that names its
 	// output as a literal arg (curl's `perl mk-lib1521.pl < curl.h lib1521.c`,
 	// where the script writes to argv) writes under bazel-out rather than a

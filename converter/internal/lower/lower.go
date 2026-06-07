@@ -1046,6 +1046,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// artifact-path tool references in genrule cmds into
 	// `$(location :<name>)` form plus a tools attr entry.
 	artifactToName := map[string]string{}
+	execArtifacts := map[string]bool{}
 	for _, tref := range cfg.Targets {
 		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
 			utilityIDs[tref.Id] = true
@@ -1057,6 +1058,9 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			for _, art := range t.Artifacts {
 				if art.Path != "" {
 					artifactToName[art.Path] = tref.Name
+					if t.Type == "EXECUTABLE" {
+						execArtifacts[art.Path] = true
+					}
 				}
 			}
 		}
@@ -1067,6 +1071,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// genrule cmds — same shape lowerStandaloneCustomCommands
 	// receives the map as a parameter.
 	cc.ArtifactToName = artifactToName
+	cc.ExecArtifacts = execArtifacts
 
 	// isTargetName is the set of every codemodel target name (real +
 	// UTILITY). The codegen-header walk uses it to stop at sibling-target

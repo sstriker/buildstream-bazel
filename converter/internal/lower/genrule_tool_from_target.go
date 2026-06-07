@@ -31,7 +31,7 @@ import (
 // containing `bin/X` as a suffix) don't rewrite. Conservative
 // because the alternative — substring rewrite — would corrupt
 // args like `--toolchain=bin/foo/include`.
-func rewriteToolFromTarget(cmd string, artifactToName map[string]string) (string, []string) {
+func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool) (string, []string) {
 	if cmd == "" || len(artifactToName) == 0 {
 		return cmd, nil
 	}
@@ -52,8 +52,7 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string) (string
 		// artifact map keys are plain build-dir-relative paths
 		// (`bin/llvm-lit`); strip the `./` before lookup so both
 		// forms match.
-		key := strings.TrimPrefix(tok, "./")
-		if name, ok := artifactToName[key]; ok {
+		emitTool := func(name string) {
 			b.WriteString("$(location :")
 			b.WriteString(name)
 			b.WriteByte(')')
@@ -61,9 +60,27 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string) (string
 				seenTools[name] = true
 				tools = append(tools, ":"+name)
 			}
-		} else {
-			b.WriteString(tok)
 		}
+		key := strings.TrimPrefix(tok, "./")
+		if name, ok := artifactToName[key]; ok {
+			emitTool(name)
+			return
+		}
+		// `VAR=<artifact-path>` form: a custom command passes the tool as a
+		// cmake -D arg, e.g. VTK's `-DEXE_SQLITE3=bin/Debug/sqlitebin-9.4`
+		// (libproj hardcodes `$<TARGET_FILE:VTK::sqlitebin>`, an in-tree built
+		// executable). The path is embedded after `=`, so the whole-token
+		// lookup misses; split on the first `=` and lift just the value when it
+		// names a converted target's artifact, keeping the `VAR=` prefix.
+		if eq := strings.IndexByte(tok, '='); eq >= 0 {
+			val := strings.TrimPrefix(tok[eq+1:], "./")
+			if name, ok := artifactToName[val]; ok && val != "" && execArtifacts[val] {
+				b.WriteString(tok[:eq+1])
+				emitTool(name)
+				return
+			}
+		}
+		b.WriteString(tok)
 	}
 
 	for i := 0; i < len(cmd); i++ {
