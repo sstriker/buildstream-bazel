@@ -749,53 +749,15 @@ transition cleanly.
   element-relative; do the staging in split (header lib), not by rewriting the
   copt in lower.
 
-- **Green the remaining heavyweight corpus members: grpc, vtk, cuda-samples.**
-  24/26 are green (protobuf + sdl + vtk landed). cuda-samples + the grpc TAIL
-  below are what's left:
-  - **grpc** — the deepest `find_package` graph (abseil + protobuf + re2 +
-    c-ares + zlib). LANDED: `scripts/build-lens/grpc.conf` +
-    `grpc-imports.json` (host-install each dep so find_package succeeds, map
-    imported targets → BCR labels via `--imports-manifest`, reuse protobuf's
-    absl umbrella) and the **element_root_headers cycle fix** (root-walk
-    aggregate excludes generated headers — `split.rootHdrLibTarget` skips
-    `genOuts` — so grpc's generated `reflection.pb.h` doesn't pull
-    `grpc_cpp_plugin → grpc_plugin_support → element_root_headers` into a
-    cycle). grpc converts with **0 rejections**, analyzes, and
-    `bazel build //...` compiles **~99.9% (4,847/4,851 TUs)** — everything but
-    the 5 gRPC C++ **service-stub** codegens (channelz + reflection).
-    `bazel build //...` compiles **~99.9% (4,847/4,851 TUs)** — everything but
-    the 5 gRPC C++ **service-stub** codegens (channelz + reflection).
-    LANDED since (the protoc-genrule conversion is now CORRECT): the converter's
-    `reanchorBuildDirCopyGenrule` handles grpc's configure-time proto-copy shape
-    (`cd <build>/protos && protoc -I . src/proto/…`) — drops the producerless
-    copy srcs, reanchors `-I .`/the proto arg to the source tree, anchors the
-    output-root to `$(RULEDIR)`, stages the proto `import` closure, drops the
-    host-tool basename phantom, and swaps the host protoc for the hermetic
-    `$(execpath @protobuf//:protoc)` (so gencode matches the rules_cc-forced BCR
-    runtime 33.4); the consumer gets the generated-output root on `includes`;
-    `--sandbox_add_mount_pair=/tmp` is on grpc.conf. Verified end-to-end in
-    MONOLITHIC emit (the genrule cmd builds the stubs); the converter goldens +
-    new `reanchor_buildcopy_test.go` guard it.
-    LANDED since: **split-emit re-relativizes the codegen genrule on its move
-    into the `gens/` sub-package** — the cmd's single-component `$(RULEDIR)/gens`
-    output-dir (→ `$(RULEDIR)`) and bare in-element tool labels like
-    `grpc_cpp_plugin` (→ `//elements/grpc:grpc_cpp_plugin`, gated on a
-    `$(execpath)`/`$(location)` reference so PATH tools are left alone). The
-    build now sails PAST the 5 protoc stubs and compiles them (749 fresh
-    actions ran).
-    REMAINING (the next open gap — a dependency CYCLE, same class as the
-    element_root_headers fix): the codegen TOOL `grpc_cpp_plugin` picks up
-    cmake's global `-I<build>/gens` → split wires it a dep on the `gens/`
-    include-root header lib (`gens:gens_headers`) → which contains a GENERATED
-    header (`reflection.pb.h`) produced by a genrule whose tool is
-    `grpc_cpp_plugin` → cycle. Fix: a codegen tool (a genrule `tools` target)
-    must NOT take the gen-output-root include / dep on that root's header lib —
-    it PRODUCES that root, doesn't consume it (it never #includes the generated
-    protos). Drop the gen-output-root include + header-lib dep from genrule-tool
-    targets. Once that lands grpc is green (the compiles already pass).
-    (Monolithic emit keeps the genrule where the cmd is correct, but grpc's
-    third_party includes don't resolve monolithically, so split is the right
-    mode.) Not disk- or scale-blocked.
+- **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
+  25/26 are green (protobuf + sdl + vtk + **grpc** landed). grpc — the deepest
+  `find_package` graph — now converts 0-rej, analyzes, and `bazel build //...`
+  completes successfully, including the 5 gRPC C++ service-stub codegens
+  (channelz + reflection) under the default `--split-packages`: the protoc
+  genrules' configure-time proto-copy shape, hermetic BCR protoc, proto-import
+  closure, split-emit output-root/tool relabel, and the codegen-tool
+  output-root-header-lib **cycle break** (suppressed across the tool's dep
+  closure) all landed. vtk's documented tail and cuda-samples are what's left:
   - **vtk** — NOT disk-blocked (an earlier note wrongly claimed this; the
     container had ~22 GB of stale prior-session survey dirs under `/home/user/`
     masking ~25 GB of real free space — reclaimed). VTK configures, converts
