@@ -794,14 +794,41 @@ transition cleanly.
   - Split (build-lens) path: dynamic_deps + the wrapper labels relabel
     cross-package (`rewriteSharedDeps` resolves `<lib>_shared` to the impl's
     package — curl's `libcurl_shared` in `//elements/curl/lib`).
-  Validated green under `SURVEY_SHARED=1`: zlib, fmt, libxml2, brotli (multi-lib),
-  curl (multi-package + the SIGSEGV root-cause — now fixed by the real `.so`),
-  glog, spdlog, mbedtls (multi-lib).
+  Validated green under `SURVEY_SHARED=1` (9/9 probed): zlib, fmt, libxml2,
+  brotli (multi-lib), curl (multi-package + the SIGSEGV root-cause — now fixed
+  by the real `.so`), glog, spdlog, mbedtls (multi-lib), protobuf
+  (find_package(absl) + umbrella + many libs).
   **Remaining:** run the WHOLE build-lens corpus under `SURVEY_SHARED=1` (incl.
   protobuf/abseil, sdl, OpenBLAS, the heavy LLVM/VTK) and fix fallout; carry the
   `.so` in runfiles for `bazel run`/test; `MODULE_LIBRARY` dlopen semantics;
   and consider flipping `SURVEY_SHARED` to the DEFAULT once the corpus is green
   under it (so green + the fidelity lens run against the config cmake produces).
+
+- **Test-target coverage — enable the scoped-out members' tests.** The build
+  lens builds `//...`, which already INCLUDES test targets where the project's
+  tests need no extra infra: tests build green today for fmt (20 `cc_test`),
+  libxml2 (8), glog (10, via `--dynamic_mode=off`), glm, googletest, abseil
+  (test-off but the surface compiles); curl builds its test PROGRAMS (cc_binary,
+  perl-harness-driven). The remaining members scope tests out via a `.conf`
+  flag, each for a concrete reason — to enable, resolve that reason:
+  - **spdlog** (`SPDLOG_BUILD_TESTS=OFF`): tests need `find_package(Catch2 3)`.
+    Catch2 IS a corpus member (3.5.3) — wire it cross-element via the imports
+    manifest + a host-install prefix (the protobuf↔absl pattern).
+  - **nlohmann-json** (`JSON_BuildTests=OFF`): tests `#include` a generated
+    `test_data.hpp` whose data is a `git clone` of `json_test_data` (network) —
+    stage the data dir + point `JSON_TestDataDirectory` at it.
+  - **mbedtls** (`ENABLE_TESTING=OFF`): test suites are `.c` generated from
+    `.data` + `.function` by `generate_test_code.py` (python add_custom_command)
+    — verify the converter recovers those as genrules.
+  - **libevent** (`EVENT__DISABLE_TESTS=ON`): `regress` needs `regress.gen.c`
+    from `event_rpcgen.py` (python codegen) — same genrule-recovery check.
+  - **eigen** (`EIGEN_BUILD_TESTING=OFF`): ~900-target `-Werror` SIMD suite,
+    self-contained (no ext dep/codegen) but a huge build — needs a scoped/
+    sharded build, not `//...` in one shot. Deferred dev surface.
+  - **openblas** (`BUILD_TESTING=OFF`): utest is C but the BLAS test surface
+    pulls the Fortran reference — gated on the (deferred) Fortran ruleset.
+  - **protobuf** (`protobuf_BUILD_TESTS=OFF`): needs googletest as a dep
+    (BCR module / corpus member) wired like abseil's `GTest::gmock`.
 
 - **Final corpus validation pass before declaring the converter "done."**
   Independent of any single feature: when the corpus is considered complete, do
