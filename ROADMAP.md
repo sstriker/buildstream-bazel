@@ -744,6 +744,19 @@ transition cleanly.
   lean on dep-availability (`tools/install-survey-deps.sh`) + scale, not new
   converter shapes.
 
+  ENVIRONMENT CONSTRAINT (verified, blocks all three on the default web
+  session): the container's filesystem has a ~38 GB ceiling (`df /` showed
+  34 GB used, ~3–4 GB free). A full grpc or vtk build doesn't fit — grpc links
+  abseil + protobuf + re2 + c-ares + its own large tree (the compiled objects +
+  bazel install cache run to multiple GB each), and vtk is LLVM-scale.
+  cuda-samples additionally needs the multi-GB CUDA toolkit (`BSB_PROVISION_CUDA=1`)
+  and there's no nvcc/GPU in the base image. So these three need a
+  LARGER-DISK environment (and CUDA for cuda-samples) provisioned before they
+  can go green; the converter side is ready. Watch `df` and clean per-project
+  `.bzcache`/`build-ws` between members (the survey writes them under
+  `--out-dir/<member>/`) — a single survey of a green member is ~100–200 MB,
+  but they accumulate and ENOSPC silently corrupts a run.
+
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
   (`lower.go` target-type switch), which Bazel static-links into every consumer
