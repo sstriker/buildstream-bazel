@@ -147,3 +147,64 @@ func TestEmitSplit_CodegenGenrule_OutputRootAndToolRelabel(t *testing.T) {
 		t.Errorf("absolute tool ref should be preserved:\n%s", body)
 	}
 }
+
+// A codegen TOOL (grpc_cpp_plugin) that carries cmake's global -I<build>/gens
+// must NOT get a dep on the gens/ include-root header lib it transitively
+// produces — that's a cycle (tool → gens_headers → generated reflection.pb.h →
+// genrule → tool). A normal consumer of the same include root still gets it.
+func TestEmitSplit_CodegenTool_NoSelfOutputRootHeaderDep(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{
+			// The codegen tool: a genrule tool that also (via cmake's global
+			// include) lists gens as an include root.
+			{Name: "grpc_cpp_plugin", Kind: ir.KindCCBinary, Srcs: []string{"plugin.cc"}, Includes: []string{"gens"}},
+			{
+				Name:         "gen_x",
+				Kind:         ir.KindGenrule,
+				GenruleOuts:  []string{"gens/src/proto/x.grpc.pb.cc", "gens/src/proto/x.grpc.pb.h"},
+				GenruleCmd:   "$(execpath grpc_cpp_plugin) -o $(RULEDIR) elements/p/x.proto",
+				GenruleTools: []string{"grpc_cpp_plugin"},
+				Visibility:   []string{"//visibility:private"},
+			},
+			// A legitimate consumer of the gens include root (also makes gens a
+			// header-lib root).
+			{Name: "consumer", Kind: ir.KindCCLibrary, Srcs: []string{"gens/src/proto/x.grpc.pb.cc"}, Hdrs: []string{"gens/src/proto/x.grpc.pb.h"}, Includes: []string{"gens"}},
+		},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	root := string(tree[""])
+	// grpc_cpp_plugin (in root) must NOT depend on gens:gens_headers.
+	plugin := sliceRule(root, "grpc_cpp_plugin")
+	if strings.Contains(plugin, "gens:gens_headers") || strings.Contains(plugin, "/gens:gens_headers") {
+		t.Errorf("codegen tool grpc_cpp_plugin should NOT dep its own output-root header lib:\n%s", plugin)
+	}
+	// The legitimate consumer SHOULD depend on it.
+	consumer := sliceRule(root, "consumer")
+	if !strings.Contains(consumer, ":gens_headers") {
+		t.Errorf("consumer should dep gens header lib:\n%s", consumer)
+	}
+}
+
+// sliceRule returns the substring of body for the rule named n (best-effort:
+// from its `name = "n"` line to the next blank line).
+func sliceRule(body, n string) string {
+	marker := "name = \"" + n + "\""
+	i := strings.Index(body, marker)
+	if i < 0 {
+		return ""
+	}
+	// back up to the rule start (preceding "(\n")
+	start := strings.LastIndex(body[:i], "(\n")
+	if start < 0 {
+		start = i
+	}
+	rest := body[start:]
+	if j := strings.Index(rest, "\n)"); j >= 0 {
+		return rest[:j]
+	}
+	return rest
+}

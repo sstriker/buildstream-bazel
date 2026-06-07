@@ -273,6 +273,18 @@ type splitPlan struct {
 	// that output can publicize the producer (see publicize).
 	genOutProducer map[string]string
 
+	// codegenToolRoots maps an in-element genrule TOOL target name to the set of
+	// output-root dirs (first path component of the genrule's outs) that genrules
+	// using it as a tool produce into. A codegen tool PRODUCES that root and must
+	// not DEPEND on the root's include-root header lib (which holds the tool's own
+	// generated outputs) — that's a dependency cycle. grpc: grpc_cpp_plugin is the
+	// tool of the gens/ protoc genrules; cmake's global `-I<build>/gens` would
+	// otherwise wire grpc_cpp_plugin → gens:gens_headers → reflection.pb.h → its
+	// genrule → grpc_cpp_plugin. rewriteTarget consults this to drop that root's
+	// header-lib dep from the tool. Same cycle class as the rootHdrLibTarget
+	// genOuts exclusion.
+	codegenToolRoots map[string]map[string]bool
+
 	// publicize is the set of rule names whose visibility must be forced to
 	// public because a generated output of theirs is referenced directly (in
 	// srcs) by a consumer in a DIFFERENT package. A genrule's outputs inherit
@@ -712,12 +724,13 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 // planSplit computes the split layout from a lowered package.
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
-		sub:            map[string]string{},
-		headerLibs:     map[string]string{},
-		headersIn:      map[string][]string{},
-		genOuts:        map[string]bool{},
-		genOutProducer: map[string]string{},
-		publicize:      map[string]bool{},
+		sub:              map[string]string{},
+		headerLibs:       map[string]string{},
+		headersIn:        map[string][]string{},
+		genOuts:          map[string]bool{},
+		genOutProducer:   map[string]string{},
+		publicize:        map[string]bool{},
+		codegenToolRoots: map[string]map[string]bool{},
 	}
 	for k, v := range pkg.SubPackages {
 		p.sub[k] = v
@@ -734,6 +747,39 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		if t.WriteFileOut != "" {
 			p.genOuts[t.WriteFileOut] = true
 			p.genOutProducer[t.WriteFileOut] = t.Name
+		}
+	}
+	// Index codegen-tool → output-roots (see splitPlan.codegenToolRoots).
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindGenrule || len(t.GenruleTools) == 0 {
+			continue
+		}
+		roots := map[string]bool{}
+		for _, o := range t.GenruleOuts {
+			if i := strings.IndexByte(o, '/'); i > 0 {
+				roots[o[:i]] = true
+			}
+		}
+		if len(roots) == 0 {
+			continue
+		}
+		for _, tool := range t.GenruleTools {
+			if strings.HasPrefix(tool, "@") {
+				continue // external-repo tool, not an in-element target
+			}
+			name := tool // bare, `:name`, or `//pkg:name` → take the target name
+			if i := strings.LastIndexByte(name, ':'); i >= 0 {
+				name = name[i+1:]
+			}
+			if name == "" {
+				continue
+			}
+			if p.codegenToolRoots[name] == nil {
+				p.codegenToolRoots[name] = map[string]bool{}
+			}
+			for r := range roots {
+				p.codegenToolRoots[name][r] = true
+			}
 		}
 	}
 	// Collect every include-root dir and the union of every target's
@@ -991,8 +1037,17 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	var headerDeps []string
 	var privHeaderDeps []string
 	incRoots := map[string]struct{}{}
+	toolRoots := plan.codegenToolRoots[t.Name]
 	for _, inc := range t.Includes {
 		n := normDir(inc)
+		// A codegen tool must not depend on the header lib of an output root it
+		// PRODUCES (cmake's global `-I<build>/gens` would otherwise wire
+		// grpc_cpp_plugin → gens:gens_headers → its own generated outputs →
+		// cycle). The tool never #includes the generated headers, so dropping
+		// the root is correct, not just cycle-avoidance.
+		if toolRoots != nil && toolRoots[n] {
+			continue
+		}
 		if name, ok := plan.headerLibs[n]; ok {
 			incRoots[n] = struct{}{}
 			headerDeps = append(headerDeps, headerLibLabel(plan, n, name))
@@ -1021,6 +1076,9 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			dir, isInc := includeDirFromCopt(c)
 			n := normDir(dir)
 			if isInc && n != "" {
+				if toolRoots != nil && toolRoots[n] {
+					continue // codegen tool's own output root — drop (see above)
+				}
 				if _, already := incRoots[n]; already {
 					continue // header dep already wired via a public include
 				}
