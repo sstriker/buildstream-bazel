@@ -776,15 +776,26 @@ transition cleanly.
     `--sandbox_add_mount_pair=/tmp` is on grpc.conf. Verified end-to-end in
     MONOLITHIC emit (the genrule cmd builds the stubs); the converter goldens +
     new `reanchor_buildcopy_test.go` guard it.
-    REMAINING (the one open gap): under the default `--split-packages`, those
-    genrules move into a `gens/` SUB-package, so **split-emit must re-relativize
-    the codegen genrule's `$(RULEDIR)/gens` output-dir (→ `$(RULEDIR)`) and its
-    same-package `grpc_cpp_plugin` tool label (→ `//elements/grpc:grpc_cpp_plugin`)
-    on the package move** — the existing split relabel handles `srcs` labels but
-    not the cmd's output-root dir or the genrule `tools` labels. (Monolithic emit
-    keeps the genrule where the cmd is already correct, but grpc's third_party
-    includes don't resolve monolithically, so split is the right mode and the
-    split-emit codegen relabel is the fix.) Not disk- or scale-blocked.
+    LANDED since: **split-emit re-relativizes the codegen genrule on its move
+    into the `gens/` sub-package** — the cmd's single-component `$(RULEDIR)/gens`
+    output-dir (→ `$(RULEDIR)`) and bare in-element tool labels like
+    `grpc_cpp_plugin` (→ `//elements/grpc:grpc_cpp_plugin`, gated on a
+    `$(execpath)`/`$(location)` reference so PATH tools are left alone). The
+    build now sails PAST the 5 protoc stubs and compiles them (749 fresh
+    actions ran).
+    REMAINING (the next open gap — a dependency CYCLE, same class as the
+    element_root_headers fix): the codegen TOOL `grpc_cpp_plugin` picks up
+    cmake's global `-I<build>/gens` → split wires it a dep on the `gens/`
+    include-root header lib (`gens:gens_headers`) → which contains a GENERATED
+    header (`reflection.pb.h`) produced by a genrule whose tool is
+    `grpc_cpp_plugin` → cycle. Fix: a codegen tool (a genrule `tools` target)
+    must NOT take the gen-output-root include / dep on that root's header lib —
+    it PRODUCES that root, doesn't consume it (it never #includes the generated
+    protos). Drop the gen-output-root include + header-lib dep from genrule-tool
+    targets. Once that lands grpc is green (the compiles already pass).
+    (Monolithic emit keeps the genrule where the cmd is correct, but grpc's
+    third_party includes don't resolve monolithically, so split is the right
+    mode.) Not disk- or scale-blocked.
   - **vtk** — NOT disk-blocked (an earlier note wrongly claimed this; the
     container had ~22 GB of stale prior-session survey dirs under `/home/user/`
     masking ~25 GB of real free space — reclaimed). VTK configures, converts
