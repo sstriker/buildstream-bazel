@@ -181,18 +181,20 @@ func main() {
 		os.Exit(2)
 	}
 
-	cmakeTUs, err := loadCmake(*cmakePath)
+	cmakeTUs, cmakeColl, err := loadCmake(*cmakePath, *cmakeSrc)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "compile-commands-diff: cmake: %v\n", err)
 		os.Exit(2)
 	}
-	bazelTUs, err := loadAquery(*aqueryPath)
+	bazelTUs, paramSkipped, bazelColl, err := loadAquery(*aqueryPath, *bazelPkg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "compile-commands-diff: aquery: %v\n", err)
 		os.Exit(2)
 	}
 
-	rep := diff(cmakeTUs, bazelTUs, o)
+	rep := diff(cmakeTUs, bazelTUs, paramSkipped, o)
+	rep.TUKeyCollisions = cmakeColl + bazelColl
+	rep.ParamFileSkipped = len(paramSkipped)
 	rep.print(os.Stdout)
 	if *jsonOut != "" {
 		if err := rep.writeJSON(*jsonOut); err != nil {
@@ -214,42 +216,61 @@ func main() {
 
 // loadCmake parses a cmake compile_commands.json into per-TU facts keyed by the
 // source file's basename (cmake records absolute host source paths).
-func loadCmake(path string) (map[string]tuFacts, error) {
+func loadCmake(path, root string) (map[string]tuFacts, int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	var entries []cmakeEntry
 	if err := json.Unmarshal(b, &entries); err != nil {
-		return nil, fmt.Errorf("parse: %w", err)
+		return nil, 0, fmt.Errorf("parse: %w", err)
 	}
 	out := map[string]tuFacts{}
+	collisions := 0
 	for _, e := range entries {
 		argv := e.Arguments
 		if len(argv) == 0 {
 			argv = splitCommand(e.Command)
 		}
-		key := tuKey(e.File)
+		key := tuKey(e.File, root)
 		if key == "" {
 			continue
 		}
+		if _, dup := out[key]; dup {
+			collisions++
+		}
 		out[key] = factsFromArgv(argv)
 	}
-	return out, nil
+	return out, collisions, nil
+}
+
+// hasParamFileArg reports whether a compile argv routes its flags through a
+// `@response-file` param file (toolchain/config-dependent, common on large
+// members). Such an action's `arguments` is just `[compiler, @path]`, so
+// factsFromArgv would extract nothing — comparing it would report every cmake
+// define/include as "missing in bazel". We skip+count these instead.
+func hasParamFileArg(argv []string) bool {
+	for _, a := range argv {
+		if strings.HasPrefix(a, "@") {
+			return true
+		}
+	}
+	return false
 }
 
 // loadAquery parses a bazel aquery jsonproto and recovers per-TU facts keyed by
 // the compiled source's basename. Only CppCompile actions are considered.
-func loadAquery(path string) (map[string]tuFacts, error) {
+func loadAquery(path, root string) (facts map[string]tuFacts, paramSkipped map[string]bool, collisions int, err error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 	var doc aqueryDoc
 	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("parse: %w", err)
+		return nil, nil, 0, fmt.Errorf("parse: %w", err)
 	}
 	out := map[string]tuFacts{}
+	skipped := map[string]bool{}
 	for _, a := range doc.Actions {
 		if a.Mnemonic != "CppCompile" {
 			continue
@@ -258,20 +279,40 @@ func loadAquery(path string) (map[string]tuFacts, error) {
 		if src == "" {
 			continue
 		}
-		out[tuKey(src)] = factsFromArgv(a.Arguments)
+		key := tuKey(src, root)
+		if hasParamFileArg(a.Arguments) {
+			// Param-file-routed: facts unrecoverable from argv. Record the key so
+			// diff EXCLUDES it (rather than reporting a total false miss) and the
+			// report can surface the count.
+			skipped[key] = true
+			continue
+		}
+		if _, dup := out[key]; dup {
+			collisions++
+		}
+		out[key] = factsFromArgv(a.Arguments)
 	}
-	return out, nil
+	return out, skipped, collisions, nil
 }
 
-// tuKey is the cross-toolchain match key for a translation unit: its basename.
-// cmake uses absolute host source paths, Bazel exec-root-relative ones, so a
-// basename is the portable join key. (Basename collisions across directories
-// are possible in large trees; the report flags the count so a future version
-// can disambiguate by relative-suffix when it matters.)
-func tuKey(p string) string {
+// tuKey is the cross-toolchain match key for a translation unit: the source
+// path made relative to its root — cmakeSrc for cmake's absolute host paths,
+// bazelPkg for Bazel's exec-root-relative ones — so the two sides land on the
+// same dir-qualified key (cmake `/tmp/vtk/Common/Misc/x.cxx` and Bazel
+// `elements/vtk/Common/Misc/x.cxx` both → `Common/Misc/x.cxx`). This keeps
+// same-named TUs in different directories DISTINCT; a plain basename silently
+// collapsed them (overwrite on both sides), corrupting Matched and the per-TU
+// verdicts at VTK/LLVM scale. Falls back to basename only when the path isn't
+// under the given root (unrelativizable).
+func tuKey(p, root string) string {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return ""
+	}
+	if root != "" {
+		if rel, ok := relUnder(root, p); ok && rel != "." {
+			return rel
+		}
 	}
 	return filepath.Base(p)
 }
@@ -317,6 +358,12 @@ func interestingCopt(a string) bool {
 		"-fPIC", "-fPIE", "-fpic", "-fpie",
 		"-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE", "-frandom-seed", "-fdiagnostics",
 		"-MF", "-MT", "-MQ",
+		// Bazel hermetic-toolchain defaults cmake's host gcc doesn't set — pure
+		// noise that would otherwise show as `extra in bazel` on every TU and
+		// bury the real -fvisibility/-fno-rtti/-fopenmp/-march deltas.
+		"-no-canonical-prefixes", "--sysroot", "--target=",
+		"-fdebug-prefix-map", "-fmacro-prefix-map", "-ffile-prefix-map",
+		"-Wl,", "-B", "-nostdinc", "-isysroot",
 	} {
 		if strings.HasPrefix(a, p) {
 			return false
@@ -404,20 +451,61 @@ func sourceFromArgv(argv []string) string {
 	return ""
 }
 
-// splitCommand tokenizes a cmake `command` string. cmake quotes shell-special
-// values; a simple space split is sufficient for the -D/-I/-std flags we read
-// (those values don't carry spaces in practice for the fidelity facts).
-func splitCommand(s string) []string { return strings.Fields(s) }
+// splitCommand tokenizes a cmake `command` string (the form cmake's Ninja
+// generator emits in compile_commands.json). It is quote-aware: a `strings.Fields`
+// split mis-tokenizes a space-bearing quoted define (`-DGREETING="hello world"`
+// → `-DGREETING="hello` + `world"`), producing a spurious define mismatch. This
+// honors single/double quotes (whitespace inside doesn't split) and backslash
+// escapes (so `\"` becomes a literal quote in the token, matching how the value
+// reaches the compiler), while consuming the outer shell-quote delimiters.
+func splitCommand(s string) []string {
+	var toks []string
+	var cur strings.Builder
+	inTok := false
+	var quote byte // 0 = none, '"' or '\'' = open quote char
+	flush := func() {
+		if inTok {
+			toks = append(toks, cur.String())
+			cur.Reset()
+			inTok = false
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote == 0 && (c == ' ' || c == '\t' || c == '\n' || c == '\r'):
+			flush()
+		case quote == 0 && (c == '"' || c == '\''):
+			quote = c
+			inTok = true // enter quote; drop the delimiter
+		case quote != 0 && c == quote:
+			quote = 0
+			inTok = true // exit quote; drop the delimiter
+		case c == '\\' && quote != '\'' && i+1 < len(s):
+			cur.WriteByte(s[i+1]) // escaped char kept literally (\" -> ")
+			i++
+			inTok = true
+		default:
+			cur.WriteByte(c)
+			inTok = true
+		}
+	}
+	flush()
+	return toks
+}
 
 // report is the per-TU diff outcome.
 type report struct {
-	Matched         int                  `json:"matched"`          // TUs present in both
-	OnlyCmake       []string             `json:"only_cmake"`       // TU keys cmake compiles, bazel doesn't
-	OnlyBazel       []string             `json:"only_bazel"`       // TU keys bazel compiles, cmake doesn't
-	DefineMismatch  map[string]diffSet   `json:"define_mismatch"`  // TU → define delta
-	StdMismatch     map[string][2]string `json:"std_mismatch"`     // TU → [cmake, bazel]
-	IncludeMismatch map[string]diffSet   `json:"include_mismatch"` // TU → source-include delta
-	CoptMismatch    map[string]diffSet   `json:"copt_mismatch"`    // TU → project-copt delta
+	Matched          int                  `json:"matched"`            // TUs present in both
+	OnlyCmake        []string             `json:"only_cmake"`         // TU keys cmake compiles, bazel doesn't
+	OnlyBazel        []string             `json:"only_bazel"`         // TU keys bazel compiles, cmake doesn't
+	DefineMismatch   map[string]diffSet   `json:"define_mismatch"`    // TU → define delta
+	StdMismatch      map[string][2]string `json:"std_mismatch"`       // TU → [cmake, bazel]
+	IncludeMismatch  map[string]diffSet   `json:"include_mismatch"`   // TU → source-include delta
+	CoptMismatch     map[string]diffSet   `json:"copt_mismatch"`      // TU → project-copt delta
+	GenRootMissing   map[string][]string  `json:"gen_root_missing"`   // TU → gen: roots cmake has with NO bazel gen: counterpart
+	TUKeyCollisions  int                  `json:"tu_key_collisions"`  // same-key TUs that overwrote (should be 0 with relative keys)
+	ParamFileSkipped int                  `json:"param_file_skipped"` // bazel CppCompile TUs routed via @param-file, excluded from the diff
 }
 
 type diffSet struct {
@@ -425,12 +513,13 @@ type diffSet struct {
 	ExtraInBazel   []string `json:"extra_in_bazel"`   // bazel has, cmake lacks
 }
 
-func diff(cmake, bazel map[string]tuFacts, o normOpts) *report {
+func diff(cmake, bazel map[string]tuFacts, paramSkipped map[string]bool, o normOpts) *report {
 	r := &report{
 		DefineMismatch:  map[string]diffSet{},
 		StdMismatch:     map[string][2]string{},
 		IncludeMismatch: map[string]diffSet{},
 		CoptMismatch:    map[string]diffSet{},
+		GenRootMissing:  map[string][]string{},
 	}
 	normSet := func(raw map[string]bool) map[string]bool {
 		out := map[string]bool{}
@@ -443,6 +532,9 @@ func diff(cmake, bazel map[string]tuFacts, o normOpts) *report {
 	}
 	for k := range cmake {
 		if _, ok := bazel[k]; !ok {
+			if paramSkipped[k] {
+				continue // bazel compiles it via a param file — excluded, not a miss
+			}
 			r.OnlyCmake = append(r.OnlyCmake, k)
 		}
 	}
@@ -471,15 +563,42 @@ func diff(cmake, bazel map[string]tuFacts, o normOpts) *report {
 		// hermetic toolchain externals) that legitimately differ even when the
 		// converted graph is correct, so they're bucketed as informational, not
 		// a headline mismatch.
-		miss, extra := setDelta(srcOnly(normSet(cf.IncludeDir)), srcOnly(normSet(bf.IncludeDir)))
+		cInc, bInc := normSet(cf.IncludeDir), normSet(bf.IncludeDir)
+		miss, extra := setDelta(srcOnly(cInc), srcOnly(bInc))
 		if len(miss)+len(extra) > 0 {
 			r.IncludeMismatch[k] = diffSet{MissingInBazel: miss, ExtraInBazel: extra}
+		}
+		// Asymmetric generated-include-root presence (higher-confidence than the
+		// noisy per-root gen: layout delta we drop in srcOnly): cmake has gen:
+		// include root(s) for this TU but bazel has NONE — i.e. a generated
+		// include dir didn't make it onto the consumer's path at all (VTK's
+		// configure_file / proj_config.h tail). When bazel has its own gen: roots
+		// the per-root paths legitimately differ (build-dir vs bazel-out), so we
+		// only headline the all-or-nothing case.
+		if cgen := genOnly(cInc); len(cgen) > 0 && len(genOnly(bInc)) == 0 {
+			roots := make([]string, 0, len(cgen))
+			for g := range cgen {
+				roots = append(roots, g)
+			}
+			sort.Strings(roots)
+			r.GenRootMissing[k] = roots
 		}
 		if cmiss, cextra := setDelta(cf.Copts, bf.Copts); len(cmiss)+len(cextra) > 0 {
 			r.CoptMismatch[k] = diffSet{MissingInBazel: cmiss, ExtraInBazel: cextra}
 		}
 	}
 	return r
+}
+
+// genOnly keeps only the gen: (generated) include roots.
+func genOnly(s map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for k := range s {
+		if strings.HasPrefix(k, "gen:") {
+			out[k] = true
+		}
+	}
+	return out
 }
 
 // srcOnly keeps only source-relative include keys (dropping the gen:/sys:/ext:
@@ -514,8 +633,23 @@ func setDelta(a, b map[string]bool) (missingInB, extraInB []string) {
 func (r *report) print(w *os.File) {
 	fmt.Fprintf(w, "compile-commands fidelity: %d TUs matched\n", r.Matched)
 	fmt.Fprintf(w, "  only in cmake: %d   only in bazel: %d\n", len(r.OnlyCmake), len(r.OnlyBazel))
-	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d   include-dir mismatches: %d   copt mismatches: %d\n",
-		len(r.DefineMismatch), len(r.StdMismatch), len(r.IncludeMismatch), len(r.CoptMismatch))
+	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d   include-dir mismatches: %d   copt mismatches: %d   gen-root-missing: %d\n",
+		len(r.DefineMismatch), len(r.StdMismatch), len(r.IncludeMismatch), len(r.CoptMismatch), len(r.GenRootMissing))
+	if r.TUKeyCollisions > 0 {
+		fmt.Fprintf(w, "  WARNING: %d TU-key collisions (same source-relative key) — results undercount\n", r.TUKeyCollisions)
+	}
+	if r.ParamFileSkipped > 0 {
+		fmt.Fprintf(w, "  note: %d bazel TUs routed via @param-file — excluded from the diff (not counted as misses)\n", r.ParamFileSkipped)
+	}
+	if len(r.GenRootMissing) > 0 {
+		// Higher-confidence than the dropped per-root gen: layout delta: cmake
+		// compiles the TU with a generated-include root that has NO bazel gen:
+		// counterpart — a generated dir that didn't reach the consumer's path.
+		fmt.Fprintln(w, "\n-- generated-include-root missing in bazel (cmake has gen: roots, bazel has none) --")
+		for _, k := range sortedStrKeys(r.GenRootMissing) {
+			fmt.Fprintf(w, "  %s: %s\n", k, strings.Join(r.GenRootMissing[k], " "))
+		}
+	}
 	// Defines are the highest-signal, path-independent facts — show them in full.
 	if len(r.DefineMismatch) > 0 {
 		fmt.Fprintln(w, "\n-- DEFINE mismatches (cmake vs bazel, per TU) --")
@@ -570,6 +704,15 @@ func printDeltas(w *os.File, m map[string]diffSet) {
 }
 
 func sortedKeys(m map[string]diffSet) []string {
+	ks := make([]string, 0, len(m))
+	for k := range m {
+		ks = append(ks, k)
+	}
+	sort.Strings(ks)
+	return ks
+}
+
+func sortedStrKeys(m map[string][]string) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
 		ks = append(ks, k)

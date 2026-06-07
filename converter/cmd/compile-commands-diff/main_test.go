@@ -83,6 +83,89 @@ func TestIgnoredDefine(t *testing.T) {
 	}
 }
 
+func TestTuKey(t *testing.T) {
+	// cmake absolute path under cmakeSrc, and bazel exec-root-relative under
+	// bazelPkg, land on the SAME dir-qualified key (so they match + stay distinct
+	// from a same-named file in another dir).
+	if k := tuKey("/tmp/vtk/Common/Misc/vtkErrorCode.cxx", "/tmp/vtk"); k != "Common/Misc/vtkErrorCode.cxx" {
+		t.Errorf("cmake key = %q", k)
+	}
+	if k := tuKey("elements/vtk/Common/Misc/vtkErrorCode.cxx", "elements/vtk"); k != "Common/Misc/vtkErrorCode.cxx" {
+		t.Errorf("bazel key = %q", k)
+	}
+	// Same basename, different dirs -> distinct keys (no collapse).
+	a := tuKey("/tmp/p/a/util.c", "/tmp/p")
+	b := tuKey("/tmp/p/b/util.c", "/tmp/p")
+	if a == b {
+		t.Errorf("same-basename TUs collapsed: %q == %q", a, b)
+	}
+	// Unrelativizable -> basename fallback.
+	if k := tuKey("/other/x.c", "/tmp/p"); k != "x.c" {
+		t.Errorf("fallback key = %q want x.c", k)
+	}
+}
+
+func TestHasParamFileArg(t *testing.T) {
+	if !hasParamFileArg([]string{"/usr/bin/gcc", "@bazel-out/k8/bin/foo.params"}) {
+		t.Error("should detect @param-file")
+	}
+	if hasParamFileArg([]string{"gcc", "-DFOO", "-c", "a.c"}) {
+		t.Error("should not flag a normal argv")
+	}
+}
+
+func TestSplitCommand_QuotedDefine(t *testing.T) {
+	// Space-bearing quoted define stays ONE token (was the strings.Fields bug).
+	got := splitCommand(`gcc "-DGREETING=\"hello world\"" -c foo.c`)
+	want := []string{"gcc", `-DGREETING="hello world"`, "-c", "foo.c"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %q want %q", got, want)
+	}
+	// Plain args unchanged.
+	if g := splitCommand("gcc -DFOO -I/inc -c a.c"); strings.Join(g, "|") != "gcc|-DFOO|-I/inc|-c|a.c" {
+		t.Errorf("plain split = %q", g)
+	}
+	// Escaped quotes (no spaces) become literal quotes in the value.
+	if g := splitCommand(`gcc -DV=\"1.2.3\"`); strings.Join(g, "|") != `gcc|-DV="1.2.3"` {
+		t.Errorf("escaped-quote split = %q", g)
+	}
+}
+
+func TestDiff_ParamSkipAndGenRoot(t *testing.T) {
+	cmake := map[string]tuFacts{
+		"a/x.c": {IncludeDir: map[string]bool{"/b/build/gen": true}, Defines: map[string]bool{}}, // gen root, no src includes
+		"a/y.c": {IncludeDir: map[string]bool{}, Defines: map[string]bool{}},                     // param-skipped on bazel side
+	}
+	bazel := map[string]tuFacts{
+		"a/x.c": {IncludeDir: map[string]bool{}, Defines: map[string]bool{}}, // no gen counterpart
+	}
+	o := normOpts{cmakeBuild: "/b/build"}
+	r := diff(cmake, bazel, map[string]bool{"a/y.c": true}, o)
+	// y.c is param-skipped -> NOT reported as only-in-cmake.
+	for _, k := range r.OnlyCmake {
+		if k == "a/y.c" {
+			t.Error("param-skipped TU should not be only_cmake")
+		}
+	}
+	// x.c: cmake has a gen: root, bazel has none -> GenRootMissing.
+	if _, ok := r.GenRootMissing["a/x.c"]; !ok {
+		t.Errorf("expected gen-root-missing for a/x.c; got %v", r.GenRootMissing)
+	}
+}
+
+func TestInterestingCopt_ToolchainNoise(t *testing.T) {
+	for _, drop := range []string{"-no-canonical-prefixes", "--sysroot=/x", "-fdebug-prefix-map=a=b", "-ffile-prefix-map=a=b"} {
+		if interestingCopt(drop) {
+			t.Errorf("toolchain-noise flag %q should be filtered", drop)
+		}
+	}
+	for _, keep := range []string{"-fvisibility=hidden", "-fno-rtti", "-fopenmp", "-march=native"} {
+		if !interestingCopt(keep) {
+			t.Errorf("semantic flag %q should be kept", keep)
+		}
+	}
+}
+
 func TestSourceFromArgv(t *testing.T) {
 	if got := sourceFromArgv([]string{"gcc", "-c", "a/b.cc", "-o", "b.o"}); got != "a/b.cc" {
 		t.Errorf("got %q want a/b.cc", got)
@@ -103,7 +186,7 @@ func TestDiff_DefineDelta(t *testing.T) {
 		"foo.cc": {Defines: map[string]bool{"A": true, "ZLIB_DLL": true}, Std: "c++20", IncludeDir: map[string]bool{}},
 		"bar.cc": {Defines: map[string]bool{"X": true}, IncludeDir: map[string]bool{}},
 	}
-	r := diff(cmake, bazel, normOpts{})
+	r := diff(cmake, bazel, nil, normOpts{})
 	if r.Matched != 2 {
 		t.Fatalf("matched = %d want 2", r.Matched)
 	}
