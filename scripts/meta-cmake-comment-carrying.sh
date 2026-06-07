@@ -58,7 +58,8 @@ assert_present() { # marker description
 assert_present "Copyright 2026 the comment-carrying authors." "the file-header block"
 assert_present "wraps the vendored widget code" "the cc_library leading comment"
 assert_present "Generate the lookup table from the spec" "the codegen genrule leading comment"
-echo "ok  meta-cmake-comment-carrying: file header + target + codegen comments carried"
+assert_present "the widget core lib" "the cc_library trailing comment"
+echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) + codegen comments carried"
 
 # (off-by-default) Convert WITHOUT the flag — no author comments must appear.
 "$bin_dir/convert-element-cmake" \

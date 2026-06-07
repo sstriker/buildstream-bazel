@@ -6,7 +6,7 @@ project(commentcarrying C)
 
 # The core library — wraps the vendored widget code.
 # Built static for the embedded target.
-add_library(widget STATIC src/widget.c)
+add_library(widget STATIC src/widget.c)  # the widget core lib
 
 # Generate the lookup table from the spec.
 add_custom_command(
