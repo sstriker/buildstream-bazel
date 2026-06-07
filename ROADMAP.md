@@ -751,24 +751,33 @@ transition cleanly.
     DEFINE_SYMBOL), and dropped `-fno-common`/`-ftrapv` (HDF5) vs added
     `-fvisibility*`.
     BUILD blockers (the real multi-step VTK lift):
-    1. **Built-tool genrule recovery (proj.db).** libproj's
+    1. **Built-tool genrule recovery (proj.db) — LANDED + validated.** libproj's
        `generate_proj_db.cmake` pipes its .sql into a sqlite3 binary, and VTK
        hardcodes its OWN bundled tool via `set(EXE_SQLITE3
        "$<TARGET_FILE:VTK::sqlitebin>")` (the `find_program`/host path is
        disabled behind `if (FALSE)`, so host sqlite3 / `-DEXE_SQLITE3` is
        ignored — an earlier "needs host sqlite3" reading was wrong). The
-       recovered genrule references the build-tree path `bin/Debug/sqlitebin-9.4`
-       which doesn't exist in the sandbox. `sqlitebin` IS already converted to a
-       cc_binary; the converter needs to recover a custom command's in-tree
-       built-EXECUTABLE dependency — rewrite the build-tree binary path to
-       `$(location :sqlitebin)` + add it to the genrule's `tools`. GENERAL
-       capability (any project with an in-tree codegen tool); genrule.go has no
-       `tools=`/`$(location)` wiring today. (The bake's WORKING_DIRECTORY fix —
-       lower's extractCdDir — landed and helps OTHER relative-`include()` bake
-       scripts, but can't bake proj.db since the tool isn't built at convert.)
-    2. **Analysis failures** in a few targets (`Utilities/octree`,
-       `IO/HDFTools`) — separate cc_library conversion fixes (aquery `--keep_going`
-       still yields 836 TUs for the fidelity pass).
+       recovered genrule referenced the build-tree path `bin/Debug/sqlitebin-9.4`
+       which doesn't exist in the sandbox. Fixed: `rewriteToolFromTarget` now
+       lifts the `VAR=<artifact-path>` embedded form (gated on a new
+       `ExecArtifacts` set so libs aren't mis-lifted) — proj.db now carries
+       `EXE_SQLITE3=$(location …:sqlitebin)` + `tools=[…:sqlitebin]`, and the
+       build advances past it. General capability (any in-tree codegen tool
+       passed as a -D arg). (The bake's WORKING_DIRECTORY fix — lower's
+       extractCdDir — also landed, helping OTHER relative-`include()` bake scripts.)
+    2. **octree split-package `strip_include_prefix` (NEXT blocker).** With
+       proj.db cleared the build aborts at `//…/Utilities/octree:octree`
+       analysis: `header '…/Utilities/octree/octree/octree' is not under strip
+       prefix '…/Utilities/octree/Utilities/octree'`. Under `--split-packages`
+       octree gets its own package (`elements/vtk/Utilities/octree`), but the
+       converter emits the element-root-relative `strip_include_prefix =
+       "Utilities/octree"`, which Bazel resolves relative to the PACKAGE → a
+       doubled/wrong path; the headers sit at package-relative `octree/*`. Fix:
+       emit `strip_include_prefix` package-location-independently (absolute
+       `/elements/vtk/Utilities/octree` form, or subtract the package's
+       within-element path) — touches the split-package emit abseil/glm also
+       exercise, so it needs care against golden churn.
+    3. **IO/HDFTools** analysis failure (after octree) — separate cc_library fix.
     A converter-shaped lift, not disk- or scale-blocked.
   - **cuda-samples** — needs the CUDA toolkit (`BSB_PROVISION_CUDA=1`); not
     provisioned in the default web session and a multi-GB install. (Verify by
