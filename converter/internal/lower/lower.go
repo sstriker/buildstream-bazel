@@ -1907,6 +1907,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	elidedMissingSrc := false
 	elidedCompilerArtifact := false
 	declaredGeneratedSrc := false
+	droppedNonCcSrc := false
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -2319,6 +2320,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 		irt.Srcs = append(irt.Srcs, src.Path)
 	}
+
+	// Catch-all over every src-append path above: a cc/cuda rule rejects a srcs
+	// entry that isn't a compile/link/header input. Some GENERATED build-order
+	// artifacts reach srcs through cmake's compile-group filing (VTK files each
+	// module's wrap-hierarchy .args/.data under a compile group), past the
+	// per-branch handling. Drop any entry whose extension is clearly non-cc; the
+	// producing genrule still builds via //... and the artifact has no cc-rule
+	// role. Only entries WITH a non-cc extension are dropped, so bare-name /
+	// extensionless labels (`:foo`, `//pkg:foo`) are never touched.
+	switch irt.Kind {
+	case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCTest,
+		ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest:
+		kept := make([]string, 0, len(irt.Srcs))
+		for _, s := range irt.Srcs {
+			if filepath.Ext(s) != "" && !isCcSrcEntry(s) {
+				droppedNonCcSrc = true
+				continue
+			}
+			kept = append(kept, s)
+		}
+		irt.Srcs = kept
+	}
+
 	if consumesCodegen {
 		irt.Tags = append(irt.Tags, "has-cmake-codegen")
 	}
@@ -2339,6 +2363,11 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// input — and so they can wire the producing genrule /
 		// configure_file edge if the converter didn't recover one.
 		irt.Tags = append(irt.Tags, "cmake-declared-generated-source")
+	}
+	if droppedNonCcSrc {
+		// A non-cc-input source (e.g. a VTK wrap-hierarchy .args/.data build-order
+		// artifact cmake filed under the module target) was dropped from cc srcs.
+		irt.Tags = append(irt.Tags, "cmake-dropped-non-cc-src")
 	}
 
 	// Build-dir-rooted includes (relative to the cmake build
