@@ -472,6 +472,7 @@ func run(a cli.Args) error {
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
+			EmitSharedLibraries:               a.EmitSharedLibraries,
 			BackedFeatures:                    backedFeatures,
 			HostPrefixDir:                     prefixAbs,
 			BuildDir:                          hostBuildOrReply,

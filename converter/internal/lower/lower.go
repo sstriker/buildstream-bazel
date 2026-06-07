@@ -48,6 +48,13 @@ type Options struct {
 	// config-mode consumption opts in (--emit-install-export-config).
 	EmitInstallExportConfig bool
 
+	// EmitSharedLibraries opts in to faithful SHARED conversion: a cmake
+	// SHARED_LIBRARY/MODULE_LIBRARY emits its static cc_library impl PLUS a
+	// sibling cc_shared_library (real .so). OFF by default — the historical
+	// static-collapse emit stays byte-identical. See ROADMAP's cc_shared_library
+	// item.
+	EmitSharedLibraries bool
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -1080,25 +1087,26 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	codegenConsumerDeps := map[string][]fileapi.TargetDependency{}
 
 	lc := targetLowerCtx{
-		cmakeSrc:         cmakeSrc,
-		cmakeBuild:       cmakeBuild,
-		hostSrc:          hostSrc,
-		hostPrefix:       opts.HostPrefixDir,
-		hostSrcOnDisk:    hostSrcOnDisk,
-		g:                g,
-		cc:               cc,
-		idToName:         idToName,
-		utilityIDs:       utilityIDs,
-		imports:          opts.Imports,
-		tests:            opts.CTest,
-		configureFiles:   configureFiles,
-		fileGenerates:    fileGenerates,
-		executeProcesses: executeProcesses,
-		findPkgAttrib:    findPkgAttrib,
-		workspaceRoot:    workspaceRoot,
-		bazelPackagePath: opts.BazelPackagePath,
-		generatedSources: generatedSources,
-		rejections:       opts.Rejections,
+		cmakeSrc:            cmakeSrc,
+		cmakeBuild:          cmakeBuild,
+		hostSrc:             hostSrc,
+		hostPrefix:          opts.HostPrefixDir,
+		hostSrcOnDisk:       hostSrcOnDisk,
+		g:                   g,
+		cc:                  cc,
+		idToName:            idToName,
+		utilityIDs:          utilityIDs,
+		imports:             opts.Imports,
+		tests:               opts.CTest,
+		configureFiles:      configureFiles,
+		fileGenerates:       fileGenerates,
+		executeProcesses:    executeProcesses,
+		findPkgAttrib:       findPkgAttrib,
+		workspaceRoot:       workspaceRoot,
+		bazelPackagePath:    opts.BazelPackagePath,
+		generatedSources:    generatedSources,
+		rejections:          opts.Rejections,
+		emitSharedLibraries: opts.EmitSharedLibraries,
 	}
 
 	for _, tref := range cfg.Targets {
@@ -1689,6 +1697,10 @@ type targetLowerCtx struct {
 	bazelPackagePath string
 	generatedSources map[string]bool
 	rejections       *rejection.Collector
+	// emitSharedLibraries: when true, a SHARED_LIBRARY/MODULE_LIBRARY target's
+	// IR carries SharedLibName so emit renders a real cc_shared_library wrapper
+	// (faithful-SHARED). Off by default — the static-collapse emit is unchanged.
+	emitSharedLibraries bool
 }
 
 // targetTrace bundles the per-target trace-derived inputs to
@@ -1791,6 +1803,20 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		irt.Alwayslink = true
 	case "SHARED_LIBRARY", "MODULE_LIBRARY":
 		irt.Kind = ir.KindCCLibrary
+		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
+		// cc_shared_library producing the real .so. The shared_lib_name is the
+		// unversioned artifact form (libz.so.1.3.1 -> libz.so); derive
+		// lib<name>.so when cmake recorded no NameOnDisk.
+		if lc.emitSharedLibraries {
+			so := t.NameOnDisk
+			if i := strings.Index(so, ".so"); i >= 0 {
+				so = so[:i+len(".so")]
+			}
+			if so == "" {
+				so = "lib" + t.Name + ".so"
+			}
+			irt.SharedLibName = so
+		}
 	case "EXECUTABLE":
 		irt.Kind = ir.KindCCBinary
 	case "INTERFACE_LIBRARY":

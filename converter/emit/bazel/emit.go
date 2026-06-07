@@ -228,6 +228,9 @@ func emitLoad(buf *bytes.Buffer, pkg *ir.Package) {
 		if sym, ok := ccRuleLoads[t.Kind]; ok {
 			used[sym] = struct{}{}
 		}
+		if t.SharedLibName != "" {
+			used["cc_shared_library"] = struct{}{}
+		}
 	}
 	if len(used) == 0 {
 		return
@@ -499,8 +502,26 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
 			return nil, err
 		}
+		if t.SharedLibName != "" {
+			emitSharedLibrary(&buf, t)
+		}
 	}
 	return canonicalize(buf.Bytes())
+}
+
+// emitSharedLibrary writes the cc_shared_library that wraps a SHARED/MODULE
+// library's static cc_library impl into a real .so (faithful-SHARED). roots is
+// the impl target; shared_lib_name is the cmake artifact name (libfoo.so).
+// Consumers that should link it dynamically add it to their dynamic_deps — a
+// later phase wires that; on its own the .so just builds alongside the impl.
+func emitSharedLibrary(buf *bytes.Buffer, t ir.Target) {
+	buf.WriteString("\ncc_shared_library(\n")
+	fmt.Fprintf(buf, "    name = %q,\n", t.Name+"_shared")
+	fmt.Fprintf(buf, "    shared_lib_name = %q,\n", t.SharedLibName)
+	// `deps` is the modern rules_cc spelling of the former `roots` attribute —
+	// the libraries linked INTO the .so.
+	fmt.Fprintf(buf, "    deps = [\":%s\"],\n", t.Name)
+	buf.WriteString(")\n")
 }
 
 // canonicalize routes the template-assembled BUILD text

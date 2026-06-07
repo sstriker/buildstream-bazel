@@ -505,6 +505,16 @@ type Target struct {
 	Linkstatic bool
 	Alwayslink bool
 
+	// SharedLibName, when non-empty, marks a KindCCLibrary that cmake declared
+	// as a SHARED_LIBRARY / MODULE_LIBRARY: the cc_library is the static
+	// implementation, and emit ALSO renders a sibling `cc_shared_library`
+	// (name `<target>_shared`, roots=[":<target>"]) producing this real .so
+	// (the value is the cmake artifact name, e.g. "libz.so"). Faithful-SHARED
+	// conversion — see ROADMAP's cc_shared_library item. Populated by lower only
+	// under the opt-in EmitSharedLibraries mode, so the default (static-collapse)
+	// emit stays byte-identical; empty for every static lib.
+	SharedLibName string
+
 	// Features routes to Bazel's `features = [...]` attribute on
 	// cc_library / cc_binary / cc_test. Each entry is a feature
 	// name a cc_toolchain feature() declares (e.g. "lto",
