@@ -79,3 +79,46 @@ func TestClassifyAndAttach_Dedup(t *testing.T) {
 		t.Errorf("Srcs = %v; want %v (deduped)", irt.Srcs, want)
 	}
 }
+
+// attachGeneratedSource is the sister chokepoint for the per-source IsGenerated /
+// on-disk-generated / OutToGenrule branches: compile-group source→srcs (+ a
+// cc_embed sibling header), header→hdrs, else→srcs, with an optional non-cc drop.
+func TestAttachGeneratedSource(t *testing.T) {
+	// compile-group source → srcs, and its cc_embed sibling header → hdrs.
+	irt := &ir.Target{}
+	attachGeneratedSource(irt, "gen/x.cxx", true, false, "gen/x.h")
+	if want := []string{"gen/x.cxx"}; !reflect.DeepEqual(irt.Srcs, want) {
+		t.Errorf("CG src: Srcs = %v; want %v", irt.Srcs, want)
+	}
+	if want := []string{"gen/x.h"}; !reflect.DeepEqual(irt.Hdrs, want) {
+		t.Errorf("CG src: Hdrs = %v; want %v (cc_embed pairing)", irt.Hdrs, want)
+	}
+
+	// header → hdrs (no embed).
+	irt = &ir.Target{}
+	attachGeneratedSource(irt, "gen/foo.h", false, false, "")
+	if want := []string{"gen/foo.h"}; !reflect.DeepEqual(irt.Hdrs, want) {
+		t.Errorf("header: Hdrs = %v; want %v", irt.Hdrs, want)
+	}
+
+	// non-cc, dropNonCc=true → dropped (the IsGenerated branch's behavior).
+	irt = &ir.Target{}
+	attachGeneratedSource(irt, "mod-hierarchy.Debug.args", false, true, "")
+	if len(irt.Srcs)+len(irt.Hdrs)+len(irt.Data) != 0 {
+		t.Errorf("non-cc dropNonCc: attached %v/%v/%v; want all empty", irt.Srcs, irt.Hdrs, irt.Data)
+	}
+
+	// non-cc, dropNonCc=false → srcs (the on-disk / OutToGenrule branches keep it).
+	irt = &ir.Target{}
+	attachGeneratedSource(irt, "weird.xyz", false, false, "")
+	if want := []string{"weird.xyz"}; !reflect.DeepEqual(irt.Srcs, want) {
+		t.Errorf("non-cc keep: Srcs = %v; want %v", irt.Srcs, want)
+	}
+
+	// compilable source not in a compile group → srcs.
+	irt = &ir.Target{}
+	attachGeneratedSource(irt, "gen/y.cc", false, true, "")
+	if want := []string{"gen/y.cc"}; !reflect.DeepEqual(irt.Srcs, want) {
+		t.Errorf("non-CG cc: Srcs = %v; want %v", irt.Srcs, want)
+	}
+}
