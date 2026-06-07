@@ -86,6 +86,18 @@ func emitProvenanceComment(buf *bytes.Buffer, p ir.Provenance) {
 	buf.WriteString("\n")
 }
 
+// emitLeadingComment writes the author's recovered CMakeLists comment block
+// (raw `# ...` tokens) as leading comment lines above a rule. The canonicalize
+// pass (build.Parse + build.Format) attaches a comment immediately preceding a
+// statement to that statement and normalizes spacing, so these survive the
+// buildifier round-trip. No-op for an empty block.
+func emitLeadingComment(buf *bytes.Buffer, lines []string) {
+	for _, ln := range lines {
+		buf.WriteString(ln)
+		buf.WriteString("\n")
+	}
+}
+
 // itoa is a tiny non-fmt int-to-string helper for the per-rule
 // provenance comment's hot path. Avoids pulling fmt into emit's
 // per-target loop.
@@ -346,6 +358,16 @@ type Options struct {
 	// would invalidate every existing golden if always-on. CLI
 	// surface via `convert-element-cmake --emit-provenance`.
 	EmitProvenance bool
+
+	// EmitSourceComments enables comment-carrying: the author's
+	// CMakeLists comments recovered onto each Target's LeadingComment /
+	// TrailingComment (and the package HeaderComments) are emitted onto
+	// the corresponding rule — leading above it (above the `# Source:`
+	// breadcrumb when EmitProvenance is also on), trailing as a `#` suffix
+	// (routed to leading on whole-rule-`# keep` kinds). Off by default —
+	// like EmitProvenance it changes BUILD bytes, and it reads raw source.
+	// CLI surface via `convert-element-cmake --emit-source-comments`.
+	EmitSourceComments bool
 }
 
 // Emit returns the contents of a BUILD.bazel file for pkg using
@@ -417,6 +439,11 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	for i, t := range pkg.Targets {
 		if i > 0 {
 			buf.WriteString("\n")
+		}
+		if opts.EmitSourceComments {
+			// Author's source comment first, then the provenance
+			// breadcrumb beneath it (when both are on).
+			emitLeadingComment(&buf, t.LeadingComment)
 		}
 		if opts.EmitProvenance && !t.Provenance.IsZero() {
 			emitProvenanceComment(&buf, t.Provenance)
@@ -506,7 +533,27 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 			emitSharedLibrary(&buf, t)
 		}
 	}
-	return canonicalize(buf.Bytes())
+	var trailing map[string]string
+	if opts.EmitSourceComments {
+		trailing = trailingCommentMap(pkg)
+	}
+	return canonicalize(buf.Bytes(), trailing)
+}
+
+// trailingCommentMap collects each target's recovered trailing comment keyed by
+// rule name, for the AST-phase suffix attachment in canonicalize.
+func trailingCommentMap(pkg *ir.Package) map[string]string {
+	var m map[string]string
+	for _, t := range pkg.Targets {
+		if t.TrailingComment == "" {
+			continue
+		}
+		if m == nil {
+			m = map[string]string{}
+		}
+		m[t.Name] = t.TrailingComment
+	}
+	return m
 }
 
 // emitSharedLibrary writes the cc_shared_library that wraps a SHARED/MODULE
@@ -562,14 +609,75 @@ func emitSharedLibrary(buf *bytes.Buffer, t ir.Target) {
 // buildifier-no-op contract without a test-visible trigger;
 // the typed return surfaces it loudly in both unit tests
 // and production paths.
-func canonicalize(body []byte) ([]byte, error) {
+func canonicalize(body []byte, trailing map[string]string) ([]byte, error) {
 	f, err := build.Parse("BUILD.bazel", body)
 	if err != nil {
 		return nil, failure.New(failure.BazelCanonicalizeFailed,
 			"bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body)
 	}
 	addKeepMarkers(f)
+	addTrailingComments(f, trailing)
 	return build.Format(f), nil
+}
+
+// addTrailingComments attaches each rule's recovered trailing author comment
+// (keyed by rule name → raw "# ..." token) to the parsed AST so it survives the
+// formatter. Normal rules get it as a Suffix (`cc_library(...)  # comment`).
+// Whole-rule-`# keep` kinds already carry a `# keep` Suffix from addKeepMarkers,
+// so stacking a second suffix there would render ambiguously — those route the
+// author comment to leading placement (Before) instead.
+func addTrailingComments(f *build.File, trailing map[string]string) {
+	if len(trailing) == 0 {
+		return
+	}
+	for _, stmt := range f.Stmt {
+		call, ok := stmt.(*build.CallExpr)
+		if !ok {
+			continue
+		}
+		name := callNameAttr(call)
+		if name == "" {
+			continue
+		}
+		tc, ok := trailing[name]
+		if !ok {
+			continue
+		}
+		c := build.Comment{Token: tc}
+		if isWholeRuleKeepKind(callRuleKind(call)) {
+			call.Comment().Before = append(call.Comment().Before, c)
+		} else {
+			call.Comment().Suffix = append(call.Comment().Suffix, c)
+		}
+	}
+}
+
+// callNameAttr returns a rule call's `name = "..."` value, or "".
+func callNameAttr(call *build.CallExpr) string {
+	for _, arg := range call.List {
+		assign, ok := arg.(*build.AssignExpr)
+		if !ok {
+			continue
+		}
+		if ident, ok := assign.LHS.(*build.Ident); !ok || ident.Name != "name" {
+			continue
+		}
+		if str, ok := assign.RHS.(*build.StringExpr); ok {
+			return str.Value
+		}
+	}
+	return ""
+}
+
+// isWholeRuleKeepKind reports whether addKeepMarkers gives this rule kind a
+// whole-rule `# keep` suffix (so a trailing author comment must route to
+// leading instead of stacking a second suffix). Mirrors addKeepMarkers' list.
+func isWholeRuleKeepKind(kind string) bool {
+	switch kind {
+	case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
+		return true
+	}
+	return false
 }
 
 // addKeepMarkers walks every rule in f and tags load-bearing

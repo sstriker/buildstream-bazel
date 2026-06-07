@@ -1520,7 +1520,7 @@ func appendExportsFiles(body []byte, files map[string]struct{}) ([]byte, error) 
 		fmt.Fprintf(&b, "%q", n)
 	}
 	b.WriteString("])\n")
-	return canonicalize(b.Bytes())
+	return canonicalize(b.Bytes(), nil)
 }
 
 // --- small path / name helpers ---

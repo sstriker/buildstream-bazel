@@ -163,6 +163,76 @@ needs `cmake`, `make`, and either Linux/amd64 (native ptrace) or
 `strace` on `$PATH`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for
 the full host-tool table.
 
+## Post-conversion prompts for an AI agent
+
+Some CMake constructs have a perfectly good *Bazel* form but no
+faithful *mechanical* translation — an `add_test(… COMMAND cmake -P
+runner.cmake)` integration harness is the canonical case: the
+idiomatic target is an `sh_test` / `diff_test` driving the built
+artifact, but reaching it means re-authoring the cmake-script
+harness, not translating an AST. The converter doesn't guess at
+these; it records them as a **deterministic worklist** for a human
+or AI post-pass.
+
+Ask the per-element converter to emit the worklist with
+`--conversion-todos-report` (add `--ignore-rejections-for-diagnostics`
+so refused constructs are mirrored in too, instead of aborting the
+run):
+
+```sh
+build/bin/convert-element-cmake \
+    --source-root /path/to/cmake/project \
+    --out-build   /path/to/out/BUILD.bazel \
+    --ignore-rejections-for-diagnostics \
+    --conversion-todos-report /path/to/out/conversion-todos.json
+```
+
+`conversion-todos.json` is byte-identical across runs (same input →
+same bytes) and carries two things:
+
+- a **`preamble`** — the standing guidance the post-pass reads first:
+  the transition-to-plain-Bazel intent, the target Bazel environment
+  and canonical rule providers (so the agent authors `@rules_cc` /
+  `@rules_shell` rules, not removed native ones), the authoring rules,
+  and a worked example. Override it with
+  `--conversion-todos-preamble=<file>` (prose, read verbatim).
+- one grouped **todo** per unit: `{id, kind, disposition, group_key,
+  anchors, evidence, suggested_shape, prompt}`. Each carries a
+  best-guess **`disposition`** — `actionable` (no faithful result was
+  produced; author the Bazel form), `improvement` (a convert-time
+  value was baked; the build works but an author could lift it to a
+  dynamic idiom), or `informational` (surfaced for visibility) — a
+  *fallible hint* the preamble explicitly invites the agent to
+  override.
+
+**Handing it to an agent.** Give the agent the converted project tree,
+not just the JSON — it is a curated bundle, every part an information
+source:
+
+- **`conversion-todos.json`** — the worklist + preamble (read the
+  preamble first).
+- the rendered **`BUILD.bazel`** — the mechanical output the agent is
+  *extending*, a read-only reference (it authors into a separate file,
+  never this one).
+- the rendered **`MODULE.bazel`** — the declared `bazel_dep`s and
+  pinned versions the preamble points at (the agent adds a `bazel_dep`
+  only for a provider it isn't already given, e.g. `rules_shell`).
+- the original **CMake sources** (`CMakeLists.txt`, `*.cmake`) — each
+  todo's `anchors` point at `file:line` sites here; the agent reads the
+  anchor to recover the construct's contract (e.g. what a `cmake -P`
+  runner actually asserts).
+
+The agent authors idiomatic Bazel — one reusable macro per shared unit
+— into a *separate* file keyed by each todo's stable `id`, turns the
+recovered `evidence.verification` into the test's assertion, and its
+output crosses the **same render gates** as mechanical output (it is
+not trusted on faith). The non-deterministic post-pass itself is
+deliberately kept out of the converter so the converter stays a pure,
+replayable function; see the
+[`docs/design/conversion-architecture.md`](docs/design/conversion-architecture.md)
+producer/consumer split and the agent-prompts item in
+[`ROADMAP.md`](ROADMAP.md).
+
 ## Trying the FreeDesktop SDK
 
 FDSDK is the working target — 1,092 elements across 21 kinds.

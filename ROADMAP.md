@@ -1038,40 +1038,71 @@ transition cleanly.
   paths" to "ships the sysroot"; larger, follows the `builtin_sysroot`
   item.
 
-- **Agent-actionable prompts for no-mechanical-form constructs.**
-  Some cmake constructs have a perfectly good *Bazel* form but no
-  *mechanical translation* — the behavior lives in a script the
-  converter can't faithfully rewrite, only an author can. The canonical
-  case is `add_test(COMMAND cmake -P <runner> …)` integration tests
-  (brotli's roundtrip/compatibility harness): the idiomatic target is an
-  `sh_test` / `bazel_skylib` `diff_test` driving the built CLI, but
-  reaching it means *re-authoring* the cmake-script harness, not
-  translating an AST. Today the converter correctly **breadcrumbs** these
-  to a warning (the #417 `add_test`-not-converted audit, the #412
-  cmake-internal-drop audit) so the gap is visible rather than silent.
-  Next: promote the breadcrumb from a human-readable warning to a
-  **structured, agent-actionable prompt** a post-conversion AI pass can
-  pick up. Shape: a `conversion-todos.json` sidecar alongside the
-  survey's existing `rejections` / `bazel-idiom` / `coverage` reports,
-  one entry per untranslatable construct carrying (a) a source anchor
-  (`CMakeLists.txt:line` + the construct), (b) recovered *evidence*
-  (the runner script path, the built exe target, the invocation args,
-  the verification — e.g. "SHA512(input)==SHA512(roundtrip)"), (c) a
-  *suggested Bazel shape*, and (d) a precise natural-language prompt.
-  Design constraints: the converter stays **deterministic** (same
-  prompts every run; the non-deterministic authoring is quarantined to
-  the separate post-pass operating on the fixed worklist); detection
-  **reuses** the existing breadcrumb logic (only the payload format is
-  new); prompts are **grouped by the unit the breadcrumb already groups
-  by** (brotli's 28 roundtrip tests share one runner → one
-  "author a reusable macro" prompt, not 28 near-duplicates); a stable
-  TODO marker (tag / comment ID) in the emitted BUILD makes pickup
-  idempotent; and agent-authored output crosses the **same trust
-  boundary** as mechanical output — it goes through the render gates,
-  it is not trusted on faith. First producer: the `cmake -P` test
-  breadcrumb; the same mechanism then fits any no-mechanical-form
-  breadcrumb (`install(SCRIPT)` / `install(CODE)`, dropped command edges).
-  Surfaced from the brotli test-form discussion.
+- **Agent-actionable prompts for no-mechanical-form constructs — AI
+  post-pass (consumer) remains.** The deterministic **producer** + the
+  consumer **contract** shipped, and the producer is now **on by default
+  and wired through to project B**. `convert-element-cmake` emits a
+  deterministic, byte-identical `conversion-todos.json` by default
+  (`--conversion-todos=false` opts out; destination is
+  `--conversion-todos-report=<p>` if set, else
+  `<dir(out-build)>/conversion-todos.json`; `--conversion-todos-preamble=<f>`
+  overrides the preamble) — the `todos.Collector` in
+  `converter/internal/todos`, plumbed through `lower.Options.Todos`,
+  carrying the operator **preamble** + one grouped
+  `{id, kind, disposition, group_key, anchors, evidence, suggested_shape,
+  prompt}` entry per unit. **Full coverage of the refusal + bake surfaces**
+  (`converter/internal/lower/todos_producers.go` + `todos_coverage.go`): the
+  three breadcrumb sites — `cmake-p-test` (`add_test(COMMAND cmake -P …)`),
+  `cmake-internal-drop` (filtered command edges), and
+  `install-script`/`install-code` (each alongside its retained stderr
+  warning) — plus generic producers mirroring **every Tier-1 refusal**
+  (`rejection:<code>`, diagnostic mode only — a refusal aborts in normal
+  mode), **every convert-time bake** (`bake`, from `collectBakedEntries`),
+  and **every unresolved-genex audit tag** (`genex-unresolved`). Each entry
+  carries a best-guess **`disposition`** (`actionable` | `improvement` |
+  `informational`) — a *fallible hint*, not a gate: the preamble invites the
+  agent to upgrade an improvement/informational entry when it sees a better
+  form (e.g. a baked check/try_compile probe option → a `config_setting`/
+  `select` over platform/sysroot/toolchain). Defaults are per-producer with
+  **per-site overrides** (a hoisted VCS/identity/date stamp bake is
+  `actionable` while a baked check-probe under the same tag stays
+  `improvement`). The preamble's **`environment` block** states the target
+  Bazel version + canonical rule providers (`@rules_cc` / `@rules_shell` /
+  `bazel_skylib` / `rules_pkg`) + the buildifier/gazelle gate, and names the
+  rendered `MODULE.bazel` as a handoff input; README's *"Post-conversion
+  prompts for an AI agent"* documents the handoff bundle (worklist + rendered
+  `BUILD.bazel` + `MODULE.bazel` + the CMake sources the anchors point at).
+  The orchestrator carries it to project B: the `<name>_converted` convert
+  genrule declares `conversion-todos.json` as an output (and the
+  `cmake_split_convert` rule writes it into the `packages` TreeArtifact), and
+  `stage-b` lands it in `elements/<name>/conversion-todos.json`. The survey
+  aggregates it alongside `rejections`/`bazel-idiom`/`coverage` (run-survey.sh
+  `todos` column). Idempotency is the stable line-free `id` + the
+  file-ownership split (the converter-owned `BUILD.bazel.out` stays
+  byte-identical and marker-free; the post-pass authors into a separate file
+  keyed by `id`).
+  **What's left:** the non-deterministic **AI post-pass** that consumes
+  the report to author the Bazel form (an `sh_test`/`diff_test` driving the
+  built CLI, one reusable macro per shared unit) — deliberately quarantined
+  out of the converter so it stays a pure replayable function. It honors
+  the contract above: read `preamble` + `todos`, author one unit per `id`
+  into the authored-output file (skip ids already present), turn
+  `evidence.verification` into the test's assertion, emit plain idiomatic
+  Bazel (no cmake re-invocation), and pass the **same render gates** as
+  mechanical output (not trusted on faith). Surfaced from the brotli
+  test-form discussion.
+  **Follow-up — root-package source exports for the post-pass.** A
+  real-corpus dry-run (glog v0.7.1) surfaced a gap in the file-ownership
+  split: when the post-pass authors a test into a *sibling* package
+  (`tests/BUILD.bazel`), its `cc_test` / `sh_test` call sites need the
+  converter-owned root `BUILD.bazel` to `exports_files([...])` the
+  cmake-test-only `.cc`/headers (sources no converted target lists, so the
+  converter never exports them) — but rule (1) forbids the agent from editing
+  the converter-owned BUILD. Options: (a) have the converter export
+  test-referenced loose sources behind a stable `filegroup`; (b) let the
+  post-pass author a `tests/` package *with its own* `exports_files` by
+  staging the sources there; (c) relax rule (1) to permit append-only
+  `exports_files` blocks. Pick one when the consumer ships.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
@@ -1414,6 +1445,36 @@ transition cleanly.
   a real architectural change; the open question is how the
   converter's in-process File API consumer reads the reply
   when the cmake-configure step runs on a remote node.
+
+- **Two-species split: remotable, cacheable configure + convert.**
+  The deeper architecture the item above leads to. `cmake configure`
+  must run on the *target* platform P (its `try_compile`/`try_run`/
+  `check_*`/`find_package` resolve against P), possibly a subset of
+  platforms per element; the converter is a Linux/Go binary not built
+  for every P. So split the welded `convert-element-cmake` (which execs
+  cmake in-process via `cmakerun.Configure`) into two independently
+  remotable+cacheable action species: `configure(element, P)` — native
+  cmake on a P worker, **no Go**, emits a File API reply bundle — and
+  `convert(element)` — Linux/Go, **no cmake**, consumes the per-platform
+  bundles via the existing `--reply-dir` seam and folds them. The File
+  API query is language-agnostic (five touch-files), so a configure
+  action is just `cmake <argv>` with hooks staged as inputs; argv/hook
+  construction stays a shared `cmakerun` function the planner (`write-a`)
+  calls. The genex literal two-pass becomes a static
+  `configure → analyze → litprobe → convert` graph whose `litprobe(P)`
+  command branches on a 0-byte probe (no cmake when empty; the 0-byte
+  probe on pass 1 makes the input roots byte-identical so the empty case
+  is a warm no-op — only the scheduling round-trip remains, removable by
+  making `litprobe` opt-in with `-unresolved` tail-baking). **Hard
+  invariant: the standalone path keeps working** — `convert-element-cmake
+  --source-root` stays a complete, infrastructure-free, full-fidelity
+  composition of the same steps; the serialized reply bundle is a complete
+  interface so `--reply-dir` is byte-identical to in-process (new gate
+  guards it). Native-P configure also closes the `try_run` cross-compile
+  fidelity gap (`docs/research/cmake_analysis.md` §7). Full design +
+  cost/narrowing model + standalone-preservation disciplines in
+  `docs/design/remotable-configure-convert.md` (delete that doc once this
+  lands).
 
 ---
 

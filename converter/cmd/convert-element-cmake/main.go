@@ -36,6 +36,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchainscan"
 	"github.com/sstriker/buildstream-bazel/converter/internal/verify"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -443,6 +444,11 @@ func run(a cli.Args) error {
 	// report is written only when --audit-coverage-report is set),
 	// mirroring the bazelidiom audit's always-on behaviour.
 	coverageCollector := coverage.New()
+	// Conversion-todos collector. Always created so the producer sites
+	// gather the no-mechanical-form constructs on every convert; the
+	// JSON report is written only when --conversion-todos-report is set,
+	// mirroring the coverage / bazelidiom always-on-collect shape.
+	todosCollector := todos.New()
 	// runToIR lowers the reply with a given literal-probe sink and
 	// resolution map. Hoisted to a closure so the generalized-genex
 	// two-pass can run it twice: pass 1 with a collecting sink (no
@@ -469,8 +475,15 @@ func run(a cli.Args) error {
 		}
 	}
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
+		// Reset the todos collector each pass: ToIR can run more than once
+		// (two-pass genex / stamp recovery) against the same collector, and
+		// the producers Add on every pass. Resetting first means the report
+		// reflects only the final pass's result rather than accumulating
+		// duplicate entries across passes.
+		todosCollector.Reset()
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
+			RecoverSourceComments:             a.EmitSourceComments,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
 			EmitSharedLibraries:               a.EmitSharedLibraries,
 			BackedFeatures:                    backedFeatures,
@@ -495,6 +508,7 @@ func run(a cli.Args) error {
 			BakeIn:                            convmode.BakeIn(a.BakeIn),
 			Rejections:                        rejections,
 			Coverage:                          coverageCollector,
+			Todos:                             todosCollector,
 			Warnings:                          os.Stderr,
 			LiteralProbeSink:                  sink,
 			LiteralResolutions:                resolutions,
@@ -714,9 +728,10 @@ func run(a cli.Args) error {
 		// the CMakeLists/add_subdirectory layout. Root → a.OutBuild;
 		// subdir "src/util" → <dir(a.OutBuild)>/src/util/BUILD.bazel.
 		tree, err := bazel.EmitSplit(pkg, bazel.Options{
-			SourceKey:        a.SourceKey,
-			BazelPackagePath: a.BazelPackagePath,
-			EmitProvenance:   a.EmitProvenance,
+			SourceKey:          a.SourceKey,
+			BazelPackagePath:   a.BazelPackagePath,
+			EmitProvenance:     a.EmitProvenance,
+			EmitSourceComments: a.EmitSourceComments,
 		})
 		if err != nil {
 			return err
@@ -745,9 +760,10 @@ func run(a cli.Args) error {
 		}
 	} else {
 		out, err := bazel.EmitWithOptions(pkg, bazel.Options{
-			SourceKey:        a.SourceKey,
-			BazelPackagePath: a.BazelPackagePath,
-			EmitProvenance:   a.EmitProvenance,
+			SourceKey:          a.SourceKey,
+			BazelPackagePath:   a.BazelPackagePath,
+			EmitProvenance:     a.EmitProvenance,
+			EmitSourceComments: a.EmitSourceComments,
 		})
 		if err != nil {
 			// canonicalize failures arrive pre-typed as
@@ -824,6 +840,39 @@ func run(a cli.Args) error {
 			if err := os.WriteFile(a.AuditCoverageReport, body, 0o644); err != nil {
 				return err
 			}
+		}
+	}
+
+	// Conversion-todos report (collected during ToIR). The stderr
+	// breadcrumbs are emitted at their producer sites and retained; this
+	// writes the deterministic conversion-todos.json for the AI post-pass.
+	// On by default (--conversion-todos); destination is the explicit
+	// --conversion-todos-report, else <dir(out-build)>/conversion-todos.json.
+	// With neither resolvable (no out-build), it's a silent no-op. Always
+	// materialized when written (empty todos list when nothing fired) so
+	// consumers can rely on the path.
+	todosDest := a.ConversionTodosReport
+	if todosDest == "" && a.OutBuild != "" {
+		todosDest = filepath.Join(filepath.Dir(a.OutBuild), "conversion-todos.json")
+	}
+	if a.ConversionTodos && todosDest != "" {
+		pre, perr := todos.LoadPreamble(a.ConversionTodosPreamble)
+		if perr != nil {
+			return fmt.Errorf("--conversion-todos-preamble %s: %w", a.ConversionTodosPreamble, perr)
+		}
+		report := todosCollector.Report(pre, "")
+		body, merr := json.MarshalIndent(report, "", "  ")
+		if merr != nil {
+			// Evidence is map[string]any; a producer adding a
+			// non-marshalable value should fail loudly, not write a
+			// truncated/invalid report.
+			return fmt.Errorf("marshal conversion-todos report: %w", merr)
+		}
+		if err := os.MkdirAll(filepath.Dir(todosDest), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(todosDest, append(body, '\n'), 0o644); err != nil {
+			return err
 		}
 	}
 

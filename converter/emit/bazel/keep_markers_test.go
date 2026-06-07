@@ -91,7 +91,7 @@ func TestEmit_KeepMarkers_Idempotent(t *testing.T) {
 	// Re-canonicalize the already-emitted body — simulates
 	// what write-a does when it re-canonicalizes BUILD.bazel-
 	// named files via its own buildtools pass.
-	out2, err := canonicalize(out1)
+	out2, err := canonicalize(out1, nil)
 	if err != nil {
 		t.Fatalf("canonicalize: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestCanonicalize_ReturnsErrorOnUnparseable(t *testing.T) {
     copts = , "-O2"],
 )
 `)
-	got, err := canonicalize(body)
+	got, err := canonicalize(body, nil)
 	if err == nil {
 		t.Fatalf("canonicalize accepted unparseable body; got=%q", got)
 	}

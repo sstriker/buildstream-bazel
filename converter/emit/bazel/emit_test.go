@@ -2040,6 +2040,83 @@ func TestEmit_Provenance_OmitsLineAndCommandWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestEmit_SourceComments_LeadingRendersAboveRule confirms a recovered
+// LeadingComment block is emitted above the rule (and above the provenance
+// breadcrumb when both are on), surviving the buildtools canonicalize pass.
+func TestEmit_SourceComments_LeadingRendersAboveRule(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:           "foo",
+			Kind:           ir.KindCCLibrary,
+			Srcs:           []string{"foo.c"},
+			LeadingComment: []string{"# wraps the vendored zlib", "# built static"},
+			Provenance:     ir.Provenance{File: "CMakeLists.txt", Line: 42, Command: "add_library"},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitSourceComments: true, EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	for _, want := range []string{"# wraps the vendored zlib", "# built static"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("expected leading comment %q; got:\n%s", want, s)
+		}
+	}
+	// Author comment must precede the provenance breadcrumb, which must
+	// precede the rule.
+	iAuthor := strings.Index(s, "# wraps the vendored zlib")
+	iProv := strings.Index(s, "# Source:")
+	iRule := strings.Index(s, "cc_library(")
+	if !(iAuthor >= 0 && iAuthor < iProv && iProv < iRule) {
+		t.Errorf("order should be author comment < provenance < rule; got %d/%d/%d in:\n%s", iAuthor, iProv, iRule, s)
+	}
+}
+
+// TestEmit_SourceComments_Trailing covers trailing-comment emission: a normal
+// rule gets it as a suffix; a whole-rule-`# keep` kind (genrule) routes it to
+// leading to avoid stacking two suffix comments.
+func TestEmit_SourceComments_Trailing(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "widget", Kind: ir.KindCCLibrary, Srcs: []string{"w.c"}, TrailingComment: "# core lib"},
+		{Name: "gen_x", Kind: ir.KindGenrule, GenruleCmd: "touch $@", GenruleOuts: []string{"x.h"}, TrailingComment: "# makes x"},
+	}}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitSourceComments: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "# core lib") {
+		t.Errorf("expected cc_library trailing comment; got:\n%s", s)
+	}
+	// genrule (whole-rule keep): the author comment routes to leading, above the rule.
+	iComment := strings.Index(s, "# makes x")
+	iGenrule := strings.Index(s, "genrule(")
+	if iComment < 0 || iGenrule < 0 || iComment > iGenrule {
+		t.Errorf("genrule trailing comment should route to leading (above the rule); got:\n%s", s)
+	}
+}
+
+// TestEmit_SourceComments_OmittedWhenDisabled keeps output byte-stable when the
+// flag is off, even if a Target carries a LeadingComment.
+func TestEmit_SourceComments_OmittedWhenDisabled(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name:           "foo",
+			Kind:           ir.KindCCLibrary,
+			Srcs:           []string{"foo.c"},
+			LeadingComment: []string{"# should not appear"},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "should not appear") {
+		t.Errorf("leading comment must be suppressed when EmitSourceComments is off; got:\n%s", got)
+	}
+}
+
 // TestEmit_Filegroup_NoLoad confirms filegroup doesn't trigger a
 // load() statement — it's in Bazel's global namespace.
 func TestEmit_Filegroup_NoLoad(t *testing.T) {

@@ -25,6 +25,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
@@ -284,6 +285,16 @@ type Options struct {
 	// --audit-coverage-report; see converter/internal/coverage.
 	Coverage *coverage.Collector
 
+	// Todos, when non-nil, collects "no-mechanical-form" constructs —
+	// ones with a good Bazel form but no faithful mechanical
+	// translation, which an author (or AI post-pass) must re-express:
+	// add_test(COMMAND cmake -P …) script harnesses, filtered cmake
+	// command edges with no Bazel analogue, and install(SCRIPT) /
+	// install(CODE) directives. Each producer site Adds one grouped
+	// entry alongside its (retained) stderr warning. Surfaced via
+	// --conversion-todos-report; see converter/internal/todos.
+	Todos *todos.Collector
+
 	// CMakeScriptRunner, when non-empty, is the Bazel label of a
 	// target that the cmake-P lift will invoke at Bazel build
 	// time in place of refusing add_custom_command(... cmake -P
@@ -341,6 +352,15 @@ type Options struct {
 	// the lower-as-pure-function shape every existing test
 	// depends on).
 	Warnings io.Writer
+
+	// RecoverSourceComments enables comment-carrying recovery: ToIR reads
+	// raw cmake source at each target's declaration site (the File API
+	// carries no comments) and populates ir.Target.LeadingComment plus the
+	// package HeaderComments file-header block, for the emitter to render
+	// under emit.Options.EmitSourceComments. Off by default — it reads
+	// source files and changes IR; the CLI sets both from one
+	// `--emit-source-comments` flag.
+	RecoverSourceComments bool
 
 	// BazelPackagePath is the repo-root-relative path of the destination
 	// Bazel package (e.g. "elements/hello-world"), mirroring the
@@ -1664,6 +1684,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			fmt.Fprintf(opts.Warnings, "  %s (%d): %s\n", k, len(outs), strings.Join(outs, ", "))
 		}
 	}
+	// Same filtered-command drops, as structured conversion-todos (one
+	// per drop kind). No-op on a nil collector; independent of the
+	// stderr breadcrumb above so the JSON is produced even when
+	// Warnings is nil.
+	emitInternalDropTodos(opts.Todos, cc.FilteredInternalCmds)
 	// add_test registrations for which no cc_test was emitted — breadcrumb
 	// so the drop isn't silent (mirrors the cmake-internal filter above). An
 	// add_test becomes a cc_test only when its COMMAND is a converted
@@ -1719,12 +1744,27 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			}
 		}
 	}
+	// Same unconverted add_test registrations, as structured
+	// conversion-todos (one per COMMAND runner). No-op on a nil
+	// collector; independent of the stderr breadcrumb above.
+	emitCMakePTestTodos(opts.Todos, opts.CTest, cc.Tests, opts.HostSourceRoot, opts.BuildDir)
 	// Surface install(SCRIPT) / install(CODE) directives. These run
 	// cmake script code at install time and have no Bazel
 	// analogue — the converter drops them silently. The warning
 	// makes the omission auditable so operators who care about
 	// install-time logic see what was lost.
 	surfaceInstallScriptInstallers(r, opts.Warnings)
+	// Same install(SCRIPT)/install(CODE) directives, as structured
+	// conversion-todos (one per (site, scriptFile)). No-op on a nil
+	// collector.
+	emitInstallScriptTodos(opts.Todos, r)
+
+	// Full-coverage generic producers: mirror every Tier-1 refusal (diagnostic
+	// mode only), every convert-time bake, and every unresolved-genex audit tag
+	// into the report, each carrying a best-guess disposition.
+	emitRejectionTodos(opts.Todos, opts.Rejections, cmakeBuild)
+	emitBakeTodos(opts.Todos, pkg, cc.bakeTodoDisposition)
+	emitUnresolvedGenexTodos(opts.Todos, pkg)
 
 	// Surface target launchers (CROSSCOMPILING_EMULATOR /
 	// TEST_LAUNCHER). Bazel has no per-target run-launcher; these
@@ -1776,6 +1816,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// package so it catches header-only libs from BOTH the codemodel path
 	// (lowerTarget) and the trace-synth path (lowerInterfaceLibraries).
 	shapeHeaderOnlyStripIncludePrefix(pkg)
+
+	// Comment-carrying (opt-in): recover author comments from raw cmake
+	// source onto the lowered targets + the package header. The File API
+	// carries no comments, so this reads source at each declaration site.
+	if opts.RecoverSourceComments {
+		recoverSourceComments(pkg, hostSrc, cmakeSrc, cmakeBuild,
+			decodedExecuteProcesses, decodedAddCustomCommands, decodedAddCustomTargets)
+	}
 
 	// cc_binary / cc_test have no `hdrs` (nor `textual_hdrs`) attribute, so
 	// the emitter folds their Hdrs into `srcs`. A header whose extension

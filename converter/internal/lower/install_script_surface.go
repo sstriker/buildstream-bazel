@@ -120,6 +120,15 @@ func surfaceLauncherTargets(r *fileapi.Reply, sink io.Writer) {
 // "file:line" string via the directory's BacktraceGraph. Returns ""
 // when the reply carries no usable backtrace (older cmake, or a graph
 // the index doesn't address) so callers can omit the site cleanly.
+//
+// The file component is re-anchored to a stable workspace-relative path
+// (via reanchorProvenanceFile, using the directory's own source/build
+// roots): most BacktraceGraph entries are already relative, but
+// absolute paths slip through for configure_file-generated CMakeLists
+// under the build dir or out-of-tree add_subdirectory — and an absolute
+// path here would leak the convert-host layout into the stderr surface
+// and the conversion-todos `group_key` / `id`, breaking determinism
+// across machines/configures.
 func installerSite(dir fileapi.Directory, backtrace int) string {
 	if backtrace <= 0 || backtrace >= len(dir.BacktraceGraph.Nodes) {
 		return ""
@@ -128,6 +137,7 @@ func installerSite(dir fileapi.Directory, backtrace int) string {
 	if file == "" {
 		return ""
 	}
+	file = reanchorProvenanceFile(file, dir.Paths.Source, dir.Paths.Build)
 	if line > 0 {
 		return fmt.Sprintf("%s:%d", file, line)
 	}
