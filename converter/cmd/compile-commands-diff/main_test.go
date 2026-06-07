@@ -120,3 +120,32 @@ func TestDiff_DefineDelta(t *testing.T) {
 		t.Errorf("std mismatch = %v ok=%v", v, ok)
 	}
 }
+
+func TestLibIdentity(t *testing.T) {
+	cases := map[string]string{
+		"-lpthread": "pthread",
+		"-lstdc++":  "stdc++",
+		"-lm":       "m",
+		"/usr/lib/x86_64-linux-gnu/libpthread.so.0": "pthread",
+		"/usr/lib/libz.a":           "", // z is not in the system allowlist (it's zlib)
+		"-lelements_Szlib_Slibzlib": "", // project archive, not a system lib
+		"-O3":                       "",
+	}
+	for in, want := range cases {
+		if got := libIdentity(in); got != want {
+			t.Errorf("libIdentity(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestOrderInversions(t *testing.T) {
+	// same order -> none
+	if inv := orderInversions([]string{"m", "pthread", "dl"}, []string{"m", "pthread", "dl"}); len(inv) != 0 {
+		t.Errorf("same order should have no inversions, got %v", inv)
+	}
+	// pthread/m swapped -> one inversion (only common libs considered; rt absent in a)
+	inv := orderInversions([]string{"m", "pthread"}, []string{"pthread", "m", "rt"})
+	if len(inv) != 1 || inv[0] != "m<->pthread" {
+		t.Errorf("got %v want [m<->pthread]", inv)
+	}
+}

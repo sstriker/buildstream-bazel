@@ -51,12 +51,16 @@ fi
 
 # --- 1. cmake ground truth -------------------------------------------------
 log "configuring cmake (EXPORT_COMPILE_COMMANDS; $cmake_defs)"
-rm -rf "$out/cmake"; mkdir -p "$out/cmake"
+rm -rf "$out/cmake"; mkdir -p "$out/cmake/.cmake/api/v1/query"
+# Request the codemodel-v2 reply so the link-ORDER check has cmake's ordered
+# link.commandFragments.
+: > "$out/cmake/.cmake/api/v1/query/codemodel-v2"
 # shellcheck disable=SC2086
 if ! cmake -S "$src" -B "$out/cmake" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $cmake_defs >"$out/cmake-configure.log" 2>&1; then
     log "cmake configure FAILED — see $out/cmake-configure.log"; exit 1
 fi
 [ -f "$out/cmake/compile_commands.json" ] || { log "no cmake compile_commands.json produced"; exit 1; }
+cmake_reply="$out/cmake/.cmake/api/v1/reply"
 
 # --- 2. Bazel view (build lens -> aquery) ----------------------------------
 log "building converted graph via the build lens"
@@ -69,6 +73,9 @@ log "aquery CppCompile actions"
 ( cd "$ws" && "$bzl" --output_user_root="$out/survey/$name/.bzcache" --noworkspace_rc \
     aquery --output=jsonproto 'mnemonic("CppCompile", //...)' ) >"$out/aquery.json" 2>"$out/aquery.err" || {
     log "aquery FAILED — see $out/aquery.err"; exit 1; }
+log "aquery CppLink actions (link-order)"
+( cd "$ws" && "$bzl" --output_user_root="$out/survey/$name/.bzcache" --noworkspace_rc \
+    aquery --output=jsonproto 'mnemonic("CppLink", //...)' ) >"$out/aquery-link.json" 2>>"$out/aquery.err" || true
 
 # --- 3. diff ----------------------------------------------------------------
 diff_bin="$repo_root/build/bin/compile-commands-diff"
@@ -83,5 +90,6 @@ log "diffing"
 # run-survey.sh try_bazel_build).
 # shellcheck disable=SC2086
 $diff_bin --cmake "$out/cmake/compile_commands.json" --aquery "$out/aquery.json" --json "$out/fidelity.json" \
-    --cmake-src "$src" --cmake-build "$out/cmake" --bazel-package "elements/$name"
+    --cmake-src "$src" --cmake-build "$out/cmake" --bazel-package "elements/$name" \
+    --cmake-codemodel "$cmake_reply" --aquery-link "$out/aquery-link.json"
 log "report: $out/fidelity.json"
