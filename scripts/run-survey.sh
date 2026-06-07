@@ -253,6 +253,11 @@ try_bazel_build() {
     unset -f extra_ws_setup 2>/dev/null || true
     _bb_conf="$repo_root/scripts/build-lens/$_bb_name.conf"
     [ -f "$_bb_conf" ] && . "$_bb_conf"
+    # A per-project CONF_SPLIT_PACKAGES=0 forces monolithic for THIS element,
+    # overriding the global --split-packages arg passed in ($_bb_sp). Read here
+    # (not in the main loop) because the loop sources the conf only in a subshell
+    # for DIAG_CONVERT_FLAGS, so CONF_SPLIT_PACKAGES doesn't propagate out.
+    case "${CONF_SPLIT_PACKAGES:-}" in 0 | no | off | false) _bb_sp="" ;; esac
 
     # The dir overlaid into the element. Defaults to the surveyed cmake dir;
     # ELEMENT_SOURCE_ROOT redirects it to an ancestor (the repo root) for a
