@@ -968,6 +968,7 @@ func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeS
 		return cmd, srcs, nil // not a cd into a build-dir subdir
 	}
 	sub = filepath.ToSlash(sub)
+	var protocTool string
 
 	srcSet := map[string]bool{}
 	for _, s := range srcs {
@@ -1018,6 +1019,23 @@ func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeS
 		cmd = anchorOutputRootDir(cmd, root)
 	}
 
+	// Hermetic protoc: the recovered command drives a HOST protoc by absolute
+	// path (find_package(Protobuf) → `/tmp/.../protoc-31.1.0`). The Bazel build
+	// links the BCR protobuf RUNTIME, which MVS resolves independently (rules_cc
+	// pulls it to 33.4), so host-protoc gencode fails its PROTOBUF_VERSION guard
+	// against the runtime headers. Generate with the BCR protoc instead
+	// (`$(execpath @protobuf//:protoc)`) so gencode matches the linked runtime —
+	// and the genrule needs no host protoc at action time. Only fires on this
+	// proto-codegen shape (a `protoc`-named absolute driver).
+	protocBasename := ""
+	if drv, rest, found := strings.Cut(cmd, " "); found {
+		if filepath.IsAbs(drv) && strings.HasPrefix(filepath.Base(drv), "protoc") {
+			protocBasename = filepath.Base(drv)
+			cmd = "$(execpath @protobuf//:protoc) " + rest
+			protocTool = "@protobuf//:protoc"
+		}
+	}
+
 	// Drop host-tool phantom srcs: a bare-basename src (no "/") that the command
 	// references only as the basename of an ABSOLUTE host path (e.g. genruleSrcs'
 	// basename-fallback of `/tmp/protobuf-install/bin/protoc-31.1.0` → a
@@ -1028,9 +1046,19 @@ func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeS
 	// also move the execpath'd in-tree tools out of srcs into the returned tools.
 	kept2 := kept[:0:0]
 	var tools []string
+	if protocTool != "" {
+		tools = append(tools, protocTool)
+	}
 	for _, s := range kept {
 		if toolSet[s] {
 			tools = append(tools, s)
+			continue
+		}
+		// Host-tool phantom basename: the genruleSrcs basename-fallback of the
+		// host-absolute driver. Dropped whether the driver was swapped to the BCR
+		// protoc (protocBasename) or left as an absolute host path (cmd carries
+		// `/<s>`).
+		if s == protocBasename {
 			continue
 		}
 		if !strings.Contains(s, "/") && strings.Contains(cmd, "/"+s) {

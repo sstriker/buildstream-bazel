@@ -28,7 +28,7 @@ func TestReanchorBuildDirCopyGenrule(t *testing.T) {
 
 	cmd, kept, tools := reanchorBuildDirCopyGenrule(raw, rewritten, srcs, outs, "", "/b", "elements/grpc")
 
-	wantCmd := "/host/bin/protoc-31.1.0 --grpc_out=:$(RULEDIR)/gens --cpp_out=$(RULEDIR)/gens " +
+	wantCmd := "$(execpath @protobuf//:protoc) --grpc_out=:$(RULEDIR)/gens --cpp_out=$(RULEDIR)/gens " +
 		"--plugin=protoc-gen-grpc=$(execpath grpc_cpp_plugin) -I elements/grpc elements/grpc/src/proto/x.proto"
 	if cmd != wantCmd {
 		t.Errorf("cmd:\n got  %q\n want %q", cmd, wantCmd)
@@ -37,7 +37,7 @@ func TestReanchorBuildDirCopyGenrule(t *testing.T) {
 	if !reflect.DeepEqual(kept, want) {
 		t.Errorf("kept srcs = %v; want %v", kept, want)
 	}
-	if wantTools := []string{"grpc_cpp_plugin"}; !reflect.DeepEqual(tools, wantTools) {
+	if wantTools := []string{"@protobuf//:protoc", "grpc_cpp_plugin"}; !reflect.DeepEqual(tools, wantTools) {
 		t.Errorf("tools = %v; want %v", tools, wantTools)
 	}
 }
