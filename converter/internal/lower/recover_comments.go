@@ -5,10 +5,22 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakeargv"
-	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// provenanceHostPath resolves a target's Provenance.File to a readable host
+// path: absolute paths are used as-is, source-root-relative paths are joined
+// with hostSrc. Empty when no path is available.
+func provenanceHostPath(file, hostSrc string) string {
+	if file == "" {
+		return ""
+	}
+	if filepath.IsAbs(file) || hostSrc == "" {
+		return file
+	}
+	return filepath.Join(hostSrc, file)
+}
 
 // recoverSourceComments carries author comments from raw cmake source into the
 // IR: it populates ir.Target.LeadingComment for codemodel targets and prepends
@@ -26,63 +38,57 @@ import (
 // body line, the egregious misattribution case. cmake-internal and unreadable
 // files are skipped (best-effort; offline --reply-dir runs whose recorded paths
 // don't exist locally simply recover nothing).
-func recoverSourceComments(pkg *ir.Package, r *fileapi.Reply, hostSrc, cmakeSrc, cmakeBuild string,
+func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string,
 	execProcs []shadow.ExecuteProcessCall,
 	customCmds []shadow.AddCustomCommandCall,
 	customTgts []shadow.AddCustomTargetCall) {
-	if pkg == nil || r == nil {
+	if pkg == nil {
 		return
 	}
+	// Codemodel targets already carry the correct declaration site in their
+	// Provenance (populated from the codemodel backtrace). Recover the leading
+	// comment from that site, reading the host file (Provenance.File is source-
+	// root-relative; join it with hostSrc, or use it directly when absolute).
+	// Sites shared by >1 target (a helper invoked N times) are skipped to avoid
+	// misattributing one body comment to many targets.
 	type site struct {
 		file string
 		line int
 	}
 	count := map[site]int{}
-	targetSite := map[string]site{} // codemodel target name -> declaration site
-	for _, t := range r.Targets {
-		if t.IsGeneratorProvided {
-			continue
-		}
-		if t.Backtrace <= 0 || t.Backtrace >= len(t.BacktraceGraph.Nodes) {
-			continue
-		}
-		node := t.BacktraceGraph.Nodes[t.Backtrace]
-		if node.File < 0 || node.File >= len(t.BacktraceGraph.Files) {
-			continue
-		}
-		f := t.BacktraceGraph.Files[node.File]
-		if f == "" || node.Line <= 0 || isCMakeInternalPath(f) {
-			continue
-		}
-		s := site{file: f, line: node.Line}
-		count[s]++
-		targetSite[t.Name] = s
-	}
-
-	byName := make(map[string]*ir.Target, len(pkg.Targets))
 	for i := range pkg.Targets {
-		byName[pkg.Targets[i].Name] = &pkg.Targets[i]
+		p := pkg.Targets[i].Provenance
+		if p.File == "" || p.Line <= 0 {
+			continue
+		}
+		count[site{p.File, p.Line}]++
 	}
 	cache := map[site][]string{}
-	for name, s := range targetSite {
-		if count[s] != 1 {
-			continue // shared site: helper-invoked, ambiguous — skip
-		}
-		irt := byName[name]
-		if irt == nil {
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if len(t.LeadingComment) > 0 || t.Provenance.File == "" || t.Provenance.Line <= 0 {
 			continue
 		}
-		lines, ok := cache[s]
+		key := site{t.Provenance.File, t.Provenance.Line}
+		if count[key] != 1 {
+			continue // shared site: helper-invoked, ambiguous — skip
+		}
+		host := provenanceHostPath(t.Provenance.File, hostSrc)
+		if host == "" || isCMakeInternalPath(host) {
+			continue
+		}
+		readKey := site{host, t.Provenance.Line}
+		lines, ok := cache[readKey]
 		if !ok {
-			recovered, err := cmakeargv.LeadingComment(s.file, s.line)
+			recovered, err := cmakeargv.LeadingComment(host, t.Provenance.Line)
 			if err != nil {
 				recovered = nil
 			}
-			cache[s] = recovered
+			cache[readKey] = recovered
 			lines = recovered
 		}
 		if len(lines) > 0 {
-			irt.LeadingComment = lines
+			t.LeadingComment = lines
 		}
 	}
 

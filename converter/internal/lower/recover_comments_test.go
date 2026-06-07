@@ -5,35 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
-// makeReply builds a minimal Reply with one target per (name, line) declared
-// in `file`, all sharing one BacktraceGraph. Reply.Targets is keyed by target
-// id (here, the name).
-func makeReply(file string, targets map[string]int) *fileapi.Reply {
-	g := fileapi.BacktraceGraph{
-		Commands: []string{"add_library"},
-		Files:    []string{file},
-		Nodes:    []fileapi.BacktraceNode{{}}, // node 0 is the unused root
-	}
-	type spec struct {
-		name string
-		node int
-	}
-	var specs []spec
-	for name, line := range targets {
-		idx := len(g.Nodes)
-		g.Nodes = append(g.Nodes, fileapi.BacktraceNode{File: 0, Line: line, Command: 0})
-		specs = append(specs, spec{name: name, node: idx})
-	}
-	r := &fileapi.Reply{Targets: map[string]fileapi.Target{}}
-	for _, s := range specs {
-		r.Targets[s.name] = fileapi.Target{Name: s.name, Backtrace: s.node, BacktraceGraph: g}
-	}
-	return r
+// prov is a source-root-relative Provenance for a CMakeLists declaration.
+func prov(line int) ir.Provenance {
+	return ir.Provenance{File: "CMakeLists.txt", Line: line, Command: "add_library"}
 }
 
 func TestRecoverSourceComments_LeadingAndHeader(t *testing.T) {
@@ -48,10 +26,9 @@ func TestRecoverSourceComments_LeadingAndHeader(t *testing.T) {
 	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := makeReply(cml, map[string]int{"foo": 6})
-	pkg := &ir.Package{Targets: []ir.Target{{Name: "foo", Kind: ir.KindCCLibrary}}}
+	pkg := &ir.Package{Targets: []ir.Target{{Name: "foo", Kind: ir.KindCCLibrary, Provenance: prov(6)}}}
 
-	recoverSourceComments(pkg, r, dir, dir, "", nil, nil, nil)
+	recoverSourceComments(pkg, dir, dir, "", nil, nil, nil)
 
 	if got := pkg.Targets[0].LeadingComment; len(got) != 1 || got[0] != "# the core library" {
 		t.Errorf("leading comment = %q, want [# the core library]", got)
@@ -71,10 +48,12 @@ func TestRecoverSourceComments_SharedSiteSkipped(t *testing.T) {
 	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := makeReply(cml, map[string]int{"a": 2, "b": 2})
-	pkg := &ir.Package{Targets: []ir.Target{{Name: "a"}, {Name: "b"}}}
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "a", Provenance: prov(2)},
+		{Name: "b", Provenance: prov(2)},
+	}}
 
-	recoverSourceComments(pkg, r, dir, dir, "", nil, nil, nil)
+	recoverSourceComments(pkg, dir, dir, "", nil, nil, nil)
 
 	for _, tg := range pkg.Targets {
 		if tg.LeadingComment != nil {
@@ -86,7 +65,7 @@ func TestRecoverSourceComments_SharedSiteSkipped(t *testing.T) {
 func TestRecoverSourceComments_NoHeaderWhenNoFile(t *testing.T) {
 	// hostSrc points at a dir with no CMakeLists.txt → no header, no panic.
 	pkg := &ir.Package{Targets: []ir.Target{{Name: "foo"}}}
-	recoverSourceComments(pkg, &fileapi.Reply{}, t.TempDir(), "", "", nil, nil, nil)
+	recoverSourceComments(pkg, t.TempDir(), "", "", nil, nil, nil)
 	if len(pkg.HeaderComments) != 0 {
 		t.Errorf("expected no header comments, got %q", pkg.HeaderComments)
 	}
@@ -110,7 +89,7 @@ func TestRecoverSourceComments_CodegenGenrule(t *testing.T) {
 	}}}
 	cmds := []shadow.AddCustomCommandCall{{File: cml, Line: 2, Outputs: []string{"gen/tables.inc"}}}
 
-	recoverSourceComments(pkg, &fileapi.Reply{}, dir, dir, "", nil, cmds, nil)
+	recoverSourceComments(pkg, dir, dir, "", nil, cmds, nil)
 
 	if got := pkg.Targets[0].LeadingComment; len(got) != 1 || got[0] != "# generate the parser tables" {
 		t.Errorf("genrule leading comment = %q, want [# generate the parser tables]", got)
