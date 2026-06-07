@@ -49,6 +49,7 @@ below; the full corpus roster + rationale is under *The corpus*.
 | **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) |
 | **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) |
 | **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) |
+| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) |
 
 `rej` = surveys with rejections, so the build lens skips it; for
 protobuf these are honest external `find_package` deps

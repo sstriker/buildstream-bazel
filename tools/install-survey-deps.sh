@@ -49,4 +49,30 @@ install_abseil() {
 
 install_abseil || true
 
+# SDL: system OpenGL / GLES / EGL dev headers. SDL's cmake auto-enables the
+# OpenGL, OpenGL ES (incl. the legacy GLES1 render backend whose
+# <GLES/glplatform.h> SDL does NOT vendor — it ships GLES2/GLES3/EGL/KHR under
+# src/video/khronos but not GLES1), and EGL backends; their sources #include
+# system Khronos headers. X11 dev headers are already present in the base image.
+# Installing the -dev packages provides both the headers (compile) and the .so
+# stubs (the find_package(OpenGL)/-lGLESv1_CM host link). Idempotent: skip when
+# the GLES1 header is already on disk.
+install_sdl_gl() {
+  if [ -f /usr/include/GLES/glplatform.h ]; then
+    log "GLES/GL/EGL dev headers already present (skip)"
+    return 0
+  fi
+  command -v apt-get >/dev/null 2>&1 || { log "WARNING: no apt-get; SDL GL backends won't build"; return 1; }
+  log "installing libgles-dev (pulls GL/GLES/EGL/GLX dev headers + stubs) for SDL"
+  if apt-get install -y --no-install-recommends libgles-dev >&2 2>/dev/null ||
+     sudo apt-get install -y --no-install-recommends libgles-dev >&2 2>/dev/null; then
+    log "GL/GLES/EGL dev headers installed"
+  else
+    log "WARNING: libgles-dev install failed — SDL's GL/GLES backends won't build"
+    return 1
+  fi
+}
+
+install_sdl_gl || true
+
 log "survey-deps provisioning done"

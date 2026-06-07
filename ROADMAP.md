@@ -724,34 +724,25 @@ transition cleanly.
   element-relative; do the staging in split (header lib), not by rewriting the
   copt in lower.
 
-- **Green sdl — multi-config `file(GENERATE)` into a `$<CONFIG>` dir +
-  build-dir include relativization.** sdl's select-arm cross-package relabel is
-  fixed (split's rewriteTarget now relabels `PerPlatform["srcs"]` too), so the
-  subpackage-label rejection is gone. The current top blocker:
-  `SDL_build_config.h: No such file` compiling `src/libm/s_floor.c`. SDL
-  generates that header in two steps (CMakeLists ~3124):
-  1. `configure_file(SDL_build_config.h.cmake → CMakeFiles/SDL_build_config.h.intermediate)`
-     — the converter recovers this as a genrule (config-independent content).
-  2. `file(GENERATE OUTPUT include-config-$<LOWER_CASE:$<CONFIG>>/build_config/SDL_build_config.h INPUT <intermediate>)`
-     — copies the intermediate into a build-type-dependent folder that's "first
-     in the include search path".
-  Two gaps to close, both multi-config-shaped:
-  - `recoverFileGenerate` drops step 2: its OUTPUT carries `$<CONFIG>` which
-    has no single value under `--build-types` (multi-config), so neither the
-    Go genex evaluator nor the two-pass literal probe resolves it. Needs to
-    emit one genrule per detected config (resolving `$<CONFIG>`→debug/release/
-    relwithdebinfo), each copying the intermediate to
-    `include-config-<c>/build_config/SDL_build_config.h` (content identical
-    across configs — input is the resolved intermediate).
-  - The codemodel records the per-config include dir as an ABSOLUTE throwaway-
-    build-dir path (`/tmp/convert-element-build-*/include-config-<c>/build_config`);
-    lower drops build-dir includes (→ `missing-include`) except under umbrella
-    promotion. It must surface a build-dir include dir that a recovered genrule
-    populates, relativized to the genrule's package-relative out dir, in the
-    config `select()`. Generic: any project that `file(GENERATE)`s a header into
-    a `$<CONFIG>` build dir and puts it on the include path. sdl is
-    multi-config × per-platform × subpackage × large media lib — expect further
-    blockers behind this one.
+- **Green the remaining heavyweight corpus members: grpc, vtk, cuda-samples.**
+  23/26 are green (protobuf + sdl landed). The last three are each deep:
+  - **grpc** — the deepest `find_package` graph (abseil + protobuf + re2 +
+    c-ares + zlib). The whole mechanism is proven (see the grpc bullet under
+    `Next`): host-install each dep so find_package succeeds, map imported
+    targets → BCR labels via `--imports-manifest`, and use the find_package
+    whole-include-tree umbrella (manifest `umbrella_label` +
+    `//absl_umbrella:absl`-style generated lib). grpc's build is large — mind
+    the disk-bounded build cycle in the large-project playbook below.
+  - **vtk** — LLVM-scale; apply the large-project playbook (disk-bounded,
+    resume, no `--disk_cache`).
+  - **cuda-samples** — needs the CUDA toolkit (`BSB_PROVISION_CUDA=1`); not
+    provisioned in the default web session and a multi-GB install.
+  The converter features sdl needed are all generic and landed: multi-config
+  `file(GENERATE)` into a `$<CONFIG>` dir (glob fan-out in `recoverFileGenerate`),
+  per-config include relativization in the multi-config fold, cmake PCH
+  `-include` drop, and select-arm cross-package relabel. The remaining members
+  lean on dep-availability (`tools/install-survey-deps.sh`) + scale, not new
+  converter shapes.
 
 - **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
   collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
