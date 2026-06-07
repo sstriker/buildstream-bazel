@@ -46,6 +46,7 @@ type tuFacts struct {
 	Defines    map[string]bool
 	Std        string
 	IncludeDir map[string]bool // raw -I/-isystem dirs as they appeared in argv
+	Copts      map[string]bool // project-signal compile flags (toolchain/build-mode defaults filtered)
 }
 
 // normOpts carries the prefixes needed to translate cmake (absolute host) and
@@ -275,9 +276,41 @@ func ignoredDefine(d string) bool {
 	return false
 }
 
+// interestingCopt reports whether a compile flag is a PROJECT-authored
+// semantic flag worth diffing — as opposed to a toolchain default, a build-mode
+// flag, or a structural arg that differs between cmake's gcc driver and Bazel's
+// hermetic toolchain for reasons unrelated to conversion fidelity. Kept (high
+// signal): -fvisibility=, -fno-rtti, -fno-exceptions, -fopenmp, -march/-msse/
+// -mavx, -pthread, -fPIC is borderline but build-mode so dropped. Dropped:
+// optimization (-O*), debug (-g*), warnings (-W/-w*), hardening + dep-file +
+// random-seed + PIC/PIE toolchain defaults, and the -D/-I/-isystem/-std flags
+// extracted separately.
+func interestingCopt(a string) bool {
+	if !strings.HasPrefix(a, "-") {
+		return false
+	}
+	switch a {
+	case "-c", "-o", "-S", "-E", "-MD", "-MMD", "-MF", "-MT", "-MQ", "-MP":
+		return false
+	}
+	for _, p := range []string{
+		"-D", "-I", "-isystem", "-iquote", "-std=", // extracted elsewhere
+		"-O", "-g", "-W", "-w", // optimization / debug / warnings (toolchain + build-mode noise)
+		"-fstack-protector", "-fno-omit-frame-pointer", "-fno-canonical-system-headers",
+		"-fPIC", "-fPIE", "-fpic", "-fpie",
+		"-U_FORTIFY_SOURCE", "-D_FORTIFY_SOURCE", "-frandom-seed", "-fdiagnostics",
+		"-MF", "-MT", "-MQ",
+	} {
+		if strings.HasPrefix(a, p) {
+			return false
+		}
+	}
+	return true
+}
+
 // factsFromArgv extracts the path-independent compile facts from a compile argv.
 func factsFromArgv(argv []string) tuFacts {
-	f := tuFacts{Defines: map[string]bool{}, IncludeDir: map[string]bool{}}
+	f := tuFacts{Defines: map[string]bool{}, IncludeDir: map[string]bool{}, Copts: map[string]bool{}}
 	for i := 0; i < len(argv); i++ {
 		a := argv[i]
 		switch {
@@ -313,6 +346,10 @@ func factsFromArgv(argv []string) tuFacts {
 		case strings.HasPrefix(a, "-iquote"):
 			if d := strings.TrimPrefix(a, "-iquote"); d != "" {
 				f.IncludeDir[d] = true
+			}
+		default:
+			if interestingCopt(a) {
+				f.Copts[a] = true
 			}
 		}
 	}
@@ -351,7 +388,8 @@ type report struct {
 	OnlyBazel       []string             `json:"only_bazel"`       // TU keys bazel compiles, cmake doesn't
 	DefineMismatch  map[string]diffSet   `json:"define_mismatch"`  // TU → define delta
 	StdMismatch     map[string][2]string `json:"std_mismatch"`     // TU → [cmake, bazel]
-	IncludeMismatch map[string]diffSet   `json:"include_mismatch"` // TU → include-basename delta
+	IncludeMismatch map[string]diffSet   `json:"include_mismatch"` // TU → source-include delta
+	CoptMismatch    map[string]diffSet   `json:"copt_mismatch"`    // TU → project-copt delta
 }
 
 type diffSet struct {
@@ -364,6 +402,7 @@ func diff(cmake, bazel map[string]tuFacts, o normOpts) *report {
 		DefineMismatch:  map[string]diffSet{},
 		StdMismatch:     map[string][2]string{},
 		IncludeMismatch: map[string]diffSet{},
+		CoptMismatch:    map[string]diffSet{},
 	}
 	normSet := func(raw map[string]bool) map[string]bool {
 		out := map[string]bool{}
@@ -408,6 +447,9 @@ func diff(cmake, bazel map[string]tuFacts, o normOpts) *report {
 		if len(miss)+len(extra) > 0 {
 			r.IncludeMismatch[k] = diffSet{MissingInBazel: miss, ExtraInBazel: extra}
 		}
+		if cmiss, cextra := setDelta(cf.Copts, bf.Copts); len(cmiss)+len(cextra) > 0 {
+			r.CoptMismatch[k] = diffSet{MissingInBazel: cmiss, ExtraInBazel: cextra}
+		}
 	}
 	return r
 }
@@ -444,8 +486,8 @@ func setDelta(a, b map[string]bool) (missingInB, extraInB []string) {
 func (r *report) print(w *os.File) {
 	fmt.Fprintf(w, "compile-commands fidelity: %d TUs matched\n", r.Matched)
 	fmt.Fprintf(w, "  only in cmake: %d   only in bazel: %d\n", len(r.OnlyCmake), len(r.OnlyBazel))
-	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d   include-dir mismatches: %d\n",
-		len(r.DefineMismatch), len(r.StdMismatch), len(r.IncludeMismatch))
+	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d   include-dir mismatches: %d   copt mismatches: %d\n",
+		len(r.DefineMismatch), len(r.StdMismatch), len(r.IncludeMismatch), len(r.CoptMismatch))
 	// Defines are the highest-signal, path-independent facts — show them in full.
 	if len(r.DefineMismatch) > 0 {
 		fmt.Fprintln(w, "\n-- DEFINE mismatches (cmake vs bazel, per TU) --")
@@ -474,15 +516,27 @@ func (r *report) print(w *os.File) {
 		// high-confidence; gen:/sys: deltas reflect build-layout differences and
 		// are lower-confidence.
 		fmt.Fprintln(w, "\n-- include-dir mismatches (normalized; cmake vs bazel) --")
-		for _, k := range sortedKeys(r.IncludeMismatch) {
-			d := r.IncludeMismatch[k]
-			fmt.Fprintf(w, "  %s\n", k)
-			if len(d.MissingInBazel) > 0 {
-				fmt.Fprintf(w, "      missing in bazel: %s\n", strings.Join(d.MissingInBazel, " "))
-			}
-			if len(d.ExtraInBazel) > 0 {
-				fmt.Fprintf(w, "      extra in bazel:   %s\n", strings.Join(d.ExtraInBazel, " "))
-			}
+		printDeltas(w, r.IncludeMismatch)
+	}
+	if len(r.CoptMismatch) > 0 {
+		// Project-authored compile flags (toolchain + build-mode defaults
+		// filtered — see interestingCopt). A delta here is a real semantic
+		// divergence (a -fvisibility/-fno-rtti/-fopenmp/-march cmake applies
+		// that the conversion dropped, or vice versa).
+		fmt.Fprintln(w, "\n-- copt mismatches (project flags; cmake vs bazel) --")
+		printDeltas(w, r.CoptMismatch)
+	}
+}
+
+func printDeltas(w *os.File, m map[string]diffSet) {
+	for _, k := range sortedKeys(m) {
+		d := m[k]
+		fmt.Fprintf(w, "  %s\n", k)
+		if len(d.MissingInBazel) > 0 {
+			fmt.Fprintf(w, "      missing in bazel: %s\n", strings.Join(d.MissingInBazel, " "))
+		}
+		if len(d.ExtraInBazel) > 0 {
+			fmt.Fprintf(w, "      extra in bazel:   %s\n", strings.Join(d.ExtraInBazel, " "))
 		}
 	}
 }

@@ -7,9 +7,21 @@ func TestFactsFromArgv(t *testing.T) {
 		"/usr/bin/gcc", "-DFOO", "-DBAR=1", "-D", "BAZ", "-std=c++17",
 		"-I/abs/inc", "-Irel/inc", "-isystem", "/sys/inc",
 		"-D__DATE__=\"redacted\"", "-D__TIME__=\"redacted\"", // Bazel stamps — must be filtered
+		"-fvisibility=hidden", "-fno-rtti", // project copts (kept)
+		"-Wall", "-O2", "-g", "-fstack-protector", "-fPIC", // toolchain/build-mode (filtered)
 		"-c", "src/foo.cc", "-o", "foo.o",
 	}
 	f := factsFromArgv(argv)
+	for _, want := range []string{"-fvisibility=hidden", "-fno-rtti"} {
+		if !f.Copts[want] {
+			t.Errorf("missing project copt %q in %v", want, f.Copts)
+		}
+	}
+	for _, no := range []string{"-Wall", "-O2", "-g", "-fstack-protector", "-fPIC", "-c", "-o"} {
+		if f.Copts[no] {
+			t.Errorf("toolchain/structural flag %q should be filtered from copts", no)
+		}
+	}
 	for _, want := range []string{"FOO", "BAR=1", "BAZ"} {
 		if !f.Defines[want] {
 			t.Errorf("missing define %q in %v", want, f.Defines)
