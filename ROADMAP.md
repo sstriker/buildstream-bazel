@@ -767,31 +767,36 @@ transition cleanly.
   `df /` and check `du -xsh /home/user/*` before concluding disk is the limit —
   and clean per-project `.bzcache`/`build-ws` under `--out-dir/<member>/`.
 
-- **Faithful SHARED-library conversion (`cc_shared_library`).** Today the lower
-  collapses `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`
-  (`lower.go` target-type switch), which Bazel static-links into every consumer
-  — the "shared-ness" (a real `.so`, dynamic linking, symbol-boundary
-  semantics) is lost. It mostly works because a static lib behaves like a shared
-  one for well-behaved code, but it's wrong where the shared boundary is
-  load-bearing: symbol dedup/visibility (curl's tests recompile the curlx
-  utility sources precisely because the `.so` hides them — static-collapse then
-  duplicates them and the test binary SIGSEGVs at startup; the curl lens works
-  around this with `BUILD_SHARED_LIBS=OFF`, an interim static alignment, see
-  docs/survey-corpus.md curl row), `MODULE_LIBRARY` plugins that are dlopen'd at
-  runtime (static-collapse breaks the model entirely), and per-`.so` global
-  state (two shared libs each owning a copy get silently merged). Implement:
-  emit a `cc_shared_library` wrapping the target's `cc_library` for
-  SHARED/MODULE targets, wire consumers' `dynamic_deps` to it, carry the `.so`
-  in runfiles for `bazel run`/test, and decide the lens policy (build static by
-  default — Bazel's idiom — but be ABLE to build the shared variant, ideally
-  both, so a shared-configured project converts faithfully instead of being
-  silently downgraded). Bazel's `cc_shared_library` constraints to honor: each
-  `cc_library` is owned by at most one shared lib in the graph, plus the
-  `exports`/`dynamic_deps` wiring. **After this lands, re-validate the whole
-  corpus** under both link models — the SHARED-defaulting members especially
-  (curl / brotli / libxml2 / OpenBLAS), which today only build because the lens
-  forces static; the shared variant has never actually been built, so each needs
-  a fresh build+run pass once `cc_shared_library` exists.
+- **Faithful SHARED-library conversion (`cc_shared_library`) — Phase 1 LANDED
+  (opt-in emission); Phase 2: consumers + flip the survey default.** The WHOLE
+  POINT of shared is FIDELITY — to build what cmake would actually build. The
+  survey forces `BUILD_SHARED_LIBS=OFF` for simplicity, but static is NOT
+  cmake's/the project's default; that forced-static is a deviation the shared
+  work exists to remove (and the fidelity lens currently compares against that
+  same deviated static config). Historically lower collapsed
+  `SHARED_LIBRARY`/`MODULE_LIBRARY` → a plain `cc_library`, losing the `.so` /
+  dynamic linking / symbol-boundary semantics. It mostly works because a static
+  lib behaves like a shared one for well-behaved code, but it's wrong where the
+  shared boundary is load-bearing: symbol dedup/visibility (curl's tests
+  recompile the curlx utility sources precisely because the `.so` hides them —
+  static-collapse duplicates them and the test binary SIGSEGVs at startup),
+  `MODULE_LIBRARY` plugins dlopen'd at runtime, and per-`.so` global state.
+  **Phase 1 (landed):** `--emit-shared-libraries` makes lower set
+  `ir.Target.SharedLibName` for SHARED/MODULE targets and emit render a sibling
+  `cc_shared_library(name=<t>_shared, shared_lib_name=libX.so, deps=[":<t>"])`
+  alongside the static impl; default emit is byte-identical (opt-in), validated
+  end-to-end (zlib → real `libz.so`).
+  **Phase 2 (remaining):** wire consumers' `dynamic_deps` to the `_shared`
+  target (+ the "a cc_library is owned by at most one shared lib" /
+  `exports`/`dynamic_deps` constraints + the "linked statically more than once"
+  guard); render in the SPLIT emit path (split.go) too, since the survey defaults
+  to `--split-packages`; carry the `.so` in runfiles for `bazel run`/test; and
+  flip the survey to build the project's NATURAL config (drop the forced
+  `BUILD_SHARED_LIBS=OFF`) so green + fidelity run against what cmake produces.
+  **After Phase 2, re-validate the whole corpus** under the natural link model —
+  the SHARED-defaulting members especially (curl / brotli / libxml2 / OpenBLAS),
+  which today only build because the lens forces static; the shared variant has
+  never actually been built, so each needs a fresh build+run pass.
 
 - **Final corpus validation pass before declaring the converter "done."**
   Independent of any single feature: when the corpus is considered complete, do
