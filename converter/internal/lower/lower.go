@@ -2838,7 +2838,30 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			if t.FileSets[idx].Type != "HEADERS" {
 				continue
 			}
-			fileSetHdrs = append(fileSetHdrs, src.Path)
+			// Relativize like every other header path — a FILE_SET HEADERS
+			// entry can be an absolute path (cmake records generated headers,
+			// e.g. VTK's per-module `vtk<Module>Module.h` export header, at
+			// their CMAKE_CURRENT_BINARY_DIR-absolute path). Appending it raw
+			// made emit render an invalid `//pkg:/abs/path` label ("target
+			// names may not start with /"). A source-tree path relativizes to
+			// (and reanchors under) the package; a build-dir path becomes
+			// build-dir-relative — matching the recovered genrule's output
+			// (the module header has a gen_*_Module_h genrule) — and is NOT
+			// reanchored, like other generated outputs. An out-of-tree
+			// absolute drops (not expressible as a label).
+			p := src.Path
+			if filepath.IsAbs(p) {
+				if rel, inside := relativeIfInside(cmakeSrc, p); inside {
+					fileSetHdrs = append(fileSetHdrs, reanchor(rel))
+				} else if rel, inside := relativeIfInside(cmakeBuild, p); inside {
+					fileSetHdrs = append(fileSetHdrs, rel)
+				}
+				continue
+			}
+			if pathHasDotDotSegment(p) {
+				continue
+			}
+			fileSetHdrs = append(fileSetHdrs, reanchor(p))
 		}
 	}
 	merged := append(irt.Hdrs, hdrs...)
