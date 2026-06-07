@@ -289,6 +289,12 @@ try_bazel_build() {
     set -- --source-root "$_bb_src"
     [ -n "$_bb_bt" ] && set -- "$@" "$_bb_bt"
     [ -n "$_bb_sp" ] && set -- "$@" "$_bb_sp"
+    # When the element is overlaid at an ancestor of the surveyed cmake dir
+    # (ELEMENT_SOURCE_ROOT, e.g. cuda-samples' whole-repo overlay with a
+    # per-sample cmake configure), tell the converter to anchor labels at that
+    # overlay root so the sample's sources/includes carry the subdir prefix that
+    # matches where the overlay staged them.
+    [ -n "$ELEMENT_SOURCE_ROOT" ] && set -- "$@" --element-source-root "$ELEMENT_SOURCE_ROOT"
     # Global build-lens default: configure cmake STATIC. Bazel's cc_library is
     # always static-linked into a cc_binary, so the build lens (which lowers
     # SHARED_LIBRARY → cc_library today — see ROADMAP's cc_shared_library item)
