@@ -2,8 +2,8 @@
 
 > **Lifespan.** Design doc for unbuilt work. **Delete it once the
 > comment-carrying producer has landed** — the code + `ROADMAP.md` become the
-> record (per `CLAUDE.md`: architecture docs describe how systems work today;
-> they don't carry plans).
+> record (per `CLAUDE.md`: docs under `docs/` describe how the systems work but
+> don't restate `ROADMAP.md` planning state — they point at it instead).
 
 ## Problem
 
