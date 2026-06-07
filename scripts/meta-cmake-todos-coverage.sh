@@ -26,16 +26,23 @@ command -v go >/dev/null 2>&1 || { echo "skip: go not on PATH"; exit 0; }
 command -v make >/dev/null 2>&1 || { echo "skip: make not on PATH"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { echo "skip: python3 not on PATH (used to assert the JSON)"; exit 0; }
 
-fixture_src="$repo_root/converter/testdata/sample-projects/todos-coverage"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
-ws="$work_dir/ws"
-mkdir -p "$ws"
-cp -R "$fixture_src/." "$ws/"
 
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 make converter >/dev/null
+
+# stage <fixture-name> copies the named sample project into a fresh workspace
+# under $work_dir and echoes the workspace path.
+stage() { # $1 = fixture dir name
+  d="$work_dir/$1"
+  mkdir -p "$d"
+  cp -R "$repo_root/converter/testdata/sample-projects/$1/." "$d/"
+  echo "$d"
+}
+
+ws="$(stage todos-coverage)"
 
 # Convert in diagnostic mode so the refusal is collected (not aborted) and the
 # rejection producer can mirror it into the todos report.
@@ -96,3 +103,48 @@ if ! cmp -s "$work_dir/todos.json" "$work_dir/todos2.json"; then
   exit 1
 fi
 echo "ok  meta-cmake-todos-coverage: report is byte-identical across runs"
+
+# (5) all-three-dispositions: the multi-disposition fixture is one real-cmake
+# project that exercises every disposition end-to-end — a cmake -P harness
+# (cmake-p-test / actionable), a file(GENERATE) baking an unmodelled
+# TARGET_PROPERTY (bake / improvement), and a `cmake -E create_symlink` edge
+# (cmake-internal-drop / informational). This proves the qualifier flows
+# through real cmake for all three classes, not just the refusal path above
+# and the Go unit tests.
+md_ws="$(stage todos-multi-disposition)"
+"$bin_dir/convert-element-cmake" \
+  --source-root "$md_ws" \
+  --ignore-rejections-for-diagnostics \
+  --conversion-todos-report "$work_dir/md.json" \
+  --out-build "$md_ws/BUILD.bazel" \
+  >"$work_dir/md.out" 2>"$work_dir/md.err" || true
+if [ ! -s "$work_dir/md.json" ]; then
+  echo "FAIL: no conversion-todos.json for the multi-disposition fixture"
+  sed 's/^/   stderr: /' "$work_dir/md.err"
+  exit 1
+fi
+python3 - "$work_dir/md.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+todos = d.get("todos", [])
+# Each (kind, disposition) we deliberately constructed must be present.
+want = {
+    ("cmake-p-test", "actionable"),
+    ("bake", "improvement"),
+    ("cmake-internal-drop", "informational"),
+}
+have = {(t["kind"], t["disposition"]) for t in todos}
+missing = want - have
+if missing:
+    print("FAIL: multi-disposition fixture missing", sorted(missing))
+    print(json.dumps(todos, indent=2))
+    sys.exit(1)
+# And every one of the three disposition classes is represented.
+classes = {t["disposition"] for t in todos}
+for c in ("actionable", "improvement", "informational"):
+    if c not in classes:
+        print("FAIL: multi-disposition fixture missing disposition class", c)
+        sys.exit(1)
+print("ok  meta-cmake-todos-coverage: all three dispositions flow end-to-end "
+      "(actionable cmake-p-test, improvement bake, informational internal-drop)")
+PY
