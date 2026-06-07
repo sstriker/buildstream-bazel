@@ -835,16 +835,45 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	// genrule). Needs p.pkgs (deepestPkg / landingDir), hence after the pkgSet
 	// build. Computed before the emit loop so a producer processed before its
 	// consumer still gets the bump.
+	publicizeIfCrossPkgGen := func(path, consumerDir, selfName string) {
+		prod, ok := p.genOutProducer[path]
+		if !ok || prod == selfName {
+			return
+		}
+		if p.deepestPkg(path) != consumerDir {
+			p.publicize[prod] = true
+		}
+	}
 	for _, t := range pkg.Targets {
 		consumerDir := p.landingDir(t, local)
 		for _, s := range t.Srcs {
-			prod, ok := p.genOutProducer[s]
-			if !ok || prod == t.Name {
+			publicizeIfCrossPkgGen(s, consumerDir, t.Name)
+		}
+		// hdrs/textual_hdrs that are a GENERATED output owned by another package
+		// are referenced by a direct cross-package file label too (rewriteTarget),
+		// so the producer needs publicizing just like a cross-package src — e.g. a
+		// cc_library that lists a sibling-package tablegen .inc directly in hdrs.
+		for _, h := range t.Hdrs {
+			publicizeIfCrossPkgGen(h, consumerDir, t.Name)
+		}
+		for _, h := range t.TextualHdrs {
+			publicizeIfCrossPkgGen(h, consumerDir, t.Name)
+		}
+	}
+	// Synthesized include-root header libs (headerLibTarget) aren't in
+	// pkg.Targets but reference their include-root's headers, cross-package-
+	// labelling any header owned by a deeper package. When such a header is a
+	// GENERATED output (VTK's KWSys aggregates vtksys's generated kwsys headers —
+	// Base64.h, Encoding.h, …), the lib lands in the include-root package while
+	// the producing genrule lives in the deeper package; publicize the producer
+	// so the cross-package hdr label resolves. (Compiled-source genOuts are
+	// dropped by headerLibTarget, so only header outputs matter here.)
+	for inc, hs := range p.headersIn {
+		for _, h := range hs {
+			if p.genOuts[h] && isCompiledSourceExt(h) {
 				continue
 			}
-			if p.deepestPkg(s) != consumerDir {
-				p.publicize[prod] = true
-			}
+			publicizeIfCrossPkgGen(h, inc, "")
 		}
 	}
 
