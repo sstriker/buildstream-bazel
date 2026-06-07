@@ -7,26 +7,30 @@ transition cleanly.
 
 ## Now
 
-- **Refactor: one source-classification chokepoint in `lower` (started).** The
+- **Refactor: source-classification chokepoints in `lower` (largely done).** The
   "is this path a cc compile/link/header input, and which attribute does it go
   in (srcs/hdrs/data/drop)?" decision was duplicated across ~6 sites in
-  `converter/internal/lower/lower.go`. `classifyAndAttach(irt, path, seen,
-  dropNonCc)` now exists as the routing chokepoint (header→hdrs, non-cc→data or
-  drop, cc→srcs, with dedup), and the two IDENTICAL consumer-attribution blocks
-  — the file(GENERATE) and execute_process sister blocks, where the VTK
-  wrap-hierarchy `.args/.data` fix had to be repeated (the "same fix in N
-  places" smell) — now both call it. Guarded behavior-preserving by the goldens
-  + the `meta-file-generate` and `meta-cmake-execute-process-rescue` render gates
-  + new `classify_and_attach_test.go`.
-  REMAINING: adopt the chokepoint at the other source-producing sites — the
-  main per-source switch, the recovered-genrule branch, the GENERATED-not-on-disk
-  branch, and the inCompileGroup / CompileGroup-IsGenerated branch (the last
-  carries extra concerns the helper's `dropNonCc` covers for the non-cc case but
-  whose CcEmbed header pairing + compile-group priority stay at the call site).
-  Then audit the wider converter for the same pattern (cross-package relabeling,
-  visibility publicizing, and exports_files also recur at multiple sites) and
-  capture any further consolidations. Keep the goldens + abseil/glm/VTK surveys
-  as the behavior-preserving guard.
+  `converter/internal/lower/lower.go`. Two chokepoints now own it:
+  `classifyAndAttach(irt, path, seen, dropNonCc)` (header→hdrs, non-cc→data or
+  drop, cc→srcs, with dedup) serves the two IDENTICAL consumer-attribution
+  blocks — the file(GENERATE) and execute_process sister blocks, where the VTK
+  wrap-hierarchy `.args/.data` fix had to be repeated; and
+  `attachGeneratedSource(irt, path, inCG, dropNonCc, embedHdr)` (compile-group
+  source→srcs + its cc_embed sibling header, header→hdrs, else→srcs, optional
+  non-cc drop) serves the three per-source generated branches in the main
+  lowerTarget walk — the IsGenerated recovered-genrule branch, the on-disk
+  generated-source branch, and the OutToGenrule branch — which previously
+  open-coded the same compile-group/CcEmbed routing three times.
+  Guarded behavior-preserving by the full goldens + new `classify_and_attach_test.go`
+  + the render gates for every handler touched (`meta-file-generate`,
+  `meta-cmake-execute-process-rescue`, `meta-cc-embed`, `meta-cc-embed-recognize`,
+  `meta-cmake-cc-hash`).
+  REMAINING: a thin per-source header-only attach (the `!inCompileGroup`
+  target_sources header branch) and the configure-time-build-dir drop are
+  single-disposition and not worth folding. Next, audit the wider converter for
+  the same pattern OUTSIDE source routing — cross-package relabeling, visibility
+  publicizing, and exports_files recur at multiple sites — and capture any
+  further consolidations. Keep the goldens + abseil/glm/VTK surveys as the guard.
 
 - **Generator-parity uplift for the cmake converter.** The
   current cmake converter reads File API codemodel-v2 +
