@@ -141,3 +141,84 @@ func FileHeaderCommentLines(lines []string) []string {
 	}
 	return out
 }
+
+// TrailingComment returns the `#` comment trailing the cmake command at the
+// given 1-based line — the comment after the call's matching close paren on
+// that physical line (e.g. `add_library(foo ...)  # core lib` -> "# core lib").
+// Returns "" when there's no trailing comment. Reads the file.
+func TrailingComment(path string, line int) (string, error) {
+	lines, err := ReadSourceLines(path)
+	if err != nil {
+		return "", err
+	}
+	return TrailingCommentLines(lines, line), nil
+}
+
+// TrailingCommentLines is the pure (no-I/O) core of TrailingComment over
+// already-read lines. It walks from the command line tracking paren depth while
+// skipping quoted strings, bracket args/comments, and inline `#` comments, then
+// — at the matching close paren — returns any `# ...` token on the remainder of
+// that physical line as a raw token (leading `#` kept).
+func TrailingCommentLines(lines []string, line int) string {
+	if line < 1 || line > len(lines) {
+		return ""
+	}
+	body := strings.Join(lines[line-1:], "\n")
+	depth := 0
+	opened := false
+	for i := 0; i < len(body); {
+		switch c := body[i]; c {
+		case '(':
+			depth++
+			opened = true
+			i++
+		case ')':
+			depth--
+			i++
+			if opened && depth == 0 {
+				rest := body[i:]
+				if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+					rest = rest[:nl]
+				}
+				rest = strings.TrimSpace(rest)
+				if isLineComment(rest) {
+					return rest
+				}
+				return ""
+			}
+		case '"':
+			i++
+			for i < len(body) {
+				if body[i] == '\\' && i+1 < len(body) {
+					i += 2
+					continue
+				}
+				if body[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+		case '[':
+			if eq := matchBracketOpen(body, i); eq >= 0 {
+				closer := "]" + strings.Repeat("=", eq) + "]"
+				start := i + 1 + eq + 1
+				if idx := strings.Index(body[start:], closer); idx >= 0 {
+					i = start + idx + len(closer)
+				} else {
+					return "" // unterminated bracket
+				}
+			} else {
+				i++
+			}
+		case '#':
+			// inline comment inside the call args — skip to end of line
+			for i < len(body) && body[i] != '\n' {
+				i++
+			}
+		default:
+			i++
+		}
+	}
+	return "" // unterminated call
+}
