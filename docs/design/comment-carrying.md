@@ -61,21 +61,39 @@ The only genuinely **new** pillar is recovering the comment *text*.
   composable with B (when both fire: author comment first, then the `# Source:`
   ref).
 
-### Codegen targets carry their originating comment (the genrule case)
+### Synthesized targets carry their originating comment (every lift, not just custom commands)
 
-Synthesized `genrule`s from `add_custom_command` / `add_custom_target` (codegen)
-are the high-value B case the operator called out — *"comments before a codegen"*
-(e.g. a `# generate the parser tables` above a tablegen custom command). These
-targets come from the **trace** (`AddCustomCommandCall` / `AddCustomTargetCall`,
-which carry `File`/`Line`), not the codemodel, so:
+The high-value B case the operator called out is *"comments before a codegen"*
+(e.g. `# generate the parser tables` above a tablegen custom command). But
+`add_custom_command` / `add_custom_target` is **only one** lift family — the
+converter synthesizes codegen targets from several trace-recovered call shapes,
+and a comment above any of them is just as worth keeping:
 
-- Populate `Provenance` on synthesized genrules from their trace call site, and
-  **prefer the highest-level originating call** — the wrapping `add_custom_target`
-  when one exists, else the `add_custom_command` — mirroring the existing
-  genrule-naming logic that already names a genrule after its wrapping
-  `add_custom_target`. That is the "highest-level CMakeLists line it came from."
-- With Provenance set, B applies uniformly: the comment above the
-  `add_custom_target` lands as the genrule's leading comment.
+- `add_custom_command` / `add_custom_target` → `genrule`
+  (`AddCustomCommandCall` / `AddCustomTargetCall`).
+- **`execute_process` codegen** → `genrule` / `cmake_configure_file` / stamp
+  lifts (`recoverExecuteProcess`, from `shadow.ExecuteProcessCall`, which carries
+  `File`/`Line` — already used for the refusal records).
+- `configure_file` / `file(GENERATE)` → `cmake_configure_file` / `genrule`
+  (`ConfigureFileCall` / `FileGenerateCall`).
+- `cmake -P` script lifts (cc-embed / cc-hash / script-bake) → the wrapping
+  custom command's call.
+
+None of these flow through the codemodel `backtraceGraph` (they're
+trace-recovered, not codemodel targets), so they have **no `Provenance` today**.
+The design therefore generalizes: **at each lift site, stamp the synthesized
+target's `Provenance` from its originating trace call's `File`/`Line`**, and
+**prefer the highest-level originating call** — the wrapping `add_custom_target`
+over the inner `add_custom_command`; the `execute_process` / `configure_file` /
+`file(GENERATE)` call itself otherwise — mirroring the existing genrule-naming
+logic that already names a genrule after its wrapping `add_custom_target`. That
+"highest-level CMakeLists line it came from" is the line whose leading comment we
+want.
+
+With `Provenance` populated uniformly across every lift, **B applies to all of
+them with no per-lift comment logic** — the single upward-read at
+`Provenance.{File, Line}` carries the comment for custom commands, lifted
+`execute_process`, and `configure_file`/`file(GENERATE)` alike.
 
 ## Recovery (the new work)
 
@@ -131,8 +149,11 @@ lexer — it reuses the `ReadCall` "open at line, tokenize" precedent.
 ## Acceptance
 
 - With `--emit-source-comments`: leading comments above target-defining commands
-  and above `add_custom_target`/`add_custom_command` codegen carry to the rule's
-  leading comment; trailing inline comments carry to the rule suffix (except on
+  and above **every lifted codegen call** (`add_custom_target`/
+  `add_custom_command`, `execute_process`, `configure_file`/`file(GENERATE)`,
+  `cmake -P` lifts) carry to the synthesized rule's leading comment — each via a
+  `Provenance` stamped from the originating trace call site; trailing inline
+  comments carry to the rule suffix (except on
   whole-rule-keep kinds, where they route to leading); the top-of-CMakeLists
   header block carries to `HeaderComments`; the EmitProvenance `# Source:` ref is
   unchanged and composes.
