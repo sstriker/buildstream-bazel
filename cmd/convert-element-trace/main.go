@@ -187,18 +187,8 @@ func main() {
 	// rules slice with renderRules above so buildRules +
 	// generated-headers fold runs once per action.
 	if *outIRJSON != "" {
-		pkg := toIR(rules)
-		body, err := json.MarshalIndent(pkg, "", "  ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: marshal ir.Package: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.MkdirAll(filepath.Dir(*outIRJSON), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: mkdir ir.json: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(*outIRJSON, append(body, '\n'), 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: write ir.json: %v\n", err)
+		if err := writeIRJSON(*outIRJSON, rules); err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-trace: ir.json sidecar: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -212,23 +202,8 @@ func main() {
 	// (slice (3)).
 	if *outMapping != "" && makeDB != nil {
 		mapping := buildInstallMapping(makeDB, buildRules(graph, imports, makeDB))
-		body, err := renderInstallMappingJSON(mapping)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: render install-mapping: %v\n", err)
-			os.Exit(1)
-		}
-		if body == nil {
-			// No install mapping to record — write an empty
-			// version-1 envelope so the Bazel output exists
-			// (genrule must produce every declared output).
-			body = []byte(`{"version":1,"mappings":[]}` + "\n")
-		}
-		if err := os.MkdirAll(filepath.Dir(*outMapping), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: mkdir mapping: %v\n", err)
-			os.Exit(1)
-		}
-		if err := os.WriteFile(*outMapping, body, 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: write mapping: %v\n", err)
+		if err := writeInstallMapping(*outMapping, mapping); err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-trace: install-mapping sidecar: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -259,6 +234,43 @@ func writePlaceholderIRJSON(outPath string) error {
 		return err
 	}
 	return os.WriteFile(outPath, append(body, '\n'), 0o644)
+}
+
+// writeIRJSON marshals the recovered rules as an ir.Package and writes it to
+// outPath — the --out-ir-json sidecar the orchestrator's multi-platform fold
+// consumes (one ir.json per (element, platform) cell).
+func writeIRJSON(outPath string, rules []CCRule) error {
+	body, err := json.MarshalIndent(toIR(rules), "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal ir.Package: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	if err := os.WriteFile(outPath, append(body, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
+}
+
+// writeInstallMapping renders the install-mapping sidecar (source →
+// install-tree-dest map) to outPath. A nil mapping writes an empty version-1
+// envelope so the genrule's declared output always exists.
+func writeInstallMapping(outPath string, mapping *InstallMapping) error {
+	body, err := renderInstallMappingJSON(mapping)
+	if err != nil {
+		return fmt.Errorf("render: %w", err)
+	}
+	if body == nil {
+		body = []byte(`{"version":1,"mappings":[]}` + "\n")
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	if err := os.WriteFile(outPath, body, 0o644); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
 }
 
 // recoveredRules returns the same CCRule slice emitBuild
