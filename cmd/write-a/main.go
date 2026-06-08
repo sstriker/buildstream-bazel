@@ -678,27 +678,9 @@ func main() {
 		// hold the resolved values when --convert-element-trace
 		// is also set. When ONLY --cmake-round2-fallback is set
 		// (not autotools round-2), resolve here.
-		if traceConfig.tracerBin == "" {
-			abs, err := filepath.Abs(*tracerBin)
-			if err != nil {
-				log.Fatalf("resolve build-tracer path: %v", err)
-			}
-			traceConfig.tracerBin = abs
-		}
-		if traceConfig.publishBin == "" {
-			abs, err := filepath.Abs(*publishBin)
-			if err != nil {
-				log.Fatalf("resolve trace-publish path: %v", err)
-			}
-			traceConfig.publishBin = abs
-		}
-		if traceConfig.lookupBin == "" {
-			abs, err := filepath.Abs(*lookupBin)
-			if err != nil {
-				log.Fatalf("resolve trace-lookup path: %v", err)
-			}
-			traceConfig.lookupBin = abs
-		}
+		resolveTraceBinOnce(&traceConfig.tracerBin, tracerBin, "build-tracer")
+		resolveTraceBinOnce(&traceConfig.publishBin, publishBin, "trace-publish")
+		resolveTraceBinOnce(&traceConfig.lookupBin, lookupBin, "trace-lookup")
 		cmakeConfig.round2FallbackEnabled = true
 	}
 	// kind:meson round-2 fallback. Same shape as kind:cmake's
@@ -722,27 +704,9 @@ func main() {
 		// already be resolved when --cmake-round2-fallback or the
 		// trace-driven autotools path is also set. Resolve here
 		// only when this is the sole consumer.
-		if traceConfig.tracerBin == "" {
-			abs, err := filepath.Abs(*tracerBin)
-			if err != nil {
-				log.Fatalf("resolve build-tracer path: %v", err)
-			}
-			traceConfig.tracerBin = abs
-		}
-		if traceConfig.publishBin == "" {
-			abs, err := filepath.Abs(*publishBin)
-			if err != nil {
-				log.Fatalf("resolve trace-publish path: %v", err)
-			}
-			traceConfig.publishBin = abs
-		}
-		if traceConfig.lookupBin == "" {
-			abs, err := filepath.Abs(*lookupBin)
-			if err != nil {
-				log.Fatalf("resolve trace-lookup path: %v", err)
-			}
-			traceConfig.lookupBin = abs
-		}
+		resolveTraceBinOnce(&traceConfig.tracerBin, tracerBin, "build-tracer")
+		resolveTraceBinOnce(&traceConfig.publishBin, publishBin, "trace-publish")
+		resolveTraceBinOnce(&traceConfig.lookupBin, lookupBin, "trace-lookup")
 		mesonConfig.round2FallbackEnabled = true
 	}
 	// Round-2 is the default trace-driven path. It activates
@@ -1442,6 +1406,21 @@ func loadElement(bstPath, includeBase, sourceCache string, options map[string]bs
 // (MODULE.bazel, BUILD.bazel, rules/, tools/) shared across every
 // element, then a per-element package under elements/<name>/ rendered
 // by the element's kind handler.
+// resolveTraceBinOnce sets *dst to the absolute form of *flagVal when *dst is
+// still empty — so a binary already resolved by another round-2 path (the
+// trace-driven autotools path, or a sibling fallback flag) isn't re-resolved —
+// fataling with a path-resolution message keyed on name when filepath.Abs fails.
+func resolveTraceBinOnce(dst *string, flagVal *string, name string) {
+	if *dst != "" {
+		return
+	}
+	abs, err := filepath.Abs(*flagVal)
+	if err != nil {
+		log.Fatalf("resolve %s path: %v", name, err)
+	}
+	*dst = abs
+}
+
 func writeProjectA(g *graph, outDir, convertBin string) error {
 	// Reset the per-invocation pyproject caches at the entrypoint.
 	// The CLI's flag-parse-time reset (see main()) only catches
