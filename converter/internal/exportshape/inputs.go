@@ -157,6 +157,25 @@ func BuildInputs(inst fileapi.DirectoryInstaller, targets map[string]fileapi.Tar
 		bundle := path.Join(inst.Destination, inst.ExportName+".cmake")
 		bundleSet[bundle] = true
 		installSet[bundle] = true
+		// The export script (<Pkg>Targets.cmake) alone is NOT found by
+		// find_package(<Pkg> CONFIG): that searches the install tree for
+		// <Pkg>Config.cmake as the entry point. cmake projects pair the
+		// install(EXPORT) with a configure_package_config_file'd
+		// <Pkg>Config.cmake (+ write_basic_package_version_file's
+		// <Pkg>ConfigVersion.cmake), but those are install(FILES) of build-dir
+		// outputs the converter doesn't lift — so they're dropped, leaving the
+		// bundle unfindable (the eigen/catch2/zstd/… "…Config.cmake not
+		// generated" survey gap). Generate the standard config-package pair
+		// alongside the targets script (renderConfigFile include()s it;
+		// renderConfigVersionFile is a permissive version stub) so the bundle is
+		// actually consumable. Same dest, so CMAKE_CURRENT_LIST_DIR resolves the
+		// sibling targets script.
+		pkg := pkgFromBundle(inst.Destination, inst.ExportName)
+		for _, f := range []string{pkg + "Config.cmake", pkg + "ConfigVersion.cmake"} {
+			p := path.Join(inst.Destination, f)
+			bundleSet[p] = true
+			installSet[p] = true
+		}
 	}
 
 	in.InstallFiles = sortedKeys(installSet)

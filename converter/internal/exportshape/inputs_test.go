@@ -31,15 +31,25 @@ func TestBuildInputs_StaticLibraryArtifactSynthesized(t *testing.T) {
 		},
 	}
 	in := exportshape.BuildInputs(inst, targets)
+	// The bundle now also generates the find_package(CONFIG) entry point
+	// (<Pkg>Config.cmake) + a version stub (<Pkg>ConfigVersion.cmake) alongside
+	// the export's <Pkg>Targets.cmake — a Targets-only bundle isn't findable.
 	want := []string{
+		"lib/cmake/MyPkg/MyPkgConfig.cmake",
+		"lib/cmake/MyPkg/MyPkgConfigVersion.cmake",
 		"lib/cmake/MyPkg/MyPkgTargets.cmake",
 		"lib/libfoo.a",
 	}
 	if !reflect.DeepEqual(in.InstallFiles, want) {
 		t.Errorf("InstallFiles: got %v want %v", in.InstallFiles, want)
 	}
-	if !reflect.DeepEqual(in.CMakeConfigBundleFiles, []string{"lib/cmake/MyPkg/MyPkgTargets.cmake"}) {
-		t.Errorf("CMakeConfigBundleFiles: got %v", in.CMakeConfigBundleFiles)
+	wantBundle := []string{
+		"lib/cmake/MyPkg/MyPkgConfig.cmake",
+		"lib/cmake/MyPkg/MyPkgConfigVersion.cmake",
+		"lib/cmake/MyPkg/MyPkgTargets.cmake",
+	}
+	if !reflect.DeepEqual(in.CMakeConfigBundleFiles, wantBundle) {
+		t.Errorf("CMakeConfigBundleFiles: got %v want %v", in.CMakeConfigBundleFiles, wantBundle)
 	}
 	if len(in.PublicHeaders) != 0 {
 		t.Errorf("PublicHeaders should be empty without FileSets: %v", in.PublicHeaders)
@@ -185,12 +195,16 @@ func TestBuildInputs_InterfaceLibraryHeadersOnly(t *testing.T) {
 	if len(in.PublicHeaders["iface"]) != 1 {
 		t.Errorf("INTERFACE_LIBRARY headers missing: %v", in.PublicHeaders)
 	}
-	// The only InstallFile should be the synthesized
-	// IfaceTargets.cmake — no artifact.
-	for _, p := range in.InstallFiles {
-		if p != "lib/cmake/Iface/IfaceTargets.cmake" {
-			t.Errorf("INTERFACE_LIBRARY shouldn't add artifact paths; got %q", p)
-		}
+	// A header-only export still ships a findable config-package (the
+	// Targets/Config/ConfigVersion trio under the export dest) but NO library
+	// artifact (no .a/.so) — that's the property under test.
+	want := []string{
+		"lib/cmake/Iface/IfaceConfig.cmake",
+		"lib/cmake/Iface/IfaceConfigVersion.cmake",
+		"lib/cmake/Iface/IfaceTargets.cmake",
+	}
+	if !reflect.DeepEqual(in.InstallFiles, want) {
+		t.Errorf("INTERFACE_LIBRARY InstallFiles: got %v want %v (config-package only, no artifact)", in.InstallFiles, want)
 	}
 }
 
@@ -294,10 +308,12 @@ func TestBuildInputs_FeedsEmitDeclarative(t *testing.T) {
 	in := exportshape.BuildInputs(inst, targets)
 	in.EmitConfig = true // opt in to the config-mode bundle generation
 	out := exportshape.EmitDeclarative(in)
-	// Expect: cmake_config_bundle, lib (cc_import), lib_hdrs (filegroup),
-	// gen_... (write_file producer for the one bundle file).
-	if len(out) != 4 {
-		t.Fatalf("want 4 IR targets; got %d: %v", len(out), out)
+	// Expect: cmake_config_bundle, lib (cc_import), lib_hdrs (filegroup), and a
+	// write_file producer per bundle file — now three: the export
+	// <Pkg>Targets.cmake plus the generated find_package(CONFIG) entry point
+	// <Pkg>Config.cmake and the version stub <Pkg>ConfigVersion.cmake.
+	if len(out) != 6 {
+		t.Fatalf("want 6 IR targets; got %d: %v", len(out), out)
 	}
 	var ccImport *ir.Target
 	for i := range out {

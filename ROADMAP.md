@@ -1224,10 +1224,16 @@ The six intent-lens producer-gap themes follow as their own entries
     (it had regressed fmt's build lens). Remaining: brotli's `.pc` isn't
     GENERATED at all (its `.pc.in` configure_file isn't lifted) — a codegen-lift
     gap tracked with theme 6, not a packaging gap.
-  - **D. `<Pkg>Config.cmake`/`<Pkg>Targets.cmake` generation** — the
-    `find_package(CONFIG)` entry points aren't generated at all (eigen, catch2,
-    zstd, cutlass, protobuf, nlohmann-json). A genuinely new producer — scope
-    deliberately.
+  - **D. `<Pkg>Config.cmake`/`<Pkg>ConfigVersion.cmake` generation — DONE.**
+    The renderers existed (`renderConfigFile` include()s the targets script;
+    `renderConfigVersionFile` is a permissive stub), but `CMakeConfigBundleFiles`
+    only carried the install(EXPORT) `<Pkg>Targets.cmake` — so a bundle had no
+    `<Pkg>Config.cmake`, the file `find_package(<Pkg> CONFIG)` actually searches
+    for, leaving it unfindable. BuildInputs now also emits `<Pkg>Config.cmake` +
+    `<Pkg>ConfigVersion.cmake` alongside the targets script (same dest), so the
+    config-package is consumable (zstd generates zstdConfig.cmake +
+    zstdConfigVersion.cmake; build green). **Install/export theme COMPLETE
+    (A/B/C/D).**
 
 - **System/threading linkopt propagation — extend the host-system-library
   fallback (25× high).** Extends "Make the host-system-library fallback
