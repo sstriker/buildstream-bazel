@@ -746,9 +746,14 @@ func TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs(t *testing.T) {
 //   - relabel the cc_import library path cross-package
 //     (//<base>/lib:libfoo.so, not the invalid same-package "lib/libfoo.so"),
 //   - relabel the filegroup's ":gen_*" srcs cross-package,
-//   - publicize the re-homed producer so the root filegroup can reach it,
-//   - tag the cc_import facade "manual" so the standalone wildcard build /
-//     compile-db aquery skip it (its install artifact has no in-graph producer).
+//   - publicize the re-homed producer so the root filegroup can reach it.
+//
+// The "manual" tag is added during LOWERING (directory_installers.go), not by
+// the split; this test supplies it in the input IR and asserts EmitSplit
+// preserves it on the facade (it's load-bearing for excluding the install-only
+// artifact from the wildcard build / compile-db aquery). The cc_import relabel
+// is also asserted under the SourceKey regime, since it's about package
+// boundaries, not src/hdr framing (see the SourceKey sub-check below).
 func TestEmit_Split_InstallExportImportSubpackage(t *testing.T) {
 	pkg := &ir.Package{
 		Name: "foo",
@@ -823,5 +828,25 @@ func TestEmit_Split_InstallExportImportSubpackage(t *testing.T) {
 	}
 	if !contains(lbody, `"//visibility:public"`) {
 		t.Errorf("re-homed producer not publicized; got:\n%s", lbody)
+	}
+
+	// SourceKey regime: the cc_import library-path relabel is about emitted-BUILD
+	// package boundaries, not src/hdr framing, so it must still fire (a bare
+	// "lib/libfoo.so" facade in the root is just as invalid when lib/ is a
+	// subpackage). srcs stay @src-prefixed in this regime, but cross-package
+	// target/artifact labels still resolve to //<base>/... form.
+	skTree, err := bazel.EmitSplit(pkg, bazel.Options{
+		BazelPackagePath: "elements/foo",
+		SourceKey:        "abc",
+	})
+	if err != nil {
+		t.Fatalf("EmitSplit (SourceKey): %v", err)
+	}
+	skRoot := string(skTree[""])
+	if !contains(skRoot, `shared_library = "//elements/foo/lib:libfoo.so"`) {
+		t.Errorf("SourceKey: cc_import shared_library not relabeled cross-package; got:\n%s", skRoot)
+	}
+	if contains(skRoot, `shared_library = "lib/libfoo.so"`) {
+		t.Errorf("SourceKey: cc_import kept the invalid same-package subpackage path; got:\n%s", skRoot)
 	}
 }

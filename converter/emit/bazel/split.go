@@ -1100,8 +1100,12 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// cc_import's static_library/shared_library are single element-root-relative
 	// artifact paths (e.g. install-export's "lib/libzstd.so"). When the
 	// artifact's dir is a sub-package, the bare path is an invalid same-package
-	// label ("lib is a subpackage"); relabel it cross-package like srcs.
-	if local && rt.Kind == ir.KindCCImport {
+	// label ("lib is a subpackage"); relabel it cross-package. NOT gated on
+	// `local`: this is about emitted-BUILD package boundaries (which a split
+	// creates in both regimes), not src/hdr path framing — the same reason deps
+	// rewrite to cross-package labels under SourceKey too. A non-sub-package
+	// path returns unchanged, so the SourceKey/non-split cases don't churn.
+	if rt.Kind == ir.KindCCImport {
 		rt.StaticLibrary = relabelImportArtifact(plan, dir, rt.StaticLibrary)
 		rt.SharedLibrary = relabelImportArtifact(plan, dir, rt.SharedLibrary)
 	}
