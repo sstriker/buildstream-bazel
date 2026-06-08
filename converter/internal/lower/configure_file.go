@@ -53,14 +53,45 @@ type configureFileOut struct {
 // or no configure_file events are recorded — preserves the
 // pre-trace behavior for offline runs without a stashed
 // fixture.
-func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, dirScopes []string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(traceRaw) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
 	if hostSrcDir == "" {
 		hostSrcDir = recordedSrcDir
 	}
-	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, liftEnabled, cmakeVars, cc)
+	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, dirScopes, liftEnabled, cmakeVars, cc)
+}
+
+// dirScopeRel returns the source-relative path of the deepest codemodel
+// directory SCOPE (an entry of dirScopes — the per-config directory Sources,
+// "" for the root) that CONTAINS callFile. This is the directory whose
+// CMAKE_CURRENT_BINARY_DIR a relative configure_file output anchors against:
+// for a call straight from a CMakeLists.txt it's that file's own dir; for a
+// call inside an include()d .cmake module it's the includer's scope (include()
+// doesn't open a new directory scope). Returns ("", false) when no scope
+// contains the call file (e.g. an offline run with no codemodel directories,
+// or a module outside the source tree) so the caller can fall back.
+func dirScopeRel(callFile, recordedSrcDir string, dirScopes []string) (string, bool) {
+	callDir := filepath.ToSlash(filepath.Dir(callFile))
+	// Trim any trailing separator so scopeAbs doesn't become "<src>/" (or
+	// "<src>//<scope>"), which would defeat the exact/prefix match below.
+	src := strings.TrimSuffix(filepath.ToSlash(recordedSrcDir), "/")
+	best := ""
+	bestLen := -1
+	for _, scope := range dirScopes {
+		scopeAbs := src
+		if scope != "" {
+			scopeAbs = src + "/" + scope
+		}
+		if callDir == scopeAbs || strings.HasPrefix(callDir, scopeAbs+"/") {
+			if len(scopeAbs) > bestLen {
+				bestLen = len(scopeAbs)
+				best = scope
+			}
+		}
+	}
+	return best, bestLen >= 0
 }
 
 // recoverConfigureFilesFromCalls is the same logic as
@@ -69,7 +100,7 @@ func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSr
 // trace is parsed once total across all extractors (including
 // the configure_file recovery), instead of one pass per
 // extractor.
-func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, dirScopes []string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -89,9 +120,29 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 			if call.CallFile == "" || recordedSrcDir == "" {
 				continue
 			}
-			relDir, inside := relativeIfInside(recordedSrcDir, filepath.Dir(call.CallFile))
-			if !inside {
-				continue
+			// Anchor to the deepest codemodel DIRECTORY SCOPE containing the
+			// call file, not dir(CallFile). cmake resolves a relative Output
+			// against CMAKE_CURRENT_BINARY_DIR — the build-dir mirror of the
+			// directory SCOPE (the add_subdirectory level), which `include()`
+			// does NOT change. So a configure_file inside an include()d module
+			// (vtk libproj's `cmake/ProjConfig.cmake` doing
+			// `configure_file(cmake/proj_config.cmake.in src/proj_config.h)`)
+			// writes to the INCLUDER's binary dir (`vtklibproj/src/…`), not the
+			// module's (`vtklibproj/cmake/src/…`). dir(CallFile) gives the
+			// latter — the wrong path — so the output isn't found and the call
+			// is silently dropped. dirScopeRel walks dirScopes (the codemodel
+			// directory Sources) for the deepest one containing the call file;
+			// for a call straight from a CMakeLists.txt that's dir(CallFile)
+			// itself (unchanged behavior), and for an include()d module it's
+			// the includer's scope. Falls back to dir(CallFile) when no scope
+			// matches (offline runs without codemodel directories).
+			relDir, ok := dirScopeRel(call.CallFile, recordedSrcDir, dirScopes)
+			if !ok {
+				var inside bool
+				relDir, inside = relativeIfInside(recordedSrcDir, filepath.Dir(call.CallFile))
+				if !inside {
+					continue
+				}
 			}
 			output = filepath.Join(recordedBuildDir, relDir, call.Output)
 		}

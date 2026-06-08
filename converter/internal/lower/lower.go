@@ -1255,16 +1255,32 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// recorded outputs (and their build-dir-relative paths) to
 	// attach to consuming targets that include the cmake build
 	// dir in their codemodel-recorded Includes.
+	// Codemodel directory scopes (source-relative, "" = root) — the
+	// CMAKE_CURRENT_BINARY_DIR levels a relative configure_file output anchors
+	// against. Lets the recovery resolve a call made inside an include()d
+	// module to the includer's scope rather than the module's own dir.
+	configureDirScopes := make([]string, 0, len(cfg.Directories))
+	for _, d := range cfg.Directories {
+		// ToSlash first, THEN trim the trailing separator (matching
+		// subPackageDir) — a Windows-separator Source must be slash-normalized
+		// before the trim, else a trailing "/" survives and breaks dirScopeRel's
+		// prefix match.
+		s := strings.TrimSuffix(filepath.ToSlash(d.Source), "/")
+		if s == "." {
+			s = ""
+		}
+		configureDirScopes = append(configureDirScopes, s)
+	}
 	var configureFiles []configureFileOut
 	if traceDecoded {
 		var err error
-		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
+		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, cc)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		var err error
-		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, hostSrc, opts.BuildDir, cmakeSrc, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, cc)
+		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, hostSrc, opts.BuildDir, cmakeSrc, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, cc)
 		if err != nil {
 			return nil, err
 		}
