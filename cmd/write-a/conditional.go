@@ -168,87 +168,19 @@ var archInTupleEntryRE = regexp.MustCompile(`['"]([^'"]+)['"]`)
 // (bootstrap_build_arch / host_arch values aren't constrained to
 // the @platforms//cpu:* set).
 func parseArchExpression(expr string) (varname string, arches []string) {
-	expr = strings.TrimSpace(expr)
-	// Strip a single layer of outer parens. Parens at intermediate
-	// positions (precedence-grouping inside an or/and chain)
-	// surface as unrecognized syntax for now — the simple-strip
-	// handles the common case where authors wrap the whole
-	// expression for readability.
-	if strings.HasPrefix(expr, "(") && strings.HasSuffix(expr, ")") {
-		// Verify the closing paren matches the opening — guard
-		// against expressions like "(a) or (b)" where the outer
-		// trim would munge two unrelated groups.
-		depth := 0
-		ok := true
-		for i, c := range expr {
-			switch c {
-			case '(':
-				depth++
-			case ')':
-				depth--
-				if depth == 0 && i != len(expr)-1 {
-					ok = false
-				}
-			}
-			if !ok {
-				break
-			}
-		}
-		if ok {
-			expr = strings.TrimSpace(expr[1 : len(expr)-1])
-		}
-	}
-	// `or`-joined chain — recurse on each part. The branch only
-	// makes sense if every part has the same LHS variable; mixed-
-	// LHS chains return ("", nil).
+	expr = stripOuterParens(strings.TrimSpace(expr))
+	// `or`-joined chain — union the parts (same-LHS required; mixed-LHS
+	// chains return ("", nil)).
 	if strings.Contains(expr, " or ") && !strings.Contains(expr, " and ") {
-		parts := strings.Split(expr, " or ")
-		var lhs string
-		var out []string
-		for _, p := range parts {
-			v, vs := parseArchExpression(strings.TrimSpace(p))
-			if v == "" {
-				return "", nil
-			}
-			if lhs == "" {
-				lhs = v
-			} else if lhs != v {
-				return "", nil
-			}
-			out = mergeArches(out, vs)
-		}
-		return lhs, out
+		return parseArchChain(strings.Split(expr, " or "), false)
 	}
-	// `and`-joined chain — same-LHS variable intersection. The
-	// most common FDSDK shape is the negation chain
-	// `var != "X" and var != "Y"` (which the != handler returns
-	// as the complement set; intersection then gives the arches
-	// excluded by both). Mixed-LHS and-chains require multi-
-	// dimensional constraint dispatch — not yet implemented; they
-	// surface as ("", nil).
+	// `and`-joined chain — same-LHS intersection. The most common FDSDK
+	// shape is the negation chain `var != "X" and var != "Y"` (the != handler
+	// returns each part's complement set; intersection then gives the arches
+	// excluded by both). Mixed-LHS and-chains require multi-dimensional
+	// constraint dispatch — not yet implemented; they surface as ("", nil).
 	if strings.Contains(expr, " and ") && !strings.Contains(expr, " or ") {
-		parts := strings.Split(expr, " and ")
-		var lhs string
-		var out []string
-		first := true
-		for _, p := range parts {
-			v, vs := parseArchExpression(strings.TrimSpace(p))
-			if v == "" {
-				return "", nil
-			}
-			if lhs == "" {
-				lhs = v
-			} else if lhs != v {
-				return "", nil
-			}
-			if first {
-				out = vs
-				first = false
-			} else {
-				out = intersectArches(out, vs)
-			}
-		}
-		return lhs, out
+		return parseArchChain(strings.Split(expr, " and "), true)
 	}
 	if m := varEqualsRE.FindStringSubmatch(expr); m != nil {
 		varname = m[1]
@@ -288,6 +220,69 @@ func parseArchExpression(expr string) (varname string, arches []string) {
 		return varname, out
 	}
 	return "", nil
+}
+
+// stripOuterParens removes a single layer of matched outer parens wrapping the
+// whole expression (the common case where authors wrap for readability). Parens
+// at intermediate positions (precedence-grouping inside an or/and chain) are
+// left intact: an expression like "(a) or (b)", whose outer parens DON'T span
+// the whole string, is returned unchanged so the trim doesn't munge two
+// unrelated groups.
+func stripOuterParens(expr string) string {
+	if !strings.HasPrefix(expr, "(") || !strings.HasSuffix(expr, ")") {
+		return expr
+	}
+	depth := 0
+	for i, c := range expr {
+		switch c {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return expr // unbalanced: a ')' with no matching '('
+			}
+			if depth == 0 && i != len(expr)-1 {
+				return expr // closing paren doesn't span the whole expr
+			}
+		}
+	}
+	if depth != 0 {
+		return expr // unbalanced: leftover '(' (e.g. "((a)")
+	}
+	return strings.TrimSpace(expr[1 : len(expr)-1])
+}
+
+// parseArchChain parses an `or`/`and`-joined arch expression by recursing on
+// each part. Every part must share the same LHS variable (mixed-LHS chains
+// return ("", nil)). With intersect=false the parts' arch sets are unioned (the
+// `or` case); with intersect=true they're intersected (the `and` case — the
+// first part seeds the accumulator).
+func parseArchChain(parts []string, intersect bool) (string, []string) {
+	var lhs string
+	var out []string
+	first := true
+	for _, p := range parts {
+		v, vs := parseArchExpression(strings.TrimSpace(p))
+		if v == "" {
+			return "", nil
+		}
+		if lhs == "" {
+			lhs = v
+		} else if lhs != v {
+			return "", nil
+		}
+		switch {
+		case !intersect:
+			out = mergeArches(out, vs)
+		case first:
+			out = vs
+		default:
+			out = intersectArches(out, vs)
+		}
+		first = false
+	}
+	return lhs, out
 }
 
 func isSupported(arch string) bool {
