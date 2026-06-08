@@ -7,6 +7,17 @@ transition cleanly.
 
 ## Now
 
+- **Regression: zstd split-emit emits an invalid subpackage label.** The
+  full-corpus fidelity run (2026-06-08) caught zstd — otherwise docs-green —
+  failing analysis with `Label '//elements/zstd:lib/libzstd.so' is invalid
+  because 'elements/zstd/lib' is a subpackage`. Split-emit's cross-package
+  relabel produces a same-package `:lib/libzstd.so` string for an artifact that
+  actually lives in the `elements/zstd/lib` subpackage; it must be relabeled to
+  the cross-package form `//elements/zstd/lib:libzstd.so` (the same relabel the
+  header-lib / `exports_files` paths already do). Blocks zstd's compile-db
+  fidelity row. Likely main-drift since zstd last went green — guard with the
+  zstd survey once fixed.
+
 - **Refactor: source-classification chokepoints in `lower` (largely done).** The
   "is this path a cc compile/link/header input, and which attribute does it go
   in (srcs/hdrs/data/drop)?" decision was duplicated across ~6 sites in
@@ -1181,7 +1192,35 @@ transition cleanly.
   let triage *verify* a claimed miss against structured truth, not just dedup it
   (and would sharpen if the todo producers populated structured `Anchor.File`
   uniformly — today only the rejection-mirror does); (c) a **real-judge corpus
-  pass** to calibrate false-positive rate and confirm the producer-gaps it finds.
+  pass** to calibrate false-positive rate and confirm the producer-gaps it finds
+  — **done (2026-06-08)**: a full-corpus run with `claude -p` as judge, output
+  committed under `docs/survey-artifacts/` and summarized in
+  `docs/survey-corpus.md` ("Full-corpus lens snapshot"). It surfaced 74
+  high-severity net-new findings clustering into six producer-gap themes (next
+  bullet); the open calibration work is now (a) scoring the queue, not whether
+  the lens finds real gaps.
+
+- **Close the intent-lens producer gaps (full-corpus 2026-06-08 backlog).** The
+  real-judge corpus pass (`docs/survey-artifacts/`) surfaced six recurring
+  classes of silently-dropped intent, biggest-first:
+  1. **Unmodeled install/export layout** — no `pkg_files` for libs / public
+     headers / binaries / `.pc`, and `find_package(CONFIG)` entry points
+     (`<Pkg>Config.cmake` / `<Pkg>Targets.cmake`) never generated. The single
+     biggest cluster and the most mechanical to close (curl, protobuf, zlib,
+     eigen, catch2, zstd, cutlass, nlohmann-json, …).
+  2. **Dropped link libraries** — `-lm` / `-ldl` / `-lpthread` that CMake
+     resolves but the converter omits (brotli, libpng, libxml2, googletest,
+     spdlog, zstd, grpc, llvm), plus build-type-conditional defines hardcoded
+     on regardless of `//config` (llvm).
+  3. **Absent targets / subpackages** with no `BUILD.bazel` (abseil's 7
+     interface subpackages, llvm's 19/20 backends, mbedtls programs).
+  4. **Dropped test suites** (abseil 232, glm ~130, sdl ~50, catch2, …).
+  5. **Unrepresented codegen** (`configure_file` / script codegen with no
+     genrule: vtk libproj, mbedtls test certs, curl configurehelp.pm).
+  6. **Optional-feature deps** not linked (llvm `LLVM_ENABLE_ZLIB/_ZSTD/_OPENCSD`).
+  Each member's `intent-capture.json` carries the per-finding `evidence` +
+  `cmake_ref` to drive a fix + a regression guard. Pick a theme; the install
+  cluster is the highest-leverage start.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the

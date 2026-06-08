@@ -1,0 +1,3083 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 2054,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 2054,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "NDEBUG"
+    ]
+   },
+   "tu_count": 899,
+   "examples": [
+    "lib/ABI/FunctionInfo.cpp",
+    "lib/ABI/IRTypeMapper.cpp",
+    "lib/ABI/TargetInfo.cpp",
+    "lib/ABI/Targets/BPF.cpp",
+    "lib/ABI/Types.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "HAS_LOGF128"
+    ],
+    "missing_in_bazel": [
+     "NDEBUG"
+    ]
+   },
+   "tu_count": 874,
+   "examples": [
+    "lib/Bitcode/Writer/BitWriter.cpp",
+    "lib/Bitcode/Writer/BitcodeWriter.cpp",
+    "lib/Bitcode/Writer/BitcodeWriterPass.cpp",
+    "lib/Bitcode/Writer/ValueEnumerator.cpp",
+    "lib/CGData/CodeGenData.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "_FORTIFY_SOURCE=1"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 281,
+   "examples": [
+    "lib/CodeGenTypes/LowLevelType.cpp",
+    "lib/Demangle/DLangDemangle.cpp",
+    "lib/Demangle/Demangle.cpp",
+    "lib/Demangle/ItaniumDemangle.cpp",
+    "lib/Demangle/MicrosoftDemangle.cpp"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 2054,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 238,
+   "examples": [
+    "lib/CodeGen/AggressiveAntiDepBreaker.cpp",
+    "lib/CodeGen/AllocationOrder.cpp",
+    "lib/CodeGen/Analysis.cpp",
+    "lib/CodeGen/AssignmentTrackingAnalysis.cpp",
+    "lib/CodeGen/AtomicExpandPass.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP"
+    ],
+    "missing_in_bazel": [
+     "include"
+    ]
+   },
+   "tu_count": 171,
+   "examples": [
+    "lib/Support/AArch64AttributeParser.cpp",
+    "lib/Support/AArch64BuildAttributes.cpp",
+    "lib/Support/ABIBreak.cpp",
+    "lib/Support/AMDGPUMetadata.cpp",
+    "lib/Support/APFixedPoint.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 126,
+   "examples": [
+    "lib/Analysis/AliasAnalysis.cpp",
+    "lib/Analysis/AliasAnalysisEvaluator.cpp",
+    "lib/Analysis/AliasSetTracker.cpp",
+    "lib/Analysis/Analysis.cpp",
+    "lib/Analysis/AssumeBundleQueries.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 117,
+   "examples": [
+    "lib/Bitcode/Writer/BitWriter.cpp",
+    "lib/Bitcode/Writer/BitcodeWriter.cpp",
+    "lib/Bitcode/Writer/BitcodeWriterPass.cpp",
+    "lib/Bitcode/Writer/ValueEnumerator.cpp",
+    "lib/IRPrinter/IRPrintingPasses.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 111,
+   "examples": [
+    "lib/Bitstream/Reader/BitstreamReader.cpp",
+    "lib/CAS/ActionCache.cpp",
+    "lib/CAS/ActionCaches.cpp",
+    "lib/CAS/BuiltinCAS.cpp",
+    "lib/CAS/BuiltinObjectHasher.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/MSF",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 93,
+   "examples": [
+    "lib/DebugInfo/PDB/GenericError.cpp",
+    "lib/DebugInfo/PDB/IPDBSourceFile.cpp",
+    "lib/DebugInfo/PDB/Native/DbiModuleDescriptor.cpp",
+    "lib/DebugInfo/PDB/Native/DbiModuleDescriptorBuilder.cpp",
+    "lib/DebugInfo/PDB/Native/DbiModuleList.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 82,
+   "examples": [
+    "lib/Transforms/Scalar/ADCE.cpp",
+    "lib/Transforms/Scalar/AlignmentFromAssumptions.cpp",
+    "lib/Transforms/Scalar/AnnotationRemarks.cpp",
+    "lib/Transforms/Scalar/BDCE.cpp",
+    "lib/Transforms/Scalar/CallSiteSplitting.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/Bitstream/Reader",
+     "lib/Demangle",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 81,
+   "examples": [
+    "lib/IR/AbstractCallSite.cpp",
+    "lib/IR/AsmWriter.cpp",
+    "lib/IR/Assumptions.cpp",
+    "lib/IR/Attributes.cpp",
+    "lib/IR/AutoUpgrade.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 80,
+   "examples": [
+    "lib/DebugInfo/DWARF/DWARFAbbreviationDeclaration.cpp",
+    "lib/DebugInfo/DWARF/DWARFAcceleratorTable.cpp",
+    "lib/DebugInfo/DWARF/DWARFAddressRange.cpp",
+    "lib/DebugInfo/DWARF/DWARFCFIPrinter.cpp",
+    "lib/DebugInfo/DWARF/DWARFCompileUnit.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 73,
+   "examples": [
+    "lib/MC/ConstantPools.cpp",
+    "lib/MC/DXContainerInfo.cpp",
+    "lib/MC/DXContainerPSVInfo.cpp",
+    "lib/MC/DXContainerRootSignature.cpp",
+    "lib/MC/ELFObjectWriter.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRPrinter",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/CFGuard",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 69,
+   "examples": [
+    "lib/Target/X86/GISel/X86CallLowering.cpp",
+    "lib/Target/X86/GISel/X86InstructionSelector.cpp",
+    "lib/Target/X86/GISel/X86LegalizerInfo.cpp",
+    "lib/Target/X86/GISel/X86PostLegalizerCombiner.cpp",
+    "lib/Target/X86/GISel/X86PreLegalizerCombiner.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/ExecutionEngine",
+     "lib/ExecutionEngine/Interpreter",
+     "lib/ExecutionEngine/JITLink",
+     "lib/ExecutionEngine/MCJIT",
+     "lib/ExecutionEngine/Orc/Debugging",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/ExecutionEngine/Orc/TargetProcess",
+     "lib/ExecutionEngine/RuntimeDyld",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRPrinter",
+     "lib/IRReader",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/Option",
+     "lib/Passes",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/CFGuard",
+     "lib/Transforms/Coroutines",
+     "lib/Transforms/HipStdPar",
+     "lib/Transforms/IPO",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize",
+     "lib/WindowsDriver"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 57,
+   "examples": [
+    "lib/ExecutionEngine/Orc/AbsoluteSymbols.cpp",
+    "lib/ExecutionEngine/Orc/BacktraceTools.cpp",
+    "lib/ExecutionEngine/Orc/COFF.cpp",
+    "lib/ExecutionEngine/Orc/COFFPlatform.cpp",
+    "lib/ExecutionEngine/Orc/COFFVCRuntimeSupport.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 56,
+   "examples": [
+    "lib/Linker/IRMover.cpp",
+    "lib/Linker/LinkModules.cpp",
+    "lib/Transforms/AggressiveInstCombine/AggressiveInstCombine.cpp",
+    "lib/Transforms/AggressiveInstCombine/TruncInstCombine.cpp",
+    "lib/Transforms/HipStdPar/HipStdPar.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 49,
+   "examples": [
+    "lib/Transforms/IPO/AlwaysInliner.cpp",
+    "lib/Transforms/IPO/Annotation2Metadata.cpp",
+    "lib/Transforms/IPO/ArgumentPromotion.cpp",
+    "lib/Transforms/IPO/Attributor.cpp",
+    "lib/Transforms/IPO/AttributorAttributes.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/CodeGenTypes",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TableGen",
+     "utils/TableGen/Basic",
+     "utils/TableGen/Common"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 42,
+   "examples": [
+    "utils/TableGen/AsmMatcherEmitter.cpp",
+    "utils/TableGen/AsmWriterEmitter.cpp",
+    "utils/TableGen/CTagsEmitter.cpp",
+    "utils/TableGen/CallingConvEmitter.cpp",
+    "utils/TableGen/CodeEmitterGen.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/ExecutionEngine/Orc/TargetProcess",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Option",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 37,
+   "examples": [
+    "lib/ExecutionEngine/JITLink/COFF.cpp",
+    "lib/ExecutionEngine/JITLink/COFFDirectiveParser.cpp",
+    "lib/ExecutionEngine/JITLink/COFFLinkGraphBuilder.cpp",
+    "lib/ExecutionEngine/JITLink/COFF_x86_64.cpp",
+    "lib/ExecutionEngine/JITLink/CompactUnwindSupport.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 37,
+   "examples": [
+    "lib/Object/Archive.cpp",
+    "lib/Object/ArchiveWriter.cpp",
+    "lib/Object/BBAddrMap.cpp",
+    "lib/Object/Binary.cpp",
+    "lib/Object/BuildID.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 36,
+   "examples": [
+    "lib/Transforms/Vectorize/LoadStoreVectorizer.cpp",
+    "lib/Transforms/Vectorize/LoopIdiomVectorize.cpp",
+    "lib/Transforms/Vectorize/LoopVectorizationLegality.cpp",
+    "lib/Transforms/Vectorize/LoopVectorizationPlanner.cpp",
+    "lib/Transforms/Vectorize/LoopVectorize.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 30,
+   "examples": [
+    "lib/CodeGen/GlobalISel/CSEInfo.cpp",
+    "lib/CodeGen/GlobalISel/CSEMIRBuilder.cpp",
+    "lib/CodeGen/GlobalISel/CallLowering.cpp",
+    "lib/CodeGen/GlobalISel/Combiner.cpp",
+    "lib/CodeGen/GlobalISel/CombinerHelper.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 30,
+   "examples": [
+    "lib/ObjectYAML/ArchiveEmitter.cpp",
+    "lib/ObjectYAML/ArchiveYAML.cpp",
+    "lib/ObjectYAML/BBAddrMapYAML.cpp",
+    "lib/ObjectYAML/COFFEmitter.cpp",
+    "lib/ObjectYAML/COFFYAML.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 28,
+   "examples": [
+    "lib/DWARFCFIChecker/DWARFCFIAnalysis.cpp",
+    "lib/DWARFCFIChecker/DWARFCFIFunctionFrameAnalyzer.cpp",
+    "lib/DWARFCFIChecker/DWARFCFIFunctionFrameStreamer.cpp",
+    "lib/DWARFCFIChecker/DWARFCFIState.cpp",
+    "lib/MCA/CodeEmitter.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 27,
+   "examples": [
+    "lib/CodeGen/AsmPrinter/AIXException.cpp",
+    "lib/CodeGen/AsmPrinter/ARMException.cpp",
+    "lib/CodeGen/AsmPrinter/AccelTable.cpp",
+    "lib/CodeGen/AsmPrinter/AddressPool.cpp",
+    "lib/CodeGen/AsmPrinter/AsmPrinter.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": [
+     "include"
+    ]
+   },
+   "tu_count": 27,
+   "examples": [
+    "lib/Demangle/DLangDemangle.cpp",
+    "lib/Demangle/Demangle.cpp",
+    "lib/Demangle/ItaniumDemangle.cpp",
+    "lib/Demangle/MicrosoftDemangle.cpp",
+    "lib/Demangle/MicrosoftDemangleNodes.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 26,
+   "examples": [
+    "lib/CodeGen/SelectionDAG/DAGCombiner.cpp",
+    "lib/CodeGen/SelectionDAG/FastISel.cpp",
+    "lib/CodeGen/SelectionDAG/FunctionLoweringInfo.cpp",
+    "lib/CodeGen/SelectionDAG/InstrEmitter.cpp",
+    "lib/CodeGen/SelectionDAG/LegalizeDAG.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "utils/TableGen/Basic"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 25,
+   "examples": [
+    "utils/TableGen/Common/AsmWriterInst.cpp",
+    "utils/TableGen/Common/CodeGenDAGPatterns.cpp",
+    "utils/TableGen/Common/CodeGenHwModes.cpp",
+    "utils/TableGen/Common/CodeGenInstAlias.cpp",
+    "utils/TableGen/Common/CodeGenInstruction.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 23,
+   "examples": [
+    "lib/DWP/DWP.cpp",
+    "lib/DWP/DWPError.cpp",
+    "lib/DWP/ELFWriter.cpp",
+    "lib/DebugInfo/GSYM/CallSiteInfo.cpp",
+    "lib/DebugInfo/GSYM/DwarfTransformer.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 22,
+   "examples": [
+    "lib/ProfileData/DataAccessProf.cpp",
+    "lib/ProfileData/ETMTraceDecoder.cpp",
+    "lib/ProfileData/GCOV.cpp",
+    "lib/ProfileData/IndexedMemProfData.cpp",
+    "lib/ProfileData/InstrProf.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/Bitstream/Reader",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 21,
+   "examples": [
+    "lib/ABI/FunctionInfo.cpp",
+    "lib/ABI/IRTypeMapper.cpp",
+    "lib/ABI/TargetInfo.cpp",
+    "lib/ABI/Targets/BPF.cpp",
+    "lib/ABI/Types.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 19,
+   "examples": [
+    "lib/DebugInfo/LogicalView/Core/LVCompare.cpp",
+    "lib/DebugInfo/LogicalView/Core/LVElement.cpp",
+    "lib/DebugInfo/LogicalView/Core/LVLine.cpp",
+    "lib/DebugInfo/LogicalView/Core/LVLocation.cpp",
+    "lib/DebugInfo/LogicalView/Core/LVObject.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 16,
+   "examples": [
+    "lib/Target/X86/MCTargetDesc/X86ATTInstPrinter.cpp",
+    "lib/Target/X86/MCTargetDesc/X86AsmBackend.cpp",
+    "lib/Target/X86/MCTargetDesc/X86ELFObjectWriter.cpp",
+    "lib/Target/X86/MCTargetDesc/X86EncodingOptimization.cpp",
+    "lib/Target/X86/MCTargetDesc/X86InstComments.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 15,
+   "examples": [
+    "lib/BinaryFormat/AMDGPUMetadataVerifier.cpp",
+    "lib/BinaryFormat/COFF.cpp",
+    "lib/BinaryFormat/DXContainer.cpp",
+    "lib/BinaryFormat/Dwarf.cpp",
+    "lib/BinaryFormat/ELF.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 15,
+   "examples": [
+    "lib/ExecutionEngine/Orc/TargetProcess/DefaultHostBootstrapValues.cpp",
+    "lib/ExecutionEngine/Orc/TargetProcess/ExecutorResolver.cpp",
+    "lib/ExecutionEngine/Orc/TargetProcess/ExecutorSharedMemoryMapperService.cpp",
+    "lib/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.cpp",
+    "lib/ExecutionEngine/Orc/TargetProcess/JITLoaderPerf.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 15,
+   "examples": [
+    "lib/TextAPI/Architecture.cpp",
+    "lib/TextAPI/ArchitectureSet.cpp",
+    "lib/TextAPI/InterfaceFile.cpp",
+    "lib/TextAPI/PackedVersion.cpp",
+    "lib/TextAPI/Platform.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 14,
+   "examples": [
+    "lib/MC/MCParser/AsmLexer.cpp",
+    "lib/MC/MCParser/AsmParser.cpp",
+    "lib/MC/MCParser/COFFAsmParser.cpp",
+    "lib/MC/MCParser/COFFMasmParser.cpp",
+    "lib/MC/MCParser/DarwinAsmParser.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP"
+    ],
+    "missing_in_bazel": [
+     "include"
+    ]
+   },
+   "tu_count": 14,
+   "examples": [
+    "lib/TableGen/DetailedRecordsBackend.cpp",
+    "lib/TableGen/Error.cpp",
+    "lib/TableGen/JSONBackend.cpp",
+    "lib/TableGen/Main.cpp",
+    "lib/TableGen/Parser.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DWARFLinker",
+     "lib/DWARFLinker/Classic",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 11,
+   "examples": [
+    "lib/DWARFLinker/Parallel/AcceleratorRecordsSaver.cpp",
+    "lib/DWARFLinker/Parallel/DIEAttributeCloner.cpp",
+    "lib/DWARFLinker/Parallel/DWARFEmitterImpl.cpp",
+    "lib/DWARFLinker/Parallel/DWARFLinker.cpp",
+    "lib/DWARFLinker/Parallel/DWARFLinkerCompileUnit.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Bitstream/Reader",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 11,
+   "examples": [
+    "lib/Remarks/BitstreamRemarkParser.cpp",
+    "lib/Remarks/BitstreamRemarkSerializer.cpp",
+    "lib/Remarks/Remark.cpp",
+    "lib/Remarks/RemarkFormat.cpp",
+    "lib/Remarks/RemarkLinker.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/IPO",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 11,
+   "examples": [
+    "lib/Transforms/Coroutines/CoroAnnotationElide.cpp",
+    "lib/Transforms/Coroutines/CoroCleanup.cpp",
+    "lib/Transforms/Coroutines/CoroConditionalWrapper.cpp",
+    "lib/Transforms/Coroutines/CoroEarly.cpp",
+    "lib/Transforms/Coroutines/CoroElide.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 7,
+   "examples": [
+    "lib/CGData/CodeGenData.cpp",
+    "lib/CGData/CodeGenDataReader.cpp",
+    "lib/CGData/CodeGenDataWriter.cpp",
+    "lib/CGData/OutlinedHashTree.cpp",
+    "lib/CGData/OutlinedHashTreeRecord.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/ExecutionEngine",
+     "lib/ExecutionEngine/Interpreter",
+     "lib/ExecutionEngine/JITLink",
+     "lib/ExecutionEngine/MCJIT",
+     "lib/ExecutionEngine/Orc",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/ExecutionEngine/Orc/TargetProcess",
+     "lib/ExecutionEngine/RuntimeDyld",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRPrinter",
+     "lib/IRReader",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/Option",
+     "lib/Passes",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/CFGuard",
+     "lib/Transforms/Coroutines",
+     "lib/Transforms/HipStdPar",
+     "lib/Transforms/IPO",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize",
+     "lib/WindowsDriver"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 7,
+   "examples": [
+    "lib/ExecutionEngine/Orc/Debugging/DebugInfoSupport.cpp",
+    "lib/ExecutionEngine/Orc/Debugging/DebuggerSupport.cpp",
+    "lib/ExecutionEngine/Orc/Debugging/DebuggerSupportPlugin.cpp",
+    "lib/ExecutionEngine/Orc/Debugging/ELFDebugObjectPlugin.cpp",
+    "lib/ExecutionEngine/Orc/Debugging/LLJITUtilsCBindings.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Extensions",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRPrinter",
+     "lib/IRReader",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/Passes",
+     "lib/Plugins",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/CFGuard",
+     "lib/Transforms/Coroutines",
+     "lib/Transforms/HipStdPar",
+     "lib/Transforms/IPO",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 6,
+   "examples": [
+    "lib/LTO/LTO.cpp",
+    "lib/LTO/LTOBackend.cpp",
+    "lib/LTO/LTOCodeGenerator.cpp",
+    "lib/LTO/LTOModule.cpp",
+    "lib/LTO/ThinLTOCodeGenerator.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRPrinter",
+     "lib/IRReader",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/CFGuard",
+     "lib/Transforms/Coroutines",
+     "lib/Transforms/HipStdPar",
+     "lib/Transforms/IPO",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 6,
+   "examples": [
+    "lib/Passes/CodeGenPassBuilder.cpp",
+    "lib/Passes/OptimizationLevel.cpp",
+    "lib/Passes/PassBuilder.cpp",
+    "lib/Passes/PassBuilderBindings.cpp",
+    "lib/Passes/PassBuilderPipelines.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 5,
+   "examples": [
+    "lib/DebugInfo/Symbolize/DIPrinter.cpp",
+    "lib/DebugInfo/Symbolize/Markup.cpp",
+    "lib/DebugInfo/Symbolize/MarkupFilter.cpp",
+    "lib/DebugInfo/Symbolize/SymbolizableObjectFile.cpp",
+    "lib/DebugInfo/Symbolize/Symbolize.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/ExecutionEngine/Interpreter",
+     "lib/ExecutionEngine/JITLink",
+     "lib/ExecutionEngine/MCJIT",
+     "lib/ExecutionEngine/Orc",
+     "lib/ExecutionEngine/Orc/Debugging",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/ExecutionEngine/Orc/TargetProcess",
+     "lib/ExecutionEngine/RuntimeDyld",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 5,
+   "examples": [
+    "lib/ExecutionEngine/ExecutionEngine.cpp",
+    "lib/ExecutionEngine/ExecutionEngineBindings.cpp",
+    "lib/ExecutionEngine/GDBRegistrationListener.cpp",
+    "lib/ExecutionEngine/SectionMemoryManager.cpp",
+    "lib/ExecutionEngine/TargetSelect.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 5,
+   "examples": [
+    "lib/MC/MCDisassembler/Disassembler.cpp",
+    "lib/MC/MCDisassembler/MCDisassembler.cpp",
+    "lib/MC/MCDisassembler/MCExternalSymbolizer.cpp",
+    "lib/MC/MCDisassembler/MCRelocationInfo.cpp",
+    "lib/MC/MCDisassembler/MCSymbolizer.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 5,
+   "examples": [
+    "lib/Target/RegisterTargetPassConfigCallback.cpp",
+    "lib/Target/Target.cpp",
+    "lib/Target/TargetLoweringObjectFile.cpp",
+    "lib/Target/TargetMachine.cpp",
+    "lib/Target/TargetMachineC.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DWARFLinker",
+     "lib/DWARFLinker/Parallel",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4,
+   "examples": [
+    "lib/DWARFLinker/Classic/DWARFLinker.cpp",
+    "lib/DWARFLinker/Classic/DWARFLinkerCompileUnit.cpp",
+    "lib/DWARFLinker/Classic/DWARFLinkerDeclContext.cpp",
+    "lib/DWARFLinker/Classic/DWARFStreamer.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4,
+   "examples": [
+    "lib/Frontend/Offloading/ArchiveLinker.cpp",
+    "lib/Frontend/Offloading/OffloadWrapper.cpp",
+    "lib/Frontend/Offloading/PropertySet.cpp",
+    "lib/Frontend/Offloading/Utility.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4,
+   "examples": [
+    "lib/Frontend/OpenMP/DirectiveNameParser.cpp",
+    "lib/Frontend/OpenMP/OMP.cpp",
+    "lib/Frontend/OpenMP/OMPContext.cpp",
+    "lib/Frontend/OpenMP/OMPIRBuilder.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4,
+   "examples": [
+    "lib/FuzzMutate/IRMutator.cpp",
+    "lib/FuzzMutate/OpDescriptor.cpp",
+    "lib/FuzzMutate/Operations.cpp",
+    "lib/FuzzMutate/RandomIRBuilder.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 3,
+   "examples": [
+    "lib/CodeGen/MIRParser/MILexer.cpp",
+    "lib/CodeGen/MIRParser/MIParser.cpp",
+    "lib/CodeGen/MIRParser/MIRParser.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Extensions",
+     "lib/Frontend/Atomic",
+     "lib/Frontend/Directive",
+     "lib/Frontend/HLSL",
+     "lib/Frontend/Offloading",
+     "lib/Frontend/OpenMP",
+     "lib/IR",
+     "lib/IRPrinter",
+     "lib/IRReader",
+     "lib/LTO",
+     "lib/Linker",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ObjectYAML",
+     "lib/Passes",
+     "lib/Plugins",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/SandboxIR",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/CFGuard",
+     "lib/Transforms/Coroutines",
+     "lib/Transforms/HipStdPar",
+     "lib/Transforms/IPO",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils",
+     "lib/Transforms/Vectorize"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 3,
+   "examples": [
+    "lib/DTLTO/DTLTO.cpp",
+    "lib/DTLTO/DTLTODistributionDriver.cpp",
+    "lib/DTLTO/DTLTOInputFiles.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 3,
+   "examples": [
+    "lib/DebugInfo/DWARF/LowLevel/DWARFCFIProgram.cpp",
+    "lib/DebugInfo/DWARF/LowLevel/DWARFExpression.cpp",
+    "lib/DebugInfo/DWARF/LowLevel/DWARFUnwindTable.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/ExecutionEngine",
+     "lib/ExecutionEngine/JITLink",
+     "lib/ExecutionEngine/MCJIT",
+     "lib/ExecutionEngine/Orc",
+     "lib/ExecutionEngine/Orc/Debugging",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/ExecutionEngine/Orc/TargetProcess",
+     "lib/ExecutionEngine/RuntimeDyld",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 3,
+   "examples": [
+    "lib/ExecutionEngine/Interpreter/Execution.cpp",
+    "lib/ExecutionEngine/Interpreter/ExternalFunctions.cpp",
+    "lib/ExecutionEngine/Interpreter/Interpreter.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 3,
+   "examples": [
+    "lib/ProfileData/Coverage/CoverageMapping.cpp",
+    "lib/ProfileData/Coverage/CoverageMappingReader.cpp",
+    "lib/ProfileData/Coverage/CoverageMappingWriter.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 3,
+   "examples": [
+    "lib/Support/LSP/Logging.cpp",
+    "lib/Support/LSP/Protocol.cpp",
+    "lib/Support/LSP/Transport.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitcode/Writer",
+     "lib/Bitstream/Reader",
+     "lib/CGData",
+     "lib/CodeGen",
+     "lib/CodeGen/AsmPrinter",
+     "lib/CodeGen/GlobalISel",
+     "lib/CodeGen/MIRParser",
+     "lib/CodeGen/SelectionDAG",
+     "lib/CodeGenTypes",
+     "lib/DWARFLinker/Classic",
+     "lib/DWARFLinker/Parallel",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/AggressiveInstCombine",
+     "lib/Transforms/InstCombine",
+     "lib/Transforms/ObjCARC",
+     "lib/Transforms/Scalar",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 2,
+   "examples": [
+    "lib/DWARFLinker/DWARFLinkerBase.cpp",
+    "lib/DWARFLinker/Utils.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/HTTP",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 2,
+   "examples": [
+    "lib/Debuginfod/BuildIDFetcher.cpp",
+    "lib/Debuginfod/Debuginfod.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Option",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 2,
+   "examples": [
+    "lib/ToolDrivers/llvm-dlltool/DlltoolDriver.cpp",
+    "lib/ToolDrivers/llvm-lib/LibDriver.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/ExecutionEngine",
+     "lib/ExecutionEngine/Interpreter",
+     "lib/ExecutionEngine/JITLink",
+     "lib/ExecutionEngine/Orc",
+     "lib/ExecutionEngine/Orc/Debugging",
+     "lib/ExecutionEngine/Orc/Shared",
+     "lib/ExecutionEngine/Orc/TargetProcess",
+     "lib/ExecutionEngine/RuntimeDyld",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target",
+     "lib/Target/X86",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/ExecutionEngine/MCJIT/MCJIT.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Analysis",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/BTF",
+     "lib/DebugInfo/CodeView",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/DebugInfo/GSYM",
+     "lib/DebugInfo/MSF",
+     "lib/DebugInfo/PDB",
+     "lib/DebugInfo/Symbolize",
+     "lib/Demangle",
+     "lib/Frontend/HLSL",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/ProfileData",
+     "lib/ProfileData/Coverage",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI",
+     "lib/TextAPI/BinaryReader",
+     "lib/Transforms/Instrumentation",
+     "lib/Transforms/Utils"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/Frontend/Driver/CodeGenOptions.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Frontend/Directive",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/Frontend/OpenACC/ACC.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/IRReader/IRReader.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/Target/X86/AsmParser/X86AsmParser.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/Target/X86/Disassembler/X86Disassembler.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/CodeGenTypes",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/MCA",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/Target/X86/TargetInfo",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/Target/X86/MCA/X86CustomBehaviour.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/BinaryFormat",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/Target/X86/AsmParser",
+     "lib/Target/X86/Disassembler",
+     "lib/Target/X86/MCA",
+     "lib/Target/X86/MCTargetDesc",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/Target/X86/TargetInfo/X86TargetInfo.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/AsmParser",
+     "lib/BinaryFormat",
+     "lib/Bitcode/Reader",
+     "lib/Bitstream/Reader",
+     "lib/DebugInfo/DWARF",
+     "lib/DebugInfo/DWARF/LowLevel",
+     "lib/Demangle",
+     "lib/IR",
+     "lib/IRReader",
+     "lib/MC",
+     "lib/MC/MCDisassembler",
+     "lib/MC/MCParser",
+     "lib/Object",
+     "lib/Remarks",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser",
+     "lib/TextAPI"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/TextAPI/BinaryReader/DylibReader.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Option",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TargetParser"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "lib/WindowsDriver/MSVCPaths.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/FileCheck",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "utils/FileCheck/FileCheck.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "utils/PerfectShuffle/PerfectShuffle.cpp"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "lib/Demangle",
+     "lib/Support",
+     "lib/Support/BLAKE3",
+     "lib/Support/LSP",
+     "lib/TableGen",
+     "utils/TableGen/Basic",
+     "utils/TableGen/Common"
+    ],
+    "missing_in_bazel": [
+     "include"
+    ]
+   },
+   "tu_count": 1,
+   "examples": [
+    "utils/TableGen/llvm-min-tblgen.cpp"
+   ]
+  }
+ ],
+ "copt_mismatch_total_tus": 4,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "-fdata-sections",
+     "-ffunction-sections"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4,
+   "examples": [
+    "lib/Support/BLAKE3/blake3_avx2_x86-64_unix.S",
+    "lib/Support/BLAKE3/blake3_avx512_x86-64_unix.S",
+    "lib/Support/BLAKE3/blake3_sse2_x86-64_unix.S",
+    "lib/Support/BLAKE3/blake3_sse41_x86-64_unix.S"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 561,
+ "param_file_skipped": 0
+}

@@ -735,6 +735,95 @@ converted bundle; the deterministic halves are gated by
 `scripts/meta-intent-capture-lens.sh` (stub judge). See the intent-capture lens
 item in `ROADMAP.md` for the open scoring/grounding questions.
 
+### Full-corpus lens snapshot (2026-06-08)
+
+Both opt-in lenses were run over the **whole corpus** (judge = `claude -p`;
+build lens skipped — the corpus is already build-green). The full per-member
+output is committed under [`survey-artifacts/`](survey-artifacts/) (triaged +
+raw judge findings, the exact prompts, and the signature-grouped fidelity
+diffs). The numbers below are a **snapshot pointer into those artifacts**, not
+a gate: `missed` (intent net-new) is judge-non-deterministic and not
+comparable across runs (see the lens caveats above).
+
+| Member | Fidelity (matched TUs) | Intent `missed` | net-new High |
+| --- | --- | --- | --- |
+| abseil | 156 | 7 | 2 |
+| boost-core | —† | 6 | 2 |
+| brotli | 36 | 8 | 3 |
+| catch2 | 107 | 11 | 3 |
+| cuda-samples | 0‡ | 0 | 0 |
+| curl | 213 | 9 | 4 |
+| cutlass | —† | 12 | 5 |
+| eigen | —† | 8 | 2 |
+| fmt | 29 | 7 | 2 |
+| glm | 1 | 8 | 2 |
+| glog | 20 | 0 | 0 |
+| googletest | 4 | 5 | 2 |
+| grpc | 1061 | 7 | 1 |
+| libevent | 40 | 7 | 1 |
+| libpng | 24 | 9 | 2 |
+| libxml2 | 52 | 10 | 3 |
+| llvm | 2054 | 29 | 14 |
+| mbedtls | 113 | 14 | 5 |
+| nlohmann-json | —† | 6 | 2 |
+| openblas | (pending) | (pending) | (pending) |
+| protobuf | 286 | 11 | 5 |
+| sdl | 259 | 9 | 2 |
+| spdlog | 8 | 10 | 3 |
+| vtk | 4218 | 8 | 4 |
+| zlib | 17 | 5 | 3 |
+| zstd | —§ | 8 | 2 |
+
+† **header-only** library — no `CppCompile` TUs, so no compile-db fidelity row
+(`boost-core`, `cutlass`, `eigen`, `nlohmann-json`).
+‡ `cuda-samples` `.cu` sources lower to `CudaCompile`, which the lens's
+`CppCompile` aquery doesn't see (0 TUs).
+§ `zstd` fidelity is **blocked by a real converter regression** (not a survey
+artifact): split-emit's cross-package relabel emits an invalid subpackage
+label `//elements/zstd:lib/libzstd.so` (where `elements/zstd/lib` is a
+subpackage). zstd is otherwise docs-green, so this is a main-drift regression
+to fix; tracked in `ROADMAP.md`.
+
+#### Producer-gap themes (the intent backlog)
+
+The net-new intent findings are **producer/lowering-gap candidates** — intent
+the converter silently dropped. Across the corpus the **74 high-severity**
+net-new findings cluster into six recurring themes (full detail, with
+`evidence` + `cmake_ref` per finding, in each member's
+`survey-artifacts/<member>/intent-capture.json`):
+
+1. **Dropped link libraries** (24× high) — system/threading linkopts CMake
+   resolves but the converter omits: `-lm` (`brotli`, `libpng`, `libxml2`),
+   `-ldl` (`libxml2`, `llvm`), `-lpthread` (`googletest`, `spdlog`, `zstd`,
+   `grpc`, `llvm`'s `${LLVM_PTHREAD_LIB}`). Also build-type-conditional
+   defines hardcoded on (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS`,
+   `LLVM_ENABLE_PLUGINS`, …, all forced `1` regardless of `//config`) and
+   dropped `target_compile_features` (`googletest`'s PUBLIC `cxx_std_17`).
+2. **Unmodeled install/export layout** (24× high) — the convert builds the
+   artifacts but ships no install tree: no `pkg_files` for libs / public
+   headers / binaries / `.pc` files (`curl`, `protobuf`, `zlib`, `sdl`,
+   `libevent`, `fmt`, …), and the `find_package(CONFIG)` entry points
+   (`<Pkg>Config.cmake` / `<Pkg>Targets.cmake`) are never generated
+   (`eigen`, `catch2`, `zstd`, `cutlass`, `protobuf`, `nlohmann-json`).
+   This is the single biggest cluster and the most mechanical to close.
+3. **Absent targets / subpackages** (9× high) — whole targets with no
+   `BUILD.bazel`: `abseil`'s 7 interface subpackages, `llvm`'s 19/20
+   backends under default `LLVM_TARGETS_TO_BUILD=all`, `mbedtls`'s
+   programs, `vtk`'s `VolumeAMR` module.
+4. **Dropped test suites** (9× high) — `enable_testing()` trees lowered
+   nowhere: `abseil` (232 `absl_cc_test`), `glm` (~130), `sdl` (~50),
+   `catch2`, `boost-core`, `mbedtls`, `vtk`.
+5. **Unrepresented codegen** (5× high) — `configure_file` / script codegen
+   with no genrule: `vtk`'s libproj `proj_config.h`, `mbedtls`'s
+   `test_certs.h`, `curl`'s `configurehelp.pm` (bakes a convert-time temp
+   path), `cutlass`'s `version_extended.h`.
+6. **Optional-feature deps** (3× high) — `LLVM_ENABLE_ZLIB` / `_ZSTD` /
+   `_OPENCSD` conditional deps not linked, so `Compression.cpp` would fail
+   to link.
+
+These are the concrete converter-improvement leads; pick a theme and the
+artifacts give the per-member evidence to drive a fix + a regression guard.
+
 ## Running a faithful survey
 
 The cardinal rule: **a survey number is only comparable to another survey
