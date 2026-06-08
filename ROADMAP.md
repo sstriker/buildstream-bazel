@@ -14,11 +14,12 @@ transition cleanly.
   step runs in the `Build + unit tests` job as **non-blocking
   (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
   At launch it flagged **55** issues against the gate thresholds (gocyclo>30,
-  gocognit>50, nestif>10, funlen); the burndown is underway (**48** now — passes
-  1-6 cleared `buildFindPackageAttrib` (51→14), `recoverSourceComments` (55→11), `lowerInterfaceLibraries` (60→15), `applyProbeGenexProperties`
-  (84→6), `lowerDirectoryInstallers` (72→24), and `stageGeneratedSourceRootIncludes`
-  (53→26), each via behavior-preserving extraction of cohesive sub-passes into
-  helpers — the established pattern). The
+  gocognit>50, nestif>10, funlen); the burndown is underway (**47** now — passes
+  1-7 have cleared seven mid-tier functions (`lowerInterfaceLibraries`,
+  `applyProbeGenexProperties`, `lowerDirectoryInstallers`,
+  `stageGeneratedSourceRootIncludes`, `recoverSourceComments`,
+  `buildFindPackageAttrib`, `fileapi.Load`) via behavior-preserving extraction of
+  cohesive sub-passes into helpers — the established pattern). The
   dominant remaining offenders are flagged by **gocognit** (the giants are
   cognitive, not cyclomatic): `lower.lowerTarget` (cognitive **713**),
   `convert-element-cmake`'s `run` (291), `lower.ToIR` (278), and `emit/bazel`
