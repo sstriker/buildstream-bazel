@@ -440,97 +440,8 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		if i > 0 {
 			buf.WriteString("\n")
 		}
-		if opts.EmitSourceComments {
-			// Author's source comment first, then the provenance
-			// breadcrumb beneath it (when both are on).
-			emitLeadingComment(&buf, t.LeadingComment)
-		}
-		if opts.EmitProvenance && !t.Provenance.IsZero() {
-			emitProvenanceComment(&buf, t.Provenance)
-		}
-		if t.Kind == ir.KindGenrule {
-			if err := emitGenrule(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindCCImport {
-			if err := emitCCImport(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindShBinary {
-			if err := emitShBinary(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindPickFile {
-			if err := emitPickFile(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindFilegroup {
-			if err := emitFilegroup(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindPkgFiles {
-			if err := emitPkgFiles(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindAlias {
-			if err := emitAlias(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindWriteFile {
-			if err := emitWriteFile(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindCMakeConfigureFile {
-			if err := emitCMakeConfigureFile(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindCCEmbed {
-			if err := emitCCEmbed(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindCCHash {
-			if err := emitCCHash(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindBoolFlag {
-			if err := emitBoolFlag(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if t.Kind == ir.KindConfigSetting {
-			if err := emitConfigSetting(&buf, t); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if err := emitCCTargetWithOptions(&buf, t, opts); err != nil {
+		if err := emitTarget(&buf, t, opts); err != nil {
 			return nil, err
-		}
-		if t.SharedLibName != "" {
-			emitSharedLibrary(&buf, t)
 		}
 	}
 	var trailing map[string]string
@@ -538,6 +449,58 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 		trailing = trailingCommentMap(pkg)
 	}
 	return canonicalize(buf.Bytes(), trailing)
+}
+
+// emitTarget writes one target's rendered rule to buf: its recovered leading
+// comment + provenance breadcrumb (each gated by opts), then the rule body
+// dispatched by kind. The default case is the cc_* target path
+// (cc_library/binary/test), which also emits a companion shared library when
+// SharedLibName is set.
+func emitTarget(buf *bytes.Buffer, t ir.Target, opts Options) error {
+	if opts.EmitSourceComments {
+		// Author's source comment first, then the provenance
+		// breadcrumb beneath it (when both are on).
+		emitLeadingComment(buf, t.LeadingComment)
+	}
+	if opts.EmitProvenance && !t.Provenance.IsZero() {
+		emitProvenanceComment(buf, t.Provenance)
+	}
+	switch t.Kind {
+	case ir.KindGenrule:
+		return emitGenrule(buf, t)
+	case ir.KindCCImport:
+		return emitCCImport(buf, t)
+	case ir.KindShBinary:
+		return emitShBinary(buf, t)
+	case ir.KindPickFile:
+		return emitPickFile(buf, t)
+	case ir.KindFilegroup:
+		return emitFilegroup(buf, t)
+	case ir.KindPkgFiles:
+		return emitPkgFiles(buf, t)
+	case ir.KindAlias:
+		return emitAlias(buf, t)
+	case ir.KindWriteFile:
+		return emitWriteFile(buf, t)
+	case ir.KindCMakeConfigureFile:
+		return emitCMakeConfigureFile(buf, t)
+	case ir.KindCCEmbed:
+		return emitCCEmbed(buf, t)
+	case ir.KindCCHash:
+		return emitCCHash(buf, t)
+	case ir.KindBoolFlag:
+		return emitBoolFlag(buf, t)
+	case ir.KindConfigSetting:
+		return emitConfigSetting(buf, t)
+	default:
+		if err := emitCCTargetWithOptions(buf, t, opts); err != nil {
+			return err
+		}
+		if t.SharedLibName != "" {
+			emitSharedLibrary(buf, t)
+		}
+		return nil
+	}
 }
 
 // trailingCommentMap collects each target's recovered trailing comment keyed by
