@@ -979,7 +979,12 @@ func parseInstallArgs(args []string) ([]string, installOpts, string, bool) {
 
 // parseInstallLongOption handles one `--foo[=val]` argv element at args[i],
 // updating o and returning the next index to scan from. ok=false + a reason on
-// an unrecognized or malformed (value-less) option.
+// an unrecognized option, or on a value-taking option (`--target-directory`,
+// and the `longValue` set) given without a value. `--strip-program` is the one
+// value-taking option NOT value-validated here: it sets o.strip, and liftInstall
+// refuses ANY strip ("modifies the copied bytes") regardless of the value, so a
+// value-less `--strip-program` already gets a clear refusal — validating it
+// would be dead code.
 func parseInstallLongOption(args []string, i int, longValue, longBool map[string]bool, o *installOpts) (int, string, bool) {
 	a := args[i]
 	name, val := a, ""
