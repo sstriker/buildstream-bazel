@@ -1458,6 +1458,16 @@ STATICCHECK_VERSION ?= 2026.1
 staticcheck:
 	$(GO) run honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION) ./...
 
+# lint-complexity is the code-complexity lens (cyclomatic / cognitive / nesting
+# / length / maintainability) — the axis go vet / gofmt / staticcheck don't
+# cover. Driven by golangci-lint with a complexity-only config (.golangci.yml);
+# pinned + run via `go run` to match the staticcheck idiom (no install step).
+# SOFT-LAUNCH: the CI step is non-blocking (continue-on-error) until the tree is
+# green against .golangci.yml's thresholds, then it flips to blocking.
+GOLANGCI_LINT_VERSION ?= v2.12.2
+lint-complexity:
+	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run
+
 # Per-toolchain check targets. Only the gates that actually exec
 # the corresponding tool gate on the matching check target; render-
 # only gates (kind:bazel, kind:script, kind:manual, finalize-b,

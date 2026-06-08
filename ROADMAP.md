@@ -18,6 +18,21 @@ transition cleanly.
   fidelity row. Likely main-drift since zstd last went green — guard with the
   zstd survey once fixed.
 
+- **Complexity lens — soft-launched, drive to green then flip to blocking.**
+  `make lint-complexity` (golangci-lint, complexity-only config in
+  `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
+  the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The CI
+  step runs in the `Build + unit tests` job as **non-blocking
+  (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
+  At launch it flags **55** issues against the gate thresholds (gocyclo>30:6,
+  gocognit>50:25, nestif>10:21, funlen:3) — the worst offenders are
+  `lower.lowerTarget` (cyclomatic 304 / cognitive 699), `convert-element-cmake`'s
+  `run` (167/291), `lower.ToIR` (130/275), and `emit/bazel` `rewriteTarget` /
+  `planSplit`. **What's left:** break these down (extract per-concern helpers the
+  way the source-classification chokepoint refactor below did), then **drop
+  `continue-on-error`** so the lens gates like the others. Tune thresholds in
+  `.golangci.yml` if a class proves low-yield.
+
 - **Refactor: source-classification chokepoints in `lower` (largely done).** The
   "is this path a cc compile/link/header input, and which attribute does it go
   in (srcs/hdrs/data/drop)?" decision was duplicated across ~6 sites in
