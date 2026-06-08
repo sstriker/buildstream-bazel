@@ -202,8 +202,15 @@ func TestEmitDeclarative_BundleFilegroup(t *testing.T) {
 		t.Errorf("Targets.cmake should carry imported-target defs; got:\n%s", targets)
 	}
 	cfg := body("gen_lib_cmake_MyPkg_MyPkgConfig_cmake")
-	if !strings.Contains(cfg, `include("${CMAKE_CURRENT_LIST_DIR}/MyPkgTargets.cmake")`) {
-		t.Errorf("Config.cmake should include() the Targets script; got:\n%s", cfg)
+	// Config.cmake glob-include()s every sibling target script (excluding the
+	// Config / ConfigVersion files) so multi-export packages resolve fully.
+	if !strings.Contains(cfg, `file(GLOB _bsb_target_scripts "${CMAKE_CURRENT_LIST_DIR}/*.cmake")`) ||
+		!strings.Contains(cfg, `include("${_bsb_script}")`) {
+		t.Errorf("Config.cmake should glob-include the sibling target scripts; got:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, `NOT _bsb_name STREQUAL "MyPkgConfig.cmake"`) ||
+		!strings.Contains(cfg, `NOT _bsb_name STREQUAL "MyPkgConfigVersion.cmake"`) {
+		t.Errorf("Config.cmake must exclude the Config/ConfigVersion files from the include glob; got:\n%s", cfg)
 	}
 	if strings.Contains(cfg, "add_library(") {
 		t.Errorf("Config.cmake must NOT carry imported-target defs; got:\n%s", cfg)

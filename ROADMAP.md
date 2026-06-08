@@ -1233,7 +1233,16 @@ The six intent-lens producer-gap themes follow as their own entries
     `<Pkg>ConfigVersion.cmake` alongside the targets script (same dest), so the
     config-package is consumable (zstd generates zstdConfig.cmake +
     zstdConfigVersion.cmake; build green). **Install/export theme COMPLETE
-    (A/B/C/D).**
+    (A/B/C/D).** The generated Config.cmake glob-include()s every sibling export
+    script (so MULTI-export packages — zstd's shared + static — resolve fully).
+    Known simplifications (follow-up): the ConfigVersion is a permissive
+    always-compatible stub (the project VERSION isn't in the codemodel), and the
+    generated Config.cmake doesn't reproduce a hand-authored Config.cmake.in's
+    richer semantics — transitive `find_dependency(<Dep>)`, `@PACKAGE_INIT@`
+    `set_and_check` path setup, `check_required_components`. It's a faithful
+    best-effort for the imported-target surface (the orchestrated graph resolves
+    via exports.json + the imports-manifest; this bundle is for EXTERNAL
+    config-mode consumers).
 
 - **System/threading linkopt propagation — extend the host-system-library
   fallback (25× high).** Extends "Make the host-system-library fallback
