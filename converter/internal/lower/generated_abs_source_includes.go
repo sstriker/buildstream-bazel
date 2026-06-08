@@ -119,8 +119,9 @@ func stageGeneratedSourceRootIncludes(pkg *ir.Package, hostSrc, bazelPackagePath
 // such include in place to its workspace-relative path, and returns the
 // per-wrapper-output map of source-root-relative sources to stage as
 // textual_hdrs on whatever compiles the wrapper (plus the rewritten-line and
-// wrapper counts for the warning). hostSrc / hostSrcOnDisk are pre-validated by
-// the caller.
+// wrapper counts for the warning). Precondition: the caller has already
+// verified hostSrc is non-empty and on disk (stageGeneratedSourceRootIncludes's
+// hostSrcOnDisk guard).
 func rewriteGeneratedWrapperIncludes(pkg *ir.Package, hostSrc, bazelPackagePath string) (map[string][]string, int, int) {
 	// included[generated-output-path] = the source-root-relative sources that
 	// output's wrapper textually includes (sorted, deduped).
