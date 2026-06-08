@@ -1153,21 +1153,33 @@ func loadGraph(bstPaths []string, sourceCache string) (*graph, error) {
 		g.ByName[elem.Name] = elem
 		g.Elements = append(g.Elements, elem)
 	}
-	// Resolve dependencies. All three lists (depends, build-depends,
-	// runtime-depends) merge into element.Deps for v1 — write-a
-	// doesn't yet distinguish build-only from runtime-only edges.
-	// Duplicates (a dep listed in both `depends:` and
-	// `build-depends:`, say) are tolerated: the dep's *element
-	// pointer dedupes downstream (topo sort doesn't care about edge
-	// multiplicity).
+	if err := resolveDependencies(g); err != nil {
+		return nil, err
+	}
+	// Topological sort (Kahn's algorithm). Stable secondary order on
+	// element name so the rendered output is deterministic across
+	// invocations regardless of input order.
+	sorted, err := topoSort(g.Elements)
+	if err != nil {
+		return nil, err
+	}
+	g.Elements = sorted
+	return g, nil
+}
+
+// resolveDependencies wires each element's Deps / BuildDeps from its
+// depends / build-depends / runtime-depends lists. All three merge into
+// elem.Deps for v1 — write-a doesn't yet distinguish build-only from
+// runtime-only edges. `depends:` (BuildStream's "both" shorthand) and
+// `build-depends:` additionally contribute to BuildDeps (kind:filter's typed
+// split cares); `runtime-depends:` does not. Duplicate edges dedupe by element
+// pointer (topo sort doesn't care about multiplicity). Junction-crossing deps
+// are rejected with a clear diagnostic (not yet supported) rather than falling
+// through to the confusing "not in the graph" path; unknown deps error.
+func resolveDependencies(g *graph) error {
 	for _, elem := range g.Elements {
 		seen := map[*element]bool{}
 		seenBuild := map[*element]bool{}
-		// `depends:` is BuildStream's "both" shorthand — counts as
-		// build AND runtime in the typed-output split. Treat as
-		// build for the BuildDeps slice (kind:filter cares).
-		// `build-depends:` is build-only. `runtime-depends:` is
-		// runtime-only and does NOT contribute to BuildDeps.
 		buildClasses := []struct {
 			deps    []bstDep
 			isBuild bool
@@ -1178,28 +1190,18 @@ func loadGraph(bstPaths []string, sourceCache string) (*graph, error) {
 		}
 		for _, class := range buildClasses {
 			for _, dep := range class.deps {
-				// Junction-crossing deps (a dependency in another
-				// BuildStream project, reached via a junction
-				// element) aren't supported yet. Reject them with a
-				// clear diagnostic rather than letting the filename
-				// fall through to the unknown-element path below,
-				// where it would surface as a confusing "not in the
-				// graph" error — or, worse, silently resolve against
-				// a same-named local element.
 				if dep.Junction != "" {
-					return nil, fmt.Errorf("element %q depends on %q via junction %q (junctions not yet supported)",
+					return fmt.Errorf("element %q depends on %q via junction %q (junctions not yet supported)",
 						elem.Name, strings.Join(dep.expandedFilenames(), ", "), dep.Junction)
 				}
-				// List-form deps (filename: [a.bst, b.bst]) expand to
-				// N edges; the shared config: applies to each.
+				// List-form deps (filename: [a.bst, b.bst]) expand to N edges.
 				for _, fn := range dep.expandedFilenames() {
-					// Tolerate `depends: [- foo.bst]` style by
-					// stripping the .bst suffix; also accept bare
-					// element names.
+					// Tolerate `depends: [- foo.bst]` style by stripping the
+					// .bst suffix; also accept bare element names.
 					depName := strings.TrimSuffix(fn, ".bst")
 					depElem, ok := g.ByName[depName]
 					if !ok {
-						return nil, fmt.Errorf("element %q depends on %q which is not in the graph", elem.Name, depName)
+						return fmt.Errorf("element %q depends on %q which is not in the graph", elem.Name, depName)
 					}
 					if !seen[depElem] {
 						seen[depElem] = true
@@ -1213,15 +1215,7 @@ func loadGraph(bstPaths []string, sourceCache string) (*graph, error) {
 			}
 		}
 	}
-	// Topological sort (Kahn's algorithm). Stable secondary order on
-	// element name so the rendered output is deterministic across
-	// invocations regardless of input order.
-	sorted, err := topoSort(g.Elements)
-	if err != nil {
-		return nil, err
-	}
-	g.Elements = sorted
-	return g, nil
+	return nil
 }
 
 // applyBuildFileOverrides scans dir for per-element BUILD-tree
