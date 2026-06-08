@@ -739,7 +739,17 @@ func stripWrapperPrefix(tokens []string) []string {
 		"taskset": true, "nice": true, "ionice": true,
 	}
 	for len(tokens) > 0 {
-		if !wrappers[filepath.Base(tokens[0])] {
+		base := filepath.Base(tokens[0])
+		if !wrappers[base] {
+			break
+		}
+		// `sh -c "<script>"` / `bash -lc "<script>"` run an unparsed quoted
+		// command string; keep the shell as argv0 rather than drilling into
+		// the script, so the driver facet stays a stable binary name and not a
+		// spaced command. Command-mode only — taskset's `-c <cpulist>` is
+		// unrelated and must still strip.
+		if (base == "sh" || base == "bash") && len(tokens) > 1 &&
+			(tokens[1] == "-c" || tokens[1] == "-lc") {
 			break
 		}
 		// env may carry KEY=VAL pairs and -i/-u flags before the real

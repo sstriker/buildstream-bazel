@@ -466,6 +466,18 @@ func TestExtractDriver(t *testing.T) {
 			want: "script.sh",
 		},
 		{
+			// `sh -c "<script>"` is opaque: the command is an unparsed quoted
+			// string, so the shell stays argv0 (don't drill into the script).
+			name: "sh -c keeps the shell as driver",
+			cmd:  `sh -c 'gcc foo.c -o foo'`,
+			want: "sh",
+		},
+		{
+			name: "bash -lc keeps the shell as driver",
+			cmd:  `env K=v bash -lc 'python3 gen.py'`,
+			want: "bash",
+		},
+		{
 			name: "cd-prefix without && remains in driver position",
 			// `cd /build cmake` has no ` && ` so the prefix-strip
 			// doesn't fire; the literal `cd` becomes the driver.
