@@ -17,6 +17,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // fileGenerateOut is one recovered file(GENERATE) emission.
@@ -1559,11 +1560,7 @@ func unresolvedCrossPackageTargetFiles(call shadow.FileGenerateCall, hostSrcDir,
 	if len(unresolved) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(unresolved))
-	for n := range unresolved {
-		out = append(out, n)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(unresolved)
 	return out
 }
 
@@ -1599,11 +1596,7 @@ func extractTargetFileRefs(body []byte) []string {
 	if len(seen) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(seen)
 	return names
 }
 
@@ -1706,11 +1699,7 @@ func extractTargetObjectsRefs(body []byte) []string {
 	if len(seen) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(seen)
 	return names
 }
 

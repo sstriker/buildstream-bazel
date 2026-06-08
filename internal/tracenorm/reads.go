@@ -20,7 +20,8 @@ package tracenorm
 import (
 	"bytes"
 	"regexp"
-	"sort"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // canonicalOpenatRE matches openat lines after CanonicalizeWith
@@ -75,10 +76,6 @@ func ExtractReads(canonicalTrace []byte) []string {
 	if len(seen) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out
 }

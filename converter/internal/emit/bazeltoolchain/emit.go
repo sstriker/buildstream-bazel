@@ -25,10 +25,10 @@ package bazeltoolchain
 import (
 	"bytes"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Config knobs the operator passes per emission. None are required;
@@ -543,11 +543,7 @@ func emitStringListConst(buf *bytes.Buffer, name string, items []string) {
 // emitStringMapConst renders a module-level Starlark dict
 // constant: `_NAME = {"k": "v", ...}` with keys in sorted order.
 func emitStringMapConst(buf *bytes.Buffer, name string, m map[string]string) {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(m)
 	if len(keys) == 0 {
 		fmt.Fprintf(buf, "%s = {}\n", name)
 		return

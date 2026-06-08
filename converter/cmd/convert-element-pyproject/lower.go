@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Target is one Bazel rule the emit pass renders. Discriminated
@@ -596,11 +597,7 @@ func lowerScripts(scripts map[string]string, pkgs []Package, labelByPkgName map[
 	if len(scripts) == 0 {
 		return nil, nil
 	}
-	names := make([]string, 0, len(scripts))
-	for n := range scripts {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(scripts)
 
 	out := make([]Target, 0, len(names))
 	for _, scriptName := range names {

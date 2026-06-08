@@ -17,7 +17,8 @@ package main
 
 import (
 	"encoding/json"
-	"sort"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // sourceEntry is one record per unique source identity in the
@@ -72,11 +73,7 @@ func collectSources(g *graph) sourcesJSON {
 			}
 		}
 	}
-	keys := make([]string, 0, len(seen))
-	for k := range seen {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(seen)
 	out := sourcesJSON{Sources: make([]sourceEntry, 0, len(keys))}
 	for _, k := range keys {
 		out.Sources = append(out.Sources, seen[k])

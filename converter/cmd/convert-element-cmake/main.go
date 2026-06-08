@@ -42,6 +42,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
 )
 
@@ -776,11 +777,7 @@ func run(a cli.Args) error {
 		}
 		rootDir := filepath.Dir(a.OutBuild)
 		// Deterministic write order (sorted dirs) for stable logs.
-		dirs := make([]string, 0, len(tree))
-		for d := range tree {
-			dirs = append(dirs, d)
-		}
-		sort.Strings(dirs)
+		dirs := sliceutil.SortedKeys(tree)
 		for _, d := range dirs {
 			var dst string
 			if d == "" {

@@ -11,6 +11,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // emitCMakePTestTodos records the add_test registrations that produced
@@ -96,11 +97,7 @@ func emitCMakePTestTodos(c *todos.Collector, reg *ctest.Registry, emittedTests [
 			evidence["script"] = normalizeReportPath(g.script, sourceRoot, buildDir)
 		}
 		if len(commands) > 0 {
-			cmds := make([]string, 0, len(commands))
-			for cmd := range commands {
-				cmds = append(cmds, cmd)
-			}
-			sort.Strings(cmds)
+			cmds := sliceutil.SortedKeys(commands)
 			evidence["command"] = cmds
 		}
 		var prompt string

@@ -11,6 +11,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/exportshape"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // producedOutputs collects the set of element-root-relative output paths the
@@ -134,11 +135,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool, produced map[st
 
 	// Materialize: stable target order = sorted target name (which
 	// embeds both kind and destination).
-	keys := make([]string, 0, len(byKey))
-	for k := range byKey {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(byKey)
 
 	// usedNames disambiguates target names that collide after
 	// sanitizeDestination. Buckets are keyed by the RAW destination

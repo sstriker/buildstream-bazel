@@ -32,10 +32,10 @@ package bsttranslate
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // TranslateElement returns a copy of el with each translatable source
@@ -119,11 +119,7 @@ func QualifierKeys(src element.Source) []string {
 		return nil
 	}
 	q, _ := src.Extra["qualifiers"].(map[string]any)
-	keys := make([]string, 0, len(q))
-	for k := range q {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(q)
 	return keys
 }
 

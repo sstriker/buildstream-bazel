@@ -19,6 +19,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/bazelconstraints"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // header is intentionally path-free so the emitted BUILD.bazel is
@@ -247,11 +248,7 @@ func emitLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	if len(used) == 0 {
 		return
 	}
-	syms := make([]string, 0, len(used))
-	for s := range used {
-		syms = append(syms, s)
-	}
-	sort.Strings(syms)
+	syms := sliceutil.SortedKeys(used)
 	buf.WriteString(`load("@rules_cc//cc:defs.bzl"`)
 	for _, s := range syms {
 		fmt.Fprintf(buf, ", %q", s)
@@ -1260,11 +1257,7 @@ func emitCMakeConfigureFile(w *bytes.Buffer, t ir.Target) error {
 // `//conditions:default` arm is needed. canonicalize() reformats the result, so
 // this only has to emit a valid select() with sorted, byte-stable arms.
 func renderConfigDictSelect(perConfig map[string]map[string]string) string {
-	labels := make([]string, 0, len(perConfig))
-	for l := range perConfig {
-		labels = append(labels, l)
-	}
-	sort.Strings(labels)
+	labels := sliceutil.SortedKeys(perConfig)
 	var b bytes.Buffer
 	b.WriteString("select({\n")
 	for _, l := range labels {
@@ -1470,11 +1463,7 @@ func pkgFilesRenamesExpr(renames map[string]string) string {
 	if len(renames) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(renames))
-	for k := range renames {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(renames)
 	var sb strings.Builder
 	sb.WriteString("{\n")
 	for _, k := range keys {
@@ -1637,11 +1626,7 @@ func emitCudaLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	if len(used) == 0 {
 		return
 	}
-	syms := make([]string, 0, len(used))
-	for s := range used {
-		syms = append(syms, s)
-	}
-	sort.Strings(syms)
+	syms := sliceutil.SortedKeys(used)
 	buf.WriteString(`load("@rules_cuda//cuda:defs.bzl"`)
 	for _, s := range syms {
 		fmt.Fprintf(buf, ", %q", s)
@@ -2064,11 +2049,7 @@ func scalarAttrExpr(flat string, sel map[string]string) string {
 	if !hasSel {
 		return fmt.Sprintf("%q", flat)
 	}
-	keys := make([]string, 0, len(sel))
-	for k := range sel {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(sel)
 	var b bytes.Buffer
 	b.WriteString("select({\n")
 	for _, k := range keys {
@@ -2242,11 +2223,7 @@ func strDict(m map[string]string) string {
 	if len(m) == 0 {
 		return "{}"
 	}
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(m)
 	var single bytes.Buffer
 	single.WriteByte('{')
 	for i, k := range keys {

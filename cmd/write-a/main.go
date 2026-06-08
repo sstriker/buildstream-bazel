@@ -48,6 +48,7 @@ import (
 
 	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/buildstream-bazel/internal/readpaths"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1007,11 +1008,7 @@ func discoverBstGraph(rootBst, sourceCache string) ([]string, error) {
 		}
 	}
 
-	paths := make([]string, 0, len(visited))
-	for p := range visited {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
+	paths := sliceutil.SortedKeys(visited)
 	return paths, nil
 }
 
@@ -2494,11 +2491,7 @@ func summarizeKinds(g *graph) string {
 	for _, e := range g.Elements {
 		counts[e.Bst.Kind]++
 	}
-	keys := make([]string, 0, len(counts))
-	for k := range counts {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(counts)
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("kind:%s×%d", k, counts[k]))

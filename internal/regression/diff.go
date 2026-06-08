@@ -1,6 +1,10 @@
 package regression
 
-import "sort"
+import (
+	"sort"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
+)
 
 // Diff is the typed comparison between two Runs (`before` and `after`).
 //
@@ -161,10 +165,6 @@ func unionNames(before, after *Run) []string {
 	for n := range after.Outcomes {
 		seen[n] = struct{}{}
 	}
-	out := make([]string, 0, len(seen))
-	for n := range seen {
-		out = append(out, n)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out
 }

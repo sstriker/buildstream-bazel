@@ -4,8 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"path/filepath"
-	"sort"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // TraceEvent is one record from `cmake --trace-expand --trace-format=json-v1`.
@@ -64,11 +65,7 @@ func extractReadPaths(events []TraceEvent, sourceRoot string) []string {
 	for _, ev := range events {
 		collectReadPath(ev, sourceRoot, seen)
 	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out
 }
 

@@ -47,6 +47,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // targetStub is one accumulated install-plan stub before it
@@ -559,11 +560,7 @@ func resolvePlaceholders(s string, dirs map[string]string) string {
 }
 
 func sortedKeys(m map[string]InstallPlanEntry) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(m)
 	return out
 }
 

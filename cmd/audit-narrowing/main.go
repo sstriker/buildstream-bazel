@@ -48,6 +48,7 @@ import (
 	"sort"
 
 	"github.com/sstriker/buildstream-bazel/internal/readpaths"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"github.com/sstriker/buildstream-bazel/internal/tracenorm"
 )
 
@@ -166,11 +167,7 @@ func loadOracle(cmakeReadsPath, tracePath string) ([]string, error) {
 			seen[p] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out, nil
 }
 
