@@ -14,12 +14,14 @@ transition cleanly.
   step runs in the `Build + unit tests` job as **non-blocking
   (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
   At launch it flagged **55** issues against the gate thresholds (gocyclo>30,
-  gocognit>50, nestif>10, funlen); the burndown is underway (**53** now —
-  `lowerInterfaceLibraries` decomposed into three pure build-pass helpers, 60→15,
-  establishing the extract-cohesive-passes pattern). The remaining worst
-  offenders are `lower.lowerTarget` (cyclomatic 304 / cognitive 699),
-  `convert-element-cmake`'s `run` (167/291), `lower.ToIR` (130/275), and
-  `emit/bazel` `rewriteTarget` / `planSplit` — each its own focused pass.
+  gocognit>50, nestif>10, funlen); the burndown is underway (**52** now — pass 1
+  decomposed `lowerInterfaceLibraries` into three pure build-pass helpers (60→15);
+  pass 2 split `applyProbeGenexProperties` into build-flag vs tag-only helpers
+  (cognitive 84→6) — establishing the extract-cohesive-passes pattern). The
+  dominant remaining offenders are flagged by **gocognit** (the giants are
+  cognitive, not cyclomatic): `lower.lowerTarget` (cognitive **713**),
+  `convert-element-cmake`'s `run` (291), `lower.ToIR` (278), and `emit/bazel`
+  `rewriteTarget` (181) / `planSplit` (167) — each its own focused pass.
   **What's left:** keep breaking these down (extract per-concern helpers the
   way the duplicate-logic audit consolidations did — see git history for the
   source-classification chokepoints + the cross-package label / exports_files
